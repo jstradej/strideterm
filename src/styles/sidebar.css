@@ -1943,6 +1943,46 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   cursor: pointer;
 }
 
+.activity-row-wrap {
+  position: relative;
+  min-width: 0;
+}
+
+.activity-row-wrap--menu .activity-row {
+  padding-right: 28px;
+}
+
+.activity-row__menu {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  z-index: 1;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font-size: 16px;
+  font-weight: bold;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(-50%);
+  transition: opacity 0.12s ease-out;
+}
+
+.activity-row-wrap:hover .activity-row__menu,
+.activity-row-wrap:focus-within .activity-row__menu {
+  opacity: 1;
+}
+
+.activity-row__menu:hover,
+.activity-row__menu:focus-visible {
+  background: rgba(var(--tint), 0.14);
+}
+
 /* The rail: one thin line per nesting level, drawn out of flow so it adds no
    height and cannot move a target when a row's depth is frozen. */
 .activity-row::before {
@@ -2000,6 +2040,10 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
 
   .activity-row--activity {
     min-height: 40px;
+  }
+
+  .activity-row__menu {
+    opacity: 1;
   }
 }
 

@@ -1,58 +1,74 @@
 <template>
   <section class="activity-cluster" data-role="activity-cluster" :data-cluster-key="clusterKey">
-    <button
+    <div
       v-for="node in nodes"
       :key="node.key"
-      type="button"
-      class="activity-row"
-      :class="{
-        'activity-row--context': node.role === 'context',
-        'activity-row--activity': node.role === 'activity',
-        'activity-row--active': node.active && !node.missing,
-        'activity-row--attention': (node.attentionCount || 0) > 0 && !node.missing,
-        'activity-row--in-grid': node.inGrid && !node.missing,
-        'activity-row--missing': node.missing,
-      }"
-      :style="`--accent:${node.color || 'var(--border)'};--activity-depth:${visualDepthOf(node.depth)}`"
-      :data-role="node.role === 'context' ? 'activity-context-row' : 'activity-node-row'"
-      :data-row-key="node.key"
-      :data-workspace-id="node.workspaceId"
-      :data-depth="node.depth"
-      :disabled="node.missing"
-      :aria-label="node.ariaLabel"
-      :aria-current="node.active && !node.missing ? 'true' : undefined"
-      :title="node.title"
-      @click="onActivate(node)"
+      class="activity-row-wrap"
+      :class="{ 'activity-row-wrap--menu': showWorkspaceMenu && !node.missing }"
     >
-      <span class="activity-row__badge" aria-hidden="true">
-        {{ node.icon }}
-        <span
-          v-if="node.statusCue && !node.missing"
-          v-heartbeat="node.statusCue.heartbeat"
-          :class="['activity-row__status-dot', `activity-row__status-dot--${node.statusCue.state}`]"
-          :title="node.statusCue.label"
-        ></span>
-        <span v-if="node.slotIndex && !node.missing" class="activity-row__slot">{{ node.slotIndex }}</span>
-      </span>
-      <span class="activity-row__text">
-        <span class="activity-row__title">
-          <strong class="activity-row__label">{{ node.label }}</strong>
+      <button
+        type="button"
+        class="activity-row"
+        :class="{
+          'activity-row--context': node.role === 'context',
+          'activity-row--activity': node.role === 'activity',
+          'activity-row--active': node.active && !node.missing,
+          'activity-row--attention': (node.attentionCount || 0) > 0 && !node.missing,
+          'activity-row--in-grid': node.inGrid && !node.missing,
+          'activity-row--missing': node.missing,
+        }"
+        :style="`--accent:${node.color || 'var(--border)'};--activity-depth:${visualDepthOf(node.depth)}`"
+        :data-role="node.role === 'context' ? 'activity-context-row' : 'activity-node-row'"
+        :data-row-key="node.key"
+        :data-workspace-id="node.workspaceId"
+        :data-depth="node.depth"
+        :disabled="node.missing"
+        :aria-label="node.ariaLabel"
+        :aria-current="node.active && !node.missing ? 'true' : undefined"
+        :title="node.title"
+        @click="onActivate(node)"
+      >
+        <span class="activity-row__badge" aria-hidden="true">
+          {{ node.icon }}
           <span
-            v-if="(node.attentionCount || 0) > 0 && !node.missing"
-            class="activity-row__attention"
-            aria-hidden="true"
-            >🔔<span class="activity-row__attention-count">{{ node.attentionCount }}</span></span
-          >
+            v-if="node.statusCue && !node.missing"
+            v-heartbeat="node.statusCue.heartbeat"
+            :class="['activity-row__status-dot', `activity-row__status-dot--${node.statusCue.state}`]"
+            :title="node.statusCue.label"
+          ></span>
+          <span v-if="node.slotIndex && !node.missing" class="activity-row__slot">{{ node.slotIndex }}</span>
         </span>
-        <small v-if="node.role === 'activity'" class="activity-row__summary">{{ node.summary || "" }}</small>
-      </span>
-      <span v-if="node.meta !== undefined || node.trailing !== undefined" class="activity-row__tail">
-        <span v-if="node.meta !== undefined" class="activity-row__state">{{ node.missing ? "" : node.meta }}</span>
-        <span v-if="node.trailing !== undefined" class="activity-row__trailing">{{
-          node.missing ? "gone" : node.trailing
-        }}</span>
-      </span>
-    </button>
+        <span class="activity-row__text">
+          <span class="activity-row__title">
+            <strong class="activity-row__label">{{ node.label }}</strong>
+            <span
+              v-if="(node.attentionCount || 0) > 0 && !node.missing"
+              class="activity-row__attention"
+              aria-hidden="true"
+              >🔔<span class="activity-row__attention-count">{{ node.attentionCount }}</span></span
+            >
+          </span>
+          <small v-if="node.role === 'activity'" class="activity-row__summary">{{ node.summary || "" }}</small>
+        </span>
+        <span v-if="node.meta !== undefined || node.trailing !== undefined" class="activity-row__tail">
+          <span v-if="node.meta !== undefined" class="activity-row__state">{{ node.missing ? "" : node.meta }}</span>
+          <span v-if="node.trailing !== undefined" class="activity-row__trailing">{{
+            node.missing ? "gone" : node.trailing
+          }}</span>
+        </span>
+      </button>
+      <button
+        v-if="showWorkspaceMenu && !node.missing"
+        type="button"
+        class="activity-row__menu"
+        title="Open the workspace actions menu."
+        aria-label="Open workspace actions menu"
+        @mousedown.stop
+        @click.stop="emit('open-menu', { event: $event, node })"
+      >
+        &#x2026;
+      </button>
+    </div>
   </section>
 </template>
 
@@ -115,10 +131,12 @@ defineProps<{
   clusterKey: string;
   /** Pre-order rows: a parent always precedes its children. */
   nodes: ActivityRowView[];
+  showWorkspaceMenu?: boolean;
 }>();
 
 const emit = defineEmits<{
   (e: "activate", node: ActivityRowView): void;
+  (e: "open-menu", payload: { event: MouseEvent; node: ActivityRowView }): void;
 }>();
 
 function onActivate(node: ActivityRowView): void {

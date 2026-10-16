@@ -91,7 +91,9 @@
           :key="cluster.key"
           :cluster-key="cluster.key"
           :nodes="cluster.rows"
+          show-workspace-menu
           @activate="onActivateRecentRow"
+          @open-menu="onOpenRecentMenu"
         />
         <button
           v-if="hiddenRecentCount > 0"
@@ -1009,6 +1011,11 @@ function onActivateRecentRow(node: ActivityRowView): void {
   // Opening a workspace is navigation, not work — nothing here stamps
   // `lastWorkedAt`, so a click can never reorder the list it was made in.
   void onActivate(node.workspaceId);
+}
+
+function onOpenRecentMenu({ event, node }: { event: MouseEvent; node: ActivityRowView }): void {
+  const ws = store.filteredWorkspaces.find((workspace) => workspace.id === node.workspaceId);
+  if (ws) onOpenMenu(event, ws as unknown as Record<string, unknown>);
 }
 
 /** `Show more` changes which ACTIVITIES are selected, so the forest is rebuilt

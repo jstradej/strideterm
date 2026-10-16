@@ -989,6 +989,65 @@ describe("SidebarPanel — recently worked shortcuts", () => {
     expect(activate).toHaveBeenCalledWith("ws-A");
   });
 
+  it("opens the recent workspace menu for that workspace without activating its row", async () => {
+    const store = useAppStore();
+    store.payload = recentPayload({ workspaces: workedWorkspaces(2) });
+    const activate = vi.spyOn(store, "activateWorkspace").mockResolvedValue(undefined);
+
+    const wrapper = mount(SidebarPanel);
+    await wrapper.get('.recent-shortcuts [data-role="activity-node-row"] + .activity-row__menu').trigger("click");
+    await flushPromises();
+
+    expect(activate).not.toHaveBeenCalled();
+    expect(
+      [...document.querySelectorAll(".context-menu .context-menu__item")].some((item) =>
+        item.textContent?.includes("Edit"),
+      ),
+    ).toBe(true);
+    expect(wrapper.find('.recent-shortcuts [data-role="activity-node-row"]').attributes("data-workspace-id")).toBe(
+      "ws-A",
+    );
+    const editButton = [...document.querySelectorAll<HTMLButtonElement>(".context-menu .context-menu__item")].find(
+      (item) => item.textContent?.includes("Edit"),
+    );
+    editButton?.click();
+    await flushPromises();
+    expect(wrapper.emitted("edit-workspace")?.[0]).toEqual(["ws-A"]);
+    wrapper.unmount();
+  });
+
+  it("offers the menu for a real context workspace in the recent hierarchy", async () => {
+    const store = useAppStore();
+    const now = Date.now();
+    store.payload = recentPayload({
+      workspaces: [
+        { id: "ws-root", name: "Root", cwd: "/root", panels: [], icon: "R", color: "#fff", profileId: "default" },
+        {
+          id: "ws-child",
+          name: "Child",
+          cwd: "/root/child",
+          panels: [],
+          icon: "C",
+          color: "#fff",
+          profileId: "default",
+          quickfix: { parentWorkspaceId: "ws-root" },
+          lastWorkedAt: new Date(now).toISOString(),
+        },
+      ],
+    });
+    const wrapper = mount(SidebarPanel);
+
+    await wrapper.get('.recent-shortcuts [data-role="activity-context-row"] + .activity-row__menu').trigger("click");
+    const editButton = [...document.querySelectorAll<HTMLButtonElement>(".context-menu .context-menu__item")].find(
+      (item) => item.textContent?.includes("Edit"),
+    );
+    editButton?.click();
+    await flushPromises();
+
+    expect(wrapper.emitted("edit-workspace")?.[0]).toEqual(["ws-root"]);
+    wrapper.unmount();
+  });
+
   it("active, grid and attention state tint a row without changing membership or order", () => {
     const store = useAppStore();
     const now = Date.now();
@@ -2265,7 +2324,7 @@ describe("SidebarPanel — hierarchical recent entries", () => {
     const clusters = wrapper.findAll('.recent-shortcuts [data-role="activity-cluster"]');
     expect(clusters).toHaveLength(2);
     // `teststash` is a cluster of its own and holds nothing else.
-    expect(clusters[0].findAll("button")).toHaveLength(1);
+    expect(clusters[0].findAll('[data-role="activity-node-row"]')).toHaveLength(1);
     expect(clusters[0].find('[data-workspace-id="ws-child"]').exists()).toBe(false);
     // The child sits in its OWN cluster, under a `strideterm` context row —
     // never under `teststash`.
