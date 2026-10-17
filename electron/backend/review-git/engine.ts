@@ -153,6 +153,21 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
     };
   }
 
+  const shown = (value: unknown): string => {
+    if (value === null || value === undefined) return "none";
+    if (Array.isArray(value)) return `[${value.map(shown).join(", ")}]`;
+    return typeof value === "string" && /^[0-9a-f]{40,64}$/u.test(value) ? short(value) : String(value);
+  };
+
+  /** The pinned facts that differ from the ones the caller says it was shown. */
+  function changedFacts(proposal: ReviewGitProposal, previous: ReviewGitConfirmation["facts"]): string[] {
+    if (!previous) return [];
+    const keys = new Set([...Object.keys(proposal.facts), ...Object.keys(previous)]);
+    return [...keys].filter(
+      (key) => JSON.stringify(proposal.facts[key] ?? null) !== JSON.stringify(previous[key] ?? null),
+    );
+  }
+
   function confirmRequired(
     facts: { headSha: string },
     proposal: ReviewGitProposal,
@@ -160,14 +175,21 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
     operationId?: string,
   ): ReviewGitResult {
     const stale = Boolean(confirmation?.proposalId) && confirmation!.proposalId !== proposal.proposalId;
+    const changed = stale ? changedFacts(proposal, confirmation?.facts) : [];
+    const changeNote = changed.length
+      ? ` Changed since you were asked: ${changed
+          .map((key) => `${key} ${shown(confirmation?.facts?.[key])} → ${shown(proposal.facts[key])}`)
+          .join("; ")}.`
+      : "";
     return {
       status: "confirm-required",
       proposal,
       ...(stale ? { stale: true } : {}),
+      ...(changed.length ? { changedFacts: changed } : {}),
       ...baseResult(
         facts,
         facts.headSha,
-        stale ? `The repository changed since you were asked. ${proposal.message}` : proposal.message,
+        stale ? `The repository changed since you were asked.${changeNote} ${proposal.message}` : proposal.message,
         operationId,
       ),
     };
@@ -235,6 +257,16 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
         };
       }
       return { prepared: { facts, sourceBranch, fullRef, remote: { target: "origin", viaOrigin: true }, liveSha: "" } };
+    }
+    if (subject.pullRequestClosed) {
+      return {
+        block: blocked(
+          facts,
+          "pull-request-closed",
+          `This pull request is ${subject.pullRequestClosed}, so nothing is refreshed, rebased or pushed for it.`,
+          "Your checkout and local work are untouched. Stage and commit still work; nothing is cleaned up for you.",
+        ),
+      };
     }
     if (subject.identityConflict) {
       return {

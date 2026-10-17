@@ -546,6 +546,7 @@ interface RuntimeDependencies {
   /** Which build is running — detected by main.ts, which can ask Electron (this module cannot). */
   distribution?: AppDistribution;
   createSshMcpBroker?: typeof createSshMcpBroker;
+  createReviewGitBroker?: typeof createReviewGitBroker;
 
   fetchImpl?: typeof fetch;
 
@@ -4200,7 +4201,7 @@ export async function createRuntime({
     auditStores: { azure: auditLogStore, github: githubAuditLogStore, system: gitAuditLogStore },
     log,
   });
-  reviewGitBroker = createReviewGitBroker({
+  reviewGitBroker = (dependencies.createReviewGitBroker || createReviewGitBroker)({
     service: reviewGitService,
     isGrantLive: (grant) =>
       isReviewGitGrantLive({

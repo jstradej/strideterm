@@ -92,3 +92,95 @@ describe("buildPullRequestSummary (github) — profile scoping", () => {
     expect(summary.reviewWorkspaceId).toBe("ws-default-review");
   });
 });
+
+describe("buildPullRequestSummary (github) — source repository", () => {
+  const connection = { id: "github-a", label: "A", hostUrl: "https://github.com", currentUserLogin: "me" };
+  const summaryFor = (pr: Record<string, unknown>) =>
+    buildPullRequestSummary({
+      connection,
+      pr,
+      reviews: [],
+      reviewComments: [],
+      issueComments: [],
+      requestedReviewers: { users: [], teams: [] },
+      workspaces: [],
+      gitSnapshots: {},
+      activeProfileId: "default",
+    }).summary as unknown as { repository: Record<string, unknown>; sourceRepository: Record<string, unknown> | null };
+
+  test("review.repository stays the TARGET (base) repository while sourceRepository is the HEAD repository", () => {
+    const { repository, sourceRepository } = summaryFor(
+      makePr({
+        head: {
+          ref: "login-fix",
+          sha: "abc123",
+          repo: {
+            id: 555,
+            name: "web-app",
+            full_name: "contributor/web-app",
+            clone_url: "https://github.com/contributor/web-app.git",
+            permissions: { push: false },
+          },
+        },
+        base: {
+          ref: "main",
+          sha: "def456",
+          repo: {
+            id: 100,
+            name: "web-app",
+            owner: { login: "acme" },
+            clone_url: "https://github.com/acme/web-app.git",
+          },
+        },
+      }),
+    );
+
+    expect(repository).toMatchObject({ fullName: "acme/web-app", remoteUrl: "https://github.com/acme/web-app.git" });
+    expect(sourceRepository).toEqual({
+      id: "555",
+      name: "web-app",
+      fullName: "contributor/web-app",
+      remoteUrl: "https://github.com/contributor/web-app.git",
+      sameAsTarget: false,
+      canPush: false,
+    });
+  });
+
+  test("a branch in the target repository itself is not a fork, and write access is unknown unless reported", () => {
+    const { sourceRepository } = summaryFor(
+      makePr({
+        head: {
+          ref: "feature/x",
+          sha: "abc123",
+          repo: {
+            id: 100,
+            name: "web-app",
+            full_name: "acme/web-app",
+            clone_url: "https://github.com/acme/web-app.git",
+          },
+        },
+        base: { ref: "main", sha: "def456", repo: { id: 100, name: "web-app", owner: { login: "acme" } } },
+      }),
+    );
+    expect(sourceRepository).toMatchObject({ id: "100", sameAsTarget: true, canPush: null });
+  });
+
+  test("write access the provider reports is carried as-is", () => {
+    const { sourceRepository } = summaryFor(
+      makePr({
+        head: {
+          ref: "feature/x",
+          sha: "abc123",
+          repo: { id: 100, name: "web-app", full_name: "acme/web-app", permissions: { push: true } },
+        },
+        base: { ref: "main", sha: "def456", repo: { id: 100, name: "web-app", owner: { login: "acme" } } },
+      }),
+    );
+    expect(sourceRepository?.canPush).toBe(true);
+  });
+
+  test("a deleted fork leaves nothing to verify a write against", () => {
+    const { sourceRepository } = summaryFor(makePr({ head: { ref: "x", sha: "abc123", repo: null } }));
+    expect(sourceRepository).toBeNull();
+  });
+});

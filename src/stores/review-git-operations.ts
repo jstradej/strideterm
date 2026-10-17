@@ -17,6 +17,8 @@ export interface ReviewGitProposalView {
   kind: string;
   title: string;
   message: string;
+  /** The repository facts the proposal pinned; handed back so a stale answer can say what changed. */
+  facts?: Record<string, string | number | boolean | string[] | null>;
   affectedCommits: Array<{ sha: string; subject: string }>;
   affectedTotal: number;
   incomingCommits: Array<{ sha: string; subject: string }>;
@@ -271,7 +273,7 @@ export function createReviewGitOperations(ctx: ReviewGitOperationsCtx) {
   async function runOnce(
     kind: ReviewGitOperationKind,
     workspaceId: string,
-    confirmation?: { proposalId: string },
+    confirmation?: { proposalId: string; facts?: ReviewGitProposalView["facts"] },
   ): Promise<ReviewGitOutcome> {
     const api = ctx.getApi() as CallableTransport;
     startsInFlight += 1;
@@ -309,7 +311,7 @@ export function createReviewGitOperations(ctx: ReviewGitOperationsCtx) {
     workspaceId: string,
     { confirm = true }: { confirm?: boolean } = {},
   ): Promise<ReviewGitOutcome> {
-    let confirmation: { proposalId: string } | undefined;
+    let confirmation: { proposalId: string; facts?: ReviewGitProposalView["facts"] } | undefined;
     let outcome: ReviewGitOutcome = null;
     for (let round = 0; round < MAX_CONFIRM_ROUNDS; round += 1) {
       outcome = await runOnce(kind, workspaceId, confirmation);
@@ -326,7 +328,7 @@ export function createReviewGitOperations(ctx: ReviewGitOperationsCtx) {
       if (!accepted) {
         return { status: "cancelled", message: "Cancelled — nothing was changed.", declined: proposal };
       }
-      confirmation = { proposalId: proposal.proposalId };
+      confirmation = { proposalId: proposal.proposalId, ...(proposal.facts ? { facts: proposal.facts } : {}) };
     }
     return outcome;
   }

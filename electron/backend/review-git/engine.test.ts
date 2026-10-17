@@ -285,6 +285,33 @@ describe("refresh", () => {
     expect(second.proposal.proposalId).not.toBe(first.proposal.proposalId);
   });
 
+  test("a stale continuation that carried the facts it was shown names the facts that changed", async () => {
+    const f = await createFixture();
+    await f.commitLocal("mine");
+    await git(f.seed, ["checkout", "feature"]);
+    await git(f.seed, ["reset", "--hard", "main"]);
+    await git(f.seed, ["commit", "--allow-empty", "-m", "rewritten 1"]);
+    await git(f.seed, ["push", "--force", "origin", "feature"]);
+    const first = expectStatus(await f.engine.refresh(f.subject, requester), "confirm-required");
+    await git(f.seed, ["commit", "--allow-empty", "-m", "rewritten 2"]);
+    await git(f.seed, ["push", "--force", "origin", "feature"]);
+    const newLive = await f.remoteSha();
+
+    const second = expectStatus(
+      await f.engine.refresh(f.subject, requester, {
+        proposalId: first.proposal.proposalId,
+        facts: first.proposal.facts,
+      }),
+      "confirm-required",
+    );
+
+    expect(second.stale).toBe(true);
+    expect(second.changedFacts).toEqual(["liveSha"]);
+    expect(second.message).toContain(
+      `liveSha ${String(first.proposal.facts.liveSha).slice(0, 8)} → ${newLive.slice(0, 8)}`,
+    );
+  });
+
   test("unknown baseline with a diverged history stays conservative and asks", async () => {
     const f = await createFixture();
     await f.commitLocal("mine");
@@ -799,6 +826,39 @@ describe("last-moment recheck, identity and proposals for agents", () => {
     expect(result.code).toBe("stale");
     expect(await f.head()).not.toBe(before);
     expect(f.audit.finished.at(-1)).toMatchObject({ outcome: "blocked", success: false });
+  });
+
+  test.each([
+    ["refresh", (f: Fixture) => f.engine.refresh(f.subject, requester)],
+    ["push", (f: Fixture) => f.engine.push(f.subject, requester)],
+    ["rebase", (f: Fixture) => f.engine.rebase(f.subject, requester)],
+  ])(
+    "a closed, merged or abandoned pull request is unavailable for %s — local work is left alone",
+    async (_name, run) => {
+      const f = await createFixture();
+      await f.commitLocal("mine");
+      await f.commitOnRemote("theirs");
+      f.subject.pullRequestClosed = "completed";
+      const before = await f.head();
+
+      const result = expectStatus(await run(f), "blocked");
+
+      expect(result.code).toBe("pull-request-closed");
+      expect(result.message).toContain("is completed");
+      expect(await f.head()).toBe(before);
+      expect(f.audit.entries).toEqual([]);
+    },
+  );
+
+  test("a closed pull request does not stop purely local work: staging and committing still work", async () => {
+    const f = await createFixture();
+    f.subject.pullRequestClosed = "abandoned";
+    await writeFile(path.join(f.checkout, "one.txt"), "1\n");
+    const first = expectStatus(await f.engine.stage(f.subject, requester, ["one.txt"]), "confirm-required");
+    expectStatus(
+      await f.engine.stage(f.subject, requester, ["one.txt"], { proposalId: first.proposal.proposalId }),
+      "staged",
+    );
   });
 
   test("a source that changed since the workspace was linked blocks source-targeted work", async () => {

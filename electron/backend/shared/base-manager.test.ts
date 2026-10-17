@@ -574,6 +574,39 @@ describe("BaseProviderManager review Git operations", () => {
     ).not.toThrow();
   });
 
+  test.each([
+    ["Azure completed", { status: "completed" }, "completed"],
+    ["Azure abandoned", { status: "abandoned" }, "abandoned"],
+    ["GitHub closed", { state: "closed" }, "closed"],
+    ["GitHub merged", { state: "closed", mergedAt: "2026-10-01T00:00:00Z" }, "merged"],
+    ["an open pull request", { status: "active" }, ""],
+    ["an open GitHub pull request", { state: "open", mergedAt: null }, ""],
+  ])("the subject knows whether the pull request is still open: %s", (_label, pullRequest, expected) => {
+    const manager = createManager({ execFileTextImpl: vi.fn(), secrets: { "tok-ref-1": "token" } });
+    manager.snapshot.connections = [{ id: "conn-1", tokenRef: "tok-ref-1" }];
+    const subject = manager.buildReviewSubject({
+      id: "ws",
+      cwd: "/repo",
+      review: { connectionId: "conn-1", pullRequest: { id: 1, sourceRefName: "refs/heads/f", ...pullRequest } },
+    });
+    expect(subject.pullRequestClosed ?? "").toBe(expected);
+  });
+
+  test("the live provider snapshot decides over the persisted copy when the pull request got closed", () => {
+    const manager = createManager({ execFileTextImpl: vi.fn(), secrets: { "tok-ref-1": "token" } });
+    manager.snapshot.connections = [{ id: "conn-1", tokenRef: "tok-ref-1" }];
+    manager.snapshot.pullRequests["conn-1:repo:1"] = {
+      prKey: "conn-1:repo:1",
+      pullRequest: { status: "completed" },
+    };
+    const subject = manager.buildReviewSubject({
+      id: "ws",
+      cwd: "/repo",
+      review: { connectionId: "conn-1", prKey: "conn-1:repo:1", pullRequest: { id: 1, status: "active" } },
+    });
+    expect(subject.pullRequestClosed).toBe("completed");
+  });
+
   test("throws when the PAT is missing", async () => {
     const manager = createManager({ execFileTextImpl: vi.fn() });
     manager.snapshot.connections = [{ id: "conn-1", tokenRef: "tok-ref-1" }];

@@ -1066,6 +1066,18 @@ export class BaseProviderManager extends EventEmitter {
     ) as {
       sourceRepository?: ReviewSourceRepository | null;
     } | null;
+    // The live provider snapshot knows better than the persisted copy whether the PR is still open.
+    const prInfo = ((summary as { pullRequest?: Record<string, unknown> } | null)?.pullRequest ||
+      review.pullRequest ||
+      {}) as { status?: string; state?: string; mergedAt?: string | null; closedAt?: string | null };
+    const prStatus = String(prInfo.status || prInfo.state || "").toLowerCase();
+    const pullRequestClosed = prInfo.mergedAt
+      ? "merged"
+      : ["abandoned", "completed", "closed", "merged"].includes(prStatus)
+        ? prStatus
+        : prInfo.closedAt
+          ? "closed"
+          : "";
     const persistedKey = reviewSourceIdentityKey(review as Partial<ReviewInfo>);
     const liveKey = summary
       ? reviewSourceIdentityKey({
@@ -1090,6 +1102,7 @@ export class BaseProviderManager extends EventEmitter {
       sourceRepository: review.sourceRepository || summary?.sourceRepository || null,
       targetRemoteUrl: review.repository?.remoteUrl || "",
       baselineSha: review.sourceBaselineSha || "",
+      ...(pullRequestClosed ? { pullRequestClosed } : {}),
       ...(persistedKey && liveKey && persistedKey !== liveKey
         ? {
             identityConflict: `${review.sourceRepository?.fullName || "recorded source"} → ${(summary as { sourceRepository?: ReviewSourceRepository | null }).sourceRepository?.fullName || "current source"}`,

@@ -45,6 +45,7 @@ const proposal = (overrides: Record<string, unknown> = {}) => ({
   kind: "reset",
   title: "Reset onto the rewritten pull request branch?",
   message: "The PR branch no longer contains HEAD.",
+  facts: { headSha: "a".repeat(40), liveSha: "b".repeat(40), baselineSha: null },
   affectedCommits: [{ sha: "a".repeat(40), subject: "my local commit" }],
   affectedTotal: 1,
   incomingCommits: [{ sha: "b".repeat(40), subject: "rewritten" }],
@@ -142,10 +143,14 @@ describe("consent", () => {
     expect(dialog.message).toContain("aaaaaaaa my local commit");
     expect(dialog.message).toContain("bbbbbbbb rewritten");
     expect(startReviewGitOperation).toHaveBeenNthCalledWith(1, { kind: "refresh", workspaceId: "ws-1" });
+    // The continuation names the proposal AND hands back the facts the user was shown.
     expect(startReviewGitOperation).toHaveBeenNthCalledWith(2, {
       kind: "refresh",
       workspaceId: "ws-1",
-      confirmation: { proposalId: "prop-1" },
+      confirmation: {
+        proposalId: "prop-1",
+        facts: { headSha: "a".repeat(40), liveSha: "b".repeat(40), baselineSha: null },
+      },
     });
   });
 
@@ -205,7 +210,10 @@ describe("consent", () => {
     expect(startReviewGitOperation).toHaveBeenNthCalledWith(2, {
       kind: "push-and-publish",
       workspaceId: "ws-1",
-      confirmation: { proposalId: "prop-9" },
+      confirmation: {
+        proposalId: "prop-9",
+        facts: { headSha: "a".repeat(40), liveSha: "b".repeat(40), baselineSha: null },
+      },
     });
     expect(outcome.publish.published).toEqual(["c1"]);
   });

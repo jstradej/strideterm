@@ -213,7 +213,8 @@ export function describeOperation(calledTool: string, lookup: OperationLookup): 
       listCommits("Local commits affected", proposal.affectedCommits, proposal.affectedTotal),
       listCommits("Incoming / replaced commits", proposal.incomingCommits, proposal.incomingTotal),
       "",
-      `Next: tell the user exactly this, ask them (AskUserQuestion in Claude, otherwise ask in the conversation and stop) and wait for their actual answer. If they approve, call ${tool} again with proposalId="${proposal.proposalId}" and consent set to their answer. If they decline, do nothing.`,
+      `Pinned facts: ${JSON.stringify(proposal.facts)}`,
+      `Next: tell the user exactly this, ask them (AskUserQuestion in Claude, otherwise ask in the conversation and stop) and wait for their actual answer. If they approve, call ${tool} again with proposalId="${proposal.proposalId}", expectedFacts set to the pinned facts above, and consent set to their answer. If they decline, do nothing.`,
     );
   } else if (engine.status === "blocked") {
     lines.push(`BLOCKED (${engine.code}): ${engine.message}`);
@@ -239,6 +240,12 @@ const proposalFields = {
     .optional()
     .describe(
       "Omit on the first call: the tool answers with a proposal. Pass the proposalId it returned only after the user actually approved.",
+    ),
+  expectedFacts: z
+    .record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null(), z.array(z.string())]))
+    .optional()
+    .describe(
+      'The "facts" object of the proposal, passed back unchanged. If the repository changed since, the new proposal names what differs.',
     ),
   consent: z
     .string()
@@ -370,12 +377,12 @@ export function registerReviewGitTools(server: McpServer, client: ReviewGitClien
         inputSchema: consent ? { ...extraSchema, ...proposalFields } : { ...extraSchema },
       },
       async (input: Record<string, unknown>, extra: { signal?: AbortSignal }) => {
-        const { proposalId, consent: consentText, ...rest } = input || {};
+        const { proposalId, expectedFacts, consent: consentText, ...rest } = input || {};
         const lookup = await client.start(
           {
             kind,
             ...rest,
-            ...(proposalId ? { confirmation: { proposalId } } : {}),
+            ...(proposalId ? { confirmation: { proposalId, ...(expectedFacts ? { facts: expectedFacts } : {}) } } : {}),
             ...(consentText ? { consent: consentText } : {}),
           },
           withDisconnect(extra.signal),
@@ -403,11 +410,11 @@ export function registerReviewGitTools(server: McpServer, client: ReviewGitClien
       inputSchema: { ...proposalFields },
     },
     async (input: Record<string, unknown>, extra: { signal?: AbortSignal }) => {
-      const { proposalId, consent: consentText } = input || {};
+      const { proposalId, expectedFacts, consent: consentText } = input || {};
       const lookup = await client.start(
         {
           kind: "refresh",
-          ...(proposalId ? { confirmation: { proposalId } } : {}),
+          ...(proposalId ? { confirmation: { proposalId, ...(expectedFacts ? { facts: expectedFacts } : {}) } } : {}),
           ...(consentText ? { consent: consentText } : {}),
         },
         withDisconnect(extra.signal),

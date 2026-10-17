@@ -1283,3 +1283,95 @@ describe("createPullRequestForWorkspace — cross-profile connection guard", () 
     ).rejects.toThrow(/Cross-profile refused.*profile-a.*profile-b/s);
   });
 });
+
+describe("AzureDevOpsManager buildReviewMetadata — source baseline and identity", () => {
+  const SHA = "a".repeat(40);
+  const summary = (overrides: Record<string, unknown> = {}) => ({
+    prKey: "ado-main:repo-1:123",
+    connectionId: "ado-main",
+    orgUrl: "https://dev.azure.com/acme",
+    project: { id: "p1", name: "Platform" },
+    repository: { id: "repo-1", name: "web-app", remoteUrl: "https://example.com/acme/web-app.git" },
+    sourceRepository: {
+      id: "100",
+      name: "web-app",
+      fullName: "acme/web-app",
+      remoteUrl: "https://example.com/acme/web-app.git",
+      sameAsTarget: true,
+      canPush: null,
+    },
+    pullRequest: { id: 123, sourceRefName: "refs/heads/feature/x", targetRefName: "refs/heads/main" },
+    role: "reviewer",
+    ...overrides,
+  });
+  const checkout = { mode: "managed-worktree", rootPath: "/r/pr-123", cacheRepoPath: "/r/cache" };
+  const previousReview = (overrides: Record<string, unknown> = {}) => ({
+    provider: "azure-devops",
+    prKey: "ado-main:repo-1:123",
+    connectionId: "ado-main",
+    sourceRepository: summary().sourceRepository,
+    pullRequest: { sourceRefName: "refs/heads/feature/x", targetRefName: "refs/heads/main" },
+    sourceBaselineSha: SHA,
+    ...overrides,
+  });
+  const build = (s: Record<string, unknown>, previous: Record<string, unknown> | null) =>
+    createManager().manager.buildReviewMetadata(s as never, checkout as never, {
+      previousReview: previous as never,
+    }) as unknown as Record<string, unknown>;
+
+  test("carries the source repository, never the retired writable flag, and starts with no baseline", () => {
+    const review = build(summary(), null);
+    expect(review.sourceRepository).toMatchObject({ id: "100", fullName: "acme/web-app", sameAsTarget: true });
+    expect(review).not.toHaveProperty("writable");
+    expect(review).not.toHaveProperty("sourceBaselineSha");
+  });
+
+  test("a rebuild keeps the baseline while the source identity is unchanged", () => {
+    expect(build(summary(), previousReview()).sourceBaselineSha).toBe(SHA);
+  });
+
+  test("a rebuild keeps the baseline when only the TARGET moved", () => {
+    const retargeted = summary({
+      pullRequest: { id: 123, sourceRefName: "refs/heads/feature/x", targetRefName: "refs/heads/release" },
+    });
+    expect(build(retargeted, previousReview()).sourceBaselineSha).toBe(SHA);
+  });
+
+  test("a rebuild drops the baseline when the source ref changes", () => {
+    const moved = summary({
+      pullRequest: { id: 123, sourceRefName: "refs/heads/feature/y", targetRefName: "refs/heads/main" },
+    });
+    expect(build(moved, previousReview())).not.toHaveProperty("sourceBaselineSha");
+  });
+
+  test("a rebuild drops the baseline when the source repository changes", () => {
+    const forked = summary({
+      sourceRepository: {
+        id: "200",
+        name: "web-app",
+        fullName: "fork/web-app",
+        remoteUrl: "https://example.com/fork/web-app.git",
+        sameAsTarget: false,
+        canPush: null,
+      },
+    });
+    expect(build(forked, previousReview())).not.toHaveProperty("sourceBaselineSha");
+  });
+
+  test("a rebuild never invents a baseline from the provider's activity cursors", () => {
+    const review = build(
+      summary({
+        lastHeadSha: SHA,
+        pullRequest: {
+          id: 123,
+          sourceRefName: "refs/heads/feature/x",
+          targetRefName: "refs/heads/main",
+          sourceCommitId: SHA,
+          headSha: SHA,
+        },
+      }),
+      null,
+    );
+    expect(review).not.toHaveProperty("sourceBaselineSha");
+  });
+});

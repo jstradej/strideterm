@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { createReviewGitBroker, type ReviewGitGrantContext } from "./broker.js";
+import { REVIEW_GIT_GRANT_IDLE_TTL_MS, createReviewGitBroker, type ReviewGitGrantContext } from "./broker.js";
 import { createReviewGitOperationRegistry } from "./operations.js";
 
 const baseGrant: ReviewGitGrantContext = {
@@ -256,6 +256,38 @@ describe("review Git broker", () => {
     expect(over.status).toBe(429);
     fake.runs.find((entry) => entry.kind === "refresh")!.release!();
     await Promise.all(waits);
+  });
+
+  test("a capability is a lease: it lapses after long idleness, and every request renews it", async () => {
+    let clock = 1_000_000;
+    const leased = createReviewGitBroker({
+      service: fake.service as never,
+      isGrantLive: () => true,
+      now: () => clock,
+    });
+    const { url: leasedUrl } = await leased.start();
+    const post = async (capability: string) =>
+      (
+        await fetch(leasedUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${capability}` },
+          body: JSON.stringify({ operation: "status" }),
+        })
+      ).status;
+    try {
+      const { capability } = leased.mintGrant(baseGrant);
+      clock += REVIEW_GIT_GRANT_IDLE_TTL_MS - 1_000;
+      expect(await post(capability)).toBe(200);
+      // Used just now: another nearly-TTL of silence is still fine.
+      clock += REVIEW_GIT_GRANT_IDLE_TTL_MS - 1_000;
+      expect(await post(capability)).toBe(200);
+
+      clock += REVIEW_GIT_GRANT_IDLE_TTL_MS + 1_000;
+      expect(await post(capability)).toBe(403);
+      expect(await post(capability)).toBe(401);
+    } finally {
+      await leased.close();
+    }
   });
 
   test("minting before the broker listens is an error", async () => {

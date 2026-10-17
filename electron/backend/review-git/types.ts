@@ -19,6 +19,8 @@ export interface ReviewGitSubject {
   baselineSha: string;
   /** Set when the provider's current PR source differs from the persisted link; blocks source-targeted work. */
   identityConflict?: string;
+  /** Set to the provider's word for it ("completed", "abandoned", "closed", "merged") once the pull request is no longer open. */
+  pullRequestClosed?: string;
   checkout: ReviewCheckout | null;
   auth: { login?: string; token: string };
 }
@@ -41,6 +43,7 @@ export type ReviewGitBlockCode =
   | "source-ref-deleted"
   | "source-unverified"
   | "source-identity-changed"
+  | "pull-request-closed"
   | "source-repo-unsupported"
   | "source-not-writable"
   | "shallow-history"
@@ -75,6 +78,8 @@ export interface ReviewGitProposal {
 
 export interface ReviewGitConfirmation {
   proposalId: string;
+  /** The facts the caller was shown; only used to name what changed when the proposal went stale. */
+  facts?: ReviewGitProposal["facts"];
 }
 
 export interface ReviewGitBase {
@@ -113,7 +118,13 @@ type ReviewGitSuccess<S extends ReviewGitSuccessStatus> = ReviewGitBase & {
 
 export type ReviewGitResult =
   | (ReviewGitBase & { status: "blocked"; code: ReviewGitBlockCode; guidance?: string })
-  | (ReviewGitBase & { status: "confirm-required"; proposal: ReviewGitProposal; stale?: boolean })
+  | (ReviewGitBase & {
+      status: "confirm-required";
+      proposal: ReviewGitProposal;
+      stale?: boolean;
+      /** Which pinned facts differ from the ones the caller was shown (when it said which). */
+      changedFacts?: string[];
+    })
   | { [S in ReviewGitSuccessStatus]: ReviewGitSuccess<S> }[ReviewGitSuccessStatus]
   | (ReviewGitBase & { status: "conflict"; conflictedPaths: string[]; operation: string });
 

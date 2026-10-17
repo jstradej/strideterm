@@ -1,4 +1,4 @@
-import type { ReviewInfo, ReviewSourceRepository } from "./types/state.js";
+import type { ReviewSourceRepository } from "./types/state.js";
 
 const SHA1_LENGTH = 40;
 const SHA256_LENGTH = 64;
@@ -123,7 +123,14 @@ export function sourceRepositoryIdentity(repository: ReviewSourceRepository | nu
   return fullName ? `name:${fullName.toLowerCase()}` : "";
 }
 
-type IdentityInput = Pick<ReviewInfo, "provider" | "connectionId" | "prKey" | "pullRequest" | "sourceRepository">;
+/** The parts of a review the identity is built from — all it needs, so partial and rebuilt shapes qualify. */
+interface IdentityInput {
+  provider: string;
+  connectionId: string;
+  prKey: string;
+  pullRequest: { sourceRefName?: string | null } | null;
+  sourceRepository: ReviewSourceRepository | null;
+}
 
 /**
  * Everything a persisted source baseline is bound to: provider, connection, PR,

@@ -142,6 +142,8 @@ describe("what the agent is told", () => {
     expect(text).toContain("wait for their actual answer");
     // Asked through the status tool, but the continuation is the tool that STARTED it.
     expect(text).toContain('call review_git_force_push again with proposalId="prop-123"');
+    expect(text).toContain("expectedFacts set to the pinned facts above");
+    expect(text).toContain("Pinned facts: {}");
     expect(text).toContain("aaaaaaaa mine");
     expect(text).toContain("bbbbbbbb theirs");
   });
@@ -392,9 +394,21 @@ describe("the MCP tools, end to end through the broker", () => {
       message: "fix it",
       confirmation: { proposalId: "prop-1" },
     });
+    expect((started[0].input.confirmation as Record<string, unknown>).facts).toBeUndefined();
     expect(started[0].caller).toMatchObject({
       profileId: "default",
       requester: { source: "mcp", agent: "claude", consent: "Yes, commit it." },
+    });
+  });
+
+  test("the continuation hands the shown facts back so a stale answer can say what changed", async () => {
+    await client.callTool({
+      name: "review_git_push",
+      arguments: { proposalId: "prop-2", expectedFacts: { headSha: "a".repeat(40), liveSha: "b".repeat(40) } },
+    });
+    expect(started[0].input.confirmation).toEqual({
+      proposalId: "prop-2",
+      facts: { headSha: "a".repeat(40), liveSha: "b".repeat(40) },
     });
   });
 

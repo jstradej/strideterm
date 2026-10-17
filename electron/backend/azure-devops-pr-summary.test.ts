@@ -106,3 +106,53 @@ describe("buildPullRequestSummary — profile scoping", () => {
     expect(summary.reviewWorkspaceId).toBe("ws-default-review");
   });
 });
+
+describe("buildPullRequestSummary — source repository", () => {
+  const connection = { id: "azure-a", label: "A", orgUrl: "https://dev.azure.com/acme", login: "me@example.com" };
+  const summaryFor = (pr: Record<string, unknown>) =>
+    buildPullRequestSummary({
+      connection,
+      pr,
+      projectName: "proj",
+      threads: [],
+      workspaces: [],
+      gitSnapshots: {},
+      activeProfileId: "default",
+    }).summary as unknown as { sourceRepository: Record<string, unknown> | null };
+
+  test("without a forkSource the source is the target repository itself, and write access is unknown", () => {
+    expect(summaryFor(makePr()).sourceRepository).toEqual({
+      id: "repo-1",
+      name: "web-app",
+      fullName: "proj/web-app",
+      remoteUrl: "https://dev.azure.com/acme/proj/_git/web-app",
+      sameAsTarget: true,
+      canPush: null,
+    });
+  });
+
+  test("a forkSource is the actual source repository — distinct from the target, and not verified writable", () => {
+    expect(
+      summaryFor(
+        makePr({
+          forkSource: {
+            name: "refs/heads/feature/x",
+            repository: {
+              id: "fork-1",
+              name: "web-app-fork",
+              remoteUrl: "https://dev.azure.com/acme/other/_git/web-app-fork",
+              project: { id: "p2", name: "other" },
+            },
+          },
+        }),
+      ).sourceRepository,
+    ).toEqual({
+      id: "fork-1",
+      name: "web-app-fork",
+      fullName: "other/web-app-fork",
+      remoteUrl: "https://dev.azure.com/acme/other/_git/web-app-fork",
+      sameAsTarget: false,
+      canPush: null,
+    });
+  });
+});

@@ -33,7 +33,25 @@ export const reviewGitOperationKindSchema = z.enum([
 ]);
 export type ReviewGitOperationKind = z.infer<typeof reviewGitOperationKindSchema>;
 
-export const reviewGitConfirmationSchema = z.object({ proposalId: z.string().min(1).max(100) }).strict();
+const proposalFactValueSchema = z.union([
+  z.string().max(2000),
+  z.number(),
+  z.boolean(),
+  z.null(),
+  z.array(z.string().max(2000)).max(1000),
+]);
+
+/**
+ * The continuation of a proposal: its id, and — optionally — the repository facts
+ * the caller was shown. The id alone already makes a stale answer impossible; the
+ * facts only let the runtime say WHICH of them changed.
+ */
+export const reviewGitConfirmationSchema = z
+  .object({
+    proposalId: z.string().min(1).max(100),
+    facts: z.record(z.string().max(100), proposalFactValueSchema).optional(),
+  })
+  .strict();
 
 export const reviewGitOperationEventSchema = z
   .object({

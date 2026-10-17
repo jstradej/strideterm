@@ -1535,6 +1535,126 @@ describe("runtime integration", () => {
     expect(broker.revokeSession).toHaveBeenCalledWith(sessionId);
   });
 
+  test("a review workspace's agent tab gets a per-tab Git capability in its environment — never in argv or state — scoped to its PR, and it ends with the link", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let brokerOptions: any;
+    let mintCount = 0;
+    const broker = {
+      async start() {
+        return { url: "http://127.0.0.1:43130/review-git" };
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mintGrant(context: any) {
+        brokerOptions.mintedContext = context;
+        mintCount += 1;
+        return { url: "http://127.0.0.1:43130/review-git", capability: `review-git-secret-test-value-${mintCount}` };
+      },
+      revokeSession: vi.fn(),
+      revokeInvalid: vi.fn(async () => {}),
+      close: vi.fn(async () => {}),
+    };
+    const workspace = {
+      id: "review-ws",
+      name: "Review",
+      kind: "terminal",
+      cwd: process.cwd(),
+      profileId: "default",
+      activePanelId: "agent",
+      panels: [
+        { id: "agent", title: "Claude", command: "claude" },
+        { id: "shell", title: "Shell", command: "" },
+      ],
+      review: {
+        provider: "azure-devops",
+        prKey: "ado-main:repo-1:123",
+        connectionId: "ado-main",
+        sourceRepository: {
+          id: "repo-1",
+          name: "web-app",
+          fullName: "Platform/web-app",
+          remoteUrl: "https://dev.azure.com/acme/Platform/_git/web-app",
+          sameAsTarget: true,
+          canPush: null,
+        },
+        pullRequest: { id: 123, sourceRefName: "refs/heads/feature/login-fix", targetRefName: "refs/heads/main" },
+      },
+    };
+    const fixture = await createFixture({
+      initialState: { workspaces: [workspace] },
+      dependencies: {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        createReviewGitBroker: (options: any) => {
+          brokerOptions = options;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          return broker as any;
+        },
+      },
+    });
+    fixtures.push(fixture);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.reviewBridgeStore.getPullRequestContext as any).mockReturnValue({
+      prKey: "ado-main:repo-1:123",
+      rootPath: "/tmp/review-root",
+      repository: { id: "repo-1", name: "web-app" },
+      pullRequest: { id: 123, title: "Fix login redirect" },
+      databasePath: "/tmp/review-root/review-bridge.db",
+      exportDir: "/tmp/review-root/export",
+      briefMarkdownPath: "/tmp/review-root/brief.md",
+      briefJsonPath: "/tmp/review-root/brief.json",
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const saved = fixture.store.getState().workspaces.find((item: any) => item.id === workspace.id);
+    const agentPanel = saved.panels.find((item: { id: string }) => item.id === "agent");
+    const sessionId = createSessionId(workspace.id, "agent");
+    fixture.sessionManager.sessions.set(sessionId, {
+      id: sessionId,
+      status: "running",
+      workspaceId: workspace.id,
+      panelId: "agent",
+      kind: "terminal",
+    });
+
+    const launch = fixture.sessionManager.getSessionLaunch({ workspace: saved, panel: agentPanel, sessionId });
+
+    expect(mintCount).toBe(1);
+    expect(launch.env.STRIDETERM_REVIEW_GIT_URL).toBe("http://127.0.0.1:43130/review-git");
+    expect(launch.env.STRIDETERM_REVIEW_GIT_CAPABILITY).toBe("review-git-secret-test-value-1");
+    expect(launch.args.join(" ")).not.toContain("review-git-secret-test-value");
+    expect(JSON.stringify(fixture.store.getState())).not.toContain("review-git-secret-test-value");
+    // The briefing that ships with it tells the agent to ask with AskUserQuestion and wait.
+    expect(launch.args.join(" ")).toContain("AskUserQuestion");
+    expect(brokerOptions.mintedContext).toMatchObject({
+      sessionId,
+      profileId: "default",
+      workspaceId: "review-ws",
+      panelId: "agent",
+      prKey: "ado-main:repo-1:123",
+      agent: "claude",
+      command: "claude",
+    });
+    expect(brokerOptions.isGrantLive(brokerOptions.mintedContext)).toBe(true);
+
+    // A shell tab in the same workspace is not an agent: no capability for it.
+    const shellPanel = saved.panels.find((item: { id: string }) => item.id === "shell");
+    expect(
+      fixture.sessionManager.getSessionLaunch({
+        workspace: saved,
+        panel: shellPanel,
+        sessionId: `${workspace.id}:shell`,
+      }),
+    ).toBeNull();
+    expect(mintCount).toBe(1);
+
+    // Detaching the workspace from its PR ends the capability for new requests.
+    await fixture.runtime.saveWorkspace({ ...saved, review: null });
+    expect(broker.revokeInvalid).toHaveBeenCalled();
+    expect(brokerOptions.isGrantLive(brokerOptions.mintedContext)).toBe(false);
+
+    // And so does closing the tab's session.
+    fixture.sessionManager.emit("terminal:exit", { sessionId, exitCode: 0, intentional: false });
+    expect(broker.revokeSession).toHaveBeenCalledWith(sessionId);
+  });
+
   test("keeps a bounded terminal replay tail for renderer startup attach", async () => {
     const fixture = await createFixture();
     fixtures.push(fixture);
