@@ -753,6 +753,9 @@ export const approvalAuditLogDeleteSchema = z
   });
 export type ApprovalAuditLogDelete = z.infer<typeof approvalAuditLogDeleteSchema>;
 
+export const operationDiscardSchema = z.object({ operationId: nonEmptyString }).strict();
+export type OperationDiscard = z.infer<typeof operationDiscardSchema>;
+
 export const approvalAuditLogStatsSchema = z.object({
   from: z.string().optional(),
 });

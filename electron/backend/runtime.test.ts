@@ -16367,7 +16367,11 @@ describe("internal MCP: creating and watching task agents", () => {
     expect(branchTaken.result.errors[0]).toMatchObject({ code: "checkout_conflict", field: "checkout.branch" });
 
     // "a/b" and "a-b" fold to one folder
-    const first = await prepareAndStart(call, readyInput({ checkout: { mode: "worktree", branch: "a/b" } }), "key-folder-a");
+    const first = await prepareAndStart(
+      call,
+      readyInput({ checkout: { mode: "worktree", branch: "a/b" } }),
+      "key-folder-a",
+    );
     expect((await waitForOperation(call, first.started.result.operationId)).status).toBe("succeeded");
     const second = await call("prepare", readyInput({ checkout: { mode: "worktree", branch: "a-b" } }));
     expect(second.result.errors[0]).toMatchObject({ code: "checkout_conflict" });
@@ -16529,7 +16533,11 @@ describe("internal MCP: creating and watching task agents", () => {
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     const operation = fixture.runtime.getPayload().operations;
-    for (let attempt = 0; attempt < 200 && operation.running.length + fixture.runtime.getPayload().operations.running.length > 0; attempt += 1) {
+    for (
+      let attempt = 0;
+      attempt < 200 && operation.running.length + fixture.runtime.getPayload().operations.running.length > 0;
+      attempt += 1
+    ) {
       if (fixture.runtime.getPayload().operations.running.length === 0) break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
@@ -16625,7 +16633,11 @@ describe("internal MCP: creating and watching task agents", () => {
     expect(detail.result.log.untrusted).toBe(true);
 
     const idle = await call("task_list", { activeOnly: true });
-    expect(idle.result.tasks.every((t: any) => ["running", "evaluating", "judge-evaluating", "refreshing", "capturing-context"].includes(t.state))).toBe(true);
+    expect(
+      idle.result.tasks.every((t: any) =>
+        ["running", "evaluating", "judge-evaluating", "refreshing", "capturing-context"].includes(t.state),
+      ),
+    ).toBe(true);
   });
 
   test("task_get pages the structured log by cursor and bounds the entries", async () => {
@@ -16637,15 +16649,25 @@ describe("internal MCP: creating and watching task agents", () => {
     const done = await waitForOperation(call, started.result.operationId);
     const task = taskWorkspaces(fixture)[0] as any;
     const logPath = path.join(repo, ".strideterm", "tasks", task.task.taskId, "TASK_LOG.jsonl");
-    const lines = Array.from({ length: 7 }, (_, i) => JSON.stringify({ ts: `2026-01-01T00:00:0${i}Z`, event: `e${i}`, round: 1, detail: "x".repeat(900) }));
+    const lines = Array.from({ length: 7 }, (_, i) =>
+      JSON.stringify({ ts: `2026-01-01T00:00:0${i}Z`, event: `e${i}`, round: 1, detail: "x".repeat(900) }),
+    );
     await fs.writeFile(logPath, lines.join("\n") + "\n");
 
     const tail = await call("task_get", { workspaceId: done.workspaceId, logLimit: 3 });
     expect(tail.result.log.entries.map((e: any) => e.event)).toEqual(["e0", "e1", "e2"]);
     expect(tail.result.log.entries[0].detail).toHaveLength(500);
-    const next = await call("task_get", { workspaceId: done.workspaceId, logLimit: 3, logCursor: tail.result.log.nextCursor });
+    const next = await call("task_get", {
+      workspaceId: done.workspaceId,
+      logLimit: 3,
+      logCursor: tail.result.log.nextCursor,
+    });
     expect(next.result.log.entries.map((e: any) => e.event)).toEqual(["e3", "e4", "e5"]);
-    const last = await call("task_get", { workspaceId: done.workspaceId, logLimit: 3, logCursor: next.result.log.nextCursor });
+    const last = await call("task_get", {
+      workspaceId: done.workspaceId,
+      logLimit: 3,
+      logCursor: next.result.log.nextCursor,
+    });
     expect(last.result.log.entries.map((e: any) => e.event)).toEqual(["e6"]);
   });
 
@@ -16661,8 +16683,12 @@ describe("internal MCP: creating and watching task agents", () => {
     expect((await call("task_get", { workspaceId: done.workspaceId })).result.awaitingUserInTerminal).toEqual([]);
 
     fixture.runtime.notifyAgentHook(workerSession, "permission_prompt", "Notification");
-    expect((await call("task_get", { workspaceId: done.workspaceId })).result.awaitingUserInTerminal).toEqual(["worker"]);
-    expect((await call("operation_get", { operationId: started.result.operationId })).result.awaitingUserInTerminal).toEqual(["worker"]);
+    expect((await call("task_get", { workspaceId: done.workspaceId })).result.awaitingUserInTerminal).toEqual([
+      "worker",
+    ]);
+    expect(
+      (await call("operation_get", { operationId: started.result.operationId })).result.awaitingUserInTerminal,
+    ).toEqual(["worker"]);
     expect((await call("task_list", {})).result.tasks[0].awaitingUserInTerminal).toEqual(["worker"]);
 
     fixture.runtime.notifyAgentHook(workerSession, "idle_prompt", "Stop");
@@ -16672,7 +16698,10 @@ describe("internal MCP: creating and watching task agents", () => {
   test("only the desktop turns the workspace option on; a remote viewer keeps what is stored", async () => {
     const repo = await createRepo();
     const fixture = await createMcpFixture({
-      workspaces: [parentWorkspace(repo), parentWorkspace(repo, { id: "plain", name: "Plain", internalMcpEnabled: false })],
+      workspaces: [
+        parentWorkspace(repo),
+        parentWorkspace(repo, { id: "plain", name: "Plain", internalMcpEnabled: false }),
+      ],
     });
     const byId = (id: string) => fixture.store.getState().workspaces.find((w: any) => w.id === id);
     expect(byId("plain").internalMcpEnabled).toBe(false);
@@ -16682,7 +16711,15 @@ describe("internal MCP: creating and watching task agents", () => {
     await fixture.runtime.saveWorkspace({ ...byId("parent"), internalMcpEnabled: false }, "remote:sess-1");
     expect(byId("parent").internalMcpEnabled).toBe(true);
     await fixture.runtime.saveWorkspace(
-      { id: "fresh", name: "Fresh", kind: "terminal", cwd: repo, profileId: "default", internalMcpEnabled: true, panels: [{ id: "p", title: "Shell", command: "" }] },
+      {
+        id: "fresh",
+        name: "Fresh",
+        kind: "terminal",
+        cwd: repo,
+        profileId: "default",
+        internalMcpEnabled: true,
+        panels: [{ id: "p", title: "Shell", command: "" }],
+      },
       "remote:sess-1",
     );
     expect(byId("fresh").internalMcpEnabled).toBe(false);
@@ -16692,5 +16729,309 @@ describe("internal MCP: creating and watching task agents", () => {
     expect(byId("plain").internalMcpEnabled).toBe(true);
     await fixture.runtime.saveWorkspace({ ...byId("plain"), internalMcpEnabled: false });
     expect(byId("plain").internalMcpEnabled).toBe(false);
+  });
+
+  describe("after a restart", () => {
+    async function seededDataDir(records: Array<Record<string, unknown>>): Promise<string> {
+      const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "internal-mcp-data-"));
+      await fs.mkdir(path.join(dataDir, "operations"), { recursive: true });
+      for (const record of records) {
+        await fs.writeFile(
+          path.join(dataDir, "operations", `${record.operationId}.json`),
+          JSON.stringify(record, null, 2),
+        );
+      }
+      return dataDir;
+    }
+
+    const record = (overrides: Record<string, unknown>) => ({
+      operationId: "op-seeded",
+      kind: "task.provision",
+      profileId: "default",
+      originWorkspaceId: "parent",
+      idempotencyKey: "key-seeded-0001",
+      inputHash: "f".repeat(64),
+      status: "running",
+      step: "creating-workspace",
+      intent: { reservedWorkspaceId: "workspace-reserved", reservedTaskId: "task-reserved" },
+      artifacts: {},
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      ...overrides,
+    });
+
+    test("an intent that created nothing is reported interrupted, and a retry returns it instead of starting again", async () => {
+      const repo = await createRepo();
+      const dataDir = await seededDataDir([
+        record({ step: "preparing-worktree", artifacts: { worktree: { path: "/x/tree/a", branch: "a" } } }),
+      ]);
+      const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)], dataDir });
+      const call = brokerClient(launchAgent(fixture).launch);
+
+      const view = (await call("operation_get", { operationId: "op-seeded" })).result;
+      expect(view.status).toBe("interrupted");
+      expect(view.error.code).toBe("interrupted");
+      expect(view.error.message).toContain("/x/tree/a");
+      expect(view.error.message).toContain("nothing was deleted");
+      expect(fixture.runtime.getPayload().operations.lastResults[0]).toMatchObject({ operationId: "op-seeded" });
+
+      const retry = await call("start", {
+        preparationId: "prep-gone",
+        approvedInputHash: "f".repeat(64),
+        idempotencyKey: "key-seeded-0001",
+      });
+      expect(retry.result).toMatchObject({ operationId: "op-seeded", replayed: true });
+      expect(taskWorkspaces(fixture)).toHaveLength(0);
+    });
+
+    test("an idle workspace whose start never happened is shown as ready to start from the UI; no second task appears", async () => {
+      const repo = await createRepo();
+      const existing = makeTaskWorkspace({
+        id: "workspace-reserved",
+        taskId: "task-reserved",
+        cwd: repo,
+        state: "idle",
+        task: { promptSent: false, parentWorkspaceId: "parent" },
+      });
+      const dataDir = await seededDataDir([record({ step: "starting" })]);
+      const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo), existing], dataDir });
+      const call = brokerClient(launchAgent(fixture).launch);
+
+      const view = (await call("operation_get", { operationId: "op-seeded" })).result;
+      expect(view.status).toBe("interrupted");
+      expect(view.workspaceId).toBe("workspace-reserved");
+      expect(view.error.message).toMatch(/exists and is idle/);
+      expect(taskWorkspaces(fixture)).toHaveLength(1);
+    });
+
+    test("a start that took effect is reconciled from the runner's state, never sent twice", async () => {
+      const repo = await createRepo();
+      const existing = makeTaskWorkspace({
+        id: "workspace-reserved",
+        taskId: "task-reserved",
+        cwd: repo,
+        state: "running",
+        task: { promptSent: true, parentWorkspaceId: "parent" },
+      });
+      const dataDir = await seededDataDir([record({ step: "starting" })]);
+      const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo), existing], dataDir });
+      const call = brokerClient(launchAgent(fixture).launch);
+
+      const view = (await call("operation_get", { operationId: "op-seeded" })).result;
+      expect(view.status).toBe("succeeded");
+      expect(view.result).toMatchObject({ workspaceId: "workspace-reserved", reconciled: true });
+      const writesBefore = fixture.sessionManager.writeCalls.length;
+      const retry = await call("start", {
+        preparationId: "prep-gone",
+        approvedInputHash: "f".repeat(64),
+        idempotencyKey: "key-seeded-0001",
+      });
+      expect(retry.result.operationId).toBe("op-seeded");
+      expect(fixture.sessionManager.writeCalls.length).toBe(writesBefore);
+      expect(taskWorkspaces(fixture)).toHaveLength(1);
+    });
+
+    test("a finished record survives a restart and goes only with the workspace it created", async () => {
+      const repo = await createRepo();
+      const existing = makeTaskWorkspace({ id: "workspace-made", taskId: "task-made", cwd: repo, state: "completed" });
+      const dataDir = await seededDataDir([
+        record({
+          operationId: "op-done",
+          status: "succeeded",
+          step: "ready",
+          workspaceId: "workspace-made",
+          result: { workspaceId: "workspace-made" },
+          finishedAt: new Date(Date.now() - 48 * 3600_000).toISOString(),
+        }),
+      ]);
+      const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo), existing], dataDir });
+      const call = brokerClient(launchAgent(fixture).launch);
+
+      // older than 24 h: no longer offered as news, but still the idempotency record
+      expect(fixture.runtime.getPayload().operations.lastResults).toEqual([]);
+      expect((await call("operation_get", { operationId: "op-done" })).result.status).toBe("succeeded");
+      const retry = await call("start", {
+        preparationId: "prep-gone",
+        approvedInputHash: "f".repeat(64),
+        idempotencyKey: "key-seeded-0001",
+      });
+      expect(retry.result.operationId).toBe("op-done");
+
+      await fixture.runtime.deleteWorkspace("workspace-made");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect((await call("operation_get", { operationId: "op-done" })).status).toBe(404);
+    });
+  });
+
+  test("two runtimes racing for one branch: git lets exactly one win and the other reports a conflict", async () => {
+    const repo = await createRepo();
+    const one = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });
+    const two = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });
+    const callOne = brokerClient(launchAgent(one).launch);
+    const callTwo = brokerClient(launchAgent(two).launch);
+    const input = readyInput({ checkout: { mode: "worktree", branch: "contested" } });
+    const preparedOne = (await callOne("prepare", input)).result;
+    const preparedTwo = (await callTwo("prepare", input)).result;
+    expect(preparedOne.status).toBe("ready");
+    expect(preparedTwo.status).toBe("ready");
+
+    const [startedOne, startedTwo] = await Promise.all([
+      callOne("start", {
+        preparationId: preparedOne.preparationId,
+        approvedInputHash: preparedOne.inputHash,
+        idempotencyKey: "key-race-one",
+      }),
+      callTwo("start", {
+        preparationId: preparedTwo.preparationId,
+        approvedInputHash: preparedTwo.inputHash,
+        idempotencyKey: "key-race-two",
+      }),
+    ]);
+    const results = await Promise.all(
+      [
+        [callOne, startedOne],
+        [callTwo, startedTwo],
+      ].map(async ([call, started]: any) =>
+        started.status === 200
+          ? waitForOperation(call, started.result.operationId)
+          : { status: "refused", error: started.error },
+      ),
+    );
+    const succeeded = results.filter((r: any) => r.status === "succeeded");
+    const lost = results.filter((r: any) => r.status !== "succeeded");
+    expect(succeeded).toHaveLength(1);
+    expect(lost).toHaveLength(1);
+    expect((lost[0] as any).error.code).toBe("checkout_conflict");
+    expect(await git(repo, "worktree", "list", "--porcelain")).toContain("contested");
+    expect((await git(repo, "branch", "--list", "contested")).length).toBeGreaterThan(0);
+  });
+
+  test("a grant is not valid on another runtime instance", async () => {
+    const repo = await createRepo();
+    const one = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });
+    const two = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });
+    const grantOne = launchAgent(one).launch;
+    const twoLaunch = launchAgent(two).launch;
+    const crossed = await fetch(twoLaunch.env.STRIDETERM_INTERNAL_MCP_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${grantOne.env.STRIDETERM_INTERNAL_MCP_CAPABILITY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ operation: "task_list", input: {} }),
+    });
+    expect(crossed.status).toBe(401);
+  });
+
+  test("a task workspace never gets a grant, whatever its saved flag says", async () => {
+    const repo = await createRepo();
+    const task = makeTaskWorkspace({ id: "task-ws", cwd: repo, state: "idle" });
+    task.internalMcpEnabled = true;
+    task.panels[1].command = "claude";
+    const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo), task] });
+    const stored = fixture.store.getState().workspaces.find((w: any) => w.id === "task-ws");
+    expect(stored.internalMcpEnabled).toBe(false);
+    expect(
+      fixture.sessionManager.getSessionLaunch({
+        workspace: { ...stored, internalMcpEnabled: true },
+        panel: stored.panels[1],
+        sessionId: createSessionId("task-ws", "panel-worker"),
+      }),
+    ).toBeNull();
+  });
+
+  test("parallel retries with one key create one pair and return one operation", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });
+    const call = brokerClient(launchAgent(fixture).launch);
+    const prepared = (await call("prepare", readyInput())).result;
+    const start = () =>
+      call("start", {
+        preparationId: prepared.preparationId,
+        approvedInputHash: prepared.inputHash,
+        idempotencyKey: "key-parallel-0001",
+      });
+    const answers = await Promise.all([start(), start()]);
+    expect(answers.map((answer) => answer.status)).toEqual([200, 200]);
+    expect(new Set(answers.map((answer) => answer.result.operationId)).size).toBe(1);
+    expect(answers.filter((answer) => answer.result.replayed === false)).toHaveLength(1);
+    expect(answers[0].result.awaitingUserInTerminal).toEqual([]);
+    await waitForOperation(call, answers[0].result.operationId);
+    expect(taskWorkspaces(fixture)).toHaveLength(1);
+    // the idle task was started exactly once: one prompt injection, not three
+    const sends = fixture.sessionManager.writeCalls.filter((entry: any) =>
+      String(entry.sessionId).endsWith(`:${(taskWorkspaces(fixture)[0] as any).task.workerPanelId}`),
+    );
+    expect(sends.length).toBeLessThanOrEqual(2);
+  });
+
+  test("a preparation can be started once; a second key needs a new preparation", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });
+    const call = brokerClient(launchAgent(fixture).launch);
+    const prepared = (await call("prepare", readyInput())).result;
+    const first = await call("start", {
+      preparationId: prepared.preparationId,
+      approvedInputHash: prepared.inputHash,
+      idempotencyKey: "key-once-000001",
+    });
+    expect(first.status).toBe(200);
+    const second = await call("start", {
+      preparationId: prepared.preparationId,
+      approvedInputHash: prepared.inputHash,
+      idempotencyKey: "key-once-000002",
+    });
+    expect(second.status).toBe(409);
+    expect(second.error?.code).toBe("needs_reprepare");
+    await waitForOperation(call, first.result.operationId);
+    expect(taskWorkspaces(fixture)).toHaveLength(1);
+  });
+
+  test("a start with a preparation that is not ready or does not exist is refused", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });
+    const call = brokerClient(launchAgent(fixture).launch);
+    const incomplete = (await call("prepare", {})).result;
+    const notReady = await call("start", {
+      preparationId: incomplete.preparationId,
+      approvedInputHash: incomplete.inputHash,
+      idempotencyKey: "key-notready-01",
+    });
+    expect(notReady.status).toBe(409);
+    expect(notReady.error?.code).toBe("preparation_not_ready");
+    const unknown = await call("start", {
+      preparationId: "prep-unknown",
+      approvedInputHash: "a".repeat(64),
+      idempotencyKey: "key-unknown-001",
+    });
+    expect(unknown.status).toBe(404);
+    expect(unknown.error?.code).toBe("preparation_not_found");
+    expect(taskWorkspaces(fixture)).toHaveLength(0);
+  });
+
+  test("a workspace without a local working directory is unsupported", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({
+      workspaces: [parentWorkspace(repo, { cwd: path.join(repo, "does", "not", "exist") })],
+    });
+    const call = brokerClient(launchAgent(fixture).launch);
+    const refused = await call("prepare", readyInput());
+    expect(refused.status).toBe(422);
+    expect(refused.error?.code).toBe("unsupported_workspace");
+  });
+
+  test("a provider whose CLI is missing blocks ready and names the role", async () => {
+    const repo = await createRepo();
+    vi.spyOn(ClaudeProvider.prototype, "checkAvailability").mockResolvedValue({
+      available: false,
+      error: "claude not found on PATH",
+    });
+    const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });
+    const call = brokerClient(launchAgent(fixture).launch);
+    const prepared = (await call("prepare", readyInput())).result;
+    expect(prepared.status).toBe("requires_input");
+    expect(prepared.errors.map((e: any) => e.field)).toEqual(["worker.providerId", "judge.providerId"]);
+    expect(prepared.errors[0]).toMatchObject({ code: "provider_unavailable", message: "claude not found on PATH" });
+    expect(prepared.choices.providers.find((p: any) => p.id === "claude").available).toBe(false);
   });
 });

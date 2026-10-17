@@ -56,6 +56,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   queryApprovalAuditLog: (filters) => ipcRenderer.invoke("approvals:audit-log:query", filters),
   getApprovalAuditStats: (filters) => ipcRenderer.invoke("approvals:audit-log:stats", filters),
   deleteApprovalAuditEntries: (payload) => ipcRenderer.invoke("approvals:audit-log:delete", payload),
+  discardOperation: (operationId) => ipcRenderer.invoke("operation:discard", { operationId }),
   markAzurePullRequestSeen: (prKey) => ipcRenderer.invoke("azure:pull-request:seen", prKey),
   openAzurePullRequest: (payload) => ipcRenderer.invoke("azure:pull-request:open", payload),
   commentAzurePullRequest: (payload) => ipcRenderer.invoke("azure:pull-request:comment", payload),

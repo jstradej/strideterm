@@ -241,6 +241,8 @@ export interface StridetermAPI {
    * offers a delete control at all.
    */
   deleteApprovalAuditEntries: (payload: ApprovalAuditLogDelete) => Promise<unknown>;
+  /** Desktop only: drop a failed operation that created nothing, freeing its idempotency key. */
+  discardOperation: (operationId: string) => Promise<boolean>;
   markAzurePullRequestSeen: (prKey: string) => Promise<unknown>;
   openAzurePullRequest: (payload: OpenPr) => Promise<unknown>;
   commentAzurePullRequest: (payload: AzureComment) => Promise<unknown>;

@@ -2057,3 +2057,17 @@ describe("settings.git.ui.updateStrategy", () => {
     }
   });
 });
+
+describe("workspace internal MCP option", () => {
+  const base = { id: "w", name: "W", cwd: "/tmp/w", panels: [{ id: "p", title: "Shell", command: "" }] };
+
+  test("is off unless explicitly on, and survives normalization when on", () => {
+    expect(normalizeWorkspace(base).internalMcpEnabled).toBe(false);
+    expect(normalizeWorkspace({ ...base, internalMcpEnabled: "yes" }).internalMcpEnabled).toBe(false);
+    expect(normalizeWorkspace({ ...base, internalMcpEnabled: true }).internalMcpEnabled).toBe(true);
+  });
+
+  test("a task workspace never carries it", () => {
+    expect(normalizeWorkspace({ ...base, kind: "task", internalMcpEnabled: true }).internalMcpEnabled).toBe(false);
+  });
+});

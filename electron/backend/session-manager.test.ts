@@ -581,6 +581,42 @@ describe("SessionManager", () => {
     }
   });
 
+  test("strips an inherited internal MCP grant unless this panel launch supplies its own", () => {
+    const prior = { ...process.env };
+    process.env.STRIDETERM_INTERNAL_MCP_URL = "http://127.0.0.1:1/internal-mcp";
+    process.env.STRIDETERM_INTERNAL_MCP_CAPABILITY = "inherited-internal-secret";
+    try {
+      const state = createState() as Parameters<SessionManager["ensureSession"]>[0];
+      new SessionManager().ensureSession(state, "workspace-a:shell");
+      const plain = spawnCalls[0].options.env as Record<string, string>;
+      expect(plain.STRIDETERM_INTERNAL_MCP_URL).toBeUndefined();
+      expect(plain.STRIDETERM_INTERNAL_MCP_CAPABILITY).toBeUndefined();
+
+      spawnCalls.length = 0;
+      const own = new SessionManager({
+        getSessionLaunch: () => ({
+          file: "claude",
+          args: [],
+          cwd: process.cwd(),
+          env: {
+            STRIDETERM_INTERNAL_MCP_URL: "http://127.0.0.1:43129/internal-mcp",
+            STRIDETERM_INTERNAL_MCP_CAPABILITY: "this-panel-internal-capability",
+          },
+          skipCommandInjection: true,
+        }),
+      });
+      own.ensureSession(createState() as Parameters<SessionManager["ensureSession"]>[0], "workspace-a:shell");
+      const granted = spawnCalls[0].options.env as Record<string, string>;
+      expect(granted.STRIDETERM_INTERNAL_MCP_CAPABILITY).toBe("this-panel-internal-capability");
+      expect(spawnCalls[0].args.join(" ")).not.toContain("this-panel-internal-capability");
+    } finally {
+      for (const key of ["STRIDETERM_INTERNAL_MCP_URL", "STRIDETERM_INTERNAL_MCP_CAPABILITY"]) {
+        if (prior[key] === undefined) delete process.env[key];
+        else process.env[key] = prior[key];
+      }
+    }
+  });
+
   test("does not pass this launch's STRIDETERM_ENV to the shell", () => {
     const prior = process.env.STRIDETERM_ENV;
     process.env.STRIDETERM_ENV = "prod";

@@ -804,3 +804,47 @@ describe("strayStatePayloadKeys", () => {
     expect(strayStatePayloadKeys(null)).toEqual([]);
   });
 });
+
+describe("buildRemoteCore: long operations", () => {
+  const operation = (profileId: string, operationId: string) => ({
+    operationId,
+    kind: "task.provision",
+    profileId,
+    step: "starting",
+    startedAt: "2026-10-17T10:00:00.000Z",
+  });
+  const outcome = (profileId: string, operationId: string) => ({
+    operationId,
+    kind: "task.provision",
+    profileId,
+    finishedAt: "2026-10-17T10:01:00.000Z",
+    result: { workspaceId: "w" },
+  });
+
+  test("a client sees only the running operations and outcomes of its own profile", () => {
+    const payload = {
+      ...fullPayload(),
+      operations: {
+        running: [operation("p1", "op-1"), operation("p2", "op-2")],
+        lastResults: [outcome("p1", "op-3"), outcome("p2", "op-4")],
+      },
+    };
+    const core = buildRemoteCore(payload);
+    expect(core.operations.running.map((op: Rec) => op.operationId)).toEqual(["op-1"]);
+    expect(core.operations.lastResults.map((op: Rec) => op.operationId)).toEqual(["op-3"]);
+  });
+
+  test("an unbound client sees none", () => {
+    const payload = {
+      ...fullPayload(),
+      remoteClient: undefined,
+      operations: { running: [operation("p1", "op-1")], lastResults: [outcome("p1", "op-3")] },
+    };
+    const core = buildRemoteCore(payload, { profileId: null });
+    expect(core.operations).toEqual({ running: [], lastResults: [] });
+  });
+
+  test("the operations key is a known payload key, not a stray one", () => {
+    expect(strayStatePayloadKeys({ ...fullPayload(), operations: { running: [], lastResults: [] } })).toEqual([]);
+  });
+});

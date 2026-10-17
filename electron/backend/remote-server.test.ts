@@ -1013,6 +1013,51 @@ describe("workspace delete endpoint validation", () => {
       await server.close();
     }
   });
+
+  test("a body that breaks the shared create schema is a 400 and never reaches the runtime", async () => {
+    const port = await getFreePort();
+    const auth = "test-token-task-create";
+    const calls: unknown[] = [];
+    const runtime = makeMinimalRuntime(auth, port) as ReturnType<typeof makeMinimalRuntime> & {
+      createTaskWorkspace: (...args: unknown[]) => Promise<unknown>;
+    };
+    runtime.createTaskWorkspace = async (...args: unknown[]) => {
+      calls.push(args);
+      return {};
+    };
+    const server = await startRemoteServer({
+      runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      const post = (body: unknown) =>
+        fetch(`http://127.0.0.1:${port}/api/task/create`, {
+          method: "POST",
+          headers: clientHeaders(auth),
+          body: JSON.stringify(body),
+        });
+      for (const bad of [
+        { description: "no cwd" },
+        { cwd: "/repo", maxRounds: 0 },
+        { cwd: "/repo", workerProvider: { providerId: "not-a-provider", model: "x" } },
+        { cwd: "/repo", description: "x".repeat(200_000) },
+      ]) {
+        const res = await post(bad);
+        expect(res.status, JSON.stringify(bad).slice(0, 60)).toBe(400);
+        expect(((await res.json()) as { error?: string }).error).toMatch(/IPC validation failed/);
+      }
+      expect(calls).toEqual([]);
+
+      const ok = await post({ cwd: "/repo", description: "fine", maxRounds: 3 });
+      expect(ok.status).toBe(200);
+      expect(calls[0]).toEqual([
+        expect.objectContaining({ cwd: "/repo", description: "fine", maxRounds: 3 }),
+        expect.any(String),
+      ]);
+    } finally {
+      await server.close();
+    }
+  });
 });
 
 // review-code-quality-2026-07.md finding 1.7: ~60 POST routes had a SHADOWED

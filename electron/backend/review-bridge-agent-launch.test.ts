@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import {
   buildAgentMcpLaunch,
   buildAgentSshMcpServerSpec,
+  buildInternalMcpServerSpec,
   buildReviewAgentLaunch as _buildReviewAgentLaunch,
   detectReviewAgentPanel,
 } from "./review-bridge-agent-launch.js";
@@ -574,5 +575,97 @@ describe("review bridge agent launch", () => {
     expect(launch.env).toMatchObject({
       ELECTRON_RUN_AS_NODE: "1",
     });
+  });
+});
+
+describe("internal MCP launch composition", () => {
+  const internalMcp = { command: "/usr/bin/node", args: ["/app/internal-mcp-stdio-entry.js", "--internal-mcp"] };
+  const sshMcp = { command: "/usr/bin/node", args: ["/app/ssh-mcp-stdio.js", "--ssh-mcp"] };
+
+  test("adds the strideterm server to a Claude launch and keeps the user's own MCP config", () => {
+    const launch = buildAgentMcpLaunch({
+      workspace: { cwd: "/repo" },
+      panel: {
+        id: "claude",
+        command:
+          'claude --model sonnet --mcp-config .mcp.json "{\\"mcpServers\\":{\\"personal\\":{\\"command\\":\\"my-mcp\\"}}}"',
+      },
+      processInfo: { platform: "linux", execPath: "/usr/bin/node" },
+      internalMcp,
+    })!;
+    const index = launch.args.indexOf("--mcp-config");
+    expect(launch.args[index + 1]).toBe(".mcp.json");
+    const servers = JSON.parse(launch.args[index + 2]).mcpServers;
+    expect(Object.keys(servers).sort()).toEqual(["personal", "strideterm"]);
+    expect(servers.strideterm.args).toEqual(internalMcp.args);
+    expect(launch.args).not.toContain("--strict-mcp-config");
+    expect(launch.args.join(" ")).not.toMatch(/CAPABILITY|capability-value/);
+  });
+
+  test("installs both grant servers side by side for Claude and Codex, naming only the variables for Codex", () => {
+    const claude = buildAgentMcpLaunch({
+      workspace: { cwd: "/repo" },
+      panel: { id: "claude", command: "claude" },
+      processInfo: { platform: "linux", execPath: "/usr/bin/node" },
+      sshMcp,
+      internalMcp,
+    })!;
+    expect(Object.keys(JSON.parse(claude.args[claude.args.indexOf("--mcp-config") + 1]).mcpServers)).toEqual([
+      "strideterm_ssh",
+      "strideterm",
+    ]);
+
+    const codex = buildAgentMcpLaunch({
+      workspace: { cwd: "/repo" },
+      panel: { id: "codex", command: "codex -s danger-full-access" },
+      processInfo: { platform: "linux", execPath: "/usr/bin/node" },
+      sshMcp,
+      internalMcp,
+    })!;
+    expect(codex.args).toContain(
+      'mcp_servers.strideterm.env_vars=["STRIDETERM_INTERNAL_MCP_URL","STRIDETERM_INTERNAL_MCP_CAPABILITY"]',
+    );
+    expect(codex.args).toContain(
+      'mcp_servers.strideterm_ssh.env_vars=["STRIDETERM_SSH_MCP_URL","STRIDETERM_SSH_MCP_CAPABILITY"]',
+    );
+    expect(codex.args).toContain("danger-full-access");
+  });
+
+  test("a launch that is not a plain Claude Code or Codex command gets nothing", () => {
+    for (const command of ["bash", "claude mcp list", "codex login", "claude | tee out.txt"]) {
+      expect(
+        buildAgentMcpLaunch({ panel: { id: "x", command }, processInfo: { platform: "linux" }, internalMcp }),
+        command,
+      ).toBeNull();
+    }
+  });
+
+  test("the packaged entry runs as Electron-as-Node on Windows and as the app itself elsewhere", () => {
+    const windows = buildInternalMcpServerSpec({
+      execPath: "C:/Program Files/strIDEterm/strIDEterm.exe",
+      platform: "win32",
+      isElectron: true,
+    });
+    expect(windows.args.at(-1)).toBe("--internal-mcp");
+    expect(windows.args[0].replaceAll("\\", "/")).toContain("/electron/backend/internal-mcp-stdio-entry.js");
+    expect(windows.env).toEqual({ ELECTRON_RUN_AS_NODE: "1" });
+    expect(buildInternalMcpServerSpec({ execPath: "/opt/strideterm", platform: "linux", isElectron: true })).toEqual({
+      command: "/opt/strideterm",
+      args: ["--internal-mcp"],
+    });
+  });
+
+  test("a review launch composes review, SSH and internal servers in one Claude config", () => {
+    const launch = buildReviewAgentLaunch({
+      workspace: createWorkspace(),
+      panel: { id: "claude", command: "claude --model sonnet" },
+      context: createContext(),
+      processInfo: { platform: "linux", execPath: "/usr/bin/node" },
+      sshMcp,
+      internalMcp,
+    })!;
+    const configs = launch.args.filter((_arg: string, index: number) => launch.args[index - 1] === "--mcp-config");
+    expect(configs).toHaveLength(1);
+    expect(Object.keys(JSON.parse(configs[0]).mcpServers)).toEqual(["review", "strideterm_ssh", "strideterm"]);
   });
 });

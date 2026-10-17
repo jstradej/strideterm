@@ -109,6 +109,7 @@ import {
   azureAuditLogStatsSchema,
   approvalAuditLogQuerySchema,
   approvalAuditLogDeleteSchema,
+  operationDiscardSchema,
   approvalAuditLogStatsSchema,
   githubConnectionSchema,
   githubCommentSchema,
@@ -1006,6 +1007,13 @@ export function registerIpc(
       ),
     ),
   );
+  // Desktop only: a failed operation keeps its record (and its idempotency key) until a person drops it.
+  handle("operation:discard", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "operation:discard" }, () =>
+      runtime.discardOperation(validateIpc(operationDiscardSchema, payload, "operation:discard").operationId, windowId),
+    );
+  });
   handle("approvals:audit-log:stats", async (_event, payload) =>
     withOperationPromise({ opId: "approvals:audit-log:stats" }, () =>
       runtime.getApprovalAuditStats(validateIpc(approvalAuditLogStatsSchema, payload, "approvals:audit-log:stats")),

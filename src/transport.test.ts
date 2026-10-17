@@ -2309,6 +2309,8 @@ describe("remote transport API parity — no method silently missing its remote 
     // no delete route, and the Approvals tab hides the delete controls when
     // the transport does not provide this method.
     "deleteApprovalAuditEntries",
+    // A failed operation keeps its record and idempotency key until a person drops it on the desktop.
+    "discardOperation",
     // Performance diagnostics rely on Electron process metrics
     // (app.getAppMetrics) and the webContents CPU profiler, which have no
     // remote-browser equivalent. The Performance panel is gated on the
