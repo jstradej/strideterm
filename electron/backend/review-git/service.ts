@@ -8,8 +8,8 @@ import {
   type ReviewGitState,
 } from "../../shared/review-git-events.js";
 import { reviewSourceIdentityKey, sourceBranchName } from "../../shared/review-source-identity.js";
-import { digest, inspectCheckout, listCommits, lsRemoteRef, type GitRun } from "./inspect.js";
-import { managedReviewBranchAlias } from "../../shared/review-source-identity.js";
+import { inspectCheckout, listCommits, lsRemoteRef, type GitRun } from "./inspect.js";
+import { fullSourceRef, managedReviewBranchAlias } from "../../shared/review-source-identity.js";
 import { sharedReviewGitLocks, type ReviewGitLocks } from "./locks.js";
 import {
   REVIEW_GIT_OPERATION_RETENTION_MS,
@@ -124,10 +124,23 @@ export function isReviewGitGrantLive({
   if (profileId !== grant.profileId || !state.profiles.some((profile) => profile.id === profileId)) return false;
   const panel = workspace.panels.find((item) => item.id === grant.panelId);
   if (!panel || panel.command !== grant.command || agentFor(panel) !== grant.agent) return false;
-  if (identityKeyFor(workspace) !== grant.identityKey) return false;
+  if (!grantIdentityHolds(grant.identityKey, identityKeyFor(workspace))) return false;
   return Boolean(
     session?.status === "running" && session.workspaceId === grant.workspaceId && session.panelId === grant.panelId,
   );
+}
+
+const PARTIAL_IDENTITY_PREFIX = "partial|";
+
+/**
+ * A grant minted before the source repository was known (a legacy workspace) is
+ * bound to provider, connection, PR and source ref only; the lazy capture of the
+ * repository after the first successful operation completes that identity, it
+ * does not change it. A grant minted with the full identity must match exactly.
+ */
+function grantIdentityHolds(grantKey: string, currentKey: string): boolean {
+  if (grantKey === currentKey) return true;
+  return grantKey.startsWith(PARTIAL_IDENTITY_PREFIX) && currentKey.startsWith(`${grantKey.slice(PARTIAL_IDENTITY_PREFIX.length)}|`);
 }
 
 export function createReviewGitService(ctx: ReviewGitServiceCtx) {
@@ -663,7 +676,17 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
     stateFor,
     /** Digest of a workspace's PR/source identity, used to bind agent capabilities. */
     identityKeyFor(workspace: WorkspaceState): string {
-      return reviewSourceIdentityKey(workspace.review) || digest(workspace.id, workspace.review?.prKey || "");
+      const review = workspace.review;
+      return (
+        reviewSourceIdentityKey(review) ||
+        [
+          "partial",
+          review?.provider || "",
+          review?.connectionId || "",
+          review?.prKey || "",
+          fullSourceRef(review?.pullRequest?.sourceRefName),
+        ].join("|")
+      );
     },
   };
 }

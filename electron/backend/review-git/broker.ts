@@ -291,13 +291,15 @@ export function createReviewGitBroker({ service, isGrantLive, now = () => Date.n
     };
     response.once("close", onResponseClose);
 
-    const expired = () => {
+    const expired = (operationId?: string) => {
       revokeGrant(capability);
       sendJson(response, 403, {
         error: {
           code: "grant_expired",
           message:
-            "Review Git is no longer available for this tab (it was detached, closed, or its pull request changed). Operations already started keep running.",
+            "Review Git is no longer available for this tab (it was detached, closed, or its pull request changed). Operations already started keep running" +
+            (operationId ? `; query operation ${operationId} with git_operation_status.` : "."),
+          ...(operationId ? { operationId } : {}),
         },
       });
     };
@@ -320,6 +322,7 @@ export function createReviewGitBroker({ service, isGrantLive, now = () => Date.n
       grant.lastUsedAt = now();
       const result = await dispatch(grant, parsed.data, controller.signal);
       if (!controller.signal.aborted) sendJson(response, 200, { result });
+      else expired((result as { operationId?: string } | null)?.operationId);
     } catch (error) {
       if (response.destroyed) return;
       if (error instanceof BrokerError) {

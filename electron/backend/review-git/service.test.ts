@@ -607,4 +607,35 @@ describe("capability liveness", () => {
     expect(check({ session: { ...session, panelId: "panel-2" } })).toBe(false);
     expect(check({ agentFor: () => "codex" })).toBe(false);
   });
+  describe("a legacy workspace whose source repository is captured lazily", () => {
+    const review = (sourceRepository: unknown, ref = "refs/heads/feature/x") =>
+      ({
+        provider: "azure",
+        connectionId: "conn-1",
+        prKey: "conn-1:repo:7",
+        pullRequest: { sourceRefName: ref },
+        sourceRepository,
+      }) as never;
+    const service = createReviewGitService({} as never);
+    const keyOf = (workspace: unknown) => service.identityKeyFor(workspace as never);
+    const mintedFor = (value: unknown) => keyOf({ id: "ws-1", review: value });
+
+    test("keeps its grant when the first operation fills in the source repository", () => {
+      const minted = mintedFor(review(null));
+      state.workspaces[0]!.review = review({ id: "repo-1" }) as never;
+      expect(check({ grant: { ...grant, identityKey: minted }, identityKeyFor: keyOf as never })).toBe(true);
+    });
+
+    test("still ends when the PR's source ref changes after the lazy capture", () => {
+      const minted = mintedFor(review(null));
+      state.workspaces[0]!.review = review({ id: "repo-1" }, "refs/heads/other") as never;
+      expect(check({ grant: { ...grant, identityKey: minted }, identityKeyFor: keyOf as never })).toBe(false);
+    });
+
+    test("a grant minted with the full identity does not accept another source repository", () => {
+      const minted = mintedFor(review({ id: "repo-1" }));
+      state.workspaces[0]!.review = review({ id: "repo-2" }) as never;
+      expect(check({ grant: { ...grant, identityKey: minted }, identityKeyFor: keyOf as never })).toBe(false);
+    });
+  });
 });

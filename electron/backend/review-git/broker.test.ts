@@ -230,6 +230,24 @@ describe("review Git broker", () => {
     expect(done.body.result).toMatchObject({ status: "succeeded" });
   });
 
+  test("a request whose capability is revoked mid-wait is answered with grant_expired and the started operation id", async () => {
+    const { capability } = broker.mintGrant(baseGrant);
+    const pending = call(capability, {
+      operation: "start",
+      kind: "refresh",
+      idempotencyKey: "key-ffffffff",
+      waitMs: 10_000,
+    });
+    await vi.waitFor(() => expect(fake.runs).toHaveLength(1));
+    broker.revokeSession(baseGrant.sessionId);
+    const answer = await pending;
+    expect(answer.status).toBe(403);
+    expect(answer.body.error?.code).toBe("grant_expired");
+    const [operation] = fake.service.operations.running("default");
+    expect((answer.body.error as { operationId?: string }).operationId).toBe(operation!.operationId);
+    expect(fake.service.operations.running("default")).toHaveLength(1);
+  });
+
   test("an operation id is not visible through a capability for another workspace or profile", async () => {
     const mine = broker.mintGrant(baseGrant);
     const other = broker.mintGrant({ ...baseGrant, sessionId: "ws-2:panel-1", workspaceId: "ws-2" });

@@ -20,6 +20,7 @@ import { runEffect } from "./effect/runtime.js";
 import { GitCommandError, GitAuthError } from "./effect/errors/git-errors.js";
 import { httpRetry } from "./effect/schedules.js";
 import { commonDirOf, sharedReviewGitLocks } from "./review-git/locks.js";
+import { managedReviewBranchAlias } from "../shared/review-source-identity.js";
 import {
   DEFAULT_DIFF_STAT,
   DEFAULT_OPERATION_STATE,
@@ -220,6 +221,16 @@ function omitHeavySnapshotFields(snapshot: Record<string, unknown>): Record<stri
     out[key] = value;
   }
   return out;
+}
+
+/** The PR source branch a push from `branch` must target: only the managed pr-<id>-<source> alias is remapped. */
+function managedReviewSourceBranch(workspace: WorkspaceRef, branch: string): string {
+  const pullRequest = workspace.review?.pullRequest;
+  const source = String(pullRequest?.sourceRefName || "")
+    .replace(/^refs\/heads\//, "")
+    .trim();
+  if (!source || source === branch) return "";
+  return branch === managedReviewBranchAlias(pullRequest?.id ?? "", source) ? source : "";
 }
 
 export class GitManager extends EventEmitter {
@@ -1371,26 +1382,17 @@ export class GitManager extends EventEmitter {
     const upstreamBranch = upstream.startsWith(`${remote}/`) ? upstream.slice(remote.length + 1) : "";
     const upstreamMatchesBranch = upstreamBranch === branch;
 
-    // Managed review checkouts name the local branch pr-<id>-<source>; pushing
-    // that name verbatim would create a bogus remote branch. Map to the PR
-    // source branch via an explicit refspec instead.
-    const reviewSourceBranch = String(workspace.review?.pullRequest?.sourceRefName || "")
-      .replace(/^refs\/heads\//, "")
-      .trim();
-    const pushToReviewSource = !!reviewSourceBranch && reviewSourceBranch !== branch;
+    const reviewSourceBranch = managedReviewSourceBranch(workspace, branch);
+    const pushToReviewSource = !!reviewSourceBranch;
 
     // Decide push strategy:
-    // - review checkout with renamed local branch: refspec to the PR source branch
+    // - managed pr-<id>-<source> alias: refspec to the PR source branch (pushing
+    //   the alias verbatim would create a bogus remote branch)
     // - upstream tracks same branch name on remote: simple push
     // - upstream missing or tracks different branch: set-upstream to fix tracking
     //
-    // NB: we intentionally do NOT remap an ordinary name-mismatched push (local
-    // `feature` tracking origin/main) onto the tracked branch — that would risk
-    // silently fast-forwarding an unrelated remote branch, and no branch-name or
-    // persisted signal reliably survives a detached workspace switching branches.
-    // Pushing to a linked PR review is served by the reliable "Enable editing"
-    // path (review stays linked, so pushToReviewSource applies) — detach makes
-    // it a plain workspace whose push publishes under the local branch name.
+    // Any other branch of a PR-linked workspace (say `develop`) is an ordinary
+    // branch: it is never remapped onto the PR source.
     const pushArgs = pushToReviewSource
       ? ["push", "-u", remote, `HEAD:refs/heads/${reviewSourceBranch}`]
       : upstreamMatchesBranch
@@ -1441,12 +1443,8 @@ export class GitManager extends EventEmitter {
     );
     const upstream = String(snapshot.upstream || "");
     const remote = remoteNames.find((r) => upstream.startsWith(`${r}/`)) || remoteNames[0] || "origin";
-    // Managed review checkouts name the local branch pr-<id>-<source> — force-push
-    // must target the PR source branch on the remote, not the local alias.
-    const reviewSourceBranch = String(workspace.review?.pullRequest?.sourceRefName || "")
-      .replace(/^refs\/heads\//, "")
-      .trim();
-    const remoteBranch = reviewSourceBranch && reviewSourceBranch !== branch ? reviewSourceBranch : branch;
+    const reviewSourceBranch = managedReviewSourceBranch(workspace, branch);
+    const remoteBranch = reviewSourceBranch || branch;
     const target = `${remote}/${remoteBranch}`;
     const effectiveCwd = rootPath || String(workspace.cwd || "");
 

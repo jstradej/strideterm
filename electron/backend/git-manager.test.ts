@@ -2864,7 +2864,7 @@ describe("GitManager", () => {
       const reviewWorkspace = {
         id: "ws-1",
         cwd: "/repo",
-        review: { pullRequest: { sourceRefName: "refs/heads/feature/foo" } },
+        review: { pullRequest: { id: 12, sourceRefName: "refs/heads/feature/foo" } },
       };
 
       test("push maps the pr-N local branch to the PR source branch via refspec", async () => {
@@ -2911,8 +2911,32 @@ describe("GitManager", () => {
       // auto-remap onto the tracked upstream: no branch-name or persisted signal
       // reliably survives a detached workspace switching branches, so remapping
       // risks fast-forwarding an unrelated remote branch. Push safely publishes
-      // under the local branch name; the reliable "Enable editing" path (review
-      // stays linked) is how you push to the PR source branch.
+      // under the local branch name.
+      test("push from another branch of a PR-linked workspace never targets the PR source branch", async () => {
+        const { mgr, calls } = makeReviewMgr({ branch: "develop", upstream: "origin/develop" });
+        const result = await mgr.push(reviewWorkspace);
+        expect(result.ok).toBe(true);
+        expect(calls).toContainEqual(["push", "origin", "HEAD"]);
+        expect(calls.some((args) => args.some((arg) => arg.includes("feature/foo")))).toBe(false);
+      });
+
+      test("push of a branch without upstream from a PR-linked workspace publishes its own name", async () => {
+        const { mgr, calls } = makeReviewMgr({ branch: "develop", upstream: "" });
+        const result = await mgr.push(reviewWorkspace);
+        expect(result.ok).toBe(true);
+        expect(calls).toContainEqual(["push", "--set-upstream", "origin", "develop"]);
+      });
+
+      test("forcePushWithLease from another branch of a PR-linked workspace acts on that branch", async () => {
+        const { mgr, calls } = makeReviewMgr({ branch: "develop", upstream: "origin/develop" });
+        const result = await mgr.forcePushWithLease(reviewWorkspace);
+        expect(result.ok).toBe(true);
+        expect(calls.some((args) => args[0] === "ls-remote")).toBe(false);
+        const push = calls.find((args) => args[0] === "push");
+        expect(push?.slice(2)).toEqual(["origin", "develop"]);
+        expect(calls.some((args) => args.some((arg) => arg.includes("feature/foo")))).toBe(false);
+      });
+
       test("push after detach publishes the local branch name (no unsafe remap)", async () => {
         const { mgr, calls } = makeReviewMgr({ branch: "pr-12-feature-foo", upstream: "origin/feature/foo" });
         const result = await mgr.push({ id: "ws-1", cwd: "/repo" });
