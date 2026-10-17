@@ -34,6 +34,7 @@
     "dist:linux": "npm run build && electron-builder --linux",
     "smoke": "npm run build && tsx scripts/smoke.mts",
     "measure:remote": "tsx scripts/measure-remote-payload.mts",
+    "package:ui": "tsx scripts/package-ui.ts",
     "smoke:remote-tunnel": "tsx scripts/remote-tunnel-smoke.mts",
     "test": "npm run test:ui && npm run test:backend && npm run test:store-appx-config",
     "test:ui": "vitest run --config vite.config.ts",

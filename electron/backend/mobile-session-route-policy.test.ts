@@ -119,6 +119,7 @@ const MOBILE_ROUTE_CLASSIFICATION: Record<string, MobileRouteClass> = {
   "/api/remote-client/": "own-check",
   "/api/remote-client/profile/activate": "own-check",
   "/api/remote-client/session/activate": "own-check",
+  "/api/remote-client/target/activate": "own-check",
   "/api/remote-client/workspace/activate": "own-check",
   "/api/state": "own-check",
   "/api/": "guarded",

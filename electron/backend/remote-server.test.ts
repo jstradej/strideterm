@@ -108,6 +108,56 @@ describe("static asset HTTP caching", () => {
   });
 });
 
+test("JSON validators are semantic across identity, gzip and Brotli and keep no-store", async () => {
+  const staticRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-json-cache-"));
+  const port = await getFreePort();
+  const bigWorkspace = { id: "ws", name: "x".repeat(3000), cwd: "C:/work", profileId: "default" };
+  const server = await startRemoteServer({
+    runtime: {
+      getPayload: () => ({
+        appState: {
+          settings: { remoteAccess: { enabled: true, host: "127.0.0.1", port, token: "test-token" } },
+          profiles: [{ id: "default", name: "Default", workspaceIds: ["ws"] }],
+          workspaces: [bigWorkspace],
+        },
+      }),
+      getInitialState: async () => ({ workspaces: [bigWorkspace], revision: 1 }),
+      setRemoteInfo: () => undefined,
+      listRemoteUrls: () => [],
+      on: () => () => undefined,
+      off: () => () => undefined,
+    } as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+    staticRoot,
+  });
+  const url = `http://127.0.0.1:${port}/api/state`;
+  const headers = { Authorization: "Bearer test-token" };
+  try {
+    const identity = await fetch(url, { headers });
+    const identityTag = identity.headers.get("etag")!;
+    expect(identityTag.startsWith("W/")).toBe(true);
+    expect(identity.headers.get("cache-control")).toBe("no-cache");
+    expect(identity.headers.get("vary")).toContain("Accept-Encoding");
+    for (const encoding of ["gzip", "br"]) {
+      const compressed = await fetch(url, { headers: { ...headers, "Accept-Encoding": encoding } });
+      expect(compressed.headers.get("content-encoding")).toBe(encoding);
+      expect(compressed.headers.get("etag")).toBe(identityTag);
+      expect(compressed.headers.get("vary")).toContain("Accept-Encoding");
+      const revalidated = await fetch(url, {
+        headers: { ...headers, "Accept-Encoding": encoding, "If-None-Match": `"unrelated", ${identityTag}` },
+      });
+      expect(revalidated.status).toBe(304);
+      expect(await revalidated.text()).toBe("");
+      expect(revalidated.headers.get("cache-control")).toBe("no-cache");
+      expect(revalidated.headers.get("vary")).toContain("Accept-Encoding");
+    }
+    const wildcard = await fetch(url, { headers: { ...headers, "If-None-Match": "*" } });
+    expect(wildcard.status).toBe(304);
+  } finally {
+    await server.close();
+    await fs.rm(staticRoot, { recursive: true, force: true });
+  }
+});
+
 test("a paused desktop does not bind the browser remote server", async () => {
   let info: unknown;
   const server = await startRemoteServer({
@@ -610,6 +660,10 @@ describe("remote token client profile context", () => {
         registryRef.activateProfile(clientId, profileId, payload.appState);
         return registryRef.composePayload(clientId, payload);
       },
+      async activateTargetForRemoteClient(clientId: string, profileId: string, workspaceId: string) {
+        registryRef.activateTarget(clientId, profileId, workspaceId, payload.appState);
+        return registryRef.composePayload(clientId, payload);
+      },
     };
     const server = await startRemoteServer({
       runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
@@ -628,10 +682,10 @@ describe("remote token client profile context", () => {
       expect(initial.remoteClient).toMatchObject({ profileId: "p1", activeWorkspaceId: "ws1" });
 
       const activated = (await (
-        await fetch(`${baseUrl}/api/remote-client/profile/activate`, {
+        await fetch(`${baseUrl}/api/remote-client/target/activate`, {
           method: "POST",
           headers: { ...headers, "Content-Type": "application/json" },
-          body: JSON.stringify({ profileId: "p2" }),
+          body: JSON.stringify({ profileId: "p2", workspaceId: "ws2" }),
         })
       ).json()) as { remoteClient?: { profileId?: string; activeWorkspaceId?: string } };
       expect(activated.remoteClient).toMatchObject({ profileId: "p2", activeWorkspaceId: "ws2" });
@@ -3994,7 +4048,7 @@ describe("mobile session bootstrap (POST /api/mobile/session/bootstrap)", () => 
     };
   }
 
-  test("a valid ticket mints a session cookie and redirects to a clean '/'", async () => {
+  test("a valid ticket mints a session cookie with a clean no-content response", async () => {
     const port = await getFreePort();
     const runtime = makeMobileRuntime(port, (ticketId, secret) => {
       if (ticketId === "ticket-1" && secret === "secret-1") {
@@ -4022,8 +4076,8 @@ describe("mobile session bootstrap (POST /api/mobile/session/bootstrap)", () => 
         body: JSON.stringify({ ticketId: "ticket-1", secret: "secret-1" }),
         redirect: "manual",
       });
-      expect(res.status).toBe(302);
-      expect(res.headers.get("location")).toBe("/");
+      expect(res.status).toBe(204);
+      expect(res.headers.get("location")).toBeNull();
       const setCookie = res.headers.get("set-cookie") || "";
       expect(setCookie).toContain("strideterm_session=");
       expect(setCookie).toContain("HttpOnly");
@@ -4317,7 +4371,7 @@ describe("mobile session bootstrap (POST /api/mobile/session/bootstrap)", () => 
       });
       // The extra keys are ignored, not a 400 — the point is that they carry no authority, and a
       // session is still minted from the ticket record alone.
-      expect(bootstrapRes.status).toBe(302);
+      expect(bootstrapRes.status).toBe(204);
       const cookieValue = (bootstrapRes.headers.get("set-cookie") || "").split(";")[0];
       expect((await fetch(`${baseUrl}/api/state`, { headers: { Cookie: cookieValue } })).status).toBe(200);
 
@@ -4687,15 +4741,23 @@ describe("the mobile session cookie's attributes", () => {
     const payload = {
       appState: {
         settings: { remoteAccess: { enabled: true, host: "127.0.0.1", port, token: "unused-master-token" } },
-        profiles: [{ id: "default", name: "Default", color: "#fff", workspaceIds: [] }],
-        workspaces: [],
+        profiles: [
+          { id: "default", name: "Default", color: "#fff", workspaceIds: ["ws-target"] },
+          { id: "other", name: "Other", color: "#000", workspaceIds: [] },
+        ],
+        workspaces: [{ id: "ws-target", name: "Target", cwd: "C:/target", profileId: "default" }],
         windowSlots: [],
       },
     };
-    const tickets = new Map<string, { deviceId: string; pairId: string; profileId: string }>();
+    const tickets = new Map<string, { deviceId: string; pairId: string; profileId: string; workspaceId?: string }>();
     return {
-      seedTicket(ticketId: string, secret: string) {
-        tickets.set(`${ticketId}:${secret}`, { deviceId: "dev-1", pairId: "pair-1", profileId: "default" });
+      seedTicket(ticketId: string, secret: string, workspaceId?: string) {
+        tickets.set(`${ticketId}:${secret}`, {
+          deviceId: "dev-1",
+          pairId: "pair-1",
+          profileId: "default",
+          workspaceId,
+        });
       },
       runtime: {
         getPayload: () => payload,
@@ -4732,9 +4794,54 @@ describe("the mobile session cookie's attributes", () => {
       body: JSON.stringify({ ticketId: "t1", secret: "s1" }),
       redirect: "manual",
     });
-    expect(res.status).toBe(302);
+    expect(res.status).toBe(204);
     return res.headers.get("set-cookie") || "";
   }
+
+  test("a workspace removed after ticket issue returns 409 and preserves the current session", async () => {
+    const port = await getFreePort();
+    const { seedTicket, runtime } = makeCookieRuntime(port);
+    seedTicket("t1", "s1");
+    seedTicket("stale-target", "s2", "ws-target");
+    seedTicket("moved-target", "s3", "ws-target");
+    const getPayload = (
+      runtime as { getPayload: () => { appState: { workspaces: { id: string; profileId: string }[] } } }
+    ).getPayload;
+    const appState = getPayload().appState;
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    const baseUrl = `http://127.0.0.1:${port}`;
+    try {
+      const originalCookie = await bootstrapCookieHeader(baseUrl, {});
+      appState.workspaces = [];
+      const stale = await fetch(`${baseUrl}/api/mobile/session/bootstrap`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticketId: "stale-target", secret: "s2" }),
+        redirect: "manual",
+      });
+      expect(stale.status).toBe(409);
+      expect(stale.headers.get("set-cookie")).toBeNull();
+      expect((await fetch(`${baseUrl}/api/state`, { headers: { Cookie: originalCookie.split(";")[0] } })).status).toBe(
+        200,
+      );
+      appState.workspaces = [{ id: "ws-target", profileId: "other" }];
+      const moved = await fetch(`${baseUrl}/api/mobile/session/bootstrap`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticketId: "moved-target", secret: "s3" }),
+        redirect: "manual",
+      });
+      expect(moved.status).toBe(409);
+      expect((await fetch(`${baseUrl}/api/state`, { headers: { Cookie: originalCookie.split(";")[0] } })).status).toBe(
+        200,
+      );
+    } finally {
+      await server.close();
+    }
+  });
 
   test("a session reached over HTTPS gets HttpOnly, Secure, SameSite=Strict and Path=/", async () => {
     const port = await getFreePort();
@@ -5920,7 +6027,7 @@ describe("the master token in payload.remoteAccess.urls, per transport", () => {
         body: JSON.stringify({ ticketId: "t1", secret: "s1" }),
         redirect: "manual",
       });
-      expect(boot.status).toBe(302);
+      expect(boot.status).toBe(204);
       const cookie = (boot.headers.get("set-cookie") || "").split(";")[0]!;
       expect(cookie).toContain("strideterm_session=");
 
@@ -6045,7 +6152,7 @@ describe("the relay's loopback origin requires the device the relay verified (E2
   test("a bootstrap naming a device other than the ticket's is still refused, and one naming it succeeds", async () => {
     const consumed: string[] = [];
     expect(await bootstrap("some-other-phone", consumed)).toBe(401);
-    expect(await bootstrap("phone-1", consumed)).toBe(302);
+    expect(await bootstrap("phone-1", consumed)).toBe(204);
   });
 });
 

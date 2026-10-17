@@ -59,6 +59,8 @@ getLogger("relay-mvp-desktop").info("tls trust store", applySystemCaTrust());
 
 const { createRuntime } = await import("../electron/backend/runtime.js");
 const { startRemoteServer } = await import("../electron/backend/remote-server.js");
+const { loadUiPackageDescriptor } = await import("../electron/backend/ui-package-descriptor.js");
+const rendererRoot = path.join(REPO_ROOT, "dist");
 
 fs.copyFileSync(stateFile, path.join(dataDir, "strideterm-state.json"));
 const initialState = JSON.parse(fs.readFileSync(stateFile, "utf8")) as {
@@ -107,6 +109,7 @@ const runtime: any = await createRuntime({
       decryptString: (value: Buffer) => value.toString("utf8").replace(/^harness:/, ""),
     },
     // The relay's internal origin, wired exactly as electron/main.ts wires it.
+    getUiPackageDescriptor: () => loadUiPackageDescriptor(rendererRoot),
     startRelayOrigin: async (loopbackOrigin: {
       host: string;
       port: number;
@@ -115,7 +118,7 @@ const runtime: any = await createRuntime({
     }) =>
       startRemoteServer({
         runtime,
-        staticRoot: path.join(REPO_ROOT, "dist"),
+        staticRoot: rendererRoot,
         loopbackOrigin,
       }),
   },
@@ -134,7 +137,7 @@ let lanServer: { close: () => Promise<void> } | null = null;
 if (initialState?.settings?.remoteAccess?.enabled) {
   lanServer = await startRemoteServer({
     runtime,
-    staticRoot: path.join(REPO_ROOT, "dist"),
+    staticRoot: rendererRoot,
   });
 }
 
@@ -281,7 +284,7 @@ const server = http.createServer((request, response) => {
           return;
         case "POST /pairing/approve": {
           const body = await readBody(request);
-          json(200, await runtime.approveMobileDevice(body.deviceId));
+          json(200, await runtime.approveMobileDevice(body.deviceId, body.sas));
           return;
         }
         case "POST /mobile/reconfigure": {

@@ -74,6 +74,7 @@ const IssueTicketInputSchema = z.object({
   deviceId: z.string().min(1),
   pairId: z.string().min(1),
   profileId: z.string().min(1),
+  workspaceId: z.string().min(1).optional(),
   allowedOrigin: z.string().min(1),
   transport: z.enum(["relay", "legacy"]),
   /**
@@ -124,6 +125,7 @@ export interface TicketRecord {
   deviceId: string;
   pairId: string;
   profileId: string;
+  workspaceId?: string;
   allowedOrigin: string;
   transport: MobileWebSessionTransport;
   /** Always `remote.webSession`. Kept on the record so the consuming route re-checks it by name. */
@@ -183,6 +185,7 @@ function toRecord(stored: StoredTicket): TicketRecord {
     deviceId: stored.deviceId,
     pairId: stored.pairId,
     profileId: stored.profileId,
+    ...(stored.workspaceId ? { workspaceId: stored.workspaceId } : {}),
     allowedOrigin: stored.allowedOrigin,
     transport: stored.transport,
     requiredCapability: stored.requiredCapability,
@@ -212,6 +215,7 @@ export function createMobileWebSessionTicketStore(now: () => number = () => Date
         deviceId: validated.deviceId,
         pairId: validated.pairId,
         profileId: validated.profileId,
+        ...(validated.workspaceId ? { workspaceId: validated.workspaceId } : {}),
         // Stored normalized so a comparison at redemption time is a string equality rather than a
         // second chance to disagree about what an origin is.
         allowedOrigin: normalizeRemoteOrigin(validated.allowedOrigin),

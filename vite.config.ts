@@ -4,6 +4,7 @@ import { resolve, sep } from "node:path";
 import { createRequire } from "node:module";
 import vue from "@vitejs/plugin-vue";
 import { APP_CONFIG } from "./config/app-config.js";
+import { createUiPackageExporter } from "./scripts/ui-package-exporter.js";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 
@@ -30,7 +31,7 @@ const sharedNodeModules = monacoPathParts.slice(0, monacoPathParts.lastIndexOf("
 const testExecArgv = "localStorage" in globalThis ? ["--no-experimental-webstorage"] : [];
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [vue(), createUiPackageExporter()],
   root: resolve(__dirname, "src"),
   base: "./",
   clearScreen: false,

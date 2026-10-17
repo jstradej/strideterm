@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import { createRuntime } from "./backend/runtime.js";
 import { registerIpc } from "./backend/ipc.js";
 import { startRemoteServer } from "./backend/remote-server.js";
+import { loadUiPackageDescriptor } from "./backend/ui-package-descriptor.js";
 import { parseReviewBridgeMcpArgs, runReviewBridgeMcpServer } from "./backend/review-bridge-mcp.js";
 import { runSshMcpStdioServer } from "./backend/ssh-mcp-stdio.js";
 import { runInternalMcpStdioServer } from "./backend/internal-mcp/internal-mcp-stdio.js";
@@ -1519,6 +1520,7 @@ async function startServices(): Promise<void> {
       enableAgentSshMcp: true,
       enableInternalMcp: true,
       distribution: appDistribution,
+      getUiPackageDescriptor: () => loadUiPackageDescriptor(path.join(app.getAppPath(), "dist")),
       /**
        * The managed relay's internal origin.
        *

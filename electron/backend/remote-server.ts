@@ -49,6 +49,7 @@ import {
   gitStashListSchema,
   gitSquashSchema,
   mobileSessionBootstrapSchema,
+  remoteClientTargetActivateSchema,
   azureClosedPrCleanupSchema,
   reviewGitStartSchema,
   mobileAttachmentEnvelopeSchema,
@@ -500,6 +501,7 @@ interface Runtime {
     deviceId: string;
     pairId: string;
     profileId: string;
+    workspaceId?: string;
     allowedOrigin: string;
     transport: "relay" | "legacy";
     requiredCapability: "remote.webSession";
@@ -1340,10 +1342,11 @@ function json(response: ServerResponse, statusCode: number, body: unknown): void
     // digests carries workspace/session identifiers, and CodeQL's
     // weak-cryptographic-algorithm rule flags sha1 over that data as a high
     // alert. Nothing here depends on the digest being short.
-    const etag = `"${createHash("sha256").update(raw).digest("base64")}"`;
+    const etag = `W/"${createHash("sha256").update(raw).digest("base64")}"`;
     headers.ETag = etag;
     headers["Cache-Control"] = ctx.noStore ? "no-store" : "no-cache";
-    if (ctx.ifNoneMatch && ctx.ifNoneMatch === etag) {
+    if (Buffer.byteLength(raw, "utf8") >= JSON_COMPRESS_MIN_BYTES) headers.Vary = "Accept-Encoding";
+    if (etagMatches(ctx.ifNoneMatch, etag)) {
       writeHead(response, 304, headers);
       response.end();
       return;
@@ -1568,7 +1571,7 @@ function etagMatches(ifNoneMatch: string | string[] | undefined, etag: string): 
   if (!raw) return false;
   return raw.split(",").some((candidate) => {
     const normalized = candidate.trim().replace(/^W\//, "");
-    return normalized === "*" || normalized === etag;
+    return normalized === "*" || normalized === etag.replace(/^W\//, "");
   });
 }
 
@@ -3055,9 +3058,21 @@ export async function startRemoteServer({
   }
 
   /** Mints a session bound to a mobile device, from an already-consumed WebView ticket record (never from client-supplied fields). */
-  function mintMobileSession(ticket: { deviceId: string; pairId: string; profileId: string }): string {
+  function mintMobileSession(ticket: {
+    deviceId: string;
+    pairId: string;
+    profileId: string;
+    workspaceId?: string;
+  }): string {
     const id = randomBytes(32).toString("base64url");
-    registry.getOrCreate(id, (runtime.getPayload() as Record<string, unknown>).appState, ticket.profileId);
+    const appState = (runtime.getPayload() as Record<string, unknown>).appState;
+    try {
+      registry.getOrCreate(id, appState, ticket.profileId);
+      if (ticket.workspaceId) registry.activateWorkspace(id, ticket.workspaceId, appState);
+    } catch (error) {
+      registry.remove(id);
+      throw error;
+    }
     const now = Date.now();
     activeSessions.set(id, {
       sessionId: id,
@@ -4026,7 +4041,23 @@ export async function startRemoteServer({
             // never touches a desktop windowSlot. The runtime methods spawn
             // PTYs for the newly viewed workspace and broadcast state — every
             // socket gets a per-client composed payload with its own view.
-            if (request.method === "POST" && url.pathname === "/api/remote-client/profile/activate") {
+            if (request.method === "POST" && url.pathname === "/api/remote-client/target/activate") {
+              const parsed = validateIpc(
+                remoteClientTargetActivateSchema,
+                body,
+                "POST /api/remote-client/target/activate",
+              );
+              const mobileSession = activeSessions.get(apiSessionId);
+              if (
+                mobileSession?.deviceId &&
+                !runtime.isMobileSessionStillAuthorized?.(mobileSession.deviceId, parsed.profileId)
+              ) {
+                json(response, 403, { error: "This phone cannot access that profile" });
+                return;
+              }
+              await runtime.activateTargetForRemoteClient(apiSessionId, parsed.profileId, parsed.workspaceId);
+              if (mobileSession?.deviceId) mobileSession.profileId = parsed.profileId;
+            } else if (request.method === "POST" && url.pathname === "/api/remote-client/profile/activate") {
               const profileId = String(body.profileId ?? "");
               const mobileSession = activeSessions.get(apiSessionId);
               if (
@@ -4393,6 +4424,31 @@ export async function startRemoteServer({
       return;
     }
 
+    const appState = (runtime.getPayload() as Record<string, unknown>).appState as
+      | {
+          profiles?: Array<{ id?: string }>;
+          workspaces?: Array<{ id?: string; profileId?: string }>;
+        }
+      | undefined;
+    const targetExists =
+      Boolean(appState?.profiles?.some((profile) => profile.id === ticket.profileId)) &&
+      (!ticket.workspaceId ||
+        appState?.workspaces?.some(
+          (workspace) => workspace.id === ticket.workspaceId && (workspace.profileId || "default") === ticket.profileId,
+        ));
+    if (!targetExists) {
+      audit.warn("mobile session bootstrap target unavailable", {
+        remoteAddress,
+        deviceRef: remoteSessionRef(ticket.deviceId),
+        reason: "ticket-target-unavailable",
+      });
+      writeHead(response, 409, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
+      response.end(
+        "The requested profile or workspace is no longer available. Choose a workspace and request a new session.",
+      );
+      return;
+    }
+
     // ONE LIVE SESSION PER DEVICE ON THIS SERVER. A device that bootstraps again has abandoned the page
     // the old session served, but the old one used to linger until its idle deadline (30 minutes) with
     // its sockets open (2026-10-05). Ending it here, with the reason the page maps to `superseded`,
@@ -4400,7 +4456,14 @@ export async function startRemoteServer({
     for (const [existingId, existing] of [...activeSessions]) {
       if (existing.deviceId === ticket.deviceId) endMobileSession(existingId, "superseded");
     }
-    const sessionId = mintMobileSession(ticket);
+    let sessionId: string;
+    try {
+      sessionId = mintMobileSession(ticket);
+    } catch {
+      writeHead(response, 409, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
+      response.end("The requested workspace is no longer available. Choose a workspace and request a new session.");
+      return;
+    }
     const sessionRef = remoteSessionRef(sessionId);
     recordMobileSessionAudit(
       activeSessions.get(sessionId),
@@ -4415,9 +4478,9 @@ export async function startRemoteServer({
       sessionRef,
       deviceRef: remoteSessionRef(ticket.deviceId),
     });
-    writeHead(response, 302, {
+    writeHead(response, 204, {
       "Set-Cookie": `${SESSION_COOKIE_NAME}=${sessionId}; ${buildSessionCookieAttrs(request.headers)}`,
-      Location: "/",
+      "Cache-Control": "no-store",
     });
     response.end();
   }

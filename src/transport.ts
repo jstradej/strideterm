@@ -1680,7 +1680,17 @@ export function createRemoteTransport(): Transport {
         let failurePhase: "profile-activation" | "workspace-activation" | "panel-selection" = "profile-activation";
         try {
           let payload: unknown;
-          if (!workspaceId || profileId !== selectedProfileId) {
+          const combinedTargetActivation = Boolean(workspaceId && profileId !== selectedProfileId);
+          if (combinedTargetActivation) {
+            if (!isCurrent()) return;
+            failurePhase = "profile-activation";
+            payload = await fetchJson(
+              "/api/remote-client/target/activate",
+              { profileId, workspaceId },
+              { signal: controller.signal },
+            );
+            if (!isCurrent()) return;
+          } else if (!workspaceId || profileId !== selectedProfileId) {
             if (!isCurrent()) return;
             failurePhase = "profile-activation";
             payload = await fetchJson(
@@ -1690,7 +1700,7 @@ export function createRemoteTransport(): Transport {
             );
             if (!isCurrent()) return;
           }
-          if (workspaceId) {
+          if (workspaceId && !combinedTargetActivation) {
             if (!isCurrent()) return;
             failurePhase = "workspace-activation";
             payload = await fetchJson(

@@ -179,6 +179,7 @@ export interface MobileWebSessionTicketIssuer {
     deviceId: string;
     pairId: string;
     profileId: string;
+    workspaceId?: string;
     allowedOrigin: string;
     /** Which of this installation's servers the ticket may be redeemed at. */
     transport: "relay" | "legacy";
@@ -201,6 +202,7 @@ export interface MobileRelayTransportStatus {
 
 export interface MobileCommandDispatcherDeps {
   getState: () => AppState;
+  getUiPackageDescriptor?: () => Promise<{ schemaVersion: 1; manifestPath: string; manifestSha256: string } | null>;
   runtime: MobileCommandRuntime;
   idempotencyStore: MobileIdempotencyStore;
   auditLogStore: MobileAuditLogStore;
@@ -333,6 +335,7 @@ function buildEndpointMetadata(args: {
   tunnelKind: string;
   now: number;
   ttlMs: number;
+  uiPackage?: { schemaVersion: 1; manifestPath: string; manifestSha256: string } | null;
 }): Record<string, unknown> {
   return {
     host: args.host,
@@ -340,6 +343,7 @@ function buildEndpointMetadata(args: {
     transport: args.transport,
     issuedAt: args.now,
     expiresAt: args.now + args.ttlMs,
+    ...(args.uiPackage ? { uiPackage: args.uiPackage } : {}),
   };
 }
 
@@ -449,7 +453,7 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
     state: AppState,
     profileId: string,
     workspaceId: string | undefined,
-  ): { ok: true } | { ok: false; reason: string } {
+  ): { ok: true; workspaceId?: string } | { ok: false; reason: string } {
     if (!state.profiles.some((profile) => profile.id === profileId)) {
       return { ok: false, reason: "profile-not-found" };
     }
@@ -459,7 +463,7 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
     if (!workspace || profileOf(workspace) !== profileId) {
       return { ok: false, reason: "cross-profile-workspace" };
     }
-    return { ok: true };
+    return { ok: true, workspaceId: workspace.id };
   }
 
   async function execute(command: Command, state: AppState, device: MobileDeviceRecord): Promise<ExecResult> {
@@ -687,6 +691,7 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
         if (device.remoteUiPaused === true) return failed("temporarily-paused");
         const target = checkRemoteTarget(state, command.profileId, command.payload.workspaceId);
         if (!target.ok) return failed(target.reason);
+        const uiPackage = await deps.getUiPackageDescriptor?.().catch(() => null);
         // The managed relay is a THIRD transport, not a replacement (relay plan §2.2). When one is
         // running it is what the phone is told about — and it needs no Cloudflare tunnel, so this
         // path deliberately does not open one. Answering with the tunnel instead would be the
@@ -704,6 +709,7 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
               tunnelKind: "managedRelay",
               now: now(),
               ttlMs: REMOTE_ENDPOINT_TTL_MS,
+              uiPackage,
             }),
             ...buildRelayE2eOffer(deps),
           });
@@ -744,6 +750,7 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
             tunnelKind: payload?.remoteAccess?.tunnel?.mode || "quick",
             now: now(),
             ttlMs: REMOTE_ENDPOINT_TTL_MS,
+            uiPackage,
           }),
         });
       }
@@ -842,6 +849,7 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
           deviceId: fresh.deviceId,
           pairId: fresh.pairId,
           profileId: command.profileId,
+          workspaceId: target.workspaceId,
           allowedOrigin: command.payload.allowedOrigin,
           transport,
           commandRef: command.commandId.slice(-8),

@@ -67,7 +67,7 @@ async function mobileCookie(base: string): Promise<string> {
     body: JSON.stringify({ ticketId: "ticket", secret: "secret" }),
     redirect: "manual",
   });
-  expect(res.status).toBe(302);
+  expect(res.status).toBe(204);
   return (res.headers.get("set-cookie") || "").split(";")[0];
 }
 
@@ -171,7 +171,7 @@ describe("remote mobile security boundaries", () => {
         body: JSON.stringify({ ticketId: "ticket", secret: "secret" }),
         redirect: "manual",
       });
-      expect(boot.status).toBe(302);
+      expect(boot.status).toBe(204);
       const cookie = (boot.headers.get("set-cookie") || "").split(";")[0];
       const state = await fetch(`${base}/api/state`, { headers: { ...guard, Cookie: cookie } });
       expect(state.status).toBe(200);

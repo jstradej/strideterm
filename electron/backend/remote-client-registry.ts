@@ -261,6 +261,21 @@ export class RemoteClientRegistry {
     client.lastSeenAt = Date.now();
   }
 
+  activateTarget(sessionId: string, profileId: string, workspaceId: string, appState: AnyState): void {
+    const client = this.clients.get(sessionId);
+    if (!client) throw new Error("Remote client session not found");
+    if (!this.existingProfileIds(appState).includes(profileId)) throw new Error("Profile not found");
+    const workspace = (appState?.workspaces || []).find((item: AnyState) => item.id === workspaceId);
+    if (!workspace) throw new Error("Workspace not found");
+    if ((workspace.profileId || "default") !== profileId)
+      throw new Error("Workspace does not belong to the selected profile");
+    client.profileId = profileId;
+    this.seedViewState(client, appState);
+    client.activeWorkspaceId = workspaceId;
+    client.activeSessionId = "";
+    client.lastSeenAt = Date.now();
+  }
+
   activateSession(sessionId: string, workspaceId: string, sessionToActivate: string, appState: AnyState): void {
     const client = this.clients.get(sessionId);
     if (!client) throw new Error("Remote client session not found");

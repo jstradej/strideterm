@@ -1478,6 +1478,22 @@ describe("the managed relay as a third transport", () => {
     expect(runtime.calls).not.toContain("createCloudflareTunnel");
   });
 
+  test("endpoint response carries only the verified local package descriptor when available", async () => {
+    const uiPackage = {
+      schemaVersion: 1 as const,
+      manifestPath: "/ui-package/manifest-" + "a".repeat(64) + ".json",
+      manifestSha256: "a".repeat(64),
+    };
+    const { dispatcher } = await createFixture({}, READY_RELAY, null, {
+      getUiPackageDescriptor: async () => uiPackage,
+    });
+    const result = await dispatcher.dispatch(
+      makeCommand({ type: "remote.endpoint.request", payload: { workspaceId: "ws-1" } }),
+      makeDevice({ capabilities: ["remote.request"] }),
+    );
+    expect(result.data).toMatchObject({ transport: "managedRelay", uiPackage });
+  });
+
   test("with no relay, remote.endpoint.request reuses the connected Cloudflare tunnel", async () => {
     const { dispatcher, runtime } = await createFixture();
     const command = makeCommand({ type: "remote.endpoint.request", payload: { workspaceId: "ws-1" } });

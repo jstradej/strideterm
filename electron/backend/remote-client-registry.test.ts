@@ -107,6 +107,22 @@ describe("RemoteClientRegistry", () => {
     });
   });
 
+  test("activateTarget validates before changing either profile or workspace", () => {
+    const registry = new RemoteClientRegistry();
+    const state = makeState({
+      profiles: [{ id: "p1" }, { id: "p2" }],
+      workspaces: [
+        { id: "ws1", profileId: "p1" },
+        { id: "ws2", profileId: "p2" },
+      ],
+    });
+    registry.getOrCreate("session", state, "p1");
+    expect(() => registry.activateTarget("session", "p2", "ws1", state)).toThrow("selected profile");
+    expect(registry.get("session")).toMatchObject({ profileId: "p1", activeWorkspaceId: "ws1" });
+    registry.activateTarget("session", "p2", "ws2", state);
+    expect(registry.get("session")).toMatchObject({ profileId: "p2", activeWorkspaceId: "ws2", activeSessionId: "" });
+  });
+
   // A client adopts the desktop's CURRENT view for its profile when it binds,
   // because profile.lastActive* is only written on deactivation-ish events and
   // drifts from what the user is looking at. Adoption happens on (re)bind only

@@ -552,6 +552,7 @@ interface RuntimeDependencies {
   taskAgentReadiness?: { quietMs: number; timeoutMs: number };
   /** Which build is running — detected by main.ts, which can ask Electron (this module cannot). */
   distribution?: AppDistribution;
+  getUiPackageDescriptor?: () => Promise<{ schemaVersion: 1; manifestPath: string; manifestSha256: string } | null>;
   createSshMcpBroker?: typeof createSshMcpBroker;
   createReviewGitBroker?: typeof createReviewGitBroker;
 
@@ -1889,6 +1890,7 @@ export async function createRuntime({
 
   const mobileCommandDispatcher = createMobileCommandDispatcher({
     getState,
+    getUiPackageDescriptor: dependencies.getUiPackageDescriptor,
     runtime: mobileRuntimeAdapter,
     idempotencyStore: mobileIdempotencyStore,
     auditLogStore: mobileAuditLogStore,
@@ -9311,6 +9313,14 @@ export async function createRuntime({
         // No `lastWorkedAt` stamp: activation is navigation, not work.
         ensureVisibleSession(String(workspaceId));
       }
+      broadcastState();
+      return registry.composePayload(clientId, getPayload());
+    },
+
+    async activateTargetForRemoteClient(clientId: string, profileId: string, workspaceId: string): Promise<unknown> {
+      const registry = requireRemoteClientRegistry(clientId);
+      registry.activateTarget(clientId, profileId, workspaceId, getState());
+      ensureVisibleSession(workspaceId);
       broadcastState();
       return registry.composePayload(clientId, getPayload());
     },

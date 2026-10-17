@@ -336,7 +336,7 @@ describe("remote transport endpoint routing", () => {
     });
   });
 
-  it("different-profile native selection activates profile before workspace", async () => {
+  it("different-profile native selection activates profile and workspace in one request", async () => {
     const postMessage = vi.fn();
     (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
     const payload = { remoteClient: { profileId: "p2", activeWorkspaceId: "workspace-p2" } };
@@ -360,9 +360,8 @@ describe("remote transport endpoint routing", () => {
     await bridge.selectTarget("p2", "workspace-next", 15);
 
     const selectionCalls = calls.filter((url) => url.includes("/api/remote-client/"));
-    expect(selectionCalls).toHaveLength(2);
-    expect(selectionCalls[0]).toContain("/api/remote-client/profile/activate");
-    expect(selectionCalls[1]).toContain("/api/remote-client/workspace/activate");
+    expect(selectionCalls).toHaveLength(1);
+    expect(selectionCalls[0]).toContain("/api/remote-client/target/activate");
   });
 
   it("same-profile workspace selection skips profile activation", async () => {
@@ -422,7 +421,7 @@ describe("remote transport endpoint routing", () => {
     await bridge.selectTarget("p2", "workspace-next", 16);
 
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toContain("/api/remote-client/profile/activate");
+    expect(calls[0]).toContain("/api/remote-client/target/activate");
     expect(postMessage.mock.calls.map(([message]) => JSON.parse(message))).toContainEqual({
       type: "selection-result",
       requestId: 16,

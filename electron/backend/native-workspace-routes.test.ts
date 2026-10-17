@@ -391,7 +391,7 @@ async function bootstrap(base: string, _runtime: unknown, profile: string) {
     body: JSON.stringify({ ticketId: profile, secret: "secret" }),
     redirect: "manual",
   });
-  expect(response.status).toBe(302);
+  expect(response.status).toBe(204);
   return (response.headers.get("set-cookie") ?? "").split(";")[0];
 }
 

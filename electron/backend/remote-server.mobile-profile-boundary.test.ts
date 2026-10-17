@@ -6,6 +6,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { WebSocket } from "ws";
 import { startRemoteServer } from "./remote-server.js";
 import { setAllowedRootsResolver } from "./file-manager.js";
+import type { RemoteClientRegistry } from "./remote-client-registry.js";
 
 /**
  * A mobile session's profile is a boundary, not a filter on what the UI draws.
@@ -35,7 +36,7 @@ interface Call {
   args: unknown[];
 }
 
-function makeRuntime(port: number) {
+function makeRuntime(port: number, allowedMobileProfiles: string[] = ["home"]) {
   const payload = {
     appState: {
       settings: { remoteAccess: { enabled: true, host: "127.0.0.1", port, token: MASTER } },
@@ -55,6 +56,7 @@ function makeRuntime(port: number) {
   };
   const calls: Call[] = [];
   const handlers: Record<string, ((p: unknown) => void)[]> = {};
+  let registry: RemoteClientRegistry | null = null;
   const base: Record<string, unknown> = {
     getPayload: () => payload,
     getInitialState: async () => payload,
@@ -65,11 +67,13 @@ function makeRuntime(port: number) {
       (handlers[channel] ||= []).push(handler);
       return () => undefined;
     },
-    setRemoteClientRegistry: () => undefined,
+    setRemoteClientRegistry: (value: RemoteClientRegistry) => {
+      registry = value;
+    },
     isSshTestSessionId: (sessionId: unknown) => typeof sessionId === "string" && sessionId.startsWith("ssh-test:"),
     isPrivateSshOperationSessionId: (sessionId: unknown) =>
       typeof sessionId === "string" && /^(ssh-test:|ssh-transfer:)/.test(sessionId),
-    isMobileSessionStillAuthorized: () => true,
+    isMobileSessionStillAuthorized: (_deviceId: string, profileId: string) => allowedMobileProfiles.includes(profileId),
     isMobileSessionPaused: () => false,
     addMobileRemoteSessionRevoker: () => () => undefined,
     consumeMobileWebSessionTicket: (ticketId: string, secret: string) =>
@@ -89,6 +93,11 @@ function makeRuntime(port: number) {
   base.updateSettings = (...args: unknown[]) => {
     calls.push({ name: "updateSettings", args });
     return { payload };
+  };
+  base.activateTargetForRemoteClient = (clientId: string, profileId: string, workspaceId: string) => {
+    calls.push({ name: "activateTargetForRemoteClient", args: [clientId, profileId, workspaceId] });
+    if (!registry) throw new Error("Remote client registry is not initialized");
+    registry.activateTarget(clientId, profileId, workspaceId, payload.appState);
   };
   const record =
     (name: string) =>
@@ -121,9 +130,9 @@ type Fixture = ReturnType<typeof makeRuntime> & {
 
 const open: Fixture[] = [];
 
-async function startFixture(): Promise<Fixture> {
+async function startFixture(allowedMobileProfiles?: string[]): Promise<Fixture> {
   const port = await getFreePort();
-  const rt = makeRuntime(port);
+  const rt = makeRuntime(port, allowedMobileProfiles);
   const server = await startRemoteServer({
     runtime: rt.runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
     staticRoot: process.cwd(),
@@ -140,7 +149,9 @@ async function startFixture(): Promise<Fixture> {
         body: JSON.stringify({ ticketId: "ticket-home", secret: "secret" }),
         redirect: "manual",
       });
-      expect(res.status).toBe(302);
+      expect(res.status).toBe(204);
+      expect(res.headers.get("location")).toBeNull();
+      expect(res.headers.get("cache-control")).toBe("no-store");
       return (res.headers.get("set-cookie") || "").split(";")[0];
     },
   };
@@ -220,6 +231,53 @@ describe("a mobile session is always served the profile-scoped v2 core", () => {
     expect(all).toContain("ws-home");
     expect(all).not.toContain("Work repo");
     expect(all).not.toContain("/work-root");
+  });
+});
+
+describe("mobile remote target activation", () => {
+  test("uses the mobile allowlist and remote-client registry without selecting a desktop window", async () => {
+    const f = await startFixture(["home", "work"]);
+    const cookie = await f.mobileCookie();
+    const slotsBefore = JSON.stringify(f.payload.appState.windowSlots);
+    const activate = (body: unknown) => post(f, "/api/remote-client/target/activate", cookie, body);
+
+    const allowed = await activate({ profileId: "work", workspaceId: "ws-work" });
+    expect(allowed.status).toBe(200);
+    expect(f.called("activateTargetForRemoteClient")).toHaveLength(1);
+    expect(f.called("activateTargetForRemoteClient")[0].args.slice(1)).toEqual(["work", "ws-work"]);
+    const selected = await fetch(`${f.base}/api/state`, { headers: { Cookie: cookie } });
+    expect((await selected.json()).remoteClient).toMatchObject({
+      profileId: "work",
+      activeWorkspaceId: "ws-work",
+    });
+
+    const callsBeforeInvalidRequests = f.called("activateTargetForRemoteClient").length;
+    expect((await activate({ profileId: "work", workspaceId: 42 })).status).toBe(400);
+    expect((await activate({ profileId: "home", workspaceId: "ws-work" })).status).toBe(400);
+    expect(f.called("activateTargetForRemoteClient")).toHaveLength(callsBeforeInvalidRequests + 1);
+
+    const selectedAfterFailures = await fetch(`${f.base}/api/state`, { headers: { Cookie: cookie } });
+    expect((await selectedAfterFailures.json()).remoteClient).toMatchObject({
+      profileId: "work",
+      activeWorkspaceId: "ws-work",
+    });
+    expect(JSON.stringify(f.payload.appState.windowSlots)).toBe(slotsBefore);
+  });
+
+  test("rejects a profile outside the paired device's allowlist before runtime mutation", async () => {
+    const f = await startFixture();
+    const cookie = await f.mobileCookie();
+    const denied = await post(f, "/api/remote-client/target/activate", cookie, {
+      profileId: "work",
+      workspaceId: "ws-work",
+    });
+    expect(denied.status).toBe(403);
+    expect(f.called("activateTargetForRemoteClient")).toEqual([]);
+    const state = await fetch(`${f.base}/api/state`, { headers: { Cookie: cookie } });
+    expect((await state.json()).remoteClient).toMatchObject({
+      profileId: "home",
+      activeWorkspaceId: "ws-home",
+    });
   });
 });
 

@@ -50,6 +50,15 @@ describe("mobile-web-session-ticket-store", () => {
     expect(issued.expiresAt).toBe(clock + 60_000);
   });
 
+  test("the authorized workspace is retained in the single-use ticket record", () => {
+    const store = createMobileWebSessionTicketStore();
+    const issued = store.issueTicket({ ...INPUT, workspaceId: "ws-target" });
+    expect(store.consumeTicket(issued.ticketId, issued.secret, LEGACY)).toMatchObject({
+      profileId: INPUT.profileId,
+      workspaceId: "ws-target",
+    });
+  });
+
   test("a second consume of an already-consumed ticket fails — single-use", () => {
     const store = createMobileWebSessionTicketStore();
     const issued = store.issueTicket(INPUT);

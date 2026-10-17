@@ -1806,6 +1806,14 @@ export type AccountDiagnostics = z.infer<typeof accountDiagnosticsSchema>;
 export const accountDeleteSchema = z.object({ confirmationPhrase: z.string().min(1).max(64) });
 export type AccountDelete = z.infer<typeof accountDeleteSchema>;
 
+export const remoteClientTargetActivateSchema = z
+  .object({
+    profileId: z.string().min(1),
+    workspaceId: z.string().min(1),
+  })
+  .strict();
+export type RemoteClientTargetActivate = z.infer<typeof remoteClientTargetActivateSchema>;
+
 // ----------------------------------------
 
 export function validateIpc<T extends z.ZodTypeAny>(schema: T, payload: unknown, channel: string): z.infer<T> {

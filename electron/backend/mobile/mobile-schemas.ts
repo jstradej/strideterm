@@ -1026,12 +1026,72 @@ export const RemoteEndpointMetadataSchema = z.object({
   e2e: z
     .object({
       v: z.literal(1),
-      keyId: z.string().min(1),
+      keyId: z
+        .string()
+        .min(1)
+        .max(128)
+        .regex(/^[A-Za-z0-9_-]+$/),
       desktopEphemeralPub: z.string(),
+    })
+    .optional(),
+  uiPackage: z
+    .object({
+      schemaVersion: z.literal(1),
+      manifestPath: z
+        .string()
+        .min(1)
+        .max(512)
+        .regex(/^\/ui-package\/manifest-[a-f0-9]{64}\.json$/),
+      manifestSha256: z.string().regex(/^[a-f0-9]{64}$/),
     })
     .optional(),
 });
 export type RemoteEndpointMetadata = z.infer<typeof RemoteEndpointMetadataSchema>;
+
+// ---------------------------------------------------------------------------
+// Mirror of generated/ui-package-manifest.ts
+// ---------------------------------------------------------------------------
+
+const uiPackageAssetPath = z
+  .string()
+  .regex(
+    /^\/(?:assets|fonts|icons)\/(?!.*(?:^|\/)\.{1,2}(\/|$))(?!.*\.(?:[mM][aA][pP]|[hH][tT][mM][lL]?)$)[^?#%\\\u0000-\u001f\u007f]+$|^\/(?:favicon\.ico|favicon\.svg|logo\.svg|splash\.png|manifest\.webmanifest)$/,
+  );
+
+const uiPackageAsset = z.object({
+  size: z
+    .number()
+    .int()
+    .min(0)
+    .max(10 * 1024 * 1024),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  mime: z.enum([
+    "application/javascript",
+    "text/javascript",
+    "text/css",
+    "font/ttf",
+    "font/woff",
+    "font/woff2",
+    "application/font-woff",
+    "application/wasm",
+    "image/svg+xml",
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/x-icon",
+    "application/json",
+  ]),
+});
+
+export const UiPackageManifestSchema = z.object({
+  schemaVersion: z.literal(1),
+  entries: z.record(uiPackageAssetPath, uiPackageAsset).refine((entries) => Object.keys(entries).length <= 1000),
+  entrypoints: z.array(uiPackageAssetPath).min(1).max(64),
+  imports: z
+    .record(uiPackageAssetPath, z.array(uiPackageAssetPath).max(256))
+    .refine((imports) => Object.keys(imports).length <= 1000),
+});
+export type UiPackageManifest = z.infer<typeof UiPackageManifestSchema>;
 
 // ---------------------------------------------------------------------------
 // Mirror of generated/remote-web-session-ticket.ts
@@ -1092,6 +1152,7 @@ export const MAX_ACTIVE_RELAY_SESSIONS_PER_ENTITLEMENT = 8 as const;
 export const MAX_EVENT_ENVELOPE_BYTES = 8192 as const;
 export const MAX_COMMAND_ENVELOPE_BYTES = 8192 as const;
 export const MAX_RESULT_ENVELOPE_BYTES = 16384 as const;
+export const MAX_RESULT_AAD_BASE64_CHARS = 1024 as const;
 export const RESERVED_HIGH_PRIORITY_DAILY_PUSH_SLOTS = 10 as const;
 // The diagnostics-report door (`submitDiagnosticsReport`). The desktop IS a caller of it — the
 // Account page's opt-in "send diagnostics" — so these are the bounds `account-diagnostics.ts`
@@ -1129,6 +1190,7 @@ export const MAX_INSTALLATIONS_PER_ENTITLEMENT = 5 as const;
 export const MAX_MOBILE_DEVICES_PER_ENTITLEMENT = 5 as const;
 export const MAX_ACCOUNT_BOOTSTRAP_REQUESTS_PER_UID_PER_UTC_DAY = 20 as const;
 export const MAX_INSTALLATION_CHALLENGES_PER_ACCOUNT_PER_UTC_DAY = 40 as const;
+export const MAX_INSTALLATION_CHALLENGES_PER_PROJECT_PER_UTC_DAY = 5000 as const;
 export const MAX_TRIAL_REQUESTS_PER_ACCOUNT_PER_UTC_DAY = 10 as const;
 export const MAX_CHECKOUT_REQUESTS_PER_ACCOUNT_PER_UTC_DAY = 20 as const;
 export const MAX_PORTAL_SESSIONS_PER_ACCOUNT_PER_UTC_DAY = 20 as const;
@@ -1136,6 +1198,8 @@ export const MAX_ACCOUNT_OVERVIEW_REQUESTS_PER_UID_PER_MINUTE = 12 as const;
 /** A durable per-account ceiling on the owner-confirmation door. */
 export const MAX_OWNER_CONFIRMATIONS_PER_ACCOUNT_PER_UTC_DAY = 40 as const;
 export const INSTALLATION_CHALLENGE_TTL_MS = 120000 as const;
+export const INSTALLATION_CHALLENGE_CLEANUP_GRACE_MS = 300000 as const;
+export const INSTALLATION_CHALLENGE_CONSUMED_RETENTION_MS = 86400000 as const;
 export const CHECKOUT_INTENT_TTL_MS = 3600000 as const;
 export const PROVIDER_MUTATION_AMBIGUOUS_OBSERVATION_MS = 900000 as const;
 export const PADDLE_WEBHOOK_FRESHNESS_TOLERANCE_MS = 300000 as const;
