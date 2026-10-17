@@ -520,7 +520,9 @@ function buildCopilotLaunch({ workspace, panel, context, processInfo, reviewGitE
   // ${VAR} placeholders from the tab's own environment (the GitHub MCP server's
   // Copilot CLI guide relies on this) — so the per-tab Git capability is named
   // here by variable, never written into the command line.
-  const reviewGitPlaceholders = Object.fromEntries(Object.keys(reviewGitEnv || {}).map((name) => [name, `\${${name}}`]));
+  const reviewGitPlaceholders = Object.fromEntries(
+    Object.keys(reviewGitEnv || {}).map((name) => [name, `\${${name}}`]),
+  );
   // Copilot exposes per-session MCP servers via --additional-mcp-config. The
   // argument accepts inline JSON (matches Claude's --mcp-config shape).
   args.push(

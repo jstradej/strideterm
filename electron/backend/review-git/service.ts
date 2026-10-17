@@ -147,7 +147,10 @@ const PARTIAL_IDENTITY_PREFIX = "partial|";
  */
 function grantIdentityHolds(grantKey: string, currentKey: string): boolean {
   if (grantKey === currentKey) return true;
-  return grantKey.startsWith(PARTIAL_IDENTITY_PREFIX) && currentKey.startsWith(`${grantKey.slice(PARTIAL_IDENTITY_PREFIX.length)}|`);
+  return (
+    grantKey.startsWith(PARTIAL_IDENTITY_PREFIX) &&
+    currentKey.startsWith(`${grantKey.slice(PARTIAL_IDENTITY_PREFIX.length)}|`)
+  );
 }
 
 export function createReviewGitService(ctx: ReviewGitServiceCtx) {
@@ -617,9 +620,10 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
       }
       case "checks": {
         // The inbox summary (findSummary) carries no checks; the synced detail does.
-        const candidates = [manager.snapshot?.pullRequests?.[review.prKey], manager.findSummary?.(review.prKey)] as Array<
-          { checks?: unknown } | undefined
-        >;
+        const candidates = [
+          manager.snapshot?.pullRequests?.[review.prKey],
+          manager.findSummary?.(review.prKey),
+        ] as Array<{ checks?: unknown } | undefined>;
         const summary = candidates.find((candidate) => candidate?.checks != null);
         return {
           prKey: review.prKey,

@@ -187,6 +187,7 @@ interface WorkspaceRef {
   review?: {
     role?: string;
     pullRequest?: {
+      id?: string | number;
       sourceRefName?: string;
       targetRefName?: string;
     } | null;

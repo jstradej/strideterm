@@ -189,9 +189,11 @@ describe("starting an operation", () => {
     git(f.checkout, ["add", "n.txt"]);
     const proposed = f.service.start({ kind: "commit", workspaceId: "ws-1", message: "audit me" }, ui);
     await f.service.operations.idle();
-    const proposal = (f.service.lookup(proposed.operationId, "default", "ws-1") as never as {
-      operation: { result: { proposal: { proposalId: string } } };
-    }).operation.result.proposal;
+    const proposal = (
+      f.service.lookup(proposed.operationId, "default", "ws-1") as never as {
+        operation: { result: { proposal: { proposalId: string } } };
+      }
+    ).operation.result.proposal;
     const started = f.service.start(
       { kind: "commit", workspaceId: "ws-1", message: "audit me", confirmation: { proposalId: proposal.proposalId } },
       ui,
@@ -407,11 +409,10 @@ describe("read tools", () => {
     git(f.checkout, ["add", "."]);
     git(f.checkout, ["commit", "-q", "-m", "mine"]);
 
-    const diff = (await f.service.read(
-      { operation: "diff", scope: "head-vs-source" },
-      "ws-1",
-      "default",
-    )) as Record<string, any>;
+    const diff = (await f.service.read({ operation: "diff", scope: "head-vs-source" }, "ws-1", "default")) as Record<
+      string,
+      any
+    >;
     expect(diff.diff).toContain("+mine");
     const history = (await f.service.read(
       { operation: "history", range: "head-vs-source" },
@@ -426,9 +427,9 @@ describe("read tools", () => {
     git(f.seed, ["add", "."]);
     git(f.seed, ["commit", "-q", "-m", "later"]);
     git(f.seed, ["push", "-q", "origin", "feature"]);
-    await expect(
-      f.service.read({ operation: "diff", scope: "head-vs-source" }, "ws-1", "default"),
-    ).rejects.toThrow("not in this checkout yet");
+    await expect(f.service.read({ operation: "diff", scope: "head-vs-source" }, "ws-1", "default")).rejects.toThrow(
+      "not in this checkout yet",
+    );
   });
 
   test("conflicts lists the conflicted files with their content", async () => {
@@ -603,7 +604,9 @@ describe("push and publish", () => {
     async function rebaseWith(
       lineSide: string,
       change: (f: Awaited<ReturnType<typeof createFixture>>) => Promise<void>,
-    ): Promise<(anchor: { commentKey: string; filePath: string; lineNumber: number; lineSide?: string }) => Promise<boolean>> {
+    ): Promise<
+      (anchor: { commentKey: string; filePath: string; lineNumber: number; lineSide?: string }) => Promise<boolean>
+    > {
       const f = await createFixture();
       const previousHeadSha = git(f.checkout, ["rev-parse", "HEAD"]).trim();
       await change(f);

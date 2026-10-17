@@ -315,9 +315,8 @@ export function createReviewGitOperations(ctx: ReviewGitOperationsCtx) {
     { confirm = true }: { confirm?: boolean } = {},
   ): Promise<ReviewGitOutcome> {
     let confirmation: { proposalId: string; facts?: ReviewGitProposalView["facts"] } | undefined;
-    let outcome: ReviewGitOutcome = null;
     for (let round = 0; round < MAX_CONFIRM_ROUNDS; round += 1) {
-      outcome = await runOnce(kind, workspaceId, confirmation);
+      const outcome = await runOnce(kind, workspaceId, confirmation);
       const gate = outcome?.push ?? outcome;
       if (gate?.status !== "confirm-required" || !confirm) return outcome;
       const proposal = gate.proposal as ReviewGitProposalView;

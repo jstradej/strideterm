@@ -955,7 +955,12 @@ export const useGitUiStore = defineStore("git-ui", () => {
         );
       } else if (action === "forcePushWithLease") {
         if ((await pullRequestContext(workspaceId)).onPullRequestBranch) {
-          await runGitAction(workspaceId, "force-push", () => runReviewGitStep(workspaceId, "force-push"), REVIEW_GIT_STEP_OPTS);
+          await runGitAction(
+            workspaceId,
+            "force-push",
+            () => runReviewGitStep(workspaceId, "force-push"),
+            REVIEW_GIT_STEP_OPTS,
+          );
         } else {
           await runGitAction(workspaceId, "force-push", () => api.gitForcePushWithLease({ workspaceId, rootPath }));
         }

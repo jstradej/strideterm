@@ -52,7 +52,7 @@ describe("review metadata store", () => {
     const { updater, read } = setup({ ...legacyReview(), sourceRepository: repository });
     const stale = reviewSourceIdentityKey({
       ...legacyReview(),
-      pullRequest: { id: 7, sourceRefName: "refs/heads/old-branch" },
+      pullRequest: { sourceRefName: "refs/heads/old-branch" },
       sourceRepository: repository,
     });
     await expect(

@@ -259,7 +259,10 @@ describe("GitChangesTab", () => {
     expect(gitSelectDiff).not.toHaveBeenCalled();
   });
 
-  test("a PR-linked workspace is not read-only: commit action and file selection stay available", async () => {
+  test("the tab takes no review, read-only or writable input, and commits whatever the checkout holds", async () => {
+    const declared = Object.keys((GitChangesTab as unknown as { props?: Record<string, unknown> }).props || {});
+    expect(declared.filter((name) => /review|read-?only|writable|locked/i.test(name))).toEqual([]);
+
     const wrapper = mountTab({
       snapshot: {
         dirty: true,
@@ -270,9 +273,13 @@ describe("GitChangesTab", () => {
       },
     });
     await flushPromises();
+    wrapper.findComponent(GitChangeTree).vm.$emit("toggle-select", "review.txt");
+    await wrapper.get(".git-changes__mobile-dock .button").trigger("click");
+    await wrapper.get(".git-changes__commit-screen textarea").setValue("address review");
+    await wrapper.findAll(".git-changes__mobile-dock .button").at(-1)!.trigger("click");
+    await flushPromises();
 
-    expect(wrapper.find(".git-changes__mobile-dock .button").exists()).toBe(true);
-    expect(wrapper.find("input[type=checkbox]").exists()).toBe(true);
+    expect(gitCommitAll).toHaveBeenCalledWith("ws1", "address review", ["review.txt"], undefined);
   });
 
   test("commits a selected rename once with its old path, even when the path has two scopes", async () => {

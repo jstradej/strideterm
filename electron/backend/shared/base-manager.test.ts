@@ -602,7 +602,11 @@ describe("BaseProviderManager review Git operations", () => {
     const subject = manager.buildReviewSubject({
       id: "ws",
       cwd: "/repo",
-      review: { connectionId: "conn-1", prKey: "conn-1:repo:1", pullRequest: { id: 1, status: "active" } },
+      review: {
+        connectionId: "conn-1",
+        prKey: "conn-1:repo:1",
+        pullRequest: { id: 1, status: "active" },
+      } as never,
     });
     expect(subject.pullRequestClosed).toBe("completed");
   });
@@ -621,7 +625,7 @@ describe("BaseProviderManager review Git operations", () => {
         connectionId: "conn-1",
         prKey: "conn-1:repo:1",
         pullRequest: { id: 1, status: "active", targetRefName: "refs/heads/main" },
-      },
+      } as never,
     });
     expect(subject.targetRefName).toBe("refs/heads/release");
   });
