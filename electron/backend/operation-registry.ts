@@ -4,6 +4,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Logger } from "./logger.js";
 import { writeFileAtomic } from "./shared/fs-durable.js";
+import { INTERNAL_MCP_ERROR_CODES } from "../shared/internal-mcp.js";
 import {
   OPERATION_LAST_RESULT_TTL_MS,
   type OperationFinished,
@@ -107,10 +108,13 @@ function keyOf(profileId: string, originWorkspaceId: string, idempotencyKey: str
   return JSON.stringify([profileId, originWorkspaceId, idempotencyKey]);
 }
 
+const STABLE_ERROR_CODES: ReadonlySet<string> = new Set(INTERNAL_MCP_ERROR_CODES);
+
+// Raw errno codes (EPERM, ENOENT, ...) are not part of the contract an agent can act on.
 function errorOf(err: unknown): { code: string; message: string } {
-  const code = typeof (err as { code?: unknown })?.code === "string" ? String((err as { code: string }).code) : "";
+  const code = typeof (err as { code?: unknown })?.code === "string" ? (err as { code: string }).code : "";
   const message = err instanceof Error ? err.message : String(err);
-  return { code: code || "internal_error", message };
+  return { code: STABLE_ERROR_CODES.has(code) ? code : "internal_error", message };
 }
 
 function isTerminal(status: OperationStatus): boolean {
@@ -123,6 +127,7 @@ export function createOperationRegistry(options: OperationRegistryOptions) {
   const records = new Map<string, OperationRecord>();
   const byKey = new Map<string, string>();
   const running = new Set<string>();
+  const removeOnFinish = new Set<string>();
 
   const fileOf = (operationId: string): string => path.join(dir, `${operationId}.json`);
 
@@ -174,15 +179,17 @@ export function createOperationRegistry(options: OperationRegistryOptions) {
     running.delete(record.operationId);
     onChange();
     const event = outcomeOf(record);
-    if (!event) return;
-    try {
-      emitFinished(event);
-    } catch (err) {
-      log.error("operation result could not be published", {
-        operationId: record.operationId,
-        err: errorOf(err).message,
-      });
+    if (event) {
+      try {
+        emitFinished(event);
+      } catch (err) {
+        log.error("operation result could not be published", {
+          operationId: record.operationId,
+          err: errorOf(err).message,
+        });
+      }
     }
+    if (removeOnFinish.delete(record.operationId)) await dropRecord(record);
   }
 
   async function execute(record: OperationRecord, runner: OperationRunner): Promise<void> {
@@ -352,8 +359,10 @@ export function createOperationRegistry(options: OperationRegistryOptions) {
     /** Forget the operations that created `workspaceId`; their idempotency records go with it. */
     async removeForWorkspace(workspaceId: string): Promise<void> {
       for (const record of [...records.values()]) {
-        if (record.workspaceId !== workspaceId || !isTerminal(record.status)) continue;
-        await dropRecord(record);
+        if (record.workspaceId !== workspaceId && record.intent.reservedWorkspaceId !== workspaceId) continue;
+        // A running operation owns its record until it settles; it is dropped then instead of living on for good.
+        if (isTerminal(record.status)) await dropRecord(record);
+        else removeOnFinish.add(record.operationId);
       }
     },
 

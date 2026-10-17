@@ -8,6 +8,7 @@ import { OperationIdempotencyConflictError } from "../operation-registry.js";
 import { createRecoveryQueue } from "../shared/recovery-queue.js";
 import { writeFileAtomic } from "../shared/fs-durable.js";
 import { getProvider, getProviderChoices } from "../providers/provider-registry.js";
+import { TASK_BRIEF_MAX_CHARS, taskWorkspaceCreateSchema } from "../ipc-schemas.js";
 import { taskDirRel, TASK_LOG_FILE, TASK_ROOT } from "../agent-task-utils.js";
 import { TASK_ACTIVE_STATES } from "../../shared/task-states.js";
 import { OPERATION_KIND_TASK_PROVISION } from "../../shared/operation-events.js";
@@ -328,9 +329,7 @@ export function createTaskService(deps: TaskServiceDeps) {
           if (!info.isFile() || info.size > INTERNAL_MCP_MAX_SOURCE_BYTES)
             throw new Error("not a readable text file within the size limit");
           const bytes = await fs.readFile(real);
-          const decoded = bytes.toString("utf8");
-          if (Buffer.from(decoded, "utf8").length !== bytes.length) throw new Error("not valid UTF-8 text");
-          text = decoded;
+          text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
         } catch {
           errors.push({
             code: "file_not_accessible",
@@ -583,6 +582,19 @@ export function createTaskService(deps: TaskServiceDeps) {
         : null,
     };
 
+    if (errors.length === 0 && missingInputs.length === 0) {
+      // The brief grows when source paths are rewritten to their snapshots; refuse here what the task form would refuse.
+      const sizingTaskId = randomUUID();
+      const briefChars = composeDescription(sizingTaskId, assignment, sources).length;
+      if (briefChars > TASK_BRIEF_MAX_CHARS) {
+        errors.push({
+          code: "invalid_request",
+          field: "assignment",
+          message: `The task brief would be ${briefChars} characters once source paths and snapshot notes are added; the limit is ${TASK_BRIEF_MAX_CHARS}. Shorten the assignment or pass fewer or shorter source paths.`,
+        });
+      }
+    }
+
     const plan: Evaluation["plan"] =
       missingInputs.length === 0 && errors.length === 0 && checkout && roles.worker && roles.judge
         ? {
@@ -618,6 +630,7 @@ export function createTaskService(deps: TaskServiceDeps) {
               branch: checkout.branch,
               head: checkout.baseCommit,
               cwd: checkout.cwd,
+              gitRoots: checkout.gitRoots,
             }
           : null,
       }),
@@ -647,6 +660,11 @@ export function createTaskService(deps: TaskServiceDeps) {
 
   function awaitingOf(workspaceId: string | undefined): Array<"worker" | "judge"> {
     return workspaceId ? deps.getAwaitingUserRoles(workspaceId) : [];
+  }
+
+  function composeDescription(taskId: string, assignment: string, sources: SourceSnapshot[]): string {
+    const targets = sources.map((source) => `${taskDirRel(taskId)}/sources/${source.snapshotName}`);
+    return remapAssignment(assignment, sources, targets) + describeSnapshots(taskId, sources);
   }
 
   function describeSnapshots(taskId: string, sources: SourceSnapshot[]): string {
@@ -721,35 +739,42 @@ export function createTaskService(deps: TaskServiceDeps) {
     }
 
     await handle.update({ step: "creating-workspace" satisfies InternalMcpOperationStep });
-    const snapshotTargets = plan.sources.map(
-      (source) => `${taskDirRel(reserved.taskId)}/sources/${source.snapshotName}`,
-    );
-    const description =
-      remapAssignment(plan.assignment, plan.sources, snapshotTargets) +
-      describeSnapshots(reserved.taskId, plan.sources);
+    const description = composeDescription(reserved.taskId, plan.assignment, plan.sources);
     const nameSource = originalAssignment.replace(/\s+/gu, " ").trim();
-    await deps.createTaskWorkspace(
-      {
-        cwd: checkout.mode === "worktree" ? checkout.repositoryPath : checkout.cwd,
-        description,
-        parentWorkspaceId: plan.parentWorkspaceId,
-        maxRounds: plan.maxRounds,
-        useWorktree: checkout.mode === "worktree",
-        worktreeBranch: checkout.mode === "worktree" ? checkout.branch : undefined,
-        gitRoots: checkout.mode === "here" ? checkout.gitRoots : undefined,
-        name: nameSource.length > 60 ? `${nameSource.slice(0, 57)}...` : nameSource,
-        workerProvider: plan.worker,
-        judgeProvider: plan.judge,
-        activate: false,
-      },
-      undefined,
-      {
+    const config = taskWorkspaceCreateSchema.safeParse({
+      cwd: checkout.mode === "worktree" ? checkout.repositoryPath : checkout.cwd,
+      description,
+      parentWorkspaceId: plan.parentWorkspaceId,
+      maxRounds: plan.maxRounds,
+      useWorktree: checkout.mode === "worktree",
+      worktreeBranch: checkout.mode === "worktree" ? checkout.branch : undefined,
+      gitRoots: checkout.mode === "here" ? checkout.gitRoots : undefined,
+      name: nameSource.length > 60 ? `${nameSource.slice(0, 57)}...` : nameSource,
+      workerProvider: plan.worker,
+      judgeProvider: plan.judge,
+    });
+    if (!config.success) {
+      throw new InternalMcpError(
+        "invalid_request",
+        `The composed task configuration is invalid: ${config.error.message}`,
+      );
+    }
+    try {
+      await deps.createTaskWorkspace({ ...config.data, activate: false }, undefined, {
         reservedIds: reserved,
         worktreeCreated: checkout.mode === "worktree",
         afterFilesWritten: (workspace) =>
           writeSnapshots(workspace.cwd, workspace.task.taskId, plan.assignment, plan.sources),
-      },
-    );
+      });
+    } catch (err) {
+      // The workspace is persisted before the last steps of createTaskWorkspace; a late failure must still name it.
+      if (getState().workspaces.some((candidate) => candidate.id === reserved.workspaceId)) {
+        await handle
+          .update({ workspaceId: reserved.workspaceId, artifacts: { workspaceCreated: true, taskId: reserved.taskId } })
+          .catch(() => undefined);
+      }
+      throw err;
+    }
     await handle.update({
       workspaceId: reserved.workspaceId,
       artifacts: { workspaceCreated: true, taskId: reserved.taskId },
@@ -849,25 +874,22 @@ export function createTaskService(deps: TaskServiceDeps) {
           ? Math.min(Number(cursor), size)
           : Math.max(0, size - LOG_WINDOW_BYTES);
       const length = Math.min(size - offset, LOG_WINDOW_BYTES);
-      const buffer = Buffer.alloc(length);
+      let buffer = Buffer.alloc(length);
       await handle.read(buffer, 0, length, offset);
-      let text = buffer.toString("utf8");
       if (cursor === undefined && offset > 0) {
-        // The tail window starts mid-line: drop the partial first line.
-        const cut = text.indexOf("\n");
-        const dropped = cut === -1 ? text.length : cut + 1;
-        offset += Buffer.byteLength(text.slice(0, dropped));
-        text = text.slice(dropped);
+        // The tail window starts mid-line, possibly inside a multi-byte character: drop the partial first line by bytes.
+        const cut = buffer.indexOf(0x0a);
+        const dropped = cut === -1 ? buffer.length : cut + 1;
+        offset += dropped;
+        buffer = buffer.subarray(dropped);
       }
       const entries: unknown[] = [];
       let consumed = 0;
-      // The last element is what follows the final newline: empty on a complete log, a partial line otherwise.
-      const lines = text.split("\n");
-      lines.pop();
-      for (const line of lines) {
-        const lineBytes = Buffer.byteLength(line) + 1;
+      // Only complete lines count; what follows the final newline is a partial line the next page picks up.
+      for (let end = buffer.indexOf(0x0a); end !== -1; end = buffer.indexOf(0x0a, consumed)) {
         if (entries.length >= limit) break;
-        consumed += lineBytes;
+        const line = buffer.toString("utf8", consumed, end);
+        consumed = end + 1;
         if (!line.trim()) continue;
         try {
           const parsed = JSON.parse(line) as Record<string, unknown>;

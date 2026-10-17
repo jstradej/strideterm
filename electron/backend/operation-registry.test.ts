@@ -232,4 +232,42 @@ describe("operation registry", () => {
     release();
     await settle(registry, record.operationId);
   });
+
+  test("a workspace deleted while its operation is still running takes the record with it once it settles", async () => {
+    const registry = create();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const { record } = await registry.accept(
+      input({ idempotencyKey: "key-orphan-0001", intent: { reservedWorkspaceId: "workspace-gone" } }),
+      async () => {
+        await gate;
+        return {};
+      },
+    );
+    await registry.removeForWorkspace("workspace-gone");
+    expect(registry.get(record.operationId, "default")).not.toBeNull();
+    release();
+    await settle(registry, record.operationId);
+    for (let attempt = 0; attempt < 100 && registry.get(record.operationId, "default"); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(registry.get(record.operationId, "default")).toBeNull();
+    await expect(fs.stat(path.join(dir, `${record.operationId}.json`))).rejects.toThrow();
+    const reused = await registry.accept(input({ idempotencyKey: "key-orphan-0001" }), async () => ({}));
+    expect(reused.replayed).toBe(false);
+  });
+
+  test("a failure carrying an errno code is reported with a stable code", async () => {
+    const registry = create();
+    const { record } = await registry.accept(input({ idempotencyKey: "key-errno-00001" }), async () => {
+      throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
+    });
+    await settle(registry, record.operationId);
+    expect(registry.get(record.operationId, "default")?.error).toMatchObject({ code: "internal_error" });
+    const catalogued = await registry.accept(input({ idempotencyKey: "key-errno-00002" }), async () => {
+      throw Object.assign(new Error("busy"), { code: "checkout_conflict" });
+    });
+    await settle(registry, catalogued.record.operationId);
+    expect(registry.get(catalogued.record.operationId, "default")?.error).toMatchObject({ code: "checkout_conflict" });
+  });
 });

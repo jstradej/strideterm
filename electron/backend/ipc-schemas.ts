@@ -852,7 +852,7 @@ export type ProviderConfigPayload = z.infer<typeof providerConfigSchema>;
 
 // Kept aligned with src/app/task-brief.ts:TASK_BRIEF_MAX_CHARS so the UI
 // maxlength and the IPC validator agree on the same ceiling.
-const TASK_BRIEF_MAX_CHARS = 20000;
+export const TASK_BRIEF_MAX_CHARS = 20000;
 
 export const taskWorkspaceCreateSchema = z.object({
   cwd: nonEmptyString,

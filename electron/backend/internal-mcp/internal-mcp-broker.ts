@@ -82,6 +82,10 @@ export function createInternalMcpBroker({ service, isGrantLive, onError }: Inter
     grant.controllers.clear();
   }
 
+  function answerAborted(response: ServerResponse): void {
+    if (!response.destroyed && !response.headersSent) sendJson(response, 403, GRANT_EXPIRED);
+  }
+
   async function dispatch(grant: GrantRecord, raw: unknown): Promise<unknown> {
     const parsed = internalMcpRequestSchema.safeParse(raw);
     if (!parsed.success) throw new InternalMcpError("invalid_request", "Invalid internal MCP request.");
@@ -132,7 +136,10 @@ export function createInternalMcpBroker({ service, isGrantLive, onError }: Inter
         return;
       }
       const raw = await readJsonBody(request, controller, { maxBytes: MAX_BODY_BYTES, timeoutMs: BODY_TIMEOUT_MS });
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted) {
+        answerAborted(response);
+        return;
+      }
       // Renderer and workspace state can change while the body is in flight.
       if (!(await isLive(grant))) {
         revokeGrant(capability);
@@ -144,8 +151,13 @@ export function createInternalMcpBroker({ service, isGrantLive, onError }: Inter
         return;
       }
       const result = await dispatch(grant, raw);
-      if (!controller.signal.aborted) sendJson(response, 200, { result });
+      if (controller.signal.aborted) answerAborted(response);
+      else sendJson(response, 200, { result });
     } catch (error) {
+      if (controller.signal.aborted) {
+        answerAborted(response);
+        return;
+      }
       if (response.destroyed) return;
       if (error instanceof InternalMcpError) {
         sendJson(response, STATUS_BY_CODE[error.code], { error: { code: error.code, message: error.message } });

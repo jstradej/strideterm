@@ -16750,6 +16750,116 @@ describe("internal MCP: creating and watching task agents", () => {
     expect(second.result.log.entries.map((e: any) => e.event)).toEqual(["e32"]);
   });
 
+  test("task_get log paging stays on entry boundaries when the tail window starts inside a multi-byte character", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });
+    const { launch } = launchAgent(fixture);
+    const call = brokerClient(launch);
+    const { started } = await prepareAndStart(call, readyInput());
+    const done = await waitForOperation(call, started.result.operationId);
+    const task = taskWorkspaces(fixture)[0] as any;
+    const logPath = path.join(repo, ".strideterm", "tasks", task.task.taskId, "TASK_LOG.jsonl");
+    for (const shift of [0, 1, 2]) {
+      const lines = Array.from({ length: 200 }, (_, i) =>
+        JSON.stringify({
+          ts: "2026-01-01T00:00:00Z",
+          event: `e${i}`,
+          round: 1,
+          detail: "€".repeat(300) + "x".repeat(shift),
+        }),
+      );
+      await fs.writeFile(logPath, lines.join("\n") + "\n");
+      const first = await call("task_get", { workspaceId: done.workspaceId, logLimit: 3 });
+      const firstEvents = first.result.log.entries.map((e: any) => e.event);
+      expect(firstEvents).not.toContain("unparsable-line");
+      const second = await call("task_get", {
+        workspaceId: done.workspaceId,
+        logLimit: 3,
+        logCursor: first.result.log.nextCursor,
+      });
+      const secondEvents = second.result.log.entries.map((e: any) => e.event);
+      expect(secondEvents).not.toContain("unparsable-line");
+      const firstIndex = Number(firstEvents[0].slice(1));
+      expect(firstEvents).toEqual([firstIndex, firstIndex + 1, firstIndex + 2].map((i) => `e${i}`));
+      expect(secondEvents).toEqual([firstIndex + 3, firstIndex + 4, firstIndex + 5].map((i) => `e${i}`));
+    }
+  });
+
+  test("a runtime-read source that is not valid UTF-8 is refused instead of snapshotted as U+FFFD", async () => {
+    const repo = await createRepo();
+    await fs.writeFile(path.join(repo, "broken.md"), Buffer.from([0x41, 0xf0, 0x9f, 0x98, 0x42, 0x0a]));
+    await fs.writeFile(path.join(repo, "fine.md"), "České znaky ✓\n");
+    const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });
+    const { launch } = launchAgent(fixture);
+    const call = brokerClient(launch);
+
+    const broken = await call("prepare", readyInput({ sources: [{ path: "broken.md" }] }));
+    expect(broken.result.status).toBe("requires_input");
+    expect(broken.result.errors[0]).toMatchObject({ code: "file_not_accessible", field: "sources[0].content" });
+    const fine = await call("prepare", readyInput({ sources: [{ path: "fine.md" }] }));
+    expect(fine.result.status).toBe("ready");
+    expect(fine.result.summary.sources[0].bytes).toBe(Buffer.byteLength("České znaky ✓\n"));
+  });
+
+  test("a change of the roots a 'here' task would carry between prepare and start is needs_reprepare", async () => {
+    const repoA = await createRepo("internal-mcp-a-");
+    const repoB = await createRepo("internal-mcp-b-");
+    const parent = await fs.mkdtemp(path.join(os.tmpdir(), "internal-mcp-here-"));
+    tempPaths.push(parent);
+    const fixture = await createMcpFixture({
+      workspaces: [parentWorkspace(parent, { gitRoots: [repoA, repoB] })],
+    });
+    const { launch } = launchAgent(fixture);
+    const call = brokerClient(launch);
+    const prepared = await call("prepare", readyInput());
+    expect(prepared.result.status).toBe("ready");
+    await fixture.store.mutate((draft: any) => {
+      draft.workspaces.find((w: any) => w.id === "parent").gitRoots = [repoA];
+    });
+
+    const started = await call("start", {
+      preparationId: prepared.result.preparationId,
+      approvedInputHash: prepared.result.inputHash,
+      idempotencyKey: "key-roots-changed",
+    });
+    expect(started.status).toBe(409);
+    expect(started.error?.code).toBe("needs_reprepare");
+    expect(taskWorkspaces(fixture)).toHaveLength(0);
+  });
+
+  test("a failure after the workspace was persisted still records its workspaceId on the operation", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });
+    const { launch } = launchAgent(fixture);
+    const call = brokerClient(launch);
+    const mutate = fixture.store.mutate.bind(fixture.store);
+    vi.spyOn(fixture.store, "mutate").mockImplementation(async (mutator: any) => {
+      if (taskWorkspaces(fixture).length > 0) throw new Error("disk went away");
+      return mutate(mutator);
+    });
+    const { started } = await prepareAndStart(
+      call,
+      readyInput({ checkout: { mode: "worktree", branch: "feature/late-failure" } }),
+    );
+    const failed = await waitForOperation(call, started.result.operationId);
+    expect(failed.status).toBe("failed");
+    expect(failed.error.code).toBe("internal_error");
+    expect(failed.workspaceId).toBe(taskWorkspaces(fixture)[0].id);
+  });
+
+  test("a brief that would exceed the task form's limit once sources are added is refused at prepare", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });
+    const { launch } = launchAgent(fixture);
+    const call = brokerClient(launch);
+    const longPath = `${"d".repeat(120)}/`.repeat(8) + "spec.md";
+    const sources = Array.from({ length: 10 }, (_, i) => ({ path: `${i}/${longPath}`, content: `source ${i}` }));
+    const prepared = await call("prepare", readyInput({ assignment: "x".repeat(15_000), sources }));
+    expect(prepared.result.status).toBe("requires_input");
+    expect(prepared.result.errors[0]).toMatchObject({ code: "invalid_request", field: "assignment" });
+    expect(taskWorkspaces(fixture)).toHaveLength(0);
+  });
+
   test("a panel on a dialog shows up as awaitingUserInTerminal and leaves when the dialog does", async () => {
     const repo = await createRepo();
     const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });

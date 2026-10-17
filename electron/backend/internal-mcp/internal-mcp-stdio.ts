@@ -111,7 +111,7 @@ export async function runInternalMcpStdioServer(config = readInternalMcpStdioCon
     {
       title: "Start an approved task",
       description:
-        "Start the task from a ready preparation the user approved. Returns an operationId at once; provisioning continues inside strIDEterm. Retrying the same idempotencyKey returns the same operation. Afterwards tell the user the pair is started and that they must confirm the agent trust dialog in the Worker and Judge terminals listed in awaitingUserInTerminal.",
+        "Start the task from a ready preparation the user approved. Returns an operationId at once; provisioning continues inside strIDEterm. Retrying the same idempotencyKey returns the same operation. The answer only means accepted: the terminals do not exist yet and awaitingUserInTerminal is empty. Poll operation_get (or task_get) until the operation is ready, then tell the user the pair is started and that they must confirm the agent trust dialog in the Worker and Judge terminals listed in awaitingUserInTerminal.",
       inputSchema: internalMcpStartInputSchema.shape,
     },
     async (input, extra) => send({ operation: "start", input }, withDisconnect(extra.signal)),

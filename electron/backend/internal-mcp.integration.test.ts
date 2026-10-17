@@ -105,6 +105,44 @@ describe("internal MCP stdio end-to-end", () => {
     });
   });
 
+  test("a grant revoked while a call is in flight still gets an answer", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const service = createService();
+    service.prepare.mockImplementation(async () => {
+      await gate;
+      return { echoed: null };
+    });
+    const { broker, grant } = await startBroker(service);
+    const pending = fetch(grant.url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${grant.capability}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ operation: "prepare", input: { assignment: "Do it" } }),
+      signal: AbortSignal.timeout(5000),
+    });
+    for (let attempt = 0; attempt < 100 && service.prepare.mock.calls.length === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(service.prepare).toHaveBeenCalledTimes(1);
+    broker.revokeSession(context.sessionId);
+    release();
+    const response = await pending;
+    expect(response.status).toBe(403);
+    expect(((await response.json()) as { error: { code: string } }).error.code).toBe("grant_expired");
+  });
+
+  test("task_start tells the host to poll until ready before reporting the trust dialog step", async () => {
+    const { grant } = await startBroker();
+    const client = await connect({
+      [INTERNAL_MCP_URL_ENV]: grant.url,
+      [INTERNAL_MCP_CAPABILITY_ENV]: grant.capability,
+    });
+    const start = (await client.listTools()).tools.find((tool) => tool.name === "task_start");
+    expect(start?.description).toContain("operation_get");
+    expect(start?.description).toContain("awaitingUserInTerminal");
+    expect(start?.description).not.toMatch(/Afterwards tell the user the pair is started/u);
+  });
+
   test("a revoked grant stops later calls", async () => {
     const { broker, grant } = await startBroker();
     const client = await connect({
