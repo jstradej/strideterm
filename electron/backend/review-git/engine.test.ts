@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -110,6 +111,7 @@ async function createFixture({ role = "reviewer" }: { role?: string } = {}): Pro
     audit: {
       begin(entry) {
         if (audit.failBegin) return null;
+        audit.onBegin?.();
         audit.entries.push(entry);
         return { index: audit.entries.length - 1 };
       },
@@ -774,6 +776,106 @@ describe("stage, commit and resolving a paused operation", () => {
     await f.engine.rebase(f.subject, requester, { proposalId: proposal.proposal.proposalId });
     expect(expectStatus(await f.engine.push(f.subject, requester), "blocked").code).toBe("operation-in-progress");
     expect(await f.engine.conflictedPaths(f.checkout)).toEqual(["same.txt"]);
+  });
+});
+
+describe("last-moment recheck, identity and proposals for agents", () => {
+  test("a shell commit landing between inspection and the command stops the mutation", async () => {
+    const f = await createFixture();
+    await f.commitOnRemote("feature 2");
+    const before = await f.head();
+    f.audit.onBegin = () => {
+      execFileSync("git", ["-c", "user.name=T", "-c", "user.email=t@e", "commit", "--allow-empty", "-m", "sneaky"], {
+        cwd: f.checkout,
+        stdio: "ignore",
+      });
+    };
+    const result = expectStatus(await f.engine.refresh(f.subject, requester), "blocked");
+    expect(result.code).toBe("stale");
+    expect(await f.head()).not.toBe(before);
+    expect(f.audit.finished.at(-1)).toMatchObject({ outcome: "blocked", success: false });
+  });
+
+  test("a source that changed since the workspace was linked blocks source-targeted work", async () => {
+    const f = await createFixture();
+    f.subject.identityConflict = "acme/repo -> other/repo";
+    const result = expectStatus(await f.engine.refresh(f.subject, requester), "blocked");
+    expect(result.code).toBe("source-identity-changed");
+    expect(result.guidance).toContain("Open the pull request again");
+  });
+
+  test("rebase fetches the target from the TARGET repository even when origin is another repository", async () => {
+    const f = await createFixture();
+    const other = path.join(f.root, "fork.git");
+    await git(f.root, ["clone", "--bare", f.remote, other]);
+    await git(f.checkout, ["remote", "set-url", "origin", other]);
+    await git(f.seed, ["checkout", "main"]);
+    await writeFile(path.join(f.seed, "main-only.txt"), "m\n");
+    await git(f.seed, ["add", "."]);
+    await git(f.seed, ["commit", "-m", "main moves"]);
+    await git(f.seed, ["push", "origin", "main"]);
+    const targetSha = await git(f.seed, ["rev-parse", "HEAD"]);
+    f.subject.targetRemoteUrl = f.remote;
+
+    const first = expectStatus(await f.engine.rebase(f.subject, requester), "confirm-required");
+    expect(first.proposal.facts).toMatchObject({ targetSha });
+    expectStatus(await f.engine.rebase(f.subject, requester, { proposalId: first.proposal.proposalId }), "rebased");
+    expect(await git(f.checkout, ["merge-base", "--is-ancestor", targetSha, "HEAD"]).then(() => true)).toBe(true);
+  });
+
+  test("an agent's push only describes itself first; the continuation must name that proposal", async () => {
+    const f = await createFixture();
+    const mine = await f.commitLocal("mine");
+    const first = expectStatus(
+      await f.engine.push(f.subject, requester, { requireProposal: true }),
+      "confirm-required",
+    );
+    expect(first.proposal.kind).toBe("push");
+    expect(first.proposal.facts).toMatchObject({ headSha: mine });
+    expect(await f.remoteSha()).not.toBe(mine);
+
+    // HEAD moves while the user is being asked: the answer no longer applies.
+    await f.commitLocal("one more", "more.txt");
+    const stale = expectStatus(
+      await f.engine.push(f.subject, requester, {
+        requireProposal: true,
+        confirmation: { proposalId: first.proposal.proposalId },
+      }),
+      "confirm-required",
+    );
+    expect(stale.stale).toBe(true);
+
+    expectStatus(
+      await f.engine.push(f.subject, requester, {
+        requireProposal: true,
+        confirmation: { proposalId: stale.proposal.proposalId },
+      }),
+      "pushed",
+    );
+    expect(await f.remoteSha()).toBe(await f.head());
+  });
+
+  test("an agent's force push is always proposed first, even when the server is still at the baseline", async () => {
+    const f = await createFixture();
+    f.subject.baselineSha = await f.head();
+    await git(f.checkout, ["reset", "--hard", "origin/main"]);
+    const rewritten = await f.commitLocal("rewritten", "r.txt");
+    const first = expectStatus(
+      await f.engine.push(f.subject, requester, { force: true, requireProposal: true }),
+      "confirm-required",
+    );
+    expect(first.proposal.kind).toBe("force-push");
+    expect(first.proposal.facts).toMatchObject({ serverMovedSinceBaseline: false });
+    expect(await f.remoteSha()).not.toBe(rewritten);
+    expectStatus(
+      await f.engine.push(f.subject, requester, {
+        force: true,
+        requireProposal: true,
+        confirmation: { proposalId: first.proposal.proposalId },
+      }),
+      "pushed",
+    );
+    expect(await f.remoteSha()).toBe(rewritten);
   });
 });
 

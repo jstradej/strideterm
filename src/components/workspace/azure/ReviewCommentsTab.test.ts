@@ -409,6 +409,48 @@ describe("ReviewCommentsTab — comment location navigation", () => {
     ]);
   });
 
+  test("a draft whose anchor a history rewrite moved is marked out of date, never moved to another line", async () => {
+    const wrapper = mount(ReviewCommentsTab, {
+      props: baseProps({
+        filteredDraftComments: [
+          {
+            commentKey: "stale-draft",
+            displayIndex: 4,
+            status: "ready-to-sync",
+            payload: {
+              filePath: "src/gone.ts",
+              lineNumber: 40,
+              anchorStale: true,
+              anchorStaleReason: "src/gone.ts:40 no longer exists after the history rewrite.",
+            },
+          },
+        ],
+      }),
+    });
+
+    const note = wrapper.get("[data-testid='stale-anchor']");
+    expect(note.text()).toContain("Anchor out of date");
+    expect(note.attributes("title")).toContain("no longer exists after the history rewrite");
+    // The stored location is still the one the user wrote.
+    const link = wrapper.get(".review-comment-file--link");
+    expect(link.text()).toBe("src/gone.ts:40");
+    await link.trigger("click");
+    expect(wrapper.emitted("open-location")?.[0]).toEqual([
+      { filePath: "src/gone.ts", line: 40, side: "new", stale: true, annotationId: "draft:stale-draft" },
+    ]);
+  });
+
+  test("a draft with a good anchor shows no stale note", () => {
+    const wrapper = mount(ReviewCommentsTab, {
+      props: baseProps({
+        filteredDraftComments: [
+          { commentKey: "ok", displayIndex: 5, payload: { filePath: "src/a.ts", lineNumber: 1 } },
+        ],
+      }),
+    });
+    expect(wrapper.find("[data-testid='stale-anchor']").exists()).toBe(false);
+  });
+
   test("labels a standalone draft with no stored file path as a PR-level comment", () => {
     const wrapper = mount(ReviewCommentsTab, {
       props: baseProps({ filteredDraftComments: [{ commentKey: "general", displayIndex: 3, payload: {} }] }),

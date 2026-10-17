@@ -1058,6 +1058,16 @@ export class BaseProviderManager extends EventEmitter {
     ) as {
       sourceRepository?: ReviewSourceRepository | null;
     } | null;
+    const persistedKey = reviewSourceIdentityKey(review as Partial<ReviewInfo>);
+    const liveKey = summary
+      ? reviewSourceIdentityKey({
+          provider: review.provider,
+          connectionId: review.connectionId,
+          prKey: review.prKey,
+          pullRequest: (summary as { pullRequest?: ReviewInfo["pullRequest"] }).pullRequest ?? null,
+          sourceRepository: summary.sourceRepository,
+        })
+      : "";
     return {
       workspaceId: workspace.id,
       profileId: workspace.profileId || "default",
@@ -1072,6 +1082,11 @@ export class BaseProviderManager extends EventEmitter {
       sourceRepository: review.sourceRepository || summary?.sourceRepository || null,
       targetRemoteUrl: review.repository?.remoteUrl || "",
       baselineSha: review.sourceBaselineSha || "",
+      ...(persistedKey && liveKey && persistedKey !== liveKey
+        ? {
+            identityConflict: `${review.sourceRepository?.fullName || "recorded source"} → ${(summary as { sourceRepository?: ReviewSourceRepository | null }).sourceRepository?.fullName || "current source"}`,
+          }
+        : {}),
       checkout: (review.checkout as ReviewGitSubject["checkout"]) || null,
       auth: { login: connection.login, token },
     };

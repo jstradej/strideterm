@@ -673,3 +673,85 @@ describe("internal MCP launch composition", () => {
     expect(Object.keys(JSON.parse(configs[0]).mcpServers)).toEqual(["review", "strideterm_ssh", "strideterm"]);
   });
 });
+
+describe("review Git capability in the agent launch", () => {
+  const CAPABILITY = "B".repeat(43);
+  const reviewGitEnv = {
+    STRIDETERM_REVIEW_GIT_URL: "http://127.0.0.1:43111/review-git",
+    STRIDETERM_REVIEW_GIT_CAPABILITY: CAPABILITY,
+  };
+  const info = (platform: string) => ({
+    execPath: platform === "win32" ? "C:/Program Files/strIDEterm/strIDEterm.exe" : "/opt/strideterm/strideterm",
+    argv: [platform === "win32" ? "C:/Program Files/strIDEterm/strIDEterm.exe" : "/opt/strideterm/strideterm"],
+    defaultApp: false,
+    platform,
+  });
+  const launch = (agent: string, platform: string, extra: Record<string, unknown> = {}) =>
+    buildReviewAgentLaunch({
+      workspace: createWorkspace(),
+      panel: { id: agent, title: agent, command: agent },
+      context: createContext(),
+      processInfo: info(platform),
+      ...extra,
+    });
+
+  test.each(["linux", "win32", "darwin"])(
+    "Claude's briefing tells it to ask with AskUserQuestion and wait, and that auto-approval is not consent (%s)",
+    (platform) => {
+      const result = launch("claude", platform);
+      const prompt = result.args[result.args.indexOf("--append-system-prompt") + 1] as string;
+      expect(prompt).toContain("review_git_*");
+      expect(prompt).toContain("call AskUserQuestion with those facts and WAIT for the user's actual answer");
+      expect(prompt).toContain("PermissionRequest hooks and auto-approval are NOT the user's consent");
+      expect(prompt).toContain("Do not run git commands that change the repository in a shell");
+      expect(prompt).toContain("Safe refresh needs no question");
+    },
+  );
+
+  test.each(["linux", "win32"])("the capability never appears on any agent's command line (%s)", (platform) => {
+    for (const agent of ["claude", "codex", "copilot", "opencode"]) {
+      const result = launch(agent, platform, { reviewGitEnv });
+      expect(JSON.stringify(result.args)).not.toContain(CAPABILITY);
+    }
+  });
+
+  test("Codex is told to forward the capability variables by NAME from the tab's environment", () => {
+    const result = launch("codex", "linux", { reviewGitEnv });
+    const configs = (result.args as string[]).filter((value, index) => result.args[index - 1] === "-c");
+    expect(configs).toContain(
+      'mcp_servers.review.env_vars=["STRIDETERM_REVIEW_GIT_URL","STRIDETERM_REVIEW_GIT_CAPABILITY"]',
+    );
+  });
+
+  test.each(["linux", "win32"])(
+    "OpenCode carries the capability in its MCP environment, which rides the launch env (%s)",
+    (platform) => {
+      const result = launch("opencode", platform, { reviewGitEnv });
+      const config = JSON.parse(result.env.OPENCODE_CONFIG_CONTENT);
+      expect(config.mcp.review.environment).toMatchObject(reviewGitEnv);
+      expect(result.args.join(" ")).not.toContain(CAPABILITY);
+    },
+  );
+
+  test("OpenCode without a capability gets no Git variables at all", () => {
+    const result = launch("opencode", "linux");
+    expect(JSON.parse(result.env.OPENCODE_CONFIG_CONTENT).mcp.review.environment).not.toHaveProperty(
+      "STRIDETERM_REVIEW_GIT_CAPABILITY",
+    );
+  });
+
+  test.each(["claude", "codex", "copilot", "opencode"])(
+    "the same review bridge entry serves the Git tools for %s on every platform",
+    (agent) => {
+      for (const platform of ["linux", "win32"]) {
+        const result = launch(agent, platform);
+        const text = JSON.stringify(result);
+        expect(text).toContain("--review-bridge-mcp");
+        expect(text).toContain("--review-root");
+        // No second MCP server or config is introduced for Git.
+        expect(text).not.toContain("strideterm_git");
+        expect(text).not.toContain("review-git-mcp");
+      }
+    },
+  );
+});

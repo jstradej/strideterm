@@ -215,7 +215,7 @@ import { createOperationRegistry } from "./operation-registry.js";
 import { INTERNAL_MCP_CAPABILITY_ENV, INTERNAL_MCP_URL_ENV } from "../shared/internal-mcp.js";
 import { OPERATION_FINISHED_CHANNEL } from "../shared/operation-events.js";
 import { createReviewGitBroker } from "./review-git/broker.js";
-import { createReviewGitService } from "./review-git/service.js";
+import { createReviewGitService, isReviewGitGrantLive } from "./review-git/service.js";
 import { REVIEW_GIT_CAPABILITY_ENV, REVIEW_GIT_URL_ENV } from "../shared/review-git-env.js";
 import { isVerifiedSshTestExit, SshTestMarkerCapture } from "./ssh/ssh-test-marker.js";
 import {
@@ -4202,20 +4202,14 @@ export async function createRuntime({
   });
   reviewGitBroker = createReviewGitBroker({
     service: reviewGitService,
-    isGrantLive: (grant) => {
-      const state = getState();
-      const workspace = state.workspaces.find((item) => item.id === grant.workspaceId);
-      if (!workspace?.review?.prKey || workspace.review.prKey !== grant.prKey) return false;
-      const profileId = String(workspace.profileId || "default");
-      if (profileId !== grant.profileId || !state.profiles.some((profile) => profile.id === profileId)) return false;
-      const panel = workspace.panels.find((item) => item.id === grant.panelId);
-      if (!panel || panel.command !== grant.command || detectReviewAgentPanel(panel) !== grant.agent) return false;
-      if (reviewGitService.identityKeyFor(workspace) !== grant.identityKey) return false;
-      const session = sessionsForSshMcp?.sessions.get(grant.sessionId);
-      return Boolean(
-        session?.status === "running" && session.workspaceId === grant.workspaceId && session.panelId === grant.panelId,
-      );
-    },
+    isGrantLive: (grant) =>
+      isReviewGitGrantLive({
+        state: getState(),
+        grant,
+        session: sessionsForSshMcp?.sessions.get(grant.sessionId),
+        agentFor: detectReviewAgentPanel,
+        identityKeyFor: (workspace) => reviewGitService.identityKeyFor(workspace),
+      }),
   });
   await reviewGitBroker.start();
 

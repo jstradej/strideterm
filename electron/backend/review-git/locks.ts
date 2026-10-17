@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
 /**
@@ -19,11 +21,40 @@ export function canonicalLockKey(dir: string): string {
   return process.platform === "win32" || process.platform === "darwin" ? slashed.toLowerCase() : slashed;
 }
 
+/**
+ * The common dir of the repository a checkout belongs to, read from the
+ * filesystem (no Git process): `<cwd>/.git` for a normal clone, or — for a
+ * linked worktree, where `.git` is a file — the `commondir` of its gitdir.
+ * It is the lock key shared by every worktree of one repository.
+ */
+export async function commonDirOf(cwd: string): Promise<string> {
+  const dotGit = path.join(cwd, ".git");
+  try {
+    if ((await stat(dotGit)).isDirectory()) return dotGit;
+    const pointer = /^gitdir:\s*(.+)$/mu.exec(await readFile(dotGit, "utf8"))?.[1]?.trim();
+    if (!pointer) return dotGit;
+    const gitDir = path.resolve(cwd, pointer);
+    const common = await readFile(path.join(gitDir, "commondir"), "utf8").then(
+      (text) => text.trim(),
+      () => "",
+    );
+    return common ? path.resolve(gitDir, common) : gitDir;
+  } catch {
+    return dotGit;
+  }
+}
+
 class KeyedMutex {
   private tails = new Map<string, Promise<void>>();
   private held = new Set<string>();
+  // Keys this async call chain already holds: a Git action that calls another
+  // locked Git action on the same checkout (a pull that fetches first) must
+  // not wait on itself.
+  private holders = new AsyncLocalStorage<ReadonlySet<string>>();
 
   async run<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const mine = this.holders.getStore();
+    if (mine?.has(key)) return fn();
     const previous = this.tails.get(key) || Promise.resolve();
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
@@ -34,7 +65,7 @@ class KeyedMutex {
     await previous;
     this.held.add(key);
     try {
-      return await fn();
+      return await this.holders.run(new Set([...(mine ?? []), key]), fn);
     } finally {
       this.held.delete(key);
       release();

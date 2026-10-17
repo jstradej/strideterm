@@ -19,6 +19,7 @@ import { createIntervalGate } from "./runtime-utils.js";
 import { runEffect } from "./effect/runtime.js";
 import { GitCommandError, GitAuthError } from "./effect/errors/git-errors.js";
 import { httpRetry } from "./effect/schedules.js";
+import { commonDirOf, sharedReviewGitLocks } from "./review-git/locks.js";
 import {
   DEFAULT_DIFF_STAT,
   DEFAULT_OPERATION_STATE,
@@ -1473,8 +1474,27 @@ export class GitManager extends EventEmitter {
       allowDirty: true,
       skipPreflight: true,
       run: async (cwd) => {
+        // A pull request's source branch is leased against the commit the server
+        // has RIGHT NOW (asked for here, authenticated), never against a tracking
+        // ref that may be stale or have been moved by another worktree's fetch.
+        let lease = leaseArg;
+        if (reviewSourceBranch) {
+          const listed = await runEffect(
+            this.execAuthGitStreamingEffect(cwd, ["ls-remote", remote, `refs/heads/${remoteBranch}`], { connection }),
+          );
+          const liveSha = String(listed.stdout || "")
+            .split(/\r?\n/u)
+            .map((line) => line.trim().split(/\s+/u))
+            .find(([, name]) => name === `refs/heads/${remoteBranch}`)?.[0];
+          if (!liveSha) {
+            throw new Error(`The pull request source branch ${remoteBranch} no longer exists on ${remote}.`);
+          }
+          extraAudit.expectedRef = liveSha;
+          extraAudit.previousRemoteRef = liveSha;
+          lease = `--force-with-lease=refs/heads/${remoteBranch}:${liveSha}`;
+        }
         const r = await runEffect(
-          this.execAuthGitStreamingEffect(cwd, ["push", leaseArg, remote, pushRefspec], {
+          this.execAuthGitStreamingEffect(cwd, ["push", lease, remote, pushRefspec], {
             connection,
             onData: onProgress,
           }),
@@ -2287,7 +2307,24 @@ export class GitManager extends EventEmitter {
     }
   }
 
-  async runWriteAction(
+  /**
+   * Every write action takes the checkout's worktree lock — the same one the
+   * review Git engine and the agents' MCP tools take — so a click in the Git pane
+   * and an agent's rebase never mutate one worktree at once. Fetch and pull also
+   * touch refs the worktrees of one repository share, so they take the repository's
+   * common-dir lock first (common, then worktree: the one allowed order).
+   */
+  async runWriteAction(workspace: WorkspaceRef, options: WriteActionOptions): Promise<Record<string, unknown>> {
+    const cwd = options.rootPath || String(workspace.cwd || "");
+    if (!cwd) return this.runWriteActionUnlocked(workspace, options);
+    const inWorktree = () =>
+      sharedReviewGitLocks.withWorktree(cwd, () => this.runWriteActionUnlocked(workspace, options));
+    if (options.type !== "fetch" && options.type !== "pull") return inWorktree();
+    const commonDir = await commonDirOf(cwd);
+    return sharedReviewGitLocks.withCommon(commonDir, inWorktree);
+  }
+
+  async runWriteActionUnlocked(
     workspace: WorkspaceRef,
     {
       type,

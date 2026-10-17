@@ -491,3 +491,91 @@ describe("review bridge store", () => {
     await store.close();
   });
 });
+
+describe("review bridge store — inline anchors after a history rewrite", () => {
+  async function createStoreWithPullRequest() {
+    const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-review-bridge-anchors-"));
+    tempPaths.push(rootPath);
+    const store = await createReviewBridgeStore(rootPath);
+    await store.syncPullRequest({
+      provider: "azure-devops",
+      prKey: "ado-main:repo-1:123",
+      connectionId: "ado-main",
+      project: { id: "project-1", name: "Platform" },
+      repository: { id: "repo-1", name: "web-app" },
+      pullRequest: {
+        id: 123,
+        title: "Fix login redirect",
+        status: "active",
+        sourceRefName: "refs/heads/feature/login-fix",
+        targetRefName: "refs/heads/main",
+      },
+      role: "reviewer",
+      lastRemoteActivityAt: "2026-03-18T08:30:00.000Z",
+      lastSeenActivityAt: "2026-03-18T08:00:00.000Z",
+      changedFiles: [],
+      localChangedFiles: [],
+      threads: [],
+    });
+    return store;
+  }
+
+  const anchored = async (
+    store: Awaited<ReturnType<typeof createStoreWithPullRequest>>,
+    body: string,
+    filePath: string,
+    lineNumber: number,
+  ) => {
+    const context = await store.createDraftComment({ prKey: "ado-main:repo-1:123", body, filePath, lineNumber });
+    return context!.comments.find((comment) => (comment.payload as { questionBody?: string }).questionBody === body)!;
+  };
+
+  test("marks a local comment whose anchor no longer holds, leaves its location untouched, and clears the mark when it holds again", async () => {
+    const store = await createStoreWithPullRequest();
+    const kept = await anchored(store, "still valid", "src/a.ts", 3);
+    const broken = await anchored(store, "line is gone", "src/b.ts", 40);
+    const general = await store.createDraftComment({ prKey: "ado-main:repo-1:123", body: "no anchor at all" });
+    expect(general).toBeTruthy();
+
+    const first = await store.markStaleAnchors("ado-main:repo-1:123", ({ filePath }) => filePath === "src/a.ts");
+    expect(first).toEqual({ checked: 2, stale: [broken.commentKey] });
+
+    const after = store.getPullRequestContext("ado-main:repo-1:123")!;
+    const byKey = new Map(
+      after.comments.map((comment) => [comment.commentKey, comment.payload as Record<string, unknown>]),
+    );
+    expect(byKey.get(kept.commentKey)).not.toHaveProperty("anchorStale");
+    expect(byKey.get(broken.commentKey)).toMatchObject({
+      anchorStale: true,
+      filePath: "src/b.ts",
+      lineNumber: 40,
+    });
+    expect(String(byKey.get(broken.commentKey)?.anchorStaleReason)).toContain("src/b.ts:40");
+
+    // The code comes back (another rebase): the mark goes, the location is still the user's.
+    const second = await store.markStaleAnchors("ado-main:repo-1:123", () => true);
+    expect(second.stale).toEqual([]);
+    const healed = store
+      .getPullRequestContext("ado-main:repo-1:123")!
+      .comments.find((comment) => comment.commentKey === broken.commentKey)!.payload as Record<string, unknown>;
+    expect(healed).not.toHaveProperty("anchorStale");
+    expect(healed).toMatchObject({ filePath: "src/b.ts", lineNumber: 40 });
+    await store.close();
+  });
+
+  test("publishing sees the mark: the queue entry's comment carries anchorStale", async () => {
+    const store = await createStoreWithPullRequest();
+    const broken = await anchored(store, "line is gone", "src/b.ts", 40);
+    await store.queueDraftResponse({ prKey: "ado-main:repo-1:123", commentKey: broken.commentKey });
+    await store.markStaleAnchors("ado-main:repo-1:123", () => false);
+
+    const seen: Array<Record<string, unknown>> = [];
+    await store.syncPendingDrafts("ado-main:repo-1:123", async (entry) => {
+      seen.push((entry as { comment: Record<string, unknown> }).comment);
+      throw new Error("refused");
+    });
+
+    expect(seen[0]).toMatchObject({ anchorStale: true, filePath: "src/b.ts", lineNumber: 40 });
+    await store.close();
+  });
+});

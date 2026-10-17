@@ -141,6 +141,34 @@ describe("decideAutoApprove", () => {
     }
   });
 
+  test("AskUserQuestion stays refused with auto-approve armed, a proven session and an active turn in a review workspace", () => {
+    // Consent for the review Git tools is asked with AskUserQuestion. If this
+    // were ever auto-answered the agent would "get" its own consent, so the
+    // never-list entry is a hard invariant — checked here in the most permissive
+    // state the setting can produce, not only through the generic list test.
+    const armedReviewSession: AutoApproveContext = {
+      ...APPROVABLE,
+      enabled: true,
+      toolName: "AskUserQuestion",
+      workspace: { kind: "terminal" },
+      signal: { turnActive: true },
+      ownershipProven: true,
+    };
+    expect(decideAutoApprove(armedReviewSession)).toEqual({ approve: false, reason: "never-list" });
+    // And the very same session DOES auto-approve an ordinary tool call, so the
+    // refusal above is the never-list and nothing else.
+    expect(decideAutoApprove({ ...armedReviewSession, toolName: "Bash" })).toEqual({ approve: true, reason: "global" });
+  });
+
+  test("a review Git tool permission prompt may be auto-approved — which is exactly why it is not consent", () => {
+    // Tool permission is not the user's answer. The agent briefing says so, and
+    // consent-required Git operations additionally need a proposal id that only
+    // a first call produces; auto-approval cannot ask the user anything.
+    for (const toolName of ["mcp__review__review_git_push", "mcp__review__review_git_force_push"]) {
+      expect(decideAutoApprove({ ...APPROVABLE, toolName })).toEqual({ approve: true, reason: "global" });
+    }
+  });
+
   test("refuses when the session's workspace is unknown", () => {
     expect(decideAutoApprove({ ...APPROVABLE, workspace: null })).toEqual({
       approve: false,

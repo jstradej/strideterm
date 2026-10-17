@@ -172,7 +172,7 @@ export function describeOperation(calledTool: string, lookup: OperationLookup): 
   }
   if (lookup.status === "running") {
     return textResult(
-      `Operation ${lookup.operationId} is still running. It keeps running without you; call review_git_operation_status with this operationId to see the result. Do not start it again.`,
+      `Operation ${lookup.operationId} is still running. It keeps running without you; call git_operation_status with this operationId to see the result. Do not start it again.`,
       structured,
     );
   }
@@ -474,7 +474,7 @@ export function registerReviewGitTools(server: McpServer, client: ReviewGitClien
   );
 
   server.registerTool(
-    "review_git_operation_status",
+    "git_operation_status",
     {
       title: "Review Git: operation status",
       description:
@@ -486,7 +486,7 @@ export function registerReviewGitTools(server: McpServer, client: ReviewGitClien
     },
     async (input, extra) =>
       describeOperation(
-        "review_git_operation_status",
+        "git_operation_status",
         await client.status(input.operationId, (input.waitSeconds || 0) * 1000, withDisconnect(extra.signal)),
       ),
   );

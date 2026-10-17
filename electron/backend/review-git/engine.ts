@@ -173,6 +173,34 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
     };
   }
 
+  /**
+   * Look at the checkout once more immediately before a mutating command. A
+   * shell Git (or another tool) can write to the checkout between this call's
+   * inspection and its command, and it cannot be locked out — so the facts the
+   * decision was made on are proven again at the last moment, and a change
+   * means nothing is done.
+   */
+  async function recheck(
+    subject: ReviewGitSubject,
+    facts: CheckoutFacts,
+    { clean = false, status = false }: { clean?: boolean; status?: boolean } = {},
+  ): Promise<Block | null> {
+    const now = await inspectCheckout(git, subject.cwd);
+    const moved =
+      now.headSha !== facts.headSha ||
+      now.branch !== facts.branch ||
+      now.operation !== facts.operation ||
+      (clean && now.dirty.total > 0) ||
+      (status && now.dirty.digest !== facts.dirty.digest);
+    if (!moved) return null;
+    return blocked(
+      now,
+      "stale",
+      "The checkout changed (HEAD, branch, working tree or a Git operation) after it was inspected. Nothing was changed.",
+      "Inspect it again and retry.",
+    );
+  }
+
   async function lockTargets(subject: ReviewGitSubject): Promise<{ commonDir: string }> {
     const facts = await inspectCheckout(git, subject.cwd);
     return { commonDir: facts.commonDir };
@@ -207,6 +235,16 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
         };
       }
       return { prepared: { facts, sourceBranch, fullRef, remote: { target: "origin", viaOrigin: true }, liveSha: "" } };
+    }
+    if (subject.identityConflict) {
+      return {
+        block: blocked(
+          facts,
+          "source-identity-changed",
+          `The pull request's source no longer matches what this workspace was linked to (${subject.identityConflict}).`,
+          "Open the pull request again to rebuild the link; the saved baseline is dropped, local work is untouched.",
+        ),
+      };
     }
     if (!sourceBranch) {
       return {
@@ -464,6 +502,8 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
 
       if (relation === "behind") {
         return audited(subject, requester, "sync-merge", facts, refs, async () => {
+          const changed = await recheck(subject, facts, { clean: true });
+          if (changed) return changed;
           const behind = await listCommits(git, subject.cwd, `${head}..${liveSha}`, 1);
           await git(subject.cwd, ["merge", "--ff-only", liveSha]);
           const headSha = (await git(subject.cwd, ["rev-parse", "HEAD"])).stdout.trim();
@@ -546,6 +586,8 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
   ): Promise<ReviewGitResult> {
     const head = facts.headSha;
     return audited(subject, requester, "sync-reset", facts, { ...refs, basis }, async () => {
+      const changed = await recheck(subject, facts, { clean: true });
+      if (changed) return changed;
       let recoveryRef: string;
       try {
         recoveryRef = await createRecoveryRef(subject, head);
@@ -614,7 +656,11 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
       }
 
       const targetRef = `refs/heads/${targetBranch}`;
-      const targetSha = await lsRemoteRef(git, subject.cwd, "origin", targetRef, subject.auth).catch(() => null);
+      // The TARGET repository is whatever the provider says it is — `origin` only
+      // when origin verifiably is it (an attached checkout may sit in a fork).
+      const viaOrigin = !subject.targetRemoteUrl || sameRemote(facts.originUrl, subject.targetRemoteUrl);
+      const targetRemote = viaOrigin ? "origin" : subject.targetRemoteUrl;
+      const targetSha = await lsRemoteRef(git, subject.cwd, targetRemote, targetRef, subject.auth).catch(() => null);
       if (!targetSha) {
         return blocked(
           facts,
@@ -622,7 +668,13 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
           `The target branch ${targetBranch} could not be resolved on the remote.`,
         );
       }
-      await git(subject.cwd, ["fetch", "origin", `+${targetRef}:refs/remotes/origin/${targetBranch}`], subject.auth);
+      await git(
+        subject.cwd,
+        viaOrigin
+          ? ["fetch", "origin", `+${targetRef}:refs/remotes/origin/${targetBranch}`]
+          : ["fetch", targetRemote, targetRef],
+        subject.auth,
+      );
       if (!(await hasCommit(git, subject.cwd, targetSha))) {
         return blocked(facts, "source-unverified", `The target commit ${short(targetSha)} could not be fetched.`);
       }
@@ -659,6 +711,8 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
       if (confirmation?.proposalId !== proposal.proposalId) return confirmRequired(facts, proposal, confirmation);
 
       return audited(subject, requester, "rebase", facts, { headSha: head, targetSha, targetRef }, async () => {
+        const changed = await recheck(subject, facts, { clean: true });
+        if (changed) return changed;
         try {
           await git(subject.cwd, ["-c", "core.editor=true", "rebase", targetSha], subject.auth);
         } catch (error) {
@@ -868,6 +922,8 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
       });
       if (confirmation?.proposalId !== proposal.proposalId) return confirmRequired(facts, proposal, confirmation);
       return audited(subject, requester, kind, facts, { headSha: facts.headSha }, async () => {
+        const changed = await recheck(subject, facts, { status: true });
+        if (changed) return changed;
         const args =
           kind === "stage"
             ? ["--literal-pathspecs", "add", "-A", "--", ...wanted]
@@ -912,6 +968,8 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
       });
       if (confirmation?.proposalId !== proposal.proposalId) return confirmRequired(facts, proposal, confirmation);
       return audited(subject, requester, "commit", facts, { headSha: facts.headSha }, async () => {
+        const changed = await recheck(subject, facts, { status: true });
+        if (changed) return changed;
         await git(subject.cwd, ["commit", "-m", text]);
         const headSha = (await git(subject.cwd, ["rev-parse", "HEAD"])).stdout.trim();
         return {
@@ -954,6 +1012,8 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
       });
       if (confirmation?.proposalId !== proposal.proposalId) return confirmRequired(facts, proposal, confirmation);
       return audited(subject, requester, action, facts, { headSha: facts.headSha }, async () => {
+        const changed = await recheck(subject, facts, { status: true });
+        if (changed) return changed;
         const verb = facts.operation as string;
         try {
           await git(subject.cwd, ["-c", "core.editor=true", verb, `--${action}`]);

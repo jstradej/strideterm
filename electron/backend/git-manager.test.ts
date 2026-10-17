@@ -2828,10 +2828,23 @@ describe("GitManager", () => {
     });
 
     describe("push on review checkouts", () => {
-      function makeReviewMgr({ branch, upstream }: { branch: string; upstream: string }) {
+      const LIVE_SHA = "c".repeat(40);
+      function makeReviewMgr({
+        branch,
+        upstream,
+        liveSha = LIVE_SHA,
+      }: {
+        branch: string;
+        upstream: string;
+        liveSha?: string;
+      }) {
         const calls: string[][] = [];
         const execGitImpl = vi.fn(async (_cwd: string, args: string[]) => {
           calls.push(args);
+          // The server's current tip of the PR source branch (what ls-remote reports).
+          if (args[0] === "ls-remote") {
+            return { stdout: liveSha ? `${liveSha}\t${args[2]}\n` : "", stderr: "" };
+          }
           return { stdout: "", stderr: "" };
         });
         const mgr = new GitManager({ execGitImpl });
@@ -2868,11 +2881,30 @@ describe("GitManager", () => {
         expect(calls).toContainEqual(["push", "origin", "HEAD"]);
       });
 
-      test("forcePushWithLease maps the pr-N local branch to the PR source branch", async () => {
+      test("forcePushWithLease maps the pr-N local branch to the PR source branch and leases the LIVE server commit", async () => {
         const { mgr, calls } = makeReviewMgr({ branch: "pr-12-feature-foo", upstream: "origin/feature/foo" });
         const result = await mgr.forcePushWithLease(reviewWorkspace);
         expect(result.ok).toBe(true);
-        expect(calls).toContainEqual(["push", "--force-with-lease", "origin", "HEAD:refs/heads/feature/foo"]);
+        // Asked for first, authenticated, from the source ref itself — never the (possibly stale) tracking ref.
+        expect(calls).toContainEqual(["ls-remote", "origin", "refs/heads/feature/foo"]);
+        expect(calls).toContainEqual([
+          "push",
+          `--force-with-lease=refs/heads/feature/foo:${LIVE_SHA}`,
+          "origin",
+          "HEAD:refs/heads/feature/foo",
+        ]);
+        expect(calls.some((args) => args[0] === "push" && args[1] === "--force-with-lease")).toBe(false);
+      });
+
+      test("forcePushWithLease refuses a PR source branch that no longer exists on the server", async () => {
+        const { mgr, calls } = makeReviewMgr({
+          branch: "pr-12-feature-foo",
+          upstream: "origin/feature/foo",
+          liveSha: "",
+        });
+        const result = await mgr.forcePushWithLease(reviewWorkspace);
+        expect(result.ok).toBe(false);
+        expect(calls.some((args) => args[0] === "push")).toBe(false);
       });
 
       // After "Detach from PR review" (review === null) we deliberately do NOT

@@ -132,6 +132,25 @@ export function createReviewGitOperations(ctx: ReviewGitOperationsCtx) {
   /** Operations this renderer started and is awaiting; their outcome belongs to the caller, not a notification. */
   const owned = new Set<string>();
   const notifiedInMemory = new Set<string>();
+  /**
+   * While a start call is awaiting its response, an operation id this renderer
+   * will own is not yet known — and a quick operation's result event can beat
+   * the response. Outcomes seen in that window are judged once the response is in.
+   */
+  let startsInFlight = 0;
+  const deferredNotifications: Array<{ event: ReviewGitOperationEvent; late: boolean }> = [];
+
+  function announce(event: ReviewGitOperationEvent, late: boolean): void {
+    if (startsInFlight > 0) {
+      deferredNotifications.push({ event, late });
+      return;
+    }
+    notifyForeign(event, { late });
+  }
+
+  function flushDeferred(): void {
+    for (const { event, late } of deferredNotifications.splice(0)) notifyForeign(event, { late });
+  }
 
   function remember(event: ReviewGitOperationEvent): void {
     finished.delete(event.operationId);
@@ -201,7 +220,7 @@ export function createReviewGitOperations(ctx: ReviewGitOperationsCtx) {
     const parsed = reviewGitOperationEventSchema.safeParse(raw);
     if (!parsed.success) return;
     settle(parsed.data);
-    notifyForeign(parsed.data, { late: false });
+    announce(parsed.data, false);
   }
 
   /** The payload's `reviewGit` (running + last runs): covers an event this client was not connected for. */
@@ -212,7 +231,7 @@ export function createReviewGitOperations(ctx: ReviewGitOperationsCtx) {
       const parsed = reviewGitOperationEventSchema.safeParse(run);
       if (!parsed.success) continue;
       settle(parsed.data);
-      notifyForeign(parsed.data, { late: true });
+      announce(parsed.data, true);
     }
   }
 
@@ -255,12 +274,19 @@ export function createReviewGitOperations(ctx: ReviewGitOperationsCtx) {
     confirmation?: { proposalId: string },
   ): Promise<ReviewGitOutcome> {
     const api = ctx.getApi() as CallableTransport;
-    const started = await api.startReviewGitOperation({
-      kind,
-      workspaceId,
-      ...(confirmation ? { confirmation } : {}),
-    });
-    owned.add(started.operationId);
+    startsInFlight += 1;
+    let started: { operationId: string };
+    try {
+      started = await api.startReviewGitOperation({
+        kind,
+        workspaceId,
+        ...(confirmation ? { confirmation } : {}),
+      });
+      owned.add(started.operationId);
+    } finally {
+      startsInFlight -= 1;
+      if (startsInFlight === 0) flushDeferred();
+    }
     try {
       const event = await waitFor(started.operationId);
       if (event.state === "failed") throw new Error(event.error || "The Git operation failed.");

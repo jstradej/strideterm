@@ -280,7 +280,7 @@
                       filePath: comment.payload.filePath,
                       line: comment.payload.lineNumber == null ? null : Number(comment.payload.lineNumber),
                       side: 'new',
-                      stale: false,
+                      stale: comment.payload.anchorStale === true,
                       annotationId: `draft:${comment.commentKey}`,
                     })
                   "
@@ -291,6 +291,16 @@
                   >
                 </button>
                 <span v-else class="review-comment-stale">PR-level comment · no file location</span>
+                <!-- A history rewrite (reset, rebase) can move the code out from under a draft's
+                     anchor. It is marked, never moved to another line, and publishing refuses it
+                     until the author repairs or deletes it. -->
+                <span
+                  v-if="comment.payload?.anchorStale"
+                  class="review-comment-stale"
+                  data-testid="stale-anchor"
+                  :title="String(comment.payload.anchorStaleReason || '')"
+                  >Anchor out of date — re-anchor or delete this comment before publishing</span
+                >
               </div>
             </div>
 

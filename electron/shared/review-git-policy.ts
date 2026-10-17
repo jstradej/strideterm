@@ -29,7 +29,7 @@ export function buildReviewGitPolicy({ askTool }: { askTool: "AskUserQuestion" |
     "Safe refresh needs no question: review_git_refresh fast-forwards, and resets onto a rewritten PR branch only when HEAD is exactly the last integrated source commit (a recovery ref is kept).",
     `Consent-required operations (${REVIEW_GIT_CONSENT_REQUIRED.join("; ")}): call the tool first WITHOUT proposalId. It returns a proposal with the exact commits, SHAs or paths involved. Then ${ask}. Only if the user approves, call the tool again with that proposalId and put the user's answer in \`consent\`. If the repository changed meanwhile you get a new proposal: ask again.`,
     "Tool permission prompts, PermissionRequest hooks and auto-approval are NOT the user's consent. Printing a question is not asking; never continue before an actual answer arrives.",
-    "Operations return an operationId. Check review_git_operation_status; never start the same operation again while its status is unknown — retrying with the same call is safe only because it is idempotent.",
+    "Operations return an operationId. Check git_operation_status; never start the same operation again while its status is unknown (a lost acknowledgement is retried by the tool itself with an idempotency key, so it cannot run twice).",
     "Pushing and publishing are separate: a push never publishes queued draft comments, and a rebase never pushes.",
   ].join("\n");
 }

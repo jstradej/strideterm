@@ -178,6 +178,39 @@ function fullPayload() {
       networks: [{ ID: "n1" }],
       lazydocker: {},
     },
+    reviewGit: {
+      running: [
+        {
+          operationId: "op-run-1",
+          profileId: "p1",
+          workspaceId: "ws1",
+          kind: "refresh",
+          source: "ui",
+          state: "running",
+        },
+        { operationId: "op-run-2", profileId: "p2", workspaceId: "ws2", kind: "push", source: "mcp", state: "running" },
+      ],
+      lastRuns: [
+        {
+          operationId: "op-done-1",
+          profileId: "p1",
+          workspaceId: "ws1",
+          kind: "push",
+          source: "ui",
+          state: "succeeded",
+          result: { status: "pushed" },
+        },
+        {
+          operationId: "op-done-2",
+          profileId: "p2",
+          workspaceId: "ws2",
+          kind: "rebase",
+          source: "ui",
+          state: "failed",
+          error: "conflict",
+        },
+      ],
+    },
     remoteClient: { id: "sess", profileId: "p1", activeWorkspaceId: "ws1", activeSessionId: "" },
   };
 }
@@ -274,6 +307,19 @@ describe("buildRemoteCore", () => {
     expect(core.revisions["azure-inbox"]).toContain("2026-07-15T11:30:00Z");
   });
 
+  test("review Git operations reach only the clients bound to their profile", () => {
+    const core = buildRemoteCore(fullPayload()); // bound to p1
+    expect(core.reviewGit.running.map((run) => run.operationId)).toEqual(["op-run-1"]);
+    expect(core.reviewGit.lastRuns.map((run) => run.operationId)).toEqual(["op-done-1"]);
+    // Another profile's workspaces, commits and outcomes are never in a p1 core.
+    expect(JSON.stringify(core.reviewGit)).not.toContain("ws2");
+    expect(JSON.stringify(core.reviewGit)).not.toContain("conflict");
+
+    const other = buildRemoteCore(fullPayload(), { profileId: "p2" });
+    expect(other.reviewGit.running.map((run) => run.operationId)).toEqual(["op-run-2"]);
+    expect(other.reviewGit.lastRuns.map((run) => run.operationId)).toEqual(["op-done-2"]);
+  });
+
   test("an uncomposed payload (no profile) yields an EMPTY scope, never every workspace", () => {
     const p = fullPayload();
     delete (p as { remoteClient?: unknown }).remoteClient;
@@ -286,6 +332,7 @@ describe("buildRemoteCore", () => {
     expect((core.appState as Rec).workspaces).toEqual([]);
     expect(Object.keys(core.azureDevops.pullRequests)).toEqual([]);
     expect(core.azureDevops.connections).toEqual([]);
+    expect(core.reviewGit).toEqual({ running: [], lastRuns: [] });
     expect(core.remoteClient).toBeUndefined();
   });
 

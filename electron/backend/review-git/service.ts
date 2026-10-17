@@ -9,7 +9,7 @@ import {
 } from "../../shared/review-git-events.js";
 import { reviewSourceIdentityKey, sourceBranchName } from "../../shared/review-source-identity.js";
 import { digest, inspectCheckout, listCommits, lsRemoteRef, type GitRun } from "./inspect.js";
-import { managedReviewBranchAlias } from "./engine.js";
+import { managedReviewBranchAlias } from "../../shared/review-source-identity.js";
 import { sharedReviewGitLocks, type ReviewGitLocks } from "./locks.js";
 import {
   REVIEW_GIT_OPERATION_RETENTION_MS,
@@ -86,6 +86,48 @@ export interface ReviewGitCommitAnchor {
   commentKey: string;
   filePath: string;
   lineNumber: number;
+}
+
+/**
+ * Is a capability still entitled to act? Re-proved against LIVE state on every
+ * request: the workspace must still exist, still be linked to the same PR with
+ * the same source identity, still be in the profile the capability was minted
+ * for (and that profile must still exist), and the tab must still be the same
+ * running agent session. A detached or closed tab, a deleted profile, a moved
+ * workspace or a changed PR source all end it — for new requests only.
+ */
+export function isReviewGitGrantLive({
+  state,
+  grant,
+  session,
+  agentFor,
+  identityKeyFor,
+}: {
+  state: AppState;
+  grant: Readonly<{
+    sessionId: string;
+    profileId: string;
+    workspaceId: string;
+    panelId: string;
+    prKey: string;
+    identityKey: string;
+    agent: string;
+    command: string;
+  }>;
+  session: { status?: string; workspaceId?: string; panelId?: string } | undefined;
+  agentFor: (panel: { id?: string; title?: string; command?: string }) => string | null;
+  identityKeyFor: (workspace: WorkspaceState) => string;
+}): boolean {
+  const workspace = state.workspaces.find((item) => item.id === grant.workspaceId);
+  if (!workspace?.review?.prKey || workspace.review.prKey !== grant.prKey) return false;
+  const profileId = String(workspace.profileId || "default");
+  if (profileId !== grant.profileId || !state.profiles.some((profile) => profile.id === profileId)) return false;
+  const panel = workspace.panels.find((item) => item.id === grant.panelId);
+  if (!panel || panel.command !== grant.command || agentFor(panel) !== grant.agent) return false;
+  if (identityKeyFor(workspace) !== grant.identityKey) return false;
+  return Boolean(
+    session?.status === "running" && session.workspaceId === grant.workspaceId && session.panelId === grant.panelId,
+  );
 }
 
 export function createReviewGitService(ctx: ReviewGitServiceCtx) {

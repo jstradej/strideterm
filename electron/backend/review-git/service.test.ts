@@ -1,0 +1,565 @@
+import { execFileSync } from "node:child_process";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { AppState, WorkspaceState } from "../../shared/types/state.js";
+import { REVIEW_GIT_OPERATION_CHANNEL } from "../../shared/review-git-events.js";
+import { BaseProviderManager } from "../shared/base-manager.js";
+import { REVIEW_GIT_OPERATION_RETENTION_MS } from "./operations.js";
+import { createReviewGitService, isReviewGitGrantLive } from "./service.js";
+
+function git(cwd: string, args: string[]): string {
+  return execFileSync("git", ["-c", "user.name=T", "-c", "user.email=t@e", ...args], {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
+}
+
+interface Fixture {
+  root: string;
+  remote: string;
+  seed: string;
+  checkout: string;
+  state: AppState;
+  workspace: WorkspaceState;
+  manager: BaseProviderManager;
+  events: Array<{ channel: string; payload: any }>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  broadcasts: { count: number };
+  service: ReturnType<typeof createReviewGitService>;
+  bridge: {
+    markStaleAnchors: ReturnType<typeof vi.fn>;
+    syncPendingDrafts: ReturnType<typeof vi.fn>;
+  };
+  stores: { github: { query: ReturnType<typeof vi.fn> }; system: { query: ReturnType<typeof vi.fn> } };
+}
+
+const dirs: string[] = [];
+
+async function createFixture(overrides: { workspaceProfile?: string } = {}): Promise<Fixture> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-review-git-service-"));
+  dirs.push(root);
+  const remote = path.join(root, "remote.git");
+  const seed = path.join(root, "seed");
+  const checkout = path.join(root, "checkout");
+  git(root, ["init", "--bare", "-q", "-b", "main", remote]);
+  git(root, ["clone", "-q", remote, seed]);
+  await fs.writeFile(path.join(seed, "a.txt"), "one\ntwo\nthree\n");
+  git(seed, ["add", "."]);
+  git(seed, ["commit", "-q", "-m", "A"]);
+  git(seed, ["push", "-q", "origin", "HEAD:refs/heads/main"]);
+  git(seed, ["checkout", "-q", "-b", "feature"]);
+  await fs.writeFile(path.join(seed, "f.txt"), "f\n");
+  git(seed, ["add", "."]);
+  git(seed, ["commit", "-q", "-m", "feature 1"]);
+  git(seed, ["push", "-q", "origin", "feature"]);
+  git(root, ["clone", "-q", remote, checkout]);
+  git(checkout, ["checkout", "-q", "-b", "pr-7-feature", "origin/feature"]);
+
+  const manager = new BaseProviderManager({
+    credentialStore: { getSecret: (ref: string) => (ref === "tok" ? "secret-token" : "") } as never,
+    reviewStore: { upsertTrackedPullRequest: async () => {} } as never,
+    auditLogStore: {
+      logEntry: () => true,
+      insertEntry: () => 1,
+      finishEntry: () => true,
+    },
+    createApi: () => ({}),
+  });
+  manager.providerLabel = "github";
+  manager.snapshot.connections = [{ id: "conn-1", tokenRef: "tok", login: "me" }];
+  const sourceRepository = {
+    id: "100",
+    name: "repo",
+    fullName: "acme/repo",
+    remoteUrl: remote,
+    sameAsTarget: true,
+    canPush: null,
+  };
+  manager.setReviewWorkspaceMetadataStore({ updateReview: async () => {} });
+  const workspace = {
+    id: "ws-1",
+    name: "repo PR #7",
+    profileId: overrides.workspaceProfile || "default",
+    cwd: checkout,
+    panels: [{ id: "panel-1", command: "claude" }],
+    review: {
+      provider: "github",
+      prKey: "conn-1:repo:7",
+      connectionId: "conn-1",
+      role: "reviewer",
+      repository: { id: "100", name: "repo", remoteUrl: remote },
+      sourceRepository,
+      sourceBaselineSha: "",
+      pullRequest: { id: 7, title: "Fix", sourceRefName: "refs/heads/feature", targetRefName: "refs/heads/main" },
+      checkout: { mode: "managed-worktree", rootPath: checkout, cacheRepoPath: checkout },
+    },
+  } as unknown as WorkspaceState;
+  const state = {
+    profiles: [
+      { id: "default", name: "Default" },
+      { id: "other", name: "Other" },
+    ],
+    workspaces: [workspace],
+  } as unknown as AppState;
+
+  const events: Fixture["events"] = [];
+  const broadcasts = { count: 0 };
+  const bridge = {
+    markStaleAnchors: vi.fn(async () => ({ checked: 0, stale: [] })),
+    syncPendingDrafts: vi.fn(async () => undefined),
+  };
+  const stores = {
+    github: { query: vi.fn(() => ({ entries: [], total: 0 })) },
+    system: { query: vi.fn(() => ({ entries: [], total: 0 })) },
+  };
+  const service = createReviewGitService({
+    getState: () => state,
+    azure: manager,
+    github: manager,
+    reviewBridgeStore: bridge,
+    refreshGit: async () => {},
+    refreshAzure: async () => {},
+    refreshGitHub: async () => {},
+    broadcastState: () => {
+      broadcasts.count += 1;
+    },
+    emit: (channel, payload) => events.push({ channel, payload: payload as never }),
+    auditStores: { github: stores.github, system: stores.system },
+    log: { info() {}, warn() {}, error() {} },
+  });
+  return { root, remote, seed, checkout, state, workspace, manager, events, broadcasts, service, bridge, stores };
+}
+
+afterEach(async () => {
+  await Promise.all(dirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true, maxRetries: 5 })));
+});
+
+const ui = { profileId: "default", requester: { source: "ui" as const } };
+
+describe("starting an operation", () => {
+  test("is validated and authorized synchronously: a bad request throws instead of becoming a failed operation", async () => {
+    const f = await createFixture();
+    expect(() => f.service.start({ kind: "refresh", workspaceId: "missing" }, ui)).toThrow(
+      "Review workspace not found",
+    );
+    expect(() => f.service.start({ kind: "refresh", workspaceId: "ws-1" }, { ...ui, profileId: "other" })).toThrow(
+      "Cross-profile refused",
+    );
+    expect(() => f.service.start({ kind: "stage", workspaceId: "ws-1" }, ui)).toThrow("At least one path");
+    expect(() => f.service.start({ kind: "commit", workspaceId: "ws-1", message: "  " }, ui)).toThrow(
+      "commit message is required",
+    );
+    f.manager.snapshot.connections = [];
+    expect(() => f.service.start({ kind: "refresh", workspaceId: "ws-1" }, ui)).toThrow();
+    expect(f.service.operations.listForProfile("default")).toEqual([]);
+  });
+
+  test("answers at once with an operation id, runs on its own, and reports exactly one result event", async () => {
+    const f = await createFixture();
+    const started = f.service.start({ kind: "refresh", workspaceId: "ws-1" }, ui);
+    expect(started).toEqual({ started: true, operationId: expect.any(String) });
+    expect(f.service.stateFor().running.map((run) => run.operationId)).toEqual([started.operationId]);
+    expect(f.events).toEqual([]);
+
+    await f.service.operations.idle();
+
+    const finished = f.events.filter((event) => event.channel === REVIEW_GIT_OPERATION_CHANNEL);
+    expect(finished).toHaveLength(1);
+    expect(finished[0].payload).toMatchObject({
+      operationId: started.operationId,
+      profileId: "default",
+      workspaceId: "ws-1",
+      kind: "refresh",
+      source: "ui",
+      state: "succeeded",
+      result: { status: "already-current" },
+    });
+    expect(f.service.stateFor()).toMatchObject({ running: [], lastRuns: [{ operationId: started.operationId }] });
+    expect(f.broadcasts.count).toBeGreaterThan(0);
+  });
+
+  test("a failure becomes a failed operation with the error, in the event and in the payload", async () => {
+    const f = await createFixture();
+    await fs.rm(path.join(f.checkout, ".git"), { recursive: true, force: true });
+    const started = f.service.start({ kind: "refresh", workspaceId: "ws-1" }, ui);
+    await f.service.operations.idle();
+    const event = f.events.find((entry) => entry.channel === REVIEW_GIT_OPERATION_CHANNEL)!.payload;
+    expect(event).toMatchObject({ operationId: started.operationId, state: "failed" });
+    expect(event.error).toBeTruthy();
+    expect(event).not.toHaveProperty("result");
+  });
+
+  test("a click repeated while the same operation is running joins it", async () => {
+    const f = await createFixture();
+    const first = f.service.start({ kind: "refresh", workspaceId: "ws-1" }, ui);
+    const second = f.service.start({ kind: "refresh", workspaceId: "ws-1" }, ui);
+    expect(second.operationId).toBe(first.operationId);
+    await f.service.operations.idle();
+  });
+
+  test("an idempotency key makes a retried start return the same operation", async () => {
+    const f = await createFixture();
+    const caller = { profileId: "default", requester: { source: "mcp" as const, agent: "claude" } };
+    const first = f.service.start({ kind: "fetch", workspaceId: "ws-1", idempotencyKey: "key-12345678" }, caller);
+    await f.service.operations.idle();
+    const retry = f.service.start({ kind: "fetch", workspaceId: "ws-1", idempotencyKey: "key-12345678" }, caller);
+    expect(retry.operationId).toBe(first.operationId);
+    expect(f.service.operations.listForProfile("default")).toHaveLength(1);
+  });
+
+  test("the payload offers a finished operation for 24 hours only", async () => {
+    let now = Date.now();
+    const f = await createFixture();
+    const service = createReviewGitService({
+      getState: () => f.state,
+      azure: f.manager,
+      github: f.manager,
+      reviewBridgeStore: f.bridge,
+      refreshGit: async () => {},
+      refreshAzure: async () => {},
+      refreshGitHub: async () => {},
+      broadcastState: () => {},
+      emit: () => {},
+      auditStores: {},
+      log: { info() {}, warn() {}, error() {} },
+      now: () => now,
+    });
+    service.start({ kind: "fetch", workspaceId: "ws-1" }, ui);
+    await service.operations.idle();
+    expect(service.stateFor().lastRuns).toHaveLength(1);
+    now += REVIEW_GIT_OPERATION_RETENTION_MS + 1_000;
+    expect(service.stateFor().lastRuns).toEqual([]);
+  });
+
+  test("lookup answers running, the result, or an explicit unavailable/expired — never a guess", async () => {
+    const f = await createFixture();
+    const started = f.service.start({ kind: "fetch", workspaceId: "ws-1" }, ui);
+    await f.service.operations.idle();
+    expect(f.service.lookup(started.operationId, "default", "ws-1")).toMatchObject({ status: "succeeded" });
+    expect(f.service.lookup(started.operationId, "other", "ws-1")).toMatchObject({
+      status: "unavailable",
+      reason: "unknown",
+    });
+    expect(f.service.lookup("nope", "default")).toMatchObject({ status: "unavailable", reason: "unknown" });
+  });
+});
+
+describe("read tools", () => {
+  test("identity names the PR, the verified source repository, the local branches and the baseline", async () => {
+    const f = await createFixture();
+    const identity = (await f.service.read({ operation: "identity" }, "ws-1", "default")) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+    expect(identity).toMatchObject({
+      workspaceId: "ws-1",
+      provider: "github",
+      prKey: "conn-1:repo:7",
+      pullRequestId: 7,
+      sourceRef: "refs/heads/feature",
+      targetRef: "refs/heads/main",
+      sourceBaselineSha: null,
+      expectedLocalBranches: ["pr-7-feature", "feature"],
+      sourceRepository: { fullName: "acme/repo", sameAsTarget: true },
+    });
+    expect(identity.sourceIdentity).toContain("github|conn-1|conn-1:repo:7|refs/heads/feature|id:100");
+    expect(JSON.stringify(identity)).not.toContain("secret-token");
+  });
+
+  test("status reports HEAD, branch binding, changes and any paused operation", async () => {
+    const f = await createFixture();
+    await fs.writeFile(path.join(f.checkout, "new.txt"), "x");
+    const status = (await f.service.read({ operation: "status" }, "ws-1", "default")) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+    expect(status).toMatchObject({
+      branch: "pr-7-feature",
+      onPullRequestBranch: true,
+      untracked: 1,
+      operationInProgress: null,
+      conflictedPaths: [],
+    });
+    expect(status.headSha).toBe(git(f.checkout, ["rev-parse", "HEAD"]));
+
+    git(f.checkout, ["checkout", "-q", "-b", "develop", "origin/main"]);
+    const moved = (await f.service.read({ operation: "status" }, "ws-1", "default")) as Record<string, unknown>;
+    expect(moved.onPullRequestBranch).toBe(false);
+  });
+
+  test("refs distinguishes the cached tracking refs from the live remote tips", async () => {
+    const f = await createFixture();
+    git(f.seed, ["checkout", "-q", "feature"]);
+    await fs.writeFile(path.join(f.seed, "g.txt"), "g");
+    git(f.seed, ["add", "."]);
+    git(f.seed, ["commit", "-q", "-m", "feature 2"]);
+    git(f.seed, ["push", "-q", "origin", "feature"]);
+    const tip = git(f.seed, ["rev-parse", "HEAD"]);
+
+    const cached = (await f.service.read({ operation: "refs" }, "ws-1", "default")) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+    expect(cached.trackingSourceSha).not.toBe(tip);
+    expect(cached).not.toHaveProperty("live");
+
+    const live = (await f.service.read({ operation: "refs", query: true }, "ws-1", "default")) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+    expect(live.live.source).toBe(tip);
+  });
+
+  test("diff, history and checks are bounded, repository-relative and read-only", async () => {
+    const f = await createFixture();
+    await fs.writeFile(path.join(f.checkout, "a.txt"), "one\nTWO\nthree\n");
+    const diff = (await f.service.read(
+      { operation: "diff", scope: "worktree", path: "a.txt" },
+      "ws-1",
+      "default",
+    )) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+    expect(diff.diff).toContain("+TWO");
+    await expect(
+      f.service.read({ operation: "diff", scope: "worktree", path: "../outside" }, "ws-1", "default"),
+    ).rejects.toThrow("not a repository-relative path");
+    await expect(
+      f.service.read({ operation: "diff", scope: "worktree", path: "/etc/passwd" }, "ws-1", "default"),
+    ).rejects.toThrow("not a repository-relative path");
+
+    const history = (await f.service.read(
+      { operation: "history", range: "head-vs-target" },
+      "ws-1",
+      "default",
+    )) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+    expect(history.commits.map((commit: { subject: string }) => commit.subject)).toEqual(["feature 1"]);
+
+    (f.manager.snapshot.pullRequests as Record<string, unknown>)["conn-1:repo:7"] = { checks: { failedCount: 1 } };
+    const checks = (await f.service.read({ operation: "checks" }, "ws-1", "default")) as Record<string, unknown>;
+    expect(checks.checks).toEqual({ failedCount: 1 });
+  });
+
+  test("conflicts lists the conflicted files with their content", async () => {
+    const f = await createFixture();
+    git(f.seed, ["checkout", "-q", "main"]);
+    await fs.writeFile(path.join(f.seed, "c.txt"), "main\n");
+    git(f.seed, ["add", "."]);
+    git(f.seed, ["commit", "-q", "-m", "main c"]);
+    git(f.seed, ["push", "-q", "origin", "main"]);
+    await fs.writeFile(path.join(f.checkout, "c.txt"), "mine\n");
+    git(f.checkout, ["add", "."]);
+    git(f.checkout, ["commit", "-q", "-m", "mine c"]);
+    git(f.checkout, ["fetch", "-q", "origin"]);
+    try {
+      git(f.checkout, ["rebase", "origin/main"]);
+    } catch {
+      // expected: conflict
+    }
+    const conflicts = (await f.service.read({ operation: "conflicts" }, "ws-1", "default")) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+    expect(conflicts.operationInProgress).toBe("rebase");
+    expect(conflicts.conflictedPaths).toEqual(["c.txt"]);
+    expect(conflicts.files[0].content).toContain("<<<<<<<");
+    // Reading is allowed while the operation is paused; mutations are not.
+    const status = (await f.service.read({ operation: "status" }, "ws-1", "default")) as Record<string, unknown>;
+    expect(status.operationInProgress).toBe("rebase");
+  });
+
+  test("the audit log is queried per workspace — provider rows for this workspace and its system-credential rows only", async () => {
+    const f = await createFixture();
+    f.stores.github.query.mockReturnValue({
+      total: 1,
+      entries: [
+        {
+          timestamp: "2026-10-17T10:00:00.000Z",
+          operation: "gitPush",
+          category: "write",
+          success: true,
+          operationId: "op-1",
+          details: JSON.stringify({ requester: { agent: "claude", reportedConsent: "yes" } }),
+          url: "https://secret.example/?token=abc",
+        },
+      ],
+    });
+    const result = (await f.service.read(
+      { operation: "audit-log", limit: 5, category: "write" },
+      "ws-1",
+      "default",
+    )) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+
+    expect(f.stores.github.query).toHaveBeenCalledWith(
+      expect.objectContaining({ connectionId: "conn-1", resourceType: "git", resourceId: "ws-1", category: "write" }),
+    );
+    expect(f.stores.system.query).toHaveBeenCalledWith(expect.objectContaining({ connectionId: "system-ws-1" }));
+    expect(result.entries[0]).toMatchObject({ operation: "gitPush", operationId: "op-1" });
+    expect(result.entries[0].details.requester.agent).toBe("claude");
+    expect(JSON.stringify(result)).not.toContain("secret.example");
+  });
+
+  test("every read refuses a workspace outside the capability's profile", async () => {
+    const f = await createFixture();
+    await expect(f.service.read({ operation: "status" }, "ws-1", "other")).rejects.toThrow("Cross-profile refused");
+    await expect(f.service.read({ operation: "status" }, "missing", "default")).rejects.toThrow(
+      "Review workspace not found",
+    );
+  });
+});
+
+describe("push and publish", () => {
+  async function withFakePush(
+    pushResult: unknown,
+    publish: (run: (entry: Record<string, unknown>) => Promise<unknown>) => Promise<void>,
+  ) {
+    const f = await createFixture();
+    const fakeManager = {
+      buildReviewSubject: f.manager.buildReviewSubject.bind(f.manager),
+      pushReviewWorkspace: vi.fn(async () => pushResult),
+      addPullRequestComment: vi.fn(async () => undefined),
+      getReviewGitEngine: () => f.manager.getReviewGitEngine(),
+      runGit: f.manager.runGit.bind(f.manager),
+    };
+    f.bridge.syncPendingDrafts.mockImplementation(async (_prKey: string, run: never) => publish(run));
+    const service = createReviewGitService({
+      getState: () => f.state,
+      azure: fakeManager,
+      github: fakeManager,
+      reviewBridgeStore: f.bridge,
+      refreshGit: async () => {},
+      refreshAzure: async () => {},
+      refreshGitHub: async () => {},
+      broadcastState: () => {},
+      emit: () => {},
+      auditStores: {},
+      log: { info() {}, warn() {}, error() {} },
+    });
+    return { f, fakeManager, service };
+  }
+
+  async function runPushAndPublish(service: ReturnType<typeof createReviewGitService>) {
+    const started = service.start({ kind: "push-and-publish", workspaceId: "ws-1" }, ui);
+    await service.operations.idle();
+    const looked = service.lookup(started.operationId, "default", "ws-1");
+    return (looked as { operation: { result: any } }).operation.result; // eslint-disable-line @typescript-eslint/no-explicit-any
+  }
+
+  test("reports the push and each comment on its own: a failing comment never undoes the push", async () => {
+    const { service, fakeManager } = await withFakePush({ status: "pushed", message: "Pushed." }, async (run) => {
+      await run({ commentKey: "c1", body: "one", remoteThreadId: null, comment: { filePath: "a.txt", lineNumber: 1 } });
+      await run({ commentKey: "c2", body: "two", remoteThreadId: null, comment: {} }).catch(() => {});
+    });
+    fakeManager.addPullRequestComment
+      .mockImplementationOnce(async () => undefined)
+      .mockRejectedValueOnce(new Error("403 Forbidden"));
+
+    const result = await runPushAndPublish(service);
+
+    expect(result.push).toMatchObject({ status: "pushed" });
+    expect(result.publish).toMatchObject({
+      attempted: true,
+      published: ["c1"],
+      failed: [{ commentKey: "c2", error: "403 Forbidden" }],
+    });
+    expect(fakeManager.pushReviewWorkspace).toHaveBeenCalledTimes(1);
+  });
+
+  test("a comment whose inline anchor went stale is refused, not posted at a guessed line", async () => {
+    const { service, fakeManager } = await withFakePush({ status: "up-to-date", message: "same" }, async (run) => {
+      await run({
+        commentKey: "stale",
+        body: "text",
+        remoteThreadId: null,
+        comment: { filePath: "gone.txt", lineNumber: 4, anchorStale: true },
+      }).catch(() => {});
+    });
+    const result = await runPushAndPublish(service);
+    expect(fakeManager.addPullRequestComment).not.toHaveBeenCalled();
+    expect(result.publish.failed[0].error).toContain("stale");
+    expect(result.publish.published).toEqual([]);
+  });
+
+  test("a push that is blocked or needs consent publishes nothing", async () => {
+    for (const push of [
+      { status: "blocked", code: "branch-mismatch", message: "wrong branch" },
+      { status: "confirm-required", proposal: { proposalId: "p" } },
+    ]) {
+      const { service, f } = await withFakePush(push, async () => {});
+      const result = await runPushAndPublish(service);
+      expect(result.publish).toMatchObject({ attempted: false, published: [], failed: [] });
+      expect(f.bridge.syncPendingDrafts).not.toHaveBeenCalled();
+    }
+  });
+
+  test("after a successful push the inline anchors are re-validated, never silently moved", async () => {
+    const { service, f } = await withFakePush({ status: "pushed", message: "ok" }, async () => {});
+    await runPushAndPublish(service);
+    expect(f.bridge.markStaleAnchors).toHaveBeenCalledTimes(1);
+  });
+
+  test("the anchor check keeps a comment only while its file still has that line at HEAD", async () => {
+    const { service, f } = await withFakePush({ status: "pushed", message: "ok" }, async () => {});
+    await runPushAndPublish(service);
+    const validator = f.bridge.markStaleAnchors.mock.calls[0][1] as (anchor: {
+      commentKey: string;
+      filePath: string;
+      lineNumber: number;
+    }) => Promise<boolean>;
+    expect(await validator({ commentKey: "k", filePath: "a.txt", lineNumber: 2 })).toBe(true);
+    expect(await validator({ commentKey: "k", filePath: "a.txt", lineNumber: 3 })).toBe(true);
+    expect(await validator({ commentKey: "k", filePath: "a.txt", lineNumber: 9 })).toBe(false);
+    expect(await validator({ commentKey: "k", filePath: "removed.txt", lineNumber: 1 })).toBe(false);
+  });
+});
+
+describe("capability liveness", () => {
+  const grant = {
+    sessionId: "ws-1:panel-1",
+    profileId: "default",
+    workspaceId: "ws-1",
+    panelId: "panel-1",
+    prKey: "conn-1:repo:7",
+    identityKey: "identity-1",
+    agent: "claude",
+    command: "claude",
+  };
+  const session = { status: "running", workspaceId: "ws-1", panelId: "panel-1" };
+  let state: AppState;
+  const check = (overrides: Partial<Parameters<typeof isReviewGitGrantLive>[0]> = {}) =>
+    isReviewGitGrantLive({
+      state,
+      grant,
+      session,
+      agentFor: () => "claude",
+      identityKeyFor: () => "identity-1",
+      ...overrides,
+    });
+
+  beforeEach(() => {
+    state = {
+      profiles: [{ id: "default" }],
+      workspaces: [
+        {
+          id: "ws-1",
+          profileId: "default",
+          panels: [{ id: "panel-1", command: "claude" }],
+          review: { prKey: "conn-1:repo:7" },
+        },
+      ],
+    } as unknown as AppState;
+  });
+
+  test("is live while the tab, workspace, PR, profile and source identity are all unchanged", () => {
+    expect(check()).toBe(true);
+  });
+
+  test.each([
+    ["the tab was detached from the PR", (s: AppState) => ((s.workspaces[0] as any).review = null)], // eslint-disable-line @typescript-eslint/no-explicit-any
+    [
+      "the workspace now belongs to another PR",
+      (s: AppState) => ((s.workspaces[0] as any).review.prKey = "other:pr:1"),
+    ], // eslint-disable-line @typescript-eslint/no-explicit-any
+    ["the workspace moved to another profile", (s: AppState) => ((s.workspaces[0] as any).profileId = "other")], // eslint-disable-line @typescript-eslint/no-explicit-any
+    ["the profile was deleted", (s: AppState) => ((s.profiles as any[]).length = 0)], // eslint-disable-line @typescript-eslint/no-explicit-any
+    ["the panel was closed", (s: AppState) => ((s.workspaces[0] as any).panels = [])], // eslint-disable-line @typescript-eslint/no-explicit-any
+    ["the panel now runs another command", (s: AppState) => ((s.workspaces[0] as any).panels[0].command = "bash")], // eslint-disable-line @typescript-eslint/no-explicit-any
+    ["the workspace was deleted", (s: AppState) => ((s.workspaces as any[]).length = 0)], // eslint-disable-line @typescript-eslint/no-explicit-any
+  ])("ends when %s", (_label, mutate) => {
+    mutate(state);
+    expect(check()).toBe(false);
+  });
+
+  test("ends when the PR's source identity changed, or the tab's agent session is no longer running", () => {
+    expect(check({ identityKeyFor: () => "identity-2" })).toBe(false);
+    expect(check({ session: undefined })).toBe(false);
+    expect(check({ session: { ...session, status: "exited" } })).toBe(false);
+    expect(check({ session: { ...session, panelId: "panel-2" } })).toBe(false);
+    expect(check({ agentFor: () => "codex" })).toBe(false);
+  });
+});

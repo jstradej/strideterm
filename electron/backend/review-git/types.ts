@@ -17,6 +17,8 @@ export interface ReviewGitSubject {
   /** The TARGET repository's clone URL (`review.repository.remoteUrl`). */
   targetRemoteUrl: string;
   baselineSha: string;
+  /** Set when the provider's current PR source differs from the persisted link; blocks source-targeted work. */
+  identityConflict?: string;
   checkout: ReviewCheckout | null;
   auth: { login?: string; token: string };
 }
@@ -38,6 +40,7 @@ export type ReviewGitBlockCode =
   | "operation-in-progress"
   | "source-ref-deleted"
   | "source-unverified"
+  | "source-identity-changed"
   | "source-repo-unsupported"
   | "source-not-writable"
   | "shallow-history"

@@ -1760,6 +1760,88 @@ describe("runtime integration", () => {
     });
   });
 
+  describe("review Git operations", () => {
+    const reviewWorkspace = (overrides: Record<string, unknown> = {}) => ({
+      id: "workspace-review",
+      name: "Review",
+      kind: "terminal",
+      cwd: "/tmp/review",
+      activePanelId: "shell",
+      profileId: "default",
+      review: {
+        provider: "github",
+        prKey: "gh-main:repo:7",
+        connectionId: "gh-main",
+        sourceRepository: {
+          id: "1",
+          name: "repo",
+          fullName: "acme/repo",
+          remoteUrl: "https://example.com/acme/repo.git",
+          sameAsTarget: true,
+          canPush: null,
+        },
+        pullRequest: { id: 7, sourceRefName: "refs/heads/feature", targetRefName: "refs/heads/main" },
+      },
+      panels: [{ id: "shell", title: "Shell", command: "", startup: "default" }],
+      ...overrides,
+    });
+
+    test("the payload carries a profile-scoped, runtime-only reviewGit list that starts empty", async () => {
+      const fixture = await createFixture({ initialState: { workspaces: [reviewWorkspace()] } });
+      fixtures.push(fixture);
+      expect(fixture.runtime.getPayload().reviewGit).toEqual({ running: [], lastRuns: [] });
+    });
+
+    test("starting is validated synchronously: an unknown workspace is an immediate error, not a failed operation", async () => {
+      const fixture = await createFixture({ initialState: { workspaces: [reviewWorkspace()] } });
+      fixtures.push(fixture);
+      await expect(
+        fixture.runtime.startReviewGitOperation({ kind: "refresh", workspaceId: "nope" }, undefined),
+      ).rejects.toThrow("Review workspace not found");
+      expect(fixture.runtime.getPayload().reviewGit).toEqual({ running: [], lastRuns: [] });
+    });
+
+    test("starting without a usable provider connection fails at once instead of starting anything", async () => {
+      const fixture = await createFixture({ initialState: { workspaces: [reviewWorkspace()] } });
+      fixtures.push(fixture);
+      await expect(
+        fixture.runtime.startReviewGitOperation({ kind: "push", workspaceId: "workspace-review" }, undefined),
+      ).rejects.toThrow();
+      expect(fixture.runtime.getPayload().reviewGit.running).toEqual([]);
+    });
+
+    test("a workspace that is not linked to a pull request cannot start one", async () => {
+      const fixture = await createFixture({ initialState: { workspaces: [reviewWorkspace({ review: null })] } });
+      fixtures.push(fixture);
+      await expect(
+        fixture.runtime.startReviewGitOperation({ kind: "refresh", workspaceId: "workspace-review" }, undefined),
+      ).rejects.toThrow("Review workspace not found");
+    });
+
+    test("a persisted source baseline and source repository survive a normalize/save round trip, and the retired writable flag does not", async () => {
+      const fixture = await createFixture({
+        initialState: {
+          workspaces: [
+            reviewWorkspace({
+              review: {
+                ...reviewWorkspace().review,
+                writable: true,
+                sourceBaselineSha: "a".repeat(40),
+              },
+            }),
+          ],
+        },
+      });
+      fixtures.push(fixture);
+      const review = fixture.runtime
+        .getPayload()
+        .appState.workspaces.find((ws) => ws.id === "workspace-review")?.review;
+      expect(review?.sourceBaselineSha).toBe("a".repeat(40));
+      expect(review?.sourceRepository).toMatchObject({ fullName: "acme/repo" });
+      expect(review).not.toHaveProperty("writable");
+    });
+  });
+
   test("repairs persisted azure review workspaces that lost review metadata", async () => {
     class FakeAzureManager extends EventEmitter {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

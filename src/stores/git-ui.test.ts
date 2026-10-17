@@ -15,8 +15,21 @@ const getGitSnapshot = vi.fn((_workspaceId: string, _rootPath?: string | null): 
 // backend's payload.workspace is always the DESKTOP's active workspace, so a
 // raw assignment jumps a remote/mobile viewer into another workspace.
 const adoptPayload = vi.fn();
+// PR-linked checkouts route Push / Force push / "update from the PR target"
+// through the review Git operations the app store exposes.
+const pushReviewCheckout = vi.fn(
+  async (_workspaceId: string, _options?: { force?: boolean }): Promise<unknown> => null,
+);
+const rebaseReviewCheckout = vi.fn(async (_workspaceId: string): Promise<unknown> => null);
+const appStoreMock = {
+  getGitSnapshot,
+  adoptPayload,
+  payload: null as unknown,
+  pushReviewCheckout,
+  rebaseReviewCheckout,
+};
 vi.mock("./app.js", () => ({
-  useAppStore: () => ({ getGitSnapshot, adoptPayload }),
+  useAppStore: () => appStoreMock,
 }));
 
 beforeEach(() => {
@@ -24,6 +37,9 @@ beforeEach(() => {
   getGitSnapshot.mockReset();
   getGitSnapshot.mockReturnValue(null);
   adoptPayload.mockReset();
+  pushReviewCheckout.mockReset();
+  rebaseReviewCheckout.mockReset();
+  appStoreMock.payload = null;
 });
 
 describe("git-ui store", () => {
@@ -486,5 +502,131 @@ describe("git-ui store", () => {
       await store.gitPush("ws1");
       expect(store.get("ws1").pushProgress).toBe("");
     });
+  });
+});
+
+describe("PR-linked checkouts", () => {
+  const linked = (branch: string) => {
+    appStoreMock.payload = {
+      appState: {
+        workspaces: [
+          {
+            id: "ws1",
+            review: {
+              prKey: "gh:7",
+              pullRequest: { id: 7, sourceRefName: "refs/heads/feature/login", targetRefName: "refs/heads/main" },
+            },
+          },
+        ],
+      },
+    };
+    getGitSnapshot.mockReturnValue({ available: true, branch });
+  };
+  const api = () =>
+    ({
+      gitPush: vi.fn().mockResolvedValue({ result: { ok: true, summary: "plain push" } }),
+      gitForcePushWithLease: vi.fn().mockResolvedValue({ result: { ok: true, summary: "plain force" } }),
+      gitRebaseBase: vi.fn().mockResolvedValue({ result: { ok: true, summary: "plain rebase" } }),
+    }) as unknown as Transport & Record<string, ReturnType<typeof vi.fn>>;
+
+  test.each(["pr-7-feature-login", "feature/login"])(
+    "Push on the PR branch (%s) is the review push: it targets the PR source branch, not the local name",
+    async (branch) => {
+      linked(branch);
+      pushReviewCheckout.mockResolvedValue({ status: "pushed", message: "Pushed abc to feature/login." });
+      const transport = api();
+      const store = useGitUiStore();
+      store.init(transport);
+
+      await store.gitPush("ws1");
+
+      expect(pushReviewCheckout).toHaveBeenCalledWith("ws1", { force: false });
+      expect(transport.gitPush).not.toHaveBeenCalled();
+      expect(store.get("ws1").lastResult).toBeNull();
+    },
+  );
+
+  test("a blocked review push shows the reason and the way out in the Git pane's result banner", async () => {
+    linked("pr-7-feature-login");
+    pushReviewCheckout.mockResolvedValue({
+      status: "blocked",
+      code: "dirty-tree",
+      message: "HEAD is detached.",
+      guidance: "Switch back to the PR branch.",
+    });
+    const store = useGitUiStore();
+    store.init(api());
+
+    await store.gitPush("ws1");
+
+    expect(store.get("ws1").lastResult).toMatchObject({
+      ok: false,
+      summary: "HEAD is detached. Switch back to the PR branch.",
+    });
+  });
+
+  test("on any other branch the ordinary push acts on that branch, even in a PR-linked workspace", async () => {
+    linked("develop");
+    const transport = api();
+    const store = useGitUiStore();
+    store.init(transport);
+
+    await store.gitPush("ws1");
+
+    expect(transport.gitPush).toHaveBeenCalledTimes(1);
+    expect(pushReviewCheckout).not.toHaveBeenCalled();
+  });
+
+  test("a workspace without a PR link always pushes the ordinary way", async () => {
+    appStoreMock.payload = { appState: { workspaces: [{ id: "ws1", review: null }] } };
+    getGitSnapshot.mockReturnValue({ available: true, branch: "pr-7-feature-login" });
+    const transport = api();
+    const store = useGitUiStore();
+    store.init(transport);
+
+    await store.gitPush("ws1");
+
+    expect(transport.gitPush).toHaveBeenCalledTimes(1);
+    expect(pushReviewCheckout).not.toHaveBeenCalled();
+  });
+
+  test("a confirmed Force push on the PR branch is a review force push", async () => {
+    linked("pr-7-feature-login");
+    pushReviewCheckout.mockResolvedValue({ status: "pushed", message: "Force pushed." });
+    const transport = api();
+    const store = useGitUiStore();
+    store.init(transport);
+
+    store.confirmForcePushWithLease("ws1", { branch: "pr-7-feature-login", remote: "origin", behindCount: 2 });
+    await store.gitConfirmAction("ws1");
+
+    expect(pushReviewCheckout).toHaveBeenCalledWith("ws1", { force: true });
+    expect(transport.gitForcePushWithLease).not.toHaveBeenCalled();
+  });
+
+  test("updating a PR branch from its own target is a TARGET rebase run by the runtime (it asks itself)", async () => {
+    linked("pr-7-feature-login");
+    rebaseReviewCheckout.mockResolvedValue({ status: "rebased", message: "Rebased onto main." });
+    const transport = api();
+    const store = useGitUiStore();
+    store.init(transport);
+
+    await store.gitRebaseBase("ws1", "origin/main");
+
+    expect(rebaseReviewCheckout).toHaveBeenCalledWith("ws1");
+    expect(transport.gitRebaseBase).not.toHaveBeenCalled();
+    expect(store.get("ws1").pendingAction ?? null).toBeNull();
+  });
+
+  test("rebasing a PR branch onto some other base is the ordinary rebase with its own confirmation", async () => {
+    linked("pr-7-feature-login");
+    const transport = api();
+    const store = useGitUiStore();
+    store.init(transport);
+
+    await store.gitRebaseBase("ws1", "origin/release/1.0");
+
+    expect(rebaseReviewCheckout).not.toHaveBeenCalled();
+    expect(store.get("ws1").pendingAction).toMatchObject({ type: "rebase", baseBranch: "origin/release/1.0" });
   });
 });
