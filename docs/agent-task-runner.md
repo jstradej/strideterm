@@ -163,6 +163,21 @@ Long tasks degrade an agent's context. Every N rounds (default 5) the Worker wri
 
 If the app closes mid-task, the next start offers to resume the interrupted tasks — see [task-recovery.md](./task-recovery.md).
 
+## Starting a task from a planning terminal (internal MCP)
+
+Turn on **Allow internal MCP for agents** in a workspace's settings (off by default, desktop only). Claude Code or Codex terminals started in that workspace afterwards get a `strideterm` MCP server with five tools:
+
+| Tool                     | What it does                                                                                                                                                               |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `task_prepare`           | Checks the assignment, source files, Worker/Judge provider and model and the checkout, and returns what is missing plus an exact summary and `inputHash`. Creates nothing. |
+| `task_start`             | Starts a prepared, user-approved task; answers at once with an `operationId`. Retrying the same `idempotencyKey` never creates a second pair.                              |
+| `operation_get`          | Progress of creating and starting the pair, even before its workspace exists. `ready` means the Worker and Judge were started, not that the work is done.                  |
+| `task_list` / `task_get` | Runner state of the tasks in this profile: phase, round, roles, times, verdict and a bounded log window.                                                                   |
+
+The agent shows you the assignment, its sources, the roles/models and the checkout in one summary and starts only after you approve exactly that. The new task is an ordinary child of the workspace in the sidebar with its Worker and Judge terminals. It does not inherit the option. The agent's own directory-trust dialog in a new worktree is the one thing you confirm by hand; `task_get` lists the panels waiting for it in `awaitingUserInTerminal`.
+
+Source files named in the assignment are copied as exact snapshots to `.strideterm/tasks/<taskId>/sources/` and the task's `TASK.md` points at them; the originals are never changed. A new worktree starts from the commit recorded in the summary on a new branch; uncommitted changes do not carry over. Outcomes appear in the Notification Center once per operation.
+
 ## Companion Loop (Attach to an Existing Conversation)
 
 The Companion loop attaches an independent AI evaluator to a **live, already-running** agent conversation (Claude Code, Codex, Gemini, Copilot or OpenCode) without restarting or cloning it. It reuses the task runner in an "attached" mode.

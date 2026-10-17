@@ -54,6 +54,7 @@ import {
   mobileAttachmentOperationSchema,
   taskUpdateDescriptionSchema,
   taskWorkspaceCreateSchema,
+  taskWorkspaceActionSchema,
   taskCompanionCreateSchema,
   taskCompanionAnswerSchema,
   terminalSessionSchema,
@@ -3413,7 +3414,8 @@ export async function startRemoteServer({
       runtime.setWorkspaceUIState(body.workspaceId, body.uiState, windowId),
     // Task lifecycle ops drive the runner against the workspace's cwd
     // (edits TASK.md, signals PTY, etc). Cross-profile must refuse.
-    "/api/task/start": (body, windowId) => runtime.startTask(body.workspaceId, windowId),
+    "/api/task/start": (body, windowId) =>
+      runtime.startTask(validateIpc(taskWorkspaceActionSchema, body, "POST /api/task/start").workspaceId, windowId),
     "/api/task/stop": (body, windowId) => Promise.resolve(runtime.stopTask(body.workspaceId, windowId)),
     "/api/task/pause": (body, windowId) => Promise.resolve(runtime.pauseTask(body.workspaceId, windowId)),
     "/api/task/resume": (body, windowId) => Promise.resolve(runtime.resumeTask(body.workspaceId, windowId)),

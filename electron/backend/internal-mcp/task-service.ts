@@ -1080,9 +1080,22 @@ export function createTaskService(deps: TaskServiceDeps) {
         : undefined;
       const worktree = record.artifacts.worktree as { path?: string; branch?: string } | undefined;
       if (!workspace?.task) {
-        const left = worktree?.path
-          ? ` A worktree was left in place at ${worktree.path} (branch ${worktree.branch}); nothing was deleted.`
+        const checkout = record.intent.checkout as { cwd?: string } | undefined;
+        const taskDirectory = checkout?.cwd
+          ? path.join(checkout.cwd, TASK_ROOT, String(record.intent.reservedTaskId || ""))
           : "";
+        const taskFilesLeft =
+          taskDirectory &&
+          (await fs.stat(taskDirectory).then(
+            () => true,
+            () => false,
+          ))
+            ? ` Task files were left in ${taskDirectory}.`
+            : "";
+        const left =
+          (worktree?.path
+            ? ` A worktree was left in place at ${worktree.path} (branch ${worktree.branch}); nothing was deleted.`
+            : "") + taskFilesLeft;
         return {
           status: "interrupted",
           error: {
