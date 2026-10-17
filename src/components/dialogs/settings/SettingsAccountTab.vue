@@ -28,6 +28,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useAccountStore } from "../../../stores/account.js";
 import CustomSelect from "../../common/CustomSelect.vue";
 import { NETWORK_TLS_UNTRUSTED_COPY } from "../../../lib/network-error-copy.js";
+import { MOBILE_TRIAL_WARNING_WINDOW_MS } from "../../../lib/mobile-access-warning.js";
 
 type AccountView = "overview" | "account" | "hidden";
 
@@ -324,9 +325,33 @@ const ownerEmailNoticeCopy = computed(() => {
     ? "The login email saved on this computer could not be read, so only a partly hidden address can be shown."
     : "The login email could not be saved on this computer. It will be shown only while you are signed in.";
 });
+const trialDeadline = computed(() => {
+  const deadline = entitlement.value?.notAfter;
+  return entitlement.value?.state === "trial" &&
+    typeof deadline === "number" &&
+    Number.isFinite(deadline) &&
+    deadline > 0
+    ? deadline
+    : null;
+});
+const endedTrialDeadline = computed(() => {
+  const deadline = entitlement.value?.notAfter;
+  return endedTrial.value && typeof deadline === "number" && Number.isFinite(deadline) && deadline > 0
+    ? deadline
+    : null;
+});
+const trialExpired = computed(() => trialDeadline.value !== null && trialDeadline.value <= nowMs.value);
+const endedTrial = computed(() => entitlement.value?.state === "lapsed" && entitlement.value.source === "trial");
+const trialEnded = computed(() => trialExpired.value || endedTrial.value);
+const trialEndingSoon = computed(
+  () =>
+    trialDeadline.value !== null &&
+    !trialEnded.value &&
+    trialDeadline.value - nowMs.value <= MOBILE_TRIAL_WARNING_WINDOW_MS,
+);
 const trialDaysLeft = computed(() => {
-  if (entitlement.value?.state !== "trial" || !entitlement.value.notAfter) return null;
-  return Math.max(0, Math.ceil((entitlement.value.notAfter - nowMs.value) / 86_400_000));
+  if (trialDeadline.value === null || trialEnded.value) return null;
+  return Math.ceil((trialDeadline.value - nowMs.value) / 86_400_000);
 });
 const trialProgress = computed(() =>
   trialDaysLeft.value === null ? 0 : Math.min(100, Math.round((trialDaysLeft.value / 14) * 100)),
@@ -526,7 +551,8 @@ function formatLastSeen(epochMs: number | undefined): string {
 
 const stateCopy = computed(() => {
   const state = entitlement.value?.state;
-  if (state === "trial") return { title: "Free trial", tone: "ok" };
+  if (state === "trial")
+    return trialExpired.value ? { title: "Free trial ended", tone: "warn" } : { title: "Free trial", tone: "ok" };
   if (state === "active") {
     return entitlement.value?.source === "subscription"
       ? cancellationAt.value !== undefined
@@ -1042,6 +1068,10 @@ function focusAuthPanel(): void {
     <div
       v-if="!completingPurpose && props.view === 'overview' && !auth && !requestedAuth"
       class="account-overview-card"
+      :class="{
+        'account-overview-card--trial-ending': trialEndingSoon && props.view === 'overview',
+        'account-overview-card--trial-ended': trialEnded && props.view === 'overview',
+      }"
     >
       <div>
         <p class="account-kicker">strIDEterm Mobile</p>
@@ -1121,18 +1151,30 @@ function focusAuthPanel(): void {
           <span>{{ account.state.ownerEmail }}</span>
           <span v-if="entitlement?.planLabel">{{ entitlement.planLabel }}</span>
         </div>
-        <div v-if="trialDaysLeft !== null" class="trial-indicator" role="status">
+        <div
+          v-if="trialDaysLeft !== null || trialEnded"
+          :class="[
+            'trial-indicator',
+            { 'trial-indicator--ending': trialEndingSoon, 'trial-indicator--expired': trialEnded },
+          ]"
+          role="status"
+        >
           <div class="trial-indicator__heading">
-            <span
+            <span v-if="!trialEnded"
               ><strong>{{ trialDaysLeft }}</strong
               ><small>{{ trialDaysLeft === 1 ? "day left" : "days left" }}</small></span
             >
-            <small>Ends {{ formatDate(entitlement?.notAfter) }}</small>
+            <span v-else class="trial-indicator__ended">Mobile access has ended</span>
+            <small
+              >{{ trialEnded ? "Ended" : "Ends" }}
+              {{ formatDate(trialDeadline ?? endedTrialDeadline ?? undefined) }}</small
+            >
           </div>
-          <div class="trial-indicator__track" aria-hidden="true">
+          <div v-if="!trialEnded" class="trial-indicator__track" aria-hidden="true">
             <span :style="{ width: `${trialProgress}%` }"></span>
           </div>
-          <small>{{
+          <small v-if="trialEnded">Review your account to restore mobile access.</small>
+          <small v-else>{{
             props.phoneCount > 0 ? "Manage your connected phones below." : "Connect your phone to get started."
           }}</small>
         </div>
@@ -1177,7 +1219,7 @@ function focusAuthPanel(): void {
         </p>
         <div v-if="entitlement" class="account-actions">
           <button
-            v-if="hasActiveHostedAccess"
+            v-if="hasActiveHostedAccess && !trialEnded"
             type="button"
             class="button account-overview-card__action"
             @click="openPhones"
@@ -1186,11 +1228,15 @@ function focusAuthPanel(): void {
           </button>
           <button
             type="button"
-            :class="['button', { 'button--ghost': hasActiveHostedAccess }]"
+            :class="['button', { 'button--ghost': hasActiveHostedAccess && !trialEnded }]"
             @click="emit('navigate-account')"
           >
             {{
-              entitlement?.state === "trial" ? "View plans" : hasActiveHostedAccess ? "Plan and account" : "Review plan"
+              trialEnded || (entitlement?.state !== "trial" && !hasActiveHostedAccess)
+                ? "Review account"
+                : entitlement?.state === "trial"
+                  ? "View plans"
+                  : "Plan and account"
             }}
           </button>
         </div>
@@ -2000,6 +2046,18 @@ function focusAuthPanel(): void {
   border-radius: 12px;
   background: linear-gradient(135deg, color-mix(in srgb, var(--accent, #f2a63b) 9%, transparent), transparent 65%);
 }
+.account-overview-card--trial-ending {
+  border-color: color-mix(in srgb, var(--warn, #d08a34) 60%, var(--border, #333));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--warn, #d08a34) 10%, transparent), transparent 65%);
+}
+.account-overview-card--trial-ended {
+  border-color: color-mix(in srgb, var(--danger, #e05252) 68%, var(--border, #333));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--danger, #e05252) 13%, transparent), transparent 65%);
+}
+.account-overview-card--trial-ended .account-kicker,
+.account-overview-card--trial-ended h3 {
+  color: var(--danger, #e05252);
+}
 .account-kicker {
   margin: 0 0 5px;
   color: var(--accent, #f2a63b);
@@ -2077,13 +2135,38 @@ function focusAuthPanel(): void {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
-  color: var(--muted);
+  color: color-mix(in srgb, var(--muted) 45%, var(--text));
   font-size: 12px;
 }
 .trial-indicator {
   display: grid;
   gap: 6px;
   font-size: 12px;
+}
+.trial-indicator--ending {
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--warn, #d08a34) 45%, var(--border, #333));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--warn, #d08a34) 8%, transparent);
+}
+.trial-indicator--ending .trial-indicator__heading > span :is(strong, small) {
+  color: var(--warn, #d08a34);
+}
+.trial-indicator--expired {
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--danger, #e05252) 55%, var(--border, #333));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger, #e05252) 9%, transparent);
+}
+.trial-indicator--expired .trial-indicator__ended,
+.trial-indicator--expired .trial-indicator__heading > small {
+  color: var(--danger, #e05252);
+}
+.trial-indicator--expired .trial-indicator__track span {
+  background: var(--danger, #e05252);
+}
+.trial-indicator__ended {
+  font-weight: 600;
 }
 .trial-indicator__heading {
   display: flex;
@@ -2118,7 +2201,8 @@ function focusAuthPanel(): void {
   background: var(--accent, #f2a63b);
 }
 .trial-indicator small {
-  color: var(--muted);
+  color: color-mix(in srgb, var(--muted) 45%, var(--text));
+  font-size: 11px;
 }
 .cancellation-indicator {
   padding: 12px;

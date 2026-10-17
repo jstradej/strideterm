@@ -14,7 +14,7 @@ export function getMobileAccessWarning(input: {
   const entitlement = input.entitlement;
   const notAfter = entitlement?.notAfter;
   const now = input.now ?? Date.now();
-  const isKnownTrial = entitlement?.source === "trial";
+  const isKnownTrial = entitlement?.state === "trial" || entitlement?.source === "trial";
   const hasTrialState = entitlement?.state === "trial" || entitlement?.state === "lapsed";
   if (
     isKnownTrial &&

@@ -127,6 +127,7 @@ const { remoteConfig, runtimeRemote, tunnel, activeShareUrl, hasPublicUrl, hasAn
 const { qrDataUrl } = useQrCode(activeShareUrl);
 const mobileWarningNow = ref(Date.now());
 let mobileWarningExpiryTimer: ReturnType<typeof setTimeout> | null = null;
+const mobileEntitlement = computed(() => accountStore.entitlement ?? accountStore.overview?.entitlement);
 
 function scheduleMobileWarningExpiry(notAfter: number | undefined): void {
   if (mobileWarningExpiryTimer !== null) clearTimeout(mobileWarningExpiryTimer);
@@ -147,8 +148,8 @@ function scheduleMobileWarningExpiry(notAfter: number | undefined): void {
 
 watch(
   () => {
-    const entitlement = accountStore.overview?.entitlement;
-    return entitlement?.source === "trial" && (entitlement.state === "trial" || entitlement.state === "lapsed")
+    const entitlement = mobileEntitlement.value;
+    return entitlement?.state === "trial" || (entitlement?.state === "lapsed" && entitlement.source === "trial")
       ? entitlement.notAfter
       : undefined;
   },
@@ -164,12 +165,12 @@ const mobileWarning = computed(() =>
     mobileEnabled: store.mobileEnabled,
     pairedPhoneCount: store.mobileDevices.filter((device) => !device.revoked && device.state === "active").length,
     health: store.mobileConnectionHealth,
-    entitlement: accountStore.overview?.entitlement,
+    entitlement: mobileEntitlement.value,
     now: mobileWarningNow.value,
   }),
 );
 const mobileTrialEndDate = computed(() => {
-  const notAfter = accountStore.overview?.entitlement.notAfter;
+  const notAfter = mobileEntitlement.value?.notAfter;
   if (typeof notAfter !== "number" || !Number.isFinite(notAfter) || notAfter <= 0) return "";
   const date = new Date(notAfter);
   const options: Intl.DateTimeFormatOptions = { month: "short", day: "numeric" };

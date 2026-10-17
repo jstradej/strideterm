@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   copyText: vi.fn(),
   pairAuthorization: "denied" as string,
   entitlement: { state: "active", source: "subscription" } as { state: string; source: string; notAfter?: number },
+  overviewEntitlement: null as { state: string; source: string; notAfter?: number } | null,
 }));
 
 enableAutoUnmount(afterEach);
@@ -25,7 +26,7 @@ vi.mock("../../stores/app.js", () => ({
 }));
 
 vi.mock("../../stores/account.js", () => ({
-  useAccountStore: () => ({ overview: { entitlement: mocks.entitlement } }),
+  useAccountStore: () => ({ entitlement: mocks.entitlement, overview: { entitlement: mocks.overviewEntitlement } }),
 }));
 
 vi.mock("../../composables/useRemoteConnection.js", async () => {
@@ -54,6 +55,7 @@ describe("RemoteAccessPanel", () => {
     mocks.openRemoteAccessDialog.mockReset();
     mocks.pairAuthorization = "denied";
     mocks.entitlement = { state: "active", source: "subscription" };
+    mocks.overviewEntitlement = null;
   });
 
   test("keeps browser sharing status while offering an actionable mobile warning", async () => {
@@ -75,6 +77,47 @@ describe("RemoteAccessPanel", () => {
     expect(warning.classes()).toContain("remote-pill--mobile-warning-expired");
     await warning.trigger("click");
     expect(mocks.openSettingsDialog).toHaveBeenCalledWith({ initialTab: "mobile", initialMobileView: "account" });
+  });
+
+  test("uses the canonical entitlement when the overview summary is missing", async () => {
+    vi.useFakeTimers();
+    mocks.pairAuthorization = "ok";
+    mocks.entitlement = { state: "trial", notAfter: Date.now() + MOBILE_TRIAL_WARNING_WINDOW_MS + 1_000 };
+    const wrapper = mount(RemoteAccessPanel);
+    try {
+      expect(wrapper.find(".remote-pill--mobile-warning").exists()).toBe(false);
+      await vi.advanceTimersByTimeAsync(1_001);
+      expect(wrapper.find(".remote-pill--mobile-warning").text()).toBe("Mobile trial ends soon");
+    } finally {
+      wrapper.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  test("canonical trial without source schedules its expiry warning", async () => {
+    vi.useFakeTimers();
+    mocks.pairAuthorization = "ok";
+    mocks.entitlement = { state: "trial", notAfter: Date.now() + MOBILE_TRIAL_WARNING_WINDOW_MS + 1_000 };
+    const wrapper = mount(RemoteAccessPanel);
+
+    try {
+      expect(wrapper.find(".remote-pill--mobile-warning").exists()).toBe(false);
+      await vi.advanceTimersByTimeAsync(1_001);
+      expect(wrapper.find(".remote-pill--mobile-warning").text()).toBe("Mobile trial ends soon");
+      await vi.advanceTimersByTimeAsync(MOBILE_TRIAL_WARNING_WINDOW_MS);
+      expect(wrapper.find(".remote-pill--mobile-warning").text()).toBe("Mobile trial ended");
+    } finally {
+      wrapper.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  test("prefers canonical trial state when the overview entitlement is stale", () => {
+    mocks.entitlement = { state: "trial", source: "trial", notAfter: Date.now() - 1 };
+    mocks.overviewEntitlement = { state: "active", source: "subscription" };
+    const wrapper = mount(RemoteAccessPanel);
+
+    expect(wrapper.find(".remote-pill--mobile-warning-expired").text()).toBe("Mobile trial ended");
   });
 
   test("upcoming trial expiration is orange and opens Account settings", async () => {

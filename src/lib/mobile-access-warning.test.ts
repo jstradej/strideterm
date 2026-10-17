@@ -20,6 +20,24 @@ describe("getMobileAccessWarning", () => {
     ).toBe("trial-expired");
   });
 
+  test("uses trial state as sufficient evidence for the current trial", () => {
+    expect(
+      getMobileAccessWarning({
+        ...base,
+        entitlement: { state: "trial", notAfter: NOW - 1 },
+      }),
+    ).toBe("trial-expired");
+  });
+
+  test("requires the trial source before labeling a lapsed entitlement as an expired trial", () => {
+    expect(
+      getMobileAccessWarning({
+        ...base,
+        entitlement: { state: "lapsed", source: "subscription", notAfter: NOW - 1 },
+      }),
+    ).toBeNull();
+  });
+
   test("uses generic authorization copy for a denied active account", () => {
     expect(
       getMobileAccessWarning({

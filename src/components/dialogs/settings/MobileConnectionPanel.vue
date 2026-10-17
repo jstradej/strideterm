@@ -1021,18 +1021,19 @@ const activePhones = computed(() =>
 );
 const activePhoneCount = computed(() => activePhones.value.length);
 const mobileConnectionHealth = computed(() => appStore.mobileConnectionHealth);
+const mobileEntitlement = computed(() => accountStore.entitlement ?? accountStore.overview?.entitlement);
 const mobileAccessWarning = computed(() =>
   getMobileAccessWarning({
     mobileEnabled: mobileEnabled.value,
     pairedPhoneCount: activePhoneCount.value,
     health: mobileConnectionHealth.value,
-    entitlement: accountStore.overview?.entitlement,
+    entitlement: mobileEntitlement.value,
     now: nowTick.value,
   }),
 );
 const mobileAccessWarningTitle = computed(() => {
   if (mobileAccessWarning.value === "authorization-denied") return "Mobile access needs attention";
-  const notAfter = accountStore.overview?.entitlement.notAfter;
+  const notAfter = mobileEntitlement.value?.notAfter;
   if (typeof notAfter !== "number" || !Number.isFinite(notAfter) || notAfter <= 0) {
     return mobileAccessWarning.value === "trial-expired" ? "Free trial ended" : "Free trial ends soon";
   }

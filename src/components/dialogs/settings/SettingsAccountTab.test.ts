@@ -693,6 +693,104 @@ describe("the account page", () => {
     expect(wrapper.emitted("navigate-account")).toHaveLength(1);
   });
 
+  test("overview marks an elapsed trial as ended and never shows zero days left", async () => {
+    const deadline = Date.now() - 1;
+    const trial = overview({ entitlement: { state: "trial", source: "trial", notAfter: deadline } });
+    const { wrapper } = await render(
+      stateFor({ overview: trial, entitlement: trial.entitlement }),
+      {},
+      { view: "overview" },
+    );
+
+    expect(wrapper.find(".account-overview-card h3").text()).toBe("Free trial ended");
+    expect(wrapper.find(".account-overview-card--trial-ended").exists()).toBe(true);
+    expect(wrapper.find(".trial-indicator--expired").text()).toContain("Mobile access has ended");
+    expect(wrapper.find(".trial-indicator--expired").text()).toContain("Ended");
+    expect(wrapper.find(".trial-indicator").text()).not.toContain("0days left");
+    expect(wrapper.find(".trial-indicator").text()).toContain("Review your account to restore mobile access.");
+    expect(wrapper.find(".trial-indicator__track").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("Connect your phone to get started.");
+    expect(wrapper.findAll(".account-overview-card button").map((button) => button.text())).toEqual(["Review account"]);
+  });
+
+  test("expired trial with existing phones still offers account review and no phone action", async () => {
+    const trial = overview({
+      entitlement: { state: "trial", source: "trial", notAfter: Date.now() - 1 },
+    });
+    const { wrapper } = await render(
+      stateFor({ overview: trial, entitlement: trial.entitlement }),
+      {},
+      { view: "overview", phoneCount: 2 },
+    );
+
+    expect(wrapper.findAll(".account-overview-card button").map((button) => button.text())).toEqual(["Review account"]);
+    expect(wrapper.find(".trial-indicator").text()).toContain("Review your account to restore mobile access.");
+    expect(wrapper.find(".trial-indicator").text()).not.toContain("Manage your connected phones below.");
+  });
+
+  test("server-lapsed trial uses the red ended card even without a deadline", async () => {
+    const trial = overview({ entitlement: { state: "lapsed", source: "trial" } });
+    const { wrapper } = await render(
+      stateFor({ overview: trial, entitlement: trial.entitlement }),
+      {},
+      { view: "overview" },
+    );
+
+    expect(wrapper.find(".account-overview-card h3").text()).toBe("Trial ended");
+    expect(wrapper.find(".account-overview-card--trial-ended").exists()).toBe(true);
+    expect(wrapper.find(".trial-indicator--expired").exists()).toBe(true);
+  });
+
+  test("server-lapsed trial retains its reported end date", async () => {
+    const deadline = Date.now() - 86_400_000;
+    const trial = overview({ entitlement: { state: "lapsed", source: "trial", notAfter: deadline } });
+    const { wrapper } = await render(
+      stateFor({ overview: trial, entitlement: trial.entitlement }),
+      {},
+      { view: "overview" },
+    );
+
+    expect(wrapper.find(".trial-indicator--expired").text()).toContain(
+      `Ended ${new Intl.DateTimeFormat(undefined, { year: "numeric", month: "long", day: "numeric" }).format(new Date(deadline))}`,
+    );
+  });
+
+  test("overview warns for the last three days but leaves later trials neutral", async () => {
+    const nearExpiry = overview({
+      entitlement: { state: "trial", source: "trial", notAfter: Date.now() + 3 * 86_400_000 },
+    });
+    const near = await render(
+      stateFor({ overview: nearExpiry, entitlement: nearExpiry.entitlement }),
+      {},
+      { view: "overview" },
+    );
+    expect(near.wrapper.find(".trial-indicator--ending").exists()).toBe(true);
+
+    const later = overview({
+      entitlement: { state: "trial", source: "trial", notAfter: Date.now() + 4 * 86_400_000 },
+    });
+    const normal = await render(
+      stateFor({ overview: later, entitlement: later.entitlement }),
+      {},
+      { view: "overview" },
+    );
+    expect(normal.wrapper.find(".trial-indicator--ending").exists()).toBe(false);
+    expect(normal.wrapper.find(".trial-indicator--expired").exists()).toBe(false);
+  });
+
+  test("an active subscription never gets the expired trial treatment", async () => {
+    const paid = overview({
+      entitlement: { state: "active", source: "subscription", notAfter: Date.now() - 1 },
+    });
+    const { wrapper } = await render(
+      stateFor({ overview: paid, entitlement: paid.entitlement }),
+      {},
+      { view: "overview" },
+    );
+    expect(wrapper.find(".account-overview-card h3").text()).toBe("Subscribed");
+    expect(wrapper.find(".trial-indicator").exists()).toBe(false);
+  });
+
   test("Manage phones keeps the existing Phones navigation", async () => {
     const { wrapper } = await render(stateFor(), {}, { view: "overview", phoneCount: 1 });
     await wrapper
