@@ -101,7 +101,7 @@ export async function runInternalMcpStdioServer(config = readInternalMcpStdioCon
     {
       title: "Prepare a Worker + Judge task",
       description:
-        "Validate a task assignment and its settings and return what is still missing, the choices, and an exact summary with an inputHash. Creates nothing and starts nothing. Pass the user's assignment verbatim and never add or widen requirements. Show the user the whole summary (assignment, sources, roles/models, checkout) for one common approval before task_start. Source files are read by you with your own tools and passed as content plus their original path.",
+        "Validate a task assignment and its settings and return what is still missing, the choices, and an exact summary with an inputHash. Creates nothing and starts nothing. Pass the user's assignment verbatim and never add or widen requirements. Show the user the whole summary (assignment, sources, roles/models, checkout) for one common approval before task_start. Source files are read by you with your own tools and passed as content plus their original path. Ask the user for every missing choice instead of filling it in: provider and model for Worker and Judge, and where the task runs (the current directory, or a new worktree — recommend a new worktree when other work happens in parallel). The user's uncommitted changes do not carry into a new worktree.",
       inputSchema: internalMcpPrepareInputSchema.shape,
     },
     async (input, extra) => send({ operation: "prepare", input }, withDisconnect(extra.signal)),

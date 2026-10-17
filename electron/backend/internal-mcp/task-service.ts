@@ -117,7 +117,8 @@ interface Preparation {
   input: InternalMcpPrepareInput;
   evaluation: Evaluation;
   expiresAt: number;
-  startedOperationId: string | null;
+  /** The start this preparation was claimed by; a failed one releases it. */
+  start: { key: string; promise: Promise<Record<string, unknown>> } | null;
 }
 
 const DEFAULT_WORKER: RoleConfig = { providerId: "claude", model: "sonnet" };
@@ -852,7 +853,9 @@ export function createTaskService(deps: TaskServiceDeps) {
           entries.push({ event: "unparsable-line" });
         }
       }
-      return { entries, nextCursor: String(Math.min(offset + consumed, size)) };
+      // A single line longer than the window can never be read whole: step over it instead of stalling on one cursor.
+      const advanced = consumed === 0 && length === LOG_WINDOW_BYTES ? length : consumed;
+      return { entries, nextCursor: String(Math.min(offset + advanced, size)) };
     } finally {
       await handle.close();
     }
@@ -864,7 +867,7 @@ export function createTaskService(deps: TaskServiceDeps) {
       prunePreparations();
       const id = `prep-${randomUUID()}`;
       const expiresAt = now() + INTERNAL_MCP_PREPARATION_TTL_MS;
-      preparations.set(id, { id, scope, input, evaluation, expiresAt, startedOperationId: null });
+      preparations.set(id, { id, scope, input, evaluation, expiresAt, start: null });
       return {
         preparationId: id,
         status: evaluation.ready ? "ready" : "requires_input",
@@ -917,71 +920,82 @@ export function createTaskService(deps: TaskServiceDeps) {
           "approvedInputHash is not the hash of this preparation. Show the user the current summary and approve it.",
         );
       }
-      if (prep.startedOperationId) {
+      if (prep.start) {
+        // The same request again while it is still being accepted shares its answer.
+        if (prep.start.key === input.idempotencyKey) return { ...(await prep.start.promise), replayed: true };
         throw new InternalMcpError(
           "needs_reprepare",
           "This preparation was already started. Prepare again to start another task.",
         );
       }
 
-      // Everything that could have moved since task_prepare — HEAD, a branch name, a source file, a
-      // provider CLI, a competing task — is read again against the same inputs before any side effect.
-      const fresh = await evaluate(scope, prep.input);
-      if (fresh.errors.length > 0) {
-        const first = fresh.errors[0];
-        throw new InternalMcpError(first.code, first.message);
-      }
-      if (!fresh.ready || !fresh.plan || fresh.inputHash !== prep.evaluation.inputHash) {
-        throw new InternalMcpError(
-          "needs_reprepare",
-          "The assignment, a source, the checkout or the configuration changed since task_prepare. Prepare again and have the user approve the new summary.",
-        );
-      }
-      const plan = fresh.plan;
-      const reserved = { workspaceId: `workspace-${randomUUID()}`, taskId: randomUUID() };
-      const accepted = await operations
-        .accept(
-          {
-            kind: OPERATION_KIND_TASK_PROVISION,
-            profileId: scope.profileId,
-            originWorkspaceId: scope.workspaceId,
-            idempotencyKey: input.idempotencyKey,
-            inputHash: input.approvedInputHash,
-            initialStep: plan.checkout.mode === "worktree" ? "preparing-worktree" : "creating-workspace",
-            intent: {
-              preparationId: prep.id,
-              reservedWorkspaceId: reserved.workspaceId,
-              reservedTaskId: reserved.taskId,
-              parentWorkspaceId: plan.parentWorkspaceId,
-              checkout: { ...plan.checkout },
-              worker: plan.worker,
-              judge: plan.judge,
-              maxRounds: plan.maxRounds,
-              assignmentSha256: sha256Hex(plan.assignment),
-              sources: plan.sources.map((source) => ({
-                path: source.path,
-                origin: source.origin,
-                access: source.access,
-                sha256: source.sha256,
-                bytes: source.bytes,
-                snapshot: source.snapshotName,
-              })),
+      // Claimed before the first await: two requests with different keys must not both start one preparation.
+      const begin = (async (): Promise<Record<string, unknown>> => {
+        // Everything that could have moved since task_prepare — HEAD, a branch name, a source file, a
+        // provider CLI, a competing task — is read again against the same inputs before any side effect.
+        const fresh = await evaluate(scope, prep.input);
+        if (fresh.errors.length > 0) {
+          const first = fresh.errors[0];
+          throw new InternalMcpError(first.code, first.message);
+        }
+        if (!fresh.ready || !fresh.plan || fresh.inputHash !== prep.evaluation.inputHash) {
+          throw new InternalMcpError(
+            "needs_reprepare",
+            "The assignment, a source, the checkout or the configuration changed since task_prepare. Prepare again and have the user approve the new summary.",
+          );
+        }
+        const plan = fresh.plan;
+        const reserved = { workspaceId: `workspace-${randomUUID()}`, taskId: randomUUID() };
+        const accepted = await operations
+          .accept(
+            {
+              kind: OPERATION_KIND_TASK_PROVISION,
+              profileId: scope.profileId,
+              originWorkspaceId: scope.workspaceId,
+              idempotencyKey: input.idempotencyKey,
+              inputHash: input.approvedInputHash,
+              initialStep: plan.checkout.mode === "worktree" ? "preparing-worktree" : "creating-workspace",
+              intent: {
+                preparationId: prep.id,
+                reservedWorkspaceId: reserved.workspaceId,
+                reservedTaskId: reserved.taskId,
+                parentWorkspaceId: plan.parentWorkspaceId,
+                checkout: { ...plan.checkout },
+                worker: plan.worker,
+                judge: plan.judge,
+                maxRounds: plan.maxRounds,
+                assignmentSha256: sha256Hex(plan.assignment),
+                sources: plan.sources.map((source) => ({
+                  path: source.path,
+                  origin: source.origin,
+                  access: source.access,
+                  sha256: source.sha256,
+                  bytes: source.bytes,
+                  snapshot: source.snapshotName,
+                })),
+              },
             },
-          },
-          (handle) => provision(handle, plan, reserved, prep.input.assignment ?? ""),
-        )
-        .catch((err: unknown) => {
-          if (err instanceof OperationIdempotencyConflictError)
-            throw new InternalMcpError("idempotency_conflict", err.message);
-          throw err;
-        });
-      if (!accepted.replayed) prep.startedOperationId = accepted.record.operationId;
-      return {
-        operationId: accepted.record.operationId,
-        status: "accepted",
-        replayed: accepted.replayed,
-        awaitingUserInTerminal: awaitingOf(accepted.record.workspaceId),
-      };
+            (handle) => provision(handle, plan, reserved, prep.input.assignment ?? ""),
+          )
+          .catch((err: unknown) => {
+            if (err instanceof OperationIdempotencyConflictError)
+              throw new InternalMcpError("idempotency_conflict", err.message);
+            throw err;
+          });
+        return {
+          operationId: accepted.record.operationId,
+          status: "accepted",
+          replayed: accepted.replayed,
+          awaitingUserInTerminal: awaitingOf(accepted.record.workspaceId),
+        };
+      })();
+      prep.start = { key: input.idempotencyKey, promise: begin };
+      try {
+        return await begin;
+      } catch (err) {
+        prep.start = null;
+        throw err;
+      }
     },
 
     operationGet(scope: InternalMcpScope, operationId: string): Record<string, unknown> {

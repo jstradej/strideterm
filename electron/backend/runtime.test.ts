@@ -17035,4 +17035,44 @@ describe("internal MCP: creating and watching task agents", () => {
     expect(prepared.errors[0]).toMatchObject({ code: "provider_unavailable", message: "claude not found on PATH" });
     expect(prepared.choices.providers.find((p: any) => p.id === "claude").available).toBe(false);
   });
+
+  test("two parallel starts with different keys cannot both start one preparation", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });
+    const call = brokerClient(launchAgent(fixture).launch);
+    const prepared = (await call("prepare", readyInput())).result;
+    const start = (idempotencyKey: string) =>
+      call("start", {
+        preparationId: prepared.preparationId,
+        approvedInputHash: prepared.inputHash,
+        idempotencyKey,
+      });
+    const answers = await Promise.all([start("key-twin-000001"), start("key-twin-000002")]);
+    expect(answers.map((answer) => answer.status).sort()).toEqual([200, 409]);
+    const accepted = answers.find((answer) => answer.status === 200)!;
+    await waitForOperation(call, accepted.result.operationId);
+    expect(taskWorkspaces(fixture)).toHaveLength(1);
+  });
+
+  test("a failed start frees the preparation for another attempt", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });
+    const call = brokerClient(launchAgent(fixture).launch);
+    const prepared = (await call("prepare", readyInput({ sources: [{ path: "spec.md" }] }))).result;
+    expect(prepared.status).toBe("requires_input");
+    const ready = (await call("prepare", readyInput())).result;
+    const wrong = await call("start", {
+      preparationId: ready.preparationId,
+      approvedInputHash: "9".repeat(64),
+      idempotencyKey: "key-retry-000001",
+    });
+    expect(wrong.status).toBe(409);
+    const right = await call("start", {
+      preparationId: ready.preparationId,
+      approvedInputHash: ready.inputHash,
+      idempotencyKey: "key-retry-000002",
+    });
+    expect(right.status).toBe(200);
+    await waitForOperation(call, right.result.operationId);
+  });
 });
