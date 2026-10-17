@@ -1,0 +1,111 @@
+name: Build Snap
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-snap:
+    name: Build Linux x64 Snap artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Resolve latest published GitHub release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
+          if [[ -z "$tag" ]]; then
+            echo "::error::No published GitHub release was found."
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Check out release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+          path: source
+
+      - name: Record source commit and check release version
+        id: source
+        working-directory: source
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse HEAD)"
+          version="$(node -p "require('./package.json').version")"
+          if [[ "$version" != "$RELEASE_TAG" && "v$version" != "$RELEASE_TAG" ]]; then
+            echo "::error::Release tag $RELEASE_TAG does not match package version $version."
+            exit 1
+          fi
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+
+      - name: Copy Snap build configuration into release source
+        run: cp electron-builder.snap.mjs source/electron-builder.snap.mjs
+
+      - run: npm ci
+        working-directory: source
+      - run: npm test
+        working-directory: source
+      - run: npm run build
+        working-directory: source
+
+      - name: Drop cpu-features (NaN/V8 incompat with Electron 42)
+        working-directory: source
+        run: node -e "require('node:fs').rmSync('node_modules/cpu-features',{recursive:true,force:true})"
+
+      - name: Install Snapcraft
+        run: sudo snap install snapcraft --classic
+
+      - name: Build unsigned Snap package
+        working-directory: source
+        run: npx electron-builder --linux snap --x64 --publish never --config electron-builder.snap.mjs
+
+      - name: Verify Snap artifact
+        working-directory: source
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_COMMIT: ${{ steps.source.outputs.commit }}
+          RELEASE_VERSION: ${{ steps.source.outputs.version }}
+        run: |
+          set -euo pipefail
+          snap_file="$(find release -maxdepth 1 -type f -name '*.snap' -print -quit)"
+          test -n "$snap_file"
+          test "$(find release -maxdepth 1 -type f -name '*.snap' | wc -l)" -eq 1
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y squashfs-tools
+          metadata="$(unsquashfs -cat "$snap_file" meta/snap.yaml)"
+          grep -qE '^name: strideterm$' <<< "$metadata"
+          grep -qE '^title: strIDEterm$' <<< "$metadata"
+          grep -qE '^confinement: classic$' <<< "$metadata"
+          {
+            echo '## Snap build artifact (not published)'
+            echo
+            echo "- Release: \`$RELEASE_TAG\`"
+            echo "- Source commit: \`$RELEASE_COMMIT\`"
+            echo "- Version: \`$RELEASE_VERSION\`"
+            echo '- Package: `strideterm`, title `strIDEterm`, classic confinement'
+            echo "- Artifact: \`$snap_file\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Snap artifact (not published to Snap Store)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: strideterm-snap-${{ steps.source.outputs.version }}-${{ steps.source.outputs.commit }}
+          path: source/release/*.snap
+          if-no-files-found: error
