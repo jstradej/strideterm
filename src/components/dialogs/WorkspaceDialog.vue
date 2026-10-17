@@ -458,7 +458,10 @@ const isDocker = computed(() => draft.kind === "docker");
 const isAzure = computed(() => draft.kind === "azure" || draft.kind === "github");
 const isTask = computed(() => draft.kind === "task");
 const isCreatingTask = computed(() => isTask.value && props.creating);
-const showInternalMcpOption = computed(() => !isTask.value && !isDocker.value && !draft.review);
+const showInternalMcpOption = computed(
+  () =>
+    !isTask.value && !isDocker.value && !isAzure.value && !draft.review && !(draft as { quickfix?: unknown }).quickfix,
+);
 const internalMcpLocked = computed(() => store.isRemoteTransport);
 const taskDescriptionLength = computed(() => (draft.task?.description || "").length);
 

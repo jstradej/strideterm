@@ -15939,16 +15939,18 @@ describe("internal MCP: creating and watching task agents", () => {
   async function createMcpFixture({
     workspaces,
     profiles,
+    settings,
     dataDir,
     execFileTextImpl,
   }: {
     workspaces: Array<Record<string, unknown>>;
     profiles?: Array<Record<string, unknown>>;
+    settings?: Record<string, unknown>;
     dataDir?: string;
     execFileTextImpl?: unknown;
   }) {
     const fixture = await createFixture({
-      initialState: { workspaces, ...(profiles ? { profiles } : {}) },
+      initialState: { workspaces, ...(profiles ? { profiles } : {}), ...(settings ? { settings } : {}) },
       execFileTextImpl: execFileTextImpl ?? execFileText,
       dataDir,
       dependencies: { enableInternalMcp: true },
@@ -16117,6 +16119,26 @@ describe("internal MCP: creating and watching task agents", () => {
     expect(result.choices.providers.map((p: { id: string }) => p.id)).toContain("codex");
     expect(fixture.store.getState().workspaces).toHaveLength(before);
     await expect(fs.stat(path.join(repo, ".strideterm"))).rejects.toThrow();
+  });
+
+  test("defaults come from the user's taskDefaults settings", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({
+      workspaces: [parentWorkspace(repo)],
+      settings: {
+        taskDefaults: {
+          workerProvider: { providerId: "codex", model: "gpt-5.1" },
+          judgeProvider: { providerId: "gemini", model: "" },
+        },
+      },
+    });
+    const { launch } = launchAgent(fixture);
+    const { result } = await brokerClient(launch)("prepare", {});
+    expect(result.defaults).toEqual({
+      worker: { providerId: "codex", model: "gpt-5.1" },
+      judge: { providerId: "gemini", model: "" },
+      maxRounds: 10,
+    });
   });
 
   test("a start must carry the hash of the approved summary", async () => {
@@ -16389,12 +16411,12 @@ describe("internal MCP: creating and watching task agents", () => {
     const first = await prepareAndStart(call, readyInput(), "key-first-task");
     expect((await waitForOperation(call, first.started.result.operationId)).status).toBe("succeeded");
     const task = taskWorkspaces(fixture)[0] as any;
-    expect(["running", "idle"]).toContain(task.task.state);
+    await fixture.store.mutate((draft: any) => {
+      draft.workspaces.find((w: any) => w.id === task.id).task.state = "running";
+    });
 
     const second = await call("prepare", readyInput({ assignment: "Another" }));
-    if (task.task.state === "running") {
-      expect(second.result.errors[0]).toMatchObject({ code: "checkout_conflict" });
-    }
+    expect(second.result.errors[0]).toMatchObject({ code: "checkout_conflict" });
     expect(taskWorkspaces(fixture)).toHaveLength(1);
   });
 
@@ -16442,7 +16464,16 @@ describe("internal MCP: creating and watching task agents", () => {
     const call = brokerClient(launch);
 
     const { prepared, started } = await prepareAndStart(call, readyInput());
-    expect(prepared.summary.checkout).toMatchObject({ mode: "here", cwd: parent, gitRoots: [fwd(repoA), fwd(repoB)] });
+    expect(prepared.summary.checkout).toMatchObject({
+      mode: "here",
+      cwd: parent,
+      gitRoots: [fwd(repoA), fwd(repoB)],
+      hasUncommittedChanges: true,
+    });
+    expect(prepared.summary.checkout.repositories).toEqual([
+      expect.objectContaining({ path: fwd(repoA), uncommittedChanges: true }),
+      expect.objectContaining({ path: fwd(repoB), uncommittedChanges: false }),
+    ]);
     expect((await waitForOperation(call, started.result.operationId)).status).toBe("succeeded");
     const task = taskWorkspaces(fixture)[0] as any;
     expect(task.cwd).toBe(parent);
@@ -16670,6 +16701,16 @@ describe("internal MCP: creating and watching task agents", () => {
       logCursor: next.result.log.nextCursor,
     });
     expect(last.result.log.entries.map((e: any) => e.event)).toEqual(["e6"]);
+
+    await fs.appendFile(
+      logPath,
+      JSON.stringify({ ts: "2026-01-01T00:01:00Z", event: "e7", round: 1 }) + String.fromCharCode(10),
+    );
+    const appended = await call("task_get", {
+      workspaceId: done.workspaceId,
+      logCursor: last.result.log.nextCursor,
+    });
+    expect(appended.result.log.entries.map((e: any) => e.event)).toEqual(["e7"]);
   });
 
   test("a panel on a dialog shows up as awaitingUserInTerminal and leaves when the dialog does", async () => {

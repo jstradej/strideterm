@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PROVIDER_CHOICES } from "./agent-provider-catalog.js";
 
 export const INTERNAL_MCP_URL_ENV = "STRIDETERM_INTERNAL_MCP_URL";
 export const INTERNAL_MCP_CAPABILITY_ENV = "STRIDETERM_INTERNAL_MCP_CAPABILITY";
@@ -33,7 +34,9 @@ export const INTERNAL_MCP_ERROR_CODES = [
 ] as const;
 export type InternalMcpErrorCode = (typeof INTERNAL_MCP_ERROR_CODES)[number];
 
-const providerIdSchema = z.enum(["claude", "codex", "gemini", "copilot", "opencode"]);
+const providerIdSchema = z
+  .string()
+  .refine((id) => PROVIDER_CHOICES.some((choice) => choice.id === id), "Unknown provider id.");
 const modelIdSchema = z
   .string()
   .max(100)

@@ -121,8 +121,8 @@ interface Preparation {
   start: { key: string; promise: Promise<Record<string, unknown>> } | null;
 }
 
-const DEFAULT_WORKER: RoleConfig = { providerId: "claude", model: "sonnet" };
-const DEFAULT_JUDGE: RoleConfig = { providerId: "claude", model: "opus" };
+const FALLBACK_WORKER: RoleConfig = { providerId: "claude", model: "sonnet" };
+const FALLBACK_JUDGE: RoleConfig = { providerId: "claude", model: "opus" };
 const DEFAULT_MAX_ROUNDS = 10;
 const MAX_PREPARATIONS = 50;
 const TASK_LIST_DEFAULT = 20;
@@ -182,20 +182,26 @@ function latestActivity(task: NonNullable<WorkspaceState["task"]>): string | nul
   return valid.length ? valid.reduce((a, b) => (Date.parse(a) >= Date.parse(b) ? a : b)) : null;
 }
 
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
 export function remapAssignment(
   assignment: string,
   sources: Array<Pick<SourceSnapshot, "path">>,
   targets: string[],
 ): string {
-  let out = assignment;
   const replacements: Array<[string, string]> = [];
   sources.forEach((source, i) => {
     const forms = new Set([source.path, source.path.replace(/\\/g, "/"), source.path.replace(/\//g, "\\")]);
     for (const form of forms) if (form) replacements.push([form, targets[i]]);
   });
+  if (replacements.length === 0) return assignment;
   replacements.sort((a, b) => b[0].length - a[0].length);
-  for (const [from, to] of replacements) out = out.split(from).join(to);
-  return out;
+  const byForm = new Map(replacements);
+  const alternatives = replacements.map(([form]) => escapeRegExp(form)).join("|");
+  const pattern = new RegExp(`(?<![\\w./\\\\-])(?:${alternatives})(?![\\w/\\\\-]|\\.\\w)`, "gu");
+  return assignment.replace(pattern, (match) => byForm.get(match) ?? match);
 }
 
 export function createTaskService(deps: TaskServiceDeps) {
@@ -216,6 +222,16 @@ export function createTaskService(deps: TaskServiceDeps) {
     } catch {
       return false;
     }
+  }
+
+  function configuredDefaults(): { worker: RoleConfig; judge: RoleConfig } {
+    const configured = getState().settings?.taskDefaults;
+    const pick = (value: { providerId?: string; model?: string } | undefined, fallback: RoleConfig): RoleConfig =>
+      value?.providerId ? { providerId: value.providerId, model: value.model ?? "" } : fallback;
+    return {
+      worker: pick(configured?.workerProvider, FALLBACK_WORKER),
+      judge: pick(configured?.judgeProvider, FALLBACK_JUDGE),
+    };
   }
 
   function resolveParent(scope: InternalMcpScope): WorkspaceState {
@@ -418,7 +434,7 @@ export function createTaskService(deps: TaskServiceDeps) {
         repositoryPath: "",
         branch: "",
         baseCommit: "",
-        dirty: false,
+        dirty: repositoryInfo.some((entry) => entry.info?.dirty === true),
         cwd: parent.cwd,
         gitRoots: (parent.gitRoots || []).length >= 2 ? [...parent.gitRoots] : [],
       };
@@ -555,6 +571,12 @@ export function createTaskService(deps: TaskServiceDeps) {
                 }
               : {
                   gitRoots: checkout.gitRoots,
+                  repositories: repositoryInfo.map((entry) => ({
+                    path: entry.path,
+                    head: entry.info?.head ?? "",
+                    uncommittedChanges: entry.info?.dirty ?? false,
+                  })),
+                  hasUncommittedChanges: checkout.dirty,
                   note: "The task runs in the workspace's current directory, including any uncommitted changes.",
                 }),
           }
@@ -605,7 +627,7 @@ export function createTaskService(deps: TaskServiceDeps) {
       missingInputs,
       errors,
       choices,
-      defaults: { worker: DEFAULT_WORKER, judge: DEFAULT_JUDGE, maxRounds: DEFAULT_MAX_ROUNDS },
+      defaults: { ...configuredDefaults(), maxRounds: DEFAULT_MAX_ROUNDS },
       summary,
       inputHash,
       ready: plan !== null,

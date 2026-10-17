@@ -37,4 +37,20 @@ describe("remapAssignment", () => {
   test("an assignment that names no source is returned untouched", () => {
     expect(remapAssignment("Do the thing", [{ path: "/a/b.md" }], targets)).toBe("Do the thing");
   });
+
+  test("matches on path boundaries: a different path or word that merely contains the source is untouched", () => {
+    const out = remapAssignment(
+      "Implement docs/plan.md, follow myplan.md, ignore plan.md.old and plan.md-x, but do use plan.md.",
+      [{ path: "plan.md" }],
+      targets,
+    );
+    expect(out).toBe(
+      "Implement docs/plan.md, follow myplan.md, ignore plan.md.old and plan.md-x, but do use .strideterm/tasks/t/sources/01-asdf.md.",
+    );
+  });
+
+  test("a source named at the start, in quotes or in parentheses is rewritten", () => {
+    const out = remapAssignment('plan.md first, "plan.md" and (plan.md)', [{ path: "plan.md" }], targets);
+    expect(out).toBe('S first, "S" and (S)'.replaceAll("S", ".strideterm/tasks/t/sources/01-asdf.md"));
+  });
 });

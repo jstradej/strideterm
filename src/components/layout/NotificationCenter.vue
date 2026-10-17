@@ -384,6 +384,16 @@
                     Snooze
                   </button>
                 </div>
+                <div v-if="canDiscardOperation(row.session)" class="notification-item__quick-actions">
+                  <button
+                    class="quick-action"
+                    data-testid="discard-operation"
+                    title="Forget this failed run and free its idempotency key, so the same request can be started again. Nothing on disk is deleted."
+                    @click.stop="discardOperation(row.session)"
+                  >
+                    Discard
+                  </button>
+                </div>
               </div>
               <!-- Hard-delete from history. Hidden on "waiting" items so the
                    user is nudged toward Dismiss/Snooze/Jump instead of
@@ -1213,6 +1223,24 @@ async function openAgentRow(row: RunningAgentRow): Promise<void> {
   // A pinned dock is a place the user chose to keep open; an overlay would
   // otherwise cover the very thing they just navigated to.
   if (!notifStore.pinned) notifStore.closePanel();
+}
+
+function canDiscardOperation(s: NotificationSession): boolean {
+  return (
+    s.category === "operation" &&
+    typeof s.meta?.operationId === "string" &&
+    !s.workspaceId &&
+    s.events?.[0]?.kind === "error" &&
+    typeof api?.discardOperation === "function"
+  );
+}
+
+async function discardOperation(s: NotificationSession): Promise<void> {
+  const discard = api?.discardOperation;
+  if (!discard) return;
+  const operationId = String(s.meta?.operationId);
+  const done = await notifStore.runWithToast("Discard failed", () => discard(operationId));
+  if (done) notifStore.remove(s.id);
 }
 
 async function dismiss(s: NotificationSession): Promise<void> {
