@@ -52,7 +52,7 @@ async function connect(env: Record<string, string>) {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: ["--import", "tsx", stdioEntry, "--internal-mcp"],
-    env: { ...process.env, ...env },
+    env: { ...process.env, ...env } as Record<string, string>,
     stderr: "pipe",
   });
   const client = new Client({ name: "internal-mcp-integration-test", version: "1.0.0" });

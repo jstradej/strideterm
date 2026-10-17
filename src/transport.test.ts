@@ -2949,10 +2949,10 @@ describe("operation:finished — transport boundary validation", () => {
   });
 
   it("electron transport subscribes through the preload bridge with the same validation", () => {
-    let bridged: ((payload: unknown) => void) | null = null;
+    const bridge: { handler: ((payload: unknown) => void) | null } = { handler: null };
     (window as unknown as Record<string, unknown>).strideterm = {
       onOperationFinished: (handler: (payload: unknown) => void) => {
-        bridged = handler;
+        bridge.handler = handler;
       },
     };
     try {
@@ -2960,7 +2960,7 @@ describe("operation:finished — transport boundary validation", () => {
       const seen: unknown[] = [];
       transport.onOperationFinished((event) => seen.push(event));
 
-      for (const payload of [finished, failed, ...malformed]) bridged?.(payload);
+      for (const payload of [finished, failed, ...malformed]) bridge.handler?.(payload);
 
       expect(seen).toEqual([finished, failed]);
     } finally {

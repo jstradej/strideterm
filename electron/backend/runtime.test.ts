@@ -15903,6 +15903,7 @@ describe("remote-access token storage", () => {
   });
 });
 
+/* eslint-disable @typescript-eslint/no-explicit-any -- the runtime fixtures and broker replies are untyped test data */
 describe("internal MCP: creating and watching task agents", () => {
   async function git(cwd: string, ...args: string[]): Promise<string> {
     const { stdout } = await execFileText("git", ["-c", "user.email=t@example.com", "-c", "user.name=T", ...args], {
@@ -15970,7 +15971,7 @@ describe("internal MCP: creating and watching task agents", () => {
     workspaceId = "parent",
     panelId = "agent",
   ) {
-    const workspace = fixture.store.getState().workspaces.find((item: any) => item.id === workspaceId);
+    const workspace = fixture.store.getState().workspaces.find((item: any) => item.id === workspaceId)!;
     const panel = workspace.panels.find((item: any) => item.id === panelId);
     const sessionId = createSessionId(workspaceId, panelId);
     fixture.sessionManager.sessions.set(sessionId, {
@@ -16074,7 +16075,7 @@ describe("internal MCP: creating and watching task agents", () => {
     expect(launch.args).toContain(".mcp.json");
     expect(launch.args).not.toContain("--strict-mcp-config");
 
-    const byId = (id: string) => fixture.store.getState().workspaces.find((item: any) => item.id === id);
+    const byId = (id: string) => fixture.store.getState().workspaces.find((item: any) => item.id === id)!;
     expect(
       fixture.sessionManager.getSessionLaunch({
         workspace: byId("parent"),
@@ -16703,7 +16704,7 @@ describe("internal MCP: creating and watching task agents", () => {
         parentWorkspace(repo, { id: "plain", name: "Plain", internalMcpEnabled: false }),
       ],
     });
-    const byId = (id: string) => fixture.store.getState().workspaces.find((w: any) => w.id === id);
+    const byId = (id: string) => fixture.store.getState().workspaces.find((w: any) => w.id === id)!;
     expect(byId("plain").internalMcpEnabled).toBe(false);
 
     await fixture.runtime.saveWorkspace({ ...byId("plain"), internalMcpEnabled: true }, "remote:sess-1");
@@ -16929,7 +16930,7 @@ describe("internal MCP: creating and watching task agents", () => {
     task.internalMcpEnabled = true;
     task.panels[1].command = "claude";
     const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo), task] });
-    const stored = fixture.store.getState().workspaces.find((w: any) => w.id === "task-ws");
+    const stored = fixture.store.getState().workspaces.find((w: any) => w.id === "task-ws")!;
     expect(stored.internalMcpEnabled).toBe(false);
     expect(
       fixture.sessionManager.getSessionLaunch({

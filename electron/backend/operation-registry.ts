@@ -225,7 +225,7 @@ export function createOperationRegistry(options: OperationRegistryOptions) {
      * evidence says (anything it does not settle becomes `interrupted`).
      */
     async load(reconcile: (record: OperationRecord) => Promise<OperationOutcome>): Promise<void> {
-      let names: string[] = [];
+      let names: string[];
       try {
         names = await fs.readdir(dir);
       } catch (err) {

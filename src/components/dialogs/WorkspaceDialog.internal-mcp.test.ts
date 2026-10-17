@@ -10,7 +10,7 @@ beforeEach(() => {
 });
 
 function mountDialog(props: Record<string, unknown> = {}) {
-  const onSubmit = vi.fn(async () => {});
+  const onSubmit = vi.fn(async (_payload: unknown) => {});
   const wrapper = mount(WorkspaceDialog, {
     props: { onCancel: vi.fn(), onSubmit, ...props },
     global: { provide: { [apiKey]: {} } },

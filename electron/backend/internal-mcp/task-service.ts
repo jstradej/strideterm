@@ -296,7 +296,7 @@ export function createTaskService(deps: TaskServiceDeps) {
     const roots = [parent.cwd, ...(parent.gitRoots || [])].filter(Boolean);
     for (const [index, source] of (input.sources || []).entries()) {
       const field = `sources[${index}]`;
-      let text: string | null = null;
+      let text: string;
       let access: SourceSnapshot["access"] = "host-provided";
       if (source.content !== undefined) {
         text = source.content;

@@ -26,9 +26,7 @@ const operationOutcomeBase = {
 
 export const operationFinishedSchema = z
   .union([
-    z
-      .object({ ...operationOutcomeBase, result: z.record(z.string(), z.unknown()) })
-      .strict(),
+    z.object({ ...operationOutcomeBase, result: z.record(z.string(), z.unknown()) }).strict(),
     z
       .object({
         ...operationOutcomeBase,

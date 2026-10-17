@@ -101,9 +101,7 @@ export const internalMcpStartInputSchema = z
   .strict();
 export type InternalMcpStartInput = z.infer<typeof internalMcpStartInputSchema>;
 
-export const internalMcpOperationGetInputSchema = z
-  .object({ operationId: z.string().trim().min(1).max(100) })
-  .strict();
+export const internalMcpOperationGetInputSchema = z.object({ operationId: z.string().trim().min(1).max(100) }).strict();
 
 export const internalMcpTaskListInputSchema = z
   .object({
@@ -185,9 +183,4 @@ export interface InternalMcpTaskOverview {
 }
 
 export type InternalMcpOperationStep =
-  | "preparing-worktree"
-  | "creating-workspace"
-  | "starting"
-  | "ready"
-  | "failed"
-  | "interrupted";
+  "preparing-worktree" | "creating-workspace" | "starting" | "ready" | "failed" | "interrupted";
