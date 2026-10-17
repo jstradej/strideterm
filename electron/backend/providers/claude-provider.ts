@@ -1,5 +1,6 @@
 import { BaseProvider, checkBinaryOnPath } from "./base-provider.js";
 import { catalogModels } from "./provider-catalog.js";
+import { effortArgs } from "../../shared/agent-provider-catalog.js";
 import type { ProviderConfig, BinaryCheckResult } from "./base-provider.js";
 
 export class ClaudeProvider extends BaseProvider {
@@ -9,10 +10,11 @@ export class ClaudeProvider extends BaseProvider {
 
   static defaultSkipPermissions = true;
 
-  override buildCommand({ model, extra, skipPermissions = true }: ProviderConfig = {}): string {
+  override buildCommand({ model, effort, extra, skipPermissions = true }: ProviderConfig = {}): string {
     const parts = ["claude"];
     if (skipPermissions) parts.push("--dangerously-skip-permissions");
     if (model) parts.push("--model", model);
+    parts.push(...effortArgs("claude", effort));
     if (extra?.mcpConfig) parts.push("--mcp-config", extra.mcpConfig as string);
     return parts.join(" ");
   }

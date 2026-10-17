@@ -29,6 +29,7 @@ export interface ParsedProviderConfig {
    * Absent on configs recovered by parsing a command line, where the flag isn't
    * recoverable — callers fall back to the provider default. */
   skipPermissions?: boolean;
+  effort?: string;
 }
 
 const providers = new Map<string, ProviderClass>();

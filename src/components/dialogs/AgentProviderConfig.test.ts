@@ -77,13 +77,14 @@ describe("AgentProviderConfig", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (wrapper as any).setProps({ provider: { providerId: "codex", model: "opus", skipPermissions: false } });
     await wrapper.findComponent(CustomSelect).vm.$emit("change");
-    // codex's worker-suggested model is gpt-5.6-terra (see PROVIDER_CHOICES),
-    // and codex defaults to skipPermissions: true.
-    const updated = lastEmitted<{ providerId: string; model: string; skipPermissions: boolean }>(
+    // codex suggests no worker model, so the worker gets "Default" (Codex picks
+    // its own recommended model); codex defaults to skipPermissions: true.
+    const updated = lastEmitted<{ providerId: string; model: string; effort: string; skipPermissions: boolean }>(
       wrapper,
       "update:provider",
     );
-    expect(updated.model).toBe("gpt-5.6-terra");
+    expect(updated.model).toBe("");
+    expect(updated.effort).toBe("");
     expect(updated.skipPermissions).toBe(true);
   });
 
@@ -109,7 +110,42 @@ describe("AgentProviderConfig", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (wrapper as any).setProps({ provider: { providerId: "codex", model: "", skipPermissions: true } });
     await wrapper.findComponent(CustomSelect).vm.$emit("change");
-    const updated = lastEmitted<{ model: string }>(wrapper, "update:provider");
-    expect(updated.model).toBe("gpt-5.6-sol");
+    const updated = lastEmitted<{ model: string; effort: string }>(wrapper, "update:provider");
+    expect(updated.model).toBe("gpt-6.1-sol");
+    expect(updated.effort).toBe("xhigh");
+  });
+
+  test("offers the provider's effort levels, and none for a CLI without an effort flag", async () => {
+    const wrapper = mountConfig("judge", {
+      provider: { providerId: "codex", model: "gpt-6.1-sol", effort: "xhigh", skipPermissions: true },
+    });
+    const selects = wrapper.findAllComponents(CustomSelect);
+    expect(selects).toHaveLength(2);
+    const effortSelect = selects[1];
+    expect(effortSelect.props("modelValue")).toBe("xhigh");
+    expect((effortSelect.props("options") as Array<{ value: string }>).map((o) => o.value)).toEqual([
+      "",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+    ]);
+    await effortSelect.vm.$emit("update:modelValue", "high");
+    expect(lastEmitted<{ effort: string }>(wrapper, "update:provider").effort).toBe("high");
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (wrapper as any).setProps({ provider: { providerId: "gemini", model: "", skipPermissions: false } });
+    expect(wrapper.findAllComponents(CustomSelect)).toHaveLength(1);
+  });
+
+  test("the custom-command prefill carries the effort flag", async () => {
+    const wrapper = mountConfig("judge", {
+      provider: { providerId: "codex", model: "gpt-6.1-sol", effort: "xhigh", skipPermissions: true },
+    });
+    await wrapper.find(".agent-config-section__advanced-btn").trigger("click");
+    expect(lastEmitted<string>(wrapper, "update:panelCommand")).toBe(
+      "codex --dangerously-bypass-approvals-and-sandbox -s danger-full-access --model gpt-6.1-sol -c model_reasoning_effort=xhigh",
+    );
   });
 });

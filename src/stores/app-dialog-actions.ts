@@ -6,6 +6,7 @@ import type { ConnectionDraft } from "./app-api-actions.js";
 import { rlog } from "../lib/renderer-log.js";
 import { adoptRestoredSession } from "./app-session-restore.js";
 import { ref, watch } from "vue";
+import { effortArgs } from "../../electron/shared/agent-provider-catalog.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -51,18 +52,21 @@ interface DialogActionsCtx {
 function buildProviderCommandString({
   providerId,
   model,
+  effort,
   skipPermissions,
-}: { providerId?: string; model?: string; skipPermissions?: boolean } = {}): string {
+}: { providerId?: string; model?: string; effort?: string; skipPermissions?: boolean } = {}): string {
   if (providerId === "claude") {
     const parts = ["claude"];
     if (skipPermissions !== false) parts.push("--dangerously-skip-permissions");
     if (model) parts.push("--model", model);
+    parts.push(...effortArgs(providerId, effort));
     return parts.join(" ");
   }
   if (providerId === "codex") {
     const parts = ["codex"];
     if (skipPermissions !== false) parts.push("--dangerously-bypass-approvals-and-sandbox", "-s", "danger-full-access");
     if (model) parts.push("--model", model);
+    parts.push(...effortArgs(providerId, effort));
     return parts.join(" ");
   }
   if (providerId === "gemini") {
@@ -75,6 +79,7 @@ function buildProviderCommandString({
     const parts = ["copilot"];
     if (skipPermissions !== false) parts.push("--allow-all-tools");
     if (model) parts.push("--model", model);
+    parts.push(...effortArgs(providerId, effort));
     return parts.join(" ");
   }
   if (providerId === "opencode") {

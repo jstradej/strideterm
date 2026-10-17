@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { PROVIDER_CHOICES } from "../../shared/agent-provider-catalog.js";
-import { getAllProviders, getProviderChoices } from "./provider-registry.js";
+import { PROVIDER_CHOICES, effortArgs } from "../../shared/agent-provider-catalog.js";
+import { getAllProviders, getProvider, getProviderChoices } from "./provider-registry.js";
 
 describe("provider catalog", () => {
   test("the backend registry offers exactly the models the shared catalog lists", () => {
@@ -20,5 +20,31 @@ describe("provider catalog", () => {
         entry.defaultSkipPermissions,
       );
     }
+  });
+
+  test("effort maps to each CLI's own flag and only a listed level reaches the command line", () => {
+    expect(effortArgs("claude", "xhigh")).toEqual(["--effort", "xhigh"]);
+    expect(effortArgs("codex", "xhigh")).toEqual(["-c", "model_reasoning_effort=xhigh"]);
+    expect(effortArgs("copilot", "max")).toEqual(["--reasoning-effort", "max"]);
+    expect(effortArgs("codex", "max")).toEqual([]);
+    expect(effortArgs("claude", "high; rm -rf /")).toEqual([]);
+    expect(effortArgs("claude", "")).toEqual([]);
+    expect(effortArgs("gemini", "high")).toEqual([]);
+    expect(effortArgs("opencode", "high")).toEqual([]);
+  });
+
+  test("the backend providers put the effort flag into the launch command", () => {
+    expect(getProvider("claude").buildCommand({ model: "opus", effort: "xhigh", skipPermissions: false })).toBe(
+      "claude --model opus --effort xhigh",
+    );
+    expect(getProvider("codex").buildCommand({ model: "gpt-6.1-sol", effort: "xhigh", skipPermissions: false })).toBe(
+      "codex --model gpt-6.1-sol -c model_reasoning_effort=xhigh",
+    );
+    expect(getProvider("copilot").buildCommand({ effort: "high", skipPermissions: false })).toBe(
+      "copilot --reasoning-effort high",
+    );
+    expect(getProvider("gemini").buildCommand({ model: "gemini-3.8-flash", effort: "high" })).toBe(
+      "gemini -m gemini-3.8-flash",
+    );
   });
 });

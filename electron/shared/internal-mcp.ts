@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { PROVIDER_CHOICES } from "./agent-provider-catalog.js";
+import { EFFORT_LEVELS, PROVIDER_CHOICES } from "./agent-provider-catalog.js";
 import { parseAgentCommand, type AgentCliProvider } from "./agent-ssh.js";
 
 export const INTERNAL_MCP_URL_ENV = "STRIDETERM_INTERNAL_MCP_URL";
@@ -61,6 +61,8 @@ const roleInputSchema = z
   .object({
     providerId: providerIdSchema.optional(),
     model: modelIdSchema.optional(),
+    /** Optional; one of the chosen provider's effortLevels. Absent → the CLI's own setting. */
+    effort: z.enum(EFFORT_LEVELS).optional(),
   })
   .strict();
 
@@ -134,7 +136,7 @@ export const internalMcpRequestSchema = z.discriminatedUnion("operation", [
 ]);
 export type InternalMcpRequest = z.infer<typeof internalMcpRequestSchema>;
 
-export type InternalMcpRoleRef = { providerId: string; model: string };
+export type InternalMcpRoleRef = { providerId: string; model: string; effort?: string };
 
 export interface InternalMcpSourceSummary {
   index: number;
@@ -157,8 +159,9 @@ export interface InternalMcpPrepareResult {
       id: string;
       name: string;
       available: boolean;
-      models: Array<{ id: string; name: string; suggestedRole: string | null }>;
+      models: Array<{ id: string; name: string; suggestedRole: string | null; suggestedEffort?: string }>;
       customModelAllowed: true;
+      effortLevels: string[];
     }>;
     checkout: {
       modes: Array<"here" | "worktree">;

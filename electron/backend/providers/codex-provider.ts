@@ -1,5 +1,6 @@
 import { BaseProvider, checkBinaryOnPath } from "./base-provider.js";
 import { catalogModels } from "./provider-catalog.js";
+import { effortArgs } from "../../shared/agent-provider-catalog.js";
 import type { ProviderConfig, BinaryCheckResult } from "./base-provider.js";
 
 export class CodexProvider extends BaseProvider {
@@ -9,10 +10,11 @@ export class CodexProvider extends BaseProvider {
 
   static defaultSkipPermissions = true;
 
-  override buildCommand({ model, skipPermissions = true }: ProviderConfig = {}): string {
+  override buildCommand({ model, effort, skipPermissions = true }: ProviderConfig = {}): string {
     const parts = ["codex"];
     if (skipPermissions) parts.push("--dangerously-bypass-approvals-and-sandbox", "-s", "danger-full-access");
     if (model) parts.push("--model", model);
+    parts.push(...effortArgs("codex", effort));
     return parts.join(" ");
   }
 

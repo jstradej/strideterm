@@ -9,6 +9,8 @@ export interface BinaryCheckResult {
 
 export interface ProviderConfig {
   model?: string;
+  /** Reasoning effort; only a level the provider's catalog entry lists reaches the command line. */
+  effort?: string;
   role?: "worker" | "judge";
   cwd?: string;
   skipPermissions?: boolean;
@@ -19,6 +21,7 @@ export interface ModelDescriptor {
   id: string;
   name: string;
   suggestedRole: string | null;
+  suggestedEffort?: string;
 }
 
 /**

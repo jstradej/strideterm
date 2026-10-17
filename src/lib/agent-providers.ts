@@ -8,29 +8,32 @@
 // (see buildProviderCommandString in app-dialog-actions.ts) — that's a
 // pre-existing, intentionally separate copy and out of scope here.
 
-import { PROVIDER_CHOICES } from "../../electron/shared/agent-provider-catalog.js";
+import { PROVIDER_CHOICES, effortArgs } from "../../electron/shared/agent-provider-catalog.js";
 import type { ProviderChoice, ProviderModelChoice } from "../../electron/shared/agent-provider-catalog.js";
 
 export interface ProviderConfig {
   providerId: string;
   model: string;
+  effort?: string;
   skipPermissions?: boolean;
 }
 
 export { PROVIDER_CHOICES };
 export type { ProviderChoice, ProviderModelChoice };
 
-export function buildProviderCommand({ providerId, model, skipPermissions }: ProviderConfig): string {
+export function buildProviderCommand({ providerId, model, effort, skipPermissions }: ProviderConfig): string {
   if (providerId === "claude") {
     const parts = ["claude"];
     if (skipPermissions) parts.push("--dangerously-skip-permissions");
     if (model) parts.push("--model", model);
+    parts.push(...effortArgs(providerId, effort));
     return parts.join(" ");
   }
   if (providerId === "codex") {
     const parts = ["codex"];
     if (skipPermissions) parts.push("--dangerously-bypass-approvals-and-sandbox", "-s", "danger-full-access");
     if (model) parts.push("--model", model);
+    parts.push(...effortArgs(providerId, effort));
     return parts.join(" ");
   }
   if (providerId === "gemini") {
@@ -43,6 +46,7 @@ export function buildProviderCommand({ providerId, model, skipPermissions }: Pro
     const parts = ["copilot"];
     if (skipPermissions) parts.push("--allow-all-tools");
     if (model) parts.push("--model", model);
+    parts.push(...effortArgs(providerId, effort));
     return parts.join(" ");
   }
   if (providerId === "opencode") {

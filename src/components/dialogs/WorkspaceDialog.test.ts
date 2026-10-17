@@ -464,8 +464,8 @@ describe("WorkspaceDialog", () => {
       await workerProviderSelect.vm.$emit("change");
       await nextTick();
 
-      // codex's worker-suggested model, per PROVIDER_CHOICES in agent-providers.ts.
-      expect(workerModelInput().value).toBe("gpt-5.6-terra");
+      // codex suggests no worker model (PROVIDER_CHOICES), so the worker falls back to "Default".
+      expect(workerModelInput().value).toBe("");
       // Judge section is untouched by the worker's provider switch.
       expect(judgeModelInput().value).toBe("opus");
     });

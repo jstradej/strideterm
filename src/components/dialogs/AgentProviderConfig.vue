@@ -7,7 +7,7 @@
       </button>
     </div>
     <template v-if="!commandOverride">
-      <div class="grid grid--2col">
+      <div class="grid" :class="effortOptions.length ? 'grid--3col' : 'grid--2col'">
         <label>
           <span>Provider</span>
           <CustomSelect v-model="providerId" :options="providerOptions" @change="onProviderChange" />
@@ -25,6 +25,13 @@
               :label="m.name + (m.suggestedRole === role ? ' (suggested)' : '')"
             />
           </datalist>
+        </label>
+        <label
+          v-if="effortOptions.length"
+          title="Reasoning effort passed to the CLI. Default leaves it to the CLI's own setting."
+        >
+          <span>Effort</span>
+          <CustomSelect v-model="effort" :options="effortOptions" />
         </label>
       </div>
       <label class="checkbox-inline" :title="skipPermissionsTitle">
@@ -81,6 +88,11 @@ const modelChoices = computed(() => {
   return p?.models || [];
 });
 
+const effortOptions = computed(() => {
+  const levels = PROVIDER_CHOICES.find((c) => c.id === props.provider.providerId)?.effortLevels ?? [];
+  return levels.length ? [{ value: "", label: "Default" }, ...levels.map((l) => ({ value: l, label: l }))] : [];
+});
+
 // Per-field writable computeds so CustomSelect/input v-model bindings can
 // stay simple, without mutating the `provider` prop object directly
 // (vue/no-mutating-props) — each emits a merged copy via update:provider.
@@ -92,6 +104,10 @@ const model = computed({
   get: () => props.provider.model,
   set: (v: string) => emit("update:provider", { ...props.provider, model: v }),
 });
+const effort = computed({
+  get: () => props.provider.effort ?? "",
+  set: (v: string) => emit("update:provider", { ...props.provider, effort: v }),
+});
 const skipPermissions = computed({
   get: () => props.provider.skipPermissions,
   set: (v: boolean) => emit("update:provider", { ...props.provider, skipPermissions: v }),
@@ -102,12 +118,13 @@ const panelCommandModel = computed({
 });
 
 function onProviderChange() {
-  // Auto-select suggested model for this role + reset skipPermissions to provider default
+  // Auto-select suggested model (and its effort) for this role + reset skipPermissions to provider default
   const p = PROVIDER_CHOICES.find((c) => c.id === props.provider.providerId);
   const suggested = p?.models?.find((m) => m.suggestedRole === props.role) || p?.models?.[0];
   emit("update:provider", {
     ...props.provider,
     model: suggested ? suggested.id : props.provider.model,
+    effort: suggested?.suggestedEffort ?? "",
     skipPermissions: p ? (p.defaultSkipPermissions ?? false) : props.provider.skipPermissions,
   });
 }
@@ -120,6 +137,7 @@ function toggleOverride() {
       buildProviderCommand({
         providerId: props.provider.providerId,
         model: props.provider.model,
+        effort: props.provider.effort,
         skipPermissions: props.provider.skipPermissions,
       }),
     );
@@ -158,6 +176,9 @@ function toggleOverride() {
 }
 .grid--2col {
   grid-template-columns: 1fr 1fr;
+}
+.grid--3col {
+  grid-template-columns: 1fr 1fr minmax(90px, 0.6fr);
 }
 /* Force matching height for the Provider select and the Model input next to it
    — browser defaults render native select / input at slightly different heights

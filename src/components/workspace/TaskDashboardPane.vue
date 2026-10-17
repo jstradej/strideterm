@@ -335,7 +335,8 @@ const PROVIDER_DISPLAY_NAMES = {
 function providerLabel(config: Record<string, any> | null | undefined) {
   if (!config) return "Claude Code (sonnet)";
   const name = (PROVIDER_DISPLAY_NAMES as Record<string, string>)[config.providerId] || config.providerId;
-  return config.model ? `${name} (${config.model})` : name;
+  const detail = [config.model, config.effort].filter(Boolean).join(" · ");
+  return detail ? `${name} (${detail})` : name;
 }
 
 const workerProviderLabel = computed(() => providerLabel(taskState.value?.workerProviderConfig));

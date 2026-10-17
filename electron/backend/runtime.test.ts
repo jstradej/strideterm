@@ -16471,6 +16471,47 @@ describe("internal MCP: creating and watching task agents", () => {
     });
   });
 
+  test("a role's effort is validated against its provider and reaches the launched command", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({
+      workspaces: [parentWorkspace(repo)],
+      settings: {
+        taskDefaults: {
+          workerProvider: { providerId: "claude", model: "sonnet" },
+          judgeProvider: { providerId: "codex", model: "gpt-6.1-sol", effort: "xhigh" },
+        },
+      },
+    });
+    const { launch } = launchAgent(fixture);
+    const call = brokerClient(launch);
+
+    const empty = await call("prepare", {});
+    expect(empty.result.defaults.judge).toEqual({ providerId: "codex", model: "gpt-6.1-sol", effort: "xhigh" });
+    const codex = empty.result.choices.providers.find((p: { id: string }) => p.id === "codex");
+    expect(codex.effortLevels).toContain("xhigh");
+    expect(empty.result.choices.providers.find((p: { id: string }) => p.id === "gemini").effortLevels).toEqual([]);
+
+    const refused = await call(
+      "prepare",
+      readyInput({ judge: { providerId: "claude", model: "opus", effort: "minimal" } }),
+    );
+    expect(refused.result.status).toBe("requires_input");
+    expect(refused.result.errors).toEqual([
+      expect.objectContaining({ code: "invalid_request", field: "judge.effort" }),
+    ]);
+
+    const { prepared, started } = await prepareAndStart(
+      call,
+      readyInput({ judge: { providerId: "claude", model: "opus", effort: "xhigh" } }),
+    );
+    expect(prepared.summary.judge.command).toContain("--model opus --effort xhigh");
+    expect(prepared.summary.worker.command).not.toContain("--effort");
+    await waitForOperation(call, started.result.operationId);
+    const task = taskWorkspaces(fixture)[0] as any;
+    expect(task.panels.find((panel: any) => panel.id === task.task.judgePanelId).command).toContain("--effort xhigh");
+    expect(task.task.judgeProviderConfig.effort).toBe("xhigh");
+  });
+
   test("a start must carry the hash of the approved summary", async () => {
     const repo = await createRepo();
     const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });

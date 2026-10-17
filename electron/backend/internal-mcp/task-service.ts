@@ -11,6 +11,7 @@ import { getProvider, getProviderChoices } from "../providers/provider-registry.
 import { TASK_BRIEF_MAX_CHARS, taskWorkspaceCreateSchema } from "../ipc-schemas.js";
 import { taskDirRel, TASK_LOG_FILE, TASK_ROOT } from "../agent-task-utils.js";
 import { TASK_ACTIVE_STATES } from "../../shared/task-states.js";
+import { PROVIDER_CHOICES } from "../../shared/agent-provider-catalog.js";
 import { OPERATION_KIND_TASK_PROVISION } from "../../shared/operation-events.js";
 import {
   INTERNAL_MCP_LOG_MAX_ENTRIES,
@@ -80,6 +81,7 @@ interface SourceSnapshot {
 interface RoleConfig {
   providerId: string;
   model: string;
+  effort?: string;
 }
 
 interface CheckoutPlan {
@@ -124,6 +126,10 @@ interface Preparation {
 
 const FALLBACK_WORKER: RoleConfig = { providerId: "claude", model: "sonnet" };
 const FALLBACK_JUDGE: RoleConfig = { providerId: "claude", model: "opus" };
+
+function effortLevelsOf(providerId: string): string[] {
+  return PROVIDER_CHOICES.find((choice) => choice.id === providerId)?.effortLevels ?? [];
+}
 const DEFAULT_MAX_ROUNDS = 10;
 const MAX_PREPARATIONS = 50;
 const TASK_LIST_DEFAULT = 20;
@@ -233,8 +239,13 @@ export function createTaskService(deps: TaskServiceDeps) {
 
   function configuredDefaults(): { worker: RoleConfig; judge: RoleConfig } {
     const configured = getState().settings?.taskDefaults;
-    const pick = (value: { providerId?: string; model?: string } | undefined, fallback: RoleConfig): RoleConfig =>
-      value?.providerId ? { providerId: value.providerId, model: value.model ?? "" } : fallback;
+    const pick = (
+      value: { providerId?: string; model?: string; effort?: string } | undefined,
+      fallback: RoleConfig,
+    ): RoleConfig =>
+      value?.providerId
+        ? { providerId: value.providerId, model: value.model ?? "", ...(value.effort ? { effort: value.effort } : {}) }
+        : fallback;
     return {
       worker: pick(configured?.workerProvider, FALLBACK_WORKER),
       judge: pick(configured?.judgeProvider, FALLBACK_JUDGE),
@@ -305,6 +316,7 @@ export function createTaskService(deps: TaskServiceDeps) {
     const ctor = provider.constructor as unknown as { defaultSkipPermissions?: boolean };
     return provider.buildCommand({
       model: role.model,
+      effort: role.effort,
       role: kind,
       skipPermissions: ctor.defaultSkipPermissions ?? false,
     });
@@ -418,8 +430,21 @@ export function createTaskService(deps: TaskServiceDeps) {
             field: `${kind}.providerId`,
             message: availability.error || `${given.providerId} is not available on this machine.`,
           });
+        } else if (given.effort && !effortLevelsOf(given.providerId).includes(given.effort)) {
+          const levels = effortLevelsOf(given.providerId);
+          errors.push({
+            code: "invalid_request",
+            field: `${kind}.effort`,
+            message: levels.length
+              ? `${given.providerId} accepts effort ${levels.join(", ")}.`
+              : `${given.providerId} has no effort setting; leave effort out.`,
+          });
         } else {
-          roles[kind] = { providerId: given.providerId, model: given.model };
+          roles[kind] = {
+            providerId: given.providerId,
+            model: given.model,
+            ...(given.effort ? { effort: given.effort } : {}),
+          };
         }
       }
     }
@@ -529,6 +554,7 @@ export function createTaskService(deps: TaskServiceDeps) {
         available: availability.available,
         models: choice.models.map((model) => ({ ...model })),
         customModelAllowed: true,
+        effortLevels: effortLevelsOf(choice.id),
       })),
       checkout: {
         modes: ["here", "worktree"],

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { reviewGitConfirmationSchema, reviewGitOperationKindSchema } from "../shared/review-git-events.js";
+import { EFFORT_LEVELS } from "../shared/agent-provider-catalog.js";
 export { remoteSessionRevokeSchema } from "../shared/remote-access.js";
 
 import type { AccountUiState } from "./account/account-state.js";
@@ -850,6 +851,7 @@ export type GithubQuickFixCreate = z.infer<typeof githubQuickFixCreateSchema>;
 export const providerConfigSchema = z.object({
   providerId: z.enum(["claude", "codex", "gemini", "copilot", "opencode"]),
   model: z.string().max(100),
+  effort: z.union([z.enum(EFFORT_LEVELS), z.literal("")]).optional(),
   skipPermissions: z.boolean().optional(),
   extra: z.record(z.string(), z.unknown()).optional(),
 });

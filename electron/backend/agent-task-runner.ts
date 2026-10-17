@@ -871,6 +871,7 @@ export class AgentTaskRunner {
       workerCommand?.trim() ||
       wp.buildCommand({
         model: workerProviderConfig.model,
+        effort: workerProviderConfig.effort,
         role: "worker",
         extra: (workerProviderConfig as unknown as Record<string, unknown>).extra as Record<string, unknown>,
         skipPermissions:
@@ -882,6 +883,7 @@ export class AgentTaskRunner {
       judgeCommand?.trim() ||
       jp.buildCommand({
         model: judgeProviderConfig.model,
+        effort: judgeProviderConfig.effort,
         role: "judge",
         extra: (judgeProviderConfig as unknown as Record<string, unknown>).extra as Record<string, unknown>,
         skipPermissions:
@@ -4636,6 +4638,7 @@ export class AgentTaskRunner {
       companionCommand?.trim() ||
       jp.buildCommand({
         model: companionProvider.model,
+        effort: companionProvider.effort,
         role: "judge",
         skipPermissions: companionProvider.skipPermissions === true,
       });

@@ -205,12 +205,11 @@ function detectProviderFromCommand(command: string): ProviderConfig | null {
   if (/^claude(\s|$)/.test(trimmed))
     return { providerId: "claude", model: extractModelFromCommand(trimmed) || "sonnet" };
   if (/^codex(\s|$)/.test(trimmed))
-    // gpt-5.4-mini until 2026-08-11 — it retires from Codex on 2026-08-31.
-    return { providerId: "codex", model: extractModelFromCommand(trimmed) || "gpt-5.6-luna" };
+    return { providerId: "codex", model: extractModelFromCommand(trimmed) || "gpt-6-luna" };
   if (/^gemini(\s|$)/.test(trimmed))
-    return { providerId: "gemini", model: extractModelFromCommand(trimmed) || "gemini-2.5-flash" };
+    return { providerId: "gemini", model: extractModelFromCommand(trimmed) || "gemini-3.8-flash" };
   if (/^copilot(\s|$)/.test(trimmed))
-    return { providerId: "copilot", model: extractModelFromCommand(trimmed) || "claude-sonnet-4.6" };
+    return { providerId: "copilot", model: extractModelFromCommand(trimmed) || "claude-sonnet-5.5" };
   if (/^opencode(\s|$)/.test(trimmed))
     return { providerId: "opencode", model: extractModelFromCommand(trimmed) || "default" };
   return null;
@@ -251,7 +250,8 @@ function defaultSkipPermissionsFor(providerId: string): boolean {
 
 const companionProvider = reactive<ProviderConfig>({
   providerId: taskDefaults.value.judgeProvider?.providerId || "codex",
-  model: taskDefaults.value.judgeProvider?.model || "gpt-5.6-sol",
+  model: taskDefaults.value.judgeProvider?.model || "gpt-6.1-sol",
+  effort: taskDefaults.value.judgeProvider?.effort ?? "",
   skipPermissions:
     taskDefaults.value.judgeProvider?.skipPermissions ??
     defaultSkipPermissionsFor(taskDefaults.value.judgeProvider?.providerId || "codex"),
@@ -267,6 +267,7 @@ const companionCommandOverride = ref(false);
 function onUpdateCompanionProvider(next: ProviderConfig) {
   companionProvider.providerId = next.providerId;
   companionProvider.model = next.model;
+  companionProvider.effort = next.effort ?? "";
   companionProvider.skipPermissions = next.skipPermissions ?? false;
 }
 

@@ -1,5 +1,6 @@
 import { BaseProvider, checkBinaryOnPath } from "./base-provider.js";
 import { catalogModels } from "./provider-catalog.js";
+import { effortArgs } from "../../shared/agent-provider-catalog.js";
 import type { ProviderConfig, BinaryCheckResult } from "./base-provider.js";
 
 export class CopilotProvider extends BaseProvider {
@@ -12,10 +13,11 @@ export class CopilotProvider extends BaseProvider {
 
   static defaultSkipPermissions = true;
 
-  override buildCommand({ model, skipPermissions = true }: ProviderConfig = {}): string {
+  override buildCommand({ model, effort, skipPermissions = true }: ProviderConfig = {}): string {
     const parts = ["copilot"];
     if (skipPermissions) parts.push("--allow-all-tools");
     if (model) parts.push("--model", model);
+    parts.push(...effortArgs("copilot", effort));
     return parts.join(" ");
   }
 
