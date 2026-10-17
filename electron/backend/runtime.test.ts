@@ -1787,6 +1787,14 @@ describe("runtime integration", () => {
                 name: "web-app",
                 remoteUrl: "https://dev.azure.com/acme/Platform/_git/web-app",
               },
+              sourceRepository: {
+                id: "repo-1",
+                name: "web-app",
+                fullName: "Platform/web-app",
+                remoteUrl: "https://dev.azure.com/acme/Platform/_git/web-app",
+                sameAsTarget: true,
+                canPush: null,
+              },
               pullRequest: {
                 id: 123,
                 title: "Fix login redirect",
@@ -1829,7 +1837,7 @@ describe("runtime integration", () => {
       // The real implementation, so the test holds the caller to its real
       // (summary, checkout, extra) signature. A hand-written 4-argument double
       // used to agree with a caller that passed a stray `mode` argument, which
-      // dropped parentWorkspaceId and "Enable editing" in production.
+      // dropped parentWorkspaceId and the source baseline in production.
       buildReviewMetadata = AzureDevOpsManager.prototype.buildReviewMetadata;
     }
 
@@ -1861,13 +1869,23 @@ describe("runtime integration", () => {
             profileId: "default",
             activePanelId: "shell",
             panels: [{ id: "shell", title: "Shell", command: "", startup: "default" }],
-            // Metadata that lost its parent link but kept the "Enable editing" opt-in.
+            // Metadata that lost its parent link but kept its source baseline, which
+            // is bound to the PR's source ref and source repository.
             review: {
               provider: "azure-devops",
               prKey: "ado-main:repo-1:123",
               connectionId: "ado-main",
               parentWorkspaceId: "",
-              writable: true,
+              sourceBaselineSha: "b".repeat(40),
+              sourceRepository: {
+                id: "repo-1",
+                name: "web-app",
+                fullName: "Platform/web-app",
+                remoteUrl: "https://dev.azure.com/acme/Platform/_git/web-app",
+                sameAsTarget: true,
+                canPush: null,
+              },
+              pullRequest: { id: 123, sourceRefName: "refs/heads/feature/login-fix" },
               checkout: { mode: "managed-worktree", rootPath: "C:/reviews/reviews/ado-main/pr-123" },
             },
           },
@@ -1886,9 +1904,10 @@ describe("runtime integration", () => {
     expect(repairedWorkspace?.review).toMatchObject({
       provider: "azure-devops",
       parentWorkspaceId: "azure-root",
-      writable: true,
+      sourceBaselineSha: "b".repeat(40),
       checkout: { mode: "managed-worktree", rootPath: "C:/reviews/reviews/ado-main/pr-123" },
     });
+    expect(repairedWorkspace?.review).not.toHaveProperty("writable");
     expect(azureReviewStore.upsertTrackedPullRequest).toHaveBeenCalledWith("ado-main:repo-1:123", {
       reviewWorkspaceId: "workspace-review",
     });

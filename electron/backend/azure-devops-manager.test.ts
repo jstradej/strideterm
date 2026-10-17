@@ -1230,9 +1230,17 @@ describe("AzureDevOpsManager fetchReviewWorkspace / rebaseReviewWorkspace / push
     expect(decoded).toBe("me@example.com:pat-123");
   });
 
-  test("rebaseReviewWorkspace and pushReviewWorkspace run fetch+rebase and push against the PR's branches end-to-end", async () => {
-    const execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
-    const { manager } = createManager({ execFileTextImpl });
+  test("push and rebase go through the shared review Git engine and refuse an unverifiable source", async () => {
+    const execFileTextImpl = vi.fn(async (_bin: string, args: string[]) => {
+      if (args.includes("symbolic-ref")) return { stdout: "pr-123-feature-login-fix", stderr: "" };
+      if (args.includes("rev-parse") && args.includes("HEAD"))
+        return { stdout: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", stderr: "" };
+      if (args.includes("rev-parse")) return { stdout: ".git", stderr: "" };
+      return { stdout: "", stderr: "" };
+    });
+    const { manager } = createManager();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).execFileText = execFileTextImpl;
     await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
 
     const workspace = {
@@ -1240,22 +1248,15 @@ describe("AzureDevOpsManager fetchReviewWorkspace / rebaseReviewWorkspace / push
       cwd: "/repo",
       review: {
         connectionId: "ado-main",
-        pullRequest: { sourceRefName: "refs/heads/feature/login-fix", targetRefName: "refs/heads/main" },
+        pullRequest: { id: 123, sourceRefName: "refs/heads/feature/login-fix", targetRefName: "refs/heads/main" },
       },
     };
 
-    await manager.rebaseReviewWorkspace({ workspace });
-    const gitCalls = execFileTextImpl.mock.calls.filter((call) => call[0] === "git");
-    expect(gitCalls[0][1]).toEqual(expect.arrayContaining(["fetch", "origin"]));
-    expect(gitCalls[1][1]).toEqual(expect.arrayContaining(["rebase", "origin/main"]));
-
-    execFileTextImpl.mockClear();
-    await manager.pushReviewWorkspace({ workspace, force: true });
-    expect(execFileTextImpl).toHaveBeenCalledWith(
-      "git",
-      expect.arrayContaining(["push", "--force-with-lease", "-u", "origin", "HEAD:refs/heads/feature/login-fix"]),
-      expect.objectContaining({ cwd: "/repo" }),
-    );
+    // No source repository was ever captured for this review, so a push cannot be
+    // verified against anything — it must stop before any git write.
+    const pushed = await manager.pushReviewWorkspace({ workspace, force: true });
+    expect(pushed).toMatchObject({ status: "blocked", code: "source-unverified" });
+    expect(execFileTextImpl.mock.calls.some((call) => call[1].includes("push"))).toBe(false);
   });
 });
 

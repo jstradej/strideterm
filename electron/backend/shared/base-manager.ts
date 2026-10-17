@@ -862,8 +862,9 @@ export class BaseProviderManager extends EventEmitter {
     login?: string;
     token: string;
   }): Promise<void> {
-    const commonDir = await this.commonDirOf(cacheRepoPath);
-    await this.reviewGitLocks.withCommon(commonDir, async () => {
+    // The cache repo is a regular clone, so its common dir is `<cache>/.git` —
+    // the same canonical key the review Git engine locks on from a worktree.
+    await this.reviewGitLocks.withCommon(path.join(cacheRepoPath, ".git"), async () => {
       await this.runGit(cacheRepoPath, ["fetch", "origin", ...fetchRefspecs], { login, token });
 
       await mkdir(path.dirname(worktreePath), { recursive: true });
@@ -894,16 +895,6 @@ export class BaseProviderManager extends EventEmitter {
         await this.fastForwardReusedBranch(worktreePath, remoteRef, localBranch);
       }
     });
-  }
-
-  /** Canonical common dir of a repository — the same key the review Git engine locks on. */
-  private async commonDirOf(cwd: string): Promise<string> {
-    try {
-      const out = (await this.runGit(cwd, ["rev-parse", "--git-common-dir"])).stdout.trim();
-      return out ? path.resolve(cwd, out) : cwd;
-    } catch {
-      return path.join(cwd, ".git");
-    }
   }
 
   private async fastForwardReusedBranch(worktreePath: string, remoteRef: string, localBranch: string): Promise<void> {
@@ -1062,7 +1053,9 @@ export class BaseProviderManager extends EventEmitter {
     if (!token) throw new Error("PAT is missing.");
     const cwd = workspace.cwd || "";
     if (!cwd) throw new Error("Review workspace has no working directory.");
-    const summary = (review.prKey ? this.findSummary(review.prKey) : null) as {
+    const summary = (
+      review.prKey ? this.findSummary(review.prKey) || this.snapshot.pullRequests[review.prKey] : null
+    ) as {
       sourceRepository?: ReviewSourceRepository | null;
     } | null;
     return {
