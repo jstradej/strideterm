@@ -240,7 +240,7 @@
         v-if="wsMenuIsPrLinked"
         type="button"
         class="context-menu__item"
-        title="Unlink this workspace from its pull request. The Review tab disappears, agent tabs stop getting the review MCP bridge, and git operations behave like a normal workspace again. The PR on the server is not touched."
+        title="Unlink this workspace from its pull request. The Review tab disappears and agent tabs stop getting the review MCP bridge and its Git tools. Git itself never needed this — a push will go to this checkout's own branch instead of the PR's source branch. The PR on the server is not touched."
         @click="onMenuAction('detach-review')"
       >
         &#x1F517; Detach from PR review
@@ -1371,9 +1371,8 @@ const wsMenuHasChildren = computed<boolean>(() => {
 
 // Any workspace carrying a PR review marker — managed review checkouts as well
 // as normal workspaces that were attached to a PR via the inbox's "Attach"
-// action. The Git tab only surfaces its detach button for review-locked
-// (non-author) checkouts, so without this entry an author-attached workspace
-// has no obvious way back out.
+// action. Detach is link management, never a prerequisite for Git; this entry
+// is the one place that works for every PR-linked workspace.
 const wsMenuIsPrLinked = computed<boolean>(() => {
   const id = wsMenu.value?.ws?.id;
   if (!id) return false;
@@ -1449,7 +1448,7 @@ async function detachReview(workspaceId: string): Promise<void> {
   const confirmed = await store.confirmInApp({
     title: "Detach from PR review?",
     message:
-      "Unlink this workspace from its pull request. The Review tab disappears and agent tabs stop being launched with the review MCP bridge; git operations behave like a normal workspace again. The pull request on the server is not touched.",
+      "Unlink this workspace from its pull request. The Review tab disappears and agent tabs stop being launched with the review MCP bridge; Push then goes to this checkout's own branch instead of the pull request's source branch. The pull request on the server is not touched.",
     confirmLabel: "Detach",
   });
   if (!confirmed) return;

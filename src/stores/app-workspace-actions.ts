@@ -454,7 +454,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     const confirmed = await confirmInApp({
       title: "Detach from PR review?",
       message:
-        "Unlink this workspace from its pull request. The Review tab disappears and agent tabs stop being launched with the review MCP bridge; git operations behave like a normal workspace again. The pull request on the server is not touched.",
+        "Unlink this workspace from its pull request. The Review tab disappears and agent tabs stop being launched with the review MCP bridge and its Git tools. Git itself never needed this — a push will go to this checkout's own branch instead of the pull request's source branch. The pull request on the server is not touched.",
       confirmLabel: "Detach",
     });
     if (!confirmed) return false;

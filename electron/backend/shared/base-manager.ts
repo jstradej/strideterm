@@ -1049,6 +1049,14 @@ export class BaseProviderManager extends EventEmitter {
     if (!review) throw new Error("This workspace is not linked to a pull request.");
     const connection = this.findConnection(review.connectionId || "");
     if (!connection) throw new Error(this.connectionNotFoundMessage);
+    // Profile-aware: a workspace never borrows the credentials of another profile's connection.
+    const connectionProfile = (connection as { profileId?: string }).profileId;
+    const workspaceProfile = workspace.profileId || "default";
+    if (connectionProfile && connectionProfile !== workspaceProfile) {
+      throw new Error(
+        `Cross-profile refused: connection ${connection.id} is in profile ${connectionProfile}, the workspace is in ${workspaceProfile}.`,
+      );
+    }
     const token = this.credentialStore.getSecret(connection.tokenRef || "");
     if (!token) throw new Error("PAT is missing.");
     const cwd = workspace.cwd || "";

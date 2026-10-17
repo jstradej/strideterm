@@ -142,7 +142,7 @@
           <button
             type="button"
             :class="['button', 'button--ghost', busyAction === 'push' && 'button--busy']"
-            :disabled="!!busyAction || !canPush"
+            :disabled="!!busyAction || gitOperationRunning || !canPush"
             :title="
               !canPush
                 ? 'Nothing to push — no local commits ahead of the remote tracking branch.'
@@ -186,7 +186,7 @@
               <button
                 type="button"
                 :class="['button', 'button--ghost', busyAction === 'rebase' && 'button--busy']"
-                :disabled="!!busyAction || !canRebase"
+                :disabled="!!busyAction || gitOperationRunning || !canRebase"
                 :title="
                   !canRebase
                     ? 'Rebase is unnecessary — your branch is already up to date with the PR target.'
@@ -199,7 +199,7 @@
               <button
                 type="button"
                 :class="['button', 'button--ghost', busyAction === 'force-push' && 'button--busy']"
-                :disabled="!!busyAction || !canForcePush"
+                :disabled="!!busyAction || gitOperationRunning || !canForcePush"
                 :title="
                   !canForcePush
                     ? 'Force push is unnecessary — local and remote agree.'
@@ -376,6 +376,9 @@ const voteDisabledReason = computed(() => {
 const canVote = computed(() => !voteDisabledReason.value);
 const voteDisabledTitle = (base: string) => (voteDisabledReason.value ? voteDisabledReason.value : base);
 
+// A review Git operation is running for this workspace (backend state: it also
+// shows after a reload, or when an agent or another client started it).
+const gitOperationRunning = computed(() => appStore.isReviewGitBusy?.(props.workspaceId) === true);
 const canPush = computed(() => aheadCount.value > 0);
 const canForcePush = computed(() => aheadCount.value > 0 || behindCount.value > 0);
 const canRebase = computed(() => (targetComparison.value?.behindCount || 0) > 0);

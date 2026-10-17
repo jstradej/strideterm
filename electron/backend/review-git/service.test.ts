@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- test fixtures poke loosely-typed state and results */
 import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -25,7 +26,7 @@ interface Fixture {
   state: AppState;
   workspace: WorkspaceState;
   manager: BaseProviderManager;
-  events: Array<{ channel: string; payload: any }>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  events: Array<{ channel: string; payload: any }>;
   broadcasts: { count: number };
   service: ReturnType<typeof createReviewGitService>;
   bridge: {
@@ -191,6 +192,50 @@ describe("starting an operation", () => {
     expect(event).not.toHaveProperty("result");
   });
 
+  test("a failed operation reaches strideterm.log, and so does one that did not run", async () => {
+    const f = await createFixture();
+    const logged: Array<{ level: string; message: string; meta?: Record<string, unknown> }> = [];
+    const service = createReviewGitService({
+      getState: () => f.state,
+      azure: f.manager,
+      github: f.manager,
+      reviewBridgeStore: f.bridge,
+      refreshGit: async () => {},
+      refreshAzure: async () => {},
+      refreshGitHub: async () => {},
+      broadcastState: () => {},
+      emit: () => {},
+      auditStores: {},
+      log: {
+        info() {},
+        warn: (message, meta) => logged.push({ level: "warn", message, meta }),
+        error: (message, meta) => logged.push({ level: "error", message, meta }),
+      },
+    });
+    await fs.writeFile(path.join(f.checkout, "dirty.txt"), "x");
+    git(f.seed, ["checkout", "-q", "feature"]);
+    await fs.writeFile(path.join(f.seed, "g.txt"), "g");
+    git(f.seed, ["add", "."]);
+    git(f.seed, ["commit", "-q", "-m", "feature 2"]);
+    git(f.seed, ["push", "-q", "origin", "feature"]);
+    service.start({ kind: "refresh", workspaceId: "ws-1" }, ui);
+    await service.operations.idle();
+    expect(logged).toContainEqual(
+      expect.objectContaining({
+        level: "warn",
+        message: "review git operation did not run",
+        meta: expect.objectContaining({ status: "blocked", kind: "refresh", source: "ui" }),
+      }),
+    );
+
+    await fs.rm(path.join(f.checkout, ".git"), { recursive: true, force: true });
+    service.start({ kind: "fetch", workspaceId: "ws-1" }, ui);
+    await service.operations.idle();
+    expect(logged.some((entry) => entry.level === "error" && entry.message === "review git operation failed")).toBe(
+      true,
+    );
+  });
+
   test("a click repeated while the same operation is running joins it", async () => {
     const f = await createFixture();
     const first = f.service.start({ kind: "refresh", workspaceId: "ws-1" }, ui);
@@ -249,7 +294,7 @@ describe("starting an operation", () => {
 describe("read tools", () => {
   test("identity names the PR, the verified source repository, the local branches and the baseline", async () => {
     const f = await createFixture();
-    const identity = (await f.service.read({ operation: "identity" }, "ws-1", "default")) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+    const identity = (await f.service.read({ operation: "identity" }, "ws-1", "default")) as Record<string, any>;
     expect(identity).toMatchObject({
       workspaceId: "ws-1",
       provider: "github",
@@ -268,7 +313,7 @@ describe("read tools", () => {
   test("status reports HEAD, branch binding, changes and any paused operation", async () => {
     const f = await createFixture();
     await fs.writeFile(path.join(f.checkout, "new.txt"), "x");
-    const status = (await f.service.read({ operation: "status" }, "ws-1", "default")) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+    const status = (await f.service.read({ operation: "status" }, "ws-1", "default")) as Record<string, any>;
     expect(status).toMatchObject({
       branch: "pr-7-feature",
       onPullRequestBranch: true,
@@ -292,11 +337,11 @@ describe("read tools", () => {
     git(f.seed, ["push", "-q", "origin", "feature"]);
     const tip = git(f.seed, ["rev-parse", "HEAD"]);
 
-    const cached = (await f.service.read({ operation: "refs" }, "ws-1", "default")) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+    const cached = (await f.service.read({ operation: "refs" }, "ws-1", "default")) as Record<string, any>;
     expect(cached.trackingSourceSha).not.toBe(tip);
     expect(cached).not.toHaveProperty("live");
 
-    const live = (await f.service.read({ operation: "refs", query: true }, "ws-1", "default")) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+    const live = (await f.service.read({ operation: "refs", query: true }, "ws-1", "default")) as Record<string, any>;
     expect(live.live.source).toBe(tip);
   });
 
@@ -307,7 +352,7 @@ describe("read tools", () => {
       { operation: "diff", scope: "worktree", path: "a.txt" },
       "ws-1",
       "default",
-    )) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+    )) as Record<string, any>;
     expect(diff.diff).toContain("+TWO");
     await expect(
       f.service.read({ operation: "diff", scope: "worktree", path: "../outside" }, "ws-1", "default"),
@@ -320,7 +365,7 @@ describe("read tools", () => {
       { operation: "history", range: "head-vs-target" },
       "ws-1",
       "default",
-    )) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+    )) as Record<string, any>;
     expect(history.commits.map((commit: { subject: string }) => commit.subject)).toEqual(["feature 1"]);
 
     (f.manager.snapshot.pullRequests as Record<string, unknown>)["conn-1:repo:7"] = { checks: { failedCount: 1 } };
@@ -344,7 +389,7 @@ describe("read tools", () => {
     } catch {
       // expected: conflict
     }
-    const conflicts = (await f.service.read({ operation: "conflicts" }, "ws-1", "default")) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+    const conflicts = (await f.service.read({ operation: "conflicts" }, "ws-1", "default")) as Record<string, any>;
     expect(conflicts.operationInProgress).toBe("rebase");
     expect(conflicts.conflictedPaths).toEqual(["c.txt"]);
     expect(conflicts.files[0].content).toContain("<<<<<<<");
@@ -373,7 +418,7 @@ describe("read tools", () => {
       { operation: "audit-log", limit: 5, category: "write" },
       "ws-1",
       "default",
-    )) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+    )) as Record<string, any>;
 
     expect(f.stores.github.query).toHaveBeenCalledWith(
       expect.objectContaining({ connectionId: "conn-1", resourceType: "git", resourceId: "ws-1", category: "write" }),
@@ -427,7 +472,7 @@ describe("push and publish", () => {
     const started = service.start({ kind: "push-and-publish", workspaceId: "ws-1" }, ui);
     await service.operations.idle();
     const looked = service.lookup(started.operationId, "default", "ws-1");
-    return (looked as { operation: { result: any } }).operation.result; // eslint-disable-line @typescript-eslint/no-explicit-any
+    return (looked as { operation: { result: any } }).operation.result;
   }
 
   test("reports the push and each comment on its own: a failing comment never undoes the push", async () => {
@@ -540,16 +585,16 @@ describe("capability liveness", () => {
   });
 
   test.each([
-    ["the tab was detached from the PR", (s: AppState) => ((s.workspaces[0] as any).review = null)], // eslint-disable-line @typescript-eslint/no-explicit-any
+    ["the tab was detached from the PR", (s: AppState) => ((s.workspaces[0] as any).review = null)],
     [
       "the workspace now belongs to another PR",
       (s: AppState) => ((s.workspaces[0] as any).review.prKey = "other:pr:1"),
-    ], // eslint-disable-line @typescript-eslint/no-explicit-any
-    ["the workspace moved to another profile", (s: AppState) => ((s.workspaces[0] as any).profileId = "other")], // eslint-disable-line @typescript-eslint/no-explicit-any
-    ["the profile was deleted", (s: AppState) => ((s.profiles as any[]).length = 0)], // eslint-disable-line @typescript-eslint/no-explicit-any
-    ["the panel was closed", (s: AppState) => ((s.workspaces[0] as any).panels = [])], // eslint-disable-line @typescript-eslint/no-explicit-any
-    ["the panel now runs another command", (s: AppState) => ((s.workspaces[0] as any).panels[0].command = "bash")], // eslint-disable-line @typescript-eslint/no-explicit-any
-    ["the workspace was deleted", (s: AppState) => ((s.workspaces as any[]).length = 0)], // eslint-disable-line @typescript-eslint/no-explicit-any
+    ],
+    ["the workspace moved to another profile", (s: AppState) => ((s.workspaces[0] as any).profileId = "other")],
+    ["the profile was deleted", (s: AppState) => ((s.profiles as any[]).length = 0)],
+    ["the panel was closed", (s: AppState) => ((s.workspaces[0] as any).panels = [])],
+    ["the panel now runs another command", (s: AppState) => ((s.workspaces[0] as any).panels[0].command = "bash")],
+    ["the workspace was deleted", (s: AppState) => ((s.workspaces as any[]).length = 0)],
   ])("ends when %s", (_label, mutate) => {
     mutate(state);
     expect(check()).toBe(false);

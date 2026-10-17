@@ -151,6 +151,28 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
     now,
     onChange(record) {
       try {
+        if (record.state === "failed") {
+          ctx.log.error("review git operation failed", {
+            operationId: record.operationId,
+            workspaceId: record.workspaceId,
+            profileId: record.profileId,
+            kind: record.kind,
+            source: record.source,
+            err: record.error,
+          });
+        } else if (record.state === "succeeded") {
+          const outcome = (record.result as { status?: string; push?: { status?: string } } | null) || {};
+          const status = outcome.push?.status ?? outcome.status ?? "";
+          if (status === "blocked" || status === "conflict") {
+            ctx.log.warn("review git operation did not run", {
+              operationId: record.operationId,
+              workspaceId: record.workspaceId,
+              kind: record.kind,
+              source: record.source,
+              status,
+            });
+          }
+        }
         ctx.broadcastState();
         if (record.state !== "running") ctx.emit(REVIEW_GIT_OPERATION_CHANNEL, toEvent(record));
       } catch (error) {

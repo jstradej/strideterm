@@ -46,7 +46,7 @@
           >
             (active)
           </button>
-          <!-- Per-row push: gated by same logic as toolbar Push; hidden in review workspace -->
+          <!-- Per-row push: gated by same logic as toolbar Push -->
           <button
             v-if="!entry.isCurrent && canPushWorktree(entry)"
             type="button"
@@ -57,8 +57,8 @@
           >
             Push
           </button>
-          <!-- Delete worktree: hidden in review workspace (UC-15); also disabled
-               for the worktree the user is currently in (git refuses anyway). -->
+          <!-- Delete worktree: never the main worktree; also disabled for the
+               worktree the user is currently in (git refuses anyway). -->
           <button
             v-if="!entry.isMainWorktree"
             type="button"
@@ -129,7 +129,7 @@ function getWorkspaceId(entry: any) {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function canPushWorktree(entry: any) {
-  // Gate same as toolbar Push: has remote, not detached, not review workspace
+  // Gate same as toolbar Push: has remote, not detached
   if (!entry.branch || entry.detached) return false;
   const remoteCount = Object.keys(props.snapshot.remotes || {}).filter((k: string) => !k.includes(":")).length;
   return remoteCount > 0;

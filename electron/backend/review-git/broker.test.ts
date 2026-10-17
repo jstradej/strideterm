@@ -126,6 +126,17 @@ describe("review Git broker", () => {
     expect((await call(capability, { operation: "start", kind: "push" })).status).toBe(400);
   });
 
+  test("an agent can never start publishing queued comments — that stays the user's own action", async () => {
+    const { capability } = broker.mintGrant(baseGrant);
+    const refused = await call(capability, {
+      operation: "start",
+      kind: "push-and-publish",
+      idempotencyKey: "key-12345678",
+    });
+    expect(refused.status).toBe(400);
+    expect(fake.service.start).not.toHaveBeenCalled();
+  });
+
   test("a capability that is no longer entitled is refused, and stays refused", async () => {
     const { capability } = broker.mintGrant(baseGrant);
     live = false;

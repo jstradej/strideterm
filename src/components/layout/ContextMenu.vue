@@ -110,7 +110,7 @@
         v-if="reviewDetachWorkspaceId"
         type="button"
         class="context-menu__item"
-        title="Unlink this workspace from its pull request. The Review tab disappears, agent tabs stop getting the review MCP bridge, and git operations behave like a normal workspace again. The PR on the server is not touched."
+        title="Unlink this workspace from its pull request. The Review tab disappears and agent tabs stop getting the review MCP bridge and its Git tools. Git itself never needed this — a push will go to this checkout's own branch instead of the PR's source branch. The PR on the server is not touched."
         @click="onDetachReview"
       >
         <span class="context-menu__icon">&#x1F517;</span><span>Detach from PR review</span>

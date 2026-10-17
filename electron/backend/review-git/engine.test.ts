@@ -44,10 +44,13 @@ interface Fixture {
     finished: Array<{ outcome: string; success: boolean }>;
     failBegin: boolean;
     failFinish: boolean;
+    /** Runs synchronously when the audit intent is written — i.e. between inspection and the command. */
+    onBegin?: () => void;
   };
   baselines: string[];
   persistFails: { value: boolean };
   engine: ReturnType<typeof createReviewGitEngine>;
+  locks: ReturnType<typeof createReviewGitLocks>;
   commitOnRemote(message: string): Promise<string>;
   forceRemoteTo(sha: string): Promise<void>;
   commitLocal(message: string, file?: string): Promise<string>;
@@ -105,9 +108,10 @@ async function createFixture({ role = "reviewer" }: { role?: string } = {}): Pro
     checkout: { mode: "managed-worktree", rootPath: checkout, cacheRepoPath: checkout },
     auth: { token: "token" },
   };
+  const locks = createReviewGitLocks();
   const engine = createReviewGitEngine({
     git: (cwd, args, auth) => gitImpl(cwd, args, auth),
-    locks: createReviewGitLocks(),
+    locks,
     audit: {
       begin(entry) {
         if (audit.failBegin) return null;
@@ -138,6 +142,7 @@ async function createFixture({ role = "reviewer" }: { role?: string } = {}): Pro
     baselines,
     persistFails,
     engine,
+    locks,
     async commitOnRemote(message) {
       await git(seed, ["checkout", "feature"]);
       await writeFile(path.join(seed, `${message.replace(/\W+/gu, "_")}.txt`), `${message}\n`);
@@ -876,6 +881,65 @@ describe("last-moment recheck, identity and proposals for agents", () => {
       "pushed",
     );
     expect(await f.remoteSha()).toBe(rewritten);
+  });
+});
+
+describe("locking around operations", () => {
+  test("two operations on one checkout never run their Git commands at the same time", async () => {
+    const f = await createFixture();
+    await f.commitOnRemote("feature 2");
+    let active = 0;
+    let maxActive = 0;
+    f.setGit((inner) => async (cwd, args, auth) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        return await inner(cwd, args, auth);
+      } finally {
+        active -= 1;
+      }
+    });
+
+    const [first, second] = await Promise.all([
+      f.engine.refresh(f.subject, requester),
+      f.engine.refresh({ ...f.subject }, requester),
+    ]);
+
+    expect(maxActive).toBe(1);
+    // The second one saw the checkout the first had already brought up to date.
+    expect([first.status, second.status].sort()).toEqual(["already-current", "updated"]);
+  });
+
+  test("the locks are free again while the user is being asked, and after a refusal", async () => {
+    const f = await createFixture();
+    await f.commitLocal("mine");
+    await f.commitOnRemote("theirs");
+
+    const proposal = expectStatus(await f.engine.refresh(f.subject, requester), "confirm-required");
+    expect(f.locks.isWorktreeHeld(f.checkout)).toBe(false);
+    expect(f.locks.isCommonHeld(path.join(f.checkout, ".git"))).toBe(false);
+
+    await writeFile(path.join(f.checkout, "late.txt"), "x");
+    const blockedNow = expectStatus(
+      await f.engine.refresh(f.subject, requester, { proposalId: proposal.proposal.proposalId }),
+      "blocked",
+    );
+    expect(blockedNow.code).toBe("dirty-tree");
+    expect(f.locks.isWorktreeHeld(f.checkout)).toBe(false);
+    expect(f.locks.isCommonHeld(path.join(f.checkout, ".git"))).toBe(false);
+  });
+
+  test("the locks are released when a command throws", async () => {
+    const f = await createFixture();
+    await f.commitLocal("mine");
+    f.setGit((inner) => async (cwd, args, auth) => {
+      if (args[0] === "push") throw new Error("network down");
+      return inner(cwd, args, auth);
+    });
+    await expect(f.engine.push(f.subject, requester)).rejects.toThrow("network down");
+    expect(f.locks.isWorktreeHeld(f.checkout)).toBe(false);
+    expect(f.locks.isCommonHeld(path.join(f.checkout, ".git"))).toBe(false);
   });
 });
 

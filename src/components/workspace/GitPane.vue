@@ -708,6 +708,7 @@ const pushLabel = computed(() => {
 const pushIsPrimary = computed(() => primaryAction.value === "push");
 const pushDisabled = computed(() => {
   if (!!gitUi.value.busyAction || operation.value.inProgress || !!gitUi.value.pendingAction) return true;
+  if (appStore.isReviewGitBusy?.(props.workspaceId)) return true;
   if (isDiverged.value && !showAllActions.value) return true;
   if (!canPush.value) return true;
   return false;

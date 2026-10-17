@@ -555,6 +555,25 @@ describe("BaseProviderManager review Git operations", () => {
     ).rejects.toThrow("Azure DevOps connection was not found.");
   });
 
+  test("a workspace never borrows the credentials of a connection owned by another profile", async () => {
+    const manager = createManager({ execFileTextImpl: vi.fn(), secrets: { "tok-ref-1": "token" } });
+    manager.snapshot.connections = [{ id: "conn-1", tokenRef: "tok-ref-1", profileId: "profile-b" }];
+    await expect(
+      manager.pushReviewWorkspace({
+        workspace: { id: "ws", cwd: "/repo", profileId: "profile-a", review: { connectionId: "conn-1" } },
+      }),
+    ).rejects.toThrow("Cross-profile refused");
+    // Same profile (or a legacy connection without one) is fine up to the next check.
+    expect(() =>
+      manager.buildReviewSubject({
+        id: "ws",
+        cwd: "/repo",
+        profileId: "profile-b",
+        review: { connectionId: "conn-1", pullRequest: { id: 1 } },
+      }),
+    ).not.toThrow();
+  });
+
   test("throws when the PAT is missing", async () => {
     const manager = createManager({ execFileTextImpl: vi.fn() });
     manager.snapshot.connections = [{ id: "conn-1", tokenRef: "tok-ref-1" }];

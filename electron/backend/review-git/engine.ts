@@ -20,7 +20,7 @@ import {
   type CheckoutFacts,
   type GitRun,
 } from "./inspect.js";
-import type { ReviewGitLocks } from "./locks.js";
+import { commonDirOf, type ReviewGitLocks } from "./locks.js";
 import type {
   ReviewGitBlockCode,
   ReviewGitConfirmation,
@@ -201,9 +201,9 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
     );
   }
 
+  /** The key every worktree of this repository shares, read from the filesystem — no Git process runs before a lock is held. */
   async function lockTargets(subject: ReviewGitSubject): Promise<{ commonDir: string }> {
-    const facts = await inspectCheckout(git, subject.cwd);
-    return { commonDir: facts.commonDir };
+    return { commonDir: await commonDirOf(subject.cwd) };
   }
 
   /**

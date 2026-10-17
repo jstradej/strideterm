@@ -15,6 +15,12 @@ const MAX_WAIT_MS = 20_000;
 
 const pathSchema = z.string().trim().min(1).max(4096);
 
+/**
+ * What an agent may start. Publishing queued comments is deliberately not here:
+ * it stays the user's own explicit action, and an agent's push never publishes.
+ */
+const agentOperationKindSchema = reviewGitOperationKindSchema.exclude(["push-and-publish"]);
+
 export const reviewGitBrokerRequestSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("identity") }).strict(),
   z.object({ operation: z.literal("status") }).strict(),
@@ -46,7 +52,7 @@ export const reviewGitBrokerRequestSchema = z.discriminatedUnion("operation", [
   z
     .object({
       operation: z.literal("start"),
-      kind: reviewGitOperationKindSchema,
+      kind: agentOperationKindSchema,
       /** Minted by the caller before the first attempt, so a lost acknowledgement can be retried safely. */
       idempotencyKey: z.string().trim().min(8).max(100),
       confirmation: reviewGitConfirmationSchema.optional(),

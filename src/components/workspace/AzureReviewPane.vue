@@ -15,7 +15,7 @@
         type="button"
         class="button"
         style="margin-top: 12px"
-        :disabled="busyAction === 'refresh'"
+        :disabled="busyAction === 'refresh' || gitOperationRunning"
         @click="handleRefresh"
       >
         {{ busyAction === "refresh" ? "Refreshing…" : "Refresh" }}
@@ -83,7 +83,7 @@
           <button
             type="button"
             :class="['button', 'button--ghost', busyAction === 'refresh' && 'button--busy']"
-            :disabled="!!busyAction"
+            :disabled="!!busyAction || gitOperationRunning"
             :title="`Fetch the latest PR data from ${isGitHub ? 'GitHub' : 'Azure DevOps'}`"
             @click="handleRefresh"
           >
@@ -95,7 +95,7 @@
           <button
             type="button"
             :class="['button', busyAction === 'pushPublish' && 'button--busy']"
-            :disabled="!!busyAction || (!pendingSyncCount && !aheadCount)"
+            :disabled="!!busyAction || gitOperationRunning || (!pendingSyncCount && !aheadCount)"
             :title="`Push ${aheadCount} commit${aheadCount !== 1 ? 's' : ''} and publish ${pendingSyncCount} comment${pendingSyncCount !== 1 ? 's' : ''}`"
             @click="handlePushAndPublish"
           >
@@ -356,7 +356,7 @@
                   <button
                     type="button"
                     :class="['button', 'button--ghost', busyAction === 'refresh' && 'button--busy']"
-                    :disabled="!!busyAction"
+                    :disabled="!!busyAction || gitOperationRunning"
                     @click="handleRefresh"
                   >
                     {{ busyAction === "refresh" ? "Refreshing…" : "Refresh" }}
@@ -1093,6 +1093,10 @@ watch(
 
 // Busy state for async toolbar actions
 const busyAction = ref<string>("");
+// A review Git operation is running for this workspace — started here, from
+// another window, from a phone or by an agent. Backend state, so it also shows
+// after a reload and while this client was disconnected.
+const gitOperationRunning = computed(() => appStore.isReviewGitBusy(props.workspaceId));
 
 // Result of the last manual Refresh's git-mutating half (sync onto the PR's
 // latest source commit). Distinct from the toolbar success/error banners
