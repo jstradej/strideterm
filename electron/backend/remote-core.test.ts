@@ -838,8 +838,8 @@ describe("looksLikeStatePayload", () => {
 
 describe("strayStatePayloadKeys", () => {
   test("names a result bolted onto a state payload, which a v2 core/ack would drop", () => {
-    expect(strayStatePayloadKeys({ ...fullPayload(), pushAndPublishResult: { publishedCount: 1 } })).toEqual([
-      "pushAndPublishResult",
+    expect(strayStatePayloadKeys({ ...fullPayload(), reviewGitResult: { publishedCount: 1 } })).toEqual([
+      "reviewGitResult",
     ]);
   });
 

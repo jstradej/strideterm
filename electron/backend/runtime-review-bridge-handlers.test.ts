@@ -5,6 +5,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { AzureDevOpsManager } from "./azure-devops-manager.js";
 import { createAzureApi } from "./azure-devops-api.js";
 import { createReviewBridgeHandlers } from "./runtime-review-bridge-handlers.js";
+import { createReviewGitService } from "./review-git/service.js";
 import { createReviewBridgeStore } from "./review-bridge-store.js";
 
 const tempPaths: string[] = [];
@@ -69,13 +70,59 @@ describe("syncReviewBridgePullRequest — cross-profile viewer guard", () => {
     expect(syncPendingDrafts).toHaveBeenCalledTimes(1);
   });
 
+  /**
+   * Publishing through "Push & publish" now runs as a review Git operation; the
+   * push itself is stubbed (nothing to push), so what is under test is only how
+   * a queued draft's inline location reaches the provider.
+   */
+  async function pushAndPublish({
+    store,
+    state,
+    azure,
+    github,
+  }: {
+    store: unknown;
+    state: { workspaces: unknown[] };
+    azure: Record<string, unknown>;
+    github: Record<string, unknown>;
+  }) {
+    const upToDate = { status: "up-to-date", message: "same", headSha: "", previousHeadSha: "" };
+    const manager = (provider: Record<string, unknown>) => ({
+      buildReviewSubject: () => ({}),
+      pushReviewWorkspace: vi.fn(async () => upToDate),
+      ...provider,
+    });
+    const service = createReviewGitService({
+      getState: () => state as never,
+      azure: manager(azure),
+      github: manager(github),
+      reviewBridgeStore: store as never,
+      refreshGit: async () => {},
+      refreshAzure: async () => {},
+      refreshGitHub: async () => {},
+      broadcastState: () => {},
+      emit: () => {},
+      auditStores: {},
+      log: { info() {}, warn() {}, error() {} },
+    });
+    const started = service.start(
+      { kind: "push-and-publish", workspaceId: "review-workspace" },
+      { profileId: "default", requester: { source: "ui" } },
+    );
+    await service.operations.idle();
+    return service.lookup(started.operationId, "default", "review-workspace") as {
+      status: string;
+      operation: { result: { publish: { published: string[]; failed: unknown[] } } };
+    };
+  }
+
   test.each([
     { publishMode: "sync", lineSide: "old" },
     { publishMode: "sync", lineSide: "new" },
     { publishMode: "push", lineSide: "old" },
     { publishMode: "push", lineSide: "new" },
   ] as const)(
-    "preserves inline comment location through real store, $publishMode handler, and ADO request ($lineSide side)",
+    "preserves inline comment location through real store, $publishMode path, and ADO request ($lineSide side)",
     async ({ publishMode, lineSide }) => {
       const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-review-publish-location-"));
       tempPaths.push(rootPath);
@@ -123,42 +170,54 @@ describe("syncReviewBridgePullRequest — cross-profile viewer guard", () => {
       manager.credentialStore = { getSecret: () => "test-token" };
       manager.setAuditContext = vi.fn();
 
-      const handlers = createReviewBridgeHandlers({
-        azure: {
-          addPullRequestComment: (input: Parameters<AzureDevOpsManager["addPullRequestComment"]>[0]) =>
-            AzureDevOpsManager.prototype.addPullRequestComment.call(manager, input),
-          findSummary: () => null,
-        },
-        github: { addPullRequestComment: vi.fn(), findSummary: () => null },
-        reviewBridgeStore: store,
-        getState: () => ({
-          workspaces: [
-            {
-              id: "review-workspace",
-              cwd: rootPath,
-              review: {
-                provider: "azure-devops",
-                prKey,
-                pullRequest: { sourceRefName: "refs/heads/feature" },
-              },
+      const azure = {
+        addPullRequestComment: (input: Parameters<AzureDevOpsManager["addPullRequestComment"]>[0]) =>
+          AzureDevOpsManager.prototype.addPullRequestComment.call(manager, input),
+        findSummary: () => null,
+      };
+      const state = {
+        workspaces: [
+          {
+            id: "review-workspace",
+            cwd: rootPath,
+            review: {
+              provider: "azure-devops",
+              prKey,
+              pullRequest: { sourceRefName: "refs/heads/feature" },
             },
-          ],
-        }),
-        getPayload: () => ({}),
-        broadcastState: vi.fn(),
-        refreshAzure: vi.fn(async () => {}),
-        refreshGitHub: vi.fn(async () => {}),
-        refreshGit: vi.fn(async () => {}),
-        assertWorkspaceInViewerProfile: vi.fn(),
-        assertPrInViewerProfile: vi.fn(),
-        git: { execGit: vi.fn(async () => ({ stdout: "0" })) },
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      } as any);
+          },
+        ],
+      };
 
-      const result =
-        publishMode === "sync"
-          ? await handlers.syncReviewBridgePullRequest({ prKey })
-          : await handlers.pushAndPublishReview({ workspaceId: "review-workspace" });
+      let published = 0;
+      if (publishMode === "sync") {
+        const handlers = createReviewBridgeHandlers({
+          azure,
+          github: { addPullRequestComment: vi.fn(), findSummary: () => null },
+          reviewBridgeStore: store,
+          getState: () => state,
+          getPayload: () => ({}),
+          broadcastState: vi.fn(),
+          refreshAzure: vi.fn(async () => {}),
+          refreshGitHub: vi.fn(async () => {}),
+          refreshGit: vi.fn(async () => {}),
+          assertWorkspaceInViewerProfile: vi.fn(),
+          assertPrInViewerProfile: vi.fn(),
+          git: { execGit: vi.fn(async () => ({ stdout: "0" })) },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any);
+        await handlers.syncReviewBridgePullRequest({ prKey });
+      } else {
+        const looked = await pushAndPublish({
+          store,
+          state,
+          azure,
+          github: { addPullRequestComment: vi.fn(), findSummary: () => null },
+        });
+        published = looked.operation.result.publish.published.length;
+        // The push and the comment are reported separately, and nothing failed.
+        expect(looked.operation.result.publish.failed).toEqual([]);
+      }
 
       const publishedContext = await store.getPullRequestContext(prKey);
       await store.close();
@@ -178,19 +237,12 @@ describe("syncReviewBridgePullRequest — cross-profile viewer guard", () => {
       });
       expect(publishedContext?.comments).toHaveLength(0);
       expect(publishedContext?.syncQueue).toHaveLength(0);
-      if (publishMode === "push") {
-        expect(
-          (result as { pushAndPublishResult: { publishedCount: number; publishError: string } }).pushAndPublishResult,
-        ).toMatchObject({ publishedCount: 1, publishError: "" });
-        // Beside the payload, not on it — a remote ack drops the payload.
-        expect(result).toHaveProperty("payload");
-        expect(result).not.toHaveProperty("appState");
-      }
+      if (publishMode === "push") expect(published).toBe(1);
     },
   );
 
   test.each(["sync", "push"] as const)(
-    "hands the inline comment location to GitHub through the real store and %s handler",
+    "hands the inline comment location to GitHub through the real store and %s path",
     async (publishMode) => {
       const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-review-publish-github-"));
       tempPaths.push(rootPath);
@@ -215,34 +267,41 @@ describe("syncReviewBridgePullRequest — cross-profile viewer guard", () => {
       });
 
       const addPullRequestComment = vi.fn(async () => {});
-      const handlers = createReviewBridgeHandlers({
-        azure: { addPullRequestComment: vi.fn(), findSummary: () => null },
-        github: { addPullRequestComment, findSummary: () => null },
-        reviewBridgeStore: store,
-        getState: () => ({
-          workspaces: [
-            {
-              id: "review-workspace",
-              cwd: rootPath,
-              review: { provider: "github", prKey, pullRequest: { sourceRefName: "feature" } },
-            },
-          ],
-        }),
-        getPayload: () => ({}),
-        broadcastState: vi.fn(),
-        refreshAzure: vi.fn(async () => {}),
-        refreshGitHub: vi.fn(async () => {}),
-        refreshGit: vi.fn(async () => {}),
-        assertWorkspaceInViewerProfile: vi.fn(),
-        assertPrInViewerProfile: vi.fn(),
-        git: { execGit: vi.fn(async () => ({ stdout: "0" })) },
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      } as any);
+      const state = {
+        workspaces: [
+          {
+            id: "review-workspace",
+            cwd: rootPath,
+            review: { provider: "github", prKey, pullRequest: { sourceRefName: "feature" } },
+          },
+        ],
+      };
+      const github = { addPullRequestComment, findSummary: () => null };
 
       if (publishMode === "sync") {
+        const handlers = createReviewBridgeHandlers({
+          azure: { addPullRequestComment: vi.fn(), findSummary: () => null },
+          github,
+          reviewBridgeStore: store,
+          getState: () => state,
+          getPayload: () => ({}),
+          broadcastState: vi.fn(),
+          refreshAzure: vi.fn(async () => {}),
+          refreshGitHub: vi.fn(async () => {}),
+          refreshGit: vi.fn(async () => {}),
+          assertWorkspaceInViewerProfile: vi.fn(),
+          assertPrInViewerProfile: vi.fn(),
+          git: { execGit: vi.fn(async () => ({ stdout: "0" })) },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any);
         await handlers.syncReviewBridgePullRequest({ prKey });
       } else {
-        await handlers.pushAndPublishReview({ workspaceId: "review-workspace" });
+        await pushAndPublish({
+          store,
+          state,
+          azure: { addPullRequestComment: vi.fn(), findSummary: () => null },
+          github,
+        });
       }
       await store.close();
 
