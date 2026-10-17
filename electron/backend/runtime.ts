@@ -11569,6 +11569,20 @@ export async function createRuntime({
       broadcastState();
       return getPayload();
     },
+    /**
+     * Drop a finished operation that produced no workspace, freeing its idempotency key. Desktop-only
+     * and explicit: a failed operation keeps its record until someone says it can go.
+     */
+    async discardOperation(operationId: unknown, windowId?: string): Promise<boolean> {
+      const id = String(operationId || "");
+      const record = operations.find(id);
+      if (!record) return false;
+      const viewerProfileId = getWindowProfileId(windowId);
+      if (viewerProfileId && viewerProfileId !== record.profileId) {
+        throw new Error(`Cross-profile refused: the operation belongs to profile ${record.profileId}.`);
+      }
+      return operations.discard(id, record.profileId);
+    },
     getPlugins() {
       return pluginManager.getPlugins();
     },

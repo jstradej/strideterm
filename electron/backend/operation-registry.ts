@@ -298,6 +298,11 @@ export function createOperationRegistry(options: OperationRegistryOptions) {
 
     get: getRecord,
 
+    /** Any profile's record: for the runtime's own profile check, never for a client. */
+    find(operationId: string): OperationRecord | null {
+      return records.get(operationId) ?? null;
+    },
+
     /** The operation an idempotency key already names, whatever its state. */
     findByKey(profileId: string, originWorkspaceId: string, idempotencyKey: string): OperationRecord | null {
       const id = byKey.get(keyOf(profileId, originWorkspaceId, idempotencyKey));

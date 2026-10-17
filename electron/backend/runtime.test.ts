@@ -2,7 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { EventEmitter } from "node:events";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   createRuntime,
   detectTerminalEnvironment,
@@ -45,6 +45,8 @@ import {
 import { PROTOCOL_VERSION, SESSION_KEY_HKDF_INFO } from "./mobile/mobile-schemas.js";
 import { SshManager } from "./ssh/ssh-manager.js";
 import { SessionManager } from "./session-manager.js";
+import { ClaudeProvider } from "./providers/claude-provider.js";
+import { operationFinishedSchema } from "../shared/operation-events.js";
 
 // Lets a single test capture log calls made through getLogger(label), for any
 // label, without altering real logging behavior for the other ~230 tests in
@@ -15898,5 +15900,797 @@ describe("remote-access token storage", () => {
     expect(tokenNow()).toBe("in-memory-token");
     await expect(fixture.runtime.regenerateRemoteToken()).rejects.toThrow("disk full");
     expect(tokenNow()).toBe("in-memory-token");
+  });
+});
+
+describe("internal MCP: creating and watching task agents", () => {
+  async function git(cwd: string, ...args: string[]): Promise<string> {
+    const { stdout } = await execFileText("git", ["-c", "user.email=t@example.com", "-c", "user.name=T", ...args], {
+      cwd,
+    });
+    return stdout.trim();
+  }
+
+  async function createRepo(prefix = "internal-mcp-repo-"): Promise<string> {
+    const repo = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+    tempPaths.push(repo);
+    await git(repo, "init", "-b", "main");
+    await fs.writeFile(path.join(repo, "README.md"), "hello\n");
+    await git(repo, "add", "-A");
+    await git(repo, "commit", "-m", "initial");
+    return repo;
+  }
+
+  function parentWorkspace(cwd: string, overrides: Record<string, unknown> = {}) {
+    return {
+      id: "parent",
+      name: "Parent",
+      kind: "terminal",
+      cwd,
+      profileId: "default",
+      internalMcpEnabled: true,
+      activePanelId: "agent",
+      panels: [{ id: "agent", title: "Claude", command: "claude" }],
+      ...overrides,
+    };
+  }
+
+  async function createMcpFixture({
+    workspaces,
+    profiles,
+    dataDir,
+    execFileTextImpl,
+  }: {
+    workspaces: Array<Record<string, unknown>>;
+    profiles?: Array<Record<string, unknown>>;
+    dataDir?: string;
+    execFileTextImpl?: unknown;
+  }) {
+    const fixture = await createFixture({
+      initialState: { workspaces, ...(profiles ? { profiles } : {}) },
+      execFileTextImpl: execFileTextImpl ?? execFileText,
+      dataDir,
+      dependencies: { enableInternalMcp: true },
+    });
+    fixtures.push(fixture);
+    // The real SessionManager stamps its sessions with the workspace id; the fake only knows projectId.
+    const ensureSession = fixture.sessionManager.ensureSession.bind(fixture.sessionManager);
+    fixture.sessionManager.ensureSession = async (state: any, sessionId: any) => {
+      const session = await ensureSession(state, sessionId);
+      const entry = fixture.sessionManager.sessions.get(sessionId);
+      if (entry) entry.workspaceId = entry.projectId;
+      return session;
+    };
+    return fixture;
+  }
+
+  /** Launch the panel the way SessionManager would and return the grant it was handed. */
+  function launchAgent(
+    fixture: Awaited<ReturnType<typeof createMcpFixture>>,
+    workspaceId = "parent",
+    panelId = "agent",
+  ) {
+    const workspace = fixture.store.getState().workspaces.find((item: any) => item.id === workspaceId);
+    const panel = workspace.panels.find((item: any) => item.id === panelId);
+    const sessionId = createSessionId(workspaceId, panelId);
+    fixture.sessionManager.sessions.set(sessionId, {
+      id: sessionId,
+      status: "running",
+      workspaceId,
+      panelId,
+      kind: "terminal",
+    });
+    const launch = fixture.sessionManager.getSessionLaunch({ workspace, panel, sessionId });
+    return { launch, sessionId };
+  }
+
+  function brokerClient(launch: { env?: Record<string, string> }) {
+    const url = launch.env!.STRIDETERM_INTERNAL_MCP_URL;
+    const capability = launch.env!.STRIDETERM_INTERNAL_MCP_CAPABILITY;
+    return async (operation: string, input: Record<string, unknown>) => {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${capability}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ operation, input }),
+      });
+      const body = (await response.json()) as { result?: any; error?: { code: string; message: string } };
+      return { status: response.status, ...body };
+    };
+  }
+
+  const readyInput = (overrides: Record<string, unknown> = {}) => ({
+    assignment: "Add a greeting to README.md",
+    worker: { providerId: "claude", model: "sonnet" },
+    judge: { providerId: "claude", model: "opus" },
+    checkout: { mode: "here" },
+    ...overrides,
+  });
+
+  async function waitForOperation(
+    call: ReturnType<typeof brokerClient>,
+    operationId: string,
+    done = (status: string) => status !== "accepted" && status !== "running",
+  ) {
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const { result, error } = await call("operation_get", { operationId });
+      if (!result) throw new Error(JSON.stringify(error));
+      if (done(result.status)) return result;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error("operation did not settle");
+  }
+
+  async function prepareAndStart(
+    call: ReturnType<typeof brokerClient>,
+    input: Record<string, unknown>,
+    idempotencyKey = "key-0001-abcd",
+  ) {
+    const prepared = await call("prepare", input);
+    expect(prepared.status).toBe(200);
+    expect(prepared.result.status).toBe("ready");
+    const started = await call("start", {
+      preparationId: prepared.result.preparationId,
+      approvedInputHash: prepared.result.inputHash,
+      idempotencyKey,
+    });
+    return { prepared: prepared.result, started };
+  }
+
+  /** State keeps paths with forward slashes on every platform. */
+  const fwd = (value: string) => value.split("\\").join("/");
+
+  const taskWorkspaces = (fixture: { store: { getState: () => any } }) =>
+    fixture.store.getState().workspaces.filter((w: any) => w.kind === "task");
+
+  beforeEach(() => {
+    vi.spyOn(ClaudeProvider.prototype, "checkAvailability").mockResolvedValue({ available: true });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test("hands the grant only to a plain Claude Code or Codex terminal of an opted-in workspace", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({
+      workspaces: [
+        parentWorkspace(repo, {
+          panels: [
+            { id: "agent", title: "Claude", command: "claude --model sonnet --mcp-config .mcp.json" },
+            { id: "shell", title: "Shell", command: "" },
+          ],
+        }),
+        parentWorkspace(repo, { id: "off", name: "Off", internalMcpEnabled: false }),
+        parentWorkspace(repo, { id: "taskish", name: "Task", kind: "task", internalMcpEnabled: true }),
+      ],
+    });
+
+    const { launch } = launchAgent(fixture);
+    expect(launch.env.STRIDETERM_INTERNAL_MCP_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/internal-mcp$/);
+    const capability = launch.env.STRIDETERM_INTERNAL_MCP_CAPABILITY;
+    expect(launch.args.join(" ")).not.toContain(capability);
+    expect(JSON.stringify(fixture.store.getState())).not.toContain(capability);
+    const config = JSON.parse(launch.args[launch.args.indexOf("--mcp-config") + 2]);
+    expect(Object.keys(config.mcpServers)).toEqual(["strideterm"]);
+    expect(launch.args).toContain(".mcp.json");
+    expect(launch.args).not.toContain("--strict-mcp-config");
+
+    const byId = (id: string) => fixture.store.getState().workspaces.find((item: any) => item.id === id);
+    expect(
+      fixture.sessionManager.getSessionLaunch({
+        workspace: byId("parent"),
+        panel: byId("parent").panels[1],
+        sessionId: createSessionId("parent", "shell"),
+      }),
+    ).toBeNull();
+    expect(
+      fixture.sessionManager.getSessionLaunch({
+        workspace: byId("off"),
+        panel: byId("off").panels[0],
+        sessionId: createSessionId("off", "agent"),
+      }),
+    ).toBeNull();
+    expect(byId("taskish").internalMcpEnabled).toBe(false);
+  });
+
+  test("prepare reports what is missing and creates nothing", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });
+    const { launch } = launchAgent(fixture);
+    const call = brokerClient(launch);
+    const before = fixture.store.getState().workspaces.length;
+
+    const { status, result } = await call("prepare", {});
+    expect(status).toBe(200);
+    expect(result.status).toBe("requires_input");
+    expect(result.missingInputs).toEqual(
+      expect.arrayContaining([
+        "assignment",
+        "worker.providerId",
+        "worker.model",
+        "judge.providerId",
+        "judge.model",
+        "checkout.mode",
+      ]),
+    );
+    expect(result.defaults.worker).toEqual({ providerId: "claude", model: "sonnet" });
+    expect(result.choices.providers.map((p: { id: string }) => p.id)).toContain("codex");
+    expect(fixture.store.getState().workspaces).toHaveLength(before);
+    await expect(fs.stat(path.join(repo, ".strideterm"))).rejects.toThrow();
+  });
+
+  test("a start must carry the hash of the approved summary", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });
+    const { launch } = launchAgent(fixture);
+    const call = brokerClient(launch);
+
+    const prepared = await call(
+      "prepare",
+      readyInput({ worker: { providerId: "claude", model: "my-custom-model-1" } }),
+    );
+    expect(prepared.result.status).toBe("ready");
+    expect(prepared.result.summary.assignment).toBe("Add a greeting to README.md");
+    expect(prepared.result.summary.worker.model).toBe("my-custom-model-1");
+    expect(prepared.result.summary.worker.command).toContain("--model my-custom-model-1");
+
+    const wrong = await call("start", {
+      preparationId: prepared.result.preparationId,
+      approvedInputHash: "0".repeat(64),
+      idempotencyKey: "key-wrong-hash",
+    });
+    expect(wrong.status).toBe(409);
+    expect(wrong.error?.code).toBe("needs_reprepare");
+    expect(taskWorkspaces(fixture)).toHaveLength(0);
+  });
+
+  test("starts the pair asynchronously: standard child workspace, exact brief, idempotent retry", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });
+    const { launch } = launchAgent(fixture);
+    const call = brokerClient(launch);
+    const finished: unknown[] = [];
+    fixture.runtime.on("operation:finished", (event: unknown) => finished.push(event));
+
+    const { prepared, started } = await prepareAndStart(call, readyInput());
+    expect(started.status).toBe(200);
+    expect(started.result.status).toBe("accepted");
+    const operationId = started.result.operationId as string;
+
+    const settled = await waitForOperation(call, operationId);
+    expect(settled.status).toBe("succeeded");
+    expect(settled.step).toBe("ready");
+
+    const tasks = taskWorkspaces(fixture);
+    expect(tasks).toHaveLength(1);
+    const task = tasks[0] as any;
+    expect(task.task.parentWorkspaceId).toBe("parent");
+    expect(task.profileId).toBe("default");
+    expect(task.cwd).toBe(repo);
+    expect(task.internalMcpEnabled).toBe(false);
+    expect(task.panels.map((p: any) => p.title)).toEqual([
+      "Dashboard",
+      expect.stringContaining("Worker"),
+      expect.stringContaining("Judge"),
+    ]);
+    expect(settled.workspaceId).toBe(task.id);
+    const taskMd = await fs.readFile(path.join(repo, ".strideterm", "tasks", task.task.taskId, "TASK.md"), "utf8");
+    expect(taskMd).toContain("Add a greeting to README.md");
+    expect(fixture.store.getState().activeWorkspaceId).not.toBe(task.id);
+
+    const again = await call("start", {
+      preparationId: prepared.preparationId,
+      approvedInputHash: prepared.inputHash,
+      idempotencyKey: "key-0001-abcd",
+    });
+    expect(again.result.operationId).toBe(operationId);
+    expect(again.result.replayed).toBe(true);
+    const afterExpiry = await call("start", {
+      preparationId: "prep-expired",
+      approvedInputHash: prepared.inputHash,
+      idempotencyKey: "key-0001-abcd",
+    });
+    expect(afterExpiry.result.operationId).toBe(operationId);
+    const conflict = await call("start", {
+      preparationId: prepared.preparationId,
+      approvedInputHash: "1".repeat(64),
+      idempotencyKey: "key-0001-abcd",
+    });
+    expect(conflict.status).toBe(409);
+    expect(conflict.error?.code).toBe("idempotency_conflict");
+    expect(taskWorkspaces(fixture)).toHaveLength(1);
+
+    expect(finished).toHaveLength(1);
+    expect(finished[0]).toMatchObject({
+      operationId,
+      kind: "task.provision",
+      profileId: "default",
+      workspaceId: task.id,
+    });
+    expect(operationFinishedSchema.safeParse(finished[0]).success).toBe(true);
+    expect(fixture.runtime.getPayload().operations.lastResults.map((r: any) => r.operationId)).toContain(operationId);
+  });
+
+  test("hands the task exact snapshots of host-supplied sources and never touches the originals", async () => {
+    const repo = await createRepo();
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "internal-mcp-outside-"));
+    tempPaths.push(outside);
+    const plan = path.join(outside, "asdf.md");
+    const body = "# Plan\n\nDo the thing.\nUnicode: žluťoučký kůň\n";
+    await fs.writeFile(plan, body);
+    const sha256 = (await import("node:crypto")).createHash("sha256").update(body).digest("hex");
+    const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });
+    const { launch } = launchAgent(fixture);
+    const call = brokerClient(launch);
+
+    const assignment = `Implementuj podle zadání v ${plan}`;
+    const { prepared, started } = await prepareAndStart(
+      call,
+      readyInput({ assignment, sources: [{ path: plan, content: body, sha256 }] }),
+    );
+    expect(prepared.summary.sources[0]).toMatchObject({ path: plan, sha256, access: "host-provided" });
+    expect(prepared.summary.sourceDelivery).toMatch(/snapshot/i);
+    const settled = await waitForOperation(call, started.result.operationId);
+    expect(settled.status).toBe("succeeded");
+
+    const task = taskWorkspaces(fixture)[0] as any;
+    const dir = path.join(repo, ".strideterm", "tasks", task.task.taskId);
+    const snapshot = path.join(dir, "sources", "01-asdf.md");
+    expect(await fs.readFile(snapshot, "utf8")).toBe(body);
+    const taskMd = await fs.readFile(path.join(dir, "TASK.md"), "utf8");
+    expect(taskMd).toContain("Implementuj podle zadání v .strideterm/tasks/");
+    expect(taskMd).toContain(`/sources/01-asdf.md`);
+    expect(taskMd).toContain(`snapshot of \`${plan}\``);
+    expect(taskMd).toContain(sha256);
+    const manifest = JSON.parse(await fs.readFile(path.join(dir, "sources", "SOURCES.json"), "utf8"));
+    expect(manifest.sources[0]).toMatchObject({ originPath: plan, sha256, access: "host-provided" });
+    // the original is untouched and its directory was not copied
+    expect(await fs.readFile(plan, "utf8")).toBe(body);
+    expect(await fs.readdir(path.join(dir, "sources"))).toEqual(["01-asdf.md", "SOURCES.json"]);
+  });
+
+  test("source problems block ready and name the field", async () => {
+    const repo = await createRepo();
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "internal-mcp-outside-"));
+    tempPaths.push(outside);
+    const secret = path.join(outside, "secret.md");
+    await fs.writeFile(secret, "outside the roots");
+    await fs.writeFile(path.join(repo, "inside.md"), "inside the roots");
+    const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });
+    const { launch } = launchAgent(fixture);
+    const call = brokerClient(launch);
+
+    const outsideResult = await call("prepare", readyInput({ sources: [{ path: secret }] }));
+    expect(outsideResult.result.status).toBe("requires_input");
+    expect(outsideResult.result.errors[0]).toMatchObject({ code: "file_not_accessible", field: "sources[0].content" });
+    expect(outsideResult.result.missingInputs).toContain("sources[0].content");
+
+    // a path inside the workspace is readable by the runtime within its own grant
+    const inside = await call("prepare", readyInput({ sources: [{ path: "inside.md" }] }));
+    expect(inside.result.status).toBe("ready");
+    expect(inside.result.summary.sources[0]).toMatchObject({ access: "runtime-read", bytes: 16 });
+
+    const badHash = await call(
+      "prepare",
+      readyInput({ sources: [{ path: secret, content: "text", sha256: "a".repeat(64) }] }),
+    );
+    expect(badHash.result.status).toBe("requires_input");
+    expect(badHash.result.errors[0]).toMatchObject({ code: "invalid_request", field: "sources[0].sha256" });
+
+    const binary = await call("prepare", readyInput({ sources: [{ path: secret, content: "a\u0000b" }] }));
+    expect(binary.result.errors[0]).toMatchObject({ code: "invalid_request", field: "sources[0].content" });
+  });
+
+  test("a source that changes between prepare and start is refused as needs_reprepare", async () => {
+    const repo = await createRepo();
+    await fs.writeFile(path.join(repo, "spec.md"), "version one");
+    const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });
+    const { launch } = launchAgent(fixture);
+    const call = brokerClient(launch);
+    const prepared = await call("prepare", readyInput({ sources: [{ path: "spec.md" }] }));
+    expect(prepared.result.status).toBe("ready");
+    await fs.writeFile(path.join(repo, "spec.md"), "version two");
+
+    const started = await call("start", {
+      preparationId: prepared.result.preparationId,
+      approvedInputHash: prepared.result.inputHash,
+      idempotencyKey: "key-source-changed",
+    });
+    expect(started.status).toBe(409);
+    expect(started.error?.code).toBe("needs_reprepare");
+    expect(taskWorkspaces(fixture)).toHaveLength(0);
+  });
+
+  test("a new worktree starts from the prepared commit on a new branch and leaves dirty changes behind", async () => {
+    const repo = await createRepo();
+    await fs.writeFile(path.join(repo, "dirty.txt"), "uncommitted");
+    const head = await git(repo, "rev-parse", "HEAD");
+    const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });
+    const { launch } = launchAgent(fixture);
+    const call = brokerClient(launch);
+
+    const input = readyInput({ checkout: { mode: "worktree", branch: "feature/mcp-task" } });
+    const { prepared, started } = await prepareAndStart(call, input);
+    expect(prepared.summary.checkout).toMatchObject({
+      mode: "worktree",
+      repository: repo,
+      newBranch: "feature/mcp-task",
+      baseCommit: head,
+      sourceHasUncommittedChanges: true,
+    });
+    const settled = await waitForOperation(call, started.result.operationId);
+    expect(settled.status).toBe("succeeded");
+    expect(settled.artifacts.worktree).toMatchObject({ branch: "feature/mcp-task", baseCommit: head });
+
+    const treePath = path.join(repo, ".strideterm", "tree", "feature-mcp-task");
+    const task = taskWorkspaces(fixture)[0] as any;
+    expect(task.cwd).toBe(treePath);
+    expect(task.task.worktreeBranch).toBe("feature/mcp-task");
+    expect(task.task.worktreeBase).toBe(repo);
+    expect(await git(treePath, "rev-parse", "HEAD")).toBe(head);
+    expect(await git(treePath, "rev-parse", "--abbrev-ref", "HEAD")).toBe("feature/mcp-task");
+    await expect(fs.stat(path.join(treePath, "dirty.txt"))).rejects.toThrow();
+    // still a standard child of the source workspace, in the same profile
+    expect(task.task.parentWorkspaceId).toBe("parent");
+    expect(task.profileId).toBe("default");
+  });
+
+  test("a head that moved since prepare changes the hash, so the worktree is never built on a different base", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });
+    const { launch } = launchAgent(fixture);
+    const call = brokerClient(launch);
+    const prepared = await call("prepare", readyInput({ checkout: { mode: "worktree", branch: "moved-head" } }));
+    expect(prepared.result.status).toBe("ready");
+    await fs.writeFile(path.join(repo, "second.txt"), "2");
+    await git(repo, "add", "-A");
+    await git(repo, "commit", "-m", "second");
+
+    const started = await call("start", {
+      preparationId: prepared.result.preparationId,
+      approvedInputHash: prepared.result.inputHash,
+      idempotencyKey: "key-head-moved",
+    });
+    expect(started.status).toBe(409);
+    expect(started.error?.code).toBe("needs_reprepare");
+    await expect(fs.stat(path.join(repo, ".strideterm", "tree", "moved-head"))).rejects.toThrow();
+  });
+
+  test("branch and folder collisions are conflicts, never a silent attach to what exists", async () => {
+    const repo = await createRepo();
+    await git(repo, "branch", "taken");
+    const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });
+    const { launch } = launchAgent(fixture);
+    const call = brokerClient(launch);
+
+    const branchTaken = await call("prepare", readyInput({ checkout: { mode: "worktree", branch: "taken" } }));
+    expect(branchTaken.result.status).toBe("requires_input");
+    expect(branchTaken.result.errors[0]).toMatchObject({ code: "checkout_conflict", field: "checkout.branch" });
+
+    // "a/b" and "a-b" fold to one folder
+    const first = await prepareAndStart(call, readyInput({ checkout: { mode: "worktree", branch: "a/b" } }), "key-folder-a");
+    expect((await waitForOperation(call, first.started.result.operationId)).status).toBe("succeeded");
+    const second = await call("prepare", readyInput({ checkout: { mode: "worktree", branch: "a-b" } }));
+    expect(second.result.errors[0]).toMatchObject({ code: "checkout_conflict" });
+    expect(second.result.errors[0].message).toMatch(/already exists/);
+    const invalid = await call("prepare", readyInput({ checkout: { mode: "worktree", branch: "bad..name" } }));
+    expect(invalid.result.errors[0]).toMatchObject({ code: "invalid_request", field: "checkout.branch" });
+  });
+
+  test("a second task over a directory another active task works in is refused before any side effect", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });
+    const { launch } = launchAgent(fixture);
+    const call = brokerClient(launch);
+    const first = await prepareAndStart(call, readyInput(), "key-first-task");
+    expect((await waitForOperation(call, first.started.result.operationId)).status).toBe("succeeded");
+    const task = taskWorkspaces(fixture)[0] as any;
+    expect(["running", "idle"]).toContain(task.task.state);
+
+    const second = await call("prepare", readyInput({ assignment: "Another" }));
+    if (task.task.state === "running") {
+      expect(second.result.errors[0]).toMatchObject({ code: "checkout_conflict" });
+    }
+    expect(taskWorkspaces(fixture)).toHaveLength(1);
+  });
+
+  test("a multi-repository workspace asks which repository a worktree comes from", async () => {
+    const repoA = await createRepo("internal-mcp-a-");
+    const repoB = await createRepo("internal-mcp-b-");
+    const stranger = await createRepo("internal-mcp-stranger-");
+    const parent = await fs.mkdtemp(path.join(os.tmpdir(), "internal-mcp-parent-"));
+    tempPaths.push(parent);
+    const fixture = await createMcpFixture({
+      workspaces: [parentWorkspace(parent, { gitRoots: [repoA, repoB] })],
+    });
+    const { launch } = launchAgent(fixture);
+    const call = brokerClient(launch);
+
+    const open = await call("prepare", readyInput({ checkout: { mode: "worktree", branch: "multi" } }));
+    expect(open.result.missingInputs).toContain("repository");
+    expect(open.result.choices.checkout.repositories.map((r: any) => r.path)).toEqual([fwd(repoA), fwd(repoB)]);
+
+    const refused = await call(
+      "prepare",
+      readyInput({ checkout: { mode: "worktree", branch: "multi", repository: stranger } }),
+    );
+    expect(refused.result.errors[0]).toMatchObject({ code: "scope_denied", field: "checkout.repository" });
+
+    const { prepared, started } = await prepareAndStart(
+      call,
+      readyInput({ checkout: { mode: "worktree", branch: "multi", repository: repoB } }),
+    );
+    expect(fwd(prepared.summary.checkout.repository)).toBe(fwd(repoB));
+    expect((await waitForOperation(call, started.result.operationId)).status).toBe("succeeded");
+    expect(fwd((taskWorkspaces(fixture)[0] as any).cwd)).toBe(fwd(path.join(repoB, ".strideterm", "tree", "multi")));
+  });
+
+  test("'here' keeps the working directory, its roots and its uncommitted changes, even outside a repository", async () => {
+    const repoA = await createRepo("internal-mcp-a-");
+    const repoB = await createRepo("internal-mcp-b-");
+    await fs.writeFile(path.join(repoA, "wip.txt"), "work in progress");
+    const parent = await fs.mkdtemp(path.join(os.tmpdir(), "internal-mcp-here-"));
+    tempPaths.push(parent);
+    const fixture = await createMcpFixture({
+      workspaces: [parentWorkspace(parent, { gitRoots: [repoA, repoB] })],
+    });
+    const { launch } = launchAgent(fixture);
+    const call = brokerClient(launch);
+
+    const { prepared, started } = await prepareAndStart(call, readyInput());
+    expect(prepared.summary.checkout).toMatchObject({ mode: "here", cwd: parent, gitRoots: [fwd(repoA), fwd(repoB)] });
+    expect((await waitForOperation(call, started.result.operationId)).status).toBe("succeeded");
+    const task = taskWorkspaces(fixture)[0] as any;
+    expect(task.cwd).toBe(parent);
+    expect(task.gitRoots).toEqual([fwd(repoA), fwd(repoB)]);
+    expect(await fs.readFile(path.join(repoA, "wip.txt"), "utf8")).toBe("work in progress");
+  });
+
+  test("the same directory in two profiles stays separate: lists, reads and operations", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({
+      profiles: [
+        { id: "default", name: "Default", workspaceIds: [] },
+        { id: "other", name: "Other", workspaceIds: [] },
+      ],
+      workspaces: [
+        parentWorkspace(repo),
+        parentWorkspace(repo, { id: "parent-b", name: "Parent B", profileId: "other" }),
+      ],
+    });
+    const a = brokerClient(launchAgent(fixture, "parent").launch);
+    const b = brokerClient(launchAgent(fixture, "parent-b").launch);
+
+    const started = await prepareAndStart(a, readyInput(), "key-profile-a");
+    expect((await waitForOperation(a, started.started.result.operationId)).status).toBe("succeeded");
+    const taskA = taskWorkspaces(fixture)[0] as any;
+    expect(taskA.profileId).toBe("default");
+
+    expect((await a("task_list", {})).result.tasks).toHaveLength(1);
+    expect((await b("task_list", {})).result.tasks).toHaveLength(0);
+    const foreignGet = await b("task_get", { workspaceId: taskA.id });
+    expect(foreignGet.status).toBe(404);
+    expect(foreignGet.error?.code).toBe("task_not_found");
+    const foreignOp = await b("operation_get", { operationId: started.started.result.operationId });
+    expect(foreignOp.status).toBe(404);
+    expect(foreignOp.error?.code).toBe("operation_not_found");
+
+    // profile B can run its own task at the same path; the guard is per profile
+    const startedB = await prepareAndStart(b, readyInput(), "key-profile-b");
+    expect((await waitForOperation(b, startedB.started.result.operationId)).status).toBe("succeeded");
+    const taskB = taskWorkspaces(fixture).find((w: any) => w.profileId === "other") as any;
+    expect(taskB.task.parentWorkspaceId).toBe("parent-b");
+    // the same idempotency key means nothing across workspaces
+    expect(startedB.started.result.operationId).not.toBe(started.started.result.operationId);
+  });
+
+  test("the profile and workspace come from the grant; a body cannot name another", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({
+      profiles: [
+        { id: "default", name: "Default", workspaceIds: [] },
+        { id: "other", name: "Other", workspaceIds: [] },
+      ],
+      workspaces: [parentWorkspace(repo), parentWorkspace(repo, { id: "parent-b", profileId: "other" })],
+    });
+    const call = brokerClient(launchAgent(fixture, "parent").launch);
+    const wrongWorkspace = await call("prepare", readyInput({ workspaceId: "parent-b" }));
+    expect(wrongWorkspace.status).toBe(403);
+    expect(wrongWorkspace.error?.code).toBe("scope_denied");
+    const unknownField = await call("prepare", readyInput({ profileId: "other" }));
+    expect(unknownField.status).toBe(400);
+    expect(unknownField.error?.code).toBe("invalid_request");
+    const unknownOperation = await fetch(launchAgent(fixture, "parent").launch.env.STRIDETERM_INTERNAL_MCP_URL, {
+      method: "POST",
+      headers: { Authorization: "Bearer " + "x".repeat(43), "Content-Type": "application/json" },
+      body: JSON.stringify({ operation: "task_list", input: {} }),
+    });
+    expect(unknownOperation.status).toBe(401);
+  });
+
+  test("closing the planning terminal or revoking the grant stops later calls but not an accepted start", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });
+    const { launch, sessionId } = launchAgent(fixture);
+    const call = brokerClient(launch);
+    const { started } = await prepareAndStart(call, readyInput({ checkout: { mode: "worktree", branch: "survives" } }));
+    expect(started.result.status).toBe("accepted");
+
+    // the planning terminal goes away right after the start
+    fixture.sessionManager.emit("terminal:exit", { sessionId, exitCode: 0, intentional: false });
+    fixture.sessionManager.sessions.delete(sessionId);
+    const refused = await call("task_list", {});
+    expect([401, 403]).toContain(refused.status);
+
+    // and the opt-in is switched off for good measure
+    const workspace = fixture.store.getState().workspaces.find((w: any) => w.id === "parent");
+    await fixture.runtime.saveWorkspace({ ...workspace, internalMcpEnabled: false });
+
+    for (let attempt = 0; attempt < 200 && taskWorkspaces(fixture).length === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    const operation = fixture.runtime.getPayload().operations;
+    for (let attempt = 0; attempt < 200 && operation.running.length + fixture.runtime.getPayload().operations.running.length > 0; attempt += 1) {
+      if (fixture.runtime.getPayload().operations.running.length === 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(taskWorkspaces(fixture)).toHaveLength(1);
+    expect(fixture.runtime.getPayload().operations.lastResults[0]).toMatchObject({ kind: "task.provision" });
+    expect("result" in fixture.runtime.getPayload().operations.lastResults[0]).toBe(true);
+  });
+
+  test("a failure after acceptance is the operation's result, with the artifacts it left", async () => {
+    const repo = await createRepo();
+    let failWorktreeAdd = false;
+    const flaky = vi.fn(async (cmd: string, args: string[], opts?: unknown) => {
+      if (failWorktreeAdd && cmd === "git" && args[0] === "worktree" && args[1] === "add") {
+        throw { stderr: "fatal: simulated disk failure", error: new Error("simulated") };
+      }
+      return execFileText(cmd, args, opts as any);
+    });
+    const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)], execFileTextImpl: flaky });
+    const { launch } = launchAgent(fixture);
+    const call = brokerClient(launch);
+    const finished: any[] = [];
+    fixture.runtime.on("operation:finished", (event: unknown) => finished.push(event));
+
+    const prepared = await call("prepare", readyInput({ checkout: { mode: "worktree", branch: "will-fail" } }));
+    expect(prepared.result.status).toBe("ready");
+    failWorktreeAdd = true;
+    const started = await call("start", {
+      preparationId: prepared.result.preparationId,
+      approvedInputHash: prepared.result.inputHash,
+      idempotencyKey: "key-will-fail",
+    });
+    expect(started.status).toBe(200);
+    const settled = await waitForOperation(call, started.result.operationId);
+    expect(settled.status).toBe("failed");
+    expect(settled.error.message).toContain("simulated disk failure");
+    expect(taskWorkspaces(fixture)).toHaveLength(0);
+    expect(finished).toHaveLength(1);
+    expect(finished[0].error.message).toContain("simulated disk failure");
+    // a retry of the same request answers with the recorded failure, not a second attempt
+    const retry = await call("start", {
+      preparationId: prepared.result.preparationId,
+      approvedInputHash: prepared.result.inputHash,
+      idempotencyKey: "key-will-fail",
+    });
+    expect(retry.result.operationId).toBe(started.result.operationId);
+    expect(retry.result.replayed).toBe(true);
+    // and the record can be dropped explicitly, which frees the key
+    expect(await fixture.runtime.discardOperation(started.result.operationId)).toBe(true);
+    expect((await call("operation_get", { operationId: started.result.operationId })).status).toBe(404);
+  });
+
+  test("task_list and task_get answer with bounded, profile-scoped runner state", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });
+    const { launch } = launchAgent(fixture);
+    const call = brokerClient(launch);
+    const first = await prepareAndStart(call, readyInput({ assignment: "First task" }), "key-list-0001");
+    const done = await waitForOperation(call, first.started.result.operationId);
+    const taskWorkspace = taskWorkspaces(fixture)[0] as any;
+    await fixture.store.mutate((draft: any) => {
+      const ws = draft.workspaces.find((w: any) => w.id === taskWorkspace.id);
+      ws.task.state = "paused";
+    });
+    const second = await prepareAndStart(
+      call,
+      readyInput({ assignment: "Second task", checkout: { mode: "worktree", branch: "second-task" } }),
+      "key-list-0002",
+    );
+    await waitForOperation(call, second.started.result.operationId);
+
+    const page1 = await call("task_list", { limit: 1 });
+    expect(page1.result.tasks).toHaveLength(1);
+    expect(page1.result.nextCursor).toBeTruthy();
+    const page2 = await call("task_list", { limit: 1, cursor: page1.result.nextCursor });
+    expect(page2.result.tasks).toHaveLength(1);
+    expect(page2.result.nextCursor).toBeNull();
+    expect(new Set([page1.result.tasks[0].workspaceId, page2.result.tasks[0].workspaceId]).size).toBe(2);
+    expect(JSON.stringify(page1.result)).not.toContain("First task");
+
+    const detail = await call("task_get", { workspaceId: done.workspaceId });
+    expect(detail.status).toBe(200);
+    expect(detail.result).toMatchObject({
+      workspaceId: done.workspaceId,
+      taskId: taskWorkspace.task.taskId,
+      state: "paused",
+      worker: { providerId: "claude", model: "sonnet" },
+      judge: { providerId: "claude", model: "opus" },
+      maxRounds: 10,
+    });
+    expect(detail.result.runId).toBeTruthy();
+    expect(detail.result.runId).not.toBe(first.started.result.operationId);
+    expect(detail.result).not.toHaveProperty("description");
+    expect(detail.result.log.untrusted).toBe(true);
+
+    const idle = await call("task_list", { activeOnly: true });
+    expect(idle.result.tasks.every((t: any) => ["running", "evaluating", "judge-evaluating", "refreshing", "capturing-context"].includes(t.state))).toBe(true);
+  });
+
+  test("task_get pages the structured log by cursor and bounds the entries", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });
+    const { launch } = launchAgent(fixture);
+    const call = brokerClient(launch);
+    const { started } = await prepareAndStart(call, readyInput());
+    const done = await waitForOperation(call, started.result.operationId);
+    const task = taskWorkspaces(fixture)[0] as any;
+    const logPath = path.join(repo, ".strideterm", "tasks", task.task.taskId, "TASK_LOG.jsonl");
+    const lines = Array.from({ length: 7 }, (_, i) => JSON.stringify({ ts: `2026-01-01T00:00:0${i}Z`, event: `e${i}`, round: 1, detail: "x".repeat(900) }));
+    await fs.writeFile(logPath, lines.join("\n") + "\n");
+
+    const tail = await call("task_get", { workspaceId: done.workspaceId, logLimit: 3 });
+    expect(tail.result.log.entries.map((e: any) => e.event)).toEqual(["e0", "e1", "e2"]);
+    expect(tail.result.log.entries[0].detail).toHaveLength(500);
+    const next = await call("task_get", { workspaceId: done.workspaceId, logLimit: 3, logCursor: tail.result.log.nextCursor });
+    expect(next.result.log.entries.map((e: any) => e.event)).toEqual(["e3", "e4", "e5"]);
+    const last = await call("task_get", { workspaceId: done.workspaceId, logLimit: 3, logCursor: next.result.log.nextCursor });
+    expect(last.result.log.entries.map((e: any) => e.event)).toEqual(["e6"]);
+  });
+
+  test("a panel on a dialog shows up as awaitingUserInTerminal and leaves when the dialog does", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });
+    const { launch } = launchAgent(fixture);
+    const call = brokerClient(launch);
+    const { started } = await prepareAndStart(call, readyInput());
+    const done = await waitForOperation(call, started.result.operationId);
+    const task = taskWorkspaces(fixture)[0] as any;
+    const workerSession = `${task.id}:${task.task.workerPanelId}`;
+    expect((await call("task_get", { workspaceId: done.workspaceId })).result.awaitingUserInTerminal).toEqual([]);
+
+    fixture.runtime.notifyAgentHook(workerSession, "permission_prompt", "Notification");
+    expect((await call("task_get", { workspaceId: done.workspaceId })).result.awaitingUserInTerminal).toEqual(["worker"]);
+    expect((await call("operation_get", { operationId: started.result.operationId })).result.awaitingUserInTerminal).toEqual(["worker"]);
+    expect((await call("task_list", {})).result.tasks[0].awaitingUserInTerminal).toEqual(["worker"]);
+
+    fixture.runtime.notifyAgentHook(workerSession, "idle_prompt", "Stop");
+    expect((await call("task_get", { workspaceId: done.workspaceId })).result.awaitingUserInTerminal).toEqual([]);
+  });
+
+  test("only the desktop turns the workspace option on; a remote viewer keeps what is stored", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({
+      workspaces: [parentWorkspace(repo), parentWorkspace(repo, { id: "plain", name: "Plain", internalMcpEnabled: false })],
+    });
+    const byId = (id: string) => fixture.store.getState().workspaces.find((w: any) => w.id === id);
+    expect(byId("plain").internalMcpEnabled).toBe(false);
+
+    await fixture.runtime.saveWorkspace({ ...byId("plain"), internalMcpEnabled: true }, "remote:sess-1");
+    expect(byId("plain").internalMcpEnabled).toBe(false);
+    await fixture.runtime.saveWorkspace({ ...byId("parent"), internalMcpEnabled: false }, "remote:sess-1");
+    expect(byId("parent").internalMcpEnabled).toBe(true);
+    await fixture.runtime.saveWorkspace(
+      { id: "fresh", name: "Fresh", kind: "terminal", cwd: repo, profileId: "default", internalMcpEnabled: true, panels: [{ id: "p", title: "Shell", command: "" }] },
+      "remote:sess-1",
+    );
+    expect(byId("fresh").internalMcpEnabled).toBe(false);
+
+    // the desktop (no remote viewer id) can switch it on and off
+    await fixture.runtime.saveWorkspace({ ...byId("plain"), internalMcpEnabled: true });
+    expect(byId("plain").internalMcpEnabled).toBe(true);
+    await fixture.runtime.saveWorkspace({ ...byId("plain"), internalMcpEnabled: false });
+    expect(byId("plain").internalMcpEnabled).toBe(false);
   });
 });
