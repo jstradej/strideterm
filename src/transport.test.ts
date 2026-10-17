@@ -2897,3 +2897,72 @@ describe("host connection-state dedupe and session-lost reason", () => {
     ]);
   });
 });
+
+describe("operation:finished — transport boundary validation", () => {
+  const finished = {
+    operationId: "op-1",
+    kind: "task.provision",
+    profileId: "default",
+    workspaceId: "ws-task",
+    finishedAt: "2026-10-17T10:00:00.000Z",
+    result: { workspaceId: "ws-task", awaitingUserInTerminal: ["worker"] },
+  };
+  const failed = {
+    operationId: "op-2",
+    kind: "task.provision",
+    profileId: "default",
+    finishedAt: "2026-10-17T10:00:01.000Z",
+    error: { code: "checkout_conflict", message: "Branch exists" },
+  };
+  const malformed = [
+    { ...failed, operationId: "" },
+    { ...failed, error: "plain string" },
+    { ...finished, extra: true },
+    { ...finished, result: "nope" },
+    null,
+  ];
+
+  it("remote transport dispatches both outcomes and drops a malformed one", () => {
+    const originalWebSocket = globalThis.WebSocket;
+    const originalFetch = globalThis.fetch;
+    MockWebSocket.instances.length = 0;
+    globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+    globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => ({}) }) as Response);
+    try {
+      const transport = createRemoteTransport();
+      const socket = MockWebSocket.instances[MockWebSocket.instances.length - 1];
+      socket.open();
+      const seen: unknown[] = [];
+      transport.onOperationFinished((event) => seen.push(event));
+
+      for (const payload of [finished, failed, ...malformed]) {
+        socket.message({ type: "operation:finished", payload });
+      }
+
+      expect(seen).toEqual([finished, failed]);
+    } finally {
+      globalThis.WebSocket = originalWebSocket;
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("electron transport subscribes through the preload bridge with the same validation", () => {
+    let bridged: ((payload: unknown) => void) | null = null;
+    (window as unknown as Record<string, unknown>).strideterm = {
+      onOperationFinished: (handler: (payload: unknown) => void) => {
+        bridged = handler;
+      },
+    };
+    try {
+      const transport = createTransport();
+      const seen: unknown[] = [];
+      transport.onOperationFinished((event) => seen.push(event));
+
+      for (const payload of [finished, failed, ...malformed]) bridged?.(payload);
+
+      expect(seen).toEqual([finished, failed]);
+    } finally {
+      delete (window as unknown as Record<string, unknown>).strideterm;
+    }
+  });
+});

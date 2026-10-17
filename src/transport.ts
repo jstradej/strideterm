@@ -14,6 +14,11 @@ import {
   azureClosedPrCleanupFinishedSchema,
   type AzureClosedPrCleanupFinished,
 } from "../electron/shared/azure-closed-pr-cleanup-events.js";
+import {
+  OPERATION_FINISHED_CHANNEL,
+  operationFinishedSchema,
+  type OperationFinished,
+} from "../electron/shared/operation-events.js";
 import type { ProfilePayload } from "../electron/backend/ipc-schemas.js";
 import type {
   SshAuthRequest,
@@ -251,6 +256,7 @@ interface EventHub {
   notificationTargetRemoved: Set<Handler<NotificationTargetRemoved>>;
   approvalRecorded: Set<Handler<ApprovalRecorded>>;
   azureClosedPrCleanupFinished: Set<Handler<AzureClosedPrCleanupFinished>>;
+  operationFinished: Set<Handler<OperationFinished>>;
   requestIssue: Set<Handler<RemoteRequestIssue>>;
 }
 
@@ -338,6 +344,8 @@ export interface Transport extends Partial<
   onApprovalRecorded: (handler: Handler<ApprovalRecorded>) => void;
   /** A background closed-PR cleanup finished (result or unexpected error). Validated at this boundary. */
   onAzureClosedPrCleanupFinished: (handler: Handler<AzureClosedPrCleanupFinished>) => void;
+  /** A long-running runtime operation finished (result or error). Validated at this boundary. */
+  onOperationFinished: (handler: Handler<OperationFinished>) => void;
   /** A paired phone opened a session (desktop only). Validated at this boundary. */
   onMobileSessionStarted?: (handler: Handler<MobileSessionStarted>) => void;
   onRemoteAuthFailures?: (handler: Handler<RemoteAuthFailures>) => void;
@@ -386,6 +394,7 @@ function createEventHub(): EventHub {
     notificationTargetRemoved: new Set(),
     approvalRecorded: new Set(),
     azureClosedPrCleanupFinished: new Set(),
+    operationFinished: new Set(),
     requestIssue: new Set(),
   };
 }
@@ -504,6 +513,16 @@ function bindElectronTransport(): Transport {
         const parsed = azureClosedPrCleanupFinishedSchema.safeParse(payload);
         if (!parsed.success) {
           rlog("warn", "azure:closed-pr-cleanup:finished ignored: malformed payload");
+          return;
+        }
+        handler(parsed.data);
+      });
+    },
+    onOperationFinished: (handler: Handler<OperationFinished>) => {
+      window.strideterm.onOperationFinished?.((payload: unknown) => {
+        const parsed = operationFinishedSchema.safeParse(payload);
+        if (!parsed.success) {
+          rlog("warn", "operation:finished ignored: malformed payload");
           return;
         }
         handler(parsed.data);
@@ -1119,6 +1138,14 @@ export function createRemoteTransport(): Transport {
         safeDispatch(listeners.azureClosedPrCleanupFinished, parsed.data, "azureClosedPrCleanupFinished");
       } else {
         rlog("warn", "azure:closed-pr-cleanup:finished ignored: malformed payload");
+      }
+    }
+    if (message.type === OPERATION_FINISHED_CHANNEL) {
+      const parsed = operationFinishedSchema.safeParse(message.payload);
+      if (parsed.success) {
+        safeDispatch(listeners.operationFinished, parsed.data, "operationFinished");
+      } else {
+        rlog("warn", "operation:finished ignored: malformed payload");
       }
     }
     if (message.type === "ssh:auth-prompt") {
@@ -2573,6 +2600,9 @@ export function createRemoteTransport(): Transport {
     },
     onAzureClosedPrCleanupFinished: (handler: Handler<AzureClosedPrCleanupFinished>) => {
       listeners.azureClosedPrCleanupFinished.add(handler);
+    },
+    onOperationFinished: (handler: Handler<OperationFinished>) => {
+      listeners.operationFinished.add(handler);
     },
     getRemoteToken: () => token,
     setRemoteToken: (nextToken: string) => {

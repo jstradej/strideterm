@@ -808,6 +808,8 @@ export interface StridetermAPI {
   onApprovalRecorded: (handler: (payload: unknown) => void) => void;
   /** A background closed-PR cleanup finished. UNVALIDATED here; parsed at the transport boundary. */
   onAzureClosedPrCleanupFinished: (handler: (payload: unknown) => void) => void;
+  /** A long-running runtime operation finished. UNVALIDATED here; parsed at the transport boundary. */
+  onOperationFinished: (handler: (payload: unknown) => void) => void;
   onMobileStatus: (
     handler: (
       payload:

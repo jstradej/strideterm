@@ -22,6 +22,11 @@ import {
   azureClosedPrCleanupFinishedSchema,
   type AzureClosedPrCleanupFinished,
 } from "../../electron/shared/azure-closed-pr-cleanup-events.js";
+import {
+  OPERATION_KIND_TASK_PROVISION,
+  operationFinishedSchema,
+  type OperationFinished,
+} from "../../electron/shared/operation-events.js";
 import { useNotificationStore } from "./notifications.js";
 import { fireNotificationAlert } from "../composables/useNotificationSound.js";
 
@@ -120,6 +125,53 @@ function azureCleanupSkipCategory(reason: string): string {
  * history on purpose: removing an entry or clearing all must not make the
  * payload's replayed last run look new again after a reload.
  */
+const NOTIFIED_OPERATIONS_KEY = "strideterm-operations-notified-ids";
+const NOTIFIED_OPERATIONS_MAX = 200;
+
+function loadNotifiedOperationIds(): string[] {
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(NOTIFIED_OPERATIONS_KEY) || "[]");
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function rememberNotifiedOperation(operationId: string): void {
+  try {
+    const ids = [...loadNotifiedOperationIds().filter((id) => id !== operationId), operationId];
+    window.localStorage.setItem(NOTIFIED_OPERATIONS_KEY, JSON.stringify(ids.slice(-NOTIFIED_OPERATIONS_MAX)));
+  } catch {
+    // Storage unavailable: this renderer's in-memory set still holds for its lifetime.
+  }
+}
+
+/** Title and body of a finished operation's Notification Center entry. */
+function describeOperationFinished(operation: OperationFinished): { title: string; body: string; failed: boolean } {
+  if (operation.kind === OPERATION_KIND_TASK_PROVISION) {
+    if ("error" in operation) {
+      return { title: "Task agents could not be started", body: operation.error.message, failed: true };
+    }
+    const name = String(operation.result.name || "").trim();
+    const awaiting = Array.isArray(operation.result.awaitingUserInTerminal)
+      ? (operation.result.awaitingUserInTerminal as unknown[]).filter((role) => role === "worker" || role === "judge")
+      : [];
+    const lines = [
+      name ? `Worker and Judge were started for "${name}".` : "Worker and Judge were started.",
+      "This does not mean the implementation is done.",
+    ];
+    if (awaiting.length) {
+      const panels = awaiting.map((role) => (role === "worker" ? "Worker" : "Judge")).join(" and ");
+      lines.push(
+        `Confirm the trust dialog in the ${panels} terminal${awaiting.length === 1 ? "" : "s"} to let it continue.`,
+      );
+    }
+    return { title: "Task agents started", body: lines.join("\n"), failed: false };
+  }
+  if ("error" in operation) return { title: "Operation failed", body: operation.error.message, failed: true };
+  return { title: "Operation finished", body: operation.kind, failed: false };
+}
+
 const NOTIFIED_AZURE_CLEANUP_RUNS_KEY = "strideterm-azure-closed-pr-cleanup-notified-runs";
 const NOTIFIED_AZURE_CLEANUP_RUNS_MAX = 100;
 
@@ -266,6 +318,59 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     for (const run of runs) {
       const parsed = azureClosedPrCleanupFinishedSchema.safeParse(run);
       if (parsed.success) reportAzureClosedPrCleanupFinished(parsed.data, { late: true });
+    }
+  }
+
+  const reportedOperationIds = new Set<string>();
+
+  /**
+   * One finished long-running operation → at most one Notification Center entry
+   * per client, live or from the payload's `operations.lastResults`. Only the
+   * profile on screen reports; nothing here switches profile or focus.
+   */
+  function reportOperationFinished(operation: OperationFinished, { late = false } = {}): void {
+    if (reportedOperationIds.has(operation.operationId)) return;
+    if (operation.profileId !== ctx.myActiveProfileId.value) return;
+    reportedOperationIds.add(operation.operationId);
+    if (late && loadNotifiedOperationIds().includes(operation.operationId)) return;
+    rememberNotifiedOperation(operation.operationId);
+    const notifications = useNotificationStore();
+    const { title, body, failed } = describeOperationFinished(operation);
+    const urgency = failed ? "urgent" : "normal";
+    const workspaceId = operation.workspaceId || "";
+    const workspace = workspaceId
+      ? ctx.payload.value?.appState?.workspaces?.find((ws) => ws.id === workspaceId)
+      : undefined;
+    const sourceAlertId = `operation:${operation.operationId}`;
+    const { event: entry, inserted } = notifications.addAlertEvent({
+      title,
+      body,
+      kind: failed ? "error" : "completed",
+      tier: 2,
+      urgency,
+      workspaceId,
+      workspaceName: workspace?.name || "strIDEterm",
+      category: "operation",
+      meta: { profileId: operation.profileId, operationId: operation.operationId },
+      sourceAlertId,
+      occurredAt: operation.finishedAt,
+    });
+    if (!inserted) return;
+    if (!notifications.pinned) notifications.pushToast({ ...entry, category: "operation" });
+    fireNotificationAlert(entry.title, entry.body, {
+      tier: 2,
+      urgency,
+      sessionKey: sourceAlertId,
+      dedupeKey: sourceAlertId,
+    });
+  }
+
+  /** The results a payload carries (`operations.lastResults`), each reported at most once. */
+  function reportOperationRuns(results: unknown): void {
+    if (!Array.isArray(results)) return;
+    for (const result of results) {
+      const parsed = operationFinishedSchema.safeParse(result);
+      if (parsed.success) reportOperationFinished(parsed.data, { late: true });
     }
   }
 
@@ -975,6 +1080,8 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     isAzureClosedPrCleanupBusy,
     reportAzureClosedPrCleanupFinished,
     reportAzureClosedPrCleanupRuns,
+    reportOperationFinished,
+    reportOperationRuns,
     saveWorkspace,
     detachWorkspaceReview,
     confirmAndDetachWorkspaceReview,

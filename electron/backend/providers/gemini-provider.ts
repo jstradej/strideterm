@@ -1,5 +1,6 @@
 /// <reference types="node" />
 import { writeFile, readFile } from "node:fs/promises";
+import { catalogModels } from "./provider-catalog.js";
 import path from "node:path";
 import { BaseProvider, checkBinaryOnPath } from "./base-provider.js";
 import type { ProviderConfig, BinaryCheckResult } from "./base-provider.js";
@@ -7,12 +8,7 @@ import type { ProviderConfig, BinaryCheckResult } from "./base-provider.js";
 export class GeminiProvider extends BaseProvider {
   static override id = "gemini";
   static override displayName = "Gemini CLI";
-  static override models = [
-    { id: "gemini-3.1-pro-preview", name: "Gemini 3.1 Pro (preview)", suggestedRole: "judge" },
-    { id: "gemini-3-flash-preview", name: "Gemini 3 Flash (preview)", suggestedRole: "worker" },
-    { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro", suggestedRole: null },
-    { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", suggestedRole: null },
-  ];
+  static override models = catalogModels("gemini");
 
   static defaultSkipPermissions = false;
 

@@ -1,15 +1,11 @@
 import { BaseProvider, checkBinaryOnPath } from "./base-provider.js";
+import { catalogModels } from "./provider-catalog.js";
 import type { ProviderConfig, BinaryCheckResult } from "./base-provider.js";
 
 export class ClaudeProvider extends BaseProvider {
   static override id = "claude";
   static override displayName = "Claude Code";
-  static override models = [
-    { id: "claude-fable-5", name: "Claude Fable 5", suggestedRole: null },
-    { id: "sonnet", name: "Claude Sonnet 5", suggestedRole: "worker" },
-    { id: "opus", name: "Claude Opus 4.8", suggestedRole: "judge" },
-    { id: "haiku", name: "Claude Haiku 4.5", suggestedRole: null },
-  ];
+  static override models = catalogModels("claude");
 
   static defaultSkipPermissions = true;
 

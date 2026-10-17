@@ -3,6 +3,7 @@ import type { SshHost, SshKey, SshCert } from "./ssh.js";
 import type { SshConnectionSettings } from "../ssh-connection.js";
 import type { Alert } from "./notifications.js";
 import type { AzureClosedPrCleanupFinished } from "../azure-closed-pr-cleanup-events.js";
+import type { OperationsState } from "../operation-events.js";
 import type { AppDistribution, MicrosoftStoreUpdateStatus } from "../app-distribution.js";
 
 // Re-export for convenience
@@ -555,6 +556,12 @@ export interface WorkspaceState {
   quickfix: QuickfixInfo | null;
   starred: boolean;
   task: TaskState | null;
+  /**
+   * Lets Claude Code / Codex terminals started in this workspace create and watch
+   * tasks through the internal MCP. Off by default, desktop-only to turn on, and
+   * never inherited by the task workspaces it creates.
+   */
+  internalMcpEnabled?: boolean;
   /**
    * ISO timestamp of the last CONFIRMED, workspace-scoped piece of user work
    * — meaningful terminal input that the backend accepted, creating this
@@ -1134,6 +1141,8 @@ export interface StatePayload {
   remoteAccess: RemoteAccessState;
   taskRunner: Record<string, unknown>;
   azureClosedPrCleanup: AzureClosedPrCleanupState;
+  /** Runtime-only: running long operations and their last results (24 h). */
+  operations: OperationsState;
   /** Per-remote-client context — only set when the payload is composed for a specific remote session. */
   remoteClient?: RemoteClientContext;
 }
@@ -1223,6 +1232,8 @@ export interface RemoteStateV2 {
   taskRunner: Record<string, unknown>;
   /** Only the client's profile's parents and runs. */
   azureClosedPrCleanup: AzureClosedPrCleanupState;
+  /** Only the client's profile's operations. */
+  operations: OperationsState;
   plugins: unknown[];
   environment: Record<string, unknown>;
   /** Share-URL surface only (token blanked). */

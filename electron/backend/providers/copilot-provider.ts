@@ -1,4 +1,5 @@
 import { BaseProvider, checkBinaryOnPath } from "./base-provider.js";
+import { catalogModels } from "./provider-catalog.js";
 import type { ProviderConfig, BinaryCheckResult } from "./base-provider.js";
 
 export class CopilotProvider extends BaseProvider {
@@ -7,13 +8,7 @@ export class CopilotProvider extends BaseProvider {
   // Curated subset of GitHub Copilot's model catalog. The full list changes
   // frequently as GitHub rotates model availability; keeping this short avoids
   // churn. Users can still override via --model in the command field.
-  static override models = [
-    { id: "claude-opus-4.8", name: "Claude Opus 4.8", suggestedRole: "judge" },
-    { id: "claude-sonnet-5", name: "Claude Sonnet 5", suggestedRole: "worker" },
-    { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", suggestedRole: null },
-    { id: "gpt-5.5", name: "GPT-5.5", suggestedRole: null },
-    { id: "gpt-5.3-codex", name: "GPT-5.3 Codex", suggestedRole: null },
-  ];
+  static override models = catalogModels("copilot");
 
   static defaultSkipPermissions = true;
 

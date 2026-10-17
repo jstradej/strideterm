@@ -1810,6 +1810,12 @@ export const useAppStore = defineStore("app", () => {
         ([runs]) => workspaceActions.reportAzureClosedPrCleanupRuns(runs),
         { immediate: true },
       );
+      api.onOperationFinished?.((event) => workspaceActions.reportOperationFinished(event));
+      watch(
+        () => [(payload.value as AnyApi)?.operations?.lastResults, myActiveProfileId.value],
+        ([results]) => workspaceActions.reportOperationRuns(results),
+        { immediate: true },
+      );
     }
 
     api.onConnectionState?.((connection) => {

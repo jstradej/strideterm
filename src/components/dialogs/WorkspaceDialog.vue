@@ -209,6 +209,20 @@
           :tab-templates="tabTemplates"
           :heading="isAzure ? 'Review workspace tabs' : 'Terminal tabs'"
         />
+        <label v-if="showInternalMcpOption" class="internal-mcp-option">
+          <input
+            v-model="draft.internalMcpEnabled"
+            type="checkbox"
+            data-testid="internal-mcp-checkbox"
+            :disabled="internalMcpLocked"
+          />
+          Allow internal MCP for agents
+          <span class="internal-mcp-hint">
+            Lets agents create and monitor tasks in strIDEterm.
+            <template v-if="internalMcpLocked"> Desktop only — change it in the desktop app.</template>
+            Applies to agent sessions started after saving.
+          </span>
+        </label>
       </template>
 
       <!-- Detach review link — workspace is linked to a PR review -->
@@ -366,6 +380,8 @@ interface WorkspaceDraft {
   judgeProvider: ProviderConfig;
   workerCommandOverride: boolean;
   judgeCommandOverride: boolean;
+  // internal MCP opt-in (workspace level, desktop-only to change)
+  internalMcpEnabled?: boolean;
   // multi-repo
   gitRoots?: string[];
   // review workspace
@@ -431,6 +447,9 @@ if (rawDraft.workerCommandOverride === undefined) rawDraft.workerCommandOverride
 if (rawDraft.judgeCommandOverride === undefined) rawDraft.judgeCommandOverride = false;
 if (!("gitRoots" in rawDraft)) rawDraft.gitRoots = [];
 if (!("repositoryForWorktree" in rawDraft)) rawDraft.repositoryForWorktree = "";
+// Task workspaces never carry the grant; everything else defaults to off.
+if (rawDraft.kind === "task") delete rawDraft.internalMcpEnabled;
+else rawDraft.internalMcpEnabled = rawDraft.internalMcpEnabled === true;
 const draft = reactive(rawDraft);
 
 const store = useAppStore();
@@ -439,6 +458,8 @@ const isDocker = computed(() => draft.kind === "docker");
 const isAzure = computed(() => draft.kind === "azure" || draft.kind === "github");
 const isTask = computed(() => draft.kind === "task");
 const isCreatingTask = computed(() => isTask.value && props.creating);
+const showInternalMcpOption = computed(() => !isTask.value && !isDocker.value && !draft.review);
+const internalMcpLocked = computed(() => store.isRemoteTransport);
 const taskDescriptionLength = computed(() => (draft.task?.description || "").length);
 
 const submitting = ref(false);
@@ -851,6 +872,17 @@ function extractErrorMessage(err: unknown): string {
 </script>
 
 <style scoped>
+.internal-mcp-option {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.internal-mcp-hint {
+  flex-basis: 100%;
+  font-size: 12px;
+  color: var(--muted);
+}
 .appearance-details {
   border: 1px solid var(--border);
   border-radius: 4px;
