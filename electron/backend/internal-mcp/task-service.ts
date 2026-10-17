@@ -170,10 +170,16 @@ function slug(text: string): string {
   );
 }
 
+// The runner stores startedAt / pausedAt / finishedAt as epoch milliseconds despite their string type.
+function isoTimestamp(value: unknown): string | null {
+  if (typeof value === "number") return Number.isFinite(value) ? new Date(value).toISOString() : null;
+  return typeof value === "string" && value.length > 0 && !Number.isNaN(Date.parse(value)) ? value : null;
+}
+
 function latestActivity(task: NonNullable<WorkspaceState["task"]>): string | null {
-  const stamps: string[] = [task.createdAt, task.startedAt, task.pausedAt, task.finishedAt].filter(
-    (value): value is string => typeof value === "string" && value.length > 0,
-  );
+  const stamps = [task.createdAt, task.startedAt, task.pausedAt, task.finishedAt]
+    .map(isoTimestamp)
+    .filter((value): value is string => value !== null);
   for (const round of task.rounds || []) {
     if (round.startedAt) stamps.push(round.startedAt);
     if (round.finishedAt) stamps.push(round.finishedAt);
@@ -821,8 +827,8 @@ export function createTaskService(deps: TaskServiceDeps) {
       parentWorkspaceId: task.parentWorkspaceId || "",
       currentRound: task.currentRound || 0,
       maxRounds: task.maxRounds,
-      startedAt: task.startedAt || null,
-      finishedAt: task.finishedAt || null,
+      startedAt: isoTimestamp(task.startedAt),
+      finishedAt: isoTimestamp(task.finishedAt),
       lastActivityAt: latestActivity(task),
       awaitingUserInTerminal: awaitingOf(workspace.id),
     };
@@ -851,7 +857,8 @@ export function createTaskService(deps: TaskServiceDeps) {
   }
 
   function runIdOf(task: NonNullable<WorkspaceState["task"]>): string | null {
-    return task.startedAt ? `${task.taskId}:${Date.parse(task.startedAt)}` : null;
+    const startedAt = isoTimestamp(task.startedAt);
+    return startedAt ? `${task.taskId}:${Date.parse(startedAt)}` : null;
   }
 
   async function readLogSlice(

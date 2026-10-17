@@ -548,6 +548,8 @@ interface RuntimeDependencies {
   enableAgentSshMcp?: boolean;
   /** Enables the per-workspace internal MCP (task creation and status) for Claude Code / Codex terminals. */
   enableInternalMcp?: boolean;
+  /** How long an internal-MCP task start waits for the Worker's freshly spawned agent to stop drawing. */
+  taskAgentReadiness?: { quietMs: number; timeoutMs: number };
   /** Which build is running — detected by main.ts, which can ask Electron (this module cannot). */
   distribution?: AppDistribution;
   createSshMcpBroker?: typeof createSshMcpBroker;
@@ -6918,6 +6920,42 @@ export async function createRuntime({
     finalizeWorkspaceRemoval,
   });
 
+  const taskAgentReadiness = dependencies.taskAgentReadiness ?? { quietMs: 2_000, timeoutMs: 30_000 };
+
+  // A task created over MCP is not activated, so nothing has spawned its
+  // Worker/Judge PTYs yet, and the runner's first prompt would be written into
+  // a session that does not exist. Bring both up and wait until the Worker's
+  // agent has drawn its prompt and gone quiet before the prompt is typed in.
+  async function startTaskWithAgents(workspaceId: string) {
+    const task = findWorkspace(getState(), workspaceId)?.task;
+    if (task?.workerPanelId && task.judgePanelId) {
+      const workerSessionId = createSessionId(workspaceId, task.workerPanelId);
+      let lastOutputAt = 0;
+      const onData = (payload: { sessionId?: string }) => {
+        if (payload?.sessionId === workerSessionId) lastOutputAt = Date.now();
+      };
+      sessions.on("terminal:data", onData);
+      try {
+        await sessions.ensureSession(getState(), workerSessionId);
+        await sessions.ensureSession(getState(), createSessionId(workspaceId, task.judgePanelId));
+        const deadline = Date.now() + taskAgentReadiness.timeoutMs;
+        while (!(lastOutputAt > 0 && Date.now() - lastOutputAt >= taskAgentReadiness.quietMs)) {
+          if (Date.now() >= deadline) {
+            log.warn("internal MCP task start: Worker agent did not settle in time, sending the prompt anyway", {
+              workspaceId,
+              sawOutput: lastOutputAt > 0,
+            });
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        }
+      } finally {
+        sessions.off("terminal:data", onData);
+      }
+    }
+    return taskHandlers.startTask(workspaceId);
+  }
+
   const taskService = createTaskService({
     log,
     getState,
@@ -6929,7 +6967,7 @@ export async function createRuntime({
     createTaskWorkspace: (config, windowId, internal) =>
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (_rt as any).createTaskWorkspace(config, windowId, internal),
-    startTask: (workspaceId) => taskHandlers.startTask(workspaceId),
+    startTask: (workspaceId) => startTaskWithAgents(workspaceId),
     getAwaitingUserRoles: (workspaceId) => taskRunner.getAwaitingUserRoles(workspaceId),
   });
   if (dependencies.enableInternalMcp === true) {

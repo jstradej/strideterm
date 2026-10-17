@@ -16219,18 +16219,20 @@ describe("internal MCP: creating and watching task agents", () => {
     settings,
     dataDir,
     execFileTextImpl,
+    taskAgentReadiness = { quietMs: 0, timeoutMs: 0 },
   }: {
     workspaces: Array<Record<string, unknown>>;
     profiles?: Array<Record<string, unknown>>;
     settings?: Record<string, unknown>;
     dataDir?: string;
     execFileTextImpl?: unknown;
+    taskAgentReadiness?: { quietMs: number; timeoutMs: number };
   }) {
     const fixture = await createFixture({
       initialState: { workspaces, ...(profiles ? { profiles } : {}), ...(settings ? { settings } : {}) },
       execFileTextImpl: execFileTextImpl ?? execFileText,
       dataDir,
-      dependencies: { enableInternalMcp: true },
+      dependencies: { enableInternalMcp: true, taskAgentReadiness },
     });
     fixtures.push(fixture);
     // The real SessionManager stamps its sessions with the workspace id; the fake only knows projectId.
@@ -16560,6 +16562,57 @@ describe("internal MCP: creating and watching task agents", () => {
     });
     expect(operationFinishedSchema.safeParse(finished[0]).success).toBe(true);
     expect(fixture.runtime.getPayload().operations.lastResults.map((r: any) => r.operationId)).toContain(operationId);
+  });
+
+  test("spawns the Worker and Judge itself and types the prompt only once the Worker's agent went quiet", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({
+      workspaces: [parentWorkspace(repo)],
+      taskAgentReadiness: { quietMs: 150, timeoutMs: 5_000 },
+    });
+    const events: string[] = [];
+    const ensureSession = fixture.sessionManager.ensureSession.bind(fixture.sessionManager);
+    fixture.sessionManager.ensureSession = async (state: any, sessionId: any) => {
+      const session = await ensureSession(state, sessionId);
+      events.push(`spawn ${String(sessionId).split(":")[1]}`);
+      // The agent draws its welcome screen a moment after the PTY is up.
+      setTimeout(() => {
+        events.push(`output ${String(sessionId).split(":")[1]}`);
+        fixture.sessionManager.emit("terminal:data", { sessionId, data: "Claude Code\r\n> " });
+      }, 50);
+      return session;
+    };
+    for (const method of ["writeToSession", "submitToSession"] as const) {
+      const original = fixture.sessionManager[method].bind(fixture.sessionManager);
+      fixture.sessionManager[method] = (sessionId: any, data: any) => {
+        events.push(`write ${String(sessionId).split(":")[1]}`);
+        return original(sessionId, data);
+      };
+    }
+    const { launch } = launchAgent(fixture);
+    const call = brokerClient(launch);
+
+    const { started } = await prepareAndStart(call, readyInput());
+    const settled = await waitForOperation(call, started.result.operationId);
+    expect(settled.status).toBe("succeeded");
+
+    const task = (taskWorkspaces(fixture)[0] as any).task;
+    const worker = task.workerPanelId;
+    const judge = task.judgePanelId;
+    expect(fixture.sessionManager.sessions.has(createSessionId(settled.workspaceId, worker))).toBe(true);
+    expect(fixture.sessionManager.sessions.has(createSessionId(settled.workspaceId, judge))).toBe(true);
+    const firstWorkerWrite = events.indexOf(`write ${worker}`);
+    expect(firstWorkerWrite).toBeGreaterThan(events.indexOf(`spawn ${worker}`));
+    expect(firstWorkerWrite).toBeGreaterThan(events.indexOf(`spawn ${judge}`));
+    expect(firstWorkerWrite).toBeGreaterThan(events.indexOf(`output ${worker}`));
+    expect(task.promptSent).toBe(true);
+
+    const detail = await call("task_get", { workspaceId: settled.workspaceId });
+    expect(detail.result.runId).toMatch(new RegExp(`^${task.taskId}:\\d+$`));
+    expect(detail.result.startedAt).toBe(new Date(task.startedAt).toISOString());
+    expect((await call("operation_get", { operationId: started.result.operationId })).result.runId).toBe(
+      detail.result.runId,
+    );
   });
 
   test("hands the task exact snapshots of host-supplied sources and never touches the originals", async () => {
