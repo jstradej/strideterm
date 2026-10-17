@@ -1604,7 +1604,7 @@ describe("runtime integration", () => {
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const saved = fixture.store.getState().workspaces.find((item: any) => item.id === workspace.id);
-    const agentPanel = saved.panels.find((item: { id: string }) => item.id === "agent");
+    const agentPanel = saved!.panels.find((item: { id: string }) => item.id === "agent");
     const sessionId = createSessionId(workspace.id, "agent");
     fixture.sessionManager.sessions.set(sessionId, {
       id: sessionId,
@@ -1635,7 +1635,7 @@ describe("runtime integration", () => {
     expect(brokerOptions.isGrantLive(brokerOptions.mintedContext)).toBe(true);
 
     // A shell tab in the same workspace is not an agent: no capability for it.
-    const shellPanel = saved.panels.find((item: { id: string }) => item.id === "shell");
+    const shellPanel = saved!.panels.find((item: { id: string }) => item.id === "shell");
     expect(
       fixture.sessionManager.getSessionLaunch({
         workspace: saved,

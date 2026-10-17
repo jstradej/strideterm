@@ -307,6 +307,23 @@ describe("operations started somewhere else", () => {
     }
   });
 
+  it("an operation whose wait gave up is still announced when its outcome arrives", async () => {
+    vi.useFakeTimers();
+    try {
+      const { ops, startReviewGitOperation } = setup();
+      startReviewGitOperation.mockImplementationOnce(async () => ({ started: true as const, operationId: "op-1" }));
+      const pending = ops.run("push", "ws-1");
+      const settled = expect(pending).rejects.toThrow("Lost track");
+      await vi.advanceTimersByTimeAsync(16 * 60 * 1000);
+      await settled;
+      await vi.advanceTimersByTimeAsync(6_000);
+      ops.reportOperation(event());
+      expect(entries()).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("a failure is announced as an error", () => {
     const { ops } = setup();
     ops.reportOperation(event({ state: "failed", result: undefined, error: "lease rejected" }));

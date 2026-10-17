@@ -248,6 +248,27 @@ describe("review Git broker", () => {
     expect(fake.service.operations.running("default")).toHaveLength(1);
   });
 
+  test("a client that aborts mid-wait keeps its capability, and a same-key retry reaches the same operation", async () => {
+    const { capability } = broker.mintGrant(baseGrant);
+    const aborter = new AbortController();
+    const body = { operation: "start", kind: "refresh", idempotencyKey: "key-abababab", waitMs: 10_000 };
+    const dropped = fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${capability}` },
+      body: JSON.stringify(body),
+      signal: aborter.signal,
+    }).catch(() => "aborted");
+    await vi.waitFor(() => expect(fake.runs).toHaveLength(1));
+    aborter.abort();
+    expect(await dropped).toBe("aborted");
+    const [operation] = fake.service.operations.running("default");
+
+    await vi.waitFor(async () => expect((await call(capability, { operation: "status" })).status).toBe(200));
+    const retry = await call(capability, { ...body, waitMs: 0 });
+    expect(retry.status).toBe(200);
+    expect(retry.body.result.operationId).toBe(operation!.operationId);
+  });
+
   test("an operation id is not visible through a capability for another workspace or profile", async () => {
     const mine = broker.mintGrant(baseGrant);
     const other = broker.mintGrant({ ...baseGrant, sessionId: "ws-2:panel-1", workspaceId: "ws-2" });

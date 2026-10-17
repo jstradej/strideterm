@@ -292,20 +292,22 @@ export function createReviewGitBroker({ service, isGrantLive, now = () => Date.n
     response.once("close", onResponseClose);
 
     const expired = (operationId?: string) => {
-      revokeGrant(capability);
       sendJson(response, 403, {
         error: {
           code: "grant_expired",
           message:
             "Review Git is no longer available for this tab (it was detached, closed, or its pull request changed). Operations already started keep running" +
-            (operationId ? `; query operation ${operationId} with git_operation_status.` : "."),
+            (operationId ? ` (operation ${operationId}); restart this agent tab to query them again.` : "."),
           ...(operationId ? { operationId } : {}),
         },
       });
     };
 
     try {
-      if (!(await isLive(grant))) return expired();
+      if (!(await isLive(grant))) {
+        revokeGrant(capability);
+        return expired();
+      }
       if (grants.get(capability) !== grant || controller.signal.aborted) {
         sendJson(response, 401, { error: { code: "unauthorized", message: "Review Git grant is unavailable." } });
         return;
@@ -318,11 +320,16 @@ export function createReviewGitBroker({ service, isGrantLive, now = () => Date.n
         return;
       }
       // Revalidate immediately before acting; state can change while the body is in flight.
-      if (!(await isLive(grant))) return expired();
+      if (!(await isLive(grant))) {
+        revokeGrant(capability);
+        return expired();
+      }
       grant.lastUsedAt = now();
       const result = await dispatch(grant, parsed.data, controller.signal);
       if (!controller.signal.aborted) sendJson(response, 200, { result });
-      else expired((result as { operationId?: string } | null)?.operationId);
+      else if (grants.get(capability) !== grant && !response.destroyed) {
+        expired((result as { operationId?: string } | null)?.operationId);
+      }
     } catch (error) {
       if (response.destroyed) return;
       if (error instanceof BrokerError) {

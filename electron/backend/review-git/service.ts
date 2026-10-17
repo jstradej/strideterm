@@ -1,3 +1,4 @@
+import { stripRefsPrefix } from "../shared/provider-utils.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { AppState, WorkspaceState } from "../../shared/types/state.js";
@@ -267,7 +268,19 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
   }
 
   const rewritesHistory = (result: ReviewGitResult): boolean =>
-    result.status === "reset" || result.status === "rebased";
+    result.status === "reset" ||
+    result.status === "rebased" ||
+    result.status === "continued" ||
+    result.status === "skipped";
+
+  /** HEAD before the rewrite: the result names it, except a finished paused rebase, whose start Git keeps in ORIG_HEAD. */
+  async function headBeforeRewrite(located: Located, result: ReviewGitResult): Promise<string> {
+    if (result.status === "reset" || result.status === "rebased") return String(result.previousHeadSha || "");
+    return gitRunFor(located.manager)(located.workspace.cwd, ["rev-parse", "--verify", "ORIG_HEAD"]).then(
+      (out) => out.stdout.trim(),
+      () => "",
+    );
+  }
 
   async function afterOperation(located: Located): Promise<void> {
     await ctx.refreshGit(located.workspace.id);
@@ -387,9 +400,7 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
       default:
         throw new Error(`Unsupported review Git operation: ${String(kind)}`);
     }
-    if (rewritesHistory(result) || (kind === "continue" && result.status === "continued")) {
-      await revalidateAnchors(located, result.status === "rebased" ? String(result.previousHeadSha || "") : "");
-    }
+    if (rewritesHistory(result)) await revalidateAnchors(located, await headBeforeRewrite(located, result));
     await afterOperation(located);
     return result;
   }
@@ -494,7 +505,8 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
     const run = gitRunFor(manager);
     const cwd = workspace.cwd;
     const sourceBranch = sourceBranchName(review.pullRequest?.sourceRefName);
-    const targetBranch = String(review.pullRequest?.targetRefName || "").replace(/^refs\/heads\//u, "");
+    const liveSubject = manager.buildReviewSubject(workspace);
+    const targetBranch = stripRefsPrefix(liveSubject.targetRefName);
     const git = async (args: string[]) => (await run(cwd, args)).stdout;
 
     switch (input.operation) {
@@ -519,7 +531,7 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
               }
             : null,
           sourceRef: review.pullRequest?.sourceRefName,
-          targetRef: review.pullRequest?.targetRefName,
+          targetRef: liveSubject.targetRefName,
           expectedLocalBranches: [
             managedReviewBranchAlias(review.pullRequest?.id ?? "", review.pullRequest?.sourceRefName || ""),
             sourceBranch,
@@ -556,25 +568,35 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
           (out) => out.trim(),
           () => "",
         );
-        const trackingTarget = await git(["rev-parse", "--verify", "-q", `refs/remotes/origin/${targetBranch}`]).then(
-          (out) => out.trim(),
-          () => "",
-        );
         const facts = await inspectCheckout(run, cwd);
-        const subject = manager.buildReviewSubject(workspace);
+        const targetTracksOrigin =
+          !liveSubject.targetRemoteUrl || sameRemote(facts.originUrl, liveSubject.targetRemoteUrl);
+        const trackingTarget = targetTracksOrigin
+          ? await git(["rev-parse", "--verify", "-q", `refs/remotes/origin/${targetBranch}`]).then(
+              (out) => out.trim(),
+              () => "",
+            )
+          : "";
+        const subject = liveSubject;
         let live: { source: string | null; target: string | null } | undefined;
         if (input.query) {
           const remote = subject.sourceRepository?.remoteUrl || "origin";
           live = {
             source: await lsRemoteRef(run, cwd, remote, `refs/heads/${sourceBranch}`, subject.auth).catch(() => null),
-            target: await lsRemoteRef(run, cwd, "origin", `refs/heads/${targetBranch}`, subject.auth).catch(() => null),
+            target: await lsRemoteRef(
+              run,
+              cwd,
+              targetTracksOrigin ? "origin" : liveSubject.targetRemoteUrl,
+              `refs/heads/${targetBranch}`,
+              subject.auth,
+            ).catch(() => null),
           };
         }
         return {
           headSha: facts.headSha,
           branch: facts.branch || null,
           sourceRef: review.pullRequest?.sourceRefName,
-          targetRef: review.pullRequest?.targetRefName,
+          targetRef: liveSubject.targetRefName,
           trackingSourceSha: trackingSource || null,
           trackingTargetSha: trackingTarget || null,
           sourceBaselineSha: review.sourceBaselineSha || null,
@@ -590,7 +612,7 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
         if (input.scope === "worktree") args = [...base, ...pathArgs];
         else if (input.scope === "staged") args = [...base, "--cached", ...pathArgs];
         else if (input.scope === "head-vs-target")
-          args = [...base, `refs/remotes/origin/${targetBranch}...HEAD`, ...pathArgs];
+          args = [...base, `${await liveTargetCommit(located, run)}...HEAD`, ...pathArgs];
         else args = [...base, `${await liveSourceCommit(located, run)}...HEAD`, ...pathArgs];
         const out = clip(await git(args));
         return { scope: input.scope, path: file || null, diff: out.text, truncated: out.truncated };
@@ -599,7 +621,7 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
         const limit = Math.min(Math.max(Number(input.limit) || 30, 1), MAX_LOG);
         const range =
           input.range === "head-vs-target"
-            ? `refs/remotes/origin/${targetBranch}..HEAD`
+            ? `${await liveTargetCommit(located, run)}..HEAD`
             : input.range === "head-vs-source"
               ? `${await liveSourceCommit(located, run)}..HEAD`
               : "HEAD";
@@ -700,6 +722,32 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
     if (!(await hasCommit(run, cwd, sha))) {
       throw new Error(
         `The live source commit ${sha.slice(0, 8)} is not in this checkout yet. Run review_git_refresh or review_git_fetch first.`,
+      );
+    }
+    return sha;
+  }
+
+  /** The live tip of the TARGET branch in the target repository (not a possibly stale or fork-tracking ref). */
+  async function liveTargetCommit(located: Located, run: GitRun): Promise<string> {
+    const { workspace, manager } = located;
+    const cwd = workspace.cwd;
+    const subject = manager.buildReviewSubject(workspace);
+    const targetBranch = stripRefsPrefix(subject.targetRefName);
+    if (!targetBranch) throw new Error("The pull request's target branch is unknown.");
+    const facts = await inspectCheckout(run, cwd);
+    const remote =
+      !subject.targetRemoteUrl || sameRemote(facts.originUrl, subject.targetRemoteUrl)
+        ? "origin"
+        : subject.targetRemoteUrl;
+    const sha = await lsRemoteRef(run, cwd, remote, `refs/heads/${targetBranch}`, subject.auth).catch(
+      (error: Error) => {
+        throw new Error(`Could not query the pull request target branch: ${error.message}`, { cause: error });
+      },
+    );
+    if (!sha) throw new Error(`The target branch ${targetBranch} no longer exists on its remote.`);
+    if (!(await hasCommit(run, cwd, sha))) {
+      throw new Error(
+        `The live target commit ${sha.slice(0, 8)} is not in this checkout yet. Run review_git_rebase (or review_git_fetch) first.`,
       );
     }
     return sha;

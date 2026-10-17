@@ -432,6 +432,21 @@ describe("read tools", () => {
     );
   });
 
+  test("head-vs-target compares with the live target commit, not a stale tracking ref", async () => {
+    const f = await createFixture();
+    git(f.seed, ["checkout", "-q", "main"]);
+    await fs.writeFile(path.join(f.seed, "target-later.txt"), "later");
+    git(f.seed, ["add", "."]);
+    git(f.seed, ["commit", "-q", "-m", "target later"]);
+    git(f.seed, ["push", "-q", "origin", "main"]);
+    await expect(f.service.read({ operation: "diff", scope: "head-vs-target" }, "ws-1", "default")).rejects.toThrow(
+      "live target commit",
+    );
+    await expect(f.service.read({ operation: "refs", query: true }, "ws-1", "default")).resolves.toMatchObject({
+      targetRef: "refs/heads/main",
+    });
+  });
+
   test("conflicts lists the conflicted files with their content", async () => {
     const f = await createFixture();
     git(f.seed, ["checkout", "-q", "main"]);
@@ -604,15 +619,20 @@ describe("push and publish", () => {
     async function rebaseWith(
       lineSide: string,
       change: (f: Awaited<ReturnType<typeof createFixture>>) => Promise<void>,
+      via: "rebase" | "refresh" | "skip" | "continue" = "rebase",
     ): Promise<
       (anchor: { commentKey: string; filePath: string; lineNumber: number; lineSide?: string }) => Promise<boolean>
     > {
       const f = await createFixture();
       const previousHeadSha = git(f.checkout, ["rev-parse", "HEAD"]).trim();
       await change(f);
+      git(f.checkout, ["update-ref", "ORIG_HEAD", previousHeadSha]);
+      const engineResult = vi.fn(async () => ({ status: via === "skip" ? "skipped" : "continued", message: "ok" }));
       const fakeManager = {
         buildReviewSubject: f.manager.buildReviewSubject.bind(f.manager),
         rebaseReviewWorkspace: vi.fn(async () => ({ status: "rebased", message: "ok", previousHeadSha })),
+        syncReviewWorkspace: vi.fn(async () => ({ status: "reset", message: "ok", previousHeadSha })),
+        getReviewGitEngine: () => ({ skipOperation: engineResult, continueOperation: engineResult }),
         runGit: f.manager.runGit.bind(f.manager),
       };
       const service = createReviewGitService({
@@ -628,7 +648,7 @@ describe("push and publish", () => {
         auditStores: {},
         log: { info() {}, warn() {}, error() {} },
       });
-      service.start({ kind: "rebase", workspaceId: "ws-1" }, ui);
+      service.start({ kind: via, workspaceId: "ws-1" }, ui);
       await service.operations.idle();
       expect(lineSide).toBeTruthy();
       return f.bridge.markStaleAnchors.mock.calls[0][1] as never;
@@ -643,6 +663,14 @@ describe("push and publish", () => {
       const validator = await rebaseWith("new", insertAtTop);
       expect(await validator({ commentKey: "k", filePath: "a.txt", lineNumber: 2, lineSide: "new" })).toBe(false);
     });
+
+    test.each(["refresh", "skip", "continue"] as const)(
+      "a new-side anchor is judged against the old code after %s too",
+      async (via) => {
+        const validator = await rebaseWith("new", insertAtTop, via);
+        expect(await validator({ commentKey: "k", filePath: "a.txt", lineNumber: 2, lineSide: "new" })).toBe(false);
+      },
+    );
 
     test("an anchor on code that did not move stays valid", async () => {
       const validator = await rebaseWith("new", async (f) => {

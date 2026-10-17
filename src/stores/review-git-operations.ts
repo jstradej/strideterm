@@ -289,16 +289,21 @@ export function createReviewGitOperations(ctx: ReviewGitOperationsCtx) {
       startsInFlight -= 1;
       if (startsInFlight === 0) flushDeferred();
     }
+    let received = false;
     try {
       const event = await waitFor(started.operationId);
+      received = true;
       if (event.state === "failed") throw new Error(event.error || "The Git operation failed.");
       return event.result;
     } finally {
       // The caller reports this outcome. Mark it told for good before ownership
       // lapses, or the payload's replay of the same last run would announce the
-      // user's own operation as a foreign one.
-      notifiedInMemory.add(started.operationId);
-      rememberNotified(started.operationId);
+      // user's own operation as a foreign one. A wait that gave up never saw the
+      // outcome, so the Notification Center must still get it.
+      if (received) {
+        notifiedInMemory.add(started.operationId);
+        rememberNotified(started.operationId);
+      }
       setTimeout(() => owned.delete(started.operationId), 5_000);
     }
   }
