@@ -16656,6 +16656,55 @@ describe("internal MCP: creating and watching task agents", () => {
     );
   });
 
+  test("a Telegram start of an inactive task spawns both agents and prompts only after the Worker went quiet", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({
+      workspaces: [parentWorkspace(repo)],
+      taskAgentReadiness: { quietMs: 150, timeoutMs: 5_000 },
+    });
+    const events: string[] = [];
+    const ensureSession = fixture.sessionManager.ensureSession.bind(fixture.sessionManager);
+    fixture.sessionManager.ensureSession = async (state: any, sessionId: any) => {
+      const session = await ensureSession(state, sessionId);
+      events.push(`spawn ${String(sessionId).split(":")[1]}`);
+      setTimeout(() => {
+        events.push(`output ${String(sessionId).split(":")[1]}`);
+        fixture.sessionManager.emit("terminal:data", { sessionId, data: "Claude Code\r\n> " });
+      }, 50);
+      return session;
+    };
+    for (const method of ["writeToSession", "submitToSession"] as const) {
+      const original = fixture.sessionManager[method].bind(fixture.sessionManager);
+      fixture.sessionManager[method] = (sessionId: any, data: any) => {
+        events.push(`write ${String(sessionId).split(":")[1]}`);
+        return original(sessionId, data);
+      };
+    }
+    const created = await fixture.runtime.createTaskWorkspace({
+      cwd: repo,
+      parentWorkspaceId: "parent",
+      description: "Telegram task",
+      activate: false,
+    });
+    const workspaceId: string = created.workspaceId;
+    const task = (): any => fixture.store.getState().workspaces.find((w: any) => w.id === workspaceId)?.task;
+
+    fixture.runtime._telegramManagerForTest().emit("command", { type: "start-existing-task", workspaceId });
+    for (let attempt = 0; attempt < 120 && !task()?.promptSent; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    const { workerPanelId, judgePanelId } = task();
+    expect(task().promptSent).toBe(true);
+    expect(fixture.sessionManager.sessions.has(createSessionId(workspaceId, workerPanelId))).toBe(true);
+    expect(fixture.sessionManager.sessions.has(createSessionId(workspaceId, judgePanelId))).toBe(true);
+    const firstWorkerWrite = events.indexOf(`write ${workerPanelId}`);
+    expect(firstWorkerWrite).toBeGreaterThan(-1);
+    expect(firstWorkerWrite).toBeGreaterThan(events.indexOf(`spawn ${workerPanelId}`));
+    expect(firstWorkerWrite).toBeGreaterThan(events.indexOf(`spawn ${judgePanelId}`));
+    expect(firstWorkerWrite).toBeGreaterThan(events.indexOf(`output ${workerPanelId}`));
+  });
+
   test("hands the task exact snapshots of host-supplied sources and never touches the originals", async () => {
     const repo = await createRepo();
     const outside = await fs.mkdtemp(path.join(os.tmpdir(), "internal-mcp-outside-"));

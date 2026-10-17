@@ -19,13 +19,13 @@ interface TelegramDispatchCtx {
   /** Live accessor — the runtime object (`_rt`) isn't fully built until createRuntime finishes. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   getRt: () => any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  sessions: any;
   clearAlertSession: (sessionId: string) => boolean;
   broadcastState: () => void;
   worktreeTreePath: (repoPath: string, branchOrName: string) => string;
   captureMainWindowPng?: (windowId?: string) => Promise<Buffer>;
   ensureWindowForProfile?: (profileId: string) => Promise<string | null>;
+  /** Spawns the task's Worker/Judge PTYs, waits for the Worker's agent to settle, then starts the task. */
+  startTaskWithAgents: (workspaceId: string) => Promise<{ ok: boolean }>;
 }
 
 /**
@@ -39,12 +39,12 @@ export function createTelegramDispatch(ctx: TelegramDispatchCtx) {
     getState,
     telegramManager,
     getRt,
-    sessions,
     clearAlertSession,
     broadcastState,
     worktreeTreePath,
     captureMainWindowPng,
     ensureWindowForProfile,
+    startTaskWithAgents,
   } = ctx;
 
   // --- Telegram command dispatch ---
@@ -347,34 +347,12 @@ export function createTelegramDispatch(ctx: TelegramDispatchCtx) {
       return;
     }
     log.warn("telegram: starting existing task", { workspaceId: wsId, state: targetWs.task.state });
-    // CRITICAL: when the task workspace was created with `activate:false`,
-    // its worker/judge PTYs were never spawned. taskRunner.startTask
-    // would then write the initial prompt into a non-existent session
-    // (silent drop in session-manager.writeToSession), and the user sees
-    // a Claude welcome screen with no command — exactly the bug the
-    // user reported. Start the PTYs explicitly here, await readiness,
-    // and give Claude's TUI a moment to finish rendering its welcome
-    // before we inject the prompt.
-    const workerPanelId = targetWs.task.workerPanelId;
-    const judgePanelId = targetWs.task.judgePanelId;
-    const workerSessionId = createSessionId(wsId, workerPanelId);
-    const judgeSessionId = createSessionId(wsId, judgePanelId);
-    try {
-      await sessions.ensureSession(getState(), workerSessionId);
-      await sessions.ensureSession(getState(), judgeSessionId);
-    } catch (err) {
-      log.warn("telegram: failed to ensure task PTY sessions", {
-        workspaceId: wsId,
-        err: (err as Error).message,
-      });
-    }
-    // Wait for Claude's Ink TUI to finish its initial render. Without
-    // this delay the keystrokes get lost in the welcome banner. 2.5s is
-    // empirically enough on a fast machine; longer than that just makes
-    // the user wait without benefit. Tune via env if it turns out flaky.
-    const promptDelayMs = Number(process.env.STRIDETERM_TG_PROMPT_DELAY_MS) || 2500;
-    await new Promise((resolve) => setTimeout(resolve, promptDelayMs));
-    const ok = await getRt()?.startTask(wsId);
+    // A task created with activate:false has no Worker/Judge PTYs yet; the shared
+    // bring-up spawns them and waits for the Worker's agent before the prompt goes in.
+    const ok = await startTaskWithAgents(wsId).catch((err: unknown) => {
+      log.warn("telegram: failed to start task", { workspaceId: wsId, err: (err as Error).message });
+      return null;
+    });
     if (cmd.chatId) {
       await telegramManager.notifyChat(
         cmd.chatId,

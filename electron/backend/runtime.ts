@@ -4775,12 +4775,12 @@ export async function createRuntime({
     getState,
     telegramManager,
     getRt: () => _rt,
-    sessions,
     clearAlertSession,
     broadcastState,
     worktreeTreePath,
     captureMainWindowPng: dependencies.captureMainWindowPng,
     ensureWindowForProfile: dependencies.ensureWindowForProfile,
+    startTaskWithAgents,
   });
   telegramManager.on("command", (cmd: unknown) => {
     void dispatchTelegramCommand(cmd);
