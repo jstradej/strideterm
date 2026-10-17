@@ -70,3 +70,14 @@ export async function renameWithRetries(fromPath: string, toPath: string): Promi
   }
   throw lastError;
 }
+
+/**
+ * Write `data` to `<filePath>.tmp` and rename it over `filePath`, so a reader —
+ * or a crash — sees the whole old file or the whole new one, never half.
+ */
+export async function writeFileAtomic(filePath: string, data: string): Promise<void> {
+  const tmpPath = `${filePath}.tmp`;
+  await writeFileDurable(tmpPath, data);
+  await renameWithRetries(tmpPath, filePath);
+  await syncDirectory(filePath);
+}

@@ -1,9 +1,9 @@
 /// <reference types="node" />
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { SSH_MCP_CAPABILITY_ENV, SSH_MCP_URL_ENV } from "../shared/agent-ssh.js";
+import { serveOverStdio } from "./mcp-stdio-lifecycle.js";
 
 export { SSH_MCP_CAPABILITY_ENV, SSH_MCP_URL_ENV };
 
@@ -115,34 +115,5 @@ export async function runSshMcpStdioServer(config = readSshMcpStdioConfig()): Pr
     async (input, extra) => textResult(await handlers.runCommand(input, withDisconnect(extra.signal))),
   );
 
-  const transport = new StdioServerTransport();
-  let finishWait!: () => void;
-  let rejectWait!: (error: Error) => void;
-  const finished = new Promise<void>((resolve, reject) => {
-    finishWait = resolve;
-    rejectWait = reject;
-  });
-  const onDisconnect = () => {
-    disconnected.abort();
-    finishWait();
-  };
-  const onInputError = (error: Error) => {
-    disconnected.abort();
-    rejectWait(error);
-  };
-  process.stdin.once("end", onDisconnect);
-  process.stdin.once("close", onDisconnect);
-  process.stdin.once("error", onInputError);
-  process.once("SIGTERM", onDisconnect);
-  try {
-    await server.connect(transport);
-    await finished;
-  } finally {
-    onDisconnect();
-    process.stdin.off("end", onDisconnect);
-    process.stdin.off("close", onDisconnect);
-    process.stdin.off("error", onInputError);
-    process.off("SIGTERM", onDisconnect);
-    await server.close().catch(() => {});
-  }
+  await serveOverStdio(server, disconnected);
 }

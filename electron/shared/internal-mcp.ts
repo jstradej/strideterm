@@ -8,7 +8,7 @@ export const INTERNAL_MCP_ROUTE = "/internal-mcp";
 
 export const INTERNAL_MCP_MAX_SOURCES = 10;
 export const INTERNAL_MCP_MAX_SOURCE_BYTES = 512 * 1024;
-export const INTERNAL_MCP_MAX_ASSIGNMENT_CHARS = 20_000;
+export const INTERNAL_MCP_MAX_ASSIGNMENT_CHARS = 16_000;
 export const INTERNAL_MCP_PREPARATION_TTL_MS = 30 * 60 * 1000;
 export const INTERNAL_MCP_TASK_LIST_MAX = 50;
 export const INTERNAL_MCP_LOG_MAX_ENTRIES = 50;
@@ -28,6 +28,7 @@ export const INTERNAL_MCP_ERROR_CODES = [
   "operation_not_found",
   "task_not_found",
   "busy",
+  "start_refused",
   "internal_error",
 ] as const;
 export type InternalMcpErrorCode = (typeof INTERNAL_MCP_ERROR_CODES)[number];

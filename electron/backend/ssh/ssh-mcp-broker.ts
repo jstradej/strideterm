@@ -1,9 +1,9 @@
 import { randomBytes } from "node:crypto";
-import http from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
+import type http from "node:http";
 import { z } from "zod";
 import type { createSshCommandService } from "./ssh-command-service.js";
+import { bearerCapability, listenOnLoopback, readJsonBody, sendJson } from "../loopback-broker-http.js";
 
 const ROUTE = "/ssh-mcp";
 const MAX_BODY_BYTES = 16 * 1024;
@@ -39,62 +39,6 @@ export interface SshMcpBrokerOptions {
 interface GrantRecord {
   context: SshMcpGrantContext;
   controllers: Set<AbortController>;
-}
-
-function sendJson(response: ServerResponse, status: number, payload: unknown): void {
-  if (response.destroyed || response.writableEnded) return;
-  response.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
-  response.end(JSON.stringify(payload));
-}
-
-function readBody(request: IncomingMessage, controller: AbortController): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    let size = 0;
-    let settled = false;
-    const finish = (error?: Error, value?: unknown) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      if (error) reject(error);
-      else resolve(value);
-    };
-    const timeout = setTimeout(() => {
-      controller.abort();
-      finish(new Error("Request body timed out."));
-      request.destroy();
-    }, BODY_TIMEOUT_MS);
-    timeout.unref?.();
-    request.on("data", (chunk: Buffer | string) => {
-      const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      size += value.length;
-      if (size > MAX_BODY_BYTES) {
-        controller.abort();
-        finish(new Error("Request body too large."));
-        request.destroy();
-        return;
-      }
-      chunks.push(value);
-    });
-    request.on("end", () => {
-      try {
-        finish(undefined, JSON.parse(Buffer.concat(chunks).toString("utf8")));
-      } catch {
-        finish(new Error("Request body must be valid JSON."));
-      }
-    });
-    request.on("error", (error) => finish(error));
-    request.on("aborted", () => {
-      controller.abort();
-      finish(new Error("Request was cancelled."));
-    });
-  });
-}
-
-function bearerCapability(request: IncomingMessage): string {
-  const header = request.headers.authorization || "";
-  const match = /^Bearer ([A-Za-z0-9_-]{40,100})$/u.exec(header);
-  return match?.[1] || "";
 }
 
 export function createSshMcpBroker({ service, isGrantLive }: SshMcpBrokerOptions) {
@@ -172,7 +116,7 @@ export function createSshMcpBroker({ service, isGrantLive }: SshMcpBrokerOptions
         return;
       }
 
-      const raw = await readBody(request, controller);
+      const raw = await readJsonBody(request, controller, { maxBytes: MAX_BODY_BYTES, timeoutMs: BODY_TIMEOUT_MS });
       if (controller.signal.aborted) return;
       const parsed = requestSchema.safeParse(raw);
       if (!parsed.success) {
@@ -247,24 +191,17 @@ export function createSshMcpBroker({ service, isGrantLive }: SshMcpBrokerOptions
   return {
     async start(): Promise<{ url: string }> {
       if (server) return { url: endpoint };
-      const created = http.createServer((request, response) => {
-        void handle(request, response).catch(() =>
-          sendJson(response, 500, { error: { code: "internal_error", message: "SSH tool request failed." } }),
-        );
-      });
-      created.on("clientError", (_error, socket) => socket.end("HTTP/1.1 400 Bad Request\r\n\r\n"));
-      created.headersTimeout = 10_000;
-      created.requestTimeout = BODY_TIMEOUT_MS;
-      await new Promise<void>((resolve, reject) => {
-        created.once("error", reject);
-        created.listen(0, "127.0.0.1", () => {
-          created.off("error", reject);
-          resolve();
-        });
-      });
-      server = created;
-      const address = created.address() as AddressInfo;
-      endpoint = `http://127.0.0.1:${address.port}${ROUTE}`;
+      const listening = await listenOnLoopback(
+        ROUTE,
+        (request, response) => {
+          void handle(request, response).catch(() =>
+            sendJson(response, 500, { error: { code: "internal_error", message: "SSH tool request failed." } }),
+          );
+        },
+        { bodyTimeoutMs: BODY_TIMEOUT_MS },
+      );
+      server = listening.server;
+      endpoint = listening.url;
       return { url: endpoint };
     },
 

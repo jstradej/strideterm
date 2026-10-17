@@ -21,6 +21,7 @@ import { applyShellIntegrationLaunch } from "./shell-integration-launch.js";
 import type { SshManager } from "./ssh/ssh-manager.js";
 import { resolveSshLaunchVia } from "../shared/ssh-connection.js";
 import { DISTRIBUTION_LAUNCHER_ENV } from "../shared/app-distribution.js";
+import { INTERNAL_MCP_ENV_PREFIX } from "../shared/internal-mcp.js";
 import { detectWslDistros } from "./ssh/ssh-wsl.js";
 
 const log = getLogger("session-mgr");
@@ -894,7 +895,7 @@ export class SessionManager extends EventEmitter {
     try {
       const inheritedEnv = { ...process.env };
       for (const key of Object.keys(inheritedEnv)) {
-        if (key.startsWith("STRIDETERM_SSH_MCP_")) delete inheritedEnv[key];
+        if (key.startsWith("STRIDETERM_SSH_MCP_") || key.startsWith(INTERNAL_MCP_ENV_PREFIX)) delete inheritedEnv[key];
       }
       // This launch's own backend declaration (main.ts defaults it to prod) must not leak into
       // user shells: a dev.ps1 started from one would otherwise run against prod.

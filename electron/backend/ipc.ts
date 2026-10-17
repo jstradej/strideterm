@@ -158,6 +158,7 @@ import { shouldShowSystemNotification } from "./notifications/system-notificatio
 import { NOTIFICATION_TARGET_REMOVED_CHANNEL } from "../shared/notification-lifecycle.js";
 import { APPROVAL_RECORDED_CHANNEL } from "../shared/approval-events.js";
 import { AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL } from "../shared/azure-closed-pr-cleanup-events.js";
+import { OPERATION_FINISHED_CHANNEL } from "../shared/operation-events.js";
 
 type Runtime = Awaited<ReturnType<typeof createRuntime>>;
 
@@ -253,6 +254,9 @@ export function registerIpc(
     runtime.on(AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL, (payload: unknown) =>
       emitToRenderer(AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL, payload),
     ),
+    // Every window, each filtering by the profile it is viewing: the result of a long operation
+    // belongs to the profile it was accepted in, not to the window that happened to ask.
+    runtime.on(OPERATION_FINISHED_CHANNEL, (payload: unknown) => emitToRenderer(OPERATION_FINISHED_CHANNEL, payload)),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     runtime.on("mobile:status", (payload: any) => emitToRenderer("mobile:status", payload)),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

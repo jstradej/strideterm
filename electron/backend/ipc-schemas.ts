@@ -88,6 +88,7 @@ export const workspaceSchema = z
     cwd: z.string().optional(),
     gitRoots: z.array(z.string()).optional(),
     kind: z.string().optional(),
+    internalMcpEnabled: z.boolean().optional(),
     panels: z
       .array(
         z

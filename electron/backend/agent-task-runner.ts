@@ -791,6 +791,7 @@ export class AgentTaskRunner {
     workerProvider,
     judgeProvider,
     callerProfileId = "",
+    reservedIds,
   }: {
     state: Partial<Pick<AppState, "workspaces" | "windowSlots">>;
     description: string;
@@ -809,8 +810,11 @@ export class AgentTaskRunner {
      * is provided — picking windowSlots[0] instead silently puts the task
      * on the wrong profile in multi-window setups. */
     callerProfileId?: string;
+    /** Ids an orchestrator reserved (and persisted) before creating anything, so a restart can
+     * find what a half-finished run made. Never accepted from a client. */
+    reservedIds?: { workspaceId: string; taskId: string };
   }): TaskWorkspaceState {
-    const workspaceId = `workspace-${randomUUID()}`;
+    const workspaceId = reservedIds?.workspaceId ?? `workspace-${randomUUID()}`;
     const dashboardPanelId = `panel-${randomUUID()}`;
     const workerPanelId = `panel-${randomUUID()}`;
     const judgePanelId = `panel-${randomUUID()}`;
@@ -949,7 +953,7 @@ export class AgentTaskRunner {
         },
       ],
       task: {
-        taskId: randomUUID(),
+        taskId: reservedIds?.taskId ?? randomUUID(),
         description,
         parentWorkspaceId: parentWorkspaceId || "",
         worktreeBase: "",
@@ -3809,6 +3813,21 @@ export class AgentTaskRunner {
   getTaskState(workspaceId: string): RuntimeTaskState | null {
     const workspace = this.#findTaskWorkspace(workspaceId);
     return workspace?.task || null;
+  }
+
+  /**
+   * The roles whose terminal is sitting on a dialog (typically the agent's
+   * directory-trust prompt) that only the user can answer. Read from the
+   * runner's own per-session screen state, never from terminal text.
+   */
+  getAwaitingUserRoles(workspaceId: string): Array<"worker" | "judge"> {
+    const workspace = this.#findTaskWorkspace(workspaceId);
+    if (!workspace || workspace.task.mode === "attached") return [];
+    const roles: Array<"worker" | "judge"> = [];
+    for (const role of ["worker", "judge"] as const) {
+      if (this.#sessionActivity.get(sessionIdFor(workspace, role))?.uiState === "dialog") roles.push(role);
+    }
+    return roles;
   }
 
   /**

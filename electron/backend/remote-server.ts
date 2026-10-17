@@ -53,6 +53,7 @@ import {
   mobileAttachmentEnvelopeSchema,
   mobileAttachmentOperationSchema,
   taskUpdateDescriptionSchema,
+  taskWorkspaceCreateSchema,
   taskCompanionCreateSchema,
   taskCompanionAnswerSchema,
   terminalSessionSchema,
@@ -92,6 +93,7 @@ import { NOTIFICATION_TARGET_REMOVED_CHANNEL } from "../shared/notification-life
 import type { RemoteBrowserSession, RemoteSessionRevoke } from "../shared/remote-access.js";
 import { APPROVAL_RECORDED_CHANNEL } from "../shared/approval-events.js";
 import { AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL } from "../shared/azure-closed-pr-cleanup-events.js";
+import { OPERATION_FINISHED_CHANNEL } from "../shared/operation-events.js";
 import {
   buildRemoteCore,
   buildResourceDetail,
@@ -3399,7 +3401,8 @@ export async function startRemoteServer({
     "/api/task-recovery/resolve": (body, windowId) => runtime.resolveTaskRecovery(body.decisions, windowId),
     "/api/azure/quickfix/create": (body, windowId) => runtime.azureQuickFixCreate(body, windowId),
     "/api/github/quickfix/create": (body, windowId) => runtime.githubQuickFixCreate(body, windowId),
-    "/api/task/create": (body, windowId) => runtime.createTaskWorkspace(body, windowId),
+    "/api/task/create": (body, windowId) =>
+      runtime.createTaskWorkspace(validateIpc(taskWorkspaceCreateSchema, body, "POST /api/task/create"), windowId),
     "/api/git/create-worktree": (body, windowId) => runtime.createWorktree(body, windowId),
     // saveWorkspace can change profileId or overwrite an existing
     // workspace; without slot-aware routing a remote on profile B
@@ -5095,6 +5098,19 @@ export async function startRemoteServer({
       const eventProfileId = String((payload as { profileId?: unknown })?.profileId || "");
       if (!eventProfileId) return;
       const serialized = JSON.stringify({ type: AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL, payload });
+      for (const socket of sockets) {
+        const clientSessionId = socketSession.get(socket);
+        if (!clientSessionId) continue;
+        if (registry.get(clientSessionId)?.profileId !== eventProfileId) continue;
+        checkedSend(socket, serialized);
+      }
+    }),
+    // The result of a long runtime operation: to every client bound to the profile it was accepted
+    // in and to no other, so a mobile session never learns another profile's task.
+    runtime.on(OPERATION_FINISHED_CHANNEL, (payload: unknown) => {
+      const eventProfileId = String((payload as { profileId?: unknown })?.profileId || "");
+      if (!eventProfileId) return;
+      const serialized = JSON.stringify({ type: OPERATION_FINISHED_CHANNEL, payload });
       for (const socket of sockets) {
         const clientSessionId = socketSession.get(socket);
         if (!clientSessionId) continue;

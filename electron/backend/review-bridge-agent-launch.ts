@@ -3,66 +3,46 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseAgentCommand, SSH_MCP_CAPABILITY_ENV, SSH_MCP_URL_ENV } from "../shared/agent-ssh.js";
+import { INTERNAL_MCP_CAPABILITY_ENV, INTERNAL_MCP_SERVER_NAME, INTERNAL_MCP_URL_ENV } from "../shared/internal-mcp.js";
+import {
+  appendClaudeMcpServers,
+  claudeMcpServerEntries,
+  copilotMcpConfigArgs,
+  installsEnv,
+  pushCodexMcpInstalls,
+  type AgentMcpInstall,
+  type AgentMcpServerSpec,
+} from "./agent-mcp-launch.js";
 
 const SUPPORTED_REVIEW_AGENTS = new Set(["claude", "codex", "copilot", "opencode"]);
 const DEFAULT_APP_ENTRY = path.resolve(fileURLToPath(new URL("../../../", import.meta.url)));
 const REVIEW_BRIDGE_STDIO_ENTRY = fileURLToPath(new URL("./review-bridge-mcp-stdio.js", import.meta.url));
 const SSH_MCP_STDIO_ENTRY = fileURLToPath(new URL("./ssh-mcp-stdio-entry.js", import.meta.url));
+const INTERNAL_MCP_STDIO_ENTRY = fileURLToPath(new URL("./internal-mcp-stdio-entry.js", import.meta.url));
 
-export interface AgentSshMcpServerSpec {
-  command: string;
-  args: string[];
-  env?: Record<string, string>;
+export type AgentSshMcpServerSpec = AgentMcpServerSpec;
+
+/** The per-session grant servers a launch may install next to the user's own MCP config. */
+interface GrantMcpServers {
+  sshMcp?: AgentMcpServerSpec;
+  internalMcp?: AgentMcpServerSpec;
 }
 
-function sshMcpEnvVars(sshMcp: AgentSshMcpServerSpec): string[] {
-  return [...new Set([...Object.keys(sshMcp.env || {}), SSH_MCP_URL_ENV, SSH_MCP_CAPABILITY_ENV])];
-}
-
-function appendClaudeMcpServers(args: string[], additions: Record<string, unknown>): void {
-  const merged: Record<string, unknown> = {};
-  const existingServers: Record<string, unknown> = {};
-  const configFiles: string[] = [];
-  const retained: string[] = [];
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
-    const inline = arg.startsWith("--mcp-config=") ? arg.slice("--mcp-config=".length) : null;
-    if (arg === "--mcp-config" || inline !== null) {
-      const values: string[] = [];
-      if (inline !== null) values.push(inline);
-      else {
-        while (index + 1 < args.length && !args[index + 1].startsWith("-")) values.push(args[++index]);
-      }
-      if (values.length === 0) throw new Error("Claude --mcp-config is missing its config value.");
-      for (const value of values) {
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(value);
-        } catch {
-          configFiles.push(value);
-          continue;
-        }
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-          configFiles.push(value);
-          continue;
-        }
-        const config = parsed as Record<string, unknown>;
-        Object.assign(merged, config);
-        const servers = config.mcpServers;
-        if (servers !== undefined) {
-          if (!servers || typeof servers !== "object" || Array.isArray(servers)) {
-            throw new Error("SSH tools require Claude mcpServers to be a JSON object.");
-          }
-          Object.assign(existingServers, servers);
-        }
-      }
-      continue;
-    }
-    retained.push(arg);
-  }
-  merged.mcpServers = { ...existingServers, ...additions };
-  retained.push("--mcp-config", ...configFiles, JSON.stringify(merged));
-  args.splice(0, args.length, ...retained);
+function grantMcpInstalls({ sshMcp, internalMcp }: GrantMcpServers): AgentMcpInstall[] {
+  return [
+    ...(sshMcp
+      ? [{ name: "strideterm_ssh", spec: sshMcp, grantEnvVars: [SSH_MCP_URL_ENV, SSH_MCP_CAPABILITY_ENV] }]
+      : []),
+    ...(internalMcp
+      ? [
+          {
+            name: INTERNAL_MCP_SERVER_NAME,
+            spec: internalMcp,
+            grantEnvVars: [INTERNAL_MCP_URL_ENV, INTERNAL_MCP_CAPABILITY_ENV],
+          },
+        ]
+      : []),
+  ];
 }
 
 interface ReviewPanel {
@@ -117,12 +97,11 @@ interface AgentLaunch {
   skipCommandInjection: boolean;
 }
 
-interface BuildLaunchInput {
+interface BuildLaunchInput extends GrantMcpServers {
   workspace?: { cwd?: string };
   panel?: ReviewPanel;
   context?: ReviewContext;
   processInfo?: ProcessInfo;
-  sshMcp?: AgentSshMcpServerSpec;
 }
 
 function normalizeText(value: unknown): string {
@@ -443,7 +422,8 @@ function buildMcpServerSpec({
   return { command, args };
 }
 
-function buildClaudeLaunch({ workspace, panel, context, processInfo, sshMcp }: BuildLaunchInput): AgentLaunch {
+function buildClaudeLaunch({ workspace, panel, context, processInfo, ...grants }: BuildLaunchInput): AgentLaunch {
+  const installs = grantMcpInstalls(grants);
   const mcp = buildMcpServerSpec({ context, processInfo });
   const platform = processInfo?.platform || process.platform;
   const args = [...inheritedPanelArgs(panel)];
@@ -455,16 +435,10 @@ function buildClaudeLaunch({ workspace, panel, context, processInfo, sshMcp }: B
       env: mcp.env,
     },
   };
-  if (sshMcp) {
-    mcpServers.strideterm_ssh = {
-      command: sshMcp.command,
-      args: sshMcp.args,
-      ...(sshMcp.env ? { env: sshMcp.env } : {}),
-    };
-  }
-  if (sshMcp) appendClaudeMcpServers(args, mcpServers);
+  Object.assign(mcpServers, claudeMcpServerEntries(installs));
+  if (installs.length) appendClaudeMcpServers(args, mcpServers);
   else args.push("--mcp-config", JSON.stringify({ mcpServers }));
-  if (!sshMcp) args.push("--strict-mcp-config");
+  if (!installs.length) args.push("--strict-mcp-config");
   args.push("--append-system-prompt", buildReviewPrompt(context));
 
   return finishLaunch({
@@ -474,11 +448,12 @@ function buildClaudeLaunch({ workspace, panel, context, processInfo, sshMcp }: B
     args,
     workspace,
     processInfo,
-    win32Env: { ...(mcp.env || {}), ...(sshMcp?.env || {}) },
+    win32Env: { ...(mcp.env || {}), ...installsEnv(installs) },
   });
 }
 
-function buildCodexLaunch({ workspace, panel, context, processInfo, sshMcp }: BuildLaunchInput): AgentLaunch {
+function buildCodexLaunch({ workspace, panel, context, processInfo, ...grants }: BuildLaunchInput): AgentLaunch {
+  const installs = grantMcpInstalls(grants);
   const mcp = buildMcpServerSpec({ context, processInfo });
   const platform = processInfo?.platform || process.platform;
   const args = [...inheritedPanelArgs(panel)];
@@ -493,16 +468,7 @@ function buildCodexLaunch({ workspace, panel, context, processInfo, sshMcp }: Bu
     "-c",
     `mcp_servers.review.args=${JSON.stringify(mcp.args)}`,
   );
-  if (sshMcp) {
-    args.push(
-      "-c",
-      `mcp_servers.strideterm_ssh.command=${JSON.stringify(sshMcp.command)}`,
-      "-c",
-      `mcp_servers.strideterm_ssh.args=${JSON.stringify(sshMcp.args)}`,
-      "-c",
-      `mcp_servers.strideterm_ssh.env_vars=${JSON.stringify(sshMcpEnvVars(sshMcp))}`,
-    );
-  }
+  pushCodexMcpInstalls(args, installs);
 
   return finishLaunch({
     platform,
@@ -510,7 +476,7 @@ function buildCodexLaunch({ workspace, panel, context, processInfo, sshMcp }: Bu
     args,
     workspace,
     processInfo,
-    win32Env: { ...(mcp.env || {}), ...(sshMcp?.env || {}) },
+    win32Env: { ...(mcp.env || {}), ...installsEnv(installs) },
     // Codex needs both `node` and its own shim resolved on Windows: the
     // launch invokes node directly against the resolved codex.js entrypoint
     // rather than the shim itself, so this can't use the generic single-path
@@ -539,14 +505,11 @@ function buildCopilotLaunch({ workspace, panel, context, processInfo }: BuildLau
   // Copilot exposes per-session MCP servers via --additional-mcp-config. The
   // argument accepts inline JSON (matches Claude's --mcp-config shape).
   args.push(
-    "--additional-mcp-config",
-    JSON.stringify({
-      mcpServers: {
-        review: {
-          command: mcp.command,
-          args: mcp.args,
-          env: mcp.env,
-        },
+    ...copilotMcpConfigArgs({
+      review: {
+        command: mcp.command,
+        args: mcp.args,
+        env: mcp.env,
       },
     }),
     "--add-dir",
@@ -651,6 +614,7 @@ export function buildReviewAgentLaunch({
   context,
   processInfo,
   sshMcp,
+  internalMcp,
 }: BuildLaunchInput): AgentLaunch | null {
   if (!context?.rootPath) {
     return null;
@@ -658,10 +622,10 @@ export function buildReviewAgentLaunch({
 
   const agent = detectReviewAgentPanel(panel);
   if (agent === "claude") {
-    return buildClaudeLaunch({ workspace, panel, context, processInfo, sshMcp });
+    return buildClaudeLaunch({ workspace, panel, context, processInfo, sshMcp, internalMcp });
   }
   if (agent === "codex") {
-    return buildCodexLaunch({ workspace, panel, context, processInfo, sshMcp });
+    return buildCodexLaunch({ workspace, panel, context, processInfo, sshMcp, internalMcp });
   }
   if (agent === "copilot") {
     return buildCopilotLaunch({ workspace, panel, context, processInfo });
@@ -672,56 +636,53 @@ export function buildReviewAgentLaunch({
   return null;
 }
 
-export function buildAgentSshMcpServerSpec(processInfo: ProcessInfo = {}): AgentSshMcpServerSpec {
+function buildStdioMcpServerSpec(entry: string, flag: string, processInfo: ProcessInfo): AgentMcpServerSpec {
   const command = String(processInfo.execPath || process.execPath || "").trim();
-  if (!command) throw new Error("SSH MCP launch is missing an executable path.");
+  if (!command) throw new Error("MCP launch is missing an executable path.");
 
   const platform = processInfo.platform || process.platform;
   if (platform === "win32" || processInfo.defaultApp) {
     return {
       command,
-      args: [SSH_MCP_STDIO_ENTRY, "--ssh-mcp"],
+      args: [entry, flag],
       ...(processInfo.isElectron ? { env: { ELECTRON_RUN_AS_NODE: "1" } } : {}),
     };
   }
   if (processInfo.isElectron) {
-    return { command, args: ["--ssh-mcp"] };
+    return { command, args: [flag] };
   }
-  return { command, args: [SSH_MCP_STDIO_ENTRY, "--ssh-mcp"] };
+  return { command, args: [entry, flag] };
 }
 
-export function buildAgentSshMcpLaunch({
+export function buildAgentSshMcpServerSpec(processInfo: ProcessInfo = {}): AgentSshMcpServerSpec {
+  return buildStdioMcpServerSpec(SSH_MCP_STDIO_ENTRY, "--ssh-mcp", processInfo);
+}
+
+export function buildInternalMcpServerSpec(processInfo: ProcessInfo = {}): AgentMcpServerSpec {
+  return buildStdioMcpServerSpec(INTERNAL_MCP_STDIO_ENTRY, "--internal-mcp", processInfo);
+}
+
+export function buildAgentMcpLaunch({
   workspace,
   panel,
   processInfo,
   sshMcp,
-}: {
+  internalMcp,
+}: GrantMcpServers & {
   workspace?: { cwd?: string };
   panel?: ReviewPanel;
   processInfo?: ProcessInfo;
-  sshMcp: AgentSshMcpServerSpec;
 }): AgentLaunch | null {
+  const installs = grantMcpInstalls({ sshMcp, internalMcp });
+  const env = installsEnv(installs);
   const parsed = parseAgentCommand(panel?.command);
   if (!parsed) return null;
   const platform = processInfo?.platform || process.platform;
   const args = [...parsed.args];
   if (parsed.provider === "claude") {
-    appendClaudeMcpServers(args, {
-      strideterm_ssh: {
-        command: sshMcp.command,
-        args: sshMcp.args,
-        ...(sshMcp.env ? { env: sshMcp.env } : {}),
-      },
-    });
+    appendClaudeMcpServers(args, claudeMcpServerEntries(installs));
   } else {
-    args.push(
-      "-c",
-      `mcp_servers.strideterm_ssh.command=${JSON.stringify(sshMcp.command)}`,
-      "-c",
-      `mcp_servers.strideterm_ssh.args=${JSON.stringify(sshMcp.args)}`,
-      "-c",
-      `mcp_servers.strideterm_ssh.env_vars=${JSON.stringify(sshMcpEnvVars(sshMcp))}`,
-    );
+    pushCodexMcpInstalls(args, installs);
   }
 
   const explicitPath = /[\\/]/u.test(parsed.executable);
@@ -743,7 +704,7 @@ export function buildAgentSshMcpLaunch({
         file: nodePath,
         args: [codexEntry, ...args],
         cwd: workspace?.cwd || "",
-        env: sshMcp.env || {},
+        env,
         skipCommandInjection: true,
       };
     }
@@ -751,7 +712,7 @@ export function buildAgentSshMcpLaunch({
       file: parsed.executable,
       args,
       cwd: workspace?.cwd || "",
-      ...(platform === "win32" && sshMcp.env ? { env: sshMcp.env } : {}),
+      ...(platform === "win32" && Object.keys(env).length ? { env } : {}),
       skipCommandInjection: true,
     };
   }
@@ -780,7 +741,7 @@ export function buildAgentSshMcpLaunch({
     args,
     workspace,
     processInfo,
-    win32Env: sshMcp.env,
+    win32Env: env,
     resolveWin32,
   });
 }

@@ -682,6 +682,16 @@ export function buildRemoteCore(
         matchesProfile(run, scope),
       ) as RemoteStateV2["azureClosedPrCleanup"]["lastRuns"],
     },
+    // Operations carry the profile they were accepted in — the field the live event is
+    // routed by — so a client never learns another profile's task or outcome.
+    operations: {
+      running: ((composed.operations?.running || []) as AnyRecord[]).filter((op) =>
+        matchesProfile(op, scope),
+      ) as RemoteStateV2["operations"]["running"],
+      lastResults: ((composed.operations?.lastResults || []) as AnyRecord[]).filter((op) =>
+        matchesProfile(op, scope),
+      ) as RemoteStateV2["operations"]["lastResults"],
+    },
     plugins: composed.plugins || [],
     environment: composed.environment || {},
     remoteAccess: reduceRemoteAccess(composed.remoteAccess),
@@ -739,6 +749,7 @@ export const STATE_PAYLOAD_KEYS: ReadonlySet<string> = new Set([
   "remoteAccess",
   "taskRunner",
   "azureClosedPrCleanup",
+  "operations",
   "secureStorage",
   "remoteClient",
 ]);

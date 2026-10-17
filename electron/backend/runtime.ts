@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { watch, existsSync } from "node:fs";
 import type { FSWatcher } from "node:fs";
-import { readFile, writeFile, mkdir, readdir, access, rm, rename, lstat, realpath, cp } from "node:fs/promises";
+import { readFile, writeFile, mkdir, readdir, access, rm, rename, lstat, stat, realpath, cp } from "node:fs/promises";
 import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -60,8 +60,9 @@ import { createReviewBridgeStore } from "./review-bridge-store.js";
 import { createAzureAuditLogStore } from "./azure-audit-log-store.js";
 import { createGitAuditLogStore } from "./git-audit-log-store.js";
 import {
-  buildAgentSshMcpLaunch,
+  buildAgentMcpLaunch,
   buildAgentSshMcpServerSpec,
+  buildInternalMcpServerSpec,
   buildReviewAgentLaunch,
   buildMcpServerSpec,
 } from "./review-bridge-agent-launch.js";
@@ -206,6 +207,12 @@ import { createSshHandlers } from "./ssh/runtime-ssh-handlers.js";
 import { SshManager } from "./ssh/ssh-manager.js";
 import { createSshCommandService } from "./ssh/ssh-command-service.js";
 import { createSshMcpBroker } from "./ssh/ssh-mcp-broker.js";
+import { InternalMcpError } from "./internal-mcp/errors.js";
+import { createInternalMcpBroker } from "./internal-mcp/internal-mcp-broker.js";
+import { createTaskService } from "./internal-mcp/task-service.js";
+import { createOperationRegistry } from "./operation-registry.js";
+import { INTERNAL_MCP_CAPABILITY_ENV, INTERNAL_MCP_URL_ENV } from "../shared/internal-mcp.js";
+import { OPERATION_FINISHED_CHANNEL } from "../shared/operation-events.js";
 import { isVerifiedSshTestExit, SshTestMarkerCapture } from "./ssh/ssh-test-marker.js";
 import {
   clone,
@@ -528,6 +535,8 @@ interface RuntimeDependencies {
 
   /** Enables local desktop-only, per-panel Built-in SSH MCP launches. */
   enableAgentSshMcp?: boolean;
+  /** Enables the per-workspace internal MCP (task creation and status) for Claude Code / Codex terminals. */
+  enableInternalMcp?: boolean;
   /** Which build is running — detected by main.ts, which can ask Electron (this module cannot). */
   distribution?: AppDistribution;
   createSshMcpBroker?: typeof createSshMcpBroker;
@@ -558,6 +567,13 @@ interface RuntimeDependencies {
    * "abort with chat error" path.
    */
   ensureWindowForProfile?: (profileId: string) => Promise<string | null>;
+}
+
+/** Workspaces that can host the internal MCP: local, ordinary ones — never a task, review or Docker workspace. */
+function internalMcpWorkspaceSupported(workspace: Pick<WorkspaceState, "kind" | "review" | "quickfix">): boolean {
+  return (
+    !["docker", "task", "azure", "github"].includes(String(workspace.kind)) && !workspace.review && !workspace.quickfix
+  );
 }
 
 export async function createRuntime({
@@ -930,6 +946,7 @@ export async function createRuntime({
    */
   const sessionOwnershipTokens = new Map<string, string>();
   let sshMcpBroker: ReturnType<typeof createSshMcpBroker> | null = null;
+  let internalMcpBroker: ReturnType<typeof createInternalMcpBroker> | null = null;
   let sshMcpCommandService: ReturnType<typeof createSshCommandService> | null = null;
 
   function getSessionOwnershipToken(sessionId: string): string {
@@ -953,6 +970,7 @@ export async function createRuntime({
     deleteSessionSignal(sessionId);
     sessionOwnershipTokens.delete(sessionId);
     sshMcpBroker?.revokeSession(sessionId);
+    internalMcpBroker?.revokeSession(sessionId);
     unregisterNotifyUrl(sessionId);
     // An offer this panel made is void the moment the panel stops existing.
     discardPermissionOffers((record) => record.sessionId === sessionId, "session-retired");
@@ -1101,6 +1119,28 @@ export async function createRuntime({
     }) => {
       const panelState = panel as import("../shared/types/state.js").PanelState;
       sshMcpBroker?.revokeSession(sessionId);
+      internalMcpBroker?.revokeSession(sessionId);
+      // Workspace-wide opt-in: a panel that is not a plain Claude Code / Codex launch simply does
+      // not get the server. Task workspaces never do, whatever their saved flag says.
+      let internalMcpSpec;
+      let internalMcpEnv: Record<string, string> | undefined;
+      if (
+        internalMcpBroker &&
+        workspace?.internalMcpEnabled === true &&
+        internalMcpWorkspaceSupported(workspace) &&
+        !panelState.launch &&
+        getAgentSshMcpEligibility(panelState.command).supported
+      ) {
+        internalMcpSpec = buildInternalMcpServerSpec(processInfo);
+        const grant = internalMcpBroker.mintGrant({
+          sessionId,
+          profileId: String(workspace.profileId || "default"),
+          workspaceId: workspace.id,
+          panelId: panelState.id,
+          command: panelState.command,
+        });
+        internalMcpEnv = { [INTERNAL_MCP_URL_ENV]: grant.url, [INTERNAL_MCP_CAPABILITY_ENV]: grant.capability };
+      }
       const sshMcpEnabled = panelState.sshMcpEnabled === true;
       let sshMcpSpec;
       let sshMcpEnv: Record<string, string> | undefined;
@@ -1153,16 +1193,17 @@ export async function createRuntime({
       if (reviewLaunch) {
         return sshMcpEnv ? { ...reviewLaunch, env: { ...(reviewLaunch.env || {}), ...sshMcpEnv } } : reviewLaunch;
       }
-      if (sshMcpSpec) {
-        const launch = buildAgentSshMcpLaunch({
+      if (sshMcpSpec || internalMcpSpec) {
+        const launch = buildAgentMcpLaunch({
           workspace: workspace || undefined,
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           panel: panel as any,
           processInfo,
           sshMcp: sshMcpSpec,
+          internalMcp: internalMcpSpec,
         });
-        if (!launch) throw new Error("SSH tools could not be enabled for this tab's agent command.");
-        return { ...launch, env: { ...(launch.env || {}), ...sshMcpEnv } };
+        if (!launch) throw new Error("MCP tools could not be enabled for this tab's agent command.");
+        return { ...launch, env: { ...(launch.env || {}), ...sshMcpEnv, ...internalMcpEnv } };
       }
       return null;
     },
@@ -1390,6 +1431,7 @@ export async function createRuntime({
   });
   events.on("state:updated", () => {
     void sshMcpBroker?.revokeInvalid();
+    void internalMcpBroker?.revokeInvalid();
     const state = getState();
     for (const [sessionId, record] of sshTestSessions) {
       const slot = (state.windowSlots || []).find((item) => item.id === record.ownerWindowId);
@@ -4377,6 +4419,7 @@ export async function createRuntime({
         tunnel: tunnel.getSnapshot(),
       },
       taskRunner: taskRunner.getTaskSnapshot(),
+      operations: operations.snapshot(),
       azureClosedPrCleanup: {
         parentWorkspaceIds: [...azureClosedPrCleanupInFlight],
         lastRuns: [...azureClosedPrCleanupLastRuns.values()].filter(
@@ -4694,6 +4737,7 @@ export async function createRuntime({
       taskRunner.cancelPendingInput(String(sessionId || ""));
       clearTerminalReplay(String(sessionId || ""));
       sshMcpBroker?.revokeSession(String(sessionId || ""));
+      internalMcpBroker?.revokeSession(String(sessionId || ""));
       await sessions.restartSession(getState(), sessionId);
       resetSessionSignal(sessionId);
     },
@@ -5875,6 +5919,13 @@ export async function createRuntime({
   }
 
   const pendingWorktreeDeletions = new Set(); // paths being deleted — skip in syncWorktrees
+  /** The generic long-operation mechanism: accepted → answered at once → one result event. */
+  const operations = createOperationRegistry({
+    dir: path.join(userDataPath, "operations"),
+    log,
+    emitFinished: (event) => events.emit(OPERATION_FINISHED_CHANNEL, event),
+    onChange: () => broadcastState(),
+  });
   const azureClosedPrCleanupInFlight = new Set<string>();
   /** parent workspace id → its last finished run. Runtime-only; one entry per Azure parent. */
   const azureClosedPrCleanupLastRuns = new Map<string, AzureClosedPrCleanupFinished>();
@@ -6206,6 +6257,7 @@ export async function createRuntime({
    */
   function finalizeWorkspaceRemoval(workspace: Pick<WorkspaceState, "id" | "profileId">): Promise<void> {
     const sessionsExited = cleanupWorkspaceRuntimeState(workspace.id);
+    void operations.removeForWorkspace(workspace.id);
     emitNotificationTargetRemoved({
       target: "workspace",
       workspaceId: workspace.id,
@@ -6789,6 +6841,50 @@ export async function createRuntime({
     finalizeWorkspaceRemoval,
   });
 
+  const taskService = createTaskService({
+    log,
+    getState,
+    operations,
+    execFileText: (cmd, args, opts) => execFileTextImpl(cmd, args, opts),
+    worktreeTreePath,
+    ensureWorktree,
+    assertNoConflictingActiveTask,
+    createTaskWorkspace: (config, windowId, internal) =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (_rt as any).createTaskWorkspace(config, windowId, internal),
+    startTask: (workspaceId) => taskHandlers.startTask(workspaceId),
+    getAwaitingUserRoles: (workspaceId) => taskRunner.getAwaitingUserRoles(workspaceId),
+  });
+  if (dependencies.enableInternalMcp === true) {
+    internalMcpBroker = createInternalMcpBroker({
+      service: taskService,
+      onError: (message, details) => log.warn(message, details),
+      isGrantLive: (grant) => {
+        const state = getState();
+        const workspace = state.workspaces.find((item) => item.id === grant.workspaceId);
+        const panel = workspace?.panels.find((item) => item.id === grant.panelId);
+        const session = sessions.sessions.get(grant.sessionId);
+        return Boolean(
+          workspace &&
+          String(workspace.profileId || "default") === grant.profileId &&
+          state.profiles.some((profile) => profile.id === grant.profileId) &&
+          workspace.internalMcpEnabled === true &&
+          internalMcpWorkspaceSupported(workspace) &&
+          panel &&
+          !panel.launch &&
+          panel.command === grant.command &&
+          getAgentSshMcpEligibility(panel.command).supported &&
+          session?.status === "running" &&
+          session.workspaceId === grant.workspaceId &&
+          session.panelId === grant.panelId &&
+          session.kind !== "ssh",
+        );
+      },
+    });
+    await internalMcpBroker.start();
+  }
+  await operations.load((record) => taskService.reconcile(record));
+
   // Restore invariant: a valid saved session is the authority, and the
   // workspace follows that session. This keeps windowSlots from restoring a
   // workspace/session pair that belongs to different workspaces.
@@ -7286,7 +7382,17 @@ export async function createRuntime({
   async function ensureWorktree(
     repoPath: string,
     branchOrName: string,
-    { richErrorHandling = false }: { richErrorHandling?: boolean } = {},
+    {
+      richErrorHandling = false,
+      baseCommit,
+      requireNewBranch = false,
+    }: {
+      richErrorHandling?: boolean;
+      /** Start the new branch at this commit instead of the repo's current HEAD. */
+      baseCommit?: string;
+      /** Never attach an existing branch or directory: a clash is a `checkout_conflict`. */
+      requireNewBranch?: boolean;
+    } = {},
   ): Promise<string> {
     const treePath = worktreeTreePath(repoPath, branchOrName);
 
@@ -7301,19 +7407,37 @@ export async function createRuntime({
       await writeFile(gitignorePath, gitignoreContent + separator + ".strideterm/\n", "utf-8");
     }
 
+    if (requireNewBranch) {
+      // worktreeTreePath folds "/" into "-", so two different branches can name one directory.
+      const taken = await stat(treePath).then(
+        () => true,
+        () => false,
+      );
+      if (taken) {
+        throw new InternalMcpError("checkout_conflict", `The worktree path ${treePath} already exists.`);
+      }
+    }
+
     // Ensure directory exists for worktree
     await mkdir(path.dirname(treePath), { recursive: true });
 
     try {
       // git worktree add — run inside the chosen repo root, not the workspace parent
-      await execFileTextImpl("git", ["worktree", "add", treePath, "-b", branchOrName], { cwd: repoPath });
+      await execFileTextImpl(
+        "git",
+        ["worktree", "add", treePath, "-b", branchOrName, ...(baseCommit ? [baseCommit] : [])],
+        { cwd: repoPath },
+      );
     } catch (err) {
       // execFileText rejects with { error, stdout, stderr } — the useful
       // message lives in stderr. err.message is undefined here, so don't
       // rely on it for either the branch-exists fallback or the user error.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const stderr = (err as any)?.stderr?.trim() || (err as any)?.error?.message || (err as Error).message || "";
-      if (richErrorHandling && stderr.includes("already exists")) {
+      if (requireNewBranch && /already exists|already checked out|is not empty|already registered/iu.test(stderr)) {
+        throw new InternalMcpError("checkout_conflict", `Failed to create git worktree: ${stderr}`, { cause: err });
+      }
+      if (richErrorHandling && !requireNewBranch && stderr.includes("already exists")) {
         await execFileTextImpl("git", ["worktree", "add", treePath, branchOrName], { cwd: repoPath });
       } else if (richErrorHandling && stderr.includes("not a git repository")) {
         // Most common user mistake — surface a clear, actionable message.
@@ -9670,6 +9794,8 @@ export async function createRuntime({
       await store.mutate((draft: AppState) => {
         const normalized = normalizeWorkspace(workspace);
         if (parseRemoteViewerId(windowId)) {
+          // Desktop-only, like autoApprovePermissions: a remote client keeps whatever is stored.
+          normalized.internalMcpEnabled = priorWorkspace?.internalMcpEnabled === true;
           const savedOptIns = new Map(
             ((priorWorkspace?.panels || []) as Array<{ id: string; sshMcpEnabled?: boolean }>).map((panel) => [
               panel.id,
@@ -9710,6 +9836,7 @@ export async function createRuntime({
         }
       });
       await sshMcpBroker?.revokeInvalid();
+      await internalMcpBroker?.revokeInvalid();
 
       if (priorPanelIds.length > 0) {
         const committed = findWorkspace(getState(), savedWorkspaceId) as WorkspaceState | null;
@@ -11070,6 +11197,7 @@ export async function createRuntime({
       taskRunner.cancelPendingInput(String(sessionId || ""));
       clearTerminalReplay(String(sessionId || ""));
       sshMcpBroker?.revokeSession(String(sessionId || ""));
+      internalMcpBroker?.revokeSession(String(sessionId || ""));
       await store.mutate((draft: AppState) => {
         if (!descriptor) {
           return;
@@ -11434,6 +11562,7 @@ export async function createRuntime({
         }
       });
       await sshMcpBroker?.revokeInvalid();
+      await internalMcpBroker?.revokeInvalid();
       // Fallback any remote clients that were on the deleted profile — in EVERY registry, because a
       // browser viewer and a mobile relay viewer can both be sitting on the profile being deleted.
       for (const registry of _remoteClientRegistries) registry.fallbackDeletedProfile(profileId, getState());
@@ -11456,6 +11585,7 @@ export async function createRuntime({
       // while we clear session signals below.
       await stopAgentNotifyServer();
       await sshMcpBroker?.close();
+      await internalMcpBroker?.close();
       sshMcpCommandService?.close();
       for (const signal of sessionSignals.values()) {
         cancelPromptTimer(signal);

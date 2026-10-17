@@ -35,6 +35,19 @@ interface TaskActionResult<Payload> {
 }
 
 /**
+ * What only the runtime itself can ask of `createTaskWorkspace` — never reachable from a client,
+ * whose requests carry two arguments.
+ */
+export interface InternalTaskCreate {
+  /** Ids reserved and persisted by the operation that is creating this task. */
+  reservedIds: { workspaceId: string; taskId: string };
+  /** The worktree already exists; only record it on the task instead of creating it. */
+  worktreeCreated?: boolean;
+  /** Runs once TASK.md is on disk and before the workspace is saved (e.g. source snapshots). */
+  afterFilesWritten?: (workspace: { cwd: string; task: { taskId: string } }) => Promise<void>;
+}
+
+/**
  * Runtime context subset consumed by the task-runner API handlers.
  * The full runtime ctx is typed as a structural interface so new fields
  * can be added without breaking this module. Generic over `Payload` so the
@@ -749,7 +762,7 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
       return probe(trimmed);
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async createTaskWorkspace(config: any, windowId?: string) {
+    async createTaskWorkspace(config: any, windowId?: string, internal?: InternalTaskCreate) {
       log.info("createTaskWorkspace", {
         cwd: config.cwd,
         hasDescription: !!config.description,
@@ -801,7 +814,9 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
 
       // --- Git worktree mode: actual disk operations (after guard) ---
       if (config.useWorktree) {
-        await ensureWorktree(config.cwd, plannedBranch, { richErrorHandling: true });
+        if (!internal?.worktreeCreated) {
+          await ensureWorktree(config.cwd, plannedBranch, { richErrorHandling: true });
+        }
 
         worktreeBase = config.cwd;
         worktreeBranch = plannedBranch;
@@ -826,6 +841,7 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
         workerProvider: config.workerProvider,
         judgeProvider: config.judgeProvider,
         callerProfileId,
+        reservedIds: internal?.reservedIds,
       });
 
       // Store worktree metadata in task object
@@ -843,6 +859,7 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
       // If this fails (disk full, permissions), don't persist a broken workspace.
       try {
         await taskRunner.writeInitialFiles(workspace.cwd, workspace.task);
+        await internal?.afterFilesWritten?.(workspace);
       } catch (err) {
         log.error("createTaskWorkspace: failed to write initial task files", {
           workspaceId: workspace.id,
@@ -913,7 +930,7 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
       } else {
         broadcastState();
       }
-      return { workspaceId: workspace.id, cwdWarning, payload: getPayload() };
+      return { workspaceId: workspace.id, taskId: workspace.task.taskId, cwdWarning, payload: getPayload() };
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async startTask(workspaceId: any, windowId?: string) {

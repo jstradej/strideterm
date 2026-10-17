@@ -1,7 +1,7 @@
 import path from "node:path";
 import { describe, expect, test } from "vitest";
 import {
-  buildAgentSshMcpLaunch,
+  buildAgentMcpLaunch,
   buildAgentSshMcpServerSpec,
   buildReviewAgentLaunch as _buildReviewAgentLaunch,
   detectReviewAgentPanel,
@@ -95,7 +95,7 @@ describe("review bridge agent launch", () => {
   });
 
   test("adds SSH MCP to a direct Claude launch without replacing user MCP config or strict mode", () => {
-    const launch = buildAgentSshMcpLaunch({
+    const launch = buildAgentMcpLaunch({
       workspace: createWorkspace(),
       panel: {
         id: "claude",
@@ -146,7 +146,7 @@ describe("review bridge agent launch", () => {
   });
 
   test("adds only Codex MCP config field names to args and never serializes a capability", () => {
-    const launch = buildAgentSshMcpLaunch({
+    const launch = buildAgentMcpLaunch({
       workspace: createWorkspace(),
       panel: { id: "codex", command: "codex -s danger-full-access" },
       processInfo: { platform: "linux", execPath: "/usr/bin/node" },
@@ -173,7 +173,7 @@ describe("review bridge agent launch", () => {
   });
 
   test("launches bare Windows Codex shims through Node when the JS entry exists", () => {
-    const launch = buildAgentSshMcpLaunch({
+    const launch = buildAgentMcpLaunch({
       workspace: createWorkspace(),
       panel: { id: "codex", command: "codex -s danger-full-access" },
       processInfo: {
@@ -189,7 +189,7 @@ describe("review bridge agent launch", () => {
   });
 
   test("launches a native Windows Codex executable directly", () => {
-    const launch = buildAgentSshMcpLaunch({
+    const launch = buildAgentMcpLaunch({
       workspace: createWorkspace(),
       panel: { id: "codex", command: "codex --model gpt-5" },
       processInfo: { platform: "win32", commandLookup: { codex: "C:/Program Files/Codex/codex.exe" } },

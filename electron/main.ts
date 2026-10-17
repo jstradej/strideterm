@@ -10,6 +10,7 @@ import { registerIpc } from "./backend/ipc.js";
 import { startRemoteServer } from "./backend/remote-server.js";
 import { parseReviewBridgeMcpArgs, runReviewBridgeMcpServer } from "./backend/review-bridge-mcp.js";
 import { runSshMcpStdioServer } from "./backend/ssh-mcp-stdio.js";
+import { runInternalMcpStdioServer } from "./backend/internal-mcp/internal-mcp-stdio.js";
 import { registerDeferredSshIpcHandlers } from "./backend/ssh-bootstrap-ipc.js";
 import { createDefaultState, normalizeState, MIGRATION_WINDOW_SLOT_ID } from "./backend/default-state.js";
 import { summarizeAttentionForProfile } from "./backend/runtime-utils.js";
@@ -401,7 +402,8 @@ let disposeDeferredSshIpcHandlers: (() => void) | null = null;
 
 const mcpMode = parseReviewBridgeMcpArgs(process.argv.slice(1));
 const sshMcpMode = process.argv.slice(1).includes("--ssh-mcp");
-const gotSingleInstanceLock = !mcpMode && !sshMcpMode && app.requestSingleInstanceLock();
+const internalMcpMode = process.argv.slice(1).includes("--internal-mcp");
+const gotSingleInstanceLock = !mcpMode && !sshMcpMode && !internalMcpMode && app.requestSingleInstanceLock();
 
 function summarizeAttention(payload: Record<string, unknown>): { count: number; waitingCount: number } {
   const attention = payload?.attention as Record<string, unknown> | undefined;
@@ -1515,6 +1517,7 @@ async function startServices(): Promise<void> {
     dependencies: {
       safeStorage,
       enableAgentSshMcp: true,
+      enableInternalMcp: true,
       distribution: appDistribution,
       /**
        * The managed relay's internal origin.
@@ -1609,6 +1612,15 @@ if (mcpMode) {
     .then(() => app.quit())
     .catch((error: unknown) => {
       process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+      process.exitCode = 1;
+      app.quit();
+    });
+} else if (internalMcpMode) {
+  runInternalMcpStdioServer()
+    .then(() => app.quit())
+    .catch((error: unknown) => {
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}
+`);
       process.exitCode = 1;
       app.quit();
     });
