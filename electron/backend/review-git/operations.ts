@@ -10,6 +10,8 @@ export interface ReviewGitOperationRecord {
   profileId: string;
   workspaceId: string;
   kind: string;
+  /** Who started it: a window / remote client ("ui") or an agent's MCP tool ("mcp"). */
+  source: "ui" | "mcp";
   /** Caller-supplied key; the same key returns the same operation instead of starting another. */
   idempotencyKey: string;
   state: ReviewGitOperationState;
@@ -26,6 +28,7 @@ export interface StartOperationInput {
   profileId: string;
   workspaceId: string;
   kind: string;
+  source: "ui" | "mcp";
   idempotencyKey?: string;
   run: () => Promise<unknown>;
 }
@@ -78,7 +81,7 @@ export function createReviewGitOperationRegistry({
   }
 
   return {
-    start({ profileId, workspaceId, kind, idempotencyKey = "", run }) {
+    start({ profileId, workspaceId, kind, source, idempotencyKey = "", run }) {
       prune();
       if (idempotencyKey) {
         const existingId = byKey.get(keyOf(profileId, workspaceId, idempotencyKey));
@@ -90,6 +93,7 @@ export function createReviewGitOperationRegistry({
         profileId,
         workspaceId,
         kind,
+        source,
         idempotencyKey,
         state: "running",
         startedAt: new Date(now()).toISOString(),

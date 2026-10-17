@@ -48,7 +48,7 @@
           </button>
           <!-- Per-row push: gated by same logic as toolbar Push; hidden in review workspace -->
           <button
-            v-if="!entry.isCurrent && canPushWorktree(entry) && !isReviewWorkspace"
+            v-if="!entry.isCurrent && canPushWorktree(entry)"
             type="button"
             class="button button--ghost button--small"
             :disabled="!!gitUi.busyAction"
@@ -60,7 +60,7 @@
           <!-- Delete worktree: hidden in review workspace (UC-15); also disabled
                for the worktree the user is currently in (git refuses anyway). -->
           <button
-            v-if="!isReviewWorkspace && !entry.isMainWorktree"
+            v-if="!entry.isMainWorktree"
             type="button"
             class="button button--ghost button--small button--danger"
             :disabled="!!gitUi.busyAction || entry.isCurrent"
@@ -95,9 +95,8 @@ const props = withDefaults(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     gitUi?: Record<string, any>;
     pushRemote?: string;
-    isReviewWorkspace?: boolean;
   }>(),
-  { workspaces: () => [], workspaceId: "", gitUi: () => ({}), pushRemote: "origin", isReviewWorkspace: false },
+  { workspaces: () => [], workspaceId: "", gitUi: () => ({}), pushRemote: "origin" },
 );
 
 const appStore = useAppStore();

@@ -92,8 +92,7 @@ function mountPane(provider: "azure-devops" | "github" = "azure-devops") {
     "markAzurePrSeen",
     "markGitHubPrSeen",
     "markAzurePullRequestSeen",
-    "azureSyncReviewWorkspace",
-    "githubSyncReviewWorkspace",
+    "refreshReviewCheckout",
     "openExternal",
   ]) {
     if (typeof (appStore as unknown as Record<string, unknown>)[fn] === "function") {
@@ -254,12 +253,12 @@ describe("AzureReviewPane — toolbar and pipelines refresh surface failures ins
   test("toolbar Refresh: rejection is caught and surfaced as a toast, busy resets", async () => {
     setMatchMediaResult("(max-width: 768px)", false);
     setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
-    // mountPane() itself installs no-op spies for azureSyncReviewWorkspace —
+    // mountPane() itself installs no-op spies for refreshReviewCheckout —
     // override it AFTER mounting, otherwise mountPane's noop clobbers ours.
     const wrapper = mountPane();
     await flushPromises();
     const appStore = useAppStore();
-    vi.spyOn(appStore, "azureSyncReviewWorkspace").mockRejectedValue(new Error("network down"));
+    vi.spyOn(appStore, "refreshReviewCheckout").mockRejectedValue(new Error("network down"));
 
     const refreshBtn = wrapper
       .findAll("button")
@@ -310,18 +309,15 @@ describe("AzureReviewPane — toolbar and pipelines refresh surface failures ins
  * never calls the checkout-mutating sync action.
  */
 describe("AzureReviewPane — manual Refresh drives the full sync, not just metadata", () => {
-  test("Refresh triggers the full sync even for a read-only reviewer workspace (no 'Enable editing' gate)", async () => {
+  test("Refresh triggers the full sync for a reviewer workspace — there is no read-only gate in front of it", async () => {
     setMatchMediaResult("(max-width: 768px)", false);
     setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
     const appStore = useAppStore();
     const payload = buildPayload("azure-devops");
-    // review.role is already "reviewer" (see buildPayload's detail) and
-    // review.writable is intentionally omitted/false — the checkout-mutating
-    // sync must run regardless, unlike the Git pane's generic write actions.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (payload.appState!.workspaces[0].review as any).writable = false;
+    // review.role is already "reviewer" (see buildPayload's detail): the role
+    // never decides what Refresh may do — the runtime inspects the checkout.
     appStore.payload = payload;
-    const syncSpy = vi.spyOn(appStore, "azureSyncReviewWorkspace").mockResolvedValue({
+    const syncSpy = vi.spyOn(appStore, "refreshReviewCheckout").mockResolvedValue({
       status: "already-current",
       message: "Already up to date.",
       commitCount: 0,
@@ -369,7 +365,7 @@ describe("AzureReviewPane — manual Refresh drives the full sync, not just meta
     const wrapper = mountPane();
     await flushPromises();
     const appStore = useAppStore();
-    vi.spyOn(appStore, "azureSyncReviewWorkspace").mockResolvedValue({
+    vi.spyOn(appStore, "refreshReviewCheckout").mockResolvedValue({
       status: "updated",
       message: "Updated 2 commits from origin/feature/x.",
       commitCount: 2,
@@ -392,7 +388,7 @@ describe("AzureReviewPane — manual Refresh drives the full sync, not just meta
     const wrapper = mountPane();
     await flushPromises();
     const appStore = useAppStore();
-    vi.spyOn(appStore, "azureSyncReviewWorkspace").mockResolvedValue({
+    vi.spyOn(appStore, "refreshReviewCheckout").mockResolvedValue({
       status: "dirty",
       message: "Cannot update: 2 uncommitted changes in the worktree. Commit, stash, or resolve it, then try again.",
       commitCount: 0,
@@ -413,7 +409,7 @@ describe("AzureReviewPane — manual Refresh drives the full sync, not just meta
     setMatchMediaResult("(max-width: 768px)", false);
     setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
     const appStore = useAppStore();
-    const syncSpy = vi.spyOn(appStore, "azureSyncReviewWorkspace");
+    const syncSpy = vi.spyOn(appStore, "refreshReviewCheckout");
     appStore.payload = buildPayload("azure-devops");
     (appStore as unknown as { activeViewId: string }).activeViewId = "review:ws-review";
     vi.spyOn(appStore, "refreshAzure").mockResolvedValue(undefined);
@@ -496,7 +492,7 @@ describe("AzureReviewPane — manual Refresh drives the full sync, not just meta
     await flushPromises();
     expect(fileGitDiff).toHaveBeenCalledTimes(1);
 
-    vi.spyOn(appStore, "azureSyncReviewWorkspace").mockResolvedValue({
+    vi.spyOn(appStore, "refreshReviewCheckout").mockResolvedValue({
       status: "updated",
       message: "Updated 1 commit from origin/feature/x.",
       commitCount: 1,
@@ -562,7 +558,7 @@ describe("AzureReviewPane — manual Refresh drives the full sync, not just meta
     await flushPromises();
     expect(fileGitDiff).toHaveBeenCalledTimes(1);
 
-    vi.spyOn(appStore, "azureSyncReviewWorkspace").mockResolvedValue({
+    vi.spyOn(appStore, "refreshReviewCheckout").mockResolvedValue({
       status: "ahead",
       message: "Local branch is 1 commit ahead of origin/feature/x. Nothing to fast-forward.",
       commitCount: 0,

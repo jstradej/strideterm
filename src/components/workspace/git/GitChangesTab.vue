@@ -12,7 +12,7 @@
         class="git-changes__mobile-branch button button--ghost"
         type="button"
         title="Browse and switch branches"
-        :disabled="isReviewWorkspace || !!gitUi.busyAction || operation.inProgress"
+        :disabled="!!gitUi.busyAction || operation.inProgress"
         @click="gitUiStore.gitSwitchTab(workspaceId, 'branches')"
       >
         {{ snapshot.branch || "Detached HEAD" }} ▾
@@ -95,7 +95,6 @@
                   <strong>Detached HEAD</strong>
                   <p>You are on a detached HEAD. Commits will be lost unless you create a branch.</p>
                   <button
-                    v-if="!isReviewWorkspace"
                     type="button"
                     class="button button--ghost button--small"
                     @click="gitUiStore.gitCreateBranch(workspaceId, `branch-from-detached`, '')"
@@ -108,7 +107,7 @@
                   :files="allChangedFiles"
                   :selected-path="gitUi.selectedDiff?.path || ''"
                   :selected-scope="gitUi.selectedDiff?.scope || ''"
-                  :selectable="snapshot.dirty && !isReviewWorkspace"
+                  :selectable="snapshot.dirty"
                   :selected-set="selectedPaths"
                   :grouped="compactChanges"
                   :scope-filter="mobileMode ? activeFilter : 'all'"
@@ -116,11 +115,7 @@
                   @toggle-select="toggleSelect"
                   @context-menu="onFileContextMenu"
                 />
-                <div
-                  v-if="!mobileMode && snapshot.dirty && !isReviewWorkspace"
-                  class="git-commit-form"
-                  style="margin-top: 12px"
-                >
+                <div v-if="!mobileMode && snapshot.dirty" class="git-commit-form" style="margin-top: 12px">
                   <input
                     v-model="commitMessage"
                     name="commit-message"
@@ -142,11 +137,7 @@
                     {{ commitButtonLabel }}
                   </button>
                 </div>
-                <div
-                  v-if="!mobileMode && snapshot.dirty && !isReviewWorkspace"
-                  class="git-stash-form"
-                  style="margin-top: 8px"
-                >
+                <div v-if="!mobileMode && snapshot.dirty" class="git-stash-form" style="margin-top: 8px">
                   <input
                     v-model="stashMessage"
                     name="stash-message"
@@ -259,7 +250,6 @@
             >
               <strong>Detached HEAD</strong><span>Commits may be lost unless you create a branch.</span>
               <button
-                v-if="!isReviewWorkspace"
                 type="button"
                 class="button button--ghost button--small"
                 @click="gitUiStore.gitCreateBranch(workspaceId, 'branch-from-detached', '')"
@@ -273,7 +263,7 @@
               :files="allChangedFiles"
               :selected-path="gitUi.selectedDiff?.path || ''"
               :selected-scope="gitUi.selectedDiff?.scope || ''"
-              :selectable="snapshot.dirty && !isReviewWorkspace"
+              :selectable="snapshot.dirty"
               :selected-set="selectedPaths"
               :grouped="true"
               :scope-filter="activeFilter"
@@ -282,7 +272,7 @@
               @context-menu="onFileContextMenu"
             />
             <details
-              v-if="compactChanges && mobileMode === 'list' && snapshot.dirty && !isReviewWorkspace"
+              v-if="compactChanges && mobileMode === 'list' && snapshot.dirty"
               class="git-changes__mobile-actions"
             >
               <summary>More actions</summary>
@@ -376,7 +366,7 @@
     <footer v-if="mobileMode" class="git-changes__mobile-dock">
       <template v-if="mobileMode === 'list' || (mobileLayout === 'split' && mobileMode === 'diff')">
         <span>{{ selectedPaths.size ? `${selectedPaths.size} selected` : `${distinctPaths.size} files` }}</span>
-        <button v-if="!isReviewWorkspace && snapshot.dirty" type="button" class="button" @click="openMobileCommit">
+        <button v-if="snapshot.dirty" type="button" class="button" @click="openMobileCommit">
           {{ selectedPaths.size ? `Commit ${selectedPaths.size}…` : "Commit all…" }}
         </button>
       </template>
@@ -472,9 +462,8 @@ const props = withDefaults(
     operation: Record<string, any>;
     activeRootPath?: string;
     isDetachedHead?: boolean;
-    isReviewWorkspace?: boolean;
   }>(),
-  { activeRootPath: "", isDetachedHead: false, isReviewWorkspace: false },
+  { activeRootPath: "", isDetachedHead: false },
 );
 
 const appStore = useAppStore();
@@ -693,14 +682,14 @@ function returnToList() {
 }
 
 function openMobileCommit() {
-  if (props.isReviewWorkspace || !props.snapshot.dirty) return;
+  if (!props.snapshot.dirty) return;
   mobileMode.value = "commit";
   void nextTick(() => commitMessageInput.value?.focus());
 }
 
 async function submitMobileCommit() {
   const message = commitMessage.value.trim();
-  if (!message || commitBusy.value || props.isReviewWorkspace) return;
+  if (!message || commitBusy.value) return;
   const { paths, previousPaths } = commitSelection();
   const workspaceId = props.workspaceId;
   const rootPath = props.activeRootPath;
@@ -901,8 +890,6 @@ const deleteDialogTitle = computed(() => {
 });
 
 function onFileContextMenu(payload: { path: string; name: string; kind: "file" | "dir"; x: number; y: number }) {
-  // Review workspaces are read-only — no destructive file ops.
-  if (props.isReviewWorkspace) return;
   // Right-clicking a checked file inside a multi-selection makes the menu act
   // on every checked file; right-clicking elsewhere acts on the single target.
   const inSelection = payload.kind === "file" && selectedPaths.value.has(payload.path);

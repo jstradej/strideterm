@@ -6,15 +6,9 @@ export function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value));
 }
 
-export function sanitizePathSegment(value: unknown, fallback = "unknown"): string {
-  const normalized = String(value || "")
-    .trim()
-    .replace(/[<>:"/\\|?*\u0000-\u001F]+/g, "-")
-    .replace(/\s+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
-  return normalized || fallback;
-}
+import { sanitizePathSegment } from "../../shared/review-source-identity.js";
+
+export { sanitizePathSegment };
 
 export function trimTrailingSlash(value: unknown): string {
   return String(value || "")

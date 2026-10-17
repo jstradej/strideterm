@@ -275,10 +275,11 @@ async function handleCreatePr() {
         prFormResult.value = { ok: false, summary: "Push your commits to remote first, then try again." };
         return;
       }
-      if (isGitHub.value) {
-        await appStore.githubPushReviewWorkspace(props.workspaceId);
-      } else {
-        await appStore.azurePushReviewWorkspace(props.workspaceId);
+      // No pull request exists yet, so there is no PR source ref to verify
+      // against: this is an ordinary push of the branch (publishing it).
+      const pushed = await api.gitPush({ workspaceId: props.workspaceId, rootPath: "" });
+      if (pushed?.result?.ok === false) {
+        throw new Error(String(pushed.result.summary || "Push failed."));
       }
     }
 

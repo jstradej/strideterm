@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import {
   fullSourceRef,
+  managedReviewBranchAlias,
   normalizeRemoteIdentity,
   sameRemote,
+  sanitizePathSegment,
   sourceBranchName,
 } from "../../shared/review-source-identity.js";
-import { sanitizePathSegment, stripRefsPrefix } from "../shared/provider-utils.js";
+import { stripRefsPrefix } from "../shared/provider-utils.js";
 import {
   compareCommits,
   describeDirty,
@@ -86,10 +88,6 @@ type Block = Extract<ReviewGitResult, { status: "blocked" }>;
 
 const SHORT = 8;
 const short = (sha: string) => (sha ? sha.slice(0, SHORT) : "none");
-
-export function managedReviewBranchAlias(prId: string | number, sourceRefName: string): string {
-  return `pr-${prId}-${sanitizePathSegment(sourceBranchName(sourceRefName))}`;
-}
 
 function proposalIdOf(
   subject: ReviewGitSubject,
@@ -1040,3 +1038,4 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
 export type ReviewGitEngine = ReturnType<typeof createReviewGitEngine>;
 export type { Ancestry };
 export { normalizeRemoteIdentity };
+export { managedReviewBranchAlias };

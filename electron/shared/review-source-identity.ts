@@ -25,6 +25,22 @@ export function sourceBranchName(sourceRefName: string | null | undefined): stri
   return fullSourceRef(sourceRefName).replace(/^refs\/heads\//u, "");
 }
 
+/** A path segment safe on every OS: the same rule the managed checkout directories and branch aliases use. */
+export function sanitizePathSegment(value: unknown, fallback = "unknown"): string {
+  const normalized = String(value || "")
+    .trim()
+    .replace(/[<>:"/\\|?*\u0000-\u001F]+/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  return normalized || fallback;
+}
+
+/** The local branch name a managed review checkout uses for a PR: `pr-<id>-<sanitized source branch>`. */
+export function managedReviewBranchAlias(prId: string | number, sourceRefName: string): string {
+  return `pr-${prId}-${sanitizePathSegment(sourceBranchName(sourceRefName))}`;
+}
+
 function trimSlashes(value: string): string {
   let start = 0;
   let end = value.length;

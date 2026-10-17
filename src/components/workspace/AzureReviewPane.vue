@@ -1103,7 +1103,7 @@ const refreshSyncResult = ref<any>(null);
 // commit, which is what the user asked for. It only reads differently because
 // the author rewrote the branch, and the message says so. Colouring it as a
 // failure would tell the reviewer something went wrong when it went right.
-const SYNC_OK_STATUSES = ["updated", "reset", "already-current"];
+const SYNC_OK_STATUSES = ["updated", "reset", "already-current", "cancelled"];
 const refreshSyncBlocked = computed(
   () => !!refreshSyncResult.value && !SYNC_OK_STATUSES.includes(refreshSyncResult.value.status),
 );
@@ -1118,16 +1118,17 @@ async function handleRefresh() {
       // HEAD onto the PR's source commit. It also refreshes the git snapshot
       // and provider PR detail server-side, so no separate
       // refreshAzure()/refreshGitHub() call is needed here.
+      // The runtime inspects the real checkout state and answers with a safe,
+      // blocked or confirmation-required outcome (asked about here before any
+      // commit is discarded) — the same flow for every role and provider.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const syncResult: any = isGitHub.value
-        ? await appStore.githubSyncReviewWorkspace(props.workspaceId)
-        : await appStore.azureSyncReviewWorkspace(props.workspaceId);
+      const syncResult: any = await appStore.refreshReviewCheckout(props.workspaceId);
       refreshSyncResult.value = syncResult || null;
       if (prKey.value) {
         if (isGitHub.value) await appStore.markGitHubPrSeen(prKey.value);
         else await appStore.markAzurePrSeen(prKey.value);
       }
-      // A blocked/no-op result (dirty, ahead, diverged, already-current)
+      // A blocked/no-op result (dirty, ahead, cancelled, already-current)
       // must leave any open diff exactly as it was. "updated" and "reset" are
       // the two that moved HEAD, so they are the two that need the Files tab
       // to catch up — a reset changes the content MORE than a fast-forward
@@ -1153,18 +1154,31 @@ async function handlePushAndPublish() {
   pushPublishSuccess.value = "";
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const result: any = await appStore.pushAndPublishReview(props.workspaceId);
-    const commits = result?.commitCount || 0;
-    const published = result?.publishedCount || 0;
-    const pubError = result?.publishError || "";
+    const outcome: any = await appStore.pushAndPublishReview(props.workspaceId);
+    if (outcome?.status === "cancelled") {
+      pushPublishSuccess.value = String(outcome.message || "Cancelled — nothing was pushed.");
+      return;
+    }
+    const push = outcome?.push;
+    if (!push || push.status === "blocked" || push.status === "confirm-required") {
+      // Nothing was pushed and nothing was published: say why, with the way out.
+      toolbarError.value = [push?.message, push?.guidance].filter(Boolean).join(" ") || "Push was not performed.";
+      return;
+    }
+    const publish = outcome.publish || { attempted: false, published: [], failed: [] };
     const parts = [];
-    if (commits > 0) parts.push(`${commits} commit${commits !== 1 ? "s" : ""} pushed`);
+    if (push.status === "pushed") parts.push(String(push.message || "Pushed"));
     else parts.push("Push completed (no new commits)");
+    const published = publish.published?.length || 0;
     if (published > 0) parts.push(`${published} comment${published !== 1 ? "s" : ""} published`);
-    pushPublishSuccess.value = parts.join(", ") + ".";
-    if (pubError) {
-      // Push succeeded but some comments failed — show both success and error
-      toolbarError.value = `Push succeeded, but publishing failed: ${pubError}`;
+    pushPublishSuccess.value = parts.join(", ").replace(/\.$/, "") + ".";
+    const failed = publish.failed || [];
+    if (failed.length) {
+      // The push (and any comment already posted) stands: never repeat them.
+      // Each failed comment stays queued and is reported on its own.
+      toolbarError.value = `Push succeeded, but ${failed.length} comment${failed.length !== 1 ? "s" : ""} could not be published: ${failed
+        .map((entry: { error: string }) => entry.error)
+        .join("; ")}`;
     }
   } catch (error) {
     // Push itself failed (before any publishing)

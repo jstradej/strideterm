@@ -8,7 +8,12 @@ import type {
   GitPushProgressPayload,
 } from "../electron/shared/ipc-bridge.js";
 import type { RemoteStateV2, RecoveryResult } from "../electron/shared/types/state.js";
-import type { AzureClosedPrCleanupStarted } from "../electron/shared/types/ipc-results.js";
+import type { AzureClosedPrCleanupStarted, ReviewGitStarted } from "../electron/shared/types/ipc-results.js";
+import {
+  REVIEW_GIT_OPERATION_CHANNEL,
+  reviewGitOperationEventSchema,
+  type ReviewGitOperationEvent,
+} from "../electron/shared/review-git-events.js";
 import {
   AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL,
   azureClosedPrCleanupFinishedSchema,
@@ -19,7 +24,7 @@ import {
   operationFinishedSchema,
   type OperationFinished,
 } from "../electron/shared/operation-events.js";
-import type { ProfilePayload } from "../electron/backend/ipc-schemas.js";
+import type { ProfilePayload, ReviewGitStart } from "../electron/backend/ipc-schemas.js";
 import type {
   SshAuthRequest,
   SshAuthPromptCancel,
@@ -257,6 +262,7 @@ interface EventHub {
   approvalRecorded: Set<Handler<ApprovalRecorded>>;
   azureClosedPrCleanupFinished: Set<Handler<AzureClosedPrCleanupFinished>>;
   operationFinished: Set<Handler<OperationFinished>>;
+  reviewGitOperation: Set<Handler<ReviewGitOperationEvent>>;
   requestIssue: Set<Handler<RemoteRequestIssue>>;
 }
 
@@ -346,6 +352,8 @@ export interface Transport extends Partial<
   onAzureClosedPrCleanupFinished: (handler: Handler<AzureClosedPrCleanupFinished>) => void;
   /** A long-running runtime operation finished (result or error). Validated at this boundary. */
   onOperationFinished: (handler: Handler<OperationFinished>) => void;
+  /** A review Git operation ended (result or error). Validated at this boundary. */
+  onReviewGitOperation: (handler: Handler<ReviewGitOperationEvent>) => void;
   /** A paired phone opened a session (desktop only). Validated at this boundary. */
   onMobileSessionStarted?: (handler: Handler<MobileSessionStarted>) => void;
   onRemoteAuthFailures?: (handler: Handler<RemoteAuthFailures>) => void;
@@ -395,6 +403,7 @@ function createEventHub(): EventHub {
     approvalRecorded: new Set(),
     azureClosedPrCleanupFinished: new Set(),
     operationFinished: new Set(),
+    reviewGitOperation: new Set(),
     requestIssue: new Set(),
   };
 }
@@ -523,6 +532,16 @@ function bindElectronTransport(): Transport {
         const parsed = operationFinishedSchema.safeParse(payload);
         if (!parsed.success) {
           rlog("warn", "operation:finished ignored: malformed payload");
+          return;
+        }
+        handler(parsed.data);
+      });
+    },
+    onReviewGitOperation: (handler: Handler<ReviewGitOperationEvent>) => {
+      window.strideterm.onReviewGitOperation?.((payload: unknown) => {
+        const parsed = reviewGitOperationEventSchema.safeParse(payload);
+        if (!parsed.success) {
+          rlog("warn", "review-git:operation ignored: malformed payload");
           return;
         }
         handler(parsed.data);
@@ -1146,6 +1165,14 @@ export function createRemoteTransport(): Transport {
         safeDispatch(listeners.operationFinished, parsed.data, "operationFinished");
       } else {
         rlog("warn", "operation:finished ignored: malformed payload");
+      }
+    }
+    if (message.type === REVIEW_GIT_OPERATION_CHANNEL) {
+      const parsed = reviewGitOperationEventSchema.safeParse(message.payload);
+      if (parsed.success) {
+        safeDispatch(listeners.reviewGitOperation, parsed.data, "reviewGitOperation");
+      } else {
+        rlog("warn", "review-git:operation ignored: malformed payload");
       }
     }
     if (message.type === "ssh:auth-prompt") {
@@ -2259,6 +2286,8 @@ export function createRemoteTransport(): Transport {
       fetchJson("/api/azure/workspace/cleanup-closed-prs", {
         parentWorkspaceId,
       }) as Promise<AzureClosedPrCleanupStarted>,
+    startReviewGitOperation: (payload: ReviewGitStart) =>
+      fetchJson("/api/review-git/start", payload) as Promise<ReviewGitStarted>,
     queryAzureAuditLog: (filters) => fetchJson("/api/azure/audit-log/query", filters),
     getAzureAuditStats: (filters) => fetchJson("/api/azure/audit-log/stats", filters),
     // Read-only, hence remote-reachable — unlike the setting that produces the
@@ -2277,14 +2306,8 @@ export function createRemoteTransport(): Transport {
     replyWithCodeChanges: (payload) => fetchJson("/api/review-bridge/comment/reply-with-changes", payload),
     resetAgentPrompts: () => fetchJson("/api/review-bridge/agent-prompt/reset", {}),
     syncReviewBridgePullRequest: (payload) => fetchJson("/api/review-bridge/pull-request/sync", payload),
-    pushAndPublishReview: (payload) => fetchJson("/api/review-bridge/pull-request/push-and-publish", payload),
     updateAzureThreadStatus: (payload) => fetchJson("/api/azure/pull-request/thread-status", payload),
     voteAzurePullRequest: (payload) => fetchJson("/api/azure/pull-request/vote", payload),
-    fetchAzureReviewWorkspace: (workspaceId) => fetchJson("/api/azure/workspace/fetch", { workspaceId }),
-    rebaseAzureReviewWorkspace: (workspaceId) => fetchJson("/api/azure/workspace/rebase", { workspaceId }),
-    pushAzureReviewWorkspace: (workspaceId, options) =>
-      fetchJson("/api/azure/workspace/push", { workspaceId, ...options }),
-    syncAzureReviewWorkspace: (workspaceId) => fetchJson("/api/azure/workspace/sync", { workspaceId }),
     azureCreatePullRequest: (payload) => fetchJson("/api/azure/create-pull-request", payload),
     azureListRemoteBranches: (payload) => fetchJson("/api/azure/list-remote-branches", payload),
     azureQuickFixListProjects: (payload) => fetchJson("/api/azure/quickfix/list-projects", payload),
@@ -2314,11 +2337,6 @@ export function createRemoteTransport(): Transport {
     commentGitHubPullRequest: (payload) => fetchJson("/api/github/pull-request/comment", payload),
     submitGitHubPullRequestReview: (payload) => fetchJson("/api/github/pull-request/review", payload),
     rerunGitHubCheck: (prKey, checkItem) => fetchJson("/api/github/rerun-check", { prKey, checkItem }),
-    fetchGitHubReviewWorkspace: (workspaceId) => fetchJson("/api/github/workspace/fetch", { workspaceId }),
-    rebaseGitHubReviewWorkspace: (workspaceId) => fetchJson("/api/github/workspace/rebase", { workspaceId }),
-    pushGitHubReviewWorkspace: (workspaceId, options) =>
-      fetchJson("/api/github/workspace/push", { workspaceId, ...options }),
-    syncGitHubReviewWorkspace: (workspaceId) => fetchJson("/api/github/workspace/sync", { workspaceId }),
     githubListRemoteBranches: (payload) => fetchJson("/api/github/list-remote-branches", payload),
     githubCreatePullRequest: (payload) => fetchJson("/api/github/create-pull-request", payload),
     githubQuickFixListRepos: (payload) => fetchJson("/api/github/quickfix/list-repos", payload),
@@ -2603,6 +2621,9 @@ export function createRemoteTransport(): Transport {
     },
     onOperationFinished: (handler: Handler<OperationFinished>) => {
       listeners.operationFinished.add(handler);
+    },
+    onReviewGitOperation: (handler: Handler<ReviewGitOperationEvent>) => {
+      listeners.reviewGitOperation.add(handler);
     },
     getRemoteToken: () => token,
     setRemoteToken: (nextToken: string) => {

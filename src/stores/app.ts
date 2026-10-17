@@ -34,6 +34,7 @@ import {
 import { createDialogActions } from "./app-dialog-actions.js";
 import { createWorkspaceActions } from "./app-workspace-actions.js";
 import { createApiActions } from "./app-api-actions.js";
+import { createReviewGitOperations } from "./review-git-operations.js";
 import { isMobileViewport } from "../composables/useIsNarrow.js";
 import { maybeApplyMockFromUrl } from "./dev-mocks.js";
 import { useGitUiStore } from "./git-ui.js";
@@ -1805,6 +1806,14 @@ export const useAppStore = defineStore("app", () => {
       // reload) and a window that switches to the run's profile later. Both
       // name the run by its runId, which is what makes it one entry.
       api.onAzureClosedPrCleanupFinished?.((event) => workspaceActions.reportAzureClosedPrCleanupFinished(event));
+      // Same two paths for review Git operations: the live event, and the
+      // payload's last runs for a client that was not connected when one ended.
+      api.onReviewGitOperation?.((event) => reviewGit.reportOperation(event));
+      watch(
+        () => [(payload.value as AnyApi)?.reviewGit, myActiveProfileId.value],
+        ([state]) => reviewGit.reconcilePayload(state),
+        { immediate: true },
+      );
       watch(
         () => [(payload.value as AnyApi)?.azureClosedPrCleanup?.lastRuns, myActiveProfileId.value],
         ([runs]) => workspaceActions.reportAzureClosedPrCleanupRuns(runs),
@@ -2007,6 +2016,14 @@ export const useAppStore = defineStore("app", () => {
       });
   }
 
+  // --- Review Git operations: start at once, learn the outcome by event / payload ---
+  const reviewGit = createReviewGitOperations({
+    payload,
+    myActiveProfileId,
+    getApi,
+    confirmInApp: workspaceActions.confirmInApp,
+  });
+
   // --- Domain API actions (azure, review, docker, remote, profile) ---
   const apiActions = createApiActions({
     payload,
@@ -2020,6 +2037,7 @@ export const useAppStore = defineStore("app", () => {
     withSuppressedBroadcast,
     confirmInApp: workspaceActions.confirmInApp,
     resolveViewerProfileId,
+    reviewGit,
   });
 
   /** Fetch a process-metrics snapshot. Returns null on transports that don't

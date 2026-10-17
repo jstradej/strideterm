@@ -84,7 +84,6 @@ type GitChangesTabTestProps = {
   gitUi: Record<string, unknown>;
   operation: Record<string, unknown>;
   activeRootPath?: string;
-  isReviewWorkspace?: boolean;
 };
 type GitChangesTabTestWrapper = VueWrapper<
   InstanceType<typeof GitChangesTab>,
@@ -260,7 +259,7 @@ describe("GitChangesTab", () => {
     expect(gitSelectDiff).not.toHaveBeenCalled();
   });
 
-  test("readonly review workspace exposes neither commit action nor file selection", async () => {
+  test("a PR-linked workspace is not read-only: commit action and file selection stay available", async () => {
     const wrapper = mountTab({
       snapshot: {
         dirty: true,
@@ -269,12 +268,11 @@ describe("GitChangesTab", () => {
         untracked: [],
         diffStat: null,
       },
-      isReviewWorkspace: true,
     });
     await flushPromises();
 
-    expect(wrapper.find(".git-changes__mobile-dock .button").exists()).toBe(false);
-    expect(wrapper.find("input[type=checkbox]").exists()).toBe(false);
+    expect(wrapper.find(".git-changes__mobile-dock .button").exists()).toBe(true);
+    expect(wrapper.find("input[type=checkbox]").exists()).toBe(true);
   });
 
   test("commits a selected rename once with its old path, even when the path has two scopes", async () => {

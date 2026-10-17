@@ -25,7 +25,6 @@ function mountList(props: Record<string, unknown> = {}) {
       workspaceId: "ws-1",
       gitUi: { busyAction: "" },
       pushRemote: "origin",
-      isReviewWorkspace: false,
       ...props,
     },
   });

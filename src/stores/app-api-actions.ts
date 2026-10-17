@@ -4,6 +4,7 @@ import type { StatePayload } from "../../electron/shared/types/state.js";
 import type { Transport, CallableTransport, TransportPayload } from "../transport.js";
 import { useRemoteDetailsStore } from "./remote-details.js";
 import { adoptRestoredSession } from "./app-session-restore.js";
+import type { ReviewGitOperations, ReviewGitOutcome } from "./review-git-operations.js";
 
 /**
  * Mirror of the backend `PruneResult` shape (electron/backend/docker-manager).
@@ -44,6 +45,8 @@ interface ApiActionsCtx {
   /** Single source of truth for "which profile does the current viewer belong
    *  to" — see resolveViewerProfileId in stores/app.ts. */
   resolveViewerProfileId: (sourcePayload: unknown, opts: { isRemote: boolean; windowId: string }) => string | null;
+  /** Review Git operations: start at once, learn the outcome by event / payload. */
+  reviewGit: ReviewGitOperations;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -77,12 +80,6 @@ interface ProviderApiMethods {
     api: AnyApi,
     args: { prKey: string; workspaceId: string; forceReview?: boolean },
   ) => Promise<AnyApi>;
-  /** The Refresh button's git-mutating half: fast-forward the review checkout
-   *  onto the PR's latest source commit. Returns {payload, result} — result is
-   *  the structured sync outcome (status/message/commitCount/headSha). */
-  syncReviewWorkspace: (api: CallableTransport, workspaceId: string) => Promise<AnyApi>;
-  rebaseReviewWorkspace: (api: CallableTransport, workspaceId: string) => Promise<AnyApi>;
-  pushReviewWorkspace: (api: CallableTransport, workspaceId: string, opts: { force: boolean }) => Promise<AnyApi>;
   deleteConnection: (api: CallableTransport, connectionId: string) => Promise<AnyApi>;
   saveConnection: (api: CallableTransport, draft: ConnectionDraft) => Promise<AnyApi>;
 }
@@ -93,9 +90,6 @@ const PROVIDER_API_METHODS: Record<ProviderKind, ProviderApiMethods> = {
     refresh: (api) => api.refreshAzure(),
     markPrSeen: (api, prKey) => api.markAzurePullRequestSeen(prKey),
     openPullRequest: (api, args) => api.openAzurePullRequest(args),
-    syncReviewWorkspace: (api, workspaceId) => api.syncAzureReviewWorkspace(workspaceId),
-    rebaseReviewWorkspace: (api, workspaceId) => api.rebaseAzureReviewWorkspace(workspaceId),
-    pushReviewWorkspace: (api, workspaceId, opts) => api.pushAzureReviewWorkspace(workspaceId, opts),
     deleteConnection: (api, connectionId) => api.deleteAzureConnection(connectionId),
     saveConnection: (api, draft) => api.saveAzureConnection(draft),
   },
@@ -104,9 +98,6 @@ const PROVIDER_API_METHODS: Record<ProviderKind, ProviderApiMethods> = {
     refresh: (api) => api.refreshGitHub(),
     markPrSeen: (api, prKey) => api.markGitHubPullRequestSeen(prKey),
     openPullRequest: (api, args) => api.openGitHubPullRequest(args),
-    syncReviewWorkspace: (api, workspaceId) => api.syncGitHubReviewWorkspace(workspaceId),
-    rebaseReviewWorkspace: (api, workspaceId) => api.rebaseGitHubReviewWorkspace(workspaceId),
-    pushReviewWorkspace: (api, workspaceId, opts) => api.pushGitHubReviewWorkspace(workspaceId, opts),
     deleteConnection: (api, connectionId) => api.deleteGitHubConnection(connectionId),
     saveConnection: (api, draft) => api.saveGitHubConnection(draft),
   },
@@ -144,25 +135,6 @@ export function makeProviderApiActions(
     );
   }
 
-  async function syncReviewWorkspace(workspaceId: string): Promise<unknown> {
-    if (!workspaceId) return null;
-    const response = (await m.syncReviewWorkspace(ctx.getApi() as CallableTransport, workspaceId)) as AnyApi;
-    setPayload((response?.payload || response) as StatePayload);
-    return response?.result ?? null;
-  }
-
-  async function rebaseReviewWorkspace(workspaceId: string): Promise<void> {
-    if (!workspaceId) return;
-    setPayload((await m.rebaseReviewWorkspace(ctx.getApi() as CallableTransport, workspaceId)) as StatePayload);
-  }
-
-  async function pushReviewWorkspace(workspaceId: string, { force = false } = {}): Promise<void> {
-    if (!workspaceId) return;
-    setPayload(
-      (await m.pushReviewWorkspace(ctx.getApi() as CallableTransport, workspaceId, { force })) as StatePayload,
-    );
-  }
-
   async function deleteConnection(connectionId: string): Promise<void> {
     if (!connectionId) return;
     const confirmed = await ctx.confirmInApp({
@@ -184,9 +156,6 @@ export function makeProviderApiActions(
     refresh,
     markPrSeen,
     openPullRequest,
-    syncReviewWorkspace,
-    rebaseReviewWorkspace,
-    pushReviewWorkspace,
     deleteConnection,
     saveConnection,
   };
@@ -395,14 +364,34 @@ export function createApiActions(ctx: ApiActionsCtx) {
     }
   }
 
-  async function pushAndPublishReview(workspaceId: string): Promise<unknown> {
+  // --- Review checkout Git (one flow for both providers; the runtime picks the provider) ---
+
+  /** Refresh: fast-forward, or reset onto a rewritten PR branch (asks first when commits would be discarded). */
+  async function refreshReviewCheckout(workspaceId: string): Promise<ReviewGitOutcome> {
     if (!workspaceId) return null;
-    // `{ payload, pushAndPublishResult }` — the result rides beside the payload
-    // so the remote ack keeps it (the ack drops only the nested payload).
-    const result = (await (ctx.getApi() as CallableTransport).pushAndPublishReview({ workspaceId })) as AnyApi;
-    const summary = result?.pushAndPublishResult || null;
-    if (result?.payload) setPayload(result.payload as StatePayload);
-    return summary;
+    return ctx.reviewGit.run("refresh", workspaceId);
+  }
+
+  /** Rebase onto the PR TARGET branch (asks first). Never pushes. */
+  async function rebaseReviewCheckout(workspaceId: string): Promise<ReviewGitOutcome> {
+    if (!workspaceId) return null;
+    return ctx.reviewGit.run("rebase", workspaceId);
+  }
+
+  /** Push HEAD to the PR SOURCE branch; `force` replaces it using a lease on the exact live commit. */
+  async function pushReviewCheckout(workspaceId: string, { force = false } = {}): Promise<ReviewGitOutcome> {
+    if (!workspaceId) return null;
+    return ctx.reviewGit.run(force ? "force-push" : "push", workspaceId);
+  }
+
+  /** Push, then publish queued drafts. Reports the push and each comment independently. */
+  async function pushAndPublishReview(workspaceId: string): Promise<ReviewGitOutcome> {
+    if (!workspaceId) return null;
+    return ctx.reviewGit.run("push-and-publish", workspaceId);
+  }
+
+  function isReviewGitBusy(workspaceId: string, kinds?: string[]): boolean {
+    return ctx.reviewGit.isBusy(workspaceId, kinds);
   }
 
   // --- GitHub ------------------------------------------------------------
@@ -865,9 +854,6 @@ export function createApiActions(ctx: ApiActionsCtx) {
     azureReactivateThread,
     azureComment,
     openAzurePullRequest: azureApi.openPullRequest,
-    azureSyncReviewWorkspace: azureApi.syncReviewWorkspace,
-    azureRebaseReviewWorkspace: azureApi.rebaseReviewWorkspace,
-    azurePushReviewWorkspace: azureApi.pushReviewWorkspace,
     deleteAzureConnection: azureApi.deleteConnection,
     saveAzureConnection: azureApi.saveConnection,
     // GitHub
@@ -876,9 +862,6 @@ export function createApiActions(ctx: ApiActionsCtx) {
     openGitHubPullRequest: githubApi.openPullRequest,
     githubComment,
     githubSubmitReview,
-    githubSyncReviewWorkspace: githubApi.syncReviewWorkspace,
-    githubRebaseReviewWorkspace: githubApi.rebaseReviewWorkspace,
-    githubPushReviewWorkspace: githubApi.pushReviewWorkspace,
     deleteGitHubConnection: githubApi.deleteConnection,
     saveGitHubConnection: githubApi.saveConnection,
     // Review bridge
@@ -890,7 +873,11 @@ export function createApiActions(ctx: ApiActionsCtx) {
     syncReviewBridgePullRequest,
     reviewBridgeDeleteAllDrafts,
     reviewBridgeQueueAllDrafts,
+    refreshReviewCheckout,
+    rebaseReviewCheckout,
+    pushReviewCheckout,
     pushAndPublishReview,
+    isReviewGitBusy,
     // Agent prompts
     saveAgentPrompt,
     deleteAgentPrompt,

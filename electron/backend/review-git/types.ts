@@ -83,31 +83,35 @@ export interface ReviewGitBase {
   operationId?: string;
 }
 
+export type ReviewGitSuccessStatus =
+  | "already-current"
+  | "updated"
+  | "reset"
+  | "ahead"
+  | "rebased"
+  | "pushed"
+  | "up-to-date"
+  | "fetched"
+  | "staged"
+  | "unstaged"
+  | "committed"
+  | "continued"
+  | "skipped"
+  | "aborted";
+
+type ReviewGitSuccess<S extends ReviewGitSuccessStatus> = ReviewGitBase & {
+  status: S;
+  commitCount?: number;
+  discardedCount?: number;
+  liveSha?: string;
+  recoveryRef?: string;
+  conflictedPaths?: string[];
+};
+
 export type ReviewGitResult =
   | (ReviewGitBase & { status: "blocked"; code: ReviewGitBlockCode; guidance?: string })
   | (ReviewGitBase & { status: "confirm-required"; proposal: ReviewGitProposal; stale?: boolean })
-  | (ReviewGitBase & {
-      status:
-        | "already-current"
-        | "updated"
-        | "reset"
-        | "ahead"
-        | "rebased"
-        | "pushed"
-        | "up-to-date"
-        | "fetched"
-        | "staged"
-        | "unstaged"
-        | "committed"
-        | "continued"
-        | "skipped"
-        | "aborted";
-      commitCount?: number;
-      discardedCount?: number;
-      liveSha?: string;
-      recoveryRef?: string;
-      conflictedPaths?: string[];
-    })
+  | { [S in ReviewGitSuccessStatus]: ReviewGitSuccess<S> }[ReviewGitSuccessStatus]
   | (ReviewGitBase & { status: "conflict"; conflictedPaths: string[]; operation: string });
 
 export type ReviewGitStatus = ReviewGitResult["status"];

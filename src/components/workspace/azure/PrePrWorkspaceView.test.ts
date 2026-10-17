@@ -208,13 +208,13 @@ describe("PrePrWorkspaceView — creating a pull request", () => {
   test("with unpushed commits: confirming the push proceeds to push then create the PR", async () => {
     const appStore = useAppStore();
     const confirmSpy = vi.spyOn(appStore, "confirmInApp").mockResolvedValue(true);
-    const pushSpy = vi.spyOn(appStore, "azurePushReviewWorkspace").mockResolvedValue(undefined as never);
+    const gitPush = vi.fn(() => Promise.resolve({ result: { ok: true, summary: "Pushed." } }));
     const azureCreatePullRequest = vi.fn(() =>
       Promise.resolve({ result: { pullRequestId: 42, url: "https://example.test/pr/42" } }),
     );
     const wrapper = mountWizard(
       { aheadCount: 1, log: [{ subject: "Fix the thing", shortHash: "abc123" }] },
-      { azureListRemoteBranches: () => Promise.resolve({ branches: ["main"] }), azureCreatePullRequest },
+      { azureListRemoteBranches: () => Promise.resolve({ branches: ["main"] }), azureCreatePullRequest, gitPush },
     );
     await flushPromises();
 
@@ -222,7 +222,7 @@ describe("PrePrWorkspaceView — creating a pull request", () => {
     await flushPromises();
 
     expect(confirmSpy).toHaveBeenCalled();
-    expect(pushSpy).toHaveBeenCalledWith("ws-review");
+    expect(gitPush).toHaveBeenCalledWith({ workspaceId: "ws-review", rootPath: "" });
     expect(azureCreatePullRequest).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceId: "ws-review", targetBranch: "main", title: "Fix the thing" }),
     );

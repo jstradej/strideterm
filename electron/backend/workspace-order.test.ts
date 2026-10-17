@@ -52,7 +52,6 @@ function review(id: string, parentWorkspaceId: string, profileId = "default"): W
         targetRefName: "",
       },
       role: "reviewer",
-      writable: false,
       checkout: { mode: "managed-worktree", rootPath: "", cacheRepoPath: "" },
     },
   });

@@ -12,8 +12,8 @@ import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 
 const azureVote = vi.fn();
-const azureRebaseReviewWorkspace = vi.fn();
-const azurePushReviewWorkspace = vi.fn();
+const rebaseReviewCheckout = vi.fn();
+const pushReviewCheckout = vi.fn();
 const getGitSnapshot = vi.fn(() => ({ aheadCount: 1, behindCount: 1 }));
 // Rebase-on-target is driven by an ad-hoc compare against the PR's target
 // branch (gitCompareBranch), not the top-level snapshot's behindCount — see
@@ -24,8 +24,8 @@ const gitCompareBranch = vi.fn(async () => ({ ok: true, aheadCount: 0, behindCou
 vi.mock("../../../stores/app.js", () => ({
   useAppStore: () => ({
     azureVote,
-    azureRebaseReviewWorkspace,
-    azurePushReviewWorkspace,
+    rebaseReviewCheckout,
+    pushReviewCheckout,
     getGitSnapshot,
     getApi: () => ({ gitCompareBranch }),
   }),
@@ -61,10 +61,11 @@ function mountTab() {
 }
 
 beforeEach(() => {
+  window.localStorage.clear();
   setActivePinia(createPinia());
   azureVote.mockClear();
-  azureRebaseReviewWorkspace.mockClear();
-  azurePushReviewWorkspace.mockClear();
+  rebaseReviewCheckout.mockReset();
+  pushReviewCheckout.mockReset();
   gitCompareBranch.mockClear();
   gitCompareBranch.mockImplementation(async () => ({ ok: true, aheadCount: 0, behindCount: 1 }));
 });
@@ -132,7 +133,7 @@ describe("ReviewSummaryTab — vote/fetch/rebase surface failures instead of sil
   });
 
   test("handleRebase: rejection is caught and surfaced as a toast, not an unhandled rejection", async () => {
-    azureRebaseReviewWorkspace.mockRejectedValueOnce(new Error("conflict"));
+    rebaseReviewCheckout.mockRejectedValueOnce(new Error("conflict"));
     const wrapper = mountTab();
     await flushPromises(); // let the initial gitCompareBranch compare resolve
     await openAdvancedMenu(wrapper);
@@ -140,11 +141,80 @@ describe("ReviewSummaryTab — vote/fetch/rebase surface failures instead of sil
     await rebaseBtn.trigger("click");
     await flushPromises();
 
-    expect(azureRebaseReviewWorkspace).toHaveBeenCalledWith("ws-1");
+    expect(rebaseReviewCheckout).toHaveBeenCalledWith("ws-1");
     const notifications = useNotificationStore();
     expect(notifications.sessions).toHaveLength(1);
     expect(notifications.sessions[0].events[0].title).toBe("Rebase failed");
     expect(rebaseBtn.text()).toBe("Rebase on target");
+  });
+});
+
+describe("ReviewSummaryTab — review Git outcomes", () => {
+  test("a blocked rebase is the action's own error, with the way out", async () => {
+    rebaseReviewCheckout.mockResolvedValueOnce({
+      status: "blocked",
+      code: "dirty-tree",
+      message: "Cannot rebase: 2 modified in the worktree.",
+      guidance: "Commit, stash, or discard the changes first.",
+    });
+    const wrapper = mountTab();
+    await flushPromises();
+    await openAdvancedMenu(wrapper);
+    await wrapper
+      .findAll("button")
+      .find((b) => b.text().includes("Rebase"))!
+      .trigger("click");
+    await flushPromises();
+
+    const notifications = useNotificationStore();
+    expect(notifications.sessions[0].events[0].title).toBe("Rebase failed");
+    expect(notifications.sessions[0].events[0].body).toContain("Commit, stash, or discard the changes first.");
+  });
+
+  test("a rebase the user declined raises nothing", async () => {
+    rebaseReviewCheckout.mockResolvedValueOnce({ status: "cancelled", message: "Cancelled — nothing was changed." });
+    const wrapper = mountTab();
+    await flushPromises();
+    await openAdvancedMenu(wrapper);
+    await wrapper
+      .findAll("button")
+      .find((b) => b.text().includes("Rebase"))!
+      .trigger("click");
+    await flushPromises();
+
+    const titles = useNotificationStore().sessions.flatMap((session) => session.events.map((event) => event.title));
+    expect(titles).not.toContain("Rebase failed");
+  });
+
+  test("Push goes through the review checkout flow and shows a blocked reason inline", async () => {
+    pushReviewCheckout.mockResolvedValueOnce({
+      status: "blocked",
+      code: "branch-mismatch",
+      message: "This checkout is on develop, not on the pull request branch.",
+      guidance: "Switch back to the PR branch.",
+    });
+    const wrapper = mountTab();
+    await flushPromises();
+    const pushBtn = wrapper.findAll("button").find((b) => b.text() === "Push branch");
+    expect(pushBtn).toBeDefined();
+    await pushBtn!.trigger("click");
+    await flushPromises();
+
+    expect(pushReviewCheckout).toHaveBeenCalledWith("ws-1", { force: false });
+    expect(wrapper.text()).toContain("Switch back to the PR branch.");
+  });
+
+  test("Force push asks the review flow for a force push", async () => {
+    pushReviewCheckout.mockResolvedValueOnce({ status: "pushed", message: "Force pushed." });
+    const wrapper = mountTab();
+    await flushPromises();
+    await openAdvancedMenu(wrapper);
+    const forceBtn = wrapper.findAll("button").find((b) => b.text().includes("Force push"));
+    expect(forceBtn).toBeDefined();
+    await forceBtn!.trigger("click");
+    await flushPromises();
+
+    expect(pushReviewCheckout).toHaveBeenCalledWith("ws-1", { force: true });
   });
 });
 

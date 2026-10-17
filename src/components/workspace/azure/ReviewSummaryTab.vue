@@ -146,7 +146,7 @@
             :title="
               !canPush
                 ? 'Nothing to push — no local commits ahead of the remote tracking branch.'
-                : 'Push the local commits of this review worktree to the remote PR branch (fast-forward only).'
+                : 'Push the commits of this checkout to the source branch of the pull request. The runtime checks the real state first and only fast-forwards; it explains why when it cannot.'
             "
             @click="handlePush(workspaceId)"
           >
@@ -190,7 +190,7 @@
                 :title="
                   !canRebase
                     ? 'Rebase is unnecessary — your branch is already up to date with the PR target.'
-                    : 'Rebase the PR source branch onto the latest PR target branch. Conflicts will be reported in the Conflicts tab.'
+                    : 'Rebase this checkout onto the latest pull request target branch (you are shown what is rewritten and asked first). It never pushes. Conflicts will be reported in the Conflicts tab.'
                 "
                 @click="handleRebase(workspaceId)"
               >
@@ -203,7 +203,7 @@
                 :title="
                   !canForcePush
                     ? 'Force push is unnecessary — local and remote agree.'
-                    : 'Force push with --force-with-lease. Use after rebase to update the PR branch; aborts if someone else pushed since your last fetch.'
+                    : 'Force push to the source branch of the pull request, leasing the exact commit currently on the server. Use after a rebase; you are asked first if the server has commits you do not have.'
                 "
                 @click="handleForcePush(workspaceId)"
               >
@@ -435,10 +435,23 @@ async function handleVote(prKey: string, vote: number, label: string) {
   }
 }
 
+// A blocked outcome is a refusal with a reason, not a crash: it reads as the
+// action's own error. A declined confirmation is "nothing happened".
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function failureOf(outcome: any): string {
+  const result = outcome?.push ?? outcome;
+  if (result?.status === "blocked") return [result.message, result.guidance].filter(Boolean).join(" ");
+  if (result?.status === "conflict") return result.message || "The rebase stopped with conflicts.";
+  return "";
+}
+
 async function handleRebase(workspaceId: string) {
   busyAction.value = "rebase";
   try {
-    await notifications.runWithToast("Rebase failed", () => appStore.azureRebaseReviewWorkspace(workspaceId));
+    await notifications.runWithToast("Rebase failed", async () => {
+      const failure = failureOf(await appStore.rebaseReviewCheckout(workspaceId));
+      if (failure) throw new Error(failure);
+    });
   } finally {
     busyAction.value = "";
   }
@@ -446,28 +459,20 @@ async function handleRebase(workspaceId: string) {
 
 const pushError = ref<string>("");
 
-async function handlePush(workspaceId: string) {
-  busyAction.value = "push";
+async function handlePush(workspaceId: string, { force = false } = {}) {
+  busyAction.value = force ? "force-push" : "push";
   pushError.value = "";
   try {
-    await appStore.azurePushReviewWorkspace(workspaceId);
+    pushError.value = failureOf(await appStore.pushReviewCheckout(workspaceId, { force }));
   } catch (error) {
-    pushError.value = (error as Error)?.message || String(error || "Push failed.");
+    pushError.value = (error as Error)?.message || String(error || (force ? "Force push failed." : "Push failed."));
   } finally {
     busyAction.value = "";
   }
 }
 
-async function handleForcePush(workspaceId: string) {
-  busyAction.value = "force-push";
-  pushError.value = "";
-  try {
-    await appStore.azurePushReviewWorkspace(workspaceId, { force: true });
-  } catch (error) {
-    pushError.value = (error as Error)?.message || String(error || "Force push failed.");
-  } finally {
-    busyAction.value = "";
-  }
+function handleForcePush(workspaceId: string) {
+  return handlePush(workspaceId, { force: true });
 }
 
 function stripRef(ref: unknown) {

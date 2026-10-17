@@ -24,7 +24,6 @@
           Pull / Rebase
         </button>
         <button
-          v-if="!isReviewWorkspace"
           type="button"
           data-testid="force-push-button"
           class="button button--ghost button--danger"
@@ -52,24 +51,16 @@
           <h3>{{ opRef || "?" }} &rarr; {{ snapshot.branch }}</h3>
         </div>
       </div>
-      <div v-if="isReviewWorkspace" class="git-info-banner" data-testid="review-detach-banner">
-        <strong>Linked to a PR review</strong>
+      <div v-if="reviewLink" class="git-info-banner" data-testid="review-link-note">
+        <strong>Linked to PR #{{ reviewLink.pullRequestId }}</strong>
         <p>
-          Rebase, Merge, Push, and Force push are disabled while this workspace is linked to a pull request review.
-          Enable editing to fix the PR directly from here (push goes to the PR source branch), or detach to make it a
-          regular workspace — the PR on the server is not touched either way.
+          While this checkout is on the PR's branch, <strong>Push</strong> goes to the PR's source branch
+          <code>{{ reviewLink.sourceBranch }}</code> and <strong>Rebase</strong> rebases onto its target
+          <code>{{ reviewLink.targetBranch }}</code> — a rebase never pushes. Every action checks the real state of the
+          checkout first and asks before anything that could discard commits. Detaching only removes the link; it is
+          never needed to use Git here.
         </p>
         <div class="git-diverged-banner__actions">
-          <button
-            type="button"
-            data-testid="enable-review-editing-button"
-            class="button button--ghost"
-            :disabled="!!gitUi.busyAction || enablingEditing"
-            title="Re-enable Rebase, Merge, Push, and Force push on this review checkout. Push targets the PR source branch, so commits update the author's PR. The workspace stays linked to the review."
-            @click="onEnableEditing"
-          >
-            {{ enablingEditing ? "Enabling…" : "Enable editing" }}
-          </button>
           <button
             type="button"
             data-testid="detach-review-button"
@@ -136,7 +127,7 @@
           </template>
         </p>
 
-        <div v-if="!isReviewWorkspace" class="git-operation-actions git-update-actions">
+        <div class="git-operation-actions git-update-actions">
           <GitStrategySplitButton
             :strategy="updateStrategy"
             :main-label="isUpdating ? 'Updating…' : updateActionLabel"
@@ -152,7 +143,7 @@
           />
         </div>
 
-        <label v-if="hasLocalAndRemote && !isReviewWorkspace" class="git-card__hint git-base-local-toggle">
+        <label v-if="hasLocalAndRemote" class="git-card__hint git-base-local-toggle">
           <input type="checkbox" :checked="preferLocalBase" @change="preferLocalBase = !preferLocalBase" />
           <span class="git-base-local-toggle__text">
             Use local <code>{{ resolvedBase.localRef }}</code> instead (no fetch — advanced/offline)
@@ -222,7 +213,7 @@
       <p class="git-card__hint">Stash saves uncommitted changes. Unstash restores the most recent stash entry.</p>
     </article>
 
-    <article v-if="!isLinkedWorktree && !isReviewWorkspace" class="git-card">
+    <article v-if="!isLinkedWorktree" class="git-card">
       <div class="section-head">
         <div>
           <p class="eyebrow">Switch Branch</p>
@@ -326,7 +317,7 @@ const props = withDefaults(
     hasNoRemote?: boolean;
     showAllActions?: boolean;
     isDiverged?: boolean;
-    isReviewWorkspace?: boolean;
+    reviewLink?: { pullRequestId: string | number; sourceBranch: string; targetBranch: string; role: string } | null;
     isLinkedWorktree?: boolean;
     pushRemote?: string;
     showUpdateCurrentBranch?: boolean;
@@ -346,7 +337,7 @@ const props = withDefaults(
     hasNoRemote: false,
     showAllActions: false,
     isDiverged: false,
-    isReviewWorkspace: false,
+    reviewLink: null,
     isLinkedWorktree: false,
     pushRemote: "origin",
     showUpdateCurrentBranch: false,
@@ -368,7 +359,6 @@ const notifications = useNotificationStore();
 const switchBranchTarget = ref("");
 const newBranchName = ref("");
 const detachingReview = ref(false);
-const enablingEditing = ref(false);
 
 // Update strategy + base resolution. "develop" is ambiguous (local branch vs
 // origin/develop); for pulling the base in we prefer the remote-tracking ref so
@@ -407,7 +397,7 @@ async function onDetachReview() {
   const confirmed = await appStore.confirmInApp({
     title: "Detach from PR review?",
     message:
-      "Detach this workspace from its PR review? Git operations get re-enabled, but pushes will then publish under this checkout's local branch name — they will NOT go to the PR source branch. To commit and push straight to the PR, use “Enable editing” instead. (Detaching does not touch the PR on the server.)",
+      "Detach this workspace from its PR review? Git keeps working, but a push will then publish under this checkout's local branch name — it will NOT go to the PR source branch. (Detaching does not touch the PR on the server.)",
     confirmLabel: "Detach",
   });
   if (!confirmed) return;
@@ -427,36 +417,6 @@ async function onDetachReview() {
     });
   } finally {
     detachingReview.value = false;
-  }
-}
-
-async function onEnableEditing() {
-  if (enablingEditing.value) return;
-  const confirmed = await appStore.confirmInApp({
-    title: "Enable editing on this review?",
-    message:
-      "Re-enable Rebase, Merge, Push, and Force push on this review checkout? " +
-      "Push targets the PR source branch, so your commits update the author's PR. " +
-      "The workspace stays linked to the review.",
-    confirmLabel: "Enable editing",
-  });
-  if (!confirmed) return;
-  enablingEditing.value = true;
-  try {
-    await appStore.setWorkspaceReviewWritable(props.workspaceId);
-  } catch (err) {
-    rlog("error", "[GitBranchTab] enable editing failed", {
-      workspaceId: props.workspaceId,
-      error: (err as Error)?.message || String(err),
-    });
-    notifications.pushEphemeralToast({
-      title: "Couldn’t enable editing",
-      body: (err as Error)?.message || "Could not enable editing on this review checkout.",
-      kind: "error",
-      durationMs: 6000,
-    });
-  } finally {
-    enablingEditing.value = false;
   }
 }
 

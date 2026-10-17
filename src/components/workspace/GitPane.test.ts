@@ -153,35 +153,17 @@ describe("GitPane repo picker", () => {
     expect(wrapper.find(".git-repo-picker").exists()).toBe(false);
   });
 
-  test("repo picker is hidden for review workspaces even with gitRoots", () => {
+  test.each([
+    ["reviewer", "no opt-in exists any more"],
+    ["author", "the author keeps full Git"],
+    ["observer", "role never changes what is available"],
+  ])("a PR-linked workspace (%s) is never locked: the repo picker stays — %s", (role) => {
     const ws = buildWorkspace({
-      id: "ws-review",
+      id: `ws-${role}`,
       gitRoots: ["/ms/api", "/ms/web"],
-      review: { prKey: "pr-123", provider: "azure-devops" },
+      review: { prKey: "pr-123", provider: "azure-devops", role },
     });
-    const wrapper = mountPane("ws-review", [ws]);
-    expect(wrapper.find(".git-repo-picker").exists()).toBe(false);
-  });
-
-  test("PR-linked workspace with role=author is not review-locked", () => {
-    // Quickfix-origin workspaces are promoted to review workspaces after PR
-    // creation but stay fully writable — the author keeps git operations.
-    const ws = buildWorkspace({
-      id: "ws-author",
-      gitRoots: ["/ms/api", "/ms/web"],
-      review: { prKey: "pr-123", provider: "azure-devops", role: "author" },
-    });
-    const wrapper = mountPane("ws-author", [ws]);
-    expect(wrapper.find(".git-repo-picker").exists()).toBe(true);
-  });
-
-  test("review workspace with writable opt-in is not review-locked", () => {
-    const ws = buildWorkspace({
-      id: "ws-writable",
-      gitRoots: ["/ms/api", "/ms/web"],
-      review: { prKey: "pr-123", provider: "azure-devops", role: "reviewer", writable: true },
-    });
-    const wrapper = mountPane("ws-writable", [ws]);
+    const wrapper = mountPane(`ws-${role}`, [ws]);
     expect(wrapper.find(".git-repo-picker").exists()).toBe(true);
   });
 

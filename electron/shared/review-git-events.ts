@@ -41,6 +41,8 @@ export const reviewGitOperationEventSchema = z
     profileId: z.string().min(1),
     workspaceId: z.string().min(1),
     kind: z.string().min(1),
+    /** "ui" for a window or remote client, "mcp" for an agent's tool. */
+    source: z.enum(["ui", "mcp"]),
     state: z.enum(["running", "succeeded", "failed"]),
     startedAt: z.string().min(1),
     finishedAt: z.string().nullable(),

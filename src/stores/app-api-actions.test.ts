@@ -22,6 +22,7 @@ function makeCtx(payloadValue: AnyApi) {
     withSuppressedBroadcast: async (fn: () => Promise<void>) => fn(),
     confirmInApp: async () => true,
     resolveViewerProfileId,
+    reviewGit: { run: vi.fn(async () => ({ status: "ok" })), isBusy: vi.fn(() => false) },
   } as AnyApi;
   return ctx;
 }
@@ -56,37 +57,45 @@ describe("createApiActions.getRemoteShareUrl", () => {
   });
 });
 
-describe("createApiActions.pushAndPublishReview", () => {
-  const summary = { commitCount: 2, publishedCount: 0, pushOk: true, publishError: "403 Forbidden" };
-
-  it("returns the summary from a remote ack and leaves the state alone", async () => {
-    const state = { appState: { workspaces: [{ id: "ws1" }] } };
-    const ctx = makeCtx(state);
-    // What a protocol-2 client receives: the ack keeps the envelope's result.
-    const pushAndPublishReview = vi.fn(async () => ({
-      ok: true,
-      changedResources: [],
-      pushAndPublishResult: summary,
-      revision: 3,
-    }));
-    ctx.getApi = () => ({ isRemote: true, pushAndPublishReview });
+describe("createApiActions review checkout Git", () => {
+  it("every action starts the matching review Git operation for the workspace", async () => {
+    const ctx = makeCtx({ appState: { workspaces: [] } });
     const actions = createApiActions(ctx);
 
-    expect(await actions.pushAndPublishReview("ws1")).toEqual(summary);
-    expect(ctx.payload.value).toBe(state);
+    await actions.refreshReviewCheckout("ws1");
+    await actions.rebaseReviewCheckout("ws1");
+    await actions.pushReviewCheckout("ws1");
+    await actions.pushReviewCheckout("ws1", { force: true });
+    await actions.pushAndPublishReview("ws1");
+
+    expect(ctx.reviewGit.run.mock.calls).toEqual([
+      ["refresh", "ws1"],
+      ["rebase", "ws1"],
+      ["push", "ws1"],
+      ["force-push", "ws1"],
+      ["push-and-publish", "ws1"],
+    ]);
   });
 
-  it("adopts the nested payload on desktop", async () => {
+  it("returns the outcome the operation reported, and does nothing without a workspace", async () => {
     const ctx = makeCtx({ appState: { workspaces: [] } });
-    const nextPayload = { appState: { workspaces: [{ id: "ws1" }] } };
-    ctx.getApi = () => ({
-      isRemote: false,
-      pushAndPublishReview: vi.fn(async () => ({ payload: nextPayload, pushAndPublishResult: summary })),
-    });
+    ctx.reviewGit.run.mockResolvedValueOnce({ push: { status: "pushed" }, publish: { attempted: true } });
     const actions = createApiActions(ctx);
 
-    expect(await actions.pushAndPublishReview("ws1")).toEqual(summary);
-    expect(ctx.payload.value).toBe(nextPayload);
+    expect(await actions.pushAndPublishReview("ws1")).toEqual({
+      push: { status: "pushed" },
+      publish: { attempted: true },
+    });
+    expect(await actions.pushAndPublishReview("")).toBeNull();
+    expect(ctx.reviewGit.run).toHaveBeenCalledTimes(1);
+  });
+
+  it("busy state comes from the runtime-backed operation list", () => {
+    const ctx = makeCtx({ appState: { workspaces: [] } });
+    ctx.reviewGit.isBusy.mockReturnValueOnce(true);
+    const actions = createApiActions(ctx);
+    expect(actions.isReviewGitBusy("ws1", ["push"])).toBe(true);
+    expect(ctx.reviewGit.isBusy).toHaveBeenCalledWith("ws1", ["push"]);
   });
 });
 
@@ -108,9 +117,6 @@ describe("createApiActions.azureVote", () => {
 
 // makeProviderApiActions is the factory behind refreshAzure/refreshGitHub,
 // markAzurePrSeen/markGitHubPrSeen, openAzurePullRequest/openGitHubPullRequest,
-// azureSyncReviewWorkspace/githubSyncReviewWorkspace,
-// azureRebaseReviewWorkspace/githubRebaseReviewWorkspace,
-// azurePushReviewWorkspace/githubPushReviewWorkspace,
 // deleteAzureConnection/deleteGitHubConnection, and
 // saveAzureConnection/saveGitHubConnection. These tests exercise the factory
 // directly (not through createApiActions) to prove that selecting "azure" vs
@@ -122,24 +128,12 @@ describe("makeProviderApiActions", () => {
       refreshAzure: vi.fn(async () => ({ azure: "refreshed" })),
       markAzurePullRequestSeen: vi.fn(async (prKey: string) => ({ azure: "seen", prKey })),
       openAzurePullRequest: vi.fn(async (args: unknown) => ({ azure: "opened", args })),
-      syncAzureReviewWorkspace: vi.fn(async (id: string) => ({
-        payload: { azure: "synced" },
-        result: { azure: "sync-result", id },
-      })),
-      rebaseAzureReviewWorkspace: vi.fn(async (id: string) => ({ azure: "rebased", id })),
-      pushAzureReviewWorkspace: vi.fn(async (id: string, opts: unknown) => ({ azure: "pushed", id, opts })),
       deleteAzureConnection: vi.fn(async (id: string) => ({ azure: "deleted", id })),
       saveAzureConnection: vi.fn(async (draft: unknown) => ({ payload: { azure: "saved", draft } })),
 
       refreshGitHub: vi.fn(async () => ({ github: "refreshed" })),
       markGitHubPullRequestSeen: vi.fn(async (prKey: string) => ({ github: "seen", prKey })),
       openGitHubPullRequest: vi.fn(async (args: unknown) => ({ github: "opened", args })),
-      syncGitHubReviewWorkspace: vi.fn(async (id: string) => ({
-        payload: { github: "synced" },
-        result: { github: "sync-result", id },
-      })),
-      rebaseGitHubReviewWorkspace: vi.fn(async (id: string) => ({ github: "rebased", id })),
-      pushGitHubReviewWorkspace: vi.fn(async (id: string, opts: unknown) => ({ github: "pushed", id, opts })),
       deleteGitHubConnection: vi.fn(async (id: string) => ({ github: "deleted", id })),
       saveGitHubConnection: vi.fn(async (draft: unknown) => ({ payload: { github: "saved", draft } })),
     };
@@ -165,9 +159,6 @@ describe("makeProviderApiActions", () => {
       await actions.refresh();
       await actions.markPrSeen("pr-1");
       await actions.openPullRequest("pr-1", "ws-1");
-      const syncResult = await actions.syncReviewWorkspace("ws-1");
-      await actions.rebaseReviewWorkspace("ws-1");
-      await actions.pushReviewWorkspace("ws-1", { force: true });
       await actions.saveConnection({ id: "conn-1" });
 
       const azureCalledWhenAzure = provider === "azure";
@@ -176,23 +167,13 @@ describe("makeProviderApiActions", () => {
 
       const markPrSeenMethod = provider === "azure" ? api.markAzurePullRequestSeen : api.markGitHubPullRequestSeen;
       const openPrMethod = provider === "azure" ? api.openAzurePullRequest : api.openGitHubPullRequest;
-      const syncMethod = provider === "azure" ? api.syncAzureReviewWorkspace : api.syncGitHubReviewWorkspace;
-      const rebaseMethod = provider === "azure" ? api.rebaseAzureReviewWorkspace : api.rebaseGitHubReviewWorkspace;
-      const pushMethod = provider === "azure" ? api.pushAzureReviewWorkspace : api.pushGitHubReviewWorkspace;
       const saveMethod = provider === "azure" ? api.saveAzureConnection : api.saveGitHubConnection;
       const otherMarkPrSeenMethod = provider === "azure" ? api.markGitHubPullRequestSeen : api.markAzurePullRequestSeen;
 
       expect(markPrSeenMethod).toHaveBeenCalledWith("pr-1");
       expect(openPrMethod).toHaveBeenCalledWith({ prKey: "pr-1", workspaceId: "ws-1", forceReview: false });
-      expect(syncMethod).toHaveBeenCalledWith("ws-1");
-      expect(rebaseMethod).toHaveBeenCalledWith("ws-1");
-      expect(pushMethod).toHaveBeenCalledWith("ws-1", { force: true });
       expect(saveMethod).toHaveBeenCalledWith({ id: "conn-1" });
       expect(otherMarkPrSeenMethod).not.toHaveBeenCalled();
-
-      // syncReviewWorkspace unwraps {payload, result}: setPayload gets the
-      // nested payload, and the structured sync result is returned to the caller.
-      expect(syncResult).toEqual({ [provider]: "sync-result", id: "ws-1" });
 
       // saveConnection unwraps { payload } exactly like the pre-refactor code did.
       expect(setPayloadCalls.at(-1)).toEqual({ [provider]: "saved", draft: { id: "conn-1" } });

@@ -166,7 +166,7 @@
             @update:strategy="onPullStrategyChange"
           />
 
-          <!-- Push: hidden when detached/review/no-remotes (structural impossibility) -->
+          <!-- Push: hidden when detached/no-remotes (structural impossibility) -->
           <button
             v-if="showPush"
             type="button"
@@ -216,7 +216,7 @@
           </button>
 
           <CustomSelect
-            v-if="availableConnections.length && !isReviewWorkspace"
+            v-if="availableConnections.length"
             class="git-branch-select"
             :model-value="activeConnectionId"
             :options="connectionOptions"
@@ -260,7 +260,7 @@
           :has-no-remote="hasNoRemote"
           :show-all-actions="showAllActions"
           :is-diverged="isDiverged"
-          :is-review-workspace="isReviewWorkspace"
+          :review-link="reviewLink"
           :is-linked-worktree="isLinkedWorktree"
           :push-remote="pushRemote"
           :show-update-current-branch="showUpdateCurrentBranch"
@@ -298,7 +298,6 @@
           :operation="operation"
           :active-root-path="activeRootPath"
           :is-detached-head="isDetachedHead"
-          :is-review-workspace="isReviewWorkspace"
         />
 
         <!-- ===== Stashes tab ===== -->
@@ -351,7 +350,6 @@
                 :workspace-id="workspaceId"
                 :git-ui="gitUi"
                 :push-remote="pushRemote"
-                :is-review-workspace="isReviewWorkspace"
               />
             </article>
             <!-- Result banners must render here too — without this, Delete on
@@ -456,21 +454,25 @@ const gitUi = computed(() => gitUiStore.get(props.workspaceId));
 const workspaces = computed(() => appStore.filteredWorkspaces);
 
 const workspace = computed(() => (appStore.filteredWorkspaces || []).find((ws) => ws.id === props.workspaceId));
-// "Review-locked": git write operations are hidden only for PR-linked
-// workspaces where the user is NOT the PR author and has not explicitly
-// enabled editing (review.writable). Authors (quickfix-origin workspaces)
-// keep full git operations — being linked to a PR is not read-only.
-const isReviewWorkspace = computed(() => {
+// A PR link is context, not a capability gate: every Git action is available,
+// and the runtime inspects the real checkout state for each one. What the link
+// does change is where the PR-targeted actions go (Push → the PR's source
+// branch, Rebase → its target) while the checkout is on the PR's branch.
+const reviewLink = computed(() => {
   const review = workspace.value?.review;
-  if (!review?.prKey) return false;
-  if (review.role === "author") return false;
-  return review.writable !== true;
+  if (!review?.prKey) return null;
+  return {
+    pullRequestId: review.pullRequest?.id ?? review.pullRequest?.number ?? "",
+    sourceBranch: String(review.pullRequest?.sourceRefName || "").replace(/^refs\/heads\//, ""),
+    targetBranch: String(review.pullRequest?.targetRefName || "").replace(/^refs\/heads\//, ""),
+    role: review.role || "",
+  };
 });
 
 // Multi-repo computed values
 const gitRoots = computed(() => workspace.value?.gitRoots || []);
 const isMultiRepo = computed(() => gitRoots.value.length >= 2);
-const showRepoPicker = computed(() => isMultiRepo.value && !isReviewWorkspace.value);
+const showRepoPicker = computed(() => isMultiRepo.value);
 const activeRootPath = computed(() => gitUiStore.getActiveRoot(props.workspaceId) || snapshot.value?.rootPath || "");
 const allRootsSnapshots = computed(() => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -615,12 +617,10 @@ const showPull = computed(() => {
 });
 const showPush = computed(() => {
   if (isDetachedHead.value) return false; // structural
-  if (isReviewWorkspace.value) return false; // structural
   if (hasNoRemote.value) return false; // structural
   return true;
 });
 const showNewWorktree = computed(() => {
-  if (isReviewWorkspace.value) return false;
   return showAllActions.value || (snapshot.value?.commitCount || 0) > 0;
 });
 
@@ -728,7 +728,6 @@ const pushTooltip = computed(() => {
 
 // Card visibility
 const showStashCard = computed(() => {
-  if (isReviewWorkspace.value) return false;
   return showAllActions.value || snapshot.value?.dirty || (snapshot.value?.stashCount || 0) > 0;
 });
 const showUpdateCurrentBranch = computed(() => {
@@ -737,7 +736,6 @@ const showUpdateCurrentBranch = computed(() => {
   return true;
 });
 const showMergeBack = computed(() => {
-  if (isReviewWorkspace.value) return false;
   if (!showAllActions.value) {
     if (!isLinkedWorktree.value) return false;
     if (!effectiveBaseBranch.value) return false;

@@ -3,6 +3,7 @@ import { ref } from "vue";
 import type { Transport, CallableTransport } from "../transport.js";
 import type { StatePayload } from "../../electron/shared/types/state.js";
 import { rlog } from "../lib/renderer-log.js";
+import { managedReviewBranchAlias, sourceBranchName } from "../../electron/shared/review-source-identity.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type GitSnapshot = Record<string, any>;
@@ -470,6 +471,70 @@ export const useGitUiStore = defineStore("git-ui", () => {
     }
   }
 
+  // --- PR-linked checkouts ---------------------------------------------------
+  //
+  // A PR link is context, not a lock. While the checkout is on the PR's own
+  // branch (the managed `pr-<id>-<source>` alias, or the source branch itself)
+  // Push, Force push and "update from the PR target" go through the runtime's
+  // review Git flow: it inspects the real checkout, targets the verified source
+  // ref, and answers with a safe / blocked / confirmation-required outcome.
+  // On any other branch the ordinary Git actions act on that branch as before.
+
+  async function pullRequestContext(workspaceId: string): Promise<{
+    onPullRequestBranch: boolean;
+    targetBranch: string;
+  }> {
+    const { useAppStore } = await import("./app.js");
+    const appStore = useAppStore();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const workspace = ((appStore.payload?.appState?.workspaces || []) as any[]).find((ws) => ws.id === workspaceId);
+    const review = workspace?.review;
+    const sourceRef = String(review?.pullRequest?.sourceRefName || "");
+    if (!review?.prKey || !sourceRef) return { onPullRequestBranch: false, targetBranch: "" };
+    const snapshot = appStore.getGitSnapshot(workspaceId, getActiveRoot(workspaceId)) as GitSnapshot | null;
+    const branch = String(snapshot?.branch || "");
+    const prId = review.pullRequest?.id ?? review.pullRequest?.number ?? "";
+    const onPullRequestBranch =
+      !!branch && (branch === managedReviewBranchAlias(prId, sourceRef) || branch === sourceBranchName(sourceRef));
+    return {
+      onPullRequestBranch,
+      targetBranch: String(review.pullRequest?.targetRefName || "").replace(/^refs\/heads\//, ""),
+    };
+  }
+
+  /** A review Git outcome in the shape the Git pane's result banner and toast already render. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function reviewOutcomeToGitResult(outcome: any): Record<string, unknown> {
+    const result = outcome?.push ?? outcome ?? {};
+    const status = String(result.status || "");
+    const blocked = status === "blocked";
+    const conflict = status === "conflict";
+    const summary = [result.message, blocked ? result.guidance : ""].filter(Boolean).join(" ");
+    return {
+      ok: !blocked && !conflict,
+      summary: summary || "Done.",
+      warnings: result.baselineWarning ? [result.baselineWarning] : [],
+      conflicts: conflict ? (result.conflictedPaths || []).map((path: string) => ({ path })) : [],
+      rawOutput: "",
+      operationState: null,
+    };
+  }
+
+  async function runReviewGitStep(
+    workspaceId: string,
+    kind: "push" | "force-push" | "rebase" | "refresh",
+  ): Promise<{ result: Record<string, unknown> }> {
+    const { useAppStore } = await import("./app.js");
+    const appStore = useAppStore();
+    const outcome =
+      kind === "rebase"
+        ? await appStore.rebaseReviewCheckout(workspaceId)
+        : kind === "refresh"
+          ? await appStore.refreshReviewCheckout(workspaceId)
+          : await appStore.pushReviewCheckout(workspaceId, { force: kind === "force-push" });
+    return { result: reviewOutcomeToGitResult(outcome) };
+  }
+
   // --- Git actions ---
 
   async function refreshGit(workspaceId: string): Promise<void> {
@@ -509,6 +574,10 @@ export const useGitUiStore = defineStore("git-ui", () => {
   }
 
   async function gitPush(workspaceId: string): Promise<void> {
+    if ((await pullRequestContext(workspaceId)).onPullRequestBranch) {
+      await runGitAction(workspaceId, "push", () => runReviewGitStep(workspaceId, "push"));
+      return;
+    }
     const rootPath = getActiveRoot(workspaceId);
     await runGitAction(workspaceId, "push", () =>
       (_api as Transport & { gitPush: (p: unknown) => Promise<unknown> }).gitPush!({ workspaceId, rootPath }),
@@ -880,7 +949,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
           api.gitRemoveWorktree({ workspaceId, worktreePath: p!.worktreePath, deleteBranch: true }),
         );
       } else if (action === "forcePushWithLease") {
-        await runGitAction(workspaceId, "force-push", () => api.gitForcePushWithLease({ workspaceId, rootPath }));
+        if ((await pullRequestContext(workspaceId)).onPullRequestBranch) {
+          await runGitAction(workspaceId, "force-push", () => runReviewGitStep(workspaceId, "force-push"));
+        } else {
+          await runGitAction(workspaceId, "force-push", () => api.gitForcePushWithLease({ workspaceId, rootPath }));
+        }
       }
       return;
     }
@@ -1054,6 +1127,16 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const appStore = useAppStore();
     const rootPath = getActiveRoot(workspaceId);
     const snapshot = appStore.getGitSnapshot(workspaceId, rootPath) as GitSnapshot | null;
+    // Updating a PR checkout from the PR's own target is a TARGET rebase: the
+    // runtime pins the target commit, shows what is rewritten and asks itself.
+    const pr = await pullRequestContext(workspaceId);
+    const requestedBase = String(baseBranch || snapshot?.baseBranch || "");
+    const targetsPullRequest =
+      !!pr.targetBranch && (requestedBase === pr.targetBranch || requestedBase.endsWith("/" + pr.targetBranch));
+    if (pr.onPullRequestBranch && targetsPullRequest) {
+      await runGitAction(workspaceId, "rebase", () => runReviewGitStep(workspaceId, "rebase"));
+      return;
+    }
     rlog("info", "[git-ui] gitRebaseBase called", {
       workspaceId,
       baseBranch,

@@ -97,6 +97,7 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
     profileId: record.profileId,
     workspaceId: record.workspaceId,
     kind: record.kind,
+    source: record.source,
     state: record.state,
     startedAt: record.startedAt,
     finishedAt: record.finishedAt,
@@ -330,6 +331,7 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
       profileId: located.profileId,
       workspaceId: located.workspace.id,
       kind: input.kind,
+      source: requester.source,
       idempotencyKey: input.idempotencyKey,
       run: () => execute(input.kind, located, input, { ...requester }),
     });
