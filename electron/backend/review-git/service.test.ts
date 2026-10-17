@@ -711,6 +711,65 @@ describe("push and publish", () => {
   });
 });
 
+describe("anchors after a REAL paused rebase (real engine)", () => {
+  type Validator = (anchor: {
+    commentKey: string;
+    filePath: string;
+    lineNumber: number;
+    lineSide: string;
+  }) => Promise<boolean>;
+
+  async function pausedRebase(): Promise<Awaited<ReturnType<typeof createFixture>>> {
+    const f = await createFixture();
+    git(f.seed, ["checkout", "-q", "main"]);
+    await fs.writeFile(path.join(f.seed, "a.txt"), "zero\none\ntwo\nthree\n");
+    await fs.writeFile(path.join(f.seed, "c.txt"), "main\n");
+    git(f.seed, ["add", "."]);
+    git(f.seed, ["commit", "-q", "-m", "main"]);
+    git(f.seed, ["push", "-q", "origin", "main"]);
+    await fs.writeFile(path.join(f.checkout, "c.txt"), "mine\n");
+    git(f.checkout, ["add", "."]);
+    git(f.checkout, ["commit", "-q", "-m", "mine c"]);
+    git(f.checkout, ["fetch", "-q", "origin"]);
+    try {
+      git(f.checkout, ["-c", "core.editor=true", "rebase", "origin/main"]);
+    } catch {
+      // the conflict on c.txt is what pauses the rebase
+    }
+    return f;
+  }
+
+  async function confirmed(
+    f: Awaited<ReturnType<typeof createFixture>>,
+    kind: "continue" | "skip",
+  ): Promise<Validator> {
+    const first = f.service.start({ kind, workspaceId: "ws-1" }, ui);
+    await f.service.operations.idle();
+    const proposal = (f.service.lookup(first.operationId, "default", "ws-1") as any).operation.result.proposal;
+    expect(proposal?.proposalId).toBeTruthy();
+    f.service.start({ kind, workspaceId: "ws-1", confirmation: { proposalId: proposal.proposalId } }, ui);
+    await f.service.operations.idle();
+    expect(f.bridge.markStaleAnchors).toHaveBeenCalledTimes(1);
+    return f.bridge.markStaleAnchors.mock.calls[0][1] as Validator;
+  }
+
+  test("continue judges new-side anchors against the pre-rebase HEAD", async () => {
+    const f = await pausedRebase();
+    await fs.writeFile(path.join(f.checkout, "c.txt"), "resolved\n");
+    git(f.checkout, ["add", "c.txt"]);
+    const validator = await confirmed(f, "continue");
+    expect(await validator({ commentKey: "k", filePath: "a.txt", lineNumber: 2, lineSide: "new" })).toBe(false);
+    expect(await validator({ commentKey: "k", filePath: "f.txt", lineNumber: 1, lineSide: "new" })).toBe(true);
+  });
+
+  test("skip judges new-side anchors against the pre-rebase HEAD", async () => {
+    const f = await pausedRebase();
+    const validator = await confirmed(f, "skip");
+    expect(await validator({ commentKey: "k", filePath: "a.txt", lineNumber: 2, lineSide: "new" })).toBe(false);
+    expect(await validator({ commentKey: "k", filePath: "f.txt", lineNumber: 1, lineSide: "new" })).toBe(true);
+  });
+});
+
 describe("capability liveness", () => {
   const grant = {
     sessionId: "ws-1:panel-1",

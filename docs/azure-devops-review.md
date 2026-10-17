@@ -114,7 +114,7 @@ Refresh, Rebase, Push and Force push start at once and report back when they fin
 
 The push and each comment are reported independently: if the push succeeds but a comment fails you see both, and a retry publishes only what is left — a successful push is never repeated. **Publish only** sends drafts without pushing.
 
-After a history rewrite (a reset or rebase), inline draft comments are re-checked against the new `HEAD`. A comment whose file or line no longer exists is marked **Anchor out of date** and is **not** moved to another line; publishing refuses it until you fix or delete it.
+After a history rewrite (a reset or rebase), inline draft comments are re-checked against the new `HEAD`. A comment whose file or line no longer exists, or whose line now holds different code, is marked **Anchor out of date** and is **not** moved to another line; publishing refuses it. A mark is never cleared in place: delete the comment and add it again on the current code.
 
 **Force push** always uses `--force-with-lease` on the exact commit the server has now. If the server holds commits you do not have _and_ it moved since your baseline, you are shown the server, baseline and local commits and asked first. A rejected lease is reported and never retried automatically.
 

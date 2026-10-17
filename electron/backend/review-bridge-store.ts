@@ -1623,7 +1623,7 @@ export async function createReviewBridgeStore(rootPath: string) {
           const next = {
             ...payload,
             anchorStale: true,
-            anchorStaleReason: `${filePath}:${lineNumber} no longer exists after the history rewrite.`,
+            anchorStaleReason: `${filePath}:${lineNumber} no longer points at the same code after the history rewrite (the line is gone or now holds different code). Delete this comment and add it again on the current code.`,
           };
           stale.push(String(row.comment_key));
           statements.updateCommentPayload.run(JSON.stringify(next), new Date().toISOString(), row.comment_key);

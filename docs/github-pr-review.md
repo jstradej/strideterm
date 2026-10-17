@@ -61,7 +61,7 @@ Works exactly like the [Azure DevOps integration](azure-devops-review.md#refresh
 2. Pushes `HEAD` to the PR branch in the head repository, only as a fast-forward of the server's current commit
 3. Publishes every queued draft
 
-The push and every comment are reported independently, and nothing that succeeded is ever repeated. Inline drafts whose line no longer exists after a history rewrite are marked and refused, never moved. See [Push & Publish](azure-devops-review.md#push--publish) for the details shared by both providers.
+The push and every comment are reported independently, and nothing that succeeded is ever repeated. Inline drafts whose line no longer exists, or now holds different code, after a history rewrite are marked and refused, never moved; delete the comment and add it again to repair it. See [Push & Publish](azure-devops-review.md#push--publish) for the details shared by both providers.
 
 **Limitation:** drafts are published as top-level PR (issue) comments. A reply you queue against an inline review-comment thread is also posted top-level — strIDEterm does not yet reply inside the original code thread.
 

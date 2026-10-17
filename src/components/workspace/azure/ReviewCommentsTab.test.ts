@@ -421,7 +421,8 @@ describe("ReviewCommentsTab — comment location navigation", () => {
               filePath: "src/gone.ts",
               lineNumber: 40,
               anchorStale: true,
-              anchorStaleReason: "src/gone.ts:40 no longer exists after the history rewrite.",
+              anchorStaleReason:
+                "src/gone.ts:40 no longer points at the same code after the history rewrite (the line is gone or now holds different code). Delete this comment and add it again on the current code.",
             },
           },
         ],
@@ -430,7 +431,7 @@ describe("ReviewCommentsTab — comment location navigation", () => {
 
     const note = wrapper.get("[data-testid='stale-anchor']");
     expect(note.text()).toContain("Anchor out of date");
-    expect(note.attributes("title")).toContain("no longer exists after the history rewrite");
+    expect(note.attributes("title")).toContain("no longer points at the same code after the history rewrite");
     // The stored location is still the one the user wrote.
     const link = wrapper.get(".review-comment-file--link");
     expect(link.text()).toBe("src/gone.ts:40");
