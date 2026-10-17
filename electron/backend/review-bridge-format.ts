@@ -385,7 +385,7 @@ export function buildAgentInstructions(context: AgentInstructionsContext): {
 } {
   return {
     purpose:
-      "Read review comments, prepare draft answers, create follow-up draft comments when needed, and never call Azure DevOps directly.",
+      "Read review comments, prepare draft answers, create follow-up draft comments when needed, and never call the pull request provider (Azure DevOps / GitHub) directly.",
     mcp: {
       mode: "embedded-review-tab",
       tools: [
@@ -406,7 +406,7 @@ export function buildAgentInstructions(context: AgentInstructionsContext): {
       "If a follow-up is needed and no imported comment exists for it, create a draft comment in the bridge. Always provide filePath and lineNumber so the comment is anchored to the code. Create one comment per finding — never combine multiple findings into a single comment.",
       "Prepare or refine a draft response for each active comment.",
       "Clean up after yourself: rewrite a draft comment that came out wrong with update_review_comment, and drop one that turned out to be wrong or duplicated with delete_review_comment, instead of leaving it for the user to remove by hand.",
-      "Do not post to Azure DevOps directly; save drafts to the bridge and queue them for publishing.",
+      "Do not post to the pull request provider (Azure DevOps / GitHub) directly; save drafts to the bridge and queue them for publishing.",
       "Queue a draft for sync only when the response is ready for review or publishing.",
     ],
     naturalPrompts: [

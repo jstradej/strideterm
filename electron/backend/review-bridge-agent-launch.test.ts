@@ -66,6 +66,7 @@ describe("review bridge agent launch", () => {
         execPath: "C:/Program Files/strIDEterm/strIDEterm.exe",
         argv: ["C:/Program Files/strIDEterm/strIDEterm.exe"],
         defaultApp: false,
+        isElectron: true,
         platform: "linux",
       },
     });
@@ -75,7 +76,7 @@ describe("review bridge agent launch", () => {
       skipCommandInjection: true,
     });
     expect(launch.args).toContain("--mcp-config");
-    expect(launch.args).toContain("--strict-mcp-config");
+    expect(launch.args).not.toContain("--strict-mcp-config");
     expect(launch.args).toContain("--append-system-prompt");
     expect(launch.args).toContain("--add-dir");
     expect(launch.args).toContain("C:/reviews/pr-123");
@@ -85,14 +86,17 @@ describe("review bridge agent launch", () => {
     const configArg = launch.args[launch.args.indexOf("--mcp-config") + 1];
     const parsed = JSON.parse(configArg);
     expect(parsed.mcpServers.review.command).toBe("C:/Program Files/strIDEterm/strIDEterm.exe");
-    expect(parsed.mcpServers.review.args).toEqual([
+    expect(parsed.mcpServers.review.args[0].replaceAll("\\", "/")).toContain(
+      "/electron/backend/review-bridge-mcp-stdio.js",
+    );
+    expect(parsed.mcpServers.review.args.slice(1)).toEqual([
       "--review-bridge-mcp",
       "--review-root",
       "C:/Users/strad/.strideterm/review-bridge",
       "--review-pr-key",
       "ado-main:repo-1:123",
     ]);
-    expect(parsed.mcpServers.review.env).toBeUndefined();
+    expect(parsed.mcpServers.review.env).toEqual({ ELECTRON_RUN_AS_NODE: "1" });
   });
 
   test("adds SSH MCP to a direct Claude launch without replacing user MCP config or strict mode", () => {
@@ -125,7 +129,7 @@ describe("review bridge agent launch", () => {
       processInfo: { platform: "linux", execPath: "/usr/bin/node" },
     })!;
     expect(launch.args.slice(0, 3)).toEqual(["--mcp-config", ".mcp.json", "--model"]);
-    expect(launch.args).toContain("--strict-mcp-config");
+    expect(launch.args).not.toContain("--strict-mcp-config");
   });
 
   test("composes review and SSH MCP servers in one Claude config while retaining review launch flags", () => {
@@ -209,6 +213,7 @@ describe("review bridge agent launch", () => {
         execPath: "C:/Program Files/strIDEterm/strIDEterm.exe",
         argv: ["C:/Program Files/strIDEterm/strIDEterm.exe"],
         defaultApp: false,
+        isElectron: true,
         platform: "linux",
       },
     });
@@ -231,9 +236,9 @@ describe("review bridge agent launch", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const argsConfig = configValues.find((value: any) => value.startsWith("mcp_servers.review.args="));
     expect(commandConfig).toBe('mcp_servers.review.command="C:/Program Files/strIDEterm/strIDEterm.exe"');
-    // The per-tab Git capability is forwarded from the PTY by NAME — never by value.
+    // The spec's own env key and the per-tab Git capability are forwarded from the PTY by NAME — never by value.
     expect(configValues).toContain(
-      'mcp_servers.review.env_vars=["STRIDETERM_REVIEW_GIT_URL","STRIDETERM_REVIEW_GIT_CAPABILITY"]',
+      'mcp_servers.review.env_vars=["ELECTRON_RUN_AS_NODE","STRIDETERM_REVIEW_GIT_URL","STRIDETERM_REVIEW_GIT_CAPABILITY"]',
     );
     expect(argsConfig).toContain("mcp_servers.review.args=");
     expect(argsConfig).toContain("--review-bridge-mcp");
@@ -262,7 +267,7 @@ describe("review bridge agent launch", () => {
     expect(launch.args).toContain("--add-dir");
   });
 
-  test("uses an explicit app target when launched from Electron default-app mode", () => {
+  test("runs the review server as Electron-as-Node when launched from Electron default-app mode", () => {
     const launch = buildReviewAgentLaunch({
       workspace: createWorkspace(),
       panel: { id: "claude", title: "Claude Code", command: "claude" },
@@ -278,6 +283,10 @@ describe("review bridge agent launch", () => {
     const configArg = launch.args[launch.args.indexOf("--mcp-config") + 1];
     const parsed = JSON.parse(configArg);
     expect(path.isAbsolute(parsed.mcpServers.review.args[0])).toBe(true);
+    expect(parsed.mcpServers.review.args[0].replaceAll("\\", "/")).toContain(
+      "/electron/backend/review-bridge-mcp-stdio.js",
+    );
+    expect(parsed.mcpServers.review.env).toEqual({ ELECTRON_RUN_AS_NODE: "1" });
     expect(parsed.mcpServers.review.args.slice(1)).toEqual([
       "--review-bridge-mcp",
       "--review-root",
@@ -635,8 +644,115 @@ describe("internal MCP launch composition", () => {
     expect(codex.args).toContain("danger-full-access");
   });
 
-  test("a launch that is not a plain Claude Code or Codex command gets nothing", () => {
-    for (const command of ["bash", "claude mcp list", "codex login", "claude | tee out.txt"]) {
+  describe("GitHub Copilot and OpenCode", () => {
+    const env = {
+      STRIDETERM_INTERNAL_MCP_URL: "http://127.0.0.1:4455/internal-mcp",
+      STRIDETERM_INTERNAL_MCP_CAPABILITY: "capability-value-xyz",
+    };
+    const electronInternalMcp = { ...internalMcp, env: { ELECTRON_RUN_AS_NODE: "1" } };
+
+    test("Copilot names the grant variables as placeholders and keeps the user's command", () => {
+      const launch = buildAgentMcpLaunch({
+        workspace: { cwd: "/repo" },
+        panel: { id: "copilot", command: "copilot --model gpt-5" },
+        processInfo: { platform: "linux", execPath: "/usr/bin/node" },
+        internalMcp: electronInternalMcp,
+        internalMcpEnv: env,
+      })!;
+      expect(launch.file).toBe("copilot");
+      expect(launch.args.slice(0, 2)).toEqual(["--model", "gpt-5"]);
+      expect(launch.args).not.toContain("--allow-all-tools");
+      expect(launch.args).not.toContain("--add-dir");
+      const config = JSON.parse(launch.args[launch.args.indexOf("--additional-mcp-config") + 1]);
+      expect(config.mcpServers.strideterm).toEqual({
+        command: "/usr/bin/node",
+        args: internalMcp.args,
+        env: {
+          ELECTRON_RUN_AS_NODE: "1",
+          STRIDETERM_INTERNAL_MCP_URL: "${STRIDETERM_INTERNAL_MCP_URL}",
+          STRIDETERM_INTERNAL_MCP_CAPABILITY: "${STRIDETERM_INTERNAL_MCP_CAPABILITY}",
+        },
+      });
+      expect(launch.args.join(" ")).not.toContain("capability-value-xyz");
+    });
+
+    test("Copilot resolves copilot.cmd on Windows", () => {
+      const launch = buildAgentMcpLaunch({
+        workspace: { cwd: "C:/repo" },
+        panel: { id: "copilot", command: "copilot" },
+        processInfo: {
+          platform: "win32",
+          execPath: "C:/app/strideterm.exe",
+          commandLookup: { copilot: "C:/npm/copilot.cmd" },
+        },
+        internalMcp: electronInternalMcp,
+        internalMcpEnv: env,
+      })!;
+      expect(launch.file).toBe("C:/npm/copilot.cmd");
+      expect(launch.args[0]).toBe("--additional-mcp-config");
+      expect(launch.env).toEqual({ ELECTRON_RUN_AS_NODE: "1" });
+      expect(launch.args.join(" ")).not.toContain("capability-value-xyz");
+    });
+
+    test.each(["linux", "win32"])(
+      "OpenCode carries the server and the grant values in OPENCODE_CONFIG_CONTENT on %s",
+      (platform) => {
+        const launch = buildAgentMcpLaunch({
+          workspace: { cwd: "/repo" },
+          panel: { id: "opencode", command: "opencode --model anthropic/sonnet" },
+          processInfo: { platform, execPath: "/usr/bin/node", commandLookup: { opencode: "C:/npm/opencode.cmd" } },
+          internalMcp,
+          internalMcpEnv: env,
+        })!;
+        expect(launch.file).toBe(platform === "win32" ? "C:/npm/opencode.cmd" : "opencode");
+        expect(launch.args).toEqual(["--model", "anthropic/sonnet"]);
+        const config = JSON.parse(launch.env!.OPENCODE_CONFIG_CONTENT);
+        expect(config.mcp.strideterm).toEqual({
+          type: "local",
+          command: ["/usr/bin/node", ...internalMcp.args],
+          environment: env,
+          enabled: true,
+        });
+        expect(config.mcp.strideterm.command.at(-1)).toBe("--internal-mcp");
+        expect(launch.args.join(" ")).not.toContain("capability-value-xyz");
+      },
+    );
+
+    test("OpenCode behind an explicit path still gets its config on Linux", () => {
+      const launch = buildAgentMcpLaunch({
+        workspace: { cwd: "/repo" },
+        panel: { id: "opencode", command: "/opt/bin/opencode" },
+        processInfo: { platform: "linux", execPath: "/usr/bin/node" },
+        internalMcp,
+        internalMcpEnv: env,
+      })!;
+      expect(launch.file).toBe("/opt/bin/opencode");
+      expect(JSON.parse(launch.env!.OPENCODE_CONFIG_CONTENT).mcp.strideterm.environment).toEqual(env);
+    });
+
+    test.each(["copilot", "opencode"])("refuses SSH tools for %s", (command) => {
+      expect(() =>
+        buildAgentMcpLaunch({
+          panel: { id: command, command },
+          processInfo: { platform: "linux", execPath: "/usr/bin/node" },
+          sshMcp,
+          internalMcp,
+          internalMcpEnv: env,
+        }),
+      ).toThrow(/Claude Code and Codex/);
+    });
+  });
+
+  test("a launch that is not a plain supported agent command gets nothing", () => {
+    for (const command of [
+      "bash",
+      "claude mcp list",
+      "codex login",
+      "claude | tee out.txt",
+      "gemini",
+      "copilot login",
+      "opencode serve",
+    ]) {
       expect(
         buildAgentMcpLaunch({ panel: { id: "x", command }, processInfo: { platform: "linux" }, internalMcp }),
         command,
@@ -644,7 +760,7 @@ describe("internal MCP launch composition", () => {
     }
   });
 
-  test("the packaged entry runs as Electron-as-Node on Windows and as the app itself elsewhere", () => {
+  test("the packaged entry runs as Electron-as-Node on every platform", () => {
     const windows = buildInternalMcpServerSpec({
       execPath: "C:/Program Files/strIDEterm/strIDEterm.exe",
       platform: "win32",
@@ -653,10 +769,15 @@ describe("internal MCP launch composition", () => {
     expect(windows.args.at(-1)).toBe("--internal-mcp");
     expect(windows.args[0].replaceAll("\\", "/")).toContain("/electron/backend/internal-mcp-stdio-entry.js");
     expect(windows.env).toEqual({ ELECTRON_RUN_AS_NODE: "1" });
-    expect(buildInternalMcpServerSpec({ execPath: "/opt/strideterm", platform: "linux", isElectron: true })).toEqual({
-      command: "/opt/strideterm",
-      args: ["--internal-mcp"],
-    });
+    for (const platform of ["linux", "darwin"]) {
+      const spec = buildInternalMcpServerSpec({ execPath: "/opt/strideterm", platform, isElectron: true });
+      expect(spec.args.at(-1)).toBe("--internal-mcp");
+      expect(spec.args[0].replaceAll("\\", "/")).toContain("/electron/backend/internal-mcp-stdio-entry.js");
+      expect(spec.env).toEqual({ ELECTRON_RUN_AS_NODE: "1" });
+    }
+    const plainNode = buildInternalMcpServerSpec({ execPath: "/usr/bin/node", platform: "linux" });
+    expect(plainNode.args.at(-1)).toBe("--internal-mcp");
+    expect(plainNode.env).toBeUndefined();
   });
 
   test("a review launch composes review, SSH and internal servers in one Claude config", () => {

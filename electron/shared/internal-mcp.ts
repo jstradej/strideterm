@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { PROVIDER_CHOICES } from "./agent-provider-catalog.js";
+import { parseAgentCommand, type AgentCliProvider } from "./agent-ssh.js";
 
 export const INTERNAL_MCP_URL_ENV = "STRIDETERM_INTERNAL_MCP_URL";
 export const INTERNAL_MCP_CAPABILITY_ENV = "STRIDETERM_INTERNAL_MCP_CAPABILITY";
@@ -187,3 +188,19 @@ export interface InternalMcpTaskOverview {
 
 export type InternalMcpOperationStep =
   "preparing-worktree" | "creating-workspace" | "starting" | "ready" | "failed" | "interrupted";
+
+export interface InternalMcpEligibility {
+  supported: boolean;
+  provider: AgentCliProvider | null;
+  reason: string | null;
+}
+
+const INTERNAL_MCP_UNSUPPORTED_REASON =
+  "The internal MCP is available only when this tab directly launches Claude Code, Codex, GitHub Copilot or OpenCode.";
+
+export function getInternalMcpEligibility(command: unknown): InternalMcpEligibility {
+  const parsed = parseAgentCommand(command);
+  return parsed
+    ? { supported: true, provider: parsed.provider, reason: null }
+    : { supported: false, provider: null, reason: INTERNAL_MCP_UNSUPPORTED_REASON };
+}

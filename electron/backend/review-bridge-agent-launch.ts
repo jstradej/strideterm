@@ -17,7 +17,6 @@ import { REVIEW_GIT_CAPABILITY_ENV, REVIEW_GIT_URL_ENV } from "../shared/review-
 import { buildReviewGitPolicy } from "../shared/review-git-policy.js";
 
 const SUPPORTED_REVIEW_AGENTS = new Set(["claude", "codex", "copilot", "opencode"]);
-const DEFAULT_APP_ENTRY = path.resolve(fileURLToPath(new URL("../../../", import.meta.url)));
 const REVIEW_BRIDGE_STDIO_ENTRY = fileURLToPath(new URL("./review-bridge-mcp-stdio.js", import.meta.url));
 const SSH_MCP_STDIO_ENTRY = fileURLToPath(new URL("./ssh-mcp-stdio-entry.js", import.meta.url));
 const INTERNAL_MCP_STDIO_ENTRY = fileURLToPath(new URL("./internal-mcp-stdio-entry.js", import.meta.url));
@@ -247,7 +246,7 @@ function buildReviewPrompt(context: ReviewContext | undefined): string {
     "Use the embedded review MCP tools first.",
     "Start with list_review_comments.",
     "Use get_review_comment for details, save_review_draft for replies, create_review_comment for new findings, update_review_comment and delete_review_comment to fix or drop a draft comment of your own, and queue_review_draft only when a draft is ready.",
-    "Do not publish to Azure DevOps directly.",
+    "Do not publish to the pull request provider (Azure DevOps / GitHub) directly.",
     buildReviewGitPolicy({ askTool: "AskUserQuestion" }),
   ].join(" ");
 }
@@ -374,21 +373,6 @@ function finishLaunch({
   };
 }
 
-function resolveDefaultAppEntry(processInfo: ProcessInfo = {}): string {
-  const argv = Array.isArray(processInfo.argv) ? processInfo.argv : [];
-  const explicitTarget = argv.slice(1).find((value) => {
-    const text = String(value || "").trim();
-    return text && !text.startsWith("-");
-  });
-  if (!explicitTarget) {
-    return DEFAULT_APP_ENTRY;
-  }
-  if (path.isAbsolute(explicitTarget)) {
-    return explicitTarget;
-  }
-  return path.resolve(DEFAULT_APP_ENTRY, explicitTarget);
-}
-
 function buildMcpServerSpec({
   context,
   processInfo,
@@ -411,7 +395,7 @@ function buildMcpServerSpec({
   }
 
   const platform = processInfo?.platform || process.platform;
-  if (platform === "win32") {
+  if (platform === "win32" || processInfo?.isElectron || processInfo?.defaultApp) {
     return {
       command,
       args: [REVIEW_BRIDGE_STDIO_ENTRY, ...args],
@@ -421,14 +405,7 @@ function buildMcpServerSpec({
     };
   }
 
-  if (processInfo?.defaultApp) {
-    return {
-      command,
-      args: [resolveDefaultAppEntry(processInfo), ...args],
-    };
-  }
-
-  return { command, args };
+  return { command, args: [REVIEW_BRIDGE_STDIO_ENTRY, ...args] };
 }
 
 function buildClaudeLaunch({ workspace, panel, context, processInfo, ...grants }: BuildLaunchInput): AgentLaunch {
@@ -447,7 +424,6 @@ function buildClaudeLaunch({ workspace, panel, context, processInfo, ...grants }
   Object.assign(mcpServers, claudeMcpServerEntries(installs));
   if (installs.length) appendClaudeMcpServers(args, mcpServers);
   else args.push("--mcp-config", JSON.stringify({ mcpServers }));
-  if (!installs.length) args.push("--strict-mcp-config");
   args.push("--append-system-prompt", buildReviewPrompt(context));
 
   return finishLaunch({
@@ -474,11 +450,11 @@ function buildCodexLaunch({ workspace, panel, context, processInfo, ...grants }:
   args.push(
     "-c",
     `mcp_servers.review.command=${JSON.stringify(mcp.command)}`,
-    // Codex starts MCP servers with a scrubbed environment: name the per-tab Git
-    // capability variables so they are forwarded from the tab's PTY (the values
-    // never appear on the command line).
+    // Codex starts MCP servers with a scrubbed environment: name the spec's own env
+    // keys and the per-tab Git capability variables so they are forwarded from the
+    // tab's PTY (the values never appear on the command line).
     "-c",
-    `mcp_servers.review.env_vars=${JSON.stringify([REVIEW_GIT_URL_ENV, REVIEW_GIT_CAPABILITY_ENV])}`,
+    `mcp_servers.review.env_vars=${JSON.stringify([...new Set([...Object.keys(mcp.env || {}), REVIEW_GIT_URL_ENV, REVIEW_GIT_CAPABILITY_ENV])])}`,
     "-c",
     `mcp_servers.review.args=${JSON.stringify(mcp.args)}`,
   );
@@ -663,15 +639,12 @@ function buildStdioMcpServerSpec(entry: string, flag: string, processInfo: Proce
   if (!command) throw new Error("MCP launch is missing an executable path.");
 
   const platform = processInfo.platform || process.platform;
-  if (platform === "win32" || processInfo.defaultApp) {
+  if (platform === "win32" || processInfo.defaultApp || processInfo.isElectron) {
     return {
       command,
       args: [entry, flag],
-      ...(processInfo.isElectron ? { env: { ELECTRON_RUN_AS_NODE: "1" } } : {}),
+      ...(processInfo.isElectron || processInfo.defaultApp ? { env: { ELECTRON_RUN_AS_NODE: "1" } } : {}),
     };
-  }
-  if (processInfo.isElectron) {
-    return { command, args: [flag] };
   }
   return { command, args: [entry, flag] };
 }
@@ -690,21 +663,58 @@ export function buildAgentMcpLaunch({
   processInfo,
   sshMcp,
   internalMcp,
+  internalMcpEnv,
 }: GrantMcpServers & {
   workspace?: { cwd?: string };
   panel?: ReviewPanel;
   processInfo?: ProcessInfo;
+  /** The per-session grant values (URL + capability). Only OpenCode needs them here: its MCP config carries the values. */
+  internalMcpEnv?: Record<string, string>;
 }): AgentLaunch | null {
   const installs = grantMcpInstalls({ sshMcp, internalMcp });
-  const env = installsEnv(installs);
+  let env = installsEnv(installs);
   const parsed = parseAgentCommand(panel?.command);
   if (!parsed) return null;
   const platform = processInfo?.platform || process.platform;
   const args = [...parsed.args];
+  let envOnEveryPlatform = false;
   if (parsed.provider === "claude") {
     appendClaudeMcpServers(args, claudeMcpServerEntries(installs));
-  } else {
+  } else if (parsed.provider === "codex") {
     pushCodexMcpInstalls(args, installs);
+  } else {
+    if (sshMcp) throw new Error("SSH tools are available only for Claude Code and Codex tabs.");
+    if (parsed.provider === "copilot") {
+      // Copilot starts MCP servers with only the env their config names and expands
+      // ${VAR} from the tab's own environment, so the grant is named, never written out.
+      const servers = Object.fromEntries(
+        installs.map(({ name, spec, grantEnvVars }) => [
+          name,
+          {
+            command: spec.command,
+            args: spec.args,
+            env: { ...(spec.env || {}), ...Object.fromEntries(grantEnvVars.map((v) => [v, `\${${v}}`])) },
+          },
+        ]),
+      );
+      args.push(...copilotMcpConfigArgs(servers));
+    } else {
+      // OpenCode has no MCP flag: its inline config rides OPENCODE_CONFIG_CONTENT, and its
+      // children get exactly the "environment" named there, so the grant values go in it.
+      const mcp = Object.fromEntries(
+        installs.map(({ name, spec }) => [
+          name,
+          {
+            type: "local",
+            command: [spec.command, ...spec.args],
+            environment: { ...(spec.env || {}), ...(internalMcpEnv || {}) },
+            enabled: true,
+          },
+        ]),
+      );
+      env = { ...env, OPENCODE_CONFIG_CONTENT: JSON.stringify({ mcp }) };
+      envOnEveryPlatform = true;
+    }
   }
 
   const explicitPath = /[\\/]/u.test(parsed.executable);
@@ -734,7 +744,7 @@ export function buildAgentMcpLaunch({
       file: parsed.executable,
       args,
       cwd: workspace?.cwd || "",
-      ...(platform === "win32" && Object.keys(env).length ? { env } : {}),
+      ...((platform === "win32" && Object.keys(env).length) || envOnEveryPlatform ? { env } : {}),
       skipCommandInjection: true,
     };
   }
@@ -759,11 +769,17 @@ export function buildAgentMcpLaunch({
   return finishLaunch({
     platform,
     commandName: parsed.provider,
-    preferredExtensions: parsed.provider === "claude" ? [".exe", ".cmd", ".bat"] : [".cmd", ".bat", ".exe"],
+    preferredExtensions:
+      parsed.provider === "claude"
+        ? [".exe", ".cmd", ".bat"]
+        : parsed.provider === "copilot" || parsed.provider === "opencode"
+          ? [".cmd", ".bat", ".exe", ".ps1"]
+          : [".cmd", ".bat", ".exe"],
     args,
     workspace,
     processInfo,
     win32Env: env,
+    ...(envOnEveryPlatform ? { nonWin32Env: env } : {}),
     resolveWin32,
   });
 }

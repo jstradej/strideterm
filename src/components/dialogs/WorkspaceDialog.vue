@@ -218,7 +218,7 @@
           />
           Allow internal MCP for agents
           <span class="internal-mcp-hint">
-            Lets agents create and monitor tasks in strIDEterm.
+            Lets Claude Code, Codex, GitHub Copilot or OpenCode agents create and monitor tasks in strIDEterm.
             <template v-if="internalMcpLocked"> Desktop only — change it in the desktop app.</template>
             Applies to agent sessions started after saving.
           </span>

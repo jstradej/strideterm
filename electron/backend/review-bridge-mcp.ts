@@ -1,11 +1,11 @@
 /// <reference types="node" />
 import fs from "node:fs/promises";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { createReviewBridgeStore } from "./review-bridge-store.js";
 import { buildReviewGitPolicy } from "../shared/review-git-policy.js";
+import { serveOverStdio } from "./mcp-stdio-lifecycle.js";
 import { createReviewGitClient, readReviewGitStdioConfig, registerReviewGitTools } from "./review-git-mcp.js";
 
 type ReviewBridgeStore = Awaited<ReturnType<typeof createReviewBridgeStore>>;
@@ -523,7 +523,7 @@ export async function runReviewBridgeMcpServer({ rootPath, prKey, workspaceId }:
               "3. Write thoughtful draft replies with save_review_draft. Focus on actionable, specific feedback.",
               "4. If you discover issues not covered by existing comments, create new ones with create_review_comment.",
               "5. When your drafts are ready for the user to review, queue them with queue_review_draft.",
-              "Do not publish to Azure DevOps directly — the user controls when drafts are published.",
+              "Do not publish to the pull request provider (Azure DevOps / GitHub) directly — the user controls when drafts are published.",
             ].join("\n"),
           },
         },
@@ -560,7 +560,7 @@ export async function runReviewBridgeMcpServer({ rootPath, prKey, workspaceId }:
     {
       title: "Create Draft Comment",
       description:
-        "Create a new draft comment for follow-up questions or observations. The draft is auto-queued for publishing to Azure DevOps and can be edited before publish. Use this when you discover something worth noting that isn't covered by existing threads. IMPORTANT: Create one comment per finding — do not combine multiple findings into a single comment. Always provide filePath and lineNumber so the comment is anchored to the right location in the code.",
+        "Create a new draft comment for follow-up questions or observations. The draft is auto-queued for publishing to the pull request provider (Azure DevOps / GitHub) and can be edited before publish. Use this when you discover something worth noting that isn't covered by existing threads. IMPORTANT: Create one comment per finding — do not combine multiple findings into a single comment. Always provide filePath and lineNumber so the comment is anchored to the right location in the code.",
       inputSchema: {
         body: z.string().min(1).describe("Body of the draft comment."),
         title: z.string().optional().describe("Optional short title for the comment."),
@@ -637,7 +637,7 @@ export async function runReviewBridgeMcpServer({ rootPath, prKey, workspaceId }:
     {
       title: "Queue Review Draft",
       description:
-        "Queue a saved draft for publishing to Azure DevOps. Once queued, the user can publish it with the 'Publish queued drafts' button in the UI. Only queue drafts that are ready — the user can also queue them manually.",
+        "Queue a saved draft for publishing to the pull request provider (Azure DevOps / GitHub). Once queued, the user can publish it with the 'Publish queued drafts' button in the UI. Only queue drafts that are ready — the user can also queue them manually.",
       inputSchema: {
         index: z.number().int().positive().optional().describe("1-based comment index from list_review_comments."),
         commentKey: z.string().optional().describe("Exact comment key when you already know it."),
@@ -654,7 +654,7 @@ export async function runReviewBridgeMcpServer({ rootPath, prKey, workspaceId }:
         "Reply to a review comment after you have made code changes that address it. " +
         "Write your reply as you would respond to the reviewer — e.g. " +
         "'Good catch. Added a null guard in parseInput() and a test case for null input.' " +
-        "This creates a queued reply that will be published to Azure DevOps when the user pushes. " +
+        "This creates a queued reply that will be published to the pull request provider (Azure DevOps / GitHub) when the user pushes. " +
         "You do NOT need to call save_review_draft or queue_review_draft separately — this tool handles both. " +
         "Only call this when you actually changed code for this comment. " +
         "For text-only replies without code changes, use save_review_draft instead.",
@@ -665,7 +665,7 @@ export async function runReviewBridgeMcpServer({ rootPath, prKey, workspaceId }:
           .string()
           .min(1)
           .describe(
-            "Your reply to the reviewer. This is the full text that will appear on the Azure DevOps thread. " +
+            "Your reply to the reviewer. This is the full text that will appear on the pull request thread. " +
               "Describe what you changed and why. Write naturally as a response to the reviewer's comment.",
           ),
         authorAgent: z.string().optional().describe("Agent label such as claude, codex, or copilot."),
@@ -674,18 +674,14 @@ export async function runReviewBridgeMcpServer({ rootPath, prKey, workspaceId }:
     async (input) => handlers.replyWithCodeChanges(input),
   );
 
-  registerReviewGitTools(server, createReviewGitClient({ config: readReviewGitStdioConfig() }));
+  const disconnected = new AbortController();
+  const withDisconnect = (signal?: AbortSignal): AbortSignal =>
+    signal ? AbortSignal.any([signal, disconnected.signal]) : disconnected.signal;
+  registerReviewGitTools(server, createReviewGitClient({ config: readReviewGitStdioConfig() }), withDisconnect);
 
-  const transport = new StdioServerTransport();
   try {
-    await server.connect(transport);
-    await new Promise<void>((resolve, reject) => {
-      process.stdin.on("end", resolve);
-      process.stdin.on("close", resolve);
-      process.stdin.on("error", reject);
-    });
+    await serveOverStdio(server, disconnected);
   } finally {
-    await server.close().catch(() => {});
     if (typeof store.close === "function") {
       await store.close().catch(() => {});
     }

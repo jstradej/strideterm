@@ -687,6 +687,54 @@ describe("SessionManager", () => {
     expect(manager.failedSpawns.has("workspace-a:shell")).toBe(false);
   });
 
+  test("shows a visible error and does not spawn when the internal MCP launch setup fails", async () => {
+    const state = createState() as Parameters<SessionManager["ensureSession"]>[0];
+    state.workspaces[0].internalMcpEnabled = true;
+    const manager = new SessionManager({
+      getSessionLaunch: () => {
+        throw new Error("MCP tools could not be enabled for this tab's agent command.");
+      },
+    });
+    const dataEvents: Array<{ sessionId: string; data: string }> = [];
+    manager.on("terminal:data", (payload) => dataEvents.push(payload));
+
+    expect(await manager.ensureSession(state, "workspace-a:shell")).toBeNull();
+    expect(spawnCalls).toHaveLength(0);
+    expect(manager.failedSpawns.has("workspace-a:shell")).toBe(true);
+    expect(dataEvents[0]?.data).toContain("MCP tools could not be enabled for this tab");
+    expect(dataEvents[0]?.data).not.toContain("SSH tools");
+  });
+
+  test("still rethrows a launch failure for a tab with no opt-in", async () => {
+    const state = createState() as Parameters<SessionManager["ensureSession"]>[0];
+    const manager = new SessionManager({
+      getSessionLaunch: () => {
+        throw new Error("unrelated failure");
+      },
+    });
+    await expect(Promise.resolve().then(() => manager.ensureSession(state, "workspace-a:shell"))).rejects.toThrow(
+      "unrelated failure",
+    );
+  });
+
+  test("strips an inherited review Git grant from the shell", () => {
+    const prior = { ...process.env };
+    process.env.STRIDETERM_REVIEW_GIT_URL = "http://127.0.0.1:1/review-git";
+    process.env.STRIDETERM_REVIEW_GIT_CAPABILITY = "inherited-review-git-secret";
+    try {
+      const state = createState() as Parameters<SessionManager["ensureSession"]>[0];
+      new SessionManager().ensureSession(state, "workspace-a:shell");
+      const env = spawnCalls[0].options.env as Record<string, string>;
+      expect(env.STRIDETERM_REVIEW_GIT_URL).toBeUndefined();
+      expect(env.STRIDETERM_REVIEW_GIT_CAPABILITY).toBeUndefined();
+    } finally {
+      for (const key of ["STRIDETERM_REVIEW_GIT_URL", "STRIDETERM_REVIEW_GIT_CAPABILITY"]) {
+        if (prior[key] === undefined) delete process.env[key];
+        else process.env[key] = prior[key];
+      }
+    }
+  });
+
   test("uses session launch overrides for review-aware agent sessions", () => {
     // Use os.tmpdir() so the cwd actually exists on disk — SessionManager
     // now validates cwd before pty.spawn and falls back to $HOME when the

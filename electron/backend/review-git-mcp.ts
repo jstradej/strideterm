@@ -260,8 +260,11 @@ const CONSENT_NOTE =
 const REFRESH_NOTE =
   " Needs no question when it is safe: it runs at once. Only when it returns a proposal (commits would be discarded) ask the user, wait for their actual answer, then call again with the proposalId.";
 
-export function registerReviewGitTools(server: McpServer, client: ReviewGitClient): void {
-  const withDisconnect = (signal?: AbortSignal) => signal;
+export function registerReviewGitTools(
+  server: McpServer,
+  client: ReviewGitClient,
+  withDisconnect: (signal?: AbortSignal) => AbortSignal | undefined = (signal) => signal,
+): void {
   const read = async (payload: Record<string, unknown>, signal?: AbortSignal) =>
     textResult(JSON.stringify(await client.read(payload, withDisconnect(signal)), null, 2));
 

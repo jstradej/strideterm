@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { getAgentSshMcpEligibility, parseAgentCommand } from "./agent-ssh.js";
+import { getInternalMcpEligibility } from "./internal-mcp.js";
 
 describe("agent SSH MCP eligibility", () => {
   test.each([
@@ -50,4 +51,43 @@ describe("agent SSH MCP eligibility", () => {
       reason: expect.stringContaining("directly launches"),
     });
   });
+});
+
+describe("internal MCP eligibility", () => {
+  test.each([
+    ["claude --model sonnet", "claude"],
+    ["codex -s workspace-write", "codex"],
+    ["copilot --model gpt-5", "copilot"],
+    ["opencode --model anthropic/sonnet", "opencode"],
+    ['"C:\\Program Files\\nodejs\\copilot.cmd"', "copilot"],
+    ["C:\\tools\\opencode.exe", "opencode"],
+  ])("accepts %s", (command, provider) => {
+    expect(getInternalMcpEligibility(command)).toEqual({ supported: true, provider, reason: null });
+  });
+
+  test.each([
+    "gemini",
+    "bash",
+    "copilot login",
+    "copilot logout",
+    "copilot help",
+    "copilot version",
+    "opencode auth login",
+    "opencode upgrade",
+    "opencode models",
+    "opencode mcp add",
+    "opencode serve",
+    "opencode web",
+    "opencode | tee out.txt",
+    "claude mcp list",
+  ])("refuses %s", (command) => {
+    expect(getInternalMcpEligibility(command)).toMatchObject({ supported: false, provider: null });
+  });
+
+  test.each(["copilot", "copilot --model gpt-5", "opencode", "opencode --model anthropic/sonnet"])(
+    "SSH tools still refuse %s",
+    (command) => {
+      expect(getAgentSshMcpEligibility(command)).toMatchObject({ supported: false, provider: null });
+    },
+  );
 });

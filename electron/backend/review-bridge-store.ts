@@ -1461,7 +1461,7 @@ export async function createReviewBridgeStore(rootPath: string) {
           title: "Write a review comment",
           description: "Create a targeted comment about a specific concern",
           sort: 2,
-          template: `Write a review comment about [DESCRIBE YOUR CONCERN].\n\nUse create_review_comment to create a new comment, or save_review_draft to reply to an existing one.\nAlways provide filePath and lineNumber so the comment is anchored to the exact code location.\n\nFormat for Azure DevOps:\n- Start with severity: **CRITICAL:**, **MAJOR:**, or **MINOR:**\n- Explain the issue clearly\n- Suggest a fix with a code snippet if applicable\n- Use \`backticks\` for code references\n\nSave it as a draft for my review.`,
+          template: `Write a review comment about [DESCRIBE YOUR CONCERN].\n\nUse create_review_comment to create a new comment, or save_review_draft to reply to an existing one.\nAlways provide filePath and lineNumber so the comment is anchored to the exact code location.\n\nFormat for the pull request provider (Azure DevOps / GitHub):\n- Start with severity: **CRITICAL:**, **MAJOR:**, or **MINOR:**\n- Explain the issue clearly\n- Suggest a fix with a code snippet if applicable\n- Use \`backticks\` for code references\n\nSave it as a draft for my review.`,
         },
         {
           id: "process-comments",
@@ -1489,7 +1489,7 @@ export async function createReviewBridgeStore(rootPath: string) {
           title: "Create a review comment",
           description: "Add a review comment with a draft",
           sort: 6,
-          template: `Use create_review_comment to create a new review comment: "[YOUR QUESTION OR NOTE]"\n\nAlways provide filePath and lineNumber to anchor the comment to the code.\nA draft is auto-created so you can edit and queue it for publishing to Azure DevOps.`,
+          template: `Use create_review_comment to create a new review comment: "[YOUR QUESTION OR NOTE]"\n\nAlways provide filePath and lineNumber to anchor the comment to the code.\nA draft is auto-created so you can edit and queue it for publishing to the pull request provider (Azure DevOps / GitHub).`,
         },
       ];
       for (const d of defaults) {

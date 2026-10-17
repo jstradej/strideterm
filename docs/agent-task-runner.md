@@ -165,7 +165,7 @@ If the app closes mid-task, the next start offers to resume the interrupted task
 
 ## Starting a task from a planning terminal (internal MCP)
 
-Turn on **Allow internal MCP for agents** in a workspace's settings (off by default, desktop only). Claude Code or Codex terminals started in that workspace afterwards get a `strideterm` MCP server with five tools:
+Turn on **Allow internal MCP for agents** in a workspace's settings (off by default, desktop only). Claude Code, Codex, GitHub Copilot or OpenCode terminals started in that workspace afterwards get a `strideterm` MCP server with five tools:
 
 | Tool                     | What it does                                                                                                                                                               |
 | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

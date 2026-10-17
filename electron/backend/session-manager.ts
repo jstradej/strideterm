@@ -22,6 +22,7 @@ import type { SshManager } from "./ssh/ssh-manager.js";
 import { resolveSshLaunchVia } from "../shared/ssh-connection.js";
 import { DISTRIBUTION_LAUNCHER_ENV } from "../shared/app-distribution.js";
 import { INTERNAL_MCP_ENV_PREFIX } from "../shared/internal-mcp.js";
+import { REVIEW_GIT_ENV_PREFIX } from "../shared/review-git-env.js";
 import { detectWslDistros } from "./ssh/ssh-wsl.js";
 
 const log = getLogger("session-mgr");
@@ -823,13 +824,15 @@ export class SessionManager extends EventEmitter {
           sessionId: key,
         }) || null;
     } catch (error) {
-      if (!panel.sshMcpEnabled) throw error;
+      const sshTools = Boolean(panel.sshMcpEnabled);
+      if (!sshTools && workspace.internalMcpEnabled !== true) throw error;
       this.sessions.delete(key);
       this.failedSpawns.add(key);
       const message = error instanceof Error ? error.message : String(error);
+      const lead = sshTools ? "SSH tools" : "MCP tools";
       this.emit("terminal:data", {
         sessionId: key,
-        data: `\r\n\x1b[31mSSH tools could not be enabled for this tab: ${message}\x1b[0m\r\n`,
+        data: `\r\n\x1b[31m${lead} could not be enabled for this tab: ${message}\x1b[0m\r\n`,
       });
       return null;
     }
@@ -895,7 +898,12 @@ export class SessionManager extends EventEmitter {
     try {
       const inheritedEnv = { ...process.env };
       for (const key of Object.keys(inheritedEnv)) {
-        if (key.startsWith("STRIDETERM_SSH_MCP_") || key.startsWith(INTERNAL_MCP_ENV_PREFIX)) delete inheritedEnv[key];
+        if (
+          key.startsWith("STRIDETERM_SSH_MCP_") ||
+          key.startsWith(INTERNAL_MCP_ENV_PREFIX) ||
+          key.startsWith(REVIEW_GIT_ENV_PREFIX)
+        )
+          delete inheritedEnv[key];
       }
       // This launch's own backend declaration (main.ts defaults it to prod) must not leak into
       // user shells: a dev.ps1 started from one would otherwise run against prod.

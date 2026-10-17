@@ -16378,6 +16378,51 @@ describe("internal MCP: creating and watching task agents", () => {
     expect(byId("taskish").internalMcpEnabled).toBe(false);
   });
 
+  test("an OpenCode terminal gets the grant in its env and config, a Copilot one by placeholder, and Gemini none", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({
+      workspaces: [
+        parentWorkspace(repo, {
+          panels: [
+            { id: "agent", title: "OpenCode", command: "opencode --model anthropic/sonnet" },
+            { id: "copilot", title: "Copilot", command: "copilot" },
+            { id: "gemini", title: "Gemini", command: "gemini" },
+          ],
+        }),
+      ],
+    });
+
+    const { launch } = launchAgent(fixture);
+    const capability = launch.env.STRIDETERM_INTERNAL_MCP_CAPABILITY;
+    expect(launch.file).toMatch(/opencode(\.cmd)?$/u);
+    expect(launch.args).toEqual(["--model", "anthropic/sonnet"]);
+    const mcp = JSON.parse(launch.env.OPENCODE_CONFIG_CONTENT).mcp.strideterm;
+    expect(mcp.environment).toMatchObject({
+      STRIDETERM_INTERNAL_MCP_URL: launch.env.STRIDETERM_INTERNAL_MCP_URL,
+      STRIDETERM_INTERNAL_MCP_CAPABILITY: capability,
+    });
+    expect(mcp.command.at(-1)).toBe("--internal-mcp");
+    expect(launch.args.join(" ")).not.toContain(capability);
+    expect(JSON.stringify(fixture.store.getState())).not.toContain(capability);
+
+    const copilot = launchAgent(fixture, "parent", "copilot").launch;
+    const copilotCapability = copilot.env.STRIDETERM_INTERNAL_MCP_CAPABILITY;
+    const copilotConfig = JSON.parse(copilot.args[copilot.args.indexOf("--additional-mcp-config") + 1]);
+    expect(copilotConfig.mcpServers.strideterm.env.STRIDETERM_INTERNAL_MCP_CAPABILITY).toBe(
+      "${STRIDETERM_INTERNAL_MCP_CAPABILITY}",
+    );
+    expect(copilot.args.join(" ")).not.toContain(copilotCapability);
+
+    const workspace = fixture.store.getState().workspaces.find((item: any) => item.id === "parent")!;
+    expect(
+      fixture.sessionManager.getSessionLaunch({
+        workspace,
+        panel: workspace.panels[2],
+        sessionId: createSessionId("parent", "gemini"),
+      }),
+    ).toBeNull();
+  });
+
   test("prepare reports what is missing and creates nothing", async () => {
     const repo = await createRepo();
     const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });

@@ -212,7 +212,11 @@ import { InternalMcpError } from "./internal-mcp/errors.js";
 import { createInternalMcpBroker } from "./internal-mcp/internal-mcp-broker.js";
 import { createTaskService } from "./internal-mcp/task-service.js";
 import { createOperationRegistry } from "./operation-registry.js";
-import { INTERNAL_MCP_CAPABILITY_ENV, INTERNAL_MCP_URL_ENV } from "../shared/internal-mcp.js";
+import {
+  getInternalMcpEligibility,
+  INTERNAL_MCP_CAPABILITY_ENV,
+  INTERNAL_MCP_URL_ENV,
+} from "../shared/internal-mcp.js";
 import { OPERATION_FINISHED_CHANNEL } from "../shared/operation-events.js";
 import { createReviewGitBroker } from "./review-git/broker.js";
 import { createReviewGitService, isReviewGitGrantLive } from "./review-git/service.js";
@@ -1130,7 +1134,7 @@ export async function createRuntime({
       const panelState = panel as import("../shared/types/state.js").PanelState;
       sshMcpBroker?.revokeSession(sessionId);
       internalMcpBroker?.revokeSession(sessionId);
-      // Workspace-wide opt-in: a panel that is not a plain Claude Code / Codex launch simply does
+      // Workspace-wide opt-in: a panel that is not a plain Claude Code / Codex / Copilot / OpenCode launch simply does
       // not get the server. Task workspaces never do, whatever their saved flag says.
       let internalMcpSpec;
       let internalMcpEnv: Record<string, string> | undefined;
@@ -1139,7 +1143,7 @@ export async function createRuntime({
         workspace?.internalMcpEnabled === true &&
         internalMcpWorkspaceSupported(workspace) &&
         !panelState.launch &&
-        getAgentSshMcpEligibility(panelState.command).supported
+        getInternalMcpEligibility(panelState.command).supported
       ) {
         internalMcpSpec = buildInternalMcpServerSpec(processInfo);
         const grant = internalMcpBroker.mintGrant({
@@ -1235,6 +1239,7 @@ export async function createRuntime({
           processInfo,
           sshMcp: sshMcpSpec,
           internalMcp: internalMcpSpec,
+          internalMcpEnv,
         });
         if (!launch) throw new Error("MCP tools could not be enabled for this tab's agent command.");
         return { ...launch, env: { ...(launch.env || {}), ...sshMcpEnv, ...internalMcpEnv } };
@@ -4079,6 +4084,7 @@ export async function createRuntime({
         execPath: process.execPath,
         platform: process.platform,
         defaultApp: Boolean((process as NodeJS.Process & { defaultApp?: boolean }).defaultApp),
+        isElectron: Boolean(process.versions.electron),
       };
       for (const prKey of prKeys) {
         const context = reviewBridgeStore.getPullRequestContext?.(prKey);
@@ -6944,7 +6950,7 @@ export async function createRuntime({
           panel &&
           !panel.launch &&
           panel.command === grant.command &&
-          getAgentSshMcpEligibility(panel.command).supported &&
+          getInternalMcpEligibility(panel.command).supported &&
           session?.status === "running" &&
           session.workspaceId === grant.workspaceId &&
           session.panelId === grant.panelId &&

@@ -1,9 +1,10 @@
+export type AgentCliProvider = "claude" | "codex" | "copilot" | "opencode";
 export type AgentSshMcpProvider = "claude" | "codex";
 export const SSH_MCP_URL_ENV = "STRIDETERM_SSH_MCP_URL";
 export const SSH_MCP_CAPABILITY_ENV = "STRIDETERM_SSH_MCP_CAPABILITY";
 
 export interface ParsedAgentCommand {
-  provider: AgentSshMcpProvider;
+  provider: AgentCliProvider;
   executable: string;
   args: string[];
 }
@@ -63,10 +64,12 @@ function tokenizeCommand(command: string): string[] {
   return tokens;
 }
 
-function commandProvider(executable: string): AgentSshMcpProvider | null {
+const AGENT_CLI_PROVIDERS: readonly string[] = ["claude", "codex", "copilot", "opencode"];
+
+function commandProvider(executable: string): AgentCliProvider | null {
   const basename = executable.split(/[\\/]/u).pop()?.toLowerCase() || "";
   const withoutExtension = basename.replace(/\.(?:exe|cmd|bat|com)$/u, "");
-  return withoutExtension === "claude" || withoutExtension === "codex" ? withoutExtension : null;
+  return AGENT_CLI_PROVIDERS.includes(withoutExtension) ? (withoutExtension as AgentCliProvider) : null;
 }
 
 function containsShellOperator(command: string): boolean {
@@ -107,7 +110,9 @@ export function parseAgentCommand(command: unknown): ParsedAgentCommand | null {
   const firstArg = (tokens[1] || "").toLowerCase();
   if (
     (provider === "claude" && ["auth", "mcp", "plugin", "plugins", "install", "update", "doctor"].includes(firstArg)) ||
-    (provider === "codex" && ["mcp", "login", "logout", "completion", "debug"].includes(firstArg))
+    (provider === "codex" && ["mcp", "login", "logout", "completion", "debug"].includes(firstArg)) ||
+    (provider === "copilot" && ["help", "login", "logout", "version"].includes(firstArg)) ||
+    (provider === "opencode" && ["auth", "upgrade", "models", "mcp", "serve", "web"].includes(firstArg))
   ) {
     return null;
   }
@@ -116,7 +121,7 @@ export function parseAgentCommand(command: unknown): ParsedAgentCommand | null {
 
 export function getAgentSshMcpEligibility(command: unknown): AgentSshMcpEligibility {
   const parsed = parseAgentCommand(command);
-  return parsed
+  return parsed && (parsed.provider === "claude" || parsed.provider === "codex")
     ? { supported: true, provider: parsed.provider, reason: null }
     : { supported: false, provider: null, reason: UNSUPPORTED_REASON };
 }
