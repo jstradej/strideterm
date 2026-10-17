@@ -147,6 +147,46 @@ function requestRemotePanel(panelId: string, signal?: AbortSignal): Promise<void
   });
 }
 
+describe("useAppStore mobile connection health bootstrap", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
+  it("seeds authorization health at startup and refreshes after a mobile status event", async () => {
+    const payload = makeBasePayload();
+    const transport = makeElectronTransport(payload);
+    const health = {
+      running: true,
+      connectionState: "connected",
+      lastError: null,
+      deviceCount: 1,
+      pendingInvitation: null,
+      pairAuthorization: "denied",
+    };
+    const handlers: { status?: (status: AnyApi) => void } = {};
+    const refreshHealth = vi.fn(async () => ({ health, quota: null }));
+    Object.assign(transport, {
+      onMobileStatus: (handler: (status: AnyApi) => void) => {
+        handlers.status = handler;
+      },
+      refreshMobileConnectionHealth: refreshHealth,
+    });
+    const store = useAppStore();
+
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(store.mobileConnectionHealth).toEqual(health);
+    expect(refreshHealth).toHaveBeenCalledTimes(1);
+
+    handlers.status?.({ running: true, pairAuthorization: "denied" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(store.mobileConnectionHealth).toEqual(health);
+    expect(refreshHealth).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("useAppStore — remote mode identity", () => {
   beforeEach(() => {
     // Each test gets a fresh Pinia so store state doesn't leak.

@@ -684,17 +684,20 @@ export class MobileManager extends EventEmitter {
     return this.transport
       .updatePresence(this.ownDeviceId, this.ownDeviceId, status)
       .then(() => {
+        const authorizationChanged = this.pairAuthorization !== "ok";
         this.pairAuthorization = "ok";
+        if (authorizationChanged) this.emit("mobile:status", { running: this.running });
       })
       .catch((err: unknown) => {
         const code = mobileErrorCode(err);
         // The heartbeat is the only write this desktop makes on its own schedule, which makes it
-        // the one place a lost pair membership surfaces without a phone having to do anything. A
-        // rules rejection here is not a presence problem: it means this uid is no longer the pair's
-        // owner, so the commands it is watching for are being refused too, and the UI must stop
-        // calling that "Connected". Any other failure (offline, unconfigured, 5xx) says nothing
-        // about authorization and leaves the flag where it was.
-        if (code === "permission-denied") this.pairAuthorization = "denied";
+        // the one place an authorization change can surface without a phone having to do anything.
+        // A rules rejection is not a presence problem: it means mobile access needs attention, while
+        // other failures (offline, unconfigured, 5xx) say nothing about authorization.
+        if (code === "permission-denied" && this.pairAuthorization !== "denied") {
+          this.pairAuthorization = "denied";
+          this.emit("mobile:status", { running: this.running });
+        }
         log.warn("presence update failed", { status, code });
       });
   }

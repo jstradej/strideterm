@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import SettingsMobileTab from "./SettingsMobileTab.vue";
 import { useAppStore } from "../../../stores/app.js";
 import { useAccountStore } from "../../../stores/account.js";
+import { MOBILE_TRIAL_WARNING_WINDOW_MS } from "../../../lib/mobile-access-warning.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -45,6 +46,24 @@ function makePayload(mobile: AnyApi): AnyApi {
     environment: {},
     remoteAccess: { enabled: false, host: "", port: 0, tunnel: { active: false, url: null, error: null } },
     taskRunner: {},
+  };
+}
+
+function makeAccountOverview(entitlement: AnyApi): AnyApi {
+  return {
+    entitlement,
+    offers: [],
+    usage: {
+      installations: { used: 1, limit: 5 },
+      mobileDevices: { used: 1, limit: 5 },
+      activeRelaySessions: { used: 0, limit: 8 },
+    },
+    installations: [],
+    mobileDevices: [],
+    notices: [],
+    billingConfigured: true,
+    generatedAt: Date.now(),
+    supportReference: "support-test",
   };
 }
 
@@ -1343,6 +1362,92 @@ describe("SettingsMobileTab", () => {
     expect(badge.text()).toBe("Not authorized");
     expect(badge.classes()).toContain("badge--warn");
     expect(badge.attributes("title")).toContain("Re-pair the phone");
+  });
+
+  test("the overview labels an elapsed server-reported trial and routes to Account", async () => {
+    const notAfter = Date.parse("2026-10-16T00:00:00Z");
+    const entitlement = { state: "trial", source: "trial", notAfter };
+    const account = useAccountStore();
+    account.attach({
+      getAccountState: async () => ({
+        phase: "ready",
+        installationRegistered: true,
+        entitlement,
+        overview: makeAccountOverview(entitlement),
+      }),
+    } as AnyApi);
+    await account.refreshState();
+
+    const { wrapper } = await mountTab({}, { enabled: true, devices: [] }, "overview");
+    const warning = wrapper.find(".mobile-tab__access-warning");
+    expect(warning.text()).toContain(
+      `Free trial ended ${new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(new Date(notAfter))}`,
+    );
+
+    await warning.find("button").trigger("click");
+    expect(wrapper.find('[role="tab"][aria-selected="true"]').text()).toBe("Account");
+  });
+
+  test("the overview warns three days before a server-reported trial ends and routes to Account", async () => {
+    const notAfter = Date.now() + MOBILE_TRIAL_WARNING_WINDOW_MS;
+    const entitlement = { state: "trial", source: "trial", notAfter };
+    const account = useAccountStore();
+    account.attach({
+      getAccountState: async () => ({
+        phase: "ready",
+        installationRegistered: true,
+        entitlement,
+        overview: makeAccountOverview(entitlement),
+      }),
+    } as AnyApi);
+    await account.refreshState();
+
+    const { wrapper } = await mountTab({}, { enabled: true, devices: [] }, "overview");
+    const warning = wrapper.find(".mobile-tab__access-warning");
+    expect(warning.text()).toContain("Free trial ends");
+    expect(warning.text()).toContain(
+      new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(new Date(notAfter)),
+    );
+    await warning.find("button").trigger("click");
+    expect(wrapper.find('[role="tab"][aria-selected="true"]').text()).toBe("Account");
+  });
+
+  test("generic denied authorization links to Phones without claiming the trial ended", async () => {
+    const account = useAccountStore();
+    account.attach({
+      getAccountState: async () => ({
+        phase: "ready",
+        installationRegistered: true,
+        entitlement: { state: "active", source: "subscription" },
+        overview: makeAccountOverview({ state: "active", source: "subscription" }),
+      }),
+    } as AnyApi);
+    await account.refreshState();
+
+    const { wrapper } = await mountTab(
+      {
+        refreshMobileConnectionHealth: vi.fn(async () => ({
+          health: {
+            running: true,
+            connectionState: "connected",
+            lastError: null,
+            deviceCount: 1,
+            pendingInvitation: null,
+            pairAuthorization: "denied",
+          },
+          quota: null,
+        })),
+      },
+      { enabled: true, devices: [] },
+      "overview",
+    );
+    const warning = wrapper.find(".mobile-tab__access-warning");
+    expect(warning.text()).toContain("Mobile access needs attention");
+    expect(warning.text()).toContain("not authorized to serve paired phones");
+    expect(warning.text()).not.toContain("trial ended");
+
+    await warning.find("button").trigger("click");
+    expect(wrapper.find('[role="tab"][aria-selected="true"]').text()).toBe("Phones");
   });
 
   test("the relay row reports the relay's own state, so 'on' is not mistaken for 'connected'", async () => {

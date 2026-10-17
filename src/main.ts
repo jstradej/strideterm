@@ -196,7 +196,9 @@ if (popoutView === "diff-popout") {
     // On the remote web client the transport has none of these methods, so `attach` finds nothing to
     // subscribe to, and the Mobile tab (which hosts the account section) is absent — see
     // SettingsDialog's TABS.
-    useAccountStore().attach(api);
+    const accountStore = useAccountStore();
+    accountStore.attach(api);
+    void accountStore.refreshState().catch(() => {});
   });
 }
 

@@ -692,6 +692,7 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
   padding: 6px 10px;
 }
 
@@ -763,6 +764,29 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
 .remote-pill--error {
   border-color: rgba(255, 111, 141, 0.26);
   color: var(--danger);
+}
+
+.remote-pill--mobile-warning {
+  border-color: color-mix(in srgb, var(--warning, #fbbf24), transparent 45%);
+  background: color-mix(in srgb, var(--warning, #fbbf24), transparent 92%);
+  color: var(--warning, #fbbf24);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.remote-pill--mobile-warning:hover {
+  background: color-mix(in srgb, var(--warning, #fbbf24), transparent 84%);
+}
+
+.remote-pill--mobile-warning-expired {
+  border-color: color-mix(in srgb, var(--danger), transparent 35%);
+  background: color-mix(in srgb, var(--danger), transparent 90%);
+  color: var(--danger);
+}
+
+.remote-pill--mobile-warning-expired:hover {
+  background: color-mix(in srgb, var(--danger), transparent 82%);
 }
 
 .remote-copy,
@@ -2479,7 +2503,10 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
 .frame--sidebar-collapsed .remote-access:not(.remote-access--expanded) .remote-compact__caret,
 .frame--sidebar-collapsed .remote-access:not(.remote-access--expanded) .remote-compact__qr-thumb,
 .frame--sidebar-collapsed .remote-access:not(.remote-access--expanded) .remote-compact__qr-panel,
-.frame--sidebar-collapsed .remote-access:not(.remote-access--expanded) .remote-compact__row > .remote-pill {
+.frame--sidebar-collapsed
+  .remote-access:not(.remote-access--expanded)
+  .remote-compact__row
+  > .remote-pill:not(.remote-pill--mobile-warning) {
   display: none;
 }
 
@@ -2491,6 +2518,19 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   width: 100%;
   padding: 7px 0;
   font-size: 11px;
+}
+
+.frame--sidebar-collapsed .remote-access:not(.remote-access--expanded) .remote-pill--mobile-warning {
+  display: inline-flex;
+  align-self: center;
+  padding: 3px 5px;
+  font-size: 0;
+}
+
+.frame--sidebar-collapsed .remote-access:not(.remote-access--expanded) .remote-pill--mobile-warning::before {
+  content: "!";
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .frame--sidebar-collapsed .sidebar-footer__card {

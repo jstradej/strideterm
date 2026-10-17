@@ -51,6 +51,19 @@
         >LAN only</span
       >
       <button
+        v-if="mobileWarning"
+        type="button"
+        class="remote-pill remote-pill--mobile-warning"
+        :class="{
+          'remote-pill--mobile-warning-expired': mobileWarning === 'trial-expired',
+          'remote-pill--mobile-warning-expiring': mobileWarning === 'trial-expiring',
+        }"
+        :title="mobileWarningTitle"
+        @click="openMobileSettings"
+      >
+        {{ mobileWarningLabel }}
+      </button>
+      <button
         type="button"
         class="button button--ghost remote-summary__configure"
         title="Open Remote Access to connect strIDEterm Mobile, manage paired phones, or configure browser sharing."
@@ -74,6 +87,19 @@
     <div class="remote-compact__icon" aria-hidden="true">&#9678;</div>
     <span class="remote-summary__label">Remote Access</span>
     <button
+      v-if="mobileWarning"
+      type="button"
+      class="remote-pill remote-pill--mobile-warning"
+      :class="{
+        'remote-pill--mobile-warning-expired': mobileWarning === 'trial-expired',
+        'remote-pill--mobile-warning-expiring': mobileWarning === 'trial-expiring',
+      }"
+      :title="mobileWarningTitle"
+      @click="openMobileSettings"
+    >
+      {{ mobileWarningLabel }}
+    </button>
+    <button
       type="button"
       class="button button--ghost remote-summary__configure"
       title="Open Remote Access to connect strIDEterm Mobile or set up LAN, Cloudflare, or VPS browser sharing."
@@ -85,17 +111,93 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useAppStore } from "../../stores/app.js";
+import { useAccountStore } from "../../stores/account.js";
 import { useRemoteConnection } from "../../composables/useRemoteConnection.js";
 import { useQrCode } from "../../composables/useQrCode.js";
+import { getMobileAccessWarning, MOBILE_TRIAL_WARNING_WINDOW_MS } from "../../lib/mobile-access-warning.js";
 
 const store = useAppStore();
+const accountStore = useAccountStore();
 
 const { remoteConfig, runtimeRemote, tunnel, activeShareUrl, hasPublicUrl, hasAnyUrl, activeError } =
   useRemoteConnection();
 
 const { qrDataUrl } = useQrCode(activeShareUrl);
+const mobileWarningNow = ref(Date.now());
+let mobileWarningExpiryTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleMobileWarningExpiry(notAfter: number | undefined): void {
+  if (mobileWarningExpiryTimer !== null) clearTimeout(mobileWarningExpiryTimer);
+  mobileWarningExpiryTimer = null;
+  mobileWarningNow.value = Date.now();
+  if (typeof notAfter !== "number" || !Number.isFinite(notAfter) || notAfter <= mobileWarningNow.value) return;
+  const warningAt = notAfter - MOBILE_TRIAL_WARNING_WINDOW_MS;
+  const nextBoundary = warningAt > mobileWarningNow.value ? warningAt : notAfter;
+  mobileWarningExpiryTimer = setTimeout(
+    () => {
+      mobileWarningExpiryTimer = null;
+      mobileWarningNow.value = Date.now();
+      if (notAfter > mobileWarningNow.value) scheduleMobileWarningExpiry(notAfter);
+    },
+    Math.min(nextBoundary - mobileWarningNow.value + 1, 2_147_483_647),
+  );
+}
+
+watch(
+  () => {
+    const entitlement = accountStore.overview?.entitlement;
+    return entitlement?.source === "trial" && (entitlement.state === "trial" || entitlement.state === "lapsed")
+      ? entitlement.notAfter
+      : undefined;
+  },
+  scheduleMobileWarningExpiry,
+  { immediate: true },
+);
+onBeforeUnmount(() => {
+  if (mobileWarningExpiryTimer !== null) clearTimeout(mobileWarningExpiryTimer);
+});
+
+const mobileWarning = computed(() =>
+  getMobileAccessWarning({
+    mobileEnabled: store.mobileEnabled,
+    pairedPhoneCount: store.mobileDevices.filter((device) => !device.revoked && device.state === "active").length,
+    health: store.mobileConnectionHealth,
+    entitlement: accountStore.overview?.entitlement,
+    now: mobileWarningNow.value,
+  }),
+);
+const mobileTrialEndDate = computed(() => {
+  const notAfter = accountStore.overview?.entitlement.notAfter;
+  if (typeof notAfter !== "number" || !Number.isFinite(notAfter) || notAfter <= 0) return "";
+  const date = new Date(notAfter);
+  const options: Intl.DateTimeFormatOptions = { month: "short", day: "numeric" };
+  if (date.getFullYear() !== new Date(mobileWarningNow.value).getFullYear()) options.year = "numeric";
+  return new Intl.DateTimeFormat("en", options).format(date);
+});
+const mobileWarningLabel = computed(() => {
+  if (mobileWarning.value === "trial-expired") return "Mobile trial ended";
+  if (mobileWarning.value === "trial-expiring") return "Mobile trial ends soon";
+  return "Mobile access needs attention";
+});
+const mobileWarningTitle = computed(() => {
+  if (mobileWarning.value === "trial-expired") {
+    return `The free mobile trial ended ${mobileTrialEndDate.value}. Open Mobile settings to review account access.`;
+  }
+  if (mobileWarning.value === "trial-expiring") {
+    return `The free mobile trial ends ${mobileTrialEndDate.value}. Open Mobile settings to review account access.`;
+  }
+  return "The desktop's mobile access was not authorized. Open Mobile settings to review account and phone access.";
+});
+
+function openMobileSettings(): void {
+  store.openSettingsDialog({
+    initialTab: "mobile",
+    initialMobileView:
+      mobileWarning.value === "trial-expired" || mobileWarning.value === "trial-expiring" ? "account" : "overview",
+  });
+}
 
 // QR is collapsed by default — the panel renders as a single-row summary
 // (caret + tiny QR thumb + status pill + Configure). Toggle via either the

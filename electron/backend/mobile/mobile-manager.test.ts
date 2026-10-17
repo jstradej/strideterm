@@ -2409,11 +2409,25 @@ describe("MobileManager presence: the desktop says it is reachable", () => {
   // read and write refused, and `connectionState` alone reported that as "Connected" for hours.
   test("a rules rejection on the heartbeat reports the pair as unauthorized", async () => {
     const { manager, transport } = await createFixture();
+    const authorizationStatuses: string[] = [];
+    manager.on("mobile:status", () => {
+      const authorization = manager.getConnectionHealth().pairAuthorization;
+      if (authorization === "denied" || authorization === "ok") authorizationStatuses.push(authorization);
+    });
     transport.updatePresence = () =>
       Promise.reject(new MobileFirebasePermissionDeniedError("v2/pairs/own/presence/own"));
 
     manager.start();
     await vi.waitFor(() => expect(manager.getConnectionHealth().pairAuthorization).toBe("denied"));
+    const publishPresence = (
+      manager as unknown as { publishPresence: (status: "online") => Promise<void> }
+    ).publishPresence.bind(manager);
+    await publishPresence("online");
+    expect(authorizationStatuses).toEqual(["denied"]);
+
+    transport.updatePresence = async () => {};
+    await publishPresence("online");
+    expect(authorizationStatuses).toEqual(["denied", "ok"]);
 
     // The link itself is genuinely up — which is exactly why the state had to stop being the whole
     // answer.

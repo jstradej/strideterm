@@ -1927,6 +1927,9 @@ export const useAppStore = defineStore("app", () => {
     // A renderer that loads while a phone is already connected would otherwise show nothing until the
     // next change. No-op on a transport without the getter (remote client).
     void refreshMobileRelayStatus().catch(() => {});
+    // The manager may have emitted its initial status before this renderer subscribed. Seed the
+    // authorization health once so the sidebar can surface a denied mobile connection immediately.
+    void refreshMobileConnectionHealth().catch(() => {});
 
     window.addEventListener("unhandledrejection", (event: PromiseRejectionEvent) => {
       const error = event.reason as AnyApi;

@@ -4,6 +4,37 @@
     <p v-if="paused" class="mobile-tab__intro" role="status">
       Mobile access is paused along with other remote connections. Your phones remain paired.
     </p>
+    <div
+      v-if="activeView === 'overview' && mobileAccessWarning"
+      class="mobile-tab__access-warning"
+      :class="{
+        'mobile-tab__access-warning--expired': mobileAccessWarning === 'trial-expired',
+        'mobile-tab__access-warning--expiring': mobileAccessWarning === 'trial-expiring',
+      }"
+      role="alert"
+    >
+      <strong>{{ mobileAccessWarningTitle }}</strong>
+      <span v-if="mobileAccessWarning === 'trial-expired'">
+        Mobile phone access is unavailable until account access is restored.
+      </span>
+      <span v-else-if="mobileAccessWarning === 'trial-expiring'">
+        Your mobile trial ends soon. Review account access before it expires.
+      </span>
+      <span v-else>
+        This desktop is not authorized to serve paired phones. Check account status and the phone connection below.
+      </span>
+      <button
+        v-if="mobileAccessWarning === 'authorization-denied'"
+        type="button"
+        class="button button--ghost mobile-tab__card-action"
+        @click="activeView = 'phones'"
+      >
+        Review phones
+      </button>
+      <button v-else type="button" class="button button--ghost mobile-tab__card-action" @click="activeView = 'account'">
+        Review account
+      </button>
+    </div>
     <div class="mobile-tab__controls">
       <nav v-if="accountAvailable" class="mobile-tab__subtabs" role="tablist" aria-label="Mobile settings sections">
         <button
@@ -891,6 +922,7 @@ import { useAppStore } from "../../../stores/app.js";
 import { useAccountStore } from "../../../stores/account.js";
 import RemoteAccessPauseControl from "../../layout/RemoteAccessPauseControl.vue";
 import SettingsAccountTab from "./SettingsAccountTab.vue";
+import { getMobileAccessWarning } from "../../../lib/mobile-access-warning.js";
 import { describeNetworkErrorCode } from "../../../lib/network-error-copy.js";
 import { mobileErrorCopy, mobileResultReasonCopy } from "./mobile-error-copy.js";
 import { QR_COLORS_FOR_SCANNING, useQrCode } from "../../../composables/useQrCode.js";
@@ -989,6 +1021,27 @@ const activePhones = computed(() =>
 );
 const activePhoneCount = computed(() => activePhones.value.length);
 const mobileConnectionHealth = computed(() => appStore.mobileConnectionHealth);
+const mobileAccessWarning = computed(() =>
+  getMobileAccessWarning({
+    mobileEnabled: mobileEnabled.value,
+    pairedPhoneCount: activePhoneCount.value,
+    health: mobileConnectionHealth.value,
+    entitlement: accountStore.overview?.entitlement,
+    now: nowTick.value,
+  }),
+);
+const mobileAccessWarningTitle = computed(() => {
+  if (mobileAccessWarning.value === "authorization-denied") return "Mobile access needs attention";
+  const notAfter = accountStore.overview?.entitlement.notAfter;
+  if (typeof notAfter !== "number" || !Number.isFinite(notAfter) || notAfter <= 0) {
+    return mobileAccessWarning.value === "trial-expired" ? "Free trial ended" : "Free trial ends soon";
+  }
+  const date = new Date(notAfter);
+  const dateOptions: Intl.DateTimeFormatOptions = { month: "short", day: "numeric" };
+  if (date.getFullYear() !== new Date(nowTick.value).getFullYear()) dateOptions.year = "numeric";
+  const label = mobileAccessWarning.value === "trial-expired" ? "Free trial ended" : "Free trial ends";
+  return `${label} ${new Intl.DateTimeFormat("en", dateOptions).format(date)}`;
+});
 const mobileQuota = computed(() => appStore.mobileQuota);
 const pairingSas = computed(() => appStore.mobilePairingSas);
 const overviewConnectionLabel = computed(() => {
@@ -1959,6 +2012,30 @@ onBeforeUnmount(() => {
   font-size: 13px;
   line-height: 1.5;
   margin: 0;
+}
+
+.mobile-tab__access-warning {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, #fbbf24 45%, var(--border, #333));
+  border-radius: 8px;
+  background: color-mix(in srgb, #fbbf24 8%, transparent);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.mobile-tab__access-warning strong {
+  color: #fbbf24;
+}
+
+.mobile-tab__access-warning--expired {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border, #333));
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+}
+
+.mobile-tab__access-warning--expired strong {
+  color: var(--danger);
 }
 
 .mobile-tab__intro--note {
