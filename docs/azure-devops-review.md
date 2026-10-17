@@ -83,18 +83,24 @@ Editable prompt templates for agents, stored locally, and the review-bridge MCP 
 
 ## Refresh & Staying Up to Date
 
-**Refresh** in the review pane toolbar is the only action that can move your review checkout's `HEAD`. It:
+**Refresh** in the review pane toolbar is the action that moves your review checkout's `HEAD` onto the PR's latest source commit. There is no read-only mode and no "Enable editing": a PR link never decides what Git may do — the runtime looks at the real state of the checkout for every action, whatever your role (author or reviewer) and however the workspace was created (managed checkout, or "Work here" on an existing one).
 
-1. Fetches the PR's exact source branch — not whatever the local branch is named or tracking (a managed checkout is `pr-{id}-...` and may have no upstream).
-2. Fast-forwards onto it **only** when that is safe — never `reset --hard`, rebase or merge.
-3. Refreshes the git snapshot and the PR metadata (title, checks, comments), and reloads the diff you have open.
-4. Reports the outcome: updated N commits, already up to date, or why it could not update safely — uncommitted changes or a rebase/merge in progress, local commits ahead, or diverged history. In those cases nothing is touched.
+It:
 
-Refresh works the same in a read-only reviewer checkout — no **Enable editing** needed, because fast-forwarding onto the PR's own branch is not an edit.
+1. Asks the provider for the PR source branch's **exact current commit** and pins that commit for the rest of the operation (it never trusts a possibly stale tracking ref).
+2. Does nothing when `HEAD` already is that commit, and **fast-forwards** when `HEAD` is simply behind it. No commit is lost, so it just happens.
+3. When the author rewrote the branch (rebase or force-push) and `HEAD` is **exactly the commit this checkout last integrated or pushed** (the _source baseline_) with a clean tree and no Git operation in progress, it resets onto the new commit automatically — after saving a recovery ref (`refs/strideterm/recovery/...`) to the old `HEAD`.
+4. Otherwise, if it would have to discard commits (you committed on top, the baseline is unknown, or the history diverged), it **stops and shows both sides** — your commits that would be discarded and the incoming ones — and only proceeds if you choose to. Keeping your commits is always an option.
+5. Blocks, with the reason, on uncommitted changes (nothing is ever stashed for you), a rebase/merge/cherry-pick/revert in progress, a detached `HEAD`, a deleted source branch, or a checkout switched to an unrelated branch (switch back, or detach).
+6. Refreshes the git snapshot and the PR metadata, and reloads the diff you have open.
+
+The **source baseline** is stored with the workspace (`sourceBaselineSha`), bound to the provider, connection, PR, full source ref and the PR's actual _source_ repository. It advances only after a refresh that integrated the source or a push of your `HEAD` to the source branch — never on a fetch, a metadata poll, a target rebase, a local commit or a cancelled prompt. It is dropped if the PR's source identity changes, and left unknown (never guessed) when it cannot be proved.
 
 **Background refresh** (switching into the pane, polling) only updates PR metadata and never touches the checkout.
 
-**Rebase on target** is a different operation: it rewrites history onto the PR's _target_ branch, and its availability depends on how far behind the target you are, not on whether the source branch moved.
+**Rebase on target** is a different operation: it rewrites your local commits onto the PR's _target_ branch (the target commit is pinned, and you are shown what is rewritten and asked first). It never pushes and never moves the source baseline — publishing the rewritten history is a separate **Force push**.
+
+Refresh, Rebase, Push and Force push start at once and report back when they finish, so a slow network (or a phone on the mobile relay) never shows "failed" for work that is still running. The result also reaches clients that were not connected when it ended.
 
 ---
 
@@ -102,38 +108,51 @@ Refresh works the same in a read-only reviewer checkout — no **Enable editing*
 
 **Push & publish** is the main action for sending your work to Azure DevOps. Its label shows the counts — **Push (3) & publish (2)**: three commits to push, two drafts to publish. In order it:
 
-1. Refuses if the worktree has uncommitted changes
-2. Pushes commits to the PR branch
+1. Checks the checkout is on the PR's branch (the managed `pr-{id}-...` branch or the source branch) — if you switched to another branch it refuses and says how to get back
+2. Pushes `HEAD` to the PR **source branch in the verified source repository**, only when that is a fast-forward of the commit the server has right now. (Uncommitted files do not block pushing committed work.) A PR whose source lives in another repository (a fork) is only pushed to when the connection is verified to have write access there; otherwise it is refused.
 3. Publishes every queued draft to its Azure DevOps thread
 
-If the push succeeds but publishing fails, you see both; a retry publishes only what is left. **Publish only** sends drafts without pushing.
+The push and each comment are reported independently: if the push succeeds but a comment fails you see both, and a retry publishes only what is left — a successful push is never repeated. **Publish only** sends drafts without pushing.
+
+After a history rewrite (a reset or rebase), inline draft comments are re-checked against the new `HEAD`. A comment whose file or line no longer exists is marked **Anchor out of date** and is **not** moved to another line; publishing refuses it until you fix or delete it.
+
+**Force push** always uses `--force-with-lease` on the exact commit the server has now. If the server holds commits you do not have _and_ it moved since your baseline, you are shown the server, baseline and local commits and asked first. A rejected lease is reported and never retried automatically.
 
 ---
 
 ## Working with AI Agents
 
-Agent tabs opened in a review workspace (Claude Code, Codex, GitHub Copilot) are wired to the **review bridge**, an MCP server that lets the agent list and read the PR's comment threads and write draft replies. The agent does not start on its own: use a template from the Agent tab or give your own instructions. (Claude also gets a short review briefing; the other CLIs get only the MCP wiring, because their prompt flags would start an unrequested run.)
+Agent tabs opened in a review workspace (Claude Code, Codex, GitHub Copilot, OpenCode) are wired to the **review bridge**, one MCP server that lets the agent list and read the PR's comment threads, write draft replies — and work with Git on the checkout. The agent does not start on its own: use a template from the Agent tab or give your own instructions. (Claude also gets a short review briefing; the other CLIs get only the MCP wiring, because their prompt flags would start an unrequested run. Every client gets the same rules from the MCP server's own instructions and the tool descriptions.)
 
 **Review mode** — the agent reads the threads and the code and writes draft replies. Drafts appear in the Comments tab at once; edit or delete them, then **Push & publish**.
 
-**Fix mode** — discuss a comment with the agent, let it edit files in the worktree (which is the PR branch) and reply describing the change (the thread gets the "Reply with code changes" banner). Have it commit, then **Push & publish** sends the commit and the reply together.
+**Fix mode** — discuss a comment with the agent, let it edit files in the worktree (which is the PR branch) and reply describing the change (the thread gets the "Reply with code changes" banner). Then the agent can stage, commit and push through the Git tools (asking you first, below) — or you do it yourself.
 
-**Agents can never publish.** They write only to the local review database; every push and every published comment goes through your **Push & publish**.
+**Agents can never publish comments.** They write only to the local review database; every published comment goes through your **Push & publish**. A push by an agent never publishes drafts either.
 
 Every draft — from a reply in the UI or from an agent — is queued for publishing automatically; there is no separate "queue" step. Published drafts disappear and come back as normal Azure DevOps comments.
+
+### Git tools
+
+The same MCP server also offers `review_git_*` tools: read-only `identity`, `status`, `refs`, `diff`, `history`, `conflicts` and `checks`, plus `fetch`, `refresh`, `rebase`, `stage`, `unstage`, `commit`, `continue` / `skip` / `abort`, `push` and `force_push`, `get_git_audit_log` and `git_operation_status`. There is no shell tool and no arbitrary-Git tool, and the agent is told not to run state-changing Git in a shell for the PR (that would bypass the safety checks and the audit trail — a rule given to the agent, not something the OS enforces).
+
+- **Consent.** Before a rebase, stage/unstage, conflict continue/skip/abort, commit, push or force push — and before a refresh that would discard commits — the tool first returns a _proposal_ (exact commits, paths and SHAs; nothing is done). The agent must ask **you** (Claude uses `AskUserQuestion` and waits for your actual answer; other agents ask in the conversation and stop), and only then repeat the call with the proposal id and your answer. Tool permission prompts, `PermissionRequest` hooks and auto-approval are never your consent, and `AskUserQuestion` is on the auto-approve never-list. A proposal id only proves the repository still looks as it did when you were asked — if anything changed you get a new proposal. There is no approval queue in strIDEterm, and what the agent reports you answered is recorded in the audit trail as context, not as proof.
+- **Safe refresh needs no question** (fast-forward, or the baseline-proven reset above).
+- **Capability.** The tools reach strIDEterm through a short-lived capability for this one tab, scoped to its profile, workspace, PR and source identity. It ends when the tab is detached or closed, the profile goes away or the PR's source changes — for new requests; an operation that already started keeps running and stays queryable for 24 hours with `git_operation_status`. Neither the remote-access token nor any provider token ever reaches the agent.
+- **Audit.** Every mutation writes its intent to the audit trail before it runs (and is refused if that cannot be written) and records the outcome on the same row: operation id, workspace, PR, source ref, requester and agent, reported consent, and the SHAs involved.
 
 ---
 
 ## Git Tab in a Review Workspace
 
+The Git tab has every action — nothing is hidden or disabled because the workspace is linked to a PR. "Detach from PR review" only removes the link; it is never needed to use Git.
+
 - **Base branch** is `origin/{source-branch}` (where you push), not `origin/master`, so **Compare with base** shows only unpushed commits
 - The **base-compare chip** can detach the comparison from the PR's base for an ad-hoc diff against any branch; **Reset to PR base** snaps back
 - Branch pickers filter as you type
 - Unpushed commits are highlighted
-- **Merge buttons are hidden** — merging into the target happens in Azure DevOps
-- **Force push** (after a rebase) uses `--force-with-lease`
-
-Push and Force push both refuse a worktree with uncommitted changes.
+- While the checkout is on the PR's branch, **Push** goes to the PR's _source_ branch, **Force push** leases the exact server commit, and **Update from base** against the PR target is the target rebase above. On any other branch the ordinary Git actions act on that branch and its upstream.
+- Merge into the target still happens in Azure DevOps
 
 ---
 

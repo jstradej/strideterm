@@ -49,7 +49,7 @@ The same five tabs as Azure DevOps — Summary, Files, Comments, Conflicts, Agen
 
 ## Refresh & Staying Up to Date
 
-Works exactly like the [Azure DevOps integration](azure-devops-review.md#refresh--staying-up-to-date): **Refresh** fetches the PR's exact source branch and fast-forwards your checkout only when that is safe (never `reset --hard`, rebase or merge), refreshes the PR metadata, reloads any open diff and reports the outcome. Background refresh only ever touches PR metadata, never the checkout.
+Works exactly like the [Azure DevOps integration](azure-devops-review.md#refresh--staying-up-to-date): **Refresh** pins the PR source branch's exact current commit, fast-forwards your checkout when that loses nothing, resets onto a rewritten branch automatically only when `HEAD` is exactly the last integrated source commit (after saving a recovery ref), and otherwise shows your commits and the incoming ones and asks before discarding anything. There is no read-only mode: the real state of the checkout decides, not your role. GitHub's source repository is the PR's _head_ repository, so a PR from a fork is pushed to only when the connection is verified to have write access there.
 
 ---
 
@@ -57,9 +57,11 @@ Works exactly like the [Azure DevOps integration](azure-devops-review.md#refresh
 
 **Push & publish** shows its counts — **Push (3) & publish (2)** — and:
 
-1. Skips the push when there is nothing ahead of the remote (then only comments are published, and a dirty worktree does not block it)
-2. Pushes commits to the PR branch
+1. Skips the push when `HEAD` already is the server's commit (then only comments are published; uncommitted files never block pushing committed work)
+2. Pushes `HEAD` to the PR branch in the head repository, only as a fast-forward of the server's current commit
 3. Publishes every queued draft
+
+The push and every comment are reported independently, and nothing that succeeded is ever repeated. Inline drafts whose line no longer exists after a history rewrite are marked and refused, never moved. See [Push & Publish](azure-devops-review.md#push--publish) for the details shared by both providers.
 
 **Limitation:** drafts are published as top-level PR (issue) comments. A reply you queue against an inline review-comment thread is also posted top-level — strIDEterm does not yet reply inside the original code thread.
 
@@ -69,7 +71,7 @@ After publishing, the drafts are removed locally and come back as normal GitHub 
 
 ## Working with AI Agents
 
-The same workflow as Azure DevOps: agent tabs in a review workspace get the review bridge (list and read comments, write drafts), wait for your first instruction, and **can never publish** — every push and comment goes through your **Push & publish**.
+The same workflow as Azure DevOps: agent tabs in a review workspace get the review bridge (list and read comments, write drafts) and the `review_git_*` Git tools, wait for your first instruction, **can never publish comments**, and ask you before every consent-required Git operation. See [Working with AI Agents](azure-devops-review.md#working-with-ai-agents).
 
 ---
 
