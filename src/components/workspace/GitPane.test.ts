@@ -305,3 +305,46 @@ describe("GitPane mobile shell menus (useMobileShellMenus wiring)", () => {
     expect(wrapper.find(".git-view__menu-backdrop").exists()).toBe(false);
   });
 });
+
+describe("GitPane push target", () => {
+  function pushButtonFor(branch: string) {
+    const ws = buildWorkspace({
+      id: "ws-pr",
+      review: {
+        prKey: "gh:7",
+        provider: "github",
+        role: "author",
+        pullRequest: { id: 7, sourceRefName: "refs/heads/feature/login", targetRefName: "refs/heads/main" },
+      },
+    });
+    const wrapper = mountPane("ws-pr", [ws]);
+    const appStore = useAppStore();
+    const payload = appStore.payload as unknown as { git: { workspaces: Record<string, GitSnapshot> } };
+    payload.git.workspaces["ws-pr"] = {
+      ...makeSnapshot(),
+      branch,
+      aheadCount: 1,
+      upstream: "origin/feature/login",
+      remotes: { origin: "https://example.com/repo.git" },
+    } as unknown as GitSnapshot;
+    appStore.payload = { ...appStore.payload } as unknown as StatePayload;
+    return { wrapper, appStore };
+  }
+
+  test("on the managed PR alias Push says it goes to the PR branch and names it", async () => {
+    const { wrapper } = pushButtonFor("pr-7-feature-login");
+    await flushPromises();
+    const button = wrapper.get("[data-testid='push-button']");
+    expect(button.text()).toBe("Push to PR branch");
+    expect(button.attributes("title")).toContain("origin/feature/login");
+    expect(button.attributes("title")).toContain("source branch");
+  });
+
+  test("on any other branch of the same workspace Push is the ordinary push of that branch", async () => {
+    const { wrapper } = pushButtonFor("develop");
+    await flushPromises();
+    const button = wrapper.get("[data-testid='push-button']");
+    expect(button.text()).not.toContain("PR branch");
+    expect(button.attributes("title")).not.toContain("source branch");
+  });
+});

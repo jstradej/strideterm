@@ -420,6 +420,7 @@ import Spinner from "../common/Spinner.vue";
 import { useMobileShellMenus } from "../../composables/useMobileShellMenus.js";
 import { useResourceInterest } from "../../composables/useResourceInterest.js";
 import { useNotificationStore } from "../../stores/notifications.js";
+import { managedReviewBranchAlias } from "../../../electron/shared/review-source-identity.js";
 
 const props = withDefaults(defineProps<{ workspaceId: string; showHeader?: boolean }>(), { showHeader: false });
 
@@ -699,9 +700,19 @@ const pullTooltip = computed(() => {
 });
 
 // Push state
+// On the managed pr-<id>-<source> alias a push goes to the PR's source branch,
+// not to a remote branch of the local name.
+const pullRequestPushTarget = computed(() => {
+  const link = reviewLink.value;
+  const branch = String(snapshot.value?.branch || "");
+  if (!link?.sourceBranch || !branch || branch === link.sourceBranch) return "";
+  const sourceRef = workspace.value?.review?.pullRequest?.sourceRefName || "";
+  return branch === managedReviewBranchAlias(link.pullRequestId, sourceRef) ? link.sourceBranch : "";
+});
 const pushLabel = computed(() => {
   const s = snapshot.value;
   if (!s) return "Push";
+  if (pullRequestPushTarget.value) return "Push to PR branch";
   if (!s.upstream || !upstreamMatchesBranch.value) return "Publish branch";
   return "Push";
 });
@@ -718,6 +729,9 @@ const pushTooltip = computed(() => {
   if (!s) return "Push the current branch to its remote tracking ref.";
   if (isDiverged.value && !showAllActions.value)
     return "Disabled — local branch has diverged from upstream and a regular push would be rejected. Resolve via the Force push (--force-with-lease) banner above if you intentionally rewrote history.";
+  if (pullRequestPushTarget.value) {
+    return `Push HEAD to ${pushRemote.value}/${pullRequestPushTarget.value}, the pull request's source branch (the local branch ${s.branch} is only its checkout name). The runtime checks the checkout and asks before anything is overwritten.`;
+  }
   const target = `${pushRemote.value}/${s.branch}`;
   if (!s.upstream || !upstreamMatchesBranch.value) {
     return `Run git push -u ${pushRemote.value} ${s.branch} — publishes the branch and pins ${target} as its upstream tracking ref so future pulls and pushes know where to go.`;

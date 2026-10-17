@@ -1655,6 +1655,62 @@ describe("runtime integration", () => {
     expect(broker.revokeSession).toHaveBeenCalledWith(sessionId);
   });
 
+  test("saveWorkspace keeps the runtime-owned source baseline and source repository against a stale or forged client copy", async () => {
+    const sourceRepository = {
+      id: "repo-1",
+      name: "web-app",
+      fullName: "Platform/web-app",
+      remoteUrl: "https://dev.azure.com/acme/Platform/_git/web-app",
+      sameAsTarget: true,
+      canPush: null,
+    };
+    const baseline = "a".repeat(40);
+    const workspace = {
+      id: "baseline-ws",
+      name: "Review",
+      kind: "terminal",
+      cwd: process.cwd(),
+      profileId: "default",
+      activePanelId: "shell",
+      panels: [{ id: "shell", title: "Shell", command: "" }],
+      review: {
+        provider: "azure-devops",
+        prKey: "ado-main:repo-1:123",
+        connectionId: "ado-main",
+        sourceRepository,
+        sourceBaselineSha: baseline,
+        pullRequest: { id: 123, sourceRefName: "refs/heads/feature/login-fix", targetRefName: "refs/heads/main" },
+      },
+    };
+    const fixture = await createFixture({ initialState: { workspaces: [workspace] } });
+    fixtures.push(fixture);
+    const read = () =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (fixture.store.getState().workspaces.find((item: any) => item.id === workspace.id) as any).review;
+    const saved = fixture.store.getState().workspaces.find((item: { id: string }) => item.id === workspace.id);
+
+    await fixture.runtime.saveWorkspace({
+      ...saved,
+      review: {
+        ...read(),
+        sourceBaselineSha: "b".repeat(40),
+        sourceRepository: { ...sourceRepository, id: "evil", remoteUrl: "https://example.com/evil.git" },
+      },
+    });
+    expect(read().sourceBaselineSha).toBe(baseline);
+    expect(read().sourceRepository).toMatchObject({ id: "repo-1", fullName: "Platform/web-app" });
+
+    // A client that moves the PR onto another source ref loses the baseline instead of carrying it along.
+    await fixture.runtime.saveWorkspace({
+      ...saved,
+      review: {
+        ...read(),
+        pullRequest: { ...read().pullRequest, sourceRefName: "refs/heads/other" },
+      },
+    });
+    expect(read().sourceBaselineSha).toBeUndefined();
+  });
+
   test("keeps a bounded terminal replay tail for renderer startup attach", async () => {
     const fixture = await createFixture();
     fixtures.push(fixture);

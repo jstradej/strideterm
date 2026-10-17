@@ -2568,7 +2568,7 @@ export class GitManager extends EventEmitter {
           errorMessage: errorMessage || null,
           durationMs: durationMs ?? null,
           resourceType: "git",
-          resourceId: "",
+          resourceId: workspaceId || "",
           summary: `git ${type} (${connection.provider || "unknown"})`,
           userInitiated: true,
           ...extra,

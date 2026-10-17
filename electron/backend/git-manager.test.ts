@@ -1012,7 +1012,7 @@ describe("GitManager", () => {
     expect(result.ok).toBe(true);
     expect(result.summary).toContain("Push tag v1.0.0");
     expect(auditLogStore.logEntry).toHaveBeenCalledWith(
-      expect.objectContaining({ operation: "gitPush-tag", category: "write" }),
+      expect.objectContaining({ operation: "gitPush-tag", category: "write", resourceType: "git", resourceId: "ws-1" }),
     );
   });
 

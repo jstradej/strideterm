@@ -216,6 +216,7 @@ import { INTERNAL_MCP_CAPABILITY_ENV, INTERNAL_MCP_URL_ENV } from "../shared/int
 import { OPERATION_FINISHED_CHANNEL } from "../shared/operation-events.js";
 import { createReviewGitBroker } from "./review-git/broker.js";
 import { createReviewGitService, isReviewGitGrantLive } from "./review-git/service.js";
+import { createReviewMetadataStore } from "./review-metadata-store.js";
 import { REVIEW_GIT_CAPABILITY_ENV, REVIEW_GIT_URL_ENV } from "../shared/review-git-env.js";
 import { isVerifiedSshTestExit, SshTestMarkerCapture } from "./ssh/ssh-test-marker.js";
 import {
@@ -257,7 +258,7 @@ import { initLogger, getLogger, setLogLevel, reconfigureLogger, createAuditLogge
 import type { Logger } from "./logger.js";
 import { createRuntimeAttentionManager } from "./runtime-attention.js";
 import type { AppState, WorkspaceState } from "../shared/types/state.js";
-import { reviewSourceIdentityKey } from "../shared/review-source-identity.js";
+import { carryOverSourceBaseline } from "../shared/review-source-identity.js";
 import type { ReviewGitStart } from "./ipc-schemas.js";
 import { formatWorkspaceDisplayName } from "../shared/workspace-display.js";
 import { isCompanionPrimaryHosted } from "../shared/companion-primary.js";
@@ -1286,28 +1287,7 @@ export async function createRuntime({
   });
   // Review Git operations record the PR source baseline (and lazily captured
   // source identity) through normal app state — same atomic store write.
-  const reviewMetadataStore = {
-    async updateReview(
-      workspaceId: string,
-      patch: {
-        sourceBaselineSha?: string;
-        sourceRepository?: import("../shared/types/state.js").ReviewSourceRepository;
-        expectedIdentityKey?: string;
-      },
-    ) {
-      await store.mutate((draft: AppState) => {
-        const workspace = draft.workspaces.find((item) => item.id === workspaceId);
-        if (!workspace?.review) return;
-        if (patch.sourceRepository && !workspace.review.sourceRepository) {
-          workspace.review.sourceRepository = patch.sourceRepository;
-        }
-        if (patch.expectedIdentityKey && reviewSourceIdentityKey(workspace.review) !== patch.expectedIdentityKey) {
-          throw new Error("The pull request's source identity changed while the operation ran; baseline not saved.");
-        }
-        if (patch.sourceBaselineSha) workspace.review.sourceBaselineSha = patch.sourceBaselineSha;
-      });
-    },
-  };
+  const reviewMetadataStore = createReviewMetadataStore(store);
   azure.setReviewWorkspaceMetadataStore?.(reviewMetadataStore);
   github.setReviewWorkspaceMetadataStore?.(reviewMetadataStore);
   const events = new EventEmitter();
@@ -9915,6 +9895,16 @@ export async function createRuntime({
           const priorWorkedAt = draft.workspaces[index]?.lastWorkedAt;
           if (priorWorkedAt) normalized.lastWorkedAt = priorWorkedAt;
           else delete normalized.lastWorkedAt;
+          // The source repository and the baseline are runtime-owned facts about
+          // the checkout. A stale or hostile client copy must not rewind the
+          // baseline or point the review at another repository.
+          const priorReview = draft.workspaces[index]?.review;
+          if (normalized.review && priorReview) {
+            normalized.review.sourceRepository = priorReview.sourceRepository ?? null;
+            const baseline = carryOverSourceBaseline(priorReview, normalized.review);
+            if (baseline) normalized.review.sourceBaselineSha = baseline;
+            else delete normalized.review.sourceBaselineSha;
+          }
           draft.workspaces[index] = normalized;
         } else {
           insertWorkspace(draft.workspaces, normalized, getViewerActiveWorkspaceId(windowId));
