@@ -561,6 +561,61 @@ describe("push and publish", () => {
     expect(await validator({ commentKey: "k", filePath: "a.txt", lineNumber: 9 })).toBe(false);
     expect(await validator({ commentKey: "k", filePath: "removed.txt", lineNumber: 1 })).toBe(false);
   });
+  describe("anchors after a local rebase", () => {
+    async function rebaseWith(
+      lineSide: string,
+      change: (f: Awaited<ReturnType<typeof createFixture>>) => Promise<void>,
+    ): Promise<(anchor: { commentKey: string; filePath: string; lineNumber: number; lineSide?: string }) => Promise<boolean>> {
+      const f = await createFixture();
+      const previousHeadSha = git(f.checkout, ["rev-parse", "HEAD"]).trim();
+      await change(f);
+      const fakeManager = {
+        buildReviewSubject: f.manager.buildReviewSubject.bind(f.manager),
+        rebaseReviewWorkspace: vi.fn(async () => ({ status: "rebased", message: "ok", previousHeadSha })),
+        runGit: f.manager.runGit.bind(f.manager),
+      };
+      const service = createReviewGitService({
+        getState: () => f.state,
+        azure: fakeManager,
+        github: fakeManager,
+        reviewBridgeStore: f.bridge,
+        refreshGit: async () => {},
+        refreshAzure: async () => {},
+        refreshGitHub: async () => {},
+        broadcastState: () => {},
+        emit: () => {},
+        auditStores: {},
+        log: { info() {}, warn() {}, error() {} },
+      });
+      service.start({ kind: "rebase", workspaceId: "ws-1" }, ui);
+      await service.operations.idle();
+      expect(lineSide).toBeTruthy();
+      return f.bridge.markStaleAnchors.mock.calls[0][1] as never;
+    }
+    const insertAtTop = async (f: Awaited<ReturnType<typeof createFixture>>) => {
+      const current = await fs.readFile(path.join(f.checkout, "a.txt"), "utf8");
+      await fs.writeFile(path.join(f.checkout, "a.txt"), `inserted\n${current}`);
+      git(f.checkout, ["commit", "-q", "-am", "insert above"]);
+    };
+
+    test("a new-side anchor whose line now holds different code is stale, even though the line still exists", async () => {
+      const validator = await rebaseWith("new", insertAtTop);
+      expect(await validator({ commentKey: "k", filePath: "a.txt", lineNumber: 2, lineSide: "new" })).toBe(false);
+    });
+
+    test("an anchor on code that did not move stays valid", async () => {
+      const validator = await rebaseWith("new", async (f) => {
+        await fs.appendFile(path.join(f.checkout, "a.txt"), "four\n");
+        git(f.checkout, ["commit", "-q", "-am", "append"]);
+      });
+      expect(await validator({ commentKey: "k", filePath: "a.txt", lineNumber: 2, lineSide: "new" })).toBe(true);
+    });
+
+    test("an old-side anchor is judged by the file at HEAD only", async () => {
+      const validator = await rebaseWith("old", insertAtTop);
+      expect(await validator({ commentKey: "k", filePath: "a.txt", lineNumber: 2, lineSide: "old" })).toBe(true);
+    });
+  });
 });
 
 describe("capability liveness", () => {

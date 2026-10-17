@@ -1,4 +1,5 @@
 import type { AppState } from "../shared/types/state.js";
+import { staleAnchorError } from "../shared/review-draft-anchor.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyManager = any;
@@ -115,6 +116,8 @@ export function createReviewBridgeHandlers(ctx: ReviewBridgeHandlerCtx) {
       const isGitHub = prData?.provider === "github" || github.findSummary(prKey);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await reviewBridgeStore.syncPendingDrafts(prKey, async (entry: any) => {
+        const stale = staleAnchorError(entry.comment);
+        if (stale) throw new Error(stale);
         if (isGitHub) {
           await github.addPullRequestComment({
             prKey,

@@ -7347,8 +7347,8 @@ export async function createRuntime({
 
   /**
    * A closed PR's checkout can still hold work that is not the PR's: edits
-   * never committed, commits never pushed ("Enable editing", a promoted quick
-   * fix), or a worktree / task workspace created inside it. The closed-PR
+   * never committed, commits never pushed (work done in a review checkout, a promoted
+   * quick fix), or a worktree / task workspace created inside it. The closed-PR
    * cleanup must leave such a checkout alone, so this answers why it is busy,
    * or "" when nothing but the PR itself lives there.
    *

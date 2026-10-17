@@ -724,6 +724,26 @@ describe("review Git capability in the agent launch", () => {
   });
 
   test.each(["linux", "win32"])(
+    "Copilot is told to forward the capability variables by NAME (a ${VAR} reference), never by value (%s)",
+    (platform) => {
+      const result = launch("copilot", platform, { reviewGitEnv });
+      const configArg = result.args[result.args.indexOf("--additional-mcp-config") + 1];
+      const review = JSON.parse(configArg).mcpServers.review;
+      expect(review.env).toMatchObject({
+        STRIDETERM_REVIEW_GIT_URL: "${STRIDETERM_REVIEW_GIT_URL}",
+        STRIDETERM_REVIEW_GIT_CAPABILITY: "${STRIDETERM_REVIEW_GIT_CAPABILITY}",
+      });
+      expect(configArg).not.toContain(CAPABILITY);
+    },
+  );
+
+  test("Copilot without a capability names no Git variables", () => {
+    const result = launch("copilot", "linux");
+    const configArg = result.args[result.args.indexOf("--additional-mcp-config") + 1];
+    expect(JSON.parse(configArg).mcpServers.review.env ?? {}).not.toHaveProperty("STRIDETERM_REVIEW_GIT_CAPABILITY");
+  });
+
+  test.each(["linux", "win32"])(
     "OpenCode carries the capability in its MCP environment, which rides the launch env (%s)",
     (platform) => {
       const result = launch("opencode", platform, { reviewGitEnv });

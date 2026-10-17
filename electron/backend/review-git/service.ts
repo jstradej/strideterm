@@ -7,9 +7,14 @@ import {
   type ReviewGitOperationKind,
   type ReviewGitState,
 } from "../../shared/review-git-events.js";
-import { reviewSourceIdentityKey, sourceBranchName } from "../../shared/review-source-identity.js";
 import { inspectCheckout, listCommits, lsRemoteRef, type GitRun } from "./inspect.js";
-import { fullSourceRef, managedReviewBranchAlias } from "../../shared/review-source-identity.js";
+import {
+  fullSourceRef,
+  managedReviewBranchAlias,
+  reviewSourceIdentityKey,
+  sourceBranchName,
+} from "../../shared/review-source-identity.js";
+import { staleAnchorError } from "../../shared/review-draft-anchor.js";
 import { sharedReviewGitLocks, type ReviewGitLocks } from "./locks.js";
 import {
   REVIEW_GIT_OPERATION_RETENTION_MS,
@@ -86,6 +91,7 @@ export interface ReviewGitCommitAnchor {
   commentKey: string;
   filePath: string;
   lineNumber: number;
+  lineSide?: string;
 }
 
 /**
@@ -220,22 +226,33 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
     (cwd, args, auth) =>
       manager.runGit(cwd, args, { login: auth?.login, token: auth?.token });
 
-  /** Stale inline anchors after a history rewrite: mark, never move. */
-  async function revalidateAnchors(located: Located): Promise<void> {
+  /**
+   * Stale inline anchors after a history rewrite: mark, never move. The file must
+   * still have the line at HEAD; after a rebase (`previousHeadSha` known) a new-side
+   * anchor must also still point at the same code, since lines inserted above it
+   * would silently attach the comment to different code.
+   */
+  async function revalidateAnchors(located: Located, previousHeadSha = ""): Promise<void> {
     const { workspace, manager } = located;
     const prKey = workspace.review?.prKey;
     if (!prKey || !ctx.reviewBridgeStore?.markStaleAnchors) return;
     const run = gitRunFor(manager);
+    const linesAt = async (rev: string, filePath: string): Promise<string[] | null> => {
+      const content = await run(workspace.cwd, ["show", `${rev}:${filePath.replaceAll("\x5c", "/")}`]).then(
+        (out) => out.stdout,
+        () => null,
+      );
+      if (content === null) return null;
+      return content.length === 0 ? [] : content.replace(/\r?\n$/u, "").split("\n");
+    };
     try {
       await ctx.reviewBridgeStore.markStaleAnchors(prKey, async (anchor: ReviewGitCommitAnchor) => {
-        const spec = `HEAD:${anchor.filePath.replace(/\\/gu, "/")}`;
-        const content = await run(workspace.cwd, ["show", spec]).then(
-          (out) => out.stdout,
-          () => null,
-        );
-        if (content === null) return false;
-        const lines = content.length === 0 ? 0 : content.split("\n").length - (content.endsWith("\n") ? 1 : 0);
-        return anchor.lineNumber <= lines;
+        const current = await linesAt("HEAD", anchor.filePath);
+        if (!current || anchor.lineNumber > current.length) return false;
+        if (!previousHeadSha || anchor.lineSide === "old") return true;
+        const before = await linesAt(previousHeadSha, anchor.filePath);
+        if (!before || anchor.lineNumber > before.length) return true;
+        return before[anchor.lineNumber - 1] === current[anchor.lineNumber - 1];
       });
     } catch (error) {
       ctx.log.warn("inline comment anchors could not be revalidated", {
@@ -264,11 +281,8 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
       const commentKey = String(entry.commentKey || "");
       try {
         const comment = (entry.comment || {}) as { anchorStale?: boolean; filePath?: string; lineNumber?: number };
-        if (comment.anchorStale) {
-          throw new Error(
-            `The inline anchor ${comment.filePath || ""}${comment.lineNumber ? `:${comment.lineNumber}` : ""} is stale after a history rewrite. Re-anchor or delete this comment, then publish again.`,
-          );
-        }
+        const stale = staleAnchorError(comment);
+        if (stale) throw new Error(stale);
         if (provider === "github") {
           await manager.addPullRequestComment({
             prKey,
@@ -370,7 +384,7 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
         throw new Error(`Unsupported review Git operation: ${String(kind)}`);
     }
     if (rewritesHistory(result) || (kind === "continue" && result.status === "continued")) {
-      await revalidateAnchors(located);
+      await revalidateAnchors(located, result.status === "rebased" ? String(result.previousHeadSha || "") : "");
     }
     await afterOperation(located);
     return result;

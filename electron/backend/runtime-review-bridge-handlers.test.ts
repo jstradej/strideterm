@@ -64,6 +64,38 @@ describe("syncReviewBridgePullRequest — cross-profile viewer guard", () => {
     expect(syncPendingDrafts).toHaveBeenCalledTimes(1);
   });
 
+  test("Publish / Retry refuses a draft whose inline anchor went stale, instead of posting it at a guessed line", async () => {
+    const addPullRequestComment = vi.fn(async () => {});
+    const failures: string[] = [];
+    const syncPendingDrafts = vi.fn(async (_prKey: string, publish: (entry: unknown) => Promise<unknown>) => {
+      await publish({
+        body: "text",
+        remoteThreadId: null,
+        comment: { filePath: "gone.ts", lineNumber: 4, anchorStale: true },
+      }).catch((error: Error) => failures.push(error.message));
+    });
+    const handlers = createReviewBridgeHandlers({
+      azure: { addPullRequestComment, findSummary: () => null },
+      github: { addPullRequestComment, findSummary: () => null },
+      reviewBridgeStore: { getPullRequestContext: () => ({ provider: "azure-devops" }), syncPendingDrafts },
+      getPayload: () => ({}),
+      broadcastState: vi.fn(),
+      refreshAzure: vi.fn(async () => {}),
+      refreshGitHub: vi.fn(async () => {}),
+      refreshGit: vi.fn(async () => {}),
+      assertWorkspaceInViewerProfile: vi.fn(),
+      assertPrInViewerProfile: vi.fn(),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    await handlers.syncReviewBridgePullRequest({ prKey: "azure:pr1" });
+
+    expect(addPullRequestComment).not.toHaveBeenCalled();
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toContain("gone.ts:4");
+    expect(failures[0]).toContain("stale");
+  });
+
   test("desktop IPC (no viewer id) is unaffected", async () => {
     const { handlers, syncPendingDrafts } = makeHandlers();
     await handlers.syncReviewBridgePullRequest({ prKey: "azure:pr1" });

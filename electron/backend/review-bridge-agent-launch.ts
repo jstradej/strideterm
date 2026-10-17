@@ -509,13 +509,18 @@ function buildCodexLaunch({ workspace, panel, context, processInfo, ...grants }:
   });
 }
 
-function buildCopilotLaunch({ workspace, panel, context, processInfo }: BuildLaunchInput): AgentLaunch {
+function buildCopilotLaunch({ workspace, panel, context, processInfo, reviewGitEnv }: BuildLaunchInput): AgentLaunch {
   const mcp = buildMcpServerSpec({ context, processInfo });
   const platform = processInfo?.platform || process.platform;
   const args = [...inheritedPanelArgs(panel)];
   if (!args.includes("--allow-all-tools") && !args.includes("--yolo") && !args.includes("--allow-all")) {
     args.unshift("--allow-all-tools");
   }
+  // Copilot starts MCP servers with only the env its config names, and expands
+  // ${VAR} placeholders from the tab's own environment (the GitHub MCP server's
+  // Copilot CLI guide relies on this) — so the per-tab Git capability is named
+  // here by variable, never written into the command line.
+  const reviewGitPlaceholders = Object.fromEntries(Object.keys(reviewGitEnv || {}).map((name) => [name, `\${${name}}`]));
   // Copilot exposes per-session MCP servers via --additional-mcp-config. The
   // argument accepts inline JSON (matches Claude's --mcp-config shape).
   args.push(
@@ -523,7 +528,7 @@ function buildCopilotLaunch({ workspace, panel, context, processInfo }: BuildLau
       review: {
         command: mcp.command,
         args: mcp.args,
-        env: mcp.env,
+        env: { ...(mcp.env || {}), ...reviewGitPlaceholders },
       },
     }),
     "--add-dir",
@@ -643,7 +648,7 @@ export function buildReviewAgentLaunch({
     return buildCodexLaunch({ workspace, panel, context, processInfo, sshMcp, internalMcp });
   }
   if (agent === "copilot") {
-    return buildCopilotLaunch({ workspace, panel, context, processInfo });
+    return buildCopilotLaunch({ workspace, panel, context, processInfo, reviewGitEnv });
   }
   if (agent === "opencode") {
     return buildOpencodeLaunch({ workspace, panel, context, processInfo, reviewGitEnv });

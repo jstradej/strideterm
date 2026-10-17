@@ -369,7 +369,6 @@ async function main(): Promise<void> {
           repository: { id: "repo", name: "repo" },
           pullRequest: { id: 1, title: "Smoke PR", status: "active" },
           role: "reviewer",
-          writable: false,
           checkout: null,
         },
         panels: [{ id: PANEL_ID, title: "Shell", command: "", startup: "default" }],

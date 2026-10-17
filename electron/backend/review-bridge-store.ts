@@ -1598,6 +1598,7 @@ export async function createReviewBridgeStore(rootPath: string) {
         commentKey: string;
         filePath: string;
         lineNumber: number;
+        lineSide?: string;
       }) => Promise<boolean> | boolean,
     ) {
       ensureOpen();
@@ -1612,7 +1613,12 @@ export async function createReviewBridgeStore(rootPath: string) {
           const lineNumber = Number(payload.lineNumber) || 0;
           if (!filePath || !lineNumber) continue;
           checked += 1;
-          const valid = await isAnchorValid({ commentKey: String(row.comment_key), filePath, lineNumber });
+          const valid = await isAnchorValid({
+            commentKey: String(row.comment_key),
+            filePath,
+            lineNumber,
+            lineSide: String(payload.lineSide || ""),
+          });
           const wasStale = payload.anchorStale === true;
           if (valid === !wasStale) continue;
           const next = { ...payload };

@@ -257,6 +257,9 @@ const proposalFields = {
 const CONSENT_NOTE =
   " Needs the user's consent: call once without proposalId to get a proposal, ask the user and wait for their actual answer, then call again with the proposalId.";
 
+const REFRESH_NOTE =
+  " Needs no question when it is safe: it runs at once. Only when it returns a proposal (commits would be discarded) ask the user, wait for their actual answer, then call again with the proposalId.";
+
 export function registerReviewGitTools(server: McpServer, client: ReviewGitClient): void {
   const withDisconnect = (signal?: AbortSignal) => signal;
   const read = async (payload: Record<string, unknown>, signal?: AbortSignal) =>
@@ -406,7 +409,7 @@ export function registerReviewGitTools(server: McpServer, client: ReviewGitClien
       title: "Review Git: refresh",
       description:
         "Bring the checkout up to the pull request's live source commit. The exact live SHA is pinned. Fast-forwards automatically; resets onto a rewritten PR branch automatically ONLY when HEAD is exactly the last integrated source commit, the tree is clean and no operation is active (a recovery ref is created first). If commits would be discarded it returns a proposal instead." +
-        CONSENT_NOTE,
+        REFRESH_NOTE,
       inputSchema: { ...proposalFields },
     },
     async (input: Record<string, unknown>, extra: { signal?: AbortSignal }) => {

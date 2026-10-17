@@ -352,12 +352,18 @@ describe("the MCP tools, end to end through the broker", () => {
       "review_git_abort",
       "review_git_push",
       "review_git_force_push",
-      "review_git_refresh",
     ]) {
       const tool = byName.get(name)!;
       expect(tool.description).toContain("Needs the user's consent");
       expect(Object.keys(tool.inputSchema.properties || {})).toEqual(expect.arrayContaining(["proposalId", "consent"]));
     }
+    // A safe refresh runs without a question; only its proposal needs the user.
+    const refresh = byName.get("review_git_refresh")!;
+    expect(refresh.description).not.toContain("Needs the user's consent");
+    expect(refresh.description).toContain("Needs no question when it is safe");
+    expect(Object.keys(refresh.inputSchema.properties || {})).toEqual(
+      expect.arrayContaining(["proposalId", "consent"]),
+    );
     expect(Object.keys(byName.get("review_git_fetch")!.inputSchema.properties || {})).toEqual([]);
     expect(Object.keys(byName.get("review_git_status")!.inputSchema.properties || {})).toEqual([]);
   });

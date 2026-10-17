@@ -46,7 +46,7 @@ For a PR **you authored**, the row also offers **Work here** when you already ha
 
 ### Detach from a Review
 
-A linked workspace stays linked until you unlink it: **Detach from PR review** in the workspace's ⋯ menu (also in the workspace editor and, for review-locked checkouts, the Git tab banner). Detaching removes the Review tab, stops wiring the review bridge into new agent tabs and restores normal git operations. The PR on the server is not touched.
+A linked workspace stays linked until you unlink it: **Detach from PR review** in the workspace's ⋯ menu (also in the workspace editor and the Git tab). Detaching is optional — Git works the same either way, because the checkout's real state decides every outcome. It removes the Review tab, stops wiring the review bridge into new agent tabs and makes the workspace an ordinary one, so a push publishes under the local branch name. The PR on the server is not touched.
 
 Workspaces linked by **Work here** unlink themselves once the PR is completed or abandoned — the source branch is usually gone by then. Managed review worktrees stay linked: they exist only for the review.
 
