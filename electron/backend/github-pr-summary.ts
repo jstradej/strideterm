@@ -30,10 +30,21 @@ interface GithubPR {
   mergeable?: boolean | null;
   mergeable_state?: string;
   base?: {
-    repo?: { owner?: { login?: string }; name?: string; clone_url?: string; html_url?: string };
+    repo?: { id?: number | string; owner?: { login?: string }; name?: string; clone_url?: string; html_url?: string };
     ref?: string;
   };
-  head?: { sha?: string; ref?: string };
+  head?: {
+    sha?: string;
+    ref?: string;
+    repo?: {
+      id?: number | string;
+      name?: string;
+      full_name?: string;
+      clone_url?: string;
+      html_url?: string;
+      permissions?: { push?: boolean };
+    } | null;
+  };
   user?: { login?: string; name?: string; avatar_url?: string };
 }
 
@@ -45,6 +56,31 @@ export function findWorkspaceForPullRequest(
 }
 
 export { findMatchingWorkspace };
+
+/**
+ * GitHub reports the PR's base (target) and head (source) repositories
+ * separately; `review.repository` is built from the base. The head repository
+ * is what a push and a baseline are bound to. It is null when the fork was
+ * deleted, which leaves nothing to verify a write against.
+ */
+function buildSourceRepository(p: GithubPR, owner: string, repo: string) {
+  const head = p.head?.repo;
+  if (!head) return null;
+  const baseRepo = p.base?.repo;
+  const fullName = head.full_name || "";
+  const sameAsTarget =
+    head.id != null && baseRepo?.id != null
+      ? String(head.id) === String(baseRepo.id)
+      : fullName.toLowerCase() === `${owner}/${repo}`.toLowerCase();
+  return {
+    id: head.id != null ? String(head.id) : "",
+    name: head.name || "",
+    fullName,
+    remoteUrl: head.clone_url || head.html_url || "",
+    sameAsTarget,
+    canPush: typeof head.permissions?.push === "boolean" ? head.permissions.push : null,
+  };
+}
 
 /**
  * Summarize reviewers from reviews list and requested_reviewers.
@@ -444,6 +480,7 @@ export function buildPullRequestSummary({
         p.base?.repo?.clone_url ||
         buildPullRequestWebUrl(hostUrl, owner, repo, pullNumber).replace(`/pull/${pullNumber}`, ""),
     },
+    sourceRepository: buildSourceRepository(p, owner, repo),
     pullRequest: {
       id: pullNumber,
       number: pullNumber,

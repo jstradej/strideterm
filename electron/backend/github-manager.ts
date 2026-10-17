@@ -2,6 +2,8 @@ import path from "node:path";
 import { execFileText } from "./process-utils.js";
 import { createGitHubApi } from "./github-api.js";
 import { BaseProviderManager } from "./shared/base-manager.js";
+import { carryOverSourceBaseline } from "../shared/review-source-identity.js";
+import type { ReviewInfo } from "../shared/types/state.js";
 import { classifyGitHubRequest, parseGitHubUrl } from "./github-audit-log-store.js";
 import { buildCheckSummary, buildPullRequestSummary, findWorkspaceForPullRequest } from "./github-pr-summary.js";
 import {
@@ -851,10 +853,6 @@ export class GitHubManager extends BaseProviderManager {
           `+refs/heads/${sourceBranch}:refs/remotes/origin/${sourceBranch}`,
           `+refs/heads/${targetBranch}:refs/remotes/origin/${targetBranch}`,
         ],
-        // Same reasoning as the Azure caller: this runs only when no review
-        // workspace exists yet, so the only branch whose ahead commits can be
-        // the user's own is their own PR.
-        allowResetToRemote: summary.role !== "author",
         token,
       });
 
@@ -875,24 +873,26 @@ export class GitHubManager extends BaseProviderManager {
   buildReviewMetadata(
     summary: Record<string, unknown>,
     checkout: Record<string, unknown>,
-    extra: Record<string, unknown> = {},
+    extra: { parentWorkspaceId?: string; previousReview?: Partial<ReviewInfo> | null } = {},
   ): Record<string, unknown> {
-    return {
+    const review = {
       provider: "github",
       prKey: summary.prKey,
       connectionId: summary.connectionId,
       hostUrl: summary.hostUrl,
       parentWorkspaceId: extra.parentWorkspaceId || "",
       repository: clone(summary.repository as Record<string, unknown>),
+      sourceRepository: summary.sourceRepository ? clone(summary.sourceRepository as Record<string, unknown>) : null,
       pullRequest: clone(summary.pullRequest as Record<string, unknown>),
       role: summary.role,
-      writable: extra.writable === true,
       checkout: {
         mode: checkout.mode || "managed-worktree",
         rootPath: checkout.rootPath,
         cacheRepoPath: checkout.cacheRepoPath || "",
       },
     };
+    const sourceBaselineSha = carryOverSourceBaseline(extra.previousReview, review as unknown as Partial<ReviewInfo>);
+    return sourceBaselineSha ? { ...review, sourceBaselineSha } : review;
   }
 
   // ---------------------------------------------------------------------------

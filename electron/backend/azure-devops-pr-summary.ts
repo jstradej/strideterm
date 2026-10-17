@@ -33,6 +33,15 @@ interface AzurePR {
     remoteUrl?: string;
     project?: { id?: string; name?: string };
   };
+  forkSource?: {
+    repository?: {
+      id?: string;
+      name?: string;
+      remoteUrl?: string;
+      project?: { id?: string; name?: string };
+    };
+    name?: string;
+  } | null;
   lastMergeSourceCommit?: {
     commitId?: string;
     committer?: unknown;
@@ -174,6 +183,28 @@ export function buildPullRequestSummary({
         buildRepositoryRemoteUrl(connection, projectName, p.repository?.name || repositoryId),
       ),
     },
+    // Azure reports a `forkSource` only when the source branch lives in another
+    // repository; without one the source is the target repository itself.
+    sourceRepository: p.forkSource?.repository
+      ? {
+          id: p.forkSource.repository.id || "",
+          name: p.forkSource.repository.name || "",
+          fullName: [p.forkSource.repository.project?.name, p.forkSource.repository.name].filter(Boolean).join("/"),
+          remoteUrl: p.forkSource.repository.remoteUrl || "",
+          sameAsTarget: false,
+          canPush: null,
+        }
+      : {
+          id: repositoryId,
+          name: p.repository?.name || "",
+          fullName: [projectName, p.repository?.name].filter(Boolean).join("/"),
+          remoteUrl: firstNonEmpty(
+            p.repository?.remoteUrl,
+            buildRepositoryRemoteUrl(connection, projectName, p.repository?.name || repositoryId),
+          ),
+          sameAsTarget: true,
+          canPush: null,
+        },
     pullRequest: {
       id: p.pullRequestId,
       title: p.title || `PR #${p.pullRequestId}`,

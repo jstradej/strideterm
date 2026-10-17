@@ -437,11 +437,11 @@ describe("default state", () => {
     expect(workspace.review!.prKey).toBe("ado-main:repo-1:123");
     expect(workspace.review!.parentWorkspaceId).toBe("azure-root");
     expect(workspace.review!.checkout!.cacheRepoPath).toBe("C:/cache/repo");
-    // writable defaults to false for review metadata that predates the flag
-    expect(workspace.review!.writable).toBe(false);
+    expect(workspace.review!.sourceBaselineSha).toBeUndefined();
+    expect(workspace.review).not.toHaveProperty("writable");
   });
 
-  test("normalizeWorkspace preserves review.writable opt-in", () => {
+  test("normalizeWorkspace drops the retired review.writable flag and keeps a valid source baseline", () => {
     const workspace = normalizeWorkspace({
       id: "review-1",
       name: "Review",
@@ -451,10 +451,33 @@ describe("default state", () => {
         provider: "azure-devops",
         prKey: "ado-main:repo-1:123",
         writable: true,
+        sourceBaselineSha: "A".repeat(40),
+        sourceRepository: { id: "repo-1", remoteUrl: "https://example.com/r.git", sameAsTarget: true },
       },
     });
 
-    expect(workspace.review!.writable).toBe(true);
+    expect(workspace.review).not.toHaveProperty("writable");
+    expect(workspace.review!.sourceBaselineSha).toBe("a".repeat(40));
+    expect(workspace.review!.sourceRepository).toEqual({
+      id: "repo-1",
+      name: "",
+      fullName: "",
+      remoteUrl: "https://example.com/r.git",
+      sameAsTarget: true,
+      canPush: null,
+    });
+  });
+
+  test("normalizeWorkspace discards a malformed source baseline", () => {
+    const workspace = normalizeWorkspace({
+      id: "review-2",
+      name: "Review",
+      cwd: "C:/work/review",
+      panels: [{ id: "shell", title: "Shell", command: "" }],
+      review: { provider: "github", prKey: "gh:1", sourceBaselineSha: "not-a-sha" },
+    });
+
+    expect(workspace.review!.sourceBaselineSha).toBeUndefined();
   });
 
   test("normalizeState preserves Azure connection config", () => {

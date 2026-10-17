@@ -14,6 +14,8 @@ import type {
 } from "../shared/types/azure-pipelines.js";
 import { BaseProviderManager } from "./shared/base-manager.js";
 import type { CredentialStore } from "./shared/credential-store.js";
+import { carryOverSourceBaseline } from "../shared/review-source-identity.js";
+import type { ReviewInfo, ReviewSourceRepository } from "../shared/types/state.js";
 import { classifyAzureRequest, parseAzureUrl } from "./azure-audit-log-store.js";
 import { buildPullRequestSummary, findWorkspaceForPullRequest } from "./azure-devops-pr-summary.js";
 import {
@@ -91,6 +93,7 @@ interface AzurePrSummary {
   provider?: string;
   project?: { id: string; name: string };
   repository?: { id: string; name: string; remoteUrl?: string };
+  sourceRepository?: ReviewSourceRepository | null;
   pullRequest?: {
     id: string | number;
     title?: string;
@@ -234,7 +237,8 @@ interface ReviewWorkspace {
     checkout?: ReviewCheckout;
     parentWorkspaceId?: string;
     role?: string;
-    writable?: boolean;
+    sourceRepository?: ReviewSourceRepository | null;
+    sourceBaselineSha?: string;
     orgUrl?: string;
   };
   quickfix?: Record<string, unknown>;
@@ -1784,10 +1788,6 @@ export class AzureDevOpsManager extends BaseProviderManager {
           `+${summary.pullRequest!.sourceRefName}:refs/remotes/origin/${sourceBranch}`,
           `+${summary.pullRequest!.targetRefName}:refs/remotes/origin/${targetBranch}`,
         ],
-        // Only reached when no review workspace exists yet, so there is no
-        // "Enable editing" opt-in to honour — the one branch whose ahead
-        // commits could be the user's own is their own PR.
-        allowResetToRemote: summary.role !== "author",
         login: connection.login,
         token,
       });
@@ -1811,9 +1811,9 @@ export class AzureDevOpsManager extends BaseProviderManager {
   buildReviewMetadata(
     summary: AzurePrSummary,
     checkout: ReviewCheckout,
-    extra: { parentWorkspaceId?: string; writable?: boolean } = {},
+    extra: { parentWorkspaceId?: string; previousReview?: Partial<ReviewInfo> | null } = {},
   ) {
-    return {
+    const review = {
       provider: "azure-devops",
       prKey: summary.prKey,
       connectionId: summary.connectionId,
@@ -1821,15 +1821,17 @@ export class AzureDevOpsManager extends BaseProviderManager {
       parentWorkspaceId: extra.parentWorkspaceId || "",
       project: clone(summary.project),
       repository: clone(summary.repository),
+      sourceRepository: summary.sourceRepository ? clone(summary.sourceRepository) : null,
       pullRequest: clone(summary.pullRequest),
       role: summary.role,
-      writable: extra.writable === true,
       checkout: {
         mode: checkout.mode,
         rootPath: checkout.rootPath,
         cacheRepoPath: checkout.cacheRepoPath || "",
       },
     };
+    const sourceBaselineSha = carryOverSourceBaseline(extra.previousReview, review as unknown as Partial<ReviewInfo>);
+    return sourceBaselineSha ? { ...review, sourceBaselineSha } : review;
   }
 
   buildManagedReviewPaths(

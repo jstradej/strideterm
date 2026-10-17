@@ -505,6 +505,17 @@ export interface ReviewRepository {
   remoteUrl: string;
 }
 
+export interface ReviewSourceRepository {
+  id: string;
+  name: string;
+  fullName: string;
+  remoteUrl: string;
+  /** True when the PR's source branch lives in the same repository as its target (no fork). */
+  sameAsTarget: boolean;
+  /** Provider-reported write access to the source repository; null when the provider did not say. */
+  canPush: boolean | null;
+}
+
 export interface ReviewInfo {
   provider: string;
   prKey: string;
@@ -515,8 +526,14 @@ export interface ReviewInfo {
   repository: ReviewRepository | null;
   pullRequest: ReviewPrInfo | null;
   role: string;
-  /** User opted in to git write operations (rebase/merge/push) on a reviewer-role checkout. */
-  writable: boolean;
+  /** The repository the PR's SOURCE branch lives in; distinct from `repository` (the target). */
+  sourceRepository?: ReviewSourceRepository | null;
+  /**
+   * The PR source commit last incorporated into, or successfully pushed from,
+   * this checkout. Bound to provider, connection, PR key, full source ref and
+   * source repository; not the activity cursor and not a tracking-ref value.
+   */
+  sourceBaselineSha?: string;
   checkout: ReviewCheckout | null;
 }
 

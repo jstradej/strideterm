@@ -48,6 +48,10 @@ interface AuditLogEntry {
   resourceId?: string;
   summary?: string;
   userInitiated?: boolean;
+  /** Review Git operations: one row per operation, written as intent and finished in place. */
+  operationId?: string;
+  /** JSON document: workspace, PR, source, requester, consent context, refs. Never a secret. */
+  details?: string;
   [key: string]: unknown;
 }
 
@@ -89,6 +93,9 @@ interface AuditLogFilters {
   success?: boolean;
   operation?: string;
   userInitiated?: boolean;
+  resourceType?: string;
+  resourceId?: string;
+  operationId?: string;
   search?: string;
   limit?: number;
   offset?: number;
@@ -147,7 +154,9 @@ export function createAuditLogStore(databasePath: string, config: AuditLogStoreC
       resource_type TEXT DEFAULT '',
       resource_id TEXT DEFAULT '',
       summary TEXT DEFAULT '',
-      user_initiated INTEGER NOT NULL DEFAULT 0
+      user_initiated INTEGER NOT NULL DEFAULT 0,
+      operation_id TEXT NOT NULL DEFAULT '',
+      details TEXT NOT NULL DEFAULT ''
     );
 
     CREATE INDEX IF NOT EXISTS idx_${indexPrefix}_timestamp ON ${tableName}(timestamp);
@@ -163,6 +172,10 @@ export function createAuditLogStore(databasePath: string, config: AuditLogStoreC
     const existing = new Set(
       (db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name?: unknown }>).map((c) => String(c.name)),
     );
+    for (const name of ["operation_id", "details"]) {
+      if (existing.has(name)) continue;
+      db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${name} TEXT NOT NULL DEFAULT ''`);
+    }
     for (const column of providerColumns) {
       if (existing.has(column.name)) continue;
       db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${column.name} TEXT NOT NULL DEFAULT ''`);
@@ -175,9 +188,17 @@ export function createAuditLogStore(databasePath: string, config: AuditLogStoreC
   const insertStmt = db.prepare(`
     INSERT INTO ${tableName}
       (timestamp, connection_id, ${providerColNames}, operation, category, method, url,
-       status_code, success, error_message, duration_ms, resource_type, resource_id, summary, user_initiated)
-    VALUES (?, ?, ${providerPlaceholders}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       status_code, success, error_message, duration_ms, resource_type, resource_id, summary, user_initiated,
+       operation_id, details)
+    VALUES (?, ?, ${providerPlaceholders}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
+
+  const finishStmt = db.prepare(`
+    UPDATE ${tableName}
+       SET success = ?, error_message = ?, duration_ms = ?, status_code = ?, summary = ?, details = ?
+     WHERE id = ?
+  `);
+  const detailsStmt = db.prepare(`SELECT details FROM ${tableName} WHERE id = ?`);
 
   const countStmt = db.prepare(`SELECT COUNT(*) as total FROM ${tableName}`);
 
@@ -191,9 +212,18 @@ export function createAuditLogStore(databasePath: string, config: AuditLogStoreC
    * refuses to approve anything it could not write down.
    */
   function logEntry(entry: AuditLogEntry): boolean {
+    return insertEntry(entry) !== null;
+  }
+
+  /**
+   * Insert one entry and return its row id, or null when the write failed.
+   * The review-Git engine writes an operation's INTENT with this before it runs
+   * a mutating command, and finishes the same row afterwards (`finishEntry`).
+   */
+  function insertEntry(entry: AuditLogEntry): number | null {
     try {
       const providerValues = mapEntryToProviderValues(entry);
-      insertStmt.run(
+      const result = insertStmt.run(
         entry.timestamp || new Date().toISOString(),
         entry.connectionId || "",
         ...providerValues,
@@ -209,10 +239,49 @@ export function createAuditLogStore(databasePath: string, config: AuditLogStoreC
         entry.resourceId || "",
         entry.summary || "",
         entry.userInitiated ? 1 : 0,
+        entry.operationId || "",
+        entry.details || "",
       );
-      return true;
+      return Number(result.lastInsertRowid) || null;
     } catch (err) {
       log.warn("failed to write entry", { err: (err as Error)?.message || String(err) });
+      return null;
+    }
+  }
+
+  /** Record the outcome on a row written by `insertEntry`. Returns whether the update landed. */
+  function finishEntry(
+    id: number,
+    outcome: {
+      success: boolean;
+      errorMessage?: string | null;
+      durationMs?: number | null;
+      summary?: string;
+      /** Merged into the intent's JSON `details`. */
+      details?: Record<string, unknown>;
+    },
+  ): boolean {
+    try {
+      const existing = detailsStmt.get(id) as { details?: string } | undefined;
+      let merged: Record<string, unknown> = {};
+      try {
+        merged = existing?.details ? (JSON.parse(existing.details) as Record<string, unknown>) : {};
+      } catch {
+        merged = {};
+      }
+      const details = JSON.stringify({ ...merged, ...(outcome.details || {}) });
+      const result = finishStmt.run(
+        outcome.success ? 1 : 0,
+        outcome.errorMessage || null,
+        outcome.durationMs ?? null,
+        null,
+        outcome.summary ?? "",
+        details,
+        id,
+      );
+      return Number(result.changes) > 0;
+    } catch (err) {
+      log.warn("failed to finish entry", { err: (err as Error)?.message || String(err) });
       return false;
     }
   }
@@ -261,6 +330,15 @@ export function createAuditLogStore(databasePath: string, config: AuditLogStoreC
     if (typeof filters.userInitiated === "boolean") {
       conditions.push("user_initiated = ?");
       params.push(filters.userInitiated ? 1 : 0);
+    }
+    for (const [column, value] of [
+      ["resource_type", filters.resourceType],
+      ["resource_id", filters.resourceId],
+      ["operation_id", filters.operationId],
+    ] as const) {
+      if (!value) continue;
+      conditions.push(`${column} = ?`);
+      params.push(value);
     }
     if (filters.providerFilters) {
       const known = new Set(providerColumns.map((c) => c.name));
@@ -429,6 +507,8 @@ export function createAuditLogStore(databasePath: string, config: AuditLogStoreC
       resourceId: row.resource_id,
       summary: row.summary,
       userInitiated: row.user_initiated === 1,
+      operationId: row.operation_id || "",
+      details: row.details || "",
     };
   }
 
@@ -439,5 +519,5 @@ export function createAuditLogStore(databasePath: string, config: AuditLogStoreC
     log.warn("prune on startup failed", { err: (err as Error)?.message || String(err) });
   }
 
-  return { logEntry, query, getStats, deleteEntries, prune, getEntryCount, close };
+  return { logEntry, insertEntry, finishEntry, query, getStats, deleteEntries, prune, getEntryCount, close };
 }

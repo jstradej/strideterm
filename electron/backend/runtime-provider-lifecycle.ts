@@ -309,11 +309,9 @@ export function createProviderLifecycle(ctx: ProviderLifecycleCtx) {
             },
             {
               parentWorkspaceId: paths.parentWorkspaceId || "",
-              // Preserve the reviewer's "Enable editing" opt-in. buildReviewMetadata
-              // defaults writable to false, so without threading it through here a
-              // periodic refresh would silently re-gate push on a checkout the user
-              // just enabled — the workspace.review object is replaced wholesale below.
-              writable: workspace.review?.writable === true,
+              // The workspace.review object is replaced wholesale below, so the
+              // persisted source baseline has to ride through the rebuild.
+              previousReview: workspace.review,
             },
           ),
         });
@@ -374,9 +372,9 @@ export function createProviderLifecycle(ctx: ProviderLifecycleCtx) {
             targetRefName: "",
           },
           role: "",
-          // Preserve the reviewer's "Enable editing" opt-in across this rebuild
-          // (see the buildReviewMetadata branch above for why).
-          writable: workspace.review?.writable === true,
+          // This rebuild knows neither the source ref nor the source repository,
+          // so no baseline can stay bound to it.
+          sourceRepository: null,
           checkout: {
             mode: "managed-worktree",
             rootPath: workspace.cwd,

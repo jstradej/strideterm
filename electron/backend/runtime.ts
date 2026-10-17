@@ -253,6 +253,7 @@ import { initLogger, getLogger, setLogLevel, reconfigureLogger, createAuditLogge
 import type { Logger } from "./logger.js";
 import { createRuntimeAttentionManager } from "./runtime-attention.js";
 import type { AppState, WorkspaceState } from "../shared/types/state.js";
+import { reviewSourceIdentityKey } from "../shared/review-source-identity.js";
 import { formatWorkspaceDisplayName } from "../shared/workspace-display.js";
 import { isCompanionPrimaryHosted } from "../shared/companion-primary.js";
 import { sessionIdFor } from "../shared/task-states.js";
@@ -1251,6 +1252,32 @@ export async function createRuntime({
     fetchImpl: dependencies.fetchImpl || globalThis.fetch,
     execFileTextImpl,
   });
+  // Review Git operations record the PR source baseline (and lazily captured
+  // source identity) through normal app state — same atomic store write.
+  const reviewMetadataStore = {
+    async updateReview(
+      workspaceId: string,
+      patch: {
+        sourceBaselineSha?: string;
+        sourceRepository?: import("../shared/types/state.js").ReviewSourceRepository;
+        expectedIdentityKey?: string;
+      },
+    ) {
+      await store.mutate((draft: AppState) => {
+        const workspace = draft.workspaces.find((item) => item.id === workspaceId);
+        if (!workspace?.review) return;
+        if (patch.sourceRepository && !workspace.review.sourceRepository) {
+          workspace.review.sourceRepository = patch.sourceRepository;
+        }
+        if (patch.expectedIdentityKey && reviewSourceIdentityKey(workspace.review) !== patch.expectedIdentityKey) {
+          throw new Error("The pull request's source identity changed while the operation ran; baseline not saved.");
+        }
+        if (patch.sourceBaselineSha) workspace.review.sourceBaselineSha = patch.sourceBaselineSha;
+      });
+    },
+  };
+  azure.setReviewWorkspaceMetadataStore?.(reviewMetadataStore);
+  github.setReviewWorkspaceMetadataStore?.(reviewMetadataStore);
   const events = new EventEmitter();
   type SshTestRecord = {
     ownerWindowId: string;

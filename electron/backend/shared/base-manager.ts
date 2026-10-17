@@ -25,6 +25,17 @@ import {
 import type { Logger } from "../logger.js";
 import { getLogger } from "../logger.js";
 import type { CredentialStore } from "./credential-store.js";
+import { reviewSourceIdentityKey } from "../../shared/review-source-identity.js";
+import type { ReviewInfo, ReviewSourceRepository } from "../../shared/types/state.js";
+import { createReviewGitEngine, type ReviewGitEngine } from "../review-git/engine.js";
+import { sharedReviewGitLocks, type ReviewGitLocks } from "../review-git/locks.js";
+import { compareCommits } from "../review-git/inspect.js";
+import type {
+  ReviewGitConfirmation,
+  ReviewGitRequester,
+  ReviewGitResult,
+  ReviewGitSubject,
+} from "../review-git/types.js";
 
 interface PrSummaryItem {
   prKey?: string;
@@ -43,64 +54,49 @@ interface SnapshotConnection {
   [key: string]: unknown;
 }
 
-/** Minimal shape `fetch/rebase/push/syncReviewWorkspace` need — both AzureDevOpsManager's
+/** Minimal shape the review Git operations need — both AzureDevOpsManager's
  * `ReviewWorkspace` and GitHubManager's `SyncWorkspace` satisfy this structurally. */
-interface ReviewWorkspaceRef {
+export interface ReviewWorkspaceRef {
   id: string;
   cwd?: string;
+  profileId?: string;
   review?: {
+    provider?: string;
+    prKey?: string;
     connectionId?: string;
+    repository?: { remoteUrl?: string } | null;
+    sourceRepository?: ReviewSourceRepository | null;
+    sourceBaselineSha?: string;
     pullRequest?: {
+      id?: string | number;
+      number?: string | number;
       sourceRefName?: string;
       targetRefName?: string;
-    };
+    } | null;
     /** "author" when the user owns the PR (a promoted quickfix workspace). */
     role?: string;
-    /** User opted in to git write operations on a reviewer-role checkout. */
-    writable?: boolean;
+    checkout?: { mode?: string; rootPath?: string; cacheRepoPath?: string } | null;
   };
 }
 
-/**
- * Is this review checkout a read-only MIRROR of the PR's source branch?
- *
- * For a reviewer who has not enabled editing, the answer is yes, and it is
- * what makes a hard reset safe: the UI disables Rebase, Merge, Push and Force
- * push on such a checkout, so the reviewer cannot have produced a local commit
- * on it. Commits "ahead" of the remote there are not the reviewer's work — they
- * are the AUTHOR's own commits, orphaned when the author rebased or
- * force-pushed the PR branch, i.e. stale copies of what the remote now carries
- * under different hashes.
- *
- * The two exceptions own real work that must never be discarded: `role ===
- * "author"` (the user's own PR, typically a promoted quickfix workspace) and
- * `writable === true` ("Enable editing", whose entire purpose is to let the
- * reviewer commit and push to the PR source branch).
- *
- * Same rule as the renderer's `isReviewWorkspace` in GitPane.vue — keep the two
- * in step; that one decides whether to DISABLE the write buttons, this one
- * relies on their being disabled.
- */
-export function isLockedReviewMirror(workspace: ReviewWorkspaceRef): boolean {
-  const review = workspace.review;
-  if (!review) return false;
-  if (review.role === "author") return false;
-  return review.writable !== true;
-}
+/** Outcome of `syncReviewWorkspace` — the shared review Git preflight result. */
+export type ReviewWorkspaceSyncResult = ReviewGitResult;
+export type ReviewWorkspaceSyncStatus = ReviewGitResult["status"];
 
-/** Outcome of `syncReviewWorkspace` — see its docstring for the semantics of each. */
-export type ReviewWorkspaceSyncStatus = "updated" | "reset" | "already-current" | "dirty" | "ahead" | "diverged";
+/** Where a started review Git operation was requested from, for the audit row. */
+export type { ReviewGitRequester, ReviewGitConfirmation };
 
-export interface ReviewWorkspaceSyncResult {
-  status: ReviewWorkspaceSyncStatus;
-  /** Human-readable outcome/reason, safe to show directly in the UI. */
-  message: string;
-  /** Commits brought in; 0 unless status is "updated" or "reset". */
-  commitCount: number;
-  /** Local commits thrown away; non-zero only for status "reset". */
-  discardedCount?: number;
-  headSha: string;
-  previousHeadSha: string;
+/** Persists review-metadata patches (baseline, lazily captured source identity) into app state. */
+export interface ReviewWorkspaceMetadataStore {
+  updateReview(
+    workspaceId: string,
+    patch: {
+      sourceBaselineSha?: string;
+      sourceRepository?: ReviewSourceRepository;
+      /** The source identity the caller inspected; the write is refused when the stored review no longer matches it. */
+      expectedIdentityKey?: string;
+    },
+  ): Promise<void>;
 }
 
 interface ProviderSnapshot {
@@ -243,7 +239,7 @@ interface OpenReviewWorkspaceHooks {
     summary: any,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     checkout: any,
-    extra: { parentWorkspaceId?: string; writable?: boolean },
+    extra: { parentWorkspaceId?: string; previousReview?: Partial<ReviewInfo> | null },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ): any;
   /** "<repo> PR #<id>" — used for both the workspace name and its notes string. */
@@ -297,7 +293,19 @@ interface OpenQuickFixWorkspaceHooks {
 }
 
 interface AuditLogStore {
-  logEntry(entry: Record<string, unknown>): void;
+  logEntry(entry: Record<string, unknown>): void | boolean;
+  /** Intent-first rows for review Git mutations; a store without them cannot audit those. */
+  insertEntry?(entry: Record<string, unknown>): number | null;
+  finishEntry?(
+    id: number,
+    outcome: {
+      success: boolean;
+      errorMessage?: string | null;
+      durationMs?: number | null;
+      summary?: string;
+      details?: Record<string, unknown>;
+    },
+  ): boolean;
 }
 
 type ApiFactory = (
@@ -375,6 +383,9 @@ export class BaseProviderManager extends EventEmitter {
   providerDisplayName: string;
   getDefaultReviewRoot: () => string;
   _log: Logger | null;
+  reviewMetadataStore: ReviewWorkspaceMetadataStore | null = null;
+  reviewGitLocks: ReviewGitLocks = sharedReviewGitLocks;
+  reviewGitEngine: ReviewGitEngine | null = null;
 
   constructor({
     credentialStore,
@@ -436,68 +447,6 @@ export class BaseProviderManager extends EventEmitter {
   }: { connectionId?: string; userInitiated?: boolean } = {}): void {
     this._auditConnectionId = connectionId;
     this._auditUserInitiated = userInitiated;
-  }
-
-  /**
-   * Run a user-initiated git operation on a review checkout and log it to the
-   * audit store. API calls are audited via _logAudit's fetch hook; git
-   * subprocesses bypass it, so review git ops (fetch/rebase/push) go through
-   * this wrapper instead. Entry shape mirrors GitManager._logGitAudit.
-   */
-  async runAuditedGitOperation<T>(
-    {
-      type,
-      connection,
-      workspaceId = "",
-    }: {
-      type: string;
-      connection: {
-        id?: string;
-        orgUrl?: string;
-        hostUrl?: string;
-        baseUrl?: string;
-        label?: string;
-        provider?: string;
-      } | null;
-      workspaceId?: string;
-    },
-    fn: () => Promise<T>,
-  ): Promise<T> {
-    const startedAt = Date.now();
-    const logAudit = (success: boolean, errorMessage = "") => {
-      if (!connection?.id || !this.auditLogStore) return;
-      const writeOps = new Set(["push", "force-push"]);
-      try {
-        this.auditLogStore.logEntry({
-          timestamp: new Date().toISOString(),
-          connectionId: connection.id,
-          organization: String(connection.orgUrl || connection.hostUrl || connection.baseUrl || connection.label || ""),
-          project: "",
-          operation: `git${type.charAt(0).toUpperCase()}${type.slice(1)}`,
-          category: writeOps.has(type) ? "write" : "read",
-          method: "GIT",
-          url: "",
-          statusCode: null,
-          success,
-          errorMessage: errorMessage || null,
-          durationMs: Date.now() - startedAt,
-          resourceType: "git",
-          resourceId: workspaceId,
-          summary: `git ${type} (review workspace)`,
-          userInitiated: true,
-        });
-      } catch {
-        // Never let audit logging break the main flow
-      }
-    };
-    try {
-      const result = await fn();
-      logAudit(true);
-      return result;
-    } catch (error) {
-      logAudit(false, (error as Error)?.message || String(error));
-      throw error;
-    }
   }
 
   getSnapshot(): ProviderSnapshot {
@@ -887,13 +836,14 @@ export class BaseProviderManager extends EventEmitter {
    * methods differ only in how they derive `fetchRefspecs` (Azure fetches the
    * PR's raw sourceRefName/targetRefName as-is; GitHub reconstructs
    * `refs/heads/<branch>`) and `login` (Azure passes connection.login; GitHub
-   * relies on runGit's defaultGitLogin). Both providers now use the same
-   * worktree-reuse strategy: prune stale worktree metadata up front, and when
-   * (re)creating a worktree for a branch that already exists locally, reuse
-   * it and hard-reset it onto the remote unless that would discard real local
-   * work — see `allowResetToRemote`. GitHub's prior force-recreate (`-B`) had
-   * no such guard at all and could silently discard unpushed work from a
-   * previous session.
+   * relies on runGit's defaultGitLogin).
+   *
+   * A reused local branch is only ever moved when no commit can be lost: it is
+   * fast-forwarded when it is behind the remote. A branch that is ahead of, or
+   * diverged from, the remote is left exactly as it is — there is no persisted
+   * baseline yet at this point (the workspace is being created), so nothing
+   * proves those commits are orphans, and role does not either. The user's
+   * first Refresh then shows the commits and asks before discarding any.
    */
   async ensureManagedWorktree({
     cacheRepoPath,
@@ -901,7 +851,6 @@ export class BaseProviderManager extends EventEmitter {
     localBranch,
     sourceBranch,
     fetchRefspecs,
-    allowResetToRemote,
     login,
     token,
   }: {
@@ -910,328 +859,334 @@ export class BaseProviderManager extends EventEmitter {
     localBranch: string;
     sourceBranch: string;
     fetchRefspecs: string[];
-    /**
-     * May a reused local branch be reset onto the remote even when it is
-     * "ahead"? True for a reviewer's mirror, where an ahead commit is an
-     * orphan the author left behind by rebasing or force-pushing — not local
-     * work. False when the user owns the branch (`role === "author"`), where
-     * an ahead commit is theirs and unpushed.
-     *
-     * Without this, the branch a deleted workspace left in the cache repo
-     * pinned the checkout to a pre-force-push tip on every reopen, and no
-     * amount of deleting the worktree directory could shake it loose — the
-     * branch is not in that directory.
-     */
-    allowResetToRemote: boolean;
     login?: string;
     token: string;
   }): Promise<void> {
-    await this.runGit(cacheRepoPath, ["fetch", "origin", ...fetchRefspecs], { login, token });
+    const commonDir = await this.commonDirOf(cacheRepoPath);
+    await this.reviewGitLocks.withCommon(commonDir, async () => {
+      await this.runGit(cacheRepoPath, ["fetch", "origin", ...fetchRefspecs], { login, token });
 
-    await mkdir(path.dirname(worktreePath), { recursive: true });
-    await this.runGit(cacheRepoPath, ["worktree", "prune"]).catch(() => {});
-    const worktreeExists = await exists(path.join(worktreePath, ".git"));
+      await mkdir(path.dirname(worktreePath), { recursive: true });
+      await this.runGit(cacheRepoPath, ["worktree", "prune"]).catch(() => {});
+      const worktreeExists = await exists(path.join(worktreePath, ".git"));
+      const remoteRef = `refs/remotes/origin/${sourceBranch}`;
 
-    if (!worktreeExists) {
-      const branchExists = await this.runGit(cacheRepoPath, [
-        "show-ref",
-        "--verify",
-        "--quiet",
-        `refs/heads/${localBranch}`,
-      ])
-        .then(() => true)
-        .catch(() => false);
+      if (!worktreeExists) {
+        const branchExists = await this.runGit(cacheRepoPath, [
+          "show-ref",
+          "--verify",
+          "--quiet",
+          `refs/heads/${localBranch}`,
+        ])
+          .then(() => true)
+          .catch(() => false);
 
-      if (branchExists) {
-        await this.runGit(cacheRepoPath, ["worktree", "add", "--force", worktreePath, localBranch]);
-        const ahead = await this.runGit(worktreePath, [
-          "rev-list",
-          "--count",
-          `refs/remotes/origin/${sourceBranch}..HEAD`,
-        ]).catch(() => ({ stdout: "0" }));
-        const aheadCount = Number(ahead.stdout.trim()) || 0;
-        if (allowResetToRemote || aheadCount === 0) {
-          if (aheadCount > 0) {
-            this.log.info("reused review branch was ahead of a rewritten remote; resetting", {
-              localBranch,
-              sourceBranch,
-              discarded: aheadCount,
-            });
-          }
-          await this.runGit(worktreePath, ["reset", "--hard", `refs/remotes/origin/${sourceBranch}`]);
+        if (branchExists) {
+          await this.runGit(cacheRepoPath, ["worktree", "add", "--force", worktreePath, localBranch]);
+          await this.fastForwardReusedBranch(worktreePath, remoteRef, localBranch);
+        } else {
+          await this.runGit(cacheRepoPath, ["worktree", "add", "--force", "-b", localBranch, worktreePath, remoteRef]);
         }
       } else {
-        await this.runGit(cacheRepoPath, [
-          "worktree",
-          "add",
-          "--force",
-          "-b",
-          localBranch,
-          worktreePath,
-          `refs/remotes/origin/${sourceBranch}`,
-        ]);
+        await this.runGit(worktreePath, ["checkout", localBranch]).catch(async () => {
+          await this.runGit(worktreePath, ["checkout", "-B", localBranch, remoteRef]);
+        });
+        await this.fastForwardReusedBranch(worktreePath, remoteRef, localBranch);
       }
-    } else {
-      await this.runGit(worktreePath, ["checkout", localBranch]).catch(async () => {
-        await this.runGit(worktreePath, ["checkout", "-B", localBranch, `refs/remotes/origin/${sourceBranch}`]);
+    });
+  }
+
+  /** Canonical common dir of a repository — the same key the review Git engine locks on. */
+  private async commonDirOf(cwd: string): Promise<string> {
+    try {
+      const out = (await this.runGit(cwd, ["rev-parse", "--git-common-dir"])).stdout.trim();
+      return out ? path.resolve(cwd, out) : cwd;
+    } catch {
+      return path.join(cwd, ".git");
+    }
+  }
+
+  private async fastForwardReusedBranch(worktreePath: string, remoteRef: string, localBranch: string): Promise<void> {
+    const status = await this.runGit(worktreePath, ["status", "--porcelain"]);
+    // Edits in progress are never something to move HEAD under.
+    if (status.stdout.trim()) return;
+    const head = (await this.runGit(worktreePath, ["rev-parse", "HEAD"])).stdout.trim();
+    const remote = (await this.runGit(worktreePath, ["rev-parse", remoteRef])).stdout.trim();
+    const relation = await compareCommits(
+      (cwd, args, auth) => this.runGit(cwd, args, auth),
+      worktreePath,
+      head,
+      remote,
+    );
+    if (relation === "behind") {
+      await this.runGit(worktreePath, ["merge", "--ff-only", remote]);
+    } else if (relation === "ahead" || relation === "diverged") {
+      this.log.info("reused review branch has local commits; leaving it for Refresh to ask about", {
+        localBranch,
+        relation,
       });
-      const status = await this.runGit(worktreePath, ["status", "--porcelain"]);
-      // An uncommitted tree blocks the reset in every case — edits in progress
-      // are never something to throw away, whoever owns the branch.
-      if (!status.stdout.trim()) {
-        const ahead = await this.runGit(worktreePath, [
-          "rev-list",
-          "--count",
-          `refs/remotes/origin/${sourceBranch}..HEAD`,
-        ]).catch(() => ({ stdout: "0" }));
-        const aheadCount = Number(ahead.stdout.trim()) || 0;
-        // Ahead commits are only worth keeping when the user could have made
-        // them; on a reviewer's mirror they are the author's force-push
-        // orphans. See `allowResetToRemote`.
-        if (allowResetToRemote || aheadCount === 0) {
-          if (aheadCount > 0) {
-            this.log.info("existing review worktree was ahead of a rewritten remote; resetting", {
-              localBranch,
-              sourceBranch,
-              discarded: aheadCount,
-            });
-          }
-          await this.runGit(worktreePath, ["reset", "--hard", `refs/remotes/origin/${sourceBranch}`]);
-        }
-      }
     }
   }
 
-  /**
-   * Shared body of AzureDevOpsManager.fetchReviewWorkspace /
-   * GitHubManager.fetchReviewWorkspace — identical except the connection's
-   * login is Azure-only (GitHub relies on runGit's defaultGitLogin).
-   */
-  async fetchReviewWorkspace({ workspace }: { workspace: ReviewWorkspaceRef }): Promise<void> {
-    const connection = this.findConnection(workspace.review?.connectionId || "");
-    if (!connection) throw new Error(this.connectionNotFoundMessage);
-    const token = this.credentialStore.getSecret(connection.tokenRef || "");
-    if (!token) throw new Error("PAT is missing.");
-    this.log.info("fetch review workspace", { workspaceId: workspace.id });
-    await this.runAuditedGitOperation({ type: "fetch", connection, workspaceId: workspace.id }, () =>
-      this.runGit(workspace.cwd || "", ["fetch", "origin"], { login: connection.login, token }),
-    );
+  // ---------------------------------------------------------------------------
+  // Review Git operations — one state-based flow for the UI and the MCP broker
+  // ---------------------------------------------------------------------------
+
+  setReviewWorkspaceMetadataStore(store: ReviewWorkspaceMetadataStore | null): void {
+    this.reviewMetadataStore = store;
   }
 
-  /** Shared body of AzureDevOpsManager.rebaseReviewWorkspace / GitHubManager.rebaseReviewWorkspace. */
-  async rebaseReviewWorkspace({ workspace }: { workspace: ReviewWorkspaceRef }): Promise<void> {
-    await this.fetchReviewWorkspace({ workspace });
-    const targetBranch = stripRefsPrefix(workspace.review?.pullRequest?.targetRefName || "");
-    this.log.info("rebase review workspace", { workspaceId: workspace.id, targetBranch });
-    // Token so partial-clone checkouts can lazily fetch blobs mid-rebase.
-    const connection = this.findConnection(workspace.review?.connectionId || "");
-    const token = connection ? this.credentialStore.getSecret(connection.tokenRef || "") : "";
-    await this.runAuditedGitOperation({ type: "rebase", connection, workspaceId: workspace.id }, () =>
-      this.runGit(workspace.cwd || "", ["rebase", `origin/${targetBranch}`], {
-        login: connection?.login,
-        token: token || undefined,
-      }),
-    );
+  setReviewGitLocks(locks: ReviewGitLocks): void {
+    this.reviewGitLocks = locks;
+    this.reviewGitEngine = null;
   }
 
-  /** Shared body of AzureDevOpsManager.pushReviewWorkspace / GitHubManager.pushReviewWorkspace. */
-  async pushReviewWorkspace({
-    workspace,
-    force = false,
-    branch = "",
-  }: {
-    workspace: ReviewWorkspaceRef;
-    force?: boolean;
-    branch?: string;
-  }): Promise<void> {
-    const connection = this.findConnection(workspace.review?.connectionId || "");
-    if (!connection) throw new Error(this.connectionNotFoundMessage);
-    const token = this.credentialStore.getSecret(connection.tokenRef || "");
-    if (!token) throw new Error("PAT is missing.");
-    const sourceBranch = stripRefsPrefix(workspace.review?.pullRequest?.sourceRefName || "") || branch;
-    if (!sourceBranch) throw new Error("Cannot determine branch name for push.");
-    // Local branch may be named differently (e.g. pr-123-feature) so push HEAD to the remote branch name
-    const pushArgs = force
-      ? ["push", "--force-with-lease", "-u", "origin", `HEAD:refs/heads/${sourceBranch}`]
-      : ["push", "-u", "origin", `HEAD:refs/heads/${sourceBranch}`];
-    this.log.info("push review workspace", { workspaceId: workspace.id, sourceBranch, force });
-    await this.runAuditedGitOperation(
-      { type: force ? "force-push" : "push", connection, workspaceId: workspace.id },
-      () => this.runGit(workspace.cwd || "", pushArgs, { login: connection.login, token }),
-    );
-  }
-
-  /**
-   * Returns a non-empty reason string when `cwd` cannot be safely
-   * fast-forwarded right now (uncommitted changes, or a rebase/merge/
-   * cherry-pick/revert already in progress), otherwise "".
-   */
-  async describeWorkingTreeBlock(cwd: string): Promise<string> {
-    const status = (await this.runGit(cwd, ["status", "--porcelain"])).stdout.trim();
-    if (status) {
-      const count = status.split(/\r?\n/).filter(Boolean).length;
-      return `${count} uncommitted change${count !== 1 ? "s" : ""} in the worktree.`;
+  getReviewGitEngine(): ReviewGitEngine {
+    if (!this.reviewGitEngine) {
+      this.reviewGitEngine = createReviewGitEngine({
+        git: (cwd, args, auth) => this.runGit(cwd, args, { login: auth?.login, token: auth?.token }),
+        locks: this.reviewGitLocks,
+        audit: this.createReviewGitAudit(),
+        persistBaseline: async (subject, sha) => {
+          if (!this.reviewMetadataStore) throw new Error("No review metadata store is configured.");
+          await this.reviewMetadataStore.updateReview(subject.workspaceId, {
+            sourceBaselineSha: sha,
+            ...(subject.sourceRepository ? { sourceRepository: subject.sourceRepository } : {}),
+            expectedIdentityKey: reviewSourceIdentityKey({
+              provider: subject.provider,
+              connectionId: subject.connectionId,
+              prKey: subject.prKey,
+              pullRequest: { sourceRefName: subject.sourceRefName } as ReviewInfo["pullRequest"],
+              sourceRepository: subject.sourceRepository,
+            }),
+          });
+        },
+        log: this.log,
+        now: this.now,
+      });
     }
-    const gitDir = (await this.runGit(cwd, ["rev-parse", "--git-dir"])).stdout.trim();
-    if (gitDir) {
-      const base = path.isAbsolute(gitDir) ? gitDir : path.join(cwd, gitDir);
-      const markers: Array<[string, string]> = [
-        ["rebase-merge", "a rebase"],
-        ["rebase-apply", "a rebase"],
-        ["MERGE_HEAD", "a merge"],
-        ["CHERRY_PICK_HEAD", "a cherry-pick"],
-        ["REVERT_HEAD", "a revert"],
-      ];
-      for (const [marker, label] of markers) {
-        if (await exists(path.join(base, marker))) {
-          return `${label} is already in progress.`;
-        }
-      }
-    }
-    return "";
+    return this.reviewGitEngine;
   }
 
-  /**
-   * Bring a review checkout's working tree up to the PR's latest source
-   * commit — the "Refresh" button's git-mutating half. Unlike
-   * `fetchReviewWorkspace` (remote-tracking refs only) this may move `HEAD`.
-   * The target is always `workspace.review.pullRequest.sourceRefName` — never
-   * the local branch's own name/upstream, since a managed checkout is named
-   * `pr-<id>-...` and reusing a stale/reused worktree may carry a wrong or
-   * missing upstream.
-   *
-   * How `HEAD` moves depends on who owns the branch:
-   *
-   * - A LOCKED REVIEW MIRROR (see `isLockedReviewMirror`) is reset hard onto
-   *   the remote ref. Authors rebase and force-push their PR branches as a
-   *   matter of course, and that is precisely when a fast-forward becomes
-   *   impossible — so ff-only meant the single most common reason a reviewer
-   *   clicks Refresh was the one case it refused. The reviewer then sat on a
-   *   pre-force-push snapshot with no way out (Rebase/Merge/Push are disabled
-   *   on the checkout, and deleting the workspace does not help because the
-   *   local branch lives in the shared cache repo), reviewing code that was no
-   *   longer in the PR — including, in the report that found this, being unable
-   *   to see the commit that answered their own review comment. Nothing local
-   *   is at stake: the discarded commits are the author's own orphans.
-   * - Anything the user may have committed to — `role === "author"` or
-   *   "Enable editing" — keeps the conservative fast-forward, and still
-   *   reports `ahead`/`diverged` rather than touching real work.
-   *
-   * In both cases an uncommitted working tree blocks first
-   * (`describeWorkingTreeBlock`), so a reset never destroys edits in progress.
-   *
-   * Shared body of AzureDevOpsManager.syncReviewWorkspace / GitHubManager.syncReviewWorkspace.
-   */
-  async syncReviewWorkspace({ workspace }: { workspace: ReviewWorkspaceRef }): Promise<ReviewWorkspaceSyncResult> {
-    const connection = this.findConnection(workspace.review?.connectionId || "");
+  private createReviewGitAudit() {
+    const writeKinds = new Set([
+      "push",
+      "force-push",
+      "sync-reset",
+      "sync-merge",
+      "rebase",
+      "commit",
+      "stage",
+      "unstage",
+      "continue",
+      "skip",
+      "abort",
+    ]);
+    return {
+      begin: (entry: {
+        operationId: string;
+        kind: string;
+        subject: ReviewGitSubject;
+        requester: ReviewGitRequester;
+        refs: Record<string, string>;
+      }): unknown | null => {
+        const store = this.auditLogStore;
+        if (!store?.insertEntry) return null;
+        const { subject, requester } = entry;
+        const connection = this.findConnection(subject.connectionId) as
+          (SnapshotConnection & { orgUrl?: string; hostUrl?: string; baseUrl?: string; label?: string }) | null;
+        const id = store.insertEntry({
+          timestamp: new Date(this.now()).toISOString(),
+          connectionId: subject.connectionId,
+          organization: String(
+            connection?.orgUrl || connection?.hostUrl || connection?.baseUrl || connection?.label || "",
+          ),
+          project: "",
+          operation: `git${entry.kind.charAt(0).toUpperCase()}${entry.kind.slice(1)}`,
+          category: writeKinds.has(entry.kind) ? "write" : "read",
+          method: "GIT",
+          url: "",
+          statusCode: null,
+          success: false,
+          errorMessage: "started; outcome not yet recorded",
+          durationMs: null,
+          resourceType: "git",
+          resourceId: subject.workspaceId,
+          summary: `git ${entry.kind} (review workspace)`,
+          userInitiated: requester.source === "ui",
+          operationId: entry.operationId,
+          details: JSON.stringify({
+            workspaceId: subject.workspaceId,
+            profileId: subject.profileId,
+            provider: subject.provider,
+            prKey: subject.prKey,
+            connectionId: subject.connectionId,
+            sourceRef: subject.sourceRefName,
+            sourceRepository: subject.sourceRepository?.fullName || subject.sourceRepository?.remoteUrl || "",
+            requester: {
+              source: requester.source,
+              agent: requester.agent || "",
+              panelId: requester.panelId || "",
+              reportedConsent: requester.consent || "",
+            },
+            refs: entry.refs,
+            outcome: "started",
+          }),
+        });
+        return id === null || id === undefined ? null : { id, startedAt: this.now() };
+      },
+      finish: (
+        handle: unknown,
+        outcome: { success: boolean; outcome: string; errorMessage?: string; refs?: Record<string, string> },
+      ) => {
+        const store = this.auditLogStore;
+        const { id, startedAt } = handle as { id: number; startedAt: number };
+        if (!store?.finishEntry) return false;
+        return store.finishEntry(id, {
+          success: outcome.success,
+          errorMessage: outcome.errorMessage || null,
+          durationMs: this.now() - startedAt,
+          details: { outcome: outcome.outcome, ...(outcome.refs ? { resultRefs: outcome.refs } : {}) },
+        });
+      },
+    };
+  }
+
+  /** Build the engine's view of one PR-linked checkout from persisted state plus the live provider snapshot. */
+  buildReviewSubject(workspace: ReviewWorkspaceRef): ReviewGitSubject {
+    const review = workspace.review;
+    if (!review) throw new Error("This workspace is not linked to a pull request.");
+    const connection = this.findConnection(review.connectionId || "");
     if (!connection) throw new Error(this.connectionNotFoundMessage);
     const token = this.credentialStore.getSecret(connection.tokenRef || "");
     if (!token) throw new Error("PAT is missing.");
     const cwd = workspace.cwd || "";
     if (!cwd) throw new Error("Review workspace has no working directory.");
-    const sourceBranch = stripRefsPrefix(workspace.review?.pullRequest?.sourceRefName || "");
-    if (!sourceBranch) throw new Error("Pull request source branch is unknown.");
-
-    this.log.info("sync review workspace", { workspaceId: workspace.id, sourceBranch });
-    const previousHeadSha = (await this.runGit(cwd, ["rev-parse", "HEAD"])).stdout.trim();
-
-    // Fetch exactly the PR's source ref into its tracking ref — not a plain
-    // `fetch origin`, which relies on the remote's configured fetch refspecs
-    // and can miss the branch on an older/reused checkout. The leading `+`
-    // only force-updates the local `refs/remotes/origin/<source>` pointer,
-    // never anything under `refs/heads/` in this worktree.
-    const remoteRef = `refs/remotes/origin/${sourceBranch}`;
-    await this.runAuditedGitOperation({ type: "sync-fetch", connection, workspaceId: workspace.id }, () =>
-      this.runGit(cwd, ["fetch", "origin", `+refs/heads/${sourceBranch}:${remoteRef}`], {
-        login: connection.login,
-        token,
-      }),
-    );
-
-    const remoteHeadSha = (await this.runGit(cwd, ["rev-parse", remoteRef])).stdout.trim();
-    if (remoteHeadSha === previousHeadSha) {
-      return {
-        status: "already-current",
-        message: "Already up to date.",
-        commitCount: 0,
-        headSha: previousHeadSha,
-        previousHeadSha,
-      };
-    }
-
-    const blockReason = await this.describeWorkingTreeBlock(cwd);
-    if (blockReason) {
-      return {
-        status: "dirty",
-        message: `Cannot update: ${blockReason} Commit, stash, or resolve it, then try again.`,
-        commitCount: 0,
-        headSha: previousHeadSha,
-        previousHeadSha,
-      };
-    }
-
-    const [aheadResult, behindResult] = await Promise.all([
-      this.runGit(cwd, ["rev-list", "--count", `${remoteRef}..HEAD`]),
-      this.runGit(cwd, ["rev-list", "--count", `HEAD..${remoteRef}`]),
-    ]);
-    const aheadCount = Number(aheadResult.stdout.trim() || "0");
-    const behindCount = Number(behindResult.stdout.trim() || "0");
-
-    // A locked mirror has no local work to protect, so "ahead" here means the
-    // author rewrote the branch and left orphans behind. Reset onto the remote
-    // rather than refusing — see this method's docstring.
-    if (aheadCount > 0 && isLockedReviewMirror(workspace)) {
-      await this.runAuditedGitOperation({ type: "sync-reset", connection, workspaceId: workspace.id }, () =>
-        this.runGit(cwd, ["reset", "--hard", remoteRef]),
-      );
-      const resetHeadSha = (await this.runGit(cwd, ["rev-parse", "HEAD"])).stdout.trim();
-      this.log.info("review mirror reset onto rewritten PR branch", {
-        workspaceId: workspace.id,
-        sourceBranch,
-        discarded: aheadCount,
-        gained: behindCount,
-        previousHeadSha,
-        headSha: resetHeadSha,
-      });
-      return {
-        status: "reset",
-        message: `The PR branch was rewritten (rebase or force-push). Reset onto origin/${sourceBranch}, discarding ${aheadCount} superseded commit${aheadCount !== 1 ? "s" : ""}.`,
-        commitCount: behindCount,
-        discardedCount: aheadCount,
-        headSha: resetHeadSha,
-        previousHeadSha,
-      };
-    }
-    if (aheadCount > 0 && behindCount > 0) {
-      return {
-        status: "diverged",
-        message: `Local branch has diverged from origin/${sourceBranch} (${aheadCount} local, ${behindCount} remote). Commit/stash and choose an integration strategy to reconcile — your local commits are kept.`,
-        commitCount: 0,
-        headSha: previousHeadSha,
-        previousHeadSha,
-      };
-    }
-    if (aheadCount > 0) {
-      return {
-        status: "ahead",
-        message: `Local branch is ${aheadCount} commit${aheadCount !== 1 ? "s" : ""} ahead of origin/${sourceBranch}. Nothing to fast-forward — push to publish them.`,
-        commitCount: 0,
-        headSha: previousHeadSha,
-        previousHeadSha,
-      };
-    }
-
-    await this.runAuditedGitOperation({ type: "sync-merge", connection, workspaceId: workspace.id }, () =>
-      this.runGit(cwd, ["merge", "--ff-only", remoteRef]),
-    );
-    const headSha = (await this.runGit(cwd, ["rev-parse", "HEAD"])).stdout.trim();
+    const summary = (review.prKey ? this.findSummary(review.prKey) : null) as {
+      sourceRepository?: ReviewSourceRepository | null;
+    } | null;
     return {
-      status: "updated",
-      message: `Updated ${behindCount} commit${behindCount !== 1 ? "s" : ""} from origin/${sourceBranch}.`,
-      commitCount: behindCount,
-      headSha,
-      previousHeadSha,
+      workspaceId: workspace.id,
+      profileId: workspace.profileId || "default",
+      cwd,
+      provider: review.provider || this.providerLabel,
+      connectionId: review.connectionId || "",
+      prKey: review.prKey || "",
+      prId: review.pullRequest?.id ?? review.pullRequest?.number ?? "",
+      role: review.role || "",
+      sourceRefName: review.pullRequest?.sourceRefName || "",
+      targetRefName: review.pullRequest?.targetRefName || "",
+      sourceRepository: review.sourceRepository || summary?.sourceRepository || null,
+      targetRemoteUrl: review.repository?.remoteUrl || "",
+      baselineSha: review.sourceBaselineSha || "",
+      checkout: (review.checkout as ReviewGitSubject["checkout"]) || null,
+      auth: { login: connection.login, token },
     };
+  }
+
+  /**
+   * Initialize a missing baseline for a workspace that is about to be saved
+   * (a new managed checkout, or "Work here" onto an existing one) — only when
+   * Git and the provider prove the live source tip is incorporated. A failure
+   * to prove leaves the baseline unknown; it never blocks opening the review.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async withProvenBaseline(workspace: any): Promise<any> {
+    const review = workspace?.review;
+    if (!review || review.sourceBaselineSha) return workspace;
+    try {
+      const sha = await this.getReviewGitEngine().proveBaseline(this.buildReviewSubject(workspace));
+      if (sha) return { ...workspace, review: { ...review, sourceBaselineSha: sha } };
+    } catch (error) {
+      this.log.warn("source baseline could not be proven; leaving it unknown", {
+        workspaceId: workspace.id,
+        err: (error as Error)?.message || String(error),
+      });
+    }
+    return workspace;
+  }
+
+  private reviewRequester(requester?: ReviewGitRequester): ReviewGitRequester {
+    return requester || { source: "ui" };
+  }
+
+  /** Shared body of AzureDevOpsManager.fetchReviewWorkspace / GitHubManager.fetchReviewWorkspace. */
+  async fetchReviewWorkspace({
+    workspace,
+    requester,
+  }: {
+    workspace: ReviewWorkspaceRef;
+    requester?: ReviewGitRequester;
+  }): Promise<ReviewGitResult> {
+    this.log.info("fetch review workspace", { workspaceId: workspace.id });
+    return this.getReviewGitEngine().fetch(this.buildReviewSubject(workspace), this.reviewRequester(requester));
+  }
+
+  /** Rebase onto the PR TARGET branch. Asks for confirmation first; never touches the source baseline. */
+  async rebaseReviewWorkspace({
+    workspace,
+    requester,
+    confirmation,
+  }: {
+    workspace: ReviewWorkspaceRef;
+    requester?: ReviewGitRequester;
+    confirmation?: ReviewGitConfirmation;
+  }): Promise<ReviewGitResult> {
+    this.log.info("rebase review workspace", { workspaceId: workspace.id });
+    return this.getReviewGitEngine().rebase(
+      this.buildReviewSubject(workspace),
+      this.reviewRequester(requester),
+      confirmation,
+    );
+  }
+
+  /**
+   * Push HEAD to the PR SOURCE ref in the verified source repository — never
+   * to `origin` by assumption, never to the local branch alias. Regular push
+   * needs a fast-forward; force push is explicit and leases the exact live SHA.
+   */
+  async pushReviewWorkspace({
+    workspace,
+    force = false,
+    requester,
+    confirmation,
+  }: {
+    workspace: ReviewWorkspaceRef;
+    force?: boolean;
+    requester?: ReviewGitRequester;
+    confirmation?: ReviewGitConfirmation;
+  }): Promise<ReviewGitResult> {
+    this.log.info("push review workspace", { workspaceId: workspace.id, force });
+    return this.getReviewGitEngine().push(this.buildReviewSubject(workspace), this.reviewRequester(requester), {
+      force,
+      confirmation,
+    });
+  }
+
+  /**
+   * Bring a review checkout up to the PR's latest source commit — the Refresh
+   * button's git-mutating half. The exact live source SHA is pinned, then:
+   * equal → nothing; fast-forwardable → fast-forward; HEAD exactly equal to the
+   * persisted baseline (nothing local on top of the last integrated source
+   * state) → reset after a recovery ref; anything else that would discard
+   * commits → a confirmation proposal. Dirty trees and active operations block.
+   * The same flow serves the UI and the MCP broker; role never decides it.
+   */
+  async syncReviewWorkspace({
+    workspace,
+    requester,
+    confirmation,
+  }: {
+    workspace: ReviewWorkspaceRef;
+    requester?: ReviewGitRequester;
+    confirmation?: ReviewGitConfirmation;
+  }): Promise<ReviewWorkspaceSyncResult> {
+    this.log.info("sync review workspace", { workspaceId: workspace.id });
+    return this.getReviewGitEngine().refresh(
+      this.buildReviewSubject(workspace),
+      this.reviewRequester(requester),
+      confirmation,
+    );
   }
 
   /**
@@ -1306,7 +1261,7 @@ export class BaseProviderManager extends EventEmitter {
         ...existingWorkspace,
         review: hooks.buildReviewMetadata(summary, checkout, {
           parentWorkspaceId: checkout.mode === "managed-worktree" ? parentWorkspaceId : "",
-          writable: existingWorkspace.review?.writable === true,
+          previousReview: existingWorkspace.review,
         }),
       };
       await this.reviewStore.upsertTrackedPullRequest(prKey, {
@@ -1314,7 +1269,7 @@ export class BaseProviderManager extends EventEmitter {
         lastSeenActivityAt: summary.lastRemoteActivityAt || new Date(this.now()).toISOString(),
       });
       return {
-        workspace,
+        workspace: await this.withProvenBaseline(workspace),
         created: false,
         attached: checkout.mode === "linked-existing-workspace",
       };
@@ -1357,7 +1312,7 @@ export class BaseProviderManager extends EventEmitter {
       lastSeenActivityAt: summary.lastRemoteActivityAt || new Date(this.now()).toISOString(),
     });
     return {
-      workspace,
+      workspace: await this.withProvenBaseline(workspace),
       created: true,
       attached: false,
     };

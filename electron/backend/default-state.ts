@@ -17,6 +17,7 @@ import type {
   MobileDeviceState,
 } from "../shared/types/state.js";
 import { isCompanionPrimaryViewId, parseCompanionPrimaryViewId } from "../shared/companion-primary.js";
+import { isFullSha } from "../shared/review-source-identity.js";
 
 const UTF8_DECODER = (() => {
   try {
@@ -318,6 +319,26 @@ function hasTaskWorkspaceEvidence(task: any): boolean {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+function normalizeReviewSourceRepository(value: any): import("../shared/types/state.js").ReviewSourceRepository | null {
+  if (!value || typeof value !== "object") return null;
+  return {
+    id: String(value.id || ""),
+    name: String(value.name || ""),
+    fullName: String(value.fullName || ""),
+    remoteUrl: String(value.remoteUrl || ""),
+    sameAsTarget: value.sameAsTarget === true,
+    canPush: typeof value.canPush === "boolean" ? value.canPush : null,
+  };
+}
+
+function normalizeSourceBaselineSha(value: unknown): string | undefined {
+  const sha = String(value || "")
+    .trim()
+    .toLowerCase();
+  return isFullSha(sha) ? sha : undefined;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
   const isDockerWorkspace = (workspace.id || "") === "docker" || workspace.kind === "docker";
   const isAzureWorkspace = workspace.kind === "azure";
@@ -425,7 +446,8 @@ export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
               }
             : null,
           role: workspace.review.role || "",
-          writable: workspace.review.writable === true,
+          sourceRepository: normalizeReviewSourceRepository(workspace.review.sourceRepository),
+          sourceBaselineSha: normalizeSourceBaselineSha(workspace.review.sourceBaselineSha),
           checkout: workspace.review.checkout
             ? {
                 mode: workspace.review.checkout.mode || "",
