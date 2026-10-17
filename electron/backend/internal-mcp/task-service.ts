@@ -861,9 +861,11 @@ export function createTaskService(deps: TaskServiceDeps) {
       }
       const entries: unknown[] = [];
       let consumed = 0;
-      for (const line of text.split("\n")) {
+      // The last element is what follows the final newline: empty on a complete log, a partial line otherwise.
+      const lines = text.split("\n");
+      lines.pop();
+      for (const line of lines) {
         const lineBytes = Buffer.byteLength(line) + 1;
-        if (consumed + lineBytes > Buffer.byteLength(text) && !text.endsWith("\n")) break;
         if (entries.length >= limit) break;
         consumed += lineBytes;
         if (!line.trim()) continue;

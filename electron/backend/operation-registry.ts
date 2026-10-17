@@ -150,21 +150,27 @@ export function createOperationRegistry(options: OperationRegistryOptions) {
   }
 
   async function finish(record: OperationRecord, outcome: OperationOutcome): Promise<void> {
-    if (outcome.workspaceId) record.workspaceId = outcome.workspaceId;
-    record.status = outcome.status;
-    record.step = outcome.status === "succeeded" ? "ready" : outcome.status;
-    record.finishedAt = new Date(now()).toISOString();
-    record.updatedAt = record.finishedAt;
-    if (outcome.status === "succeeded") record.result = outcome.result;
-    else record.error = outcome.error;
+    const finishedAt = new Date(now()).toISOString();
+    const settled: OperationRecord = {
+      ...record,
+      ...(outcome.workspaceId ? { workspaceId: outcome.workspaceId } : {}),
+      status: outcome.status,
+      step: outcome.status === "succeeded" ? "ready" : outcome.status,
+      finishedAt,
+      updatedAt: finishedAt,
+      ...(outcome.status === "succeeded" ? { result: outcome.result } : { error: outcome.error }),
+    };
+    // The terminal state is persisted from a copy and published to the record, the payload and the event
+    // together, so nothing reads "succeeded" while the payload still lists the operation as running.
     try {
-      await persist(record);
+      await persist(settled);
     } catch (err) {
       log.error("operation outcome could not be persisted", {
         operationId: record.operationId,
         err: errorOf(err).message,
       });
     }
+    Object.assign(record, settled);
     running.delete(record.operationId);
     onChange();
     const event = outcomeOf(record);

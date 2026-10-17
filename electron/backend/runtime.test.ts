@@ -16023,6 +16023,12 @@ describe("internal MCP: creating and watching task agents", () => {
     throw new Error("operation did not settle");
   }
 
+  async function waitForFinishedEvents(finished: unknown[], count: number) {
+    for (let attempt = 0; attempt < 200 && finished.length < count; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+
   async function prepareAndStart(
     call: ReturnType<typeof brokerClient>,
     input: Record<string, unknown>,
@@ -16222,6 +16228,7 @@ describe("internal MCP: creating and watching task agents", () => {
     expect(conflict.error?.code).toBe("idempotency_conflict");
     expect(taskWorkspaces(fixture)).toHaveLength(1);
 
+    await waitForFinishedEvents(finished, 1);
     expect(finished).toHaveLength(1);
     expect(finished[0]).toMatchObject({
       operationId,
@@ -16606,6 +16613,7 @@ describe("internal MCP: creating and watching task agents", () => {
     expect(settled.status).toBe("failed");
     expect(settled.error.message).toContain("simulated disk failure");
     expect(taskWorkspaces(fixture)).toHaveLength(0);
+    await waitForFinishedEvents(finished, 1);
     expect(finished).toHaveLength(1);
     expect(finished[0].error.message).toContain("simulated disk failure");
     // a retry of the same request answers with the recorded failure, not a second attempt
@@ -16711,6 +16719,35 @@ describe("internal MCP: creating and watching task agents", () => {
       logCursor: last.result.log.nextCursor,
     });
     expect(appended.result.log.entries.map((e: any) => e.event)).toEqual(["e7"]);
+  });
+
+  test("task_get log paging is byte-exact when the 64 KiB window ends on a newline", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });
+    const { launch } = launchAgent(fixture);
+    const call = brokerClient(launch);
+    const { started } = await prepareAndStart(call, readyInput());
+    const done = await waitForOperation(call, started.result.operationId);
+    const task = taskWorkspaces(fixture)[0] as any;
+    const logPath = path.join(repo, ".strideterm", "tasks", task.task.taskId, "TASK_LOG.jsonl");
+    const lineOf = (i: number) => {
+      const base = { ts: "2026-01-01T00:00:00Z", event: `e${i}`, round: 1, detail: "" };
+      const pad = 2047 - Buffer.byteLength(JSON.stringify(base));
+      return JSON.stringify({ ...base, detail: "x".repeat(pad) });
+    };
+    const lines = Array.from({ length: 33 }, (_, i) => lineOf(i));
+    expect(lines.every((line) => Buffer.byteLength(line) === 2047)).toBe(true);
+    await fs.writeFile(logPath, lines.join("\n") + "\n");
+
+    const first = await call("task_get", { workspaceId: done.workspaceId, logCursor: "0", logLimit: 50 });
+    expect(first.result.log.entries).toHaveLength(32);
+    expect(first.result.log.nextCursor).toBe("65536");
+    const second = await call("task_get", {
+      workspaceId: done.workspaceId,
+      logCursor: first.result.log.nextCursor,
+      logLimit: 50,
+    });
+    expect(second.result.log.entries.map((e: any) => e.event)).toEqual(["e32"]);
   });
 
   test("a panel on a dialog shows up as awaitingUserInTerminal and leaves when the dialog does", async () => {
