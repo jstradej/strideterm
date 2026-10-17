@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { reviewGitConfirmationSchema, reviewGitOperationKindSchema } from "../shared/review-git-events.js";
 export { remoteSessionRevokeSchema } from "../shared/remote-access.js";
 
 import type { AccountUiState } from "./account/account-state.js";
@@ -243,10 +244,14 @@ export const reviewBridgeSyncSchema = z.object({
 });
 export type ReviewBridgeSync = z.infer<typeof reviewBridgeSyncSchema>;
 
-export const reviewBridgePushAndPublishSchema = z.object({
-  workspaceId: nonEmptyString,
-});
-export type ReviewBridgePushAndPublish = z.infer<typeof reviewBridgePushAndPublishSchema>;
+export const reviewGitStartSchema = z
+  .object({
+    kind: reviewGitOperationKindSchema,
+    workspaceId: nonEmptyString,
+    confirmation: reviewGitConfirmationSchema.optional(),
+  })
+  .strict();
+export type ReviewGitStart = z.infer<typeof reviewGitStartSchema>;
 
 export const agentPromptSaveSchema = z.object({}).passthrough();
 export type AgentPromptSave = z.infer<typeof agentPromptSaveSchema>;
@@ -997,11 +1002,6 @@ export const notificationShowSchema = z.object({
   dedupeKey: z.string().optional(),
 });
 export type NotificationShow = z.infer<typeof notificationShowSchema>;
-
-export const workspacePushOptionsSchema = z.object({
-  force: z.boolean().optional(),
-});
-export type WorkspacePushOptions = z.infer<typeof workspacePushOptionsSchema>;
 
 export const rerunCheckSchema = z.object({
   prKey: nonEmptyString,

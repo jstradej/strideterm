@@ -705,9 +705,13 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
   async function push(
     subject: ReviewGitSubject,
     requester: ReviewGitRequester,
-    options: { force?: boolean; confirmation?: ReviewGitConfirmation } = {},
+    options: { force?: boolean; confirmation?: ReviewGitConfirmation; requireProposal?: boolean } = {},
   ): Promise<ReviewGitResult> {
     const force = options.force === true;
+    // An agent never pushes on its own say-so: its first call only describes the
+    // push, and the continuation must name that exact proposal. The UI's Push
+    // button is itself the explicit action, so it does not take this step.
+    const requireProposal = options.requireProposal === true;
     return withLocks(subject, async () => {
       const result = await prepare(subject, { queryLive: true, requireWritable: true });
       if ("block" in result) return result.block;
@@ -752,23 +756,45 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
             "Force push replaces the remote branch and is a separate, explicit action.",
           );
         }
+        if (requireProposal) {
+          const outgoing = await listCommits(git, subject.cwd, `${liveSha}..${head}`);
+          const proposal = makeProposal(subject, "push", {
+            title: `Push to ${sourceBranch}?`,
+            message: `Push ${outgoing.total} commit${outgoing.total !== 1 ? "s" : ""} (HEAD ${short(head)}) to ${sourceBranch} on the pull request's source repository (server at ${short(liveSha)}).`,
+            facts: { headSha: head, liveSha },
+            affected: { commits: outgoing.commits, total: outgoing.total },
+            proceedLabel: "Push",
+          });
+          if (options.confirmation?.proposalId !== proposal.proposalId) {
+            return confirmRequired(facts, proposal, options.confirmation);
+          }
+        }
       } else {
         const remoteOnly =
           relation === "ahead" ? { commits: [], total: 0 } : await listCommits(git, subject.cwd, `${head}..${liveSha}`);
         const serverMovedSinceBaseline = remoteOnly.total > 0 && liveSha !== subject.baselineSha;
-        if (serverMovedSinceBaseline) {
+        if (serverMovedSinceBaseline || requireProposal) {
           const local = await listCommits(git, subject.cwd, `${liveSha}..${head}`);
           const proposal = makeProposal(subject, "force-push", {
-            title: "Force push over changes on the server?",
-            message:
-              `${sourceBranch} on the server has ${remoteOnly.total} commit${remoteOnly.total !== 1 ? "s" : ""} this checkout does not contain ` +
-              `(server ${short(liveSha)}; last integrated ${short(subject.baselineSha)}; local ${short(head)}). ` +
-              `A force push replaces them.`,
-            facts: { headSha: head, liveSha, baselineSha: subject.baselineSha || null },
+            title: serverMovedSinceBaseline
+              ? "Force push over changes on the server?"
+              : `Force push to ${sourceBranch}?`,
+            message: serverMovedSinceBaseline
+              ? `${sourceBranch} on the server has ${remoteOnly.total} commit${remoteOnly.total !== 1 ? "s" : ""} this checkout does not contain ` +
+                `(server ${short(liveSha)}; last integrated ${short(subject.baselineSha)}; local ${short(head)}). ` +
+                `A force push replaces them.`
+              : `Force push HEAD ${short(head)} over ${sourceBranch} (server at ${short(liveSha)}, last integrated ${short(subject.baselineSha)}). ` +
+                `The remote branch is replaced; the lease is the exact server commit above.`,
+            facts: {
+              headSha: head,
+              liveSha,
+              baselineSha: subject.baselineSha || null,
+              serverMovedSinceBaseline,
+            },
             affected: { commits: local.commits, total: local.total },
             incoming: { commits: remoteOnly.commits, total: remoteOnly.total },
-            proceedLabel: "Force push and replace the server commits",
-            keepLabel: "Keep server version",
+            proceedLabel: serverMovedSinceBaseline ? "Force push and replace the server commits" : "Force push",
+            keepLabel: serverMovedSinceBaseline ? "Keep server version" : undefined,
           });
           if (options.confirmation?.proposalId !== proposal.proposalId) {
             return confirmRequired(facts, proposal, options.confirmation);

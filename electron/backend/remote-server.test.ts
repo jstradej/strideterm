@@ -1719,10 +1719,10 @@ describe("terminal streaming — subscription routing + backpressure", () => {
       resetAgentPrompts: async () => payload,
       // Docker refresh — a full-payload result a v2 client must receive as an ack.
       refreshDockerState: async () => payload,
-      // Push & publish: an ack route whose result rides beside the payload.
-      pushAndPublishReview: async () => ({
-        payload,
-        pushAndPublishResult: { commitCount: 2, publishedCount: 0, pushOk: true, publishError: "403 Forbidden" },
+      // Review Git: answers at once with an operation id; the outcome arrives by event / payload.
+      startReviewGitOperation: async (input: { workspaceId: string; kind: string }, windowId?: string) => ({
+        started: true,
+        operationId: `op-${input.kind}-${input.workspaceId}-${windowId || "none"}`,
       }),
       // Docker interactive shell — mirrors the real runtime's dockerShellOpen/
       // Write/Resize/Close (electron/backend/runtime.ts): open records the
@@ -3159,29 +3159,39 @@ describe("terminal streaming — subscription routing + backpressure", () => {
       });
     });
 
-    test("push-and-publish ack keeps the result that rides beside the payload", async () => {
-      await withServer("tok-pap", async ({ port }) => {
-        const res = await fetch(`http://127.0.0.1:${port}/api/review-bridge/pull-request/push-and-publish`, {
+    test("review Git operations answer at once with an operation id, bound to the caller's viewer", async () => {
+      await withServer("tok-rgit", async ({ port }) => {
+        const res = await fetch(`http://127.0.0.1:${port}/api/review-git/start`, {
           method: "POST",
           headers: {
-            Authorization: "Bearer tok-pap",
-            "X-Strideterm-Client-Id": "pap-aaaa",
+            Authorization: "Bearer tok-rgit",
+            "X-Strideterm-Client-Id": "rgit-aaaa",
             "X-Strideterm-State-Protocol": "2",
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ workspaceId: "ws1" }),
+          body: JSON.stringify({ kind: "push-and-publish", workspaceId: "ws1" }),
         });
         expect(res.status).toBe(200);
-        const body = (await res.json()) as { ok: boolean; payload?: unknown; pushAndPublishResult?: unknown };
-        expect(body.ok).toBe(true);
-        expect(body.payload).toBeUndefined(); // ack, not a core
-        // The phone must still learn that publishing failed.
-        expect(body.pushAndPublishResult).toEqual({
-          commitCount: 2,
-          publishedCount: 0,
-          pushOk: true,
-          publishError: "403 Forbidden",
+        const body = (await res.json()) as { started?: boolean; operationId?: string; payload?: unknown };
+        expect(body.started).toBe(true);
+        expect(body.operationId).toContain("op-push-and-publish-ws1-");
+        expect(body.operationId).not.toContain("-none");
+        expect(body.payload).toBeUndefined();
+      });
+    });
+
+    test("review Git start refuses a payload the schema rejects", async () => {
+      await withServer("tok-rgit2", async ({ port }) => {
+        const res = await fetch(`http://127.0.0.1:${port}/api/review-git/start`, {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer tok-rgit2",
+            "X-Strideterm-Client-Id": "rgit-bbbb",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ kind: "stage", workspaceId: "ws1", paths: ["a"] }),
         });
+        expect(res.status).toBeGreaterThanOrEqual(400);
       });
     });
 

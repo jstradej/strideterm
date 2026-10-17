@@ -10,7 +10,6 @@ import {
   resolveRootPath as resolveRootPathShared,
   assertPrInViewerProfile as assertPrInViewerProfileShared,
   mirrorActivationIntoSlot,
-  assertWorktreeCleanForPush,
   resolveReviewWorkTarget,
 } from "./shared/runtime-provider-guards.js";
 import type { WorkspaceState, AppState } from "../shared/types/state.js";
@@ -133,13 +132,6 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
   // out at the gateway (524). Sharing one in-flight promise means overlapping
   // callers all await the same poll and get the same fresh payload.
   let azureRefreshInFlight: Promise<unknown> | null = null;
-
-  // Coalesces concurrent "sync review source" calls per workspace — the
-  // Refresh button's git-mutating half must never run twice at once against
-  // the same worktree (e.g. a desktop click racing an auto-triggered remote
-  // one), which would otherwise let a second fast-forward attempt run while
-  // the first is still fetching/merging.
-  const azureSyncInFlight = new Map<string, Promise<unknown>>();
 
   return {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -510,74 +502,6 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
           );
         }
         throw err instanceof Error ? err : new Error(message, { cause: err });
-      }
-    },
-    async fetchAzureReviewWorkspace(workspaceId: string) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const workspace = findWorkspace(getState() as any, workspaceId) as WorkspaceState | null;
-      if (!workspace?.review) {
-        throw new Error("Azure review workspace not found.");
-      }
-      await azure.fetchReviewWorkspace({ workspace });
-      await refreshGit(workspaceId);
-      broadcastState();
-      return getPayload();
-    },
-    async rebaseAzureReviewWorkspace(workspaceId: string) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const workspace = findWorkspace(getState() as any, workspaceId) as WorkspaceState | null;
-      if (!workspace?.review) {
-        throw new Error("Azure review workspace not found.");
-      }
-      await azure.rebaseReviewWorkspace({ workspace });
-      await refreshGit(workspaceId);
-      broadcastState();
-      return getPayload();
-    },
-    async pushAzureReviewWorkspace(workspaceId: string, { force = false } = {}) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const workspace = findWorkspace(getState() as any, workspaceId) as WorkspaceState | null;
-      if (!workspace?.review) {
-        throw new Error("Azure review workspace not found.");
-      }
-      await assertWorktreeCleanForPush(git, workspace);
-      const snapshot = git.getSnapshot(workspaceId);
-      await azure.pushReviewWorkspace({ workspace, force, branch: snapshot?.branch });
-      await refreshGit(workspaceId);
-      await refreshAzure();
-      return getPayload();
-    },
-    /**
-     * The Refresh button's git-mutating half: bring the review checkout up to
-     * the PR's latest source commit — by fast-forward, or by resetting onto
-     * the remote when the checkout is a read-only reviewer mirror whose branch
-     * the author rewrote (never a rebase or merge; see syncReviewWorkspace for
-     * which case is which). Distinct from fetchAzureReviewWorkspace (remote-
-     * tracking refs only, HEAD never moves) and from an automatic/background
-     * metadata refresh (refreshAzureState) — those must keep calling only the
-     * latter. Concurrent calls for the same workspace share one in-flight run.
-     */
-    async syncAzureReviewWorkspace(workspaceId: string, windowId?: string) {
-      assertWorkspaceInViewerProfile(workspaceId, windowId);
-      const inFlight = azureSyncInFlight.get(workspaceId);
-      if (inFlight) return inFlight;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const workspace = findWorkspace(getState() as any, workspaceId) as WorkspaceState | null;
-      if (!workspace?.review) {
-        throw new Error("Azure review workspace not found.");
-      }
-      const run = (async () => {
-        const result = await azure.syncReviewWorkspace({ workspace });
-        await refreshGit(workspaceId);
-        await refreshAzure();
-        broadcastState();
-        return { payload: getPayload(), result };
-      })();
-      azureSyncInFlight.set(workspaceId, run);
-      try {
-        return await run;
-      } finally {
-        azureSyncInFlight.delete(workspaceId);
       }
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

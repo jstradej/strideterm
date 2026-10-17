@@ -65,6 +65,7 @@ import {
   buildInternalMcpServerSpec,
   buildReviewAgentLaunch,
   buildMcpServerSpec,
+  detectReviewAgentPanel,
 } from "./review-bridge-agent-launch.js";
 import { AzureDevOpsManager } from "./azure-devops-manager.js";
 import { GitHubManager } from "./github-manager.js";
@@ -213,6 +214,9 @@ import { createTaskService } from "./internal-mcp/task-service.js";
 import { createOperationRegistry } from "./operation-registry.js";
 import { INTERNAL_MCP_CAPABILITY_ENV, INTERNAL_MCP_URL_ENV } from "../shared/internal-mcp.js";
 import { OPERATION_FINISHED_CHANNEL } from "../shared/operation-events.js";
+import { createReviewGitBroker } from "./review-git/broker.js";
+import { createReviewGitService } from "./review-git/service.js";
+import { REVIEW_GIT_CAPABILITY_ENV, REVIEW_GIT_URL_ENV } from "../shared/review-git-env.js";
 import { isVerifiedSshTestExit, SshTestMarkerCapture } from "./ssh/ssh-test-marker.js";
 import {
   clone,
@@ -254,6 +258,7 @@ import type { Logger } from "./logger.js";
 import { createRuntimeAttentionManager } from "./runtime-attention.js";
 import type { AppState, WorkspaceState } from "../shared/types/state.js";
 import { reviewSourceIdentityKey } from "../shared/review-source-identity.js";
+import type { ReviewGitStart } from "./ipc-schemas.js";
 import { formatWorkspaceDisplayName } from "../shared/workspace-display.js";
 import { isCompanionPrimaryHosted } from "../shared/companion-primary.js";
 import { sessionIdFor } from "../shared/task-states.js";
@@ -948,6 +953,7 @@ export async function createRuntime({
   const sessionOwnershipTokens = new Map<string, string>();
   let sshMcpBroker: ReturnType<typeof createSshMcpBroker> | null = null;
   let internalMcpBroker: ReturnType<typeof createInternalMcpBroker> | null = null;
+  let reviewGitBroker: ReturnType<typeof createReviewGitBroker> | null = null;
   let sshMcpCommandService: ReturnType<typeof createSshCommandService> | null = null;
 
   function getSessionOwnershipToken(sessionId: string): string {
@@ -972,6 +978,7 @@ export async function createRuntime({
     sessionOwnershipTokens.delete(sessionId);
     sshMcpBroker?.revokeSession(sessionId);
     internalMcpBroker?.revokeSession(sessionId);
+    reviewGitBroker?.revokeSession(sessionId);
     unregisterNotifyUrl(sessionId);
     // An offer this panel made is void the moment the panel stops existing.
     discardPermissionOffers((record) => record.sessionId === sessionId, "session-retired");
@@ -1142,6 +1149,7 @@ export async function createRuntime({
         });
         internalMcpEnv = { [INTERNAL_MCP_URL_ENV]: grant.url, [INTERNAL_MCP_CAPABILITY_ENV]: grant.capability };
       }
+      reviewGitBroker?.revokeSession(sessionId);
       const sshMcpEnabled = panelState.sshMcpEnabled === true;
       let sshMcpSpec;
       let sshMcpEnv: Record<string, string> | undefined;
@@ -1169,6 +1177,7 @@ export async function createRuntime({
 
       // --- Review workspace: inject MCP bridge ---
       let reviewLaunch = null;
+      let reviewGitEnv: Record<string, string> | undefined;
       if (["azure-devops", "github"].includes(workspace?.review?.provider ?? "")) {
         const storedContext = workspace!.review!.prKey
           ? reviewBridgeStore.getPullRequestContext?.(workspace!.review!.prKey)
@@ -1180,6 +1189,24 @@ export async function createRuntime({
             return rootPath ? { rootPath, workspaceId: workspace!.id, prKey: "" } : null;
           })();
         if (context) {
+          // The agent's Git tools talk to a runtime-owned broker through a
+          // short-lived capability scoped to this profile, workspace, PR, source
+          // identity and tab. Never the remote master token, never a provider PAT.
+          const reviewAgent = detectReviewAgentPanel(panelState);
+          const reviewPrKey = workspace!.review!.prKey;
+          if (reviewGitBroker && reviewAgent && reviewPrKey) {
+            const grant = reviewGitBroker.mintGrant({
+              sessionId,
+              profileId: String(workspace!.profileId || "default"),
+              workspaceId: workspace!.id,
+              panelId: panelState.id,
+              prKey: reviewPrKey,
+              identityKey: reviewGitService.identityKeyFor(workspace as WorkspaceState),
+              agent: reviewAgent,
+              command: panelState.command,
+            });
+            reviewGitEnv = { [REVIEW_GIT_URL_ENV]: grant.url, [REVIEW_GIT_CAPABILITY_ENV]: grant.capability };
+          }
           reviewLaunch = buildReviewAgentLaunch({
             workspace: workspace as WorkspaceState,
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1187,12 +1214,16 @@ export async function createRuntime({
             context,
             processInfo,
             sshMcp: sshMcpSpec,
+            reviewGitEnv,
           });
         }
       }
 
       if (reviewLaunch) {
-        return sshMcpEnv ? { ...reviewLaunch, env: { ...(reviewLaunch.env || {}), ...sshMcpEnv } } : reviewLaunch;
+        const launchEnv = { ...(sshMcpEnv || {}), ...(reviewGitEnv || {}) };
+        return Object.keys(launchEnv).length
+          ? { ...reviewLaunch, env: { ...(reviewLaunch.env || {}), ...launchEnv } }
+          : reviewLaunch;
       }
       if (sshMcpSpec || internalMcpSpec) {
         const launch = buildAgentMcpLaunch({
@@ -1459,6 +1490,7 @@ export async function createRuntime({
   events.on("state:updated", () => {
     void sshMcpBroker?.revokeInvalid();
     void internalMcpBroker?.revokeInvalid();
+    void reviewGitBroker?.revokeInvalid();
     const state = getState();
     for (const [sessionId, record] of sshTestSessions) {
       const slot = (state.windowSlots || []).find((item) => item.id === record.ownerWindowId);
@@ -4152,6 +4184,41 @@ export async function createRuntime({
     scheduleGitHubPolling,
   } = providerLifecycle;
 
+  // Review Git: one state-based flow for the UI and the agents' MCP tools.
+  // Operations answer at once and report by event / payload; the broker is the
+  // loopback door the review MCP server uses, scoped by per-tab capability.
+  const reviewGitService = createReviewGitService({
+    getState,
+    azure,
+    github,
+    reviewBridgeStore,
+    refreshGit: (workspaceId) => refreshGit(workspaceId ?? null),
+    refreshAzure,
+    refreshGitHub,
+    broadcastState,
+    emit: (channel, payload) => events.emit(channel, payload),
+    auditStores: { azure: auditLogStore, github: githubAuditLogStore, system: gitAuditLogStore },
+    log,
+  });
+  reviewGitBroker = createReviewGitBroker({
+    service: reviewGitService,
+    isGrantLive: (grant) => {
+      const state = getState();
+      const workspace = state.workspaces.find((item) => item.id === grant.workspaceId);
+      if (!workspace?.review?.prKey || workspace.review.prKey !== grant.prKey) return false;
+      const profileId = String(workspace.profileId || "default");
+      if (profileId !== grant.profileId || !state.profiles.some((profile) => profile.id === profileId)) return false;
+      const panel = workspace.panels.find((item) => item.id === grant.panelId);
+      if (!panel || panel.command !== grant.command || detectReviewAgentPanel(panel) !== grant.agent) return false;
+      if (reviewGitService.identityKeyFor(workspace) !== grant.identityKey) return false;
+      const session = sessionsForSshMcp?.sessions.get(grant.sessionId);
+      return Boolean(
+        session?.status === "running" && session.workspaceId === grant.workspaceId && session.panelId === grant.panelId,
+      );
+    },
+  });
+  await reviewGitBroker.start();
+
   tunnel.setBinaryPreference?.(getState().settings.remoteAccess.cloudflaredPath || "");
 
   const versionChecker = createUpdateCheckerForDistribution({
@@ -4447,6 +4514,7 @@ export async function createRuntime({
       },
       taskRunner: taskRunner.getTaskSnapshot(),
       operations: operations.snapshot(),
+      reviewGit: reviewGitService.stateFor(),
       azureClosedPrCleanup: {
         parentWorkspaceIds: [...azureClosedPrCleanupInFlight],
         lastRuns: [...azureClosedPrCleanupLastRuns.values()].filter(
@@ -4765,6 +4833,7 @@ export async function createRuntime({
       clearTerminalReplay(String(sessionId || ""));
       sshMcpBroker?.revokeSession(String(sessionId || ""));
       internalMcpBroker?.revokeSession(String(sessionId || ""));
+      reviewGitBroker?.revokeSession(String(sessionId || ""));
       await sessions.restartSession(getState(), sessionId);
       resetSessionSignal(sessionId);
     },
@@ -10313,6 +10382,28 @@ export async function createRuntime({
       return { started: true };
     },
 
+    /**
+     * Start a review Git operation (refresh, rebase, push, force push,
+     * push-and-publish). Validates and authorizes synchronously — a throw is an
+     * immediate error toast — then returns an operation id at once: the work can
+     * outlast the 30 s a remote request may take to start answering, and it must
+     * not depend on the caller afterwards. The outcome arrives as
+     * `review-git:operation` and in the payload's `reviewGit`.
+     */
+    async startReviewGitOperation(input: ReviewGitStart, windowId?: string) {
+      assertWorkspaceInViewerProfile(input.workspaceId, windowId);
+      const workspace = getState().workspaces.find((item) => item.id === input.workspaceId);
+      if (!workspace) throw new Error("Review workspace not found.");
+      return reviewGitService.start(
+        {
+          kind: input.kind,
+          workspaceId: input.workspaceId,
+          confirmation: input.confirmation,
+        },
+        { profileId: workspace.profileId || "default", requester: { source: "ui" } },
+      );
+    },
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async deleteWorkspace(workspaceId: any, options: any = {}, windowId?: string) {
       const state = getState();
@@ -11627,6 +11718,7 @@ export async function createRuntime({
       await stopAgentNotifyServer();
       await sshMcpBroker?.close();
       await internalMcpBroker?.close();
+      await reviewGitBroker?.close();
       sshMcpCommandService?.close();
       for (const signal of sessionSignals.values()) {
         cancelPromptTimer(signal);

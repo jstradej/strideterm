@@ -31,3 +31,9 @@ export interface AzureClosedPrCleanupResult {
 export interface AzureClosedPrCleanupStarted {
   started: true;
 }
+
+/** A review Git operation was started; its outcome arrives as `review-git:operation`. */
+export interface ReviewGitStarted {
+  started: true;
+  operationId: string;
+}

@@ -1143,16 +1143,20 @@ export class BaseProviderManager extends EventEmitter {
     force = false,
     requester,
     confirmation,
+    requireProposal = false,
   }: {
     workspace: ReviewWorkspaceRef;
     force?: boolean;
     requester?: ReviewGitRequester;
     confirmation?: ReviewGitConfirmation;
+    /** Describe the push first and only run it when the continuation names that proposal. */
+    requireProposal?: boolean;
   }): Promise<ReviewGitResult> {
     this.log.info("push review workspace", { workspaceId: workspace.id, force });
     return this.getReviewGitEngine().push(this.buildReviewSubject(workspace), this.reviewRequester(requester), {
       force,
       confirmation,
+      requireProposal,
     });
   }
 

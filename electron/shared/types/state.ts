@@ -4,6 +4,7 @@ import type { SshConnectionSettings } from "../ssh-connection.js";
 import type { Alert } from "./notifications.js";
 import type { AzureClosedPrCleanupFinished } from "../azure-closed-pr-cleanup-events.js";
 import type { OperationsState } from "../operation-events.js";
+import type { ReviewGitState } from "../review-git-events.js";
 import type { AppDistribution, MicrosoftStoreUpdateStatus } from "../app-distribution.js";
 
 // Re-export for convenience
@@ -1160,6 +1161,8 @@ export interface StatePayload {
   azureClosedPrCleanup: AzureClosedPrCleanupState;
   /** Runtime-only: running long operations and their last results (24 h). */
   operations: OperationsState;
+  /** Review Git operations running now and finished within 24 h (runtime-only, never persisted). */
+  reviewGit: ReviewGitState;
   /** Per-remote-client context — only set when the payload is composed for a specific remote session. */
   remoteClient?: RemoteClientContext;
 }
@@ -1251,6 +1254,8 @@ export interface RemoteStateV2 {
   azureClosedPrCleanup: AzureClosedPrCleanupState;
   /** Only the client's profile's operations. */
   operations: OperationsState;
+  /** Only the client's profile's operations. */
+  reviewGit: ReviewGitState;
   plugins: unknown[];
   environment: Record<string, unknown>;
   /** Share-URL surface only (token blanked). */

@@ -13,6 +13,8 @@ import {
   type AgentMcpInstall,
   type AgentMcpServerSpec,
 } from "./agent-mcp-launch.js";
+import { REVIEW_GIT_CAPABILITY_ENV, REVIEW_GIT_URL_ENV } from "../shared/review-git-env.js";
+import { buildReviewGitPolicy } from "../shared/review-git-policy.js";
 
 const SUPPORTED_REVIEW_AGENTS = new Set(["claude", "codex", "copilot", "opencode"]);
 const DEFAULT_APP_ENTRY = path.resolve(fileURLToPath(new URL("../../../", import.meta.url)));
@@ -102,6 +104,12 @@ interface BuildLaunchInput extends GrantMcpServers {
   panel?: ReviewPanel;
   context?: ReviewContext;
   processInfo?: ProcessInfo;
+  /**
+   * The per-tab review Git capability (URL + capability), when the runtime
+   * minted one. It rides the PTY environment; only agents whose MCP children
+   * do not inherit that environment get it handed over explicitly.
+   */
+  reviewGitEnv?: Record<string, string>;
 }
 
 function normalizeText(value: unknown): string {
@@ -240,6 +248,7 @@ function buildReviewPrompt(context: ReviewContext | undefined): string {
     "Start with list_review_comments.",
     "Use get_review_comment for details, save_review_draft for replies, create_review_comment for new findings, update_review_comment and delete_review_comment to fix or drop a draft comment of your own, and queue_review_draft only when a draft is ready.",
     "Do not publish to Azure DevOps directly.",
+    buildReviewGitPolicy({ askTool: "AskUserQuestion" }),
   ].join(" ");
 }
 
@@ -465,6 +474,11 @@ function buildCodexLaunch({ workspace, panel, context, processInfo, ...grants }:
   args.push(
     "-c",
     `mcp_servers.review.command=${JSON.stringify(mcp.command)}`,
+    // Codex starts MCP servers with a scrubbed environment: name the per-tab Git
+    // capability variables so they are forwarded from the tab's PTY (the values
+    // never appear on the command line).
+    "-c",
+    `mcp_servers.review.env_vars=${JSON.stringify([REVIEW_GIT_URL_ENV, REVIEW_GIT_CAPABILITY_ENV])}`,
     "-c",
     `mcp_servers.review.args=${JSON.stringify(mcp.args)}`,
   );
@@ -527,7 +541,7 @@ function buildCopilotLaunch({ workspace, panel, context, processInfo }: BuildLau
   });
 }
 
-function buildOpencodeLaunch({ workspace, panel, context, processInfo }: BuildLaunchInput): AgentLaunch {
+function buildOpencodeLaunch({ workspace, panel, context, processInfo, reviewGitEnv }: BuildLaunchInput): AgentLaunch {
   const mcp = buildMcpServerSpec({ context, processInfo });
   const platform = processInfo?.platform || process.platform;
   const args = [...inheritedPanelArgs(panel)];
@@ -551,7 +565,7 @@ function buildOpencodeLaunch({ workspace, panel, context, processInfo }: BuildLa
       review: {
         type: "local",
         command: [mcp.command, ...mcp.args],
-        environment: mcp.env,
+        environment: { ...(mcp.env || {}), ...(reviewGitEnv || {}) },
         enabled: true,
       },
     },
@@ -615,6 +629,7 @@ export function buildReviewAgentLaunch({
   processInfo,
   sshMcp,
   internalMcp,
+  reviewGitEnv,
 }: BuildLaunchInput): AgentLaunch | null {
   if (!context?.rootPath) {
     return null;
@@ -631,7 +646,7 @@ export function buildReviewAgentLaunch({
     return buildCopilotLaunch({ workspace, panel, context, processInfo });
   }
   if (agent === "opencode") {
-    return buildOpencodeLaunch({ workspace, panel, context, processInfo });
+    return buildOpencodeLaunch({ workspace, panel, context, processInfo, reviewGitEnv });
   }
   return null;
 }

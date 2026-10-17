@@ -70,12 +70,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   saveAgentPrompt: (payload) => ipcRenderer.invoke("review-bridge:agent-prompt:save", payload),
   deleteAgentPrompt: (payload) => ipcRenderer.invoke("review-bridge:agent-prompt:delete", payload),
   syncReviewBridgePullRequest: (payload) => ipcRenderer.invoke("review-bridge:pull-request:sync", payload),
-  pushAndPublishReview: (payload) => ipcRenderer.invoke("review-bridge:pull-request:push-and-publish", payload),
   voteAzurePullRequest: (payload) => ipcRenderer.invoke("azure:pull-request:vote", payload),
-  fetchAzureReviewWorkspace: (workspaceId) => ipcRenderer.invoke("azure:workspace:fetch", workspaceId),
-  rebaseAzureReviewWorkspace: (workspaceId) => ipcRenderer.invoke("azure:workspace:rebase", workspaceId),
-  pushAzureReviewWorkspace: (workspaceId, options) => ipcRenderer.invoke("azure:workspace:push", workspaceId, options),
-  syncAzureReviewWorkspace: (workspaceId) => ipcRenderer.invoke("azure:workspace:sync", workspaceId),
   azureCreatePullRequest: (payload) => ipcRenderer.invoke("azure:create-pull-request", payload),
   azureListRemoteBranches: (payload) => ipcRenderer.invoke("azure:list-remote-branches", payload),
   azureQuickFixListProjects: (payload) => ipcRenderer.invoke("azure:quickfix:list-projects", payload),
@@ -105,11 +100,6 @@ contextBridge.exposeInMainWorld("strideterm", {
   commentGitHubPullRequest: (payload) => ipcRenderer.invoke("github:pull-request:comment", payload),
   submitGitHubPullRequestReview: (payload) => ipcRenderer.invoke("github:pull-request:review", payload),
   rerunGitHubCheck: (prKey, checkItem) => ipcRenderer.invoke("github:rerun-check", prKey, checkItem),
-  fetchGitHubReviewWorkspace: (workspaceId) => ipcRenderer.invoke("github:workspace:fetch", workspaceId),
-  rebaseGitHubReviewWorkspace: (workspaceId) => ipcRenderer.invoke("github:workspace:rebase", workspaceId),
-  pushGitHubReviewWorkspace: (workspaceId, options) =>
-    ipcRenderer.invoke("github:workspace:push", workspaceId, options),
-  syncGitHubReviewWorkspace: (workspaceId) => ipcRenderer.invoke("github:workspace:sync", workspaceId),
   githubListRemoteBranches: (payload) => ipcRenderer.invoke("github:list-remote-branches", payload),
   githubCreatePullRequest: (payload) => ipcRenderer.invoke("github:create-pull-request", payload),
   githubQuickFixListRepos: (payload) => ipcRenderer.invoke("github:quickfix:list-repos", payload),
@@ -363,6 +353,8 @@ contextBridge.exposeInMainWorld("strideterm", {
   onNotificationTargetRemoved: (handler) =>
     ipcRenderer.on("notification:target-removed", (_event, payload) => handler(payload)),
   onApprovalRecorded: (handler) => ipcRenderer.on("approval:recorded", (_event, payload) => handler(payload)),
+  onReviewGitOperation: (handler) => ipcRenderer.on("review-git:operation", (_event, payload) => handler(payload)),
+  startReviewGitOperation: (payload) => ipcRenderer.invoke("review-git:start", payload),
   onAzureClosedPrCleanupFinished: (handler) =>
     ipcRenderer.on("azure:closed-pr-cleanup:finished", (_event, payload) => handler(payload)),
   onOperationFinished: (handler) => ipcRenderer.on("operation:finished", (_event, payload) => handler(payload)),

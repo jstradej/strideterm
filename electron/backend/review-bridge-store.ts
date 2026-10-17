@@ -445,6 +445,15 @@ export async function createReviewBridgeStore(rootPath: string) {
       SET title = ?, summary = ?, payload_json = ?, updated_at = ?
       WHERE comment_key = ?
     `),
+    selectLocalAnchoredComments: db.prepare(`
+      SELECT comment_key, payload_json FROM review_comments
+      WHERE pr_key = ? AND remote_thread_id IS NULL AND comment_kind IN ('draft', 'local-comment')
+    `),
+    updateCommentPayload: db.prepare(`
+      UPDATE review_comments
+      SET payload_json = ?, updated_at = ?
+      WHERE comment_key = ?
+    `),
     updateDraftBody: db.prepare(`
       UPDATE draft_responses
       SET body = ?, updated_at = ?
@@ -1573,6 +1582,52 @@ export async function createReviewBridgeStore(rootPath: string) {
         }
 
         return finishAndExport(prKey);
+      });
+    },
+    /**
+     * After a local history rewrite (reset, rebase) re-check every local inline
+     * comment's anchor — the file at the new HEAD must still have that line.
+     * A comment whose anchor no longer holds is MARKED stale (`anchorStale`,
+     * with the reason) and left exactly where it was: it is never silently moved
+     * to another line, and publishing refuses it until the user repairs it. A
+     * comment whose anchor holds again loses an earlier mark.
+     */
+    async markStaleAnchors(
+      prKey: string,
+      isAnchorValid: (anchor: {
+        commentKey: string;
+        filePath: string;
+        lineNumber: number;
+      }) => Promise<boolean> | boolean,
+    ) {
+      ensureOpen();
+      if (!prKey) throw new Error("Pull request key is required.");
+      return enqueue(async () => {
+        const rows = statements.selectLocalAnchoredComments.all(prKey) as SqlRow[];
+        const stale: string[] = [];
+        let checked = 0;
+        for (const row of rows) {
+          const payload = fromJson<Record<string, unknown>>(row.payload_json, {});
+          const filePath = String(payload.filePath || "");
+          const lineNumber = Number(payload.lineNumber) || 0;
+          if (!filePath || !lineNumber) continue;
+          checked += 1;
+          const valid = await isAnchorValid({ commentKey: String(row.comment_key), filePath, lineNumber });
+          const wasStale = payload.anchorStale === true;
+          if (valid === !wasStale) continue;
+          const next = { ...payload };
+          if (valid) {
+            delete next.anchorStale;
+            delete next.anchorStaleReason;
+          } else {
+            next.anchorStale = true;
+            next.anchorStaleReason = `${filePath}:${lineNumber} no longer exists after the history rewrite.`;
+            stale.push(String(row.comment_key));
+          }
+          statements.updateCommentPayload.run(JSON.stringify(next), new Date().toISOString(), row.comment_key);
+        }
+        await finishAndExport(prKey);
+        return { checked, stale };
       });
     },
     getSignalPath() {

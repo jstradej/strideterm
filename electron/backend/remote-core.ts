@@ -692,6 +692,17 @@ export function buildRemoteCore(
         matchesProfile(op, scope),
       ) as RemoteStateV2["operations"]["lastResults"],
     },
+    // Operations carry the effective profile id they were started in — the same
+    // field the live event is routed by — so a client never learns another
+    // profile's workspaces, commits or outcomes.
+    reviewGit: {
+      running: ((composed.reviewGit?.running || []) as AnyRecord[]).filter((run) =>
+        matchesProfile(run, scope),
+      ) as RemoteStateV2["reviewGit"]["running"],
+      lastRuns: ((composed.reviewGit?.lastRuns || []) as AnyRecord[]).filter((run) =>
+        matchesProfile(run, scope),
+      ) as RemoteStateV2["reviewGit"]["lastRuns"],
+    },
     plugins: composed.plugins || [],
     environment: composed.environment || {},
     remoteAccess: reduceRemoteAccess(composed.remoteAccess),
@@ -750,6 +761,7 @@ export const STATE_PAYLOAD_KEYS: ReadonlySet<string> = new Set([
   "taskRunner",
   "azureClosedPrCleanup",
   "operations",
+  "reviewGit",
   "secureStorage",
   "remoteClient",
 ]);

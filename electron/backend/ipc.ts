@@ -33,7 +33,7 @@ import {
   reviewBridgeDeleteCommentSchema,
   reviewBridgeReplyWithChangesSchema,
   reviewBridgeSyncSchema,
-  reviewBridgePushAndPublishSchema,
+  reviewGitStartSchema,
   agentPromptSaveSchema,
   agentPromptDeleteSchema,
   fileListSchema,
@@ -98,7 +98,6 @@ import {
   workspaceReorderSchema,
   attentionSyncSchema,
   notificationShowSchema,
-  workspacePushOptionsSchema,
   worktreeSchema,
   removeWorktreeSchema,
   quickFixListProjectsSchema,
@@ -160,6 +159,7 @@ import { NOTIFICATION_TARGET_REMOVED_CHANNEL } from "../shared/notification-life
 import { APPROVAL_RECORDED_CHANNEL } from "../shared/approval-events.js";
 import { AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL } from "../shared/azure-closed-pr-cleanup-events.js";
 import { OPERATION_FINISHED_CHANNEL } from "../shared/operation-events.js";
+import { REVIEW_GIT_OPERATION_CHANNEL } from "../shared/review-git-events.js";
 
 type Runtime = Awaited<ReturnType<typeof createRuntime>>;
 
@@ -258,6 +258,10 @@ export function registerIpc(
     // Every window, each filtering by the profile it is viewing: the result of a long operation
     // belongs to the profile it was accepted in, not to the window that happened to ask.
     runtime.on(OPERATION_FINISHED_CHANNEL, (payload: unknown) => emitToRenderer(OPERATION_FINISHED_CHANNEL, payload)),
+    // Every window: each renderer shows an operation only while viewing its profile.
+    runtime.on(REVIEW_GIT_OPERATION_CHANNEL, (payload: unknown) =>
+      emitToRenderer(REVIEW_GIT_OPERATION_CHANNEL, payload),
+    ),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     runtime.on("mobile:status", (payload: any) => emitToRenderer("mobile:status", payload)),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -725,15 +729,6 @@ export function registerIpc(
       ),
     ),
   );
-  handle("review-bridge:pull-request:push-and-publish", async (event, payload) => {
-    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
-    return withOperationPromise({ opId: "review-bridge:pull-request:push-and-publish" }, () =>
-      runtime.pushAndPublishReview(
-        validateIpc(reviewBridgePushAndPublishSchema, payload, "review-bridge:pull-request:push-and-publish"),
-        windowId,
-      ),
-    );
-  });
 
   // --- SSH ---
   handle("ssh:hosts:list", async () =>
@@ -847,28 +842,12 @@ export function registerIpc(
       runtime.voteAzurePullRequest(validateIpc(azureVoteSchema, payload, "azure:pull-request:vote"), windowId),
     );
   });
-  handle("azure:workspace:fetch", async (_event, workspaceId) =>
-    withOperationPromise({ workspaceId: String(workspaceId || ""), opId: "azure:workspace:fetch" }, () =>
-      runtime.fetchAzureReviewWorkspace(workspaceId),
-    ),
-  );
-  handle("azure:workspace:rebase", async (_event, workspaceId) =>
-    withOperationPromise({ workspaceId: String(workspaceId || ""), opId: "azure:workspace:rebase" }, () =>
-      runtime.rebaseAzureReviewWorkspace(workspaceId),
-    ),
-  );
-  handle("azure:workspace:push", async (_event, workspaceId, options) =>
-    withOperationPromise({ workspaceId: String(workspaceId || ""), opId: "azure:workspace:push" }, () =>
-      runtime.pushAzureReviewWorkspace(
-        workspaceId,
-        validateIpc(workspacePushOptionsSchema, options || {}, "azure:workspace:push"),
-      ),
-    ),
-  );
-  handle("azure:workspace:sync", async (event, workspaceId) => {
+  // Starts a review Git operation and answers at once; the outcome arrives as
+  // `review-git:operation` (and in the payload's `reviewGit`).
+  handle("review-git:start", async (event, payload) => {
     const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
-    return withOperationPromise({ workspaceId: String(workspaceId || ""), opId: "azure:workspace:sync" }, () =>
-      runtime.syncAzureReviewWorkspace(validateIpc(workspaceIdSchema, workspaceId, "azure:workspace:sync"), windowId),
+    return withOperationPromise({ opId: "review-git:start" }, () =>
+      runtime.startReviewGitOperation(validateIpc(reviewGitStartSchema, payload, "review-git:start"), windowId),
     );
   });
   handle("azure:create-pull-request", async (_event, payload) =>
@@ -1062,30 +1041,6 @@ export function registerIpc(
       return runtime.rerunGitHubCheck(validated.prKey, validated.checkItem);
     }),
   );
-  handle("github:workspace:fetch", async (_event, workspaceId) =>
-    withOperationPromise({ workspaceId: String(workspaceId || ""), opId: "github:workspace:fetch" }, () =>
-      runtime.fetchGitHubReviewWorkspace(workspaceId),
-    ),
-  );
-  handle("github:workspace:rebase", async (_event, workspaceId) =>
-    withOperationPromise({ workspaceId: String(workspaceId || ""), opId: "github:workspace:rebase" }, () =>
-      runtime.rebaseGitHubReviewWorkspace(workspaceId),
-    ),
-  );
-  handle("github:workspace:push", async (_event, workspaceId, options) =>
-    withOperationPromise({ workspaceId: String(workspaceId || ""), opId: "github:workspace:push" }, () =>
-      runtime.pushGitHubReviewWorkspace(
-        workspaceId,
-        validateIpc(workspacePushOptionsSchema, options || {}, "github:workspace:push"),
-      ),
-    ),
-  );
-  handle("github:workspace:sync", async (event, workspaceId) => {
-    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
-    return withOperationPromise({ workspaceId: String(workspaceId || ""), opId: "github:workspace:sync" }, () =>
-      runtime.syncGitHubReviewWorkspace(validateIpc(workspaceIdSchema, workspaceId, "github:workspace:sync"), windowId),
-    );
-  });
   handle("github:list-remote-branches", async (_event, payload) =>
     withOperationPromise({ opId: "github:list-remote-branches" }, () =>
       runtime.githubListRemoteBranches(validateIpc(gitPayloadSchema, payload, "github:list-remote-branches")),

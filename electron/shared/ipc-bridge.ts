@@ -1,5 +1,5 @@
 import type { StatePayload, RecoveryResult } from "./types/state.js";
-import type { AzureClosedPrCleanupStarted } from "./types/ipc-results.js";
+import type { AzureClosedPrCleanupStarted, ReviewGitStarted } from "./types/ipc-results.js";
 import type { MobileConnectedDevice } from "./mobile-session-events.js";
 import type { RemoteBrowserSession } from "./remote-access.js";
 import type {
@@ -18,7 +18,7 @@ import type {
   ReviewBridgeDeleteComment,
   ReviewBridgeReplyWithChanges,
   ReviewBridgeSync,
-  ReviewBridgePushAndPublish,
+  ReviewGitStart,
   AgentPromptSave,
   AgentPromptDelete,
   GitPayload,
@@ -93,7 +93,6 @@ import type {
   ApprovalAuditLogQuery,
   ApprovalAuditLogDelete,
   ApprovalAuditLogStats,
-  WorkspacePushOptions,
   AccountCheckout,
   AccountDelete,
   AccountDiagnostics,
@@ -231,6 +230,8 @@ export interface StridetermAPI {
   refreshAzure: () => Promise<unknown>;
   /** Starts the cleanup and resolves at once; the outcome arrives via `onAzureClosedPrCleanupFinished`. */
   cleanupAzureClosedPullRequests: (parentWorkspaceId: string) => Promise<AzureClosedPrCleanupStarted>;
+  /** Starts a review Git operation and resolves at once; the outcome arrives via `onReviewGitOperation`. */
+  startReviewGitOperation: (payload: ReviewGitStart) => Promise<ReviewGitStarted>;
   queryAzureAuditLog: (filters: AzureAuditLogQuery) => Promise<unknown>;
   getAzureAuditStats: (filters: AzureAuditLogStats) => Promise<unknown>;
   queryApprovalAuditLog: (filters: ApprovalAuditLogQuery) => Promise<unknown>;
@@ -248,10 +249,6 @@ export interface StridetermAPI {
   commentAzurePullRequest: (payload: AzureComment) => Promise<unknown>;
   updateAzureThreadStatus: (payload: AzureThreadStatus) => Promise<unknown>;
   voteAzurePullRequest: (payload: AzureVote) => Promise<unknown>;
-  fetchAzureReviewWorkspace: (workspaceId: string) => Promise<unknown>;
-  rebaseAzureReviewWorkspace: (workspaceId: string) => Promise<unknown>;
-  pushAzureReviewWorkspace: (workspaceId: string, options?: WorkspacePushOptions) => Promise<unknown>;
-  syncAzureReviewWorkspace: (workspaceId: string) => Promise<unknown>;
   azureCreatePullRequest: (payload: Record<string, unknown>) => Promise<unknown>;
   azureListRemoteBranches: (payload: Record<string, unknown>) => Promise<unknown>;
   azureQuickFixListProjects: (payload: QuickFixListProjects) => Promise<unknown>;
@@ -329,10 +326,6 @@ export interface StridetermAPI {
   commentGitHubPullRequest: (payload: GithubComment) => Promise<unknown>;
   submitGitHubPullRequestReview: (payload: GithubReview) => Promise<unknown>;
   rerunGitHubCheck: (prKey: string, checkItem: RerunCheck["checkItem"]) => Promise<unknown>;
-  fetchGitHubReviewWorkspace: (workspaceId: string) => Promise<unknown>;
-  rebaseGitHubReviewWorkspace: (workspaceId: string) => Promise<unknown>;
-  pushGitHubReviewWorkspace: (workspaceId: string, options?: WorkspacePushOptions) => Promise<unknown>;
-  syncGitHubReviewWorkspace: (workspaceId: string) => Promise<unknown>;
   githubListRemoteBranches: (payload: Record<string, unknown>) => Promise<unknown>;
   githubCreatePullRequest: (payload: Record<string, unknown>) => Promise<unknown>;
   githubQuickFixListRepos: (payload: GithubQuickFixListRepos) => Promise<unknown>;
@@ -438,7 +431,6 @@ export interface StridetermAPI {
   saveAgentPrompt: (payload: AgentPromptSave) => Promise<unknown>;
   deleteAgentPrompt: (payload: AgentPromptDelete) => Promise<unknown>;
   syncReviewBridgePullRequest: (payload: ReviewBridgeSync) => Promise<unknown>;
-  pushAndPublishReview: (payload: ReviewBridgePushAndPublish) => Promise<unknown>;
 
   // Agent hooks
   regenerateRemoteToken: () => Promise<unknown>;
@@ -812,6 +804,7 @@ export interface StridetermAPI {
   onAzureClosedPrCleanupFinished: (handler: (payload: unknown) => void) => void;
   /** A long-running runtime operation finished. UNVALIDATED here; parsed at the transport boundary. */
   onOperationFinished: (handler: (payload: unknown) => void) => void;
+  onReviewGitOperation: (handler: (payload: unknown) => void) => void;
   onMobileStatus: (
     handler: (
       payload:

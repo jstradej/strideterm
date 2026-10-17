@@ -96,26 +96,6 @@ export function mirrorActivationIntoSlot(
 }
 
 /**
- * Refuse to push a review workspace whose worktree has uncommitted changes —
- * pushing over them would silently discard the reviewer's in-progress edits
- * (the managed worktree has no stash of its own). Identical guard used by
- * both providers' `push*ReviewWorkspace` handlers right before the actual
- * push call.
- */
-export async function assertWorktreeCleanForPush(
-  git: { getCachedWorktreeDirtyState: (cwd: string) => Promise<{ dirty: boolean; dirtyCount: number }> },
-  workspace: { cwd: string },
-): Promise<void> {
-  const dirtyState = await git.getCachedWorktreeDirtyState(workspace.cwd);
-  if (dirtyState.dirty) {
-    throw new Error(
-      `Cannot push: ${dirtyState.dirtyCount} uncommitted change${dirtyState.dirtyCount !== 1 ? "s" : ""} in the worktree. ` +
-        "Commit your changes first, then try again.",
-    );
-  }
-}
-
-/**
  * Filter a provider's full connection list down to connections owned by a
  * profile that is currently open in some window. Filtering by only
  * `windowSlots[0]` hid a connection the user just saved while working in a

@@ -1,12 +1,12 @@
 /// <reference types="node" />
-import path from "node:path";
 import fs from "node:fs/promises";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { createReviewBridgeStore } from "./review-bridge-store.js";
-import { createGitAuditLogStore } from "./git-audit-log-store.js";
+import { buildReviewGitPolicy } from "../shared/review-git-policy.js";
+import { createReviewGitClient, readReviewGitStdioConfig, registerReviewGitTools } from "./review-git-mcp.js";
 
 type ReviewBridgeStore = Awaited<ReturnType<typeof createReviewBridgeStore>>;
 type ReviewContext = NonNullable<ReturnType<ReviewBridgeStore["getPullRequestContext"]>>;
@@ -474,11 +474,13 @@ export async function runReviewBridgeMcpServer({ rootPath, prKey, workspaceId }:
   const store = await createReviewBridgeStore(rootPath);
   const keySpec: KeySpec = { prKey, workspaceId };
   const handlers = createReviewBridgeMcpHandlers({ store, prKey, workspaceId });
-  const gitAuditLogStore = createGitAuditLogStore(path.join(rootPath, "git-audit-log.db"));
-  const server = new McpServer({
-    name: "strideterm-review-bridge",
-    version: "1.0.0",
-  });
+  const server = new McpServer(
+    {
+      name: "strideterm-review-bridge",
+      version: "1.0.0",
+    },
+    { instructions: buildReviewGitPolicy({ askTool: null }) },
+  );
 
   server.registerResource(
     "review-brief",
@@ -672,33 +674,7 @@ export async function runReviewBridgeMcpServer({ rootPath, prKey, workspaceId }:
     async (input) => handlers.replyWithCodeChanges(input),
   );
 
-  server.registerTool(
-    "get_git_audit_log",
-    {
-      title: "Get Git Audit Log",
-      description:
-        "Query the git operation audit log. Shows push, pull, fetch, and force-push history for this workspace, " +
-        "including force-push ref hashes (expectedRef, previousRemoteRef, newRemoteRef). " +
-        "Covers both connection-based and system-credential operations.",
-      inputSchema: {
-        limit: z.number().int().positive().max(100).optional().describe("Max entries to return (default 20)."),
-        category: z.enum(["read", "write"]).optional().describe("Filter by read or write category."),
-        operation: z.string().optional().describe("Filter by operation name, e.g. gitPush or gitForce-push."),
-      },
-    },
-    async (input) => {
-      const result = gitAuditLogStore.query({
-        limit: input?.limit || 20,
-        category: input?.category,
-        operation: input?.operation,
-      });
-      return toolResult(
-        result.entries.length === 0
-          ? "No git audit log entries found."
-          : `${result.total} total entries (showing ${result.entries.length}):\n\n${JSON.stringify(result.entries, null, 2)}`,
-      );
-    },
-  );
+  registerReviewGitTools(server, createReviewGitClient({ config: readReviewGitStdioConfig() }));
 
   const transport = new StdioServerTransport();
   try {
@@ -712,9 +688,6 @@ export async function runReviewBridgeMcpServer({ rootPath, prKey, workspaceId }:
     await server.close().catch(() => {});
     if (typeof store.close === "function") {
       await store.close().catch(() => {});
-    }
-    if (typeof gitAuditLogStore.close === "function") {
-      gitAuditLogStore.close();
     }
   }
 }

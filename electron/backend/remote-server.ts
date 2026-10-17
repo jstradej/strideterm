@@ -50,6 +50,7 @@ import {
   gitSquashSchema,
   mobileSessionBootstrapSchema,
   azureClosedPrCleanupSchema,
+  reviewGitStartSchema,
   mobileAttachmentEnvelopeSchema,
   mobileAttachmentOperationSchema,
   taskUpdateDescriptionSchema,
@@ -95,6 +96,7 @@ import type { RemoteBrowserSession, RemoteSessionRevoke } from "../shared/remote
 import { APPROVAL_RECORDED_CHANNEL } from "../shared/approval-events.js";
 import { AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL } from "../shared/azure-closed-pr-cleanup-events.js";
 import { OPERATION_FINISHED_CHANNEL } from "../shared/operation-events.js";
+import { REVIEW_GIT_OPERATION_CHANNEL } from "../shared/review-git-events.js";
 import {
   buildRemoteCore,
   buildResourceDetail,
@@ -1079,8 +1081,6 @@ const ACK_MUTATION_ROUTES = new Set<string>([
   "/api/azure/pull-request/vote",
   "/api/azure/pull-request/thread-status",
   "/api/azure/pull-request/open",
-  "/api/azure/workspace/fetch",
-  "/api/azure/workspace/rebase",
   "/api/azure/delete-connection",
   // Re-run a CI check (renderer awaits + discards, then emits refresh).
   "/api/azure/rerun-check",
@@ -1090,8 +1090,6 @@ const ACK_MUTATION_ROUTES = new Set<string>([
   "/api/github/pull-request/comment",
   "/api/github/pull-request/review",
   "/api/github/pull-request/open",
-  "/api/github/workspace/fetch",
-  "/api/github/workspace/rebase",
   "/api/github/delete-connection",
   // Review-bridge domain mutations (renderer: setPayload no-op).
   "/api/review-bridge/draft/save",
@@ -1101,7 +1099,6 @@ const ACK_MUTATION_ROUTES = new Set<string>([
   "/api/review-bridge/comment/delete",
   "/api/review-bridge/comment/reply-with-changes",
   "/api/review-bridge/pull-request/sync",
-  "/api/review-bridge/pull-request/push-and-publish",
   "/api/review-bridge/agent-prompt/reset",
   // Docker domain mutations (renderer: setPayload no-op — the Docker pane
   // repaints from its `docker` detail resource, refetched via the ack's
@@ -1172,11 +1169,6 @@ function changedResourcesForRoute(route: string, body: Record<string, unknown> |
     case "/api/github/pull-request/open":
     case "/api/github/rerun-check":
       return githubPr();
-    case "/api/azure/workspace/fetch":
-    case "/api/azure/workspace/rebase":
-    case "/api/github/workspace/fetch":
-    case "/api/github/workspace/rebase":
-      return wsId ? [`git:${wsId}`] : [];
     case "/api/review-bridge/draft/save":
     case "/api/review-bridge/draft/delete":
     case "/api/review-bridge/draft/queue":
@@ -1184,7 +1176,6 @@ function changedResourcesForRoute(route: string, body: Record<string, unknown> |
     case "/api/review-bridge/comment/delete":
     case "/api/review-bridge/comment/reply-with-changes":
     case "/api/review-bridge/pull-request/sync":
-    case "/api/review-bridge/pull-request/push-and-publish":
       return prKey ? [`review-bridge:${prKey}`] : [];
     // Prompt reset changes the global agent-prompts list — the ack names that
     // single resource so an interested (mounted) review pane refetches it
@@ -1706,10 +1697,6 @@ const API_ROUTES: Record<string, ApiRouteHandler> = {
   // /api/azure/pull-request/vote is handled in the outer dispatch
   // (slotAwareRoute) so it resolves the caller's viewer id and rejects a vote
   // on a PR outside the caller's profile.
-  "/api/azure/workspace/fetch": (runtime, body) => runtime.fetchAzureReviewWorkspace(body.workspaceId),
-  "/api/azure/workspace/rebase": (runtime, body) => runtime.rebaseAzureReviewWorkspace(body.workspaceId),
-  "/api/azure/workspace/push": (runtime, body) =>
-    runtime.pushAzureReviewWorkspace(body.workspaceId as string, { force: Boolean(body.force) }),
   "/api/azure/create-pull-request": (runtime, body) => runtime.azureCreatePullRequest(body),
   "/api/azure/list-remote-branches": (runtime, body) => runtime.azureListRemoteBranches(body),
   "/api/azure/quickfix/list-projects": (runtime, body) => runtime.azureQuickFixListProjects(body),
@@ -1742,9 +1729,6 @@ const API_ROUTES: Record<string, ApiRouteHandler> = {
   // from the remote-client registry and reject cross-profile PRs.
   // /api/github/rerun-check is handled in the outer dispatch (slotAwareRoute)
   // so it resolves the caller's viewer id and refuses a cross-profile prKey.
-  "/api/github/workspace/fetch": (runtime, body) => runtime.fetchGitHubReviewWorkspace(body.workspaceId),
-  "/api/github/workspace/rebase": (runtime, body) => runtime.rebaseGitHubReviewWorkspace(body.workspaceId),
-  "/api/github/workspace/push": (runtime, body) => runtime.pushGitHubReviewWorkspace(body.workspaceId, body),
   "/api/github/list-remote-branches": (runtime, body) => runtime.githubListRemoteBranches(body),
   "/api/github/create-pull-request": (runtime, body) => runtime.githubCreatePullRequest(body),
   "/api/github/quickfix/list-repos": (runtime, body) => runtime.githubQuickFixListRepos(body),
@@ -3316,22 +3300,12 @@ export async function startRemoteServer({
     // another cross-profile-visible side effect, so refuse a foreign prKey.
     "/api/azure/rerun-check": (body, windowId) => runtime.rerunAzureCheck(body.prKey, body.checkItem, windowId),
     "/api/github/rerun-check": (body, windowId) => runtime.rerunGitHubCheck(body.prKey, body.checkItem, windowId),
-    // The Refresh button's git-mutating half (fast-forward the review
-    // checkout onto the PR's latest source commit). Unlike the plain
-    // fetch/rebase/push review-workspace routes above (flat API_ROUTES,
-    // unguarded — a pre-existing gap), this one is new and routed through
-    // slotAwareRoute so the runtime can refuse a workspace outside the
-    // caller's profile.
-    "/api/azure/workspace/sync": (body, windowId) =>
-      runtime.syncAzureReviewWorkspace(
-        validateIpc(workspaceIdSchema, body.workspaceId, "POST /api/azure/workspace/sync"),
-        windowId,
-      ),
-    "/api/github/workspace/sync": (body, windowId) =>
-      runtime.syncGitHubReviewWorkspace(
-        validateIpc(workspaceIdSchema, body.workspaceId, "POST /api/github/workspace/sync"),
-        windowId,
-      ),
+    // Review Git operations (refresh, rebase, push, force push, push-and-publish)
+    // answer at once with an operation id and report by event / payload. Routed
+    // here so the runtime knows WHO is asking and refuses a workspace outside
+    // the caller's profile before anything starts.
+    "/api/review-git/start": (body, windowId) =>
+      runtime.startReviewGitOperation(validateIpc(reviewGitStartSchema, body, "POST /api/review-git/start"), windowId),
     // Sync publishes queued draft comments to the PR provider — an
     // externally visible side effect that must refuse cross-profile prKeys.
     "/api/review-bridge/pull-request/sync": (body, windowId) => runtime.syncReviewBridgePullRequest(body, windowId),
@@ -3498,8 +3472,8 @@ export async function startRemoteServer({
     "/api/project/reorder": (body, windowId) =>
       runtime.reorderWorkspaces((body.workspaceIds || body.projectIds || []) as string[], windowId),
     // Review-bridge handlers can publish comments to the PR provider
-    // (pushAndPublishReview) and push to the git remote — both
-    // externally visible side effects that must refuse cross-profile.
+    // and sync queued drafts to the PR provider — externally
+    // visible side effects that must refuse cross-profile.
     "/api/review-bridge/draft-comment/create": (body, windowId) =>
       runtime.createReviewBridgeDraftComment(body, windowId),
     "/api/review-bridge/draft/save": (body, windowId) => runtime.saveReviewBridgeDraft(body, windowId),
@@ -3507,8 +3481,6 @@ export async function startRemoteServer({
     "/api/review-bridge/draft/delete": (body, windowId) => runtime.deleteReviewBridgeDraft(body, windowId),
     "/api/review-bridge/comment/delete": (body, windowId) => runtime.deleteReviewBridgeComment(body, windowId),
     "/api/review-bridge/comment/reply-with-changes": (body, windowId) => runtime.replyWithCodeChanges(body, windowId),
-    "/api/review-bridge/pull-request/push-and-publish": (body, windowId) =>
-      runtime.pushAndPublishReview(body, windowId),
     // Git ops all mutate state in a workspace's cwd (and gitFetch/Push/Pull
     // touch external remotes). Routing them through slotAwareRoute pins
     // each request to the caller's bound profile so a remote/mobile
@@ -5113,6 +5085,21 @@ export async function startRemoteServer({
       const eventProfileId = String((payload as { profileId?: unknown })?.profileId || "");
       if (!eventProfileId) return;
       const serialized = JSON.stringify({ type: OPERATION_FINISHED_CHANNEL, payload });
+      for (const socket of sockets) {
+        const clientSessionId = socketSession.get(socket);
+        if (!clientSessionId) continue;
+        if (registry.get(clientSessionId)?.profileId !== eventProfileId) continue;
+        checkedSend(socket, serialized);
+      }
+    }),
+    // The outcome of a review Git operation: to every client bound to the
+    // profile that owns the workspace, and to no other — the phone that started
+    // it may not be the one still watching, and a mobile session never learns
+    // another profile's workspaces or commits.
+    runtime.on(REVIEW_GIT_OPERATION_CHANNEL, (payload: unknown) => {
+      const eventProfileId = String((payload as { profileId?: unknown })?.profileId || "");
+      if (!eventProfileId) return;
+      const serialized = JSON.stringify({ type: REVIEW_GIT_OPERATION_CHANNEL, payload });
       for (const socket of sockets) {
         const clientSessionId = socketSession.get(socket);
         if (!clientSessionId) continue;

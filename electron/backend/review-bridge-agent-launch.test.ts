@@ -231,6 +231,10 @@ describe("review bridge agent launch", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const argsConfig = configValues.find((value: any) => value.startsWith("mcp_servers.review.args="));
     expect(commandConfig).toBe('mcp_servers.review.command="C:/Program Files/strIDEterm/strIDEterm.exe"');
+    // The per-tab Git capability is forwarded from the PTY by NAME — never by value.
+    expect(configValues).toContain(
+      'mcp_servers.review.env_vars=["STRIDETERM_REVIEW_GIT_URL","STRIDETERM_REVIEW_GIT_CAPABILITY"]',
+    );
     expect(argsConfig).toContain("mcp_servers.review.args=");
     expect(argsConfig).toContain("--review-bridge-mcp");
     // No trailing [PROMPT] positional: codex submits it immediately, which would
