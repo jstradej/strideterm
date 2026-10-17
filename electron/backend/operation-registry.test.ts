@@ -248,11 +248,22 @@ describe("operation registry", () => {
     expect(registry.get(record.operationId, "default")).not.toBeNull();
     release();
     await settle(registry, record.operationId);
-    for (let attempt = 0; attempt < 100 && registry.get(record.operationId, "default"); attempt += 1) {
+    // The record leaves memory before its file is removed, so wait for both.
+    const file = path.join(dir, `${record.operationId}.json`);
+    const fileExists = () =>
+      fs.stat(file).then(
+        () => true,
+        () => false,
+      );
+    for (
+      let attempt = 0;
+      attempt < 100 && (registry.get(record.operationId, "default") || (await fileExists()));
+      attempt += 1
+    ) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     expect(registry.get(record.operationId, "default")).toBeNull();
-    await expect(fs.stat(path.join(dir, `${record.operationId}.json`))).rejects.toThrow();
+    await expect(fs.stat(file)).rejects.toThrow();
     const reused = await registry.accept(input({ idempotencyKey: "key-orphan-0001" }), async () => ({}));
     expect(reused.replayed).toBe(false);
   });

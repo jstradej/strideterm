@@ -141,6 +141,8 @@ describe("the app store follows mobile:status for the connected-phone list", () 
     const store = useAppStore();
     store.init(transport as AnyApi);
     await flushPromises();
+    // init() seeds the health once on its own (app.test.ts); only the event must not add a round trip.
+    transport.refreshMobileConnectionHealth.mockClear();
 
     emitStatus({ connectedDevices: [PHONE] });
     expect(store.mobileConnectedDevices).toEqual([PHONE]);
