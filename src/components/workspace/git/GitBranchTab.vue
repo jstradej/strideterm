@@ -27,8 +27,8 @@
           type="button"
           data-testid="force-push-button"
           class="button button--ghost button--danger"
-          :disabled="!!gitUi.busyAction || operation.inProgress || !!gitUi.pendingAction"
-          title="Force-push with lease — aborts if remote was updated since your last fetch"
+          :disabled="!!gitUi.busyAction || operation.inProgress || !!gitUi.pendingAction || reviewGitBusy"
+          title="Force-push with lease — aborts if the remote branch moved away from the commit it was checked against"
           @click="
             gitUiStore.confirmForcePushWithLease(
               workspaceId,
@@ -354,6 +354,7 @@ const props = withDefaults(
 
 const gitUiStore = useGitUiStore();
 const appStore = useAppStore();
+const reviewGitBusy = computed(() => appStore.isReviewGitBusy?.(props.workspaceId) === true);
 const notifications = useNotificationStore();
 
 const switchBranchTarget = ref("");

@@ -410,7 +410,7 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
       kind: input.kind,
       source: requester.source,
       idempotencyKey: input.idempotencyKey,
-      run: () => execute(input.kind, located, input, { ...requester }),
+      run: (operationId) => execute(input.kind, located, input, { ...requester, operationId }),
     });
     return { started: true, operationId: operation.operationId };
   }

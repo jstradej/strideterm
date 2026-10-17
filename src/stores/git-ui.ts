@@ -199,6 +199,11 @@ const GIT_ACTION_TIMEOUT_MS = 120_000;
 // the per-workspace buffer without bound.
 const PUSH_PROGRESS_MAX = 100_000;
 
+// A review Git step includes the user's decision in the proposal dialog and a
+// push that may run for minutes; the runtime's operation and the operation wait
+// own their own limits, so the generic backstop must not cut either short.
+const REVIEW_GIT_STEP_OPTS = { timeoutMs: 0 };
+
 function withGitTimeout<T>(promise: Promise<T>, ms: number, action: string): Promise<T> {
   if (!ms || ms <= 0) return promise;
   return new Promise<T>((resolve, reject) => {
@@ -575,7 +580,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   async function gitPush(workspaceId: string): Promise<void> {
     if ((await pullRequestContext(workspaceId)).onPullRequestBranch) {
-      await runGitAction(workspaceId, "push", () => runReviewGitStep(workspaceId, "push"));
+      await runGitAction(workspaceId, "push", () => runReviewGitStep(workspaceId, "push"), REVIEW_GIT_STEP_OPTS);
       return;
     }
     const rootPath = getActiveRoot(workspaceId);
@@ -950,7 +955,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
         );
       } else if (action === "forcePushWithLease") {
         if ((await pullRequestContext(workspaceId)).onPullRequestBranch) {
-          await runGitAction(workspaceId, "force-push", () => runReviewGitStep(workspaceId, "force-push"));
+          await runGitAction(workspaceId, "force-push", () => runReviewGitStep(workspaceId, "force-push"), REVIEW_GIT_STEP_OPTS);
         } else {
           await runGitAction(workspaceId, "force-push", () => api.gitForcePushWithLease({ workspaceId, rootPath }));
         }
@@ -1074,7 +1079,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
         title: "Force push (with lease)",
         body:
           `Force-push \`${branch}\` to \`${remote}/${branch}\`? Remote is ${behindCount} commit(s) ahead — those commits will be overwritten. ` +
-          "`--force-with-lease` aborts if someone pushed since your last fetch, but users who already pulled will need to reset their local branch.",
+          "`--force-with-lease` aborts if the remote branch moved away from the commit it was checked against, but users who already pulled will need to reset their local branch.",
         confirmLabel: "Force push",
         payload: { branch, remote },
       }),
@@ -1134,7 +1139,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const targetsPullRequest =
       !!pr.targetBranch && (requestedBase === pr.targetBranch || requestedBase.endsWith("/" + pr.targetBranch));
     if (pr.onPullRequestBranch && targetsPullRequest) {
-      await runGitAction(workspaceId, "rebase", () => runReviewGitStep(workspaceId, "rebase"));
+      await runGitAction(workspaceId, "rebase", () => runReviewGitStep(workspaceId, "rebase"), REVIEW_GIT_STEP_OPTS);
       return;
     }
     rlog("info", "[git-ui] gitRebaseBase called", {

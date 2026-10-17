@@ -577,6 +577,40 @@ describe("PR-linked checkouts", () => {
     expect(pushReviewCheckout).not.toHaveBeenCalled();
   });
 
+  test("a confirmed Force push on another branch is the ordinary force push of that branch", async () => {
+    linked("develop");
+    const transport = api();
+    const store = useGitUiStore();
+    store.init(transport);
+
+    store.confirmForcePushWithLease("ws1", { branch: "develop", remote: "origin", behindCount: 2 });
+    await store.gitConfirmAction("ws1");
+
+    expect(transport.gitForcePushWithLease).toHaveBeenCalledTimes(1);
+    expect(pushReviewCheckout).not.toHaveBeenCalled();
+  });
+
+  test("a review push that waits on the proposal dialog is not cut off by the generic 120 s backstop", async () => {
+    vi.useFakeTimers();
+    try {
+      linked("pr-7-feature-login");
+      let finish!: (value: unknown) => void;
+      pushReviewCheckout.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+      const store = useGitUiStore();
+      store.init(api());
+
+      const pending = store.gitPush("ws1");
+      await vi.advanceTimersByTimeAsync(300_000);
+      expect(store.get("ws1").busyAction).toBe("push");
+      finish({ status: "pushed", message: "Pushed abc to feature/login." });
+      await pending;
+
+      expect(store.get("ws1").lastResult).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("a workspace without a PR link always pushes the ordinary way", async () => {
     appStoreMock.payload = { appState: { workspaces: [{ id: "ws1", review: null }] } };
     getGitSnapshot.mockReturnValue({ available: true, branch: "pr-7-feature-login" });

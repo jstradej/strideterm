@@ -183,8 +183,9 @@ describe("consent", () => {
   it("never loops forever on proposals", async () => {
     const stale = { status: "confirm-required", stale: true, proposal: proposal() };
     const { ops, confirmInApp } = scripted(stale, stale, stale, stale, stale);
-    await ops.run("refresh", "ws-1");
+    const outcome = await ops.run("refresh", "ws-1");
     expect(confirmInApp).toHaveBeenCalledTimes(3);
+    expect(outcome).toMatchObject({ status: "blocked", reason: "proposal-unstable" });
   });
 
   it("push-and-publish asks about its push, and a push that needs consent publishes nothing until answered", async () => {
@@ -287,6 +288,23 @@ describe("operations started somewhere else", () => {
     });
     await ops.run("push", "ws-1");
     expect(entries()).toHaveLength(0);
+  });
+
+  it("is not re-announced from the payload once ownership has lapsed", async () => {
+    vi.useFakeTimers();
+    try {
+      const { ops, startReviewGitOperation } = setup();
+      startReviewGitOperation.mockImplementationOnce(async () => {
+        ops.reportOperation(event());
+        return { started: true as const, operationId: "op-1" };
+      });
+      await ops.run("push", "ws-1");
+      await vi.advanceTimersByTimeAsync(6_000);
+      ops.reconcilePayload({ running: [], lastRuns: [event()] });
+      expect(entries()).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("a failure is announced as an error", () => {

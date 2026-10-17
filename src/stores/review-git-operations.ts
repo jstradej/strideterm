@@ -294,8 +294,11 @@ export function createReviewGitOperations(ctx: ReviewGitOperationsCtx) {
       if (event.state === "failed") throw new Error(event.error || "The Git operation failed.");
       return event.result;
     } finally {
-      // Keep it owned a moment longer than the settle so the live event that
-      // resolved it cannot also raise a notification for the same run.
+      // The caller reports this outcome. Mark it told for good before ownership
+      // lapses, or the payload's replay of the same last run would announce the
+      // user's own operation as a foreign one.
+      notifiedInMemory.add(started.operationId);
+      rememberNotified(started.operationId);
       setTimeout(() => owned.delete(started.operationId), 5_000);
     }
   }
@@ -330,7 +333,12 @@ export function createReviewGitOperations(ctx: ReviewGitOperationsCtx) {
       }
       confirmation = { proposalId: proposal.proposalId, ...(proposal.facts ? { facts: proposal.facts } : {}) };
     }
-    return outcome;
+    return {
+      status: "blocked",
+      reason: "proposal-unstable",
+      message: "The repository kept changing while you were deciding, so nothing was changed.",
+      guidance: "Check the Git tab, then try again.",
+    };
   }
 
   return { run, isBusy, runningFor, reportOperation, reconcilePayload };

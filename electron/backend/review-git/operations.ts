@@ -30,7 +30,7 @@ export interface StartOperationInput {
   kind: string;
   source: "ui" | "mcp";
   idempotencyKey?: string;
-  run: () => Promise<unknown>;
+  run: (operationId: string) => Promise<unknown>;
 }
 
 export interface ReviewGitOperationRegistry {
@@ -110,7 +110,7 @@ export function createReviewGitOperationRegistry({
         onChange?.(record);
       };
       const task = Promise.resolve()
-        .then(run)
+        .then(() => run(record.operationId))
         .then(
           (result) => settle({ state: "succeeded", result }),
           (error: unknown) =>

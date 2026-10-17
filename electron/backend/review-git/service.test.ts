@@ -181,6 +181,26 @@ describe("starting an operation", () => {
     expect(f.broadcasts.count).toBeGreaterThan(0);
   });
 
+  test("the audit row of an operation carries the operation id that status, payload and event expose", async () => {
+    const f = await createFixture();
+    const insertEntry = vi.fn(() => 1);
+    (f.manager as unknown as { auditLogStore: { insertEntry: unknown } }).auditLogStore.insertEntry = insertEntry;
+    await fs.writeFile(path.join(f.checkout, "n.txt"), "n\n");
+    git(f.checkout, ["add", "n.txt"]);
+    const proposed = f.service.start({ kind: "commit", workspaceId: "ws-1", message: "audit me" }, ui);
+    await f.service.operations.idle();
+    const proposal = (f.service.lookup(proposed.operationId, "default", "ws-1") as never as {
+      operation: { result: { proposal: { proposalId: string } } };
+    }).operation.result.proposal;
+    const started = f.service.start(
+      { kind: "commit", workspaceId: "ws-1", message: "audit me", confirmation: { proposalId: proposal.proposalId } },
+      ui,
+    );
+    await f.service.operations.idle();
+    expect(insertEntry).toHaveBeenCalledTimes(1);
+    expect((insertEntry.mock.calls[0] as unknown[])[0]).toMatchObject({ operationId: started.operationId });
+  });
+
   test("a failure becomes a failed operation with the error, in the event and in the payload", async () => {
     const f = await createFixture();
     await fs.rm(path.join(f.checkout, ".git"), { recursive: true, force: true });
