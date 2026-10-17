@@ -48,6 +48,23 @@
         "
         @click="selectMode(tab.id)"
       >
+        <svg class="remote-mode-tab__icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+          <template v-if="tab.id === 'mobile'">
+            <rect x="6" y="2.5" width="8" height="15" rx="1.5" />
+            <path d="M9 15h2" />
+          </template>
+          <template v-else-if="tab.id === 'lan'">
+            <circle cx="10" cy="10" r="7.5" />
+            <path d="M2.8 10h14.4M10 2.5a12 12 0 0 1 0 15M10 2.5a12 12 0 0 0 0 15" />
+          </template>
+          <template v-else-if="tab.id === 'cloudflare'">
+            <path d="M5.1 15.5h9.6a3 3 0 0 0 .2-6 4.8 4.8 0 0 0-9.2-1.1 3.6 3.6 0 0 0-.6 7.1Z" />
+          </template>
+          <template v-else>
+            <rect x="3" y="3" width="14" height="10" rx="1" />
+            <path d="M7 17h6M10 13v4" />
+          </template>
+        </svg>
         {{ tab.label }}
       </button>
     </div>

@@ -2466,7 +2466,7 @@ function focusAuthPanel(): void {
   border-color: color-mix(in srgb, var(--accent, #f2a63b) 42%, var(--border, #333));
 }
 .account-bootstrap {
-  max-width: 720px;
+  max-width: 100%;
 }
 .account-bootstrap h4 {
   margin: 0;

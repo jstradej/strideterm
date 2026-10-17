@@ -890,6 +890,17 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   font-family: inherit;
 }
 
+.remote-mode-tab__icon {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+}
+
 .remote-mode-tab:last-child {
   border-right: none;
 }
