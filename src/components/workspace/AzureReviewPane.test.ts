@@ -382,6 +382,45 @@ describe("AzureReviewPane — manual Refresh drives the full sync, not just meta
     expect(wrapper.text()).toContain("Updated 2 commits from origin/feature/x.");
   });
 
+  test("a baseline persistence warning on the refresh result is shown beside its outcome", async () => {
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+    const wrapper = mountPane();
+    await flushPromises();
+    const appStore = useAppStore();
+    vi.spyOn(appStore, "refreshReviewCheckout").mockResolvedValue({
+      status: "updated",
+      message: "Updated 1 commit from origin/feature/x.",
+      baselineWarning: "The review baseline could not be saved.",
+    });
+
+    const refreshBtn = wrapper
+      .findAll("button")
+      .find((b) => b.attributes("title")?.includes("Fetch the latest PR data"))!;
+    await refreshBtn.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get("[data-testid='baseline-warning']").text()).toBe("The review baseline could not be saved.");
+  });
+
+  test("Push & publish carries the baseline warning of its push into the success line", async () => {
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+    const wrapper = mountPane();
+    await flushPromises();
+    const appStore = useAppStore();
+    vi.spyOn(appStore, "pushAndPublishReview").mockResolvedValue({
+      push: { status: "pushed", message: "Pushed abc to feature/x.", baselineWarning: "Baseline not saved." },
+      publish: { attempted: false, published: [], failed: [] },
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (wrapper.vm as any).handlePushAndPublish();
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Pushed abc to feature/x. Warning: Baseline not saved.");
+  });
+
   test("a blocked ('dirty') sync result renders a distinct, non-success outcome banner", async () => {
     setMatchMediaResult("(max-width: 768px)", false);
     setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);

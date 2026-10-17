@@ -7,11 +7,12 @@ import {
   type ReviewGitOperationKind,
   type ReviewGitState,
 } from "../../shared/review-git-events.js";
-import { inspectCheckout, listCommits, lsRemoteRef, type GitRun } from "./inspect.js";
+import { hasCommit, inspectCheckout, listCommits, lsRemoteRef, type GitRun } from "./inspect.js";
 import {
   fullSourceRef,
   managedReviewBranchAlias,
   reviewSourceIdentityKey,
+  sameRemote,
   sourceBranchName,
 } from "../../shared/review-source-identity.js";
 import { staleAnchorError } from "../../shared/review-draft-anchor.js";
@@ -587,7 +588,7 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
         else if (input.scope === "staged") args = [...base, "--cached", ...pathArgs];
         else if (input.scope === "head-vs-target")
           args = [...base, `refs/remotes/origin/${targetBranch}...HEAD`, ...pathArgs];
-        else args = [...base, `refs/remotes/origin/${sourceBranch}...HEAD`, ...pathArgs];
+        else args = [...base, `${await liveSourceCommit(located, run)}...HEAD`, ...pathArgs];
         const out = clip(await git(args));
         return { scope: input.scope, path: file || null, diff: out.text, truncated: out.truncated };
       }
@@ -597,7 +598,7 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
           input.range === "head-vs-target"
             ? `refs/remotes/origin/${targetBranch}..HEAD`
             : input.range === "head-vs-source"
-              ? `refs/remotes/origin/${sourceBranch}..HEAD`
+              ? `${await liveSourceCommit(located, run)}..HEAD`
               : "HEAD";
         const commits = await listCommits(run, cwd, range, limit);
         return { range: input.range, total: commits.total, commits: commits.commits };
@@ -615,8 +616,11 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
         return { operationInProgress: facts.operation, conflictedPaths: paths, files };
       }
       case "checks": {
-        const summary = (manager.findSummary?.(review.prKey) || manager.snapshot?.pullRequests?.[review.prKey]) as
-          { checks?: unknown } | undefined;
+        // The inbox summary (findSummary) carries no checks; the synced detail does.
+        const candidates = [manager.snapshot?.pullRequests?.[review.prKey], manager.findSummary?.(review.prKey)] as Array<
+          { checks?: unknown } | undefined
+        >;
+        const summary = candidates.find((candidate) => candidate?.checks != null);
         return {
           prKey: review.prKey,
           checks: summary?.checks ?? null,
@@ -669,6 +673,32 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
       default:
         throw new Error("Unsupported review Git read.");
     }
+  }
+
+  /**
+   * The PR source's commit as the server has it right now, asked of the verified
+   * SOURCE repository (a fork is not origin) — never a tracking ref that may be
+   * stale or point at another repository. It must already be in the checkout to
+   * be diffed; refresh / fetch bring it in.
+   */
+  async function liveSourceCommit(located: Located, run: GitRun): Promise<string> {
+    const { workspace, manager } = located;
+    const cwd = workspace.cwd;
+    const subject = manager.buildReviewSubject(workspace);
+    const facts = await inspectCheckout(run, cwd);
+    const repo = subject.sourceRepository;
+    const remote = !repo?.remoteUrl || sameRemote(facts.originUrl, repo.remoteUrl) ? "origin" : repo.remoteUrl;
+    const fullRef = fullSourceRef(workspace.review?.pullRequest?.sourceRefName);
+    const sha = await lsRemoteRef(run, cwd, remote, fullRef, subject.auth).catch((error: Error) => {
+      throw new Error(`Could not query the pull request source branch: ${error.message}`, { cause: error });
+    });
+    if (!sha) throw new Error("The pull request source branch no longer exists on its remote.");
+    if (!(await hasCommit(run, cwd, sha))) {
+      throw new Error(
+        `The live source commit ${sha.slice(0, 8)} is not in this checkout yet. Run review_git_refresh or review_git_fetch first.`,
+      );
+    }
+    return sha;
   }
 
   function parseDetails(raw: unknown): unknown {

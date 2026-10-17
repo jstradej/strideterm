@@ -1069,7 +1069,13 @@ export class BaseProviderManager extends EventEmitter {
     // The live provider snapshot knows better than the persisted copy whether the PR is still open.
     const prInfo = ((summary as { pullRequest?: Record<string, unknown> } | null)?.pullRequest ||
       review.pullRequest ||
-      {}) as { status?: string; state?: string; mergedAt?: string | null; closedAt?: string | null };
+      {}) as {
+      status?: string;
+      state?: string;
+      mergedAt?: string | null;
+      closedAt?: string | null;
+      targetRefName?: string | null;
+    };
     const prStatus = String(prInfo.status || prInfo.state || "").toLowerCase();
     const pullRequestClosed = prInfo.mergedAt
       ? "merged"
@@ -1098,7 +1104,9 @@ export class BaseProviderManager extends EventEmitter {
       prId: review.pullRequest?.id ?? review.pullRequest?.number ?? "",
       role: review.role || "",
       sourceRefName: review.pullRequest?.sourceRefName || "",
-      targetRefName: review.pullRequest?.targetRefName || "",
+      // The live target wins: a provider-side retarget must be seen by the next
+      // proposal (and invalidate one still open), not wait for the PR to be reopened.
+      targetRefName: prInfo.targetRefName || review.pullRequest?.targetRefName || "",
       sourceRepository: review.sourceRepository || summary?.sourceRepository || null,
       targetRemoteUrl: review.repository?.remoteUrl || "",
       baselineSha: review.sourceBaselineSha || "",

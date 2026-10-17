@@ -137,6 +137,12 @@
         <span :style="{ color: refreshSyncBlocked ? 'var(--danger, #e53935)' : 'var(--success, #4caf50)' }">{{
           refreshSyncResult.message
         }}</span>
+        <span
+          v-if="refreshSyncResult.baselineWarning"
+          data-testid="baseline-warning"
+          style="color: var(--warning, #f9a825)"
+          >{{ refreshSyncResult.baselineWarning }}</span
+        >
         <button
           type="button"
           class="button button--ghost"
@@ -1175,7 +1181,8 @@ async function handlePushAndPublish() {
     else parts.push("Push completed (no new commits)");
     const published = publish.published?.length || 0;
     if (published > 0) parts.push(`${published} comment${published !== 1 ? "s" : ""} published`);
-    pushPublishSuccess.value = parts.join(", ").replace(/\.$/, "") + ".";
+    pushPublishSuccess.value =
+      parts.join(", ").replace(/\.$/, "") + "." + (push.baselineWarning ? ` Warning: ${push.baselineWarning}` : "");
     const failed = publish.failed || [];
     if (failed.length) {
       // The push (and any comment already posted) stands: never repeat them.

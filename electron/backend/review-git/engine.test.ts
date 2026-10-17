@@ -664,6 +664,26 @@ describe("rebase onto the PR target", () => {
     expect(await f.remoteSha()).toBe(remoteBefore);
   });
 
+  test("a provider-side retarget while the user is deciding turns the continuation into a fresh proposal", async () => {
+    const f = await createFixture();
+    await advanceTarget(f, "main-only.txt", "m\n");
+    await git(f.seed, ["checkout", "-b", "release", "main"]);
+    await writeFile(path.join(f.seed, "release-only.txt"), "r\n");
+    await git(f.seed, ["add", "."]);
+    await git(f.seed, ["commit", "-m", "release work"]);
+    await git(f.seed, ["push", "origin", "release"]);
+
+    const first = expectStatus(await f.engine.rebase(f.subject, requester), "confirm-required");
+    f.subject.targetRefName = "refs/heads/release";
+    const second = expectStatus(
+      await f.engine.rebase(f.subject, requester, { proposalId: first.proposal.proposalId }),
+      "confirm-required",
+    );
+    expect(second.stale).toBe(true);
+    expect(second.proposal.facts).toMatchObject({ targetRef: "refs/heads/release" });
+    expect(second.proposal.proposalId).not.toBe(first.proposal.proposalId);
+  });
+
   test("stops with a conflict and reports it; abort restores the branch", async () => {
     const f = await createFixture();
     const before = await f.commitLocal("mine", "same.txt");

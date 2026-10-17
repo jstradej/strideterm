@@ -607,6 +607,25 @@ describe("BaseProviderManager review Git operations", () => {
     expect(subject.pullRequestClosed).toBe("completed");
   });
 
+  test("a provider-side retarget is seen by the subject without reopening the pull request", () => {
+    const manager = createManager({ execFileTextImpl: vi.fn(), secrets: { "tok-ref-1": "token" } });
+    manager.snapshot.connections = [{ id: "conn-1", tokenRef: "tok-ref-1" }];
+    manager.snapshot.pullRequests["conn-1:repo:1"] = {
+      prKey: "conn-1:repo:1",
+      pullRequest: { status: "active", targetRefName: "refs/heads/release" },
+    };
+    const subject = manager.buildReviewSubject({
+      id: "ws",
+      cwd: "/repo",
+      review: {
+        connectionId: "conn-1",
+        prKey: "conn-1:repo:1",
+        pullRequest: { id: 1, status: "active", targetRefName: "refs/heads/main" },
+      },
+    });
+    expect(subject.targetRefName).toBe("refs/heads/release");
+  });
+
   test("throws when the PAT is missing", async () => {
     const manager = createManager({ execFileTextImpl: vi.fn() });
     manager.snapshot.connections = [{ id: "conn-1", tokenRef: "tok-ref-1" }];

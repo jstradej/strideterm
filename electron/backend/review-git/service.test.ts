@@ -393,6 +393,44 @@ describe("read tools", () => {
     expect(checks.checks).toEqual({ failedCount: 1 });
   });
 
+  test("checks come from the synced detail even when the inbox summary (which has none) is found first", async () => {
+    const f = await createFixture();
+    (f.manager.snapshot.pullRequests as Record<string, unknown>)["conn-1:repo:7"] = { checks: { failedCount: 2 } };
+    f.manager.findSummary = (() => ({ title: "inbox row without checks" })) as never;
+    const checks = (await f.service.read({ operation: "checks" }, "ws-1", "default")) as Record<string, unknown>;
+    expect(checks.checks).toEqual({ failedCount: 2 });
+  });
+
+  test("head-vs-source compares with the live source commit, and says so when that commit is not fetched yet", async () => {
+    const f = await createFixture();
+    await fs.writeFile(path.join(f.checkout, "mine.txt"), "mine");
+    git(f.checkout, ["add", "."]);
+    git(f.checkout, ["commit", "-q", "-m", "mine"]);
+
+    const diff = (await f.service.read(
+      { operation: "diff", scope: "head-vs-source" },
+      "ws-1",
+      "default",
+    )) as Record<string, any>;
+    expect(diff.diff).toContain("+mine");
+    const history = (await f.service.read(
+      { operation: "history", range: "head-vs-source" },
+      "ws-1",
+      "default",
+    )) as Record<string, any>;
+    expect(history.commits.map((commit: { subject: string }) => commit.subject)).toEqual(["mine"]);
+
+    // The server moves on; the checkout's tracking ref is now stale and must not be trusted.
+    git(f.seed, ["checkout", "-q", "feature"]);
+    await fs.writeFile(path.join(f.seed, "later.txt"), "later");
+    git(f.seed, ["add", "."]);
+    git(f.seed, ["commit", "-q", "-m", "later"]);
+    git(f.seed, ["push", "-q", "origin", "feature"]);
+    await expect(
+      f.service.read({ operation: "diff", scope: "head-vs-source" }, "ws-1", "default"),
+    ).rejects.toThrow("not in this checkout yet");
+  });
+
   test("conflicts lists the conflicted files with their content", async () => {
     const f = await createFixture();
     git(f.seed, ["checkout", "-q", "main"]);
