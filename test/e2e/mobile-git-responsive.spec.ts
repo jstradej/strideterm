@@ -400,6 +400,7 @@ test("native keyboard channel keeps commit controls above the keyboard without s
     await saveScreenshot(page, "320x568", "native-keyboard");
     assertNoErrors(page);
   } finally {
+    await page.close();
     await mock.close();
   }
 });

@@ -1178,7 +1178,7 @@ useContextMenu({
 .git-changes__commit-screen textarea {
   flex: 1 1 110px;
   width: 100%;
-  min-height: 80px;
+  min-height: 64px;
   box-sizing: border-box;
   resize: vertical;
   padding: 10px;
