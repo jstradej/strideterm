@@ -1590,7 +1590,7 @@ export async function createReviewBridgeStore(rootPath: string) {
      * A comment whose anchor no longer holds is MARKED stale (`anchorStale`,
      * with the reason) and left exactly where it was: it is never silently moved
      * to another line, and publishing refuses it until the user repairs it. A
-     * comment whose anchor holds again loses an earlier mark.
+     * later, weaker check never lifts a mark an earlier, stricter one set.
      */
     async markStaleAnchors(
       prKey: string,
@@ -1619,17 +1619,13 @@ export async function createReviewBridgeStore(rootPath: string) {
             lineNumber,
             lineSide: String(payload.lineSide || ""),
           });
-          const wasStale = payload.anchorStale === true;
-          if (valid === !wasStale) continue;
-          const next = { ...payload };
-          if (valid) {
-            delete next.anchorStale;
-            delete next.anchorStaleReason;
-          } else {
-            next.anchorStale = true;
-            next.anchorStaleReason = `${filePath}:${lineNumber} no longer exists after the history rewrite.`;
-            stale.push(String(row.comment_key));
-          }
+          if (valid || payload.anchorStale === true) continue;
+          const next = {
+            ...payload,
+            anchorStale: true,
+            anchorStaleReason: `${filePath}:${lineNumber} no longer exists after the history rewrite.`,
+          };
+          stale.push(String(row.comment_key));
           statements.updateCommentPayload.run(JSON.stringify(next), new Date().toISOString(), row.comment_key);
         }
         await finishAndExport(prKey);

@@ -273,14 +273,34 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
     result.status === "continued" ||
     result.status === "skipped";
 
-  /** HEAD before the rewrite: the result names it, except a finished paused rebase, whose start Git keeps in ORIG_HEAD. */
-  async function headBeforeRewrite(located: Located, result: ReviewGitResult): Promise<string> {
-    if (result.status === "reset" || result.status === "rebased") return String(result.previousHeadSha || "");
-    return gitRunFor(located.manager)(located.workspace.cwd, ["rev-parse", "--verify", "ORIG_HEAD"]).then(
+  /**
+   * Where a continue/skip starts from: a paused rebase's start is only in ORIG_HEAD
+   * (HEAD is mid-rebase), anything else (cherry-pick, revert, merge) never sets it
+   * reliably, so the HEAD before the step is captured explicitly.
+   */
+  async function headBeforeContinuation(located: Located): Promise<string> {
+    const run = gitRunFor(located.manager);
+    const cwd = located.workspace.cwd;
+    const rebasing = await Promise.all(
+      ["rebase-merge", "rebase-apply"].map((name) =>
+        run(cwd, ["rev-parse", "--git-path", name]).then(
+          (out) =>
+            fs.stat(path.resolve(cwd, out.stdout.trim())).then(
+              () => true,
+              () => false,
+            ),
+          () => false,
+        ),
+      ),
+    ).then((found) => found.some(Boolean));
+    return run(cwd, ["rev-parse", "--verify", rebasing ? "ORIG_HEAD" : "HEAD"]).then(
       (out) => out.stdout.trim(),
       () => "",
     );
   }
+
+  const headBeforeRewrite = (result: ReviewGitResult, continuationBase: string): string =>
+    result.status === "reset" || result.status === "rebased" ? String(result.previousHeadSha || "") : continuationBase;
 
   async function afterOperation(located: Located): Promise<void> {
     await ctx.refreshGit(located.workspace.id);
@@ -346,6 +366,7 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
     const common = { workspace, requester };
     const mcp = requester.source === "mcp";
     let result: ReviewGitResult;
+    let continuationBase = "";
     switch (kind) {
       case "fetch":
         result = await manager.fetchReviewWorkspace(common);
@@ -375,7 +396,6 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
         const publish = pushed
           ? await publishDrafts(located, requester)
           : { attempted: false, published: [] as string[], failed: [] as Array<{ commentKey: string; error: string }> };
-        if (push.status === "pushed") await revalidateAnchors(located);
         await afterOperation(located);
         return { kind, push, publish };
       }
@@ -387,6 +407,7 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
       case "abort": {
         const engine = manager.getReviewGitEngine();
         const subject = manager.buildReviewSubject(workspace);
+        if (kind === "continue" || kind === "skip") continuationBase = await headBeforeContinuation(located);
         if (kind === "stage") result = await engine.stage(subject, requester, input.paths || [], input.confirmation);
         else if (kind === "unstage")
           result = await engine.unstage(subject, requester, input.paths || [], input.confirmation);
@@ -400,7 +421,7 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
       default:
         throw new Error(`Unsupported review Git operation: ${String(kind)}`);
     }
-    if (rewritesHistory(result)) await revalidateAnchors(located, await headBeforeRewrite(located, result));
+    if (rewritesHistory(result)) await revalidateAnchors(located, headBeforeRewrite(result, continuationBase));
     await afterOperation(located);
     return result;
   }
@@ -721,7 +742,7 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
     if (!sha) throw new Error("The pull request source branch no longer exists on its remote.");
     if (!(await hasCommit(run, cwd, sha))) {
       throw new Error(
-        `The live source commit ${sha.slice(0, 8)} is not in this checkout yet. Run review_git_refresh or review_git_fetch first.`,
+        `The live source commit ${sha.slice(0, 8)} is not in this checkout yet. Run review_git_refresh first.`,
       );
     }
     return sha;
@@ -747,7 +768,7 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
     if (!sha) throw new Error(`The target branch ${targetBranch} no longer exists on its remote.`);
     if (!(await hasCommit(run, cwd, sha))) {
       throw new Error(
-        `The live target commit ${sha.slice(0, 8)} is not in this checkout yet. Run review_git_rebase (or review_git_fetch) first.`,
+        `The live target commit ${sha.slice(0, 8)} is not in this checkout yet. Run review_git_rebase first.`,
       );
     }
     return sha;

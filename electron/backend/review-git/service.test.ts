@@ -596,25 +596,12 @@ describe("push and publish", () => {
     }
   });
 
-  test("after a successful push the inline anchors are re-validated, never silently moved", async () => {
+  test("a successful push does not re-validate (or heal) inline anchors", async () => {
     const { service, f } = await withFakePush({ status: "pushed", message: "ok" }, async () => {});
     await runPushAndPublish(service);
-    expect(f.bridge.markStaleAnchors).toHaveBeenCalledTimes(1);
+    expect(f.bridge.markStaleAnchors).not.toHaveBeenCalled();
   });
 
-  test("the anchor check keeps a comment only while its file still has that line at HEAD", async () => {
-    const { service, f } = await withFakePush({ status: "pushed", message: "ok" }, async () => {});
-    await runPushAndPublish(service);
-    const validator = f.bridge.markStaleAnchors.mock.calls[0][1] as (anchor: {
-      commentKey: string;
-      filePath: string;
-      lineNumber: number;
-    }) => Promise<boolean>;
-    expect(await validator({ commentKey: "k", filePath: "a.txt", lineNumber: 2 })).toBe(true);
-    expect(await validator({ commentKey: "k", filePath: "a.txt", lineNumber: 3 })).toBe(true);
-    expect(await validator({ commentKey: "k", filePath: "a.txt", lineNumber: 9 })).toBe(false);
-    expect(await validator({ commentKey: "k", filePath: "removed.txt", lineNumber: 1 })).toBe(false);
-  });
   describe("anchors after a local rebase", () => {
     async function rebaseWith(
       lineSide: string,
@@ -625,9 +612,12 @@ describe("push and publish", () => {
     > {
       const f = await createFixture();
       const previousHeadSha = git(f.checkout, ["rev-parse", "HEAD"]).trim();
-      await change(f);
-      git(f.checkout, ["update-ref", "ORIG_HEAD", previousHeadSha]);
-      const engineResult = vi.fn(async () => ({ status: via === "skip" ? "skipped" : "continued", message: "ok" }));
+      const stepping = via === "skip" || via === "continue";
+      if (!stepping) await change(f);
+      const engineResult = vi.fn(async () => {
+        await change(f);
+        return { status: via === "skip" ? "skipped" : "continued", message: "ok" };
+      });
       const fakeManager = {
         buildReviewSubject: f.manager.buildReviewSubject.bind(f.manager),
         rebaseReviewWorkspace: vi.fn(async () => ({ status: "rebased", message: "ok", previousHeadSha })),
@@ -677,6 +667,40 @@ describe("push and publish", () => {
         await fs.appendFile(path.join(f.checkout, "a.txt"), "four\n");
         git(f.checkout, ["commit", "-q", "-am", "append"]);
       });
+      expect(await validator({ commentKey: "k", filePath: "a.txt", lineNumber: 2, lineSide: "new" })).toBe(true);
+    });
+
+    test("a continued step never reads a stale ORIG_HEAD left by an earlier reset", async () => {
+      const f = await createFixture();
+      const earlier = git(f.checkout, ["rev-parse", "HEAD"]).trim();
+      await insertAtTop(f);
+      git(f.checkout, ["update-ref", "ORIG_HEAD", earlier]);
+      await fs.appendFile(path.join(f.checkout, "a.txt"), "tail\n");
+      const engineResult = vi.fn(async () => {
+        git(f.checkout, ["commit", "-q", "-am", "cherry-picked"]);
+        return { status: "continued", message: "ok" };
+      });
+      const fakeManager = {
+        buildReviewSubject: f.manager.buildReviewSubject.bind(f.manager),
+        getReviewGitEngine: () => ({ continueOperation: engineResult }),
+        runGit: f.manager.runGit.bind(f.manager),
+      };
+      const service = createReviewGitService({
+        getState: () => f.state,
+        azure: fakeManager,
+        github: fakeManager,
+        reviewBridgeStore: f.bridge,
+        refreshGit: async () => {},
+        refreshAzure: async () => {},
+        refreshGitHub: async () => {},
+        broadcastState: () => {},
+        emit: () => {},
+        auditStores: {},
+        log: { info() {}, warn() {}, error() {} },
+      } as never);
+      service.start({ kind: "continue", workspaceId: "ws-1" }, ui);
+      await service.operations.idle();
+      const validator = f.bridge.markStaleAnchors.mock.calls[0][1] as (a: unknown) => Promise<boolean>;
       expect(await validator({ commentKey: "k", filePath: "a.txt", lineNumber: 2, lineSide: "new" })).toBe(true);
     });
 

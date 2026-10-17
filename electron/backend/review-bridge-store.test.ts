@@ -530,7 +530,7 @@ describe("review bridge store — inline anchors after a history rewrite", () =>
     return context!.comments.find((comment) => (comment.payload as { questionBody?: string }).questionBody === body)!;
   };
 
-  test("marks a local comment whose anchor no longer holds, leaves its location untouched, and clears the mark when it holds again", async () => {
+  test("marks a local comment whose anchor no longer holds, leaves its location untouched, and a later weaker check never clears the mark", async () => {
     const store = await createStoreWithPullRequest();
     const kept = await anchored(store, "still valid", "src/a.ts", 3);
     const broken = await anchored(store, "line is gone", "src/b.ts", 40);
@@ -552,14 +552,12 @@ describe("review bridge store — inline anchors after a history rewrite", () =>
     });
     expect(String(byKey.get(broken.commentKey)?.anchorStaleReason)).toContain("src/b.ts:40");
 
-    // The code comes back (another rebase): the mark goes, the location is still the user's.
     const second = await store.markStaleAnchors("ado-main:repo-1:123", () => true);
     expect(second.stale).toEqual([]);
-    const healed = store
+    const kept2 = store
       .getPullRequestContext("ado-main:repo-1:123")!
       .comments.find((comment) => comment.commentKey === broken.commentKey)!.payload as Record<string, unknown>;
-    expect(healed).not.toHaveProperty("anchorStale");
-    expect(healed).toMatchObject({ filePath: "src/b.ts", lineNumber: 40 });
+    expect(kept2).toMatchObject({ anchorStale: true, filePath: "src/b.ts", lineNumber: 40 });
     await store.close();
   });
 
