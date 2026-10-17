@@ -204,11 +204,6 @@
           This workspace is the Azure DevOps parent. Its checkout root is used for managed review checkouts, and these
           tabs are copied into each new review subworkspace.
         </p>
-        <PanelEditor
-          v-model:panels="draft.panels"
-          :tab-templates="tabTemplates"
-          :heading="isAzure ? 'Review workspace tabs' : 'Terminal tabs'"
-        />
         <label v-if="showInternalMcpOption" class="internal-mcp-option">
           <input
             v-model="draft.internalMcpEnabled"
@@ -223,6 +218,11 @@
             Applies to agent sessions started after saving.
           </span>
         </label>
+        <PanelEditor
+          v-model:panels="draft.panels"
+          :tab-templates="tabTemplates"
+          :heading="isAzure ? 'Review workspace tabs' : 'Terminal tabs'"
+        />
       </template>
 
       <!-- Detach review link — workspace is linked to a PR review -->
@@ -880,10 +880,20 @@ function extractErrorMessage(err: unknown): string {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+  cursor: pointer;
+  font-size: 13px;
 }
+.internal-mcp-option input[type="checkbox"] {
+  width: auto;
+  flex: none;
+  margin: 0;
+}
+/* Undo the global `label span` field-caption style (overlay.css). */
 .internal-mcp-hint {
   flex-basis: 100%;
-  font-size: 12px;
+  font-size: 11px;
+  text-transform: none;
+  letter-spacing: normal;
   color: var(--muted);
 }
 .appearance-details {
