@@ -300,6 +300,10 @@
   padding: 0;
 }
 
+.notification-center__body--connections {
+  padding: 12px 8px 0;
+}
+
 /* The Performance panel manages its own internal scroll + layout, so this body
    only provides the flex slot and clips (no nested scrollbars). */
 .notification-center__body--perf {
@@ -1365,6 +1369,41 @@
 .connections-section h3 {
   margin: 0;
   font-size: 13px;
+}
+
+.connections-section__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.connections-section__settings {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border, #444);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted, #aaa);
+  cursor: pointer;
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.connections-section__settings:hover {
+  border-color: var(--accent, #7aa2f7);
+  color: var(--text, #eee);
+}
+
+.connections-section__settings:focus-visible {
+  outline: 2px solid var(--accent, #7aa2f7);
+  outline-offset: 2px;
 }
 
 .connections-section__hint {

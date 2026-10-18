@@ -240,8 +240,9 @@
               type="button"
               class="button"
               :class="activePhoneCount === 0 ? 'button--primary' : 'button--ghost'"
-              :disabled="paused"
-              @click="addPhoneSetupOpen = true"
+              :disabled="paused || !canStartPairing"
+              :title="pairingUnavailableReason || undefined"
+              @click="openAddPhoneSetup"
             >
               Add phone
             </button>
@@ -249,6 +250,16 @@
           <p v-if="mobileDevices.length === 0" class="mobile-tab__intro">
             Pair strIDEterm Mobile to open your profiles and terminals, receive notifications, and respond from your
             phone.
+          </p>
+          <p
+            v-if="pairingUnavailableReason && installationRegistered && !paused"
+            class="mobile-tab__intro mobile-tab__intro--note"
+            role="status"
+          >
+            {{ pairingUnavailableReason }}
+            <button type="button" class="mobile-tab__inline-action" @click="activeView = 'account'">
+              Go to Account
+            </button>
           </p>
           <div v-if="enableBusy || pairingBusy" class="pairing-progress" role="status" aria-live="polite">
             <span class="pairing-progress__spinner" aria-hidden="true"></span>
@@ -436,8 +447,11 @@
                 <button
                   type="button"
                   class="button pairing-section__action"
-                  :disabled="pairingBusy"
-                  title="Generate a single-use QR code. Valid for 120 seconds — scan it with strIDEterm Mobile's Pair device screen."
+                  :disabled="!canStartPairing || pairingBusy"
+                  :title="
+                    pairingUnavailableReason ||
+                    'Generate a single-use QR code. Valid for 120 seconds — scan it with strIDEterm Mobile\'s Pair device screen.'
+                  "
                   @click="startPairing"
                 >
                   {{ pairingBusy ? "Creating…" : pairingExpired ? "Generate new code" : "Pair a phone" }}
@@ -527,6 +541,12 @@
             </p>
           </details>
         </template>
+
+        <MobileDeviceList
+          v-if="!pairingReady && mobileDevices.length > 0 && !activePairing && !pairingSas"
+          :profiles="profileOptions"
+          :refresh-on-mount="false"
+        />
 
         <!--
       ADVANCED, AND LAST. Everything in here is a switch whose answer is already yes by the time
@@ -774,6 +794,18 @@ const hostedAccessBlocked = computed(() => {
   const state = accountStore.entitlement?.state;
   return state === "unbound" || state === "lapsed" || state === "revoked" || state === "billing_unconfigured";
 });
+const pairingUnavailableReason = computed(() => {
+  if (accountStore.onlineBootstrap.phase === "failed") {
+    return "Online services configuration could not be verified. Phone pairing is unavailable until it is restored.";
+  }
+  if (paused.value) return "Remote access is paused. Resume it before pairing a phone.";
+  if (!accountAvailable.value) return "";
+  if (!installationRegistered.value) return "Register this computer first.";
+  if (hostedAccessBlocked.value)
+    return "Mobile access is unavailable for this account. Review account access to continue.";
+  return "";
+});
+const canStartPairing = computed(() => pairingUnavailableReason.value === "");
 const showTestingNotice = computed(() => accountAvailable.value && mobileDevices.value.length === 0);
 const mobileEnabled = computed(() => appStore.mobileEnabled);
 const mobileDevices = computed(() => appStore.mobileDevices);
@@ -1347,6 +1379,7 @@ const claimInFlight = computed(() => appStore.mobilePairingClaimInFlight === tru
 const { qrDataUrl } = useQrCode(qrPayload, QR_COLORS_FOR_SCANNING, 4);
 
 async function startPairing() {
+  if (!canStartPairing.value || paused.value || pairingBusy.value || pairingSas.value) return;
   if (pairingProfileIds.value.length === 0) {
     pairingError.value = "Select at least one profile.";
     return;
@@ -1371,10 +1404,15 @@ async function startPairing() {
   }
 }
 
+function openAddPhoneSetup(): void {
+  if (!canStartPairing.value || paused.value) return;
+  addPhoneSetupOpen.value = true;
+}
+
 async function connectFirstPhone(): Promise<void> {
   activeView.value = "phones";
   await nextTick();
-  if (paused.value || !pairingReady.value || hostedAccessBlocked.value || pairingBusy.value || pairingSas.value) return;
+  if (paused.value || !pairingReady.value || !canStartPairing.value || pairingBusy.value || pairingSas.value) return;
 
   if (!mobileEnabled.value) {
     if (!(await setEnabled(true))) return;

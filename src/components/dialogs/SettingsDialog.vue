@@ -125,14 +125,18 @@
       <SettingsMobileTab :profiles="profiles" :initial-view="initialMobileView" />
     </div>
 
-    <section v-else-if="activeTab === 'remote'" class="form settings-tab-content" data-testid="remote-session-settings">
+    <section
+      v-else-if="activeTab === 'remote'"
+      class="form settings-tab-content settings-tab-content--remote"
+      data-testid="remote-session-settings"
+    >
       <h3>Browser session expiry</h3>
       <p>Sessions end after inactivity or when their absolute lifetime expires.</p>
-      <label class="settings-check__row">
+      <label class="remote-session-setting">
         <span>Idle timeout (minutes)</span>
         <input v-model.number="form.remoteAccess.sessionIdleTtlMinutes" type="number" min="15" max="43200" />
       </label>
-      <label class="settings-check__row">
+      <label class="remote-session-setting">
         <span>Absolute lifetime (minutes)</span>
         <input v-model.number="form.remoteAccess.sessionAbsoluteTtlMinutes" type="number" min="60" max="129600" />
       </label>
@@ -733,6 +737,24 @@ defineExpose({ requestClose });
   scrollbar-gutter: stable;
   padding-bottom: 4px;
   padding-right: 4px;
+}
+.settings-tab-content--remote {
+  align-content: start;
+}
+.remote-session-setting {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, 220px);
+  align-items: center;
+  gap: 12px;
+}
+.remote-session-setting > input {
+  width: 100%;
+}
+@media (max-width: 600px) {
+  .remote-session-setting {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
 }
 .settings-footer {
   flex-shrink: 0;

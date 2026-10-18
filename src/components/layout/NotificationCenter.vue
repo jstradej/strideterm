@@ -67,7 +67,21 @@
             title="Telegram and paired phone connections, including access and session status."
             @click="activeTab = 'telegram'"
           >
-            <span class="notification-center__tab-icon" aria-hidden="true">🔗</span>
+            <span class="notification-center__tab-icon" aria-hidden="true">
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <rect x="6" y="2" width="12" height="20" rx="2" />
+                <path d="M11 18h2" />
+              </svg>
+            </span>
             <span class="notification-center__tab-label">Connections</span>
           </button>
           <button
@@ -217,9 +231,44 @@
       </Transition>
 
       <!-- Connections tab -->
-      <div v-if="activeTab === 'telegram'" class="notification-center__body">
+      <div v-if="activeTab === 'telegram'" class="notification-center__body notification-center__body--connections">
+        <section class="connections-section connections-section--phones">
+          <header class="connections-section__heading">
+            <h3>Phones</h3>
+            <button
+              v-if="!appStore.isRemoteTransport"
+              type="button"
+              class="connections-section__settings"
+              aria-label="Mobile settings"
+              title="Open Mobile settings"
+              @click="openMobileSettings"
+            >
+              <span aria-hidden="true">⚙</span>
+            </button>
+          </header>
+          <p v-if="appStore.isRemoteTransport" class="connections-section__hint">
+            Phone management is available in Settings on the desktop app.
+          </p>
+          <template v-else>
+            <p v-if="!appStore.mobileEnabled" class="connections-section__hint">
+              Mobile access is turned off. Paired phones remain listed below.
+            </p>
+            <MobileDeviceList :profiles="mobileProfiles" />
+          </template>
+        </section>
         <section class="connections-section">
-          <h3>Telegram</h3>
+          <header class="connections-section__heading">
+            <h3>Telegram</h3>
+            <button
+              type="button"
+              class="connections-section__settings"
+              aria-label="Telegram settings"
+              title="Open Settings → Telegram to add a new bot, edit existing connections (token, chat ID, forward filter), or remove one."
+              @click="openTelegramSettings"
+            >
+              <span aria-hidden="true">⚙</span>
+            </button>
+          </header>
           <div
             v-if="telegramConnections.length === 0"
             class="notification-center__empty telegram-empty"
@@ -229,14 +278,6 @@
             <p class="telegram-empty__hint">
               Forward strIDEterm alerts to your phone, and reply to act on them. Setup takes ~1 minute.
             </p>
-            <button
-              type="button"
-              class="button button--primary telegram-empty__cta"
-              title="Open Settings → Telegram to add a bot connection"
-              @click="openTelegramSettings"
-            >
-              Set up Telegram bot
-            </button>
           </div>
           <div v-else class="telegram-status">
             <div class="telegram-status-list">
@@ -289,30 +330,7 @@
               Send <code>/help</code> to your bot for the available commands, or <code>/menu</code> for an interactive
               hub.
             </div>
-            <div class="telegram-status__actions">
-              <button
-                type="button"
-                class="button button--ghost"
-                title="Open Settings → Telegram to add a new bot, edit existing connections (token, chat ID, forward filter), or remove one."
-                @click="openTelegramSettings"
-              >
-                ⚙ Configure
-              </button>
-            </div>
           </div>
-        </section>
-        <section class="connections-section connections-section--phones">
-          <h3>Phones</h3>
-          <p v-if="appStore.isRemoteTransport" class="connections-section__hint">
-            Phone management is available in Settings on the desktop app.
-          </p>
-          <template v-else>
-            <p v-if="!appStore.mobileEnabled" class="connections-section__hint">
-              Mobile access is turned off. Paired phones remain listed below.
-            </p>
-            <MobileDeviceList :profiles="mobileProfiles" />
-            <button type="button" class="button button--ghost" @click="openMobileSettings">⚙ Mobile settings</button>
-          </template>
         </section>
       </div>
 

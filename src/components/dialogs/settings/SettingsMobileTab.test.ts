@@ -361,7 +361,7 @@ describe("SettingsMobileTab", () => {
     expect(
       wrapper
         .findAll("button")
-        .find((button) => button.text() === "Send test push")!
+        .find((button) => button.text() === "Test push")!
         .attributes("disabled"),
     ).toBeDefined();
     expect(
@@ -379,7 +379,8 @@ describe("SettingsMobileTab", () => {
     expect(wrapper.text()).toContain("Pixel 8");
     expect(wrapper.text()).toContain("android");
     expect(wrapper.text()).toContain("Control tasks");
-    expect(wrapper.text()).toContain("profiles: all, except none");
+    await wrapper.find(".mobile-device-card__details summary").trigger("click");
+    expect(wrapper.text()).toContain("Profiles: all, except none");
     // Review 2 §P0.7: the list must name concrete INSTALLATIONS. A label is whatever the phone
     // typed and two phones may share one; the fingerprint is the digest of the key the pairing
     // actually pinned, and is what a user compares against their phone before revoking a row.
@@ -480,6 +481,34 @@ describe("SettingsMobileTab", () => {
       .trigger("click");
     await flushPromises();
     expect(transport.createMobilePairingInvitation).toHaveBeenCalledOnce();
+  });
+
+  test("an open pairing setup follows pause and resume state", async () => {
+    const { wrapper, appStore } = await mountTab({ listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]) });
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Add phone")!
+      .trigger("click");
+
+    const setPaused = (paused: boolean) => {
+      appStore.payload = {
+        ...appStore.payload!,
+        appState: {
+          ...appStore.payload!.appState,
+          settings: { ...appStore.payload!.appState.settings, remoteAccess: { paused } },
+        },
+      } as AnyApi;
+    };
+
+    setPaused(true);
+    await flushPromises();
+    const pairButton = wrapper.find(".pairing-section__action");
+    expect(pairButton.attributes("disabled")).toBeDefined();
+    expect(pairButton.attributes("title")).toContain("Remote access is paused");
+
+    setPaused(false);
+    await flushPromises();
+    expect(wrapper.find(".pairing-section__action").attributes("disabled")).toBeUndefined();
   });
 
   test("Add phone button is primary with no active phones, ghost with active phones", async () => {
@@ -601,7 +630,7 @@ describe("SettingsMobileTab", () => {
     // would bury the one that matters.
     expect(wrapper.text()).not.toContain("awaiting your confirmation");
     expect(wrapper.text()).not.toContain("proving key");
-    expect(wrapper.text()).toContain("revoked");
+    expect(wrapper.text()).toContain("Revoked");
   });
 
   test("desktop can pause and resume remote UI without changing the pairing", async () => {
@@ -612,9 +641,9 @@ describe("SettingsMobileTab", () => {
     });
 
     expect(wrapper.text()).toContain("Device paused");
-    const resume = wrapper.findAll("button").find((button) => button.text().includes("Resume device"));
+    const resume = wrapper.findAll("button").find((button) => button.text() === "Resume");
     expect(resume).toBeDefined();
-    const testPush = wrapper.findAll("button").find((button) => button.text().includes("Send test push"));
+    const testPush = wrapper.findAll("button").find((button) => button.text() === "Test push");
     expect(testPush?.attributes("disabled")).toBeDefined();
     await resume!.trigger("click");
     await flushPromises();
@@ -1638,7 +1667,7 @@ describe("SettingsMobileTab", () => {
   test("send test push button reports the result and is visibly labeled as a test", async () => {
     const { wrapper, transport } = await mountTab({ listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]) });
 
-    const testPushButton = wrapper.findAll("button").find((b) => b.text().includes("Send test push"));
+    const testPushButton = wrapper.findAll("button").find((b) => b.text() === "Test push");
     await testPushButton!.trigger("click");
     await flushPromises();
 
@@ -1698,12 +1727,140 @@ describe("SettingsMobileTab", () => {
       }),
     } as AnyApi);
     await account.refreshState();
-    const { wrapper } = await mountTab({ listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]) });
+    const { wrapper } = await mountTab(
+      { listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]) },
+      { enabled: true, devices: [SAMPLE_DEVICE] },
+    );
 
     expect(wrapper.text()).toContain("Register this computer first");
     // Not merely disabled: absent. A tick-box that cannot lead anywhere is a question with no answer.
     expect(wrapper.text()).not.toContain("Enable Mobile");
     expect(wrapper.find('input[type="checkbox"]').exists()).toBe(false);
+    const addPhone = wrapper.findAll("button").find((button) => button.text() === "Add phone");
+    expect(addPhone?.attributes("disabled")).toBeDefined();
+    expect(addPhone?.attributes("title")).toContain("Register this computer first");
+    expect(wrapper.find(".pairing-section__action").exists()).toBe(false);
+  });
+
+  test("shows a known revoked phone when registration and online services are unavailable, while keeping pairing blocked", async () => {
+    const account = useAccountStore();
+    account.attach({
+      getAccountState: async () => ({
+        phase: "signed-out",
+        busy: false,
+        needsRecentAuth: true,
+        installationRegistered: false,
+        signInAvailable: true,
+        onlineBootstrap: {
+          phase: "failed",
+          purpose: "refresh",
+          url: "https://services.example.test/bootstrap.json",
+          error: {
+            stage: "verify",
+            category: "verification",
+            code: "ENVIRONMENT_MISMATCH",
+            message: "Wrong environment.",
+          },
+        },
+      }),
+    } as AnyApi);
+    await account.refreshState();
+    const revokedDevice = { ...SAMPLE_DEVICE, state: "revoked", revoked: true, revokedAt: Date.now() };
+    const { wrapper } = await mountTab(
+      { listMobileDevices: vi.fn(async () => [revokedDevice]) },
+      { enabled: false, devices: [revokedDevice] },
+    );
+
+    expect(wrapper.find(".mobile-device-card--revoked").exists()).toBe(true);
+    expect(wrapper.text()).toContain("Pixel 8");
+    expect(wrapper.text()).toContain("Revoked");
+    expect(wrapper.find(".device-item__forget").attributes("disabled")).toBeUndefined();
+    expect(wrapper.find(".pairing-section__action").exists()).toBe(false);
+    expect(
+      wrapper
+        .findAll("button")
+        .find((button) => button.text() === "Add phone")
+        ?.attributes("disabled"),
+    ).toBeDefined();
+  });
+
+  test("failed online bootstrap disables pairing and routes first-phone requests to the account explanation", async () => {
+    const account = useAccountStore();
+    const subscription = { state: "active", source: "subscription" };
+    account.attach({
+      getAccountState: async () => ({
+        phase: "ready",
+        busy: false,
+        needsRecentAuth: false,
+        installationRegistered: true,
+        entitlement: subscription,
+        overview: makeAccountOverview(subscription),
+        onlineBootstrap: {
+          phase: "failed",
+          purpose: "refresh",
+          url: "https://services.example.test/bootstrap.json",
+          error: {
+            stage: "verify",
+            category: "verification",
+            code: "ENVIRONMENT_MISMATCH",
+            message: "This data directory belongs to a different environment. Use a separate data directory.",
+          },
+        },
+      }),
+    } as AnyApi);
+    await account.refreshState();
+    const { wrapper, transport } = await mountTab({}, { enabled: true, devices: [] }, "overview");
+
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Connect first phone")!
+      .trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Online services configuration could not be verified");
+    expect(wrapper.find(".pairing-section__action").attributes("disabled")).toBeDefined();
+    await wrapper.find(".pairing-section__action").trigger("click");
+    expect(transport.createMobilePairingInvitation).not.toHaveBeenCalled();
+    expect(transport.setMobileEnabled).not.toHaveBeenCalled();
+  });
+
+  test("cached verified services still allow pairing when refresh and the relay are disconnected", async () => {
+    const account = useAccountStore();
+    const subscription = { state: "active", source: "subscription" };
+    account.attach({
+      getAccountState: async () => ({
+        phase: "ready",
+        busy: false,
+        needsRecentAuth: false,
+        installationRegistered: true,
+        entitlement: subscription,
+        overview: makeAccountOverview(subscription),
+        onlineBootstrap: {
+          phase: "cache-warning",
+          purpose: "refresh",
+          url: "https://services.example.test/bootstrap.json",
+          error: { stage: "fetch", category: "network", message: "Bootstrap refresh failed." },
+        },
+      }),
+    } as AnyApi);
+    await account.refreshState();
+    const { wrapper, transport, appStore } = await mountTab(
+      {
+        refreshMobileConnectionHealth: vi.fn(async () => ({
+          health: { running: true, connectionState: "disconnected", lastError: "network", deviceCount: 0 },
+          quota: null,
+        })),
+      },
+      { enabled: true, devices: [] },
+    );
+    await flushPromises();
+
+    expect(appStore.mobileConnectionHealth?.connectionState).toBe("disconnected");
+    const pairPhone = wrapper.find(".pairing-section__action");
+    expect(pairPhone.attributes("disabled")).toBeUndefined();
+    await pairPhone.trigger("click");
+    await flushPromises();
+    expect(transport.createMobilePairingInvitation).toHaveBeenCalledOnce();
   });
 
   test("before the first phone the page offers the STEP, not the setting", async () => {
@@ -1752,7 +1909,8 @@ describe("SettingsMobileTab", () => {
 
   test("a row's profile and capability copy states what the boundary is, and what it is not", async () => {
     const { wrapper } = await mountTab({ listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]) });
-    const profiles = wrapper.findAll("span").find((el) => el.text().startsWith("profiles:"))!;
+    await wrapper.find(".mobile-device-card__details summary").trigger("click");
+    const profiles = wrapper.findAll("span").find((el) => el.text().startsWith("Profiles:"))!;
     const title = profiles.attributes("title") || "";
     expect(title).toContain("shell on this computer under your account");
     expect(title).toContain("not at the operating-system level");

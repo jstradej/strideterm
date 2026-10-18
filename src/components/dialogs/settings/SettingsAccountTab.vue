@@ -328,12 +328,25 @@ const ownerEmailNoticeCopy = computed(() => {
 const trialDeadline = computed(() => {
   const deadline = entitlement.value?.notAfter;
   return entitlement.value?.state === "trial" &&
+    entitlement.value?.source === "trial" &&
     typeof deadline === "number" &&
     Number.isFinite(deadline) &&
     deadline > 0
     ? deadline
     : null;
 });
+const finiteAccessDeadline = computed(() => {
+  const source = entitlement.value?.source;
+  const deadline = entitlement.value?.notAfter;
+  return (entitlement.value?.state === "active" || entitlement.value?.state === "lapsed") &&
+    (source === "operator" || source === "incident") &&
+    typeof deadline === "number" &&
+    Number.isFinite(deadline) &&
+    deadline > 0
+    ? deadline
+    : null;
+});
+const countdownDeadline = computed(() => trialDeadline.value ?? finiteAccessDeadline.value);
 const endedTrialDeadline = computed(() => {
   const deadline = entitlement.value?.notAfter;
   return endedTrial.value && typeof deadline === "number" && Number.isFinite(deadline) && deadline > 0
@@ -343,19 +356,37 @@ const endedTrialDeadline = computed(() => {
 const trialExpired = computed(() => trialDeadline.value !== null && trialDeadline.value <= nowMs.value);
 const endedTrial = computed(() => entitlement.value?.state === "lapsed" && entitlement.value.source === "trial");
 const trialEnded = computed(() => trialExpired.value || endedTrial.value);
+const finiteAccessExpired = computed(
+  () =>
+    finiteAccessDeadline.value !== null &&
+    (entitlement.value?.state === "lapsed" || finiteAccessDeadline.value <= nowMs.value),
+);
+const endedFiniteAccess = computed(
+  () =>
+    entitlement.value?.state === "lapsed" &&
+    (entitlement.value.source === "operator" || entitlement.value.source === "incident"),
+);
+const accessEnded = computed(() => trialEnded.value || finiteAccessExpired.value || endedFiniteAccess.value);
 const trialEndingSoon = computed(
   () =>
     trialDeadline.value !== null &&
     !trialEnded.value &&
     trialDeadline.value - nowMs.value <= MOBILE_TRIAL_WARNING_WINDOW_MS,
 );
-const trialDaysLeft = computed(() => {
-  if (trialDeadline.value === null || trialEnded.value) return null;
-  return Math.ceil((trialDeadline.value - nowMs.value) / 86_400_000);
+const countdownDaysLeft = computed(() => {
+  if (countdownDeadline.value === null) return null;
+  if (accessEnded.value) return 0;
+  return Math.max(0, Math.ceil((countdownDeadline.value - nowMs.value) / 86_400_000));
 });
-const trialProgress = computed(() =>
-  trialDaysLeft.value === null ? 0 : Math.min(100, Math.round((trialDaysLeft.value / 14) * 100)),
-);
+const countdownSegmentsFilled = computed(() => (accessEnded.value ? 0 : Math.min(14, countdownDaysLeft.value ?? 0)));
+const trialCountdown = computed(() => trialDeadline.value !== null || endedTrial.value);
+const countdownTone = computed(() => {
+  const days = countdownDaysLeft.value;
+  if (accessEnded.value || days === 0 || trialEnded.value) return "red";
+  if (days !== null && days <= 3) return "red";
+  if (days !== null && days <= 7) return "orange";
+  return "green";
+});
 const cancellationAt = computed(() =>
   entitlement.value?.state === "active" && entitlement.value.source === "subscription"
     ? entitlement.value.cancellationAt
@@ -558,12 +589,15 @@ const stateCopy = computed(() => {
       ? cancellationAt.value !== undefined
         ? { title: "Cancellation scheduled", tone: "warn" }
         : { title: "Subscribed", tone: "ok" }
-      : { title: "Active access", tone: "ok" };
+      : finiteAccessExpired.value
+        ? { title: "Access ended", tone: "warn" }
+        : { title: "Active access", tone: "ok" };
   }
   if (state === "past_due") return { title: "Payment problem", tone: "warn" };
   if (state === "lapsed") {
-    return entitlement.value?.source === "trial"
-      ? { title: "Trial ended", tone: "warn" }
+    if (entitlement.value?.source === "trial") return { title: "Trial ended", tone: "warn" };
+    return entitlement.value?.source === "operator" || entitlement.value?.source === "incident"
+      ? { title: "Access ended", tone: "warn" }
       : { title: "Subscription ended", tone: "warn" };
   }
   if (state === "revoked") return { title: "Access revoked", tone: "warn" };
@@ -1071,6 +1105,9 @@ function focusAuthPanel(): void {
       :class="{
         'account-overview-card--trial-ending': trialEndingSoon && props.view === 'overview',
         'account-overview-card--trial-ended': trialEnded && props.view === 'overview',
+        'account-overview-card--access-ending':
+          countdownTone === 'orange' && !trialCountdown && props.view === 'overview',
+        'account-overview-card--access-ended': finiteAccessExpired && props.view === 'overview',
       }"
     >
       <div>
@@ -1152,28 +1189,50 @@ function focusAuthPanel(): void {
           <span v-if="entitlement?.planLabel">{{ entitlement.planLabel }}</span>
         </div>
         <div
-          v-if="trialDaysLeft !== null || trialEnded"
+          v-if="countdownDaysLeft !== null || trialEnded || endedFiniteAccess"
           :class="[
             'trial-indicator',
-            { 'trial-indicator--ending': trialEndingSoon, 'trial-indicator--expired': trialEnded },
+            {
+              'trial-indicator--ending': trialEndingSoon,
+              'trial-indicator--warning': countdownTone === 'orange',
+              'trial-indicator--critical': countdownTone === 'red' && !accessEnded,
+              'trial-indicator--expired': accessEnded,
+            },
           ]"
           role="status"
         >
           <div class="trial-indicator__heading">
-            <span v-if="!trialEnded"
-              ><strong>{{ trialDaysLeft }}</strong
-              ><small>{{ trialDaysLeft === 1 ? "day left" : "days left" }}</small></span
+            <span v-if="!accessEnded"
+              ><strong>{{ countdownDaysLeft }}</strong
+              ><small>{{ countdownDaysLeft === 1 ? "day left" : "days left" }}</small></span
             >
-            <span v-else class="trial-indicator__ended">Mobile access has ended</span>
+            <span v-else class="trial-indicator__ended">
+              {{ trialEnded ? "Mobile access has ended" : "Access has ended" }}
+            </span>
             <small
-              >{{ trialEnded ? "Ended" : "Ends" }}
-              {{ formatDate(trialDeadline ?? endedTrialDeadline ?? undefined) }}</small
+              >{{ accessEnded ? "Ended" : trialCountdown ? "Ends" : "Access until" }}
+              {{ formatDate(countdownDeadline ?? endedTrialDeadline ?? undefined) }}</small
             >
           </div>
-          <div v-if="!trialEnded" class="trial-indicator__track" aria-hidden="true">
-            <span :style="{ width: `${trialProgress}%` }"></span>
+          <div
+            class="trial-indicator__track"
+            :class="`trial-indicator__track--${countdownTone}`"
+            role="img"
+            :aria-label="
+              accessEnded
+                ? `${trialCountdown ? 'Trial' : 'Mobile access'} ended; 0 of 14 days remain.`
+                : `${countdownDaysLeft} ${countdownDaysLeft === 1 ? 'day' : 'days'} left; ${countdownSegmentsFilled} of 14 segments filled.`
+            "
+          >
+            <span
+              v-for="segment in 14"
+              :key="segment"
+              class="trial-indicator__segment"
+              :class="{ 'trial-indicator__segment--filled': segment <= countdownSegmentsFilled }"
+              aria-hidden="true"
+            ></span>
           </div>
-          <small v-if="trialEnded">Review your account to restore mobile access.</small>
+          <small v-if="accessEnded">Review your account to restore mobile access.</small>
           <small v-else>{{
             props.phoneCount > 0 ? "Manage your connected phones below." : "Connect your phone to get started."
           }}</small>
@@ -1219,7 +1278,7 @@ function focusAuthPanel(): void {
         </p>
         <div v-if="entitlement" class="account-actions">
           <button
-            v-if="hasActiveHostedAccess && !trialEnded"
+            v-if="hasActiveHostedAccess && !accessEnded"
             type="button"
             class="button account-overview-card__action"
             @click="openPhones"
@@ -1228,11 +1287,11 @@ function focusAuthPanel(): void {
           </button>
           <button
             type="button"
-            :class="['button', { 'button--ghost': hasActiveHostedAccess && !trialEnded }]"
+            :class="['button', { 'button--ghost': hasActiveHostedAccess && !accessEnded }]"
             @click="emit('navigate-account')"
           >
             {{
-              trialEnded || (entitlement?.state !== "trial" && !hasActiveHostedAccess)
+              accessEnded || (entitlement?.state !== "trial" && !hasActiveHostedAccess)
                 ? "Review account"
                 : entitlement?.state === "trial"
                   ? "View plans"
@@ -2050,12 +2109,22 @@ function focusAuthPanel(): void {
   border-color: color-mix(in srgb, var(--warn, #d08a34) 60%, var(--border, #333));
   background: linear-gradient(135deg, color-mix(in srgb, var(--warn, #d08a34) 10%, transparent), transparent 65%);
 }
+.account-overview-card--access-ending {
+  border-color: color-mix(in srgb, var(--warn, #d08a34) 60%, var(--border, #333));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--warn, #d08a34) 10%, transparent), transparent 65%);
+}
 .account-overview-card--trial-ended {
   border-color: color-mix(in srgb, var(--danger, #e05252) 68%, var(--border, #333));
   background: linear-gradient(135deg, color-mix(in srgb, var(--danger, #e05252) 13%, transparent), transparent 65%);
 }
+.account-overview-card--access-ended {
+  border-color: color-mix(in srgb, var(--danger, #e05252) 68%, var(--border, #333));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--danger, #e05252) 13%, transparent), transparent 65%);
+}
 .account-overview-card--trial-ended .account-kicker,
-.account-overview-card--trial-ended h3 {
+.account-overview-card--trial-ended h3,
+.account-overview-card--access-ended .account-kicker,
+.account-overview-card--access-ended h3 {
   color: var(--danger, #e05252);
 }
 .account-kicker {
@@ -2152,6 +2221,24 @@ function focusAuthPanel(): void {
 .trial-indicator--ending .trial-indicator__heading > span :is(strong, small) {
   color: var(--warn, #d08a34);
 }
+.trial-indicator--warning {
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--warn, #d08a34) 45%, var(--border, #333));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--warn, #d08a34) 8%, transparent);
+}
+.trial-indicator--warning .trial-indicator__heading > span :is(strong, small) {
+  color: var(--warn, #d08a34);
+}
+.trial-indicator--critical {
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--danger, #e05252) 55%, var(--border, #333));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger, #e05252) 9%, transparent);
+}
+.trial-indicator--critical .trial-indicator__heading > span :is(strong, small) {
+  color: var(--danger, #e05252);
+}
 .trial-indicator--expired {
   padding: 12px;
   border: 1px solid color-mix(in srgb, var(--danger, #e05252) 55%, var(--border, #333));
@@ -2161,9 +2248,6 @@ function focusAuthPanel(): void {
 .trial-indicator--expired .trial-indicator__ended,
 .trial-indicator--expired .trial-indicator__heading > small {
   color: var(--danger, #e05252);
-}
-.trial-indicator--expired .trial-indicator__track span {
-  background: var(--danger, #e05252);
 }
 .trial-indicator__ended {
   font-weight: 600;
@@ -2189,16 +2273,28 @@ function focusAuthPanel(): void {
   font-weight: 600;
 }
 .trial-indicator__track {
-  height: 6px;
-  overflow: hidden;
-  border-radius: 999px;
+  display: grid;
+  grid-template-columns: repeat(14, minmax(0, 1fr));
+  gap: 3px;
+  height: 9px;
+}
+.trial-indicator__segment {
+  height: 100%;
+  min-width: 0;
+  border-radius: 2px;
   background: var(--border, #333);
 }
-.trial-indicator__track span {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: var(--accent, #f2a63b);
+.trial-indicator__track--red .trial-indicator__segment {
+  background: color-mix(in srgb, var(--danger, #e05252) 30%, var(--border, #333));
+}
+.trial-indicator__track--green .trial-indicator__segment--filled {
+  background: var(--success, #49a876);
+}
+.trial-indicator__track--orange .trial-indicator__segment--filled {
+  background: var(--warn, #d08a34);
+}
+.trial-indicator__track--red .trial-indicator__segment--filled {
+  background: var(--danger, #e05252);
 }
 .trial-indicator small {
   color: color-mix(in srgb, var(--muted) 45%, var(--text));

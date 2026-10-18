@@ -10,68 +10,91 @@
         v-for="device in devices"
         :key="device.deviceId"
         class="device-item mobile-device-card"
-        :class="{ 'device-item--revoked': device.revoked, 'mobile-device-card--revoked': device.revoked }"
+        :class="{ 'mobile-device-card--revoked': device.revoked }"
       >
         <header class="mobile-device-card__header">
-          <template v-if="renamingId === device.deviceId">
-            <input
-              v-model="renameDraft"
-              class="settings-input"
-              maxlength="60"
-              aria-label="Phone name"
-              @keyup.enter="rename(device)"
-            />
-            <button class="button button--ghost" type="button" @click="rename(device)">Save</button>
-            <button class="button button--ghost" type="button" @click="renamingId = null">Cancel</button>
-          </template>
-          <template v-else>
-            <strong>{{ device.label }}</strong>
+          <div class="mobile-device-card__title-group">
+            <strong :class="{ 'mobile-device-card__label--revoked': device.revoked }">{{ device.label }}</strong>
             <span
               class="mobile-device-card__badge"
               :class="device.revoked ? 'badge--off' : device.state === 'active' ? 'badge--ok' : 'badge--pending'"
             >
-              {{ device.revoked ? "revoked" : device.state === "active" ? "Paired" : pendingLabel(device.state) }}
+              {{ device.revoked ? "Revoked" : device.state === "active" ? "Paired" : pendingLabel(device.state) }}
             </span>
-            <button
-              v-if="!device.revoked"
-              class="button button--ghost"
-              type="button"
-              :disabled="paused"
-              @click="
-                renamingId = device.deviceId;
-                renameDraft = device.label;
-              "
+            <span
+              v-if="device.revoked && pendingAction(device, 'revoke')"
+              class="mobile-device-card__pending-status"
+              role="status"
             >
-              Rename
-            </button>
-            <button
-              v-if="!device.revoked && device.state !== 'active'"
-              class="button button--ghost"
-              type="button"
-              :disabled="paused"
-              @click="reviewPairing(device)"
-            >
-              Review pairing
-            </button>
-          </template>
+              <span class="mobile-device-card__spinner" aria-hidden="true"></span>
+              Revoking…
+            </span>
+          </div>
+          <div v-if="!device.revoked" class="mobile-device-card__header-actions">
+            <template v-if="renamingId === device.deviceId">
+              <input
+                v-model="renameDraft"
+                class="settings-input"
+                maxlength="60"
+                :disabled="isBusy(device)"
+                aria-label="Phone name"
+                @keyup.enter="rename(device)"
+              />
+              <button class="button button--ghost" type="button" :disabled="isBusy(device)" @click="rename(device)">
+                <span
+                  v-if="pendingAction(device, 'rename')"
+                  class="mobile-device-card__spinner"
+                  aria-hidden="true"
+                ></span>
+                {{ pendingAction(device, "rename") ? "Saving…" : "Save" }}
+              </button>
+              <button class="button button--ghost" type="button" :disabled="isBusy(device)" @click="renamingId = null">
+                Cancel
+              </button>
+            </template>
+            <template v-else>
+              <button
+                class="button button--ghost"
+                type="button"
+                :disabled="paused || isBusy(device)"
+                @click="
+                  renamingId = device.deviceId;
+                  renameDraft = device.label;
+                "
+              >
+                Rename
+              </button>
+              <button
+                v-if="device.state !== 'active'"
+                class="button button--ghost"
+                type="button"
+                :disabled="paused || isBusy(device)"
+                @click="reviewPairing(device)"
+              >
+                <span
+                  v-if="pendingAction(device, 'review')"
+                  class="mobile-device-card__spinner"
+                  aria-hidden="true"
+                ></span>
+                {{ pendingAction(device, "review") ? "Loading…" : "Review pairing" }}
+              </button>
+            </template>
+          </div>
           <button
             v-if="device.revoked"
             class="device-item__forget"
             type="button"
-            :disabled="paused"
+            :disabled="paused || isBusy(device)"
             @click="forget(device)"
           >
-            ×
+            <span v-if="pendingAction(device, 'forget')" class="mobile-device-card__spinner" aria-hidden="true"></span>
+            <span v-else aria-hidden="true">×</span>
+            <span class="sr-only">{{ pendingAction(device, "forget") ? "Forgetting phone" : "Forget phone" }}</span>
           </button>
         </header>
-        <div class="mobile-device-card__meta">
-          <span>{{ device.platform }}</span>
-          <details>
-            <summary>Security fingerprint</summary>
-            <code>{{ device.fingerprint }}</code>
-          </details>
-          <span v-if="device.revoked" class="device-item__paused">Revoked</span>
-          <span v-else-if="device.remoteUiPaused" class="device-item__paused">Device paused</span>
+        <div v-if="!device.revoked" class="mobile-device-card__meta">
+          <span class="mobile-device-card__platform">{{ device.platform }}</span>
+          <span v-if="device.remoteUiPaused" class="device-item__paused">Device paused</span>
           <span
             v-else-if="isForegroundRecent(device.deviceId)"
             class="device-item__connected"
@@ -91,38 +114,71 @@
             >Session active</span
           >
           <span v-else :title="'Last seen: ' + formatTimestamp(device.lastSeenAt)"
-            >last seen {{ formatTimestamp(device.lastSeenAt) }}</span
-          >
-          <span :title="profileAccessTitle"
-            >profiles: all, except {{ (device.excludedProfileIds || []).map(profileLabel).join(", ") || "none" }}</span
-          >
-          <span :title="'Capabilities granted to this device: ' + device.capabilities.join(', ')"
-            >capabilities: {{ device.capabilities.map(capabilityLabel).join(", ") || "none" }}</span
+            >last seen {{ formatLastSeen(device.lastSeenAt) }}</span
           >
         </div>
+        <details v-if="!device.revoked" class="mobile-device-card__details">
+          <summary>Access and security details</summary>
+          <div class="mobile-device-card__details-content">
+            <span :title="profileAccessTitle"
+              >Profiles: all, except
+              {{ (device.excludedProfileIds || []).map(profileLabel).join(", ") || "none" }}</span
+            >
+            <span :title="'Capabilities granted to this device: ' + device.capabilities.join(', ')"
+              >Capabilities: {{ device.capabilities.map(capabilityLabel).join(", ") || "none" }}</span
+            >
+            <span>Platform: {{ device.platform }}</span>
+            <span
+              >Fingerprint: <code>{{ device.fingerprint }}</code></span
+            >
+          </div>
+        </details>
         <div v-if="!device.revoked" class="mobile-device-card__actions">
           <button
             v-if="device.state === 'active'"
             class="button button--ghost"
+            :class="device.remoteUiPaused ? 'mobile-device-card__resume' : 'mobile-device-card__pause'"
             type="button"
-            :disabled="paused || busyId === device.deviceId"
+            :disabled="paused || isBusy(device)"
+            :aria-label="device.remoteUiPaused ? 'Resume remote UI for this phone' : 'Pause remote UI for this phone'"
             @click="setPaused(device)"
           >
-            {{ device.remoteUiPaused ? "Resume device" : "Pause device" }}
+            <span v-if="pendingAction(device, 'pause')" class="mobile-device-card__spinner" aria-hidden="true"></span>
+            <svg v-else-if="device.remoteUiPaused" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path d="M5 3.5v9l7-4.5z" />
+            </svg>
+            <svg v-else viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path d="M4 3h3v10H4zM9 3h3v10H9z" />
+            </svg>
+            {{ pendingAction(device, "pause") ? "Updating…" : device.remoteUiPaused ? "Resume" : "Pause" }}
           </button>
-          <button class="button button--ghost" type="button" :disabled="paused" @click="toggleAccess(device)">
+          <button
+            class="button button--ghost"
+            type="button"
+            :disabled="paused || isBusy(device)"
+            @click="toggleAccess(device)"
+          >
             {{ editingId === device.deviceId ? "Close access" : "Edit access" }}
           </button>
           <button
             v-if="device.state === 'active'"
             class="button button--ghost"
             type="button"
-            :disabled="paused || device.remoteUiPaused || testBusyId === device.deviceId"
+            :disabled="paused || device.remoteUiPaused || isBusy(device)"
             @click="sendTest(device)"
           >
-            {{ testBusyId === device.deviceId ? "Sending…" : "Send test push" }}
+            <span v-if="pendingAction(device, 'test')" class="mobile-device-card__spinner" aria-hidden="true"></span>
+            {{ pendingAction(device, "test") ? "Sending…" : "Test push" }}
           </button>
-          <button class="button button--ghost button--danger" type="button" @click="revoke(device)">Revoke</button>
+          <button
+            class="button button--ghost button--danger"
+            type="button"
+            :disabled="isBusy(device)"
+            @click="revoke(device)"
+          >
+            <span v-if="pendingAction(device, 'revoke')" class="mobile-device-card__spinner" aria-hidden="true"></span>
+            {{ pendingAction(device, "revoke") ? "Revoking…" : "Revoke" }}
+          </button>
         </div>
         <p v-if="result[device.deviceId]" class="device-item__test-result" role="status">
           {{ result[device.deviceId] }}
@@ -133,7 +189,7 @@
         <fieldset
           v-if="editingId === device.deviceId"
           class="mobile-device-card__access device-item__allowlist-form"
-          :disabled="paused || saving"
+          :disabled="paused || isBusy(device)"
         >
           <p>Profiles excluded from this phone</p>
           <div class="pairing-picker">
@@ -148,7 +204,10 @@
               ><input v-model="draft.capabilities" type="checkbox" :value="cap.id" /> {{ cap.label }}</label
             >
           </div>
-          <button class="button" type="button" :disabled="saving" @click="saveAccess(device)">Save access</button>
+          <button class="button" type="button" :disabled="isBusy(device)" @click="saveAccess(device)">
+            <span v-if="pendingAction(device, 'access')" class="mobile-device-card__spinner" aria-hidden="true"></span>
+            {{ pendingAction(device, "access") ? "Saving…" : "Save access" }}
+          </button>
           <p v-if="accessError" role="alert">{{ accessError }}</p>
         </fieldset>
       </article>
@@ -186,7 +245,9 @@ const props = withDefaults(defineProps<{ profiles?: Profile[]; refreshOnMount?: 
   refreshOnMount: true,
 });
 const app = useAppStore();
-const devices = computed(() => app.mobileDevices as unknown as Device[]);
+const devices = computed(() =>
+  [...(app.mobileDevices as unknown as Device[])].sort((a, b) => Number(a.revoked) - Number(b.revoked)),
+);
 const paused = computed(() => app.payload?.appState?.settings?.remoteAccess?.paused === true);
 const profiles = computed(() =>
   props.profiles.length
@@ -210,10 +271,8 @@ onBeforeUnmount(() => {
 const renamingId = ref<string | null>(null);
 const renameDraft = ref("");
 const editingId = ref<string | null>(null);
-const saving = ref(false);
 const accessError = ref("");
-const busyId = ref<string | null>(null);
-const testBusyId = ref<string | null>(null);
+const pending = reactive<Record<string, string>>({});
 const result = reactive<Record<string, string>>({});
 const errors = reactive<Record<string, string>>({});
 const draft = reactive<{ capabilities: MobileCapability[]; excludedProfileIds: string[] }>({
@@ -241,7 +300,28 @@ function remoteUiConnected(id: string): boolean {
   return sessionFor(id)?.remoteUiConnected === true;
 }
 function formatTimestamp(ts: number): string {
-  return ts ? new Date(ts).toLocaleString() : "never";
+  if (!Number.isFinite(ts) || ts <= 0) return "never";
+  const date = new Date(ts);
+  return Number.isNaN(date.getTime()) ? "never" : date.toLocaleString();
+}
+function formatLastSeen(ts: number): string {
+  if (!Number.isFinite(ts) || ts <= 0) return "never";
+  const date = new Date(ts);
+  if (Number.isNaN(date.getTime())) return "never";
+  const seconds = Math.max(0, Math.round((now.value - ts) / 1000));
+  if (seconds < 45) return "just now";
+  const relative = new Intl.RelativeTimeFormat("en", { numeric: "always" });
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return relative.format(-minutes, "minute");
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return relative.format(-hours, "hour");
+  const days = Math.round(hours / 24);
+  if (days < 14) return relative.format(-days, "day");
+  const weeks = Math.round(days / 7);
+  if (weeks < 8) return relative.format(-weeks, "week");
+  const months = Math.round(days / 30);
+  if (months < 12) return relative.format(-months, "month");
+  return relative.format(-Math.round(days / 365), "year");
 }
 function profileLabel(id: string): string {
   return profiles.value.find((profile) => profile.id === id)?.name || id;
@@ -258,12 +338,19 @@ function pendingLabel(state: string): string {
         ? "activating"
         : state;
 }
+function pendingAction(device: Device, action: string): boolean {
+  return pending[device.deviceId] === action || (action === "revoke" && pending[device.deviceId] === "revoke-confirm");
+}
+function isBusy(device: Device): boolean {
+  return Boolean(pending[device.deviceId]);
+}
 function isForegroundRecent(id: string): boolean {
   void now.value;
   const stamp = sessionFor(id)?.lastForegroundAt;
   return remoteUiConnected(id) && typeof stamp === "number" && now.value - stamp <= MOBILE_FOREGROUND_PRESENCE_FRESH_MS;
 }
 async function reviewPairing(device: Device): Promise<void> {
+  pending[device.deviceId] = "review";
   try {
     await app.refreshMobileDevicesAwaitingApproval(device.deviceId);
     if (app.mobilePairingSas?.deviceId !== device.deviceId) {
@@ -273,24 +360,32 @@ async function reviewPairing(device: Device): Promise<void> {
     app.openSettingsDialog({ initialTab: "mobile", initialMobileView: "phones" });
   } catch (error) {
     errors[device.deviceId] = mobileErrorCopy(error, "review");
+  } finally {
+    delete pending[device.deviceId];
   }
 }
 async function forget(device: Device): Promise<void> {
+  pending[device.deviceId] = "forget";
   try {
     const response = await app.forgetMobileDevice(device.deviceId);
     if (!response.ok) errors[device.deviceId] = mobileResultReasonCopy(response.reason, "forget");
   } catch (error) {
     errors[device.deviceId] = mobileErrorCopy(error, "forget");
+  } finally {
+    delete pending[device.deviceId];
   }
 }
 async function rename(device: Device): Promise<void> {
   const label = renameDraft.value.trim();
-  if (!label) return;
+  if (!label || isBusy(device)) return;
+  pending[device.deviceId] = "rename";
   try {
     await app.renameMobileDevice(device.deviceId, label);
     renamingId.value = null;
   } catch {
     errors[device.deviceId] = "Could not rename this phone. Please try again.";
+  } finally {
+    delete pending[device.deviceId];
   }
 }
 function toggleAccess(device: Device): void {
@@ -304,7 +399,8 @@ function toggleAccess(device: Device): void {
   editingId.value = device.deviceId;
 }
 async function saveAccess(device: Device): Promise<void> {
-  saving.value = true;
+  if (isBusy(device)) return;
+  pending[device.deviceId] = "access";
   accessError.value = "";
   try {
     await app.updateMobileDeviceAllowlist(device.deviceId, {
@@ -315,44 +411,51 @@ async function saveAccess(device: Device): Promise<void> {
   } catch {
     accessError.value = "Could not synchronize access with the phone. Please try again.";
   } finally {
-    saving.value = false;
+    delete pending[device.deviceId];
   }
 }
 async function setPaused(device: Device): Promise<void> {
-  busyId.value = device.deviceId;
+  if (isBusy(device)) return;
+  pending[device.deviceId] = "pause";
   delete errors[device.deviceId];
   try {
     await app.setMobileDeviceRemoteUiPaused(device.deviceId, !device.remoteUiPaused);
   } catch (error) {
     errors[device.deviceId] = mobileErrorCopy(error, "relay");
   } finally {
-    busyId.value = null;
+    delete pending[device.deviceId];
   }
 }
 async function sendTest(device: Device): Promise<void> {
-  testBusyId.value = device.deviceId;
+  if (isBusy(device)) return;
+  pending[device.deviceId] = "test";
   try {
     const response = await app.sendMobileTestPush(device.deviceId);
     result[device.deviceId] = response?.ok ? "Test push sent." : mobileResultReasonCopy(response?.reason, "test-push");
   } catch (error) {
     errors[device.deviceId] = mobileErrorCopy(error, "test-push");
   } finally {
-    testBusyId.value = null;
+    delete pending[device.deviceId];
   }
 }
 async function revoke(device: Device): Promise<void> {
-  const confirmed = await app.confirmInApp({
-    title: "Revoke mobile device?",
-    message: `"${device.label}" will immediately lose push notifications and remote access. This cannot be undone — the phone must be re-paired.`,
-    confirmLabel: "Revoke",
-    danger: true,
-  });
-  if (!confirmed) return;
+  if (isBusy(device)) return;
+  pending[device.deviceId] = "revoke-confirm";
   try {
+    const confirmed = await app.confirmInApp({
+      title: "Revoke mobile device?",
+      message: `"${device.label}" will immediately lose push notifications and remote access. This cannot be undone — the phone must be re-paired.`,
+      confirmLabel: "Revoke",
+      danger: true,
+    });
+    if (!confirmed) return;
+    pending[device.deviceId] = "revoke";
     await app.revokeMobileDevice(device.deviceId);
     delete errors[device.deviceId];
   } catch (error) {
     errors[device.deviceId] = mobileErrorCopy(error, "revoke");
+  } finally {
+    delete pending[device.deviceId];
   }
 }
 </script>
@@ -364,28 +467,58 @@ async function revoke(device: Device): Promise<void> {
   min-width: 0;
 }
 .mobile-device-list__empty {
-  color: var(--text-secondary);
+  color: var(--muted);
 }
 .mobile-device-card {
   min-width: 0;
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 10px;
-  background: var(--bg-secondary);
+  padding: 9px;
+  background: var(--bg);
 }
 .mobile-device-card__header,
-.mobile-device-card__actions {
+.mobile-device-card__actions,
+.mobile-device-card__title-group,
+.mobile-device-card__header-actions {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   min-width: 0;
 }
-.mobile-device-card__header strong {
+.mobile-device-card__header {
+  flex-wrap: nowrap;
+}
+.mobile-device-card__title-group {
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+}
+.mobile-device-card__header-actions {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+}
+.mobile-device-card__actions {
+  flex-wrap: wrap;
+}
+.mobile-device-card__title-group strong {
+  min-width: 0;
   overflow-wrap: anywhere;
-  margin-right: auto;
+  flex: 0 1 auto;
+}
+.mobile-device-card__label--revoked {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+.mobile-device-card__header .settings-input {
+  width: 100%;
+  min-width: 0;
+}
+.mobile-device-card__header button {
+  flex: 0 0 auto;
+  padding-inline: 6px;
+  white-space: nowrap;
 }
 .mobile-device-card__badge {
+  flex: 0 0 auto;
   border-radius: 10px;
   padding: 2px 7px;
   font-size: 11px;
@@ -402,20 +535,88 @@ async function revoke(device: Device): Promise<void> {
   color: var(--muted);
   background: rgba(255, 255, 255, 0.06);
 }
+.mobile-device-card__pending-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
 .mobile-device-card__meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px 10px;
-  margin: 8px 0;
+  gap: 4px 8px;
+  margin: 6px 0;
   font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.mobile-device-card__platform {
+  text-transform: capitalize;
+  color: var(--muted);
+}
+.mobile-device-card__details {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.mobile-device-card__details summary {
+  width: fit-content;
+  cursor: pointer;
+}
+.mobile-device-card__details-content {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 6px 0 2px;
   overflow-wrap: anywhere;
 }
 .mobile-device-card__meta code {
   overflow-wrap: anywhere;
 }
 .mobile-device-card__actions button {
+  display: inline-flex;
+  flex: 1 1 calc(50% - 6px);
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
   max-width: 100%;
-  white-space: normal;
+  white-space: nowrap;
+  padding-inline: 6px;
+}
+.mobile-device-card__actions button svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  fill: currentColor;
+}
+.mobile-device-card__actions .mobile-device-card__pause {
+  color: var(--status-paused);
+  border-color: var(--status-paused);
+}
+.mobile-device-card__actions .mobile-device-card__pause:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--status-paused) 12%, transparent);
+}
+.mobile-device-card__spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: mobile-device-card-spin 0.7s linear infinite;
+}
+@keyframes mobile-device-card-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.mobile-device-card--revoked {
+  padding-block: 6px;
+  opacity: 1;
 }
 .mobile-device-card__access {
   display: grid;
@@ -440,19 +641,39 @@ async function revoke(device: Device): Promise<void> {
   font-weight: 600;
 }
 .device-item__paused {
-  color: var(--warning-fg, var(--warning));
+  color: var(--status-paused);
   font-weight: 600;
 }
 .device-item__test-result {
   margin: 7px 0 0;
-  color: var(--text-secondary);
+  color: var(--muted);
   font-size: 12px;
 }
 .device-item__forget {
-  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
   background: none;
   border: 0;
   color: var(--muted);
   cursor: pointer;
+}
+.device-item__forget:disabled,
+.mobile-device-card button:disabled {
+  cursor: wait;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 </style>

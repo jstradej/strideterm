@@ -914,11 +914,26 @@ describe("NotificationCenter — Connections tab", () => {
     expect(wrapper.text()).toContain("Telegram");
     expect(wrapper.text()).toContain("Phones");
     expect(wrapper.text()).toContain("No phones paired yet.");
+    const connectionsBody = wrapper.find(".notification-center__body--connections");
+    expect(connectionsBody.text().indexOf("Phones")).toBeLessThan(connectionsBody.text().indexOf("Telegram"));
+    expect(connectionsBody.find('[aria-label="Mobile settings"]').attributes("title")).toBe("Open Mobile settings");
+    expect(connectionsBody.find('[aria-label="Telegram settings"]').attributes("title")).toContain(
+      "Open Settings → Telegram",
+    );
+    const connectionsTab = wrapper
+      .findAll(".notification-center__tab")
+      .find((button) => button.text().includes("Connections"))!;
+    expect(connectionsTab.attributes("title")).toBe(
+      "Telegram and paired phone connections, including access and session status.",
+    );
+    expect(connectionsTab.find("svg").exists()).toBe(true);
     await wrapper
       .findAll("button")
-      .find((button) => button.text().includes("Mobile settings"))!
+      .find((button) => button.attributes("aria-label") === "Mobile settings")!
       .trigger("click");
     expect(openSettings).toHaveBeenCalledWith({ initialTab: "mobile", initialMobileView: "phones" });
+    await connectionsBody.find('[aria-label="Telegram settings"]').trigger("click");
+    expect(openSettings).toHaveBeenCalledWith({ initialTab: "telegram" });
   });
 
   it("keeps phone management unavailable on remote transports", async () => {
