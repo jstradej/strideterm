@@ -150,7 +150,7 @@ describe("GitBranchesTab — copyToClipboard surfaces a failure notification", (
 
     expect(showError).toHaveBeenCalledTimes(1);
     expect(showError.mock.calls[0][0]).toBe("Copy failed");
-    expect(showError.mock.calls[0][1]).toContain("clipboard blocked");
+    expect(showError.mock.calls[0][1]).toMatchObject({ message: "clipboard blocked" });
   });
 });
 

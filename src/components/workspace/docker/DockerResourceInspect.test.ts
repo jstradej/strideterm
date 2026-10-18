@@ -97,6 +97,6 @@ describe("DockerResourceInspect — visual render with mock data", () => {
     await flushPromises();
 
     expect(showErrorSpy).toHaveBeenCalledTimes(1);
-    expect(showErrorSpy).toHaveBeenCalledWith("Copy failed", expect.stringContaining("clipboard blocked"));
+    expect(showErrorSpy).toHaveBeenCalledWith("Copy failed", expect.objectContaining({ message: "clipboard blocked" }));
   });
 });

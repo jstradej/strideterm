@@ -91,3 +91,10 @@ condition = "AND"
 regexTarget = "secret"
 paths = ['^electron/backend/mobile/test-fixtures/system-channel\.json$']
 regexes = ['^(?:NzJgDU966DT/QtVN\+FjfaytPNYtIxtIXifgY0dnr/SA=|AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=)$']
+
+[[allowlists]]
+description = "audited deterministic fixtures: review Git and internal MCP tests (fixed idempotency key, not a credential)"
+condition = "AND"
+regexTarget = "secret"
+paths = ['^electron/backend/(?:review-git/(?:broker|operations|service)|internal-mcp\.integration)\.test\.ts$']
+regexes = ['^key-12345678$']
