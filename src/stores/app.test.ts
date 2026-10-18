@@ -137,11 +137,26 @@ function makeRemotePanelPayload(activePanelId = "panel-one"): AnyApi {
   });
 }
 
-function requestRemotePanel(panelId: string, signal?: AbortSignal): Promise<void> {
+function requestRemotePanel(
+  panelId: string,
+  signal?: AbortSignal,
+  onResolve?: (state?: unknown) => void,
+): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     window.dispatchEvent(
       new CustomEvent("strideterm:remote-select-panel", {
-        detail: { profileId: "p1", workspaceId: "ws-panels", panelId, handled: false, signal, resolve, reject },
+        detail: {
+          profileId: "p1",
+          workspaceId: "ws-panels",
+          panelId,
+          handled: false,
+          signal,
+          resolve: (state?: unknown) => {
+            onResolve?.(state);
+            resolve();
+          },
+          reject,
+        },
       }),
     );
   });
@@ -286,12 +301,15 @@ describe("useAppStore — remote mode identity", () => {
     await Promise.resolve();
 
     const panelOneController = new AbortController();
-    const panelOne = requestRemotePanel("panel-one", panelOneController.signal).catch((error) => error);
+    const resolvedStates: unknown[] = [];
+    const panelOne = requestRemotePanel("panel-one", panelOneController.signal, (state) =>
+      resolvedStates.push(state),
+    ).catch((error) => error);
     await nextTick();
     expect(transport.activateSession).toHaveBeenCalledWith("ws-panels:panel-one");
 
     panelOneController.abort();
-    const panelTwo = requestRemotePanel("panel-two");
+    const panelTwo = requestRemotePanel("panel-two", undefined, (state) => resolvedStates.push(state));
     await nextTick();
     expect(transport.activateSession).toHaveBeenCalledWith("ws-panels:panel-two");
 
@@ -302,6 +320,8 @@ describe("useAppStore — remote mode identity", () => {
 
     expect(store.activeViewId).toBe("ws-panels:panel-two");
     expect((store as AnyApi).payload.workspace.workspace.activePanelId).toBe("panel-two");
+    expect(resolvedStates).toHaveLength(1);
+    expect((resolvedStates[0] as AnyApi).workspace.workspace.activePanelId).toBe("panel-two");
   });
 
   it("clears an older pending view when a newer panel selection fails before activation", async () => {

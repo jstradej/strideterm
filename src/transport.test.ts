@@ -574,6 +574,190 @@ describe("remote transport endpoint routing", () => {
     });
   });
 
+  it("selects an exact panel in the already active target without reactivating its workspace", async () => {
+    const postMessage = vi.fn();
+    (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
+    const transport = createRemoteTransport();
+    const updated = vi.fn();
+    transport.onStateUpdated(updated);
+    const socket = MockWebSocket.instances.at(-1)!;
+    socket.open();
+    socket.message({
+      type: "state:updated",
+      payload: {
+        remoteClient: { profileId: "p1", activeWorkspaceId: "ws1", activeSessionId: "ws1:other" },
+        workspace: { workspace: { id: "ws1" } },
+        appState: {
+          workspaces: [
+            {
+              id: "ws1",
+              name: "Project",
+              panels: [
+                { id: "panel-a", title: "Shell" },
+                { id: "other", title: "Other" },
+              ],
+            },
+          ],
+        },
+        coreRevision: 1,
+      },
+    });
+    postMessage.mockClear();
+    capturedUrls.length = 0;
+    const activatedState = {
+      remoteClient: { profileId: "p1", activeWorkspaceId: "ws1", activeSessionId: "ws1:panel-a" },
+      workspace: { workspace: { id: "ws1" } },
+      appState: {
+        workspaces: [
+          {
+            id: "ws1",
+            name: "Project",
+            panels: [
+              { id: "panel-a", title: "Shell" },
+              { id: "other", title: "Other" },
+            ],
+          },
+        ],
+      },
+      coreRevision: 2,
+    };
+    const selectPanel = vi.fn((detail: { handled: boolean; resolve: (state?: unknown) => void }) => {
+      detail.handled = true;
+      detail.resolve(activatedState);
+    });
+    window.addEventListener(
+      "strideterm:remote-select-panel",
+      ((event: CustomEvent<{ handled: boolean; resolve: (state?: unknown) => void }>) =>
+        selectPanel(event.detail)) as EventListener,
+      { once: true },
+    );
+    const bridge = (
+      window as unknown as {
+        __stridetermRemote: { selectTarget: (...args: [string, string, number, string?]) => Promise<void> };
+      }
+    ).__stridetermRemote;
+
+    await bridge.selectTarget("p1", "ws1", 81, "panel-a");
+
+    expect(capturedUrls).toEqual([]);
+    expect(selectPanel).toHaveBeenCalledOnce();
+    expect(updated).not.toHaveBeenCalledWith(undefined);
+    const messages = postMessage.mock.calls.map(([message]) => JSON.parse(String(message)));
+    expect(messages).toContainEqual({
+      type: "selection-changed",
+      profileId: "p1",
+      workspaceId: "ws1",
+      workspaceName: "Project",
+      panelId: "panel-a",
+      panelName: "Shell",
+    });
+    expect(
+      messages.findIndex((message) => message.type === "selection-changed" && message.panelId === "panel-a"),
+    ).toBeLessThan(messages.findIndex((message) => message.type === "selection-result"));
+    expect(messages).toContainEqual({
+      type: "selection-result",
+      requestId: 81,
+      ok: true,
+      profileId: "p1",
+      workspaceId: "ws1",
+      panelId: "panel-a",
+    });
+  });
+
+  it("does not report success when a warmed-target panel selection is rejected", async () => {
+    const postMessage = vi.fn();
+    (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
+    const transport = createRemoteTransport();
+    transport.onStateUpdated(vi.fn());
+    const socket = MockWebSocket.instances.at(-1)!;
+    socket.open();
+    socket.message({
+      type: "state:updated",
+      payload: {
+        remoteClient: { profileId: "p1", activeWorkspaceId: "ws1", activeSessionId: "ws1:panel-a" },
+        workspace: { workspace: { id: "ws1" } },
+        appState: { workspaces: [{ id: "ws1", name: "Project", panels: [{ id: "panel-a", title: "Shell" }] }] },
+        coreRevision: 1,
+      },
+    });
+    capturedUrls.length = 0;
+    window.addEventListener(
+      "strideterm:remote-select-panel",
+      ((event: CustomEvent<{ handled: boolean; reject: (reason?: unknown) => void }>) => {
+        event.detail.handled = true;
+        event.detail.reject(new Error("session activation failed"));
+      }) as EventListener,
+      { once: true },
+    );
+    const bridge = (
+      window as unknown as {
+        __stridetermRemote: { selectTarget: (...args: [string, string, number, string?]) => Promise<void> };
+      }
+    ).__stridetermRemote;
+
+    await bridge.selectTarget("p1", "ws1", 82, "panel-a");
+
+    expect(capturedUrls).toEqual([]);
+    expect(postMessage.mock.calls.map(([message]) => JSON.parse(String(message)))).toContainEqual({
+      type: "selection-result",
+      requestId: 82,
+      ok: false,
+      failurePhase: "panel-selection",
+    });
+    expect(
+      postMessage.mock.calls.map(([message]) => JSON.parse(String(message))).some((message) => message.ok === true),
+    ).toBe(false);
+  });
+
+  it("activates the workspace when cached selection lacks its loaded workspace snapshot", async () => {
+    const postMessage = vi.fn();
+    (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
+    const payload = { remoteClient: { profileId: "p1", activeWorkspaceId: "ws1" } };
+    globalThis.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      capturedUrls.push(String(url));
+      return { ok: true, json: async () => payload } as Response;
+    });
+    const transport = createRemoteTransport();
+    transport.onStateUpdated(vi.fn());
+    const socket = MockWebSocket.instances.at(-1)!;
+    socket.open();
+    socket.message({
+      type: "state:updated",
+      payload: {
+        remoteClient: { profileId: "p1", activeWorkspaceId: "ws1", activeSessionId: "ws1:panel-a" },
+        appState: { workspaces: [{ id: "ws1", name: "Project", panels: [{ id: "panel-a", title: "Shell" }] }] },
+        coreRevision: 1,
+      },
+    });
+    capturedUrls.length = 0;
+    window.addEventListener(
+      "strideterm:remote-select-panel",
+      ((event: CustomEvent<{ handled: boolean; resolve: () => void }>) => {
+        event.detail.handled = true;
+        event.detail.resolve();
+      }) as EventListener,
+      { once: true },
+    );
+    const bridge = (
+      window as unknown as {
+        __stridetermRemote: { selectTarget: (...args: [string, string, number, string?]) => Promise<void> };
+      }
+    ).__stridetermRemote;
+
+    await bridge.selectTarget("p1", "ws1", 83, "panel-a");
+
+    expect(capturedUrls).toHaveLength(1);
+    expect(capturedUrls[0]).toContain("/api/remote-client/workspace/activate");
+    expect(postMessage.mock.calls.map(([message]) => JSON.parse(String(message)))).toContainEqual({
+      type: "selection-result",
+      requestId: 83,
+      ok: true,
+      profileId: "p1",
+      workspaceId: "ws1",
+      panelId: "panel-a",
+    });
+  });
+
   it("native selection reports failure when the requested panel cannot be selected", async () => {
     const postMessage = vi.fn();
     (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };

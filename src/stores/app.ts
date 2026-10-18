@@ -1774,7 +1774,8 @@ export const useAppStore = defineStore("app", () => {
           if (activeViewId.value !== viewId) {
             throw new Error(`Target panel was not selected: ${detail.panelId}`);
           }
-        })().then(detail.resolve, detail.reject);
+          detail.resolve(payload.value);
+        })().catch(detail.reject);
       };
       if (!remotePanelSelectionWindowListenerBound) {
         remotePanelSelectionWindowListenerBound = true;

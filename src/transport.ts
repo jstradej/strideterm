@@ -218,7 +218,7 @@ export interface RemotePanelSelectionDetail {
   panelId: string;
   handled: boolean;
   signal?: AbortSignal;
-  resolve: () => void;
+  resolve: (state?: unknown) => void;
   reject: (reason?: unknown) => void;
 }
 
@@ -807,6 +807,7 @@ export function createRemoteTransport(): Transport {
   let lastCoreRevision = -1;
   let selectedProfileId: string | null = null;
   let selectedWorkspaceId: string | null = null;
+  let selectedWorkspaceSnapshotId: string | null = null;
   let targetSelectionGeneration = 0;
   let activeTargetSelection: { requestId: number; controller: AbortController } | null = null;
   let cancelActiveBrowse: (() => void) | null = null;
@@ -957,7 +958,11 @@ export function createRemoteTransport(): Transport {
   }
 
   function noteCoreRevision(state: unknown): void {
-    const selection = (state as { remoteClient?: { profileId?: string; activeWorkspaceId?: string } })?.remoteClient;
+    const stateRecord = state as {
+      remoteClient?: { profileId?: string; activeWorkspaceId?: string };
+      workspace?: { workspace?: { id?: unknown } | null; project?: { id?: unknown } | null } | null;
+    };
+    const selection = stateRecord?.remoteClient;
     const nextProfileId = typeof selection?.profileId === "string" && selection.profileId ? selection.profileId : null;
     const nextWorkspaceId =
       typeof selection?.activeWorkspaceId === "string" && selection.activeWorkspaceId
@@ -968,6 +973,8 @@ export function createRemoteTransport(): Transport {
     }
     selectedProfileId = nextProfileId;
     selectedWorkspaceId = nextWorkspaceId;
+    const scopedWorkspace = stateRecord?.workspace?.workspace || stateRecord?.workspace?.project;
+    selectedWorkspaceSnapshotId = typeof scopedWorkspace?.id === "string" ? scopedWorkspace.id : null;
     const { target: nextTarget, workspaceName, panelName } = resolveRemoteSelection(state);
     const panelId = nextTarget.panelId;
     if (
@@ -1689,8 +1696,17 @@ export function createRemoteTransport(): Transport {
         let failurePhase: "profile-activation" | "workspace-activation" | "panel-selection" = "profile-activation";
         try {
           let payload: unknown;
+          const workspaceAlreadyLoaded = Boolean(
+            panelId &&
+            workspaceId &&
+            selectedProfileId === profileId &&
+            selectedWorkspaceId === workspaceId &&
+            selectedWorkspaceSnapshotId === workspaceId &&
+            selectedRemoteTarget?.profileId === profileId &&
+            selectedRemoteTarget.workspaceId === workspaceId,
+          );
           const combinedTargetActivation = Boolean(workspaceId && profileId !== selectedProfileId);
-          if (combinedTargetActivation) {
+          if (!workspaceAlreadyLoaded && combinedTargetActivation) {
             if (!isCurrent()) return;
             failurePhase = "profile-activation";
             payload = await fetchJson(
@@ -1699,7 +1715,7 @@ export function createRemoteTransport(): Transport {
               { signal: controller.signal },
             );
             if (!isCurrent()) return;
-          } else if (!workspaceId || profileId !== selectedProfileId) {
+          } else if (!workspaceAlreadyLoaded && (!workspaceId || profileId !== selectedProfileId)) {
             if (!isCurrent()) return;
             failurePhase = "profile-activation";
             payload = await fetchJson(
@@ -1709,7 +1725,7 @@ export function createRemoteTransport(): Transport {
             );
             if (!isCurrent()) return;
           }
-          if (workspaceId && !combinedTargetActivation) {
+          if (!workspaceAlreadyLoaded && workspaceId && !combinedTargetActivation) {
             if (!isCurrent()) return;
             failurePhase = "workspace-activation";
             payload = await fetchJson(
@@ -1719,7 +1735,7 @@ export function createRemoteTransport(): Transport {
             );
             if (!isCurrent()) return;
           }
-          noteCoreRevision(payload);
+          if (payload !== undefined) noteCoreRevision(payload);
           if (!isCurrent()) return;
           if (panelId) {
             failurePhase = "panel-selection";
@@ -1732,7 +1748,16 @@ export function createRemoteTransport(): Transport {
                 panelId,
                 handled: false,
                 signal: controller.signal,
-                resolve: () => finish(resolve),
+                resolve: (state) => {
+                  if (!isCurrent()) {
+                    finish(() => reject(new Error("Panel selection was superseded")));
+                    return;
+                  }
+                  finish(() => {
+                    if (state !== undefined) noteCoreRevision(state);
+                    resolve();
+                  });
+                },
                 reject: (reason) => finish(() => reject(reason)),
               };
               let readyTimeout = 0;
@@ -1755,7 +1780,7 @@ export function createRemoteTransport(): Transport {
                   onAbort();
                   return;
                 }
-                safeDispatch(listeners.stateUpdated, payload as CoreState, "stateUpdated");
+                if (payload !== undefined) safeDispatch(listeners.stateUpdated, payload as CoreState, "stateUpdated");
                 window.dispatchEvent(
                   new CustomEvent<RemotePanelSelectionDetail>(REMOTE_PANEL_SELECTION_EVENT, { detail }),
                 );
@@ -1771,7 +1796,7 @@ export function createRemoteTransport(): Transport {
             });
           } else {
             if (!isCurrent()) return;
-            safeDispatch(listeners.stateUpdated, payload as CoreState, "stateUpdated");
+            if (payload !== undefined) safeDispatch(listeners.stateUpdated, payload as CoreState, "stateUpdated");
           }
           if (!isCurrent()) return;
           postHost({
