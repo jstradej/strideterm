@@ -834,16 +834,6 @@ describe("notify.mjs PermissionRequest decisions", () => {
     expect(hookLog).not.toContain("conflict");
   }, 15_000);
 
-  test("an unparseable notify URL is logged without its secret", async () => {
-    const { stdout, hookLog } = await runNotifyForPermissionRequest([], undefined, {
-      STRIDETERM_NOTIFY_URL: "not a url?sid=ws%3Ap&secret=TOP-SECRET-VALUE",
-    });
-    expect(stdout.trim()).toBe("");
-    expect(hookLog).toContain("invalid notify url");
-    expect(hookLog).not.toContain("TOP-SECRET-VALUE");
-    expect(hookLog).not.toContain("not a url");
-  }, 15_000);
-
   test("an offer accepted but a commit that returns nothing prints nothing", async () => {
     // The audit write failed, or the offer expired. The prompt is shown, which
     // is the correct fallback.
@@ -887,7 +877,7 @@ describe("notify.mjs PermissionRequest decisions", () => {
         child.stdin!.end(JSON.stringify({ session_id: "abc", tool_name: "Bash", tool_input: {} }));
       });
       expect(stdout.trim()).toBe("");
-      const hookLog = await fs.readFile(path.join(userDataPath, "logs", "hook.log"), "utf8");
+      const hookLog = await fs.readFile(path.join(userDataPath, "logs", "hook.log"), "utf8").catch(() => "");
       expect(hookLog).toContain("unparseable");
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -1623,6 +1613,123 @@ describe("notify.mjs registry resolution", () => {
       expect(seen[1]).toHaveLength(0);
     } finally {
       await Promise.all(servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
+    }
+  }, 20_000);
+
+  test("a mismatched env URL is discarded and the explicit session routes through its registry URL", async () => {
+    const userDataPath = path.join(tempDir, "mismatch-env-data");
+    await fs.mkdir(path.join(userDataPath, "hooks"), { recursive: true });
+    const scriptResult = await ensureNotifyScript(userDataPath);
+    const seen: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const server = http.createServer((req, res) => {
+      let raw = "";
+      req.on("data", (chunk) => (raw += chunk));
+      req.on("end", () => {
+        seen.push({ url: req.url || "", body: JSON.parse(raw || "{}") as Record<string, unknown> });
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end("{}");
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const sharedDir = path.join(tempDir, "mismatch-hooks");
+      const instancesDir = path.join(sharedDir, "instances");
+      await fs.mkdir(instancesDir, { recursive: true });
+      const projectDir = path.join(tempDir, "mismatch-project");
+      const liveUrl = `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}/notify?sid=ws%3Aown&secret=s`;
+      await fs.writeFile(
+        path.join(instancesDir, "dddddddddddd.json"),
+        JSON.stringify({ [normalizeCwd(projectDir)]: [{ url: liveUrl, instanceId: "dddddddddddd", sid: "ws:own" }] }),
+      );
+
+      const invoke = (env: NodeJS.ProcessEnv) =>
+        new Promise<void>((resolve, reject) => {
+          const child = execFile(process.execPath, [scriptResult.path, "Stop"], { env }, (err) =>
+            err ? reject(err) : resolve(),
+          );
+          child.stdin!.end(JSON.stringify({ cwd: projectDir, session_id: "abc" }));
+        });
+      await invoke({
+        ...process.env,
+        STRIDETERM_NOTIFY_URL: `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}/notify?sid=ws%3Aother&secret=s`,
+        STRIDETERM_SESSION_ID: "ws:own",
+        STRIDETERM_SESSION_TOKEN: "own-token",
+        CLAUDE_PROJECT_DIR: projectDir,
+        STRIDETERM_HOOKS_DIR: sharedDir,
+      });
+      expect(seen).toEqual([
+        {
+          url: "/notify?sid=ws%3Aown&secret=s",
+          body: expect.objectContaining({ strideterm_session_token: "own-token" }),
+        },
+      ]);
+
+      await invoke({
+        ...process.env,
+        STRIDETERM_NOTIFY_URL: `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}/notify?sid=ws%3Aother&secret=s`,
+        STRIDETERM_SESSION_ID: "ws:missing",
+        CLAUDE_PROJECT_DIR: projectDir,
+        STRIDETERM_HOOKS_DIR: sharedDir,
+      });
+      expect(seen).toHaveLength(1);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 20_000);
+
+  test("an unparseable env URL is ignored and logged without its secret while the session registry entry is used", async () => {
+    const userDataPath = path.join(tempDir, "invalid-env-data");
+    await fs.mkdir(path.join(userDataPath, "hooks"), { recursive: true });
+    const scriptResult = await ensureNotifyScript(userDataPath);
+    const received: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const server = http.createServer((req, res) => {
+      let raw = "";
+      req.on("data", (chunk) => (raw += chunk));
+      req.on("end", () => {
+        received.push({ url: req.url || "", body: JSON.parse(raw || "{}") as Record<string, unknown> });
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end("{}");
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const sharedDir = path.join(tempDir, "invalid-env-hooks");
+      const instancesDir = path.join(sharedDir, "instances");
+      await fs.mkdir(instancesDir, { recursive: true });
+      const projectDir = path.join(tempDir, "invalid-env-project");
+      const url = `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}/notify?sid=ws%3Aown&secret=s`;
+      await fs.writeFile(
+        path.join(instancesDir, "eeeeeeeeeeee.json"),
+        JSON.stringify({ [normalizeCwd(projectDir)]: [{ url, instanceId: "eeeeeeeeeeee", sid: "ws:own" }] }),
+      );
+      await new Promise<void>((resolve, reject) => {
+        const child = execFile(
+          process.execPath,
+          [scriptResult.path, "Stop"],
+          {
+            env: {
+              ...process.env,
+              STRIDETERM_NOTIFY_URL: "not a url?secret=TOP-SECRET-VALUE",
+              STRIDETERM_SESSION_ID: "ws:own",
+              STRIDETERM_HOOKS_DIR: sharedDir,
+              CLAUDE_PROJECT_DIR: projectDir,
+            },
+          },
+          (err) => (err ? reject(err) : resolve()),
+        );
+        child.stdin!.end(JSON.stringify({ cwd: projectDir }));
+      });
+      expect(received).toEqual([
+        {
+          url: "/notify?sid=ws%3Aown&secret=s",
+          body: expect.objectContaining({ strideterm_session_token: "test-session-token" }),
+        },
+      ]);
+      const hookLog = await fs.readFile(path.join(userDataPath, "logs", "hook.log"), "utf8").catch(() => "");
+      expect(hookLog).not.toContain("TOP-SECRET-VALUE");
+      expect(hookLog).not.toContain("not a url");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   }, 20_000);
 });

@@ -74,6 +74,74 @@ describe("SessionManager", () => {
     spawnError = null;
   });
 
+  test("strips parent hook identity from ordinary PTYs when the notify listener is off", async () => {
+    const prior = { ...process.env };
+    process.env.STRIDETERM_NOTIFY_URL = "http://old/notify?sid=parent";
+    process.env.STRIDETERM_SESSION_ID = "parent";
+    process.env.STRIDETERM_SESSION_TOKEN = "parent-token";
+    try {
+      const manager = new SessionManager({
+        getSessionEnv: () => ({
+          STRIDETERM_SESSION_ID: "workspace-a:shell",
+          STRIDETERM_SESSION_TOKEN: "fresh-token",
+        }),
+      });
+      await manager.ensureSession(createState() as Parameters<SessionManager["ensureSession"]>[0], "workspace-a:shell");
+      const env = spawnCalls[0].options.env as Record<string, string>;
+      expect(env.STRIDETERM_NOTIFY_URL).toBeUndefined();
+      expect(env.STRIDETERM_SESSION_ID).toBe("workspace-a:shell");
+      expect(env.STRIDETERM_SESSION_TOKEN).toBe("fresh-token");
+    } finally {
+      for (const key of ["STRIDETERM_NOTIFY_URL", "STRIDETERM_SESSION_ID", "STRIDETERM_SESSION_TOKEN"]) {
+        if (prior[key] === undefined) delete process.env[key];
+        else process.env[key] = prior[key];
+      }
+    }
+  });
+
+  test("runtime session identity overrides stale custom shell environment values", async () => {
+    const prior = { ...process.env };
+    process.env.STRIDETERM_NOTIFY_URL = "http://parent/notify?sid=parent";
+    process.env.STRIDETERM_SESSION_ID = "parent";
+    process.env.STRIDETERM_SESSION_TOKEN = "parent-token";
+    try {
+      const manager = new SessionManager({
+        getSessionEnv: () => ({
+          STRIDETERM_NOTIFY_URL: "http://runtime/notify?sid=workspace-a%3Ashell",
+          STRIDETERM_SESSION_ID: "workspace-a:shell",
+          STRIDETERM_SESSION_TOKEN: "fresh-token",
+        }),
+        getSessionLaunch: () => ({
+          file: "custom-shell.exe",
+          env: {
+            STRIDETERM_NOTIFY_URL: "http://stale/notify?sid=other",
+            STRIDETERM_SESSION_ID: "other",
+            STRIDETERM_SESSION_TOKEN: "other-token",
+            STRIDETERM_SESSION_EXTRA: "stale-extra",
+            ...(process.platform === "win32"
+              ? { strideterm_notify_url: "http://stale/notify?sid=lower", strideterm_session_id: "lower" }
+              : {}),
+          },
+        }),
+      });
+      await manager.ensureSession(createState() as Parameters<SessionManager["ensureSession"]>[0], "workspace-a:shell");
+      const env = spawnCalls[0].options.env as Record<string, string>;
+      expect(env.STRIDETERM_NOTIFY_URL).toBe("http://runtime/notify?sid=workspace-a%3Ashell");
+      expect(env.STRIDETERM_SESSION_ID).toBe("workspace-a:shell");
+      expect(env.STRIDETERM_SESSION_TOKEN).toBe("fresh-token");
+      expect(env.STRIDETERM_SESSION_EXTRA).toBeUndefined();
+      if (process.platform === "win32") {
+        expect(env.strideterm_notify_url).toBeUndefined();
+        expect(env.strideterm_session_id).toBeUndefined();
+      }
+    } finally {
+      for (const key of ["STRIDETERM_NOTIFY_URL", "STRIDETERM_SESSION_ID", "STRIDETERM_SESSION_TOKEN"]) {
+        if (prior[key] === undefined) delete process.env[key];
+        else process.env[key] = prior[key];
+      }
+    }
+  });
+
   test("hard restart spawns a fresh session and marks old exit as intentional", async () => {
     const manager = new SessionManager();
     const exits: unknown[] = [];

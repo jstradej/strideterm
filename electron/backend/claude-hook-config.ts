@@ -319,33 +319,15 @@ process.stdin.on("end", () => {
   }
   parsed.hook = hookNameArg || parsed.hook_event_name || parsed.hook || "Notification";
 
-  // Resolve notify URLs. Two sources, tried in order rather than merged:
-  //   1. STRIDETERM_NOTIFY_URL — inherited from the PTY strIDEterm spawned.
-  //      It names THIS panel and nothing else, which is why it is preferred:
-  //      the registry is keyed by project directory, so falling straight to it
-  //      would deliver a panel's events to every other panel sharing the cwd.
-  //   2. the registry, keyed by CLAUDE_PROJECT_DIR (Claude Code) or
-  //      payload.cwd (Codex).
-  // The env URL is not authoritative, though. It is frozen at the moment the
-  // terminal was created, so a notify server that later stopped and restarted
-  // on a different port — the agent-hook checkbox switched off and back on —
-  // leaves every running shell pointing at a dead port, and the registry is
-  // the only place the live one is written down. So: use it, and when nothing
-  // could be DELIVERED over it (refused, timed out, or answered 403 because
-  // another instance now owns that port) fall back to the registry instead of
-  // dropping the event.
-  // If neither source yields anything, exit silently: this hook is firing from
-  // an agent run the user started outside any strideterm PTY (e.g. "claude" in
-  // another terminal) and we must not leak its notifications into strideterm.
+  // The explicit PTY session id selects registry entries. A matching env URL
+  // is a snapshot candidate; only its own session can fall back to registry.
+  // The receiver still requires the session's ownership token.
   const payloadCwd = typeof parsed.cwd === "string" ? parsed.cwd : "";
   const projectDir = envProjectDir || payloadCwd;
-  const envUrls = envUrl ? [envUrl] : [];
   const envSid = envUrl ? urlSid(envUrl) : "";
-  const requestedSessionId = envSessionId || envSid;
-  if (envSessionId && envSid && envSessionId !== envSid) {
-    log("WARN", "notify URL does not match explicit session identity — skipping");
-    process.exit(0);
-  }
+  const urlMatchesSession = !envSessionId || envSessionId === envSid;
+  const envUrls = envUrl && urlMatchesSession ? [envUrl] : [];
+  const requestedSessionId = envSessionId || (urlMatchesSession ? envSid : "");
   if (!requestedSessionId) {
     log("DEBUG", "no strideterm session identity (hook=" + parsed.hook + ") — skipping");
     process.exit(0);
@@ -363,7 +345,7 @@ process.stdin.on("end", () => {
   // A stale per-session URL can be replaced by the current URL for that same
   // sid. When the URL has no sid, the explicit PTY session id still limits the
   // fallback; without either identity, delivery was skipped above.
-  const fallbackUrls = requestedSessionId ? registryUrls.filter((u) => urlSid(u) === requestedSessionId) : [];
+  const fallbackUrls = envUrls.length && requestedSessionId ? registryUrls.filter((u) => urlSid(u) === requestedSessionId) : [];
 
   // PermissionRequest is the one hook whose RESPONSE matters: Claude Code reads
   // our stdout to decide whether to show the permission dialog. Every other

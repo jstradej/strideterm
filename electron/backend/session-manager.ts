@@ -186,6 +186,18 @@ function shellBasename(filePath: string): string {
     .replace(/\.exe$/, "");
 }
 
+function isHookSessionIdentityKey(key: string): boolean {
+  const candidate = process.platform === "win32" ? key.toUpperCase() : key;
+  return candidate === "STRIDETERM_NOTIFY_URL" || candidate.startsWith("STRIDETERM_SESSION_");
+}
+
+function withoutSessionIdentity(env: Record<string, string | undefined> | undefined): Record<string, string> {
+  if (!env) return {};
+  return Object.fromEntries(
+    Object.entries(env).filter(([key, value]) => !isHookSessionIdentityKey(key) && value !== undefined),
+  ) as Record<string, string>;
+}
+
 /**
  * Build environment variables that auto-source shell integration scripts.
  * Returns an object of env vars to merge, or {} if integration is disabled
@@ -897,7 +909,7 @@ export class SessionManager extends EventEmitter {
 
     let processHandle: IPty;
     try {
-      const inheritedEnv = { ...process.env };
+      const inheritedEnv = withoutSessionIdentity(process.env);
       for (const key of Object.keys(inheritedEnv)) {
         if (
           key.startsWith("STRIDETERM_SSH_MCP_") ||
@@ -928,7 +940,7 @@ export class SessionManager extends EventEmitter {
             panel,
             sessionId: key,
           }) || {}),
-          ...(launchOverride?.env || {}),
+          ...withoutSessionIdentity(launchOverride?.env),
         },
       });
     } catch (error: unknown) {
@@ -1165,7 +1177,7 @@ export class SessionManager extends EventEmitter {
               cols: APP_CONFIG.session.defaultCols,
               rows: APP_CONFIG.session.defaultRows,
               cwd: os.homedir(),
-              env: { ...process.env, ...(host.advanced?.env || {}) },
+              env: { ...withoutSessionIdentity(process.env), ...withoutSessionIdentity(host.advanced?.env) },
             }),
           ),
         catch: (err) =>
@@ -1301,7 +1313,7 @@ export class SessionManager extends EventEmitter {
               cols: APP_CONFIG.session.defaultCols,
               rows: APP_CONFIG.session.defaultRows,
               cwd: os.homedir(),
-              env: { ...process.env, WSL_UTF8: "1" },
+              env: { ...withoutSessionIdentity(process.env), WSL_UTF8: "1" },
             }),
           ),
         catch: (err) =>

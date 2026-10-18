@@ -1080,25 +1080,14 @@ export async function createRuntime({
         }
       }
 
-      // Ownership proof for the auto-approve path — see sessionOwnershipTokens.
-      //
-      // Minted whether or not the notify server happens to be running. A PTY
-      // spawned while the agent-hook setting was off would otherwise never
-      // carry a token, and turning the hook on afterwards cannot change the
-      // environment of a shell that already started: the registry would route
-      // its hooks correctly and `decideAutoApprove` would then refuse every
-      // one of them as `unproven-session` until the user restarted the
-      // terminal — a failure with no visible cause. The token proves identity;
-      // it grants nothing on its own.
+      // Every HTTP hook request proves the owning session with this token.
       if (sessionId) {
         env.STRIDETERM_SESSION_TOKEN = getSessionOwnershipToken(sessionId);
         env.STRIDETERM_SESSION_ID = sessionId;
       }
 
-      // Agent notification hook URL — set in env (for agents that read it
-      // directly, e.g. the OpenCode plugin) AND written to the notify-URL
-      // registry, which is what notify.mjs merges with the env value. The env
-      // copy is a snapshot; the registry is the live map.
+      // The env URL is a snapshot for direct clients; the registry tracks the
+      // current listener URL for generated hooks and listener restarts.
       if (notifyServerHandle?.port && sessionId) {
         const notifyUrl = buildNotifyUrl(notifyServerHandle.port, sessionId, notifySecret);
         env.STRIDETERM_NOTIFY_URL = notifyUrl;
