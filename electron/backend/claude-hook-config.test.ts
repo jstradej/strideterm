@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import http from "node:http";
 import { execFile } from "node:child_process";
-import { afterEach, describe, expect, test, beforeEach } from "vitest";
+import { afterEach, describe, expect, test, beforeEach, vi } from "vitest";
 import {
   ensureNotifyScript,
   configureClaudeHook,
@@ -22,6 +22,8 @@ let mockHomedir: string;
 let originalHomedir: any;
 
 beforeEach(async () => {
+  vi.stubEnv("STRIDETERM_SESSION_ID", "");
+  vi.stubEnv("STRIDETERM_SESSION_TOKEN", "test-session-token");
   tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-hook-test-"));
   mockHomedir = path.join(tempDir, "home");
   await fs.mkdir(mockHomedir, { recursive: true });
@@ -32,6 +34,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   os.homedir = originalHomedir;
   await fs.rm(tempDir, { recursive: true, force: true });
 });
@@ -603,6 +606,8 @@ describe("notify.mjs retry", () => {
             env: {
               ...process.env,
               STRIDETERM_NOTIFY_URL: "",
+              STRIDETERM_SESSION_ID: "ws:p",
+              STRIDETERM_SESSION_TOKEN: "token-for-this-pty",
               CLAUDE_PROJECT_DIR: projectDir,
               // The child is a real node process, so `os.homedir()` inside it
               // is the DEVELOPER's home unless this seam is set — the script
@@ -620,6 +625,7 @@ describe("notify.mjs retry", () => {
       expect(firstKilled).toBe(true);
       expect(received).toHaveLength(1);
       expect(received[0].hook).toBe("Stop");
+      expect(received[0].strideterm_session_token).toBe("token-for-this-pty");
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
@@ -730,6 +736,7 @@ async function runNotifyForPermissionRequest(
           env: {
             ...process.env,
             STRIDETERM_NOTIFY_URL: "",
+            STRIDETERM_SESSION_ID: "ws:p",
             CLAUDE_PROJECT_DIR: projectDir,
             // Keep the shared registry out of the developer's real home dir.
             STRIDETERM_HOOKS_DIR: path.join(tempDir, "shared-hooks"),
@@ -870,6 +877,7 @@ describe("notify.mjs PermissionRequest decisions", () => {
             env: {
               ...process.env,
               STRIDETERM_NOTIFY_URL: "",
+              STRIDETERM_SESSION_ID: "ws:p",
               CLAUDE_PROJECT_DIR: projectDir,
               STRIDETERM_HOOKS_DIR: path.join(tempDir, "shared-hooks"),
             },
@@ -994,6 +1002,7 @@ describe("notify.mjs registry resolution", () => {
             env: {
               ...process.env,
               STRIDETERM_NOTIFY_URL: "",
+              STRIDETERM_SESSION_ID: "ws:p",
               CLAUDE_PROJECT_DIR: projectDir,
               STRIDETERM_HOOKS_DIR: sharedDir,
             },
@@ -1066,6 +1075,7 @@ describe("notify.mjs registry resolution", () => {
             env: {
               ...process.env,
               STRIDETERM_NOTIFY_URL: "",
+              STRIDETERM_SESSION_ID: "ws:p",
               CLAUDE_PROJECT_DIR: projectDir,
               STRIDETERM_HOOKS_DIR: sharedDir,
             },
@@ -1145,6 +1155,7 @@ describe("notify.mjs registry resolution", () => {
             env: {
               ...process.env,
               STRIDETERM_NOTIFY_URL: "",
+              STRIDETERM_SESSION_ID: "ws:p",
               CLAUDE_PROJECT_DIR: projectDir,
               STRIDETERM_HOOKS_DIR: sharedDir,
             },
@@ -1172,11 +1183,11 @@ describe("notify.mjs registry resolution", () => {
       sharedUrlsPath: string;
       localUrlsPath: string;
       key: string;
-      /** Registry key of a workspace NESTED inside `key` — the prefix-fallback case. */
+      /** Registry key of a workspace nested inside `key`. */
       childKey: string;
       urls: string[];
     }) => Promise<void>,
-    options: { runInChild?: boolean } = {},
+    options: { runInChild?: boolean; sessionId?: string | null } = {},
   ): Promise<Array<Array<Record<string, unknown>>>> {
     const userDataPath = path.join(tempDir, `${label}-data`);
     await fs.mkdir(path.join(userDataPath, "hooks"), { recursive: true });
@@ -1233,6 +1244,7 @@ describe("notify.mjs registry resolution", () => {
             env: {
               ...process.env,
               STRIDETERM_NOTIFY_URL: "",
+              ...(options.sessionId === null ? {} : { STRIDETERM_SESSION_ID: options.sessionId || "ws:p" }),
               CLAUDE_PROJECT_DIR: hookCwd,
               STRIDETERM_HOOKS_DIR: sharedDir,
             },
@@ -1273,6 +1285,66 @@ describe("notify.mjs registry resolution", () => {
     expect(seen[1]).toHaveLength(0);
   }, 15_000);
 
+  test("does not route registry hooks by cwd when the PTY session ID is missing", async () => {
+    const seen = await runWithRegistryLayout(
+      "missing-session-id",
+      async (ctx) => {
+        await fs.writeFile(
+          path.join(ctx.sharedUrlsPath, "..", "instances", "aaaaaaaaaaaa.json"),
+          JSON.stringify({
+            updatedAt: Date.now(),
+            urls: { [ctx.key]: [{ url: ctx.urls[0], instanceId: "aaaaaaaaaaaa", sid: "ws:p" }] },
+          }),
+        );
+      },
+      { sessionId: null },
+    );
+
+    expect(seen[0]).toHaveLength(0);
+    expect(seen[1]).toHaveLength(0);
+  }, 15_000);
+
+  test("registry fallback selects only the exact PTY session in a shared cwd", async () => {
+    const seen = await runWithRegistryLayout("exact-session", async (ctx) => {
+      await fs.writeFile(
+        path.join(ctx.instancesDir, "aaaaaaaaaaaa.json"),
+        JSON.stringify({
+          updatedAt: Date.now(),
+          urls: {
+            [ctx.key]: [
+              { url: ctx.urls[0], instanceId: "aaaaaaaaaaaa", sid: "ws:p" },
+              {
+                url: ctx.urls[1].replace("sid=ws%3Ap", "sid=ws%3Asibling"),
+                instanceId: "aaaaaaaaaaaa",
+                sid: "ws:sibling",
+              },
+            ],
+          },
+        }),
+      );
+    });
+
+    expect(seen[0]).toHaveLength(1);
+    expect(seen[1]).toHaveLength(0);
+  }, 15_000);
+
+  test("session identity still finds its listener after the workspace cwd changes", async () => {
+    const seen = await runWithRegistryLayout("changed-session-cwd", async (ctx) => {
+      await fs.writeFile(
+        path.join(ctx.instancesDir, "aaaaaaaaaaaa.json"),
+        JSON.stringify({
+          updatedAt: Date.now(),
+          urls: {
+            [path.join(ctx.key, "old-root")]: [{ url: ctx.urls[0], instanceId: "aaaaaaaaaaaa", sid: "ws:p" }],
+          },
+        }),
+      );
+    });
+
+    expect(seen[0]).toHaveLength(1);
+    expect(seen[1]).toHaveLength(0);
+  }, 15_000);
+
   test("a swept installation's mirror is not consulted while a leased shard answers", async () => {
     // The ordering trap: `pruneExpiredShards()` DELETES the expired shard, and
     // with the file gone there is nothing left to tombstone its URLs from. So
@@ -1297,15 +1369,9 @@ describe("notify.mjs registry resolution", () => {
   }, 15_000);
 
   test("an expired child workspace does not fall through to a live parent's panel", async () => {
-    // P3-1: refusing the expired shard's URL is only half the answer. The
-    // shard never reached `routable`, so its workspace KEY was never
-    // materialised — and with no exact key, the resolver's longest-PREFIX
-    // match handed the hook to the live parent workspace at the level above.
-    // The event would have raised an alert (and offered a decision) in a
-    // different panel, in a different workspace, that never made the call.
-    //
-    // Neither mirror can rescue the key here either: a leased shard answered,
-    // so both are skipped by construction.
+    // The expired child URL must remain tombstoned while the sibling parent
+    // URL stays live. Exact session-id resolution must not route the child's
+    // event to the parent.
     const seen = await runWithRegistryLayout(
       "nested-expired",
       async (ctx) => {
@@ -1313,18 +1379,34 @@ describe("notify.mjs registry resolution", () => {
           path.join(ctx.instancesDir, "aaaaaaaaaaaa.json"),
           JSON.stringify({
             updatedAt: Date.now(),
-            urls: { [ctx.key]: [{ url: ctx.urls[0], instanceId: "aaaaaaaaaaaa", sid: "ws:parent" }] },
+            urls: {
+              [ctx.key]: [
+                {
+                  url: ctx.urls[0].replace("sid=ws%3Ap", "sid=ws%3Aparent"),
+                  instanceId: "aaaaaaaaaaaa",
+                  sid: "ws:parent",
+                },
+              ],
+            },
           }),
         );
         await fs.writeFile(
           path.join(ctx.instancesDir, "bbbbbbbbbbbb.json"),
           JSON.stringify({
             updatedAt: Date.now() - SHARD_LEASE_TTL_MS - 60_000,
-            urls: { [ctx.childKey]: [{ url: ctx.urls[1], instanceId: "bbbbbbbbbbbb", sid: "ws:child" }] },
+            urls: {
+              [ctx.childKey]: [
+                {
+                  url: ctx.urls[1].replace("sid=ws%3Ap", "sid=ws%3Achild"),
+                  instanceId: "bbbbbbbbbbbb",
+                  sid: "ws:child",
+                },
+              ],
+            },
           }),
         );
       },
-      { runInChild: true },
+      { runInChild: true, sessionId: "ws:child" },
     );
 
     // Not the dead child URL, and not the live parent's either.
@@ -1332,10 +1414,7 @@ describe("notify.mjs registry resolution", () => {
     expect(seen[1]).toHaveLength(0);
   }, 15_000);
 
-  test("a live nested workspace still routes to its own panel, not the parent's", async () => {
-    // The other side of the same rule: the empty bucket is written only where
-    // nothing live claims the key, so dev and prod (or a parent workspace and
-    // a nested one) keep the routing they registered.
+  test("a live nested workspace resolves by its exact session id", async () => {
     const seen = await runWithRegistryLayout(
       "nested-live",
       async (ctx) => {
@@ -1344,13 +1423,25 @@ describe("notify.mjs registry resolution", () => {
           JSON.stringify({
             updatedAt: Date.now(),
             urls: {
-              [ctx.key]: [{ url: ctx.urls[0], instanceId: "aaaaaaaaaaaa", sid: "ws:parent" }],
-              [ctx.childKey]: [{ url: ctx.urls[1], instanceId: "aaaaaaaaaaaa", sid: "ws:child" }],
+              [ctx.key]: [
+                {
+                  url: ctx.urls[0].replace("sid=ws%3Ap", "sid=ws%3Aparent"),
+                  instanceId: "aaaaaaaaaaaa",
+                  sid: "ws:parent",
+                },
+              ],
+              [ctx.childKey]: [
+                {
+                  url: ctx.urls[1].replace("sid=ws%3Ap", "sid=ws%3Achild"),
+                  instanceId: "aaaaaaaaaaaa",
+                  sid: "ws:child",
+                },
+              ],
             },
           }),
         );
       },
-      { runInChild: true },
+      { runInChild: true, sessionId: "ws:child" },
     );
 
     expect(seen[0]).toHaveLength(0);

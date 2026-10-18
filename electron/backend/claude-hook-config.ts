@@ -83,9 +83,9 @@ const HOOK_MARKERS = ["STRIDETERM_NOTIFY_URL", "hooks/notify.mjs", "hooks\\notif
 // it cannot describe a notify server that moved to a new port afterwards, and
 // an agent started outside a strIDEterm PTY has none of it at all. URLs are
 // therefore ALSO resolved from a registry the runtime keeps up to date: the
-// env URL is tried first because it names one panel exactly. The registry is
-// keyed by project directory, so fallback must retain the env URL's sid instead
-// of sending one panel's event to every sibling panel in that directory.
+// env URL is tried first because it names one panel exactly. Registry fallback
+// selects entries carrying the PTY's exact session id; cwd is not routing
+// authority, and the target listener additionally proves the session token.
 //
 // Paths resolve from `import.meta.url` so each installed script points at its
 // own <userDataPath> — critical for dev instances (dev.ps1 / --data-dir) whose
@@ -185,21 +185,12 @@ function shardAgeMs(file, stamped) {
 const hookNameArg = process.argv[2] || "";
 const envUrl = process.env.STRIDETERM_NOTIFY_URL || "";
 const envProjectDir = process.env.CLAUDE_PROJECT_DIR || "";
+const envSessionId = process.env.STRIDETERM_SESSION_ID || "";
 // Per-PTY ownership token, injected by strIDEterm into the terminal it spawned.
-// A hook process that inherited the terminal's environment can echo it back and
-// thereby PROVE which panel it belongs to; one that cannot is routed by project
-// directory alone and is never allowed to auto-approve anything.
+// A hook process that inherited the terminal's environment can echo it back
+// and thereby PROVE which panel it belongs to. A URL may still be attempted
+// without it, but the listener refuses to dispatch that event.
 const ownershipToken = process.env.STRIDETERM_SESSION_TOKEN || "";
-
-// Path normalization. Must match runtime.ts#normalizeCwd exactly. Case is
-// folded only on case-insensitive filesystems: on Linux /work/Repo and
-// /work/repo are two different directories, and merging them would route a
-// hook into a workspace it does not belong to.
-const CASE_INSENSITIVE_FS = process.platform === "win32" || process.platform === "darwin";
-const norm = (p) => {
-  const slashed = String(p || "").replace(/\\\\/g, "/").replace(/\\/+$/, "");
-  return CASE_INSENSITIVE_FS ? slashed.toLowerCase() : slashed;
-};
 
 function readRegistry(file) {
   try {
@@ -221,16 +212,10 @@ function urlSid(value) {
 
 let anyRegistryRead = false;
 
-function resolveUrls(projectDir) {
-  if (!projectDir) return [];
-  // Only the URL matters here — the instance id is what lets the WRITER
-  // replace its own entry without evicting another instance that happens to
-  // have restored the same workspace/panel ids.
+function resolveUrls(sessionId) {
+  if (!sessionId) return [];
   const routable = [];
   const dead = Object.create(null);
-  // Workspace keys an expired shard claimed. Their URLs are refused, but the
-  // KEY still has to exist — see where the empty buckets are materialised.
-  const expiredKeys = Object.create(null);
   let liveShards = 0;
   for (const source of registryFiles()) {
     const parsed = readRegistry(source.file);
@@ -250,7 +235,6 @@ function resolveUrls(projectDir) {
       // merging a mirror would publish the dead port straight back.
       for (const key of Object.keys(data)) {
         if (!Array.isArray(data[key])) continue;
-        expiredKeys[key] = true;
         for (const item of data[key]) {
           const url = entryUrl(item);
           if (url) dead[url] = true;
@@ -272,10 +256,6 @@ function resolveUrls(projectDir) {
     for (const key of Object.keys(source.data)) {
       const list = source.data[key];
       if (!Array.isArray(list)) continue;
-      // The bucket is created even when every URL in it turns out to be
-      // tombstoned: the key still belongs to this workspace, and an absent one
-      // falls through to the longest-PREFIX match, which would route the hook
-      // to a parent workspace's panel.
       if (!merged[key]) merged[key] = [];
       for (const item of list) {
         const url = entryUrl(item);
@@ -284,33 +264,11 @@ function resolveUrls(projectDir) {
       }
     }
   }
-  // An expired shard's workspace keys, as EMPTY buckets. Refusing its URLs is
-  // only half the answer: with no key at all, a hook run in an expired CHILD
-  // workspace (C:/repo/sub) falls through to the longest-PREFIX match and is
-  // delivered to a live PARENT workspace's panel (C:/repo) — a different panel
-  // in a different workspace, which never made the tool call. The expired
-  // shard is not in routable, so its keys cannot come from the merge above,
-  // and a mirror's tombstoned copy cannot supply them either: the mirrors are
-  // skipped entirely while any leased shard answers. Written only where
-  // nothing live claims the key, so dev and prod sharing one workspace path
-  // keep their live routing.
-  for (const key of Object.keys(expiredKeys)) {
-    if (!merged[key]) merged[key] = [];
-  }
   if (!anyRegistryRead) return [];
-  const needle = norm(projectDir);
-  if (Array.isArray(merged[needle])) return merged[needle];
-  // Longest-prefix match so claude invoked in a subdirectory still routes
-  // to its owning strideterm workspace. External agents running outside
-  // any registered workspace will never match and exit silently — that
-  // is intentional so their notifications don't leak into strideterm.
-  let bestKey = "";
-  for (const key of Object.keys(merged)) {
-    if ((needle === key || needle.startsWith(key + "/")) && key.length > bestKey.length) {
-      bestKey = key;
-    }
-  }
-  return bestKey ? (merged[bestKey] || []) : [];
+  // The registry is grouped by cwd for lifecycle bookkeeping, but cwd can
+  // change while a PTY stays alive. The session id selects candidates; the
+  // receiving runtime proves the per-PTY token before dispatch.
+  return [...new Set(Object.values(merged).flat().filter((url) => urlSid(url) === sessionId))];
 }
 
 // A PermissionRequest's tool_input carries whatever the tool was called with —
@@ -382,8 +340,17 @@ process.stdin.on("end", () => {
   const payloadCwd = typeof parsed.cwd === "string" ? parsed.cwd : "";
   const projectDir = envProjectDir || payloadCwd;
   const envUrls = envUrl ? [envUrl] : [];
-  const registryUrls = resolveUrls(projectDir).filter((u) => u !== envUrl);
   const envSid = envUrl ? urlSid(envUrl) : "";
+  const requestedSessionId = envSessionId || envSid;
+  if (envSessionId && envSid && envSessionId !== envSid) {
+    log("WARN", "notify URL does not match explicit session identity — skipping");
+    process.exit(0);
+  }
+  if (!requestedSessionId) {
+    log("DEBUG", "no strideterm session identity (hook=" + parsed.hook + ") — skipping");
+    process.exit(0);
+  }
+  const registryUrls = resolveUrls(requestedSessionId).filter((u) => u !== envUrl);
 
   if (envUrls.length === 0 && registryUrls.length === 0) {
     if (projectDir && !anyRegistryRead) {
@@ -394,9 +361,9 @@ process.stdin.on("end", () => {
   }
   const primaryUrls = envUrls.length ? envUrls : registryUrls;
   // A stale per-session URL can be replaced by the current URL for that same
-  // sid. If the old URL has no sid, there is no safe way to pick its panel from
-  // the cwd-wide registry, so fail closed instead of copying the event to peers.
-  const fallbackUrls = envSid ? registryUrls.filter((u) => urlSid(u) === envSid) : [];
+  // sid. When the URL has no sid, the explicit PTY session id still limits the
+  // fallback; without either identity, delivery was skipped above.
+  const fallbackUrls = requestedSessionId ? registryUrls.filter((u) => urlSid(u) === requestedSessionId) : [];
 
   // PermissionRequest is the one hook whose RESPONSE matters: Claude Code reads
   // our stdout to decide whether to show the permission dialog. Every other
@@ -420,6 +387,7 @@ process.stdin.on("end", () => {
     // on — and the PermissionRequest legs do not retry, so nothing needs it.
     parsed.strideterm_delivery_id = crypto.randomUUID();
   }
+  if (ownershipToken) parsed.strideterm_session_token = ownershipToken;
 
   // One retry after a short delay: a transient failure (strideterm
   // restarting, notify server rebinding) would otherwise lose the event

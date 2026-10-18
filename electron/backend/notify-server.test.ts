@@ -67,6 +67,7 @@ async function createServer(options: any = {}) {
   const handle = await startNotifyServer({
     secret,
     onNotification,
+    authorizeNotification: options.authorizeNotification,
     onPermissionOffer: options.onPermissionOffer,
     onPermissionCommit: options.onPermissionCommit,
   });
@@ -119,6 +120,17 @@ describe("startNotifyServer", () => {
     const a = await createServer();
     const b = await createServer();
     expect(a.handle.port).not.toBe(b.handle.port);
+  });
+
+  test("rejects an unauthorized hook before dispatch and lets the caller detect 403", async () => {
+    const onNotification = vi.fn();
+    const authorizeNotification = vi.fn(() => false);
+    const { handle, secret } = await createServer({ onNotification, authorizeNotification });
+    const res = await postJson(buildNotifyUrl(handle.port, "ws:panel", secret), { hook: "Stop" });
+
+    expect(res.status).toBe(403);
+    expect(onNotification).not.toHaveBeenCalled();
+    expect(authorizeNotification).toHaveBeenCalledOnce();
   });
 
   test("close() shuts down the server", async () => {

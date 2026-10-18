@@ -84,6 +84,7 @@ export interface NotifyServerHandle {
 
 export interface StartNotifyServerOptions {
   onNotification: (n: NotifyPayload) => void;
+  authorizeNotification?: (n: NotifyPayload) => boolean;
   /**
    * Offer to answer a `PermissionRequest`. Return the `requestId` this
    * instance would commit under, or null to abstain (the prompt is then shown
@@ -117,6 +118,7 @@ export function buildNotifyUrl(port: number, sessionId: string, secret: string):
 
 export function startNotifyServer({
   onNotification,
+  authorizeNotification,
   onPermissionOffer,
   onPermissionCommit,
   secret,
@@ -229,6 +231,20 @@ export function startNotifyServer({
           message: String(payload.message || ""),
           title: String(payload.title || ""),
         };
+        if (authorizeNotification) {
+          let authorized = false;
+          try {
+            authorized = authorizeNotification(notification);
+          } catch (error) {
+            log.warn("notification authorization failed closed", { sessionId, hook, err: (error as Error).message });
+          }
+          if (!authorized) {
+            log.debug("rejected request: session ownership not proven", { sessionId, hook });
+            response.writeHead(403, { "Content-Type": "text/plain" });
+            response.end("Forbidden");
+            return;
+          }
+        }
         // The commit leg is a second POST for a request the dispatcher has
         // already seen. Re-running the notification pipeline for it would
         // double every side effect it has (signal updates, activity state), so

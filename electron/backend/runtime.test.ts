@@ -2740,6 +2740,149 @@ describe("runtime integration", () => {
     expect(info.port).toBeNull();
   });
 
+  test("HTTP hook ownership keeps same-cwd sibling terminals isolated", async () => {
+    const fixture = await createFixture({
+      initialState: {
+        activeProjectId: "proj",
+        projects: [
+          {
+            id: "proj",
+            name: "Project",
+            kind: "terminal",
+            cwd: "/tmp/shared-project",
+            activePanelId: "sibling",
+            panels: [
+              { id: "owner", title: "Owner agent", command: "", shell: true, startup: "default" },
+              { id: "sibling", title: "Sibling agent", command: "claude", shell: true, startup: "default" },
+              { id: "files", title: "Files", command: "__files__", shell: false, startup: "none" },
+              { id: "closed", title: "Closed agent", command: "claude", shell: true, startup: "default" },
+            ],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    const sessionIds = ["proj:owner", "proj:sibling", "proj:files", "proj:closed"];
+    for (const sessionId of sessionIds) await fixture.runtime.activateSession(sessionId);
+    await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["proj:sibling", "proj:files"] });
+
+    const workspace = fixture.store.getState().workspaces.find((item: WorkspaceState) => item.id === "proj");
+    expect(workspace).toBeDefined();
+    const getSessionEnv = (sessionId: string) => fixture.sessionManager.getSessionEnv({ workspace, sessionId });
+    const ownerEnv = getSessionEnv("proj:owner");
+    const siblingEnv = getSessionEnv("proj:sibling");
+    const filesEnv = getSessionEnv("proj:files");
+    const closedEnv = getSessionEnv("proj:closed");
+    const ownerUrl = ownerEnv.STRIDETERM_NOTIFY_URL;
+    const siblingUrl = siblingEnv.STRIDETERM_NOTIFY_URL;
+    const filesUrl = filesEnv.STRIDETERM_NOTIFY_URL;
+    const closedUrl = closedEnv.STRIDETERM_NOTIFY_URL;
+    expect(ownerUrl).toBeTruthy();
+    expect(siblingUrl).toBeTruthy();
+    expect(filesUrl).toBeTruthy();
+    expect(closedUrl).toBeTruthy();
+
+    const postHook = async (url: string, hook: string, token?: string, notificationType?: string) => {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          hook,
+          ...(notificationType ? { notification_type: notificationType } : {}),
+          ...(token ? { strideterm_session_token: token } : {}),
+        }),
+      });
+      return response.status;
+    };
+    const flushHookDispatch = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(await postHook(ownerUrl, "UserPromptSubmit", ownerEnv.STRIDETERM_SESSION_TOKEN)).toBe(200);
+    expect(await postHook(siblingUrl, "UserPromptSubmit", siblingEnv.STRIDETERM_SESSION_TOKEN)).toBe(200);
+    await flushHookDispatch();
+
+    const originalNow = Date.now;
+    Date.now = () => originalNow() + 20_000;
+    try {
+      expect(await postHook(ownerUrl, "Notification", ownerEnv.STRIDETERM_SESSION_TOKEN, "permission_prompt")).toBe(
+        200,
+      );
+      expect(await postHook(ownerUrl, "Stop", ownerEnv.STRIDETERM_SESSION_TOKEN)).toBe(200);
+    } finally {
+      Date.now = originalNow;
+    }
+    expect(await postHook(siblingUrl, "Stop", ownerEnv.STRIDETERM_SESSION_TOKEN)).toBe(403);
+    expect(await postHook(siblingUrl, "Stop")).toBe(403);
+    expect(await postHook(filesUrl, "UserPromptSubmit", filesEnv.STRIDETERM_SESSION_TOKEN)).toBe(403);
+
+    fixture.sessionManager.sessions.delete("proj:closed");
+    expect(await postHook(closedUrl, "UserPromptSubmit", closedEnv.STRIDETERM_SESSION_TOKEN)).toBe(403);
+    await flushHookDispatch();
+
+    const attention = fixture.runtime.getPayload().attention;
+    expect(attention.sessions["proj:owner"]).toMatchObject({ activity: "done", hasUserInput: true });
+    expect(attention.sessions["proj:sibling"]).toMatchObject({ activity: "running", hasUserInput: true });
+    expect(attention.sessions["proj:files"]).toBeUndefined();
+    expect(attention.sessions["proj:closed"]).toBeUndefined();
+    expect(
+      attention.byWorkspace.proj?.alerts.map((alert: { panelId: string }) => alert.panelId) ?? [],
+      JSON.stringify(attention),
+    ).toEqual(["owner"]);
+  });
+
+  test("same session IDs in separate runtimes are isolated by ownership tokens", async () => {
+    const initialState = {
+      activeProjectId: "proj",
+      projects: [
+        {
+          id: "proj",
+          name: "Project",
+          kind: "terminal",
+          cwd: "/tmp/shared-project",
+          activePanelId: "owner",
+          panels: [{ id: "owner", title: "Owner agent", command: "claude", shell: true, startup: "default" }],
+        },
+      ],
+    };
+    const createOwnerSession = async () => {
+      const fixture = await createFixture({ initialState });
+      fixtures.push(fixture);
+      await fixture.runtime.activateSession("proj:owner");
+      const workspace = fixture.store.getState().workspaces.find((item: WorkspaceState) => item.id === "proj");
+      const env = fixture.sessionManager.getSessionEnv({ workspace, sessionId: "proj:owner" });
+      return { fixture, env };
+    };
+    const first = await createOwnerSession();
+    const second = await createOwnerSession();
+    const firstUrl = first.env.STRIDETERM_NOTIFY_URL;
+    const secondUrl = second.env.STRIDETERM_NOTIFY_URL;
+    const firstToken = first.env.STRIDETERM_SESSION_TOKEN;
+    const secondToken = second.env.STRIDETERM_SESSION_TOKEN;
+    expect(firstUrl).toBeTruthy();
+    expect(secondUrl).toBeTruthy();
+    expect(firstToken).not.toBe(secondToken);
+
+    const postPrompt = async (url: string, token: string) => {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hook: "UserPromptSubmit", strideterm_session_token: token }),
+      });
+      return response.status;
+    };
+
+    expect(await postPrompt(secondUrl, firstToken)).toBe(403);
+    expect(second.fixture.runtime.getPayload().attention.sessions["proj:owner"]).toBeUndefined();
+    expect(await postPrompt(firstUrl, firstToken)).toBe(200);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(first.fixture.runtime.getPayload().attention.sessions["proj:owner"]).toMatchObject({
+      activity: "running",
+      hasUserInput: true,
+    });
+    expect(second.fixture.runtime.getPayload().attention.sessions["proj:owner"]).toBeUndefined();
+  });
+
   test("UserPromptSubmit marks agent session activity in attention snapshot", async () => {
     const fixture = await createFixture({
       initialState: {
@@ -4711,6 +4854,7 @@ describe("runtime integration", () => {
       sessionId: "proj:shell",
     });
     expect(env.STRIDETERM_NOTIFY_URL).toBeDefined();
+    expect(env.STRIDETERM_SESSION_ID).toBe("proj:shell");
     expect(env.STRIDETERM_NOTIFY_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/notify\?sid=proj%3Ashell&secret=.+$/);
   });
 
@@ -4743,6 +4887,7 @@ describe("runtime integration", () => {
       sessionId: "proj:shell",
     });
     expect(env.STRIDETERM_NOTIFY_URL).toBeUndefined();
+    expect(env.STRIDETERM_SESSION_ID).toBe("proj:shell");
   });
 
   test("the ownership token is injected even while the notify server is off", async () => {

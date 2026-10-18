@@ -55,13 +55,14 @@ const PLUGIN_CONTENT = `// strIDEterm notification plugin for OpenCode.
 // outside strIDEterm and the plugin stays silent.
 
 const NOTIFY_URL = process.env.STRIDETERM_NOTIFY_URL || "";
+const SESSION_TOKEN = process.env.STRIDETERM_SESSION_TOKEN || "";
 
 async function send(hook) {
   try {
     await fetch(NOTIFY_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ hook, source: "opencode-plugin" }),
+      body: JSON.stringify({ hook, source: "opencode-plugin", strideterm_session_token: SESSION_TOKEN }),
       signal: AbortSignal.timeout(2000),
     });
   } catch {
@@ -181,7 +182,28 @@ export async function migrateLegacyOpencodeHooks(): Promise<{
   error?: string;
 }> {
   const cleanup = await cleanupLegacyOpencodeHooks();
-  if (!cleanup.removed) return { cleaned: [], pluginInstalled: false };
+  if (!cleanup.removed) {
+    const pluginPath = getOpencodePluginPath();
+    let installed: string;
+    try {
+      installed = await fs.readFile(pluginPath, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { cleaned: [], pluginInstalled: false };
+      const message = (error as NodeJS.ErrnoException).message;
+      log.warn("installed OpenCode notification plugin could not be read", { pluginPath, err: message });
+      return { cleaned: [], pluginInstalled: false, error: message };
+    }
+    if (!installed.startsWith("// strIDEterm notification plugin for OpenCode.")) {
+      return { cleaned: [], pluginInstalled: false };
+    }
+
+    const refreshed = await configureOpencodeHook();
+    if (!refreshed.ok) {
+      log.warn("installed OpenCode notification plugin refresh failed", { pluginPath, err: refreshed.error });
+      return { cleaned: [], pluginInstalled: false, error: refreshed.error };
+    }
+    return { cleaned: [], pluginInstalled: false };
+  }
 
   const result = await configureOpencodeHook();
   if (!result.ok) {

@@ -2,6 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   configureOpencodeHook,
@@ -12,6 +13,7 @@ import {
   getOpencodeConfigPath,
   getOpencodeConfigDir,
   getOpencodePluginPath,
+  PLUGIN_CONTENT,
   PLUGIN_FILENAME,
   REGISTERED_EVENTS,
 } from "./opencode-hook-config.js";
@@ -127,8 +129,44 @@ describe("configureOpencodeHook", () => {
     expect(plugin).toContain('event?.type === "session.idle"');
     expect(plugin).toContain('"chat.message"');
     expect(plugin).toContain("process.env.STRIDETERM_NOTIFY_URL");
+    expect(plugin).toContain("process.env.STRIDETERM_SESSION_TOKEN");
+    expect(plugin).toContain("strideterm_session_token: SESSION_TOKEN");
     // No URL means opencode was started outside strIDEterm — stay silent.
     expect(plugin).toContain("if (!NOTIFY_URL) return {}");
+  });
+
+  test("sends the session token with every plugin event", async () => {
+    const pluginPath = path.join(tempDir, "plugin-under-test.mjs");
+    await fs.writeFile(pluginPath, PLUGIN_CONTENT);
+    const originalUrl = process.env.STRIDETERM_NOTIFY_URL;
+    const originalToken = process.env.STRIDETERM_SESSION_TOKEN;
+    const originalFetch = globalThis.fetch;
+    const requests: string[] = [];
+    process.env.STRIDETERM_NOTIFY_URL = "http://127.0.0.1:1234/notify?sid=ws%3Ap&secret=test";
+    process.env.STRIDETERM_SESSION_TOKEN = "session-token";
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push(String(init?.body || ""));
+      return { ok: true } as Response;
+    }) as typeof fetch;
+
+    try {
+      const plugin = await import(pathToFileURL(pluginPath).href);
+      const handlers = await plugin.StridetermNotify();
+      await handlers.event({ event: { type: "session.idle" } });
+      await handlers["chat.message"]();
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalUrl === undefined) delete process.env.STRIDETERM_NOTIFY_URL;
+      else process.env.STRIDETERM_NOTIFY_URL = originalUrl;
+      if (originalToken === undefined) delete process.env.STRIDETERM_SESSION_TOKEN;
+      else process.env.STRIDETERM_SESSION_TOKEN = originalToken;
+    }
+
+    expect(requests).toHaveLength(2);
+    expect(requests.map((body) => JSON.parse(body))).toEqual([
+      { hook: "Stop", source: "opencode-plugin", strideterm_session_token: "session-token" },
+      { hook: "UserPromptSubmit", source: "opencode-plugin", strideterm_session_token: "session-token" },
+    ]);
   });
 
   test("never writes a hooks key into the OpenCode config (#178)", async () => {
@@ -278,6 +316,29 @@ describe("migrateLegacyOpencodeHooks", () => {
     const result = await migrateLegacyOpencodeHooks();
     expect(result.pluginInstalled).toBe(false);
     expect(existsSync(getOpencodePluginPath())).toBe(false);
+  });
+
+  test("refreshes an installed strIDEterm plugin without installing for an unconfigured user", async () => {
+    const pluginPath = getOpencodePluginPath();
+    await fs.mkdir(path.dirname(pluginPath), { recursive: true });
+    await fs.writeFile(pluginPath, "// strIDEterm notification plugin for OpenCode.\nexport const oldPlugin = true;\n");
+
+    const result = await migrateLegacyOpencodeHooks();
+
+    expect(result).toEqual({ cleaned: [], pluginInstalled: false });
+    expect(await fs.readFile(pluginPath, "utf8")).toBe(PLUGIN_CONTENT);
+  });
+
+  test("leaves a plugin file without the strIDEterm marker untouched", async () => {
+    const pluginPath = getOpencodePluginPath();
+    await fs.mkdir(path.dirname(pluginPath), { recursive: true });
+    const userPlugin = "export const UserPlugin = async () => ({});\n";
+    await fs.writeFile(pluginPath, userPlugin);
+
+    const result = await migrateLegacyOpencodeHooks();
+
+    expect(result).toEqual({ cleaned: [], pluginInstalled: false });
+    expect(await fs.readFile(pluginPath, "utf8")).toBe(userPlugin);
   });
 
   // Finding our own legacy entries proves the user once opted in, so the

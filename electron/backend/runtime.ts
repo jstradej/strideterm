@@ -893,13 +893,9 @@ export async function createRuntime({
   }, NOTIFY_LEASE_RENEWAL_MS);
   notifyLeaseTimer.unref?.();
 
-  // Hook events resolve PRIMARILY via the session id embedded in each notify
-  // URL (sid=workspaceId:panelId → workspace → profile). The cwd key below is
-  // only the lookup FALLBACK for hook processes whose inherited env cannot be
-  // trusted to be current: notify.mjs resolves URLs by project dir and POSTs
-  // to each, but every URL still carries its own session id, so two workspaces
-  // with the same cwd in different profiles each route to their own workspace
-  // — never to the other profile's.
+  // The registry stores URLs alongside cwd for lifecycle bookkeeping.
+  // notify.mjs resolves stale URLs by exact session id across the registry,
+  // and HTTP ingress verifies the per-PTY token before dispatch.
   function registerNotifyUrl(cwd: string, url: string): void {
     notifyUrlRegistry.register(cwd, url);
   }
@@ -1096,6 +1092,7 @@ export async function createRuntime({
       // it grants nothing on its own.
       if (sessionId) {
         env.STRIDETERM_SESSION_TOKEN = getSessionOwnershipToken(sessionId);
+        env.STRIDETERM_SESSION_ID = sessionId;
       }
 
       // Agent notification hook URL — set in env (for agents that read it
@@ -3096,6 +3093,13 @@ export async function createRuntime({
     const state = getState();
     const project = findWorkspace(state, descriptor.workspaceId) as WorkspaceState | null;
     const panel = project?.panels.find((p) => p.id === descriptor.panelId) || null;
+    if (
+      panel &&
+      (panel.command === "__files__" || panel.command === "__task-dashboard__" || /^https?:\/\//i.test(panel.command))
+    ) {
+      log.debug("hook ignored: target is not a terminal panel", { sessionId, workspaceKind: project?.kind });
+      return;
+    }
     const signal = getSessionSignal(sessionId, project, panel);
     signal.hookCapable = true;
     if (hook === "Notification" || hook === "Stop" || hook === "SubagentStop") {
@@ -3935,6 +3939,30 @@ export async function createRuntime({
       notifyServerHandle = await startNotifyServer({
         secret: notifySecret,
         onNotification: handleAgentHookNotification,
+        authorizeNotification: (event) => {
+          const sessionId = event.sessionId;
+          const payload = event.payload || {};
+          const probeId = typeof payload.probe_id === "string" ? payload.probe_id : "";
+          if (probeId && hookProbeListeners.has(probeId) && sessionId === `probe:${probeId}`) return true;
+          const expectedToken = sessionId ? sessionOwnershipTokens.get(sessionId) || "" : "";
+          const presentedToken =
+            typeof payload.strideterm_session_token === "string" ? payload.strideterm_session_token : "";
+          if (!expectedToken || presentedToken !== expectedToken) return false;
+          const descriptor = parseSessionId(sessionId);
+          if (!descriptor) return false;
+          const workspace = findWorkspace(getState(), descriptor.workspaceId) as WorkspaceState | null;
+          const panel = workspace?.panels.find((item) => item.id === descriptor.panelId);
+          const session = sessions.sessions.get(sessionId);
+          return Boolean(
+            session &&
+            session.status === "running" &&
+            workspace &&
+            panel &&
+            panel.command !== "__files__" &&
+            panel.command !== "__task-dashboard__" &&
+            !/^https?:\/\//i.test(panel.command),
+          );
+        },
         onPermissionOffer: (event) => {
           try {
             return offerPermissionDecision(event);
@@ -8256,6 +8284,8 @@ export async function createRuntime({
           ...process.env,
           ELECTRON_RUN_AS_NODE: "1",
           STRIDETERM_NOTIFY_URL: probeUrl,
+          STRIDETERM_SESSION_ID: probeSessionId,
+          STRIDETERM_SESSION_TOKEN: "",
           CLAUDE_PROJECT_DIR: "",
         },
         stdio: ["pipe", "ignore", "ignore"],
