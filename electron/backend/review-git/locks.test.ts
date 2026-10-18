@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -146,7 +146,7 @@ describe("commonDirOf", () => {
     execFileSync("git", ["-c", "user.name=T", "-c", "user.email=t@e", ...args], { cwd, stdio: "ignore" });
 
   test("a linked worktree and its main checkout share one common dir", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "strideterm-common-dir-"));
+    const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "strideterm-common-dir-")));
     dirs.push(root);
     const main = path.join(root, "main");
     const linked = path.join(root, "linked");
