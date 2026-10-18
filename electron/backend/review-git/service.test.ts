@@ -57,6 +57,8 @@ async function createFixture(overrides: { workspaceProfile?: string } = {}): Pro
   git(seed, ["push", "-q", "origin", "feature"]);
   git(root, ["clone", "-q", remote, checkout]);
   git(checkout, ["checkout", "-q", "-b", "pr-7-feature", "origin/feature"]);
+  git(checkout, ["config", "user.name", "T"]);
+  git(checkout, ["config", "user.email", "t@e"]);
 
   const manager = new BaseProviderManager({
     credentialStore: { getSecret: (ref: string) => (ref === "tok" ? "secret-token" : "") } as never,
