@@ -135,7 +135,13 @@ export interface MobileNotificationFilter {
  * this replaced.
  */
 export type MobileCapability =
-  "notifications" | "status.read" | "task.control" | "task.destructive" | "remote.request" | "remote.webSession";
+  | "notifications"
+  | "status.read"
+  | "task.control"
+  | "task.destructive"
+  | "review.start"
+  | "remote.request"
+  | "remote.webSession";
 
 /**
  * Where a paired device is in the pairing state machine (review 3 §P0.1).

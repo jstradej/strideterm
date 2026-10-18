@@ -213,7 +213,11 @@ export function createOperationRegistry(options: OperationRegistryOptions) {
     } catch (err) {
       const error = errorOf(err);
       log.warn("operation failed", { operationId: record.operationId, kind: record.kind, step: record.step, ...error });
-      await finish(record, { status: "failed", error });
+      await finish(record, {
+        status: "failed",
+        error,
+        ...(record.workspaceId ? { workspaceId: record.workspaceId } : {}),
+      });
     }
   }
 

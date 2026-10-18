@@ -50,6 +50,7 @@ import { canReconnectTunnel } from "../tunnel-manager.js";
 import { getLogger } from "../logger.js";
 import { findWorkspace } from "../runtime-utils.js";
 import { formatWorkspaceDisplayName } from "../../shared/workspace-display.js";
+import type { OperationFinished } from "../../shared/operation-events.js";
 import { createHash } from "node:crypto";
 import { buildWorkspaceTree } from "../../shared/workspace-tree.js";
 import type { WorkspaceState } from "../../shared/types/state.js";
@@ -126,6 +127,23 @@ export interface MobileCommandRuntime {
   resetTask(workspaceId: string): Promise<TaskActionResult>;
   updateTaskDescription(workspaceId: string, description: string): Promise<TaskActionResult>;
   resendTaskInstruction(workspaceId: string, role: "worker" | "judge"): Promise<TaskActionResult>;
+  startPullRequestReview?(
+    input: { provider: "azure-devops" | "github"; prKey: string; idempotencyKey: string },
+    windowId?: number,
+    profileId?: string,
+  ):
+    | Promise<{
+        started: true;
+        operationId: string;
+        replayed: boolean;
+        outcome?: OperationFinished;
+      }>
+    | {
+        started: true;
+        operationId: string;
+        replayed: boolean;
+        outcome?: OperationFinished;
+      };
   /**
    * Clears the attention alert on a session — the SAME method the desktop's own
    * "Dismiss"/"Jump" and the remote client call, so a phone acknowledgement lands
@@ -575,6 +593,35 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
           : failed("nothing-to-resend");
       }
 
+      case "review.start": {
+        const fresh = deps.currentDevice ? deps.currentDevice(device.deviceId) : device;
+        if (!isDeviceUsable(fresh)) return failed("device-not-active");
+        if (!deviceHasCapability(fresh, "review.start")) return failed("capability-missing");
+        if (!deviceAllowsProfile(fresh, command.profileId)) return failed("profile-not-allowed");
+        if (!deps.runtime.startPullRequestReview) return failed("review-start-unavailable");
+        const accepted = await deps.runtime.startPullRequestReview(
+          {
+            provider: command.payload.provider,
+            prKey: command.payload.prKey,
+            idempotencyKey: command.commandId,
+          },
+          undefined,
+          command.profileId,
+        );
+        return succeeded({
+          operationId: accepted.operationId,
+          provider: command.payload.provider,
+          prKey: command.payload.prKey,
+          replayed: accepted.replayed,
+          state: accepted.outcome
+            ? "result" in accepted.outcome && accepted.outcome.result.launched === true
+              ? "launched"
+              : "failed"
+            : "preparing",
+          ...(accepted.outcome ? { outcome: accepted.outcome } : {}),
+        });
+      }
+
       case "profile.catalog.get": {
         // Names are presentation metadata; ids remain the authorization boundary. Derive the list
         // from the authenticated device record rather than a client filter, so this result cannot
@@ -778,7 +825,7 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
         // read again here and the three things that can have changed are checked again: is the device
         // still active, does it still hold `remote.webSession`, and is this profile still on its
         // allowlist. Without it, a revoke landing in that window produced a usable session.
-        const fresh = deps.currentDevice?.(device.deviceId) ?? device;
+        const fresh = deps.currentDevice ? deps.currentDevice(device.deviceId) : device;
         if (!isDeviceUsable(fresh)) return failed("device-not-active");
         if (fresh.remoteUiPaused === true) return failed("temporarily-paused");
         if (!deviceHasCapability(fresh, REMOTE_WEB_SESSION_CAPABILITY)) return failed("capability-missing");

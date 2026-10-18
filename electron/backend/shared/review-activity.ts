@@ -29,7 +29,16 @@ interface ReviewSummaryRef {
   profileId?: string;
   role?: string;
   repository?: { fullName?: string; name?: string };
-  pullRequest?: { number?: number; id?: number; title?: string; webUrl?: string };
+  pullRequest?: {
+    number?: number;
+    id?: number;
+    title?: string;
+    webUrl?: string;
+    draft?: boolean;
+    isDraft?: boolean;
+    headSha?: string;
+    sourceCommitId?: string;
+  };
   reviewWorkspaceId?: string;
   existingWorkspaceId?: string;
   lastRemoteActivityAt?: string | null;
@@ -100,7 +109,10 @@ export function buildReviewActivityEvent({
   reviewWorkspaceId: string;
   existingWorkspaceId: string;
   actor: unknown;
+  draftState: "draft" | "ready";
+  headSha: string;
 } {
+  const pullRequest = summary.pullRequest || {};
   return {
     id: `${summary.prKey}:${kind}:${at}`,
     prKey: summary.prKey,
@@ -124,6 +136,8 @@ export function buildReviewActivityEvent({
     reviewWorkspaceId: summary.reviewWorkspaceId || "",
     existingWorkspaceId: summary.existingWorkspaceId || "",
     actor,
+    draftState: pullRequest.draft || pullRequest.isDraft ? "draft" : "ready",
+    headSha: pullRequest.headSha || pullRequest.sourceCommitId || "",
   };
 }
 

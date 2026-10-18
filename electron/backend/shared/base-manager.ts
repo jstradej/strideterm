@@ -217,6 +217,8 @@ interface OpenReviewWorkspaceOptions {
    *  checkout instead. Set by the row's separate "Review" button — see the
    *  fallback in openReviewWorkspaceCore for why it needs saying explicitly. */
   forceReview?: boolean;
+  /** Always create a fresh managed checkout, never reuse/link an existing workspace. */
+  isolated?: boolean;
 }
 
 interface OpenReviewWorkspaceHooks {
@@ -231,6 +233,7 @@ interface OpenReviewWorkspaceHooks {
     connection: any;
     token: string;
     reviewRoot: string;
+    isolatedId?: string;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   }): Promise<{ mode: string; rootPath: string; cacheRepoPath: string; [key: string]: any }>;
   /** Provider-specific `review` metadata shape (Azure: project/orgUrl; GitHub: hostUrl). */
@@ -506,7 +509,11 @@ export class BaseProviderManager extends EventEmitter {
       const persistedState = reviewState.connections?.[connection.id] || {};
       const connectionSnapshot = hooks.createConnectionSnapshot(connection, persistedState);
       connectionSnapshots.push(connectionSnapshot);
-      const seedingConnection = shouldSeedConnection(this._seededConnections, connection.id);
+      // Seed only a connection with no successful persisted poll. The in-memory
+      // Set still prevents a second seed during this process, while a restart
+      // can now detect PRs that arrived while the app was offline.
+      const seedingConnection =
+        shouldSeedConnection(this._seededConnections, connection.id) && !persistedState.lastSuccessAt;
 
       try {
         const token = this.credentialStore.getSecret(connection.tokenRef || "");
@@ -1240,7 +1247,14 @@ export class BaseProviderManager extends EventEmitter {
    * their own copy.
    */
   async openReviewWorkspaceCore(
-    { state, prKey, workspaceId = "", callerProfileId = "", forceReview = false }: OpenReviewWorkspaceOptions,
+    {
+      state,
+      prKey,
+      workspaceId = "",
+      callerProfileId = "",
+      forceReview = false,
+      isolated = false,
+    }: OpenReviewWorkspaceOptions,
     hooks: OpenReviewWorkspaceHooks,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ): Promise<{ workspace: any; created: boolean; attached: boolean }> {
@@ -1270,13 +1284,14 @@ export class BaseProviderManager extends EventEmitter {
     // did not explicitly ask for a review checkout. Without the forceReview
     // gate the row's "Review" button would silently attach instead, since
     // "no workspaceId" is exactly what the Attach button sends too.
-    const existingWorkspace =
-      (workspaceId
-        ? profileWorkspaces.find((workspace) => workspace.id === workspaceId)
-        : hooks.findWorkspaceForPullRequest(profileWorkspaces, prKey) ||
-          (!forceReview && summary.role === "author" && summary.existingWorkspaceId
-            ? profileWorkspaces.find((workspace) => workspace.id === summary.existingWorkspaceId)
-            : null)) || null;
+    const existingWorkspace = isolated
+      ? null
+      : (workspaceId
+          ? profileWorkspaces.find((workspace) => workspace.id === workspaceId)
+          : hooks.findWorkspaceForPullRequest(profileWorkspaces, prKey) ||
+            (!forceReview && summary.role === "author" && summary.existingWorkspaceId
+              ? profileWorkspaces.find((workspace) => workspace.id === summary.existingWorkspaceId)
+              : null)) || null;
 
     const reviewProfileId = existingWorkspace?.profileId || activeProfile;
     const parentWorkspace =
@@ -1322,6 +1337,7 @@ export class BaseProviderManager extends EventEmitter {
       token,
       reviewRoot:
         parentWorkspace?.cwd || (connection as { reviewRoot?: string }).reviewRoot || this.getDefaultReviewRoot(),
+      ...(isolated ? { isolatedId: randomUUID() } : {}),
     });
     const panels = createReviewWorkspacePanels(
       (parentWorkspace?.panels || []) as PanelTemplate[],

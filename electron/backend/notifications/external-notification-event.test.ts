@@ -83,6 +83,39 @@ describe("buildExternalNotificationEvent", () => {
     }
   });
 
+  test("only ready PR review notifications offer the basic-review action", () => {
+    const base = { eventId: "pr", profileId: "p1", workspaceId: "ws", kind: "review", title: "PR review" };
+    expect(
+      buildExternalNotificationEvent({
+        ...base,
+        provider: "github",
+        prKey: "repo#42",
+        draftState: "ready",
+      }).actions,
+    ).toEqual(["review.start", "notification.acknowledge"]);
+    expect(
+      buildExternalNotificationEvent({
+        ...base,
+        provider: "github",
+        prKey: "repo#42",
+        draftState: "draft",
+      }).actions,
+    ).toEqual(["notification.acknowledge"]);
+    expect(
+      buildExternalNotificationEvent({
+        ...base,
+        provider: "github",
+        prKey: "repo#42",
+        draftState: "ready",
+        reviewStatus: "started",
+        operationId: "op-1",
+      }).actions,
+    ).toEqual(["notification.acknowledge"]);
+    expect(buildExternalNotificationEvent({ ...base, draftState: "ready" }).actions).toEqual([
+      "notification.acknowledge",
+    ]);
+  });
+
   test("defaults profileId to 'default' and kind to 'info' when omitted", () => {
     const event = buildExternalNotificationEvent({
       eventId: "evt-5",

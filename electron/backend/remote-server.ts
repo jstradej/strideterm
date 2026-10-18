@@ -14,6 +14,7 @@ import * as attachments from "./attachments.js";
 import { AttachmentPolicyError } from "./attachment-file-policy.js";
 import { deriveSessionKey, openEnvelope, publicKeyFromRaw, sealEnvelope } from "./mobile/mobile-crypto.js";
 import { decodeCanonicalPublicKey } from "./mobile/mobile-crypto.js";
+import { START_PULL_REQUEST_REVIEW_ROUTE, startPullRequestReviewSchema } from "../shared/pull-request-review.js";
 import {
   dockerActionSchema,
   dockerComposeActionSchema,
@@ -3321,6 +3322,11 @@ export async function startRemoteServer({
     // the caller's profile before anything starts.
     "/api/review-git/start": (body, windowId) =>
       runtime.startReviewGitOperation(validateIpc(reviewGitStartSchema, body, "POST /api/review-git/start"), windowId),
+    "/api/review/start": (body, windowId) =>
+      runtime.startPullRequestReview(
+        validateIpc(startPullRequestReviewSchema, body, `POST ${START_PULL_REQUEST_REVIEW_ROUTE}`),
+        windowId,
+      ),
     // Sync publishes queued draft comments to the PR provider — an
     // externally visible side effect that must refuse cross-profile prKeys.
     "/api/review-bridge/pull-request/sync": (body, windowId) => runtime.syncReviewBridgePullRequest(body, windowId),
@@ -3676,10 +3682,14 @@ export async function startRemoteServer({
     if (!profileId) {
       return { status: 403, error: "Not available to a mobile session", reason: "session-has-no-profile" };
     }
+    const mobileDeviceId = activeSessions.get(sessionId)?.deviceId;
     const decision = evaluateMobileRoute({
       pathname,
       body,
       profileId,
+      capabilities: mobileDeviceId
+        ? runtime.getMobileAttachmentContext?.(mobileDeviceId)?.device?.capabilities || []
+        : undefined,
       workspaceProfile: (workspaceId) => cachedWorkspaceProfiles.get(workspaceId),
       connectionProfile: (connectionId) => {
         const integrations = ((runtime.getPayload() as { appState?: { settings?: { integrations?: unknown } } })

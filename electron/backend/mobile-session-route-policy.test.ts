@@ -6,6 +6,7 @@ import {
   MOBILE_GET_DETAIL_ROUTES,
   MOBILE_NON_POST_ROUTES,
   MOBILE_PROBE_ROUTES,
+  MOBILE_REQUIRED_CAPABILITIES,
   classifyMobileRoute,
   evaluateMobileRoute,
   type MobileRouteClass,
@@ -264,6 +265,7 @@ const MOBILE_ROUTE_CLASSIFICATION: Record<string, MobileRouteClass> = {
   "/api/review-bridge/draft/save": "guarded",
   "/api/review-bridge/pull-request": "guarded",
   "/api/review-git/start": "guarded",
+  "/api/review/start": "guarded",
   "/api/review-bridge/pull-request/sync": "guarded",
   "/api/ssh/auth/answer": "guarded",
   "/api/ssh/auth/cancel": "guarded",
@@ -445,6 +447,19 @@ describe("mobile session route policy", () => {
       allow: true,
     });
     expect(decide("/api/task/create", { workspaceId: "workspace-new-uuid" })).toEqual({ allow: true });
+  });
+
+  test("review start requires its explicit capability grant", () => {
+    const common = {
+      pathname: "/api/review/start",
+      body: { provider: "github", prKey: "org/repo#1", idempotencyKey: "key" },
+      profileId: PROFILE,
+      workspaceProfile: (id: string) => WORKSPACES[id],
+      connectionProfile: (id: string) => CONNECTIONS[id],
+    };
+    expect(MOBILE_REQUIRED_CAPABILITIES[common.pathname]).toBe("review.start");
+    expect(evaluateMobileRoute(common)).toMatchObject({ allow: false, reason: "capability-missing" });
+    expect(evaluateMobileRoute({ ...common, capabilities: ["review.start"] })).toEqual({ allow: true });
   });
 
   test("routes that carry their own authorization are not judged by the body guard", () => {

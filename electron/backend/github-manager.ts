@@ -111,6 +111,7 @@ interface PrepareManagedReviewCheckoutOptions {
   connection: SyncConnection;
   token: string;
   reviewRoot: string;
+  isolatedId?: string;
 }
 
 interface OpenReviewWorkspaceOptions {
@@ -127,6 +128,7 @@ interface OpenReviewWorkspaceOptions {
   /** Build a managed review checkout even when the author's own workspace
    * sits on the PR's source branch. */
   forceReview?: boolean;
+  isolated?: boolean;
 }
 
 interface OpenQuickFixWorkspaceOptions {
@@ -331,6 +333,11 @@ export class GitHubManager extends BaseProviderManager {
     const queries = [
       `is:pr is:open archived:false review-requested:${login} ${scope}`.trim(),
       `is:pr is:open archived:false author:${login} ${scope}`.trim(),
+      // Draft PRs cannot carry review requests on GitHub. Assigned drafts are
+      // still personal inbox items. Explicit repository filters opt into a
+      // bounded watch of all open PRs there so draft→ready remains observable.
+      `is:pr is:open archived:false assignee:${login} ${scope}`.trim(),
+      ...(repoScope ? [`is:pr is:open archived:false ${repoScope}`.trim()] : []),
     ];
 
     const seenPrKeys = new Set<string>();
@@ -379,6 +386,17 @@ export class GitHubManager extends BaseProviderManager {
           activeProfileId,
           now: this.now,
         });
+        const assignedToMe =
+          Array.isArray(item.assignees) &&
+          item.assignees.some(
+            (assignee: { login?: string } | null) =>
+              String(assignee?.login || "").toLowerCase() === String(login).toLowerCase(),
+          );
+        (summary as Record<string, unknown>).notificationInterest = assignedToMe
+          ? "assigned"
+          : repoScope
+            ? "watched-repository"
+            : "inbox";
         visibleSummaries.push(summary);
 
         const { events, lastNotifiedActivityAt } = this._detectGitHubReviewActivityDeltas({
@@ -410,6 +428,8 @@ export class GitHubManager extends BaseProviderManager {
           lastRemoteActivityAt: summary.lastRemoteActivityAt,
           lastReviewStateSignature: internals.reviewStateSignature,
           lastHeadSha: internals.headSha,
+          lastDraftState:
+            (summary.pullRequest as Record<string, unknown> | undefined)?.draft === true ? "draft" : "ready",
           lastChecksSignature: internals.checksSignature,
           lastSeenActivityAt: tracked.lastSeenActivityAt || null,
           lastNotifiedActivityAt,
@@ -512,14 +532,28 @@ export class GitHubManager extends BaseProviderManager {
     const summaryAuthor = summary.author as Record<string, unknown>;
 
     if (!prevNotifiedAt) {
-      if (summary.role === "reviewer") {
+      const notificationInterest = String(summary.notificationInterest || "");
+      const isSelfAuthor = String(summaryAuthor.login || "").toLowerCase() === myLogin;
+      if (
+        summary.role === "reviewer" ||
+        notificationInterest === "assigned" ||
+        (notificationInterest === "watched-repository" && !isSelfAuthor)
+      ) {
+        const title =
+          summaryPr.draft === true
+            ? `New draft pull request: ${summaryRepo.fullName} #${summaryPr.number}`
+            : summary.role === "reviewer"
+              ? `Review requested: ${summaryRepo.fullName} #${summaryPr.number}`
+              : notificationInterest === "assigned"
+                ? `Pull request assigned to you: ${summaryRepo.fullName} #${summaryPr.number}`
+                : `New pull request: ${summaryRepo.fullName} #${summaryPr.number}`;
         events.push(
           buildReviewActivityEvent({
             provider: "github",
             summary: summary as unknown as Parameters<typeof buildReviewActivityEvent>[0]["summary"],
             kind: "pr-new",
             at: (summary.lastRemoteActivityAt as string) || nowIso,
-            title: `Review requested: ${summaryRepo.fullName} #${summaryPr.number}`,
+            title,
             body: truncateBody(`${summaryAuthor.displayName}: ${summaryPr.title}`),
             actor: { login: summaryAuthor.login as string, displayName: summaryAuthor.displayName as string },
           }),
@@ -530,6 +564,21 @@ export class GitHubManager extends BaseProviderManager {
         lastNotifiedActivityAt:
           seedNotifiedTimestamp(summary as unknown as Parameters<typeof seedNotifiedTimestamp>[0], nowIso) || nowIso,
       };
+    }
+
+    const wasDraft = tracked.lastDraftState === "draft";
+    const isDraft = summaryPr.draft === true;
+    if (wasDraft && !isDraft) {
+      events.push(
+        buildReviewActivityEvent({
+          provider: "github",
+          summary: summary as unknown as Parameters<typeof buildReviewActivityEvent>[0]["summary"],
+          kind: "pr-ready",
+          at: nowIso,
+          title: `Ready for review: ${summaryRepo.fullName} #${summaryPr.number}`,
+          body: truncateBody(String(summaryPr.title || "")),
+        }),
+      );
     }
 
     // 1) New issue + review comments from other users.
@@ -813,6 +862,7 @@ export class GitHubManager extends BaseProviderManager {
     connection,
     token,
     reviewRoot,
+    isolatedId,
   }: PrepareManagedReviewCheckoutOptions): Promise<{
     mode: string;
     rootPath: string;
@@ -838,9 +888,9 @@ export class GitHubManager extends BaseProviderManager {
         normalizeReviewRoot(reviewRoot),
         "reviews",
         shortPathKey(connection.id, "connection"),
-        `pr-${pullRequest.number}`,
+        `pr-${pullRequest.number}${isolatedId ? `-review-${isolatedId}` : ""}`,
       );
-      const localBranch = `pr-${pullRequest.number}-${sanitizePathSegment(sourceBranch)}`;
+      const localBranch = `pr-${pullRequest.number}-${sanitizePathSegment(sourceBranch)}${isolatedId ? `-review-${isolatedId}` : ""}`;
 
       await this.ensureManagedWorktree({
         cacheRepoPath,
@@ -905,6 +955,7 @@ export class GitHubManager extends BaseProviderManager {
     workspaceId = "",
     callerProfileId = "",
     forceReview = false,
+    isolated = false,
   }: OpenReviewWorkspaceOptions): Promise<{
     workspace: Record<string, unknown>;
     created: boolean;
@@ -912,7 +963,7 @@ export class GitHubManager extends BaseProviderManager {
   }> {
     return this.openReviewWorkspaceCore(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      { state: state as any, prKey, workspaceId, callerProfileId, forceReview },
+      { state: state as any, prKey, workspaceId, callerProfileId, forceReview, isolated },
       {
         ensurePullRequestDetail: (key, opts) => this.ensurePullRequestDetail(key, opts),
         prepareManagedReviewCheckout: (opts) =>

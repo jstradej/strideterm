@@ -44,6 +44,7 @@ import {
 import {
   AEAD_NONCE_BYTES,
   CommandSchema,
+  NotificationPayloadSchema,
   MAX_CLIENT_CLOCK_SKEW_MS,
   MAX_COMMAND_TTL_MS,
   MAX_EVENT_TTL_MS,
@@ -85,6 +86,16 @@ const log = getLogger("mobile-manager");
 // HKDF `info` for the pairing session key — the generated cross-side constant, not a
 // desktop-local choice (see SESSION_KEY_HKDF_INFO's doc comment for the drift this fixed).
 const PROTOCOL_INFO = Buffer.from(SESSION_KEY_HKDF_INFO);
+
+/** Bounds optional display metadata to protocol limits without splitting a Unicode surrogate pair. */
+function boundedNotificationText(value: string, maxCodeUnits: number): string {
+  let result = value.slice(0, maxCodeUnits);
+  if (result.length > 0) {
+    const last = result.charCodeAt(result.length - 1);
+    if (last >= 0xd800 && last <= 0xdbff) result = result.slice(0, -1);
+  }
+  return result;
+}
 /** Command/result envelopes get a short TTL — plan §8 ("destructive command má krátkou TTL"). */
 const RESULT_ENVELOPE_TTL_MS = 5 * 60_000;
 const PRIORITY_RANK: Record<Severity, number> = { low: 0, normal: 1, high: 2 };
@@ -1333,8 +1344,18 @@ export class MobileManager extends EventEmitter {
       ...(event.prompt ? { prompt: event.prompt } : {}),
       ...(typeof event.exitCode === "number" ? { exitCode: event.exitCode } : {}),
       ...(typeof event.durationMs === "number" ? { durationMs: event.durationMs } : {}),
+      ...(event.provider ? { provider: event.provider } : {}),
+      ...(event.prKey ? { prKey: event.prKey } : {}),
+      ...(event.draftState ? { draftState: event.draftState } : {}),
+      ...(event.pullRequestTitle ? { pullRequestTitle: boundedNotificationText(event.pullRequestTitle, 500) } : {}),
+      ...(typeof event.pullRequestNumber === "number" ? { pullRequestNumber: event.pullRequestNumber } : {}),
+      ...(event.repositoryName ? { repositoryName: boundedNotificationText(event.repositoryName, 200) } : {}),
+      ...(event.reviewStatus ? { reviewStatus: event.reviewStatus } : {}),
+      ...(event.agentName ? { agentName: boundedNotificationText(event.agentName, 80) } : {}),
+      ...(event.operationId ? { operationId: boundedNotificationText(event.operationId, 200) } : {}),
     };
-    const plaintext = Buffer.from(JSON.stringify(payload));
+    const validatedPayload = NotificationPayloadSchema.parse(payload);
+    const plaintext = Buffer.from(JSON.stringify(validatedPayload));
     const ciphertext = sealToCombinedBase64(plaintext, key, aad);
 
     const wireEvent: NotificationEvent = {

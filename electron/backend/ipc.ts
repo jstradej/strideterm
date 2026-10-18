@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { stat, mkdir, writeFile, readFile } from "node:fs/promises";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import type { createRuntime } from "./runtime.js";
+import { startPullRequestReviewSchema } from "../shared/pull-request-review.js";
 import { withOperationPromise } from "./effect/runtime.js";
 import * as fm from "./file-manager.js";
 import * as attachments from "./attachments.js";
@@ -848,6 +849,12 @@ export function registerIpc(
     const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
     return withOperationPromise({ opId: "review-git:start" }, () =>
       runtime.startReviewGitOperation(validateIpc(reviewGitStartSchema, payload, "review-git:start"), windowId),
+    );
+  });
+  handle("review:start", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "review:start" }, () =>
+      runtime.startPullRequestReview(validateIpc(startPullRequestReviewSchema, payload, "review:start"), windowId),
     );
   });
   handle("azure:create-pull-request", async (_event, payload) =>

@@ -24,7 +24,7 @@ export interface Alert {
 }
 
 /**
- * The 13 mobile command types from strideterm-mobile/protocol (plan §8).
+ * The mobile command types from strideterm-mobile/protocol (plan §8).
  * Defined here (not in electron/backend/mobile/) so shared, non-mobile code
  * (this file's ExternalNotificationEvent) can reference "which mobile action
  * applies" without a shared -> backend dependency. electron/backend/mobile/
@@ -39,6 +39,7 @@ export type MobileCommandType =
   | "task.reset"
   | "task.updateDescription"
   | "task.sendInstruction"
+  | "review.start"
   | "profile.catalog.get"
   | "remote.status.get"
   | "remote.endpoint.request"
@@ -48,6 +49,9 @@ export type MobileCommandType =
 
 /** Priority bucket for mobile push delivery — see plan §7. */
 export type ExternalNotificationPriority = "high" | "normal" | "low";
+export type MobileReviewProvider = "azure-devops" | "github";
+export type MobilePullRequestDraftState = "draft" | "ready";
+export type MobileReviewLaunchStatus = "started" | "failed";
 
 /**
  * Transport-neutral notification event (plan §10.1). Created once by the
@@ -78,12 +82,23 @@ export interface ExternalNotificationEvent {
   prompt?: string;
   exitCode?: number;
   durationMs?: number;
+  /** Pull request identity and state for provider-specific native notification detail. */
+  provider?: MobileReviewProvider;
+  prKey?: string;
+  draftState?: MobilePullRequestDraftState;
+  pullRequestTitle?: string;
+  pullRequestNumber?: number;
+  repositoryName?: string;
+  /** Correlates an accepted review.start with its final launch outcome. */
+  reviewStatus?: MobileReviewLaunchStatus;
+  agentName?: string;
+  operationId?: string;
   /** Stable key for collapsing duplicate OS/mobile notifications of the same alert. */
   dedupeKey: string;
   /** Set only for low-priority/repeatable kinds — see buildExternalNotificationEvent(). */
   collapseKey: string | null;
   /** Epoch ms. */
   createdAt: number;
-  /** Which of the 12 mobile command types a client may offer as a quick action for this event. */
+  /** Which mobile command types a client may offer as a quick action for this event. */
   actions: MobileCommandType[];
 }

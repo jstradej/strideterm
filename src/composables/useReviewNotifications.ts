@@ -10,15 +10,15 @@ import { resolveEventProfileId } from "./useNotificationProfileScope.js";
  * the notification store so the user gets a notification-center entry and a
  * toast when a PR gets a new comment, review, push, etc.
  *
- * Deduplication is by event id (stable, includes timestamp), so repeated
- * broadcasts of the same snapshot don't re-fire. Startup grace mirrors
- * useNotificationCapture: the first `STARTUP_GRACE_MS` after mount, events are
- * marked as seen without firing toasts — the backend's own seeding logic
- * should already prevent stale events from landing in this window, but this is
- * a belt-and-suspenders guard for the case where the renderer hot-reloads.
+ * Deduplication is by event id (stable, includes timestamp), persisted in a
+ * bounded client list so reloads and offline gaps do not replay the rolling
+ * backend snapshot. New PR and ready-transition events found during startup
+ * are added silently to history.
  */
 
 const STARTUP_GRACE_MS = 5_000;
+const SEEN_REVIEW_EVENTS_KEY = "strideterm-review-notified-activity-v1";
+const SEEN_REVIEW_EVENTS_MAX = 500;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function displayWorkspaceName(event: any): string {
@@ -42,20 +42,24 @@ export function useReviewNotifications(latestToastRef: Ref<any> | null = null) {
   const appStore = useAppStore();
   const notifStore = useNotificationStore();
 
-  const seenEventIds = new Set<string>();
+  const seenEventIds = new Set<string>(loadSeenEventIds());
   const startupAt = Date.now();
 
-  function seedFromPayload() {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const azure = (appStore.payload?.azureDevops as any)?.reviewActivity || [];
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const github = (appStore.payload?.github as any)?.reviewActivity || [];
-    for (const ev of [...azure, ...github]) {
-      if (ev?.id) seenEventIds.add(ev.id);
+  function rememberEventId(id: string): void {
+    seenEventIds.add(id);
+    while (seenEventIds.size > SEEN_REVIEW_EVENTS_MAX) {
+      const oldest = seenEventIds.values().next().value;
+      if (oldest === undefined) break;
+      seenEventIds.delete(oldest);
+    }
+    try {
+      const stored = loadSeenEventIds();
+      const next = [...stored.filter((entry) => entry !== id), id].slice(-SEEN_REVIEW_EVENTS_MAX);
+      window.localStorage.setItem(SEEN_REVIEW_EVENTS_KEY, JSON.stringify(next));
+    } catch {
+      // In-memory dedupe still applies for this renderer lifetime.
     }
   }
-
-  seedFromPayload();
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function processEvents(events: any[], provider: string) {
@@ -71,8 +75,6 @@ export function useReviewNotifications(latestToastRef: Ref<any> | null = null) {
 
     for (const ev of ordered) {
       if (!ev?.id || seenEventIds.has(ev.id)) continue;
-      seenEventIds.add(ev.id);
-      if (inStartupGrace) continue;
 
       // Skip events that belong to a different profile. Review activity is
       // broadcast to every window, but the toast / sound / dock entry must
@@ -85,8 +87,19 @@ export function useReviewNotifications(latestToastRef: Ref<any> | null = null) {
       if (!eventProfileId) continue;
       if (eventProfileId !== activeProfileId) continue;
 
+      const kind = String(ev.kind || "");
+      if (inStartupGrace && kind !== "pr-new" && kind !== "pr-ready") {
+        rememberEventId(ev.id);
+        continue;
+      }
+      rememberEventId(ev.id);
+
       const viewId = ev.prKey || ev.id;
       const workspaceId = ev.reviewWorkspaceId || ev.existingWorkspaceId || "";
+      const existingThread = notifStore.sessions.find(
+        (session) => session.workspaceId === workspaceId && session.viewId === viewId,
+      );
+      const isPrTransition = kind === "pr-new" || kind === "pr-ready";
       const title = eventAlertTitle(ev);
       const body = eventAlertBody(ev);
 
@@ -100,6 +113,16 @@ export function useReviewNotifications(latestToastRef: Ref<any> | null = null) {
         reviewWorkspaceId: ev.reviewWorkspaceId || "",
         existingWorkspaceId: ev.existingWorkspaceId || "",
         profileId: eventProfileId,
+        draftState:
+          ev.draftState === "draft" || ev.draftState === "ready"
+            ? ev.draftState
+            : existingThread?.meta?.draftState || "",
+        reviewActionKind: isPrTransition ? kind : existingThread?.meta?.reviewActionKind || "",
+        pullRequestTitle: ev.pullRequestTitle || existingThread?.meta?.pullRequestTitle || "",
+        pullRequestNumber: ev.pullRequestNumber || existingThread?.meta?.pullRequestNumber || "",
+        repositoryName: ev.repositoryName || existingThread?.meta?.repositoryName || "",
+        headSha: ev.headSha || existingThread?.meta?.headSha || "",
+        sourceEventId: isPrTransition ? ev.id : existingThread?.meta?.sourceEventId || ev.id,
       };
       const entry = notifStore.add({
         title,
@@ -137,15 +160,26 @@ export function useReviewNotifications(latestToastRef: Ref<any> | null = null) {
 
   watch(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    () => (appStore.payload?.azureDevops as any)?.reviewActivity,
-    (events) => processEvents(events || [], "azure-devops"),
-    { deep: false },
+    () => [(appStore.payload?.azureDevops as any)?.reviewActivity, appStore.activeProfile?.id],
+    ([events]) => processEvents(events || [], "azure-devops"),
+    { deep: false, immediate: true },
   );
 
   watch(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    () => (appStore.payload?.github as any)?.reviewActivity,
-    (events) => processEvents(events || [], "github"),
-    { deep: false },
+    () => [(appStore.payload?.github as any)?.reviewActivity, appStore.activeProfile?.id],
+    ([events]) => processEvents(events || [], "github"),
+    { deep: false, immediate: true },
   );
+}
+
+function loadSeenEventIds(): string[] {
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(SEEN_REVIEW_EVENTS_KEY) || "[]");
+    return Array.isArray(parsed)
+      ? parsed.filter((id): id is string => typeof id === "string").slice(-SEEN_REVIEW_EVENTS_MAX)
+      : [];
+  } catch {
+    return [];
+  }
 }

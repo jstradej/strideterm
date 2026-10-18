@@ -15,6 +15,9 @@ function createContext() {
   return {
     prKey: "ado-main:repo-1:123",
     rootPath: "C:/Users/strad/.strideterm/review-bridge",
+    checkoutPath: "C:/reviews/pr-123",
+    expectedHead: "0123456789abcdef0123456789abcdef01234567",
+    baseCommit: "abcdef0123456789abcdef0123456789abcdef01",
     repository: {
       id: "repo-1",
       name: "mhub",
@@ -40,6 +43,76 @@ function createWorkspace() {
 }
 
 describe("review bridge agent launch", () => {
+  test.each([
+    ["claude", "claude --model sonnet"],
+    ["codex", "codex --model o3"],
+    ["copilot", "copilot --model gpt-4.1"],
+    ["opencode", "opencode --model anthropic/claude-sonnet-4"],
+  ])("passes the one-shot draft-only review prompt to %s", (provider, command) => {
+    const prompt = "Review this PR once; save local draft findings only.";
+    const launch = buildReviewAgentLaunch({
+      workspace: createWorkspace(),
+      panel: { id: "reviewer", title: "Reviewer", command },
+      context: createContext(),
+      processInfo: { platform: "linux", execPath: "/usr/bin/node" },
+      initialPrompt: prompt,
+      draftOnlyReview: true,
+    })!;
+    expect(launch.args.join(" ")).toContain(prompt);
+    expect(`${launch.args.join(" ")} ${JSON.stringify(launch.env || {})}`).toContain("--review-draft-only");
+    expect(launch.args).not.toContain("--add-dir");
+    if (provider === "claude") {
+      expect(launch.args).toContain("--permission-mode");
+      expect(launch.args).toContain("mcp__review__create_review_comment");
+      expect(launch.args).not.toContain("Bash");
+      expect(launch.args).toContain("-p");
+    } else if (provider === "codex") {
+      expect(launch.args).toContain("read-only");
+      expect(launch.args).not.toContain("--ask-for-approval");
+      expect(launch.args).toContain("exec");
+      expect(launch.args.indexOf("exec")).toBeLessThan(
+        launch.args.findIndex((arg: string) => arg.startsWith("mcp_servers.review.command=")),
+      );
+      expect(launch.args.at(-1)).toBe(prompt);
+    } else if (provider === "copilot") {
+      expect(launch.args).toContain("review(create_review_comment)");
+      expect(launch.args).not.toContain("--allow-all-tools");
+      expect(launch.args).toContain("--no-custom-instructions");
+      expect(launch.args).toContain("-p");
+      expect(launch.args).not.toContain("-i");
+      expect(launch.env?.COPILOT_ALLOW_ALL).toBe("false");
+    } else {
+      expect(launch.args).not.toContain("--yolo");
+      expect(launch.args).toContain("run");
+      expect(launch.args).not.toContain("--prompt");
+      expect(launch.args.at(-1)).toBe(prompt);
+      const config = JSON.parse(launch.env?.OPENCODE_CONFIG_CONTENT || "{}");
+      expect(config.permission.bash).toBe("deny");
+      expect(config.permission.review_get_review_changes).toBe("allow");
+    }
+    expect(detectReviewAgentPanel({ title: "Reviewer", command })).toBe(provider);
+  });
+
+  test("recognizes a configured absolute CLI path with spaces on a custom-titled panel", () => {
+    const executable = "C:/Program Files/CLI/claude.exe";
+    expect(
+      detectReviewAgentPanel({ title: "Reviewer", command: '"C:/Program Files/CLI/claude.exe" --model haiku' }),
+    ).toBe("claude");
+    const launch = buildReviewAgentLaunch({
+      workspace: createWorkspace(),
+      panel: { id: "reviewer", title: "Reviewer", command: '"C:/Program Files/CLI/claude.exe" --model haiku' },
+      context: createContext(),
+      processInfo: { platform: "linux", execPath: "/usr/bin/node", commandLookup: { claude: executable } },
+      initialPrompt: "Review prompt",
+      draftOnlyReview: true,
+    })!;
+    expect(launch.file).toBe(executable);
+    expect(launch.args).toContain("--model");
+    expect(launch.args).toContain("haiku");
+    expect(launch.args).toContain("-p");
+    expect(launch.args).toContain("Review prompt");
+  });
+
   test("detects built-in review agent panels", () => {
     expect(detectReviewAgentPanel({ command: "claude" })).toBe("claude");
     expect(detectReviewAgentPanel({ command: "codex" })).toBe("codex");
@@ -141,7 +214,7 @@ describe("review bridge agent launch", () => {
       sshMcp: { command: "/usr/bin/node", args: ["/app/ssh-mcp-stdio.js", "--ssh-mcp"] },
     })!;
 
-    const configs = launch.args.filter((arg, index) => launch.args[index - 1] === "--mcp-config");
+    const configs = launch.args.filter((arg: string, index: number) => launch.args[index - 1] === "--mcp-config");
     expect(configs).toHaveLength(1);
     expect(JSON.parse(configs[0]).mcpServers).toHaveProperty("review");
     expect(JSON.parse(configs[0]).mcpServers).toHaveProperty("strideterm_ssh");

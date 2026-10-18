@@ -263,4 +263,87 @@ describe("useReviewNotifications — profile scoping", () => {
     expect(notifStore.sessions[0].meta?.profileId).toBe("p1");
     wrapper.unmount();
   });
+
+  test("imports a new ready PR from the initial snapshot silently and dedupes it across reloads", async () => {
+    const appStore = useAppStore();
+    const notifStore = useNotificationStore();
+    appStore.payload = buildPayload({
+      azureDevops: {
+        reviewActivity: [
+          {
+            id: "pr-ready-1",
+            kind: "pr-ready",
+            provider: "azure-devops",
+            prKey: "pr-17",
+            profileId: "p1",
+            connectionId: "conn-a",
+            draftState: "ready",
+            pullRequestTitle: "Improve startup",
+            pullRequestNumber: 17,
+            repositoryName: "service",
+            headSha: "head-1",
+            title: "Pull request is ready",
+            body: "Improve startup",
+          },
+        ],
+        connections: [],
+        inboxItems: [],
+        pullRequests: {},
+        lastUpdatedAt: null,
+        error: "",
+      },
+    });
+
+    const first = mountHarness();
+    await nextTick();
+    expect(notifStore.sessions).toHaveLength(1);
+    expect(notifStore.sessions[0].meta).toMatchObject({
+      draftState: "ready",
+      reviewActionKind: "pr-ready",
+      headSha: "head-1",
+    });
+    expect(first.toastRef.value).toBeNull();
+    first.wrapper.unmount();
+
+    const second = mountHarness();
+    await nextTick();
+    expect(notifStore.sessions[0].events).toHaveLength(1);
+    second.wrapper.unmount();
+  });
+
+  test("does not consume another profile's event before that profile is active", async () => {
+    const appStore = useAppStore();
+    const notifStore = useNotificationStore();
+    appStore.payload = buildPayload();
+    const event = {
+      id: "p2-pr-ready",
+      kind: "pr-ready",
+      provider: "azure-devops",
+      prKey: "pr-p2",
+      profileId: "p2",
+      connectionId: "conn-b",
+      draftState: "ready",
+      title: "P2 ready",
+      body: "",
+    };
+    const { wrapper } = mountHarness();
+
+    appStore.payload = buildPayload({
+      azureDevops: { reviewActivity: [event], connections: [], inboxItems: [], pullRequests: {} },
+    });
+    await nextTick();
+    expect(notifStore.sessions).toHaveLength(0);
+
+    const activePayload = buildPayload();
+    appStore.payload = buildPayload({
+      appState: {
+        ...activePayload.appState,
+        windowSlots: [{ id: "slot1", profileId: "p2", activeWorkspaceId: "ws-p2", activeSessionId: "" }],
+      },
+      azureDevops: { reviewActivity: [event], connections: [], inboxItems: [], pullRequests: {} },
+    });
+    await nextTick();
+    expect(notifStore.sessions.map((session) => session.events[0].title)).toContain("P2 ready");
+    wrapper.unmount();
+  });
 });

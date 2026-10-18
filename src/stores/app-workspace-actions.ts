@@ -168,6 +168,19 @@ function describeOperationFinished(operation: OperationFinished): { title: strin
     }
     return { title: "Task agents started", body: lines.join("\n"), failed: false };
   }
+  if (operation.kind === "review.start") {
+    if ("error" in operation) {
+      return { title: "Review agent could not be started", body: operation.error.message, failed: true };
+    }
+    const provider = operation.result.provider === "github" ? "GitHub" : "Azure DevOps";
+    const number = operation.result.pullRequestNumber ? ` #${String(operation.result.pullRequestNumber)}` : "";
+    const agent = String(operation.result.agent || "The review agent");
+    return {
+      title: "Review agent started",
+      body: `${agent} started a basic review of ${provider}${number}. The review is still in progress.`,
+      failed: false,
+    };
+  }
   if ("error" in operation) return { title: "Operation failed", body: operation.error.message, failed: true };
   return { title: "Operation finished", body: operation.kind, failed: false };
 }

@@ -1262,6 +1262,7 @@ export function normalizeState(
     "status.read",
     "task.control",
     "task.destructive",
+    "review.start",
     "remote.request",
     "remote.webSession",
   ]);

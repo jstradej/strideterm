@@ -1,5 +1,17 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
 import { describe, expect, test, vi } from "vitest";
-import { createReviewBridgeMcpHandlers, parseReviewBridgeMcpArgs } from "./review-bridge-mcp.js";
+import {
+  createReviewBridgeMcpHandlers,
+  parseReviewBridgeMcpArgs,
+  registerBasicReviewChangesTool,
+} from "./review-bridge-mcp.js";
+import { execFileText } from "./process-utils.js";
 
 function createContext() {
   return {
@@ -64,6 +76,23 @@ function createContext() {
 }
 
 describe("review bridge mcp handlers", () => {
+  test("draft-only mode stores comments and replies locally without queueing", async () => {
+    const context = createContext();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const store: any = {
+      getPullRequestContext: vi.fn(() => context),
+      createDraftComment: vi.fn().mockResolvedValue(context),
+      saveDraftResponse: vi.fn().mockResolvedValue(context),
+      queueDraftResponse: vi.fn().mockResolvedValue(context),
+    };
+    const handlers = createReviewBridgeMcpHandlers({ store, prKey: context.prKey, draftOnly: true });
+    await handlers.createDraftComment({ body: "Concrete defect", filePath: "src/app.js", lineNumber: 12 });
+    await handlers.saveReviewDraft({ index: 1, body: "Local reply" });
+    expect(store.createDraftComment).toHaveBeenCalledWith(expect.objectContaining({ autoQueue: false }));
+    expect(store.saveDraftResponse).toHaveBeenCalledTimes(1);
+    expect(store.queueDraftResponse).not.toHaveBeenCalled();
+  });
+
   test("lists only active comments in order", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const store: any = {
@@ -280,6 +309,93 @@ describe("parseReviewBridgeMcpArgs", () => {
       rootPath: "C:/bridge",
       prKey: "ado-main:repo-1:123",
       workspaceId: "",
+      draftOnly: false,
+      checkoutPath: "",
+      expectedHead: "",
+      baseCommit: "",
     });
+  });
+
+  test("enables the local-draft-only review mode", () => {
+    expect(
+      parseReviewBridgeMcpArgs([
+        "--review-bridge-mcp",
+        "--review-root",
+        "C:/bridge",
+        "--review-pr-key",
+        "x",
+        "--review-draft-only",
+      ]),
+    ).toMatchObject({ draftOnly: true });
+  });
+});
+
+describe("basic review diff MCP tool", () => {
+  test("serves a paged base-to-head diff from a divergent target without changing the checkout", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-review-diff-"));
+    const git = (args: string[]) => execFileText("git", args, { cwd: root, timeout: 20_000 });
+    const server = new McpServer({ name: "review-test", version: "1" });
+    const client = new Client({ name: "review-test-client", version: "1" });
+    try {
+      await git(["init", "--initial-branch=main"]);
+      await git(["config", "user.name", "Review Test"]);
+      await git(["config", "user.email", "review-test@example.invalid"]);
+      await fs.writeFile(path.join(root, "common.txt"), "common\n");
+      await git(["add", "."]);
+      await git(["commit", "-m", "common"]);
+      await git(["checkout", "-b", "feature"]);
+      await fs.writeFile(
+        path.join(root, "feature.txt"),
+        Array.from(
+          { length: 100 },
+          (_, index) => `feature-line-${index.toString().padStart(3, "0")} ${"x".repeat(20)}`,
+        ).join("\n") + "\n",
+      );
+      await git(["add", "."]);
+      await git(["commit", "-m", "feature"]);
+      const head = (await git(["rev-parse", "HEAD"])).stdout.trim();
+      await git(["checkout", "main"]);
+      await fs.writeFile(path.join(root, "target-only.txt"), "target branch change\n");
+      await git(["add", "."]);
+      await git(["commit", "-m", "target-only"]);
+      await git(["checkout", "feature"]);
+      const mergeBase = (await git(["merge-base", "main", head])).stdout.trim();
+
+      registerBasicReviewChangesTool(server, { checkoutPath: root, expectedHead: head, baseCommit: mergeBase });
+      const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+      const names = (await client.listTools()).tools.map((tool) => tool.name);
+      expect(names).toEqual(["get_review_changes"]);
+
+      const filesResult = CallToolResultSchema.parse(
+        await client.callTool({ name: "get_review_changes", arguments: {} }),
+      );
+      const filesText = filesResult.content.find((content) => content.type === "text")?.text || "";
+      expect(filesText).toContain("feature.txt");
+      expect(filesText).not.toContain("target-only.txt");
+
+      const first = CallToolResultSchema.parse(
+        await client.callTool({
+          name: "get_review_changes",
+          arguments: { filePath: "feature.txt", offset: 0, limit: 500 },
+        }),
+      );
+      const second = CallToolResultSchema.parse(
+        await client.callTool({
+          name: "get_review_changes",
+          arguments: { filePath: "feature.txt", offset: 500, limit: 500 },
+        }),
+      );
+      const firstPage = first.content.find((content) => content.type === "text")?.text || "";
+      const secondPage = second.content.find((content) => content.type === "text")?.text || "";
+      expect(firstPage).toContain("diff --git");
+      expect(firstPage).not.toBe(secondPage);
+      expect((first.structuredContent as { hasMore: boolean }).hasMore).toBe(true);
+      expect((await git(["status", "--short"])).stdout).toBe("");
+    } finally {
+      await client.close().catch(() => {});
+      await server.close().catch(() => {});
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });

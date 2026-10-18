@@ -1249,6 +1249,11 @@ const CAPABILITY_OPTIONS: Array<{ id: MobileCapability; label: string; title: st
     label: "Receive notifications",
     title: "Receive alerts from this desktop and mark them read.",
   },
+  {
+    id: "review.start",
+    label: "Start PR reviews",
+    title: "Ask this desktop to launch a basic review agent for a ready Azure DevOps or GitHub pull request.",
+  },
   { id: "status.read", label: "Read status", title: "See workspace and remote-access status. Read-only." },
   {
     id: "task.control",
@@ -1518,7 +1523,9 @@ const quotaTitle = computed(
 
 // --- Pairing ---
 const pairingProfileIds = computed(() => profileOptions.value.map((p) => p.id));
-const pairingCapabilities = ref<MobileCapability[]>(CAPABILITY_OPTIONS.map((c) => c.id));
+const pairingCapabilities = ref<MobileCapability[]>(
+  CAPABILITY_OPTIONS.filter((c) => c.id !== "review.start").map((c) => c.id),
+);
 const addPhoneSetupOpen = ref(false);
 const pairingQr = ref<HTMLElement | null>(null);
 const pairingBusy = ref(false);
@@ -1541,7 +1548,9 @@ const pairingGrantSummary = computed(() => {
   const capabilities =
     pairingCapabilities.value.length >= capCount
       ? "everything a paired phone can do"
-      : `${pairingCapabilities.value.length} of ${capCount} capabilities`;
+      : !pairingCapabilities.value.includes("review.start") && pairingCapabilities.value.length === capCount - 1
+        ? "all standard capabilities; starting PR reviews is off"
+        : `${pairingCapabilities.value.length} of ${capCount} capabilities`;
   return `${profiles} and ${capabilities}`;
 });
 const nowTick = ref(Date.now());

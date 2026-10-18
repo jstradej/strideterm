@@ -175,3 +175,13 @@ Each row is one request; expand it for the URL, timestamp, connection and error,
 ## Review Worktrees on Disk
 
 Review worktrees stay on disk after you close a workspace; reopening the PR reuses the worktree with its local commits. Deleting a review or quick-fix workspace asks whether to remove the worktree files too; if removal fails (a process still holds the directory), you get the path to delete it yourself.
+
+## Draft and Ready Notifications
+
+Notifications include pull request draft state and report new relevant PRs plus draft-to-ready transitions. The first successful poll for a new connection establishes its baseline; later polls, including after restart, report new activity without replaying already tracked events.
+
+A Ready notification can start a basic review directly from desktop or a native mobile notification. strIDEterm verifies that the PR is still open, ready, and at the same head before launch, then creates an isolated managed checkout and a fresh agent session. Agent choice prefers the configured task worker provider, followed by Claude Code, Codex, GitHub Copilot, and OpenCode when their supported CLI is installed. The review saves concrete findings as local drafts only; it does not queue or publish comments, edit files, or mutate Git state.
+
+The action returns an operation ID immediately and launches the configured CLI in its one-shot mode, so a new isolated checkout does not require an interactive trust confirmation. The review uses the CLI's existing sign-in and does not change global CLI configuration; sign in with the provider before using the action if needed. A `started` result means the CLI process launched, not that review is complete.
+
+For native mobile use, update both apps and enable **Start PR reviews** (`review.start`) in the paired device's access settings. This permission is off by default; existing devices keep their current permissions.

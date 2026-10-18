@@ -335,7 +335,21 @@
               @click="onClickSession(row.session)"
               @pointermove="clearFlash(row.session.id)"
             >
-              <div class="notification-item__icon">{{ sessionIcon(row.session) }}</div>
+              <div class="notification-item__icon">
+                <svg
+                  v-if="isPullRequestNotification(row.session)"
+                  class="notification-item__pr-icon"
+                  viewBox="0 0 16 16"
+                  role="img"
+                  :aria-label="`${providerLabel(row.session)} pull request`"
+                >
+                  <path
+                    fill="currentColor"
+                    d="M4.5 3.25a1.75 1.75 0 1 0-1 1.67v6.16a1.75 1.75 0 1 0 1.5 0V6.25h4.25a2.75 2.75 0 0 0 2.75-2.75v-.58a1.75 1.75 0 1 0-1.5 0v.58c0 .69-.56 1.25-1.25 1.25H5V4.92c.6-.25 1-.85 1-1.67Zm-.5 0a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm8.5-1a.75.75 0 1 1 0 1.5.75.75 0 0 1 0-1.5ZM4.25 12.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Z"
+                  />
+                </svg>
+                <span v-else>{{ sessionIcon(row.session) }}</span>
+              </div>
               <div class="notification-item__content">
                 <div class="notification-item__head">
                   <strong class="notification-item__title">
@@ -343,6 +357,15 @@
                     {{ sessionTitle(row.session) }}
                   </strong>
                   <span class="notification-item__meta">
+                    <span
+                      v-if="pullRequestDraftState(row.session)"
+                      class="notification-item__pr-state"
+                      :class="`notification-item__pr-state--${pullRequestDraftState(row.session)}`"
+                      :aria-label="
+                        pullRequestDraftState(row.session) === 'draft' ? 'Draft pull request' : 'Ready pull request'
+                      "
+                      >{{ pullRequestDraftState(row.session) === "draft" ? "Draft" : "Ready" }}</span
+                    >
                     <span
                       v-if="sessionProfileLabel(row.session)"
                       class="notification-item__profile-label"
@@ -394,6 +417,27 @@
                     Discard
                   </button>
                 </div>
+                <div v-if="isStartReviewAvailable(row.session)" class="notification-item__quick-actions">
+                  <button
+                    type="button"
+                    class="quick-action notification-item__start-review"
+                    :disabled="
+                      reviewAction.isStarting(row.session.meta || {}) ||
+                      Boolean(reviewAction.recordFor(row.session.meta || {})?.operationId)
+                    "
+                    :aria-label="`Start basic review for ${sessionTitle(row.session)}`"
+                    @click.stop="startBasicReview(row.session)"
+                  >
+                    {{ reviewActionLabel(row.session) }}
+                  </button>
+                </div>
+                <p
+                  v-if="isStartReviewAvailable(row.session) && reviewAction.recordFor(row.session.meta || {})?.error"
+                  class="notification-item__review-error"
+                  role="alert"
+                >
+                  {{ reviewAction.recordFor(row.session.meta || {})?.error }}
+                </p>
               </div>
               <!-- Hard-delete from history. Hidden on "waiting" items so the
                    user is nudged toward Dismiss/Snooze/Jump instead of
@@ -476,13 +520,15 @@ import {
   formatRunningAgentElapsed,
   type RunningAgentRow,
 } from "../../app/selectors.js";
-import type { WorkspaceState } from "../../../electron/shared/types/state.js";
+import type { StatePayload, WorkspaceState } from "../../../electron/shared/types/state.js";
+import type { OperationFinished } from "../../../electron/shared/operation-events.js";
 import PerformancePanel from "./PerformancePanel.vue";
 import ApprovalsPanel from "./ApprovalsPanel.vue";
 import WorkspaceAttachments from "../workspace/WorkspaceAttachments.vue";
 import { dayBandKey, dayBandLabel } from "../../app/helpers.js";
 import { apiKey } from "../../types/keys.js";
 import type { Transport } from "../../transport.js";
+import { usePullRequestReviewAction, isStartReviewTarget } from "../../composables/usePullRequestReviewAction.js";
 
 interface NotificationSession {
   id: string;
@@ -545,6 +591,7 @@ const performanceTabTitle = computed(() =>
 // second WebSocket on the remote client. Only the Approvals list uses it: it
 // reads the audit log and deletes from it.
 const api = inject<Transport>(apiKey) ?? null;
+const reviewAction = usePullRequestReviewAction();
 
 /**
  * Show the Approvals tab when auto-approve is armed OR the profile has a trail.
@@ -1030,6 +1077,48 @@ function sessionIcon(s: NotificationSession): string {
   return "🔔";
 }
 
+function isPullRequestNotification(s: NotificationSession): boolean {
+  const kind = s.meta?.reviewActionKind || s.meta?.kind;
+  return s.category === "review" && (kind === "pr-new" || kind === "pr-ready");
+}
+
+function providerLabel(s: NotificationSession): string {
+  return s.meta?.provider === "github" ? "GitHub" : "Azure DevOps";
+}
+
+function pullRequestDraftState(s: NotificationSession): "draft" | "ready" | "" {
+  return s.meta?.draftState === "draft" || s.meta?.draftState === "ready" ? s.meta.draftState : "";
+}
+
+function isStartReviewAvailable(s: NotificationSession): boolean {
+  return s.category === "review" && isStartReviewTarget(s.meta);
+}
+
+function reviewActionLabel(s: NotificationSession): string {
+  const record = s.meta ? reviewAction.recordFor(s.meta) : undefined;
+  if (record?.operationId) return "Review starting…";
+  if (s.meta && reviewAction.isStarting(s.meta)) return "Starting…";
+  return record?.error ? "Retry basic review" : "Start basic review";
+}
+
+async function startBasicReview(s: NotificationSession): Promise<void> {
+  if (!api) {
+    notifStore.showError("Could not start review", "The review action is unavailable in this client.", {
+      profileId: String(s.meta?.profileId || ""),
+    });
+    return;
+  }
+  try {
+    const record = await reviewAction.start(s.meta || {}, api);
+    if (record?.outcome) await reconcileReviewOperationResults([record.outcome]);
+    else await reconcileReviewOperationResults(appStore.payload?.operations?.lastResults);
+  } catch (error) {
+    notifStore.showError("Could not start review", (error as Error)?.message || String(error), {
+      profileId: String(s.meta?.profileId || ""),
+    });
+  }
+}
+
 function sessionTitle(s: NotificationSession): string {
   // A phone session belongs to no workspace or tab; the event title ("Phone connected") says it all.
   if (s.category === "mobile") return s.events?.[0]?.title || "Phone connected";
@@ -1183,6 +1272,75 @@ async function navigateToTarget(target: { workspaceId: string; viewId: string })
   }
   return true;
 }
+
+const reviewNavigationInFlight = new Set<string>();
+
+async function navigateToStartedReview(record: {
+  operationId?: string;
+  workspaceId?: string;
+  profileId?: string;
+}): Promise<void> {
+  const operationId = record.operationId || "";
+  const workspaceId = record.workspaceId || "";
+  if (!operationId || !workspaceId || reviewNavigationInFlight.has(operationId)) return;
+  if (record.profileId && record.profileId !== (activeProfileId.value || "default")) {
+    reviewAction.markNavigated(operationId);
+    return;
+  }
+  reviewNavigationInFlight.add(operationId);
+  try {
+    let targetExists =
+      appStore.payload?.appState?.workspaces?.some((workspace) => workspace.id === workspaceId) || false;
+    if (!targetExists && api?.getState) {
+      const state = await api.getState();
+      if ("appState" in state) appStore.adoptPayload(state as StatePayload);
+      targetExists = appStore.payload?.appState?.workspaces?.some((workspace) => workspace.id === workspaceId) || false;
+    }
+    // The operation event can beat the workspace broadcast. Keep its accepted
+    // id in local storage; the next authoritative payload will try navigation
+    // again once the workspace arrives.
+    if (!targetExists) return;
+    const navigated = await navigateToTarget({ workspaceId, viewId: "" });
+    if (navigated) reviewAction.markNavigated(operationId);
+  } catch {
+    // The start result remains persisted and can be reconciled on the next state push.
+  } finally {
+    reviewNavigationInFlight.delete(operationId);
+  }
+}
+
+async function reconcileReviewOperationResults(rawResults: unknown): Promise<void> {
+  if (!Array.isArray(rawResults)) return;
+  for (const raw of rawResults) {
+    if (!raw || typeof raw !== "object" || !("kind" in raw) || raw.kind !== "review.start") continue;
+    const operation = raw as OperationFinished;
+    const currentProfileId = activeProfileId.value || "default";
+    if (operation.profileId && operation.profileId !== currentProfileId) continue;
+    if (!("result" in operation)) {
+      reviewAction.reconcileFinished(operation);
+      continue;
+    }
+    const record = reviewAction.reconcileFinished({
+      ...operation,
+      result: {
+        ...operation.result,
+        workspaceId: operation.result.workspaceId || operation.workspaceId,
+      },
+    });
+    if (record?.workspaceId) await navigateToStartedReview(record);
+  }
+}
+
+watch(
+  () => [
+    appStore.payload?.operations?.lastResults,
+    appStore.payload?.appState?.workspaces,
+    activeProfileId.value,
+    reviewAction.records.value,
+  ],
+  ([rawResults]) => reconcileReviewOperationResults(rawResults),
+  { immediate: true },
+);
 
 async function jump(s: NotificationSession): Promise<void> {
   const target = resolveJumpTarget(s);

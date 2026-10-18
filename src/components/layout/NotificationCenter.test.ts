@@ -135,6 +135,128 @@ describe("NotificationCenter — sessionProfileLabel render", () => {
     expect(wrapper.find(".notification-item__profile-label").exists()).toBe(false);
   });
 
+  it("shows provider PR identity, ready state, and starts a basic review", async () => {
+    const appStore = useAppStore();
+    const notifStore = useNotificationStore();
+    appStore.payload = makePayload() as AnyApi;
+    notifStore.panelOpen = true;
+    const startPullRequestReview = vi.fn(async () => ({
+      started: true as const,
+      operationId: "review-op-1",
+      replayed: false,
+    }));
+    const meta = {
+      provider: "github",
+      kind: "pr-new",
+      reviewActionKind: "pr-new",
+      prKey: "repo:17",
+      profileId: "p1",
+      draftState: "ready",
+      headSha: "head-1",
+    };
+    notifStore.add({
+      title: "New pull request in repo #17",
+      body: "Improve startup",
+      kind: "review",
+      category: "review",
+      workspaceId: "",
+      viewId: "repo:17",
+      meta,
+    });
+
+    const wrapper = mount(NotificationCenter, {
+      global: { provide: { [apiKey]: { startPullRequestReview } as AnyApi } },
+    });
+    await nextTick();
+    expect(wrapper.find('svg[aria-label="GitHub pull request"]').exists()).toBe(true);
+    expect(wrapper.find(".notification-item__pr-state").text()).toBe("Ready");
+    await wrapper.find(".notification-item__start-review").trigger("click");
+    await flushPromises();
+    expect(startPullRequestReview).toHaveBeenCalledWith({
+      provider: "github",
+      prKey: "repo:17",
+      idempotencyKey: expect.any(String),
+    });
+    expect(wrapper.find(".notification-item__start-review").text()).toContain("Review starting");
+
+    const activateProfile = vi.spyOn(appStore, "activateProfile");
+    appStore.payload = makePayload({
+      appState: {
+        profiles: [
+          { id: "p1", name: "Profile Alpha", color: "#fff", workspaceIds: ["ws-a"] },
+          { id: "p2", name: "Profile Beta", color: "#fff", workspaceIds: [] },
+        ],
+        windowSlots: [{ id: "slot1", profileId: "p2", activeWorkspaceId: "", activeSessionId: "" }],
+      },
+      operations: {
+        running: [],
+        lastResults: [
+          {
+            operationId: "review-op-1",
+            kind: "review.start",
+            profileId: "p1",
+            workspaceId: "ws-a",
+            finishedAt: new Date().toISOString(),
+            result: { workspaceId: "ws-a", provider: "github", prKey: "repo:17", agent: "Codex" },
+          },
+        ],
+      },
+    }) as AnyApi;
+    await flushPromises();
+    expect(activateProfile).not.toHaveBeenCalled();
+    expect(JSON.parse(window.localStorage.getItem("strideterm-pr-review-starts-v1") || "{}")).toMatchObject({
+      "p1|github:repo:17:head-1": { operationId: "review-op-1" },
+    });
+  });
+
+  it("reconciles a replayed terminal result once even while its workspace is not in the payload", async () => {
+    const appStore = useAppStore();
+    const notifStore = useNotificationStore();
+    appStore.payload = makePayload() as AnyApi;
+    notifStore.panelOpen = true;
+    const startedAt = new Date().toISOString();
+    const startPullRequestReview = vi.fn(async () => ({
+      started: true as const,
+      operationId: "review-op-replayed",
+      replayed: true,
+      outcome: {
+        operationId: "review-op-replayed",
+        kind: "review.start",
+        profileId: "p1",
+        finishedAt: startedAt,
+        result: { workspaceId: "review-workspace" },
+      },
+    }));
+    notifStore.add({
+      title: "New pull request in repo #18",
+      body: "Improve startup",
+      kind: "review",
+      category: "review",
+      workspaceId: "",
+      viewId: "repo:18",
+      meta: {
+        provider: "github",
+        kind: "pr-new",
+        reviewActionKind: "pr-new",
+        prKey: "repo:18",
+        profileId: "p1",
+        draftState: "ready",
+        headSha: "head-18",
+      },
+    });
+    const wrapper = mount(NotificationCenter, {
+      global: { provide: { [apiKey]: { startPullRequestReview } as AnyApi } },
+    });
+
+    await wrapper.get(".notification-item__start-review").trigger("click");
+    await flushPromises();
+    const persisted = JSON.parse(window.localStorage.getItem("strideterm-pr-review-starts-v1") || "{}");
+    expect(persisted["p1|github:repo:18:head-18"]).toMatchObject({
+      operationId: "review-op-replayed",
+      workspaceId: "review-workspace",
+    });
+  });
+
   it("names an entry with no tab by its own title, not the 'Workspace › Tab' placeholders", async () => {
     const appStore = useAppStore();
     const notifStore = useNotificationStore();

@@ -37,6 +37,17 @@ export interface BuildExternalNotificationEventInput {
   prompt?: string;
   exitCode?: number | null;
   durationMs?: number;
+  /** PR notification routing/display context; copied into the encrypted mobile payload. */
+  provider?: "azure-devops" | "github";
+  prKey?: string;
+  draftState?: "draft" | "ready";
+  pullRequestTitle?: string;
+  pullRequestNumber?: number;
+  repositoryName?: string;
+  /** Completion detail for an accepted review.start operation. */
+  operationId?: string;
+  reviewStatus?: "started" | "failed";
+  agentName?: string;
   createdAt?: number;
 }
 
@@ -75,8 +86,23 @@ function resolvePriority(kind: string, urgency: "normal" | "urgent"): ExternalNo
  * plan's example in §10.1 ("a waiting event exposes task.sendInstruction /
  * task.pause etc.").
  */
-function resolveActions(kind: string): MobileCommandType[] {
-  if (kind === "waiting") {
+function resolveActions(
+  input: Pick<
+    BuildExternalNotificationEventInput,
+    "kind" | "provider" | "prKey" | "draftState" | "reviewStatus" | "operationId"
+  >,
+): MobileCommandType[] {
+  if (
+    input.kind === "review" &&
+    input.provider &&
+    input.prKey &&
+    input.draftState === "ready" &&
+    !input.reviewStatus &&
+    !input.operationId
+  ) {
+    return ["review.start", "notification.acknowledge"];
+  }
+  if (input.kind === "waiting") {
     return ["task.sendInstruction", "task.pause", "notification.acknowledge"];
   }
   return ["notification.acknowledge"];
@@ -90,7 +116,11 @@ export function buildExternalNotificationEvent(input: BuildExternalNotificationE
   const sessionId = input.sessionId || null;
   const panelId = input.panelId || null;
   const activity = displayText(sanitizeTerminalText(input.activity || ""), 200);
-  const dedupeKey = `${workspaceId}:${sessionId || panelId || ""}:${kind}`;
+  const dedupeKey = input.operationId
+    ? `${workspaceId}:review-start:${input.operationId}`
+    : input.prKey
+      ? `${workspaceId}:review:${input.provider || "unknown"}:${input.prKey}:${kind}`
+      : `${workspaceId}:${sessionId || panelId || ""}:${kind}`;
 
   return {
     eventId: input.eventId,
@@ -109,11 +139,20 @@ export function buildExternalNotificationEvent(input: BuildExternalNotificationE
     ...(input.prompt ? { prompt: truncateUtf8Head(input.prompt, 500) } : {}),
     ...(Number.isInteger(input.exitCode) ? { exitCode: input.exitCode! } : {}),
     ...(Number.isInteger(input.durationMs) && input.durationMs! >= 0 ? { durationMs: input.durationMs! } : {}),
+    ...(input.provider ? { provider: input.provider } : {}),
+    ...(input.prKey ? { prKey: input.prKey } : {}),
+    ...(input.draftState ? { draftState: input.draftState } : {}),
+    ...(input.pullRequestTitle ? { pullRequestTitle: displayText(input.pullRequestTitle, 500) } : {}),
+    ...(Number.isInteger(input.pullRequestNumber) ? { pullRequestNumber: input.pullRequestNumber } : {}),
+    ...(input.repositoryName ? { repositoryName: displayText(input.repositoryName, 200) } : {}),
+    ...(input.operationId ? { operationId: displayText(input.operationId, 200) } : {}),
+    ...(input.reviewStatus ? { reviewStatus: input.reviewStatus } : {}),
+    ...(input.agentName ? { agentName: displayText(input.agentName, 80) } : {}),
     dedupeKey,
     // Only low-priority events collapse — waiting/error/normal events must
     // never silently disappear behind a later one (plan §7/§11.5).
     collapseKey: priority === "low" ? dedupeKey : null,
     createdAt: typeof input.createdAt === "number" ? input.createdAt : Date.now(),
-    actions: resolveActions(kind),
+    actions: resolveActions(input),
   };
 }

@@ -151,6 +151,7 @@ function makeCommand(overrides: Partial<Command> & { type: Command["type"]; payl
 
 function createFakeRuntime(): MobileCommandRuntime & {
   calls: string[];
+  setReviewOutcome: (outcome: import("../../shared/operation-events.js").OperationFinished) => void;
   setTunnelState: (status: string, publicUrl?: string) => void;
   setResult: (
     method: "pause" | "resume" | "stop" | "reset" | "updateDescription" | "resendInstruction",
@@ -171,8 +172,12 @@ function createFakeRuntime(): MobileCommandRuntime & {
     updateDescription: true,
     resendInstruction: true,
   };
+  let reviewOutcome: import("../../shared/operation-events.js").OperationFinished | undefined;
   return {
     calls,
+    setReviewOutcome(outcome) {
+      reviewOutcome = outcome;
+    },
     setTunnelState(status, publicUrl = "") {
       tunnel.status = status;
       tunnel.publicUrl = publicUrl;
@@ -203,6 +208,15 @@ function createFakeRuntime(): MobileCommandRuntime & {
     async resendTaskInstruction(workspaceId, role) {
       calls.push(`resendTaskInstruction:${workspaceId}:${role}`);
       return { ok: results.resendInstruction };
+    },
+    async startPullRequestReview(input, _windowId, profileId) {
+      calls.push(`startPullRequestReview:${input.provider}:${input.prKey}:${profileId}`);
+      return {
+        started: true as const,
+        operationId: reviewOutcome?.operationId ?? "op-review-1",
+        replayed: reviewOutcome != null,
+        ...(reviewOutcome ? { outcome: reviewOutcome } : {}),
+      };
     },
     async createCloudflareTunnel() {
       calls.push("createCloudflareTunnel");
@@ -1766,6 +1780,88 @@ describe("workspace.status.get carries the name the phone cannot otherwise learn
     // The phone falls back to its own wording for this. An empty string dressed up as a name would
     // render as a blank subtitle, which reads as a bug rather than as an absence.
     expect((result.data as { name: unknown }).name).toBeNull();
+  });
+});
+
+describe("review.start", () => {
+  test("requires the review capability and returns a preparing operation", async () => {
+    const { dispatcher, runtime } = await createFixture();
+    const command = makeCommand({
+      type: "review.start",
+      commandId: "review-command-1",
+      payload: { provider: "github", prKey: "org/repo#42" },
+    });
+    const denied = await dispatcher.dispatch(command, makeDevice({ capabilities: ["task.control"] }));
+    expect(denied).toMatchObject({ status: "failed", errorCode: "missing-capability" });
+    const accepted = await dispatcher.dispatch(command, makeDevice({ capabilities: ["review.start"] }));
+    expect(accepted).toMatchObject({
+      status: "succeeded",
+      data: {
+        operationId: "op-review-1",
+        provider: "github",
+        prKey: "org/repo#42",
+        state: "preparing",
+      },
+    });
+    expect(runtime.calls).toContain("startPullRequestReview:github:org/repo#42:default");
+  });
+
+  test("a successful terminal replay is returned as launched", async () => {
+    const { dispatcher, runtime } = await createFixture();
+    runtime.setReviewOutcome({
+      operationId: "op-review-replay",
+      kind: "review.start",
+      profileId: "default",
+      finishedAt: new Date().toISOString(),
+      result: { provider: "github", prKey: "org/repo#42", agent: "Claude Code", launched: true },
+    });
+    const result = await dispatcher.dispatch(
+      makeCommand({
+        type: "review.start",
+        commandId: "review-command-replay-succeeded",
+        payload: { provider: "github", prKey: "org/repo#42" },
+      }),
+      makeDevice({ capabilities: ["review.start"] }),
+    );
+    expect(result).toMatchObject({
+      status: "succeeded",
+      data: { state: "launched", outcome: { result: { launched: true } } },
+    });
+  });
+
+  test("a failed terminal replay is returned as failed, not preparing", async () => {
+    const { dispatcher, runtime } = await createFixture();
+    runtime.setReviewOutcome({
+      operationId: "op-review-replay-failed",
+      kind: "review.start",
+      profileId: "default",
+      finishedAt: new Date().toISOString(),
+      error: { code: "agent-unavailable", message: "No review agent is available." },
+    });
+    const result = await dispatcher.dispatch(
+      makeCommand({
+        type: "review.start",
+        commandId: "review-command-replay-failed",
+        payload: { provider: "github", prKey: "org/repo#42" },
+      }),
+      makeDevice({ capabilities: ["review.start"] }),
+    );
+    expect(result).toMatchObject({
+      status: "succeeded",
+      data: { state: "failed", outcome: { error: { code: "agent-unavailable" } } },
+    });
+  });
+
+  test("does not fall back to a stale device when the authorized record disappears", async () => {
+    const { dispatcher, runtime } = await createFixture({}, null, null, { currentDevice: () => null });
+    const command = makeCommand({
+      type: "review.start",
+      commandId: "review-command-revoked",
+      payload: { provider: "azure-devops", prKey: "org/project/repo/42" },
+    });
+    const result = await dispatcher.dispatch(command, makeDevice({ capabilities: ["review.start"] }));
+    expect(result).toMatchObject({ status: "failed", errorCode: "device-not-active", data: null });
+    expect(runtime.calls).not.toContain("startPullRequestReview:azure-devops:org/project/repo/42:default");
   });
 });
 

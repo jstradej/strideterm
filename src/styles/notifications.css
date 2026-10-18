@@ -605,6 +605,12 @@
   text-align: center;
 }
 
+.notification-item__pr-icon {
+  width: 16px;
+  height: 16px;
+  vertical-align: -3px;
+}
+
 /* Review activity notifications (Azure/GitHub PR events) — distinct from
    terminal completions. A colored left-border plus a subtle wash identifies
    the provider at a glance. */
@@ -661,6 +667,40 @@
 .notification-toast--review-github {
   border-left-color: #238636;
 }
+.notification-toast__pr-icon {
+  width: 16px;
+  height: 16px;
+  vertical-align: middle;
+}
+.notification-toast__pr-state {
+  display: inline-flex;
+  margin-left: 6px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 1px 6px;
+  font-size: 9px;
+  line-height: 1.2;
+}
+.notification-toast__review-action {
+  margin-top: 5px;
+  padding: 3px 8px;
+  border: 1px solid rgba(var(--tint), 0.18);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.notification-toast__review-action:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+.notification-toast__review-error {
+  margin: 4px 0 0;
+  color: #ff7a7a;
+  font-size: 11px;
+}
 
 .notification-item__content {
   min-width: 0;
@@ -694,6 +734,33 @@
   align-items: baseline;
   gap: 4px;
   flex-shrink: 0;
+}
+
+.notification-item__pr-state {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 1px 6px;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.notification-item__pr-state--ready {
+  color: #6edfb6;
+}
+.notification-item__pr-state--draft {
+  color: var(--muted);
+}
+.notification-item__start-review {
+  color: var(--accent);
+  font-weight: 700;
+}
+.notification-item__review-error {
+  margin: 4px 0 0;
+  color: #ff7a7a;
+  font-size: 11px;
 }
 
 .notification-item__count {

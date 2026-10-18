@@ -1,5 +1,6 @@
 import type { StatePayload, RecoveryResult } from "./types/state.js";
 import type { AzureClosedPrCleanupStarted, ReviewGitStarted } from "./types/ipc-results.js";
+import type { StartPullRequestReviewInput, StartPullRequestReviewResult } from "./pull-request-review.js";
 import type { MobileConnectedDevice } from "./mobile-session-events.js";
 import type { RemoteBrowserSession } from "./remote-access.js";
 import type {
@@ -232,6 +233,7 @@ export interface StridetermAPI {
   cleanupAzureClosedPullRequests: (parentWorkspaceId: string) => Promise<AzureClosedPrCleanupStarted>;
   /** Starts a review Git operation and resolves at once; the outcome arrives via `onReviewGitOperation`. */
   startReviewGitOperation: (payload: ReviewGitStart) => Promise<ReviewGitStarted>;
+  startPullRequestReview: (payload: StartPullRequestReviewInput) => Promise<StartPullRequestReviewResult>;
   queryAzureAuditLog: (filters: AzureAuditLogQuery) => Promise<unknown>;
   getAzureAuditStats: (filters: AzureAuditLogStats) => Promise<unknown>;
   queryApprovalAuditLog: (filters: ApprovalAuditLogQuery) => Promise<unknown>;

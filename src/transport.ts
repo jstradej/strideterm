@@ -25,6 +25,11 @@ import {
   type OperationFinished,
 } from "../electron/shared/operation-events.js";
 import type { ProfilePayload, ReviewGitStart } from "../electron/backend/ipc-schemas.js";
+import {
+  startPullRequestReviewSchema,
+  type StartPullRequestReviewInput,
+  type StartPullRequestReviewResult,
+} from "../electron/shared/pull-request-review.js";
 import type {
   SshAuthRequest,
   SshAuthPromptCancel,
@@ -2298,6 +2303,11 @@ export function createRemoteTransport(): Transport {
       }) as Promise<AzureClosedPrCleanupStarted>,
     startReviewGitOperation: (payload: ReviewGitStart) =>
       fetchJson("/api/review-git/start", payload) as Promise<ReviewGitStarted>,
+    startPullRequestReview: (payload: StartPullRequestReviewInput) =>
+      fetchJson(
+        "/api/review/start",
+        startPullRequestReviewSchema.parse(payload),
+      ) as Promise<StartPullRequestReviewResult>,
     queryAzureAuditLog: (filters) => fetchJson("/api/azure/audit-log/query", filters),
     getAzureAuditStats: (filters) => fetchJson("/api/azure/audit-log/stats", filters),
     // Read-only, hence remote-reachable — unlike the setting that produces the

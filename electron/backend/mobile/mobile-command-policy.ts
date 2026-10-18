@@ -120,6 +120,14 @@ export const COMMAND_POLICY: Record<MobileCommandType, CommandPolicy> = {
     idempotent: false,
     maxTtlMs: TWENTY_FOUR_HOURS,
   },
+  "review.start": {
+    requiredCapability: "review.start",
+    destructive: false,
+    allowedTargetKind: "desktop",
+    // The runtime dedupes by PR and source revision before launching an agent.
+    idempotent: true,
+    maxTtlMs: FIVE_MINUTES,
+  },
   "profile.catalog.get": {
     requiredCapability: "status.read",
     destructive: false,

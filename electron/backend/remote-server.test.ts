@@ -1716,6 +1716,7 @@ describe("terminal streaming — subscription routing + backpressure", () => {
     // Same, for the PR mutations moved into slotAwareRoute this round: azure/github
     // mark-seen, github comment/review and review-bridge sync (#32/#58/#63).
     const prMutationCalls: { method: string; prKey?: string; windowId?: string }[] = [];
+    const reviewStartCalls: { provider: string; prKey: string; windowId?: string }[] = [];
     // Records every docker shell runtime call (open/write/resize/close) so a test
     // can assert the HTTP route / WS message handler forwarded the right args.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1730,6 +1731,11 @@ describe("terminal streaming — subscription routing + backpressure", () => {
       _azureMutationCalls: azureMutationCalls,
       _gitConflictCalls: gitConflictCalls,
       _prMutationCalls: prMutationCalls,
+      _reviewStartCalls: reviewStartCalls,
+      startPullRequestReview: async (input: { provider: string; prKey: string }, windowId?: string) => {
+        reviewStartCalls.push({ provider: input.provider, prKey: input.prKey, windowId });
+        return { started: true, operationId: "review-op-http", replayed: false };
+      },
       // Mark-seen / github comment+review / review-bridge sync are now viewer-bound:
       // each records the windowId it received so a test can assert it is a
       // `remote:` viewer id (was a viewerless global path).
@@ -3246,6 +3252,48 @@ describe("terminal streaming — subscription routing + backpressure", () => {
           body: JSON.stringify({ kind: "stage", workspaceId: "ws1", paths: ["a"] }),
         });
         expect(res.status).toBeGreaterThanOrEqual(400);
+      });
+    });
+
+    test("basic PR review start is viewer-bound and returns the accepted operation immediately", async () => {
+      await withServer("tok-pr-review", async ({ port, runtime }) => {
+        const response = await fetch(`http://127.0.0.1:${port}/api/review/start`, {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer tok-pr-review",
+            "X-Strideterm-Client-Id": "prrv-aaaa",
+            "X-Strideterm-State-Protocol": "2",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ provider: "github", prKey: "gh:pr1", idempotencyKey: "request-1" }),
+        });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({ started: true, operationId: "review-op-http", replayed: false });
+        const calls = (
+          runtime as unknown as { _reviewStartCalls: { provider: string; prKey: string; windowId?: string }[] }
+        )._reviewStartCalls;
+        expect(calls).toEqual([{ provider: "github", prKey: "gh:pr1", windowId: expect.stringMatching(/^remote:/) }]);
+      });
+    });
+
+    test("basic PR review start rejects caller-supplied profile assertions", async () => {
+      await withServer("tok-pr-review-schema", async ({ port, runtime }) => {
+        const response = await fetch(`http://127.0.0.1:${port}/api/review/start`, {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer tok-pr-review-schema",
+            "X-Strideterm-Client-Id": "prrv-bbbb",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            provider: "github",
+            prKey: "gh:pr1",
+            idempotencyKey: "request-2",
+            internalProfileId: "other",
+          }),
+        });
+        expect(response.status).toBeGreaterThanOrEqual(400);
+        expect((runtime as unknown as { _reviewStartCalls: unknown[] })._reviewStartCalls).toEqual([]);
       });
     });
 

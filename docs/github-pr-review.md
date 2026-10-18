@@ -86,3 +86,13 @@ The same workflow as Azure DevOps: agent tabs in a review workspace get the revi
 ## Activity Log
 
 The **Activity Log** tab records every GitHub API call strIDEterm made — fetching PRs, loading comments, posting your replies — so you can confirm a comment was published, investigate a failed sync and tell your actions from background polling. Filter by category, status, source, date range and free text. Entries are kept for 30 days.
+
+## Draft and Ready Notifications
+
+Notifications cover review-requested and authored PRs, PRs assigned to you, and (when a connection has explicit repository filters) all open PRs in those watched repositories. The watched-repository scope is bounded to those filters so draft PRs remain observable when they become ready. The first successful poll for a new connection establishes its baseline; later polls, including after restart, report new relevant PRs and draft-to-ready transitions without replaying already tracked events.
+
+A Ready notification can start a basic review directly from desktop or a native mobile notification. strIDEterm checks that the PR is still open, ready, and at the same head before launch, then creates an isolated managed checkout and a fresh agent session. Agent choice prefers the configured task worker provider, followed by Claude Code, Codex, GitHub Copilot, and OpenCode when their supported CLI is installed. The basic review saves concrete findings as local drafts only; it does not queue or publish comments, edit files, or mutate Git state.
+
+The action returns an operation ID immediately and launches the configured CLI in its one-shot mode, so a new isolated checkout does not require an interactive trust confirmation. The review uses the CLI's existing sign-in and does not change global CLI configuration; sign in with the provider before using the action if needed. A `started` result means the CLI process launched, not that review is complete.
+
+For native mobile use, update both apps and enable **Start PR reviews** (`review.start`) in the paired device's access settings. This permission is off by default; existing devices keep their current permissions.

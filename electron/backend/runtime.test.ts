@@ -27,7 +27,7 @@ import { createStore } from "./store.js";
 import { createCredentialStore } from "./shared/credential-store.js";
 import { shortPathKey } from "./azure-devops-utils.js";
 import { REMOTE_ACCESS_TOKEN_REF } from "./shared/connection-secret.js";
-import type { WorkspaceState } from "../shared/types/state.js";
+import type { AppState, TabTemplate, WorkspaceState } from "../shared/types/state.js";
 import { APP_CONFIG } from "../../config/app-config.js";
 import { readFileContent, withCallerProfile } from "./file-manager.js";
 import { createInMemoryMobileFirebaseTransport } from "./mobile/mobile-firebase-transport.js";
@@ -12518,6 +12518,330 @@ describe("provider connections — profile ownership across viewers", () => {
     // The OTHER window of the same profile keeps its own view.
     expect(slots.find((s) => s.id === "win-a2")?.activeWorkspaceId).toBe("ws-a1");
     expect(slots.find((s) => s.id === "win-default")?.activeWorkspaceId).toBe("ws-default");
+  });
+});
+
+describe("headless pull request review start", () => {
+  test("launches one fresh MCP review session without activating a desktop workspace", async () => {
+    const prKey = "gh-1:acme:web:123";
+    const reviewHead = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const summary = {
+      prKey,
+      provider: "github",
+      profileId: "profile-a",
+      connectionId: "gh-1",
+      role: "reviewer",
+      repository: { fullName: "acme/web", owner: "acme", name: "web" },
+      pullRequest: {
+        id: 123,
+        number: 123,
+        title: "Fix parser",
+        state: "open",
+        draft: false,
+        headSha: reviewHead,
+        sourceRefName: "refs/heads/fix",
+        targetRefName: "refs/heads/main",
+      },
+    };
+    let checkoutMutation: (() => Promise<void>) | null = null;
+    class ReviewManager extends EventEmitter {
+      getSnapshot() {
+        return {
+          connections: [{ id: "gh-1", profileId: "profile-a", enabled: true }],
+          pullRequests: { [prKey]: summary },
+          trackedPullRequests: {},
+          inbox: { needsMyReview: [], myPullRequests: [], recentlyUpdated: [], needsAttention: [] },
+          sync: { running: false, lastStartedAt: null, lastCompletedAt: null },
+        };
+      }
+      async sync() {
+        return this.getSnapshot();
+      }
+      stopPolling() {}
+      configurePolling() {}
+      setReviewWorkspaceMetadataStore() {}
+      async ensurePullRequestDetail() {
+        return summary;
+      }
+      async openReviewWorkspace({ prKey: key, callerProfileId }: { prKey: string; callerProfileId: string }) {
+        expect(key).toBe(prKey);
+        expect(callerProfileId).toBe("profile-a");
+        await checkoutMutation?.();
+        return {
+          workspace: {
+            id: "isolated-review",
+            name: "acme/web PR #123",
+            kind: "terminal",
+            cwd: process.cwd(),
+            profileId: "profile-a",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", startup: "default" }],
+            review: { ...summary, provider: "github", checkout: { mode: "managed-worktree", rootPath: process.cwd() } },
+          },
+          created: true,
+          attached: false,
+        };
+      }
+    }
+    class LaunchCaptureSessionManager extends FakeSessionManager {
+      launches: Array<{
+        workspace?: WorkspaceState;
+        panel?: WorkspaceState["panels"][number];
+        launch?: { args: string[] } | null;
+      }> = [];
+      constructor(
+        options: { getSessionEnv?: unknown; getSessionLaunch?: unknown; isBracketedPasteEnabled?: unknown } = {},
+      ) {
+        super(options);
+      }
+      override syncWithState() {}
+      override async ensureSession(state: AppState, sessionId: string) {
+        const [workspaceId, panelId] = sessionId.split(":");
+        const workspace = state.workspaces.find((item) => item.id === workspaceId);
+        const panel = workspace?.panels.find((item) => item.id === panelId);
+        const launch = this.getSessionLaunch?.({ workspace, panel, sessionId }) as { args: string[] } | null;
+        this.launches.push({ workspace, panel, launch });
+        return super.ensureSession({ projects: state.workspaces }, sessionId);
+      }
+    }
+    const sessions = new LaunchCaptureSessionManager({});
+    const execFileTextImpl = vi.fn(async (file: string, args: string[]) => ({
+      stdout:
+        file === "git" && args[0] === "rev-parse"
+          ? `${reviewHead}\n`
+          : file === "git" && args[0] === "merge-base"
+            ? "0123456789abcdef0123456789abcdef01234567\n"
+            : "/usr/bin/claude\n",
+      stderr: "",
+    }));
+    const fixture = await createFixture({
+      initialState: {
+        activeWorkspaceId: "desktop-workspace",
+        profiles: [
+          { id: "default", name: "Default", workspaceIds: [] },
+          { id: "profile-a", name: "A", workspaceIds: [] },
+        ],
+        workspaces: [
+          {
+            id: "desktop-workspace",
+            name: "Keep active",
+            kind: "terminal",
+            profileId: "default",
+            cwd: "C:/work",
+            panels: [{ id: "shell", title: "Shell", command: "", startup: "default" }],
+          },
+        ],
+        windowSlots: [
+          {
+            id: "win-default",
+            profileId: "default",
+            activeWorkspaceId: "desktop-workspace",
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 900, height: 700 },
+            lastFocusedAt: 1,
+          },
+        ],
+        tabTemplates: [{ id: "claude", title: "Claude Code", command: "claude --model sonnet", icon: "" }],
+        settings: {
+          integrations: {
+            github: {
+              enabled: true,
+              connections: [
+                {
+                  id: "gh-1",
+                  enabled: true,
+                  profileId: "profile-a",
+                  tokenRef: "gh-token",
+                  currentUserLogin: "me",
+                  hostUrl: "https://api.github.com",
+                },
+              ],
+            },
+          },
+          taskDefaults: {
+            workerProvider: { providerId: "claude", model: "" },
+            judgeProvider: { providerId: "claude", model: "" },
+          },
+        },
+      },
+      execFileTextImpl,
+      dependencies: {
+        GitHubManager: ReviewManager,
+        SessionManager: class {
+          constructor(options: {
+            getSessionEnv?: unknown;
+            getSessionLaunch?: unknown;
+            isBracketedPasteEnabled?: unknown;
+          }) {
+            Object.assign(sessions, new LaunchCaptureSessionManager(options));
+            return sessions;
+          }
+        },
+      },
+    });
+    fixtures.push(fixture);
+
+    const beforeActive = fixture.store.getState().activeWorkspaceId;
+    const initialLaunchCount = sessions.launches.length;
+    await expect(
+      fixture.runtime.startPullRequestReview(
+        { provider: "github", prKey, idempotencyKey: "wrong-profile" },
+        undefined,
+        "default",
+      ),
+    ).rejects.toThrow("Cross-profile refused");
+    summary.pullRequest.state = "closed";
+    await expect(
+      fixture.runtime.startPullRequestReview(
+        { provider: "github", prKey, idempotencyKey: "closed-pr" },
+        undefined,
+        "profile-a",
+      ),
+    ).rejects.toThrow("no longer open and ready");
+    summary.pullRequest.state = "open";
+
+    // Missing CLI configuration is reported as a terminal launch failure
+    // before the managed checkout is opened, and a fresh key can retry it.
+    const templates = fixture.store.getState().tabTemplates;
+    await fixture.store.mutate((draft: AppState) => {
+      draft.tabTemplates = templates.map((template: TabTemplate) => ({
+        ...template,
+        command: "not-an-mcp-review-agent",
+      }));
+    });
+    const unavailable = await fixture.runtime.startPullRequestReview(
+      { provider: "github", prKey, idempotencyKey: "no-review-agent" },
+      undefined,
+      "profile-a",
+    );
+    expect(unavailable.started).toBe(true);
+    await vi.waitFor(() =>
+      expect(fixture.runtime.getPayload().operations.lastResults).toContainEqual(
+        expect.objectContaining({
+          operationId: unavailable.operationId,
+          kind: "review.start",
+          error: expect.objectContaining({
+            message: expect.stringContaining("No installed MCP-compatible review agent"),
+          }),
+        }),
+      ),
+    );
+    await fixture.store.mutate((draft: AppState) => {
+      draft.tabTemplates = templates;
+    });
+
+    const expectLaunchFailure = async (idempotencyKey: string) => {
+      const result = await fixture.runtime.startPullRequestReview(
+        { provider: "github", prKey, idempotencyKey },
+        undefined,
+        "profile-a",
+      );
+      await vi.waitFor(() =>
+        expect(fixture.runtime.getPayload().operations.lastResults).toContainEqual(
+          expect.objectContaining({ operationId: result.operationId, kind: "review.start", error: expect.any(Object) }),
+        ),
+      );
+      expect(sessions.launches).toHaveLength(initialLaunchCount);
+    };
+    checkoutMutation = async () => {
+      summary.pullRequest.draft = true;
+    };
+    await expectLaunchFailure("drafted-during-checkout");
+    summary.pullRequest.draft = false;
+    checkoutMutation = async () => {
+      summary.pullRequest.headSha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    };
+    await expectLaunchFailure("head-changed-during-checkout");
+    summary.pullRequest.headSha = reviewHead;
+    checkoutMutation = async () => {
+      await fixture.store.mutate((draft: AppState) => {
+        const connection = draft.settings.integrations.github?.connections.find((item) => item.id === "gh-1");
+        if (connection) connection.profileId = "default";
+      });
+    };
+    await expectLaunchFailure("connection-moved-during-checkout");
+    checkoutMutation = null;
+    await fixture.store.mutate((draft: AppState) => {
+      const connection = draft.settings.integrations.github?.connections.find((item) => item.id === "gh-1");
+      if (connection) connection.profileId = "profile-a";
+    });
+
+    const accepted = await fixture.runtime.startPullRequestReview(
+      { provider: "github", prKey, idempotencyKey: "native-action-1" },
+      undefined,
+      "profile-a",
+    );
+    expect(accepted.started).toBe(true);
+    await vi.waitFor(() =>
+      expect(fixture.runtime.getPayload().operations.lastResults).toContainEqual(
+        expect.objectContaining({
+          operationId: accepted.operationId,
+          kind: "review.start",
+          result: expect.objectContaining({ launched: true }),
+        }),
+      ),
+    );
+    expect(fixture.store.getState().activeWorkspaceId).toBe(beforeActive);
+    const reviewLaunches = sessions.launches.filter((entry) =>
+      entry.launch?.args?.join(" ").includes("Perform a basic code review"),
+    );
+    expect(reviewLaunches).toHaveLength(1);
+    expect(reviewLaunches[0].launch.args.join(" ")).toContain("--review-draft-only");
+    expect(fixture.store.getState().workspaces.find((item) => item.id === "isolated-review")?.profileId).toBe(
+      "profile-a",
+    );
+    const duplicate = await fixture.runtime.startPullRequestReview(
+      { provider: "github", prKey, idempotencyKey: "retry-with-new-command-id" },
+      undefined,
+      "profile-a",
+    );
+    expect(duplicate).toMatchObject({
+      started: true,
+      replayed: true,
+      operationId: accepted.operationId,
+      outcome: { kind: "review.start", result: { launched: true } },
+    });
+    expect(reviewLaunches).toHaveLength(1);
+
+    await fixture.store.mutate((draft: AppState) => {
+      draft.workspaces = draft.workspaces.filter((workspace) => workspace.id !== "isolated-review");
+    });
+    const exactRetryAfterDelete = await fixture.runtime.startPullRequestReview(
+      { provider: "github", prKey, idempotencyKey: "native-action-1" },
+      undefined,
+      "profile-a",
+    );
+    expect(exactRetryAfterDelete).toMatchObject({
+      started: true,
+      replayed: true,
+      operationId: accepted.operationId,
+      outcome: {
+        kind: "review.start",
+        error: {
+          code: "REVIEW_WORKSPACE_DELETED",
+          message: expect.stringContaining("Retry with a new action"),
+        },
+      },
+    });
+    const retryAfterDelete = await fixture.runtime.startPullRequestReview(
+      { provider: "github", prKey, idempotencyKey: "new-action-after-delete" },
+      undefined,
+      "profile-a",
+    );
+    expect(retryAfterDelete).toMatchObject({ started: true, replayed: false });
+    expect(retryAfterDelete.operationId).not.toBe(accepted.operationId);
+    await vi.waitFor(() =>
+      expect(fixture.runtime.getPayload().operations.lastResults).toContainEqual(
+        expect.objectContaining({
+          operationId: retryAfterDelete.operationId,
+          kind: "review.start",
+          result: expect.objectContaining({ launched: true }),
+        }),
+      ),
+    );
+    expect(
+      sessions.launches.filter((entry) => entry.launch?.args?.join(" ").includes("Perform a basic code review")),
+    ).toHaveLength(2);
   });
 });
 

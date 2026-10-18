@@ -102,6 +102,7 @@ interface AzurePrSummary {
     sourceRefName?: string;
     targetRefName?: string;
     sourceCommitId?: string;
+    isDraft?: boolean;
     closedDate?: string;
     webUrl?: string;
   };
@@ -1163,6 +1164,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
           lastVoteSignature: typedInternals.voteSignature as string | null,
           lastMergeStatus: typedSummary.pullRequest?.mergeStatus,
           lastSourceCommitId: typedSummary.pullRequest?.sourceCommitId,
+          lastDraftState: typedSummary.pullRequest?.isDraft === true ? "draft" : "ready",
           lastSeenActivityAt: tracked.lastSeenActivityAt || null,
           lastNotifiedActivityAt: lastNotifiedActivityAt as string | null,
         };
@@ -1283,14 +1285,17 @@ export class AzureDevOpsManager extends BaseProviderManager {
     // Brand-new PR that wasn't in the tracked store before this poll.
     // Emit a `pr-new` event when the current user is the requested reviewer.
     if (!prevNotifiedAt) {
-      if (summary.role === "reviewer") {
+      if (summary.role === "reviewer" || summary.role === "assigned") {
         events.push(
           buildReviewActivityEvent({
             provider: "azure-devops",
             summary,
             kind: "pr-new",
             at: summary.lastRemoteActivityAt || nowIso,
-            title: `Review requested: ${summary.repository.name} #${summary.pullRequest.id}`,
+            title:
+              summary.pullRequest.isDraft === true
+                ? `Draft review requested: ${summary.repository.name} #${summary.pullRequest.id}`
+                : `Review requested: ${summary.repository.name} #${summary.pullRequest.id}`,
             body: truncateBody(`${summary.author.displayName}: ${summary.pullRequest.title}`),
             actor: { login: summary.author.uniqueName, displayName: summary.author.displayName },
           }),
@@ -1300,6 +1305,20 @@ export class AzureDevOpsManager extends BaseProviderManager {
         events,
         lastNotifiedActivityAt: seedNotifiedTimestamp(summary, nowIso),
       };
+    }
+
+    const wasDraft = tracked.lastDraftState === "draft";
+    if (wasDraft && summary.pullRequest.isDraft !== true) {
+      events.push(
+        buildReviewActivityEvent({
+          provider: "azure-devops",
+          summary,
+          kind: "pr-ready",
+          at: nowIso,
+          title: `Ready for review: ${summary.repository.name} #${summary.pullRequest.id}`,
+          body: truncateBody(summary.pullRequest.title),
+        }),
+      );
     }
 
     // 1) New comments from other people.
@@ -1734,11 +1753,13 @@ export class AzureDevOpsManager extends BaseProviderManager {
     connection,
     token,
     reviewRoot,
+    isolatedId,
   }: {
     summary: AzurePrSummary;
     connection: AzureConnection;
     token: string;
     reviewRoot: string;
+    isolatedId?: string;
   }): Promise<{ mode: string; rootPath: string; cacheRepoPath: string; sourceBranch: string; targetBranch: string }> {
     try {
       const remoteUrl = firstNonEmpty(
@@ -1773,9 +1794,9 @@ export class AzureDevOpsManager extends BaseProviderManager {
         normalizeReviewRoot(reviewRoot),
         "reviews",
         shortPathKey(connection.id, "connection"),
-        `pr-${summary.pullRequest!.id}`,
+        `pr-${summary.pullRequest!.id}${isolatedId ? `-review-${isolatedId}` : ""}`,
       );
-      const localBranch = `pr-${summary.pullRequest!.id}-${sanitizePathSegment(sourceBranch)}`;
+      const localBranch = `pr-${summary.pullRequest!.id}-${sanitizePathSegment(sourceBranch)}${isolatedId ? `-review-${isolatedId}` : ""}`;
 
       await this.ensureManagedWorktree({
         cacheRepoPath,
@@ -1873,6 +1894,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
     workspaceId = "",
     callerProfileId = "",
     forceReview = false,
+    isolated = false,
   }: {
     state: { workspaces: ReviewWorkspace[]; windowSlots?: Array<{ profileId?: string }>; tabTemplates?: unknown[] };
     prKey: string;
@@ -1883,10 +1905,11 @@ export class AzureDevOpsManager extends BaseProviderManager {
     /** Build a managed review checkout even when the author's own workspace
      * sits on the PR's source branch. */
     forceReview?: boolean;
+    isolated?: boolean;
   }) {
     return this.openReviewWorkspaceCore(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      { state: state as any, prKey, workspaceId, callerProfileId, forceReview },
+      { state: state as any, prKey, workspaceId, callerProfileId, forceReview, isolated },
       {
         ensurePullRequestDetail: (key, opts) => this.ensurePullRequestDetail(key, opts),
         prepareManagedReviewCheckout: (opts) =>

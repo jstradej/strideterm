@@ -165,6 +165,14 @@ describe("remote transport endpoint routing", () => {
     expect(capturedBodies.some((b) => (b as { profileId?: string }).profileId === "p1")).toBe(true);
   });
 
+  it("startPullRequestReview uses the profile-bound review endpoint with an idempotency key", async () => {
+    const transport = createRemoteTransport();
+    const payload = { provider: "github" as const, prKey: "repo:17", idempotencyKey: "retry-key" };
+    await transport.startPullRequestReview!(payload);
+    expect(capturedUrls.some((url) => url.endsWith("/api/review/start"))).toBe(true);
+    expect(capturedBodies).toContainEqual(payload);
+  });
+
   it("native profile selection reuses the socket and reports the confirmed selection", async () => {
     const postMessage = vi.fn();
     (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };

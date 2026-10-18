@@ -1411,6 +1411,7 @@ export const mobileCapabilitySchema = z.enum([
   "status.read",
   "task.control",
   "task.destructive",
+  "review.start",
   "remote.request",
   "remote.webSession",
 ]);

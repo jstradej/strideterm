@@ -1007,6 +1007,44 @@ describe("MobileManager outbox: ExternalNotificationEvent -> encrypted per-devic
     expect(plaintext.prompt).toBe(event.prompt);
   });
 
+  test("bounds long Unicode PR display metadata to the shared protocol limits", async () => {
+    const { manager, transport, deviceStore, desktopKeyPair, externalNotificationEvents } = await createFixture();
+    const { keyPair } = await addMobileDevice(deviceStore);
+    const event = buildExternalNotificationEvent({
+      eventId: "evt-pr-bounds",
+      profileId: "default",
+      workspaceId: "ws-1",
+      kind: "review",
+      title: "Review agent started",
+      detail: "Claude Code",
+      provider: "github",
+      prKey: "org/repo#42",
+      draftState: "ready",
+      pullRequestTitle: "界".repeat(600),
+      pullRequestNumber: 42,
+      repositoryName: "界".repeat(300),
+      reviewStatus: "started",
+      agentName: "🧪".repeat(60),
+      operationId: "op-".repeat(90),
+    });
+    manager.start();
+    externalNotificationEvents.emit("event", event);
+    await flush();
+    manager.stop();
+    const [sent] = transport.getSentEvents(OWN_DEVICE_ID);
+    const plaintext = JSON.parse(
+      openCombinedBase64(
+        sent.ciphertext,
+        sessionKeyFor(keyPair.privateKey, desktopKeyPair.publicKey),
+        Buffer.from(sent.aad, "base64"),
+      ).toString("utf8"),
+    );
+    expect(NotificationPayloadSchema.safeParse(plaintext).success).toBe(true);
+    expect(plaintext.pullRequestTitle).toBe("界".repeat(500));
+    expect(plaintext.repositoryName).toBe("界".repeat(200));
+    expect(plaintext.operationId).toBe("op-".repeat(66) + "op");
+  });
+
   test("a device NOT in the event's profile allowlist does not receive it", async () => {
     const { manager, transport, deviceStore, externalNotificationEvents } = await createFixture();
     await addMobileDevice(deviceStore, { profileAllowlist: ["other-profile"] });

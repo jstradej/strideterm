@@ -171,6 +171,7 @@ export const CapabilitySchema = z.enum([
   "status.read",
   "task.control",
   "task.destructive",
+  "review.start",
   "remote.request",
   "remote.webSession",
 ]);
@@ -331,7 +332,7 @@ export const RemoteWebSessionIssuePayloadSchema = z.object({
   e2e: z
     .object({
       v: z.literal(1),
-      keyId: z.string().min(1),
+      keyId: z.string().max(128).min(1),
       phoneEphemeralPub: z.string(),
     })
     .optional(),
@@ -342,6 +343,12 @@ export const WorkspaceStatusGetPayloadSchema = z.object({
   workspaceId: z.string().min(1),
 });
 export type WorkspaceStatusGetPayload = z.infer<typeof WorkspaceStatusGetPayloadSchema>;
+
+export const ReviewStartPayloadSchema = z.object({
+  provider: z.enum(["azure-devops", "github"]),
+  prKey: z.string().min(1).max(500),
+});
+export type ReviewStartPayload = z.infer<typeof ReviewStartPayloadSchema>;
 
 const commandEnvelopeFields = {
   commandId: z.string().min(1),
@@ -450,6 +457,13 @@ export const WorkspaceStatusGetCommandSchema = z.object({
 });
 export type WorkspaceStatusGetCommand = z.infer<typeof WorkspaceStatusGetCommandSchema>;
 
+export const ReviewStartCommandSchema = z.object({
+  ...commandEnvelopeFields,
+  type: z.literal("review.start"),
+  payload: ReviewStartPayloadSchema,
+});
+export type ReviewStartCommand = z.infer<typeof ReviewStartCommandSchema>;
+
 export const CommandSchema = z.discriminatedUnion("type", [
   NotificationAcknowledgeCommandSchema,
   TaskPauseCommandSchema,
@@ -464,6 +478,7 @@ export const CommandSchema = z.discriminatedUnion("type", [
   RemoteTunnelReconnectCommandSchema,
   RemoteWebSessionIssueCommandSchema,
   WorkspaceStatusGetCommandSchema,
+  ReviewStartCommandSchema,
 ]);
 export type Command = z.infer<typeof CommandSchema>;
 
@@ -541,14 +556,23 @@ export const NotificationPayloadSchema = z.object({
   // What the phone's Activity list reads at a glance, so a row does not have to hide its answer
   // behind a tap. All optional: an event from an older desktop carries none of them and is still a
   // valid event.
-  workspaceName: z.string().optional(),
-  taskId: z.string().min(1).optional(),
-  panelId: z.string().optional(),
-  tab: z.string().optional(),
-  activity: z.string().optional(),
-  prompt: z.string().optional(),
+  workspaceName: z.string().max(120).optional(),
+  taskId: z.string().max(200).min(1).optional(),
+  panelId: z.string().max(200).optional(),
+  tab: z.string().max(120).optional(),
+  activity: z.string().max(200).optional(),
+  prompt: z.string().max(500).optional(),
   exitCode: z.number().int().optional(),
   durationMs: z.number().int().min(0).optional(),
+  provider: z.enum(["azure-devops", "github"]).optional(),
+  prKey: z.string().min(1).max(500).optional(),
+  draftState: z.enum(["draft", "ready"]).optional(),
+  pullRequestTitle: z.string().max(500).optional(),
+  pullRequestNumber: z.number().int().min(1).optional(),
+  repositoryName: z.string().max(200).optional(),
+  reviewStatus: z.enum(["started", "failed"]).optional(),
+  agentName: z.string().max(80).optional(),
+  operationId: z.string().max(200).optional(),
   // `verificationCode` used to be here — a random value sealed into an event addressed to a
   // freshly-claimed device, echoed back to prove it could decrypt. Gone with the challenge event
   // itself (review 3 §P0.1): delivering a real event to, and accepting a real command from, a device
@@ -596,15 +620,15 @@ export const EntitlementSummarySchema = z.object({
   notAfter: z.number().int().min(0).optional(),
   renewalAt: z.number().int().min(0).optional(),
   cancellationAt: z.number().int().min(0).optional(),
-  planLabel: z.string().optional(),
+  planLabel: z.string().max(64).optional(),
   source: z.enum(["none", "trial", "subscription", "operator", "incident"]),
 });
 export type EntitlementSummary = z.infer<typeof EntitlementSummarySchema>;
 
 export const BillingOfferSchema = z.object({
-  offerId: z.string().min(1),
-  planLabel: z.string().min(1),
-  formattedPrice: z.string().min(1),
+  offerId: z.string().max(128).min(1),
+  planLabel: z.string().max(64).min(1),
+  formattedPrice: z.string().max(32).min(1),
   billingPeriod: z.enum(["monthly", "annual"]),
 });
 export type BillingOffer = z.infer<typeof BillingOfferSchema>;
@@ -623,17 +647,17 @@ export const AccountUsageSchema = z.object({
 export type AccountUsage = z.infer<typeof AccountUsageSchema>;
 
 export const AccountPairSummarySchema = z.object({
-  pairId: z.string().min(1),
-  pairDeviceId: z.string().min(1),
-  desktopInstallationId: z.string().min(1),
-  desktopLabel: z.string().optional(),
+  pairId: z.string().max(128).min(1),
+  pairDeviceId: z.string().max(128).min(1),
+  desktopInstallationId: z.string().max(128).min(1),
+  desktopLabel: z.string().max(64).optional(),
 });
 export type AccountPairSummary = z.infer<typeof AccountPairSummarySchema>;
 
 export const AccountInstallationSummarySchema = z.object({
-  installationId: z.string().min(1),
-  label: z.string().optional(),
-  keyFingerprintSuffix: z.string().optional(),
+  installationId: z.string().max(128).min(1),
+  label: z.string().max(64).optional(),
+  keyFingerprintSuffix: z.string().max(16).optional(),
   registeredAt: z.number().int().min(0),
   lastSeenAt: z.number().int().min(0).optional(),
   isThisInstallation: z.boolean(),
@@ -642,8 +666,8 @@ export const AccountInstallationSummarySchema = z.object({
 export type AccountInstallationSummary = z.infer<typeof AccountInstallationSummarySchema>;
 
 export const AccountMobileDeviceSummarySchema = z.object({
-  mobileDeviceKeySuffix: z.string(),
-  label: z.string().optional(),
+  mobileDeviceKeySuffix: z.string().max(16),
+  label: z.string().max(64).optional(),
   platform: PlatformSchema,
   boundAt: z.number().int().min(0),
   lastSeenAt: z.number().int().min(0).optional(),
@@ -653,7 +677,7 @@ export const AccountMobileDeviceSummarySchema = z.object({
 export type AccountMobileDeviceSummary = z.infer<typeof AccountMobileDeviceSummarySchema>;
 
 export const AccountNoticeSummarySchema = z.object({
-  noticeId: z.string().min(1),
+  noticeId: z.string().max(128).min(1),
   kind: z.enum(["trial-ending-3d", "trial-ending-1d", "trial-ended", "cap-reached", "payment-issue", "access-ended"]),
   effectiveAt: z.number().int().min(0),
   createdAt: z.number().int().min(0),
@@ -669,8 +693,8 @@ export const AccountDeletionStatusSchema = z.object({
 export type AccountDeletionStatus = z.infer<typeof AccountDeletionStatusSchema>;
 
 export const AccountOverviewSchema = z.object({
-  accountDisplay: z.string().optional(),
-  supportReference: z.string().min(1),
+  accountDisplay: z.string().max(128).optional(),
+  supportReference: z.string().max(64).min(1),
   entitlement: EntitlementSummarySchema,
   offers: z.array(BillingOfferSchema),
   usage: AccountUsageSchema,
@@ -708,54 +732,54 @@ export type ControlPlaneErrorDetails = z.infer<typeof ControlPlaneErrorDetailsSc
 // ---------------------------------------------------------------------------
 
 export const EnsureAccountRequestSchema = z.object({
-  idempotencyKey: z.string().min(1),
+  idempotencyKey: z.string().max(128).min(1),
 });
 export type EnsureAccountRequest = z.infer<typeof EnsureAccountRequestSchema>;
 
 export const EnsureAccountResponseSchema = z.object({
   status: z.enum(["created", "existing"]),
-  supportReference: z.string().min(1),
+  supportReference: z.string().max(64).min(1),
   claimsChanged: z.boolean(),
 });
 export type EnsureAccountResponse = z.infer<typeof EnsureAccountResponseSchema>;
 
 export const InstallationChallengeRequestSchema = z.object({
-  installationId: z.string().min(1),
+  installationId: z.string().max(128).min(1),
   publicKey: z.string(),
-  label: z.string().optional(),
+  label: z.string().max(64).optional(),
 });
 export type InstallationChallengeRequest = z.infer<typeof InstallationChallengeRequestSchema>;
 
 export const InstallationChallengeResponseSchema = z.object({
-  challengeId: z.string().min(1),
-  transcript: z.string().min(1),
+  challengeId: z.string().max(128).min(1),
+  transcript: z.string().max(512).min(1),
   expiresAt: z.number().int().min(0),
 });
 export type InstallationChallengeResponse = z.infer<typeof InstallationChallengeResponseSchema>;
 
 export const InstallationRegistrationRequestSchema = z.object({
-  challengeId: z.string().min(1),
+  challengeId: z.string().max(128).min(1),
   signature: z.string(),
-  idempotencyKey: z.string().min(1),
-  label: z.string().optional(),
+  idempotencyKey: z.string().max(128).min(1),
+  label: z.string().max(64).optional(),
   mode: z.enum(["register", "recover-uid"]),
-  pairHints: z.array(z.string().min(1)).optional(),
+  pairHints: z.array(z.string().max(128).min(1)).optional(),
 });
 export type InstallationRegistrationRequest = z.infer<typeof InstallationRegistrationRequestSchema>;
 
 export const InstallationRegistrationResponseSchema = z.object({
   status: z.enum(["registered", "already-registered", "uid-recovered", "refused"]),
-  installationId: z.string().min(1).optional(),
+  installationId: z.string().max(128).min(1).optional(),
   claimsChanged: z.boolean(),
-  adoptedPairIds: z.array(z.string().min(1)).optional(),
-  refusedPairIds: z.array(z.string().min(1)).optional(),
+  adoptedPairIds: z.array(z.string().max(128).min(1)).optional(),
+  refusedPairIds: z.array(z.string().min(1).max(128)).optional(),
   errorReason: ControlPlaneErrorDetailsSchema.optional(),
 });
 export type InstallationRegistrationResponse = z.infer<typeof InstallationRegistrationResponseSchema>;
 
 export const TrialStartRequestSchema = z.object({
-  installationId: z.string().min(1),
-  idempotencyKey: z.string().min(1),
+  installationId: z.string().max(128).min(1),
+  idempotencyKey: z.string().max(128).min(1),
 });
 export type TrialStartRequest = z.infer<typeof TrialStartRequestSchema>;
 
@@ -770,28 +794,28 @@ export const TrialStartResponseSchema = z.object({
 export type TrialStartResponse = z.infer<typeof TrialStartResponseSchema>;
 
 export const CheckoutRequestSchema = z.object({
-  offerId: z.string().min(1),
-  installationId: z.string().min(1),
-  idempotencyKey: z.string().min(1),
+  offerId: z.string().max(128).min(1),
+  installationId: z.string().max(128).min(1),
+  idempotencyKey: z.string().max(128).min(1),
 });
 export type CheckoutRequest = z.infer<typeof CheckoutRequestSchema>;
 
 export const CheckoutResponseSchema = z.object({
   status: z.enum(["ready", "checkout-pending", "refused"]),
-  checkoutUrl: z.string().optional(),
-  intentId: z.string().min(1).optional(),
+  checkoutUrl: z.string().max(2048).optional(),
+  intentId: z.string().max(128).min(1).optional(),
   errorReason: ControlPlaneErrorDetailsSchema.optional(),
 });
 export type CheckoutResponse = z.infer<typeof CheckoutResponseSchema>;
 
 export const PortalSessionRequestSchema = z.object({
-  installationId: z.string().min(1),
+  installationId: z.string().max(128).min(1),
 });
 export type PortalSessionRequest = z.infer<typeof PortalSessionRequestSchema>;
 
 export const PortalSessionResponseSchema = z.object({
   status: z.enum(["ready", "refused"]),
-  portalUrl: z.string().optional(),
+  portalUrl: z.string().max(2048).optional(),
   expiresAt: z.number().int().min(0).optional(),
   errorReason: ControlPlaneErrorDetailsSchema.optional(),
 });
@@ -799,27 +823,27 @@ export type PortalSessionResponse = z.infer<typeof PortalSessionResponseSchema>;
 
 export const AccountRevokeRequestSchema = z.object({
   kind: z.enum(["installation", "mobile-device", "pair", "account-wide"]),
-  targetId: z.string().min(1).optional(),
-  idempotencyKey: z.string().min(1),
+  targetId: z.string().max(128).min(1).optional(),
+  idempotencyKey: z.string().max(128).min(1),
 });
 export type AccountRevokeRequest = z.infer<typeof AccountRevokeRequestSchema>;
 
 export const AccountRevokeResponseSchema = z.object({
   status: z.enum(["revoked", "already-revoked", "not-found"]),
-  revokedPairDeviceIds: z.array(z.string().min(1)),
+  revokedPairDeviceIds: z.array(z.string().max(128).min(1)),
   relayCommandsQueued: z.number().int().min(0),
 });
 export type AccountRevokeResponse = z.infer<typeof AccountRevokeResponseSchema>;
 
 export const AccountDeletionRequestSchema = z.object({
-  confirmationPhrase: z.string().min(1),
-  idempotencyKey: z.string().min(1),
+  confirmationPhrase: z.string().max(64).min(1),
+  idempotencyKey: z.string().max(128).min(1),
 });
 export type AccountDeletionRequest = z.infer<typeof AccountDeletionRequestSchema>;
 
 export const AccountDeletionResponseSchema = z.object({
   status: z.enum(["accepted", "already-pending", "refused"]),
-  deletionJobId: z.string().min(1).optional(),
+  deletionJobId: z.string().max(128).min(1).optional(),
   providerCancellationRequired: z.boolean(),
 });
 export type AccountDeletionResponse = z.infer<typeof AccountDeletionResponseSchema>;
@@ -833,7 +857,7 @@ export type AccountDeletionResponse = z.infer<typeof AccountDeletionResponseSche
  * identity would be a way to read one.
  */
 export const ConfirmOwnerRequestSchema = z.object({
-  installationId: z.string().min(1),
+  installationId: z.string().max(128).min(1),
 });
 export type ConfirmOwnerRequest = z.infer<typeof ConfirmOwnerRequestSchema>;
 
@@ -844,7 +868,7 @@ export const ConfirmOwnerResponseSchema = z.object({
 export type ConfirmOwnerResponse = z.infer<typeof ConfirmOwnerResponseSchema>;
 
 export const AccountNoticeAckRequestSchema = z.object({
-  noticeId: z.string().min(1),
+  noticeId: z.string().max(128).min(1),
 });
 export type AccountNoticeAckRequest = z.infer<typeof AccountNoticeAckRequestSchema>;
 
@@ -867,15 +891,15 @@ export const ControlPlaneBootstrapPayloadSchema = z.object({
   configEpoch: z.number().int().min(1),
   issuedAt: z.number().int().min(0),
   notBefore: z.number().int().min(0).optional(),
-  projectId: z.string().min(1),
-  apiKey: z.string().min(1),
-  appId: z.string().min(1),
-  messagingSenderId: z.string().min(1),
-  databaseUrl: z.string().min(1),
-  functionsBaseUrl: z.string().min(1),
-  relayOrigin: z.string().optional(),
-  appCheckAndroidAppId: z.string().optional(),
-  appCheckWebAppId: z.string().optional(),
+  projectId: z.string().max(128).min(1),
+  apiKey: z.string().max(256).min(1),
+  appId: z.string().max(128).min(1),
+  messagingSenderId: z.string().max(64).min(1),
+  databaseUrl: z.string().max(512).min(1),
+  functionsBaseUrl: z.string().max(512).min(1),
+  relayOrigin: z.string().max(512).optional(),
+  appCheckAndroidAppId: z.string().max(128).optional(),
+  appCheckWebAppId: z.string().max(128).optional(),
   /**
    * The EXACT hostnames a checkout or portal URL may point at. Lower-cased, no scheme, no port.
    *
@@ -885,13 +909,13 @@ export const ControlPlaneBootstrapPayloadSchema = z.object({
    * this build opens NO billing URL, which is the right default for one that has not been told which
    * merchant it uses.
    */
-  billingCheckoutHosts: z.array(z.string().min(1)).optional(),
+  billingCheckoutHosts: z.array(z.string().max(253).min(1)).optional(),
 });
 export type ControlPlaneBootstrapPayload = z.infer<typeof ControlPlaneBootstrapPayloadSchema>;
 
 export const ControlPlaneBootstrapEnvelopeSchema = z.object({
   v: z.literal(1),
-  keyId: z.string().min(1),
+  keyId: z.string().max(128).min(1),
   payload: ControlPlaneBootstrapPayloadSchema,
   signature: z.string(),
 });
@@ -922,7 +946,7 @@ export const PairingInvitationSchema = z.object({
    * invitation is the desktop's authorization, made durable — and neither field reaches the QR, so
    * this desktop writes neither and the phone never sees them.
    */
-  admissionPrincipalId: z.string().min(1).optional(),
+  admissionPrincipalId: z.string().max(160).min(1).optional(),
   principalNotAfter: z.number().int().min(0).optional(),
   createdAt: z.number().int().min(0),
   expiresAt: z.number().int().min(0),
@@ -936,7 +960,7 @@ export const PairingInvitationSchema = z.object({
    * tell that apart from somebody else consuming the invitation. `completion`'s ABSENCE on a consumed
    * invitation is the signal that the claim consumed the credential and did not finish.
    */
-  claimedBy: z.string().min(1).optional(),
+  claimedBy: z.string().max(320).min(1).optional(),
   claimedAt: z.number().int().min(0).optional(),
   completion: z
     .object({
@@ -980,17 +1004,7 @@ export type PairingClaimRequest = z.infer<typeof PairingClaimRequestSchema>;
 
 export const PairingClaimResponseSchema = z.object({
   status: z.enum(["claimed", "expired", "invalid", "already-claimed", "refused"]),
-  /**
-   * The structured half of a `refused`. Added because the phone was previously left to GUESS which
-   * of several very different problems it had hit — a device cap, a pairing cap, or an invitation
-   * belonging to somebody else's account — from one undifferentiated failure.
-   */
   errorReason: ControlPlaneErrorDetailsSchema.optional(),
-  /**
-   * True when the claim bound the phone's uid to an account and raised the claim-sync revision, so
-   * the phone must force an ID-token refresh BEFORE registering a push token or asking for a relay
-   * grant: its current token predates the claim.
-   */
   claimsChanged: z.boolean().optional(),
   pairId: z.string().min(1).optional(),
   desktopDeviceId: z.string().min(1).optional(),

@@ -23,7 +23,7 @@
  * purpose rather than inheriting "guarded" by default.
  */
 
-export type MobileRouteDenyReason = "route-not-available-to-mobile" | "target-outside-profile";
+export type MobileRouteDenyReason = "route-not-available-to-mobile" | "target-outside-profile" | "capability-missing";
 
 export type MobileRouteDecision = { allow: true } | { allow: false; reason: MobileRouteDenyReason; detail?: string };
 
@@ -168,6 +168,11 @@ export const MOBILE_PROBE_ROUTES: ReadonlySet<string> = new Set([
   "/api/check-command",
 ]);
 
+/** Routes that need an explicit paired-device grant in addition to profile scoping. */
+export const MOBILE_REQUIRED_CAPABILITIES: Readonly<Record<string, string>> = {
+  "/api/review/start": "review.start",
+};
+
 /** Families that carry their own authorization (`/api/mobile/workspaces/*`, `/api/remote-client/*`). */
 export const MOBILE_OWN_CHECK_PREFIXES: readonly string[] = ["/api/mobile/workspaces/", "/api/remote-client/"];
 
@@ -187,6 +192,8 @@ export interface MobileRouteInput {
   body: Record<string, unknown>;
   /** The profile the session is bound to. */
   profileId: string;
+  /** Current paired-device grants. Omitted for route-policy callers without a paired device. */
+  capabilities?: readonly string[];
   /** Profile of an EXISTING workspace, or undefined when no workspace has that id. */
   workspaceProfile(workspaceId: string): string | undefined;
   /** Profile of an EXISTING azure/github connection, or undefined. */
@@ -220,6 +227,10 @@ export function evaluateMobileRoute(input: MobileRouteInput): MobileRouteDecisio
   if (cls === "own-check") return { allow: true };
   if (cls === "deny") {
     return { allow: false, reason: "route-not-available-to-mobile" };
+  }
+  const requiredCapability = MOBILE_REQUIRED_CAPABILITIES[pathname];
+  if (requiredCapability && !input.capabilities?.includes(requiredCapability)) {
+    return { allow: false, reason: "capability-missing", detail: requiredCapability };
   }
 
   const outside = (kind: string, id: string): MobileRouteDecision => ({
