@@ -16,14 +16,14 @@
 - **Multiple Windows** - open additional windows with `Ctrl+Shift+N`, each pinned to one profile (a profile can be open in at most one window at a time). Window bounds and display assignment persist across restarts
 - **Git Integration** - branch info, dirty count, commit log, worktree creation, and Lazygit support
 - **Multi-repo Workspaces** - group sibling repositories (e.g. microservices) under one workspace via `gitRoots`; Git pane shows a repo switcher above the tabs, and a dedicated Bulk sub-tab runs Fetch all / Pull all (ff-only) across every repo with per-row status. Single-repo behavior is unchanged when `gitRoots` is empty or has a single entry.
-- **Azure DevOps PR Review** - pull request inbox grouped by repo, managed review workspaces, AI agent integration (review + fix code), push & publish workflow, and MCP bridge — see [docs](docs/azure-devops-review.md)
-- **GitHub PR Review** - pull request inbox, managed review workspaces with local checkout, comment and review submission (Approve / Request Changes / Comment), push & publish workflow, and MCP bridge for AI agents — see [docs](docs/github-pr-review.md)
-- **Agent Task Runner** - supervised coding loop with Worker + Judge agents (Claude Code, Codex CLI, Gemini CLI, GitHub Copilot, or OpenCode for either role): runs deterministic checks between rounds, git-aware judge evaluation, periodic context refresh (shower mode), and a Dashboard UI for monitoring progress. The task brief and worker rules live in editable `TASK.md` / `WORKER.md` files — concrete verification commands belong in your brief, not auto-detected from the repo — see [docs](docs/agent-task-runner.md)
-- **Task agents from a planning terminal (internal MCP)** - opt in per workspace and Claude Code, Codex, GitHub Copilot or OpenCode running there can prepare, start (after you approve one exact summary) and watch a Worker + Judge task through a `strideterm` MCP server — see [docs](docs/agent-task-runner.md#starting-a-task-from-a-planning-terminal-internal-mcp)
+- **Azure DevOps PR Review** - browse pull requests, review changes with AI agents, and publish updates — see the [Azure DevOps review guide](docs/azure-devops-review.md)
+- **GitHub PR Review** - browse pull requests, review changes with AI agents, and publish updates — see the [GitHub review guide](docs/github-pr-review.md)
+- **Agent Task Runner** - supervise coding tasks with Worker and Judge agents from supported AI coding tools — see the [Agent Task Runner guide](docs/agent-task-runner.md)
+- **Task agents from a planning terminal (internal MCP)** - supported AI agents can prepare and monitor a task, then wait for your approval before starting
 - **Docker Manager** - list containers, run actions, open shells, and stream logs
-- **SSH Support** - connect to remote machines from a saved host book or ad-hoc, with built-in key manager, host key TOFU verification, `~/.ssh/config` import, SSH agent support, jump hosts, and three launch modes (built-in, system `ssh`, or WSL) — see [docs](docs/ssh.md)
+- **SSH Support** - connect to remote machines using saved hosts or by entering a connection directly — see the [SSH guide](docs/ssh.md)
 - **Remote Access** - access your workspace from any device via LAN or Cloudflare tunnel with QR code; browser sessions expire after 24 hours idle or 7 days total by default and can be revoked in Settings
-- **Telegram Bot** - forward strIDEterm alerts to a Telegram chat and reply / tap inline buttons to drive the app from your phone — start a task, pause / resume agents, capture screenshots, fetch task files, open a PR review, grab the remote-access URL via `/tunnel`, all over Telegram's long-polling API (no webhook, no public tunnel) — see [docs](docs/telegram.md)
+- **Telegram Bot** - receive alerts and control selected app features from a Telegram chat — see the [Telegram guide](docs/telegram.md)
 - **Plugins** - extend functionality with plugins (Docker Ops and System Monitor built-in)
 - **Finish Notifications** - know when a command or agent finishes without watching the screen:
   - Audio ding when focused, system notification when in background
@@ -38,8 +38,7 @@
 - **Drag & Drop** - reorder workspaces and tabs by dragging
 - **Mobile-Responsive Remote UI** - the web client served by the remote-access server adapts to phone-width viewports: the workspace sidebar, Git pane chrome, Azure DevOps / GitHub PR inbox and review panes, and per-tab actions all collapse into popovers and full-width controls so you can drive a workspace from a phone over LAN or a Cloudflare tunnel
 - **Select Text by Touch** - a long press in the terminal (or the ⿴ control on any touch device, or **Select text** in the mobile input bar's ⋯ menu) opens a snapshot of the visible screen as plain text. Select words and ranges with the phone's own handles and copy with **Copy selection**, **Copy all**, or the system Copy menu — the snapshot holds still while the PTY keeps writing and a TUI keeps repainting. **Include earlier output** re-takes it with up to 500 lines of scrollback
-- **Free where it runs, paid where it is hosted** - the terminal, the workspaces, the agents, LAN remote access and the Cloudflare Quick Tunnel are free and consult no account. What a subscription pays for is the hosted control plane behind the companion phone app: the pairing, the notification and command path, push delivery and the managed relay. Signing out, letting a subscription lapse or revoking every device never limits anything local
-- **Account and billing, in Settings → Mobile** - the section the tab leads with: the plan, the renewal date, the machines and phones on the account, and a link that opens the billing portal in your system browser. Signing in is an email address and a one-time link — there is no strIDEterm password to create, type or reset — and the link can be opened on this computer or on your phone; the last step happens on the machine being signed in. Paddle is the Merchant of Record, so invoices, card changes and cancellation live there; nothing in strIDEterm renders a payment form. Each data directory is its own installation, with its own key and its own place on the account
+- **Free and hosted features** — local terminals, workspaces, agents, LAN access, and Cloudflare Quick Tunnel are free and work without an account. Hosted Mobile companion services require a subscription. See [strIDEterm Mobile](https://strideterm.com/mobile/) and the [account and billing guide](docs/account-and-billing.md) for setup and plan management.
 
 ## Screenshots
 
@@ -55,23 +54,19 @@
 
 **[Download the latest release](https://github.com/jstradej/strideterm/releases/latest)** — pre-built installers are available for all major platforms:
 
-| Platform | Format                                                                            |
-| -------- | --------------------------------------------------------------------------------- |
-| Windows  | NSIS installer (`.exe`) + portable                                                |
-| macOS    | DMG (`.dmg`) — `-mac-arm64` for Apple Silicon (M1/M2/M3/M4), `-mac-x64` for Intel |
-| Linux    | AppImage (`.AppImage`) + Debian package (`.deb`)                                  |
+| Platform | Format                                                                                                  |
+| -------- | ------------------------------------------------------------------------------------------------------- |
+| Windows  | NSIS installer (`.exe`), portable, or [Microsoft Store](https://apps.microsoft.com/detail/9PBP826FCHF7) |
+| macOS    | DMG (`.dmg`) — `-mac-arm64` for Apple Silicon (M1/M2/M3/M4), `-mac-x64` for Intel                       |
+| Linux    | AppImage (`.AppImage`) + Debian package (`.deb`)                                                        |
+
+Windows users can also install strIDEterm from the [Microsoft Store](https://apps.microsoft.com/detail/9PBP826FCHF7). The Store updates that copy itself, so the app does not check GitHub for updates there. A GitHub build installed beside it is a second copy using the same `~/.strideterm` data directory.
 
 Nightly builds from the latest `master` are also published on the [Releases page](https://github.com/jstradej/strideterm/releases).
 
 > **macOS — pick the right architecture:** Apple Silicon Macs (M1, M2, M3, M4) need the `-mac-arm64.dmg`; Intel Macs need the `-mac-x64.dmg`. The arm64 binary runs natively on Apple Silicon; the x64 binary runs through Rosetta 2 translation, which adds noticeable latency to the WebGL terminal renderer (laggy scroll, sluggish redraws). If you're not sure which Mac you have: **Apple menu → About This Mac → "Chip"** says "Apple M…" for arm64 or "Intel" for x64. To verify a running install: open Activity Monitor, find `strIDEterm`, and check the **Kind** column — `Apple` means native, `Intel` means Rosetta.
 
 > **Code signing:** Windows Authenticode signing depends on release signing credentials. The Store AppX is built unsigned; Microsoft signs packages accepted through Store submission. macOS DMGs and Linux artifacts are not currently signed/notarized — on first launch macOS Gatekeeper will require **System Settings → Privacy & Security → Open Anyway** (or `xattr -dr com.apple.quarantine strIDEterm.app`), and Linux package managers may warn about the unsigned `.deb`.
-
-strIDEterm is also available from the [Microsoft Store](https://apps.microsoft.com/detail/9PBP826FCHF7). The Store updates that copy itself, so the app does not check GitHub for updates there. A GitHub build installed beside it is a second copy using the same `~/.strideterm` data directory.
-
-The Store package is not part of the GitHub release. It is built on demand by the [Store AppX workflow](.github/workflows/store-appx.yml): dispatch it in `store` mode from the release tag (**Use workflow from → Tags → `vX.Y.Z`**; the workflow refuses any other ref). It needs the three repository variables `MS_STORE_IDENTITY_NAME`, `MS_STORE_PUBLISHER`, and `MS_STORE_PUBLISHER_DISPLAY_NAME` set to the exact identity shown in Partner Center, takes the AppX version from `package.json` (`X.Y.Z.0`), and uploads the package as the Actions artifact `store-appx-<commit sha>` for submission in Partner Center; it never submits it itself. Pushes to `build/store-*` branches build with a clearly marked temporary validation identity and upload only a validation artifact.
-
-For a local Store package, first run `npm run dist:win`, then set those three variables and run `npm run dist:store`. The package is written under `release/store-appx/`; this command reuses `release/win-unpacked` and does not rebuild the app.
 
 ### Quick install
 
@@ -151,7 +146,7 @@ Invoke-WebRequest -Uri "https://github.com/jstradej/strideterm/releases/latest/d
 
 </details>
 
-Building from source is for contributors — see the [Development Guide](docs/development.md).
+Building from source is for contributors; see the [Development Guide](docs/development.md).
 
 ## Configuration
 
@@ -198,19 +193,14 @@ STRIDETERM_DISABLE_WEBGL=1 strideterm
 
 ## Remote Access
 
-strIDEterm can expose the workspace over HTTP/WebSocket to another device. **Remote access is off by default** — turn it on in Settings, or set `STRIDETERM_REMOTE_ENABLED=true` before launch, so the server actually starts listening.
+For remote access, we recommend installing strIDEterm using the pre-built installers above. Open **Remote Access** in the app and choose a connection:
 
-```bash
-# Enable remote access for this launch (LAN-accessible)
-STRIDETERM_REMOTE_ENABLED=true npm start
+- **Mobile** — pair the [strIDEterm mobile app](https://strideterm.com/mobile/) with your desktop. Sessions through the managed relay are end-to-end encrypted between your phone and desktop.
+- **LAN** — connect a browser on the same trusted local network.
+- **Cloudflare** — create a temporary public Quick Tunnel without configuring port forwarding; share its link with the device you want to use.
+- **VPS / Custom** — use your own VPS, reverse proxy, or domain for a public connection.
 
-# Desktop-only (bind to loopback so nothing on the LAN can reach the port)
-STRIDETERM_REMOTE_ENABLED=true STRIDETERM_REMOTE_HOST=127.0.0.1 npm start
-```
-
-Once enabled, the server binds to `0.0.0.0:43123` by default. From another device: `http://<your-lan-ip>:43123/?token=<token>`
-
-**Security:** treat the remote token like a password. Use LAN mode only on trusted networks. Even with a valid token, remote clients cannot toggle Cloudflare auto-tunnel, repoint the `cloudflared` binary, change the bind host/port, rotate the token, edit `customPublicUrl`, or flip `externalPathOpener` — those settings are local-IPC only. Every settings update and HTTP/WS request from a remote client is filtered through a server-side **blocklist** (a fixed set of dangerous keys is dropped) and validated against shared Zod schemas before reaching the runtime.
+Keep shared links private because they include your access token. LAN connections are not encrypted.
 
 ## Telegram Bot
 
@@ -222,7 +212,7 @@ strIDEterm can forward workspace alerts to a Telegram chat and let you reply to 
 
 The Telegram tab in the notification panel shows each connection's status, poll interval, and forward filter at a glance, with a one-click **Configure** shortcut. From the bot, `/menu` is the recommended entry point on mobile — it gives one-tap access to status, new task, screenshot, workspaces, and help.
 
-The bot token is stored encrypted via the OS keychain, the chat-ID allowlist is enforced on every incoming update, and the Get-file flow refuses paths that resolve outside the task workspace's `cwd`. See [Telegram docs](docs/telegram.md) for the full feature reference, security model, and technical overview.
+The bot token is stored securely by the operating system, and the bot only responds to the configured chat.
 
 ## Agent Task Runner
 
@@ -235,7 +225,15 @@ strIDEterm can run a supervised coding loop where a **Worker** agent implements 
 
 Key features: editable `TASK.md` brief and `WORKER.md` rules, TODO/WORK_LOCK file protocol, periodic context refresh (shower mode) for long tasks, and a Dashboard tab showing round-by-round progress with judge feedback.
 
-Requires at least one of [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude`), [Codex CLI](https://developers.openai.com/codex/cli) (`codex`), [Gemini CLI](https://geminicli.com/) (`gemini`), [GitHub Copilot CLI](https://docs.github.com/en/copilot/github-copilot-in-the-cli) (`copilot`), or [OpenCode](https://opencode.ai/) (`opencode`) on your PATH. See [Agent Task Runner docs](docs/agent-task-runner.md) for full details.
+Use any supported AI coding tool installed on your computer to run Worker and Judge agents.
+
+## Internal MCP
+
+strIDEterm provides three MCP servers that give supported AI agents access to app capabilities:
+
+- **Task orchestration** — supported AI agents can prepare and monitor coding tasks; strIDEterm asks you to approve the task before it starts.
+- **Pull-request review** — AI agents can help inspect and respond to pull requests in Azure DevOps and GitHub review workspaces.
+- **SSH commands** — supported AI agents can run commands on saved SSH hosts from a terminal.
 
 ## Agent Notification Hooks
 
@@ -243,7 +241,7 @@ strIDEterm integrates with each supported agent CLI's hook system so you get ins
 
 | Provider       | Config location                                                             | Events registered                                                                 | Notes                                                                                                                                                               |
 | -------------- | --------------------------------------------------------------------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Claude Code    | `~/.claude/settings.json`                                                   | Notification, Stop, SubagentStop, UserPromptSubmit, PreToolUse, PermissionRequest | Widest event coverage. `PermissionRequest` lets alerts name the tool being approved, and powers the optional auto-approve below                                     |
+| Claude Code    | `~/.claude/settings.json`                                                   | Notification, Stop, SubagentStop, UserPromptSubmit, PreToolUse, PermissionRequest | Widest event coverage. `PermissionRequest` lets alerts name the tool being approved                                                                                 |
 | Gemini CLI     | `~/.gemini/settings.json`                                                   | AfterAgent, Notification, BeforeAgent                                             | Event names auto-mapped to Claude aliases                                                                                                                           |
 | Codex CLI      | `~/.codex/hooks.json` + `[features] hooks = true` in `~/.codex/config.toml` | Stop, UserPromptSubmit                                                            | Requires Codex CLI **0.121.0+** on Windows ([PR #17268](https://github.com/openai/codex/pull/17268)); first run may require approving strIDEterm hooks via `/hooks` |
 | GitHub Copilot | `~/.copilot/config.json` (top-level `hooks` key)                            | sessionEnd, userPromptSubmitted                                                   | Requires Copilot CLI **1.0.32+**. Respects `COPILOT_HOME` env var override                                                                                          |
@@ -252,26 +250,6 @@ strIDEterm integrates with each supported agent CLI's hook system so you get ins
 The four hook-based providers share a single notification script (`~/.strideterm/hooks/notify.mjs`) that posts events to a local HTTP endpoint embedded in strIDEterm. The script is written automatically on startup, so you never need to edit it by hand. OpenCode reaches the same endpoint from inside its own process — its plugin reads the `STRIDETERM_NOTIFY_URL` that strIDEterm injects into every terminal session, so an `opencode` started outside strIDEterm sends nothing. Settings also exposes a **Test hook** button that runs an end-to-end probe and reports delivery latency.
 
 **Without hooks** the Task Runner falls back to a silence-based heuristic (8 s default) for all five providers. OSC 133 shell integration only fires when a _shell_ returns to its prompt, so for interactive agent sessions (which never return to a prompt between turns) it doesn't help — hooks carry the primary signal. Hooks are optional but strongly recommended for long Judge reasoning passes where silence timers add up. Codex may also show _"hooks need review"_ after configuration; open `/hooks` in Codex and approve the two strIDEterm entries once.
-
-### Auto-approve permission prompts (Claude Code)
-
-**Settings → General → Notifications → Auto-approve permission prompts.** Off by default, and disabled until the agent notification hook is on and the Claude Code hooks are configured.
-
-When enabled, strIDEterm answers Claude Code's `PermissionRequest` hook with `allow`: the prompt does not appear in the terminal and the agent keeps working. This is equivalent to running the agent without permission prompts, so treat it as such — it is a bypass, not a filter. What keeps it accountable:
-
-- **Every decision is recorded** in `approval-audit-log.db` in the data directory (30-day retention), listed in the **Approvals** tab of the notification panel — one row per decision, newest first, grouped by day and searchable by workspace, panel, tool or command; click a row for the full command, the reason, and the Claude session id that finds it in the agent's own transcript. The tab is there whenever auto-approve is armed or the profile has approvals on record, so disarming never hides what was already approved. Each approval is also added to the Notification Center as a silent entry. That entry arrives as a live event, so the history is rebuilt from the log whenever a window could have missed one — at start-up, when you switch back to a profile, and after a remote client reconnects — continuing from the last entry it filled in, and in further passes when a lot happened while you were away, so a long absence is caught up completely rather than only its most recent page — in the right order, with the newest approvals kept when the history is full, and retried on its own if a catch-up fails. An approval too old to fit alongside them changes nothing on screen — it never marks a thread you already cleared as unread again. If the record cannot be written, **the approval is refused** and the prompt is shown instead. Rows read `decision-issued`, not "approved": strIDEterm knows it handed a decision to the hook's stdout, and nothing in the flow reports back whether Claude Code acted on it.
-- **The panel has to prove it is yours.** Hooks are routed by project directory, which proves nothing on its own — a `claude` you started in a plain terminal in the same repository reaches strIDEterm exactly like the real one does. Each terminal strIDEterm spawns therefore carries an ownership token (`STRIDETERM_SESSION_TOKEN`) that the hook echoes back; a request without the right token for the session it names is never auto-approved. If your setup does not pass the terminal's environment through to hook processes, nothing is auto-approved and the prompt is shown — which is the same outcome as having no hook at all.
-- **One decision, one instance.** The hook runs a two-phase handshake: every reachable strIDEterm is asked whether it _would_ answer, and only when exactly one offers is that one told to commit. Nothing is recorded, notified or forwarded before that point, so two instances over the same repository leave no "approved" trail behind them — neither answers, and the prompt appears. The commit is not a rubber stamp on the offer either: the setting, the never-list, the ownership token and the active turn are all re-checked against the state as it is then, so unticking the box, ending the turn or closing the panel voids an offer already made — a repeat of a commit already answered included.
-- **One request, one decision.** Each run of the hook script carries its own random delivery id, and both legs of the handshake — the offer and the commit that answers it — are checked against the same panel, the same delivery, the same tool and the same arguments; a decision is only ever replayed on that same identity, and only after every check above has passed again. Claude's `PermissionRequest` input has nothing that identifies the individual request — there is no `tool_use_id`, and `prompt_id` names the whole user turn — so nothing else is treated as an identity: two tools in one turn are two questions, answered (or refused) one at a time.
-- **Never auto-approved:** `AskUserQuestion` and `ExitPlanMode` (both need a real answer, not a rubber stamp), any panel in a task-runner workspace, and any session outside an active turn.
-- **One prompt is out of reach.** A tool call blocked by Claude Code's sandbox for network access raises no `PermissionRequest` — Claude asks about it through a plain notification, which carries no decision back. That prompt still appears and is still yours to answer; strIDEterm names the tool in the alert and nothing more.
-- **Your own rules still win.** Claude Code evaluates deny and ask rules from `/permissions` before the hook, so the hook only ever sees requests Claude was going to ask you about.
-- **You can delete rows, from the desktop.** Individual rows, or the whole trail for a profile, from the Approvals tab. There is no remote route for it: reading the record of an unattended bypass from a phone is fine, erasing it is not — the same reasoning that keeps a remote client from arming it in the first place. A deletion leaves no rows behind but does leave a line in `strideterm.log` saying how many went and when. Retention clears the rest after 30 days.
-- **Remote clients cannot enable it.** `POST /api/settings/update` drops the field; arming an unattended bypass has to happen at the machine that will execute the result. Turning the agent notification hook off also disarms auto-approve, so a remote client turning the hook back on cannot silently re-arm the bypass. Reading the log over remote (`GET /api/approvals/audit-log`) is allowed, scoped to the profile the calling session is bound to — a caller presenting the master token with no bound session reads the whole installation's trail, which that token already grants in full.
-- If you already run your own `PermissionRequest` hook, don't run both: hooks for one event execute in parallel and the docs don't define which decision wins.
-- Requires **Claude Code 2.0.45+** (when the `PermissionRequest` hook was added), and nothing beyond it: the flow uses only fields that hook has carried since then. `prompt_id` (2.1.196+) and `agent_id` sharpen the match between a request and the notification that follows it, and are simply absent on an older CLI; when the notification names one and no parked request agrees with it, the alert keeps Claude's own wording rather than describing a tool it cannot prove is the right one. On a CLI older than 2.0.45 the hook never fires at all: alerts fall back to Claude's own message text and nothing is auto-approved. The `question` alert kind itself needs no minimum version, except `agent_needs_input`, which Claude Code only sends from 2.1.198.
-
-**Copilot note:** if the user has `disableAllHooks: true` set in `~/.copilot/config.json` (Copilot's global kill-switch), Settings shows a distinct _"Configured — hooks disabled"_ badge so you know installed entries won't fire until you clear the flag.
 
 ## Keyboard Shortcuts
 
@@ -304,15 +282,11 @@ Built-in plugins (under `plugins/`):
 
 User plugins: `~/.strideterm/plugins/`
 
-See [Plugin Development Guide](docs/plugin-development.md) for details.
+Plugins can add workspace templates to strIDEterm. See the [Plugin Development guide](docs/plugin-development.md).
 
 ## Development
 
-Building from source, running tests, and the project architecture are documented separately so this README stays focused on using the app:
-
-- [Development Guide](docs/development.md) — requirements, dev startup, build & test commands, packaging notes
-- [Architecture](docs/architecture.md) — runtime/adapter/renderer breakdown and key patterns
-- [Contributing](CONTRIBUTING.md) — commit and PR conventions
+For an overview of how the desktop, browser, and mobile companion work together, see [How strIDEterm works](docs/architecture.md). Contributors can start with the [Development Guide](docs/development.md).
 
 ## License
 

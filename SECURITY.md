@@ -40,7 +40,7 @@ Only the **latest tagged release** on the [Releases page](https://github.com/jst
 
 **Out of scope** (these are documented trust assumptions):
 
-- **Plugin code is not sandboxed.** Plugins under `~/.strideterm/plugins/` run in the same Node.js process as the backend with full filesystem access — see [docs/plugin-development.md](docs/plugin-development.md). Treat plugin authors as trusted.
+- **Plugin code is not sandboxed.** Plugins run in the same Node.js process as the backend with full filesystem access. Treat plugin authors as trusted.
 - **Custom user CLI commands** (Worker / Judge agent commands, post-login SSH commands, panel commands) execute with the user's privileges. The user explicitly configures them.
 - **Local-machine attacks.** A local attacker who can read `~/.strideterm/` files or the user's keychain is already past the trust boundary. The OS keychain protection of `safeStorage` is the boundary, not file-permission obscurity.
 - **Third-party CLIs we integrate with** (Claude Code, Codex, Gemini, Copilot, OpenCode, `git`, Docker, `lazygit`, `ssh`). Report those upstream.

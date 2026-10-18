@@ -10737,7 +10737,7 @@ describe("clearAlertForSession + syncAttentionContext — profile scoping", () =
 });
 
 // ---------------------------------------------------------------------------
-// Task-agent crash recovery (see docs/task-recovery.md)
+// Task-agent crash recovery
 // ---------------------------------------------------------------------------
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

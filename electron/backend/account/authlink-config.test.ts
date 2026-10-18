@@ -424,14 +424,10 @@ describe("the pasted-link parser", () => {
 });
 
 // ---------------------------------------------------------------------------
-// F10 — the documented procedure has to be one this build accepts
+// F10 — a refused configuration has a distinct reason
 // ---------------------------------------------------------------------------
 //
-// THE OTHER HALF OF THE STATIC CONFIGURATION TEST. The cloud repository's
-// `check-authlink-local-config.mjs` compares the two documented configurations against the Worker's
-// own vars and the dev `google-services.json`; it cannot see this build's resolver. This does: every
-// broker origin `docs/development.md` tells somebody to export is fed to `resolveAuthLinkConfig`, and
-// a documented value the resolver refuses fails here rather than at the person's keyboard.
+// A refused configuration has a distinct reason so the caller can explain why sign-in is blocked.
 describe("a contradictory Firebase configuration blocks a new sign-in with its own reason (R06)", () => {
   test("no Firebase config BECAUSE it was refused is `environment-contradiction`, not `not-configured`", () => {
     const refused = resolveAuthLinkConfig({
@@ -447,50 +443,13 @@ describe("a contradictory Firebase configuration blocks a new sign-in with its o
   });
 });
 
-describe("the documented local procedure agrees with the resolver", () => {
-  const documentation = readFileSync(resolve(process.cwd(), "docs/development.md"), "utf8");
-
-  test("every documented broker origin is one a local build accepts", () => {
-    const documented = [...documentation.matchAll(/STRIDETERM_MOBILE_AUTHLINK_ORIGIN\s*=\s*"([^"]+)"/g)].map(
-      (match) => match[1]!,
-    );
-    // The section exists, and it names at least one origin. A regex that matched nothing would make
-    // every assertion below vacuous.
-    expect(documented.length).toBeGreaterThan(0);
-    for (const origin of documented) {
-      const resolved = resolveAuthLinkConfig({
-        firebase: FIREBASE,
-        environment: "local",
-        env: { [AUTHLINK_ENV_VARS.devOrigin]: origin },
-      });
-      expect(resolved.refusal, origin).toBeNull();
-      expect(resolved.config?.origin, origin).toBe(origin);
-    }
-  });
-
-  test("the documented environment declaration is one this build recognises", () => {
-    // F11's variable, and its values. A document naming `staging` would send somebody to a build
-    // whose sign-in refuses with `environment-unresolved`.
-    const declared = [...documentation.matchAll(/STRIDETERM_ENV\s*=\s*"([^"]+)"/g)].map((match) => match[1]!);
-    expect(declared.length).toBeGreaterThan(0);
-    for (const value of declared) {
-      expect(bootstrapEnvironmentFor({ STRIDETERM_ENV: value } as NodeJS.ProcessEnv), value).not.toBe("unresolved");
-    }
-  });
-
+describe("the development launcher declares its environment", () => {
   test("`dev.ps1` declares the environment rather than leaving it to be inferred", () => {
     // The script is what a developer actually runs, and F11's whole point is that setting a data
     // directory is not a declaration. If this line goes, a bare `dev.ps1` resolves to whatever
     // `STRIDETERM_ENV` happened to already be set to in the shell, rather than to `local`.
     const script = readFileSync(resolve(process.cwd(), "dev.ps1"), "utf8");
     expect(script).toContain("$env:STRIDETERM_ENV = 'local'");
-  });
-
-  test("the documented procedure does not tell a local build to use the prod broker", () => {
-    // "Neopravovat nesoulad vypnutím allowlistu nebo automatickým přechodem na produkční broker."
-    const section = documentation.slice(documentation.indexOf("### Exercising passwordless sign-in"));
-    expect(section).not.toContain('STRIDETERM_MOBILE_AUTHLINK_ORIGIN = "https://auth.strideterm.com"');
-    expect(section).toContain("Do not point a local build at the prod broker");
   });
 });
 

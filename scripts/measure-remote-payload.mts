@@ -15,8 +15,7 @@
  *   4. the size of an ongoing WS resource:invalidate frame, to evaluate whether
  *      WS permessage-deflate is worth its per-frame CPU (plan §Phase 4).
  *
- * Numbers are recorded in docs/remote-payload-measurements.md. Sizes are
- * deterministic (fixed synthetic data), so re-running reproduces them.
+ * Sizes are deterministic (fixed synthetic data), so re-running reproduces them.
  */
 import { brotliCompressSync, gzipSync, deflateRawSync, createDeflateRaw } from "node:zlib";
 import { performance } from "node:perf_hooks";
@@ -260,7 +259,7 @@ function main(): void {
     `     invalidations + latest-wins-coalesced core deltas, for which per-message`,
     `     deflate is net-negative.`,
   ];
-  // eslint-disable-next-line no-console
+
   console.log(lines.join("\n"));
 }
 

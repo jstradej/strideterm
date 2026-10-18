@@ -30,7 +30,7 @@ export type TaskExecutionState =
   | "judge-evaluating"
   | "refreshing"
   | "completed"
-  // Attached-mode (Companion loop) states — see docs/agent-task-runner.md
+  // Attached-mode (Companion loop) states.
   | "capturing-context"
   | "brief-ready"
   | "awaiting-user"
@@ -170,7 +170,7 @@ export interface TaskState {
   judgePanelId: string;
   maxRounds: number;
   // ---- Attached mode (Companion loop) metadata. Absent/undefined means
-  // "standard" task — see docs/agent-task-runner.md "Companion loop". ----
+  // "standard" task — "Companion loop". ----
   /** "standard" (default, Worker+Judge task) or "attached" (Companion loop
    * over an existing live conversation). Absent is treated as "standard". */
   mode?: "standard" | "attached";

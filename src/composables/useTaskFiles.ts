@@ -18,7 +18,7 @@ import type { TaskState } from "../../electron/shared/types/task.js";
 const TASK_FILE_NAME = "TASK.md";
 const WORKER_FILE_NAME = "WORKER.md";
 const JUDGE_FILE_NAME = "JUDGE_PROMPT.md";
-// Attached mode (Companion loop) only — see docs/agent-task-runner.md.
+// Attached mode (Companion loop) only.
 const CONTEXT_FILE_NAME = "CONTEXT.md";
 const HANDOFF_FILE_NAME = "HANDOFF.md";
 const VERIFICATION_FILE_NAME = "VERIFICATION.md";

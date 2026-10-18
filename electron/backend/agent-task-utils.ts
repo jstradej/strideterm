@@ -27,7 +27,7 @@ export function promptFileFor(role: "worker" | "judge"): string {
   return role === "judge" ? "PROMPT.judge.md" : "PROMPT.worker.md";
 }
 export const HANDOFF_FILE = "HANDOFF.md";
-// Attached mode (Companion loop) — see docs/agent-task-runner.md.
+// Attached mode (Companion loop).
 export const CONTEXT_FILE = "CONTEXT.md";
 export const VERIFICATION_FILE = "VERIFICATION.md";
 

@@ -89,7 +89,7 @@ const COPILOT_PROGRAMMATIC_JUDGE_TIMEOUT_MS = 180_000;
 /** Full task state as used internally (extends persisted TaskState with runtime fields) */
 interface RuntimeTaskState extends TaskState {
   judgeNudged?: boolean;
-  // Attached mode only — see docs/agent-task-runner.md.
+  // Attached mode only.
   /** True once a capture-incomplete nudge has been sent to Primary; a second
    * incomplete idle pauses instead of nudging forever. */
   captureNudged?: boolean;
@@ -712,7 +712,7 @@ export class AgentTaskRunner {
   //   "context restore" flag — the agent re-orients from the artifacts the
   //   previous round wrote to disk (HANDOFF.md, TODO.md, WORK_LOCK,
   //   verdict.json, git history). See buildRecoveryPrompt for the prompt
-  //   text and docs/task-recovery.md for the full protocol.
+  //   text for the full protocol.
   // ---------------------------------------------------------------------------
 
   #reconcileOnStartup(): void {
@@ -4560,7 +4560,7 @@ export class AgentTaskRunner {
   }
 
   // ---------------------------------------------------------------------------
-  // Attached mode (Companion loop) — see docs/agent-task-runner.md. These
+  // Attached mode (Companion loop). These
   // methods are deliberately PARALLEL to the Worker/Judge methods above
   // rather than branching inside them: every entry point that can receive an
   // attached task dispatches here as its very first action, so standard

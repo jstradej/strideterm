@@ -242,7 +242,7 @@ function describe(
  *   - The production project's fixed custom domain, `mail.strideterm.com`.
  *   - The AUTH EMULATOR's handler, `http://<host>/emulator/action`, and only in a `local` build with an
  *     emulator configured. It is what configuration A pastes — the emulator-only procedure named by
- *     `docs/development.md`, written out in `docs/PASSWORDLESS-LOCAL-TESTING.md` in the cloud
+ *     the local development procedure in the cloud
  *     repository — and gating it on `isLocal` is what stops a plain-HTTP handler ever being accepted
  *     by a real build.
  *   - A CUSTOM action domain, named explicitly by {@link AUTHLINK_ENV_VARS.actionDomains} and only

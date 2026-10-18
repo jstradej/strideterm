@@ -1,10 +1,10 @@
 # Contributing to strIDEterm
 
-Thanks for your interest. The build, test, and dev-startup details live in the [Development Guide](docs/development.md) — this file covers the conventions on top of that.
+Thanks for your interest in contributing to strIDEterm. See the [Development Guide](docs/development.md) for setup and build basics.
 
 ## Setup
 
-See [docs/development.md](docs/development.md) for prerequisites and the full build & test command list. The short form:
+Clone the repository and install dependencies:
 
 ```bash
 git clone https://github.com/jstradej/strideterm.git

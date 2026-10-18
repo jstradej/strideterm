@@ -1,192 +1,74 @@
-# Plugin Development Guide
+# Plugin Development
 
-This guide explains how to create plugins for strIDEterm. **Plugins are currently manifest-only**: a plugin declares a workspace template and metadata, and the loader executes no plugin code. A runtime entry point (`activate(...)`) is reserved in the manifest but not wired into the loader.
+strIDEterm plugins currently provide workspace templates through a `plugin.json` manifest. The manifest does not load JavaScript plugin code. Panel startup commands and scripts run as normal terminal commands under the signed-in user's account, so install only plugins you trust.
 
-## Quick Start
+## Create a plugin
 
-```bash
-# 1. Create the plugin directory
-mkdir -p ~/.strideterm/plugins/my-plugin
-
-# 2. Create the manifest
-cat > ~/.strideterm/plugins/my-plugin/plugin.json << 'EOF'
-{
-  "id": "my-plugin",
-  "name": "My Plugin",
-  "version": "1.0.0",
-  "description": "A short description of what this plugin does.",
-  "author": "Your Name",
-  "license": "MIT",
-  "icon": "MP",
-  "color": "#ff6600",
-  "kind": "terminal",
-  "capabilities": ["terminal:create-panel"],
-  "workspaceDefaults": {
-    "name": "My Plugin Workspace",
-    "icon": "MP",
-    "color": "#ff6600",
-    "kind": "terminal",
-    "notes": "Created by My Plugin.",
-    "panels": [
-      {
-        "id": "main",
-        "title": "Main",
-        "command": "echo 'Hello from my plugin!'",
-        "shell": true,
-        "startup": "default"
-      }
-    ]
-  }
-}
-EOF
-
-# 3. Restart strIDEterm
-```
-
-The plugin appears in the plugin list if its manifest validates; a manifest that fails validation is not loaded.
-
-## Plugin Locations
-
-| Location                         | Type           | Priority      |
-| -------------------------------- | -------------- | ------------- |
-| `plugins/` inside the app bundle | Built-in       | Loaded first  |
-| `~/.strideterm/plugins/`         | User-installed | Loaded second |
-
-Every direct subdirectory containing a `plugin.json` is a plugin; discovery is not recursive. If a user plugin has the same `id` as a built-in one, the built-in wins.
+Create a folder for your plugin inside the app data directory's `plugins` folder. By default, this is `~/.strideterm/plugins/`; if you use a custom app data directory, put the folder there instead. Each plugin must be a direct child folder with its own `plugin.json`.
 
 ```text
-~/.strideterm/plugins/my-plugin/
-|- plugin.json
-|- README.md
-`- assets/
+plugins/
+└── my-tool/
+    ├── plugin.json
+    ├── start.sh
+    └── start.ps1
 ```
 
-Only `plugin.json` is required. See `plugins/system-monitor/` for a real example.
-
-## Manifest Reference
-
-### Required Fields
-
-| Field     | Type     | Description                                                      |
-| --------- | -------- | ---------------------------------------------------------------- |
-| `id`      | `string` | Lowercase alphanumeric with `-` or `_`. Pattern: `^[a-z0-9_-]+$` |
-| `name`    | `string` | Human-readable display name                                      |
-| `version` | `string` | Semantic version string                                          |
-
-### Optional Fields
-
-| Field                 | Type       | Default      | Description                                                                                                                      |
-| --------------------- | ---------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| `description`         | `string`   | `""`         | Short description shown in the UI                                                                                                |
-| `author`              | `string`   | `""`         | Plugin author name                                                                                                               |
-| `license`             | `string`   | `""`         | License identifier such as `"MIT"`                                                                                               |
-| `icon`                | `string`   | `"PL"`       | 1-4 character badge shown on the workspace card                                                                                  |
-| `color`               | `string`   | `"#888"`     | Hex color for the workspace accent                                                                                               |
-| `kind`                | `string`   | `"terminal"` | Workspace type. The renderer knows `"terminal"`, `"docker"`, `"azure"` and `"github"`; other strings are accepted but not useful |
-| `capabilities`        | `string[]` | `[]`         | Declared capabilities, validated against the list below                                                                          |
-| `workspaceDefaults`   | `object`   | `null`       | Default workspace template                                                                                                       |
-| `entryPoint`          | `string`   | —            | Reserved. Must stay inside the plugin directory; the file is **not imported or executed** today                                  |
-| `recommendedPackages` | `object[]` | `[]`         | Informational list of suggested packages; not used by the runtime                                                                |
-
-## Workspace Template
-
-`workspaceDefaults` is the template a user adds from the **+ Add Workspace** picker.
+Use a separate startup script for each operating system. For example, this manifest describes a terminal workspace with an automatically started panel:
 
 ```json
 {
+  "id": "my-tool",
+  "name": "My Tool",
+  "version": "1.0.0",
+  "description": "A workspace for My Tool",
+  "icon": "MT",
+  "color": "#e06040",
+  "kind": "terminal",
   "workspaceDefaults": {
     "name": "My Tool",
     "icon": "MT",
     "color": "#e06040",
     "kind": "terminal",
-    "notes": "Description of what this workspace does.",
     "panels": [
       {
         "id": "main",
-        "title": "Main",
-        "command": "my-tool --interactive",
+        "title": "My Tool",
+        "command": "",
         "shell": true,
-        "startup": "default"
-      },
-      {
-        "id": "logs",
-        "title": "Logs",
-        "command": "tail -f /var/log/my-tool.log",
-        "shell": true,
-        "startup": "manual"
+        "startup": "default",
+        "platforms": {
+          "win32": { "script": "start.ps1" },
+          "posix": { "script": "start.sh" }
+        }
       }
     ]
   }
 }
 ```
 
-### Panel Fields
+The `posix` override applies to macOS and Linux. Supported script extensions are `.ps1`, `.sh`, `.bash`, `.py`, `.js`, and `.mjs`. Script paths must stay inside the plugin folder. User plugins must use script files in platform overrides; inline per-platform commands are reserved for built-in plugins.
 
-| Field       | Type      | Default        | Description                                    |
-| ----------- | --------- | -------------- | ---------------------------------------------- |
-| `id`        | `string`  | auto-generated | Unique panel identifier within the workspace   |
-| `title`     | `string`  | `"Shell"`      | Tab title                                      |
-| `command`   | `string`  | `""`           | Startup command. Empty means interactive shell |
-| `shell`     | `boolean` | `true`         | Whether to run the command in a shell          |
-| `startup`   | `string`  | `"default"`    | `"default"` or `"manual"`                      |
-| `platforms` | `object`  | `null`         | Platform-specific overrides                    |
+Restart strIDEterm after adding or changing a plugin. If its template does not appear in **+ → Add Workspace**, check the app's plugin list for validation errors. Choose the template to create a workspace, then review and edit the resulting panels like other workspaces.
 
-## Cross-Platform Panels
+## Manifest fields
 
-A panel can override its startup per platform. Keys: `win32`, `linux`, `darwin`, and `posix`, used when the current platform has no entry of its own.
+| Field               | Purpose                                                                                        |
+| ------------------- | ---------------------------------------------------------------------------------------------- |
+| `id`                | Required unique identifier; use lowercase letters, numbers, `-`, or `_`.                       |
+| `name`              | Required display name.                                                                         |
+| `version`           | Required version string.                                                                       |
+| `description`       | Optional short text shown in the UI.                                                           |
+| `icon`              | Optional 1–4 character badge for the workspace.                                                |
+| `color`             | Optional hex color for the workspace accent.                                                   |
+| `kind`              | Workspace kind such as `terminal`, `docker`, `azure`, or `github`.                             |
+| `workspaceDefaults` | Optional workspace template, including name, icon, color, notes, and panels.                   |
+| `capabilities`      | Optional list of recognized capability labels. These labels are metadata, not access controls. |
 
-```json
-{
-  "id": "monitor",
-  "title": "Monitor",
-  "command": "",
-  "shell": true,
-  "startup": "default",
-  "platforms": {
-    "win32": { "script": "monitor.ps1" },
-    "posix": { "script": "monitor.sh" }
-  }
-}
-```
+Each panel can set `id`, `title`, `command`, `shell`, and `startup`. Use `startup: "default"` to start the command with the workspace, or `"manual"` to open it on demand. An empty command starts an interactive shell. Platform overrides can choose an allowed script for `win32`, `linux`, `darwin`, or `posix`.
 
-| Field     | Description                                                                                                      |
-| --------- | ---------------------------------------------------------------------------------------------------------------- |
-| `script`  | Filename inside the plugin directory, with one of `.ps1`, `.sh`, `.bash`, `.py`, `.js`, `.mjs`                   |
-| `command` | A plain shell command for that platform. **Honoured only for built-in plugins**; a user plugin must use `script` |
+## Safety and limitations
 
-The loader, not the plugin, chooses how a script runs (e.g. `.ps1` becomes `powershell -ExecutionPolicy Bypass -File …`), and refuses a script whose extension is not allowed or whose path leaves the plugin directory. A refused panel shows the reason in its terminal.
+Plugins are local to one installation and are not synchronized to other computers. strIDEterm does not sandbox terminal commands: a command or script from a plugin can access files and programs with the same permissions as your normal shell. Review its manifest and scripts before using it.
 
-## Capabilities
-
-`capabilities` must name only these; an unknown one fails validation and the plugin does not load:
-
-- `docker:list-containers`, `docker:container-actions`, `docker:attach-shell`, `docker:stream-logs`, `docker:lazydocker`
-- `terminal:create-panel`, `terminal:read-output`
-- `workspace:create`, `workspace:modify-own`
-- `system:read-metrics`
-
-Declare only what you need. Capabilities are metadata, not a permission system (see below).
-
-## Plugin Lifecycle (today)
-
-1. **Discovery** — built-in plugins, then user plugins, as above.
-2. **Manifest validation** — `id` format, required fields, capability list, `entryPoint` containment.
-3. **Template surfacing** — `workspaceDefaults` appears in the **+ Add Workspace** picker; choosing it creates the workspace with platform panels resolved for the current OS.
-
-There is no module import, no `activate()` and no `deactivate()`. Runtime behaviour that a plugin cannot express as a template belongs in `electron/backend/` today.
-
-## Security Model
-
-What is enforced:
-
-- manifest validation, including the capability list;
-- `entryPoint` and platform scripts must stay inside the plugin directory, and scripts must have an allowed extension;
-- a user plugin cannot supply a per-platform inline `command`.
-
-What is not:
-
-- **The loader executes no plugin code today.** A plugin's panels and scripts run as ordinary terminal sessions under your user account, with the same access as anything you type in a shell — so a plugin's commands and scripts are code you are choosing to run.
-- **There is no sandbox.** If entry points are wired up later, they would run unsandboxed in the backend's Node.js process.
-- **Capabilities are not permissions.** They are validated names, not an enforced boundary.
-
-Treat plugin authors as trusted code authors, and read a plugin's manifest and scripts before installing it.
+The manifest's `capabilities` list does not grant or restrict permissions. Plugin templates can launch terminal commands, but plugins cannot currently add new app interfaces or backend features through JavaScript code.

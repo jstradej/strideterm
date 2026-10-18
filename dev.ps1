@@ -100,7 +100,7 @@ function Import-MobileFirebaseDevConfig {
         if (-not $existingProject) { $missing += $projectVar }
         if (-not $existingApiKey) { $missing += $apiKeyVar }
         if (-not $existingDatabase) { $missing += $databaseVar }
-        throw "STRIDETERM_ENV is '$declaredEnvironment', so the sibling local google-services.json is not imported. Set $($missing -join ', ') for that environment's Firebase project, or pass -MobileFirebaseConfigPath <that project's google-services.json>. See docs/development.md, 'Which remote environment a dev build talks to'."
+        throw "STRIDETERM_ENV is '$declaredEnvironment', so the sibling local google-services.json is not imported. Set $($missing -join ', ') for that environment's Firebase project, or pass -MobileFirebaseConfigPath <that project's google-services.json>."
     }
 
     $candidates = @()
@@ -397,7 +397,7 @@ $env:STRIDETERM_DATA_DIR = $DataDir
 # THE BARE LAUNCHER DEFAULTS TO 'local' (plan §3.1), not 'dev'. `dev` is now a real, remote server —
 # emulators plus a `demo-` project is `local` — so a plain `.\dev.ps1` with nothing else set must not
 # quietly start talking to the real dev-tier backend. Set STRIDETERM_ENV before invoking this script
-# (e.g. 'dev' or 'qa') to run with isolated data against another backend; see docs/development.md.
+# (e.g. 'dev' or 'qa') to run with isolated data against another backend.
 if (-not $env:STRIDETERM_ENV) {
     $env:STRIDETERM_ENV = 'local'
 }

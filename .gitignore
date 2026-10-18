@@ -53,6 +53,7 @@ CLAUDE.local.md
 # strIDEterm local artifacts
 .strideterm/
 .private/
+docs-private/
 credentials.json
 *.db
 *.db-wal

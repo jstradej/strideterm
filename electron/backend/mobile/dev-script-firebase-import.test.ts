@@ -141,22 +141,6 @@ function runImport(
   };
 }
 
-/** The `env` a documented PowerShell block assigns, plus whether it names the config file. */
-function documentedBlock(
-  markdown: string,
-  heading: string,
-  environment: string,
-): { env: Record<string, string>; namesConfigFile: boolean } {
-  const section = markdown.slice(markdown.indexOf(heading));
-  const fence = [...section.matchAll(/```powershell\r?\n([\s\S]*?)```/g)].find((match) =>
-    match[1]?.includes(`$env:STRIDETERM_ENV = "${environment}"`),
-  );
-  if (!fence) throw new Error(`${heading}: no powershell block for ${environment}`);
-  const env: Record<string, string> = {};
-  for (const match of fence[1]!.matchAll(/\$env:([A-Z_0-9]+)\s*=\s*"([^"]*)"/g)) env[match[1]!] = match[2]!;
-  return { env, namesConfigFile: /-MobileFirebaseConfigPath\s+"/.test(fence[1]!) };
-}
-
 describe.skipIf(!pwshAvailable)("dev.ps1 imports one Firebase project, or none of it", () => {
   test("with nothing pre-set, all three values come from the file", () => {
     const { vars } = runImport({});
@@ -257,21 +241,10 @@ describe.skipIf(!pwshAvailable)("dev.ps1 imports one Firebase project, or none o
 });
 
 /**
- * The qa procedure `docs/development.md` documents, run against the launcher and the resolver (R06).
- * "Testovat výslednou konfiguraci launcheru/resolveru podle skutečných dokumentovaných příkazů: čistý
- * staging [now: qa], A → B [B no longer exists, see below], staging + emulator hosts, staging +
- * explicitní HTTP DB." The environment-naming migration (plan §2.1) removed configuration B — the
- * real dev project reached through a locally-run Worker — as a supported diagnostic mode, so the
- * "A → B" case this section used to cover no longer has a B to switch to.
+ * Exercise the qa launcher/resolver behavior with an explicit environment fixture.
  */
 describe.skipIf(!pwshAvailable)("switching environments is unambiguous (R06)", () => {
-  const documentation = readFileSync(resolve(process.cwd(), "docs/development.md"), "utf8");
-  const qa = documentedBlock(documentation, "#### Running against dev, qa or prod", "qa");
-
-  test("the document declares qa and names the config file, and nothing else", () => {
-    expect(qa.env).toEqual({ STRIDETERM_ENV: "qa" });
-    expect(qa.namesConfigFile).toBe(true);
-  });
+  const qaEnv = { STRIDETERM_ENV: "qa" };
 
   test("a CLEAN qa console with no file named is refused before Electron starts, naming the three variables", () => {
     // `STRIDETERM_ENV=qa` alone used to import the DEV project's file under the old vocabulary: a qa
@@ -283,15 +256,15 @@ describe.skipIf(!pwshAvailable)("switching environments is unambiguous (R06)", (
     expect(output).toContain("MobileFirebaseConfigPath");
   });
 
-  test("the documented qa command imports the NAMED file, and the resolver then reaches HTTPS endpoints only", () => {
-    const { vars, status } = runImport(qa.env);
+  test("qa imports the NAMED file, and the resolver then reaches HTTPS endpoints only", () => {
+    const { vars, status } = runImport(qaEnv);
     expect(status).toBe(0);
     expect(vars).toMatchObject({
       [MOBILE_FIREBASE_ENV_VARS.projectId]: "fixture-project",
       [MOBILE_FIREBASE_ENV_VARS.apiKey]: "AIza-fixture-key",
       [MOBILE_FIREBASE_ENV_VARS.databaseUrl]: FIXTURE.project_info.firebase_url,
     });
-    const env = { ...qa.env, ...stringValues(vars!) } as NodeJS.ProcessEnv;
+    const env = { ...qaEnv, ...stringValues(vars!) } as NodeJS.ProcessEnv;
     expect(bootstrapEnvironmentFor(env)).toBe("qa");
     const { config, refusal } = resolveMobileFirebaseConfig(env, FUNCTIONS_REGION);
     expect(refusal).toBeNull();
@@ -332,9 +305,9 @@ describe.skipIf(!pwshAvailable)("switching environments is unambiguous (R06)", (
       [MOBILE_FIREBASE_ENV_VARS.databaseEmulator]: "127.0.0.1:9000",
       [MOBILE_FIREBASE_ENV_VARS.functionsEmulator]: "127.0.0.1:5001",
     };
-    const { vars, status } = runImport({ ...qa.env, ...leftover });
+    const { vars, status } = runImport({ ...qaEnv, ...leftover });
     expect(status).toBe(0);
-    const env = { ...qa.env, ...leftover, ...stringValues(vars!) } as NodeJS.ProcessEnv;
+    const env = { ...qaEnv, ...leftover, ...stringValues(vars!) } as NodeJS.ProcessEnv;
     const { config, refusal } = resolveMobileFirebaseConfig(env, FUNCTIONS_REGION);
     expect(config).toBeNull();
     expect(refusal?.reason).toBe("environment-contradiction");
@@ -345,13 +318,13 @@ describe.skipIf(!pwshAvailable)("switching environments is unambiguous (R06)", (
     // The launcher keeps a database URL it finds set (a complete environment is left alone), so A's
     // `http://127.0.0.1:9000?ns=…` survives into a qa console. The resolver is what stops it.
     const { vars, status } = runImport({
-      ...qa.env,
+      ...qaEnv,
       [MOBILE_FIREBASE_ENV_VARS.projectId]: "fixture-project",
       [MOBILE_FIREBASE_ENV_VARS.apiKey]: "AIza-fixture-key",
       [MOBILE_FIREBASE_ENV_VARS.databaseUrl]: "http://127.0.0.1:9000?ns=demo-strideterm-mobile-local-default-rtdb",
     });
     expect(status).toBe(0);
-    const env = { ...qa.env, ...stringValues(vars!) } as NodeJS.ProcessEnv;
+    const env = { ...qaEnv, ...stringValues(vars!) } as NodeJS.ProcessEnv;
     const { config, refusal } = resolveMobileFirebaseConfig(env, FUNCTIONS_REGION);
     expect(config).toBeNull();
     expect(refusal?.reason).toBe("environment-contradiction");
