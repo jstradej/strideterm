@@ -16587,7 +16587,7 @@ describe("internal MCP: creating and watching task agents", () => {
   }
 
   async function createRepo(prefix = "internal-mcp-repo-"): Promise<string> {
-    const repo = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+    const repo = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
     tempPaths.push(repo);
     await git(repo, "init", "-b", "main");
     await fs.writeFile(path.join(repo, "README.md"), "hello\n");

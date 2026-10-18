@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 
 /**
@@ -28,6 +28,13 @@ export function canonicalLockKey(dir: string): string {
  * It is the lock key shared by every worktree of one repository.
  */
 export async function commonDirOf(cwd: string): Promise<string> {
+  const dir = await rawCommonDirOf(cwd);
+  // Git writes a linked worktree's gitdir pointer with symlinks resolved, so
+  // the main checkout is resolved too, or the two would get different keys.
+  return realpath(dir).catch(() => dir);
+}
+
+async function rawCommonDirOf(cwd: string): Promise<string> {
   const dotGit = path.join(cwd, ".git");
   try {
     if ((await stat(dotGit)).isDirectory()) return dotGit;
