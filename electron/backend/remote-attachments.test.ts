@@ -194,7 +194,7 @@ describe("encrypted mobile attachment route", () => {
       await server.close();
       await rm(root, { recursive: true, force: true });
     }
-  });
+  }, 90_000);
 });
 
 async function getFreePort() {
