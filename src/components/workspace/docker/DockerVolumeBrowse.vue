@@ -47,9 +47,9 @@
             v-for="e in entries"
             :key="e.name"
             :class="['vol-browse__row', `vol-browse__row--${e.type}`]"
+            tabindex="0"
             @click="onClick(e)"
             @keydown.enter="onClick(e)"
-            tabindex="0"
           >
             <td class="vol-browse__name">
               <span class="vol-browse__icon">{{ e.type === "dir" ? "📁" : e.type === "link" ? "↪" : "·" }}</span>
@@ -88,6 +88,7 @@ import { ref, computed, onMounted, watch } from "vue";
 import Spinner from "../../common/Spinner.vue";
 import { useAppStore } from "../../../stores/app.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
+import { userFacingMessage } from "../../../lib/error-message.js";
 
 interface Entry {
   name: string;
@@ -145,7 +146,7 @@ async function load(): Promise<void> {
     );
     parseAndSet(raw);
   } catch (e) {
-    const msg = (e as Error)?.message || String(e);
+    const msg = userFacingMessage(e, "Unknown error");
     error.value = msg;
     entries.value = [];
     notifications.showError("Volume browse failed", `${props.volumeName}: ${msg}`);
@@ -234,7 +235,7 @@ async function openPreview(path: string): Promise<void> {
     const raw = await appStore.dockerVolumeRead(props.volumeName, props.backendId, props.contextName, path);
     previewContent.value = raw;
   } catch (e) {
-    const msg = (e as Error)?.message || String(e);
+    const msg = userFacingMessage(e, "Unknown error");
     previewContent.value = `Failed to read file:\n${msg}`;
     notifications.showError("Volume read failed", `${path}: ${msg}`);
   } finally {

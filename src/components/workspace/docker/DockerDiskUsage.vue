@@ -34,6 +34,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from "vue";
 import { useAppStore } from "../../../stores/app.js";
+import { userFacingMessage } from "../../../lib/error-message.js";
 
 interface DfRow {
   Type: string;
@@ -96,7 +97,7 @@ async function load(): Promise<void> {
     const raw = await appStore.dockerSystemDf();
     rows.value = parseDf(raw);
   } catch (e) {
-    error.value = (e as Error)?.message || String(e);
+    error.value = userFacingMessage(e, "Failed to load Docker disk usage.");
   } finally {
     loading.value = false;
   }

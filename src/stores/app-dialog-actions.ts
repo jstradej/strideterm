@@ -258,7 +258,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
   // instead of leaving it in the DevTools console where nobody looks.
   async function reportFailure(title: string, err: unknown): Promise<void> {
     const { useNotificationStore } = await import("./notifications.js");
-    useNotificationStore().showError(title, (err as Error)?.message || String(err));
+    useNotificationStore().showError(title, err);
   }
 
   function currentProfileId(): string {

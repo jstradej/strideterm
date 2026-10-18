@@ -18,6 +18,7 @@ import { formatWorkspaceDisplayName } from "../../electron/shared/workspace-disp
 import { isCompanionPrimaryViewId } from "../../electron/shared/companion-primary.js";
 import type { Transport, CallableTransport } from "../transport.js";
 import { APP_CONFIG } from "../../config/app-config.js";
+import { userFacingMessage } from "../lib/error-message.js";
 import {
   azureClosedPrCleanupFinishedSchema,
   type AzureClosedPrCleanupFinished,
@@ -557,7 +558,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
         // the workspace is gone, the suppression set self-clears in the
         // broadcast handler. Until then keep it suppressed.
       } catch (err: unknown) {
-        const message = (err as { message?: string })?.message || String(err);
+        const message = userFacingMessage(err, "Unknown error");
         // The IPC call failed outright (couldn't reach backend, schema
         // rejection, runtime threw). The workspace probably still exists
         // server-side, so unflag it and let the next broadcast restore it.
@@ -721,7 +722,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
             const { useNotificationStore } = await import("./notifications.js");
             useNotificationStore().pushPersistentToast({
               title: "Couldn't close tab",
-              body: err?.message || String(err),
+              body: userFacingMessage(err, "Unknown error"),
               kind: "error",
               profileId: (activeWs as AnyApi)?.profileId || "default",
             });
@@ -762,7 +763,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
         const { useNotificationStore } = await import("./notifications.js");
         useNotificationStore().pushPersistentToast({
           title: "Couldn't close tab",
-          body: err?.message || String(err),
+          body: userFacingMessage(err, "Unknown error"),
           kind: "error",
           profileId: (activeWs as AnyApi)?.profileId || "default",
         });
@@ -881,7 +882,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
       const dispatch = ctx.isGridVisible.value ? ctx.setGridLayout(layout) : ctx.enableWorkspaceGrid(layout);
       dispatch.catch(async (err: unknown) => {
         const { useNotificationStore } = await import("./notifications.js");
-        useNotificationStore().showError("Couldn't change layout", (err as Error)?.message || String(err));
+        useNotificationStore().showError("Couldn't change layout", err);
       });
       return;
     }

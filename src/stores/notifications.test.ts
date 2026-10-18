@@ -278,6 +278,25 @@ describe("notification store (session-grouped)", () => {
       expect(store.sessions[0].events[0].body).toBe("disk full");
     });
 
+    it("formats structured process failures without rendering [object Object]", async () => {
+      const logRenderer = vi.fn();
+      (window as unknown as { strideterm?: unknown }).strideterm = { logRenderer };
+      try {
+        const store = useNotificationStore();
+        const ok = await store.runWithToast("Git fetch failed", async () => {
+          throw { error: { stderr: "fatal: unable to access remote" } };
+        });
+        expect(ok).toBe(false);
+        expect(store.sessions[0].events[0].body).toBe("fatal: unable to access remote");
+        expect(store.sessions[0].events[0].body).not.toContain("[object Object]");
+        expect(logRenderer).toHaveBeenCalledWith("warn", "[toast] Git fetch failed", {
+          message: "fatal: unable to access remote",
+        });
+      } finally {
+        delete (window as unknown as { strideterm?: unknown }).strideterm;
+      }
+    });
+
     // Regression: the toast showed "Error invoking remote method
     // 'azure:pull-req…" and the real reason was cut off; nothing was logged.
     it("drops Electron's IPC prefix from the toast and logs the raw message to the app log", async () => {

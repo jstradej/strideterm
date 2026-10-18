@@ -1113,7 +1113,7 @@ async function startBasicReview(s: NotificationSession): Promise<void> {
     if (record?.outcome) await reconcileReviewOperationResults([record.outcome]);
     else await reconcileReviewOperationResults(appStore.payload?.operations?.lastResults);
   } catch (error) {
-    notifStore.showError("Could not start review", (error as Error)?.message || String(error), {
+    notifStore.showError("Could not start review", error, {
       profileId: String(s.meta?.profileId || ""),
     });
   }

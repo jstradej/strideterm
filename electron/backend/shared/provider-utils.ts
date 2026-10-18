@@ -7,6 +7,7 @@ export function clone<T>(value: T): T {
 }
 
 import { sanitizePathSegment } from "../../shared/review-source-identity.js";
+import { errorMessage } from "../../shared/error-message.js";
 
 export { sanitizePathSegment };
 
@@ -85,9 +86,7 @@ export function createEmptySnapshot() {
 }
 
 export function extractErrorText(error: unknown): string {
-  const e = error as
-    { stderr?: unknown; stdout?: unknown; error?: { message?: unknown }; message?: unknown } | null | undefined;
-  return firstNonEmpty(e?.stderr, e?.stdout, e?.error?.message, e?.message, String(error || ""));
+  return errorMessage(error, "");
 }
 
 /**

@@ -193,6 +193,7 @@ import ConfirmDialog from "../../dialogs/ConfirmDialog.vue";
 import { useDockerDetail, type SubTabKind } from "../../../stores/docker-detail.js";
 import { useAppStore } from "../../../stores/app.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
+import { userFacingMessage } from "../../../lib/error-message.js";
 import { useIsNarrow } from "../../../composables/useIsNarrow.js";
 
 const { isMobile } = useIsNarrow();
@@ -221,7 +222,6 @@ const inspectFetcher = (): Promise<string> => {
 };
 
 const lazydockerAvailable = computed(() => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const docker = appStore.dockerState();
   if (!docker?.lazydocker) return false;
   const backendId = activeTab.value?.backendId;
@@ -232,7 +232,7 @@ const lazydockerAvailable = computed(() => {
 
 const projectServices = computed(() => {
   if (activeTab.value?.kind !== "project") return [];
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   const docker = appStore.dockerState();
   if (!docker?.containers) return [];
   return docker.containers.filter(
@@ -267,7 +267,7 @@ async function doRemove(): Promise<void> {
   try {
     await appStore.dockerAction("remove", props.workspaceId, tab.containerId, tab.backendId, tab.contextName);
   } catch (e) {
-    const msg = (e as Error)?.message || String(e);
+    const msg = userFacingMessage(e, "Unknown error");
     notifications.showError("Failed to remove container", `${tab.label}: ${msg}`);
   }
 }

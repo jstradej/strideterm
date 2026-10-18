@@ -74,6 +74,7 @@ import ConfirmDialog from "../../dialogs/ConfirmDialog.vue";
 import { useAppStore } from "../../../stores/app.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
 import { useDockerDetail, type OpenTab } from "../../../stores/docker-detail.js";
+import { userFacingMessage } from "../../../lib/error-message.js";
 
 type VolumeView = "inspect" | "browse";
 
@@ -90,7 +91,6 @@ const confirmRemove = ref(false);
 const view = ref<VolumeView>("inspect");
 
 const volume = computed(() => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const docker = appStore.dockerState();
   return docker?.volumes?.find(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -100,7 +100,6 @@ const volume = computed(() => {
 });
 
 const usedByCount = computed(() => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const docker = appStore.dockerState();
   if (!docker?.containers || !props.tab.volumeName) return 0;
   let count = 0;
@@ -128,7 +127,7 @@ async function doRemove(force: boolean): Promise<void> {
     await appStore.dockerVolumeRemove(props.tab.volumeName, props.tab.backendId, props.tab.contextName, force);
     detailStore.closeTab(props.workspaceId, props.tab.tabId);
   } catch (e) {
-    const msg = (e as Error)?.message || String(e);
+    const msg = userFacingMessage(e, "Unknown error");
     notifications.showError("Failed to remove volume", `${props.tab.volumeName}: ${msg}`);
   } finally {
     removing.value = false;

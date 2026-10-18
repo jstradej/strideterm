@@ -26,6 +26,7 @@ import type { Logger } from "../logger.js";
 import { getLogger } from "../logger.js";
 import type { CredentialStore } from "./credential-store.js";
 import { reviewSourceIdentityKey } from "../../shared/review-source-identity.js";
+import { errorMessage } from "../../shared/error-message.js";
 import type { ReviewInfo, ReviewSourceRepository } from "../../shared/types/state.js";
 import { createReviewGitEngine, type ReviewGitEngine } from "../review-git/engine.js";
 import { sharedReviewGitLocks, type ReviewGitLocks } from "../review-git/locks.js";
@@ -754,12 +755,9 @@ export class BaseProviderManager extends EventEmitter {
         if (!text) return text;
         return String(text).replace(/Basic\s+[A-Za-z0-9+/=]+/g, "Basic ***");
       };
-      // execFileText rejects with a plain { error, stdout, stderr } object.
-      // Electron IPC cannot serialize plain objects into error messages, so
-      // convert to a proper Error with the stderr/message as the message.
-      const err = error as { stderr?: string; stdout?: string; error?: { message?: string }; message?: string };
+      const err = error as { stderr?: string; stdout?: string };
       const stderr = sanitize(err.stderr);
-      const innerMsg = sanitize(err.error?.message || err.message);
+      const innerMsg = sanitize(errorMessage(error));
       const msg = stderr || innerMsg || "Git command failed";
       this.log.warn(`git ${args[0]} failed`, { cwd, msg });
       const wrapped = new Error(msg) as Error & { stdout?: string; stderr?: string };

@@ -294,6 +294,7 @@ import { computed, ref, inject, watch, nextTick, onMounted, onUnmounted } from "
 import { apiKey } from "../../types/keys.js";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
+import { userFacingMessage } from "../../lib/error-message.js";
 import { useWorkspaceDragDrop } from "../../composables/useDragDrop.js";
 import { useContextMenu } from "../../composables/useContextMenu.js";
 import { buildWorkspaceCards } from "../../app/workspace-render.js";
@@ -1223,7 +1224,7 @@ function handleToggleStar(ws: any): void {
       console.error("[sidebar] toggle star failed:", err);
       notifications.pushEphemeralToast({
         title: "Could not update the star",
-        body: (err as Error)?.message || String(err),
+        body: userFacingMessage(err, "Unknown error"),
         kind: "error",
         durationMs: 5000,
       });
@@ -1269,7 +1270,7 @@ async function handleTaskToggle(ws: any): Promise<void> {
     const { useNotificationStore } = await import("../../stores/notifications.js");
     useNotificationStore().pushEphemeralToast({
       title: "Task action failed",
-      body: (err as Error)?.message || "Unknown error",
+      body: userFacingMessage(err, "Unknown error"),
       kind: "error",
       durationMs: 5000,
     });
@@ -1286,7 +1287,7 @@ async function handleTaskStop(ws: any): Promise<void> {
     console.error("[sidebar] task stop failed:", err);
     notifications.pushEphemeralToast({
       title: "Stop failed",
-      body: (err as Error)?.message || String(err),
+      body: userFacingMessage(err, "Unknown error"),
       kind: "error",
       durationMs: 5000,
     });

@@ -161,6 +161,7 @@ import { APPROVAL_RECORDED_CHANNEL } from "../shared/approval-events.js";
 import { AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL } from "../shared/azure-closed-pr-cleanup-events.js";
 import { OPERATION_FINISHED_CHANNEL } from "../shared/operation-events.js";
 import { REVIEW_GIT_OPERATION_CHANNEL } from "../shared/review-git-events.js";
+import { errorMessage } from "../shared/error-message.js";
 
 type Runtime = Awaited<ReturnType<typeof createRuntime>>;
 
@@ -173,13 +174,26 @@ function osClipboardFormat(name: string): string {
   return `electron application/osclipboard;format="${name}"`;
 }
 
-/** A rejection's message for the log. Not every rejection is an Error:
- *  execFileText rejects with a plain `{ error, stdout, stderr }` object. */
+/** A rejection's message for the log. */
 function describeIpcFailure(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  const e = err as { message?: unknown; stderr?: unknown; error?: { message?: unknown } } | null;
-  const stderr = typeof e?.stderr === "string" ? e.stderr.trim() : "";
-  return String(e?.message || stderr || e?.error?.message || err);
+  return errorMessage(err, "IPC request failed");
+}
+
+function normalizeIpcFailure(err: unknown): Error {
+  const message = errorMessage(err, "IPC request failed");
+  if (err instanceof Error && err.message.trim() === message) return err;
+
+  const normalized = new Error(message, { cause: err });
+  if (err === null || typeof err !== "object") return normalized;
+
+  const fields = err as Record<string, unknown>;
+  for (const key of ["_tag", "code", "status", "statusCode", "stdout", "stderr", "exitCode"]) {
+    const value = fields[key];
+    if (typeof value === "string" || typeof value === "number") {
+      Object.defineProperty(normalized, key, { configurable: true, enumerable: true, value });
+    }
+  }
+  return normalized;
 }
 
 export function registerIpc(
@@ -314,7 +328,7 @@ export function registerIpc(
         return await listener(event, ...args);
       } catch (err) {
         logIpcFailure(channel, err);
-        throw err;
+        throw normalizeIpcFailure(err);
       }
     });
     registeredHandleChannels.push(channel);

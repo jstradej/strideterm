@@ -136,6 +136,7 @@ import ConfirmDialog from "../../dialogs/ConfirmDialog.vue";
 import { useAppStore } from "../../../stores/app.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
 import { useDockerDetail, type OpenTab } from "../../../stores/docker-detail.js";
+import { userFacingMessage } from "../../../lib/error-message.js";
 import { parseDockerSize, bulkConfirmMessage, pruneSummary, imageRowKey } from "./dockerListHelpers.js";
 import type { DockerImage, DockerContainer } from "../../../../electron/shared/types/state.js";
 
@@ -254,7 +255,7 @@ function askRemoveOne(row: DockerImage): void {
       try {
         await appStore.dockerImageRemove(row.ID, props.tab.backendId, props.tab.contextName, used > 0);
       } catch (e) {
-        notifications.showError("Failed to remove image", `${label}: ${(e as Error)?.message || String(e)}`);
+        notifications.showError("Failed to remove image", `${label}: ${userFacingMessage(e, "Unknown error")}`);
       } finally {
         busy.value = false;
       }
@@ -317,7 +318,7 @@ async function pullOne(row: DockerImage): Promise<void> {
   } catch (e) {
     notifications.showError(
       "Failed to pull image",
-      `${row.Repository}:${row.Tag}: ${(e as Error)?.message || String(e)}`,
+      `${row.Repository}:${row.Tag}: ${userFacingMessage(e, "Unknown error")}`,
     );
   } finally {
     busy.value = false;
@@ -341,7 +342,7 @@ function askPrune(all: boolean): void {
           category: "system",
         });
       } catch (e) {
-        notifications.showError("Image prune failed", (e as Error)?.message || String(e));
+        notifications.showError("Image prune failed", e);
       } finally {
         busy.value = false;
       }

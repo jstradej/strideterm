@@ -1011,6 +1011,7 @@ export class AgentTaskRunner {
         ],
         { concurrency: "unbounded" },
       ),
+      (error) => error,
     );
     // Tasks created from now on use the new split format (TASK.md + WORKER.md).
     // Setting the flag here means downstream prompt builders skip the disk
@@ -3964,6 +3965,7 @@ export class AgentTaskRunner {
           ),
         ),
       ),
+      (error) => error,
     ).catch((err: unknown) => {
       log.error("evaluateWorker failed", { workspaceId, err: (err as Error)?.message });
       // Krok 4 — capture the state we fell from (evaluating/judge-evaluating) so
@@ -4741,6 +4743,7 @@ export class AgentTaskRunner {
         ],
         { concurrency: "unbounded" },
       ),
+      (error) => error,
     );
   }
 

@@ -7,6 +7,7 @@ import path from "node:path";
 import os from "node:os";
 import { existsSync, statSync } from "node:fs";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { errorMessage } from "../shared/error-message.js";
 
 interface DiffStat {
   files: number;
@@ -679,8 +680,7 @@ export function buildOperationState({
 }
 
 export function extractErrorMessage(error: unknown): string {
-  const e = error as { stderr?: string; stdout?: string; error?: { message?: string } } | null | undefined;
-  return e?.stderr || e?.stdout || e?.error?.message || "Git command failed.";
+  return errorMessage(error, "Git command failed.");
 }
 
 // Windows reserves these basenames for devices (any extension, any case). A file

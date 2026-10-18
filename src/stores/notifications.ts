@@ -4,6 +4,7 @@ import type { StatePayload } from "../../electron/shared/types/state.js";
 import { hasMeaningfulUserInput } from "../../electron/shared/terminal-input.js";
 import { rlog } from "../lib/renderer-log.js";
 import { userFacingMessage } from "../lib/error-message.js";
+import { errorMessage } from "../../electron/shared/error-message.js";
 
 /**
  * Notification center state — session-grouped (Plan § 3.3.1).
@@ -897,7 +898,7 @@ export const useNotificationStore = defineStore("notifications", () => {
             .then((nextPayload) => {
               if (nextPayload) appStore.adoptPayload(nextPayload as StatePayload);
             })
-            .catch((err: unknown) => showError("Clear all failed", (err as Error)?.message || String(err)));
+            .catch((err: unknown) => showError("Clear all failed", err));
         }
       })
       .catch(() => {});
@@ -978,17 +979,19 @@ export const useNotificationStore = defineStore("notifications", () => {
   // should pass that workspace's `profileId` instead.
   function showError(
     title: string,
-    body: string,
+    error: unknown,
     {
       workspaceId = "",
       workspaceName = "",
       profileId = "",
     }: { workspaceId?: string; workspaceName?: string; profileId?: string } = {},
   ): NotificationEvent {
-    recordFailure(title, body, workspaceId);
+    const rawMessage = errorMessage(error, "Action failed");
+    const body = userFacingMessage(rawMessage, "Action failed");
+    recordFailure(title, rawMessage, workspaceId);
     const entry = addEvent({
       title,
-      body: userFacingMessage(body) || body,
+      body,
       kind: "error",
       tier: 1,
       urgency: "normal",
@@ -1100,7 +1103,7 @@ export const useNotificationStore = defineStore("notifications", () => {
       await fn();
       return true;
     } catch (err) {
-      showError(title, (err as Error)?.message || String(err || "") || "Action failed", options);
+      showError(title, err, options);
       return false;
     }
   }

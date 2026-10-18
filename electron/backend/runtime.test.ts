@@ -5043,8 +5043,7 @@ describe("runtime integration", () => {
     }
   });
 
-  // execFileText rejects with a plain { error, stdout, stderr } object, which
-  // Electron's IPC turns into "[object Object]". The plain createWorktree path
+  // Process errors carry output in stderr, which the createWorktree path
   // must hand the renderer a real Error carrying git's stderr — and must NOT
   // borrow createTaskWorkspace's retry-against-existing-branch fallback.
   test("createWorktree turns a git failure into an Error with git's stderr, logs it, and adds no workspace", async () => {
@@ -6636,6 +6635,42 @@ describe("runtime integration", () => {
     );
     expect(worktreeRemoveCalls).toHaveLength(0);
   });
+
+  test.each(["stderr", "nested error", "native error"] as const)(
+    "deleteWorkspace reports wrapped Git %s when both disk removal methods fail",
+    async (failureKind) => {
+      const diskPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-del-git-error-"));
+      tempPaths.push(diskPath);
+
+      const diagnostic = `fatal: not a working tree (${failureKind})`;
+      const execFileText = vi.fn(async (_cmd: string, args: string[]) => {
+        if (args[0] === "worktree" && args[1] === "remove") {
+          if (failureKind === "stderr") {
+            throw { error: new Error("Command failed: git"), stdout: "", stderr: diagnostic };
+          }
+          if (failureKind === "nested error") throw { error: new Error(diagnostic), stderr: " \n" };
+          throw new Error(diagnostic);
+        }
+        return { stdout: "", stderr: "" };
+      });
+      const rmPathMock = vi.fn().mockRejectedValue(Object.assign(new Error("EBUSY"), { code: "EBUSY" }));
+
+      const fixture = await createFixture({
+        execFileTextImpl: execFileText,
+        dependencies: { rmPath: rmPathMock },
+        initialState: { workspaces: [makeReviewWorkspace("ws-del-git-error", diskPath)] },
+      });
+      fixtures.push(fixture);
+
+      const result = await fixture.runtime.deleteWorkspace("ws-del-git-error", {
+        deleteFromDisk: true,
+        diskPath,
+      });
+
+      expect(result.deleteWorkspaceError).toContain(diagnostic);
+      expect(result.deleteWorkspaceError).not.toContain("[object Object]");
+    },
+  );
 
   // --- Krok 6: background retry after a failed disk delete ---
 

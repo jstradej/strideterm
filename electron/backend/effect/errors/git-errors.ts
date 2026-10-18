@@ -17,4 +17,5 @@ export class GitCommandError extends Data.TaggedError("GitCommandError")<{
   readonly stdout: string;
   readonly stderr: string;
   readonly exitCode: number;
+  readonly cause: unknown;
 }> {}

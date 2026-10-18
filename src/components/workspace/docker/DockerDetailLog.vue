@@ -1,5 +1,5 @@
 <template>
-  <div class="detail-log" ref="rootEl">
+  <div ref="rootEl" class="detail-log">
     <DockerLogToolbar
       ref="toolbarEl"
       :paused="paused"
@@ -67,6 +67,7 @@ import Spinner from "../../common/Spinner.vue";
 import DockerLogToolbar from "./DockerLogToolbar.vue";
 import { useAppStore } from "../../../stores/app.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
+import { userFacingMessage } from "../../../lib/error-message.js";
 import { downloadTextFile } from "../../../app/helpers.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -151,10 +152,9 @@ const FIRST_REATTACH_MS = 1000;
 const MAX_REATTACH_MS = 30_000;
 
 const containerStateLower = computed(() => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const docker = appStore.dockerState();
   if (!docker?.containers) return "";
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   const found = docker.containers.find((c: AnyApi) => c.ID === props.containerId);
   return String(found?.State || "").toLowerCase();
 });
@@ -214,7 +214,6 @@ function scheduleFit(): void {
 }
 
 function fontSizeKey(): "terminalFontSizeLocal" | "terminalFontSizeRemote" {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (appStore as AnyApi).isRemoteTransport ? "terminalFontSizeRemote" : "terminalFontSizeLocal";
 }
 
@@ -245,7 +244,7 @@ function applyFontSize(size: number): void {
   if (persistFontTimer) clearTimeout(persistFontTimer);
   persistFontTimer = setTimeout(() => {
     persistFontTimer = null;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     (appStore as AnyApi).updateSettings?.({ [fontSizeKey()]: clamped })?.catch?.(() => {});
   }, 200);
 }
@@ -358,7 +357,7 @@ function openLogSession(): void {
       tail: tail.value,
     })
     .catch((e) => {
-      const msg = (e as Error)?.message || String(e);
+      const msg = userFacingMessage(e, "Unknown error");
       connecting.value = false;
       reattaching.value = false;
       notifications.showError("Log stream failed", `${props.containerName}: ${msg}`);
@@ -410,7 +409,7 @@ async function copyAll(): Promise<void> {
       copied.value = false;
     }, 1500);
   } catch (e) {
-    notifications.showError("Copy failed", (e as Error)?.message || String(e));
+    notifications.showError("Copy failed", e);
   }
 }
 
@@ -552,7 +551,7 @@ async function restartStream(): Promise<void> {
     // re-open also fails (otherwise the user sees a spurious toast).
     notifications.showError(
       "Log stream restart failed",
-      `${props.containerName}: ${(e as Error)?.message || String(e)}`,
+      `${props.containerName}: ${userFacingMessage(e, "Unknown error")}`,
     );
   }
   // Hard re-open

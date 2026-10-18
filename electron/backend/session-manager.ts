@@ -441,6 +441,7 @@ async function buildSystemSshArgs(
             distro,
             wslUser || (host.advanced?.wsl?.user as string | null | undefined) || undefined,
           ).pipe(Effect.provideService(Scope.Scope, scope)),
+          (error) => error,
         );
       } catch (err) {
         await runEffect(Scope.close(scope, Exit.void)).catch(() => {});
@@ -1190,6 +1191,7 @@ export class SessionManager extends EventEmitter {
           }),
         ),
       ),
+      (error) => error,
     ).catch(async (err: unknown) => {
       const msg = (err as { cause?: Error })?.cause?.message ?? String(err);
       await cleanupFn();
@@ -1315,6 +1317,7 @@ export class SessionManager extends EventEmitter {
           }),
         ),
       ),
+      (error) => error,
     ).catch(async (err: unknown) => {
       const msg = (err as { cause?: Error })?.cause?.message ?? String(err);
       await cleanupFn();

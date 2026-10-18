@@ -35,6 +35,7 @@
 import { ref, onMounted, watch } from "vue";
 import Spinner from "../../common/Spinner.vue";
 import { useAppStore } from "../../../stores/app.js";
+import { userFacingMessage } from "../../../lib/error-message.js";
 
 const props = defineProps<{
   containerId: string;
@@ -103,7 +104,7 @@ async function reload(): Promise<void> {
     header.value = parsed.header;
     rows.value = parsed.rows;
   } catch (e) {
-    error.value = (e as Error)?.message || String(e);
+    error.value = userFacingMessage(e, "Failed to load container processes.");
     header.value = [];
     rows.value = [];
   } finally {

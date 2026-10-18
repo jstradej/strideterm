@@ -4,6 +4,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { constants as fsConstants } from "node:fs";
 import path from "node:path";
 import { execFileText } from "./process-utils.js";
+import { errorMessage } from "../shared/error-message.js";
 import { guessLanguageFromPath } from "../../config/language-map.js";
 
 const TEXT_PREVIEW_MAX = 256 * 1024; // 256 KB
@@ -929,8 +930,7 @@ export async function getGitFileStatus(
     const result = await execFileText("git", args, { cwd: top });
     stdout = result.stdout || "";
   } catch (err) {
-    const error = err as { error?: { message?: string } };
-    return { isRepo: true, root: top, entries: {}, error: error?.error?.message || "git status failed" };
+    return { isRepo: true, root: top, entries: {}, error: errorMessage(err, "git status failed") };
   }
   const entries: Record<string, GitStatusEntry> = {};
   for (const rawLine of stdout.split(/\r?\n/)) {
@@ -1226,8 +1226,7 @@ export async function getCommitFiles(rootPath: string, hash: string): Promise<Co
     const result = await execFileText("git", args, { cwd: top });
     lines = (result.stdout || "").split(/\r?\n/).filter(Boolean);
   } catch (err) {
-    const error = err as { error?: { message?: string } };
-    return { isRepo: true, hash, parentHash, files: [], error: error?.error?.message || "git diff-tree failed" };
+    return { isRepo: true, hash, parentHash, files: [], error: errorMessage(err, "git diff-tree failed") };
   }
 
   const files: CommitFileEntry[] = [];

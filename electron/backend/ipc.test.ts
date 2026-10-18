@@ -725,7 +725,7 @@ describe("registerIpc — every failing handler is logged", () => {
     return logCalls.filter((call) => call.label === "ipc" && call.message === "ipc handler failed");
   }
 
-  test("a rejected handler is logged with its channel and rethrown unchanged", async () => {
+  test("a rejected handler is logged with its channel and keeps Error details", async () => {
     const dispose = registerIpc(makeRuntimeStub(), () => {});
     const listener = handleRegistry.get("azure:pull-request:vote") as (e: unknown, p: unknown) => Promise<unknown>;
 
@@ -743,23 +743,65 @@ describe("registerIpc — every failing handler is logged", () => {
     dispose();
   });
 
-  test("a plain { stderr } rejection is logged by its stderr", async () => {
+  test("a structured process rejection becomes a readable Error and keeps useful fields", async () => {
+    const failure = {
+      error: new Error("Command failed"),
+      stdout: "",
+      stderr: "fatal: bad ref\n",
+      code: "checkout_conflict",
+      status: 409,
+    };
     const runtime = new Proxy(
       {},
       {
         get: (_target, method: string) =>
-          method === "createWorktree"
-            ? () => Promise.reject({ error: new Error("Command failed"), stdout: "", stderr: "fatal: bad ref\n" })
-            : () => () => {},
+          method === "createWorktree" ? () => Promise.reject(failure) : () => () => {},
       },
     ) as Parameters<typeof registerIpc>[0];
     const dispose = registerIpc(runtime, () => {});
     const listener = handleRegistry.get("git:create-worktree") as (e: unknown, p: unknown) => Promise<unknown>;
 
-    await expect(listener({ sender: { id: 1 } }, { workspaceId: "ws", name: "x" })).rejects.toMatchObject({
+    const normalized = await listener({ sender: { id: 1 } }, { workspaceId: "ws", name: "x" }).catch(
+      (error: unknown) => error,
+    );
+    expect(normalized).toBeInstanceOf(Error);
+    expect(normalized).toMatchObject({
+      message: "fatal: bad ref",
       stderr: "fatal: bad ref\n",
+      code: "checkout_conflict",
+      status: 409,
+      cause: failure,
     });
+    expect((normalized as Error).message).not.toContain("[object Object]");
     expect(ipcFailures()[0]?.meta).toEqual({ channel: "git:create-worktree", err: "fatal: bad ref" });
+    dispose();
+  });
+
+  test("an Error with captured process output uses the diagnostic as its IPC message", async () => {
+    const failure = Object.assign(new Error("Command failed: git worktree add"), {
+      stderr: "fatal: a branch named 'feature' already exists\n",
+      exitCode: 128,
+    });
+    const runtime = new Proxy(
+      {},
+      {
+        get: (_target, method: string) =>
+          method === "createWorktree" ? () => Promise.reject(failure) : () => () => {},
+      },
+    ) as Parameters<typeof registerIpc>[0];
+    const dispose = registerIpc(runtime, () => {});
+    const listener = handleRegistry.get("git:create-worktree") as (e: unknown, p: unknown) => Promise<unknown>;
+
+    const normalized = await listener({ sender: { id: 1 } }, { workspaceId: "ws", name: "x" }).catch(
+      (error: unknown) => error,
+    );
+    expect(normalized).toBeInstanceOf(Error);
+    expect(normalized).toMatchObject({
+      message: "fatal: a branch named 'feature' already exists",
+      stderr: failure.stderr,
+      exitCode: 128,
+      cause: failure,
+    });
     dispose();
   });
 

@@ -8,6 +8,7 @@ import type { Ref } from "vue";
 import type { APP_CONFIG } from "../../config/app-config.js";
 import type { StatePayload, WorkspaceState } from "../../electron/shared/types/state.js";
 import { detectPaths } from "./path-detector.js";
+import { userFacingMessage } from "../lib/error-message.js";
 import { buildTerminalTextSnapshot } from "./terminal-text-snapshot.js";
 import type { TerminalTextSnapshot, TerminalTextSnapshotOptions } from "./terminal-text-snapshot.js";
 
@@ -852,7 +853,7 @@ export function createTerminalController({
           const result = await openPath({ path: absPath, forceSystem: true });
           if (!result?.ok) await reportOpenPathError(absPath, result?.error || "unknown error");
         } catch (err) {
-          await reportOpenPathError(absPath, (err as Error)?.message || String(err));
+          await reportOpenPathError(absPath, userFacingMessage(err, "Unknown error"));
         }
       }
       term.registerLinkProvider({
@@ -893,7 +894,7 @@ export function createTerminalController({
                   }
                 })
                 .catch((err: unknown) => {
-                  void reportOpenPathError(m.path, (err as Error)?.message || String(err));
+                  void reportOpenPathError(m.path, userFacingMessage(err, "Unknown error"));
                 });
             },
           }));
@@ -967,7 +968,7 @@ export function createTerminalController({
                     }
                   })
                   .catch((err: unknown) => {
-                    void reportOpenPathError(resolvedPath, (err as Error)?.message || String(err));
+                    void reportOpenPathError(resolvedPath, userFacingMessage(err, "Unknown error"));
                   });
               },
             });
@@ -1089,7 +1090,7 @@ export function createTerminalController({
       try {
         result = await pasteImage();
       } catch (err) {
-        const msg = (err as Error)?.message || String(err);
+        const msg = userFacingMessage(err, "Unknown error");
         api.logRenderer?.("error", "[clipboard-paste] IPC threw", { error: msg });
         void reportImagePasteError(`Couldn't paste image into terminal: ${msg}`);
         return false;

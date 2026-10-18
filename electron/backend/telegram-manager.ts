@@ -4441,7 +4441,8 @@ export class TelegramManager extends EventEmitter {
         }
         return Effect.fail(new Error(message)) as Effect.Effect<T, Error>;
       }),
-    ) as Promise<T>;
+      (error) => error,
+    );
   }
 
   // ---------------------------------------------------------------------------

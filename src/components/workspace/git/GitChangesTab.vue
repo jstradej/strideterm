@@ -442,6 +442,7 @@ import { useAppStore } from "../../../stores/app.js";
 import { useGitUiStore } from "../../../stores/git-ui.js";
 import { useGitStashStore } from "../../../stores/git-stash.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
+import { userFacingMessage } from "../../../lib/error-message.js";
 import { useContextMenu } from "../../../composables/useContextMenu.js";
 import GitDiffStat from "./GitDiffStat.vue";
 import GitChangeTree from "./GitChangeTree.vue";
@@ -957,7 +958,7 @@ async function onMenuIgnore() {
       isDirectory: target.kind === "dir",
     });
   } catch (e) {
-    notifications.showError("Failed to update .gitignore", `${target.name}: ${(e as Error)?.message || String(e)}`, {
+    notifications.showError("Failed to update .gitignore", `${target.name}: ${userFacingMessage(e, "Unknown error")}`, {
       workspaceId: props.workspaceId,
     });
     return;

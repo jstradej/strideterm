@@ -1732,7 +1732,7 @@ async function copyToClipboard(text: string) {
     await navigator.clipboard.writeText(text);
   } catch (err) {
     const notifStore = (await import("../../../stores/notifications.js")).useNotificationStore();
-    notifStore.showError("Copy failed", (err as Error)?.message || "The browser blocked clipboard access.", {
+    notifStore.showError("Copy failed", err || "The browser blocked clipboard access.", {
       workspaceId: props.workspaceId,
     });
   }

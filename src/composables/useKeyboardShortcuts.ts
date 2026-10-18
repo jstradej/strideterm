@@ -3,6 +3,7 @@ import { useAppStore } from "../stores/app.js";
 import { useTerminalStore } from "../stores/terminal.js";
 import { useNotificationStore } from "../stores/notifications.js";
 import { rlog } from "../lib/renderer-log.js";
+import { userFacingMessage } from "../lib/error-message.js";
 import { shortcutTabDirection } from "../app/helpers.js";
 import type { Transport } from "../transport.js";
 import type { StatePayload } from "../../electron/shared/types/state.js";
@@ -25,7 +26,7 @@ export function useKeyboardShortcuts(api: Transport, { onNewWorkspace }: { onNew
     try {
       await handleKeydownInner(event);
     } catch (err) {
-      const message = (err as Error)?.message || String(err);
+      const message = userFacingMessage(err, "Unknown error");
       rlog("error", "[keyboard-shortcut] handler failed", {
         key: event.key,
         code: event.code,

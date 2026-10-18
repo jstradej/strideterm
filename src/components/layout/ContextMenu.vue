@@ -461,7 +461,7 @@ function onDisconnectSsh() {
     .getApi()
     .closeTerminal?.(id)
     .catch((err) => {
-      useNotificationStore().showError("Disconnect failed", (err as Error)?.message || String(err));
+      useNotificationStore().showError("Disconnect failed", err);
     });
 }
 

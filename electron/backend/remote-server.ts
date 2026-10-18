@@ -91,6 +91,7 @@ import {
 } from "./mobile/mobile-relay-protocol.js";
 import { parseRemoteViewerId, remoteViewerId } from "./viewer-id.js";
 import { ClientRequestError } from "./shared/client-request-error.js";
+import { errorMessage } from "../shared/error-message.js";
 import { NativeWorkspaceError } from "./native-workspace-errors.js";
 import { classifyMobileRoute, evaluateMobileRoute } from "./mobile-session-route-policy.js";
 import { NOTIFICATION_TARGET_REMOVED_CHANNEL } from "../shared/notification-lifecycle.js";
@@ -2486,7 +2487,7 @@ async function handleApiRequest(
 
     json(response, 404, { error: "Not found" });
   } catch (error) {
-    const msg = (error as Error).message || "Remote API failed";
+    const msg = errorMessage(error, "Remote API failed");
     const statusCode = refusalStatus(error, msg);
     json(response, statusCode, { error: msg });
   }
@@ -4132,7 +4133,7 @@ export async function startRemoteServer({
           try {
             json(response, 200, await slotAwareHandler(body, viewerId));
           } catch (err) {
-            const msg = (err as Error).message || "Slot operation failed";
+            const msg = errorMessage(err, "Slot operation failed");
             const statusCode = refusalStatus(err, msg);
             json(response, statusCode, { error: msg });
           }

@@ -1,8 +1,35 @@
 import { execFile, spawn, type ExecFileOptions } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { getLogger } from "./logger.js";
+import { errorMessage } from "../shared/error-message.js";
 
 const log = getLogger("process-utils");
+
+export class ProcessCommandError extends Error {
+  readonly _tag = "ProcessCommandError";
+
+  constructor(
+    message: string,
+    readonly stdout: string,
+    readonly stderr: string,
+    readonly exitCode: number | null,
+    readonly code: string | number | null,
+    cause: unknown,
+  ) {
+    super(errorMessage({ stderr, stdout, message }), { cause });
+    this.name = "ProcessCommandError";
+  }
+}
+
+function processCode(error: unknown): string | number | null {
+  if (error === null || typeof error !== "object" || !("code" in error)) return null;
+  return typeof error.code === "number" || typeof error.code === "string" ? error.code : null;
+}
+
+function processExitCode(error: unknown): number | null {
+  const code = processCode(error);
+  return typeof code === "number" ? code : null;
+}
 
 export function quotePosixArg(value: unknown): string {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
@@ -16,11 +43,18 @@ export function execFileText(
   return new Promise((resolve, reject) => {
     execFile(file, args, { windowsHide: true, maxBuffer: 10 * 1024 * 1024, ...options }, (error, stdout, stderr) => {
       if (error) {
-        reject({
-          error,
-          stdout: stdout?.toString?.() || "",
-          stderr: stderr?.toString?.() || "",
-        });
+        const stdoutText = stdout?.toString?.() || "";
+        const stderrText = stderr?.toString?.() || "";
+        reject(
+          new ProcessCommandError(
+            error.message,
+            stdoutText,
+            stderrText,
+            processExitCode(error),
+            processCode(error),
+            error,
+          ),
+        );
         return;
       }
 
@@ -38,11 +72,10 @@ export function execFileText(
  * long-running commands (e.g. `git push`, which can block for a minute-plus on
  * a pre-push hook) so the UI can show live progress.
  *
- * Resolve/reject shapes mirror execFileText so callers can treat both the same:
- * on non-zero exit (or spawn error) it rejects with `{ error, stdout, stderr,
- * exitCode }`. Retained buffers are capped at `maxBuffer` per stream (front is
- * trimmed, keeping the tail where a hook's error summary lives); `onData` still
- * fires for every chunk regardless of the cap.
+ * Nonzero exits and spawn failures reject with `ProcessCommandError`, retaining
+ * the cause and output buffers. Retained buffers are capped at `maxBuffer` per
+ * stream (front is trimmed, keeping the tail where a hook's error summary
+ * lives); `onData` still fires for every chunk regardless of the cap.
  */
 export function spawnTextStreaming(
   file: string,
@@ -73,7 +106,7 @@ export function spawnTextStreaming(
     });
 
     child.on("error", (error) => {
-      reject({ error, stdout, stderr });
+      reject(new ProcessCommandError(error.message, stdout, stderr, processExitCode(error), processCode(error), error));
     });
     child.on("close", (code) => {
       stdout = capFront(stdout + outDecoder.end());
@@ -82,9 +115,8 @@ export function spawnTextStreaming(
         resolve({ stdout, stderr });
         return;
       }
-      const error: NodeJS.ErrnoException = new Error(`Command failed: ${file} ${args.join(" ")}`);
-      error.code = String(code ?? "");
-      reject({ error, stdout, stderr, exitCode: code ?? 1 });
+      const error = new Error(`Command failed: ${file} ${args.join(" ")} (exit code ${code ?? "unknown"})`);
+      reject(new ProcessCommandError(error.message, stdout, stderr, code, code, error));
     });
   });
 }

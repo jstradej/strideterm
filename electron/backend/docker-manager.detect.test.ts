@@ -3,26 +3,41 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 // Lives in its own file because it mocks process-utils at module level —
 // docker-manager.test.ts drives the real module through a subclass and would
 // break under the same mock.
-const execFileText = vi.fn();
+const { execFileText, ProcessCommandError } = vi.hoisted(() => {
+  class MockProcessCommandError extends Error {
+    readonly _tag = "ProcessCommandError";
+    constructor(
+      message: string,
+      readonly stdout: string,
+      readonly stderr: string,
+      readonly exitCode: number | null,
+      readonly code: string | number | null,
+      cause: unknown,
+    ) {
+      super(message, { cause });
+    }
+  }
+  return { execFileText: vi.fn(), ProcessCommandError: MockProcessCommandError };
+});
 vi.mock("./process-utils.js", () => ({
   execFileText: (...args: unknown[]) => execFileText(...args),
+  ProcessCommandError,
   parseJsonLines: () => [],
   quotePosixArg: (v: unknown) => `'${String(v)}'`,
 }));
 
 const { DockerManager } = await import("./docker-manager.js");
 
-/** Shape execFileText rejects with: the spawn error is nested under `error`. */
+/** Shape execFileText rejects with when the CLI cannot be spawned. */
 function enoent() {
-  return Promise.reject({ error: Object.assign(new Error("spawn docker ENOENT"), { code: "ENOENT" }) });
+  const cause = Object.assign(new Error("spawn docker ENOENT"), { code: "ENOENT" });
+  return Promise.reject(new ProcessCommandError(cause.message, "", "", null, "ENOENT", cause));
 }
 
 /** CLI exists, but the daemon is down — a non-zero exit, NOT a spawn failure. */
 function daemonDown() {
-  return Promise.reject({
-    error: Object.assign(new Error("exit 1"), { code: 1 }),
-    stderr: "Cannot connect to the Docker daemon",
-  });
+  const cause = Object.assign(new Error("exit 1"), { code: 1 });
+  return Promise.reject(new ProcessCommandError("exit 1", "", "Cannot connect to the Docker daemon", 1, 1, cause));
 }
 
 function callsFor(file: string) {

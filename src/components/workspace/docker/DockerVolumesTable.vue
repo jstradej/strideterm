@@ -103,6 +103,7 @@ import ConfirmDialog from "../../dialogs/ConfirmDialog.vue";
 import { useAppStore } from "../../../stores/app.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
 import { useDockerDetail, type OpenTab } from "../../../stores/docker-detail.js";
+import { userFacingMessage } from "../../../lib/error-message.js";
 import { bulkConfirmMessage, pruneSummary } from "./dockerListHelpers.js";
 import type { DockerVolume, DockerContainer } from "../../../../electron/shared/types/state.js";
 
@@ -197,7 +198,7 @@ function askRemoveOne(row: DockerVolume): void {
       try {
         await appStore.dockerVolumeRemove(row.Name, props.tab.backendId, props.tab.contextName, used > 0);
       } catch (e) {
-        notifications.showError("Failed to remove volume", `${row.Name}: ${(e as Error)?.message || String(e)}`);
+        notifications.showError("Failed to remove volume", `${row.Name}: ${userFacingMessage(e, "Unknown error")}`);
       } finally {
         busy.value = false;
       }
@@ -258,7 +259,7 @@ function askPrune(): void {
           category: "system",
         });
       } catch (e) {
-        notifications.showError("Volume prune failed", (e as Error)?.message || String(e));
+        notifications.showError("Volume prune failed", e);
       } finally {
         busy.value = false;
       }

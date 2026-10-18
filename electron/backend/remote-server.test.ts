@@ -6,6 +6,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { WebSocket } from "ws";
 import { getLogDir } from "./logger.js";
+import { ClientRequestError } from "./shared/client-request-error.js";
 import {
   AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL,
   azureClosedPrCleanupFinishedSchema,
@@ -1063,6 +1064,60 @@ describe("workspace delete endpoint validation", () => {
       });
       expect(res.status).toBe(200);
       expect(calls[0]).toEqual(["ws-1", "new brief", expect.any(String)]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("a structured process rejection returns its useful diagnostic as JSON", async () => {
+    const port = await getFreePort();
+    const auth = "test-token-desc-error";
+    const runtime = makeMinimalRuntime(auth, port) as ReturnType<typeof makeMinimalRuntime> & {
+      updateTaskDescription: (...args: unknown[]) => Promise<unknown>;
+    };
+    runtime.updateTaskDescription = async () => {
+      throw { error: new Error("Command failed"), stdout: "", stderr: "fatal: task workspace is read-only\n" };
+    };
+    const server = await startRemoteServer({
+      runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/task/update-description`, {
+        method: "POST",
+        headers: clientHeaders(auth),
+        body: JSON.stringify({ workspaceId: "ws-1", description: "new brief" }),
+      });
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { error?: string };
+      expect(body.error).toBe("fatal: task workspace is read-only");
+      expect(body.error).not.toContain("[object Object]");
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("a refused task update keeps its caller error status", async () => {
+    const port = await getFreePort();
+    const auth = "test-token-desc-refused";
+    const runtime = makeMinimalRuntime(auth, port) as ReturnType<typeof makeMinimalRuntime> & {
+      updateTaskDescription: (...args: unknown[]) => Promise<unknown>;
+    };
+    runtime.updateTaskDescription = async () => {
+      throw new ClientRequestError("Target workspace is not available in this profile", 403);
+    };
+    const server = await startRemoteServer({
+      runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/task/update-description`, {
+        method: "POST",
+        headers: clientHeaders(auth),
+        body: JSON.stringify({ workspaceId: "ws-1", description: "new brief" }),
+      });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: "Target workspace is not available in this profile" });
     } finally {
       await server.close();
     }

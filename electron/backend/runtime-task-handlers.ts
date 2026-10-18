@@ -8,6 +8,7 @@ import {
 import { updateTaskDescriptionFile } from "./agent-task-files.js";
 import { sessionIdFor } from "./agent-task-runner.js";
 import { TASK_ACTIVE_STATES } from "../shared/task-states.js";
+import { errorMessage } from "../shared/error-message.js";
 import { createRecoveryQueue } from "./shared/recovery-queue.js";
 import type { Logger } from "./logger.js";
 import type {
@@ -729,7 +730,7 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
           results[(ProviderClass as any).id] = await new (ProviderClass as any)().checkAvailability();
         } catch (err) {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          results[(ProviderClass as any).id] = { available: false, error: (err as Error).message };
+          results[(ProviderClass as any).id] = { available: false, error: errorMessage(err) };
         }
       }
       return results;
@@ -746,8 +747,7 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
         const { stdout } = await execFileTextImpl("git", ["rev-parse", "--is-inside-work-tree"], { cwd: trimmed });
         return { isGitRepo: stdout.trim() === "true" };
       } catch (err) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const stderr = (err as any)?.stderr?.trim() || (err as any)?.error?.message || "";
+        const stderr = errorMessage(err, "");
         if (stderr.includes("not a git repository")) return { isGitRepo: false, reason: "not-a-repo" };
         // Could not even run git — treat as "unknown" so the dialog stays
         // permissive rather than blocking based on a transient failure.

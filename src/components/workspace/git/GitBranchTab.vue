@@ -294,6 +294,7 @@ import { useGitUiStore } from "../../../stores/git-ui.js";
 import { rlog } from "../../../lib/renderer-log.js";
 import { useAppStore } from "../../../stores/app.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
+import { userFacingMessage } from "../../../lib/error-message.js";
 import GitStrategySplitButton from "./GitStrategySplitButton.vue";
 import type { StrategyOption } from "./update-strategy.js";
 import GitOperationCard from "./GitOperationCard.vue";
@@ -412,7 +413,7 @@ async function onDetachReview() {
     });
     notifications.pushEphemeralToast({
       title: "Detach failed",
-      body: (err as Error)?.message || "Could not detach the workspace from its PR review.",
+      body: userFacingMessage(err, "Could not detach the workspace from its PR review."),
       kind: "error",
       durationMs: 6000,
     });

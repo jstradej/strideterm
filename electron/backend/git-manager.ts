@@ -6,7 +6,7 @@ import { EventEmitter } from "node:events";
 import { existsSync, lstatSync, readdirSync } from "node:fs";
 import { rm as fsRm, readFile as fsReadFile, writeFile as fsWriteFile } from "node:fs/promises";
 import { Effect } from "effect";
-import { execFileText, quotePosixArg, spawnTextStreaming } from "./process-utils.js";
+import { execFileText, ProcessCommandError, quotePosixArg, spawnTextStreaming } from "./process-utils.js";
 import {
   createGitConfigEnvProbe,
   encodeAuthHeader,
@@ -18,6 +18,7 @@ import { getLogger } from "./logger.js";
 import { createIntervalGate } from "./runtime-utils.js";
 import { runEffect } from "./effect/runtime.js";
 import { GitCommandError, GitAuthError } from "./effect/errors/git-errors.js";
+import { errorMessage } from "../shared/error-message.js";
 import { httpRetry } from "./effect/schedules.js";
 import { commonDirOf, sharedReviewGitLocks } from "./review-git/locks.js";
 import { managedReviewBranchAlias } from "../shared/review-source-identity.js";
@@ -381,8 +382,9 @@ export class GitManager extends EventEmitter {
   // and stderr — a failing hook (e.g. pre-push `npm run check`) writes its real
   // diagnostics to stdout, so dropping it hid the reason a push failed.
   private toGitError(cwd: string, args: string[], e: unknown): GitCommandError | GitAuthError {
-    const err = e as { stdout?: string; stderr?: string; exitCode?: number };
-    const stderr = err.stderr ?? String(e);
+    const err = e !== null && typeof e === "object" ? (e as Record<string, unknown>) : {};
+    const stdout = typeof err.stdout === "string" ? err.stdout : "";
+    const stderr = typeof err.stderr === "string" ? err.stderr : errorMessage(e, "Git command failed.");
     if (/authentication failed|401|403|invalid credentials/i.test(stderr)) {
       return new GitAuthError({ cwd, remote: cwd, cause: e });
     }
@@ -390,9 +392,10 @@ export class GitManager extends EventEmitter {
       cwd,
       cmd: "git",
       args,
-      stdout: err.stdout ?? "",
+      stdout,
       stderr,
-      exitCode: err.exitCode ?? 1,
+      exitCode: typeof err.exitCode === "number" ? err.exitCode : 1,
+      cause: e,
     });
   }
 
@@ -401,14 +404,15 @@ export class GitManager extends EventEmitter {
     return Effect.tryPromise({
       try: () => this.execGit(cwd, args),
       catch: (e) => {
-        const err = e as { stdout?: string; stderr?: string; exitCode?: number };
+        const err = e !== null && typeof e === "object" ? (e as Record<string, unknown>) : {};
         return new GitCommandError({
           cwd,
           cmd: "git",
           args,
-          stdout: err.stdout ?? "",
-          stderr: err.stderr ?? String(e),
-          exitCode: err.exitCode ?? 1,
+          stdout: typeof err.stdout === "string" ? err.stdout : "",
+          stderr: typeof err.stderr === "string" ? err.stderr : errorMessage(e, "Git command failed."),
+          exitCode: typeof err.exitCode === "number" ? err.exitCode : 1,
+          cause: e,
         });
       },
     });
@@ -1329,7 +1333,8 @@ export class GitManager extends EventEmitter {
     return this.runWriteAction(workspace, {
       type: "fetch",
       label: "Fetch",
-      run: (cwd) => runEffect(this.execAuthGitEffect(cwd, ["fetch", "--all", "--prune"], { connection })),
+      run: (cwd) =>
+        runEffect(this.execAuthGitEffect(cwd, ["fetch", "--all", "--prune"], { connection }), (error) => error),
       allowDirty: true,
       connection,
       rootPath,
@@ -1347,7 +1352,7 @@ export class GitManager extends EventEmitter {
     return this.runWriteAction(workspace, {
       type: "pull",
       label: "Pull",
-      run: (cwd) => runEffect(this.execAuthGitEffect(cwd, ["pull", "--ff-only"], { connection })),
+      run: (cwd) => runEffect(this.execAuthGitEffect(cwd, ["pull", "--ff-only"], { connection }), (error) => error),
       allowDirty: true,
       stashDirty,
       connection,
@@ -1407,7 +1412,8 @@ export class GitManager extends EventEmitter {
       baseBranch: " ",
       allowDirty: true,
       skipPreflight: true,
-      run: (cwd) => runEffect(this.execAuthGitStreamingEffect(cwd, pushArgs, { connection, onData: onProgress })),
+      run: (cwd) =>
+        runEffect(this.execAuthGitStreamingEffect(cwd, pushArgs, { connection, onData: onProgress }), (error) => error),
       connection,
       rootPath,
       snapshot,
@@ -1480,6 +1486,7 @@ export class GitManager extends EventEmitter {
         if (reviewSourceBranch) {
           const listed = await runEffect(
             this.execAuthGitStreamingEffect(cwd, ["ls-remote", remote, `refs/heads/${remoteBranch}`], { connection }),
+            (error) => error,
           );
           const liveSha = String(listed.stdout || "")
             .split(/\r?\n/u)
@@ -1497,6 +1504,7 @@ export class GitManager extends EventEmitter {
             connection,
             onData: onProgress,
           }),
+          (error) => error,
         );
         try {
           const headResult = await this.execGit(cwd, ["rev-parse", "HEAD"]);
@@ -1580,7 +1588,10 @@ export class GitManager extends EventEmitter {
       // Auth matters in partial clones (--filter=blob:none): merge may lazily
       // fetch missing blobs, and that fetch inherits the auth config via -c.
       run: (cwd, resolvedBaseBranch) =>
-        runEffect(this.execAuthGitEffect(cwd, ["merge", "--no-edit", resolvedBaseBranch], { connection })),
+        runEffect(
+          this.execAuthGitEffect(cwd, ["merge", "--no-edit", resolvedBaseBranch], { connection }),
+          (error) => error,
+        ),
       connection,
       rootPath,
     });
@@ -1603,7 +1614,7 @@ export class GitManager extends EventEmitter {
       // Auth matters in partial clones (--filter=blob:none): rebase may lazily
       // fetch missing blobs, and that fetch inherits the auth config via -c.
       run: (cwd, resolvedBaseBranch) =>
-        runEffect(this.execAuthGitEffect(cwd, ["rebase", resolvedBaseBranch], { connection })),
+        runEffect(this.execAuthGitEffect(cwd, ["rebase", resolvedBaseBranch], { connection }), (error) => error),
       connection,
       rootPath,
     });
@@ -1951,7 +1962,7 @@ export class GitManager extends EventEmitter {
       );
       return { ok: true, entries: entriesWithBinary };
     } catch (err) {
-      return { ok: false, entries: [], summary: String((err as Error).message) };
+      return { ok: false, entries: [], summary: errorMessage(err) };
     }
   }
 
@@ -2054,7 +2065,7 @@ export class GitManager extends EventEmitter {
     } catch (err) {
       return createStructuredResult({
         ok: false,
-        summary: String((err as { stderr?: string }).stderr || (err as Error).message),
+        summary: errorMessage(err),
       });
     }
   }
@@ -2074,7 +2085,7 @@ export class GitManager extends EventEmitter {
     } catch (err) {
       return createStructuredResult({
         ok: false,
-        summary: String((err as { stderr?: string }).stderr || (err as Error).message),
+        summary: errorMessage(err),
       });
     }
   }
@@ -2879,11 +2890,11 @@ export class GitManager extends EventEmitter {
     try {
       sha = String((await this.execGit(cwd, ["rev-parse", "--verify", "--quiet", "HEAD"])).stdout || "").trim();
     } catch (e) {
-      const r = e as { stderr?: string; error?: { code?: unknown } };
+      const r = e as { stderr?: string; exitCode?: number | null };
       // Numeric exit code + empty stderr == git ran and reported "no such ref"
       // (what --quiet does for an unborn/unknown HEAD). A message on stderr, or a
       // non-numeric spawn code, is an operational failure and is NOT "unborn".
-      cleanlyUnresolved = String(r?.stderr || "").trim() === "" && typeof r?.error?.code === "number";
+      cleanlyUnresolved = e instanceof ProcessCommandError && String(r.stderr || "").trim() === "" && r.exitCode === 1;
     }
     const ref = await this.execGit(cwd, ["symbolic-ref", "--quiet", "HEAD"])
       .then((r) => String(r.stdout || "").trim())

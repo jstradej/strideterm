@@ -491,7 +491,7 @@ async function exportLog(format: "csv" | "json"): Promise<void> {
       downloadTextFile(`${provider}-audit-log-${stamp}.json`, JSON.stringify(rows, null, 2), "application/json");
     }
   } catch (err) {
-    useNotificationStore().showError("Audit log export failed", (err as Error)?.message || String(err));
+    useNotificationStore().showError("Audit log export failed", err);
   } finally {
     exporting.value = false;
   }

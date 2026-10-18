@@ -381,6 +381,7 @@ import Sparkline from "../workspace/docker/Sparkline.vue";
 import { useAppStore } from "../../stores/app.js";
 import { useTerminalStore } from "../../stores/terminal.js";
 import { useNotificationStore } from "../../stores/notifications.js";
+import { userFacingMessage } from "../../lib/error-message.js";
 import { downloadTextFile, readPerfRefreshInterval, writePerfRefreshInterval } from "../../app/helpers.js";
 import type { PerformanceSnapshot } from "../../../electron/shared/performance.js";
 import type { TerminalDiagnosticsSnapshot } from "../../app/terminal-controller.js";
@@ -546,7 +547,7 @@ async function poll(): Promise<void> {
   } catch (e) {
     // Keep the last reading and show a brief inline status — never a toast
     // loop while polling.
-    error.value = (e as Error)?.message || String(e);
+    error.value = userFacingMessage(e, "Failed to load performance metrics.");
   }
 }
 
@@ -607,7 +608,7 @@ async function captureProfile(): Promise<void> {
     }
   } catch (e) {
     captureStatus.value = "";
-    notifications.showError("CPU profile failed", (e as Error)?.message || String(e));
+    notifications.showError("CPU profile failed", e);
   } finally {
     capturing.value = false;
   }
@@ -621,7 +622,7 @@ async function revealProfile(): Promise<void> {
       notifications.showError("Could not open folder", res.error || "Unknown error");
     }
   } catch (e) {
-    notifications.showError("Could not open folder", (e as Error)?.message || String(e));
+    notifications.showError("Could not open folder", e);
   }
 }
 
@@ -654,7 +655,7 @@ async function copyDiagnostics(): Promise<void> {
       copied.value = false;
     }, 1500);
   } catch (e) {
-    notifications.showError("Copy failed", (e as Error)?.message || String(e));
+    notifications.showError("Copy failed", e);
   }
 }
 

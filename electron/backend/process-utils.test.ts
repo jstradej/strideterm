@@ -5,7 +5,7 @@ vi.mock("./logger.js", () => ({
   getLogger: () => ({ info: vi.fn(), warn: vi.fn(), debug: debugSpy, error: vi.fn() }),
 }));
 
-import { parseJsonLines, spawnTextStreaming } from "./process-utils.js";
+import { execFileText, parseJsonLines, ProcessCommandError, spawnTextStreaming } from "./process-utils.js";
 
 // Portable across Windows/macOS/Linux — spawn the same node binary running the
 // tests, so no external command needs to exist on PATH.
@@ -34,14 +34,36 @@ describe("spawnTextStreaming", () => {
         "process.stdout.write('out-part'); process.stderr.write('err-part'); process.exit(3);",
       ]),
     ).rejects.toMatchObject({
+      _tag: "ProcessCommandError",
       stdout: expect.stringContaining("out-part"),
       stderr: expect.stringContaining("err-part"),
       exitCode: 3,
+      message: expect.stringContaining("err-part"),
     });
   });
 
   test("rejects with an error when the binary cannot be spawned", async () => {
-    await expect(spawnTextStreaming("definitely-not-a-real-binary-xyz", ["--version"])).rejects.toHaveProperty("error");
+    await expect(spawnTextStreaming("definitely-not-a-real-binary-xyz", ["--version"])).rejects.toMatchObject({
+      _tag: "ProcessCommandError",
+      exitCode: null,
+      code: "ENOENT",
+      cause: expect.objectContaining({ code: expect.any(String) }),
+    });
+  });
+
+  test("execFileText rejects with the tagged error and captured output", async () => {
+    await expect(execFileText(NODE, ["-e", "process.stderr.write('failed'); process.exit(7);"])).rejects.toMatchObject({
+      _tag: "ProcessCommandError",
+      stderr: "failed",
+      exitCode: 7,
+      code: 7,
+      message: expect.stringContaining("failed"),
+      cause: expect.any(Error),
+    });
+  });
+
+  test("exports a real Error subtype", () => {
+    expect(new ProcessCommandError("failure", "", "", null, null, new Error("cause"))).toBeInstanceOf(Error);
   });
 });
 

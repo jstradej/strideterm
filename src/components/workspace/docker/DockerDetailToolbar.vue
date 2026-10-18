@@ -231,6 +231,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
 import { useAppStore } from "../../../stores/app.js";
+import { userFacingMessage } from "../../../lib/error-message.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
 import { useIsNarrow } from "../../../composables/useIsNarrow.js";
 import type { OpenTab } from "../../../stores/docker-detail.js";
@@ -280,7 +281,6 @@ watch(
 );
 
 const container = computed(() => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const docker = appStore.dockerState();
   if (!docker?.containers || !props.tab.containerId) return null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -304,7 +304,7 @@ async function doAction(action: string): Promise<void> {
       props.tab.contextName,
     );
   } catch (e) {
-    const msg = (e as Error)?.message || String(e);
+    const msg = userFacingMessage(e, "Unknown error");
     notifications.showError(`Failed to ${action} container`, `${props.tab.label}: ${msg}`);
   } finally {
     busyAction.value = "";
@@ -317,7 +317,7 @@ async function doComposeAction(action: string): Promise<void> {
   try {
     await appStore.dockerComposeAction(action, props.tab.backendId, props.tab.contextName, props.tab.projectName);
   } catch (e) {
-    const msg = (e as Error)?.message || String(e);
+    const msg = userFacingMessage(e, "Unknown error");
     notifications.showError(`Compose ${action} failed`, `${props.tab.label}: ${msg}`);
   } finally {
     composeAction.value = "";

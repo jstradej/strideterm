@@ -158,7 +158,7 @@ async function startReview(): Promise<void> {
       }
     }
   } catch (error) {
-    notifStore.showError("Could not start review", (error as Error)?.message || String(error), {
+    notifStore.showError("Could not start review", error, {
       profileId: String(props.toast.meta.profileId || ""),
     });
   }

@@ -3,6 +3,7 @@ import { findWorkspace, markWorkspaceWorked } from "./runtime-utils.js";
 import { normalizeWorkspace } from "./default-state.js";
 import { insertWorkspace } from "./workspace-order.js";
 import { ClientRequestError } from "./shared/client-request-error.js";
+import { errorMessage } from "../shared/error-message.js";
 import { connectionSecretRef, findOwnedConnection } from "./shared/connection-secret.js";
 import { trimTrailingSlash } from "./shared/provider-utils.js";
 import {
@@ -278,8 +279,7 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
           forceReview: payload.forceReview === true,
         });
       } catch (err) {
-        const message =
-          err instanceof Error ? err.message : (err as any)?.stderr || (err as any)?.error?.message || String(err); // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: error shape is unknown at catch boundary
+        const message = errorMessage(err);
         log.warn("openGitHubPullRequest failed", { prKey: payload.prKey, err: message });
         throw new Error(message, { cause: err });
       }

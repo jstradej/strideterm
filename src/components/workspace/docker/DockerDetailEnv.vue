@@ -43,6 +43,7 @@
 import { ref, computed, onMounted, watch } from "vue";
 import Spinner from "../../common/Spinner.vue";
 import { useAppStore } from "../../../stores/app.js";
+import { userFacingMessage } from "../../../lib/error-message.js";
 
 const props = defineProps<{
   containerId: string;
@@ -71,7 +72,7 @@ async function reload(): Promise<void> {
     const raw = props.mockJson ?? (await appStore.dockerInspect(props.containerId, props.backendId, props.contextName));
     entries.value = parseEnv(raw);
   } catch (e) {
-    error.value = (e as Error)?.message || String(e);
+    error.value = userFacingMessage(e, "Failed to load container environment.");
     entries.value = [];
   } finally {
     loading.value = false;

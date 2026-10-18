@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
-import { execFileText, parseJsonLines, quotePosixArg } from "./process-utils.js";
+import { execFileText, parseJsonLines, ProcessCommandError, quotePosixArg } from "./process-utils.js";
 import { getLogger } from "./logger.js";
 import type {
   DockerState,
@@ -252,7 +252,7 @@ export class DockerManager extends EventEmitter {
     try {
       await execFileText(file, args);
     } catch (err) {
-      if ((err as { error?: { code?: string } })?.error?.code === "ENOENT") {
+      if (err instanceof ProcessCommandError && err.code === "ENOENT") {
         this.#missingCli.add(file);
         log.debug("docker CLI not found — skipping it until the next explicit refresh", { file });
       }

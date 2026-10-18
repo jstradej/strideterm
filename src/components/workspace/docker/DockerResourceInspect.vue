@@ -24,6 +24,7 @@
 import { ref, computed, onMounted, watch } from "vue";
 import Spinner from "../../common/Spinner.vue";
 import { useNotificationStore } from "../../../stores/notifications.js";
+import { userFacingMessage } from "../../../lib/error-message.js";
 
 const props = defineProps<{
   /** Display name used in the loading text. */
@@ -55,7 +56,7 @@ async function reload(): Promise<void> {
     const raw = await props.fetcher();
     pretty.value = formatJson(raw);
   } catch (e) {
-    error.value = (e as Error)?.message || String(e);
+    error.value = userFacingMessage(e, "Failed to load resource details.");
     pretty.value = "";
   } finally {
     loading.value = false;
@@ -151,7 +152,7 @@ async function copy(): Promise<void> {
       copied.value = false;
     }, 1500);
   } catch (e) {
-    notifications.showError("Copy failed", (e as Error)?.message || String(e));
+    notifications.showError("Copy failed", e);
   }
 }
 

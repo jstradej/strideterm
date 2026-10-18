@@ -634,7 +634,7 @@ describe("GitManager", () => {
         .mockResolvedValueOnce({ stdout: "", stderr: "" });
       const manager = new GitManager({ execGitImpl });
 
-      const result = await runEffect(manager.execAuthGitEffect(root, ["fetch", "--all", "--prune"]));
+      const result = await runEffect(manager.execAuthGitEffect(root, ["fetch", "--all", "--prune"]), (error) => error);
 
       expect(result).toEqual({ stdout: "", stderr: "" });
       expect(execGitImpl).toHaveBeenCalledTimes(2);
@@ -650,7 +650,9 @@ describe("GitManager", () => {
       });
       const manager = new GitManager({ execGitImpl });
 
-      await expect(runEffect(manager.execAuthGitEffect(root, ["merge", "--no-edit", "main"]))).rejects.toMatchObject({
+      await expect(
+        runEffect(manager.execAuthGitEffect(root, ["merge", "--no-edit", "main"]), (error) => error),
+      ).rejects.toMatchObject({
         _tag: "GitCommandError",
       });
       expect(execGitImpl).toHaveBeenCalledTimes(1);
@@ -666,7 +668,9 @@ describe("GitManager", () => {
       });
       const manager = new GitManager({ execGitImpl });
 
-      await expect(runEffect(manager.execAuthGitEffect(root, ["rebase", "main"]))).rejects.toMatchObject({
+      await expect(
+        runEffect(manager.execAuthGitEffect(root, ["rebase", "main"]), (error) => error),
+      ).rejects.toMatchObject({
         _tag: "GitCommandError",
       });
       expect(execGitImpl).toHaveBeenCalledTimes(1);
@@ -681,7 +685,9 @@ describe("GitManager", () => {
       });
       const manager = new GitManager({ execGitImpl });
 
-      await expect(runEffect(manager.execAuthGitEffect(root, ["fetch", "--all", "--prune"]))).rejects.toMatchObject({
+      await expect(
+        runEffect(manager.execAuthGitEffect(root, ["fetch", "--all", "--prune"]), (error) => error),
+      ).rejects.toMatchObject({
         _tag: "GitCommandError",
       });
       expect(execGitImpl).toHaveBeenCalledTimes(1);

@@ -4,7 +4,8 @@ import { once } from "node:events";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { execFileText } from "./process-utils.js";
+import { execFileText, ProcessCommandError } from "./process-utils.js";
+import { errorMessage } from "../shared/error-message.js";
 import { getLogger } from "./logger.js";
 import { APP_CONFIG } from "../../config/app-config.js";
 
@@ -169,15 +170,15 @@ export class CloudflareTunnelManager extends EventEmitter {
         error: this.snapshot.status === "idle" ? "" : this.snapshot.error,
       };
     } catch (rawError: unknown) {
-      // execFileText rejects with { error, stdout, stderr }. Surface every
-      // useful field — the colleague's "chyba 1" was cloudflared exiting
+      // Surface every useful field — the colleague's "chyba 1" was cloudflared exiting
       // with code 1 and the actual reason sitting in stderr, never logged.
-      const errObj = rawError as { error?: Error & { code?: string | number }; stdout?: string; stderr?: string };
+      const errObj = rawError as { stdout?: string; stderr?: string };
+      const processError = rawError instanceof ProcessCommandError ? rawError : undefined;
       log.warn("cloudflared --version failed", {
         binary: this.binary,
         preference: this.binaryPreference || "(none)",
-        errCode: errObj?.error?.code,
-        errMessage: errObj?.error?.message,
+        errCode: processError?.code,
+        errMessage: errorMessage(rawError),
         stdout: (errObj?.stdout || "").trim(),
         stderr: (errObj?.stderr || "").trim(),
       });

@@ -94,6 +94,7 @@ import { ref, computed, onMounted, onBeforeUnmount, watch } from "vue";
 import Spinner from "../../common/Spinner.vue";
 import Sparkline from "./Sparkline.vue";
 import { useAppStore } from "../../../stores/app.js";
+import { userFacingMessage } from "../../../lib/error-message.js";
 import { vHeartbeat } from "../../../app/heartbeat-directive.js";
 
 /** Fixed-size ring of samples for the sparkline. ~2 min at 2 s polling. */
@@ -161,7 +162,7 @@ async function loadOnce(): Promise<void> {
     data.value = await appStore.dockerStats(props.containerId, props.backendId, props.contextName);
     if (data.value) recordHistory(data.value);
   } catch (e) {
-    error.value = (e as Error)?.message || String(e);
+    error.value = userFacingMessage(e, "Failed to load container stats.");
   } finally {
     loading.value = false;
   }

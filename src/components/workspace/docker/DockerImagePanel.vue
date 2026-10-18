@@ -54,6 +54,7 @@ import ConfirmDialog from "../../dialogs/ConfirmDialog.vue";
 import { useAppStore } from "../../../stores/app.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
 import { useDockerDetail, type OpenTab } from "../../../stores/docker-detail.js";
+import { userFacingMessage } from "../../../lib/error-message.js";
 
 const props = defineProps<{
   workspaceId: string;
@@ -68,7 +69,6 @@ const pulling = ref(false);
 const confirmRemove = ref(false);
 
 const image = computed(() => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const docker = appStore.dockerState();
   return docker?.images?.find(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -90,7 +90,7 @@ async function doRemove(force: boolean): Promise<void> {
     await appStore.dockerImageRemove(props.tab.imageId, props.tab.backendId, props.tab.contextName, force);
     detailStore.closeTab(props.workspaceId, props.tab.tabId);
   } catch (e) {
-    const msg = (e as Error)?.message || String(e);
+    const msg = userFacingMessage(e, "Unknown error");
     // Common case: image is referenced by a container. Suggest force in the toast.
     const hint = /image is .* being used|image is in use|conflict/i.test(msg)
       ? " (try removing the containers that use it first, or use force-remove)"
@@ -107,7 +107,7 @@ async function doPull(): Promise<void> {
   try {
     await appStore.dockerImagePull(pullRef.value, props.tab.backendId, props.tab.contextName);
   } catch (e) {
-    const msg = (e as Error)?.message || String(e);
+    const msg = userFacingMessage(e, "Unknown error");
     notifications.showError("Failed to pull image", `${pullRef.value}: ${msg}`);
   } finally {
     pulling.value = false;

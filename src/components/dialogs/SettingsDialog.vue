@@ -529,7 +529,7 @@ async function handleCheckForUpdates() {
     }
   } catch (err) {
     manualCheckResult.value = null;
-    notifications.value.showError("Update check failed", (err as Error)?.message || String(err));
+    notifications.value.showError("Update check failed", err);
   } finally {
     checkingUpdate.value = false;
   }

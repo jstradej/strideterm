@@ -46,6 +46,7 @@ import ConfirmDialog from "../../dialogs/ConfirmDialog.vue";
 import { useAppStore } from "../../../stores/app.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
 import { useDockerDetail, type OpenTab } from "../../../stores/docker-detail.js";
+import { userFacingMessage } from "../../../lib/error-message.js";
 
 const props = defineProps<{
   workspaceId: string;
@@ -59,7 +60,6 @@ const removing = ref(false);
 const confirmRemove = ref(false);
 
 const network = computed(() => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const docker = appStore.dockerState();
   return docker?.networks?.find(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -85,7 +85,7 @@ async function doRemove(): Promise<void> {
     await appStore.dockerNetworkRemove(props.tab.networkId, props.tab.backendId, props.tab.contextName);
     detailStore.closeTab(props.workspaceId, props.tab.tabId);
   } catch (e) {
-    const msg = (e as Error)?.message || String(e);
+    const msg = userFacingMessage(e, "Unknown error");
     notifications.showError("Failed to remove network", `${props.tab.label}: ${msg}`);
   } finally {
     removing.value = false;

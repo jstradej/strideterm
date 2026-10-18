@@ -47,6 +47,7 @@ import {
   storedSecretOfSavedConnection,
 } from "./shared/connection-secret.js";
 import { execFileText } from "./process-utils.js";
+import { errorMessage } from "../shared/error-message.js";
 import { shortPathKey } from "./azure-devops-utils.js";
 import { DockerManager } from "./docker-manager.js";
 import { DockerLogManager } from "./docker-log-streamer.js";
@@ -8032,9 +8033,7 @@ export async function createRuntime({
       }
       return "Checkout has local commits that are not on the remote.";
     } catch (error) {
-      // execFileText rejects with { error, stdout, stderr }, not an Error.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const detail = (error as any)?.stderr?.trim() || (error as any)?.error?.message || (error as Error)?.message;
+      const detail = errorMessage(error, "");
       return `Could not inspect the checkout for local work${detail ? `: ${detail}` : "."}`;
     }
   }
@@ -8107,9 +8106,8 @@ export async function createRuntime({
    * existing branch and rewrites "not a git repository" into a task-dialog
    * hint, createWorktree does neither. `richErrorHandling` keeps those two
    * task-only behaviors opt-in. Every other git failure, on both paths,
-   * becomes an Error carrying git's stderr: execFileText rejects with a
-   * plain `{ error, stdout, stderr }` object, which crosses IPC as
-   * "[object Object]" and left the New worktree dialog with nothing to show.
+   * becomes an Error carrying git's stderr so the New worktree dialog can
+   * display the process failure across IPC.
    */
   async function ensureWorktree(
     repoPath: string,
@@ -8161,11 +8159,7 @@ export async function createRuntime({
         { cwd: repoPath },
       );
     } catch (err) {
-      // execFileText rejects with { error, stdout, stderr } — the useful
-      // message lives in stderr. err.message is undefined here, so don't
-      // rely on it for either the branch-exists fallback or the user error.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const stderr = (err as any)?.stderr?.trim() || (err as any)?.error?.message || (err as Error).message || "";
+      const stderr = errorMessage(err, "");
       if (requireNewBranch && /already exists|already checked out|is not empty|already registered/iu.test(stderr)) {
         throw new InternalMcpError("checkout_conflict", `Failed to create git worktree: ${stderr}`, { cause: err });
       }
@@ -8466,8 +8460,8 @@ export async function createRuntime({
           // the response — it's just metadata cleanup.
           execFileTextImpl("git", ["worktree", "prune"], { cwd: gitCwd }).catch(() => {});
           if (rmFailed && gitFallbackErr) {
-            const rmMsg = (rmErr as Error)?.message?.slice(0, 200) ?? String(rmErr);
-            const gitMsg = (gitFallbackErr as Error)?.message?.slice(0, 200) ?? String(gitFallbackErr);
+            const rmMsg = errorMessage(rmErr).slice(0, 200);
+            const gitMsg = errorMessage(gitFallbackErr).slice(0, 200);
             throw new Error(`Failed to remove ${diskPath}: rm: ${rmMsg}; git: ${gitMsg}`);
           }
         } else if (rmFailed) {
@@ -8481,7 +8475,7 @@ export async function createRuntime({
           rmFailed,
         });
       } catch (err) {
-        diskDeleteError = `Could not delete ${diskPath}: ${(err as any)?.message || err}`; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: unknown catch shape
+        diskDeleteError = `Could not delete ${diskPath}: ${errorMessage(err)}`;
         log.warn("workspace disk delete failed", { diskPath, err: diskDeleteError });
         // Krok 6: the foreground attempt gave up (likely a lock held by an
         // orphaned agent child / AV). Keep the path held in
@@ -12518,7 +12512,7 @@ export async function createRuntime({
       } catch (err) {
         log.debug("checkCommand: not found", {
           command,
-          err: (err as any)?.error?.message || (err as Error).message || "unknown", // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: error shape is unknown at catch boundary
+          err: errorMessage(err),
         });
         return false;
       }

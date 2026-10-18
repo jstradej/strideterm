@@ -1,5 +1,5 @@
 <template>
-  <div class="detail-shell" ref="rootEl">
+  <div ref="rootEl" class="detail-shell">
     <div v-if="!alive && !connecting" class="detail-shell__overlay detail-shell__overlay--exit">
       <div class="detail-shell__exit-card">
         <p>Shell session ended.</p>
@@ -23,6 +23,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import Spinner from "../../common/Spinner.vue";
 import { useAppStore } from "../../../stores/app.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
+import { userFacingMessage } from "../../../lib/error-message.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -133,7 +134,7 @@ function openSession(): void {
     .catch((e: unknown) => {
       connecting.value = false;
       alive.value = false;
-      const msg = (e as Error)?.message || String(e);
+      const msg = userFacingMessage(e, "Unknown error");
       notifications.showError("Shell session failed", `${props.containerName}: ${msg}`);
     });
 }
