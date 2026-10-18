@@ -26,6 +26,7 @@ export default defineConfig({
     // 30s eliminates the Windows-only flake without hiding genuinely
     // hung tests.
     testTimeout: 30_000,
+    setupFiles: [fileURLToPath(new URL("./test/vitest-backend-setup.ts", import.meta.url))],
     // The shared notify-URL registry lives in the user's HOME by design (it
     // has to be reachable from every data dir). A test run must never write
     // there, so point both sides of the hook — runtime.ts and notify.mjs — at
