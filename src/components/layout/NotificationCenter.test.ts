@@ -891,3 +891,50 @@ describe("NotificationCenter — Attachments tab", () => {
     expect(event.defaultPrevented).toBe(false);
   });
 });
+
+describe("NotificationCenter — Connections tab", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    window.localStorage.removeItem("strideterm-notifications-v2");
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "slot1" } };
+  });
+
+  it("shows Telegram and phone management together and links to Mobile settings", async () => {
+    const appStore = useAppStore();
+    const notifStore = useNotificationStore();
+    appStore.payload = makePayload({ telegram: { connections: [] } }) as AnyApi;
+    notifStore.panelOpen = true;
+    const openSettings = vi.spyOn(appStore, "openSettingsDialog").mockImplementation(() => undefined as AnyApi);
+    const wrapper = mount(NotificationCenter);
+    await wrapper
+      .findAll(".notification-center__tab")
+      .find((button) => button.text().includes("Connections"))!
+      .trigger("click");
+    await nextTick();
+    expect(wrapper.text()).toContain("Telegram");
+    expect(wrapper.text()).toContain("Phones");
+    expect(wrapper.text()).toContain("No phones paired yet.");
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("Mobile settings"))!
+      .trigger("click");
+    expect(openSettings).toHaveBeenCalledWith({ initialTab: "mobile", initialMobileView: "phones" });
+  });
+
+  it("keeps phone management unavailable on remote transports", async () => {
+    const appStore = useAppStore();
+    const notifStore = useNotificationStore();
+    appStore.payload = makePayload({ telegram: { connections: [] } }) as AnyApi;
+    appStore.isRemoteTransport = true;
+    notifStore.panelOpen = true;
+    const wrapper = mount(NotificationCenter);
+    await wrapper
+      .findAll(".notification-center__tab")
+      .find((button) => button.text().includes("Connections"))!
+      .trigger("click");
+    await nextTick();
+    expect(wrapper.text()).toContain("Phone management is available in Settings on the desktop app.");
+    expect(wrapper.find("[data-role='mobile-device-list']").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("Mobile settings");
+  });
+});

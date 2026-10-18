@@ -2775,11 +2775,13 @@ describe("remote transport failure messages", () => {
 describe("host connection-state dedupe and session-lost reason", () => {
   let originalFetch: typeof globalThis.fetch;
   let originalWebSocket: typeof globalThis.WebSocket;
+  let originalVisibilityState: PropertyDescriptor | undefined;
   type Bridge = { suspend(): void; resume(): void; isSuspended(): boolean; isSessionLost(): boolean };
   const bridge = () => (window as unknown as Record<string, Bridge>).__stridetermRemote;
 
   beforeEach(() => {
     MockWebSocket.instances.length = 0;
+    originalVisibilityState = Object.getOwnPropertyDescriptor(document, "visibilityState");
     originalFetch = globalThis.fetch;
     originalWebSocket = globalThis.WebSocket;
     globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
@@ -2789,6 +2791,8 @@ describe("host connection-state dedupe and session-lost reason", () => {
   afterEach(() => {
     (window as unknown as Record<string, { suspend?: () => void } | undefined>).__stridetermRemote?.suspend?.();
     delete (window as unknown as Record<string, unknown>).StridetermHost;
+    if (originalVisibilityState) Object.defineProperty(document, "visibilityState", originalVisibilityState);
+    else Reflect.deleteProperty(document, "visibilityState");
     globalThis.fetch = originalFetch;
     globalThis.WebSocket = originalWebSocket;
     vi.useRealTimers();
@@ -2825,18 +2829,57 @@ describe("host connection-state dedupe and session-lost reason", () => {
     expect(after.at(-1)).toMatchObject({ connected: false });
   });
 
-  it("sends a presence message while visible and not suspended, and none once suspended", async () => {
+  it("sends foreground presence immediately and while visible, and none once suspended", async () => {
     vi.useFakeTimers();
     (window as unknown as Record<string, unknown>).StridetermHost = { postMessage: () => {} };
     const transport = createRemoteTransport();
     transport.onConnectionState(() => {});
     const socket = MockWebSocket.instances[0];
     socket.open();
-    await vi.advanceTimersByTimeAsync(60_000);
     expect(socket.sent.filter((m) => JSON.parse(m).type === "client:presence")).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(socket.sent.filter((m) => JSON.parse(m).type === "client:presence")).toHaveLength(2);
     bridge().suspend();
     await vi.advanceTimersByTimeAsync(120_000);
-    expect(socket.sent.filter((m) => JSON.parse(m).type === "client:presence")).toHaveLength(1);
+    expect(socket.sent.filter((m) => JSON.parse(m).type === "client:presence")).toHaveLength(2);
+  });
+
+  it("does not send initial foreground presence when the native-host page is hidden", () => {
+    vi.useFakeTimers();
+    (window as unknown as Record<string, unknown>).StridetermHost = { postMessage: () => {} };
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    createRemoteTransport();
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+    expect(socket.sent.filter((m) => JSON.parse(m).type === "client:presence")).toHaveLength(0);
+  });
+
+  it("does not send foreground presence for a browser client without the native host", () => {
+    vi.useFakeTimers();
+    createRemoteTransport();
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+    expect(socket.sent.filter((m) => JSON.parse(m).type === "client:presence")).toHaveLength(0);
+  });
+
+  it("sends an immediate presence after resuming a suspended native-host socket", () => {
+    (window as unknown as Record<string, unknown>).StridetermHost = { postMessage: () => {} };
+    const transport = createRemoteTransport();
+    transport.onConnectionState(() => {});
+    const first = MockWebSocket.instances[0];
+    first.open();
+    const presenceCount = () =>
+      MockWebSocket.instances.reduce(
+        (count, socket) =>
+          count + socket.sent.filter((message) => JSON.parse(message).type === "client:presence").length,
+        0,
+      );
+    expect(presenceCount()).toBe(1);
+    bridge().suspend();
+    bridge().resume();
+    const resumed = MockWebSocket.instances.at(-1)!;
+    resumed.open();
+    expect(presenceCount()).toBe(2);
   });
 
   it.each([

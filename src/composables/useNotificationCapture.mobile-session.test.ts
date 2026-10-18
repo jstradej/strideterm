@@ -124,7 +124,14 @@ describe("the app store follows mobile:status for the connected-phone list", () 
     return { transport, emitStatus: (event: AnyApi) => statusHandler(event) };
   }
 
-  const PHONE = { deviceId: "dev-1", name: "Pixel 8", profileId: "default", startedAt: 1000 };
+  const PHONE = {
+    deviceId: "dev-1",
+    name: "Pixel 8",
+    profileId: "default",
+    startedAt: 1000,
+    remoteUiConnected: false,
+    lastForegroundAt: null,
+  };
 
   it("a renderer that loads while a phone is connected shows it without waiting for an event", async () => {
     const { transport } = makeTransport({

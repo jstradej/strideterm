@@ -576,6 +576,25 @@ describe("slimRemoteSettings", () => {
     slimRemoteSettings(input);
     expect(JSON.stringify(input)).toBe(before); // pure
   });
+
+  test("drops desktop-owned mobile pairing and live connection state from remote settings", () => {
+    const input = {
+      integrations: {
+        mobile: {
+          enabled: true,
+          devices: [{ deviceId: "phone-1", lastSeenAt: 1 }],
+          connectedDevices: [{ deviceId: "phone-1", remoteUiConnected: true }],
+        },
+        telegram: { connections: [{ id: "telegram-1" }] },
+      },
+    };
+    const before = JSON.stringify(input);
+    const result = slimRemoteSettings(input);
+    expect(result.integrations).not.toHaveProperty("mobile");
+    expect(result.integrations.telegram).toEqual({ connections: [] });
+    expect(JSON.stringify(result)).not.toMatch(/phone-1|remoteUiConnected/);
+    expect(JSON.stringify(input)).toBe(before);
+  });
 });
 
 describe("capability negotiation", () => {

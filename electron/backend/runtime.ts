@@ -1869,7 +1869,13 @@ export async function createRuntime({
   // remote-server.ts pushes the live mobile sessions every time that set changes. There can be two
   // servers (direct and relay-origin), each reporting only its own sessions, so they are kept per
   // source and merged here. The merged list is what the desktop shows as "a phone is connected".
-  type LiveMobileSession = { deviceId: string; profileId: string; startedAt: number };
+  type LiveMobileSession = {
+    deviceId: string;
+    profileId: string;
+    startedAt: number;
+    remoteUiConnected: boolean;
+    lastForegroundAt: number | null;
+  };
   const liveMobileSessionsBySource = new Map<string, LiveMobileSession[]>();
   let mobileConnectedDevices: MobileConnectedDevice[] = [];
 
@@ -1884,7 +1890,21 @@ export async function createRuntime({
     for (const sessions of liveMobileSessionsBySource.values()) {
       for (const session of sessions) {
         const known = byDevice.get(session.deviceId);
-        if (!known || session.startedAt < known.startedAt) byDevice.set(session.deviceId, session);
+        if (!known) {
+          byDevice.set(session.deviceId, session);
+          continue;
+        }
+        byDevice.set(session.deviceId, {
+          ...(session.startedAt < known.startedAt ? session : known),
+          startedAt: Math.min(known.startedAt, session.startedAt),
+          remoteUiConnected: known.remoteUiConnected || session.remoteUiConnected,
+          lastForegroundAt:
+            known.lastForegroundAt === null
+              ? session.lastForegroundAt
+              : session.lastForegroundAt === null
+                ? known.lastForegroundAt
+                : Math.max(known.lastForegroundAt, session.lastForegroundAt),
+        });
       }
     }
     return [...byDevice.values()]
@@ -1894,13 +1914,21 @@ export async function createRuntime({
         name: mobileDeviceDisplayName(session.deviceId),
         profileId: session.profileId,
         startedAt: session.startedAt,
+        remoteUiConnected: session.remoteUiConnected,
+        lastForegroundAt: session.lastForegroundAt,
       }));
   }
 
   function setLiveMobileSessions(source: string, sessions: ReadonlyArray<LiveMobileSession>): void {
     liveMobileSessionsBySource.set(
       source,
-      sessions.map(({ deviceId, profileId, startedAt }) => ({ deviceId, profileId, startedAt })),
+      sessions.map(({ deviceId, profileId, startedAt, remoteUiConnected, lastForegroundAt }) => ({
+        deviceId,
+        profileId,
+        startedAt,
+        remoteUiConnected,
+        lastForegroundAt,
+      })),
     );
     const previousIds = new Set(mobileConnectedDevices.map((device) => device.deviceId));
     mobileConnectedDevices = mergeLiveMobileSessions();

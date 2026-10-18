@@ -550,11 +550,13 @@ export function slimRemoteSettings(settings: AnyRecord | undefined): AnyRecord {
   const s = (settings || {}) as AnyRecord;
   const integrations = (s.integrations || {}) as AnyRecord;
   const telegram = integrations.telegram as AnyRecord | undefined;
+  const remoteIntegrations = { ...integrations };
+  delete remoteIntegrations.mobile;
   return {
     ...s,
     remoteAccess: s.remoteAccess ? { enabled: Boolean((s.remoteAccess as AnyRecord).enabled) } : s.remoteAccess,
     integrations: {
-      ...integrations,
+      ...remoteIntegrations,
       azureDevops: reduceProviderIntegrationConfig(integrations.azureDevops as AnyRecord | undefined, "pat"),
       github: reduceProviderIntegrationConfig(integrations.github as AnyRecord | undefined, "token"),
       telegram: telegram ? { connections: [] } : telegram,

@@ -19,12 +19,11 @@
 import { computed } from "vue";
 import { useAppStore } from "../../stores/app.js";
 
-// "A phone is connected right now" — the desktop equivalent of a screen-sharing icon. It sits next to
-// the notification bell and is rendered only while at least one paired phone holds a live session, so
-// a connection the user did not expect is visible without opening anything.
+// This indicator means an authenticated remote-UI WebSocket is open, not merely that a phone holds a
+// valid session ticket. It stays visible while the remote UI connection is live.
 const appStore = useAppStore();
 
-const devices = computed(() => appStore.mobileConnectedDevices);
+const devices = computed(() => appStore.mobileConnectedDevices.filter((device) => device.remoteUiConnected));
 
 function profileName(profileId: string): string {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

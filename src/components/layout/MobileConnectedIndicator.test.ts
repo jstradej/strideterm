@@ -11,7 +11,7 @@ type AnyApi = any;
 const SELECTOR = '[data-role="mobile-connected-indicator"]';
 
 function device(deviceId: string, name: string, profileId = "default", startedAt = Date.now() - 60_000) {
-  return { deviceId, name, profileId, startedAt };
+  return { deviceId, name, profileId, startedAt, remoteUiConnected: true, lastForegroundAt: null };
 }
 
 describe("MobileConnectedIndicator", () => {
@@ -32,6 +32,13 @@ describe("MobileConnectedIndicator", () => {
   });
 
   it("renders nothing while no phone is connected", () => {
+    const wrapper = mount(MobileConnectedIndicator);
+    expect(wrapper.find(SELECTOR).exists()).toBe(false);
+  });
+
+  it("does not show a session ticket without an open remote UI WebSocket", () => {
+    const store = useAppStore();
+    store.mobileConnectedDevices = [{ ...device("d1", "Pixel 8"), remoteUiConnected: false }];
     const wrapper = mount(MobileConnectedIndicator);
     expect(wrapper.find(SELECTOR).exists()).toBe(false);
   });

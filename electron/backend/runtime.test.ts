@@ -9148,7 +9148,14 @@ describe("runtime integration", () => {
     }
 
     describe("which phones are connected right now", () => {
-      type Sessions = { deviceId: string; profileId: string; startedAt: number }[];
+      type Sessions = {
+        deviceId: string;
+        profileId: string;
+        startedAt: number;
+        remoteUiConnected: boolean;
+        lastForegroundAt: number | null;
+      }[];
+      const inactive = { remoteUiConnected: false, lastForegroundAt: null };
 
       async function createConnectedFixture() {
         const initialState = normalizeState();
@@ -9171,15 +9178,15 @@ describe("runtime integration", () => {
       test("mobile:status carries the connected devices with their resolved names, and the getter agrees", async () => {
         const { fixture, profileId, connectedDevices } = await createConnectedFixture();
         const sessions: Sessions = [
-          { deviceId: "dev-1", profileId, startedAt: 1000 },
-          { deviceId: "dev-2", profileId, startedAt: 2000 },
+          { deviceId: "dev-1", profileId, startedAt: 1000, ...inactive },
+          { deviceId: "dev-2", profileId, startedAt: 2000, ...inactive },
         ];
         fixture.runtime.onMobileSessionsChanged(sessions);
 
         expect(connectedDevices()).toEqual([
-          { deviceId: "dev-1", name: "Pixel 8", profileId, startedAt: 1000 },
+          { deviceId: "dev-1", name: "Pixel 8", profileId, startedAt: 1000, ...inactive },
           // A blank label falls back to a shortened id, never an empty name.
-          { deviceId: "dev-2", name: "Phone dev-2", profileId, startedAt: 2000 },
+          { deviceId: "dev-2", name: "Phone dev-2", profileId, startedAt: 2000, ...inactive },
         ]);
         expect(fixture.runtime.getMobileRelayStatus().connectedDevices).toEqual(connectedDevices());
 
@@ -9190,9 +9197,11 @@ describe("runtime integration", () => {
 
       test("an unknown device is still listed, under a shortened id", async () => {
         const { fixture, profileId, connectedDevices } = await createConnectedFixture();
-        fixture.runtime.onMobileSessionsChanged([{ deviceId: "0123456789abcdef", profileId, startedAt: 5 }]);
+        fixture.runtime.onMobileSessionsChanged([
+          { deviceId: "0123456789abcdef", profileId, startedAt: 5, ...inactive },
+        ]);
         expect(connectedDevices()).toEqual([
-          { deviceId: "0123456789abcdef", name: "Phone 01234567", profileId, startedAt: 5 },
+          { deviceId: "0123456789abcdef", name: "Phone 01234567", profileId, startedAt: 5, ...inactive },
         ]);
       });
 
@@ -9200,52 +9209,81 @@ describe("runtime integration", () => {
         const { fixture, profileId, started } = await createConnectedFixture();
         const profileName = fixture.store.getState().profiles[0].name as string;
 
-        fixture.runtime.onMobileSessionsChanged([{ deviceId: "dev-1", profileId, startedAt: 1000 }]);
-        expect(started).toEqual([{ deviceId: "dev-1", name: "Pixel 8", profileId, profileName, startedAt: 1000 }]);
+        fixture.runtime.onMobileSessionsChanged([{ deviceId: "dev-1", profileId, startedAt: 1000, ...inactive }]);
+        expect(started).toEqual([
+          { deviceId: "dev-1", name: "Pixel 8", profileId, profileName, startedAt: 1000, ...inactive },
+        ]);
 
         // The same device again (a second session), and an unrelated re-push: no new phone appeared.
         fixture.runtime.onMobileSessionsChanged([
-          { deviceId: "dev-1", profileId, startedAt: 1000 },
-          { deviceId: "dev-1", profileId, startedAt: 1500 },
+          { deviceId: "dev-1", profileId, startedAt: 1000, ...inactive },
+          { deviceId: "dev-1", profileId, startedAt: 1500, ...inactive },
         ]);
-        fixture.runtime.onMobileSessionsChanged([{ deviceId: "dev-1", profileId, startedAt: 1000 }]);
+        fixture.runtime.onMobileSessionsChanged([{ deviceId: "dev-1", profileId, startedAt: 1000, ...inactive }]);
         expect(started).toHaveLength(1);
 
         // A second phone is news; so is the first one coming back after it had gone.
         fixture.runtime.onMobileSessionsChanged([
-          { deviceId: "dev-1", profileId, startedAt: 1000 },
-          { deviceId: "dev-2", profileId, startedAt: 2000 },
+          { deviceId: "dev-1", profileId, startedAt: 1000, ...inactive },
+          { deviceId: "dev-2", profileId, startedAt: 2000, ...inactive },
         ]);
         expect(started).toHaveLength(2);
         fixture.runtime.onMobileSessionsChanged([]);
-        fixture.runtime.onMobileSessionsChanged([{ deviceId: "dev-1", profileId, startedAt: 3000 }]);
+        fixture.runtime.onMobileSessionsChanged([{ deviceId: "dev-1", profileId, startedAt: 3000, ...inactive }]);
         expect(started).toHaveLength(3);
       });
 
       test("the direct and relay-origin servers are merged, not overwritten, and a device on both is one phone", async () => {
         const { fixture, profileId, started, connectedDevices } = await createConnectedFixture();
-        fixture.runtime.onMobileSessionsChanged([{ deviceId: "dev-1", profileId, startedAt: 1000 }], "direct");
         fixture.runtime.onMobileSessionsChanged(
           [
-            { deviceId: "dev-1", profileId, startedAt: 900 },
-            { deviceId: "dev-2", profileId, startedAt: 2000 },
+            {
+              deviceId: "dev-1",
+              profileId: "direct-profile",
+              startedAt: 1000,
+              remoteUiConnected: true,
+              lastForegroundAt: 5000,
+            },
+          ],
+          "direct",
+        );
+        fixture.runtime.onMobileSessionsChanged(
+          [
+            { deviceId: "dev-1", profileId: "relay-profile", startedAt: 900, ...inactive },
+            { deviceId: "dev-2", profileId, startedAt: 2000, ...inactive },
           ],
           "relay",
         );
         expect(connectedDevices()).toEqual([
-          { deviceId: "dev-1", name: "Pixel 8", profileId, startedAt: 900 },
-          { deviceId: "dev-2", name: "Phone dev-2", profileId, startedAt: 2000 },
+          {
+            deviceId: "dev-1",
+            name: "Pixel 8",
+            profileId: "relay-profile",
+            startedAt: 900,
+            remoteUiConnected: true,
+            lastForegroundAt: 5000,
+          },
+          { deviceId: "dev-2", name: "Phone dev-2", profileId, startedAt: 2000, ...inactive },
         ]);
         expect(started).toHaveLength(2);
 
         // The relay going away leaves what the direct server still holds.
         fixture.runtime.onMobileSessionsChanged([], "relay");
-        expect(connectedDevices()).toEqual([{ deviceId: "dev-1", name: "Pixel 8", profileId, startedAt: 1000 }]);
+        expect(connectedDevices()).toEqual([
+          {
+            deviceId: "dev-1",
+            name: "Pixel 8",
+            profileId: "direct-profile",
+            startedAt: 1000,
+            remoteUiConnected: true,
+            lastForegroundAt: 5000,
+          },
+        ]);
       });
 
       test("neither event carries a session id or pair id", async () => {
         const { fixture, profileId, statuses, started } = await createConnectedFixture();
-        fixture.runtime.onMobileSessionsChanged([{ deviceId: "dev-1", profileId, startedAt: 1 }]);
+        fixture.runtime.onMobileSessionsChanged([{ deviceId: "dev-1", profileId, startedAt: 1, ...inactive }]);
         const serialized = JSON.stringify([statuses, started]);
         expect(serialized).not.toContain("sessionId");
         expect(serialized).not.toContain("pairId");

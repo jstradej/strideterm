@@ -1350,6 +1350,29 @@
   padding: 0 8px 8px 8px;
 }
 
+.connections-section {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding-bottom: 14px;
+}
+
+.connections-section + .connections-section {
+  border-top: 1px solid var(--border, #333);
+  padding-top: 12px;
+}
+
+.connections-section h3 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.connections-section__hint {
+  margin: 0;
+  color: var(--muted, #999);
+  font-size: 12px;
+}
+
 .telegram-empty {
   display: flex;
   flex-direction: column;

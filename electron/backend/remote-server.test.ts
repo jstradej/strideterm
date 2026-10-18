@@ -12,6 +12,7 @@ import {
   azureClosedPrCleanupFinishedSchema,
 } from "../shared/azure-closed-pr-cleanup-events.js";
 import * as fm from "./file-manager.js";
+import { MOBILE_FOREGROUND_PRESENCE_FRESH_MS } from "../shared/mobile-session-events.js";
 import {
   REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS,
   REMOTE_BLOCKED_TOP_LEVEL_FIELDS,
@@ -467,7 +468,15 @@ describe("stripSecretsForRemote", () => {
       },
       remoteAccess: { enabled: true, urls: ["http://1.2.3.4:43123/?token=super-secret-master-token"] },
     };
-    const stripped = stripSecretsForRemote(payload) as typeof payload;
+    const stripped = stripSecretsForRemote(payload) as unknown as {
+      appState: {
+        settings: {
+          integrations: Record<string, unknown>;
+          logLevel: string;
+          remoteAccess: { token: string; host: string };
+        };
+      };
+    };
     expect(stripped.appState.settings.remoteAccess.token).toBe("");
     // Non-token fields untouched.
     expect(stripped.appState.settings.remoteAccess.host).toBe("0.0.0.0");
@@ -487,6 +496,31 @@ describe("stripSecretsForRemote", () => {
   test("passes through partial payload shapes", () => {
     const partial = { appState: { settings: { logLevel: "info" } } };
     expect(stripSecretsForRemote(partial)).toEqual(partial);
+  });
+
+  test("removes paired mobile devices from remote responses without mutating desktop state", () => {
+    const payload = {
+      appState: {
+        settings: {
+          integrations: {
+            mobile: { enabled: true, devices: [{ deviceId: "phone-1", label: "Pixel" }] },
+            telegram: { connections: [{ id: "bot-1" }] },
+          },
+        },
+      },
+    };
+    const stripped = stripSecretsForRemote(payload) as unknown as {
+      appState: {
+        settings: {
+          integrations: Record<string, unknown>;
+          remoteAccess?: { token: string; host: string };
+          logLevel?: string;
+        };
+      };
+    };
+    expect(stripped.appState.settings.integrations).not.toHaveProperty("mobile");
+    expect(stripped.appState.settings.integrations.telegram).toEqual({ connections: [{ id: "bot-1" }] });
+    expect(payload.appState.settings.integrations.mobile.devices).toHaveLength(1);
   });
 
   test("zeros the master token in a NESTED result envelope (mutation/verification results)", () => {
@@ -2975,6 +3009,7 @@ describe("terminal streaming — subscription routing + backpressure", () => {
           expect(await waitUntil(() => Boolean(initialState(legacy)))).toBe(true);
           await delay(60);
           expect(initialState(v2)).toBeUndefined(); // no redundant WS bootstrap for v2
+          expect(JSON.stringify(runtime.getPayload())).not.toContain("mobile");
 
           // HTTP bootstrap for v2 is the slim core.
           const res = await apiGet(port, "/api/state", "tok-v2", "v2-aaaaa");
@@ -5450,7 +5485,13 @@ describe("a mobile session's activity is audited (metadata only)", () => {
         expect(lists).toHaveLength(1);
         expect(lists[0]!.source).toBe("direct");
         expect(lists[0]!.sessions).toEqual([
-          { deviceId: "dev-1", profileId: "default", startedAt: expect.any(Number) },
+          {
+            deviceId: "dev-1",
+            profileId: "default",
+            startedAt: expect.any(Number),
+            remoteUiConnected: false,
+            lastForegroundAt: null,
+          },
         ]);
         const serialized = JSON.stringify(lists);
         expect(serialized).not.toContain(sessionId);
@@ -5458,6 +5499,71 @@ describe("a mobile session's activity is audited (metadata only)", () => {
         expect(serialized).not.toContain("sessionId");
         expect(serialized).not.toContain("pairId");
       });
+    });
+
+    test("only an authenticated open mobile WebSocket counts as connected and foreground-active", async () => {
+      await withAuditedServer({}, async ({ baseUrl, lists, seedTicket }) => {
+        seedTicket("t1", "s1", "dev-1");
+        const cookie = await bootstrap(baseUrl, "t1", "s1");
+        expect(lists.at(-1)!.sessions).toMatchObject([{ remoteUiConnected: false, lastForegroundAt: null }]);
+
+        const ws = new WebSocket(`ws://127.0.0.1:${new URL(baseUrl).port}/ws`, {
+          headers: { Cookie: cookie },
+        });
+        await new Promise<void>((resolve, reject) => {
+          ws.on("open", () => resolve());
+          ws.on("error", reject);
+        });
+        await vi.waitFor(() => {
+          expect(lists.at(-1)!.sessions).toMatchObject([{ remoteUiConnected: true, lastForegroundAt: null }]);
+        });
+
+        ws.send(JSON.stringify({ type: "client:presence" }));
+        await vi.waitFor(() => {
+          expect(lists.at(-1)!.sessions).toMatchObject([
+            { remoteUiConnected: true, lastForegroundAt: expect.any(Number) },
+          ]);
+        });
+        const heartbeat = (lists.at(-1)!.sessions[0] as { lastForegroundAt: number }).lastForegroundAt;
+        expect(Date.now() - heartbeat).toBeLessThan(5_000);
+
+        ws.close();
+        await vi.waitFor(() => {
+          expect(lists.at(-1)!.sessions).toMatchObject([
+            { remoteUiConnected: false, lastForegroundAt: expect.any(Number) },
+          ]);
+        });
+      });
+    });
+
+    test("foreground activity expires through the existing mobile session sweep", async () => {
+      await withAuditedServer(
+        { server: { mobileSessionAbsoluteTtlMs: 600_000, mobileSessionIdleTtlMs: 600_000, mobileSessionSweepMs: 25 } },
+        async ({ baseUrl, lists, seedTicket, server }) => {
+          seedTicket("t1", "s1", "dev-1");
+          const cookie = await bootstrap(baseUrl, "t1", "s1");
+          const ws = new WebSocket(`ws://127.0.0.1:${new URL(baseUrl).port}/ws`, { headers: { Cookie: cookie } });
+          await new Promise<void>((resolve, reject) => {
+            ws.on("open", () => resolve());
+            ws.on("error", reject);
+          });
+          ws.send(JSON.stringify({ type: "client:presence" }));
+          await vi.waitFor(() =>
+            expect(lists.at(-1)!.sessions).toMatchObject([{ lastForegroundAt: expect.any(Number) }]),
+          );
+
+          const latest = (lists.at(-1)!.sessions[0] as { lastForegroundAt: number }).lastForegroundAt;
+          const now = vi.spyOn(Date, "now").mockReturnValue(latest + MOBILE_FOREGROUND_PRESENCE_FRESH_MS + 1);
+          try {
+            await vi.waitFor(() =>
+              expect(lists.at(-1)!.sessions).toMatchObject([{ remoteUiConnected: true, lastForegroundAt: null }]),
+            );
+          } finally {
+            now.mockRestore();
+            ws.close();
+          }
+        },
+      );
     });
 
     test("a second phone is added to the list; ending one leaves the other", async () => {

@@ -1320,6 +1320,7 @@ export function createRemoteTransport(): Transport {
       if (hasDeclaredInterest && nextWs.readyState === WebSocket.OPEN) {
         nextWs.send(JSON.stringify({ type: "resource:interest", resources: lastResourceInterest }));
       }
+      sendForegroundPresence(nextWs);
       // First-connect bootstrap handoff: if we already hold a bootstrap revision,
       // tell the server so it catches us up on any change in the [bootstrap, open]
       // window that the rev-less first WS URL couldn't advertise.
@@ -1523,16 +1524,19 @@ export function createRemoteTransport(): Transport {
   // (a browser tab has no such deadline) and never while suspended, so a backgrounded phone still idles
   // out. The server's absolute deadline is untouched by it.
   const PRESENCE_INTERVAL_MS = 60_000;
+  function sendForegroundPresence(current: WebSocket): void {
+    if (!mobileHost || suspended || sessionLost || current !== ws || current.readyState !== WebSocket.OPEN) return;
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+    try {
+      current.send(JSON.stringify({ type: "client:presence" }));
+    } catch {
+      // A socket that cannot send is closing; the reconnect path owns that.
+    }
+  }
   if (mobileHost && typeof window !== "undefined") {
     window.setInterval(() => {
       const current = ws;
-      if (suspended || sessionLost || !current || current.readyState !== WebSocket.OPEN) return;
-      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
-      try {
-        current.send(JSON.stringify({ type: "client:presence" }));
-      } catch {
-        // A socket that cannot send is closing; the reconnect path owns that.
-      }
+      if (current) sendForegroundPresence(current);
     }, PRESENCE_INTERVAL_MS);
   }
 

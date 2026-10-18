@@ -401,15 +401,64 @@ describe("SettingsMobileTab", () => {
     expect(wrapper.text()).toContain("last seen");
 
     statusHandler!({
-      connectedDevices: [{ deviceId: "mobile-1", name: "Pixel 8", profileId: "default", startedAt: 5000 }],
+      connectedDevices: [
+        {
+          deviceId: "mobile-1",
+          name: "Pixel 8",
+          profileId: "default",
+          startedAt: 5000,
+          remoteUiConnected: false,
+          lastForegroundAt: null,
+        },
+      ],
     });
     await flushPromises();
 
     const connected = wrapper.findAll(".device-item__connected");
     expect(connected).toHaveLength(1);
-    expect(connected[0]!.text()).toBe("Connected");
+    expect(connected[0]!.text()).toBe("Session active");
     // Only the other phone still reports last seen.
     expect(wrapper.text().match(/last seen/g)).toHaveLength(1);
+  });
+
+  test("separates authenticated remote UI connection from recent renderer activity", async () => {
+    let statusHandler: ((payload: AnyApi) => void) | null = null;
+    const { wrapper } = await mountTab({
+      listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]),
+      onMobileStatus: (fn: (payload: AnyApi) => void) => {
+        statusHandler = fn;
+      },
+    });
+    statusHandler!({
+      connectedDevices: [
+        {
+          deviceId: "mobile-1",
+          name: "Pixel 8",
+          profileId: "default",
+          startedAt: 5000,
+          remoteUiConnected: true,
+          lastForegroundAt: Date.now(),
+        },
+      ],
+    });
+    await flushPromises();
+    expect(wrapper.text()).toContain("Remote UI recently active");
+
+    statusHandler!({
+      connectedDevices: [
+        {
+          deviceId: "mobile-1",
+          name: "Pixel 8",
+          profileId: "default",
+          startedAt: 5000,
+          remoteUiConnected: true,
+          lastForegroundAt: Date.now() - 120_000,
+        },
+      ],
+    });
+    await flushPromises();
+    expect(wrapper.text()).toContain("Remote UI connected");
+    expect(wrapper.text()).not.toContain("Remote UI recently active");
   });
 
   test("shows paired phones first and reveals the add-phone setup on request", async () => {

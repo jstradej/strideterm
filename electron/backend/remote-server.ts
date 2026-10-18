@@ -100,6 +100,7 @@ import { APPROVAL_RECORDED_CHANNEL } from "../shared/approval-events.js";
 import { AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL } from "../shared/azure-closed-pr-cleanup-events.js";
 import { OPERATION_FINISHED_CHANNEL } from "../shared/operation-events.js";
 import { REVIEW_GIT_OPERATION_CHANNEL } from "../shared/review-git-events.js";
+import { MOBILE_FOREGROUND_PRESENCE_FRESH_MS } from "../shared/mobile-session-events.js";
 import {
   buildRemoteCore,
   buildResourceDetail,
@@ -543,7 +544,13 @@ interface Runtime {
    * their own sessions: the receiver merges per source rather than letting one overwrite the other.
    */
   onMobileSessionsChanged?(
-    sessions: ReadonlyArray<{ deviceId: string; profileId: string; startedAt: number }>,
+    sessions: ReadonlyArray<{
+      deviceId: string;
+      profileId: string;
+      startedAt: number;
+      remoteUiConnected: boolean;
+      lastForegroundAt: number | null;
+    }>,
     source?: string,
   ): void;
   getMobileAttachmentContext?(deviceId: string): {
@@ -715,6 +722,8 @@ interface MobileSessionRecord {
   origin?: "token" | "ticket" | "mobile" | "token-client";
   remoteAddress?: string;
   idleTtlMs?: number;
+  /** Latest authenticated foreground heartbeat observed from this session's native-host UI. */
+  lastForegroundAt?: number;
 }
 
 /**
@@ -972,7 +981,23 @@ export function stripSecretsForRemote(body: unknown, opts: StripSecretsOptions =
 
 /** Both strips, in one place, so the two payload shapes above stay one line each. */
 function stripStateSecrets(state: Record<string, unknown>, opts: StripSecretsOptions): Record<string, unknown> {
-  return stripShareUrls(stripStateToken(state), opts);
+  const appState = state.appState as Record<string, unknown> | undefined;
+  const settings = appState?.settings as Record<string, unknown> | undefined;
+  const integrations = settings?.integrations as Record<string, unknown> | undefined;
+  const withoutMobile =
+    integrations && Object.hasOwn(integrations, "mobile")
+      ? {
+          ...state,
+          appState: {
+            ...appState,
+            settings: {
+              ...settings,
+              integrations: Object.fromEntries(Object.entries(integrations).filter(([key]) => key !== "mobile")),
+            },
+          },
+        }
+      : state;
+  return stripShareUrls(stripStateToken(withoutMobile), opts);
 }
 
 /**
@@ -2974,6 +2999,14 @@ export async function startRemoteServer({
               deviceId: record.deviceId as string,
               profileId: record.profileId,
               startedAt: record.createdAt,
+              remoteUiConnected: [...sockets].some(
+                (socket) => socket.readyState === socket.OPEN && socketSession.get(socket) === record.sessionId,
+              ),
+              lastForegroundAt:
+                record.lastForegroundAt !== undefined &&
+                Date.now() - record.lastForegroundAt <= MOBILE_FOREGROUND_PRESENCE_FRESH_MS
+                  ? record.lastForegroundAt
+                  : null,
             }));
       runtime.onMobileSessionsChanged?.(sessions, isLoopbackOrigin ? "relay" : "direct");
     } catch (err) {
@@ -3172,11 +3205,22 @@ export async function startRemoteServer({
    * "Session" 3). One interval for the whole server, unref'd so it never holds the process open.
    */
   const mobileSessionSweep = setInterval(() => {
+    let mobileStatusChanged = false;
     for (const [sessionId, record] of [...activeSessions]) {
       if (record.expiresAt === null) continue;
       const verdict = mobileSessionExpiry(record, Date.now());
       if (verdict !== "live") endMobileSession(sessionId, verdict);
+      else if (
+        record.deviceId &&
+        record.lastForegroundAt !== undefined &&
+        Date.now() - record.lastForegroundAt > MOBILE_FOREGROUND_PRESENCE_FRESH_MS
+      ) {
+        const { lastForegroundAt: _expiredForegroundAt, ...withoutForeground } = record;
+        activeSessions.set(sessionId, withoutForeground);
+        mobileStatusChanged = true;
+      }
     }
+    if (mobileStatusChanged) publishMobileSessions();
   }, mobileSessionSweepMs);
   mobileSessionSweep.unref?.();
 
@@ -5323,6 +5367,7 @@ export async function startRemoteServer({
       if (wsComposed) {
         socketSession.set(ws, wsSessionId);
         registry.bumpLastSeen(wsSessionId);
+        if (activeSessions.get(wsSessionId)?.deviceId) publishMobileSessions();
       }
       // Diagnostic for the mobile workspace flip-flop: `composed=false` means this
       // socket will get RAW broadcasts (no remoteClient) and the renderer will fall
@@ -5377,6 +5422,13 @@ export async function startRemoteServer({
               // Already closing.
             }
             return;
+          }
+          if (message.type === "client:presence" && wsSessionId && activeSessions.get(wsSessionId)?.deviceId) {
+            const record = activeSessions.get(wsSessionId);
+            if (record) {
+              record.lastForegroundAt = Date.now();
+              publishMobileSessions();
+            }
           }
           if (message.type === "terminal:input") {
             const parsed = wsTerminalInputSchema.safeParse(message);
@@ -5537,6 +5589,7 @@ export async function startRemoteServer({
         const routing = socketRouting.get(ws);
         if (routing?.closeTimer) clearTimeout(routing.closeTimer);
         socketRouting.delete(ws);
+        if (wsSessionId && activeSessions.get(wsSessionId)?.deviceId) publishMobileSessions();
         // If this was the LAST live socket for the session, the viewer is gone
         // — drop its visible-session contribution so its panels stop counting
         // as visible. A session can hold more than one socket (reconnect race,

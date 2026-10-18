@@ -18,10 +18,17 @@ export const mobileConnectedDeviceSchema = z
     profileId: z.string().min(1),
     /** Epoch ms of the oldest live session this device holds. */
     startedAt: z.number(),
+    /** At least one authenticated mobile-session WebSocket is currently open. */
+    remoteUiConnected: z.boolean(),
+    /** Latest authenticated foreground heartbeat, or null when none is currently observed. */
+    lastForegroundAt: z.number().nullable(),
   })
   .strict();
 
 export type MobileConnectedDevice = z.infer<typeof mobileConnectedDeviceSchema>;
+
+/** Foreground heartbeat age after which remote UI activity is no longer considered recent. */
+export const MOBILE_FOREGROUND_PRESENCE_FRESH_MS = 90_000;
 
 export const mobileSessionStartedSchema = mobileConnectedDeviceSchema
   .extend({
