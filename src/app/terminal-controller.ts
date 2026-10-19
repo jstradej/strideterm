@@ -1780,6 +1780,11 @@ export function createTerminalController({
     if (!view.opened) {
       view.term.open(view.mount);
       view.opened = true;
+      // Size the parser before replaying buffered TUI output. The first
+      // animation-frame fit can be delayed while xterm is already parsing a
+      // full-screen app's cursor-addressed startup screen at its default
+      // 80x24 dimensions, leaving stale rows after the later resize.
+      view.fitAddon.fit();
       const queued = buffers.value.get(sessionId);
       const replayParsed = pendingReplayCallbacks.get(sessionId);
       if (queued || replayParsed) {

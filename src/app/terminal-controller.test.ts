@@ -1099,6 +1099,34 @@ function installFakeAnimationFrames() {
 }
 
 describe("terminal pane reattach", () => {
+  test("fits the opened terminal before writing buffered startup output", () => {
+    const resizeObserver = installFakeResizeObserver();
+    try {
+      const { controller, views, buffers } = buildAttachController();
+      const sessionId = "workspace-1:shell-1";
+      const paneBody = document.createElement("div");
+      document.body.append(paneBody);
+      buffers.value.set(sessionId, "startup output");
+
+      const view = controller.ensureTerminal(sessionId);
+      const events: string[] = [];
+      vi.spyOn(view.fitAddon, "fit").mockImplementation(() => {
+        events.push("fit");
+        view.term.resize(199, 54);
+      });
+      vi.spyOn(view.term, "write").mockImplementation(() => {
+        events.push(`write:${view.term.cols}x${view.term.rows}`);
+      });
+
+      controller.attachTerminalPane(sessionId, paneBody);
+
+      expect(events.slice(0, 2)).toEqual(["fit", "write:199x54"]);
+      expect(buffers.value.has(sessionId)).toBe(false);
+    } finally {
+      resizeObserver.restore();
+    }
+  });
+
   test("reattach redraws through the deferred fit only once", async () => {
     vi.useFakeTimers();
     installFontLoader();
