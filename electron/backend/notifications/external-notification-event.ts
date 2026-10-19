@@ -15,8 +15,11 @@ import { createHash } from "node:crypto";
 import type {
   ExternalNotificationEvent,
   ExternalNotificationPriority,
+  MobileReviewProvider,
   MobileCommandType,
 } from "../../shared/types/notifications.js";
+import type { ReviewNotificationCommentTarget } from "../../shared/review-notification-target.js";
+import type { WorkspaceState } from "../../shared/types/state.js";
 import { truncateUtf8Head } from "./notification-context.js";
 import { sanitizeTerminalText } from "./terminal-text.js";
 
@@ -47,8 +50,11 @@ export interface BuildExternalNotificationEventInput {
   exitCode?: number | null;
   durationMs?: number;
   /** PR notification routing/display context; copied into the encrypted mobile payload. */
-  provider?: "azure-devops" | "github";
+  provider?: MobileReviewProvider;
+  connectionId?: string;
   prKey?: string;
+  reviewWorkspaceId?: string;
+  commentTarget?: ReviewNotificationCommentTarget;
   draftState?: "draft" | "ready";
   pullRequestTitle?: string;
   pullRequestNumber?: number;
@@ -70,6 +76,48 @@ function displayText(value: string | undefined, maxLength: number): string | und
     result += char;
   }
   return result || undefined;
+}
+
+function boundedId(value: string | undefined): string | undefined {
+  return typeof value === "string" && value.length > 0 && value.length <= 200 ? value : undefined;
+}
+
+export function findReviewNotificationWorkspace(
+  workspaces: WorkspaceState[],
+  identity: {
+    profileId: string;
+    provider: MobileReviewProvider;
+    connectionId: string;
+    prKey: string;
+    preferredId?: string;
+  },
+): WorkspaceState | undefined {
+  const matches = workspaces.filter(
+    (workspace) =>
+      (workspace.profileId || "default") === identity.profileId &&
+      workspace.review?.provider === identity.provider &&
+      workspace.review.connectionId === identity.connectionId &&
+      workspace.review.prKey === identity.prKey,
+  );
+  return matches.find((workspace) => workspace.id === identity.preferredId) || matches[0];
+}
+
+function normalizeCommentTarget(
+  provider: MobileReviewProvider | undefined,
+  target: ReviewNotificationCommentTarget | undefined,
+): ReviewNotificationCommentTarget | undefined {
+  if (!provider || !target || !boundedId(target.commentId)) return undefined;
+  if (provider === "azure-devops" && target.kind === "azure-thread-comment" && boundedId(target.threadId)) {
+    return { kind: target.kind, threadId: target.threadId, commentId: target.commentId };
+  }
+  if (provider === "github" && target.kind === "github-issue-comment") {
+    return { kind: target.kind, commentId: target.commentId };
+  }
+  if (provider === "github" && target.kind === "github-review-comment") {
+    const threadId = target.threadId ? boundedId(target.threadId) : undefined;
+    return { kind: target.kind, commentId: target.commentId, ...(threadId ? { threadId } : {}) };
+  }
+  return undefined;
 }
 
 /**
@@ -125,6 +173,11 @@ export function buildExternalNotificationEvent(input: BuildExternalNotificationE
   const sessionId = input.sessionId || null;
   const panelId = input.panelId || null;
   const activity = displayText(sanitizeTerminalText(input.activity || ""), 200);
+  const connectionId = boundedId(input.connectionId);
+  const reviewWorkspaceId = boundedId(input.reviewWorkspaceId);
+  const commentTarget = normalizeCommentTarget(input.provider, input.commentTarget);
+  const canRouteToComment =
+    kind === "review" && Boolean(input.provider && connectionId && input.prKey && reviewWorkspaceId && commentTarget);
   const dedupeKey = input.operationId
     ? `${workspaceId}:review-start:${input.operationId}`
     : input.prKey
@@ -149,6 +202,7 @@ export function buildExternalNotificationEvent(input: BuildExternalNotificationE
     ...(Number.isInteger(input.exitCode) ? { exitCode: input.exitCode! } : {}),
     ...(Number.isInteger(input.durationMs) && input.durationMs! >= 0 ? { durationMs: input.durationMs! } : {}),
     ...(input.provider ? { provider: input.provider } : {}),
+    ...(canRouteToComment ? { connectionId, reviewWorkspaceId, commentTarget } : {}),
     ...(input.prKey ? { prKey: input.prKey } : {}),
     ...(input.draftState ? { draftState: input.draftState } : {}),
     ...(input.pullRequestTitle ? { pullRequestTitle: displayText(input.pullRequestTitle, 500) } : {}),

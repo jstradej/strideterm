@@ -149,7 +149,10 @@ import {
   publicKeyFromRaw,
 } from "./mobile/mobile-crypto.js";
 import { PROTOCOL_VERSION, SESSION_KEY_HKDF_INFO, type MobileDeviceRecord } from "./mobile/mobile-schemas.js";
-import { buildExternalNotificationEvent } from "./notifications/external-notification-event.js";
+import {
+  buildExternalNotificationEvent,
+  findReviewNotificationWorkspace,
+} from "./notifications/external-notification-event.js";
 import {
   buildMobileNotificationContent,
   mobileNotificationTitle,
@@ -2016,6 +2019,7 @@ export async function createRuntime({
     // The relay end-to-end latch (`MobileDeviceRecord.relayE2eSeenAt`), written once a device has
     // completed an encrypted relay session.
     markRelayE2eSeen: (deviceId: string) => mobileDeviceStore.markRelayE2eSeen(deviceId),
+    setNotificationFeatures: (deviceId, features) => mobileDeviceStore.updateNotificationFeatures(deviceId, features),
     desktopProfileFocusOrder,
   });
 
@@ -4699,6 +4703,14 @@ export async function createRuntime({
         const providerKind = provider === "azure-devops" ? "azure" : "github";
         const providerLabel = provider === "azure-devops" ? "Azure DevOps" : "GitHub";
         const workspaceId = String(ev.reviewWorkspaceId || ev.existingWorkspaceId || "");
+        const commentWorkspace = findReviewNotificationWorkspace(state.workspaces, {
+          profileId,
+          provider,
+          connectionId: String(ev.connectionId || ""),
+          prKey: String(ev.prKey || ""),
+          preferredId: workspaceId,
+        });
+        const commentTarget = ev.kind === "pr-new-comment" ? ev.commentTarget : undefined;
         const workspace =
           (workspaceId ? state.workspaces.find((w) => w.id === workspaceId) : undefined) ||
           state.workspaces.find(
@@ -4748,6 +4760,13 @@ export async function createRuntime({
             detail: String(ev.body || ev.pullRequestTitle || ""),
             provider,
             prKey: String(ev.prKey || ""),
+            ...(commentWorkspace
+              ? {
+                  connectionId: String(ev.connectionId || ""),
+                  reviewWorkspaceId: commentWorkspace.id,
+                  ...(commentTarget ? { commentTarget } : {}),
+                }
+              : {}),
             draftState: ev.draftState === "draft" ? "draft" : "ready",
             pullRequestTitle: String(ev.pullRequestTitle || ""),
             pullRequestNumber:

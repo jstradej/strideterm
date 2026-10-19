@@ -1251,6 +1251,9 @@ type ReviewInboxFocus = {
   profileId: string;
   workspaceId: string;
 };
+type ReviewCommentFocus = ReviewInboxFocus & {
+  target: import("../../../electron/shared/review-notification-target.js").ReviewNotificationCommentTarget;
+};
 
 type ReviewConnectionSettings = { id: string; profileId?: string; enabled?: boolean };
 type ReviewProviderSettings = { connections?: ReviewConnectionSettings[] };
@@ -1274,6 +1277,7 @@ function resolveJumpTarget(s: NotificationSession): {
   workspaceId: string;
   viewId: string;
   pullRequestFocus?: ReviewInboxFocus;
+  reviewCommentFocus?: ReviewCommentFocus;
 } {
   if (s.category !== "review") {
     // Follow the tab to wherever it is currently PRESENTED: a Primary alerting
@@ -1321,7 +1325,26 @@ function resolveJumpTarget(s: NotificationSession): {
       ),
     )
     .find(Boolean);
-  if (direct) return { workspaceId: direct.id, viewId: "" };
+  const currentReview =
+    direct ||
+    workspaces.find(
+      (workspace) =>
+        String(workspace.profileId || "default") === focus.profileId &&
+        workspace.review?.provider === focus.provider &&
+        workspace.review?.connectionId === focus.connectionId &&
+        workspace.review?.prKey === focus.prKey,
+    );
+  const commentTarget =
+    s.meta?.kind === "pr-new-comment" ? (s.meta?.commentTarget as ReviewCommentFocus["target"] | undefined) : undefined;
+  if (currentReview) {
+    return {
+      workspaceId: currentReview.id,
+      viewId: "",
+      reviewCommentFocus: commentTarget
+        ? { ...focus, workspaceId: currentReview.id, target: commentTarget }
+        : undefined,
+    };
+  }
 
   const settings = appStore.payload?.appState?.settings?.integrations as ReviewIntegrations | undefined;
   const providerSettings = settings?.[focus.provider === "github" ? "github" : "azureDevops"];
@@ -1469,6 +1492,7 @@ async function jump(s: NotificationSession): Promise<void> {
   if (!navigated) return;
 
   if (target.pullRequestFocus) appStore.requestInboxPullRequestFocus(target.pullRequestFocus);
+  if (target.reviewCommentFocus) appStore.requestReviewCommentFocus(target.reviewCommentFocus);
 
   // Connection-error notifications have no PR / review workspace to land on —
   // resolveJumpTarget routed us to the provider inbox above. Ask that inbox to

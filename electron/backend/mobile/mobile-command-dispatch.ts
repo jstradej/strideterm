@@ -270,6 +270,7 @@ export interface MobileCommandDispatcherDeps {
    * that does not care — the catalog then carries no desktop order.
    */
   desktopProfileFocusOrder?: () => string[];
+  setNotificationFeatures?: (deviceId: string, features: MobileDeviceRecord["notificationFeatures"]) => Promise<void>;
   now?: () => number;
 }
 
@@ -486,6 +487,15 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
 
   async function execute(command: Command, state: AppState, device: MobileDeviceRecord): Promise<ExecResult> {
     switch (command.type) {
+      case "notification.features": {
+        if (!deps.setNotificationFeatures) return failed("notification-feature-storage-unavailable");
+        const supportedFeatures = command.payload.supportedFeatures;
+        if (supportedFeatures.length > 8 || new Set(supportedFeatures).size !== supportedFeatures.length) {
+          return failed("invalid-notification-features");
+        }
+        await deps.setNotificationFeatures(device.deviceId, supportedFeatures);
+        return succeeded({ notificationFeatures: supportedFeatures });
+      }
       case "notification.acknowledge": {
         // The phone has already marked the event read on its own screen — that half is local and
         // unconditional there. This half is the desktop's: the alert that produced the event stops
@@ -653,7 +663,9 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
               ...(focusOrder[0] === profile.id ? { desktopActive: true } : {}),
             };
           });
-        if (!command.payload.includeWorkspaces) return succeeded({ profiles });
+        if (!command.payload.includeWorkspaces) {
+          return succeeded({ profiles, notificationFeatures: ["review-comment-target-v1"] });
+        }
 
         const profileId = command.profileId;
         if (!allowed.has(profileId)) return failed("profile-not-allowed");
@@ -686,6 +698,7 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
         if (!selectedProfile) return failed("profile-not-allowed");
         const resultData: Record<string, unknown> = {
           profiles: resultProfiles,
+          notificationFeatures: ["review-comment-target-v1"],
           workspaceCatalogVersion: 1,
           workspaceCatalogProfileId: profileId,
           workspaceCatalogToken: catalogToken,

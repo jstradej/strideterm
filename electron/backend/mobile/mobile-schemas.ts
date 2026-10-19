@@ -263,6 +263,11 @@ export const NotificationAcknowledgePayloadSchema = z.object({
 });
 export type NotificationAcknowledgePayload = z.infer<typeof NotificationAcknowledgePayloadSchema>;
 
+export const NotificationFeaturesPayloadSchema = z.object({
+  supportedFeatures: z.array(z.enum(["review-comment-target-v1"])),
+});
+export type NotificationFeaturesPayload = z.infer<typeof NotificationFeaturesPayloadSchema>;
+
 export const TaskPausePayloadSchema = z.object({
   workspaceId: z.string().min(1),
   taskId: z.string().min(1),
@@ -373,6 +378,13 @@ export const NotificationAcknowledgeCommandSchema = z.object({
 });
 export type NotificationAcknowledgeCommand = z.infer<typeof NotificationAcknowledgeCommandSchema>;
 
+export const NotificationFeaturesCommandSchema = z.object({
+  ...commandEnvelopeFields,
+  type: z.literal("notification.features"),
+  payload: NotificationFeaturesPayloadSchema,
+});
+export type NotificationFeaturesCommand = z.infer<typeof NotificationFeaturesCommandSchema>;
+
 export const TaskPauseCommandSchema = z.object({
   ...commandEnvelopeFields,
   type: z.literal("task.pause"),
@@ -466,6 +478,7 @@ export type ReviewStartCommand = z.infer<typeof ReviewStartCommandSchema>;
 
 export const CommandSchema = z.discriminatedUnion("type", [
   NotificationAcknowledgeCommandSchema,
+  NotificationFeaturesCommandSchema,
   TaskPauseCommandSchema,
   TaskResumeCommandSchema,
   TaskStopCommandSchema,
@@ -565,6 +578,15 @@ export const NotificationPayloadSchema = z.object({
   exitCode: z.number().int().optional(),
   durationMs: z.number().int().min(0).optional(),
   provider: z.enum(["azure-devops", "github"]).optional(),
+  connectionId: z.string().max(200).min(1).optional(),
+  reviewWorkspaceId: z.string().max(200).min(1).optional(),
+  commentTarget: z
+    .object({
+      kind: z.enum(["azure-thread-comment", "github-issue-comment", "github-review-comment"]),
+      commentId: z.string().min(1).max(200),
+      threadId: z.string().min(1).max(200).optional(),
+    })
+    .optional(),
   prKey: z.string().min(1).max(500).optional(),
   draftState: z.enum(["draft", "ready"]).optional(),
   pullRequestTitle: z.string().max(500).optional(),
@@ -1306,6 +1328,8 @@ export const MobileDeviceRecordSchema = z.object({
   /** Desktop-local reversible block for this device's remote UI sessions. Never synced as a grant. */
   remoteUiPaused: z.boolean().default(false),
   notificationFilter: MobileNotificationFilterSchema,
+  /** Optional on old records; absent means no opt-in for notification payload extensions. */
+  notificationFeatures: z.array(z.enum(["review-comment-target-v1"])).default([]),
   /**
    * The invitation this device claimed, and the server's digest of the grants that invitation
    * approved (review 3 §P0.1).

@@ -193,5 +193,6 @@ describe("review-activity helpers", () => {
     expect(event.provider).toBe("github");
     expect(event.repositoryName).toBe("org/thing");
     expect(event.pullRequestNumber).toBe(42);
+    expect(event.commentTarget).toBeUndefined();
   });
 });

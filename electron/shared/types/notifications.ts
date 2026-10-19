@@ -1,3 +1,5 @@
+import type { ReviewNotificationCommentTarget } from "../review-notification-target.js";
+
 export interface NotificationPayload {
   title: string;
   body: string;
@@ -33,6 +35,7 @@ export interface Alert {
  */
 export type MobileCommandType =
   | "notification.acknowledge"
+  | "notification.features"
   | "task.pause"
   | "task.resume"
   | "task.stop"
@@ -52,6 +55,7 @@ export type ExternalNotificationPriority = "high" | "normal" | "low";
 export type MobileReviewProvider = "azure-devops" | "github";
 export type MobilePullRequestDraftState = "draft" | "ready";
 export type MobileReviewLaunchStatus = "started" | "failed";
+export type MobileNotificationFeature = "review-comment-target-v1";
 
 /**
  * Transport-neutral notification event (plan §10.1). Created once by the
@@ -84,7 +88,10 @@ export interface ExternalNotificationEvent {
   durationMs?: number;
   /** Pull request identity and state for provider-specific native notification detail. */
   provider?: MobileReviewProvider;
+  connectionId?: string;
   prKey?: string;
+  reviewWorkspaceId?: string;
+  commentTarget?: ReviewNotificationCommentTarget;
   draftState?: MobilePullRequestDraftState;
   pullRequestTitle?: string;
   pullRequestNumber?: number;

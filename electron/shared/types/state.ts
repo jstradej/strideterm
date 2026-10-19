@@ -189,6 +189,7 @@ export interface MobileDeviceRecord {
   /** Desktop-local reversible block for remote UI sessions; pairing and other grants stay intact. */
   remoteUiPaused: boolean;
   notificationFilter: MobileNotificationFilter;
+  notificationFeatures: import("./notifications.js").MobileNotificationFeature[];
   /**
    * When THIS desktop verified the claim's cryptographic key proof, or null while it has not.
    *

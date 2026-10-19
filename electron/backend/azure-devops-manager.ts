@@ -39,6 +39,7 @@ import {
   createPullRequestKey,
   stripRefsPrefix,
   firstNonEmpty,
+  parseDate,
   normalizeRemoteUrl,
   buildRepositoryRemoteUrl,
   sanitizeGitEnvironment,
@@ -1391,11 +1392,17 @@ export class AzureDevOpsManager extends BaseProviderManager {
       getAuthor: (comment) => comment.author,
     });
     if (newComments.length > 0) {
-      const latest = newComments[newComments.length - 1];
+      const latest = [...newComments].sort(
+        (a, b) => parseDate(a.lastUpdatedDate || a.publishedDate) - parseDate(b.lastUpdatedDate || b.publishedDate),
+      )[newComments.length - 1];
       const actor = {
         login: latest.author?.uniqueName || "",
         displayName: latest.author?.displayName || latest.author?.uniqueName || "Someone",
       };
+      const commentTarget =
+        latest.id != null && latest.threadId != null
+          ? { kind: "azure-thread-comment" as const, threadId: String(latest.threadId), commentId: String(latest.id) }
+          : undefined;
       const title =
         newComments.length > 1
           ? `${newComments.length} new comments on ${summary.repository.name} #${summary.pullRequest.id}`
@@ -1409,6 +1416,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
           title,
           body: truncateBody(`${actor.displayName}: ${latest.content || ""}`),
           actor,
+          commentTarget,
         }),
       );
     }

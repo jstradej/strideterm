@@ -329,6 +329,8 @@
           v-else-if="activeTab === 'comments'"
           :pr-key="prKey"
           :workspace-id="workspaceId"
+          :provider="reviewProvider"
+          :focus-request="scopedReviewCommentFocus"
           :filtered-threads="filteredThreads"
           :filtered-draft-comments="filteredDraftComments"
           :drafts-by-thread="draftsByThread"
@@ -346,6 +348,7 @@
           :sort-options="sortOptions"
           :total-comment-count="totalCommentCount"
           @open-location="openReviewCommentLocation"
+          @focus-consumed="consumeReviewCommentFocus"
         />
 
         <!-- Conflicts panel -->
@@ -497,7 +500,9 @@ const workspace = computed(() =>
   (appStore.payload?.appState?.workspaces || []).find((ws) => ws.id === props.workspaceId),
 );
 const prKey = computed(() => workspace.value?.review?.prKey || "");
-const reviewProvider = computed(() => workspace.value?.review?.provider || "azure-devops");
+const reviewProvider = computed<"azure-devops" | "github">(() =>
+  workspace.value?.review?.provider === "github" ? "github" : "azure-devops",
+);
 const isGitHub = computed(() => reviewProvider.value === "github");
 const detail = computed(() => {
   const key = prKey.value;
@@ -510,6 +515,7 @@ const detail = computed(() => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const issueThreads = (raw.issueComments || []).map((c: any) => ({
       id: c.id,
+      commentKind: "github-issue-comment",
       status: "active",
       isDeleted: false,
       filePath: "",
@@ -529,7 +535,16 @@ const detail = computed(() => {
         },
       ],
     }));
-    return { ...raw, threads: [...(raw.threads || []), ...issueThreads] };
+    return {
+      ...raw,
+      threads: [
+        ...(raw.threads || []).map((thread: Record<string, unknown>) => ({
+          ...thread,
+          commentKind: "github-review-comment",
+        })),
+        ...issueThreads,
+      ],
+    };
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (appStore.providerPrDetail("azure", key) as any) || null;
@@ -561,6 +576,35 @@ useResourceInterest(() => {
   return keys;
 });
 const reviewUi = computed(() => gitUiStore.get(props.workspaceId));
+const scopedReviewCommentFocus = computed(() => {
+  const request = appStore.reviewCommentFocus;
+  const review = workspace.value?.review;
+  if (
+    !request ||
+    request.expiresAt <= Date.now() ||
+    request.workspaceId !== props.workspaceId ||
+    request.provider !== review?.provider ||
+    request.connectionId !== review?.connectionId ||
+    request.prKey !== review?.prKey ||
+    request.profileId !== String(workspace.value?.profileId || "default") ||
+    request.provider !== reviewProvider.value
+  )
+    return null;
+  return request;
+});
+watch(
+  scopedReviewCommentFocus,
+  (request) => {
+    if (!request) return;
+    gitUiStore.reviewSwitchTab(props.workspaceId, "comments");
+    gitUiStore.reviewSetCommentFilter(props.workspaceId, "all");
+    gitUiStore.reviewSetCommentSearch(props.workspaceId, "");
+  },
+  { immediate: true },
+);
+function consumeReviewCommentFocus(requestId: string): void {
+  appStore.clearReviewCommentFocus(requestId);
+}
 const checks = computed(() => detail.value?.checks || {});
 const refreshingChecks = ref(false);
 async function handleRefreshChecks() {

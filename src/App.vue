@@ -355,9 +355,53 @@ import { usePipelineNotifications } from "./composables/usePipelineNotifications
 import { useSignInNotice } from "./composables/useSignInNotice.js";
 import { useNotificationStore } from "./stores/notifications.js";
 import { useSshStore } from "./stores/ssh.js";
+import { activateReviewCommentQuery, parseReviewCommentQuery } from "./app/review-comment-query.js";
 
 const api = inject(apiKey);
 const store = useAppStore();
+
+const reviewCommentQuery = api?.isRemote ? parseReviewCommentQuery(window.location.href) : null;
+if (
+  reviewCommentQuery?.hasReviewParams &&
+  reviewCommentQuery.cleanedHref !== `${window.location.pathname}${window.location.search}${window.location.hash}`
+) {
+  window.history.replaceState(window.history.state, "", reviewCommentQuery.cleanedHref);
+}
+
+const reviewCommentRequest = reviewCommentQuery?.request;
+if (reviewCommentRequest) {
+  let handled = false;
+  let pending = false;
+  let stopWatching = (): void => {};
+  const handleReviewCommentQuery = async (): Promise<void> => {
+    if (handled || pending || !store.payload || !store.myActiveProfileId) return;
+    handled = true;
+    stopWatching();
+    const request = reviewCommentRequest;
+    pending = true;
+    try {
+      await activateReviewCommentQuery(request, {
+        getPayload: () => store.payload,
+        getActiveProfileId: () => store.myActiveProfileId,
+        getActiveWorkspaceId: () => store.myActiveWorkspaceId,
+        activateWorkspace: store.activateWorkspaceInGrid,
+        requestFocus: store.requestReviewCommentFocus,
+      });
+    } catch {
+      // A stale native notification is safe to ignore if its workspace cannot be opened.
+    } finally {
+      pending = false;
+    }
+  };
+  stopWatching = watch(
+    () => [store.payload, store.myActiveProfileId],
+    () => void handleReviewCommentQuery(),
+    { deep: false },
+  );
+  void handleReviewCommentQuery();
+  onUnmounted(() => stopWatching());
+}
+
 const notifStore = useNotificationStore();
 const sshStore = useSshStore();
 const { latestToast } = useNotificationCapture(api as Transport | null);

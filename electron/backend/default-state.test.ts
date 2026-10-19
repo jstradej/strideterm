@@ -938,6 +938,7 @@ describe("default state", () => {
                   revoked: false,
                   revokedAt: null,
                   notificationFilter: { minPriority: "high", mutedKinds: ["info"] },
+                  notificationFeatures: ["review-comment-target-v1", "unknown-feature", "review-comment-target-v1"],
                 },
               ],
             },
@@ -953,6 +954,7 @@ describe("default state", () => {
         profileAllowlist: ["default"],
         revoked: false,
         notificationFilter: { minPriority: "high", mutedKinds: ["info"] },
+        notificationFeatures: ["review-comment-target-v1"],
       });
     });
 
@@ -974,6 +976,7 @@ describe("default state", () => {
         revoked: false,
         revokedAt: null,
         notificationFilter: { minPriority: "low", mutedKinds: [] },
+        notificationFeatures: [],
       });
     });
 

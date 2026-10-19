@@ -22,6 +22,7 @@ import {
   touchLastSeen,
   updateAllowlist,
   updateNotificationFilter,
+  updateNotificationFeatures,
 } from "./mobile-device-store.js";
 import type { NewDeviceInput } from "./mobile-device-store.js";
 import type { MobileDeviceRecord } from "./mobile-schemas.js";
@@ -56,6 +57,7 @@ describe("addDevice", () => {
     expect(result.devices).toHaveLength(1);
     expect(result.device).toMatchObject({ deviceId: "dev-1", revoked: false, revokedAt: null });
     expect(result.device.notificationFilter).toEqual({ minPriority: "low", mutedKinds: [] });
+    expect(result.device.notificationFeatures).toEqual([]);
   });
 
   test("is idempotent for an already-present deviceId (replayed claim)", () => {
@@ -90,6 +92,23 @@ describe("addDevice", () => {
     devices = revokeDevice(devices, "dev-1", 2000);
     const fourth = addDevice(devices, newDeviceInput("dev-4"));
     expect(fourth.ok).toBe(true);
+  });
+});
+
+describe("updateNotificationFeatures", () => {
+  test("stores a deduplicated per-device feature list without changing another device", () => {
+    const first = addDevice([], newDeviceInput("dev-1"));
+    if (!first.ok) throw new Error("expected ok");
+    const second = addDevice(first.devices, newDeviceInput("dev-2"));
+    if (!second.ok) throw new Error("expected ok");
+
+    const updated = updateNotificationFeatures(second.devices, "dev-1", ["review-comment-target-v1"]);
+    expect(updated[0]?.notificationFeatures).toEqual(["review-comment-target-v1"]);
+    expect(updated[1]?.notificationFeatures).toEqual([]);
+    expect(
+      updateNotificationFeatures(updated, "dev-1", ["review-comment-target-v1", "review-comment-target-v1"])[0]
+        ?.notificationFeatures,
+    ).toEqual(["review-comment-target-v1"]);
   });
 });
 

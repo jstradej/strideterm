@@ -1302,6 +1302,7 @@ export class MobileManager extends EventEmitter {
     const currentDevice = this.deviceStore.getDevice(device.deviceId);
     if (!currentDevice || !isDeviceUsable(currentDevice) || currentDevice.remoteUiPaused) return;
     device = currentDevice;
+    const canReceiveCommentTargets = device.notificationFeatures.includes("review-comment-target-v1");
     const pairId = this.ownDeviceId;
     // The recipient is a path segment now (v2/pairs/{pairId}/events/{deviceId}/{eventId}), so the
     // eventId no longer has to carry it: the `${eventId}:${deviceId}` suffix existed only to keep
@@ -1345,6 +1346,9 @@ export class MobileManager extends EventEmitter {
       ...(typeof event.exitCode === "number" ? { exitCode: event.exitCode } : {}),
       ...(typeof event.durationMs === "number" ? { durationMs: event.durationMs } : {}),
       ...(event.provider ? { provider: event.provider } : {}),
+      ...(canReceiveCommentTargets && event.connectionId ? { connectionId: event.connectionId } : {}),
+      ...(canReceiveCommentTargets && event.reviewWorkspaceId ? { reviewWorkspaceId: event.reviewWorkspaceId } : {}),
+      ...(canReceiveCommentTargets && event.commentTarget ? { commentTarget: event.commentTarget } : {}),
       ...(event.prKey ? { prKey: event.prKey } : {}),
       ...(event.draftState ? { draftState: event.draftState } : {}),
       ...(event.pullRequestTitle ? { pullRequestTitle: boundedNotificationText(event.pullRequestTitle, 500) } : {}),

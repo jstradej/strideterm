@@ -1,5 +1,5 @@
 <template>
-  <div class="review-panel">
+  <div ref="commentsRoot" class="review-panel">
     <article class="git-card review-card review-card--stack">
       <div class="section-head">
         <div>
@@ -84,10 +84,20 @@
         />
       </div>
 
+      <p v-if="focusNotice" class="review-comment-focus-notice" role="status">{{ focusNotice }}</p>
+
       <div class="docker-list review-card__list review-card__list--dense">
         <template v-if="filteredThreads.length || filteredDraftComments.length">
           <!-- ═══ Azure threads ═══ -->
-          <article v-for="thread in filteredThreads" :key="thread.id" class="docker-card review-comment-card">
+          <article
+            v-for="thread in filteredThreads"
+            :key="`${thread.commentKind || 'azure-thread'}:${thread.id}`"
+            class="docker-card review-comment-card"
+            :data-thread-id="String(thread.id)"
+            :data-thread-kind="
+              thread.commentKind || (provider === 'github' ? 'github-review-comment' : 'azure-thread-comment')
+            "
+          >
             <!-- Thread header: index badge, status chip, file path, relative time -->
             <div class="docker-card__head">
               <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
@@ -140,6 +150,13 @@
                 v-for="(comment, ci) in threadComments(thread)"
                 :key="comment.id"
                 :class="['review-comment', ci > 0 && 'review-comment--reply']"
+                :data-thread-id="String(thread.id)"
+                :data-comment-id="String(comment.id)"
+                :data-comment-kind="
+                  comment.commentKind ||
+                  thread.commentKind ||
+                  (provider === 'github' ? 'github-review-comment' : 'azure-thread-comment')
+                "
               >
                 <span
                   class="review-comment__avatar"
@@ -407,7 +424,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from "vue";
+import { nextTick, onBeforeUnmount, ref, watch } from "vue";
+import type { ReviewNotificationCommentTarget } from "../../../../electron/shared/review-notification-target.js";
 import { useAppStore } from "../../../stores/app.js";
 import { useGitUiStore } from "../../../stores/git-ui.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
@@ -417,6 +435,13 @@ import { formatRelativeUntil } from "./azurePipelineFormat.js";
 const props = defineProps<{
   prKey: string;
   workspaceId: string;
+  provider: "azure-devops" | "github";
+  focusRequest: {
+    requestId: string;
+    target: ReviewNotificationCommentTarget;
+    ts: number;
+    expiresAt: number;
+  } | null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   filteredThreads: Array<Record<string, any>>;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -442,7 +467,7 @@ const props = defineProps<{
   sortOptions: Array<Record<string, any>>;
   totalCommentCount: number;
 }>();
-defineEmits<{
+const emit = defineEmits<{
   (
     event: "open-location",
     location: {
@@ -453,6 +478,7 @@ defineEmits<{
       annotationId: string;
     },
   ): void;
+  (event: "focus-consumed", requestId: string): void;
 }>();
 
 const appStore = useAppStore();
@@ -460,6 +486,82 @@ const gitUiStore = useGitUiStore();
 const notifications = useNotificationStore();
 
 const busyAction = ref<string>("");
+const commentsRoot = ref<HTMLElement | null>(null);
+const focusNotice = ref("");
+let focusHighlightTimer: ReturnType<typeof setTimeout> | null = null;
+let focusExpiryTimer: ReturnType<typeof setTimeout> | null = null;
+let scheduledFocusRequestId = "";
+let highlightedComment: HTMLElement | null = null;
+let highlightedRequestId = "";
+
+watch(
+  () => [props.focusRequest, props.filteredThreads] as const,
+  async ([request]) => {
+    if (!request) {
+      if (focusExpiryTimer) clearTimeout(focusExpiryTimer);
+      focusExpiryTimer = null;
+      scheduledFocusRequestId = "";
+      return;
+    }
+    if (highlightedRequestId && highlightedRequestId !== request.requestId) {
+      if (highlightedComment) highlightedComment.classList.remove("review-comment--notification-focus");
+      highlightedComment = null;
+      highlightedRequestId = "";
+      if (focusHighlightTimer) clearTimeout(focusHighlightTimer);
+      focusHighlightTimer = null;
+    }
+    if (scheduledFocusRequestId && scheduledFocusRequestId !== request.requestId) {
+      if (focusExpiryTimer) clearTimeout(focusExpiryTimer);
+      focusExpiryTimer = null;
+      scheduledFocusRequestId = "";
+    }
+    focusNotice.value = "";
+    await nextTick();
+    if (props.focusRequest?.requestId !== request.requestId || request.expiresAt <= Date.now()) return;
+    const target = request.target;
+    const comment = [...(commentsRoot.value?.querySelectorAll<HTMLElement>("[data-comment-id]") || [])].find((row) => {
+      if (row.dataset.commentKind !== target.kind || row.dataset.commentId !== target.commentId) return false;
+      if (target.kind === "azure-thread-comment") return row.dataset.threadId === target.threadId;
+      return true;
+    });
+    if (comment) {
+      comment.scrollIntoView?.({ block: "center", behavior: "smooth" });
+      comment.classList.add("review-comment--notification-focus");
+      if (focusHighlightTimer) clearTimeout(focusHighlightTimer);
+      if (focusExpiryTimer) clearTimeout(focusExpiryTimer);
+      focusExpiryTimer = null;
+      scheduledFocusRequestId = "";
+      highlightedComment = comment;
+      highlightedRequestId = request.requestId;
+      focusHighlightTimer = setTimeout(() => {
+        comment.classList.remove("review-comment--notification-focus");
+        highlightedComment = null;
+        highlightedRequestId = "";
+        focusHighlightTimer = null;
+      }, 5_000);
+      emit("focus-consumed", request.requestId);
+    } else if (scheduledFocusRequestId !== request.requestId) {
+      scheduledFocusRequestId = request.requestId;
+      focusExpiryTimer = setTimeout(
+        () => {
+          if (props.focusRequest?.requestId !== request.requestId) return;
+          focusNotice.value = "This comment could not be found in the current PR details. Showing available comments.";
+          emit("focus-consumed", request.requestId);
+          focusExpiryTimer = null;
+          scheduledFocusRequestId = "";
+        },
+        Math.max(0, request.expiresAt - Date.now() - 50),
+      );
+    }
+  },
+  { immediate: true },
+);
+
+onBeforeUnmount(() => {
+  if (focusHighlightTimer) clearTimeout(focusHighlightTimer);
+  if (focusExpiryTimer) clearTimeout(focusExpiryTimer);
+  highlightedComment?.classList.remove("review-comment--notification-focus");
+});
 
 /* ── Avatar helpers ── */
 function isHumanAuthor(agent: unknown) {

@@ -1,5 +1,40 @@
 import { describe, expect, test } from "vitest";
-import { buildExternalNotificationEvent } from "./external-notification-event.js";
+import { buildExternalNotificationEvent, findReviewNotificationWorkspace } from "./external-notification-event.js";
+import type { WorkspaceState } from "../../shared/types/state.js";
+
+test("review comment workspace lookup prefers an exact match and never crosses profiles", () => {
+  const workspaces = [
+    {
+      id: "wrong-profile",
+      profileId: "other",
+      review: { provider: "github", connectionId: "gh-1", prKey: "owner/repo#42" },
+    },
+    {
+      id: "matching-review",
+      profileId: "default",
+      review: { provider: "github", connectionId: "gh-1", prKey: "owner/repo#42" },
+    },
+    {
+      id: "different-connection",
+      profileId: "default",
+      review: { provider: "github", connectionId: "gh-2", prKey: "owner/repo#42" },
+    },
+  ] as unknown as WorkspaceState[];
+  const identity = {
+    profileId: "default",
+    provider: "github" as const,
+    connectionId: "gh-1",
+    prKey: "owner/repo#42",
+  };
+
+  expect(findReviewNotificationWorkspace(workspaces, { ...identity, preferredId: "stale-workspace" })?.id).toBe(
+    "matching-review",
+  );
+  expect(findReviewNotificationWorkspace(workspaces, { ...identity, preferredId: "wrong-profile" })?.id).toBe(
+    "matching-review",
+  );
+  expect(findReviewNotificationWorkspace(workspaces, { ...identity, profileId: "missing-profile" })).toBeUndefined();
+});
 
 describe("buildExternalNotificationEvent", () => {
   test("waiting alerts are high priority with reply actions", () => {

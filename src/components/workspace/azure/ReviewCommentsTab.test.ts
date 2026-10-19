@@ -6,8 +6,9 @@
  * five now go through notifications.runWithToast.
  */
 import { describe, expect, test, beforeEach, vi } from "vitest";
-import { mount, flushPromises } from "@vue/test-utils";
+import { mount, flushPromises, type VueWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
+import type { ComponentPublicInstance } from "vue";
 
 const reviewBridgeDeleteAllDrafts = vi.fn();
 const deleteReviewBridgeDraft = vi.fn();
@@ -46,11 +47,18 @@ import ReviewCommentsTab from "./ReviewCommentsTab.vue";
 import { useNotificationStore } from "../../../stores/notifications.js";
 import { azureThreadStatusSchema } from "../../../../electron/backend/ipc-schemas.js";
 
+type ReviewCommentsTabWrapper = VueWrapper<
+  unknown,
+  ComponentPublicInstance<{ filteredThreads: Array<Record<string, unknown>> }>
+>;
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function baseProps(overrides: Record<string, any> = {}) {
   return {
     prKey: "pr-1",
     workspaceId: "ws-1",
+    provider: "azure-devops",
+    focusRequest: null,
     filteredThreads: [],
     filteredDraftComments: [],
     draftsByThread: () => [],
@@ -83,6 +91,85 @@ beforeEach(() => {
   openDialog.mockReset();
   closeDialog.mockReset();
   createReviewBridgeDraftComment.mockReset();
+});
+
+describe("ReviewCommentsTab — notification comment focus", () => {
+  test("waits for lazy comment data before giving up on the target", async () => {
+    const wrapper = mount(ReviewCommentsTab, {
+      props: baseProps({
+        focusRequest: {
+          requestId: "focus-lazy-1",
+          ts: 100,
+          expiresAt: Date.now() + 45_000,
+          target: { kind: "azure-thread-comment", threadId: "8", commentId: "12" },
+        },
+      }),
+    }) as unknown as ReviewCommentsTabWrapper;
+    await flushPromises();
+    expect(wrapper.find('[role="status"]').exists()).toBe(false);
+
+    await wrapper.setProps({ filteredThreads: [{ id: 8, comments: [{ id: 12, content: "Arrived later" }] }] });
+    await flushPromises();
+
+    expect(wrapper.get('[data-comment-id="12"]').classes()).toContain("review-comment--notification-focus");
+    expect(wrapper.emitted("focus-consumed")).toEqual([["focus-lazy-1"]]);
+    wrapper.unmount();
+  });
+
+  test("selects a GitHub review comment by kind and id despite issue ID collision and nested reply parent id", async () => {
+    const wrapper = mount(ReviewCommentsTab, {
+      props: baseProps({
+        provider: "github",
+        filteredThreads: [
+          {
+            id: 42,
+            commentKind: "github-issue-comment",
+            comments: [{ id: 42, content: "Issue comment" }],
+          },
+          {
+            id: 42,
+            commentKind: "github-review-comment",
+            comments: [{ id: 42, content: "Review comment" }],
+          },
+        ],
+        focusRequest: {
+          requestId: "focus-review-1",
+          ts: 101,
+          expiresAt: Date.now() + 45_000,
+          target: { kind: "github-review-comment", commentId: "42", threadId: "41" },
+        },
+      }),
+    });
+    await flushPromises();
+
+    const comments = wrapper.findAll('[data-comment-id="42"]');
+    expect(comments).toHaveLength(2);
+    expect(comments[0].attributes("data-comment-kind")).toBe("github-issue-comment");
+    expect(comments[1].classes()).toContain("review-comment--notification-focus");
+    expect(wrapper.emitted("focus-consumed")).toEqual([["focus-review-1"]]);
+  });
+
+  test("reports when a loaded PR no longer contains the notified comment", async () => {
+    vi.useFakeTimers();
+    const wrapper = mount(ReviewCommentsTab, {
+      props: baseProps({
+        focusRequest: {
+          requestId: "focus-stale-1",
+          ts: 102,
+          expiresAt: Date.now() + 45_000,
+          target: { kind: "azure-thread-comment", threadId: "8", commentId: "99" },
+        },
+      }),
+    });
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(45_000);
+    await flushPromises();
+
+    expect(wrapper.get('[role="status"]').text()).toContain("could not be found");
+    expect(wrapper.emitted("focus-consumed")).toEqual([["focus-stale-1"]]);
+    wrapper.unmount();
+    vi.useRealTimers();
+  });
 });
 
 // Regression: Resolve / Reactivate sent String(threadId), and the main

@@ -108,6 +108,7 @@ export function useReviewNotifications(latestToastRef: Ref<any> | null = null) {
         prKey: ev.prKey || "",
         webUrl: ev.webUrl || "",
         kind: ev.kind || "",
+        commentTarget: kind === "pr-new-comment" && ev.commentTarget ? ev.commentTarget : null,
         actor: ev.actor || null,
         connectionId: ev.connectionId || "",
         reviewWorkspaceId: ev.reviewWorkspaceId || "",

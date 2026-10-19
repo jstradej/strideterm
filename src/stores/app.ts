@@ -54,6 +54,7 @@ import type {
 import { RECOVERY_OUTCOMES, SETTLED_RECOVERY_OUTCOMES } from "../../electron/shared/types/state.js";
 import type { RemotePanelSelectionDetail, Transport, CallableTransport, TransportPayload } from "../transport.js";
 import type { PerformanceSnapshot, CpuProfileCaptureResult, RevealResult } from "../../electron/shared/performance.js";
+import type { ReviewNotificationCommentTarget } from "../../electron/shared/review-notification-target.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -234,6 +235,42 @@ export const useAppStore = defineStore("app", () => {
   }): void {
     if (!request.connectionId || !request.prKey || !request.profileId || !request.workspaceId) return;
     inboxPullRequestFocus.value = { ...request, ts: Date.now() };
+  }
+  const reviewCommentFocus = ref<{
+    requestId: string;
+    provider: "azure-devops" | "github";
+    connectionId: string;
+    prKey: string;
+    profileId: string;
+    workspaceId: string;
+    target: ReviewNotificationCommentTarget;
+    ts: number;
+    expiresAt: number;
+  } | null>(null);
+  let reviewCommentFocusTimer: ReturnType<typeof setTimeout> | null = null;
+  function requestReviewCommentFocus(request: {
+    provider: "azure-devops" | "github";
+    connectionId: string;
+    prKey: string;
+    profileId: string;
+    workspaceId: string;
+    target: ReviewNotificationCommentTarget;
+  }): void {
+    if (!request.connectionId || !request.prKey || !request.profileId || !request.workspaceId) return;
+    if (reviewCommentFocusTimer) clearTimeout(reviewCommentFocusTimer);
+    const requestId = crypto.randomUUID();
+    const ts = Date.now();
+    reviewCommentFocus.value = { ...request, requestId, ts, expiresAt: ts + 45_000 };
+    reviewCommentFocusTimer = setTimeout(() => {
+      if (reviewCommentFocus.value?.requestId === requestId) reviewCommentFocus.value = null;
+      reviewCommentFocusTimer = null;
+    }, 45_000);
+  }
+  function clearReviewCommentFocus(requestId: string): void {
+    if (reviewCommentFocus.value?.requestId !== requestId) return;
+    if (reviewCommentFocusTimer) clearTimeout(reviewCommentFocusTimer);
+    reviewCommentFocusTimer = null;
+    reviewCommentFocus.value = null;
   }
 
   // --- Race condition prevention ---
@@ -2476,6 +2513,9 @@ export const useAppStore = defineStore("app", () => {
     requestInboxConnectionFocus,
     inboxPullRequestFocus,
     requestInboxPullRequestFocus,
+    reviewCommentFocus,
+    requestReviewCommentFocus,
+    clearReviewCommentFocus,
     // Per-window identity
     myWindowId,
     myWindowSlot,

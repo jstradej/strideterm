@@ -955,6 +955,58 @@ describe("MobileManager outbox: ExternalNotificationEvent -> encrypted per-devic
     });
   });
 
+  test("adds comment routing fields only for a device that negotiated the feature", async () => {
+    const { manager, transport, deviceStore, desktopKeyPair, externalNotificationEvents } = await createFixture();
+    const legacy = await addMobileDevice(deviceStore, { deviceId: "legacy-device", profileAllowlist: ["default"] });
+    const compatible = await addMobileDevice(deviceStore, {
+      deviceId: "compatible-device",
+      profileAllowlist: ["default"],
+    });
+    await deviceStore.updateNotificationFeatures(compatible.deviceId, ["review-comment-target-v1"]);
+    const event = buildExternalNotificationEvent({
+      eventId: "evt-comment-routing",
+      profileId: "default",
+      workspaceId: "inbox-ws",
+      kind: "review",
+      title: "New pull request comment",
+      detail: "A comment was added",
+      provider: "github",
+      connectionId: "gh-1",
+      prKey: "owner/repo#42",
+      reviewWorkspaceId: "review-ws",
+      commentTarget: { kind: "github-issue-comment", commentId: "9001" },
+      createdAt: 11_000,
+    });
+
+    manager.start();
+    externalNotificationEvents.emit("event", event);
+    await flush();
+    manager.stop();
+
+    const sentEvents = transport.getSentEvents(OWN_DEVICE_ID);
+    expect(sentEvents).toHaveLength(2);
+    const payloadFor = (deviceId: string, privateKey: ReturnType<typeof generateX25519KeyPair>["privateKey"]) => {
+      const sent = sentEvents.find((item) => item.targetDeviceId === deviceId)!;
+      return JSON.parse(
+        openCombinedBase64(
+          sent.ciphertext,
+          sessionKeyFor(privateKey, desktopKeyPair.publicKey),
+          Buffer.from(sent.aad, "base64"),
+        ).toString("utf8"),
+      ) as Record<string, unknown>;
+    };
+    const oldPayload = payloadFor(legacy.deviceId, legacy.keyPair.privateKey);
+    const compatiblePayload = payloadFor(compatible.deviceId, compatible.keyPair.privateKey);
+    expect(oldPayload).not.toHaveProperty("connectionId");
+    expect(oldPayload).not.toHaveProperty("reviewWorkspaceId");
+    expect(oldPayload).not.toHaveProperty("commentTarget");
+    expect(compatiblePayload).toMatchObject({
+      connectionId: "gh-1",
+      reviewWorkspaceId: "review-ws",
+      commentTarget: { kind: "github-issue-comment", commentId: "9001" },
+    });
+  });
+
   test("an event is sent to a device whose profile allowlist and notification filter both allow it", async () => {
     const { manager, transport, deviceStore, externalNotificationEvents } = await createFixture();
     const { deviceId } = await addMobileDevice(deviceStore, { profileAllowlist: ["default"], minPriority: "low" });

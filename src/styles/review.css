@@ -1168,6 +1168,18 @@
   align-items: start;
 }
 
+.review-comment--notification-focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  background-color: color-mix(in srgb, var(--accent), transparent 88%);
+}
+
+.review-comment-focus-notice {
+  margin: 0 10px 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .review-comment:first-child {
   border-top: none;
 }

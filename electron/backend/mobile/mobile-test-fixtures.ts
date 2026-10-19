@@ -68,6 +68,7 @@ export function makeLocalDevice(overrides: Partial<MobileDeviceRecord> = {}): Mo
     revokedAt: null,
     remoteUiPaused: false,
     notificationFilter: { minPriority: "low", mutedKinds: [] },
+    notificationFeatures: [],
     verifiedAt: 10,
     activatedAt: 20,
     ...overrides,

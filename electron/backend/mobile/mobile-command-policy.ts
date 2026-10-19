@@ -68,6 +68,13 @@ const TWENTY_FOUR_HOURS = MAX_COMMAND_TTL_MS;
 const FIVE_MINUTES = MAX_DESTRUCTIVE_COMMAND_TTL_MS;
 
 export const COMMAND_POLICY: Record<MobileCommandType, CommandPolicy> = {
+  "notification.features": {
+    requiredCapability: "notifications",
+    destructive: false,
+    allowedTargetKind: "desktop",
+    idempotent: true,
+    maxTtlMs: TWENTY_FOUR_HOURS,
+  },
   "notification.acknowledge": {
     requiredCapability: "notifications",
     destructive: false,

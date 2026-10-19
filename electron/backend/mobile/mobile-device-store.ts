@@ -133,6 +133,7 @@ export function addDevice(devices: MobileDeviceRecord[], input: NewDeviceInput):
     revokedAt: null,
     remoteUiPaused: false,
     notificationFilter: { minPriority: "low", mutedKinds: [] },
+    notificationFeatures: [],
     verifiedAt: input.state === "keyProven" ? input.now : null,
     activatedAt: null,
   };
@@ -376,6 +377,14 @@ export function updateNotificationFilter(
   return devices.map((d) => (d.deviceId === deviceId ? { ...d, notificationFilter: filter } : d));
 }
 
+export function updateNotificationFeatures(
+  devices: MobileDeviceRecord[],
+  deviceId: string,
+  features: MobileDeviceRecord["notificationFeatures"],
+): MobileDeviceRecord[] {
+  return devices.map((d) => (d.deviceId === deviceId ? { ...d, notificationFeatures: [...new Set(features)] } : d));
+}
+
 export function deviceHasCapability(device: MobileDeviceRecord, capability: string): boolean {
   return (device.capabilities as readonly string[]).includes(capability);
 }
@@ -465,6 +474,12 @@ export function createMobileDeviceStore(deps: MobileDeviceStoreDeps) {
     },
     async updateNotificationFilter(deviceId: string, filter: MobileNotificationFilter): Promise<void> {
       await deps.mutateDevices((devices) => updateNotificationFilter(devices, deviceId, filter));
+    },
+    async updateNotificationFeatures(
+      deviceId: string,
+      features: MobileDeviceRecord["notificationFeatures"],
+    ): Promise<void> {
+      await deps.mutateDevices((devices) => updateNotificationFeatures(devices, deviceId, features));
     },
     listUsableDevices(): MobileDeviceRecord[] {
       return listUsableDevices(deps.getDevices());

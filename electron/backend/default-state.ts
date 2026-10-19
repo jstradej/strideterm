@@ -1322,6 +1322,11 @@ export function normalizeState(
         minPriority: validPriority,
         mutedKinds: Array.isArray(rawFilter.mutedKinds) ? rawFilter.mutedKinds.map(String) : [],
       },
+      notificationFeatures: Array.isArray(device?.notificationFeatures)
+        ? device.notificationFeatures.includes("review-comment-target-v1")
+          ? ["review-comment-target-v1"]
+          : []
+        : [],
       verifiedAt: typeof device?.verifiedAt === "number" ? device.verifiedAt : null,
       // `activatedAt` is when a human approved this device. For a record that predates the state
       // machine, the honest answer is "we do not know" — so it carries the verification timestamp when

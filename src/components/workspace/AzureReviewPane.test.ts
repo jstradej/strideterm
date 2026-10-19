@@ -57,7 +57,8 @@ function buildPayload(provider: "azure-devops" | "github" = "azure-devops"): Sta
           kind: "terminal",
           activeViewId: "review:ws-review",
           panels: [],
-          review: { provider, prKey },
+          profileId: "default",
+          review: { provider, connectionId: provider === "github" ? "gh-1" : "ado-1", prKey },
         },
       ],
       profiles: [{ id: "default", name: "Default", color: "", workspaceIds: ["ws-review"] }],
@@ -68,7 +69,8 @@ function buildPayload(provider: "azure-devops" | "github" = "azure-devops"): Sta
         name: "Review WS",
         kind: "terminal",
         panels: [],
-        review: { provider, prKey },
+        profileId: "default",
+        review: { provider, connectionId: provider === "github" ? "gh-1" : "ado-1", prKey },
       },
       project: null,
       sessions: [],
@@ -129,6 +131,30 @@ beforeEach(() => {
 });
 
 describe("AzureReviewPane responsive chrome", () => {
+  test("notification focus selects Comments and clears saved filters", async () => {
+    const appStore = useAppStore();
+    const wrapper = mountPane();
+    const gitUiStore = useGitUiStore();
+    gitUiStore.reviewSetCommentFilter("ws-review", "mine");
+    gitUiStore.reviewSetCommentSearch("ws-review", "old search");
+
+    appStore.requestReviewCommentFocus({
+      provider: "azure-devops",
+      connectionId: "ado-1",
+      prKey: "ado:1",
+      profileId: "default",
+      workspaceId: "ws-review",
+      target: { kind: "azure-thread-comment", threadId: "8", commentId: "12" },
+    });
+    await flushPromises();
+
+    expect(gitUiStore.get("ws-review").activeReviewTab).toBe("comments");
+    expect(gitUiStore.get("ws-review").commentFilter).toBe("all");
+    expect(gitUiStore.get("ws-review").commentSearch).toBe("");
+    appStore.clearReviewCommentFocus(appStore.reviewCommentFocus!.requestId);
+    wrapper.unmount();
+  });
+
   test("on desktop the inline review chrome renders without popover triggers", async () => {
     setMatchMediaResult("(max-width: 768px)", false);
     setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);

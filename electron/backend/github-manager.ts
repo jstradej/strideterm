@@ -677,18 +677,37 @@ export class GitHubManager extends BaseProviderManager {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       getAuthor: (comment: any) => comment.user || {},
     });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const newComments = ([...newIssue, ...newReview] as any[]).sort(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (a: any, b: any) => parseDate(a.updated_at || a.created_at) - parseDate(b.updated_at || b.created_at),
+    const newComments = [
+      ...(newIssue as Array<Record<string, unknown>>).map((comment) => ({
+        comment,
+        kind: "github-issue-comment" as const,
+      })),
+      ...(newReview as Array<Record<string, unknown>>).map((comment) => ({
+        comment,
+        kind: "github-review-comment" as const,
+      })),
+    ].sort(
+      (a, b) =>
+        parseDate(a.comment.updated_at || a.comment.created_at) -
+        parseDate(b.comment.updated_at || b.comment.created_at),
     );
     if (newComments.length > 0) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const latest: any = newComments[newComments.length - 1];
+      const latest = newComments[newComments.length - 1].comment;
+      const latestUser = latest.user as { login?: string; name?: string } | null | undefined;
+      const targetKind = newComments[newComments.length - 1].kind;
       const actor = {
-        login: latest.user?.login || "",
-        displayName: latest.user?.name || latest.user?.login || "Someone",
+        login: latestUser?.login || "",
+        displayName: latestUser?.name || latestUser?.login || "Someone",
       };
+      const commentId = typeof latest.id === "string" || typeof latest.id === "number" ? String(latest.id) : "";
+      const rootCommentId =
+        typeof latest.in_reply_to_id === "string" || typeof latest.in_reply_to_id === "number"
+          ? String(latest.in_reply_to_id)
+          : commentId;
+      const commentAt =
+        (typeof latest.updated_at === "string" && latest.updated_at) ||
+        (typeof latest.created_at === "string" && latest.created_at) ||
+        nowIso;
       const title =
         newComments.length > 1
           ? `${newComments.length} new comments on ${summaryRepo.fullName} #${summaryPr.number}`
@@ -698,10 +717,17 @@ export class GitHubManager extends BaseProviderManager {
           provider: "github",
           summary: summary as unknown as Parameters<typeof buildReviewActivityEvent>[0]["summary"],
           kind: "pr-new-comment",
-          at: latest.updated_at || latest.created_at || nowIso,
+          at: commentAt,
           title,
-          body: truncateBody(`${actor.displayName}: ${latest.body || ""}`),
+          body: truncateBody(`${actor.displayName}: ${typeof latest.body === "string" ? latest.body : ""}`),
           actor,
+          commentTarget: commentId
+            ? {
+                kind: targetKind,
+                commentId,
+                ...(targetKind === "github-review-comment" && rootCommentId ? { threadId: rootCommentId } : {}),
+              }
+            : undefined,
         }),
       );
     }

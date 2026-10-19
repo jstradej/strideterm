@@ -888,6 +888,70 @@ describe("NotificationCenter — review notification navigation", () => {
       ts: expect.any(Number),
     });
   });
+
+  it("opens the existing matching review workspace and requests its exact comment", async () => {
+    const appStore = useAppStore();
+    const notifStore = useNotificationStore();
+    const workspaceId = "review-ws";
+    const target = { kind: "github-review-comment", commentId: "501", threadId: "499" } as const;
+    appStore.payload = makePayload({
+      appState: {
+        activeWorkspaceId: "ws-a",
+        profiles: [{ id: "p1", name: "Profile Alpha", color: "", workspaceIds: ["ws-a", workspaceId] }],
+        windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "ws-a", activeSessionId: "" }],
+        workspaces: [
+          { id: "ws-a", name: "WsA", profileId: "p1", kind: "terminal", panels: [] },
+          {
+            id: workspaceId,
+            name: "Review",
+            profileId: "p1",
+            kind: "github",
+            panels: [],
+            review: { provider: "github", connectionId: "gh-1", prKey: "github:42" },
+          },
+        ],
+        settings: {
+          integrations: { github: { connections: [{ id: "gh-1", profileId: "p1", enabled: true }] } },
+        },
+      },
+    }) as AnyApi;
+    notifStore.panelOpen = true;
+    notifStore.add({
+      title: "New comment",
+      body: "Someone commented",
+      kind: "review",
+      category: "review",
+      workspaceId: "",
+      viewId: "github:42",
+      meta: {
+        kind: "pr-new-comment",
+        provider: "github",
+        connectionId: "gh-1",
+        prKey: "github:42",
+        profileId: "p1",
+        commentTarget: target,
+        reviewWorkspaceId: "",
+        existingWorkspaceId: "",
+      },
+    });
+    const activateWorkspace = vi.spyOn(appStore, "activateWorkspaceInGrid").mockResolvedValue();
+
+    const wrapper = mount(NotificationCenter);
+    await wrapper.get(".notification-item").trigger("click");
+    await flushPromises();
+
+    expect(activateWorkspace).toHaveBeenCalledWith(workspaceId);
+    expect(appStore.reviewCommentFocus).toMatchObject({
+      provider: "github",
+      connectionId: "gh-1",
+      prKey: "github:42",
+      profileId: "p1",
+      workspaceId,
+      target,
+    });
+    expect(appStore.inboxPullRequestFocus).toBeNull();
+    appStore.clearReviewCommentFocus(appStore.reviewCommentFocus!.requestId);
+  });
 });
 
 describe("NotificationCenter — Attachments tab", () => {

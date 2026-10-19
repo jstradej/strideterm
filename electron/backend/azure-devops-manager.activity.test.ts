@@ -304,17 +304,30 @@ describe("AzureDevOpsManager review-activity deltas", () => {
         id: 103,
         author: { id: "me-azure", uniqueName: "renamed@example.com" },
         content: "self",
-        at: world.nowIso,
+        at: "2026-03-17T10:03:00.000Z",
       }),
-      commentFrom({ id: 104, author: {}, content: "unknown author", at: world.nowIso }),
-      commentFrom({ id: 105, author: { id: "other-id", displayName: "Me" }, content: "foreign", at: world.nowIso }),
+      commentFrom({ id: 104, author: {}, content: "unknown author", at: "2026-03-17T10:04:00.000Z" }),
+      commentFrom({
+        id: 106,
+        author: { id: "other-id", displayName: "Bob" },
+        content: "older foreign",
+        at: "2026-03-17T10:06:00.000Z",
+      }),
+      commentFrom({
+        id: 105,
+        author: { id: "other-id", displayName: "Me" },
+        content: "latest foreign",
+        at: "2026-03-17T10:07:00.000Z",
+      }),
     );
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const snapshot = (await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} })) as any;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const event = snapshot.reviewActivity.find((item: any) => item.kind === "pr-new-comment");
-    expect(event.title).toContain("2 new comments");
-    expect(event.body).toContain("foreign");
+    expect(event.title).toContain("3 new comments");
+    expect(event.body).toContain("latest foreign");
+    expect(event.commentTarget).toEqual({ kind: "azure-thread-comment", threadId: "10", commentId: "105" });
+    expect(event.at).toBe("2026-03-17T10:07:00.000Z");
   });
 
   test("coalesces identity for syncs, then retries a briefly cached discovery failure", async () => {

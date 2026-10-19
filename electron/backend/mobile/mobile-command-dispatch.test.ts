@@ -127,6 +127,7 @@ function makeDevice(overrides: Partial<MobileDeviceRecord> = {}): MobileDeviceRe
     verifiedAt: 1000,
     activatedAt: 1000,
     notificationFilter: { minPriority: "low", mutedKinds: [] },
+    notificationFeatures: [],
     ...overrides,
   };
 }
@@ -349,6 +350,66 @@ describe("authorization: membership / capability / profile", () => {
   });
 });
 
+describe("notification feature negotiation", () => {
+  test("advertises comment routing in the profile catalog and persists the authenticated device opt-in", async () => {
+    const setNotificationFeatures = vi.fn(async () => {});
+    const { dispatcher } = await createFixture({}, null, null, { setNotificationFeatures });
+    const device = makeDevice({ profileAllowlist: ["default"] });
+
+    const catalog = await dispatcher.dispatch(makeCommand({ type: "profile.catalog.get", payload: {} }), device);
+    expect(catalog.data).toMatchObject({ notificationFeatures: ["review-comment-target-v1"] });
+
+    const result = await dispatcher.dispatch(
+      makeCommand({
+        type: "notification.features",
+        commandId: "cmd-features",
+        idempotencyKey: "idem-features",
+        payload: { supportedFeatures: ["review-comment-target-v1"] },
+      }),
+      device,
+    );
+    expect(result).toMatchObject({ status: "succeeded", data: { notificationFeatures: ["review-comment-target-v1"] } });
+    expect(setNotificationFeatures).toHaveBeenCalledWith("dev-1", ["review-comment-target-v1"]);
+
+    const duplicateFeatures = await dispatcher.dispatch(
+      makeCommand({
+        type: "notification.features",
+        commandId: "cmd-features-duplicate",
+        idempotencyKey: "idem-features-duplicate",
+        payload: { supportedFeatures: ["review-comment-target-v1", "review-comment-target-v1"] },
+      }),
+      device,
+    );
+    expect(duplicateFeatures).toMatchObject({ status: "failed", errorCode: "invalid-notification-features" });
+    expect(setNotificationFeatures).toHaveBeenCalledTimes(1);
+  });
+
+  test("requires the existing notification grant and profile allowlist", async () => {
+    const setNotificationFeatures = vi.fn(async () => {});
+    const { dispatcher } = await createFixture({}, null, null, { setNotificationFeatures });
+    const command = makeCommand({
+      type: "notification.features",
+      payload: { supportedFeatures: ["review-comment-target-v1"] },
+    });
+    const deniedByGrant = await dispatcher.dispatch(command, makeDevice({ capabilities: ["status.read"] }));
+    expect(deniedByGrant).toMatchObject({ status: "failed", errorCode: "missing-capability" });
+    expect(setNotificationFeatures).not.toHaveBeenCalled();
+
+    const deniedByProfile = await dispatcher.dispatch(
+      makeCommand({
+        type: "notification.features",
+        commandId: "cmd-features-profile",
+        idempotencyKey: "idem-features-profile",
+        profileId: "other",
+        payload: { supportedFeatures: ["review-comment-target-v1"] },
+      }),
+      makeDevice({ profileAllowlist: ["default"] }),
+    );
+    expect(deniedByProfile).toMatchObject({ status: "failed", errorCode: "profile-not-allowed" });
+    expect(setNotificationFeatures).not.toHaveBeenCalled();
+  });
+});
+
 describe("profile catalog", () => {
   test("returns current display names only for profiles allowed to this device", async () => {
     const { dispatcher } = await createFixture({
@@ -368,6 +429,7 @@ describe("profile catalog", () => {
 
     expect(result).toMatchObject({ status: "succeeded", errorCode: null });
     expect(result.data).toEqual({
+      notificationFeatures: ["review-comment-target-v1"],
       profiles: [
         { id: "default", name: "Default 2", workspaceCount: 1, workspaceNames: ["Fix the parser #3"] },
         { id: "other", name: "asdf", workspaceCount: 1, workspaceNames: [] },
@@ -375,7 +437,7 @@ describe("profile catalog", () => {
     });
   });
 
-  test("keeps the legacy catalog byte shape when workspace projection is omitted", async () => {
+  test("advertises notification features when workspace projection is omitted", async () => {
     const { dispatcher } = await createFixture({
       profiles: [{ id: "default", name: "Default", color: "#123456", workspaceIds: ["ws-1"] }],
     });
@@ -384,6 +446,7 @@ describe("profile catalog", () => {
       makeDevice({ capabilities: ["status.read"] }),
     );
     expect(result.data).toEqual({
+      notificationFeatures: ["review-comment-target-v1"],
       profiles: [{ id: "default", name: "Default", workspaceCount: 1, workspaceNames: ["Fix the parser #3"] }],
     });
   });

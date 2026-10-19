@@ -182,6 +182,73 @@ describe("useReviewNotifications — profile scoping", () => {
     wrapper.unmount();
   });
 
+  test("keeps the latest comment target and clears it when a later PR event is not a comment", async () => {
+    const appStore = useAppStore();
+    appStore.payload = buildPayload();
+    const notifStore = useNotificationStore();
+    const { wrapper } = mountHarness();
+    vi.setSystemTime(new Date("2025-01-01T00:00:10Z"));
+
+    appStore.payload = buildPayload({
+      azureDevops: {
+        reviewActivity: [
+          {
+            id: "comment-1",
+            kind: "pr-new-comment",
+            connectionId: "conn-a",
+            prKey: "pr-1",
+            title: "New comment",
+            commentTarget: { kind: "azure-thread-comment", threadId: "8", commentId: "12" },
+          },
+        ],
+        connections: [],
+        inboxItems: [],
+        pullRequests: {},
+        lastUpdatedAt: null,
+        error: "",
+      },
+    });
+    await nextTick();
+    await flushPromises();
+    expect(notifStore.sessions[0].meta?.commentTarget).toEqual({
+      kind: "azure-thread-comment",
+      threadId: "8",
+      commentId: "12",
+    });
+
+    appStore.payload = buildPayload({
+      azureDevops: {
+        reviewActivity: [
+          {
+            id: "vote-2",
+            kind: "pr-vote-changed",
+            connectionId: "conn-a",
+            prKey: "pr-1",
+            title: "Review changed",
+          },
+          {
+            id: "comment-1",
+            kind: "pr-new-comment",
+            connectionId: "conn-a",
+            prKey: "pr-1",
+            title: "New comment",
+            commentTarget: { kind: "azure-thread-comment", threadId: "8", commentId: "12" },
+          },
+        ],
+        connections: [],
+        inboxItems: [],
+        pullRequests: {},
+        lastUpdatedAt: null,
+        error: "",
+      },
+    });
+    await nextTick();
+    await flushPromises();
+    expect(notifStore.sessions[0].meta?.kind).toBe("pr-vote-changed");
+    expect(notifStore.sessions[0].meta?.commentTarget).toBeNull();
+    wrapper.unmount();
+  });
+
   test("events with an unresolvable owner are dropped", async () => {
     // Backend stamps event.profileId from the owning connection, so a
     // missing profileId here means every source failed: no stamp on the

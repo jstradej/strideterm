@@ -17,6 +17,7 @@
  */
 
 import { parseDate } from "./provider-utils.js";
+import type { ReviewNotificationCommentTarget } from "../../shared/review-notification-target.js";
 
 interface ReviewSummaryRef {
   prKey: string;
@@ -81,6 +82,7 @@ export function buildReviewActivityEvent({
   body,
   actor = null,
   urgency = "normal",
+  commentTarget,
 }: {
   provider: string;
   summary: ReviewSummaryRef;
@@ -90,6 +92,7 @@ export function buildReviewActivityEvent({
   body: string;
   actor?: unknown;
   urgency?: string;
+  commentTarget?: ReviewNotificationCommentTarget;
 }): {
   id: string;
   prKey: string;
@@ -111,6 +114,7 @@ export function buildReviewActivityEvent({
   actor: unknown;
   draftState: "draft" | "ready";
   headSha: string;
+  commentTarget?: ReviewNotificationCommentTarget;
 } {
   const pullRequest = summary.pullRequest || {};
   return {
@@ -138,6 +142,7 @@ export function buildReviewActivityEvent({
     actor,
     draftState: pullRequest.draft || pullRequest.isDraft ? "draft" : "ready",
     headSha: pullRequest.headSha || pullRequest.sourceCommitId || "",
+    ...(commentTarget ? { commentTarget } : {}),
   };
 }
 
