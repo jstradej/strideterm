@@ -163,7 +163,7 @@
     "effect": "4.0.5",
     "monaco-editor": "^0.57.0",
     "node-pty": "^1.1.0",
-    "pinia": "^4.0.3",
+    "pinia": "^4.1.0",
     "proper-lockfile": "4.1.2",
     "qrcode": "^1.5.4",
     "splitpanes": "^4.1.2",
