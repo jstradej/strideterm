@@ -178,4 +178,81 @@ describe("buildExternalNotificationEvent", () => {
 
     expect(event.activity).toBe("[I/O] make test");
   });
+
+  test("normalizes derived review, pipeline, and review-start IDs deterministically", () => {
+    const sourceIds = [
+      "azure:org/project:repo:pull-request:42:pr-new:2026-10-19T12:34:56.789Z",
+      "github:owner/repo#42:review:ready",
+      "pipeline:project:build:run-42:2026-10-19T12:34:56.789Z",
+      "review-start:ws-1:operation:op-42:accepted",
+    ];
+    const normalize = (eventId: string) =>
+      buildExternalNotificationEvent({
+        eventId,
+        profileId: "default",
+        workspaceId: "ws-1",
+        kind: "review",
+        title: "Review",
+      }).eventId;
+
+    const normalized = sourceIds.map(normalize);
+    expect(normalized).toHaveLength(sourceIds.length);
+    expect(new Set(normalized).size).toBe(sourceIds.length);
+    expect(normalized).toEqual(sourceIds.map(normalize));
+    expect(normalized.every((id) => /^[A-Za-z0-9_-]{1,128}$/.test(id))).toBe(true);
+  });
+
+  test("preserves valid boundary IDs and hashes overlength or invalid IDs without sanitization collisions", () => {
+    const normalize = (eventId: string) =>
+      buildExternalNotificationEvent({
+        eventId,
+        profileId: "default",
+        workspaceId: "ws-1",
+        kind: "pipeline",
+        title: "Pipeline",
+      }).eventId;
+    const atLimit = `A${"_".repeat(127)}`;
+    const overLimit = `${atLimit}x`;
+
+    expect(normalize(atLimit)).toBe(atLimit);
+    expect(normalize(overLimit)).toMatch(/^[A-Za-z0-9_-]{1,128}$/);
+    expect(normalize(overLimit)).not.toBe(atLimit);
+    expect(normalize("review:ready")).not.toBe(normalize("review.ready"));
+  });
+
+  test("hashes every opaque ID outside the protocol safe alphabet", () => {
+    const normalize = (eventId: string) =>
+      buildExternalNotificationEvent({
+        eventId,
+        profileId: "default",
+        workspaceId: "ws-1",
+        kind: "pipeline",
+        title: "Pipeline",
+      }).eventId;
+    const invalidIds = [
+      "colon:id",
+      "dot.id",
+      "slash/id",
+      "back\\slash",
+      "hash#id",
+      "dollar$id",
+      "left[id",
+      "right]id",
+      "space id",
+      "line\nfeed",
+      "carriage\rreturn",
+      "tab\tid",
+      "nul\0id",
+      "del\u007fid",
+      "café",
+      "emoji-😀",
+      "",
+      "x".repeat(129),
+    ];
+
+    for (const sourceId of invalidIds) {
+      expect(normalize(sourceId), JSON.stringify(sourceId)).toMatch(/^evt-[0-9a-f]{64}$/);
+    }
+    expect(normalize("Az09_-")).toBe("Az09_-");
+  });
 });

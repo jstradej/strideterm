@@ -11,6 +11,7 @@
  *
  * Pure function — no side effects, safe to unit test without a runtime.
  */
+import { createHash } from "node:crypto";
 import type {
   ExternalNotificationEvent,
   ExternalNotificationPriority,
@@ -18,6 +19,14 @@ import type {
 } from "../../shared/types/notifications.js";
 import { truncateUtf8Head } from "./notification-context.js";
 import { sanitizeTerminalText } from "./terminal-text.js";
+
+const OPAQUE_EVENT_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
+function normalizeEventId(eventId: string): string {
+  if (OPAQUE_EVENT_ID.test(eventId)) return eventId;
+  const digest = createHash("sha256").update(eventId, "utf8").digest("hex");
+  return `evt-${digest}`;
+}
 
 export interface BuildExternalNotificationEventInput {
   eventId: string;
@@ -123,7 +132,7 @@ export function buildExternalNotificationEvent(input: BuildExternalNotificationE
       : `${workspaceId}:${sessionId || panelId || ""}:${kind}`;
 
   return {
-    eventId: input.eventId,
+    eventId: normalizeEventId(input.eventId),
     profileId: input.profileId || "default",
     workspaceId,
     sessionId,

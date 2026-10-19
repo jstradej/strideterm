@@ -887,6 +887,74 @@ describe("MobileManager outbox: ExternalNotificationEvent -> encrypted per-devic
     expect(notificationOrigins.size()).toBe(0);
   });
 
+  test("a derived review ID stays aligned across origin lookup, routing AAD, and encrypted delivery", async () => {
+    const { manager, transport, deviceStore, desktopKeyPair, externalNotificationEvents, notificationOrigins } =
+      await createFixture();
+    const { keyPair } = await addMobileDevice(deviceStore, { profileAllowlist: ["default"], minPriority: "low" });
+    const sourceId = "azure:org/project:repo:pull-request:42:pr-new:2026-10-19T12:34:56.789Z";
+    const event = buildExternalNotificationEvent({
+      eventId: sourceId,
+      profileId: "default",
+      workspaceId: "ws-1",
+      sessionId: "ws-1:review-panel",
+      panelId: "review-panel",
+      kind: "review",
+      title: "Review ready",
+      detail: "A new review is ready",
+      provider: "azure-devops",
+      prKey: "org/project#42",
+      draftState: "ready",
+      createdAt: 10_000,
+    });
+
+    manager.start();
+    externalNotificationEvents.emit("event", event);
+    await flush();
+    manager.stop();
+
+    expect(event.eventId).toMatch(/^[A-Za-z0-9_-]{1,128}$/);
+    expect(event.eventId).not.toBe(sourceId);
+    expect(notificationOrigins.get(event.eventId)).toEqual({
+      profileId: "default",
+      workspaceId: "ws-1",
+      panelId: "review-panel",
+      sessionId: "ws-1:review-panel",
+    });
+    expect(notificationOrigins.get(sourceId)).toBeNull();
+
+    const sentEvents = transport.getSentEvents(OWN_DEVICE_ID);
+    expect(sentEvents).toHaveLength(1);
+    const [sent] = sentEvents;
+    expect(sent.eventId).toBe(event.eventId);
+    const expectedAad = buildRoutingAad({
+      protocolVersion: sent.protocolVersion,
+      pairId: sent.pairId,
+      sourceDeviceId: sent.sourceDeviceId,
+      targetDeviceId: sent.targetDeviceId,
+      messageId: sent.eventId,
+      messageType: "notificationEvent",
+      sessionKeyVersion: sent.sessionKeyVersion,
+      createdAt: sent.createdAt,
+      expiresAt: sent.expiresAt,
+    });
+    expect(Buffer.from(sent.aad, "base64")).toEqual(expectedAad);
+    const plaintext = JSON.parse(
+      openCombinedBase64(
+        sent.ciphertext,
+        sessionKeyFor(keyPair.privateKey, desktopKeyPair.publicKey),
+        expectedAad,
+      ).toString("utf8"),
+    );
+    expect(plaintext).toMatchObject({
+      title: "Review ready",
+      body: "A new review is ready",
+      provider: "azure-devops",
+      prKey: "org/project#42",
+      draftState: "ready",
+      actions: ["review.start", "notification.acknowledge"],
+    });
+  });
+
   test("an event is sent to a device whose profile allowlist and notification filter both allow it", async () => {
     const { manager, transport, deviceStore, externalNotificationEvents } = await createFixture();
     const { deviceId } = await addMobileDevice(deviceStore, { profileAllowlist: ["default"], minPriority: "low" });
