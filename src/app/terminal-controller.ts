@@ -165,6 +165,7 @@ interface TerminalControllerApi {
   isRemote?: boolean;
   startupFlags?: {
     disableWebgl?: boolean;
+    windowId?: string;
   };
   logRenderer?: (level: LogLevel, message: string, meta?: Record<string, unknown>) => void;
   updateSettings?: (settings: Record<string, unknown>) => void;
@@ -690,6 +691,16 @@ export function createTerminalController({
         if (diagnosticsEnabled) diag.fullRefreshes++;
       }
       view.lastSizeKey = nextSizeKey;
+      api.logRenderer?.("debug", "[terminal] resize requested", {
+        sessionId,
+        cols: view.term.cols,
+        rows: view.term.rows,
+        force,
+        remote: Boolean(api.isRemote),
+        windowId: api.startupFlags?.windowId,
+        visibility: document.visibilityState,
+        focused: document.hasFocus(),
+      });
       api.resizeTerminal(sessionId, { cols: view.term.cols, rows: view.term.rows });
     });
   }

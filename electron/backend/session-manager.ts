@@ -884,6 +884,9 @@ export class SessionManager extends EventEmitter {
     const integrationEnv = integrationLaunch.env;
     const skipTypedSource = integrationLaunch.skipTypedSource;
 
+    const initialCols = Math.max(existing?.cols || APP_CONFIG.session.defaultCols, APP_CONFIG.session.minCols);
+    const initialRows = Math.max(existing?.rows || APP_CONFIG.session.defaultRows, APP_CONFIG.session.minRows);
+
     // Validate cwd before handing it to pty.spawn — on Windows an invalid
     // cwd produces a cryptic "Cannot create process, error code: 267"
     // (ERROR_DIRECTORY) and the panel stays empty with no obvious hint why.
@@ -905,6 +908,8 @@ export class SessionManager extends EventEmitter {
       file: launcher.file,
       args: launcher.args,
       cwd: effectiveCwd,
+      cols: initialCols,
+      rows: initialRows,
       shellIntegration: shellIntEnabled,
     });
 
@@ -927,8 +932,8 @@ export class SessionManager extends EventEmitter {
       for (const name of DISTRIBUTION_LAUNCHER_ENV) delete inheritedEnv[name];
       processHandle = pty.spawn(launcher.file, launcher.args, {
         name: APP_CONFIG.session.termName,
-        cols: APP_CONFIG.session.defaultCols,
-        rows: APP_CONFIG.session.defaultRows,
+        cols: initialCols,
+        rows: initialRows,
         cwd: effectiveCwd,
         env: {
           ...inheritedEnv,
@@ -967,8 +972,8 @@ export class SessionManager extends EventEmitter {
       panelId: panel.id,
       title: panel.title,
       command: panel.command,
-      cols: (existing as PtySession | undefined)?.cols || APP_CONFIG.session.defaultCols,
-      rows: (existing as PtySession | undefined)?.rows || APP_CONFIG.session.defaultRows,
+      cols: initialCols,
+      rows: initialRows,
       status: "running",
       processHandle,
     };
@@ -1466,6 +1471,14 @@ export class SessionManager extends EventEmitter {
     ) {
       return;
     }
+
+    log.debug("resizing session", {
+      sessionId,
+      previousCols: session.cols,
+      previousRows: session.rows,
+      cols: nextCols,
+      rows: nextRows,
+    });
 
     session.cols = nextCols;
     session.rows = nextRows;

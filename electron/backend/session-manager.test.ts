@@ -45,6 +45,7 @@ vi.mock("node-pty", () => ({
 }));
 
 import { SessionManager, shellIntegrationEnv } from "./session-manager.js";
+import { APP_CONFIG } from "../../config/app-config.js";
 
 function createState() {
   return {
@@ -418,6 +419,29 @@ describe("SessionManager", () => {
     manager.ensureSession(state, "workspace-a:shell");
     expect(spawns).toHaveLength(2);
     expect(handles).toHaveLength(2);
+  });
+
+  test("respawned PTY starts at its cached size so a same-size resize is not lost", async () => {
+    const manager = new SessionManager();
+    const state = createState() as Parameters<typeof manager.ensureSession>[0];
+    const sessionId = "workspace-a:shell";
+
+    await manager.ensureSession(state, sessionId);
+    expect(spawnCalls[0].options).toMatchObject({
+      cols: APP_CONFIG.session.defaultCols,
+      rows: APP_CONFIG.session.defaultRows,
+    });
+    manager.resizeSession(sessionId, 190, 54);
+    handles[0].kill();
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+
+    await manager.ensureSession(state, sessionId);
+    const secondResize = vi.spyOn(handles[1], "resize");
+
+    manager.resizeSession(sessionId, 190, 54);
+
+    expect(spawnCalls[1].options).toMatchObject({ cols: 190, rows: 54 });
+    expect(secondResize).not.toHaveBeenCalled();
   });
 
   test("syncWithState emits terminal:removed for a panel that no longer exists in state", async () => {
