@@ -2523,6 +2523,7 @@ export const useAppStore = defineStore("app", () => {
     myActiveProfileId,
     isRemoteTransport,
     supportsPerformanceMetrics,
+    isMobileSession,
     // Computed
     activeWorkspace,
     filteredWorkspaces,

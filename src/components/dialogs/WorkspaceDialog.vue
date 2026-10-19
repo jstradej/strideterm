@@ -235,7 +235,11 @@
           :tab-templates="tabTemplates"
           :heading="isAzure ? 'Review workspace tabs' : 'Terminal tabs'"
         />
-        <section v-if="isAzure" class="review-agent-preparation" data-testid="review-agent-preparation">
+        <section
+          v-if="isAzure && !isMobileSession"
+          class="review-agent-preparation"
+          data-testid="review-agent-preparation"
+        >
           <h3>Prepare an agent for review checkouts</h3>
           <p class="field-hint">
             Prepare the selected agent for future PR and New Branch workspaces. Confirm any trust prompt in the
@@ -576,6 +580,7 @@ else rawDraft.internalMcpEnabled = rawDraft.internalMcpEnabled === true;
 const draft = reactive(rawDraft);
 
 const store = useAppStore();
+const isMobileSession = computed(() => store.isMobileSession());
 
 const preparationConnections = computed(() => {
   const integrations = store.payload?.appState?.settings?.integrations as
@@ -612,6 +617,7 @@ const preparationError = ref("");
 let preparationLoadGeneration = 0;
 const canPrepareAgent = computed(
   () =>
+    !isMobileSession.value &&
     preparationConnections.value.some((connection) => connection.id === preparationConnectionId.value) &&
     (draft.kind !== "azure" || !!preparationProjectName.value) &&
     selectedPreparationRepositoryKeys.value.length > 0 &&
@@ -999,7 +1005,7 @@ async function loadPreparationProjects() {
   selectedPreparationRepositoryKeys.value = [];
   preparationProjects.value = [];
   preparationRepositories.value = [];
-  if (!connectionId || !api) return;
+  if (store.isMobileSession() || !connectionId || !api) return;
   if (kind === "github") {
     await loadPreparationRepositories();
     return;
@@ -1038,7 +1044,7 @@ async function loadPreparationRepositories() {
   preparationError.value = "";
   selectedPreparationRepositoryKeys.value = [];
   preparationRepositories.value = [];
-  if (!connectionId || !api || (kind === "azure" && !projectName)) return;
+  if (store.isMobileSession() || !connectionId || !api || (kind === "azure" && !projectName)) return;
   preparationLoading.value = true;
   try {
     const result =
@@ -1097,7 +1103,7 @@ function toggleAllPreparationRepositories(): void {
 }
 
 async function prepareReviewAgent() {
-  if (!canPrepareAgent.value) return;
+  if (store.isMobileSession() || !canPrepareAgent.value) return;
   const repositories = preparationRepositories.value.filter((entry) =>
     selectedPreparationRepositoryKeys.value.includes(entry.key),
   );

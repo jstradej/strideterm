@@ -148,6 +148,54 @@ describe("WorkspaceDialog", () => {
       );
     });
 
+    test("hides agent preparation and skips discovery in a paired mobile session", async () => {
+      const store = useAppStore();
+      vi.spyOn(store, "isMobileSession").mockReturnValue(true);
+      store.payload = {
+        appState: {
+          settings: {
+            integrations: {
+              azureDevops: { connections: [{ id: "az-1", enabled: true, profileId: "default" }] },
+            },
+          },
+        },
+      } as never;
+      const azureQuickFixListProjects = vi.fn();
+      const onPrepareAgent = vi.fn();
+      const wrapper = mountDialog({ workspace: parent("azure"), onPrepareAgent }, { azureQuickFixListProjects });
+
+      await flushPromises();
+
+      expect(wrapper.find('[data-testid="review-agent-preparation"]').exists()).toBe(false);
+      expect(azureQuickFixListProjects).not.toHaveBeenCalled();
+      expect(onPrepareAgent).not.toHaveBeenCalled();
+    });
+
+    test("keeps agent preparation available to a non-mobile remote client", async () => {
+      const store = useAppStore();
+      store.isRemoteTransport = true;
+      vi.spyOn(store, "isMobileSession").mockReturnValue(false);
+      store.payload = {
+        appState: {
+          settings: {
+            integrations: {
+              azureDevops: { connections: [{ id: "az-1", enabled: true, profileId: "default" }] },
+            },
+          },
+        },
+      } as never;
+      const azureQuickFixListProjects = vi.fn().mockResolvedValue({ projects: [] });
+      const wrapper = mountDialog(
+        { workspace: parent("azure"), onPrepareAgent: vi.fn() },
+        { azureQuickFixListProjects },
+      );
+
+      await flushPromises();
+
+      expect(wrapper.find('[data-testid="review-agent-preparation"]').exists()).toBe(true);
+      expect(azureQuickFixListProjects).toHaveBeenCalledWith({ connectionId: "az-1" });
+    });
+
     test("discovers and selects a GitHub repository without project steps", async () => {
       const store = useAppStore();
       store.payload = {
