@@ -1099,6 +1099,80 @@ function installFakeAnimationFrames() {
 }
 
 describe("terminal pane reattach", () => {
+  test("reattach redraws through the deferred fit only once", async () => {
+    vi.useFakeTimers();
+    installFontLoader();
+    const resizeObserver = installFakeResizeObserver();
+    const animationFrames = installFakeAnimationFrames();
+    try {
+      const { controller, views } = buildAttachController();
+      const sessionId = "workspace-1:shell-1";
+      const paneBody = document.createElement("div");
+      document.body.append(paneBody);
+
+      controller.attachTerminalPane(sessionId, paneBody);
+      await flushPromises();
+      animationFrames.flush();
+      await flushPromises();
+      animationFrames.flush();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const view = (views.value as any).get(sessionId)!;
+
+      controller.detachTerminalPane(sessionId, paneBody);
+      view.term.refresh.mockClear();
+      controller.attachTerminalPane(sessionId, paneBody);
+
+      await flushPromises();
+      animationFrames.flush();
+
+      expect(view.term.refresh).toHaveBeenCalledTimes(1);
+      expect(view.term.refresh).toHaveBeenCalledWith(0, view.term.rows - 1);
+    } finally {
+      resizeObserver.restore();
+    }
+  });
+
+  test("a detached fit timeout cannot redraw a view after it is reattached", async () => {
+    vi.useFakeTimers();
+    installFontLoader();
+    const resizeObserver = installFakeResizeObserver();
+    const animationFrames = installFakeAnimationFrames();
+    try {
+      const { controller, views } = buildAttachController();
+      const sessionId = "workspace-1:shell-1";
+      const paneBody = document.createElement("div");
+      document.body.append(paneBody);
+
+      controller.attachTerminalPane(sessionId, paneBody);
+      await flushPromises();
+      animationFrames.flush();
+      await flushPromises();
+      animationFrames.flush();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const view = (views.value as any).get(sessionId)!;
+      view.term.refresh.mockClear();
+
+      controller.detachTerminalPane(sessionId, paneBody);
+      await vi.advanceTimersByTimeAsync(60);
+      controller.attachTerminalPane(sessionId, paneBody);
+      await flushPromises();
+      animationFrames.flush();
+      view.term.refresh.mockClear();
+
+      // The first attachment's 120 ms fallback expires now. The second one's
+      // remains scheduled for 60 ms later.
+      await vi.advanceTimersByTimeAsync(60);
+      animationFrames.flush();
+      expect(view.term.refresh).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(60);
+      animationFrames.flush();
+      expect(view.term.refresh).toHaveBeenCalledTimes(1);
+    } finally {
+      resizeObserver.restore();
+    }
+  });
+
   test("removes the previous terminal host when the pane rebinds to another session", () => {
     const resizeObserver = installFakeResizeObserver();
     try {

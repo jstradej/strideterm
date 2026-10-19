@@ -44,6 +44,8 @@ export interface TerminalView {
    */
   webglContextLosses: number;
   webglRetryTimer: number | null;
+  /** Invalidates delayed fits when the pane detaches or attaches again. */
+  deferredFitGeneration: number;
   /** Pending grace-period timer that releases the GL context of a pane that
    *  was detached from the DOM. Cleared when the pane comes back. */
   webglIdleDisposeTimer: number | null;
@@ -718,11 +720,14 @@ export function createTerminalController({
   }
 
   function scheduleDeferredTerminalFits(sessionId: string): void {
-    window.requestAnimationFrame(() => {
-      scheduleSessionResize(sessionId, { force: true });
-    });
+    const view = views.value.get(sessionId);
+    if (!view) return;
+    const generation = ++view.deferredFitGeneration;
+    const isCurrentFit = () =>
+      views.value.get(sessionId) === view && view.deferredFitGeneration === generation && view.mount.isConnected;
+
     window.setTimeout(() => {
-      scheduleSessionResize(sessionId, { force: true });
+      if (isCurrentFit()) scheduleSessionResize(sessionId, { force: true });
     }, 120);
 
     // Wait for the real terminal font to load, then re-measure + refit so the
@@ -732,11 +737,9 @@ export function createTerminalController({
     // load, in which case the callback would run against the still-unloaded
     // fallback and the garble would persist. `.load()` resolves only once the
     // matching FontFace is actually available.
-    const initialView = views.value.get(sessionId);
-    const fontLoad = initialView ? loadTerminalFont(initialView).catch(() => []) : Promise.resolve([]);
+    const fontLoad = loadTerminalFont(view).catch(() => []);
     void fontLoad.then(() => {
-      const view = views.value.get(sessionId);
-      if (!view) return;
+      if (!isCurrentFit()) return;
       forceCharRemeasure(view);
       scheduleSessionResize(sessionId, { force: true });
     });
@@ -1638,6 +1641,7 @@ export function createTerminalController({
       webglAttachPending: false,
       webglContextLosses: 0,
       webglRetryTimer: null,
+      deferredFitGeneration: 0,
       webglIdleDisposeTimer: null,
       diagRenderDisposer,
       releaseTouchGesture,
@@ -1825,20 +1829,10 @@ export function createTerminalController({
       // Re-attach after a workspace switch. The pane was removed from the
       // DOM (PaneStage v-for drops inactive articles) and is now back —
       // re-fit the terminal to the (possibly new) size, retry the WebGL
-      // addon if the GL context was lost while we were away, and force a
-      // redraw so any DOM-rendered terminal that didn't paint while
-      // detached fills the canvas. Without the refresh, macOS terminals
-      // sometimes come back as a black square until the user types or
-      // resizes the window.
+      // addon if the GL context was lost while we were away. The forced fit
+      // scheduled below owns the first redraw after attach.
       scheduleDeferredTerminalFits(sessionId);
       tryAttachWebglAddon(view, "reattach");
-      try {
-        view.term.refresh(0, Math.max(0, view.term.rows - 1));
-        if (diagnosticsEnabled) diag.fullRefreshes++;
-      } catch {
-        // refresh throws if the renderer is in a transient bad state; the
-        // resize that follows will paint the canvas anyway, so swallow.
-      }
     }
     view.resizeObserver?.disconnect();
     view.resizeObserver = new ResizeObserver(() => {
@@ -1859,6 +1853,7 @@ export function createTerminalController({
     }
     window.cancelAnimationFrame(view.resizeFrame || 0);
     view.resizeFrame = null;
+    view.deferredFitGeneration++;
     cancelWebglRetry(view);
     // A parked pane keeps no pending long-press timer and no window-level
     // capture listener. The mount's own touch listeners come back with it on
