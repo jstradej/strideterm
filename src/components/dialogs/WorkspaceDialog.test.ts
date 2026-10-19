@@ -5,6 +5,7 @@ import { nextTick } from "vue";
 import WorkspaceDialog from "./WorkspaceDialog.vue";
 import { apiKey } from "../../types/keys.js";
 import { useNotificationStore } from "../../stores/notifications.js";
+import { useAppStore } from "../../stores/app.js";
 import { BADGE_ICONS } from "../../lib/badge-icons.js";
 
 beforeEach(() => {
@@ -42,7 +43,7 @@ function buildTaskDraft(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function mountDialog(props = {}) {
+function mountDialog(props = {}, api: Record<string, unknown> = {}) {
   return mount(WorkspaceDialog, {
     props: {
       onCancel: vi.fn(),
@@ -50,12 +51,293 @@ function mountDialog(props = {}) {
       ...props,
     },
     global: {
-      provide: { [apiKey]: {} },
+      provide: { [apiKey]: api },
     },
   });
 }
 
 describe("WorkspaceDialog", () => {
+  describe("review agent preparation", () => {
+    const parent = (kind: "azure" | "github") => ({
+      id: "parent-1",
+      name: "Parent",
+      icon: "AZ",
+      color: "#0078d4",
+      kind,
+      source: "manual",
+      pluginId: "",
+      cwd: "C:/repos",
+      notes: "",
+      profileId: "default",
+      activePanelId: "agent-panel",
+      panels: [
+        { id: "agent-panel", title: "Claude", command: "claude --model sonnet", shell: true, startup: "default" },
+      ],
+    });
+
+    test("discovers the single Azure connection, project and repository then prepares the selected parent agent", async () => {
+      const store = useAppStore();
+      store.payload = {
+        appState: {
+          settings: {
+            integrations: {
+              azureDevops: { connections: [{ id: "az-1", label: "Azure", enabled: true, profileId: "default" }] },
+            },
+          },
+        },
+      } as never;
+      const azureQuickFixListProjects = vi.fn().mockResolvedValue({ projects: [{ name: "Project" }] });
+      const azureQuickFixListRepositories = vi
+        .fn()
+        .mockResolvedValue({ repositories: [{ id: "repo-1", name: "Repo" }] });
+      const onPrepareAgent = vi.fn().mockResolvedValue({ operationId: "op-1" });
+      const wrapper = mountDialog(
+        { workspace: parent("azure"), onPrepareAgent },
+        { azureQuickFixListProjects, azureQuickFixListRepositories },
+      );
+
+      await flushPromises();
+      expect(azureQuickFixListProjects).toHaveBeenCalledWith({ connectionId: "az-1" });
+      expect(azureQuickFixListRepositories).toHaveBeenCalledWith({ connectionId: "az-1", projectName: "Project" });
+      const preparation = wrapper.get('[data-testid="review-agent-preparation"]');
+      expect(preparation.find('label[title*="connection used"]').exists()).toBe(true);
+      expect(preparation.find('label[title*="project whose repositories"]').exists()).toBe(true);
+      expect(preparation.find('label[title*="Prepare a trust setup terminal"]').exists()).toBe(true);
+      expect(preparation.find('label[title*="stable cached repository root"]').exists()).toBe(true);
+      const selectAll = preparation.get(".review-agent-repositories__heading button");
+      expect(selectAll.attributes("title")).toBe("Clear the repository selection.");
+      await selectAll.trigger("click");
+      expect(selectAll.attributes("title")).toBe("Select every repository listed here.");
+      await selectAll.trigger("click");
+      expect(preparation.get('[data-testid="prepare-review-agent"]').attributes("title")).toContain(
+        "temporary setup terminal",
+      );
+      const preparationSelects = wrapper.findAllComponents({ name: "CustomSelect" });
+      expect(
+        preparationSelects
+          .find((select) => select.props("placeholder") === "Select a connection…")
+          ?.props("modelValue"),
+      ).toBe("az-1");
+      expect(
+        preparationSelects.find((select) => select.props("placeholder") === "Select a project…")?.props("options"),
+      ).toEqual([{ value: "Project", label: "Project" }]);
+      expect(
+        preparationSelects
+          .find((select) => select.props("placeholder") === "Select an agent tab…")
+          ?.props("modelValue"),
+      ).toBe("agent-panel");
+      expect(wrapper.get('[data-testid="prepare-review-agent"]').element.hasAttribute("disabled")).toBe(false);
+      await wrapper.get('[data-testid="prepare-review-agent"]').trigger("click");
+      await flushPromises();
+
+      expect(onPrepareAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          selections: [
+            {
+              repositoryName: "Repo",
+              selection: {
+                provider: "azure-devops",
+                connectionId: "az-1",
+                projectName: "Project",
+                repositoryId: "repo-1",
+                panelId: "agent-panel",
+              },
+            },
+          ],
+        }),
+      );
+    });
+
+    test("discovers and selects a GitHub repository without project steps", async () => {
+      const store = useAppStore();
+      store.payload = {
+        appState: {
+          settings: {
+            integrations: {
+              github: { connections: [{ id: "gh-1", label: "GitHub", enabled: true, profileId: "default" }] },
+            },
+          },
+        },
+      } as never;
+      const githubQuickFixListRepos = vi
+        .fn()
+        .mockResolvedValue({ repositories: [{ name: "repo", owner: "octo", fullName: "octo/repo" }] });
+      const onPrepareAgent = vi.fn().mockResolvedValue({ operationId: "op-2" });
+      const wrapper = mountDialog({ workspace: parent("github"), onPrepareAgent }, { githubQuickFixListRepos });
+
+      await flushPromises();
+      expect(githubQuickFixListRepos).toHaveBeenCalledWith({ connectionId: "gh-1" });
+      const preparationSelects = wrapper.findAllComponents({ name: "CustomSelect" });
+      expect(
+        preparationSelects
+          .find((select) => select.props("placeholder") === "Select a connection…")
+          ?.props("modelValue"),
+      ).toBe("gh-1");
+      expect(preparationSelects.find((select) => select.props("placeholder") === "Select a project…")).toBeUndefined();
+      await wrapper.get('[data-testid="prepare-review-agent"]').trigger("click");
+      await flushPromises();
+      expect(onPrepareAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          selections: [
+            {
+              repositoryName: "octo/repo",
+              selection: {
+                provider: "github",
+                connectionId: "gh-1",
+                owner: "octo",
+                repo: "repo",
+                panelId: "agent-panel",
+              },
+            },
+          ],
+        }),
+      );
+    });
+
+    test("updates an open agent selector immediately when a Codex command is edited", async () => {
+      const wrapper = mountDialog({ workspace: parent("azure"), onPrepareAgent: vi.fn() });
+      const addCustom = wrapper.findAll(".template-btn").find((button) => button.text().includes("Custom"));
+      expect(addCustom).toBeDefined();
+      await addCustom!.trigger("click");
+      await flushPromises();
+      await nextTick();
+      const agentSelect = wrapper
+        .findAllComponents({ name: "CustomSelect" })
+        .find((select) => select.props("placeholder") === "Select an agent tab…");
+      expect(agentSelect).toBeDefined();
+      await agentSelect!.find("button").trigger("click");
+      const commandInputs = wrapper.findAll('input[placeholder="optional boot command"]');
+      await commandInputs.at(-1)!.setValue("codex --yolo");
+      await wrapper.findAll(".panel-title-input").at(-1)!.setValue("Codex");
+      await flushPromises();
+      await nextTick();
+      expect(agentSelect?.props("options")).toEqual([
+        { value: "agent-panel", label: "Claude" },
+        expect.objectContaining({ value: expect.any(String), label: "Codex" }),
+      ]);
+      expect(document.body.querySelector(".custom-select__options")?.textContent).toContain("Codex");
+      wrapper.unmount();
+    });
+
+    test("includes a Codex tab added from the preset button and allows selecting it", async () => {
+      const wrapper = mountDialog({ workspace: parent("azure"), onPrepareAgent: vi.fn() });
+      const addCodex = wrapper.findAll(".template-btn").find((button) => button.text().includes("Codex"));
+      expect(addCodex).toBeDefined();
+      await addCodex!.trigger("click");
+      await flushPromises();
+      const agentSelect = wrapper
+        .findAllComponents({ name: "CustomSelect" })
+        .find((select) => select.props("placeholder") === "Select an agent tab…");
+      expect(agentSelect?.props("options")).toEqual([
+        { value: "agent-panel", label: "Claude" },
+        expect.objectContaining({ value: expect.any(String), label: expect.stringContaining("Codex") }),
+      ]);
+      const agentButton = agentSelect!.find("button").element;
+      const viewportHeight = window.innerHeight;
+      const buttonRect = vi
+        .spyOn(agentButton, "getBoundingClientRect")
+        .mockReturnValue(new DOMRect(10, viewportHeight - 68, 240, 36));
+      await agentSelect!.find("button").trigger("click");
+      const list = document.body.querySelector<HTMLElement>(".custom-select__list");
+      expect(list?.style.top).toBe("auto");
+      expect(list?.style.bottom).toBe("71px");
+      const codexOption = Array.from(document.body.querySelectorAll(".custom-select__option")).find((option) =>
+        option.textContent?.includes("Codex"),
+      );
+      expect(codexOption).toBeDefined();
+      buttonRect.mockReturnValue(new DOMRect(10, 100, 240, 36));
+      window.dispatchEvent(new Event("resize"));
+      await nextTick();
+      expect(list?.style.top).toBe("139px");
+      expect(list?.style.bottom).toBe("auto");
+      codexOption!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+      await nextTick();
+      expect(agentSelect?.props("modelValue")).not.toBe("agent-panel");
+    });
+
+    test("selects all discovered repositories for one queued preparation", async () => {
+      const store = useAppStore();
+      store.payload = {
+        appState: {
+          settings: {
+            integrations: { github: { connections: [{ id: "gh-1", enabled: true, profileId: "default" }] } },
+          },
+        },
+      } as never;
+      const githubQuickFixListRepos = vi.fn().mockResolvedValue({
+        repositories: [
+          { name: "one", owner: "octo", fullName: "octo/one" },
+          { name: "two", owner: "octo", fullName: "octo/two" },
+        ],
+      });
+      const onPrepareAgent = vi.fn().mockResolvedValue(undefined);
+      const wrapper = mountDialog({ workspace: parent("github"), onPrepareAgent }, { githubQuickFixListRepos });
+      await flushPromises();
+      await wrapper.get(".review-agent-repositories__heading button").trigger("click");
+      await wrapper.get('[data-testid="prepare-review-agent"]').trigger("click");
+      await flushPromises();
+      expect(onPrepareAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          selections: [
+            expect.objectContaining({
+              repositoryName: "octo/one",
+              selection: expect.objectContaining({ repo: "one" }),
+            }),
+            expect.objectContaining({
+              repositoryName: "octo/two",
+              selection: expect.objectContaining({ repo: "two" }),
+            }),
+          ],
+        }),
+      );
+    });
+  });
+
+  describe("internal MCP workspace opt-in", () => {
+    const providerParent = () => ({
+      id: "provider-parent",
+      name: "Parent",
+      icon: "AZ",
+      color: "#0078d4",
+      kind: "azure",
+      source: "manual",
+      pluginId: "",
+      cwd: "C:/repos",
+      notes: "",
+      profileId: "default",
+      activePanelId: "agent-panel",
+      panels: [{ id: "agent-panel", title: "Claude", command: "claude", shell: true, startup: "default" }],
+    });
+
+    test.each([
+      ["manual review", { review: { prKey: "azure:project:123" } }],
+      ["quickfix", { quickfix: { connectionId: "az-1" } }],
+    ])("shows an editable opt-in for a %s child workspace", async (_label, marker) => {
+      const workspace = { ...providerParent(), kind: "terminal", ...marker };
+      const wrapper = mountDialog({ workspace });
+      const toggle = wrapper.get('[data-testid="internal-mcp-checkbox"]');
+      expect((toggle.element as HTMLInputElement).checked).toBe(false);
+      await toggle.setValue(true);
+      expect((toggle.element as HTMLInputElement).checked).toBe(true);
+    });
+
+    test("shows the provider-parent default and excludes task and Docker workspaces", () => {
+      const provider = mountDialog({ workspace: providerParent() });
+      expect(provider.find('[data-testid="internal-mcp-checkbox"]').exists()).toBe(true);
+      expect(
+        provider.get('[data-testid="internal-mcp-checkbox"]').element.parentElement?.getAttribute("title"),
+      ).toContain("Sets the default for newly created New Branch and manual PR workspaces");
+      expect(provider.get(".internal-mcp-hint").text()).toContain(
+        "Applies to new workspaces created with New Branch or opened manually for a PR",
+      );
+
+      const task = mountDialog({ workspace: buildTaskDraft() });
+      const docker = mountDialog({ workspace: { ...providerParent(), kind: "docker" } });
+      expect(task.find('[data-testid="internal-mcp-checkbox"]').exists()).toBe(false);
+      expect(docker.find('[data-testid="internal-mcp-checkbox"]').exists()).toBe(false);
+    });
+  });
+
   describe("task creation mode", () => {
     test("shows 'Create task workspace' header when creating=true with task draft", () => {
       const wrapper = mountDialog({ workspace: buildTaskDraft(), creating: true });

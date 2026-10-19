@@ -20,6 +20,19 @@ import type { StatePayload } from "../../../electron/shared/types/state.js";
 
 declare const setMatchMediaResult: (query: string, matches: boolean) => void;
 
+type TestPrItem = {
+  prKey: string;
+  connectionId?: string;
+  pullRequest: { id: number };
+  repository: { name?: string };
+  author: { id?: string; displayName: string; uniqueName?: string };
+};
+type MutableInboxFixture = {
+  appState: { workspaces: Array<{ id: string; name: string; kind: string; panels: unknown[] }> };
+  azureDevops?: { inbox: { recentlyUpdated: TestPrItem[]; needsAttention: TestPrItem[] } };
+  github?: { inbox: { recentlyUpdated: TestPrItem[]; needsAttention: TestPrItem[] } };
+};
+
 function buildAzurePayload(overrides: Record<string, unknown> = {}): StatePayload {
   return {
     appState: {
@@ -485,7 +498,7 @@ describe("InboxPane (azure) show-seen gates the Seen button per tab", () => {
 
   function mountAzurePaneWithRealPrRow(payload: StatePayload) {
     const appStore = useAppStore();
-    appStore.payload = payload;
+    appStore.payload = payload as unknown as StatePayload;
     return mount(InboxPane, {
       props: { workspaceId: "ws-azure", provider: "azure" },
       global: { stubs: { PaneShell: true, AuditLog: true, AzurePipelinesTab: true } },
@@ -536,6 +549,144 @@ describe("InboxPane (azure) show-seen gates the Seen button per tab", () => {
     expect(appStore.markAzurePrSeen).toHaveBeenCalledWith("ado:1");
     expect(wrapper.findAll(".azure-repo-group")).toHaveLength(0);
     expect(wrapper.text()).not.toContain("Alice");
+  });
+});
+
+describe("InboxPane notification focus", () => {
+  beforeEach(() => {
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+  });
+
+  test.each([
+    { provider: "azure" as const, workspaceId: "ws-azure", connectionId: "ado-1", prKey: "ado:1" },
+    { provider: "github" as const, workspaceId: "ws-github", connectionId: "gh-1", prKey: "github:42" },
+  ])("opens and highlights the exact $provider pull request in All", async (target) => {
+    const appStore = useAppStore();
+    const payload = (target.provider === "azure"
+      ? buildAzurePayload()
+      : buildGitHubPayload()) as unknown as MutableInboxFixture;
+    const inbox = target.provider === "azure" ? payload.azureDevops!.inbox : payload.github!.inbox;
+    const pr = inbox.recentlyUpdated[0];
+    pr.connectionId = target.connectionId;
+    if (target.provider === "azure") inbox.needsAttention = [];
+    appStore.payload = payload as unknown as StatePayload;
+    appStore.requestInboxPullRequestFocus({
+      provider: target.provider === "github" ? "github" : "azure-devops",
+      connectionId: target.connectionId,
+      prKey: target.prKey,
+      profileId: "default",
+      workspaceId: target.workspaceId,
+    });
+
+    const wrapper = mount(InboxPane, {
+      props: { workspaceId: target.workspaceId, provider: target.provider },
+      global: { stubs: { PaneShell: true, AuditLog: true, AzurePipelinesTab: true } },
+    });
+    await flushPromises();
+
+    expect(
+      wrapper
+        .findAll(".azure-tab")
+        .find((tab) => tab.text().startsWith("All"))
+        ?.classes(),
+    ).toContain("azure-tab--active");
+    const row = wrapper.get(`[data-pr-key="${target.prKey}"][data-connection-id="${target.connectionId}"]`);
+    expect(row.classes()).toContain("azure-pr-row--focused");
+    expect(row.classes()).toContain("azure-pr-row--expanded");
+    expect(appStore.inboxPullRequestFocus).toBeNull();
+    wrapper.unmount();
+  });
+
+  test("only the requested same-provider inbox consumes the focus request", async () => {
+    const appStore = useAppStore();
+    const payload = buildAzurePayload() as unknown as MutableInboxFixture;
+    payload.appState.workspaces.push({ id: "ws-azure-secondary", name: "Second Inbox", kind: "azure", panels: [] });
+    appStore.payload = payload as unknown as StatePayload;
+    appStore.requestInboxPullRequestFocus({
+      provider: "azure-devops",
+      connectionId: "ado-1",
+      prKey: "ado:1",
+      profileId: "default",
+      workspaceId: "ws-azure-secondary",
+    });
+
+    const first = mount(InboxPane, {
+      props: { workspaceId: "ws-azure", provider: "azure" },
+      global: { stubs: { PaneShell: true, AuditLog: true, AzurePipelinesTab: true } },
+    });
+    const second = mount(InboxPane, {
+      props: { workspaceId: "ws-azure-secondary", provider: "azure" },
+      global: { stubs: { PaneShell: true, AuditLog: true, AzurePipelinesTab: true } },
+    });
+    await flushPromises();
+
+    expect(appStore.inboxPullRequestFocus).toBeNull();
+    expect(first.find(".azure-pr-row--focused").exists()).toBe(false);
+    expect(second.find(".azure-pr-row--focused").exists()).toBe(true);
+    first.unmount();
+    second.unmount();
+  });
+
+  test("clears conflicting repo and author filters, then scrolls to the requested Azure PR", async () => {
+    const appStore = useAppStore();
+    const payload = buildAzurePayload() as unknown as MutableInboxFixture;
+    const inbox = payload.azureDevops!.inbox;
+    const target = inbox.recentlyUpdated[0];
+    const other = structuredClone(target);
+    other.prKey = "ado:2";
+    other.pullRequest.id = 2;
+    other.author = { id: "bob", displayName: "Bob", uniqueName: "bob@example.com" };
+    const third = structuredClone(other);
+    third.prKey = "ado:3";
+    third.pullRequest.id = 3;
+    third.repository.name = "other-repo";
+    inbox.recentlyUpdated = [target, other, third];
+    inbox.needsAttention = [target, other, third];
+    appStore.payload = payload as unknown as StatePayload;
+    const scrollIntoView = vi.fn();
+    const originalDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView");
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scrollIntoView });
+
+    try {
+      const wrapper = mount(InboxPane, {
+        props: { workspaceId: "ws-azure", provider: "azure" },
+        global: { stubs: { PaneShell: true, AuditLog: true, AzurePipelinesTab: true } },
+      });
+      await flushPromises();
+      await wrapper
+        .findAll(".azure-inbox__filter-button")
+        .find((button) => button.text().includes("platform-api"))!
+        .trigger("click");
+      await wrapper
+        .findAll(".azure-inbox__filter-button")
+        .find((button) => button.text() === "Bob")!
+        .trigger("click");
+
+      appStore.requestInboxPullRequestFocus({
+        provider: "azure-devops",
+        connectionId: "ado-1",
+        prKey: "ado:1",
+        profileId: "default",
+        workspaceId: "ws-azure",
+      });
+      await flushPromises();
+
+      const row = wrapper.get('[data-pr-key="ado:1"][data-connection-id="ado-1"]');
+      expect(row.classes()).toContain("azure-pr-row--focused");
+      expect(row.classes()).toContain("azure-pr-row--expanded");
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: "center", behavior: "smooth" });
+      expect(
+        wrapper
+          .findAll(".azure-inbox__filter-button")
+          .find((button) => button.text() === "All repos")
+          ?.classes(),
+      ).toContain("button--active");
+      wrapper.unmount();
+    } finally {
+      if (originalDescriptor) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", originalDescriptor);
+      else Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
+    }
   });
 });
 

@@ -38,6 +38,8 @@ import type {
   ReviewGitSubject,
 } from "../review-git/types.js";
 
+const cacheRepoInitializations = new Map<string, Promise<string>>();
+
 interface PrSummaryItem {
   prKey?: string;
   lastRemoteActivityAt?: string | null;
@@ -812,24 +814,37 @@ export class BaseProviderManager extends EventEmitter {
       shortPathKey(connectionId, "connection"),
       shortPathKey(repoIdentifier, "repository"),
     );
-    const repositoryExists = await exists(path.join(repositoryRoot, ".git"));
-    await mkdir(path.dirname(repositoryRoot), { recursive: true });
-    if (!repositoryExists) {
-      try {
-        await this.runGit(process.cwd(), ["clone", "--no-checkout", "--filter=blob:none", remoteUrl, repositoryRoot], {
-          login,
-          token,
-        });
-      } catch (error) {
-        this.log.warn("partial clone failed, retrying with full clone", {
-          repository: repoLabel,
-          err: (error as Error)?.message || String(error),
-        });
-        await rm(repositoryRoot, { recursive: true, force: true }).catch(() => {});
-        await this.runGit(process.cwd(), ["clone", "--no-checkout", remoteUrl, repositoryRoot], { login, token });
+    const lockKey = path.resolve(repositoryRoot);
+    const existingInitialization = cacheRepoInitializations.get(lockKey);
+    if (existingInitialization) return existingInitialization;
+
+    const initialization = (async () => {
+      const repositoryExists = await exists(path.join(repositoryRoot, ".git"));
+      await mkdir(path.dirname(repositoryRoot), { recursive: true });
+      if (!repositoryExists) {
+        try {
+          await this.runGit(
+            process.cwd(),
+            ["clone", "--no-checkout", "--filter=blob:none", remoteUrl, repositoryRoot],
+            { login, token },
+          );
+        } catch (error) {
+          this.log.warn("partial clone failed, retrying with full clone", {
+            repository: repoLabel,
+            err: (error as Error)?.message || String(error),
+          });
+          await rm(repositoryRoot, { recursive: true, force: true }).catch(() => {});
+          await this.runGit(process.cwd(), ["clone", "--no-checkout", remoteUrl, repositoryRoot], { login, token });
+        }
       }
+      return repositoryRoot;
+    })();
+    cacheRepoInitializations.set(lockKey, initialization);
+    try {
+      return await initialization;
+    } finally {
+      if (cacheRepoInitializations.get(lockKey) === initialization) cacheRepoInitializations.delete(lockKey);
     }
-    return repositoryRoot;
   }
 
   /**
@@ -1360,6 +1375,7 @@ export class BaseProviderManager extends EventEmitter {
       profileId: reviewProfileId,
       activePanelId: panels[0]?.id || "",
       panels,
+      internalMcpEnabled: !isolated && parentWorkspace?.internalMcpEnabled === true,
       review: hooks.buildReviewMetadata(summary, checkout, { parentWorkspaceId: parentWorkspaceId || "" }),
     };
     await this.reviewStore.upsertTrackedPullRequest(prKey, {
@@ -1511,6 +1527,7 @@ export class BaseProviderManager extends EventEmitter {
       profileId: activeProfile,
       activePanelId: panels[0]?.id || "",
       panels,
+      internalMcpEnabled: parentWorkspace?.internalMcpEnabled === true,
       review,
       quickfix,
     };

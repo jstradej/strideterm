@@ -519,6 +519,7 @@ export class SessionManager extends EventEmitter {
    * `sessions` alone would never know they existed.
    */
   failedSpawns: Set<string>;
+  private temporarySessionIds = new Set<string>();
   getSessionEnv: ((ctx: SessionEnvContext) => Record<string, string>) | null;
   getSessionLaunch: ((ctx: SessionEnvContext) => SessionLaunchOverride | null) | null;
   isBracketedPasteEnabled: ((sessionId: string) => boolean) | null;
@@ -1059,6 +1060,14 @@ export class SessionManager extends EventEmitter {
     }
 
     return session;
+  }
+
+  retainTemporarySession(sessionId: string): void {
+    this.temporarySessionIds.add(sessionId);
+  }
+
+  releaseTemporarySession(sessionId: string): void {
+    this.temporarySessionIds.delete(sessionId);
   }
 
   async registerProcessSession(
@@ -1725,7 +1734,7 @@ export class SessionManager extends EventEmitter {
     }
 
     for (const [sessionId, session] of this.sessions.entries()) {
-      if (sessionId.startsWith("ssh-test:")) continue;
+      if (sessionId.startsWith("ssh-test:") || this.temporarySessionIds.has(sessionId)) continue;
       if (validSessionIds.has(sessionId)) {
         continue;
       }
@@ -1751,7 +1760,7 @@ export class SessionManager extends EventEmitter {
     // them. Prune the ones whose panel is gone here too, or the runtime's replay
     // entry for the surfaced error message leaks for a pane that no longer exists.
     for (const sessionId of this.failedSpawns) {
-      if (sessionId.startsWith("ssh-test:")) continue;
+      if (sessionId.startsWith("ssh-test:") || this.temporarySessionIds.has(sessionId)) continue;
       if (validSessionIds.has(sessionId)) continue;
       this.failedSpawns.delete(sessionId);
       this.emit("terminal:removed", { sessionId });

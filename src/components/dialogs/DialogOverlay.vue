@@ -40,6 +40,7 @@ const DIALOGS = {
   HelpDialog: defineAsyncComponent(() => import("./HelpDialog.vue")),
   NewWorkspacePicker: defineAsyncComponent(() => import("./NewWorkspacePicker.vue")),
   WorkspaceDialog: defineAsyncComponent(() => import("./WorkspaceDialog.vue")),
+  ReviewAgentPreparationDialog: defineAsyncComponent(() => import("./ReviewAgentPreparationDialog.vue")),
   CompanionAgentDialog: defineAsyncComponent(() => import("./CompanionAgentDialog.vue")),
   SettingsDialog: defineAsyncComponent(() => import("./SettingsDialog.vue")),
   ProfilesDialog: defineAsyncComponent(() => import("./ProfilesDialog.vue")),
@@ -109,8 +110,10 @@ function releaseTerminalKeyboardCapture(preserve?: Element | null) {
 
 function testTerminalAt(target: EventTarget | null): Element | null {
   if (hasDecision.value || !(target instanceof Node)) return null;
-  const activeTest = overlayRef.value?.querySelector(".ssh-connection-test");
-  const terminal = activeTest?.querySelector(".ssh-connection-test__terminal");
+  const activeTest = overlayRef.value?.querySelector(".ssh-connection-test, .review-agent-preparation-dialog");
+  const terminal = activeTest?.querySelector(
+    ".ssh-connection-test__terminal, .review-agent-preparation-dialog__terminal",
+  );
   return terminal?.contains(target) ? terminal : null;
 }
 

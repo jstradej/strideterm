@@ -709,12 +709,12 @@ describe("SettingsMobileTab", () => {
   // The access controls stay behind a disclosure —
   // were a question the screen had already answered for itself. Pairing hands out everything; the
   // boxes are behind a disclosure for whoever actually came to restrict something.
-  test("pairing grants everything by default, with the pickers behind a disclosure", async () => {
+  test("pairing grants all capabilities by default, with the pickers behind a disclosure", async () => {
     const { wrapper, transport } = await mountTab({}, { enabled: true, devices: [] });
 
     // Stated in a sentence, not in a row of boxes.
-    expect(wrapper.find(".pairing-section").text()).toContain("all profiles and all standard capabilities");
-    expect(wrapper.find(".pairing-section").text()).toContain("starting PR reviews is off");
+    expect(wrapper.find(".pairing-section").text()).toContain("all profiles and everything a paired phone can do");
+    expect(wrapper.find(".pairing-section").text()).not.toContain("starting PR reviews is off");
     const limits = wrapper.find("details.pairing-limits");
     expect(limits.exists()).toBe(true);
     expect(limits.attributes("open")).toBeUndefined();
@@ -734,6 +734,7 @@ describe("SettingsMobileTab", () => {
     expect(grant.profileAllowlist).toEqual(["default"]);
     expect(grant.capabilities).toEqual([
       "notifications",
+      "review.start",
       "status.read",
       "task.control",
       "task.destructive",
@@ -742,20 +743,21 @@ describe("SettingsMobileTab", () => {
     ]);
   });
 
-  test("only grants PR review start when the person explicitly selects it", async () => {
+  test("allows PR review start to be excluded from the default grant", async () => {
     const { wrapper, transport } = await mountTab({}, { enabled: true, devices: [] });
     const reviewLabel = wrapper
       .findAll(".pairing-limits .pairing-picker label")
       .find((label) => label.text() === "Start PR reviews");
     expect(reviewLabel).toBeTruthy();
-    await reviewLabel!.find("input").setValue(true);
+    expect((reviewLabel!.find("input").element as HTMLInputElement).checked).toBe(true);
+    await reviewLabel!.find("input").setValue(false);
     await wrapper
       .findAll("button")
       .find((button) => button.text().includes("Pair a phone"))!
       .trigger("click");
     await flushPromises();
 
-    expect(transport.createMobilePairingInvitation.mock.calls[0][0].capabilities).toContain("review.start");
+    expect(transport.createMobilePairingInvitation.mock.calls[0][0].capabilities).not.toContain("review.start");
   });
 
   test("shows useful copy for the Electron-wrapped active-plan pairing refusal", async () => {
@@ -789,6 +791,13 @@ describe("SettingsMobileTab", () => {
       .find((b) => b.text() === "Edit access")!
       .trigger("click");
     const form = wrapper.find(".device-item__allowlist-form");
+    const review = form
+      .findAll(".pairing-picker")[1]
+      .findAll("input")
+      .find((input) => (input.element as HTMLInputElement).value === "review.start");
+    expect(review).toBeTruthy();
+    expect((review!.element as HTMLInputElement).checked).toBe(false);
+    await review!.setValue(true);
     const profile = form.findAll(".pairing-picker")[0].find("input");
     expect((profile.element as HTMLInputElement).checked).toBe(false);
     await profile.setValue(true);
@@ -796,7 +805,7 @@ describe("SettingsMobileTab", () => {
     await flushPromises();
     expect(transport.updateMobileDeviceAllowlist).toHaveBeenCalledWith({
       deviceId: "mobile-1",
-      capabilities: ["task.control"],
+      capabilities: ["task.control", "review.start"],
       excludedProfileIds: ["default"],
     });
   });
@@ -807,7 +816,7 @@ describe("SettingsMobileTab", () => {
     const capabilityBoxes = wrapper.find("details.pairing-limits").findAll(".pairing-picker")[0].findAll("input");
     await capabilityBoxes[0].setValue(false);
 
-    expect(wrapper.find(".pairing-section").text()).toContain("5 of 7 capabilities");
+    expect(wrapper.find(".pairing-section").text()).toContain("6 of 7 capabilities");
     expect(wrapper.find(".pairing-section").text()).not.toContain("everything a paired phone can do");
   });
 

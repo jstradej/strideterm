@@ -217,6 +217,24 @@ export const useAppStore = defineStore("app", () => {
     if (!connectionId) return;
     inboxConnectionFocus.value = { provider: provider || "", connectionId, ts: Date.now() };
   }
+  const inboxPullRequestFocus = ref<{
+    provider: "azure-devops" | "github";
+    connectionId: string;
+    prKey: string;
+    profileId: string;
+    workspaceId: string;
+    ts: number;
+  } | null>(null);
+  function requestInboxPullRequestFocus(request: {
+    provider: "azure-devops" | "github";
+    connectionId: string;
+    prKey: string;
+    profileId: string;
+    workspaceId: string;
+  }): void {
+    if (!request.connectionId || !request.prKey || !request.profileId || !request.workspaceId) return;
+    inboxPullRequestFocus.value = { ...request, ts: Date.now() };
+  }
 
   // --- Race condition prevention ---
   const pendingWorkspaceActivationId = ref("");
@@ -1662,6 +1680,7 @@ export const useAppStore = defineStore("app", () => {
     activeSessionId,
     myActiveWorkspaceId,
     myActiveProfileId,
+    activateWorkspaceInGrid,
     splitGroup,
     hiddenViewIds,
     workspaceTabs: workspaceTabs as AnyApi,
@@ -1694,6 +1713,8 @@ export const useAppStore = defineStore("app", () => {
     withSuppressedBroadcast,
     getPanelByViewId,
     createWorktree: workspaceActions.createWorktree,
+    subscribeReviewAgentPreparation: workspaceActions.subscribeReviewAgentPreparation,
+    getReviewAgentPreparationResult: workspaceActions.getReviewAgentPreparationResult,
     quickAddTemplateTab: workspaceActions.quickAddTemplateTab,
     resolveViewerProfileId,
   });
@@ -2453,6 +2474,8 @@ export const useAppStore = defineStore("app", () => {
     recoveryCandidates,
     inboxConnectionFocus,
     requestInboxConnectionFocus,
+    inboxPullRequestFocus,
+    requestInboxPullRequestFocus,
     // Per-window identity
     myWindowId,
     myWindowSlot,

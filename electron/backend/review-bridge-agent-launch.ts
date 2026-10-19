@@ -113,6 +113,7 @@ interface BuildLaunchInput extends GrantMcpServers {
    * do not inherit that environment get it handed over explicitly.
    */
   reviewGitEnv?: Record<string, string>;
+  internalMcpEnv?: Record<string, string>;
   /** One-shot first turn for a backend-started review action. Ordinary tab launches omit this. */
   initialPrompt?: string;
   /** Constrains the bridge to local draft tools for automated basic reviews. */
@@ -564,9 +565,12 @@ function buildCopilotLaunch({
   context,
   processInfo,
   reviewGitEnv,
+  internalMcp,
+  internalMcpEnv,
   initialPrompt,
   draftOnlyReview,
 }: BuildLaunchInput): AgentLaunch {
+  const installs = grantMcpInstalls({ internalMcp });
   const mcp = buildMcpServerSpec({ context, processInfo, draftOnlyReview });
   const platform = processInfo?.platform || process.platform;
   const policy =
@@ -588,6 +592,9 @@ function buildCopilotLaunch({
   const reviewGitPlaceholders = Object.fromEntries(
     Object.keys(reviewGitEnv || {}).map((name) => [name, `\${${name}}`]),
   );
+  const internalMcpPlaceholders = Object.fromEntries(
+    installs.flatMap((install) => install.grantEnvVars.map((name) => [name, `\${${name}}`] as const)),
+  );
   // Copilot exposes per-session MCP servers via --additional-mcp-config. The
   // argument accepts inline JSON (matches Claude's --mcp-config shape).
   args.push(
@@ -597,6 +604,16 @@ function buildCopilotLaunch({
         args: mcp.args,
         env: { ...(mcp.env || {}), ...reviewGitPlaceholders },
       },
+      ...Object.fromEntries(
+        installs.map((install) => [
+          install.name,
+          {
+            command: install.spec.command,
+            args: install.spec.args,
+            env: { ...(install.spec.env || {}), ...internalMcpPlaceholders },
+          },
+        ]),
+      ),
     }),
   );
   if (automaticReview) {
@@ -613,8 +630,8 @@ function buildCopilotLaunch({
     args,
     workspace,
     processInfo,
-    win32Env: { ...(mcp.env || {}), ...(policy?.env || {}) },
-    nonWin32Env: { ...(mcp.env || {}), ...(policy?.env || {}) },
+    win32Env: { ...(mcp.env || {}), ...(policy?.env || {}), ...installsEnv(installs), ...(internalMcpEnv || {}) },
+    nonWin32Env: { ...(mcp.env || {}), ...(policy?.env || {}), ...installsEnv(installs), ...(internalMcpEnv || {}) },
   });
 }
 
@@ -624,9 +641,12 @@ function buildOpencodeLaunch({
   context,
   processInfo,
   reviewGitEnv,
+  internalMcp,
+  internalMcpEnv,
   initialPrompt,
   draftOnlyReview,
 }: BuildLaunchInput): AgentLaunch {
+  const installs = grantMcpInstalls({ internalMcp });
   const mcp = buildMcpServerSpec({ context, processInfo, draftOnlyReview });
   const platform = processInfo?.platform || process.platform;
   const policy =
@@ -658,10 +678,27 @@ function buildOpencodeLaunch({
         environment: { ...(mcp.env || {}), ...(reviewGitEnv || {}) },
         enabled: true,
       },
+      ...Object.fromEntries(
+        installs.map((install) => [
+          install.name,
+          {
+            type: "local",
+            command: [install.spec.command, ...install.spec.args],
+            environment: { ...(install.spec.env || {}), ...(internalMcpEnv || {}) },
+            enabled: true,
+          },
+        ]),
+      ),
     },
     ...(policy?.opencodePermission ? { permission: policy.opencodePermission } : {}),
   });
-  const env = { ...(mcp.env || {}), ...(policy?.env || {}), OPENCODE_CONFIG_CONTENT: configContent };
+  const env = {
+    ...(mcp.env || {}),
+    ...(policy?.env || {}),
+    ...installsEnv(installs),
+    ...(internalMcpEnv || {}),
+    OPENCODE_CONFIG_CONTENT: configContent,
+  };
   if (automaticReview) args.push("run", initialPrompt!.trim());
   else if (initialPrompt?.trim()) args.push("--prompt", initialPrompt.trim());
 
@@ -724,6 +761,7 @@ export function buildReviewAgentLaunch({
   processInfo,
   sshMcp,
   internalMcp,
+  internalMcpEnv,
   reviewGitEnv,
   initialPrompt,
   draftOnlyReview,
@@ -740,7 +778,7 @@ export function buildReviewAgentLaunch({
       context,
       processInfo,
       sshMcp,
-      internalMcp,
+      internalMcp: draftOnlyReview ? undefined : internalMcp,
       initialPrompt,
       draftOnlyReview,
     });
@@ -752,13 +790,23 @@ export function buildReviewAgentLaunch({
       context,
       processInfo,
       sshMcp,
-      internalMcp,
+      internalMcp: draftOnlyReview ? undefined : internalMcp,
       initialPrompt,
       draftOnlyReview,
     });
   }
   if (agent === "copilot") {
-    return buildCopilotLaunch({ workspace, panel, context, processInfo, reviewGitEnv, initialPrompt, draftOnlyReview });
+    return buildCopilotLaunch({
+      workspace,
+      panel,
+      context,
+      processInfo,
+      reviewGitEnv,
+      internalMcp: draftOnlyReview ? undefined : internalMcp,
+      internalMcpEnv: draftOnlyReview ? undefined : internalMcpEnv,
+      initialPrompt,
+      draftOnlyReview,
+    });
   }
   if (agent === "opencode") {
     return buildOpencodeLaunch({
@@ -767,6 +815,8 @@ export function buildReviewAgentLaunch({
       context,
       processInfo,
       reviewGitEnv,
+      internalMcp: draftOnlyReview ? undefined : internalMcp,
+      internalMcpEnv: draftOnlyReview ? undefined : internalMcpEnv,
       initialPrompt,
       draftOnlyReview,
     });

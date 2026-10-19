@@ -72,6 +72,7 @@ function makeCtx(initialPayload: AnyApi, apiOverrides: AnyApi = {}) {
     activeSessionId,
     myActiveWorkspaceId,
     myActiveProfileId,
+    activateWorkspaceInGrid: vi.fn(async () => undefined),
     isRemoteTransport,
     splitGroup,
     hiddenViewIds,
@@ -90,6 +91,50 @@ function makeCtx(initialPayload: AnyApi, apiOverrides: AnyApi = {}) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return { ctx: ctx as any, api, payload, optimisticallyDeletedIds, overlay, overlayProps };
 }
+
+describe("review agent preparation operation delivery", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
+  it("retains a result that arrives before the start response and suppresses the generic toast", () => {
+    const operation = {
+      operationId: "op-prepare",
+      kind: "review-agent.prepare",
+      profileId: "profile-a",
+      finishedAt: new Date().toISOString(),
+      result: { sessionId: "temporary-session", repositoryName: "repo", agentName: "claude" },
+    };
+    const { ctx } = makeCtx({ appState: { workspaces: [] }, operations: { lastResults: [] } });
+    const actions = createWorkspaceActions(ctx);
+
+    actions.reportOperationFinished(operation);
+    expect(actions.getReviewAgentPreparationResult("op-prepare")).toEqual(operation);
+
+    expect(ctx.activateWorkspaceInGrid).not.toHaveBeenCalled();
+    expect(useNotificationStore().sessions).toHaveLength(0);
+  });
+
+  it("does not deliver an operation from another profile to a subscriber", () => {
+    const operation = {
+      operationId: "op-prepare-other-profile",
+      kind: "review-agent.prepare",
+      profileId: "profile-a",
+      finishedAt: new Date().toISOString(),
+      result: { sessionId: "temporary-session", repositoryName: "repo", agentName: "claude" },
+    };
+    const { ctx } = makeCtx({ appState: { workspaces: [] }, operations: { lastResults: [] } });
+    const actions = createWorkspaceActions(ctx);
+    const listener = vi.fn();
+    actions.subscribeReviewAgentPreparation(listener);
+    ctx.myActiveProfileId.value = "profile-b";
+
+    actions.reportOperationFinished(operation);
+
+    expect(ctx.activateWorkspaceInGrid).not.toHaveBeenCalled();
+    expect(listener).not.toHaveBeenCalled();
+  });
+});
 
 describe("createWorkspaceActions.deleteWorkspace (optimistic)", () => {
   beforeEach(() => {

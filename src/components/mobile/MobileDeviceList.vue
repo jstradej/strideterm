@@ -193,16 +193,17 @@
         >
           <p>Profiles excluded from this phone</p>
           <div class="pairing-picker">
-            <label v-for="profile in profiles" :key="profile.id"
-              ><input v-model="draft.excludedProfileIds" type="checkbox" :value="profile.id" />
-              {{ profile.name }}</label
-            >
+            <label v-for="profile in profiles" :key="profile.id" class="access-picker__option">
+              <input v-model="draft.excludedProfileIds" type="checkbox" :value="profile.id" />
+              <span>{{ profile.name }}</span>
+            </label>
           </div>
           <p>What it may do</p>
           <div class="pairing-picker">
-            <label v-for="cap in capabilities" :key="cap.id"
-              ><input v-model="draft.capabilities" type="checkbox" :value="cap.id" /> {{ cap.label }}</label
-            >
+            <label v-for="cap in capabilities" :key="cap.id" class="access-picker__option">
+              <input v-model="draft.capabilities" type="checkbox" :value="cap.id" />
+              <span>{{ cap.label }}</span>
+            </label>
           </div>
           <button class="button" type="button" :disabled="isBusy(device)" @click="saveAccess(device)">
             <span v-if="pendingAction(device, 'access')" class="mobile-device-card__spinner" aria-hidden="true"></span>
@@ -628,9 +629,32 @@ async function revoke(device: Device): Promise<void> {
   overflow-wrap: anywhere;
 }
 .mobile-device-card__access .pairing-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 4px 10px;
+}
+.access-picker__option {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px 12px;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.access-picker__option:hover {
+  background: color-mix(in srgb, var(--fg, #fff) 5%, transparent);
+}
+.access-picker__option input {
+  flex: 0 0 auto;
+  width: auto;
+  margin: 2px 0 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+.access-picker__option span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .mobile-device-card__access p {
   margin: 6px 0 0;

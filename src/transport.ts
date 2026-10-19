@@ -24,7 +24,7 @@ import {
   operationFinishedSchema,
   type OperationFinished,
 } from "../electron/shared/operation-events.js";
-import type { ProfilePayload, ReviewGitStart } from "../electron/backend/ipc-schemas.js";
+import type { ProfilePayload, ReviewGitStart, StartReviewAgentPreparation } from "../electron/backend/ipc-schemas.js";
 import {
   startPullRequestReviewSchema,
   type StartPullRequestReviewInput,
@@ -2337,6 +2337,10 @@ export function createRemoteTransport(): Transport {
         "/api/review/start",
         startPullRequestReviewSchema.parse(payload),
       ) as Promise<StartPullRequestReviewResult>,
+    startReviewAgentPreparation: (payload: StartReviewAgentPreparation) =>
+      fetchJson("/api/review/agent-prepare", payload) as Promise<{ operationId: string }>,
+    stopReviewAgentPreparation: (payload: { operationId?: string; sessionId?: string }) =>
+      fetchJson("/api/review/agent-prepare/stop", payload) as Promise<{ ok: boolean }>,
     queryAzureAuditLog: (filters) => fetchJson("/api/azure/audit-log/query", filters),
     getAzureAuditStats: (filters) => fetchJson("/api/azure/audit-log/stats", filters),
     // Read-only, hence remote-reachable — unlike the setting that produces the

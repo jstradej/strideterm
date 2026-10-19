@@ -118,11 +118,13 @@ function updateListPosition() {
   listStyle.value = {
     position: "fixed",
     left: `${rect.left}px`,
+    right: "auto",
     minWidth: `${rect.width}px`,
     maxWidth: `${Math.max(160, vw - rect.left - 8)}px`,
     width: "max-content",
     maxHeight: `${maxHeight}px`,
-    ...(flipAbove ? { bottom: `${vh - rect.top + 3}px` } : { top: `${rect.bottom + 3}px` }),
+    top: flipAbove ? "auto" : `${rect.bottom + 3}px`,
+    bottom: flipAbove ? `${vh - rect.top + 3}px` : "auto",
   };
 }
 

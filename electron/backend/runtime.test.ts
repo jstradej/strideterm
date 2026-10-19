@@ -1559,6 +1559,7 @@ describe("runtime integration", () => {
       kind: "terminal",
       cwd: process.cwd(),
       profileId: "default",
+      internalMcpEnabled: true,
       activePanelId: "agent",
       panels: [
         { id: "agent", title: "Claude", command: "claude" },
@@ -1582,6 +1583,7 @@ describe("runtime integration", () => {
     const fixture = await createFixture({
       initialState: { workspaces: [workspace] },
       dependencies: {
+        enableInternalMcp: true,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         createReviewGitBroker: (options: any) => {
           brokerOptions = options;
@@ -1619,7 +1621,12 @@ describe("runtime integration", () => {
     expect(mintCount).toBe(1);
     expect(launch.env.STRIDETERM_REVIEW_GIT_URL).toBe("http://127.0.0.1:43130/review-git");
     expect(launch.env.STRIDETERM_REVIEW_GIT_CAPABILITY).toBe("review-git-secret-test-value-1");
+    expect(launch.env.STRIDETERM_INTERNAL_MCP_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/internal-mcp$/);
+    const internalCapability = launch.env.STRIDETERM_INTERNAL_MCP_CAPABILITY;
+    expect(internalCapability).toBeTruthy();
+    expect(launch.args.join(" ")).toContain('"strideterm"');
     expect(launch.args.join(" ")).not.toContain("review-git-secret-test-value");
+    expect(launch.args.join(" ")).not.toContain(internalCapability);
     expect(JSON.stringify(fixture.store.getState())).not.toContain("review-git-secret-test-value");
     // The briefing that ships with it tells the agent to ask with AskUserQuestion and wait.
     expect(launch.args.join(" ")).toContain("AskUserQuestion");
@@ -13063,6 +13070,227 @@ describe("headless pull request review start", () => {
   });
 });
 
+describe("review agent preparation", () => {
+  test("uses the Azure parent cache root, launches the selected panel, and rejects invalid scope", async () => {
+    const parentRoot = await fs.mkdtemp(path.join(os.tmpdir(), "review-agent-parent-"));
+    tempPaths.push(parentRoot);
+    const cacheRepoPath = path.join(parentRoot, "repos", "connection", "repository");
+    await fs.mkdir(cacheRepoPath, { recursive: true });
+    const connection = {
+      id: "ado-1",
+      enabled: true,
+      profileId: "profile-a",
+      tokenRef: "ado-token",
+      orgUrl: "https://dev.azure.com/acme",
+      login: "me",
+      reviewRoot: parentRoot,
+    };
+    const discoveredRepository = {
+      id: "repo-1",
+      name: "web-app",
+      remoteUrl: "https://dev.azure.com/acme/Platform/_git/web-app",
+    };
+    const cacheRequests: Array<Record<string, unknown>> = [];
+    let cacheBarrier: { promise: Promise<void>; release: () => void; started: () => void } | null = null;
+    class PreparationAzureManager extends EventEmitter {
+      getSnapshot() {
+        return {
+          connections: [connection],
+          inbox: { needsMyReview: [], myPullRequests: [], recentlyUpdated: [], needsAttention: [] },
+          trackedPullRequests: {},
+          pullRequests: {},
+          sync: { running: false, lastStartedAt: null, lastCompletedAt: null },
+        };
+      }
+      async sync() {
+        return this.getSnapshot();
+      }
+      stopPolling() {}
+      configurePolling() {}
+      setReviewWorkspaceMetadataStore() {}
+      async listQuickFixRepositories(connectionId: string, projectName: string) {
+        expect(connectionId).toBe(connection.id);
+        expect(projectName).toBe("Platform");
+        return [discoveredRepository];
+      }
+      resolveAzureConnectionAndToken(connectionId: string) {
+        expect(connectionId).toBe(connection.id);
+        return { connection, token: "secret-token" };
+      }
+      async ensureCacheRepo(input: Record<string, unknown>) {
+        cacheRequests.push(input);
+        if (cacheBarrier) {
+          cacheBarrier.started();
+          await cacheBarrier.promise;
+        }
+        return cacheRepoPath;
+      }
+    }
+    const fixture = await createFixture({
+      initialState: {
+        profiles: [
+          { id: "default", name: "Default", workspaceIds: [] },
+          { id: "profile-a", name: "A", workspaceIds: [] },
+        ],
+        workspaces: [
+          {
+            id: "azure-parent",
+            name: "Azure project",
+            kind: "azure",
+            cwd: parentRoot,
+            profileId: "profile-a",
+            panels: [
+              { id: "agent-panel", title: "Claude", command: "claude --model sonnet", shell: true },
+              { id: "other-panel", title: "Shell", command: "", shell: true },
+            ],
+          },
+        ],
+        windowSlots: [
+          {
+            id: "win-default",
+            profileId: "default",
+            activeWorkspaceId: "",
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 900, height: 700 },
+            lastFocusedAt: 1,
+          },
+          {
+            id: "win-profile-a",
+            profileId: "profile-a",
+            activeWorkspaceId: "azure-parent",
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 900, height: 700 },
+            lastFocusedAt: 2,
+          },
+        ],
+        settings: { integrations: { azureDevops: { enabled: true, connections: [connection] } } },
+      },
+      dependencies: { AzureDevOpsManager: PreparationAzureManager },
+    });
+    fixtures.push(fixture);
+
+    await expect(
+      fixture.runtime.startReviewAgentPreparation(
+        {
+          parentWorkspaceId: "azure-parent",
+          provider: "azure-devops",
+          connectionId: "ado-1",
+          projectName: "Platform",
+          repositoryId: "repo-1",
+          panelId: "agent-panel",
+          idempotencyKey: "setup-cross-profile",
+        },
+        "win-default",
+      ),
+    ).rejects.toThrow("Cross-profile refused");
+    await expect(
+      fixture.runtime.startReviewAgentPreparation(
+        {
+          parentWorkspaceId: "azure-parent",
+          provider: "azure-devops",
+          connectionId: "ado-1",
+          projectName: "Platform",
+          repositoryId: "repo-1",
+          panelId: "other-panel",
+          idempotencyKey: "setup-invalid-panel",
+        },
+        "win-profile-a",
+      ),
+    ).rejects.toThrow("Choose a saved local");
+    expect(cacheRequests).toHaveLength(0);
+
+    let releaseCache!: () => void;
+    let cacheStarted!: () => void;
+    const cacheStartedPromise = new Promise<void>((resolve) => (cacheStarted = resolve));
+    const cacheGate = new Promise<void>((resolve) => (releaseCache = resolve));
+    cacheBarrier = { promise: cacheGate, release: releaseCache, started: cacheStarted };
+    const cancelled = await fixture.runtime.startReviewAgentPreparation(
+      {
+        parentWorkspaceId: "azure-parent",
+        provider: "azure-devops",
+        connectionId: "ado-1",
+        projectName: "Platform",
+        repositoryId: "repo-1",
+        panelId: "agent-panel",
+        idempotencyKey: "setup-cancel-before-launch",
+      },
+      "win-profile-a",
+    );
+    await cacheStartedPromise;
+    expect(
+      await fixture.runtime.stopReviewAgentPreparation({ operationId: cancelled.operationId }, "win-profile-a"),
+    ).toEqual({ ok: true });
+    releaseCache();
+    await vi.waitFor(() =>
+      expect(fixture.runtime.getPayload().operations.lastResults).toContainEqual(
+        expect.objectContaining({
+          operationId: cancelled.operationId,
+          error: expect.objectContaining({ message: "Review setup was closed." }),
+        }),
+      ),
+    );
+    expect([...fixture.sessionManager.sessions.keys()].some((id: string) => id.startsWith("review-agent-setup-"))).toBe(
+      false,
+    );
+    cacheBarrier = null;
+    cacheRequests.length = 0;
+
+    const accepted = await fixture.runtime.startReviewAgentPreparation(
+      {
+        parentWorkspaceId: "azure-parent",
+        provider: "azure-devops",
+        connectionId: "ado-1",
+        projectName: "Platform",
+        repositoryId: "repo-1",
+        panelId: "agent-panel",
+        idempotencyKey: "setup-valid",
+      },
+      "win-profile-a",
+    );
+    await vi.waitFor(() =>
+      expect(fixture.runtime.getPayload().operations.lastResults).toContainEqual(
+        expect.objectContaining({
+          operationId: accepted.operationId,
+          kind: "review-agent.prepare",
+          result: expect.objectContaining({ agentName: "claude", repositoryName: "web-app" }),
+        }),
+      ),
+    );
+    const finished = fixture.runtime
+      .getPayload()
+      .operations.lastResults.find((item) => item.operationId === accepted.operationId);
+    const resultSessionId = finished && "result" in finished ? finished.result.sessionId : undefined;
+    expect(cacheRequests).toEqual([
+      expect.objectContaining({
+        connection,
+        repository: discoveredRepository,
+        reviewRoot: parentRoot,
+      }),
+    ]);
+    expect(resultSessionId).toMatch(/^review-agent-setup-[0-9a-f-]+:agent$/);
+    expect(
+      fixture.store
+        .getState()
+        .workspaces.find((workspace: WorkspaceState) => workspace.id.startsWith("review-agent-setup-")),
+    ).toBeUndefined();
+    expect(fixture.sessionManager.sessions.get(resultSessionId)).toMatchObject({
+      command: "claude --model sonnet",
+      status: "running",
+    });
+    expect(fixture.runtime.isReviewAgentPreparationSessionId(resultSessionId)).toBe(true);
+    expect(fixture.runtime.reviewAgentPreparationSessionOwner(resultSessionId)).toBe("win-profile-a");
+    await expect(
+      fixture.runtime.stopReviewAgentPreparation({ sessionId: resultSessionId }, "win-default"),
+    ).rejects.toThrow("another client");
+    expect(await fixture.runtime.stopReviewAgentPreparation({ sessionId: resultSessionId }, "win-profile-a")).toEqual({
+      ok: true,
+    });
+    expect(
+      fixture.store.getState().workspaces.find((workspace: WorkspaceState) => workspace.id === "azure-parent")?.panels,
+    ).toHaveLength(2);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Shared terminal input
 // ---------------------------------------------------------------------------
@@ -16920,6 +17148,79 @@ describe("internal MCP: creating and watching task agents", () => {
       }),
     ).toBeNull();
     expect(byId("taskish").internalMcpEnabled).toBe(false);
+  });
+
+  test("provider inboxes stay ineligible while opted-in quickfix children can receive a grant", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({
+      workspaces: [
+        parentWorkspace(repo, {
+          id: "quickfix-on",
+          quickfix: { connectionId: "ado-main", parentWorkspaceId: "provider" },
+          review: { provider: "azure-devops", prKey: "" },
+        }),
+        parentWorkspace(repo, {
+          id: "quickfix-off",
+          internalMcpEnabled: false,
+          quickfix: { connectionId: "ado-main", parentWorkspaceId: "provider" },
+          review: { provider: "azure-devops", prKey: "" },
+        }),
+        parentWorkspace(repo, { id: "provider", kind: "azure" }),
+      ],
+    });
+
+    expect(launchAgent(fixture, "quickfix-on").launch.env.STRIDETERM_INTERNAL_MCP_URL).toMatch(
+      /^http:\/\/127\.0\.0\.1:\d+\/internal-mcp$/,
+    );
+    expect(launchAgent(fixture, "quickfix-off").launch).toBeNull();
+    expect(launchAgent(fixture, "provider").launch).toBeNull();
+  });
+
+  test("deleting a managed review parent leaves a task worktree and session intact", async () => {
+    const repo = await createRepo();
+    const quickfixPath = path.join(repo, "quickfix", "feature");
+    const taskPath = path.join(repo, ".strideterm", "tree", "task", "review-fix");
+    await fs.mkdir(quickfixPath, { recursive: true });
+    await fs.mkdir(taskPath, { recursive: true });
+    const taskSessionId = createSessionId("task-child", "worker");
+    const quickfix = parentWorkspace(repo, {
+      id: "quickfix-parent",
+      cwd: quickfixPath,
+      quickfix: { connectionId: "ado-main", parentWorkspaceId: "provider" },
+      review: {
+        provider: "azure-devops",
+        prKey: "",
+        checkout: { mode: "managed-worktree", rootPath: quickfixPath, cacheRepoPath: repo },
+      },
+    });
+    const task = {
+      id: "task-child",
+      name: "Review task",
+      kind: "task",
+      cwd: taskPath,
+      profileId: "default",
+      task: { taskId: "task-id", parentWorkspaceId: "quickfix-parent", worktreeBase: repo, state: "running" },
+      panels: [{ id: "worker", title: "Worker", command: "claude" }],
+    };
+    const fixture = await createMcpFixture({ workspaces: [quickfix, task] });
+    fixture.sessionManager.sessions.set(taskSessionId, {
+      id: taskSessionId,
+      status: "running",
+      workspaceId: task.id,
+      panelId: "worker",
+      kind: "terminal",
+    });
+
+    await fixture.runtime.deleteWorkspace("quickfix-parent", {
+      deleteFromDisk: true,
+      diskPath: quickfixPath,
+      skipGitRefresh: true,
+    });
+
+    expect(fixture.store.getState().workspaces.map((workspace: any) => workspace.id)).toContain("task-child");
+    expect(fixture.sessionManager.sessions.has(taskSessionId)).toBe(true);
+    await expect(fs.access(taskPath)).resolves.toBeUndefined();
+    await expect(fs.access(quickfixPath)).rejects.toThrow();
   });
 
   test("an OpenCode terminal gets the grant in its env and config, a Copilot one by placeholder, and Gemini none", async () => {

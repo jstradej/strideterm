@@ -61,3 +61,4 @@ export interface OperationsState {
 }
 
 export const OPERATION_KIND_TASK_PROVISION = "task.provision";
+export const OPERATION_KIND_REVIEW_AGENT_PREPARE = "review-agent.prepare";

@@ -444,6 +444,29 @@ describe("SessionManager", () => {
     expect(manager.sessions.get("workspace-a:shell")).toBeUndefined();
   });
 
+  test("retained temporary setup sessions survive persisted-state synchronization", async () => {
+    const manager = new SessionManager();
+    const state = createState() as Parameters<typeof manager.ensureSession>[0];
+    const workspace = {
+      ...state.workspaces[0],
+      id: "review-agent-setup-test",
+      cwd: "/tmp/review-cache/repo",
+      activePanelId: "agent",
+      panels: [{ id: "agent", title: "Claude", command: "claude", startup: "default" as const }],
+    };
+    const launchState = { ...state, workspaces: [...state.workspaces, workspace] };
+    const sessionId = "review-agent-setup-test:agent";
+    manager.retainTemporarySession(sessionId);
+    expect(await manager.ensureSession(launchState, sessionId)).not.toBeNull();
+
+    manager.syncWithState(state);
+    expect(manager.sessions.has(sessionId)).toBe(true);
+
+    manager.releaseTemporarySession(sessionId);
+    manager.syncWithState(state);
+    expect(manager.sessions.has(sessionId)).toBe(false);
+  });
+
   test("syncWithState emits terminal:removed for a FAILED-spawn panel once its panel is gone", async () => {
     // Review F3: a PTY spawn failure surfaces as terminal:data + null and is
     // never inserted into `sessions`, yet the runtime still records the error in

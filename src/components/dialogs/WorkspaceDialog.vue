@@ -204,7 +204,15 @@
           This workspace is the Azure DevOps parent. Its checkout root is used for managed review checkouts, and these
           tabs are copied into each new review subworkspace.
         </p>
-        <label v-if="showInternalMcpOption" class="internal-mcp-option">
+        <label
+          v-if="showInternalMcpOption"
+          class="internal-mcp-option"
+          :title="
+            isAzure
+              ? 'Sets the default for newly created New Branch and manual PR workspaces. Existing workspaces keep their own setting.'
+              : 'Controls whether agents in this workspace can access strIDEterm task tools.'
+          "
+        >
           <input
             v-model="draft.internalMcpEnabled"
             type="checkbox"
@@ -215,7 +223,11 @@
           <span class="internal-mcp-hint">
             Lets Claude Code, Codex, GitHub Copilot or OpenCode agents create and monitor tasks in strIDEterm.
             <template v-if="internalMcpLocked"> Desktop only — change it in the desktop app.</template>
-            Applies to agent sessions started after saving.
+            <template v-if="isAzure">
+              Applies to new workspaces created with New Branch or opened manually for a PR. Existing workspaces keep
+              their own setting.
+            </template>
+            <template v-else>Applies to agent sessions started after saving.</template>
           </span>
         </label>
         <PanelEditor
@@ -223,6 +235,100 @@
           :tab-templates="tabTemplates"
           :heading="isAzure ? 'Review workspace tabs' : 'Terminal tabs'"
         />
+        <section v-if="isAzure" class="review-agent-preparation" data-testid="review-agent-preparation">
+          <h3>Prepare an agent for review checkouts</h3>
+          <p class="field-hint">
+            Prepare the selected agent for future PR and New Branch workspaces. Confirm any trust prompt in the
+            temporary terminal.
+          </p>
+          <label
+            :title="
+              draft.kind === 'azure'
+                ? 'Choose the Azure DevOps connection used to discover and prepare review repositories.'
+                : 'Choose the GitHub connection used to discover and prepare review repositories.'
+            "
+          >
+            <span>Connection</span>
+            <CustomSelect
+              v-model="preparationConnectionId"
+              placeholder="Select a connection…"
+              :disabled="preparationLoading || submitting"
+              :options="preparationConnectionOptions"
+            />
+          </label>
+          <label
+            v-if="draft.kind === 'azure'"
+            title="Choose the Azure DevOps project whose repositories you want to prepare."
+          >
+            <span>Project</span>
+            <CustomSelect
+              v-model="preparationProjectName"
+              placeholder="Select a project…"
+              :disabled="preparationLoading || submitting"
+              :options="preparationProjectOptions"
+              @change="loadPreparationRepositories"
+            />
+          </label>
+          <div class="review-agent-repositories">
+            <div class="review-agent-repositories__heading">
+              <span title="Select which repositories should get a temporary agent setup terminal.">Repositories</span>
+              <button
+                type="button"
+                class="button button--ghost"
+                :disabled="!preparationRepositories.length || preparationLoading"
+                :title="
+                  selectedPreparationRepositoryKeys.length === preparationRepositories.length
+                    ? 'Clear the repository selection.'
+                    : 'Select every repository listed here.'
+                "
+                @click="toggleAllPreparationRepositories"
+              >
+                {{
+                  selectedPreparationRepositoryKeys.length === preparationRepositories.length
+                    ? "Clear all"
+                    : "Select all"
+                }}
+              </button>
+            </div>
+            <label
+              v-for="repository in preparationRepositories"
+              :key="repository.key"
+              class="review-agent-repository"
+              :title="`Prepare a trust setup terminal for ${repository.label}.`"
+            >
+              <input
+                v-model="selectedPreparationRepositoryKeys"
+                type="checkbox"
+                :value="repository.key"
+                :disabled="preparationLoading || submitting"
+              />
+              <span>{{ repository.label }}</span>
+            </label>
+          </div>
+          <label
+            title="Choose an agent tab configured above. Its saved command runs unchanged at the stable cached repository root used by future PR worktrees. If the agent stores trust at this repository root, confirming it here can apply to future worktrees."
+          >
+            <span>Agent tab</span>
+            <CustomSelect
+              v-model="preparationPanelId"
+              placeholder="Select an agent tab…"
+              :disabled="preparationLoading || submitting"
+              :options="preparationPanelOptions"
+            />
+          </label>
+          <p v-if="preparationLoading" class="field-hint">Loading repositories…</p>
+          <p v-if="preparationError" class="dialog__error" role="alert">{{ preparationError }}</p>
+          <button
+            type="button"
+            class="button button--ghost"
+            data-testid="prepare-review-agent"
+            title="Save this workspace, then open temporary setup terminals for the selected repositories, one at a time. Confirm any trust prompt yourself. No additional workspace is added."
+            :disabled="!canPrepareAgent || submitting || preparationLoading"
+            @click="prepareReviewAgent"
+          >
+            Save and prepare agent
+          </button>
+        </section>
       </template>
 
       <!-- Detach review link — workspace is linked to a PR review -->
@@ -324,11 +430,13 @@
 import { reactive, computed, inject, ref, watch, onMounted, useAttrs } from "vue";
 import { apiKey } from "../../types/keys.js";
 import type { Transport } from "../../transport.js";
+import type { StartReviewAgentPreparation } from "../../../electron/backend/ipc-schemas.js";
 import { cloneWorkspace, createEmptyWorkspace } from "../../workspace-state.js";
 import { APP_CONFIG } from "../../../config/app-config.js";
 import { safeColor } from "../../app/helpers.js";
 import { TASK_BRIEF_MAX_CHARS, TASK_BRIEF_HINT, formatBriefCounter } from "../../app/task-brief.js";
 import { useAppStore } from "../../stores/app.js";
+import { useNotificationStore } from "../../stores/notifications.js";
 import { pickPath } from "../../lib/pick-path.js";
 import { rlog } from "../../lib/renderer-log.js";
 import { BADGE_ICONS } from "../../lib/badge-icons.js";
@@ -336,6 +444,7 @@ import { PROVIDER_CHOICES, type ProviderConfig } from "../../lib/agent-providers
 import PanelEditor from "./PanelEditor.vue";
 import CustomSelect from "../common/CustomSelect.vue";
 import AgentProviderConfig from "./AgentProviderConfig.vue";
+import { parseAgentCommand } from "../../../electron/shared/agent-ssh.js";
 
 defineOptions({ inheritAttrs: false });
 
@@ -352,11 +461,25 @@ interface PanelEntry {
   command: string;
   shell: boolean;
   startup: string;
+  launch?: unknown;
 }
 
 interface GitRootEntry {
   childRepos?: string[];
   truncated?: boolean;
+}
+
+type ReviewAgentPreparationSelection = StartReviewAgentPreparation extends infer Request
+  ? Request extends object
+    ? Omit<Request, "parentWorkspaceId" | "idempotencyKey">
+    : never
+  : never;
+
+interface PreparationConnection {
+  id: string;
+  label?: string;
+  enabled?: boolean;
+  profileId?: string;
 }
 
 interface WorkspaceDraft {
@@ -454,14 +577,79 @@ const draft = reactive(rawDraft);
 
 const store = useAppStore();
 
+const preparationConnections = computed(() => {
+  const integrations = store.payload?.appState?.settings?.integrations as
+    Record<string, { connections?: PreparationConnection[] }> | undefined;
+  const key = draft.kind === "github" ? "github" : "azureDevops";
+  const activeProfileId = String(draft.profileId || store.myActiveProfileId || "default");
+  return (integrations?.[key]?.connections || []).filter(
+    (connection) => connection.enabled !== false && String(connection.profileId || "default") === activeProfileId,
+  );
+});
+const preparationPanels = computed(() =>
+  (draft.panels || []).filter((panel) => !panel.launch && !!parseAgentCommand(panel.command)),
+);
+const preparationConnectionOptions = computed(() =>
+  preparationConnections.value.map((connection) => ({
+    value: connection.id,
+    label: connection.label || connection.id,
+  })),
+);
+const preparationProjectOptions = computed(() =>
+  preparationProjects.value.map((project) => ({ value: project.name, label: project.name })),
+);
+const preparationPanelOptions = computed(() =>
+  preparationPanels.value.map((panel) => ({ value: panel.id, label: panel.title || panel.command })),
+);
+const preparationConnectionId = ref("");
+const preparationProjectName = ref("");
+const selectedPreparationRepositoryKeys = ref<string[]>([]);
+const preparationPanelId = ref("");
+const preparationProjects = ref<{ name: string }[]>([]);
+const preparationRepositories = ref<{ key: string; label: string; id?: string; owner?: string; repo?: string }[]>([]);
+const preparationLoading = ref(false);
+const preparationError = ref("");
+let preparationLoadGeneration = 0;
+const canPrepareAgent = computed(
+  () =>
+    preparationConnections.value.some((connection) => connection.id === preparationConnectionId.value) &&
+    (draft.kind !== "azure" || !!preparationProjectName.value) &&
+    selectedPreparationRepositoryKeys.value.length > 0 &&
+    selectedPreparationRepositoryKeys.value.every((key) =>
+      preparationRepositories.value.some((repository) => repository.key === key),
+    ) &&
+    preparationPanels.value.some((panel) => panel.id === preparationPanelId.value) &&
+    typeof attrs.onPrepareAgent === "function",
+);
+
+watch(
+  preparationConnections,
+  (connections) => {
+    if (!connections.some((connection) => connection.id === preparationConnectionId.value)) {
+      preparationConnectionId.value = connections.length === 1 ? connections[0].id : "";
+      preparationProjectName.value = "";
+      preparationProjects.value = [];
+      preparationRepositories.value = [];
+    }
+  },
+  { immediate: true },
+);
+watch(
+  preparationPanels,
+  (panels) => {
+    if (!panels.some((panel) => panel.id === preparationPanelId.value)) {
+      preparationPanelId.value = panels.length === 1 ? panels[0].id : "";
+    }
+  },
+  { immediate: true },
+);
+watch(preparationConnectionId, () => void loadPreparationProjects(), { immediate: true });
+
 const isDocker = computed(() => draft.kind === "docker");
 const isAzure = computed(() => draft.kind === "azure" || draft.kind === "github");
 const isTask = computed(() => draft.kind === "task");
 const isCreatingTask = computed(() => isTask.value && props.creating);
-const showInternalMcpOption = computed(
-  () =>
-    !isTask.value && !isDocker.value && !isAzure.value && !draft.review && !(draft as { quickfix?: unknown }).quickfix,
-);
+const showInternalMcpOption = computed(() => !isTask.value && !isDocker.value);
 const internalMcpLocked = computed(() => store.isRemoteTransport);
 const taskDescriptionLength = computed(() => (draft.task?.description || "").length);
 
@@ -801,6 +989,170 @@ function onCwdChange() {
   }
 }
 
+async function loadPreparationProjects() {
+  const generation = ++preparationLoadGeneration;
+  const connectionId = preparationConnectionId.value;
+  const profileId = String(draft.profileId || store.myActiveProfileId || "default");
+  const kind = draft.kind;
+  preparationError.value = "";
+  if (kind === "azure") preparationProjectName.value = "";
+  selectedPreparationRepositoryKeys.value = [];
+  preparationProjects.value = [];
+  preparationRepositories.value = [];
+  if (!connectionId || !api) return;
+  if (kind === "github") {
+    await loadPreparationRepositories();
+    return;
+  }
+  preparationLoading.value = true;
+  try {
+    const result = (await api.azureQuickFixListProjects?.({
+      connectionId,
+    })) as { projects?: { id?: string; name: string }[] } | undefined;
+    if (
+      generation !== preparationLoadGeneration ||
+      preparationConnectionId.value !== connectionId ||
+      draft.kind !== kind ||
+      String(draft.profileId || store.myActiveProfileId || "default") !== profileId ||
+      !preparationConnections.value.some((connection) => connection.id === connectionId)
+    )
+      return;
+    preparationProjects.value = result?.projects || [];
+    if (preparationProjects.value.length === 1) {
+      preparationProjectName.value = preparationProjects.value[0].name;
+      await loadPreparationRepositories();
+    }
+  } catch (err) {
+    if (generation === preparationLoadGeneration) reportPreparationError("Couldn't load review projects", err);
+  } finally {
+    if (generation === preparationLoadGeneration) preparationLoading.value = false;
+  }
+}
+
+async function loadPreparationRepositories() {
+  const generation = ++preparationLoadGeneration;
+  const connectionId = preparationConnectionId.value;
+  const projectName = preparationProjectName.value;
+  const profileId = String(draft.profileId || store.myActiveProfileId || "default");
+  const kind = draft.kind;
+  preparationError.value = "";
+  selectedPreparationRepositoryKeys.value = [];
+  preparationRepositories.value = [];
+  if (!connectionId || !api || (kind === "azure" && !projectName)) return;
+  preparationLoading.value = true;
+  try {
+    const result =
+      kind === "azure"
+        ? ((await api.azureQuickFixListRepositories?.({
+            connectionId,
+            projectName,
+          })) as { repositories?: { id?: string; name: string }[] } | undefined)
+        : ((await api.githubQuickFixListRepos?.({ connectionId })) as
+            { repositories?: { name: string; fullName?: string; owner?: string }[] } | undefined);
+    if (
+      generation !== preparationLoadGeneration ||
+      preparationConnectionId.value !== connectionId ||
+      preparationProjectName.value !== projectName ||
+      draft.kind !== kind ||
+      String(draft.profileId || store.myActiveProfileId || "default") !== profileId ||
+      !preparationConnections.value.some((connection) => connection.id === connectionId)
+    )
+      return;
+    const repositories = result?.repositories || [];
+    preparationRepositories.value =
+      kind === "azure"
+        ? (repositories as { id?: string; name: string }[])
+            .filter((repository) => repository.id !== undefined)
+            .map((repository) => ({ key: String(repository.id), id: String(repository.id), label: repository.name }))
+        : (repositories as { name: string; fullName?: string; owner?: string }[])
+            .filter((repository) => repository.owner && repository.name)
+            .map((repository) => ({
+              key: `${repository.owner}/${repository.name}`,
+              owner: repository.owner,
+              repo: repository.name,
+              label: repository.fullName || `${repository.owner}/${repository.name}`,
+            }));
+    if (preparationRepositories.value.length === 1) {
+      selectedPreparationRepositoryKeys.value = [preparationRepositories.value[0].key];
+    }
+  } catch (err) {
+    if (generation === preparationLoadGeneration) reportPreparationError("Couldn't load review repositories", err);
+  } finally {
+    if (generation === preparationLoadGeneration) preparationLoading.value = false;
+  }
+}
+
+function reportPreparationError(title: string, error: unknown): void {
+  preparationError.value = extractErrorMessage(error);
+  useNotificationStore().showError(title, error, {
+    workspaceId: draft.id,
+    profileId: String(draft.profileId || store.myActiveProfileId || "default"),
+  });
+}
+
+function toggleAllPreparationRepositories(): void {
+  const allKeys = preparationRepositories.value.map((repository) => repository.key);
+  selectedPreparationRepositoryKeys.value =
+    selectedPreparationRepositoryKeys.value.length === allKeys.length ? [] : allKeys;
+}
+
+async function prepareReviewAgent() {
+  if (!canPrepareAgent.value) return;
+  const repositories = preparationRepositories.value.filter((entry) =>
+    selectedPreparationRepositoryKeys.value.includes(entry.key),
+  );
+  if (!repositories.length) return;
+  preparationLoading.value = true;
+  preparationError.value = "";
+  submitting.value = true;
+  try {
+    const request = {
+      workspace: {
+        ...draft,
+        name: draft.name.trim(),
+        icon: draft.icon.trim() || APP_CONFIG.ui.defaultProjectIcon,
+        cwd: draft.cwd.trim(),
+        notes: draft.notes.trim(),
+        panels: draft.panels.map((panel) => ({
+          ...panel,
+          title: panel.title.trim() || APP_CONFIG.ui.defaultPanelTitle,
+          command: panel.command.trim() || "",
+          startup: APP_CONFIG.ui.defaultPanelStartup,
+        })),
+      } as WorkspaceDraft,
+      selections: repositories.map((repository) => ({
+        repositoryName: repository.label,
+        selection:
+          draft.kind === "azure"
+            ? {
+                provider: "azure-devops" as const,
+                connectionId: preparationConnectionId.value,
+                projectName: preparationProjectName.value,
+                repositoryId: repository.id!,
+                panelId: preparationPanelId.value,
+              }
+            : {
+                provider: "github" as const,
+                connectionId: preparationConnectionId.value,
+                owner: repository.owner!,
+                repo: repository.repo!,
+                panelId: preparationPanelId.value,
+              },
+      })),
+    } satisfies {
+      workspace: WorkspaceDraft;
+      selections: { repositoryName: string; selection: ReviewAgentPreparationSelection }[];
+    };
+    const callback = attrs.onPrepareAgent as ((value: typeof request) => Promise<unknown>) | undefined;
+    await callback?.(request);
+  } catch (err) {
+    reportPreparationError("Couldn't prepare the agent setup terminal", err);
+  } finally {
+    preparationLoading.value = false;
+    submitting.value = false;
+  }
+}
+
 async function handleSubmit() {
   const result = {
     ...draft,
@@ -882,6 +1234,55 @@ function extractErrorMessage(err: unknown): string {
   gap: 8px;
   cursor: pointer;
   font-size: 13px;
+}
+.review-agent-preparation {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.review-agent-preparation h3 {
+  margin: 0;
+  font-size: 14px;
+}
+.review-agent-preparation .field-hint {
+  margin: 0;
+}
+.review-agent-repositories {
+  display: grid;
+  gap: 6px;
+  max-height: 180px;
+  overflow-y: auto;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.review-agent-repositories__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.review-agent-repository {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  cursor: pointer;
+}
+.review-agent-repository input[type="checkbox"] {
+  width: auto;
+  flex: 0 0 auto;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+.review-agent-repository span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: normal;
 }
 .internal-mcp-option input[type="checkbox"] {
   width: auto;

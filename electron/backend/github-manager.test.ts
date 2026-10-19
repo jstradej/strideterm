@@ -522,7 +522,7 @@ describe("GitHubManager openReviewWorkspace", () => {
 });
 
 describe("GitHubManager openQuickFixWorkspace", () => {
-  test("creates a quickfix worktree workspace on the parent's profile", async () => {
+  test.each([true, false])("creates a quickfix workspace using the parent opt-in default (%s)", async (parentOptIn) => {
     const execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
     const { manager } = createManager({ secrets: { "cred:gh-main": "ghp-token" } });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -538,6 +538,7 @@ describe("GitHubManager openQuickFixWorkspace", () => {
             kind: "github",
             profileId: "default",
             cwd: "C:/reviews",
+            internalMcpEnabled: parentOptIn,
             panels: [{ id: "shell-template", title: "Shell", command: "" }],
           },
         ],
@@ -554,6 +555,7 @@ describe("GitHubManager openQuickFixWorkspace", () => {
     expect(result.parentWorkspaceId).toBe("github-root");
     expect(result.workspace.name).toBe("fix-123");
     expect(result.workspace.profileId).toBe("default");
+    expect(result.workspace.internalMcpEnabled).toBe(parentOptIn);
     expect(result.workspace.cwd).toContain(path.join("quickfix", "gh-main"));
     expect(result.workspace.review).toMatchObject({
       provider: "github",

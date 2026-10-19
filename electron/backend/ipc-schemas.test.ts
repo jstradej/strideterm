@@ -32,6 +32,7 @@ import {
   onlineBootstrapStateOutputSchema,
   sanitizeAccountUiStateOutput,
   sshKeyTransferStartSchema,
+  startReviewAgentPreparationSchema,
 } from "./ipc-schemas.js";
 
 describe("ipc-schemas", () => {
@@ -216,6 +217,49 @@ describe("ipc-schemas", () => {
         "test",
       );
       expect(result.customField).toBe("hello");
+    });
+  });
+
+  describe("startReviewAgentPreparationSchema", () => {
+    test("accepts provider-specific repository identities without a client-supplied remote URL", () => {
+      expect(
+        startReviewAgentPreparationSchema.parse({
+          parentWorkspaceId: "parent-1",
+          provider: "azure-devops",
+          connectionId: "connection-1",
+          projectName: "Project",
+          repositoryId: "repo-1",
+          panelId: "panel-1",
+          idempotencyKey: "run-1",
+        }),
+      ).toMatchObject({ provider: "azure-devops", repositoryId: "repo-1" });
+      expect(
+        startReviewAgentPreparationSchema.parse({
+          parentWorkspaceId: "parent-1",
+          provider: "github",
+          connectionId: "connection-1",
+          owner: "org",
+          repo: "repo",
+          panelId: "panel-1",
+          idempotencyKey: "run-1",
+        }),
+      ).toMatchObject({ provider: "github", owner: "org", repo: "repo" });
+    });
+
+    test("rejects remote URLs and command text from the caller", () => {
+      expect(
+        startReviewAgentPreparationSchema.safeParse({
+          parentWorkspaceId: "parent-1",
+          provider: "github",
+          connectionId: "connection-1",
+          owner: "org",
+          repo: "repo",
+          panelId: "panel-1",
+          idempotencyKey: "run-1",
+          remoteUrl: "https://attacker.invalid/repo.git",
+          command: "claude --dangerously-skip-permissions",
+        }).success,
+      ).toBe(false);
     });
   });
 

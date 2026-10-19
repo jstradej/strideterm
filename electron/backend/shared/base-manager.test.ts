@@ -107,6 +107,38 @@ describe("BaseProviderManager.ensureCacheRepoAt", () => {
     expect(decodeGitAuth(cloneCall!)).toBe("me@example.com:tok-123");
   });
 
+  test("serializes concurrent initialization of the same cache repo", async () => {
+    let finishClone!: () => void;
+    const cloneGate = new Promise<void>((resolve) => {
+      finishClone = resolve;
+    });
+    const execFileTextImpl = vi.fn(async (_bin: string, args: string[]) => {
+      if (args.includes("clone")) await cloneGate;
+      return { stdout: "", stderr: "" };
+    });
+    const managerA = createManager({ execFileTextImpl });
+    const managerB = createManager({ execFileTextImpl });
+    const input = {
+      connectionId: "conn-concurrent",
+      repoIdentifier: "repo-concurrent",
+      repoLabel: "acme/repo-concurrent",
+      remoteUrl: "https://example.com/acme/repo-concurrent.git",
+      reviewRoot: path.join(reviewRoot, "concurrent-init"),
+      token: "tok-123",
+    };
+
+    const first = managerA.ensureCacheRepoAt(input);
+    const second = managerB.ensureCacheRepoAt(input);
+    await vi.waitFor(() =>
+      expect(execFileTextImpl.mock.calls.filter((call) => call[1].includes("clone"))).toHaveLength(1),
+    );
+    finishClone();
+
+    await expect(Promise.all([first, second])).resolves.toEqual([expect.any(String), expect.any(String)]);
+    expect(await first).toBe(await second);
+    expect(execFileTextImpl.mock.calls.filter((call) => call[1].includes("clone"))).toHaveLength(1);
+  });
+
   test("hands the token to git through GIT_CONFIG_* env, not argv, on git >= 2.31", async () => {
     const execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
     const manager = createManager({ execFileTextImpl });
@@ -983,7 +1015,7 @@ describe("BaseProviderManager.openReviewWorkspaceCore — forceReview", () => {
     ],
   };
 
-  function openWith(forceReview: boolean) {
+  function openWith(forceReview: boolean, { isolated = false, parentOptIn = false, existingOptIn = false } = {}) {
     const manager = createManager({
       execFileTextImpl: vi.fn().mockResolvedValue({ stdout: "", stderr: "" }),
       secrets: { "cred:conn-1": "pat-123" },
@@ -999,8 +1031,21 @@ describe("BaseProviderManager.openReviewWorkspaceCore — forceReview", () => {
     return {
       prepareManagedReviewCheckout,
       result: manager.openReviewWorkspaceCore(
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: trimmed state fixture
-        { state: state as any, prKey: "conn-1:repo-1:123", forceReview },
+        {
+          state: {
+            ...state,
+            workspaces: state.workspaces.map((workspace) =>
+              workspace.id === "provider-root"
+                ? { ...workspace, internalMcpEnabled: parentOptIn }
+                : workspace.id === "workspace-main"
+                  ? { ...workspace, internalMcpEnabled: existingOptIn }
+                  : workspace,
+            ),
+          },
+          prKey: "conn-1:repo-1:123",
+          forceReview,
+          isolated,
+        },
         {
           ensurePullRequestDetail: async () => summary,
           prepareManagedReviewCheckout,
@@ -1030,5 +1075,19 @@ describe("BaseProviderManager.openReviewWorkspaceCore — forceReview", () => {
     expect(opened.workspace.id).not.toBe("workspace-main");
     expect(opened.workspace.cwd).toBe(path.join(reviewRoot, "reviews", "pr-123"));
     expect(prepareManagedReviewCheckout).toHaveBeenCalledTimes(1);
+  });
+
+  test("manual review inherits the provider opt-in, but isolated one-shot review does not", async () => {
+    const manual = await openWith(true, { parentOptIn: true }).result;
+    const isolated = await openWith(true, { isolated: true, parentOptIn: true }).result;
+
+    expect(manual.workspace.internalMcpEnabled).toBe(true);
+    expect(isolated.workspace.internalMcpEnabled).toBe(false);
+  });
+
+  test("reopening an existing review keeps its own opt-in when the provider default changes", async () => {
+    const opened = await openWith(false, { parentOptIn: true, existingOptIn: false }).result;
+    expect(opened.created).toBe(false);
+    expect(opened.workspace.internalMcpEnabled).toBe(false);
   });
 });

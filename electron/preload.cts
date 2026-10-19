@@ -356,6 +356,8 @@ contextBridge.exposeInMainWorld("strideterm", {
   onReviewGitOperation: (handler) => ipcRenderer.on("review-git:operation", (_event, payload) => handler(payload)),
   startReviewGitOperation: (payload) => ipcRenderer.invoke("review-git:start", payload),
   startPullRequestReview: (payload) => ipcRenderer.invoke("review:start", payload),
+  startReviewAgentPreparation: (payload) => ipcRenderer.invoke("review:agent-prepare", payload),
+  stopReviewAgentPreparation: (payload) => ipcRenderer.invoke("review:agent-prepare:stop", payload),
   onAzureClosedPrCleanupFinished: (handler) =>
     ipcRenderer.on("azure:closed-pr-cleanup:finished", (_event, payload) => handler(payload)),
   onOperationFinished: (handler) => ipcRenderer.on("operation:finished", (_event, payload) => handler(payload)),

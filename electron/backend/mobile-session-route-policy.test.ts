@@ -266,6 +266,8 @@ const MOBILE_ROUTE_CLASSIFICATION: Record<string, MobileRouteClass> = {
   "/api/review-bridge/pull-request": "guarded",
   "/api/review-git/start": "guarded",
   "/api/review/start": "guarded",
+  "/api/review/agent-prepare": "deny",
+  "/api/review/agent-prepare/stop": "deny",
   "/api/review-bridge/pull-request/sync": "guarded",
   "/api/ssh/auth/answer": "guarded",
   "/api/ssh/auth/cancel": "guarded",

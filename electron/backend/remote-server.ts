@@ -53,6 +53,8 @@ import {
   remoteClientTargetActivateSchema,
   azureClosedPrCleanupSchema,
   reviewGitStartSchema,
+  startReviewAgentPreparationSchema,
+  reviewAgentPreparationStopSchema,
   mobileAttachmentEnvelopeSchema,
   mobileAttachmentOperationSchema,
   taskUpdateDescriptionSchema,
@@ -1699,7 +1701,11 @@ function approvalAuditLogFilters(url: URL, profileId: string): Record<string, un
   };
 }
 
-type ApiRouteHandler = (runtime: Runtime, body: Record<string, unknown>) => unknown;
+type ApiRouteHandler = (
+  runtime: Runtime,
+  body: Record<string, unknown>,
+  caller?: { sessionId: string; profileId: string; mobile: boolean },
+) => unknown;
 
 /**
  * Plain POST routes: `json(response, 200, await handler(runtime, body))` is
@@ -1825,8 +1831,18 @@ const API_ROUTES: Record<string, ApiRouteHandler> = {
       throw new Error("Desktop-only SSH operations cannot be controlled remotely");
     return runtime.restartSession(body.sessionId);
   },
-  "/api/terminal/replay": (runtime, body) => {
+  "/api/terminal/replay": (runtime, body, caller) => {
     const parsed = validateIpc(terminalSessionSchema, body, "/api/terminal/replay");
+    if (runtime.isReviewAgentPreparationSessionId?.(parsed.sessionId)) {
+      if (
+        !caller ||
+        caller.mobile ||
+        runtime.reviewAgentPreparationSessionOwner?.(parsed.sessionId) !== remoteViewerId(caller.sessionId) ||
+        runtime.reviewAgentPreparationSessionProfile?.(parsed.sessionId) !== caller.profileId
+      )
+        throw new ClientRequestError("Review setup session is not available to this client", 403);
+      return runtime.getTerminalReplay(parsed.sessionId);
+    }
     if (isDesktopPrivateSshSession(runtime, parsed.sessionId))
       throw new Error("Desktop-only SSH operations cannot be replayed remotely");
     return runtime.getTerminalReplay(parsed.sessionId);
@@ -2493,6 +2509,7 @@ async function handleApiRequest(
       if (handler) {
         if (
           url.pathname === "/api/terminal/replay" &&
+          !runtime.isReviewAgentPreparationSessionId?.(String(body.sessionId ?? "")) &&
           !targetBelongsToCaller(runtime, String(body.sessionId ?? ""), callerProfileId, true)
         ) {
           json(response, 403, { error: "Target session is not available in this profile" });
@@ -2505,7 +2522,15 @@ async function handleApiRequest(
           json(response, 403, { error: "Target workspace is not available in this profile" });
           return;
         }
-        json(response, 200, await handler(runtime, body));
+        json(
+          response,
+          200,
+          await handler(runtime, body, {
+            sessionId: callerSessionId,
+            profileId: callerProfileId,
+            mobile: callerIsMobile,
+          }),
+        );
         return;
       }
     }
@@ -3370,6 +3395,16 @@ export async function startRemoteServer({
     "/api/review/start": (body, windowId) =>
       runtime.startPullRequestReview(
         validateIpc(startPullRequestReviewSchema, body, `POST ${START_PULL_REQUEST_REVIEW_ROUTE}`),
+        windowId,
+      ),
+    "/api/review/agent-prepare": (body, windowId) =>
+      runtime.startReviewAgentPreparation(
+        validateIpc(startReviewAgentPreparationSchema, body, "POST /api/review/agent-prepare"),
+        windowId,
+      ),
+    "/api/review/agent-prepare/stop": (body, windowId) =>
+      runtime.stopReviewAgentPreparation(
+        validateIpc(reviewAgentPreparationStopSchema, body, "POST /api/review/agent-prepare/stop"),
         windowId,
       ),
     // Sync publishes queued draft comments to the PR provider — an
@@ -4846,12 +4881,16 @@ export async function startRemoteServer({
         // if the resubscribe is delayed, lost, or rejected. Drop the stale
         // subscription so it can't route again until a fresh subscribe re-adds it.
         const client = routing.clientSessionId ? registry.get(routing.clientSessionId) : undefined;
-        if (!canAccessTerminalSession(client, cachedWorkspaceProfiles, sessionId)) {
+        if (
+          runtime.isReviewAgentPreparationSessionId?.(sessionId)
+            ? !viewerMayTouchReviewSetup(routing.clientSessionId || "", sessionId)
+            : !canAccessTerminalSession(client, cachedWorkspaceProfiles, sessionId)
+        ) {
           routing.sessions.delete(sessionId);
           continue;
         }
         checkedSend(socket, serialized);
-      } else {
+      } else if (!runtime.isReviewAgentPreparationSessionId?.(sessionId)) {
         checkedSend(socket, serialized);
       }
     }
@@ -4891,6 +4930,16 @@ export async function startRemoteServer({
   function viewerMayTouchTerminal(clientSessionId: string, terminalSessionId: string): boolean {
     const client = clientSessionId ? registry.get(clientSessionId) : undefined;
     return canAccessTerminalSession(client, cachedWorkspaceProfiles, terminalSessionId);
+  }
+
+  function viewerMayTouchReviewSetup(clientSessionId: string, terminalSessionId: string): boolean {
+    if (!runtime.isReviewAgentPreparationSessionId?.(terminalSessionId)) return false;
+    const client = clientSessionId ? registry.get(clientSessionId) : undefined;
+    if (!client || activeSessions.get(clientSessionId)?.deviceId) return false;
+    return (
+      runtime.reviewAgentPreparationSessionOwner?.(terminalSessionId) === remoteViewerId(clientSessionId) &&
+      runtime.reviewAgentPreparationSessionProfile?.(terminalSessionId) === client.profileId
+    );
   }
 
   /**
@@ -4961,7 +5010,10 @@ export async function startRemoteServer({
     let unknown = 0;
     let outsideProfile = 0;
     for (const id of requested) {
-      if (!validSessionIds.has(id)) unknown += 1;
+      if (runtime.isReviewAgentPreparationSessionId?.(id)) {
+        if (viewerMayTouchReviewSetup(clientSessionId, id)) accepted.push(id);
+        else outsideProfile += 1;
+      } else if (!validSessionIds.has(id)) unknown += 1;
       else if (!canAccessTerminalSession(client, workspaceProfiles, id)) outsideProfile += 1;
       else accepted.push(id);
     }
@@ -5436,7 +5488,12 @@ export async function startRemoteServer({
               log.warn("WebSocket terminal input rejected: desktop SSH test sessions are private", {
                 sessionRef: remoteSessionRef(wsSessionId),
               });
-            } else if (parsed.success && !viewerMayTouchTerminal(wsSessionId, parsed.data.sessionId)) {
+            } else if (
+              parsed.success &&
+              (runtime.isReviewAgentPreparationSessionId?.(parsed.data.sessionId)
+                ? !viewerMayTouchReviewSetup(wsSessionId, parsed.data.sessionId)
+                : !viewerMayTouchTerminal(wsSessionId, parsed.data.sessionId))
+            ) {
               log.warn("WebSocket terminal input rejected: session outside caller profile", {
                 sessionRef: remoteSessionRef(wsSessionId),
               });
@@ -5450,7 +5507,15 @@ export async function startRemoteServer({
               // recorded for a master-token or browser session — it has no device id.
               if (wsSessionId) recordMobileTerminalInput(wsSessionId, parsed.data.sessionId, parsed.data.data || "");
               const viewerId = wsSessionId ? remoteViewerId(wsSessionId) : undefined;
-              runtime.writeToSession(parsed.data.sessionId, parsed.data.data, viewerId, parsed.data.originWorkspaceId);
+              if (runtime.isReviewAgentPreparationSessionId?.(parsed.data.sessionId))
+                runtime.reviewAgentPreparationWrite(parsed.data.sessionId, parsed.data.data, viewerId || "");
+              else
+                runtime.writeToSession(
+                  parsed.data.sessionId,
+                  parsed.data.data,
+                  viewerId,
+                  parsed.data.originWorkspaceId,
+                );
             } else {
               log.warn("WebSocket terminal input rejected: invalid payload", {
                 sessionRef: remoteSessionRef(wsSessionId),
@@ -5462,7 +5527,12 @@ export async function startRemoteServer({
               log.warn("WebSocket terminal submit rejected: desktop SSH test sessions are private", {
                 sessionRef: remoteSessionRef(wsSessionId),
               });
-            } else if (parsed.success && !viewerMayTouchTerminal(wsSessionId, parsed.data.sessionId)) {
+            } else if (
+              parsed.success &&
+              (runtime.isReviewAgentPreparationSessionId?.(parsed.data.sessionId)
+                ? !viewerMayTouchReviewSetup(wsSessionId, parsed.data.sessionId)
+                : !viewerMayTouchTerminal(wsSessionId, parsed.data.sessionId))
+            ) {
               log.warn("WebSocket terminal submit rejected: session outside caller profile", {
                 sessionRef: remoteSessionRef(wsSessionId),
               });
@@ -5470,7 +5540,15 @@ export async function startRemoteServer({
               const input = `${parsed.data.text}\r`;
               if (wsSessionId) recordMobileTerminalInput(wsSessionId, parsed.data.sessionId, input);
               const viewerId = wsSessionId ? remoteViewerId(wsSessionId) : undefined;
-              runtime.submitToSession(parsed.data.sessionId, parsed.data.text, viewerId, parsed.data.originWorkspaceId);
+              if (runtime.isReviewAgentPreparationSessionId?.(parsed.data.sessionId))
+                runtime.reviewAgentPreparationSubmit(parsed.data.sessionId, parsed.data.text, viewerId || "");
+              else
+                runtime.submitToSession(
+                  parsed.data.sessionId,
+                  parsed.data.text,
+                  viewerId,
+                  parsed.data.originWorkspaceId,
+                );
             } else {
               log.warn("WebSocket terminal submit rejected: invalid payload", {
                 sessionRef: remoteSessionRef(wsSessionId),
@@ -5482,7 +5560,12 @@ export async function startRemoteServer({
               log.warn("WebSocket terminal resize rejected: desktop SSH test sessions are private", {
                 sessionRef: remoteSessionRef(wsSessionId),
               });
-            } else if (parsed.success && !viewerMayTouchTerminal(wsSessionId, parsed.data.sessionId)) {
+            } else if (
+              parsed.success &&
+              (runtime.isReviewAgentPreparationSessionId?.(parsed.data.sessionId)
+                ? !viewerMayTouchReviewSetup(wsSessionId, parsed.data.sessionId)
+                : !viewerMayTouchTerminal(wsSessionId, parsed.data.sessionId))
+            ) {
               log.warn("WebSocket terminal resize rejected: session outside caller profile", {
                 sessionRef: remoteSessionRef(wsSessionId),
               });
@@ -5493,7 +5576,14 @@ export async function startRemoteServer({
                 cols: parsed.data.cols,
                 rows: parsed.data.rows,
               });
-              runtime.resizeSession(parsed.data.sessionId, { cols: parsed.data.cols, rows: parsed.data.rows });
+              if (runtime.isReviewAgentPreparationSessionId?.(parsed.data.sessionId))
+                runtime.reviewAgentPreparationResize(
+                  parsed.data.sessionId,
+                  parsed.data.cols,
+                  parsed.data.rows,
+                  remoteViewerId(wsSessionId),
+                );
+              else runtime.resizeSession(parsed.data.sessionId, { cols: parsed.data.cols, rows: parsed.data.rows });
             } else {
               log.warn("WebSocket terminal resize rejected: invalid payload", {
                 sessionRef: remoteSessionRef(wsSessionId),
@@ -5604,6 +5694,7 @@ export async function startRemoteServer({
             }
           }
           if (!stillConnected) {
+            void runtime.reviewAgentPreparationStopOwner?.(remoteViewerId(wsSessionId));
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             (runtime as any).dropViewerVisibility?.(remoteViewerId(wsSessionId));
           }

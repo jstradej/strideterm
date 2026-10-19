@@ -1,6 +1,7 @@
 import type { StatePayload, RecoveryResult } from "./types/state.js";
 import type { AzureClosedPrCleanupStarted, ReviewGitStarted } from "./types/ipc-results.js";
 import type { StartPullRequestReviewInput, StartPullRequestReviewResult } from "./pull-request-review.js";
+import type { StartReviewAgentPreparation } from "../backend/ipc-schemas.js";
 import type { MobileConnectedDevice } from "./mobile-session-events.js";
 import type { RemoteBrowserSession } from "./remote-access.js";
 import type {
@@ -234,6 +235,8 @@ export interface StridetermAPI {
   /** Starts a review Git operation and resolves at once; the outcome arrives via `onReviewGitOperation`. */
   startReviewGitOperation: (payload: ReviewGitStart) => Promise<ReviewGitStarted>;
   startPullRequestReview: (payload: StartPullRequestReviewInput) => Promise<StartPullRequestReviewResult>;
+  startReviewAgentPreparation: (payload: StartReviewAgentPreparation) => Promise<{ operationId: string }>;
+  stopReviewAgentPreparation: (payload: { operationId?: string; sessionId?: string }) => Promise<{ ok: boolean }>;
   queryAzureAuditLog: (filters: AzureAuditLogQuery) => Promise<unknown>;
   getAzureAuditStats: (filters: AzureAuditLogStats) => Promise<unknown>;
   queryApprovalAuditLog: (filters: ApprovalAuditLogQuery) => Promise<unknown>;

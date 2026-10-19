@@ -2186,6 +2186,144 @@ describe("terminal streaming — subscription routing + backpressure", () => {
     });
   });
 
+  test("review setup replay and PTY control require the exact authenticated browser session", async () => {
+    await withServer("tok-review-setup", async ({ port, runtime }) => {
+      const sessionId = "review-agent-setup-123e4567-e89b-12d3-a456-426614174000:agent";
+      const owners = new Map<string, string>();
+      const profiles = new Map<string, string>();
+      const stopCalls: Array<{ payload: unknown; owner: string }> = [];
+      const reviewWrite = vi.fn();
+      const reviewSubmit = vi.fn();
+      const reviewResize = vi.fn();
+      Object.assign(runtime, {
+        isReviewAgentPreparationSessionId: (id: unknown) =>
+          typeof id === "string" && id.startsWith("review-agent-setup-") && id.endsWith(":agent"),
+        reviewAgentPreparationSessionOwner: (id: string) => owners.get(id),
+        reviewAgentPreparationSessionProfile: (id: string) => profiles.get(id),
+        getTerminalReplay: (id: string) => ({ sessionId: id, data: "TRUST-PROMPT", throughSeq: 4 }),
+        reviewAgentPreparationWrite: reviewWrite,
+        reviewAgentPreparationSubmit: reviewSubmit,
+        reviewAgentPreparationResize: reviewResize,
+        stopReviewAgentPreparation: async (payload: unknown, owner: string) => {
+          stopCalls.push({ payload, owner });
+          if (owners.get(sessionId) !== owner)
+            throw new ClientRequestError("Review setup belongs to another client.", 403);
+          owners.delete(sessionId);
+          profiles.delete(sessionId);
+          return { ok: true };
+        },
+      });
+
+      const baseUrl = `http://127.0.0.1:${port}`;
+      const bootstrapBrowser = async () => {
+        const response = await fetch(`${baseUrl}/?token=tok-review-setup&profileId=p1`, { redirect: "manual" });
+        const cookie = (response.headers.get("set-cookie") || "").split(";")[0]!;
+        expect(cookie).toContain("strideterm_session=");
+        return cookie;
+      };
+      const ownerCookie = await bootstrapBrowser();
+      const otherCookie = await bootstrapBrowser();
+      const ownerSessionId = ownerCookie.split("=")[1]!;
+      owners.set(sessionId, `remote:${ownerSessionId}`);
+      profiles.set(sessionId, "p1");
+
+      const replay = (cookie: string, extraHeaders: Record<string, string> = {}) =>
+        fetch(`${baseUrl}/api/terminal/replay`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Cookie: cookie, ...extraHeaders },
+          body: JSON.stringify({ sessionId }),
+        });
+      expect((await replay(ownerCookie)).status).toBe(200);
+      expect((await replay(otherCookie, { "X-Strideterm-Client-Id": ownerSessionId })).status).toBe(403);
+      expect((await replay(ownerCookie, { "X-Strideterm-Client-Id": "attacker-client-123" })).status).toBe(200);
+
+      const ownerWs = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: { Cookie: ownerCookie } });
+      const otherWs = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: { Cookie: otherCookie } });
+      const ownerMessages: { type: string; payload?: unknown }[] = [];
+      const otherMessages: { type: string; payload?: unknown }[] = [];
+      ownerWs.on("message", (raw: Buffer) => ownerMessages.push(JSON.parse(raw.toString())));
+      otherWs.on("message", (raw: Buffer) => otherMessages.push(JSON.parse(raw.toString())));
+      await Promise.all([
+        new Promise<void>((resolve, reject) => {
+          ownerWs.once("open", resolve);
+          ownerWs.once("error", reject);
+        }),
+        new Promise<void>((resolve, reject) => {
+          otherWs.once("open", resolve);
+          otherWs.once("error", reject);
+        }),
+      ]);
+      ownerWs.send(JSON.stringify({ type: "terminal:subscribe", sessionIds: [sessionId] }));
+      otherWs.send(JSON.stringify({ type: "terminal:subscribe", sessionIds: [sessionId] }));
+      expect(await waitUntil(() => ownerMessages.some((message) => message.type === "terminal:replay"))).toBe(true);
+      await delay(40);
+      expect(otherMessages.some((message) => message.type === "terminal:replay")).toBe(false);
+
+      ownerWs.send(JSON.stringify({ type: "terminal:input", sessionId, data: "accept\r" }));
+      ownerWs.send(JSON.stringify({ type: "terminal:submit", sessionId, text: "accept" }));
+      ownerWs.send(JSON.stringify({ type: "terminal:resize", sessionId, cols: 100, rows: 32 }));
+      otherWs.send(JSON.stringify({ type: "terminal:input", sessionId, data: "spoof\r" }));
+      otherWs.send(JSON.stringify({ type: "terminal:submit", sessionId, text: "spoof" }));
+      otherWs.send(JSON.stringify({ type: "terminal:resize", sessionId, cols: 120, rows: 40 }));
+      expect(await waitUntil(() => reviewWrite.mock.calls.length === 1)).toBe(true);
+      expect(reviewSubmit.mock.calls).toEqual([[sessionId, "accept", `remote:${ownerSessionId}`]]);
+      expect(reviewResize.mock.calls).toEqual([[sessionId, 100, 32, `remote:${ownerSessionId}`]]);
+      runtime._emit("terminal:data", { sessionId, data: "OWNER-ONLY", seq: 5 });
+      expect(
+        await waitUntil(() => ownerMessages.some((message) => JSON.stringify(message).includes("OWNER-ONLY"))),
+      ).toBe(true);
+      await delay(40);
+      expect(JSON.stringify(otherMessages)).not.toContain("OWNER-ONLY");
+
+      const stop = (cookie: string) =>
+        fetch(`${baseUrl}/api/review/agent-prepare/stop`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Cookie: cookie },
+          body: JSON.stringify({ sessionId }),
+        });
+      expect((await stop(otherCookie)).status).toBe(403);
+      expect((await stop(ownerCookie)).status).toBe(200);
+      expect(stopCalls.at(-1)).toEqual({ payload: { sessionId }, owner: `remote:${ownerSessionId}` });
+      ownerWs.close();
+      otherWs.close();
+    });
+  });
+
+  test("unowned review-setup prefixes and unbound legacy sockets cannot read or write", async () => {
+    await withServer("tok-review-setup-unowned", async ({ port, runtime }) => {
+      const arbitraryId = "review-agent-setup-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa:agent";
+      const reviewWrite = vi.fn();
+      Object.assign(runtime, {
+        isReviewAgentPreparationSessionId: (id: unknown) =>
+          typeof id === "string" && id.startsWith("review-agent-setup-") && id.endsWith(":agent"),
+        reviewAgentPreparationSessionOwner: () => undefined,
+        reviewAgentPreparationSessionProfile: () => undefined,
+        getTerminalReplay: () => ({ data: "MUST-NOT-LEAK", throughSeq: 1 }),
+        reviewAgentPreparationWrite: reviewWrite,
+      });
+      const legacy = new WebSocket(`ws://127.0.0.1:${port}/ws?token=tok-review-setup-unowned`);
+      const messages: { type: string; payload?: unknown }[] = [];
+      legacy.on("message", (raw: Buffer) => messages.push(JSON.parse(raw.toString())));
+      await new Promise<void>((resolve, reject) => {
+        legacy.once("open", resolve);
+        legacy.once("error", reject);
+      });
+      legacy.send(JSON.stringify({ type: "terminal:subscribe", sessionIds: [arbitraryId] }));
+      legacy.send(JSON.stringify({ type: "terminal:input", sessionId: arbitraryId, data: "NO" }));
+      runtime._emit("terminal:data", { sessionId: arbitraryId, data: "MUST-NOT-LEAK", seq: 2 });
+      await delay(80);
+      expect(messages.some((message) => JSON.stringify(message).includes("MUST-NOT-LEAK"))).toBe(false);
+      expect(reviewWrite).not.toHaveBeenCalled();
+      const replay = await fetch(`http://127.0.0.1:${port}/api/terminal/replay`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer tok-review-setup-unowned" },
+        body: JSON.stringify({ sessionId: arbitraryId }),
+      });
+      expect(replay.status).toBe(403);
+      legacy.close();
+    });
+  });
+
   test("filtered socket receives only its subscribed sessions", async () => {
     await withServer("tok-filter", async ({ port, runtime }) => {
       const c = connectWs(port, "tok-filter", "filter-a");
@@ -5273,6 +5411,77 @@ describe("a mobile session is finite", () => {
       ws.close();
       expect((await fetch(`${baseUrl}/api/state`, { headers: { Cookie: cookie } })).status).toBe(200);
     } finally {
+      await server.close();
+    }
+  });
+
+  test("mobile sessions cannot claim review-setup ownership through HTTP or WebSocket", async () => {
+    const port = await getFreePort();
+    const { seedTicket, runtime } = makeFiniteSessionRuntime(port);
+    seedTicket("review-ticket", "review-secret", "dev-review");
+    const sessionId = "review-agent-setup-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb:agent";
+    let claimedOwner = "";
+    const write = vi.fn();
+    const resize = vi.fn();
+    const stop = vi.fn(async () => ({ ok: true }));
+    Object.assign(runtime, {
+      isReviewAgentPreparationSessionId: (id: unknown) =>
+        typeof id === "string" && id.startsWith("review-agent-setup-") && id.endsWith(":agent"),
+      reviewAgentPreparationSessionOwner: () => claimedOwner,
+      reviewAgentPreparationSessionProfile: () => "default",
+      getTerminalReplay: () => ({ sessionId, data: "MOBILE-MUST-NOT-SEE", throughSeq: 1 }),
+      getTerminalReplaySnapshot: () => ({ data: "MOBILE-MUST-NOT-SEE", throughSeq: 1 }),
+      reviewAgentPreparationWrite: write,
+      reviewAgentPreparationResize: resize,
+      stopReviewAgentPreparation: stop,
+    });
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    const baseUrl = `http://127.0.0.1:${port}`;
+    let ws: WebSocket | undefined;
+    try {
+      const cookie = await bootstrap(baseUrl, "review-ticket", "review-secret");
+      const mobileSessionId = cookie.split("=")[1]!;
+      claimedOwner = `remote:${mobileSessionId}`;
+
+      const deniedStop = await fetch(`${baseUrl}/api/review/agent-prepare/stop`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Cookie: cookie },
+        body: JSON.stringify({
+          operationId: "review-agent-setup-operation",
+          sessionId,
+          ownerWindowId: claimedOwner,
+        }),
+      });
+      expect(deniedStop.status).toBe(403);
+      expect(stop).not.toHaveBeenCalled();
+
+      const replay = await fetch(`${baseUrl}/api/terminal/replay`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Cookie: cookie },
+        body: JSON.stringify({ sessionId }),
+      });
+      expect(replay.status).not.toBe(200);
+
+      ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: { Cookie: cookie } });
+      const messages: { type: string; payload?: unknown }[] = [];
+      ws.on("message", (raw: Buffer) => messages.push(JSON.parse(raw.toString())));
+      await new Promise<void>((resolve, reject) => {
+        ws!.once("open", resolve);
+        ws!.once("error", reject);
+      });
+      ws.send(JSON.stringify({ type: "terminal:subscribe", sessionIds: [sessionId] }));
+      ws.send(JSON.stringify({ type: "terminal:input", sessionId, data: "approve" }));
+      ws.send(JSON.stringify({ type: "terminal:resize", sessionId, cols: 100, rows: 30 }));
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(messages.some((message) => JSON.stringify(message).includes("MOBILE-MUST-NOT-SEE"))).toBe(false);
+      expect(messages.some((message) => message.type === "terminal:replay")).toBe(false);
+      expect(write).not.toHaveBeenCalled();
+      expect(resize).not.toHaveBeenCalled();
+    } finally {
+      ws?.close();
       await server.close();
     }
   });

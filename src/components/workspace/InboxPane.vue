@@ -1,5 +1,5 @@
 <template>
-  <div class="workspace-pane__body workspace-pane__body--git">
+  <div ref="inboxRoot" class="workspace-pane__body workspace-pane__body--git">
     <PaneShell
       v-if="showHeader"
       :title="isGitHub ? 'GitHub' : 'Azure DevOps'"
@@ -376,6 +376,7 @@
                   :key="item.prKey"
                   :item="item"
                   :provider="provider"
+                  :focused="focusedPr?.prKey === item.prKey && focusedPr?.connectionId === item.connectionId"
                   :show-seen="true"
                   :opening="item.prKey === openingPrKey"
                   @open="onOpenPr"
@@ -395,6 +396,7 @@
                   :key="item.prKey"
                   :item="item"
                   :provider="provider"
+                  :focused="focusedPr?.prKey === item.prKey && focusedPr?.connectionId === item.connectionId"
                   :show-seen="isGitHub ? undefined : activeTab !== 'all'"
                   :opening="item.prKey === openingPrKey"
                   @open="onOpenPr"
@@ -416,7 +418,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onUnmounted, ref, watch, nextTick } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useAzurePipelinesStore } from "../../stores/azure-pipelines.js";
 import { useNotificationStore } from "../../stores/notifications.js";
@@ -586,6 +588,78 @@ const inboxTabs = computed(() => {
 
 const repoFilter = ref<string>("");
 const authorFilter = ref<string>("");
+const inboxRoot = ref<HTMLElement | null>(null);
+const focusedPr = ref<{ prKey: string; connectionId: string } | null>(null);
+let focusedPrTimer: ReturnType<typeof setTimeout> | null = null;
+let focusExpiryTimer: ReturnType<typeof setTimeout> | null = null;
+
+watch(
+  () => ({
+    request: appStore.inboxPullRequestFocus,
+    provider: provider.value,
+    profileId: appStore.myActiveProfileId,
+    connectionIds: myConnectionIds.value,
+    items: inbox.value.recentlyUpdated,
+  }),
+  async ({ request, provider: currentProvider, profileId: currentProfileId, connectionIds, items }) => {
+    if (!request) return;
+    if (request.workspaceId !== props.workspaceId) return;
+    if (Date.now() - request.ts > 15_000) {
+      appStore.inboxPullRequestFocus = null;
+      return;
+    }
+    if (!focusExpiryTimer) {
+      focusExpiryTimer = setTimeout(
+        () => {
+          if (appStore.inboxPullRequestFocus?.ts === request.ts) appStore.inboxPullRequestFocus = null;
+          focusExpiryTimer = null;
+        },
+        Math.max(0, 15_000 - (Date.now() - request.ts)),
+      );
+    }
+    const expectedProvider = currentProvider === "github" ? "github" : "azure-devops";
+    const profileId = currentProfileId || "default";
+    if (
+      request.provider !== expectedProvider ||
+      request.profileId !== profileId ||
+      !connectionIds.has(request.connectionId)
+    )
+      return;
+
+    activeTab.value = "all";
+    repoFilter.value = "";
+    authorFilter.value = "";
+    const rowExists = (items || []).some(
+      (item: { prKey?: string; connectionId?: string }) =>
+        item.prKey === request.prKey && item.connectionId === request.connectionId,
+    );
+    if (!rowExists) return;
+
+    if (focusExpiryTimer) clearTimeout(focusExpiryTimer);
+    focusExpiryTimer = null;
+    appStore.inboxPullRequestFocus = null;
+    if (focusedPrTimer) clearTimeout(focusedPrTimer);
+    focusedPr.value = null;
+    await nextTick();
+    focusedPr.value = { prKey: request.prKey, connectionId: request.connectionId };
+    await nextTick();
+    const row = [...(inboxRoot.value?.querySelectorAll<HTMLElement>("[data-pr-key][data-connection-id]") || [])].find(
+      (element) => element.dataset.prKey === request.prKey && element.dataset.connectionId === request.connectionId,
+    );
+    row?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+    focusedPrTimer = setTimeout(() => {
+      if (focusedPr.value?.prKey === request.prKey && focusedPr.value.connectionId === request.connectionId) {
+        focusedPr.value = null;
+      }
+    }, 4_000);
+  },
+  { immediate: true },
+);
+
+onUnmounted(() => {
+  if (focusedPrTimer) clearTimeout(focusedPrTimer);
+  if (focusExpiryTimer) clearTimeout(focusExpiryTimer);
+});
 
 const activeTabInfo = computed(() => inboxTabs.value.find((t) => t.id === activeTab.value) || inboxTabs.value[0]);
 

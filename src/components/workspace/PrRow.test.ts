@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 import PrRow from "./PrRow.vue";
 
@@ -14,6 +14,8 @@ function fact(wrapper: ReturnType<typeof mountRow>, label: string): string | und
   const dt = wrapper.findAll(".azure-pr-row__fact dt").find((el) => el.text() === label);
   return dt?.element.nextElementSibling?.textContent?.trim();
 }
+
+afterEach(() => vi.useRealTimers());
 
 describe("PrRow — provider defaults to azure", () => {
   const azureItem = {
@@ -52,6 +54,44 @@ describe("PrRow — provider defaults to azure", () => {
     expect(wrapper.find(".azure-pr-row__id").text()).toBe("#42");
     expect(wrapper.text()).toContain("Draft");
     expect(wrapper.find(".azure-pr-row__meta").text()).toContain("MyProject / myrepo");
+  });
+
+  test("shows Azure creation and remote-activity ages with absolute-date tooltips", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-03T00:00:00.000Z"));
+    const wrapper = mountRow({ ...azureItem, lastRemoteActivityAt: "2026-01-02T00:00:00.000Z" });
+    const times = wrapper.findAll(".azure-pr-row__meta [title]");
+
+    expect(times.map((time) => time.text())).toEqual(["Created 2d ago", "Updated 1d ago"]);
+    expect(times[0]?.attributes("title")).toBe(`Created ${new Date("2026-01-01T00:00:00.000Z").toLocaleString()}`);
+    expect(times[1]?.attributes("title")).toBe(`Updated ${new Date("2026-01-02T00:00:00.000Z").toLocaleString()}`);
+  });
+
+  test("omits missing and invalid Azure timestamps", () => {
+    const wrapper = mountRow({
+      ...azureItem,
+      pullRequest: { ...azureItem.pullRequest, creationDate: "invalid-date" },
+      lastRemoteActivityAt: "invalid-date",
+    });
+    expect(wrapper.findAll(".azure-pr-row__meta [title]")).toHaveLength(0);
+  });
+
+  test("refreshes relative ages on a new inbox snapshot without a per-row timer", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:30.000Z"));
+    const item = { ...azureItem, lastRemoteActivityAt: "2026-01-01T00:00:00.000Z" };
+    const wrapper = mountRow(item);
+    expect(wrapper.findAll(".azure-pr-row__meta [title]").map((time) => time.text())).toEqual([
+      "Created just now",
+      "Updated just now",
+    ]);
+
+    vi.setSystemTime(new Date("2026-01-01T00:02:00.000Z"));
+    await wrapper.setProps({ item: { ...item } });
+    expect(wrapper.findAll(".azure-pr-row__meta [title]").map((time) => time.text())).toEqual([
+      "Created 2m ago",
+      "Updated 2m ago",
+    ]);
   });
 
   test("expanded view shows Status (not State), the 2-state merge label, and the unresolved-comment dimension", async () => {
@@ -134,6 +174,25 @@ describe("PrRow — provider=github", () => {
     const wrapper = mountRow(githubItem, { provider: "github" });
     expect(wrapper.find(".azure-pr-row__id").text()).toBe("#7");
     expect(wrapper.find(".azure-pr-row__meta").text()).toContain("acme/widgets");
+  });
+
+  test("shows GitHub creation and provider update ages with absolute-date tooltips", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-03T00:00:00.000Z"));
+    const wrapper = mountRow(githubItem, { provider: "github" });
+    const times = wrapper.findAll(".azure-pr-row__meta [title]");
+
+    expect(times.map((time) => time.text())).toEqual(["Created 2d ago", "Updated 1d ago"]);
+    expect(times[0]?.attributes("title")).toBe(`Created ${new Date("2026-01-01T00:00:00.000Z").toLocaleString()}`);
+    expect(times[1]?.attributes("title")).toBe(`Updated ${new Date("2026-01-02T00:00:00.000Z").toLocaleString()}`);
+  });
+
+  test("omits missing and invalid GitHub timestamps", () => {
+    const wrapper = mountRow(
+      { ...githubItem, pullRequest: { ...githubItem.pullRequest, createdAt: "invalid-date", updatedAt: undefined } },
+      { provider: "github" },
+    );
+    expect(wrapper.findAll(".azure-pr-row__meta [title]")).toHaveLength(0);
   });
 
   test("shows inline approved/changes-requested badges from reviewerSummary counts", () => {
@@ -251,6 +310,14 @@ describe("PrRow — shared behavior across providers", () => {
     const primaryBtn = wrapper.findAll(".azure-pr-row__actions button")[0];
     expect(primaryBtn.attributes("disabled")).toBeDefined();
     expect(primaryBtn.text()).toBe("Opening…");
+  });
+
+  test("focused=true expands and marks the row", () => {
+    const wrapper = mountRow({ ...baseItem, connectionId: "conn-1" }, { focused: true });
+
+    expect(wrapper.classes()).toContain("azure-pr-row--focused");
+    expect(wrapper.classes()).toContain("azure-pr-row--expanded");
+    expect(wrapper.find(".azure-pr-row__details").exists()).toBe(true);
   });
 
   test("the primary action is Review even when the author's checkout could be attached", async () => {

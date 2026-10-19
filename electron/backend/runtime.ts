@@ -48,7 +48,7 @@ import {
 } from "./shared/connection-secret.js";
 import { execFileText } from "./process-utils.js";
 import { errorMessage } from "../shared/error-message.js";
-import { shortPathKey } from "./azure-devops-utils.js";
+import { getDefaultReviewRoot as getDefaultAzureReviewRoot, shortPathKey } from "./azure-devops-utils.js";
 import { DockerManager } from "./docker-manager.js";
 import { DockerLogManager } from "./docker-log-streamer.js";
 import { DockerShellManager } from "./docker-shell-streamer.js";
@@ -70,6 +70,7 @@ import {
 } from "./review-bridge-agent-launch.js";
 import { AzureDevOpsManager } from "./azure-devops-manager.js";
 import { GitHubManager } from "./github-manager.js";
+import { getDefaultReviewRoot as getDefaultGitHubReviewRoot } from "./github-utils.js";
 import { createGitHubAuditLogStore } from "./github-audit-log-store.js";
 import { TelegramManager } from "./telegram-manager.js";
 import { createTelegramAuditLogStore } from "./telegram-audit-log-store.js";
@@ -218,7 +219,7 @@ import {
   INTERNAL_MCP_CAPABILITY_ENV,
   INTERNAL_MCP_URL_ENV,
 } from "../shared/internal-mcp.js";
-import { OPERATION_FINISHED_CHANNEL } from "../shared/operation-events.js";
+import { OPERATION_FINISHED_CHANNEL, OPERATION_KIND_REVIEW_AGENT_PREPARE } from "../shared/operation-events.js";
 import {
   OPERATION_KIND_REVIEW_START,
   type StartPullRequestReviewInput,
@@ -269,7 +270,8 @@ import type { Logger } from "./logger.js";
 import { createRuntimeAttentionManager } from "./runtime-attention.js";
 import type { AppState, WorkspaceState } from "../shared/types/state.js";
 import { carryOverSourceBaseline } from "../shared/review-source-identity.js";
-import type { ReviewGitStart } from "./ipc-schemas.js";
+import { reviewAgentPreparationStopSchema } from "./ipc-schemas.js";
+import type { ReviewGitStart, StartReviewAgentPreparation } from "./ipc-schemas.js";
 import { formatWorkspaceDisplayName } from "../shared/workspace-display.js";
 import { isCompanionPrimaryHosted } from "../shared/companion-primary.js";
 import { sessionIdFor } from "../shared/task-states.js";
@@ -590,10 +592,11 @@ interface RuntimeDependencies {
   ensureWindowForProfile?: (profileId: string) => Promise<string | null>;
 }
 
-/** Workspaces that can host the internal MCP: local, ordinary ones — never a task, review or Docker workspace. */
+/** Workspaces that can host the internal MCP: never provider inboxes, tasks or Docker workspaces. */
 function internalMcpWorkspaceSupported(workspace: Pick<WorkspaceState, "kind" | "review" | "quickfix">): boolean {
   return (
-    !["docker", "task", "azure", "github"].includes(String(workspace.kind)) && !workspace.review && !workspace.quickfix
+    !["docker", "task", "azure", "github"].includes(String(workspace.kind)) &&
+    ((!workspace.review && !workspace.quickfix) || workspace.kind === "terminal")
   );
 }
 
@@ -1235,6 +1238,8 @@ export async function createRuntime({
             context,
             processInfo: launchProcessInfo,
             sshMcp: pendingReview ? undefined : sshMcpSpec,
+            internalMcp: pendingReview ? undefined : internalMcpSpec,
+            internalMcpEnv: pendingReview ? undefined : internalMcpEnv,
             reviewGitEnv: pendingReview ? undefined : reviewGitEnv,
             ...(pendingReview ? { initialPrompt: pendingReview.prompt, draftOnlyReview: true } : {}),
           });
@@ -1242,7 +1247,9 @@ export async function createRuntime({
       }
 
       if (reviewLaunch) {
-        const launchEnv = pendingReview ? {} : { ...(sshMcpEnv || {}), ...(reviewGitEnv || {}) };
+        const launchEnv = pendingReview
+          ? {}
+          : { ...(sshMcpEnv || {}), ...(reviewGitEnv || {}), ...(internalMcpEnv || {}) };
         return Object.keys(launchEnv).length
           ? { ...reviewLaunch, env: { ...(reviewLaunch.env || {}), ...launchEnv } }
           : reviewLaunch;
@@ -1321,6 +1328,33 @@ export async function createRuntime({
     probeCapture?: SshTestMarkerCapture;
   };
   const sshTestSessions = new Map<string, SshTestRecord>();
+  type ReviewAgentPreparationRecord = {
+    operationId: string;
+    sessionId?: string;
+    ownerWindowId: string;
+    profileId: string;
+    cancelled: boolean;
+  };
+  const reviewAgentPreparations = new Map<string, ReviewAgentPreparationRecord>();
+  const reviewAgentPreparationSessions = new Map<string, ReviewAgentPreparationRecord>();
+  const cancelledReviewAgentPreparationOperations = new Set<string>();
+  const reviewAgentOwnerGenerations = new Map<string, number>();
+  const reviewAgentOwnerGeneration = (ownerWindowId: string) => reviewAgentOwnerGenerations.get(ownerWindowId) || 0;
+  const invalidateReviewAgentOwner = (ownerWindowId: string) =>
+    reviewAgentOwnerGenerations.set(ownerWindowId, reviewAgentOwnerGeneration(ownerWindowId) + 1);
+  function cleanupReviewAgentPreparation(record: ReviewAgentPreparationRecord): void {
+    if (record.sessionId) {
+      sessions.removeSession(record.sessionId);
+      sessions.failedSpawns?.delete(record.sessionId);
+      sessions.releaseTemporarySession?.(record.sessionId);
+      terminalReplay.delete(record.sessionId);
+      reviewAgentPreparationSessions.delete(record.sessionId);
+    }
+    reviewAgentPreparations.delete(record.operationId);
+    cancelledReviewAgentPreparationOperations.delete(record.operationId);
+  }
+  const isReviewAgentPreparationSessionId = (value: unknown): value is string =>
+    typeof value === "string" && value.startsWith("review-agent-setup-") && value.endsWith(":agent");
   type SshKeyTransferRecord = {
     ownerWindowId: string;
     profileId: string;
@@ -1437,6 +1471,23 @@ export async function createRuntime({
         stopOwnedSshKeyTransfer(operationId, record.ownerWindowId),
       ),
     );
+    for (const profile of getState().profiles || []) {
+      for (const operation of operations.list(profile.id)) {
+        if (
+          operation.kind === OPERATION_KIND_REVIEW_AGENT_PREPARE &&
+          (operation.status === "accepted" || operation.status === "running")
+        ) {
+          cancelledReviewAgentPreparationOperations.add(operation.operationId);
+        }
+      }
+    }
+    for (const record of reviewAgentPreparations.values()) invalidateReviewAgentOwner(record.ownerWindowId);
+    await Promise.all(
+      [...reviewAgentPreparations.values()].map(async (record) => {
+        record.cancelled = true;
+        cleanupReviewAgentPreparation(record);
+      }),
+    );
   }
   // Transport-neutral notification source (plan §10.1) — raiseAlert() and the
   // PR/pipeline forwarders below emit ExternalNotificationEvent here, once,
@@ -1501,6 +1552,23 @@ export async function createRuntime({
     for (const [operationId, record] of sshKeyTransfers) {
       const slot = (state.windowSlots || []).find((item) => item.id === record.ownerWindowId);
       if (slot?.profileId !== record.profileId) void stopOwnedSshKeyTransfer(operationId, record.ownerWindowId);
+    }
+    for (const record of reviewAgentPreparations.values()) {
+      if (getWindowProfileId(record.ownerWindowId) !== record.profileId) {
+        invalidateReviewAgentOwner(record.ownerWindowId);
+        record.cancelled = true;
+        cleanupReviewAgentPreparation(record);
+      }
+    }
+    for (const profile of state.profiles || []) {
+      for (const operation of operations.list(profile.id)) {
+        if (
+          operation.kind === OPERATION_KIND_REVIEW_AGENT_PREPARE &&
+          (operation.status === "accepted" || operation.status === "running") &&
+          getWindowProfileId(String(operation.intent.ownerWindowId || "")) !== operation.profileId
+        )
+          cancelledReviewAgentPreparationOperations.add(operation.operationId);
+      }
     }
   });
   sessions.on("terminal:exit", (payload: { sessionId?: string; exitCode?: number }) => {
@@ -7108,17 +7176,25 @@ export async function createRuntime({
     await internalMcpBroker.start();
   }
   await operations.load((record) =>
-    record.kind === OPERATION_KIND_REVIEW_START
+    record.kind === OPERATION_KIND_REVIEW_AGENT_PREPARE
       ? Promise.resolve({
           status: "interrupted" as const,
-          workspaceId: String(record.artifacts.workspaceId || "") || undefined,
           error: {
             code: "interrupted",
-            message:
-              "The runtime stopped before it could confirm that the review agent started. Retry to start a new review.",
+            message: "The runtime stopped before the temporary review setup finished. Start setup again.",
           },
         })
-      : taskService.reconcile(record),
+      : record.kind === OPERATION_KIND_REVIEW_START
+        ? Promise.resolve({
+            status: "interrupted" as const,
+            workspaceId: String(record.artifacts.workspaceId || "") || undefined,
+            error: {
+              code: "interrupted",
+              message:
+                "The runtime stopped before it could confirm that the review agent started. Retry to start a new review.",
+            },
+          })
+        : taskService.reconcile(record),
   );
   replayRecentReviewStartOutcomes = () => {
     const cutoff = Date.now() - 24 * 60 * 60 * 1000;
@@ -8575,6 +8651,75 @@ export async function createRuntime({
     sshTestSessionOwner(sessionId: unknown): string | undefined {
       if (typeof sessionId !== "string") return undefined;
       return sshTestSessions.get(sessionId)?.ownerWindowId || sshTransferOwnerForSession(sessionId);
+    },
+    reviewAgentPreparationSessionOwner(sessionId: unknown): string | undefined {
+      return typeof sessionId === "string" ? reviewAgentPreparationSessions.get(sessionId)?.ownerWindowId : undefined;
+    },
+    reviewAgentPreparationSessionProfile(sessionId: unknown): string | undefined {
+      return typeof sessionId === "string" ? reviewAgentPreparationSessions.get(sessionId)?.profileId : undefined;
+    },
+    reviewAgentPreparationWrite(sessionId: string, data: string, ownerWindowId: string) {
+      if (reviewAgentPreparationSessions.get(sessionId)?.ownerWindowId !== ownerWindowId) return false;
+      sessions.writeToSession(sessionId, data);
+      return true;
+    },
+    reviewAgentPreparationSubmit(sessionId: string, text: string, ownerWindowId: string) {
+      if (reviewAgentPreparationSessions.get(sessionId)?.ownerWindowId !== ownerWindowId) return false;
+      sessions.submitToSession(sessionId, text);
+      return true;
+    },
+    reviewAgentPreparationResize(sessionId: string, cols: number, rows: number, ownerWindowId: string) {
+      if (reviewAgentPreparationSessions.get(sessionId)?.ownerWindowId !== ownerWindowId) return false;
+      sessions.resizeSession(sessionId, cols, rows);
+      return true;
+    },
+    isReviewAgentPreparationSessionId,
+    async stopReviewAgentPreparation(payload: unknown, ownerWindowId: string) {
+      const parsed = reviewAgentPreparationStopSchema.parse(payload);
+      const record = parsed.operationId
+        ? reviewAgentPreparations.get(parsed.operationId)
+        : parsed.sessionId
+          ? reviewAgentPreparationSessions.get(parsed.sessionId)
+          : undefined;
+      if (!record && parsed.operationId) {
+        const ownerProfile = getWindowProfileId(ownerWindowId);
+        const operation = ownerProfile ? operations.find(parsed.operationId) : null;
+        if (operation?.kind === OPERATION_KIND_REVIEW_AGENT_PREPARE && operation.intent.ownerWindowId !== ownerWindowId)
+          throw new ClientRequestError("Review setup belongs to another client.", 403);
+        if (
+          operation?.kind === OPERATION_KIND_REVIEW_AGENT_PREPARE &&
+          operation.profileId === ownerProfile &&
+          operation.intent.ownerWindowId === ownerWindowId &&
+          (operation.status === "accepted" || operation.status === "running")
+        ) {
+          cancelledReviewAgentPreparationOperations.add(parsed.operationId);
+          return { ok: true };
+        }
+      }
+      if (!record) return { ok: true };
+      if (record.ownerWindowId !== ownerWindowId)
+        throw new ClientRequestError("Review setup belongs to another client.", 403);
+      record.cancelled = true;
+      cleanupReviewAgentPreparation(record);
+      return { ok: true };
+    },
+    async reviewAgentPreparationStopOwner(ownerWindowId: string) {
+      invalidateReviewAgentOwner(ownerWindowId);
+      for (const profile of getState().profiles || []) {
+        for (const operation of operations.list(profile.id)) {
+          if (
+            operation.kind === OPERATION_KIND_REVIEW_AGENT_PREPARE &&
+            operation.intent.ownerWindowId === ownerWindowId &&
+            (operation.status === "accepted" || operation.status === "running")
+          )
+            cancelledReviewAgentPreparationOperations.add(operation.operationId);
+        }
+      }
+      for (const record of [...reviewAgentPreparations.values()]) {
+        if (record.ownerWindowId !== ownerWindowId) continue;
+        record.cancelled = true;
+        cleanupReviewAgentPreparation(record);
+      }
     },
     isPrivateSshOperationSessionId,
     isPrivateSshOperationSession,
@@ -11097,6 +11242,236 @@ export async function createRuntime({
         },
         { profileId: workspace.profileId || "default", requester: { source: "ui" } },
       );
+    },
+
+    async startReviewAgentPreparation(input: StartReviewAgentPreparation, windowId?: string) {
+      if (!windowId) throw new Error("Review setup requires an authenticated client.");
+      const state = getState();
+      const parent = state.workspaces.find((item) => item.id === input.parentWorkspaceId);
+      const expectedParentKind = input.provider === "azure-devops" ? "azure" : "github";
+      if (!parent || parent.kind !== expectedParentKind) throw new Error("Review parent workspace not found.");
+      const profileId = String(parent.profileId || "default");
+      const callerProfileId = windowId ? getWindowProfileId(windowId) : null;
+      if (!callerProfileId) throw new Error("The calling profile is no longer available.");
+      if (callerProfileId && callerProfileId !== profileId) throw new Error("Cross-profile refused.");
+      assertProfileExists(state, profileId);
+
+      const connections =
+        input.provider === "github" ? getGitHubSettings(state).connections : getAzureSettings(state).connections;
+      const connection = connections.find((item) => item.id === input.connectionId);
+      if (!connection || connection.enabled === false || String(connection.profileId || "default") !== profileId)
+        throw new Error("The provider connection is not enabled in this profile.");
+
+      const panel = (parent.panels || []).find((item) => item.id === input.panelId);
+      const parsedAgent = panel && !panel.launch ? parseAgentCommand(panel.command) : null;
+      if (!panel || !parsedAgent || !["claude", "codex", "copilot", "opencode"].includes(parsedAgent.provider))
+        throw new Error("Choose a saved local Claude Code, Codex, Copilot, or OpenCode panel.");
+
+      const parentRoot = String(parent.cwd || "");
+      const panelCommand = String(panel.command || "");
+      const panelTitle = String(panel.title || parsedAgent.provider);
+      const panelShellValue = panel.shell;
+      const panelShell = panel.shell;
+      const connectionFingerprint = (value: Record<string, unknown>) =>
+        JSON.stringify([
+          value.id,
+          value.profileId || "default",
+          value.enabled !== false,
+          value.tokenRef,
+          value.reviewRoot,
+          value.hostUrl,
+          value.orgUrl,
+        ]);
+      const initialConnectionFingerprint = connectionFingerprint(connection as unknown as Record<string, unknown>);
+      const ownerGenerationAtStart = reviewAgentOwnerGeneration(windowId);
+      const inputHash = createHash("sha256").update(JSON.stringify(input)).digest("hex");
+      const runner = async (handle: import("./operation-registry.js").OperationHandle) => {
+        const preparation: ReviewAgentPreparationRecord = {
+          operationId: handle.record.operationId,
+          ownerWindowId: windowId,
+          profileId,
+          cancelled: cancelledReviewAgentPreparationOperations.has(handle.record.operationId),
+        };
+        reviewAgentPreparations.set(preparation.operationId, preparation);
+        const checkPreparation = () => {
+          if (preparation.cancelled) throw new Error("Review setup was closed.");
+          if (reviewAgentOwnerGeneration(windowId) !== ownerGenerationAtStart || sshTestShuttingDown)
+            throw new Error("The review setup owner disconnected.");
+          if (getWindowProfileId(windowId) !== profileId) throw new Error("The client profile changed during setup.");
+        };
+        checkPreparation();
+        const currentState = getState();
+        const currentParent = currentState.workspaces.find((item) => item.id === input.parentWorkspaceId);
+        if (
+          !currentParent ||
+          currentParent.kind !== expectedParentKind ||
+          String(currentParent.profileId || "default") !== profileId ||
+          String(currentParent.cwd || "") !== parentRoot
+        )
+          throw new Error("The review parent changed before setup could start.");
+        const currentPanel = (currentParent.panels || []).find((item) => item.id === input.panelId);
+        if (
+          !currentPanel ||
+          currentPanel.launch ||
+          currentPanel.command !== panelCommand ||
+          currentPanel.shell !== panelShellValue
+        )
+          throw new Error("The selected agent panel changed before setup could start.");
+        const liveConnection = (
+          input.provider === "github"
+            ? getGitHubSettings(currentState).connections
+            : getAzureSettings(currentState).connections
+        ).find((item) => item.id === input.connectionId);
+        if (
+          !liveConnection ||
+          liveConnection.enabled === false ||
+          String(liveConnection.profileId || "default") !== profileId ||
+          connectionFingerprint(liveConnection as unknown as Record<string, unknown>) !== initialConnectionFingerprint
+        )
+          throw new Error("The provider connection changed before setup could start.");
+
+        await handle.update({ step: "finding-repository" });
+        let cacheRepoPath: string;
+        let agentName: string;
+        let repositoryName: string;
+        if (input.provider === "github") {
+          const repository = (await github.listQuickFixRepositories(input.connectionId)).find(
+            (item: { owner: string; name: string }) => item.owner === input.owner && item.name === input.repo,
+          );
+          if (!repository?.remoteUrl) throw new Error("The selected GitHub repository is no longer available.");
+          repositoryName = repository.fullName;
+          const { connection: managerConnection, token } = github.resolveConnectionAndToken(input.connectionId);
+          if (
+            connectionFingerprint(managerConnection as unknown as Record<string, unknown>) !==
+            initialConnectionFingerprint
+          )
+            throw new Error("The GitHub connection changed before setup could start.");
+          const reviewRoot = parentRoot || managerConnection.reviewRoot || getDefaultGitHubReviewRoot();
+          cacheRepoPath = await github.ensureCacheRepo({
+            connection: managerConnection,
+            token,
+            owner: String(repository.owner),
+            repo: String(repository.name),
+            remoteUrl: repository.remoteUrl,
+            reviewRoot,
+          });
+          agentName = parsedAgent.provider;
+        } else {
+          const repository = (await azure.listQuickFixRepositories(input.connectionId, input.projectName)).find(
+            (item: { id: unknown }) => item.id === input.repositoryId,
+          );
+          if (!repository?.remoteUrl) throw new Error("The selected Azure DevOps repository is no longer available.");
+          repositoryName = repository.name;
+          const { connection: managerConnection, token } = azure.resolveAzureConnectionAndToken(input.connectionId);
+          if (
+            connectionFingerprint(managerConnection as unknown as Record<string, unknown>) !==
+            initialConnectionFingerprint
+          )
+            throw new Error("The Azure DevOps connection changed before setup could start.");
+          const reviewRoot = parentRoot || managerConnection.reviewRoot || getDefaultAzureReviewRoot();
+          cacheRepoPath = await azure.ensureCacheRepo({
+            connection: managerConnection,
+            token,
+            repository: { id: repository.id, name: repository.name, remoteUrl: repository.remoteUrl },
+            reviewRoot,
+          });
+          agentName = parsedAgent.provider;
+        }
+
+        checkPreparation();
+
+        const latestState = getState();
+        assertProfileExists(latestState, profileId);
+        const latestParent = latestState.workspaces.find((item) => item.id === input.parentWorkspaceId);
+        if (
+          !latestParent ||
+          latestParent.kind !== expectedParentKind ||
+          String(latestParent.profileId || "default") !== profileId ||
+          String(latestParent.cwd || "") !== parentRoot
+        )
+          throw new Error("The review parent changed while its repository was being prepared.");
+        const latestPanel = (latestParent.panels || []).find((item) => item.id === input.panelId);
+        const latestConnection = (
+          input.provider === "github"
+            ? getGitHubSettings(latestState).connections
+            : getAzureSettings(latestState).connections
+        ).find((item) => item.id === input.connectionId);
+        if (
+          !latestPanel ||
+          latestPanel.launch ||
+          latestPanel.command !== panelCommand ||
+          latestPanel.shell !== panelShellValue ||
+          !latestConnection ||
+          latestConnection.enabled === false ||
+          String(latestConnection.profileId || "default") !== profileId ||
+          connectionFingerprint(latestConnection as unknown as Record<string, unknown>) !== initialConnectionFingerprint
+        )
+          throw new Error("The selected agent or provider connection changed while the repository was prepared.");
+        checkPreparation();
+        const workspaceId = `review-agent-setup-${randomUUID()}`;
+        const panelId = "agent";
+        const sessionId = createSessionId(workspaceId, panelId);
+        preparation.sessionId = sessionId;
+        reviewAgentPreparationSessions.set(sessionId, preparation);
+        sessions.retainTemporarySession?.(sessionId);
+        const tempWorkspace = normalizeWorkspace({
+          id: workspaceId,
+          name: `${repositoryName} · Review setup`,
+          icon: input.provider === "github" ? "GH" : "AZ",
+          color: input.provider === "github" ? "#238636" : "#0078d4",
+          kind: "terminal",
+          source: "manual",
+          pluginId: "",
+          cwd: cacheRepoPath,
+          profileId,
+          notes: "",
+          activePanelId: panelId,
+          panels: [
+            {
+              id: panelId,
+              title: panelTitle || agentName,
+              command: panelCommand,
+              shell: panelShell,
+              startup: "default",
+            },
+          ],
+        });
+        const launchState = {
+          ...latestState,
+          workspaces: [...latestState.workspaces, tempWorkspace],
+          projects: [...(latestState.projects || []), tempWorkspace],
+        };
+        const session = await sessions.ensureSession(launchState, sessionId);
+        checkPreparation();
+        if (!session || reviewAgentPreparations.get(preparation.operationId) !== preparation) {
+          throw new Error("The review setup agent could not be launched.");
+        }
+        await handle.update({ step: "agent-started" });
+        return { sessionId, repositoryName, agentName };
+      };
+
+      const accepted = await operations.accept(
+        {
+          kind: OPERATION_KIND_REVIEW_AGENT_PREPARE,
+          profileId,
+          originWorkspaceId: input.parentWorkspaceId,
+          idempotencyKey: input.idempotencyKey,
+          inputHash,
+          initialStep: "accepted",
+          intent: { ...input, agentName: parsedAgent.provider, ownerWindowId: windowId },
+        },
+        async (handle) => {
+          try {
+            return await runner(handle);
+          } catch (error) {
+            const record = reviewAgentPreparations.get(handle.record.operationId);
+            if (record) cleanupReviewAgentPreparation(record);
+            else cancelledReviewAgentPreparationOperations.delete(handle.record.operationId);
+            throw error;
+          }
+        },
+      );
+      return { operationId: accepted.record.operationId };
     },
 
     startPullRequestReview(input: StartPullRequestReviewInput, windowId?: string, internalProfileId?: string) {

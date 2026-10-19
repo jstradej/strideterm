@@ -1105,7 +1105,7 @@ describe("azure manager helpers", () => {
 });
 
 describe("AzureDevOpsManager openQuickFixWorkspace", () => {
-  test("creates a quickfix worktree workspace on the parent's profile", async () => {
+  test.each([true, false])("creates a quickfix workspace using the parent opt-in default (%s)", async (parentOptIn) => {
     const execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
     const { manager } = createManager({ execFileTextImpl });
     await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
@@ -1119,6 +1119,7 @@ describe("AzureDevOpsManager openQuickFixWorkspace", () => {
             kind: "azure",
             profileId: "default",
             cwd: "C:/reviews",
+            internalMcpEnabled: parentOptIn,
             panels: [{ id: "shell-template", title: "Shell", command: "" }],
           },
         ],
@@ -1136,6 +1137,7 @@ describe("AzureDevOpsManager openQuickFixWorkspace", () => {
     expect(result.parentWorkspaceId).toBe("azure-root");
     expect(result.workspace.name).toBe("fix-123");
     expect(result.workspace.profileId).toBe("default");
+    expect(result.workspace.internalMcpEnabled).toBe(parentOptIn);
     expect(result.workspace.cwd).toContain(path.join("quickfix", "ado-main"));
     expect(result.workspace.review).toMatchObject({
       provider: "azure-devops",

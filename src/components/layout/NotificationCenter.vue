@@ -1244,7 +1244,37 @@ function backendSessionId(s: NotificationSession): string {
   return s.viewId || s.id;
 }
 
-function resolveJumpTarget(s: NotificationSession): { workspaceId: string; viewId: string } {
+type ReviewInboxFocus = {
+  provider: "azure-devops" | "github";
+  connectionId: string;
+  prKey: string;
+  profileId: string;
+  workspaceId: string;
+};
+
+type ReviewConnectionSettings = { id: string; profileId?: string; enabled?: boolean };
+type ReviewProviderSettings = { connections?: ReviewConnectionSettings[] };
+type ReviewIntegrations = Record<string, ReviewProviderSettings>;
+
+function resolveReviewInboxFocus(s: NotificationSession): ReviewInboxFocus | null {
+  const provider = s.meta?.provider;
+  if (provider !== "azure-devops" && provider !== "github") return null;
+  const connectionId = String(s.meta?.connectionId || "");
+  const prKey = String(s.meta?.prKey || "");
+  if (!connectionId || !prKey) return null;
+  const settings = appStore.payload?.appState?.settings?.integrations as ReviewIntegrations | undefined;
+  const providerSettings = settings?.[provider === "github" ? "github" : "azureDevops"];
+  const connection = providerSettings?.connections?.find((item) => item.id === connectionId);
+  const profileId = String(s.meta?.profileId || connection?.profileId || "default");
+  if (connection && String(connection.profileId || "default") !== profileId) return null;
+  return { provider, connectionId, prKey, profileId, workspaceId: "" };
+}
+
+function resolveJumpTarget(s: NotificationSession): {
+  workspaceId: string;
+  viewId: string;
+  pullRequestFocus?: ReviewInboxFocus;
+} {
   if (s.category !== "review") {
     // Follow the tab to wherever it is currently PRESENTED: a Primary alerting
     // mid-companion-loop lives in the task workspace, and jumping to its owner
@@ -1258,14 +1288,54 @@ function resolveJumpTarget(s: NotificationSession): { workspaceId: string; viewI
     return { workspaceId, viewId };
   }
   const workspaces = appStore.payload?.appState?.workspaces || [];
-  const preferredId = s.meta?.reviewWorkspaceId || s.meta?.existingWorkspaceId || s.workspaceId || "";
-  const direct = preferredId && workspaces.find((w) => w.id === preferredId);
+  const focus = resolveReviewInboxFocus(s);
+  if (!focus) {
+    if (s.meta?.kind !== "connection-error") return { workspaceId: "", viewId: "" };
+    const provider = s.meta?.provider;
+    if (provider !== "azure-devops" && provider !== "github") return { workspaceId: "", viewId: "" };
+    const connectionId = String(s.meta?.connectionId || "");
+    const settings = appStore.payload?.appState?.settings?.integrations as ReviewIntegrations | undefined;
+    const providerSettings = settings?.[provider === "github" ? "github" : "azureDevops"];
+    const connection = providerSettings?.connections?.find((item) => item.id === connectionId);
+    if (!connectionId || !connection) return { workspaceId: "", viewId: "" };
+    const profileId = String(s.meta?.profileId || connection.profileId || "default");
+    if (String(connection.profileId || "default") !== profileId) return { workspaceId: "", viewId: "" };
+    const inboxKind = provider === "github" ? "github" : "azure";
+    const inbox = workspaces.find(
+      (workspace) => workspace.kind === inboxKind && String(workspace.profileId || "default") === profileId,
+    );
+    return { workspaceId: inbox?.id || "", viewId: "" };
+  }
+  const directIds = [s.meta?.reviewWorkspaceId, s.meta?.existingWorkspaceId, s.workspaceId]
+    .map((id) => String(id || ""))
+    .filter(Boolean);
+  const direct = directIds
+    .map((id) =>
+      workspaces.find(
+        (workspace) =>
+          workspace.id === id &&
+          String(workspace.profileId || "default") === focus.profileId &&
+          workspace.review?.provider === focus.provider &&
+          workspace.review?.connectionId === focus.connectionId &&
+          workspace.review?.prKey === focus.prKey,
+      ),
+    )
+    .find(Boolean);
   if (direct) return { workspaceId: direct.id, viewId: "" };
-  // No review workspace yet — fall back to the provider inbox.
-  const inboxKind = s.meta?.provider === "github" ? "github" : "azure";
-  const activeProfile = appStore.myActiveProfileId || "default";
-  const inbox = workspaces.find((w) => w.kind === inboxKind && (w.profileId || "default") === activeProfile);
-  return { workspaceId: inbox?.id || "", viewId: "" };
+
+  const settings = appStore.payload?.appState?.settings?.integrations as ReviewIntegrations | undefined;
+  const providerSettings = settings?.[focus.provider === "github" ? "github" : "azureDevops"];
+  const connection = providerSettings?.connections?.find((item) => item.id === focus.connectionId);
+  if (!connection || connection.enabled === false) return { workspaceId: "", viewId: "" };
+  const inboxKind = focus.provider === "github" ? "github" : "azure";
+  const inbox = workspaces.find(
+    (workspace) => workspace.kind === inboxKind && String(workspace.profileId || "default") === focus.profileId,
+  );
+  return {
+    workspaceId: inbox?.id || "",
+    viewId: "",
+    pullRequestFocus: inbox ? { ...focus, workspaceId: inbox.id } : undefined,
+  };
 }
 
 /**
@@ -1397,6 +1467,8 @@ async function jump(s: NotificationSession): Promise<void> {
   }
   const navigated = await navigateToTarget(target);
   if (!navigated) return;
+
+  if (target.pullRequestFocus) appStore.requestInboxPullRequestFocus(target.pullRequestFocus);
 
   // Connection-error notifications have no PR / review workspace to land on —
   // resolveJumpTarget routed us to the provider inbox above. Ask that inbox to

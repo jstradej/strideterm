@@ -564,6 +564,45 @@ describe("createDialogActions.startTaskWithHookCheck surfaces a failed start", (
   });
 });
 
+describe("createDialogActions.openWorkspaceDialog agent preparation", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "win-a" } };
+  });
+
+  it("does not start preparation when saving the edited parent workspace fails", async () => {
+    const workspace = {
+      id: "parent-1",
+      kind: "azure",
+      profileId: "profile-a",
+      name: "Parent",
+      panels: [{ id: "agent", title: "Claude", command: "claude", shell: true }],
+    };
+    const saveWorkspace = vi.fn().mockRejectedValue(new Error("Disk is read-only"));
+    const startReviewAgentPreparation = vi.fn();
+    const ctx = makeCtx({ appState: { workspaces: [workspace] } });
+    ctx.getApi = () => ({ saveWorkspace, startReviewAgentPreparation });
+    const actions = createDialogActions(ctx);
+
+    actions.openWorkspaceDialog(workspace);
+    await expect(
+      (ctx.overlayProps.value.onPrepareAgent as (request: AnyApi) => Promise<void>)({
+        workspace,
+        selection: {
+          provider: "azure-devops",
+          connectionId: "az-1",
+          projectName: "Project",
+          repositoryId: "repo-1",
+          panelId: "agent",
+        },
+      }),
+    ).rejects.toThrow("Disk is read-only");
+
+    expect(startReviewAgentPreparation).not.toHaveBeenCalled();
+    expect(ctx.overlay.value).toBe("WorkspaceDialog");
+  });
+});
+
 describe("createDialogActions.createWorktreeWithDialog", () => {
   it("single-repo workspace uses WorktreeDialog (no repo picker) and closes once the worktree exists", async () => {
     const ctx = makeCtx({ appState: { workspaces: [{ id: "ws-1", cwd: "/repo" }] } });

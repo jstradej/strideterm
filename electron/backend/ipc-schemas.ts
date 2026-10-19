@@ -688,6 +688,39 @@ export const quickFixCreateSchema = z.object({
   baseBranch: nonEmptyString,
   newBranchName: nonEmptyString,
 });
+
+export const startReviewAgentPreparationSchema = z.discriminatedUnion("provider", [
+  z
+    .object({
+      parentWorkspaceId: nonEmptyString,
+      provider: z.literal("azure-devops"),
+      connectionId: nonEmptyString,
+      projectName: nonEmptyString,
+      repositoryId: nonEmptyString,
+      panelId: nonEmptyString,
+      idempotencyKey: nonEmptyString,
+    })
+    .strict(),
+  z
+    .object({
+      parentWorkspaceId: nonEmptyString,
+      provider: z.literal("github"),
+      connectionId: nonEmptyString,
+      owner: nonEmptyString,
+      repo: nonEmptyString,
+      panelId: nonEmptyString,
+      idempotencyKey: nonEmptyString,
+    })
+    .strict(),
+]);
+export type StartReviewAgentPreparation = z.infer<typeof startReviewAgentPreparationSchema>;
+export const reviewAgentPreparationStopSchema = z
+  .object({ operationId: nonEmptyString.optional(), sessionId: nonEmptyString.optional() })
+  .strict()
+  .refine(
+    (value) => Boolean(value.operationId) !== Boolean(value.sessionId),
+    "Provide exactly one session or operation id",
+  );
 export type QuickFixCreate = z.infer<typeof quickFixCreateSchema>;
 
 export const azureAuditLogQuerySchema = z.object({

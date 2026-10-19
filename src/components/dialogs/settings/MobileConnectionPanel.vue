@@ -476,7 +476,7 @@
                     <label
                       v-for="cap in CAPABILITY_OPTIONS"
                       :key="cap.id"
-                      class="form-label form-label--inline"
+                      class="pairing-picker__option"
                       :title="cap.title"
                     >
                       <input v-model="pairingCapabilities" type="checkbox" :value="cap.id" />
@@ -1316,9 +1316,7 @@ const quotaTitle = computed(
 
 // --- Pairing ---
 const pairingProfileIds = computed(() => profileOptions.value.map((p) => p.id));
-const pairingCapabilities = ref<MobileCapability[]>(
-  CAPABILITY_OPTIONS.filter((c) => c.id !== "review.start").map((c) => c.id),
-);
+const pairingCapabilities = ref<MobileCapability[]>(CAPABILITY_OPTIONS.map((c) => c.id));
 const addPhoneSetupOpen = ref(false);
 const pairingQr = ref<HTMLElement | null>(null);
 const pairingBusy = ref(false);
@@ -2221,9 +2219,36 @@ onBeforeUnmount(() => {
 }
 
 .pairing-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 6px 12px;
+}
+
+.pairing-picker__option {
   display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  padding: 5px 7px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.pairing-picker__option:hover {
+  background: color-mix(in srgb, var(--fg, #fff) 5%, transparent);
+}
+
+.pairing-picker__option input {
+  flex: 0 0 auto;
+  width: auto;
+  margin: 2px 0 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.pairing-picker__option span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .pairing-qr {

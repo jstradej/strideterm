@@ -1,6 +1,13 @@
 <template>
   <article
-    :class="['azure-pr-row', item.hasAttention && 'azure-pr-row--attention', expanded && 'azure-pr-row--expanded']"
+    :class="[
+      'azure-pr-row',
+      item.hasAttention && 'azure-pr-row--attention',
+      expanded && 'azure-pr-row--expanded',
+      focused && 'azure-pr-row--focused',
+    ]"
+    :data-pr-key="item.prKey"
+    :data-connection-id="item.connectionId"
   >
     <div class="azure-pr-row__main">
       <div class="azure-pr-row__title">
@@ -44,6 +51,12 @@
         <template v-if="isGitHub && item.reviewerSummary?.changesRequestedCount">
           <span>&middot;</span>
           <span style="color: #ff6f8d">{{ item.reviewerSummary.changesRequestedCount }} changes requested</span>
+        </template>
+        <template v-if="createdAge || updatedAge">
+          <span>&middot;</span>
+          <span v-if="createdAge" :title="`Created ${formatFull(createdDate)}`">Created {{ createdAge }}</span>
+          <span v-if="createdAge && updatedAge">&middot;</span>
+          <span v-if="updatedAge" :title="`Updated ${formatFull(updatedDate)}`">Updated {{ updatedAge }}</span>
         </template>
       </div>
       <div class="azure-pr-row__branch">
@@ -141,8 +154,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from "vue";
-import { stripRef } from "./azure/azurePipelineFormat.js";
+import { computed, ref, watch } from "vue";
+import { formatFull, formatRelative, stripRef } from "./azure/azurePipelineFormat.js";
 import { shortSha, formatDate } from "./prRowFormat.js";
 
 const props = withDefaults(
@@ -151,9 +164,10 @@ const props = withDefaults(
     item: Record<string, any>;
     showSeen?: boolean;
     opening?: boolean;
+    focused?: boolean;
     provider?: "azure" | "github";
   }>(),
-  { showSeen: true, opening: false, provider: "azure" },
+  { showSeen: true, opening: false, focused: false, provider: "azure" },
 );
 
 const emit = defineEmits<{
@@ -165,6 +179,14 @@ const emit = defineEmits<{
 const isGitHub = computed(() => props.provider === "github");
 
 const expanded = ref(false);
+
+watch(
+  () => props.focused,
+  (focused) => {
+    if (focused) expanded.value = true;
+  },
+  { immediate: true },
+);
 
 const pullRequest = computed(() => props.item.pullRequest || {});
 
@@ -241,6 +263,19 @@ const descriptionText = computed(() => {
 });
 
 const createdDate = computed(() => pullRequest.value.creationDate || pullRequest.value.createdAt);
+const updatedDate = computed(() =>
+  isGitHub.value ? pullRequest.value.updatedAt || props.item.lastRemoteActivityAt : props.item.lastRemoteActivityAt,
+);
+const createdAge = computed(() =>
+  formatRelative(props.item.pullRequest?.creationDate || props.item.pullRequest?.createdAt),
+);
+const updatedAge = computed(() =>
+  formatRelative(
+    isGitHub.value
+      ? props.item.pullRequest?.updatedAt || props.item.lastRemoteActivityAt
+      : props.item.lastRemoteActivityAt,
+  ),
+);
 
 const mergeStatusLabel = computed(() => {
   if (isGitHub.value) {

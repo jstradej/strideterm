@@ -812,6 +812,84 @@ describe("NotificationCenter — Performance tab availability", () => {
   });
 });
 
+describe("NotificationCenter — review notification navigation", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    window.localStorage.removeItem("strideterm-notifications-v2");
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "slot1" } };
+  });
+
+  it.each([
+    {
+      provider: "azure-devops" as const,
+      inboxKind: "azure",
+      connectionKey: "azureDevops",
+      connectionId: "ado-1",
+      prKey: "ado:1",
+    },
+    {
+      provider: "github" as const,
+      inboxKind: "github",
+      connectionKey: "github",
+      connectionId: "gh-1",
+      prKey: "github:42",
+    },
+  ])("routes the $provider notification to its exact profile inbox and PR", async (target) => {
+    const appStore = useAppStore();
+    const notifStore = useNotificationStore();
+    const workspaceId = `ws-${target.inboxKind}`;
+    appStore.payload = makePayload({
+      appState: {
+        activeWorkspaceId: "ws-a",
+        profiles: [{ id: "p1", name: "Profile Alpha", color: "", workspaceIds: ["ws-a", workspaceId] }],
+        windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "ws-a", activeSessionId: "" }],
+        workspaces: [
+          { id: "ws-a", name: "WsA", profileId: "p1", kind: "terminal", panels: [] },
+          { id: workspaceId, name: "Provider Inbox", profileId: "p1", kind: target.inboxKind, panels: [] },
+        ],
+        settings: {
+          integrations: {
+            [target.connectionKey]: {
+              connections: [{ id: target.connectionId, profileId: "p1", enabled: true }],
+            },
+          },
+        },
+      },
+    }) as AnyApi;
+    notifStore.panelOpen = true;
+    notifStore.add({
+      title: "Review requested",
+      body: "Please review this pull request",
+      kind: "review",
+      category: "review",
+      workspaceId: "",
+      viewId: target.prKey,
+      meta: {
+        kind: "pr-new",
+        provider: target.provider,
+        connectionId: target.connectionId,
+        prKey: target.prKey,
+        profileId: "p1",
+      },
+    });
+    const activateWorkspace = vi.spyOn(appStore, "activateWorkspaceInGrid").mockResolvedValue();
+
+    const wrapper = mount(NotificationCenter);
+    await wrapper.get(".notification-item").trigger("click");
+    await flushPromises();
+
+    expect(activateWorkspace).toHaveBeenCalledWith(workspaceId);
+    expect(appStore.inboxPullRequestFocus).toEqual({
+      provider: target.provider,
+      connectionId: target.connectionId,
+      prKey: target.prKey,
+      profileId: "p1",
+      workspaceId,
+      ts: expect.any(Number),
+    });
+  });
+});
+
 describe("NotificationCenter — Attachments tab", () => {
   beforeEach(() => {
     setActivePinia(createPinia());

@@ -44,6 +44,8 @@ export const MOBILE_DENIED_ROUTES: ReadonlySet<string> = new Set([
   "/api/terminal/restart",
   "/api/session/activate",
   "/api/session/activate-in-window",
+  "/api/review/agent-prepare",
+  "/api/review/agent-prepare/stop",
   "/api/file/write",
   "/api/file/create-file",
   "/api/file/create-dir",

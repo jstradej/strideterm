@@ -161,6 +161,10 @@ function effectiveProfile(workspace: Pick<WorkspaceState, "profileId">): string 
   return workspace.profileId || "default";
 }
 
+function managedReviewSource(parent: WorkspaceState): boolean {
+  return Boolean(parent.quickfix || parent.review?.checkout?.mode === "managed-worktree");
+}
+
 function safeFileName(source: string): string {
   const base = source.replace(/\\/g, "/").split("/").pop() || "source";
   return base.replace(/[^A-Za-z0-9._-]+/gu, "_").slice(0, 80) || "source";
@@ -266,13 +270,54 @@ export function createTaskService(deps: TaskServiceDeps) {
     if (parent.internalMcpEnabled !== true) {
       throw new InternalMcpError("scope_denied", "Internal MCP is not enabled for this workspace.");
     }
-    if (UNSUPPORTED_KINDS.has(String(parent.kind)) || parent.review || parent.quickfix) {
+    const linkedReview = parent.review?.checkout?.mode === "linked-existing-workspace" && !parent.quickfix;
+    const managedReview = managedReviewSource(parent);
+    if (
+      UNSUPPORTED_KINDS.has(String(parent.kind)) ||
+      (parent.review != null && !linkedReview && !managedReview) ||
+      (managedReview && (!parent.review?.checkout || parent.review.checkout.mode !== "managed-worktree"))
+    ) {
       throw new InternalMcpError(
         "unsupported_workspace",
         `A ${parent.kind} workspace cannot create tasks through the internal MCP.`,
       );
     }
     return parent;
+  }
+
+  async function managedReviewRepository(
+    parent: WorkspaceState,
+  ): Promise<{ path: string; info: { head: string; dirty: boolean } } | null> {
+    const checkout = parent.review?.checkout;
+    if (
+      checkout?.mode !== "managed-worktree" ||
+      !checkout.rootPath ||
+      !checkout.cacheRepoPath ||
+      !samePath(checkout.rootPath, parent.cwd) ||
+      samePath(checkout.cacheRepoPath, parent.cwd) ||
+      isInside(parent.cwd, checkout.cacheRepoPath)
+    )
+      return null;
+
+    try {
+      const sourceRoot = await git(["rev-parse", "--show-toplevel"], parent.cwd);
+      const cacheRoot = await git(["rev-parse", "--show-toplevel"], checkout.cacheRepoPath);
+      if (!samePath(sourceRoot, parent.cwd) || !samePath(cacheRoot, checkout.cacheRepoPath)) return null;
+
+      const sourceCommon = await git(["rev-parse", "--git-common-dir"], parent.cwd);
+      const cacheCommon = await git(["rev-parse", "--git-common-dir"], checkout.cacheRepoPath);
+      const sourceCommonPath = await fs.realpath(path.resolve(parent.cwd, sourceCommon));
+      const cacheCommonPath = await fs.realpath(path.resolve(checkout.cacheRepoPath, cacheCommon));
+      const cacheGitPath = await fs.realpath(path.join(checkout.cacheRepoPath, ".git"));
+      if (!samePath(sourceCommonPath, cacheCommonPath) || !samePath(cacheCommonPath, cacheGitPath)) return null;
+
+      const sourceInfo = await inspectRepo(parent.cwd);
+      if (!sourceInfo) return null;
+      await git(["cat-file", "-e", `${sourceInfo.head}^{commit}`], checkout.cacheRepoPath);
+      return { path: await fs.realpath(checkout.cacheRepoPath), info: sourceInfo };
+    } catch {
+      return null;
+    }
   }
 
   async function localDirectory(dir: string): Promise<boolean> {
@@ -449,12 +494,31 @@ export function createTaskService(deps: TaskServiceDeps) {
       }
     }
 
-    const repositories = await repositoriesOf(parent);
-    const repositoryInfo = await Promise.all(
-      repositories.map(async (repo) => ({ path: repo, info: await inspectRepo(repo) })),
-    );
+    const managed = managedReviewSource(parent);
+    const managedRepo = managed ? await managedReviewRepository(parent) : null;
+    const repositories = managed ? (managedRepo ? [managedRepo.path] : []) : await repositoriesOf(parent);
+    const repositoryInfo = managed
+      ? managedRepo
+        ? [{ path: managedRepo.path, info: managedRepo.info }]
+        : []
+      : await Promise.all(repositories.map(async (repo) => ({ path: repo, info: await inspectRepo(repo) })));
     const mode = input.checkout?.mode;
     if (!mode) missingInputs.push("checkout.mode");
+    if (managed && !managedRepo) {
+      errors.push({
+        code: "unsupported_workspace",
+        field: "checkout.repository",
+        message:
+          "The managed review checkout no longer has a valid repository cache. Reopen the review before creating a task.",
+      });
+    }
+    if (managed && mode === "here") {
+      errors.push({
+        code: "invalid_request",
+        field: "checkout.mode",
+        message: "Tasks from managed review and quickfix checkouts must use a separate worktree.",
+      });
+    }
 
     const suggestedBranch = `task/${slug(assignment)}-${sha256Hex(`${parent.id}:${assignment}`).slice(0, 4)}`;
     let checkout: CheckoutPlan | null = null;
@@ -519,6 +583,12 @@ export function createTaskService(deps: TaskServiceDeps) {
               field: "checkout.branch",
               message: taken ? `Branch "${branch}" already exists.` : `The worktree path ${treePath} already exists.`,
             });
+          } else if (managed && isInside(parent.cwd, treePath)) {
+            errors.push({
+              code: "scope_denied",
+              field: "checkout.repository",
+              message: "The task worktree must be outside the disposable review checkout.",
+            });
           } else {
             checkout = {
               mode,
@@ -557,7 +627,7 @@ export function createTaskService(deps: TaskServiceDeps) {
         effortLevels: effortLevelsOf(choice.id),
       })),
       checkout: {
-        modes: ["here", "worktree"],
+        modes: managed ? ["worktree"] : ["here", "worktree"],
         repositories: repositoryInfo.map((entry) => ({
           path: entry.path,
           head: entry.info?.head ?? "",

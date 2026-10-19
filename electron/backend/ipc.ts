@@ -17,6 +17,8 @@ import { getLogger } from "./logger.js";
 import {
   validateIpc,
   workspaceSchema,
+  startReviewAgentPreparationSchema,
+  reviewAgentPreparationStopSchema,
   workspaceUIStateSchema,
   projectSchema,
   settingsSchema,
@@ -210,10 +212,15 @@ export function registerIpc(
   } = {},
 ): () => void {
   const sshTestOwnerDestroyHandlers = new Map<string, { sender: Electron.WebContents; listener: () => void }>();
+  const isReviewAgentSetupSession = (sessionId: unknown): sessionId is string =>
+    typeof sessionId === "string" && sessionId.startsWith("review-agent-setup-") && sessionId.endsWith(":agent");
   function emitOwnedSessionEvent(channel: string, payload: unknown): void {
     const eventPayload = payload as { sessionId?: unknown; operationId?: unknown } | null;
     const sessionId = String(eventPayload?.sessionId || eventPayload?.operationId || "");
-    const ownerWindowId = runtime.sshTestSessionOwner(sessionId);
+    const ownerWindowId =
+      (isReviewAgentSetupSession(sessionId) ? runtime.reviewAgentPreparationSessionOwner(sessionId) : undefined) ||
+      runtime.sshTestSessionOwner(sessionId);
+    if (isReviewAgentSetupSession(sessionId) && !ownerWindowId) return;
     if (runtime.isPrivateSshOperationSessionId(sessionId) && !ownerWindowId) return;
     if (ownerWindowId) {
       emitToWindow?.(ownerWindowId, channel, payload);
@@ -225,7 +232,10 @@ export function registerIpc(
   function assertSshTestOwner(event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent, payload: unknown): void {
     const eventPayload = payload as { sessionId?: unknown; operationId?: unknown } | null;
     const sessionId = String(eventPayload?.sessionId || eventPayload?.operationId || "");
-    const ownerWindowId = runtime.sshTestSessionOwner(sessionId);
+    const ownerWindowId =
+      (isReviewAgentSetupSession(sessionId) ? runtime.reviewAgentPreparationSessionOwner(sessionId) : undefined) ||
+      runtime.sshTestSessionOwner(sessionId);
+    if (isReviewAgentSetupSession(sessionId) && !ownerWindowId) throw new Error("Review setup session not found");
     if (runtime.isPrivateSshOperationSessionId(sessionId) && !ownerWindowId)
       throw new Error("Desktop-only SSH operation not found");
     if (!ownerWindowId) return;
@@ -772,6 +782,7 @@ export function registerIpc(
       const listener = () => {
         sshTestOwnerDestroyHandlers.delete(windowId);
         void runtime.sshTestStopOwner(windowId);
+        void runtime.reviewAgentPreparationStopOwner(windowId);
       };
       sshTestOwnerDestroyHandlers.set(windowId, { sender: event.sender, listener });
       event.sender.once("destroyed", listener);
@@ -869,6 +880,24 @@ export function registerIpc(
     const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
     return withOperationPromise({ opId: "review:start" }, () =>
       runtime.startPullRequestReview(validateIpc(startPullRequestReviewSchema, payload, "review:start"), windowId),
+    );
+  });
+  handle("review:agent-prepare", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    registerSshOwnerWindowClose(event, windowId);
+    return withOperationPromise({ opId: "review:agent-prepare" }, () =>
+      runtime.startReviewAgentPreparation(
+        validateIpc(startReviewAgentPreparationSchema, payload, "review:agent-prepare"),
+        windowId,
+      ),
+    );
+  });
+  handle("review:agent-prepare:stop", async (event, payload) => {
+    const ownerWindowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    if (!ownerWindowId) throw new Error("Review setup client is unavailable.");
+    return runtime.stopReviewAgentPreparation(
+      validateIpc(reviewAgentPreparationStopSchema, payload, "review:agent-prepare:stop"),
+      ownerWindowId,
     );
   });
   handle("azure:create-pull-request", async (_event, payload) =>
@@ -1443,6 +1472,13 @@ export function registerIpc(
   });
   handle("terminal:close", async (event, sessionId) => {
     assertSshTestOwner(event, { sessionId });
+    const reviewOwner = isReviewAgentSetupSession(sessionId)
+      ? runtime.reviewAgentPreparationSessionOwner(sessionId)
+      : undefined;
+    if (reviewOwner) {
+      const callerWindowId = getWindowIdByWebContentsId?.(event.sender.id);
+      return runtime.stopReviewAgentPreparation({ sessionId }, callerWindowId || "");
+    }
     const ownerWindowId = runtime.sshTestSessionOwner(sessionId);
     if (ownerWindowId) {
       const callerWindowId = getWindowIdByWebContentsId?.(event.sender.id);
@@ -2639,7 +2675,13 @@ export function registerIpc(
   on("terminal:resize", (_event, sessionId, size) => {
     try {
       const validated = validateIpc(terminalResizeSchema, size, "terminal:resize");
-      const ownerWindowId = runtime.sshTestSessionOwner(sessionId);
+      const reviewOwner = runtime.reviewAgentPreparationSessionOwner(sessionId);
+      const ownerWindowId = reviewOwner || runtime.sshTestSessionOwner(sessionId);
+      if (isReviewAgentSetupSession(sessionId)) {
+        if (ownerWindowId && ownerWindowId === getWindowIdByWebContentsId?.(_event.sender.id))
+          runtime.reviewAgentPreparationResize(sessionId, validated.cols, validated.rows, ownerWindowId);
+        return;
+      }
       if (runtime.isPrivateSshOperationSessionId(sessionId) && !ownerWindowId) return;
       if (ownerWindowId) {
         const callerWindowId = getWindowIdByWebContentsId?.(_event.sender.id);
@@ -2656,7 +2698,14 @@ export function registerIpc(
   on("terminal:input", (event, sessionId, data, originWorkspaceId) => {
     if (typeof sessionId === "string" && typeof data === "string") {
       const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
-      const ownerWindowId = runtime.sshTestSessionOwner(sessionId);
+      const reviewOwner = isReviewAgentSetupSession(sessionId)
+        ? runtime.reviewAgentPreparationSessionOwner(sessionId)
+        : undefined;
+      const ownerWindowId = reviewOwner || runtime.sshTestSessionOwner(sessionId);
+      if (isReviewAgentSetupSession(sessionId)) {
+        if (windowId === ownerWindowId) runtime.reviewAgentPreparationWrite(sessionId, data, ownerWindowId);
+        return;
+      }
       if (runtime.isPrivateSshOperationSessionId(sessionId) && !ownerWindowId) return;
       if (ownerWindowId) {
         if (windowId !== ownerWindowId) return;
@@ -2675,7 +2724,14 @@ export function registerIpc(
     if (!parsed.success) return;
     const [validSessionId, validText, validOrigin] = parsed.data;
     const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
-    const ownerWindowId = runtime.sshTestSessionOwner(validSessionId);
+    const reviewOwner = isReviewAgentSetupSession(validSessionId)
+      ? runtime.reviewAgentPreparationSessionOwner(validSessionId)
+      : undefined;
+    const ownerWindowId = reviewOwner || runtime.sshTestSessionOwner(validSessionId);
+    if (isReviewAgentSetupSession(validSessionId)) {
+      if (windowId === ownerWindowId) runtime.reviewAgentPreparationSubmit(validSessionId, validText, ownerWindowId);
+      return;
+    }
     if (runtime.isPrivateSshOperationSessionId(validSessionId) && !ownerWindowId) return;
     if (ownerWindowId) {
       if (windowId === ownerWindowId) runtime.sshTestWrite(validSessionId, `${validText}\r`, ownerWindowId);

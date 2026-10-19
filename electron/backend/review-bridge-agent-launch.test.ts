@@ -866,6 +866,60 @@ describe("internal MCP launch composition", () => {
     expect(configs).toHaveLength(1);
     expect(Object.keys(JSON.parse(configs[0]).mcpServers)).toEqual(["review", "strideterm_ssh", "strideterm"]);
   });
+
+  test.each([
+    ["claude", "claude", "STRIDETERM_INTERNAL_MCP_URL"],
+    ["codex", "codex", "STRIDETERM_INTERNAL_MCP_URL"],
+    ["copilot", "copilot", "${STRIDETERM_INTERNAL_MCP_URL}"],
+    ["opencode", "opencode", "http://127.0.0.1:43112/internal-mcp"],
+  ])("a manually started %s review installs the internal MCP", (agent, command, expectedUrl) => {
+    const internalMcpEnv = {
+      STRIDETERM_INTERNAL_MCP_URL: "http://127.0.0.1:43112/internal-mcp",
+      STRIDETERM_INTERNAL_MCP_CAPABILITY: "internal-capability-secret",
+    };
+    const launch = buildReviewAgentLaunch({
+      workspace: createWorkspace(),
+      panel: { id: agent, title: agent, command },
+      context: createContext(),
+      processInfo: { platform: "linux", execPath: "/usr/bin/node" },
+      internalMcp,
+      internalMcpEnv,
+    })!;
+    expect(JSON.stringify(launch.args)).not.toContain("internal-capability-secret");
+    if (agent === "claude") {
+      const configIndex = launch.args.findIndex((arg: string, index: number) => arg === "--mcp-config" && index > 0);
+      expect(JSON.parse(launch.args[configIndex + 1]).mcpServers).toHaveProperty("strideterm");
+    } else if (agent === "codex") {
+      expect(launch.args.join(" ")).toContain("mcp_servers.strideterm.command");
+    } else if (agent === "copilot") {
+      expect(launch.env).toMatchObject(internalMcpEnv);
+      const config = JSON.parse(launch.args[launch.args.indexOf("--additional-mcp-config") + 1]);
+      expect(config.mcpServers.strideterm.env.STRIDETERM_INTERNAL_MCP_URL).toBe(expectedUrl);
+    } else {
+      expect(launch.env).toMatchObject(internalMcpEnv);
+      const config = JSON.parse(launch.env.OPENCODE_CONFIG_CONTENT);
+      expect(config.mcp.strideterm.environment.STRIDETERM_INTERNAL_MCP_URL).toBe(expectedUrl);
+    }
+  });
+
+  test("a one-shot draft-only review never installs inherited internal MCP", () => {
+    const launch = buildReviewAgentLaunch({
+      workspace: createWorkspace(),
+      panel: { id: "claude", title: "Claude", command: "claude" },
+      context: createContext(),
+      processInfo: { platform: "linux", execPath: "/usr/bin/node" },
+      internalMcp,
+      internalMcpEnv: {
+        STRIDETERM_INTERNAL_MCP_URL: "http://127.0.0.1:43112/internal-mcp",
+        STRIDETERM_INTERNAL_MCP_CAPABILITY: "internal-capability-secret",
+      },
+      initialPrompt: "Review once",
+      draftOnlyReview: true,
+    })!;
+    const configs = launch.args.filter((_arg: string, index: number) => launch.args[index - 1] === "--mcp-config");
+    expect(Object.keys(JSON.parse(configs[0]).mcpServers)).toEqual(["review"]);
+    expect(launch.env?.STRIDETERM_INTERNAL_MCP_CAPABILITY).toBeUndefined();
+  });
 });
 
 describe("review Git capability in the agent launch", () => {

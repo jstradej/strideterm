@@ -64,6 +64,7 @@ interface WorkspaceActionsCtx {
   activeSessionId: Ref<string | null>;
   myActiveWorkspaceId: ComputedRef<string>;
   myActiveProfileId: ComputedRef<string | null>;
+  activateWorkspaceInGrid: (workspaceId: string) => Promise<void>;
   splitGroup: Ref<SplitGroup | null>;
   hiddenViewIds: Ref<Set<string>>;
   workspaceTabs: ComputedRef<WorkspaceTab[]>;
@@ -179,6 +180,17 @@ function describeOperationFinished(operation: OperationFinished): { title: strin
     return {
       title: "Review agent started",
       body: `${agent} started a basic review of ${provider}${number}. The review is still in progress.`,
+      failed: false,
+    };
+  }
+  if (operation.kind === "review-agent.prepare") {
+    if ("error" in operation) {
+      return { title: "Agent setup terminal could not be prepared", body: operation.error.message, failed: true };
+    }
+    const agent = String(operation.result.agentName || "The agent");
+    return {
+      title: "Agent setup terminal ready",
+      body: `${agent} is ready in the review repository. Confirm any trust prompt in its terminal.`,
       failed: false,
     };
   }
@@ -336,13 +348,52 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
   }
 
   const reportedOperationIds = new Set<string>();
+  const recentReviewAgentPreparationResults = new Map<string, OperationFinished>();
+  const deliveredReviewAgentPreparationIds = new Set<string>();
+  const reviewAgentPreparationListeners = new Set<(operation: OperationFinished) => void>();
+
+  function subscribeReviewAgentPreparation(listener: (operation: OperationFinished) => void): () => void {
+    reviewAgentPreparationListeners.add(listener);
+    return () => reviewAgentPreparationListeners.delete(listener);
+  }
+
+  function getReviewAgentPreparationResult(operationId: string): OperationFinished | undefined {
+    return (
+      recentReviewAgentPreparationResults.get(operationId) ??
+      ctx.payload.value?.operations?.lastResults?.find(
+        (result) => result.operationId === operationId && result.kind === "review-agent.prepare",
+      )
+    );
+  }
 
   /**
    * One finished long-running operation → at most one Notification Center entry
    * per client, live or from the payload's `operations.lastResults`. Only the
-   * profile on screen reports; nothing here switches profile or focus.
+   * profile on screen reports; a setup terminal is activated only while the
+   * requesting window still displays the profile that started it.
    */
   function reportOperationFinished(operation: OperationFinished, { late = false } = {}): void {
+    if (operation.kind === "review-agent.prepare") {
+      recentReviewAgentPreparationResults.set(operation.operationId, operation);
+      while (recentReviewAgentPreparationResults.size > 100) {
+        const oldest = recentReviewAgentPreparationResults.keys().next().value;
+        if (!oldest) break;
+        recentReviewAgentPreparationResults.delete(oldest);
+      }
+      if (
+        operation.profileId === ctx.myActiveProfileId.value &&
+        !deliveredReviewAgentPreparationIds.has(operation.operationId)
+      ) {
+        deliveredReviewAgentPreparationIds.add(operation.operationId);
+        while (deliveredReviewAgentPreparationIds.size > 100) {
+          const oldest = deliveredReviewAgentPreparationIds.values().next().value;
+          if (!oldest) break;
+          deliveredReviewAgentPreparationIds.delete(oldest);
+        }
+        for (const listener of reviewAgentPreparationListeners) listener(operation);
+      }
+      return;
+    }
     if (reportedOperationIds.has(operation.operationId)) return;
     if (operation.profileId !== ctx.myActiveProfileId.value) return;
     reportedOperationIds.add(operation.operationId);
@@ -1084,6 +1135,8 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     reportAzureClosedPrCleanupRuns,
     reportOperationFinished,
     reportOperationRuns,
+    subscribeReviewAgentPreparation,
+    getReviewAgentPreparationResult,
     saveWorkspace,
     detachWorkspaceReview,
     confirmAndDetachWorkspaceReview,
