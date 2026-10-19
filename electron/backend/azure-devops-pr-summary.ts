@@ -12,6 +12,7 @@ import {
   compareThreads,
   inferAttentionReason,
 } from "./azure-devops-utils.js";
+import { isAzureCommentByCurrentUser } from "./azure-comment-identity.js";
 
 interface AzurePR {
   pullRequestId?: number | string;
@@ -75,6 +76,7 @@ export function buildPullRequestSummary({
   gitSnapshots = {},
   activeProfileId = "default",
   now: _now = () => Date.now(),
+  currentUserId,
 }: {
   connection: { id: string; label?: string; orgUrl?: string; login?: string; profileId?: string };
   pr: Record<string, unknown>;
@@ -86,6 +88,7 @@ export function buildPullRequestSummary({
   /** Defensive fallback when connection.profileId is empty (legacy/pre-migration). */
   activeProfileId?: string;
   now?: () => number;
+  currentUserId?: string | null;
 }): { summary: Record<string, unknown>; internals: Record<string, unknown> } {
   const p = pr as AzurePR;
   const repositoryId = p.repository?.id || "";
@@ -114,9 +117,8 @@ export function buildPullRequestSummary({
   const latestPrAt = parseDate(p.creationDate);
   const lastRemoteActivityAt = toIsoOrNull(Math.max(latestCommentAt, latestCommitAt, latestPrAt));
   const lastSeenAt = parseDate(tracked.lastSeenActivityAt);
-  type AzureIdentity = { uniqueName?: string; mailAddress?: string; displayName?: string; id?: string };
   const commentsByOthers = comments.filter(
-    (comment) => !identityMatches(connection.login, comment.author as AzureIdentity | null | undefined),
+    (comment) => !isAzureCommentByCurrentUser(comment.author as { id?: string } | null | undefined, currentUserId),
   );
   const newCommentsCount = commentsByOthers.filter(
     (comment) => parseDate(comment.lastUpdatedDate || comment.publishedDate) > lastSeenAt,

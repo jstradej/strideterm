@@ -146,10 +146,12 @@ function createManager({
   secrets = { "cred:gh-main": "ghp-token" },
   trackedPullRequests = {},
   fetchOverrides = {},
+  now = () => new Date("2026-03-17T10:00:00.000Z").getTime(),
 }: {
   secrets?: Record<string, string>;
   trackedPullRequests?: Record<string, unknown>;
   fetchOverrides?: Parameters<typeof createFetchStub>[0];
+  now?: () => number;
 } = {}) {
   const reviewStore = createReviewStore({ trackedPullRequests });
   const fetchImpl = createFetchStub(fetchOverrides);
@@ -160,7 +162,7 @@ function createManager({
     reviewStore: reviewStore as any,
     fetchImpl: fetchImpl as unknown as typeof fetch,
     execFileTextImpl: vi.fn().mockResolvedValue({ stdout: "", stderr: "" }),
-    now: () => new Date("2026-03-17T10:00:00.000Z").getTime(),
+    now,
   });
   manager.supportsGitConfigEnv = async () => true;
   return { manager, fetchImpl, reviewStore };
@@ -174,6 +176,56 @@ const connection = {
   tokenRef: "cred:gh-main",
   enabled: true,
 };
+
+describe("GitHubManager authenticated identity cache", () => {
+  test("coalesces identity requests and invalidates by profile, host, and token fingerprint", async () => {
+    const { manager } = createManager();
+    const getAuthenticatedUser = vi.fn().mockResolvedValue({ id: 7, login: "octocat" });
+    manager.api.getAuthenticatedUser = getAuthenticatedUser;
+    const baseConnection = { id: "gh-main", profileId: "work", hostUrl: "https://github.com" };
+
+    const [first, coalesced] = await Promise.all([
+      manager._getAuthenticatedUserIdentity(baseConnection, "token-one"),
+      manager._getAuthenticatedUserIdentity(baseConnection, "token-one"),
+    ]);
+    expect(first).toEqual({ id: "7", login: "octocat" });
+    expect(coalesced).toEqual(first);
+    expect(await manager._getAuthenticatedUserIdentity(baseConnection, "token-one")).toEqual(first);
+    expect(getAuthenticatedUser).toHaveBeenCalledTimes(1);
+
+    await manager._getAuthenticatedUserIdentity(baseConnection, "token-two");
+    await manager._getAuthenticatedUserIdentity({ ...baseConnection, hostUrl: "https://ghe.example" }, "token-two");
+    await manager._getAuthenticatedUserIdentity({ ...baseConnection, profileId: "other" }, "token-two");
+    expect(getAuthenticatedUser).toHaveBeenCalledTimes(4);
+  });
+
+  test("keeps lookup failures unknown briefly, then retries and caches success", async () => {
+    let now = 0;
+    const { manager } = createManager({ now: () => now });
+    const getAuthenticatedUser = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error("temporary API failure");
+      })
+      .mockResolvedValueOnce({ id: 7, login: "octocat" });
+    manager.api.getAuthenticatedUser = getAuthenticatedUser;
+    const baseConnection = { id: "gh-main", profileId: "work", hostUrl: "https://github.com" };
+
+    expect(await manager._getAuthenticatedUserIdentity(baseConnection, "token-one")).toBeNull();
+    expect(await manager._getAuthenticatedUserIdentity(baseConnection, "token-one")).toBeNull();
+    expect(getAuthenticatedUser).toHaveBeenCalledTimes(1);
+    now = 30_000;
+    expect(await manager._getAuthenticatedUserIdentity(baseConnection, "token-one")).toEqual({
+      id: "7",
+      login: "octocat",
+    });
+    expect(await manager._getAuthenticatedUserIdentity(baseConnection, "token-one")).toEqual({
+      id: "7",
+      login: "octocat",
+    });
+    expect(getAuthenticatedUser).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe("GitHubManager stale PR resolution", () => {
   test("marks a PR closed when the detail check 404s", async () => {

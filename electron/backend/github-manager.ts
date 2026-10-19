@@ -1,4 +1,5 @@
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { execFileText } from "./process-utils.js";
 import { createGitHubApi } from "./github-api.js";
 import { BaseProviderManager } from "./shared/base-manager.js";
@@ -36,9 +37,12 @@ interface SyncConnection {
   enabled?: boolean;
   tokenRef?: string;
   currentUserLogin?: string;
+  profileId?: string;
+  hostUrl?: string;
+  apiBaseUrl?: string;
+  authenticatedUser?: { id?: string; login?: string } | null;
   ownerFilters?: string[];
   repositoryFilters?: string[];
-  hostUrl?: string;
   reviewRoot?: string;
   [key: string]: unknown;
 }
@@ -156,8 +160,21 @@ interface DetectDeltasOptions {
   seedingConnection: boolean;
 }
 
+interface AuthenticatedGitHubUser {
+  id?: string;
+  login?: string;
+}
+
+interface AuthenticatedGitHubUserCacheEntry {
+  fingerprint: string;
+  identity: AuthenticatedGitHubUser | null;
+  retryAfter?: number;
+  pending?: Promise<AuthenticatedGitHubUser | null>;
+}
+
 export class GitHubManager extends BaseProviderManager {
   declare reviewStore: GitHubReviewStore;
+  private readonly authenticatedUserCache = new Map<string, AuthenticatedGitHubUserCacheEntry>();
   constructor(
     {
       credentialStore,
@@ -196,6 +213,54 @@ export class GitHubManager extends BaseProviderManager {
     this.parentWorkspaceKind = "github";
     this.providerDisplayName = "GitHub";
     this.getDefaultReviewRoot = getDefaultReviewRoot;
+  }
+
+  async _getAuthenticatedUserIdentity(
+    connection: SyncConnection,
+    token: string,
+  ): Promise<AuthenticatedGitHubUser | null> {
+    const slot = `${connection.profileId || "default"}\0${connection.id}`;
+    const fingerprint = createHash("sha256")
+      .update(`${connection.hostUrl || "https://github.com"}\0${connection.apiBaseUrl || ""}\0${token}`)
+      .digest("hex");
+    let entry = this.authenticatedUserCache.get(slot);
+    if (entry?.fingerprint !== fingerprint) {
+      entry = { fingerprint, identity: null };
+      this.authenticatedUserCache.set(slot, entry);
+    }
+    if (entry.identity) return entry.identity;
+    if (entry.pending) return entry.pending;
+    if (entry.retryAfter && this.now() < entry.retryAfter) return null;
+
+    const currentEntry = entry;
+    const pending = Promise.resolve().then(async () => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const user = await (this.api as any).getAuthenticatedUser(connection, token);
+        const rawId = user?.id;
+        const id =
+          typeof rawId === "string"
+            ? rawId.trim()
+            : typeof rawId === "number" && Number.isFinite(rawId) && Number.isInteger(rawId) && rawId > 0
+              ? String(rawId)
+              : "";
+        const login = typeof user?.login === "string" ? user.login.trim() : "";
+        if (!id && !login) throw new Error("GitHub returned no authenticated user identity.");
+        currentEntry.identity = { ...(id ? { id } : {}), ...(login ? { login } : {}) };
+        return currentEntry.identity;
+      } catch (error) {
+        currentEntry.retryAfter = this.now() + 30_000;
+        this.log.warn("GitHub authenticated user lookup failed; comment author identity is unknown", {
+          connectionId: connection.id,
+          err: (error as Error).message || String(error),
+        });
+        return null;
+      } finally {
+        currentEntry.pending = undefined;
+      }
+    });
+    currentEntry.pending = pending;
+    return pending;
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -263,6 +328,12 @@ export class GitHubManager extends BaseProviderManager {
     gitSnapshots = {},
     activeProfileId = "default",
   }: SyncOptions = {}): Promise<Record<string, unknown>> {
+    const activeIdentityCacheSlots = new Set(
+      connections.map((connection) => `${connection.profileId || "default"}\0${connection.id}`),
+    );
+    for (const slot of this.authenticatedUserCache.keys()) {
+      if (!activeIdentityCacheSlots.has(slot)) this.authenticatedUserCache.delete(slot);
+    }
     return this.syncCore(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       { connections: connections as any, workspaces, gitSnapshots, activeProfileId },
@@ -318,8 +389,14 @@ export class GitHubManager extends BaseProviderManager {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const api = this.api as any;
 
-    const login = connection.currentUserLogin;
+    const authenticatedUser = await this._getAuthenticatedUserIdentity(connection, token);
+    const login = authenticatedUser?.login || connection.currentUserLogin;
     if (!login) throw new Error("GitHub login is not configured. Re-verify the connection.");
+    const summaryConnection: SyncConnection = {
+      ...connection,
+      currentUserLogin: authenticatedUser?.login || connection.currentUserLogin,
+      authenticatedUser,
+    };
 
     // Build search queries for inbox
     const ownerScope = connection.ownerFilters?.length ? connection.ownerFilters.map((o) => `org:${o}`).join(" ") : "";
@@ -374,7 +451,7 @@ export class GitHubManager extends BaseProviderManager {
 
         const tracked: Record<string, unknown> = this.reviewStore.getTrackedPullRequest(prKey) || {};
         const { summary, internals } = buildPullRequestSummary({
-          connection,
+          connection: summaryConnection,
           pr,
           reviews,
           reviewComments,
@@ -585,8 +662,7 @@ export class GitHubManager extends BaseProviderManager {
     const newIssue = filterNewComments({
       comments: internals.otherIssueComments as unknown[],
       sinceIsoString: prevNotifiedAt,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      isSelf: (author: any) => isSelfLogin(author?.login),
+      isSelf: () => false,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       getTimestamp: (comment: any) => comment.updated_at || comment.created_at,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -595,8 +671,7 @@ export class GitHubManager extends BaseProviderManager {
     const newReview = filterNewComments({
       comments: internals.otherReviewComments as unknown[],
       sinceIsoString: prevNotifiedAt,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      isSelf: (author: any) => isSelfLogin(author?.login),
+      isSelf: () => false,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       getTimestamp: (comment: any) => comment.updated_at || comment.created_at,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

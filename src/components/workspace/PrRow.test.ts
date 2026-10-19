@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { mount } from "@vue/test-utils";
+import { defineComponent, h, nextTick, ref } from "vue";
 import PrRow from "./PrRow.vue";
 
 function mountRow(item: Record<string, unknown>, props: Record<string, unknown> = {}) {
@@ -80,14 +81,20 @@ describe("PrRow — provider defaults to azure", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:30.000Z"));
     const item = { ...azureItem, lastRemoteActivityAt: "2026-01-01T00:00:00.000Z" };
-    const wrapper = mountRow(item);
+    const currentItem = ref(item);
+    const wrapper = mount(
+      defineComponent({
+        setup: () => () => h(PrRow, { item: currentItem.value }),
+      }),
+    );
     expect(wrapper.findAll(".azure-pr-row__meta [title]").map((time) => time.text())).toEqual([
       "Created just now",
       "Updated just now",
     ]);
 
     vi.setSystemTime(new Date("2026-01-01T00:02:00.000Z"));
-    await wrapper.setProps({ item: { ...item } });
+    currentItem.value = { ...item };
+    await nextTick();
     expect(wrapper.findAll(".azure-pr-row__meta [title]").map((time) => time.text())).toEqual([
       "Created 2m ago",
       "Updated 2m ago",

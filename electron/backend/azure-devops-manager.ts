@@ -1,5 +1,6 @@
 /// <reference types="node" />
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { execFileText } from "./process-utils.js";
 import { createAzureApi } from "./azure-devops-api.js";
 import type {
@@ -18,6 +19,7 @@ import { carryOverSourceBaseline } from "../shared/review-source-identity.js";
 import type { ReviewInfo, ReviewSourceRepository } from "../shared/types/state.js";
 import { classifyAzureRequest, parseAzureUrl } from "./azure-audit-log-store.js";
 import { buildPullRequestSummary, findWorkspaceForPullRequest } from "./azure-devops-pr-summary.js";
+import { isAzureCommentByCurrentUser } from "./azure-comment-identity.js";
 import {
   buildReviewActivityEvent,
   diffSignatureKeys,
@@ -60,6 +62,7 @@ interface AzureConnection {
   repositoryFilters?: string[];
   pollSeconds?: number;
   reviewRoot?: string;
+  profileId?: string;
   [key: string]: unknown;
 }
 
@@ -275,6 +278,11 @@ export class AzureDevOpsManager extends BaseProviderManager {
 
   /** Cached pipeline parameter schemas, keyed by connection:project:pipeline:branch. */
   private paramSchemaCache = new Map<string, { at: number; defs: AzurePipelineParameterDef[] }>();
+  private authenticatedUserCache = new Map<
+    string,
+    { expiresAt: number; userId: string | null; pending?: Promise<string | null> }
+  >();
+  private static readonly AUTHENTICATED_USER_FAILURE_TTL_MS = 30_000;
   // A pipeline's YAML parameters change rarely (only on a definition edit), so a
   // long TTL is fine; the cache is in-memory and cleared on restart anyway.
   private static readonly PARAM_SCHEMA_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
@@ -378,6 +386,53 @@ export class AzureDevOpsManager extends BaseProviderManager {
       durationMs: raw.durationMs ?? null,
       userInitiated: this._auditUserInitiated,
     });
+  }
+
+  private async getAuthenticatedUserId(connection: AzureConnection, token: string): Promise<string | null> {
+    const fingerprint = createHash("sha256").update(token).digest("hex");
+    const key = [
+      connection.profileId || "default",
+      connection.id,
+      connection.orgUrl,
+      connection.login,
+      fingerprint,
+    ].join("\0");
+    const cached = this.authenticatedUserCache.get(key);
+    if (cached && cached.expiresAt > this.now()) {
+      if (cached.pending) return cached.pending;
+      return cached.userId;
+    }
+    const pending = Promise.resolve()
+      .then(() => this.azureApi.getAuthenticatedUser(connection, token))
+      .then((user) => (typeof user?.id === "string" ? user.id.trim() || null : null))
+      .catch((error) => {
+        this.log.warn("Azure authenticated-user lookup failed; comment alerts are not filtered", {
+          connectionId: connection.id,
+          err: (error as Error).message || String(error),
+        });
+        return null;
+      });
+    const entry: { expiresAt: number; userId: string | null; pending?: Promise<string | null> } = {
+      expiresAt: Number.POSITIVE_INFINITY,
+      userId: null,
+      pending,
+    };
+    this.authenticatedUserCache.set(key, entry);
+    if (this.authenticatedUserCache.size > 100) {
+      for (const [cacheKey, value] of this.authenticatedUserCache) {
+        if (!value.pending && value.expiresAt <= this.now()) this.authenticatedUserCache.delete(cacheKey);
+      }
+      while (this.authenticatedUserCache.size > 100) {
+        this.authenticatedUserCache.delete(this.authenticatedUserCache.keys().next().value!);
+      }
+    }
+    const userId = await pending;
+    entry.userId = userId;
+    entry.pending = undefined;
+    entry.expiresAt = userId
+      ? Number.POSITIVE_INFINITY
+      : this.now() + AzureDevOpsManager.AUTHENTICATED_USER_FAILURE_TTL_MS;
+    return userId;
   }
 
   async verifyConnection(
@@ -1087,6 +1142,8 @@ export class AzureDevOpsManager extends BaseProviderManager {
       newActivityEvents,
     } = ctx;
 
+    const currentUserId = await this.getAuthenticatedUserId(connection, token);
+
     const projects = (await this.azureApi.listProjects(connection, token)) as AzureProject[];
     const filteredProjects = connection.projectFilters?.length
       ? projects.filter(
@@ -1129,6 +1186,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
           workspaces: workspaces as Array<{ id: string; profileId?: string; [key: string]: unknown }>,
           gitSnapshots,
           activeProfileId,
+          currentUserId,
           now: this.now,
         });
         const typedSummary = summary as AzurePrSummary;
@@ -1140,6 +1198,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
           tracked,
           summary: typedSummary,
           internals: typedInternals,
+          currentUserId,
           seedingConnection,
         });
         newActivityEvents.push(...events);
@@ -1259,12 +1318,14 @@ export class AzureDevOpsManager extends BaseProviderManager {
     tracked,
     summary: summaryIn,
     internals,
+    currentUserId,
     seedingConnection,
   }: {
     connection: AzureConnection;
     tracked: TrackedPullRequest;
     summary: AzurePrSummary;
     internals: Record<string, unknown>;
+    currentUserId: string | null;
     seedingConnection: boolean;
   }): { events: unknown[]; lastNotifiedActivityAt: string | null } {
     // Cast to the ReviewSummaryRef shape expected by buildReviewActivityEvent
@@ -1325,11 +1386,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
     const newComments = filterNewComments({
       comments: internals.commentsByOthers as AzureComment[],
       sinceIsoString: prevNotifiedAt,
-      isSelf: (author) =>
-        identityMatches(
-          connection.login,
-          author as { uniqueName?: string; mailAddress?: string; displayName?: string; id?: string },
-        ),
+      isSelf: (author) => isAzureCommentByCurrentUser(author as { id?: string } | null | undefined, currentUserId),
       getTimestamp: (comment) => comment.lastUpdatedDate || comment.publishedDate,
       getAuthor: (comment) => comment.author,
     });

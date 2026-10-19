@@ -93,6 +93,85 @@ describe("buildPullRequestSummary (github) — profile scoping", () => {
   });
 });
 
+describe("buildPullRequestSummary (github) — authenticated comment identity", () => {
+  const build = (
+    authenticatedUser: { id?: string; login?: string } | null,
+    issueComments: Array<Record<string, unknown>>,
+    reviewComments: Array<Record<string, unknown>> = [],
+  ) =>
+    buildPullRequestSummary({
+      connection: {
+        id: "github-a",
+        currentUserLogin: "saved-login",
+        authenticatedUser,
+      },
+      pr: makePr(),
+      issueComments,
+      reviewComments,
+      tracked: { lastSeenActivityAt: "2026-01-01T00:00:00Z" },
+      now: () => new Date("2026-01-03T00:00:00Z").getTime(),
+    });
+
+  test("uses stable user id across login changes and retains different ids sharing the same login", () => {
+    const own = { id: 1, body: "mine", created_at: "2026-01-02T00:00:00Z", user: { id: 7, login: "renamed" } };
+    const otherSameLogin = {
+      id: 2,
+      body: "theirs",
+      created_at: "2026-01-02T00:01:00Z",
+      user: { id: 8, login: "current" },
+    };
+    const { summary, internals } = build(
+      { id: "7", login: "current" },
+      [own, otherSameLogin],
+      [{ id: 3, body: "reply", created_at: "2026-01-02T00:02:00Z", user: { id: 7, login: "old-login" } }],
+    );
+
+    expect(summary.newCommentsCount).toBe(1);
+    expect(summary.commentCount).toBe(3);
+    expect(internals.otherIssueComments).toEqual([otherSameLogin]);
+    expect(internals.otherReviewComments).toEqual([]);
+  });
+
+  test("uses the verified login only when the comment has no user id", () => {
+    const { summary } = build({ id: "7", login: "current" }, [
+      { id: 1, body: "mine", created_at: "2026-01-02T00:00:00Z", user: { login: "current" } },
+      { id: 2, body: "other", created_at: "2026-01-02T00:01:00Z", user: { id: 8, login: "current" } },
+    ]);
+    expect(summary.newCommentsCount).toBe(1);
+  });
+
+  test("keeps comments from an unknown identity when authenticated-user lookup failed", () => {
+    const { summary } = build(null, [
+      { id: 1, body: "possibly mine", created_at: "2026-01-02T00:00:00Z", user: { login: "saved-login" } },
+      { id: 2, body: "unknown", created_at: "2026-01-02T00:01:00Z", user: { id: 7, login: "saved-login" } },
+    ]);
+    expect(summary.newCommentsCount).toBe(2);
+  });
+
+  test("uses a verified login when the author has no user id", () => {
+    const { summary } = buildPullRequestSummary({
+      connection: { id: "github-a", currentUserLogin: "me", authenticatedUser: { login: "me" } },
+      pr: makePr(),
+      issueComments: [
+        { id: 1, created_at: "2026-01-02T00:00:00Z", user: { login: "me" } },
+        { id: 2, created_at: "2026-01-02T00:01:00Z", user: { login: "other" } },
+      ],
+      tracked: { lastSeenActivityAt: "2026-01-01T00:00:00Z" },
+    });
+    expect(summary.newCommentsCount).toBe(1);
+  });
+
+  test("does not trust a configured login when authenticated identity is unavailable", () => {
+    const { summary } = buildPullRequestSummary({
+      connection: { id: "github-a", currentUserLogin: "saved-login" },
+      pr: makePr(),
+      issueComments: [{ id: 1, created_at: "2026-01-02T00:00:00Z", user: { login: "saved-login" } }],
+      tracked: { lastSeenActivityAt: "2026-01-01T00:00:00Z" },
+    });
+    expect(summary.newCommentsCount).toBe(1);
+  });
+});
+
 describe("buildPullRequestSummary (github) — source repository", () => {
   const connection = { id: "github-a", label: "A", hostUrl: "https://github.com", currentUserLogin: "me" };
   const summaryFor = (pr: Record<string, unknown>) =>

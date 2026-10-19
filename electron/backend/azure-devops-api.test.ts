@@ -24,6 +24,21 @@ function createMockFetch(responses: MockResponse[] = []) {
 }
 
 describe("Azure DevOps API - ETag caching", () => {
+  test("gets the authenticated identity from the collection root with PAT Basic auth", async () => {
+    const fetchImpl = createMockFetch([{ status: 200, body: { authenticatedUser: { id: "vsid-1" } } }]);
+    const api = createAzureApi(fetchImpl as unknown as typeof fetch);
+    const user = await api.getAuthenticatedUser(
+      { orgUrl: "https://tfs.example/tfs/Collection", login: "manual" },
+      "pat",
+    );
+    expect(user).toEqual({ id: "vsid-1" });
+    const [url, options] = fetchImpl.mock.calls[0] as unknown as [string, { headers: Record<string, string> }];
+    expect(url).toBe(
+      "https://tfs.example/tfs/Collection/_apis/connectionData?connectOptions=0&lastChangeId=-1&lastChangeId64=-1",
+    );
+    expect(options.headers.Authorization).toBe(`Basic ${Buffer.from(":pat").toString("base64")}`);
+  });
+
   test("sends If-None-Match header on subsequent GET requests", async () => {
     const fetchImpl = createMockFetch([
       {

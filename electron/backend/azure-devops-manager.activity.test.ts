@@ -49,6 +49,14 @@ function createReviewStore(initial: any = {}) {
 function createWorldFetch(world: any) {
   return vi.fn(async (url) => {
     const href = String(url);
+    if (href.includes("/_apis/connectionData?")) {
+      world.authenticatedUserCalls = (world.authenticatedUserCalls || 0) + 1;
+      if (world.authenticatedUserFailures > 0) {
+        world.authenticatedUserFailures -= 1;
+        throw new Error("temporary identity failure");
+      }
+      return { ok: true, json: async () => ({ authenticatedUser: { id: "me-azure" } }) };
+    }
     if (href.includes("/_apis/projects")) {
       return {
         ok: true,
@@ -279,6 +287,69 @@ describe("AzureDevOpsManager review-activity deltas", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const snapshot = (await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} })) as any;
     expect(snapshot.reviewActivity).toEqual([]);
+  });
+
+  test("filters by authenticated id even when comment login differs, but keeps unknown authors", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const world: any = {
+      nowIso: "2026-03-17T10:00:00.000Z",
+      pullRequests: [basePullRequest()],
+      comments: [] as ReturnType<typeof commentFrom>[],
+    };
+    const { manager } = makeManager(world);
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+    world.nowIso = "2026-03-17T10:05:00.000Z";
+    world.comments.push(
+      commentFrom({
+        id: 103,
+        author: { id: "me-azure", uniqueName: "renamed@example.com" },
+        content: "self",
+        at: world.nowIso,
+      }),
+      commentFrom({ id: 104, author: {}, content: "unknown author", at: world.nowIso }),
+      commentFrom({ id: 105, author: { id: "other-id", displayName: "Me" }, content: "foreign", at: world.nowIso }),
+    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const snapshot = (await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} })) as any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const event = snapshot.reviewActivity.find((item: any) => item.kind === "pr-new-comment");
+    expect(event.title).toContain("2 new comments");
+    expect(event.body).toContain("foreign");
+  });
+
+  test("coalesces identity for syncs, then retries a briefly cached discovery failure", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const world: any = {
+      nowIso: "2026-03-17T10:00:00.000Z",
+      pullRequests: [basePullRequest()],
+      comments: [],
+      authenticatedUserFailures: 1,
+    };
+    const { manager } = makeManager(world);
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+    world.nowIso = "2026-03-17T10:00:10.000Z";
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+    expect(world.authenticatedUserCalls).toBe(1);
+    world.nowIso = "2026-03-17T10:01:00.000Z";
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+    expect(world.authenticatedUserCalls).toBe(2);
+  });
+
+  test("resolves identity again when the connection URL changes", async () => {
+    const world = {
+      nowIso: "2026-03-17T10:00:00.000Z",
+      pullRequests: [basePullRequest()],
+      comments: [] as ReturnType<typeof commentFrom>[],
+      authenticatedUserCalls: 0,
+    };
+    const { manager } = makeManager(world);
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+    await manager.sync({
+      connections: [{ ...connection, orgUrl: "https://dev.azure.com/other" }],
+      workspaces: [],
+      gitSnapshots: {},
+    });
+    expect(world.authenticatedUserCalls).toBe(2);
   });
 
   test("vote change by another reviewer emits pr-vote-changed; self vote is ignored", async () => {

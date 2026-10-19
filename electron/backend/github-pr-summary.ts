@@ -48,6 +48,12 @@ interface GithubPR {
   user?: { login?: string; name?: string; avatar_url?: string };
 }
 
+function normalizeGitHubUserId(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) return String(value);
+  return "";
+}
+
 export function findWorkspaceForPullRequest(
   workspaces: Array<{ id: string; [key: string]: unknown }>,
   prKey: string,
@@ -345,7 +351,14 @@ export function buildPullRequestSummary({
   activeProfileId = "default",
   now: _now = () => Date.now(),
 }: {
-  connection: { id: string; label?: string; hostUrl?: string; currentUserLogin?: string; profileId?: string };
+  connection: {
+    id: string;
+    label?: string;
+    hostUrl?: string;
+    currentUserLogin?: string;
+    profileId?: string;
+    authenticatedUser?: { id?: string; login?: string } | null;
+  };
   pr: Record<string, unknown>;
   reviews?: Array<Record<string, unknown>>;
   reviewComments?: Array<Record<string, unknown>>;
@@ -363,7 +376,7 @@ export function buildPullRequestSummary({
   type GHComment = {
     id?: unknown;
     body?: string;
-    user?: { login?: string; name?: string; avatar_url?: string };
+    user?: { id?: unknown; login?: string; name?: string; avatar_url?: string };
     created_at?: string;
     updated_at?: string;
     [key: string]: unknown;
@@ -382,6 +395,16 @@ export function buildPullRequestSummary({
   const pullNumber = p.number ?? "";
   const prKey = createPullRequestKey(connection.id, owner, repo, pullNumber);
   const currentUserLogin = connection.currentUserLogin || "";
+  const authenticatedUser = connection.authenticatedUser;
+  const isSelfComment = (author: (GHComment["user"] & { id?: unknown }) | undefined) => {
+    const authorId = normalizeGitHubUserId(author?.id);
+    const currentUserId = normalizeGitHubUserId(authenticatedUser?.id);
+    if (authorId) return Boolean(currentUserId) && authorId === currentUserId;
+    const authorLogin = typeof author?.login === "string" ? author.login.trim().toLowerCase() : "";
+    const authenticatedLogin =
+      typeof authenticatedUser?.login === "string" ? authenticatedUser.login.trim().toLowerCase() : "";
+    return Boolean(authenticatedLogin) && authorLogin === authenticatedLogin;
+  };
   const isAuthor = (p.user?.login || "").toLowerCase() === currentUserLogin.toLowerCase();
   const reviewerInfo = summarizeReviewers(reviews, requestedReviewers, currentUserLogin);
   const isReviewer = !isAuthor && (reviewerInfo.myIsRequested || reviewerInfo.myState !== "");
@@ -402,12 +425,8 @@ export function buildPullRequestSummary({
 
   // New comments since last seen
   const lastSeenAt = parseDate(tracked.lastSeenActivityAt);
-  const otherIssueComments = (issueComments as GHComment[]).filter(
-    (c) => (c.user?.login || "").toLowerCase() !== currentUserLogin.toLowerCase(),
-  );
-  const otherReviewComments = (reviewComments as GHComment[]).filter(
-    (c) => (c.user?.login || "").toLowerCase() !== currentUserLogin.toLowerCase(),
-  );
+  const otherIssueComments = (issueComments as GHComment[]).filter((c) => !isSelfComment(c.user));
+  const otherReviewComments = (reviewComments as GHComment[]).filter((c) => !isSelfComment(c.user));
   const newCommentsCount = [
     ...otherIssueComments.filter((c) => parseDate(c.updated_at || c.created_at) > lastSeenAt),
     ...otherReviewComments.filter((c) => parseDate(c.updated_at || c.created_at) > lastSeenAt),

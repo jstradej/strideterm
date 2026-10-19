@@ -156,3 +156,34 @@ describe("buildPullRequestSummary — source repository", () => {
     });
   });
 });
+
+describe("buildPullRequestSummary — comment identity", () => {
+  const connection = { id: "azure-a", orgUrl: "https://dev.azure.com/acme", login: "me@example.com" };
+  const build = (currentUserId: string | null, authors: Array<Record<string, unknown>>) =>
+    buildPullRequestSummary({
+      connection,
+      pr: makePr(),
+      projectName: "proj",
+      threads: [
+        {
+          comments: authors.map((author, index) => ({
+            id: index + 1,
+            content: "comment",
+            publishedDate: `2026-01-01T00:0${index}:00Z`,
+            lastUpdatedDate: `2026-01-01T00:0${index}:00Z`,
+            author,
+          })),
+        },
+      ],
+      tracked: { lastSeenActivityAt: "2025-12-31T00:00:00Z" },
+      currentUserId,
+    }).summary as { newCommentsCount: number };
+
+  test("matches only the verified stable id and leaves missing identities visible", () => {
+    const selfOnly = build("auth-id", [{ id: "auth-id", uniqueName: "changed@example.com" }]);
+    expect(selfOnly.newCommentsCount).toBe(0);
+    expect((selfOnly as unknown as { hasAttention: boolean }).hasAttention).toBe(false);
+    expect(build("auth-id", [{ displayName: "Me" }, {}]).newCommentsCount).toBe(2);
+    expect(build(null, [{ id: "auth-id" }]).newCommentsCount).toBe(1);
+  });
+});

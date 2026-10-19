@@ -219,6 +219,18 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
     return result.value || [];
   }
 
+  async function getAuthenticatedUser(connection: AzureConnection, token: string) {
+    const url = `${trimTrailingSlash(connection.orgUrl)}/_apis/connectionData?connectOptions=0&lastChangeId=-1&lastChangeId64=-1`;
+    const result = (await requestJson(url, { login: "", token })) as {
+      authenticatedUser?: { id?: string };
+    };
+    const id = result.authenticatedUser?.id;
+    if (typeof id !== "string" || !id.trim()) {
+      throw new Error("Azure authenticated-user response did not include an identity id");
+    }
+    return { id: id.trim() };
+  }
+
   async function listPullRequestsByProject(connection: AzureConnection, token: string, projectName: string) {
     const result = (await requestJson(buildProjectPullRequestsUrl(connection, projectName), {
       login: connection.login,
@@ -709,6 +721,7 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
     fetchBuildDetail,
     reEvaluatePolicy,
     listProjects,
+    getAuthenticatedUser,
     listPullRequestsByProject,
     getPullRequestById,
     listThreads,
