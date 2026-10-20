@@ -449,7 +449,7 @@ describe("AzureDevOpsManager review-activity deltas", () => {
     ).toEqual([]);
   });
 
-  test("brand-new PR discovered on second sync emits pr-new for reviewer role", async () => {
+  test("brand-new PR discovered on second sync notifies even when current user is not a reviewer", async () => {
     // First sync: only PR 123 exists
     const world = {
       nowIso: "2026-03-17T10:00:00.000Z",
@@ -471,7 +471,7 @@ describe("AzureDevOpsManager review-activity deltas", () => {
           commitId: "commit-new",
           committer: { name: "Alice", email: "alice@example.com", date: "2026-03-17T10:03:00.000Z" },
         },
-        reviewers: [{ id: "reviewer-1", displayName: "Me", uniqueName: "me@example.com", vote: 0, isRequired: true }],
+        reviewers: [{ id: "reviewer-2", displayName: "Bob", uniqueName: "bob@example.com", vote: 0 }],
       }),
     ];
 
@@ -481,7 +481,9 @@ describe("AzureDevOpsManager review-activity deltas", () => {
       .filter((ev: any) => ev.kind === "pr-new");
     expect(newEvents).toHaveLength(1);
     expect(newEvents[0].pullRequestNumber).toBe(456);
-    expect(newEvents[0].body).toContain("feature X");
+    expect(newEvents[0].title).toContain("Platform / web-app");
+    expect(newEvents[0].title).toContain("Add feature X");
+    expect(newEvents[0].body).toContain("Alice");
   });
 
   test("connection error emits exactly once per transition, silent on re-poll", async () => {

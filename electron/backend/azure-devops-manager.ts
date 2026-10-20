@@ -1345,24 +1345,19 @@ export class AzureDevOpsManager extends BaseProviderManager {
     const prevNotifiedAt = tracked.lastNotifiedActivityAt || "";
 
     // Brand-new PR that wasn't in the tracked store before this poll.
-    // Emit a `pr-new` event when the current user is the requested reviewer.
     if (!prevNotifiedAt) {
-      if (summary.role === "reviewer" || summary.role === "assigned") {
-        events.push(
-          buildReviewActivityEvent({
-            provider: "azure-devops",
-            summary,
-            kind: "pr-new",
-            at: summary.lastRemoteActivityAt || nowIso,
-            title:
-              summary.pullRequest.isDraft === true
-                ? `Draft review requested: ${summary.repository.name} #${summary.pullRequest.id}`
-                : `Review requested: ${summary.repository.name} #${summary.pullRequest.id}`,
-            body: truncateBody(`${summary.author.displayName}: ${summary.pullRequest.title}`),
-            actor: { login: summary.author.uniqueName, displayName: summary.author.displayName },
-          }),
-        );
-      }
+      const author = summary.author.displayName || summary.author.uniqueName || "Unknown author";
+      events.push(
+        buildReviewActivityEvent({
+          provider: "azure-devops",
+          summary,
+          kind: "pr-new",
+          at: summary.lastRemoteActivityAt || nowIso,
+          title: `New pull request: ${summary.project.name} / ${summary.repository.name} — ${summary.pullRequest.title}`,
+          body: `#${summary.pullRequest.id} by ${author}`,
+          actor: { login: summary.author.uniqueName, displayName: author },
+        }),
+      );
       return {
         events,
         lastNotifiedActivityAt: seedNotifiedTimestamp(summary, nowIso),
