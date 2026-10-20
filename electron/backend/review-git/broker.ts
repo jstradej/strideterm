@@ -12,14 +12,6 @@ const BODY_TIMEOUT_MS = 5_000;
 const MAX_GLOBAL_REQUESTS = 12;
 const MAX_REQUESTS_PER_GRANT = 4;
 const MAX_WAIT_MS = 20_000;
-/**
- * A capability is a lease on one tab, not a standing credential: it lapses after
- * this long without a single request (each live request renews it) and the tab
- * has to be restarted from its review workspace to get a new one. Long enough
- * for an agent session that idles over lunch, short enough that a forgotten
- * capability does not outlive the work it was minted for.
- */
-export const REVIEW_GIT_GRANT_IDLE_TTL_MS = 12 * 60 * 60 * 1000;
 
 const pathSchema = z.string().trim().min(1).max(4096);
 
@@ -98,13 +90,11 @@ export interface ReviewGitGrantContext {
 export interface ReviewGitBrokerOptions {
   service: Pick<ReviewGitService, "read" | "start" | "lookup" | "operations">;
   isGrantLive: (grant: Readonly<ReviewGitGrantContext>) => boolean | Promise<boolean>;
-  now?: () => number;
 }
 
 interface GrantRecord {
   context: ReviewGitGrantContext;
   controllers: Set<AbortController>;
-  lastUsedAt: number;
 }
 
 class BrokerError extends Error {
@@ -190,7 +180,7 @@ const sleep = (ms: number, signal: AbortSignal) =>
 /**
  * Loopback broker for the review MCP server's Git tools.
  *
- * The MCP child holds only a short-lived, least-privilege capability: it names
+ * The MCP child holds a session-scoped, least-privilege capability: it names
  * one profile, workspace, PR, source identity and agent tab, and the runtime
  * re-proves all of that against live state on every request. The master
  * remote token and provider PATs never reach the child — the runtime does the
@@ -198,14 +188,13 @@ const sleep = (ms: number, signal: AbortSignal) =>
  * lost, the source identity changes) refuses NEW requests; an operation that
  * already started is the runtime's and finishes regardless.
  */
-export function createReviewGitBroker({ service, isGrantLive, now = () => Date.now() }: ReviewGitBrokerOptions) {
+export function createReviewGitBroker({ service, isGrantLive }: ReviewGitBrokerOptions) {
   const grants = new Map<string, GrantRecord>();
   let server: http.Server | null = null;
   let endpoint = "";
   let activeRequests = 0;
 
   async function isLive(grant: GrantRecord): Promise<boolean> {
-    if (now() - grant.lastUsedAt > REVIEW_GIT_GRANT_IDLE_TTL_MS) return false;
     try {
       return await isGrantLive(grant.context);
     } catch {
@@ -324,7 +313,6 @@ export function createReviewGitBroker({ service, isGrantLive, now = () => Date.n
         revokeGrant(capability);
         return expired();
       }
-      grant.lastUsedAt = now();
       const result = await dispatch(grant, parsed.data, controller.signal);
       if (!controller.signal.aborted) sendJson(response, 200, { result });
       else if (grants.get(capability) !== grant && !response.destroyed) {
@@ -372,7 +360,7 @@ export function createReviewGitBroker({ service, isGrantLive, now = () => Date.n
     mintGrant(context: ReviewGitGrantContext): { url: string; capability: string } {
       if (!server || !endpoint) throw new Error("Review Git broker has not started.");
       const capability = randomBytes(32).toString("base64url");
-      grants.set(capability, { context: { ...context }, controllers: new Set(), lastUsedAt: now() });
+      grants.set(capability, { context: { ...context }, controllers: new Set() });
       return { url: endpoint, capability };
     },
 
