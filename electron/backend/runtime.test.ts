@@ -1,6 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
+import pty, { type IPty } from "node-pty";
 import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
@@ -13722,6 +13723,59 @@ describe("ensureSessionSafe — fire-and-forget ensureSession failures are logge
       );
     } finally {
       logCallCapture.current = null;
+    }
+  });
+});
+
+describe("runtime forwards pre-spawn terminal dimensions", () => {
+  test("a resize before workspace activation determines the real PTY spawn dimensions", async () => {
+    const ptyHandle = {
+      onData: vi.fn(),
+      onExit: vi.fn(),
+      resize: vi.fn(),
+      write: vi.fn(),
+      kill: vi.fn(),
+    };
+    const spawnPty = vi.spyOn(pty, "spawn").mockReturnValue(ptyHandle as unknown as IPty);
+
+    const fixture = await createFixture({
+      initialState: {
+        activeWorkspaceId: "home-workspace",
+        profiles: [{ id: "default", name: "Default", workspaceIds: [] }],
+        workspaces: [
+          {
+            id: "home-workspace",
+            name: "Home",
+            kind: "terminal",
+            cwd: os.tmpdir(),
+            profileId: "default",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", startup: "manual" }],
+          },
+          {
+            id: "review-workspace",
+            name: "PR #28328",
+            kind: "terminal",
+            cwd: os.tmpdir(),
+            profileId: "default",
+            activePanelId: "agent",
+            panels: [{ id: "agent", title: "Claude Code", command: "", startup: "default" }],
+          },
+        ],
+      },
+      dependencies: { SessionManager },
+    });
+    fixtures.push(fixture);
+
+    const sessionId = "review-workspace:agent";
+    try {
+      fixture.runtime.resizeSession(sessionId, { cols: 176, rows: 56 });
+      await fixture.runtime.activateSession(sessionId);
+
+      expect(spawnPty).toHaveBeenCalledOnce();
+      expect(spawnPty.mock.calls[0]?.[2]).toMatchObject({ cols: 176, rows: 56 });
+    } finally {
+      spawnPty.mockRestore();
     }
   });
 });

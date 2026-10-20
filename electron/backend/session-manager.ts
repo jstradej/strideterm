@@ -509,6 +509,7 @@ export class SessionManager extends EventEmitter {
       timer: NodeJS.Timeout | null;
     }
   >();
+  private pendingInitialSizes = new Map<string, { cols: number; rows: number }>();
   sessions: Map<string, RuntimeSession>;
   startingSessions: Map<string, StartRecord>;
   /**
@@ -884,8 +885,15 @@ export class SessionManager extends EventEmitter {
     const integrationEnv = integrationLaunch.env;
     const skipTypedSource = integrationLaunch.skipTypedSource;
 
-    const initialCols = Math.max(existing?.cols || APP_CONFIG.session.defaultCols, APP_CONFIG.session.minCols);
-    const initialRows = Math.max(existing?.rows || APP_CONFIG.session.defaultRows, APP_CONFIG.session.minRows);
+    const pendingSize = this.pendingInitialSizes.get(key);
+    const initialCols = Math.max(
+      pendingSize?.cols || existing?.cols || APP_CONFIG.session.defaultCols,
+      APP_CONFIG.session.minCols,
+    );
+    const initialRows = Math.max(
+      pendingSize?.rows || existing?.rows || APP_CONFIG.session.defaultRows,
+      APP_CONFIG.session.minRows,
+    );
 
     // Validate cwd before handing it to pty.spawn — on Windows an invalid
     // cwd produces a cryptic "Cannot create process, error code: 267"
@@ -930,7 +938,7 @@ export class SessionManager extends EventEmitter {
       // Same for the launcher variables this launch's build detection read: a strIDEterm started
       // from the shell would take them for its own.
       for (const name of DISTRIBUTION_LAUNCHER_ENV) delete inheritedEnv[name];
-      processHandle = pty.spawn(launcher.file, launcher.args, {
+      processHandle = this.spawnPty(launcher.file, launcher.args, {
         name: APP_CONFIG.session.termName,
         cols: initialCols,
         rows: initialRows,
@@ -1000,6 +1008,7 @@ export class SessionManager extends EventEmitter {
     });
 
     this.sessions.set(key, session);
+    this.pendingInitialSizes.delete(key);
     // A live session now owns this id → it is no longer a failed-spawn orphan
     // (a retry succeeded); syncWithState will clean it up via `sessions`.
     this.failedSpawns.delete(key);
@@ -1457,9 +1466,23 @@ export class SessionManager extends EventEmitter {
     return session;
   }
 
-  resizeSession(sessionId: string, cols: number, rows: number): void {
+  resizeSession(sessionId: string, cols: number, rows: number, state?: AppState): void {
     const session = this.sessions.get(sessionId);
     if (!session || session.status !== "running") {
+      const descriptor = parseSessionId(sessionId);
+      if (!state || !descriptor || createSessionId(descriptor.workspaceId, descriptor.panelId) !== sessionId) {
+        return;
+      }
+      const workspace = findWorkspace(state, descriptor.workspaceId);
+      const panel = findPanel(workspace, descriptor.panelId);
+      if (!panel || isBrowserPanel(panel) || panel.launch?.kind === "ssh") {
+        this.pendingInitialSizes.delete(sessionId);
+        return;
+      }
+      this.pendingInitialSizes.set(sessionId, {
+        cols: Math.max(cols, APP_CONFIG.session.minCols),
+        rows: Math.max(rows, APP_CONFIG.session.minRows),
+      });
       return;
     }
 
@@ -1633,6 +1656,7 @@ export class SessionManager extends EventEmitter {
 
   removeSession(sessionId: string): void {
     this.cancelTerminalWrites(sessionId);
+    this.pendingInitialSizes.delete(sessionId);
     // A start still in flight has not inserted its session yet; tombstone its
     // record so the connect is torn down when it resolves instead of resurrecting
     // a session the user just asked to disconnect. "disconnected", not "removed":
@@ -1682,6 +1706,10 @@ export class SessionManager extends EventEmitter {
 
   removeWorkspaceSessions(workspaceId: string): Promise<void> {
     const exitPromises: Promise<void>[] = [];
+    const prefix = `${workspaceId}:`;
+    for (const sessionId of this.pendingInitialSizes.keys()) {
+      if (sessionId.startsWith(prefix)) this.pendingInitialSizes.delete(sessionId);
+    }
     for (const [sessionId, session] of this.sessions.entries()) {
       if (session.workspaceId !== workspaceId) {
         continue;
@@ -1717,7 +1745,6 @@ export class SessionManager extends EventEmitter {
     // syncWithState — a small unbounded leak. No terminal:removed is emitted:
     // the caller drops the workspace's replay wholesale, matching how the live
     // sessions above are removed silently.
-    const prefix = `${workspaceId}:`;
     for (const sessionId of this.failedSpawns) {
       if (sessionId.startsWith(prefix)) this.failedSpawns.delete(sessionId);
     }
@@ -1779,6 +1806,10 @@ export class SessionManager extends EventEmitter {
       this.emit("terminal:removed", { sessionId });
     }
 
+    for (const sessionId of this.pendingInitialSizes.keys()) {
+      if (!validSessionIds.has(sessionId)) this.pendingInitialSizes.delete(sessionId);
+    }
+
     // In-flight starts whose panel is gone from state: tombstone them as
     // "removed" so a late connect resolving after this prune does not re-insert
     // a session or replay for a panel that no longer exists (the loops above
@@ -1794,6 +1825,7 @@ export class SessionManager extends EventEmitter {
 
   stopAll(): void {
     for (const sessionId of this.#terminalWriteQueues.keys()) this.cancelTerminalWrites(sessionId);
+    this.pendingInitialSizes.clear();
     for (const [sessionId, session] of this.sessions.entries()) {
       if (session.kind === "ssh") {
         void this.stopSshIntentional(sessionId);

@@ -12077,7 +12077,7 @@ export async function createRuntime({
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     resizeSession(sessionId: any, size: any) {
-      sessions.resizeSession(sessionId, size.cols, size.rows);
+      sessions.resizeSession(sessionId, size.cols, size.rows, getState());
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     writeToSession(sessionId: any, data: any, viewerId?: string, originWorkspaceId?: string) {

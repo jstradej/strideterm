@@ -444,6 +444,126 @@ describe("SessionManager", () => {
     expect(secondResize).not.toHaveBeenCalled();
   });
 
+  test("uses the latest validated resize that arrived before the first PTY spawn", async () => {
+    const manager = new SessionManager();
+    const state = createState() as Parameters<typeof manager.ensureSession>[0];
+    const sessionId = "workspace-a:shell";
+
+    manager.syncWithState(state);
+    manager.resizeSession(sessionId, 180, 62, state);
+    manager.resizeSession(sessionId, 176, 56, state);
+
+    const session = await manager.ensureSession(state, sessionId);
+
+    expect(spawnCalls[0].options).toMatchObject({ cols: 176, rows: 56 });
+    expect(session).toMatchObject({ cols: 176, rows: 56 });
+    const nativeResize = vi.spyOn(handles[0], "resize");
+    manager.resizeSession(sessionId, 176, 56, state);
+    expect(nativeResize).not.toHaveBeenCalled();
+
+    manager.resizeSession(sessionId, 190, 54, state);
+    handles[0].kill();
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    await manager.ensureSession(state, sessionId);
+    expect(spawnCalls[1].options).toMatchObject({ cols: 190, rows: 54 });
+  });
+
+  test("clamps a pending initial size to the configured terminal minimum", async () => {
+    const manager = new SessionManager();
+    const state = createState() as Parameters<typeof manager.ensureSession>[0];
+    const sessionId = "workspace-a:shell";
+
+    manager.resizeSession(sessionId, 1, 1, state);
+    await manager.ensureSession(state, sessionId);
+
+    expect(spawnCalls[0].options).toMatchObject({
+      cols: APP_CONFIG.session.minCols,
+      rows: APP_CONFIG.session.minRows,
+    });
+  });
+
+  test("retains pending initial geometry when the first PTY spawn fails", async () => {
+    const manager = new SessionManager();
+    const state = createState() as Parameters<typeof manager.ensureSession>[0];
+    const sessionId = "workspace-a:shell";
+
+    manager.resizeSession(sessionId, 176, 56, state);
+    spawnError = new Error("spawn unavailable");
+    await expect(manager.ensureSession(state, sessionId)).resolves.toBeNull();
+
+    spawnError = null;
+    await manager.ensureSession(state, sessionId);
+
+    expect(spawnCalls[0].options).toMatchObject({ cols: 176, rows: 56 });
+  });
+
+  test("does not retain pre-spawn sizes for missing, browser, or SSH panels", async () => {
+    const manager = new SessionManager();
+    const state = createState() as Parameters<typeof manager.ensureSession>[0];
+    const sessionId = "workspace-a:shell";
+
+    manager.syncWithState(state);
+    manager.resizeSession("workspace-a:missing", 190, 54, state);
+    state.workspaces[0].panels.push({
+      id: "missing",
+      title: "Missing",
+      command: "",
+      startup: "default",
+    });
+    await manager.ensureSession(state, "workspace-a:missing");
+    expect(spawnCalls[0].options).toMatchObject({
+      cols: APP_CONFIG.session.defaultCols,
+      rows: APP_CONFIG.session.defaultRows,
+    });
+
+    state.workspaces[0].panels.pop();
+    state.workspaces[0].panels[0].command = "https://example.test";
+    manager.resizeSession(sessionId, 190, 54, state);
+    state.workspaces[0].panels[0].command = "";
+    state.workspaces[0].panels[0].launch = { kind: "ssh" };
+    manager.resizeSession(sessionId, 190, 54, state);
+    delete state.workspaces[0].panels[0].launch;
+
+    await manager.ensureSession(state, sessionId);
+
+    expect(spawnCalls[1].options).toMatchObject({
+      cols: APP_CONFIG.session.defaultCols,
+      rows: APP_CONFIG.session.defaultRows,
+    });
+  });
+
+  test("clears pending initial sizes when the panel is pruned, workspace removed, or manager stopped", async () => {
+    const sessionId = "workspace-a:shell";
+    const state = createState() as Parameters<SessionManager["ensureSession"]>[0];
+
+    const prunedManager = new SessionManager();
+    prunedManager.resizeSession(sessionId, 190, 54, state);
+    prunedManager.syncWithState({ ...state, workspaces: [] });
+    await prunedManager.ensureSession(state, sessionId);
+    expect(spawnCalls[0].options).toMatchObject({
+      cols: APP_CONFIG.session.defaultCols,
+      rows: APP_CONFIG.session.defaultRows,
+    });
+
+    const removedManager = new SessionManager();
+    removedManager.resizeSession(sessionId, 190, 54, state);
+    await removedManager.removeWorkspaceSessions("workspace-a");
+    await removedManager.ensureSession(state, sessionId);
+    expect(spawnCalls[1].options).toMatchObject({
+      cols: APP_CONFIG.session.defaultCols,
+      rows: APP_CONFIG.session.defaultRows,
+    });
+
+    const stoppedManager = new SessionManager();
+    stoppedManager.resizeSession(sessionId, 190, 54, state);
+    stoppedManager.stopAll();
+    await stoppedManager.ensureSession(state, sessionId);
+    expect(spawnCalls[2].options).toMatchObject({
+      cols: APP_CONFIG.session.defaultCols,
+      rows: APP_CONFIG.session.defaultRows,
+    });
+  });
+
   test("syncWithState emits terminal:removed for a panel that no longer exists in state", async () => {
     // Review F4: a panel removed via saveWorkspace → syncWithState kills the PTY
     // but the runtime also needs to drop its replay. syncWithState signals that
