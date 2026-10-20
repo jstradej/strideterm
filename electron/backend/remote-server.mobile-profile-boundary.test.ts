@@ -73,6 +73,8 @@ function makeRuntime(port: number, allowedMobileProfiles: string[] = ["home"]) {
     isSshTestSessionId: (sessionId: unknown) => typeof sessionId === "string" && sessionId.startsWith("ssh-test:"),
     isPrivateSshOperationSessionId: (sessionId: unknown) =>
       typeof sessionId === "string" && /^(ssh-test:|ssh-transfer:)/.test(sessionId),
+    isReviewAgentPreparationSessionId: (sessionId: unknown) =>
+      typeof sessionId === "string" && sessionId.startsWith("review-agent-setup-") && sessionId.endsWith(":agent"),
     isMobileSessionStillAuthorized: (_deviceId: string, profileId: string) => allowedMobileProfiles.includes(profileId),
     isMobileSessionPaused: () => false,
     addMobileRemoteSessionRevoker: () => () => undefined,

@@ -93,13 +93,16 @@ describe("WorkspaceDialog internal MCP option", () => {
     expect(wrapper.find('[data-testid="internal-mcp-checkbox"]').exists()).toBe(false);
   });
 
-  test.each([["azure"], ["github"]])("not offered for a %s workspace, which never gets a grant", async (kind) => {
+  test.each([["azure"], ["github"]])("offered for a %s inbox as the default for new review children", async (kind) => {
     const { wrapper } = mountDialog({ workspace: { ...existing, kind } });
-    expect(wrapper.find('[data-testid="internal-mcp-checkbox"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="internal-mcp-checkbox"]').exists()).toBe(true);
+    expect(wrapper.get(".internal-mcp-hint").text()).toContain(
+      "Applies to new workspaces created with New Branch or opened manually for a PR",
+    );
   });
 
-  test("not offered for a quickfix workspace", async () => {
+  test("offered for a quickfix workspace", async () => {
     const { wrapper } = mountDialog({ workspace: { ...existing, quickfix: { prId: 1 } } });
-    expect(wrapper.find('[data-testid="internal-mcp-checkbox"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="internal-mcp-checkbox"]').exists()).toBe(true);
   });
 });
