@@ -63,7 +63,7 @@ describe("remapAssignment", () => {
 });
 
 async function createManagedReviewFixture() {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-managed-task-"));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-managed-task-")));
   const cache = path.join(root, "cache", "repo");
   const source = path.join(root, "reviews", "pr-1");
   await fs.mkdir(cache, { recursive: true });
