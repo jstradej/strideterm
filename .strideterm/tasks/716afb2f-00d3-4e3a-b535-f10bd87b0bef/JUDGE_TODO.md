@@ -220,7 +220,8 @@ Full per-requirement ledger (122 items)
 51. **PARTIAL** — Diagnostics carry available operation/run ID, action, profile/workspace/root, result, duration and safe error; distinguish blocked/cancel/partial/failure and protect credentials/content.
    Evidence: electron/backend/operation-registry.ts:216; electron/backend/git-manager.ts:2643,2686,2755; electron/backend/runtime-git-handlers.ts:143.
    Evidence: OperationRegistry failure logs now include operation ID, kind, effective profile, origin workspace, optional repository root, step, elapsed duration, and stable error code; a regression verifies the correlation fields and duration.
-   Remaining: Some long runners still collapse structured failures/warnings/operationState into generic Error or summary; preserve per-action classifications through the runner.
+   Evidence: Long Git failure outcomes now carry a stable `git_operation_failed` code plus bounded warnings, conflict paths, and raw output through the event/payload schema to the Git operation card. Runtime, store, and registry regressions cover this path.
+   Remaining: Other long runners may still collapse structured failures into generic summaries; audit them individually.
 
 52. **PARTIAL** — Busy always releases, prevents duplicate launch; uncertain write results trigger state verification before user retry, never automatic write retry.
    Evidence: src/stores/git-ui.ts:446,521,610,633; src/components/workspace/git/GitChangesTab.vue:605; src/components/workspace/GitPane.vue:144.
@@ -783,3 +784,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - OperationRegistry failure logs now include effective profile, origin workspace, optional root path, elapsed duration, operation identity, step, and stable error code. The regression verifies these fields without including operation inputs or credentials. Backend suite: 10 tests pass; repository typecheck passes; touched-file Prettier passes; ESLint reports zero errors with existing warnings; `git diff --check` passes.
 - Remaining long-runner classification gaps, route/menu audit, and user-owned manual walkthrough stay open; WORK_LOCK remains.
+
+## Worker continuation (structured long Git failures)
+
+- Long Git failures now retain stable `git_operation_failed` classification, bounded warnings, conflict paths, and raw output in the generic operation outcome. Those diagnostics pass through the shared operation event schema and store to the Git status card. OperationRegistry tests pass 10; the focused runtime failure regression passes; `git-ui.test.ts` passes 59; repository typecheck, touched-file Prettier, ESLint (0 errors; existing warnings), and `git diff --check` pass.
+- Other long-operation result classifications and remaining manual/inventory audit items remain open. WORK_LOCK stays.
