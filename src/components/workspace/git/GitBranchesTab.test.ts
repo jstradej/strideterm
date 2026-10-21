@@ -11,6 +11,8 @@ const openDialog = vi.fn();
 const closeDialog = vi.fn();
 const azureCreatePullRequest = vi.fn();
 const gitLoadGraph = vi.fn();
+const gitFetch = vi.fn();
+const gitPush = vi.fn();
 const gitCheckoutBranch = vi.fn();
 const gitCreateBranch = vi.fn();
 
@@ -26,6 +28,8 @@ vi.mock("../../../stores/git-ui.js", () => ({
     gitListBranches: vi.fn(),
     gitListTags: vi.fn(),
     gitLoadGraph,
+    gitFetch,
+    gitPush,
     getGitHistoryPreferences: () => ({ favorites: [], recent: [] }),
     getGitHistorySelection: (_workspaceId: string, _rootPath: string, _profileId: string) => historySelection,
     setGitHistorySelection: (
@@ -100,6 +104,11 @@ beforeEach(() => {
   openDialog.mockClear();
   closeDialog.mockClear();
   azureCreatePullRequest.mockReset();
+  gitLoadGraph.mockClear();
+  gitFetch.mockClear();
+  gitPush.mockClear();
+  gitCheckoutBranch.mockClear();
+  gitCreateBranch.mockClear();
   document.body.innerHTML = "";
 });
 
@@ -178,6 +187,8 @@ describe("GitBranchesTab compact history picker", () => {
     expect(gitLoadGraph).toHaveBeenCalledWith("ws1", expect.objectContaining({ branch: "origin/main" }));
     expect(gitCheckoutBranch).not.toHaveBeenCalled();
     expect(gitCreateBranch).not.toHaveBeenCalled();
+    expect(gitFetch).not.toHaveBeenCalled();
+    expect(gitPush).not.toHaveBeenCalled();
     picker.unmount();
     vi.useRealTimers();
   });
