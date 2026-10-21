@@ -219,7 +219,8 @@ Full per-requirement ledger (122 items)
 
 51. **PARTIAL** — Diagnostics carry available operation/run ID, action, profile/workspace/root, result, duration and safe error; distinguish blocked/cancel/partial/failure and protect credentials/content.
    Evidence: electron/backend/operation-registry.ts:216; electron/backend/git-manager.ts:2643,2686,2755; electron/backend/runtime-git-handlers.ts:143.
-   Remaining: Long runner collapses structured failures/warnings/operationState into generic Error or summary; registry failure logging omits requested profile/root/duration. Preserve classifications and safe scoped diagnostics.
+   Evidence: OperationRegistry failure logs now include operation ID, kind, effective profile, origin workspace, optional repository root, step, elapsed duration, and stable error code; a regression verifies the correlation fields and duration.
+   Remaining: Some long runners still collapse structured failures/warnings/operationState into generic Error or summary; preserve per-action classifications through the runner.
 
 52. **PARTIAL** — Busy always releases, prevents duplicate launch; uncertain write results trigger state verification before user retry, never automatic write retry.
    Evidence: src/stores/git-ui.ts:446,521,610,633; src/components/workspace/git/GitChangesTab.vue:605; src/components/workspace/GitPane.vue:144.
@@ -777,3 +778,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 ## Worker continuation (pre-push diagnostics UI regression)
 
 - Focused GitOperationCard and git-ui suites pass 59 tests. Repository typecheck and touched-file Prettier pass; ESLint reports 0 errors and 15 existing warnings in git-ui.test.ts. `git diff --check` passes. Hook diagnostics reach the operation card; pending disconnect-through-action, broad route/menu audit, and user-owned `MANUAL_VERIFICATION.md` walkthrough remain open, so WORK_LOCK stays.
+
+## Worker continuation (scoped operation diagnostics)
+
+- OperationRegistry failure logs now include effective profile, origin workspace, optional root path, elapsed duration, operation identity, step, and stable error code. The regression verifies these fields without including operation inputs or credentials. Backend suite: 10 tests pass; repository typecheck passes; touched-file Prettier passes; ESLint reports zero errors with existing warnings; `git diff --check` passes.
+- Remaining long-runner classification gaps, route/menu audit, and user-owned manual walkthrough stay open; WORK_LOCK remains.
