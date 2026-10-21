@@ -565,6 +565,40 @@ describe("GitBranchesTab compact history picker", () => {
     vi.useRealTimers();
   });
 
+  test("restores the selected History reference after the History pane remounts", async () => {
+    vi.useFakeTimers();
+    mobileViewport.isMobile.value = false;
+    const props = {
+      workspaceId: "ws-history-remount",
+      snapshot: { dirty: false, branch: "main" },
+      gitUi: {
+        branchList: {
+          current: "main",
+          local: [{ name: "main", isCurrent: true }],
+          remotes: [{ name: "origin/release", shortName: "release", remote: "origin" }],
+          defaultBranch: "main",
+          defaultRemote: "origin",
+        },
+        graph: { commits: [], head: "", refs: {} },
+        tags: [],
+      },
+      compactHistory: true,
+    };
+    const first = mount(GitBranchesTab, { props });
+    mountedWrappers.push(first);
+    await flushPromises();
+    await first.get('[aria-label="History reference"]').setValue("origin/release");
+    expect(historySelection.ref).toBe("origin/release");
+    first.unmount();
+
+    const second = mount(GitBranchesTab, { props });
+    mountedWrappers.push(second);
+    await flushPromises();
+    expect((second.get('[aria-label="History reference"]').element as HTMLSelectElement).value).toBe("origin/release");
+    second.unmount();
+    vi.useRealTimers();
+  });
+
   test("HEAD and all references issue distinct graph queries", async () => {
     vi.useFakeTimers();
     mobileViewport.isMobile.value = false;

@@ -172,3 +172,4 @@
 - [x] Define and test the History “All branches and tags” query as local heads, remote-tracking refs, tags, and HEAD, with reachable commits deduplicated by Git. Focused logGraph filter suite passes 3 tests.
 - [x] Cover History range query shapes for all refs, one selected ref, and local-only refs; assert result limits are forwarded. Focused logGraph filter suite passes 5 tests.
 - [x] Verify the real GitPane keeps one remote Git detail interest across new-view setting off/on transitions and releases it on unmount; GitPane suite passes 34/34.
+- [x] Verify the History reference selection is restored when the History pane remounts; focused GitBranchesTab lifecycle test passes.
