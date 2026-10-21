@@ -754,3 +754,9 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 - Extended the app-store remote revision-gate tests with a missed `git.pull` completion: after disconnect/reconnect resets the core revision baseline, a restarted server's lower-revision snapshot applies and its persisted `operations.lastResults` produces the action-specific Git Pull failure notification. This verifies the renderer app-state/reconnect boundary; a single end-to-end test spanning a pending `git-ui` action through actual transport reconnect remains open under items 78/79/92.
 - `npm run test:ui -- src/stores/app.test.ts`: PASS, 48 tests. `npm run typecheck`: PASS. Prettier and `git diff --check`: PASS. Focused ESLint: 0 errors, 14 pre-existing warnings.
 - `WORK_LOCK` remains; route-level audit completeness and the user-owned manual walkthrough also remain outstanding.
+
+## Worker continuation (index mutation route dispatch)
+
+- Added a runtime integration regression calling the stage-file, unstage-file, and commit-staged handlers. It asserts each manager mutation is invoked exactly once with the workspace and validated root. This adds route-boundary evidence to requirement 91; the GitManager real-repository audit test still proves the audit entry behavior at the manager boundary.
+- Focused runtime test: 1 passed / 519 skipped. Repository `npm run typecheck`: PASS. Touched-file Prettier: PASS; ESLint: 0 errors / 130 existing warnings; `git diff --check`: PASS.
+- Full menu/shortcut mapping, renderer reconnect end-to-end, and manual visual acceptance remain open, so keep `WORK_LOCK`.

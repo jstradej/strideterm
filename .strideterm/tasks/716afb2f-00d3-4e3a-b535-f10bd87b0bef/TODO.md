@@ -106,3 +106,4 @@
 - [x] Verify backend pull and push operations are isolated across profiles when accepted concurrently with the same idempotency key; focused runtime regressions produce distinct operation IDs and profile/workspace-scoped outcomes.
 - [x] Verify the mounted History picker restores its visible ref when switching repository roots and profiles, then switching back. `GitBranchesTab.test.ts` passes 17 tests; repository typecheck, Prettier, and diff checks pass.
 - [x] Verify the app store accepts and reports a missed Git pull outcome from the lower-revision snapshot received after reconnect. `app.test.ts` passes 48 tests; repository typecheck, Prettier, ESLint (0 errors), and diff checks pass.
+- [x] Verify runtime stage, unstage, and commit-staged handlers each dispatch exactly one manager write with the validated workspace root. Focused runtime regression passes; repository typecheck, touched-file Prettier/ESLint, and diff checks pass.
