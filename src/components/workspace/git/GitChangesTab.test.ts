@@ -254,6 +254,33 @@ describe("GitChangesTab", () => {
     expect(gitCommitAll).not.toHaveBeenCalled();
   });
 
+  test("preserves backend diff contents when no unified patch is returned", async () => {
+    fakeApi.gitDiffPreview = vi.fn(async () => ({
+      ok: true,
+      leftContent: "// before: file.ts\nexport const value = 'old';\n",
+      rightContent: "// after: file.ts\nexport const value = 'new';\n",
+      leftLabel: "HEAD",
+      rightLabel: "Working tree",
+    }));
+    mountTab({
+      gitUi: { selectedDiff: { path: "file.ts", scope: "unstaged" } },
+      snapshot: {
+        dirty: true,
+        staged: [],
+        unstaged: [{ path: "file.ts", code: "M", scope: "unstaged" }],
+        untracked: [],
+        diffStat: null,
+      },
+    });
+    await flushPromises();
+
+    expect(
+      monacoPayloads.mock.calls.some(
+        ([payload]) => payload?.leftContent.includes("before:") && payload?.rightContent.includes("after:"),
+      ),
+    ).toBe(true);
+  });
+
   test("replaces actual NUL-byte diff content with the binary notice before rendering Monaco", async () => {
     fakeApi.gitDiffPreview = vi.fn(async () => ({
       diff: "",

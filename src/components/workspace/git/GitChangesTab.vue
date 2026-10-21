@@ -759,7 +759,8 @@ const diffLoader = useMonacoDiffLoader(async (path: string, scope: string) => {
   const diff = String(payload?.diff || "");
   const hunks = diff.split(/(?=^@@ )/m).filter((part: string) => part.startsWith("@@ "));
   const language = path.split(".").pop() || "plaintext";
-  const [leftContent = "", rightContent = ""] = hunks.length ? parsePatchHunk(hunks[0]) : ["", ""];
+  const [leftContent = String(payload?.leftContent || ""), rightContent = String(payload?.rightContent || "")] =
+    hunks.length ? parsePatchHunk(hunks[0]) : [];
   return {
     ...payload,
     leftContent,
