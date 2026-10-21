@@ -242,6 +242,32 @@ describe("git-ui store", () => {
       expect(diffPreview).toHaveBeenCalledTimes(2);
     });
 
+    test("ignores a post-mutation diff response after switching to another root", async () => {
+      let finishOldPreview!: (value: unknown) => void;
+      const diffPreview = vi
+        .fn()
+        .mockResolvedValueOnce({ ok: true, path: "a.txt", scope: "unstaged", diff: "root A before" })
+        .mockImplementationOnce(() => new Promise((resolve) => (finishOldPreview = resolve)))
+        .mockResolvedValueOnce({ ok: true, path: "b.txt", scope: "unstaged", diff: "root B current" });
+      const store = useGitUiStore();
+      store.init({
+        gitDiffPreview: diffPreview,
+        gitStageFile: vi.fn().mockResolvedValue({ result: { ok: true } }),
+      } as unknown as Transport);
+      store.setActiveRoot("ws-preview-root-switch", "/repo/a");
+      await store.gitSelectDiff("ws-preview-root-switch", "a.txt", "unstaged");
+
+      const mutation = store.gitStageFile("ws-preview-root-switch", "a.txt");
+      await vi.waitFor(() => expect(diffPreview).toHaveBeenCalledTimes(2));
+      store.setActiveRoot("ws-preview-root-switch", "/repo/b");
+      await store.gitSelectDiff("ws-preview-root-switch", "b.txt", "unstaged");
+      finishOldPreview({ ok: true, path: "a.txt", scope: "unstaged", diff: "root A stale" });
+      await mutation;
+
+      expect(store.get("ws-preview-root-switch").selectedDiff).toEqual({ path: "b.txt", scope: "unstaged" });
+      expect(store.get("ws-preview-root-switch").diffPreview).toMatchObject({ diff: "root B current", path: "b.txt" });
+    });
+
     test("requires a successful root refresh before retrying an index write with a lost response", async () => {
       const stageFile = vi
         .fn()

@@ -155,3 +155,4 @@
 - [x] Require a successful root-specific refresh before retrying index or commit writes after a lost response; test retry suppression, different-root refresh isolation, and retry after verification.
 - [x] Require a successful root-specific refresh before retrying synchronous local branch/history/tag/stash/worktree/conflict/merge-into-base writes after a lost response; regressions cover conflict dialog root changes and bulk refresh of a non-active root.
 - [x] Surface failed post-mutation diff refreshes as error previews with selected identity and no stale diff text; store regression passes.
+- [x] Verify a deferred post-mutation preview from one repository root cannot replace the selected preview after switching roots; store regression passes.
