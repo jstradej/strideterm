@@ -154,3 +154,4 @@
 - [x] Add elapsed duration to failed `runWriteAction` audit entries and assert it for success/failure; full GitManager suite passes (188 passed / 2 skipped).
 - [x] Require a successful root-specific refresh before retrying index or commit writes after a lost response; test retry suppression, different-root refresh isolation, and retry after verification.
 - [x] Require a successful root-specific refresh before retrying synchronous local branch/history/tag/stash/worktree/conflict/merge-into-base writes after a lost response; regressions cover conflict dialog root changes and bulk refresh of a non-active root.
+- [x] Surface failed post-mutation diff refreshes as error previews with selected identity and no stale diff text; store regression passes.

@@ -725,7 +725,13 @@ export const useGitUiStore = defineStore("git-ui", () => {
           scope: selectedDiffAtStart.scope,
           baseBranch: snapshot?.baseBranch || snapshot?.compareWithBase?.baseBranch || "",
           rootPath: actionRootPath,
-        }).catch(() => null);
+        }).catch((error) => ({
+          ok: false,
+          path: selectedDiffAtStart.path,
+          scope: selectedDiffAtStart.scope,
+          diff: "",
+          summary: (error as Error)?.message || "Diff preview failed to refresh after the Git action.",
+        }));
         if (
           preview &&
           getActiveRoot(workspaceId) === actionRootPath &&

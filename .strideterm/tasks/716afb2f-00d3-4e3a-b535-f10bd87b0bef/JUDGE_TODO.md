@@ -237,6 +237,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
 
 50. **PARTIAL** — Reads distinguish loading/error/empty/stale; retained stale data is marked; obsolete cancellation is not a failed user mutation.
    Evidence: src/stores/git-ui.ts:725,741,746,867,878,1564,1567; src/components/workspace/git/GitBranchesTab.vue:168,427.
+   Evidence: A post-mutation diff refresh rejection now replaces the prior preview with an error-shaped result preserving path/scope and clearing stale diff text; `git-ui.test.ts` verifies the stale content is not retained.
    Remaining: Tag list failures now render as an inline alert in History and the focused picker suite passes. Verify visual treatment of preview refresh failures in the manual pass.
 
 51. **PARTIAL** — Diagnostics carry available operation/run ID, action, profile/workspace/root, result, duration and safe error; distinguish blocked/cancel/partial/failure and protect credentials/content.
@@ -1054,3 +1055,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Added a real-repository test that creates a three-commit history, starts bisect with a known good/bad range, verifies GitManager detects the in-progress bisect, aborts through `abortOperation`, and confirms the operation ends with exactly one `gitBisect` write audit row containing the resolved root and duration.
 - Focused backend case passes (1 passed / 190 skipped). Broader action-route audit and user visual verification remain open; WORK_LOCK stays present.
+
+## Worker continuation (post-mutation preview refresh failure)
+
+- When a Git action's automatic selected-file preview refresh rejects, the store now replaces the old preview with an error result containing the selected path and scope. The diff text is empty, so a stale pre-mutation diff is not left looking current. Added a store regression for success followed by a rejected preview refresh.
+- `npm run test:ui -- src/stores/git-ui.test.ts` passes 69/69. Visual treatment remains part of the user's manual walkthrough; other reads, routes and manual acceptance remain open; WORK_LOCK stays present.

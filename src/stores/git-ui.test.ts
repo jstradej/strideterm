@@ -215,6 +215,33 @@ describe("git-ui store", () => {
   });
 
   describe("runGitAction payload adoption", () => {
+    test("surfaces a failed post-mutation diff refresh instead of retaining the stale preview", async () => {
+      const diffPreview = vi
+        .fn()
+        .mockResolvedValueOnce({ ok: true, path: "a.txt", scope: "unstaged", diff: "old preview" })
+        .mockRejectedValueOnce(new Error("Diff service disconnected."));
+      const store = useGitUiStore();
+      store.init({
+        gitDiffPreview: diffPreview,
+        gitStageFile: vi.fn().mockResolvedValue({ result: { ok: true } }),
+      } as unknown as Transport);
+      store.setActiveRoot("ws-diff-refresh", "/repo/a");
+
+      await store.gitSelectDiff("ws-diff-refresh", "a.txt", "unstaged");
+      expect(store.get("ws-diff-refresh").diffPreview).toMatchObject({ diff: "old preview" });
+
+      await store.gitStageFile("ws-diff-refresh", "a.txt");
+
+      expect(store.get("ws-diff-refresh").diffPreview).toMatchObject({
+        ok: false,
+        path: "a.txt",
+        scope: "unstaged",
+        diff: "",
+        summary: "Diff service disconnected.",
+      });
+      expect(diffPreview).toHaveBeenCalledTimes(2);
+    });
+
     test("requires a successful root refresh before retrying an index write with a lost response", async () => {
       const stageFile = vi
         .fn()
