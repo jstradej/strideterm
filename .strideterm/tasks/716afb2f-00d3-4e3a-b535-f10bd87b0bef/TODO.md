@@ -74,3 +74,10 @@
 - [x] Reconcile the action inventory with current generic operation paths, guarded remote routes, scoped History state, and current healthy-check results; mobile route-policy suite passes all 50 cases.
 - [x] Prevent duplicate same-action launches while a Git action is pending; store regression, typecheck, focused lint/format and safe build pass.
 - [x] Emit local Git write audit entries for stage/unstage/hunk/index commit actions, including success/failure and resolved root; real-repository audit test and full GitManager suite pass.
+- [x] Move force push and remote branch deletion into `OperationRegistry`; verify prompt acceptance, deduplication, outcome correlation, store waiting, typecheck and focused UI/runtime regressions. Local merge-into-base remains synchronous because it merges in a local sibling worktree.
+- [x] Add explicit no-fetch/no-push assertions to read-only History ref browsing; focused GitBranchesTab tests pass (8).
+- [x] Surface History tag-list read failures as an inline alert; GitBranchesTab suite passes (9), typecheck and safe production build pass.
+- [x] Verify unsaved review editor text survives Review pane unmount because the app-level DialogOverlay remains mounted; focused AzureReviewPane integration regression passes.
+- [x] Re-run AzureReviewPane tests after the dialog lifecycle addition (30 passed) and repository `npm run typecheck` (passes).
+- [x] Preserve a scoped History ref selection while branch and tag reads are still loading; prevent initial empty lists from pruning persisted refs. GitBranchesTab suite (10) and repository typecheck pass; committed as `9b10429e`.
+- [x] Verify current continuation: full UI suite passes 214 files / 3,040 tests; full backend suite passes 224 files / 5,465 tests (7 skipped, four workers); force-push/remote-delete runtime operation test and force-push store tests (2) pass; typecheck passes; full lint reports 0 errors (4,678 warnings), touched-file Prettier/ESLint pass; `VITE_BUILD_WATCH=1 npm run build` passes. The user visual walkthrough and remaining lifecycle/audit acceptance items remain open.
