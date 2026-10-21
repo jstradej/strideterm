@@ -90,3 +90,4 @@
 - [x] Add compact History coverage for a repository with no commits and detached HEAD; verify the HEAD option, working-branch label, and empty graph state. GitBranchesTab suite passes 12 tests; Prettier and diff check pass; committed locally.
 - [x] Commit empty/detached History regression as `276b50f6`.
 - [x] Add compact History coverage for 400 refs and search filtering; GitBranchesTab suite passes 13 tests, repository typecheck passes, touched-file Prettier/ESLint and diff check pass. Committed as `9e62ee37`.
+- [x] Verify History and Changes each render the shared operation card while a fetch is busy; GitBranchesTab/GitChangesTab suites pass 29 tests, repository typecheck and touched-file Prettier pass. Committed as `61c44782`.

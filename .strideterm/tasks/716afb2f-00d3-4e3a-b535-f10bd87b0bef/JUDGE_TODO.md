@@ -661,3 +661,7 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 ## Worker continuation (`large History ref lists`)
 
 - Added a compact History component test with 400 local refs. It verifies the last ref is rendered and a targeted search sharply reduces visible matching options while retaining the intended ref. `GitBranchesTab.test.ts` passes 13 tests; repository typecheck, touched-file Prettier/ESLint and `git diff --check` pass. This closes the automated large-list portion of audit item 69; keyboard/focus, visual narrow behavior and root/profile switching acceptance remain open.
+
+## Worker continuation (`operation card visibility`)
+
+- Added component-level regressions proving History and Changes render the shared operation status card during an active fetch. The existing GitPane test verifies Review's parent-rendered card. `GitBranchesTab.test.ts` and `GitChangesTab.test.ts` pass 29 combined tests; repository typecheck and touched-file Prettier pass. This strengthens audit items 10 and 94; across-view conflict, operation completion, and human visual acceptance remain open.
