@@ -1239,8 +1239,10 @@ export type FileGitRefs = z.infer<typeof fileGitRefsSchema>;
 export const fileGitDiffSchema = z.object({
   rootPath: z.string().min(1),
   relativePath: z.string().min(1),
-  source: z.enum(["head", "staged", "commit", "branch", "tag"]).default("head"),
+  source: z.enum(["head", "staged", "commit", "branch", "tag", "range"]).default("head"),
   revisionRef: z.string().optional(),
+  baseRef: z.string().optional(),
+  targetRef: z.string().optional(),
 });
 export type FileGitDiff = z.infer<typeof fileGitDiffSchema>;
 

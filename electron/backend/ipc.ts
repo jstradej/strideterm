@@ -2629,6 +2629,8 @@ export function registerIpc(
       return fm.computeFileDiff(p.rootPath, p.relativePath, {
         source: p.source,
         revisionRef: p.revisionRef || "",
+        baseRef: p.baseRef || "",
+        targetRef: p.targetRef || "",
       });
     }),
   );

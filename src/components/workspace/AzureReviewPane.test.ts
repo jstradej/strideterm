@@ -841,8 +841,9 @@ describe("AzureReviewPane — Monaco diff loading via the shared useMonacoDiffLo
     expect(fileGitDiff).toHaveBeenCalledWith({
       rootPath: "/repo",
       relativePath: "src/foo.ts",
-      source: "branch",
-      revisionRef: "origin/main",
+      source: "range",
+      baseRef: "origin/main",
+      targetRef: "origin/feature/x",
     });
 
     // MonacoDiffPanel is auto-stubbed as a defineAsyncComponent in this test

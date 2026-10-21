@@ -3470,6 +3470,8 @@ export async function startRemoteServer({
       fm.computeFileDiff(body.rootPath as string, body.relativePath as string, {
         source: (body.source as string) || "head",
         revisionRef: (body.revisionRef as string) || "",
+        baseRef: (body.baseRef as string) || "",
+        targetRef: (body.targetRef as string) || "",
       }),
     ),
     "/api/file/commit-files": fileRoute("commit-files", (body) =>

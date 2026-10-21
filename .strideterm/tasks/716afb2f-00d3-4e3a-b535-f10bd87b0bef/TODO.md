@@ -8,7 +8,7 @@
 ## To Do
 
 - [ ] Complete the user's visual review using `MANUAL_VERIFICATION.md` in their `dev.ps1` session; adjust anything they report.
-- [ ] Finish remaining audit findings in `JUDGE_TODO.md`, including Review diff source, Changes draft/context persistence, narrow workflows, conflict visibility, HEAD/all semantics, long operations and regression coverage.
+- [ ] Finish remaining audit findings in `JUDGE_TODO.md`, including provider-pinned Review commit IDs (the local two-ref diff still depends on local refs), Changes draft/context persistence, narrow workflows, long operations and regression coverage.
 - [ ] Re-run the full numbered self-audit against the current tree and update each requirement with verifiable evidence.
 - [ ] Resolve the full typecheck failures and run the project checks required by `WORKER.md` after implementation changes.
 - [ ] Complete user's visual review in their `dev.ps1` session; this remains user-owned.
@@ -39,4 +39,5 @@
 - [x] Distinguish the HEAD history query from the all-branches query.
 - [x] Keep a conflict resolution action in the shared Git frame and exercise More destination routing in GitPane tests.
 - [x] Render operation outcomes inside Changes and send structured `{ ok: false }` mutation results through the standard error toast; GitChangesTab/store tests pass.
+- [x] Add a typed two-revision file diff through Electron and remote transport and switch Review away from the working copy. Coverage passes; resolve refs to provider-pinned commit IDs before marking the Review requirement complete.
 - [x] Re-run focused GitPane/History UI and GitManager tag/hunk tests, full lint, formatting check and safe production build; all pass. Full typecheck remains failing in unrelated existing test typings (see `JUDGE_TODO.md`); remaining implementation work is still open.
