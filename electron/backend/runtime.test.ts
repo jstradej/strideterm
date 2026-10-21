@@ -8867,6 +8867,35 @@ describe("runtime integration", () => {
     }
   });
 
+  test.each([
+    ["gitMergeIntoCurrent", "mergeIntoCurrent"],
+    ["gitRebaseOnto", "rebaseOnto"],
+  ] as const)(
+    "long route %s dispatches one merge/rebase write with the resolved root",
+    async (route, managerMethod) => {
+      const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+      fixtures.push(fixture);
+      const write = vi.fn(async () => ({ ok: true, summary: "Integrated." }));
+      Object.assign(fixture.git, { [managerMethod]: write });
+      const waitForGitOperation = watchOperation(fixture);
+
+      const started = await fixture.runtime[route]({ workspaceId: "ws-a1", rootPath: "/tmp/a1", baseBranch: "main" });
+      expect(started).toMatchObject({ started: true, operationId: expect.any(String) });
+      await expect(waitForGitOperation(started.operationId)).resolves.toMatchObject({
+        kind: route === "gitMergeIntoCurrent" ? "git.merge" : "git.rebase",
+        workspaceId: "ws-a1",
+        profileId: "profile-a",
+        rootPath: "/tmp/a1",
+      });
+
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(write).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "ws-a1", profileId: "profile-a" }),
+        expect.objectContaining({ baseBranch: "main", rootPath: "/tmp/a1" }),
+      );
+    },
+  );
+
   test("rejects a caller-supplied Git root outside a single-repository workspace before accepting fetch", async () => {
     const fixture = await createFixture({
       initialState: {
