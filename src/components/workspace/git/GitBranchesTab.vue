@@ -1451,7 +1451,10 @@ watch(
     for (const b of branchList.value.local) validRefs.add(b.name);
     for (const r of branchList.value.remotes) validRefs.add(r.name);
     for (const t of tags.value) validRefs.add(t.name);
-    if (selectedRef.value && !validRefs.has(selectedRef.value)) {
+    // Empty arrays can mean the initial branch/tag reads have not arrived yet.
+    // Do not discard a persisted selection until each ref source has completed.
+    const refsReady = !branchesLoading.value && !props.gitUi?.tagsLoading;
+    if (refsReady && selectedRef.value && !validRefs.has(selectedRef.value)) {
       selectedRef.value = "";
       gitUiStore.gitSelectCommit(props.workspaceId, "");
     }

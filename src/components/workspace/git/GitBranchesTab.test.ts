@@ -126,6 +126,27 @@ describe("GitBranchesTab compact history picker", () => {
     expect(picker.get('[role="alert"]').text()).toBe("Could not load tags.");
   });
 
+  test("keeps a persisted ref selection while branch and tag reads are pending", async () => {
+    mobileViewport.isNarrow.value = false;
+    const picker = mount(GitBranchesTab, {
+      props: {
+        workspaceId: "ws-pending-ref",
+        snapshot: { dirty: false, branch: "main" },
+        gitUi: {
+          branchList: { current: "main", local: [], remotes: [], defaultBranch: "", defaultRemote: "" },
+          graph: { commits: [], head: "", refs: {} },
+          branchesLoading: true,
+          tagsLoading: true,
+        },
+        compactHistory: true,
+      },
+      attrs: {},
+    });
+    historySelection.ref = "origin/topic";
+    await flushPromises();
+    expect(historySelection.ref).toBe("origin/topic");
+  });
+
   test("compact History skips the hidden branch-tree step on narrow layouts", async () => {
     mobileViewport.isNarrow.value = true;
     mobileViewport.isMobile.value = true;
