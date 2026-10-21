@@ -1081,3 +1081,7 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Git view preference keys now URI-encode each profile/workspace/root/PR segment before joining them, preventing :: inside identifiers from aliasing another view scope. Added a regression using colliding raw tuples; 
 pm run test:ui -- src/stores/git-ui.test.ts passes 71 tests. This strengthens requirements 44/66; manual UI acceptance and remaining inventory audit items stay open. WORK_LOCK remains present.
+
+## Worker continuation (fetch reconnect/profile isolation)
+
+- Extended the real remote transport reconnect/profile-switch regression matrix to fetch, pull, and push. Each action remains pending while switched to another profile, then settles from the originating profile's persisted outcome, with its staged draft retained and exactly one accepted start. The focused cases pass 3/3. This closes the fetch portion of requirement 60's reconnect/draft evidence; manual visual acceptance and route audit requirements remain open. WORK_LOCK stays present.

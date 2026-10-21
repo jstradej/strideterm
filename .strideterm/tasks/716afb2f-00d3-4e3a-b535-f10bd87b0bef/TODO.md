@@ -167,3 +167,4 @@
 - [x] Re-run the selected History graph query on root changes even when the saved ref string is identical.
 - [x] Fix transport test isolation by suspending every bridge created during each test; full UI suite passes 215 files / 3,093 tests, including the previously timing-sensitive temporary-pause case. User visual review and remaining audit lifecycle coverage remain open.
 - [x] Encode each profile/workspace/root/PR segment in persisted Git view preference keys; delimiter-bearing IDs no longer collide. Git UI store suite passes 71 tests.
+- [x] Extend remote transport reconnect/profile-switch coverage to fetch as well as pull and push; all three retain busy state and the staged draft while away from the origin profile, then settle from its scoped persisted result with one accepted start. Focused transport cases pass 3/3.

@@ -1633,6 +1633,7 @@ describe("remote transport endpoint routing", () => {
   });
 
   it.each([
+    ["fetch", "/api/git/fetch", "gitFetch", "git.fetch"],
     ["pull", "/api/git/pull", "gitPull", "git.pull"],
     ["push", "/api/git/push", "gitPush", "git.push"],
   ] as const)(
