@@ -76,6 +76,13 @@ function makeRemoteTransport() {
   return transport;
 }
 
+afterEach(() => {
+  // Every transport test shares this module's jsdom window. Keep transports created in every
+  // describe from reacting to later tests' mocked visibility/focus events or fake timers.
+  for (const bridge of createdRemoteBridges) bridge.suspend?.();
+  createdRemoteBridges.length = 0;
+});
+
 function redirectedResponse(body: BodyInit, url: string, init: ResponseInit = {}): Response {
   const response = new Response(body, init);
   Object.defineProperties(response, {
