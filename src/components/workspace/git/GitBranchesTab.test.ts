@@ -199,6 +199,28 @@ describe("GitBranchesTab compact history picker", () => {
     expect(picker.find('[aria-label="History reference"]').exists()).toBe(true);
   });
 
+  test("keeps the History ref picker natively keyboard-focusable", async () => {
+    const picker = mount(GitBranchesTab, {
+      props: {
+        workspaceId: "ws-keyboard-history",
+        snapshot: { dirty: false, branch: "main" },
+        gitUi: {
+          branchList: { current: "main", local: [{ name: "main", isCurrent: true }], remotes: [] },
+          graph: { commits: [], head: "", refs: {} },
+          tags: [],
+        },
+        compactHistory: true,
+      },
+      attachTo: document.body,
+    });
+    const select = picker.get<HTMLSelectElement>('[aria-label="History reference"]');
+    expect(select.element.tabIndex).toBe(0);
+    select.element.focus();
+    expect(document.activeElement).toBe(select.element);
+    expect(select.attributes("aria-label")).toBe("History reference");
+    picker.unmount();
+  });
+
   test("restores the visible History selection when switching roots and profiles", async () => {
     historySelections.set(historySelectionKey("ws-scope-switch", "/repo/a", "profile-a"), {
       ref: "feature/a",
