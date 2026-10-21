@@ -10,8 +10,6 @@
 - [ ] Complete the user's visual review using `MANUAL_VERIFICATION.md` in their `dev.ps1` session; adjust anything they report.
 - [ ] Finish remaining audit findings in `JUDGE_TODO.md`, including long operations and scoped read/draft lifecycle coverage.
 - [ ] Re-run the full numbered self-audit against the current tree and update each requirement with verifiable evidence.
-- [ ] Finish the remaining audit and rerun the full backend suite after increasing only the two slow review Git reset test timeouts (full backend run had 2 load timeouts; both cases pass isolated in 25.46s). User visual review in their dev.ps1 session is still pending.
-- [ ] Resolve any remaining suite failures and complete the user visual review; rerun project checks after remaining implementation changes.
 - [x] Commit implementation changes locally without pushing.
 
 ## In Progress
@@ -54,7 +52,7 @@
 - [x] Reject caller-supplied Git roots outside a single-repository workspace before accepting long fetch operations; runtime regression and the full 509-test runtime suite pass.
 - [x] Make History favorite/recent preferences reactive after localStorage updates; store and History component suites pass.
 - [x] Deduplicate overlapping fetch/pull/push operations by profile, workspace, root, kind, and inputs, even when requests have distinct idempotency keys; runtime suite passes 510 tests.
-- [x] Re-run repository verification on the current tree: typecheck, production build, lint/Prettier; UI and backend suites reported only load-sensitive timeouts also covered by isolated passes. User visual review and remaining audit items stay open.
+- [x] Re-run repository verification on the current tree: typecheck, production build, lint/Prettier; current default-concurrency backend run showed load-related Git fixture failures; a four-worker full backend run now passes. User visual review and remaining audit items stay open.
 - [x] Add a slow-fetch regression proving same-key Git operations in two profiles receive separate operation IDs and profile/workspace-scoped outcomes; the focused runtime test passes.
 - [x] Verify PR Review uses pinned provider source/target revisions and excludes local unstaged edits; AzureReviewPane tests (28) and file-manager tests (37) pass.
 - [x] Verify provider-owned saved Review drafts reappear after the AzureReviewPane is unmounted and reopened; all 29 AzureReviewPane tests and repository typecheck pass. Unsaved editor-dialog draft round-trip remains open.
@@ -63,3 +61,6 @@
 - [x] Add a History picker regression proving `HEAD` queries only `HEAD`, while “All branches and tags” uses the distinct all-ref query; focused test passes.
 - [x] Refresh the stale Settings General visual snapshot from the current stable UI. Settings dialog E2E (5), full E2E (142 passed, 5 skipped), file-manager responsive E2E (1), and Git responsive E2E (10) pass.
 - [x] Re-run the full UI suite after latest diagnostics and History query tests: 214 files, 3,028 tests pass.
+
+- [x] Re-run full backend suite with reduced process pressure: `npm run test:backend -- --maxWorkers=4` passes 224 files / 5,459 tests (7 skipped); full default-concurrency run was unstable under Windows process load.
+- [x] Re-run full typecheck and lint/Prettier after final audit/test/snapshot changes; both pass (lint 0 errors, 4,659 warnings).
