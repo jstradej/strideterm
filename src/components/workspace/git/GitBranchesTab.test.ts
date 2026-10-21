@@ -409,6 +409,35 @@ describe("GitBranchesTab compact history picker", () => {
     expect(select.text()).toContain("feature/topic-399");
   });
 
+  test("distinguishes an empty commit search from a history query error", async () => {
+    const gitUi = reactive({
+      branchList: { current: "main", local: [{ name: "main", isCurrent: true }], remotes: [] },
+      graph: {
+        commits: [{ hash: "abc123456789", shortHash: "abc1234", message: "A real commit" }],
+        head: "abc123456789",
+        refs: {},
+      },
+      graphError: "",
+    });
+    const picker = mount(GitBranchesTab, {
+      props: {
+        workspaceId: "ws-history-search-error",
+        snapshot: { dirty: false, branch: "main" },
+        gitUi,
+        compactHistory: true,
+      },
+    });
+    const search = picker.get('[aria-label="Search commits"]');
+    await search.setValue("no such commit");
+    expect(picker.text()).toContain("No commits match “no such commit”.");
+    expect(picker.find(".git-branches__pane-error").exists()).toBe(false);
+
+    gitUi.graphError = "History query failed.";
+    await flushPromises();
+    expect(picker.text()).not.toContain("No commits match “no such commit”.");
+    expect(picker.find(".git-branches__pane-error").text()).toContain("History query failed.");
+  });
+
   test("selecting a named reference only changes the graph query", async () => {
     vi.useFakeTimers();
     mobileViewport.isMobile.value = false;
