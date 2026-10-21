@@ -240,6 +240,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
    Evidence: src/stores/git-ui.ts:725,741,746,867,878,1564,1567; src/components/workspace/git/GitBranchesTab.vue:168,427.
    Evidence: A post-mutation diff refresh rejection now replaces the prior preview with an error-shaped result preserving path/scope and clearing stale diff text; `git-ui.test.ts` verifies the stale content is not retained.
    Evidence: A deferred post-mutation preview response from root A is ignored after switching to root B; the regression confirms root B's selected file and preview remain current.
+   Evidence (2026-10-21): History commit-file reads now include active root in the watcher identity, so the same hash reloads on a root switch; a deferred root-A file-list result is discarded after root B loads. `useMonacoDiffLoader.clear()` invalidates in-flight diffs when History switches roots. GitBranchesTab and diff-loader suites pass (30 tests); typecheck and safe production build pass; repository lint passes (0 errors, 4,715 warnings; Prettier clean).
    Remaining: Tag list failures now render as an inline alert in History and the focused picker suite passes. Verify visual treatment of preview refresh failures in the manual pass.
 
 51. **PARTIAL** — Diagnostics carry available operation/run ID, action, profile/workspace/root, result, duration and safe error; distinguish blocked/cancel/partial/failure and protect credentials/content.
