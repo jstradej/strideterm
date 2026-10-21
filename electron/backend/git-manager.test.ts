@@ -2279,11 +2279,12 @@ describe("GitManager", () => {
       tempPaths.push(root);
 
       const calls: string[][] = [];
+      const auditEntries: Record<string, unknown>[] = [];
       const execGitImpl = vi.fn().mockImplementation(async (_cwd: string, args: string[]) => {
         calls.push(args);
         return { stdout: "", stderr: "" };
       });
-      const mgr = new GitManager({ execGitImpl });
+      const mgr = new GitManager({ execGitImpl, gitAuditLogStore: { logEntry: (entry) => auditEntries.push(entry) } });
       const result = await mgr.removeWorktree({ id: "ws1", cwd: root }, { worktreePath: wtPath, rootPath: root });
       // The worktree directory itself was removed by fs.rm before git ran.
       let dirGone = false;
@@ -2300,6 +2301,14 @@ describe("GitManager", () => {
       expect(ranPrune).toBe(true);
       expect(ranForceRemove).toBe(false);
       expect(result.ok).toBe(true);
+      expect(auditEntries).toHaveLength(1);
+      expect(auditEntries[0]).toMatchObject({
+        operation: "gitRemove-worktree",
+        category: "write",
+        success: true,
+        connectionId: "system-ws1",
+        rootPath: root,
+      });
     });
 
     test("falls back to git worktree remove --force when fs.rm fails / dir still exists", async () => {

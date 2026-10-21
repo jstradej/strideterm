@@ -332,7 +332,8 @@ Full per-requirement ledger (122 items)
    Evidence: src/stores/git-ui.ts:481; electron/backend/git-manager.ts:4278,4293; src/components/workspace/git/GitChangesTab.vue:605.
    Evidence: Runtime route tests assert one resolved-root manager call for index and local-tag writes; the real-repository manager audit test verifies one audit row per index/local-tag mutation. Changes surfaces structured failures and route policy classifies new APIs.
    Evidence: Stash, pop, apply, drop and branch-from-stash now run under the per-worktree write lock and emit one system Git audit row; a real temporary-repo test checks successful and failed outcomes and the resolved root. Full GitManager suite passes 178 tests (2 skipped), typecheck passes.
-   Remaining: Continue the route/audit sweep for worktree, provider and other remaining mutation families; reconcile the full inventory.
+   Evidence: Worktree removal now runs under the per-worktree lock and emits an audited write outcome; the fast-path manager test asserts one row with root. Worktree/stash/index audit tests pass and repository typecheck passes.
+   Remaining: Worktree creation, provider and other remaining mutation families still need route/audit reconciliation.
 
 78. **PARTIAL** — Stage 6: involved long Git actions use generic flow for both layouts/remote; reconnect and dedup verified.
    Evidence: `runtime-git-handlers.ts` routes fetch/pull/push/force-push, merge/rebase, remote branch deletion, and network tag writes through OperationRegistry; mobile route policy classifies the guarded routes. `git-ui.test.ts` covers event/payload resolution and duplicate terminal delivery for fetch/pull/push.
@@ -392,7 +393,8 @@ Full per-requirement ledger (122 items)
 91. **PARTIAL** — Acceptance: button/menu/shortcut use same audited path; one mutation yields no duplicate audit (review intent/outcome is expected pair).
    Evidence: electron/backend/git-manager.ts:2203,4278; src/components/workspace/GitPane.test.ts:138; .strideterm/tasks/716afb2f-00d3-4e3a-b535-f10bd87b0bef/IMPLEMENTATION_INVENTORY.md:11.
    Evidence: `runtime.test.ts` asserts one resolved-root manager dispatch for index/local-tag plus branch, commit-history and stash mutation routes; `git-manager.test.ts` verifies exact audit rows for index/tag and stash mutations. Existing `runGitAction` tests and the action inventory map visible UI routes to the store/runtime path.
-   Remaining: Add equivalent exact audit assertions for worktree and provider mutation families and complete the individual menu/shortcut mapping.
+   Evidence: Worktree remove now has a single audit-row assertion in the fast-path manager regression.
+   Remaining: Add equivalent route/audit assertions for worktree creation and provider mutation families and complete the individual menu/shortcut mapping.
 
 92. **PARTIAL** — Acceptance: controlled slow backend proves start before relay timeout, reconnect outcome, dedup and profile isolation, without timeout increase.
    Evidence: Gated OperationRegistry tests cover prompt fetch/rebase acceptance, dedup, tag/force-push/remote-delete, and profile/workspace isolation; store tests verify event plus payload completion for fetch/pull/push, one notification per failure, and pull recovery from persisted outcomes.

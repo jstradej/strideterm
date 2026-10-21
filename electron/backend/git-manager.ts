@@ -2746,6 +2746,7 @@ export class GitManager extends EventEmitter {
       "stash-apply",
       "stash-drop",
       "stash-branch",
+      "remove-worktree",
     ]);
 
     try {
@@ -3321,83 +3322,85 @@ export class GitManager extends EventEmitter {
       return createStructuredResult({ ok: false, summary: "Cannot remove the main worktree." });
     }
 
-    let branchName = "";
-    if (deleteBranch) {
-      try {
-        const worktrees = parseWorktreeList(
-          (await this.execGit(effectiveCwd, ["worktree", "list", "--porcelain"])).stdout,
-        );
-        branchName = worktrees.find((entry) => path.resolve(entry.path) === resolvedPath)?.branch || "";
-      } catch {
-        // branch detection failed, skip branch deletion
-      }
-    }
-
-    // Fast path: delete the worktree directory ourselves, then ask git to
-    // prune the metadata. `git worktree remove --force` walks the tree with
-    // per-file stat calls and is markedly slower than the platform-native
-    // recursive remove. On Windows we shell out to `rd /s /q` (filesystem
-    // driver level — one or two orders of magnitude faster than fs.rm on NTFS
-    // with deep node_modules trees). Other platforms use fs.rm directly,
-    // which is already a thin syscall wrapper there. fs.rm fallback with
-    // retries handles antivirus / lock interference on Windows when rd fails.
-    let rawOutput: string;
-    let removalError: { stdout?: string; stderr?: string; message?: string } | null = null;
-    if (existsSync(resolvedPath)) {
-      let removed = false;
-      if (process.platform === "win32") {
+    return this.runAuditedGitMutation(workspace, effectiveCwd, "remove-worktree", async (effectiveCwd) => {
+      let branchName = "";
+      if (deleteBranch) {
         try {
-          await execFileText("cmd.exe", ["/c", "rd", "/s", "/q", resolvedPath], { timeout: 30_000 });
-          removed = true;
+          const worktrees = parseWorktreeList(
+            (await this.execGit(effectiveCwd, ["worktree", "list", "--porcelain"])).stdout,
+          );
+          branchName = worktrees.find((entry) => path.resolve(entry.path) === resolvedPath)?.branch || "";
         } catch {
-          // fall through to fs.rm with retries — gives proper EBUSY/EPERM
-          // error codes that the maxRetries loop can back off on.
+          // branch detection failed, skip branch deletion
         }
       }
-      if (!removed) {
-        try {
-          await fsRm(resolvedPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-        } catch (error) {
-          removalError = error as { stdout?: string; stderr?: string; message?: string };
+
+      // Fast path: delete the worktree directory ourselves, then ask git to
+      // prune the metadata. `git worktree remove --force` walks the tree with
+      // per-file stat calls and is markedly slower than the platform-native
+      // recursive remove. On Windows we shell out to `rd /s /q` (filesystem
+      // driver level — one or two orders of magnitude faster than fs.rm on NTFS
+      // with deep node_modules trees). Other platforms use fs.rm directly,
+      // which is already a thin syscall wrapper there. fs.rm fallback with
+      // retries handles antivirus / lock interference on Windows when rd fails.
+      let rawOutput: string;
+      let removalError: { stdout?: string; stderr?: string; message?: string } | null = null;
+      if (existsSync(resolvedPath)) {
+        let removed = false;
+        if (process.platform === "win32") {
+          try {
+            await execFileText("cmd.exe", ["/c", "rd", "/s", "/q", resolvedPath], { timeout: 30_000 });
+            removed = true;
+          } catch {
+            // fall through to fs.rm with retries — gives proper EBUSY/EPERM
+            // error codes that the maxRetries loop can back off on.
+          }
+        }
+        if (!removed) {
+          try {
+            await fsRm(resolvedPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+          } catch (error) {
+            removalError = error as { stdout?: string; stderr?: string; message?: string };
+          }
         }
       }
-    }
 
-    // Tell git to drop the worktree entry. `prune` cleans stale entries when
-    // we already removed the directory; if the directory still exists (e.g.
-    // fs.rm hit a locked file), fall back to `git worktree remove --force`.
-    try {
-      if (removalError || existsSync(resolvedPath)) {
-        const result = await this.execGit(effectiveCwd, ["worktree", "remove", "--force", resolvedPath]);
-        rawOutput = joinRawOutput(result.stdout, result.stderr);
-      } else {
-        const pruneResult = await this.execGit(effectiveCwd, ["worktree", "prune"]);
-        rawOutput = joinRawOutput(pruneResult.stdout, pruneResult.stderr);
-      }
-    } catch (error) {
-      const err = error as { stdout?: string; stderr?: string; message?: string };
-      return createStructuredResult({
-        ok: false,
-        summary: `Failed to remove worktree at ${resolvedPath}.`,
-        rawOutput: joinRawOutput(err.stdout || (removalError?.message ?? ""), err.stderr),
-      });
-    }
-
-    let branchOutput = "";
-    if (deleteBranch && branchName) {
+      // Tell git to drop the worktree entry. `prune` cleans stale entries when
+      // we already removed the directory; if the directory still exists (e.g.
+      // fs.rm hit a locked file), fall back to `git worktree remove --force`.
       try {
-        const result = await this.execGit(effectiveCwd, ["branch", "-d", branchName]);
-        branchOutput = joinRawOutput(result.stdout, result.stderr);
+        if (removalError || existsSync(resolvedPath)) {
+          const result = await this.execGit(effectiveCwd, ["worktree", "remove", "--force", resolvedPath]);
+          rawOutput = joinRawOutput(result.stdout, result.stderr);
+        } else {
+          const pruneResult = await this.execGit(effectiveCwd, ["worktree", "prune"]);
+          rawOutput = joinRawOutput(pruneResult.stdout, pruneResult.stderr);
+        }
       } catch (error) {
-        const err = error as { stdout?: string; stderr?: string };
-        branchOutput = `Branch ${branchName} could not be deleted (may not be fully merged): ${joinRawOutput(err.stdout, err.stderr)}`;
+        const err = error as { stdout?: string; stderr?: string; message?: string };
+        return createStructuredResult({
+          ok: false,
+          summary: `Failed to remove worktree at ${resolvedPath}.`,
+          rawOutput: joinRawOutput(err.stdout || (removalError?.message ?? ""), err.stderr),
+        });
       }
-    }
 
-    return createStructuredResult({
-      ok: true,
-      summary: `Worktree removed.${branchName && deleteBranch ? ` Branch ${branchName} deleted.` : ""}`,
-      rawOutput: joinRawOutput(rawOutput, branchOutput),
+      let branchOutput = "";
+      if (deleteBranch && branchName) {
+        try {
+          const result = await this.execGit(effectiveCwd, ["branch", "-d", branchName]);
+          branchOutput = joinRawOutput(result.stdout, result.stderr);
+        } catch (error) {
+          const err = error as { stdout?: string; stderr?: string };
+          branchOutput = `Branch ${branchName} could not be deleted (may not be fully merged): ${joinRawOutput(err.stdout, err.stderr)}`;
+        }
+      }
+
+      return createStructuredResult({
+        ok: true,
+        summary: `Worktree removed.${branchName && deleteBranch ? ` Branch ${branchName} deleted.` : ""}`,
+        rawOutput: joinRawOutput(rawOutput, branchOutput),
+      });
     });
   }
 
@@ -3595,7 +3598,7 @@ export class GitManager extends EventEmitter {
     if (!effectiveCwd) {
       return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
     }
-    return this.runAuditedStashMutation(workspace, effectiveCwd, "stash", async (effectiveCwd) => {
+    return this.runAuditedGitMutation(workspace, effectiveCwd, "stash", async (effectiveCwd) => {
       try {
         // git stash needs a base commit to stash against. On an unborn HEAD (a
         // freshly `git init`'d repo with no commits yet) every variant fails with
@@ -3692,10 +3695,10 @@ export class GitManager extends EventEmitter {
     }
   }
 
-  private async runAuditedStashMutation(
+  private async runAuditedGitMutation(
     workspace: WorkspaceRef | null,
     rootPath: string,
-    type: "stash" | "stash-pop" | "stash-apply" | "stash-drop" | "stash-branch",
+    type: "stash" | "stash-pop" | "stash-apply" | "stash-drop" | "stash-branch" | "remove-worktree",
     run: (cwd: string) => Promise<Record<string, unknown>>,
   ): Promise<Record<string, unknown>> {
     const cwd = rootPath || String(workspace?.cwd || "");
@@ -3737,7 +3740,7 @@ export class GitManager extends EventEmitter {
     }
     const args = ["stash", "pop"];
     if (ref) args.push(ref);
-    return this.runAuditedStashMutation(workspace, effectiveCwd, "stash-pop", (cwd) =>
+    return this.runAuditedGitMutation(workspace, effectiveCwd, "stash-pop", (cwd) =>
       this.execToResult(cwd, args, "Stash applied and removed.", "Stash pop failed.", (combined) => {
         // Modern git refuses to drop the entry on conflict — it stays in place.
         if (!/CONFLICT|conflict/i.test(combined)) return null;
@@ -3984,7 +3987,7 @@ export class GitManager extends EventEmitter {
     }
     const args = ["stash", "apply"];
     if (ref) args.push(ref);
-    return this.runAuditedStashMutation(workspace, effectiveCwd, "stash-apply", (cwd) =>
+    return this.runAuditedGitMutation(workspace, effectiveCwd, "stash-apply", (cwd) =>
       this.execToResult(cwd, args, "Stash applied. The stash entry was kept.", "Stash apply failed.", (combined) => {
         // `git stash apply` exits non-zero on conflicts but still writes the
         // changes (with conflict markers) into the working tree.
@@ -4010,7 +4013,7 @@ export class GitManager extends EventEmitter {
     }
     const args = ["stash", "drop"];
     if (ref) args.push(ref);
-    return this.runAuditedStashMutation(workspace, effectiveCwd, "stash-drop", (cwd) =>
+    return this.runAuditedGitMutation(workspace, effectiveCwd, "stash-drop", (cwd) =>
       this.execToResult(cwd, args, "Stash dropped.", "Stash drop failed."),
     );
   }
@@ -4032,7 +4035,7 @@ export class GitManager extends EventEmitter {
     if (!name || !/^[A-Za-z0-9._/-]+$/.test(name)) {
       return createStructuredResult({ ok: false, summary: "Invalid branch name." });
     }
-    return this.runAuditedStashMutation(workspace, effectiveCwd, "stash-branch", async (effectiveCwd) => {
+    return this.runAuditedGitMutation(workspace, effectiveCwd, "stash-branch", async (effectiveCwd) => {
       try {
         if (switchImmediately) {
           // Native path: create branch from the stash base, check it out, apply

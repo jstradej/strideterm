@@ -126,3 +126,4 @@
 - [x] Reuse fetch/pull/push idempotency keys when a start response is lost, so retry can replay the accepted operation instead of launching a second write; Git UI store suite passes 60 tests and repository typecheck passes.
 - [x] Extend runtime single-dispatch/root assertions across branch checkout/create/delete/rename, cherry-pick/squash/continue/abort, stash lifecycle/import, and commit-all mutation routes; focused runtime regression and repository typecheck pass.
 - [x] Route stash, pop, apply, drop, and branch-from-stash through the per-worktree Git write lock and system audit log; real-repository test verifies one success/failure row per action with root. Full GitManager suite passes 178 tests (2 skipped), typecheck passes.
+- [x] Route worktree removal through the per-worktree Git lock and record its resolved root/outcome; fast-path regression asserts one audit row. Focused worktree/stash/index audit tests pass and typecheck passes.
