@@ -887,3 +887,9 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Re-read the task prompt, TODO, worker checklist, source plan, and the numbered audit. Corrected requirement 45's stale note: the unsaved review editor now has automated pane-unmount, file-switch, and Settings-toggle coverage; the running fetch and staged draft/result retention also have mounted/store regressions. Pending transport disconnect-through-action and visual walkthrough are still distinct open requirements.
 - Current tree retains the prior verification record: full backend passes 224 files / 5,468 tests (7 skipped); full lint 0 errors / 4,685 warnings with Prettier clean; typecheck passes. Full UI has one load-sensitive transport test failure that passes in isolation. No app, dev server, or build launched.
+
+## Worker continuation verification refresh (provider audit)
+
+- Re-read `PROMPT.worker.md`, TODO, WORKER, TASK, the current source plan, implementation inventory, and the 122-item ledger. Reconciled provider PR creation and Azure thread status audit statements in requirements 47, 77, and 91; focused assertions now cover GitHub PR creation/review/comment and Azure PR creation/thread update/comment/vote writes.
+- Re-ran `npm run test:backend -- electron/backend/github-manager.test.ts electron/backend/azure-devops-manager.test.ts -t "audit"`: 5 passed, 67 skipped. `npm run typecheck`: pass. Earlier touched-file Prettier/ESLint and `git diff --check` passed after the test addition.
+- Open work remains: user-owned `MANUAL_VERIFICATION.md` walkthrough, per-entry-point menu/shortcut/result/audit reconciliation, remaining long-operation uncertainty and lifecycle acceptance. No application or dev server was launched. Keep WORK_LOCK.
