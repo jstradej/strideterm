@@ -562,6 +562,45 @@ describe("GitBranchesTab compact history picker", () => {
     picker.unmount();
     vi.useRealTimers();
   });
+
+  test("reloads the selected history query when the root changes but its ref is the same", async () => {
+    vi.useFakeTimers();
+    historySelections.set(historySelectionKey("ws-root-history", "/repo-b", "default"), {
+      ref: "topic-b",
+      commitSearch: "",
+    });
+    const picker = mount(GitBranchesTab, {
+      props: {
+        workspaceId: "ws-root-history",
+        snapshot: { dirty: false, branch: "main" },
+        gitUi: {
+          branchList: {
+            current: "main",
+            local: [
+              { name: "main", isCurrent: true },
+              { name: "topic-b", isCurrent: false },
+            ],
+            remotes: [],
+            defaultBranch: "main",
+            defaultRemote: "",
+          },
+          graph: { commits: [], head: "", refs: {} },
+        },
+        activeRootPath: "/repo-a",
+        compactHistory: true,
+      },
+    });
+    await flushPromises();
+    gitLoadGraph.mockClear();
+
+    await picker.setProps({ activeRootPath: "/repo-b" } as never);
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(gitLoadGraph).toHaveBeenCalledWith("ws-root-history", expect.objectContaining({ branch: "topic-b" }));
+    picker.unmount();
+    vi.useRealTimers();
+  });
 });
 
 /**

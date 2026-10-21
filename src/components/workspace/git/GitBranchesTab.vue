@@ -1438,6 +1438,7 @@ watch(
     includeBaseUpdates,
     selectedRef,
     showRemotes,
+    () => props.activeRootPath,
   ],
   () => scheduleFilteredGraphRefresh(),
   { deep: true },
