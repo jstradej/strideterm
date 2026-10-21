@@ -358,6 +358,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
    Evidence: Scoped commit-all success and rejected empty selection each emit one system Git write audit row with the workspace root in a real repository regression.
    Evidence: Merge-into-base success and dirty-target rejection each emit one system Git write audit row with the resolved target worktree root.
    Evidence: Bisect continue/abort audit types are classified as writes; the focused classification regression covers success and failure outcomes. History cherry-pick success and Git failure each produce one audit entry with the resolved repository root. Squashing two History commits produces the requested commit and one `gitSquash` write audit entry.
+   Verification refresh (2026-10-21): Full `npm run test:backend -- electron/backend/git-manager.test.ts` passes 188 tests with 2 skipped after the bisect, cherry-pick, and squash audit additions.
    Evidence: Conflict resolve and undo success/failure each emit one system Git audit outcome with the resolved root; the focused real-conflict regression passes.
    Evidence: Conflict detail/resolve/unresolve reject repository traversal paths, and the regression confirms an outside file is not modified.
    Evidence (2026-10-21): GitHub PR creation, Azure DevOps PR creation, and Azure DevOps thread status update each have focused assertions for exactly one successful classified provider write audit entry. Provider PR/thread gaps are closed; other mutation families and inventory-wide route reconciliation remain.
@@ -1009,3 +1010,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Added a real-repository History squash regression. Squashing two commits creates the requested single commit and emits exactly one `gitSquash` write audit entry with the resolved root.
 - Focused backend test passes (1 passed / 189 skipped); `npm run typecheck` passes; touched-file ESLint reports 0 errors / 99 existing warnings; Prettier and `git diff --check` pass. Other action-route audit checks and the user's visual walkthrough remain open.
+
+## Worker continuation verification refresh (GitManager)
+
+- Re-ran the full GitManager backend test file after recent audit coverage additions: 188 passed / 2 skipped. Repository typecheck passes; touched-file Prettier passes; ESLint reports 0 errors / 99 existing warnings; `git diff --check` passes.
+- Re-read the current prompt, TODO, worker verification checklist, manual walkthrough and the numbered audit. Outstanding requirements remain the user-owned visual walkthrough, keyboard/narrow human acceptance, and several inventory-wide routes and uncertain synchronous-write lifecycle behaviors; WORK_LOCK stays present.
