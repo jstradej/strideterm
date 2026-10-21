@@ -1022,3 +1022,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 - Fixed `runWriteAction` to include elapsed duration in audit rows when the Git command rejects. Strengthened the real-repository cherry-pick audit test to assert duration is present for both success and failure.
 - Focused cherry-pick audit test passes (1 passed / 189 skipped); full GitManager suite passes (188 passed / 2 skipped); `npm run typecheck` passes; touched-file ESLint reports 0 errors / 137 existing warnings; Prettier and `git diff --check` pass.
 - Re-audited requirements 47, 51, and 77 against current manager paths and real-repository evidence. These remain partial because full route inventory and uncertain synchronous-write outcome recovery are not complete; manual visual acceptance remains user-owned. WORK_LOCK stays present.
+
+## Worker continuation (generic write failure timing)
+
+- Rechecked `runWriteAction` diagnostics and found failed `execGit` actions omitted duration even though successful actions included it. Failure audit records now include elapsed milliseconds. The cherry-pick success/failure audit test verifies both entries have a nonnegative duration.
+- Focused cherry-pick case passes; full GitManager suite passes (188 passed / 2 skipped); repository typecheck passes; touched-file ESLint reports 0 errors / 137 existing warnings; Prettier and `git diff --check` pass. Requirements 47/51/77 remain partial for inventory-wide route and uncertain synchronous-write recovery; WORK_LOCK remains.
