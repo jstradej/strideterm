@@ -30,6 +30,8 @@ function buildPayload(provider: "azure-devops" | "github" = "azure-devops"): Sta
       isDraft: false,
       sourceRefName: provider === "github" ? "feature/x" : "refs/heads/feature/x",
       targetRefName: provider === "github" ? "main" : "refs/heads/main",
+      sourceCommitId: "source-commit-sha",
+      targetCommitId: "target-commit-sha",
       url: "",
       webUrl: "",
       mergeStatus: "succeeded",
@@ -733,6 +735,8 @@ describe("AzureReviewPane — Monaco diff loading via the shared useMonacoDiffLo
         isDraft: false,
         sourceRefName: "refs/heads/feature/x",
         targetRefName: "refs/heads/main",
+        sourceCommitId: "source-commit-sha",
+        targetCommitId: "target-commit-sha",
         url: "",
         webUrl: "",
         mergeStatus: "succeeded",
@@ -842,8 +846,8 @@ describe("AzureReviewPane — Monaco diff loading via the shared useMonacoDiffLo
       rootPath: "/repo",
       relativePath: "src/foo.ts",
       source: "range",
-      baseRef: "origin/main",
-      targetRef: "origin/feature/x",
+      baseRef: "target-commit-sha",
+      targetRef: "source-commit-sha",
     });
 
     // MonacoDiffPanel is auto-stubbed as a defineAsyncComponent in this test

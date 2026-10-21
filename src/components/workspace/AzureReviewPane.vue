@@ -1271,11 +1271,8 @@ const diffLoader = useMonacoDiffLoader((filePath: string) => {
   if (reviewDiffMode.value === "commit") {
     return api.fileCommitDiff({ rootPath, relativePath: filePath, hash: reviewCommitFilter.value });
   }
-  const targetBranch = stripRef(pullRequest.value.targetRefName || "");
-  const sourceBranch = stripRef(pullRequest.value.sourceRefName || "");
-  const remote = "origin";
-  const baseRef = targetBranch ? `${remote}/${targetBranch}` : "HEAD";
-  const targetRef = sourceBranch ? `${remote}/${sourceBranch}` : "";
+  const baseRef = String(pullRequest.value.targetCommitId || "");
+  const targetRef = String(pullRequest.value.sourceCommitId || "");
   return api.fileGitDiff({ rootPath, relativePath: filePath, source: "range", baseRef, targetRef });
 });
 const monacoDiffPayload = diffLoader.payload;

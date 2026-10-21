@@ -497,6 +497,8 @@ export interface ReviewPrInfo {
   webUrl: string;
   sourceRefName: string;
   targetRefName: string;
+  sourceCommitId?: string;
+  targetCommitId?: string;
 }
 
 export interface ReviewCheckout {
