@@ -82,11 +82,28 @@ describe("GitTreeGraph", () => {
     expect(rows.length).toBe(linearCommits.length);
   });
 
-  test("first row carries HEAD / main badges in the subject cell", () => {
+  test("first row carries HEAD / main badges in the refs column", () => {
     const wrapper = mountGraph();
     const firstRow = wrapper.find(".git-tree__row");
     expect(firstRow.html()).toContain("HEAD");
     expect(firstRow.html()).toContain("main");
+  });
+
+  test("renders refs in a separate column before the aligned subject column", () => {
+    const wrapper = mountGraph();
+    const headers = wrapper.findAll(".git-tree__header .git-tree__hcell");
+    expect(headers.map((header) => header.text())).toEqual(["", "Refs", "Subject", "Author", "Date", "Hash"]);
+
+    const firstRow = wrapper.find(".git-tree__row");
+    expect(firstRow.find(".git-tree__cell--refs").text()).toContain("HEAD");
+    expect(firstRow.find(".git-tree__cell--subject").text()).toContain("tip on main");
+    expect(firstRow.findAll(".git-tree__cell").map((cell) => cell.classes())).toEqual([
+      ["git-tree__cell", "git-tree__cell--refs"],
+      ["git-tree__cell", "git-tree__cell--subject"],
+      ["git-tree__cell", "git-tree__cell--author"],
+      ["git-tree__cell", "git-tree__cell--date"],
+      ["git-tree__cell", "git-tree__cell--hash"],
+    ]);
   });
 
   test("merge commit row gets the --merge subject styling", () => {

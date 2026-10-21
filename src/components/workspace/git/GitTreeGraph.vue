@@ -8,6 +8,7 @@
            text column anyway. Sticky so it stays visible during long scrolls. -->
       <div v-if="!compact" class="git-tree__header">
         <span class="git-tree__hcell git-tree__hcell--graph" :style="{ width: `${graphWidth}px` }"></span>
+        <span class="git-tree__hcell git-tree__hcell--refs">Refs</span>
         <span class="git-tree__hcell git-tree__hcell--subject">Subject</span>
         <span class="git-tree__hcell git-tree__hcell--author">Author</span>
         <span class="git-tree__hcell git-tree__hcell--date">Date</span>
@@ -105,7 +106,7 @@
             @dblclick="onDoubleClick(node)"
             @contextmenu="onContextMenu($event, node)"
           >
-            <span class="git-tree__cell git-tree__cell--subject">
+            <span class="git-tree__cell git-tree__cell--refs">
               <span
                 v-for="ref in node.refs"
                 :key="ref.label"
@@ -115,6 +116,8 @@
                 <span class="git-tree__ref-icon" aria-hidden="true">{{ ref.icon }}</span>
                 <span class="git-tree__ref-label">{{ ref.label }}</span>
               </span>
+            </span>
+            <span class="git-tree__cell git-tree__cell--subject">
               <span class="git-tree__subject" :class="{ 'git-tree__subject--merge': node.isMerge }">{{
                 node.subject
               }}</span>
@@ -624,8 +627,8 @@ watch(
 .git-tree__header {
   display: grid;
   grid-template-columns:
-    var(--graph-col, 60px) minmax(160px, 1fr) minmax(80px, max-content) minmax(60px, max-content)
-    minmax(50px, max-content);
+    var(--graph-col, 60px) 180px minmax(160px, 1fr) minmax(80px, max-content)
+    minmax(60px, max-content) minmax(50px, max-content);
   gap: 10px;
   padding: 4px 10px 4px 4px;
   background: rgba(255, 255, 255, 0.03);
@@ -678,7 +681,7 @@ watch(
   left: 0;
   right: 0;
   display: grid;
-  grid-template-columns: minmax(200px, 1fr) minmax(80px, max-content) minmax(60px, max-content) minmax(
+  grid-template-columns: 180px minmax(200px, 1fr) minmax(80px, max-content) minmax(60px, max-content) minmax(
       50px,
       max-content
     );
@@ -693,7 +696,7 @@ watch(
 }
 
 .git-tree--compact .git-tree__row {
-  grid-template-columns: 1fr minmax(60px, max-content);
+  grid-template-columns: minmax(72px, 24vw) minmax(0, 1fr) minmax(60px, max-content);
 }
 
 .git-tree__row:hover {
@@ -712,10 +715,14 @@ watch(
 
 .git-tree__cell--subject {
   color: var(--text);
+}
+
+.git-tree__cell--refs {
   display: flex;
   align-items: center;
   gap: 4px;
-  flex-wrap: nowrap;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
 .git-tree__subject {

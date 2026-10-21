@@ -64,3 +64,4 @@
 
 - [x] Re-run full backend suite with reduced process pressure: `npm run test:backend -- --maxWorkers=4` passes 224 files / 5,459 tests (7 skipped); full default-concurrency run was unstable under Windows process load.
 - [x] Re-run full typecheck and lint/Prettier after final audit/test/snapshot changes; both pass (lint 0 errors, 4,659 warnings).
+- [x] Separate History refs from commit subjects into aligned columns on desktop and compact layouts; GitTreeGraph tests (13), typecheck, focused lint/format and safe production build pass.
