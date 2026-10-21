@@ -177,6 +177,12 @@ afterEach(async () => {
 });
 
 describe("GitChangesTab", () => {
+  test("keeps the shared operation status visible while Changes is active", async () => {
+    const pane = mountTab({ gitUi: { busyAction: "fetch", busyPhase: "Fetching…" } });
+    await flushPromises();
+    expect(pane.get('[data-testid="operation-card"]').text()).toContain("Fetching…");
+  });
+
   test("keeps the classic commit draft when the Changes view remounts", async () => {
     observedWidth = 800;
     const first = mountTab({ snapshot: { dirty: true, unstaged: [{ path: "a.txt", code: "M", scope: "unstaged" }] } });

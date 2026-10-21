@@ -230,6 +230,7 @@ describe("GitBranchesTab compact history picker", () => {
           branchList: { current: "", local: [], remotes: [], defaultBranch: "", defaultRemote: "" },
           graph: { commits: [], head: "", refs: {} },
           tags: [],
+          busyAction: "fetch",
         },
         compactHistory: true,
       },
@@ -238,6 +239,7 @@ describe("GitBranchesTab compact history picker", () => {
     expect(picker.get('[aria-label="History reference"]').text()).toContain("HEAD · detached");
     expect(picker.findAll(".git-history-picker__current")[0].text()).toContain("Working branch: Detached HEAD");
     expect(picker.findAll(".git-tree__placeholder").some((node) => node.text() === "No commits found.")).toBe(true);
+    expect(picker.find('[data-testid="operation-card"]').exists()).toBe(true);
   });
 
   test("renders and filters a large History ref list", async () => {
