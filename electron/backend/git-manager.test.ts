@@ -4009,6 +4009,45 @@ describe("GitManager", () => {
       expect(entries.every((entry) => entry.rootPath === root)).toBe(true);
     });
 
+    test("records one success or failure audit row per stash mutation", async () => {
+      const entries: Record<string, unknown>[] = [];
+      const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
+      const root = await initRepo();
+      const workspace = { id: "ws-stash-audit", cwd: root, kind: "terminal" as const };
+
+      await fs.writeFile(path.join(root, "a.txt"), "stash one\n", "utf8");
+      expect((await auditMgr.stash(workspace, { message: "one" })).ok).toBe(true);
+      expect((await auditMgr.stashApply(workspace, { ref: "stash@{0}" })).ok).toBe(true);
+      await fs.writeFile(path.join(root, "a.txt"), "base\n", "utf8");
+      expect((await auditMgr.stashDrop(workspace, { ref: "stash@{0}" })).ok).toBe(true);
+
+      await fs.writeFile(path.join(root, "a.txt"), "stash two\n", "utf8");
+      expect((await auditMgr.stash(workspace, { message: "two" })).ok).toBe(true);
+      expect(
+        (
+          await auditMgr.stashBranch(workspace, {
+            ref: "stash@{0}",
+            branchName: "from-stash",
+            switchImmediately: false,
+          })
+        ).ok,
+      ).toBe(true);
+      expect((await auditMgr.stashPop(workspace, { ref: "stash@{0}" })).ok).toBe(true);
+      expect((await auditMgr.stashDrop(workspace, { ref: "stash@{0}" })).ok).toBe(false);
+
+      expect(entries.map((entry) => [entry.operation, entry.category, entry.success])).toEqual([
+        ["gitStash", "write", true],
+        ["gitStash-apply", "write", true],
+        ["gitStash-drop", "write", true],
+        ["gitStash", "write", true],
+        ["gitStash-branch", "write", true],
+        ["gitStash-pop", "write", true],
+        ["gitStash-drop", "write", false],
+      ]);
+      expect(entries.every((entry) => entry.connectionId === "system-ws-stash-audit")).toBe(true);
+      expect(entries.every((entry) => entry.rootPath === root)).toBe(true);
+    });
+
     test("stages a fresh verified hunk and refuses a stale token", async () => {
       const root = await initRepo();
       const workspace = { id: "ws-hunk", cwd: root, kind: "terminal" as const };

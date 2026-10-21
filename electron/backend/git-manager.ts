@@ -2741,6 +2741,11 @@ export class GitManager extends EventEmitter {
       "stage-hunk",
       "unstage-hunk",
       "commit-staged",
+      "stash",
+      "stash-pop",
+      "stash-apply",
+      "stash-drop",
+      "stash-branch",
     ]);
 
     try {
@@ -3590,67 +3595,69 @@ export class GitManager extends EventEmitter {
     if (!effectiveCwd) {
       return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
     }
-    try {
-      // git stash needs a base commit to stash against. On an unborn HEAD (a
-      // freshly `git init`'d repo with no commits yet) every variant fails with
-      // the cryptic "You do not have the initial commit yet". Either signal the
-      // caller to offer a one-click fix (needsInitialCommit), or — when the user
-      // accepted it — create an empty root commit so the stash has a base.
-      const head = await this.execGit(effectiveCwd, ["rev-parse", "--verify", "--quiet", "HEAD"]).catch(() => ({
-        stdout: "",
-        stderr: "",
-      }));
-      if (!String(head.stdout || "").trim()) {
-        if (!allowEmptyInitialCommit) {
-          return {
-            ...createStructuredResult({
-              ok: false,
-              summary: "Cannot stash: the repository has no commits yet. Create an initial commit first.",
-            }),
-            needsInitialCommit: true,
-          };
+    return this.runAuditedStashMutation(workspace, effectiveCwd, "stash", async (effectiveCwd) => {
+      try {
+        // git stash needs a base commit to stash against. On an unborn HEAD (a
+        // freshly `git init`'d repo with no commits yet) every variant fails with
+        // the cryptic "You do not have the initial commit yet". Either signal the
+        // caller to offer a one-click fix (needsInitialCommit), or — when the user
+        // accepted it — create an empty root commit so the stash has a base.
+        const head = await this.execGit(effectiveCwd, ["rev-parse", "--verify", "--quiet", "HEAD"]).catch(() => ({
+          stdout: "",
+          stderr: "",
+        }));
+        if (!String(head.stdout || "").trim()) {
+          if (!allowEmptyInitialCommit) {
+            return {
+              ...createStructuredResult({
+                ok: false,
+                summary: "Cannot stash: the repository has no commits yet. Create an initial commit first.",
+              }),
+              needsInitialCommit: true,
+            };
+          }
+          await this.execGit(effectiveCwd, ["commit", "--allow-empty", "-m", "Initial commit"]);
         }
-        await this.execGit(effectiveCwd, ["commit", "--allow-empty", "-m", "Initial commit"]);
-      }
-      const args = ["stash", "push"];
-      // Default ON to match the previous behaviour; callers may opt out.
-      if (includeUntracked !== false) args.push("--include-untracked");
-      if (keepIndex) args.push("--keep-index");
-      if (message) args.push("-m", message);
-      // Path-scoped stash: only the listed files are stashed, the rest stay in
-      // the working tree. Everything after `--` is treated by git as a pathspec
-      // (no option injection possible), and execGit passes args as an array so
-      // there is no shell to escape. Drop empties/non-strings defensively.
-      const safePaths = (Array.isArray(paths) ? paths : []).filter(
-        (p): p is string => typeof p === "string" && p.length > 0,
-      );
-      if (safePaths.length) args.push("--", ...safePaths);
-      const result = await this.execGit(effectiveCwd, args);
-      const combined = joinRawOutput(result.stdout, result.stderr);
-      if (/no local changes to save/i.test(combined)) {
+        const args = ["stash", "push"];
+        // Default ON to match the previous behaviour; callers may opt out.
+        if (includeUntracked !== false) args.push("--include-untracked");
+        if (keepIndex) args.push("--keep-index");
+        if (message) args.push("-m", message);
+        // Path-scoped stash: only the listed files are stashed, the rest stay in
+        // the working tree. Everything after `--` is treated by git as a pathspec
+        // (no option injection possible), and execGit passes args as an array so
+        // there is no shell to escape. Drop empties/non-strings defensively.
+        const safePaths = (Array.isArray(paths) ? paths : []).filter(
+          (p): p is string => typeof p === "string" && p.length > 0,
+        );
+        if (safePaths.length) args.push("--", ...safePaths);
+        const result = await this.execGit(effectiveCwd, args);
+        const combined = joinRawOutput(result.stdout, result.stderr);
+        if (/no local changes to save/i.test(combined)) {
+          return createStructuredResult({
+            ok: false,
+            summary: "No local changes to stash.",
+            rawOutput: combined,
+          });
+        }
         return createStructuredResult({
-          ok: false,
-          summary: "No local changes to stash.",
+          ok: true,
+          summary: "Changes stashed successfully.",
           rawOutput: combined,
         });
+      } catch (error) {
+        const err = error as { stdout?: string; stderr?: string };
+        const raw = joinRawOutput(err.stdout, err.stderr);
+        return createStructuredResult({
+          ok: false,
+          // Surface the actual git error (e.g. "pathspec '…' did not match",
+          // "You do not have the initial commit yet") instead of a generic label,
+          // matching the sibling stash methods. Falls back when git wrote nothing.
+          summary: raw || "Stash failed.",
+          rawOutput: raw,
+        });
       }
-      return createStructuredResult({
-        ok: true,
-        summary: "Changes stashed successfully.",
-        rawOutput: combined,
-      });
-    } catch (error) {
-      const err = error as { stdout?: string; stderr?: string };
-      const raw = joinRawOutput(err.stdout, err.stderr);
-      return createStructuredResult({
-        ok: false,
-        // Surface the actual git error (e.g. "pathspec '…' did not match",
-        // "You do not have the initial commit yet") instead of a generic label,
-        // matching the sibling stash methods. Falls back when git wrote nothing.
-        summary: raw || "Stash failed.",
-        rawOutput: raw,
-      });
-    }
+    });
   }
 
   /**
@@ -3685,6 +3692,41 @@ export class GitManager extends EventEmitter {
     }
   }
 
+  private async runAuditedStashMutation(
+    workspace: WorkspaceRef | null,
+    rootPath: string,
+    type: "stash" | "stash-pop" | "stash-apply" | "stash-drop" | "stash-branch",
+    run: (cwd: string) => Promise<Record<string, unknown>>,
+  ): Promise<Record<string, unknown>> {
+    const cwd = rootPath || String(workspace?.cwd || "");
+    if (!cwd) return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
+    const targetWorkspace = workspace || { id: "unknown", cwd };
+    return sharedReviewGitLocks.withWorktree(cwd, async () => {
+      const startedAt = Date.now();
+      const snapshot = await this._inspectRoot(targetWorkspace, cwd).catch((): Record<string, unknown> => ({}));
+      let result: Record<string, unknown>;
+      let errorMessage = "";
+      try {
+        result = await run(cwd);
+      } catch (error) {
+        errorMessage = extractErrorMessage(error);
+        result = createStructuredResult({ ok: false, summary: errorMessage || "Git stash operation failed." });
+      }
+      this.invalidateSnapshotCache(targetWorkspace.id, cwd);
+      this._logGitAudit({
+        type,
+        connection: null,
+        success: result.ok === true,
+        durationMs: Date.now() - startedAt,
+        errorMessage: errorMessage || (result.ok === false ? String(result.summary || "") : ""),
+        workspaceId: targetWorkspace.id,
+        remoteUrl: String(Object.values((snapshot.remotes as Record<string, unknown>) || {})[0] || ""),
+        extra: { rootPath: cwd },
+      });
+      return result;
+    });
+  }
+
   async stashPop(
     workspace: WorkspaceRef | null,
     { rootPath = "", ref = "" }: { rootPath?: string; ref?: string } = {},
@@ -3695,16 +3737,18 @@ export class GitManager extends EventEmitter {
     }
     const args = ["stash", "pop"];
     if (ref) args.push(ref);
-    return this.execToResult(effectiveCwd, args, "Stash applied and removed.", "Stash pop failed.", (combined) => {
-      // Modern git refuses to drop the entry on conflict — it stays in place.
-      if (!/CONFLICT|conflict/i.test(combined)) return null;
-      return createStructuredResult({
-        ok: false,
-        summary: "Pop produced conflicts. Stash entry kept — resolve in the Changes tab and drop it manually.",
-        conflicts: parseConflictPaths(combined),
-        rawOutput: combined,
-      });
-    });
+    return this.runAuditedStashMutation(workspace, effectiveCwd, "stash-pop", (cwd) =>
+      this.execToResult(cwd, args, "Stash applied and removed.", "Stash pop failed.", (combined) => {
+        // Modern git refuses to drop the entry on conflict — it stays in place.
+        if (!/CONFLICT|conflict/i.test(combined)) return null;
+        return createStructuredResult({
+          ok: false,
+          summary: "Pop produced conflicts. Stash entry kept — resolve in the Changes tab and drop it manually.",
+          conflicts: parseConflictPaths(combined),
+          rawOutput: combined,
+        });
+      }),
+    );
   }
 
   // ─── Stash detail / lifecycle operations ──────────────────────────
@@ -3940,12 +3984,8 @@ export class GitManager extends EventEmitter {
     }
     const args = ["stash", "apply"];
     if (ref) args.push(ref);
-    return this.execToResult(
-      effectiveCwd,
-      args,
-      "Stash applied. The stash entry was kept.",
-      "Stash apply failed.",
-      (combined) => {
+    return this.runAuditedStashMutation(workspace, effectiveCwd, "stash-apply", (cwd) =>
+      this.execToResult(cwd, args, "Stash applied. The stash entry was kept.", "Stash apply failed.", (combined) => {
         // `git stash apply` exits non-zero on conflicts but still writes the
         // changes (with conflict markers) into the working tree.
         if (!/CONFLICT|conflict/i.test(combined)) return null;
@@ -3956,7 +3996,7 @@ export class GitManager extends EventEmitter {
           conflicts: parseConflictPaths(combined),
           rawOutput: combined,
         });
-      },
+      }),
     );
   }
 
@@ -3970,7 +4010,9 @@ export class GitManager extends EventEmitter {
     }
     const args = ["stash", "drop"];
     if (ref) args.push(ref);
-    return this.execToResult(effectiveCwd, args, "Stash dropped.", "Stash drop failed.");
+    return this.runAuditedStashMutation(workspace, effectiveCwd, "stash-drop", (cwd) =>
+      this.execToResult(cwd, args, "Stash dropped.", "Stash drop failed."),
+    );
   }
 
   async stashBranch(
@@ -3990,44 +4032,46 @@ export class GitManager extends EventEmitter {
     if (!name || !/^[A-Za-z0-9._/-]+$/.test(name)) {
       return createStructuredResult({ ok: false, summary: "Invalid branch name." });
     }
-    try {
-      if (switchImmediately) {
-        // Native path: create branch from the stash base, check it out, apply
-        // the stash, and drop the entry. Requires a clean working tree.
-        const status = await this.execGit(effectiveCwd, ["status", "--porcelain"]).catch(() => ({
-          stdout: "",
-          stderr: "",
-        }));
-        if (String(status.stdout || "").trim()) {
+    return this.runAuditedStashMutation(workspace, effectiveCwd, "stash-branch", async (effectiveCwd) => {
+      try {
+        if (switchImmediately) {
+          // Native path: create branch from the stash base, check it out, apply
+          // the stash, and drop the entry. Requires a clean working tree.
+          const status = await this.execGit(effectiveCwd, ["status", "--porcelain"]).catch(() => ({
+            stdout: "",
+            stderr: "",
+          }));
+          if (String(status.stdout || "").trim()) {
+            return createStructuredResult({
+              ok: false,
+              summary:
+                "Working tree has uncommitted changes. Commit or stash them first, or uncheck 'Switch immediately'.",
+            });
+          }
+          const result = await this.execGit(effectiveCwd, ["stash", "branch", name, ref]);
           return createStructuredResult({
-            ok: false,
-            summary:
-              "Working tree has uncommitted changes. Commit or stash them first, or uncheck 'Switch immediately'.",
+            ok: true,
+            summary: `Created and switched to '${name}' from the stash.`,
+            rawOutput: joinRawOutput(result.stdout, result.stderr),
           });
         }
-        const result = await this.execGit(effectiveCwd, ["stash", "branch", name, ref]);
+        // Non-switching path: just create the branch ref at the stash base. The
+        // stash is kept intact and the current branch/working tree are untouched.
+        const result = await this.execGit(effectiveCwd, ["branch", name, `${ref}^1`]);
         return createStructuredResult({
           ok: true,
-          summary: `Created and switched to '${name}' from the stash.`,
+          summary: `Created branch '${name}' from the stash base. The stash was kept.`,
           rawOutput: joinRawOutput(result.stdout, result.stderr),
         });
+      } catch (error) {
+        const err = error as { stdout?: string; stderr?: string };
+        return createStructuredResult({
+          ok: false,
+          summary: "Branch from stash failed.",
+          rawOutput: joinRawOutput(err.stdout, err.stderr),
+        });
       }
-      // Non-switching path: just create the branch ref at the stash base. The
-      // stash is kept intact and the current branch/working tree are untouched.
-      const result = await this.execGit(effectiveCwd, ["branch", name, `${ref}^1`]);
-      return createStructuredResult({
-        ok: true,
-        summary: `Created branch '${name}' from the stash base. The stash was kept.`,
-        rawOutput: joinRawOutput(result.stdout, result.stderr),
-      });
-    } catch (error) {
-      const err = error as { stdout?: string; stderr?: string };
-      return createStructuredResult({
-        ok: false,
-        summary: "Branch from stash failed.",
-        rawOutput: joinRawOutput(err.stdout, err.stderr),
-      });
-    }
+    });
   }
 
   async stashFileDiff(
