@@ -319,12 +319,12 @@ Full per-requirement ledger (122 items)
    Remaining: Local tags now use audited wrapper; Changes surfaces structured failures and route policy classifies new APIs. Route-level single-audit assertions and full inventory audit coverage remain.
 
 78. **PARTIAL** — Stage 6: involved long Git actions use generic flow for both layouts/remote; reconnect and dedup verified.
-   Evidence: electron/backend/runtime-git-handlers.ts:101,446; electron/backend/runtime.test.ts:8481; src/stores/app-workspace-actions.ts:375; electron/backend/mobile-session-route-policy.test.ts:327.
-   Remaining: Basic fetch/pull/push flow exists; remaining network paths and Git reconnect/dedup verification incomplete. Four new index routes are classified as guarded and the route-policy suite passes.
+   Evidence: `runtime-git-handlers.ts` routes fetch/pull/push/force-push, merge/rebase, remote branch deletion, and network tag writes through OperationRegistry; mobile route policy classifies the guarded routes. `git-ui.test.ts` covers event/payload resolution and duplicate terminal delivery for fetch/pull/push.
+   Remaining: End-to-end renderer reconnect and cross-profile pull/push coverage remain; inventory-wide route/audit assertions are still incomplete.
 
 79. **PARTIAL** — Stage 6: layout/profile changes or client disconnect do not cancel accepted work or misroute its result.
-   Evidence: electron/backend/operation-registry.ts:123,187; src/components/workspace/GitPane.vue:556; electron/backend/runtime.test.ts:8481; src/stores/git-ui.ts:491.
-   Remaining: Registry work is client-independent, but Git-specific lifecycle isolation tests absent and post-action read/message writes can target changed root. Capture originating context and verify.
+   Evidence: electron/backend/operation-registry.ts:123,187; `git-ui.test.ts` verifies pull can recover its terminal result from the persisted lastResults payload after a missed event; runtime tests verify distinct profile/workspace operation IDs and outcomes.
+   Remaining: Renderer reconnect while a Git action is pending and pull/push profile switching need end-to-end lifecycle coverage. Root-scoped diff refresh and staged commit completion use the originating root; branch/tag refreshes remain protected by read-generation and active-root checks.
 
 80. **IMPLEMENTED** — Stage 7: run lint, relevant UI/backend tests and production build after Vue layout changes, meeting project healthy checks.
    Evidence: CLAUDE.md:15; docs/development.md:66; package.json:30; electron/backend/agent-task-runner.callbacks.test.ts:214; electron/backend/runtime.test.ts:1511.
@@ -374,8 +374,8 @@ Full per-requirement ledger (122 items)
    Remaining: Local/remote tag writes and index actions are audited; branch manager mutations retain manager audit. Add route-level exact single-mutation/single-audit assertions and complete menu/shortcut audit mapping.
 
 92. **PARTIAL** — Acceptance: controlled slow backend proves start before relay timeout, reconnect outcome, dedup and profile isolation, without timeout increase.
-   Evidence: electron/backend/runtime.test.ts:8481; electron/backend/runtime-git-handlers.ts:149; src/stores/app-workspace-actions.ts:375.
-   Remaining: Gated fetch and rebase plus tag/force-push/remote-delete acceptance/dedup tests pass. Add Git reconnect and cross-profile/double-delivery coverage for pull/push and terminal error outcomes.
+   Evidence: Gated OperationRegistry tests cover prompt fetch/rebase acceptance, dedup, tag/force-push/remote-delete, and profile/workspace isolation; store tests verify event plus payload completion for fetch/pull/push, one notification per failure, and pull recovery from persisted outcomes.
+   Remaining: Add renderer integration for a real disconnect/reconnect during pending pull/push and cross-profile pull/push isolation.
 
 93. **PARTIAL** — Acceptance: keyboard picker open/search/select/close and narrow layout work with long refs/paths and hundreds of branches.
    Evidence: src/components/workspace/git/GitBranchesTab.test.ts:104; src/components/workspace/git/GitBranchesTab.vue:538,566; .strideterm/tasks/716afb2f-00d3-4e3a-b535-f10bd87b0bef/MANUAL_VERIFICATION.md:7,9.
@@ -725,3 +725,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Added a GitPane integration test that keeps fetch active while toggling the opt-in new view off and on; the busy store state survives and the operation card is present after restoring the new view.
 - GitPane tests pass 21 tests; full UI passes 214 files / 3,056 tests; typecheck passes. Comment-editor persistence through the actual Settings control and visual confirmation remain pending, along with other lifecycle/audit items; WORK_LOCK stays.
+
+## Worker continuation (self-audit reconciliation)
+
+- Reconciled numbered findings 78, 79, and 92 with the current long-operation coverage: registry-backed network operations, duplicate event/payload terminal delivery, pull recovery from persisted outcome, and backend profile isolation are implemented and tested. Remaining lifecycle gaps are renderer reconnect during pending pull/push and cross-profile pull/push integration coverage.
+- Root-scoped post-action diff refresh and staged commit completion capture the originating root; branch/tag read responses check request generation and active root before assignment. Route-wide exact audit counts and manual accessibility/visual checks remain outstanding.
