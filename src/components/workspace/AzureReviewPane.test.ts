@@ -11,6 +11,7 @@ import { describe, expect, test, beforeEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import AzureReviewPane from "./AzureReviewPane.vue";
+import DialogOverlay from "../dialogs/DialogOverlay.vue";
 import { apiKey } from "../../types/keys.js";
 import ReviewPipelinesTab from "./shared/ReviewPipelinesTab.vue";
 import { useAppStore } from "../../stores/app.js";
@@ -176,6 +177,35 @@ describe("AzureReviewPane — persisted drafts survive view unmounts", () => {
     expect(reopened.text()).toContain("Draft survives switching away from Review.");
     expect(reopened.findAll(".review-comment--draft")).toHaveLength(1);
     reopened.unmount();
+  });
+
+  test("an unsaved comment editor stays mounted while Review changes views", async () => {
+    const appStore = useAppStore();
+    const dialog = mount(DialogOverlay, { attachTo: document.body });
+    appStore.openDialog("TextAreaDialog", {
+      title: "Edit review draft",
+      label: "Comment",
+      value: "Saved value",
+      onSubmit: vi.fn(),
+      onCancel: vi.fn(),
+    });
+    await vi.waitFor(() => expect(document.body.querySelector(".dialog--textarea textarea")).not.toBeNull(), {
+      timeout: 10_000,
+    });
+    const textarea = document.body.querySelector("textarea");
+    expect(textarea).not.toBeNull();
+    textarea!.value = "Unsaved edit that should remain open.";
+    textarea!.dispatchEvent(new Event("input", { bubbles: true }));
+    await flushPromises();
+
+    const pane = mountPane("azure-devops", { includeComments: true });
+    await flushPromises();
+    pane.unmount();
+    await flushPromises();
+
+    expect(document.body.querySelector("textarea")).toHaveProperty("value", "Unsaved edit that should remain open.");
+    dialog.unmount();
+    appStore.closeDialog();
   });
 });
 
