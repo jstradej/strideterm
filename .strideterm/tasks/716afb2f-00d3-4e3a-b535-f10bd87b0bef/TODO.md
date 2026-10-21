@@ -157,3 +157,4 @@
 - [x] Surface failed post-mutation diff refreshes as error previews with selected identity and no stale diff text; store regression passes.
 - [x] Verify a deferred post-mutation preview from one repository root cannot replace the selected preview after switching roots; store regression passes.
 - [x] Cover conflict resolve/unresolve/skip/continue/abort in the runtime one-dispatch/resolved-root matrix; focused runtime case passes.
+- [x] Cover synchronous merge-into-base in the runtime one-dispatch/resolved-root matrix; focused runtime case passes.

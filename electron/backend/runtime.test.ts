@@ -8822,7 +8822,7 @@ describe("runtime integration", () => {
     expect(deleteTag).toHaveBeenCalledWith(workspace, { workspaceId: "ws-a1", rootPath: "/tmp/a1", tagName: "v1.0.0" });
   });
 
-  test("branch, history, stash and conflict mutation routes dispatch one manager write with the resolved root", async () => {
+  test("local Git mutation routes dispatch one manager write with the resolved root", async () => {
     const fixture = await createFixture({ initialState: makeProfileSwitchState() });
     fixtures.push(fixture);
     const routes = [
@@ -8832,6 +8832,7 @@ describe("runtime integration", () => {
       ["gitRenameBranch", "renameBranch", { branch: "feature/a", newName: "feature/b" }],
       ["gitCherryPick", "cherryPick", { hashes: ["abc123"] }],
       ["gitSquashCommits", "squashCommits", { hashes: ["abc123", "def456"], message: "Squash" }],
+      ["gitMergeCurrentIntoBase", "mergeCurrentIntoBase", { baseBranch: "main" }],
       ["gitContinueOperation", "continueOperation", {}],
       ["gitAbortOperation", "abortOperation", {}],
       ["gitSkipCommit", "skipCommit", {}],
