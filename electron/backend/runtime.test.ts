@@ -643,6 +643,8 @@ class FakeGitManager extends EventEmitter {
   declare actions: any[];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   declare invalidateCalls: any[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  declare auditEntries: any[];
 
   constructor() {
     super();
@@ -650,6 +652,11 @@ class FakeGitManager extends EventEmitter {
     this.refreshArgs = [];
     this.actions = [];
     this.invalidateCalls = [];
+    this.auditEntries = [];
+  }
+
+  _logGitAudit(entry: Record<string, unknown>) {
+    this.auditEntries.push(entry);
   }
 
   invalidateSnapshotCache(workspaceId: string | null = null, rootPath: string | null = null) {
@@ -5256,6 +5263,17 @@ describe("runtime integration", () => {
     expect(projectWorkspaces).toHaveLength(2);
     expect(payload.appState.activeProjectId).toBe(projectWorkspaces[1].id);
     expect(projectWorkspaces[1].cwd).toBe(path.join(projectRoot, ".strideterm", "tree", "feature-x"));
+    expect(fixture.git.auditEntries).toHaveLength(1);
+    expect(fixture.git.auditEntries[0]).toMatchObject({
+      type: "create-worktree",
+      success: true,
+      workspaceId: "frontend",
+      extra: {
+        rootPath: projectRoot,
+        branch: "feature-x",
+        worktreePath: path.join(projectRoot, ".strideterm", "tree", "feature-x"),
+      },
+    });
   });
 
   async function createWorktreeFixture(execFileTextImpl?: ReturnType<typeof vi.fn>) {
@@ -5363,6 +5381,13 @@ describe("runtime integration", () => {
       const worktreeAdds = execFileText.mock.calls.filter((c) => c[1][0] === "worktree" && c[1][1] === "add");
       expect(worktreeAdds).toHaveLength(1);
       expect(fixture.store.getState().workspaces).toHaveLength(workspacesBefore);
+      expect(fixture.git.auditEntries).toHaveLength(1);
+      expect(fixture.git.auditEntries[0]).toMatchObject({
+        type: "create-worktree",
+        success: false,
+        workspaceId: "frontend",
+        extra: { rootPath: expect.any(String), branch: "feature-x" },
+      });
       expect(calls).toContainEqual(
         expect.objectContaining({
           level: "warn",

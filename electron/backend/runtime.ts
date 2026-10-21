@@ -53,6 +53,7 @@ import { DockerManager } from "./docker-manager.js";
 import { DockerLogManager } from "./docker-log-streamer.js";
 import { DockerShellManager } from "./docker-shell-streamer.js";
 import { GitManager } from "./git-manager.js";
+import { sharedReviewGitLocks } from "./review-git/locks.js";
 import { CloudflareTunnelManager, canReconnectTunnel } from "./tunnel-manager.js";
 import { createPluginManager } from "./plugin-loader.js";
 import { createCredentialStore } from "./credential-store.js";
@@ -12852,7 +12853,32 @@ export async function createRuntime({
               throw new Error(`Selected repository ${repoPath} is no longer part of this workspace.`);
             }
           }
-          const treePath = await ensureWorktree(repoPath, name);
+          const auditStartedAt = Date.now();
+          let treePath: string;
+          try {
+            treePath = await sharedReviewGitLocks.withWorktree(repoPath, () => ensureWorktree(repoPath, name));
+            git._logGitAudit({
+              type: "create-worktree",
+              connection: null,
+              success: true,
+              durationMs: Date.now() - auditStartedAt,
+              workspaceId: targetWorkspaceId,
+              remoteUrl: "",
+              extra: { rootPath: repoPath, branch: name, worktreePath: treePath },
+            });
+          } catch (error) {
+            git._logGitAudit({
+              type: "create-worktree",
+              connection: null,
+              success: false,
+              durationMs: Date.now() - auditStartedAt,
+              errorMessage: errorMessage(error, "Failed to create git worktree."),
+              workspaceId: targetWorkspaceId,
+              remoteUrl: "",
+              extra: { rootPath: repoPath, branch: name },
+            });
+            throw error;
+          }
           log.info("createWorktree: worktree created", { workspaceId: targetWorkspaceId, branch: name, treePath });
 
           const newProject = normalizeWorkspace({

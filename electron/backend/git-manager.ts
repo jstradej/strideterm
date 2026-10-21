@@ -2747,6 +2747,7 @@ export class GitManager extends EventEmitter {
       "stash-drop",
       "stash-branch",
       "remove-worktree",
+      "create-worktree",
     ]);
 
     try {

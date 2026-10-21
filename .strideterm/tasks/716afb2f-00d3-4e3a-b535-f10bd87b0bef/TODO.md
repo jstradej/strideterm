@@ -127,3 +127,4 @@
 - [x] Extend runtime single-dispatch/root assertions across branch checkout/create/delete/rename, cherry-pick/squash/continue/abort, stash lifecycle/import, and commit-all mutation routes; focused runtime regression and repository typecheck pass.
 - [x] Route stash, pop, apply, drop, and branch-from-stash through the per-worktree Git write lock and system audit log; real-repository test verifies one success/failure row per action with root. Full GitManager suite passes 178 tests (2 skipped), typecheck passes.
 - [x] Route worktree removal through the per-worktree Git lock and record its resolved root/outcome; fast-path regression asserts one audit row. Focused worktree/stash/index audit tests pass and typecheck passes.
+- [x] Route runtime worktree creation through the same per-worktree lock and audit contract; create success and Git failure regressions assert exact audit outcome/root. Three focused runtime cases pass.
