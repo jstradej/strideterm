@@ -57,3 +57,4 @@
 - [x] Re-run repository verification on the current tree: typecheck, production build, lint/Prettier; UI and backend suites reported only load-sensitive timeouts also covered by isolated passes. User visual review and remaining audit items stay open.
 - [x] Add a slow-fetch regression proving same-key Git operations in two profiles receive separate operation IDs and profile/workspace-scoped outcomes; the focused runtime test passes.
 - [x] Verify PR Review uses pinned provider source/target revisions and excludes local unstaged edits; AzureReviewPane tests (28) and file-manager tests (37) pass.
+- [x] Verify provider-owned saved Review drafts reappear after the AzureReviewPane is unmounted and reopened; all 29 AzureReviewPane tests and repository typecheck pass. Unsaved editor-dialog draft round-trip remains open.

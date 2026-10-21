@@ -84,9 +84,12 @@ function buildPayload(provider: "azure-devops" | "github" = "azure-devops"): Sta
   } as unknown as StatePayload;
 }
 
-function mountPane(provider: "azure-devops" | "github" = "azure-devops") {
+function mountPane(
+  provider: "azure-devops" | "github" = "azure-devops",
+  options: { includeComments?: boolean; payload?: StatePayload } = {},
+) {
   const appStore = useAppStore();
-  appStore.payload = buildPayload(provider);
+  appStore.payload = options.payload || buildPayload(provider);
   // Stub the network-bound store actions the component fires from
   // mounted/watch hooks so they don't blow up against the null _api.
   const noop = () => Promise.resolve();
@@ -113,7 +116,7 @@ function mountPane(provider: "azure-devops" | "github" = "azure-devops") {
         GitCommitLog: true,
         MonacoDiffPanel: true,
         ReviewSummaryTab: true,
-        ReviewCommentsTab: true,
+        ReviewCommentsTab: options.includeComments ? false : true,
         ReviewAgentTab: true,
         ReviewPipelinesTab: true,
         CustomSelect: true,
@@ -127,6 +130,54 @@ function mountPane(provider: "azure-devops" | "github" = "azure-devops") {
     },
   });
 }
+
+describe("AzureReviewPane — persisted drafts survive view unmounts", () => {
+  test("a saved PR draft is restored when Review is reopened after switching views", async () => {
+    const appStore = useAppStore();
+    const payload = buildPayload();
+    // Model the provider-owned result returned by the persisted review bridge
+    // store. The component itself is discarded as GitPane switches views.
+    (payload as unknown as { reviewBridge: { pullRequests: Record<string, unknown> } }).reviewBridge.pullRequests[
+      "ado:1"
+    ] = {
+      comments: [
+        {
+          commentKey: "local-draft-key",
+          commentKind: "draft",
+          displayIndex: 1,
+          status: "draft-ready",
+          payload: {},
+        },
+      ],
+      drafts: [
+        {
+          draftId: "persisted-draft-id",
+          commentKey: "local-draft-key",
+          body: "Draft survives switching away from Review.",
+          authorAgent: "human",
+          status: "draft",
+        },
+      ],
+      syncQueue: [],
+    };
+    appStore.payload = payload;
+    const gitUi = useGitUiStore();
+    gitUi.reviewSwitchTab("ws-review", "comments");
+
+    const first = mountPane("azure-devops", { includeComments: true, payload });
+    await flushPromises();
+    expect(first.text()).toContain("Draft survives switching away from Review.");
+    first.unmount();
+
+    gitUi.reviewSwitchTab("ws-review", "summary");
+    gitUi.reviewSwitchTab("ws-review", "comments");
+    const reopened = mountPane("azure-devops", { includeComments: true, payload });
+    await flushPromises();
+    expect(reopened.text()).toContain("Draft survives switching away from Review.");
+    expect(reopened.findAll(".review-comment--draft")).toHaveLength(1);
+    reopened.unmount();
+  });
+});
 
 beforeEach(() => {
   setActivePinia(createPinia());
