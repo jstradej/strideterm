@@ -187,9 +187,9 @@ Full per-requirement ledger (122 items)
 42. **IMPLEMENTED** — One classic/new boundary in GitPane; render only active component variant without duplicate polling.
    Evidence: src/components/workspace/GitPane.vue:232,245,275,302,322,369,622,494.
 
-43. **PARTIAL** — New-view state is separate from activeTab/legacy migrations, kept in store; large payloads use shallow reactivity/computed.
+43. **IMPLEMENTED** — New-view state is separate from activeTab/legacy migrations, kept in store; large read payloads use markRaw to avoid deep proxy conversion.
    Evidence: src/stores/git-ui.ts:334,1410,1423; src/components/workspace/GitPane.vue:614,622.
-   Remaining: New selection is separate; GitUi state remains deep ref and newly loaded graph/diff payloads are assigned into it. Implement the plan's shallow handling for large data.
+   Evidence: `src/stores/git-ui.ts` wraps graph, diff preview, branch list, and tag read payloads with `markGitReadPayload`; `git-ui.test.ts` verifies graph, nested commits, and diff payload are not reactive. Commit `9512e01d`.
 
 44. **IMPLEMENTED** — State is isolated by profile/workspace/root/PR and late results from old context are ignored.
    Evidence: src/stores/git-ui.ts:1414,1464,867,1394; src/components/workspace/GitPane.vue:302; src/components/workspace/git/GitBranchesTab.vue:733; src/stores/git-ui.ts:491.
@@ -695,3 +695,9 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 - `npm run test:backend -- --maxWorkers=4`: PASS, 224 files / 5,465 passed, 7 skipped, duration 266.79s.
 - `npm run typecheck`: PASS. `npm run lint`: PASS, 0 errors / 4,678 warnings; repository Prettier check passes. Safe build with `VITE_BUILD_WATCH=1` passed in the preceding verification refresh after the latest implementation changes.
 - No Electron app/dev server was launched. `MANUAL_VERIFICATION.md`, route/audit completeness, reconnect/draft lifecycle, and keyboard/narrow human acceptance are still open; WORK_LOCK remains.
+
+## Worker continuation (large read payload reactivity)
+
+- Audit item 43 is implemented: graph/diff, branch-list, and tag read results use `markRaw` at assignment. `git-ui.test.ts` verifies graph, nested commits, and diff preview are not reactive. Commit: `9512e01d`.
+- Current checks: full UI 214 files / 3,050 tests; backend 224 files / 5,465 passed / 7 skipped (backend unchanged); typecheck passes; focused ESLint has 0 errors (63 warnings); touched-file Prettier and `git diff --check` pass; watch-compatible build passes.
+- Manual `dev.ps1` walkthrough and other outstanding lifecycle/audit items remain; keep WORK_LOCK.
