@@ -462,33 +462,90 @@ describe("SettingsMobileTab", () => {
     expect(wrapper.text()).not.toContain("Remote UI recently active");
   });
 
-  test("shows paired phones first and reveals the add-phone setup on request", async () => {
+  test("shows paired phones first and Add phone goes straight to the QR code", async () => {
     const { wrapper, transport } = await mountTab({ listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]) });
 
     expect(wrapper.text()).toContain("Pixel 8");
-    expect(wrapper.text()).not.toContain("The new phone gets");
+    expect(wrapper.text()).toContain("shows a single-use QR code straight away");
     expect(wrapper.findAll("button").some((button) => button.text() === "Pair a phone")).toBe(false);
 
     await wrapper
       .findAll("button")
       .find((button) => button.text() === "Add phone")!
       .trigger("click");
-    expect(wrapper.text()).toContain("The new phone gets");
-
-    await wrapper
-      .findAll("button")
-      .find((button) => button.text() === "Pair a phone")!
-      .trigger("click");
     await flushPromises();
+
     expect(transport.createMobilePairingInvitation).toHaveBeenCalledOnce();
+    expect(wrapper.find(".pairing-qr").exists()).toBe(true);
+    expect(wrapper.findAll("button").some((button) => button.text() === "Pair a phone")).toBe(false);
   });
 
-  test("an open pairing setup follows pause and resume state", async () => {
-    const { wrapper, appStore } = await mountTab({ listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]) });
+  test("cancelling an Add phone QR code returns to the phone list", async () => {
+    const { wrapper, transport } = await mountTab({ listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]) });
     await wrapper
       .findAll("button")
       .find((button) => button.text() === "Add phone")!
       .trigger("click");
+    await flushPromises();
+
+    await wrapper.find(".pairing-qr button").trigger("click");
+    await flushPromises();
+
+    expect(transport.cancelMobilePairingInvitation).toHaveBeenCalledOnce();
+    expect(wrapper.find(".pairing-qr").exists()).toBe(false);
+    expect(wrapper.find(".pairing-section__action").exists()).toBe(false);
+    expect(wrapper.findAll("button").some((button) => button.text() === "Add phone")).toBe(true);
+  });
+
+  test("Add phone with Mobile turned off turns it on and shows the QR code", async () => {
+    const { wrapper, transport } = await mountTab(
+      {
+        listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]),
+        setMobileEnabled: vi.fn(async () => makePayload({ enabled: true, devices: [SAMPLE_DEVICE] })),
+      },
+      { enabled: false, devices: [SAMPLE_DEVICE] },
+    );
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Add phone")!
+      .trigger("click");
+    await flushPromises();
+
+    expect(transport.setMobileEnabled).toHaveBeenCalledWith(true);
+    expect(transport.createMobilePairingInvitation).toHaveBeenCalledOnce();
+    expect(wrapper.find(".pairing-qr").exists()).toBe(true);
+  });
+
+  test("a failed Add phone keeps its error and a retry on screen", async () => {
+    const { wrapper, transport } = await mountTab({
+      listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]),
+      createMobilePairingInvitation: vi.fn(async () => {
+        throw new Error("network down");
+      }),
+    });
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Add phone")!
+      .trigger("click");
+    await flushPromises();
+
+    expect(transport.createMobilePairingInvitation).toHaveBeenCalledOnce();
+    expect(wrapper.find(".pairing-section .mobile-tab__error").exists()).toBe(true);
+    expect(wrapper.find(".pairing-section__action").text()).toBe("Pair a phone");
+  });
+
+  test("an open pairing setup follows pause and resume state", async () => {
+    const { wrapper, appStore } = await mountTab({
+      listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]),
+      createMobilePairingInvitation: vi.fn(async () => {
+        throw new Error("network down");
+      }),
+    });
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Add phone")!
+      .trigger("click");
+    await flushPromises();
 
     const setPaused = (paused: boolean) => {
       appStore.payload = {
@@ -511,7 +568,7 @@ describe("SettingsMobileTab", () => {
     expect(wrapper.find(".pairing-section__action").attributes("disabled")).toBeUndefined();
   });
 
-  test("Add phone button is primary with no active phones, ghost with active phones", async () => {
+  test("Add phone button is primary with and without active phones", async () => {
     // With a revoked device, mobileDevices.length > 0 so the button shows, but activePhoneCount === 0
     const { wrapper: noActiveWrapper } = await mountTab({
       listMobileDevices: vi.fn(async () => [{ ...SAMPLE_DEVICE, revoked: true }]),
@@ -521,14 +578,14 @@ describe("SettingsMobileTab", () => {
     expect(noActiveButton!.classes()).toContain("button--primary");
     expect(noActiveButton!.classes()).not.toContain("button--ghost");
 
-    // With one active device, activePhoneCount === 1
     const { wrapper: activeWrapper } = await mountTab({
       listMobileDevices: vi.fn(async () => [SAMPLE_DEVICE]),
     });
     const activeButton = activeWrapper.findAll("button").find((b) => b.text() === "Add phone");
     expect(activeButton).toBeTruthy();
-    expect(activeButton!.classes()).toContain("button--ghost");
-    expect(activeButton!.classes()).not.toContain("button--primary");
+    expect(activeButton!.classes()).toContain("button--primary");
+    expect(activeButton!.classes()).not.toContain("button--ghost");
+    expect(activeButton!.attributes("title")).toContain("single-use pairing QR code");
   });
 
   test("the device row renders an iOS device as ios", async () => {
@@ -1977,7 +2034,8 @@ describe("SettingsMobileTab", () => {
       .findAll("button")
       .find((button) => button.text() === "Add phone")!
       .trigger("click");
-    expect(wrapper.find(".pairing-section__action").text()).toContain("Pair a phone");
+    await flushPromises();
+    expect(wrapper.find(".pairing-qr").exists()).toBe(true);
   });
 
   test("without a hosted account there is no dangling reference to a page that is not there", async () => {
