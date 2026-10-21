@@ -48,7 +48,7 @@
 - [x] Fix repository-wide TypeScript test errors in task-round, mobile invitation, SSH fixture, and component test typings; `npm run typecheck` passes.
 - [x] Re-run project lint/format, full UI suite (214 files, 3,024 tests), focused Git UI, route policy (50), AppX config (9), and `npm run typecheck`; all pass.
 - [x] Fix the E2E mock's missing `/git/diff-preview` fixture route; all nine responsive Git Changes viewport cases now pass.
-- [ ] Investigate remaining verification blockers: full backend run now passes 223 files; its native Windows OpenSSH integration failed under suite load but passes alone. Browser E2E reports the known settings screenshot mismatch and one file-manager visibility failure under parallel load (passes alone). User visual review remains pending.
+- [ ] Investigate remaining verification blockers: latest full backend run had three load-related timeouts across agent-task callback, review-git fixture, and native OpenSSH tests; isolated SSH integration passes. Full UI had one SSH dialog timeout that passes alone. Browser E2E reports the settings screenshot mismatch and file-manager visibility failure under parallel load (passes alone). User visual review remains pending.
 - [x] Resolve backend codicon test failures by resolving Monaco's real installed package path instead of assuming a worktree-local `node_modules`; the two affected backend files pass 74 tests.
 - [x] Persist the Settings → Git new-view checkbox through the dialog's form and save payload; integration coverage mounts the real tab and verifies the sibling `showAllActions` preference is preserved.
 - [x] Reject caller-supplied Git roots outside a single-repository workspace before accepting long fetch operations; runtime regression and the full 509-test runtime suite pass.
@@ -56,3 +56,4 @@
 - [x] Deduplicate overlapping fetch/pull/push operations by profile, workspace, root, kind, and inputs, even when requests have distinct idempotency keys; runtime suite passes 510 tests.
 - [x] Re-run repository verification on the current tree: typecheck, production build, lint/Prettier; UI and backend suites reported only load-sensitive timeouts also covered by isolated passes. User visual review and remaining audit items stay open.
 - [x] Add a slow-fetch regression proving same-key Git operations in two profiles receive separate operation IDs and profile/workspace-scoped outcomes; the focused runtime test passes.
+- [x] Verify PR Review uses pinned provider source/target revisions and excludes local unstaged edits; AzureReviewPane tests (28) and file-manager tests (37) pass.

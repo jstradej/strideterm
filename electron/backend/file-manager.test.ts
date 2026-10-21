@@ -426,6 +426,9 @@ describe("file-manager git integration", () => {
     expect(range.ok).toBe(true);
     expect(range.leftContent).toBe("# Initial\n");
     expect(range.rightContent).toBe("# Initial\n");
+    // The working tree has an unstaged "Changed" line, but a revision range
+    // must remain pinned to its base/target commits and exclude that local edit.
+    expect(range.rightContent).not.toContain("Changed");
     expect(range.leftLabel).toContain("base");
     expect(range.rightLabel).toContain("target");
 
