@@ -9117,6 +9117,42 @@ describe("runtime integration", () => {
     expect(rebase).not.toHaveBeenCalled();
   });
 
+  test("fetch-first Git rebase retains fetch warnings when the rebase is blocked", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fetch = vi.fn(async () => ({
+      ok: true,
+      summary: "Fetch completed.",
+      warnings: ["Fetch used a fallback ref."],
+    }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rebase = vi.fn(async () => ({
+      ok: false,
+      summary: "Rebase blocked by local changes.",
+      warnings: ["Commit or stash the local changes first."],
+    }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).fetch = fetch;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).rebaseOnto = rebase;
+    const waitForGitOperation = watchOperation(fixture);
+
+    const started = await fixture.runtime.gitRebaseOnto({
+      workspaceId: "ws-a1",
+      baseBranch: "origin/main",
+      fetchFirst: true,
+    });
+    const outcome = await waitForGitOperation(started.operationId);
+
+    expect(outcome).toMatchObject({ kind: "git.rebase", profileId: "profile-a" });
+    expect("error" in outcome && outcome.error).toMatchObject({
+      code: "git_operation_failed",
+      message: expect.stringContaining("Rebase blocked by local changes."),
+      warnings: ["Fetch used a fallback ref.", "Commit or stash the local changes first."],
+    });
+  });
+
   test("long Git fetches in separate profiles have isolated operations and outcomes", async () => {
     const fixture = await createFixture({ initialState: makeProfileSwitchState() });
     fixtures.push(fixture);

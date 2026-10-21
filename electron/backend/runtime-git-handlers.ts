@@ -299,7 +299,11 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
                 );
         }
         if (result?.result?.ok === false) {
-          throw gitFailure(kind, result.result);
+          const failure = gitFailure(kind, result.result);
+          if (priorWarnings.length) {
+            failure.warnings = [...priorWarnings, ...failure.warnings];
+          }
+          throw failure;
         }
         return {
           ok: true,
