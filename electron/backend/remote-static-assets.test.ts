@@ -10,6 +10,7 @@ import { mkdtemp, mkdir, readFile, rm, utimes, writeFile } from "node:fs/promise
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
 import { startRemoteServer } from "./remote-server.js";
 
@@ -76,8 +77,11 @@ async function serve(staticRoot: string): Promise<string> {
   return `http://127.0.0.1:${port}`;
 }
 
-const realCodiconTtf = () =>
-  readFile(path.join(process.cwd(), "node_modules/monaco-editor/esm/vs/base/browser/ui/codicons/codicon/codicon.ttf"));
+const monacoCodiconPath = path.resolve(
+  path.dirname(fileURLToPath(import.meta.resolve("monaco-editor"))),
+  "../../esm/vs/base/browser/ui/codicons/codicon/codicon.ttf",
+);
+const realCodiconTtf = () => readFile(monacoCodiconPath);
 
 describe("remote client static assets", () => {
   test("every asset type the bundle ships carries its real Content-Type", async () => {
