@@ -748,3 +748,9 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 - Added a mounted History picker regression that restores distinct saved refs across repository roots and profiles, and restores the original visible ref when switching back. This strengthens requirement 86 and closes the automated root/profile-switch portion noted in TODO; keyboard/narrow visuals remain manual.
 - `npm run test:ui -- src/components/workspace/git/GitBranchesTab.test.ts`: PASS, 17 tests. `npm run typecheck`: PASS. Touched-file Prettier, ESLint (0 errors; one existing security warning), and `git diff --check`: PASS.
 - `WORK_LOCK` remains because renderer disconnect/reconnect integration, route/audit inventory completeness, and the user-owned visual walkthrough are still open.
+
+## Worker continuation (reconnect outcome snapshot)
+
+- Extended the app-store remote revision-gate tests with a missed `git.pull` completion: after disconnect/reconnect resets the core revision baseline, a restarted server's lower-revision snapshot applies and its persisted `operations.lastResults` produces the action-specific Git Pull failure notification. This verifies the renderer app-state/reconnect boundary; a single end-to-end test spanning a pending `git-ui` action through actual transport reconnect remains open under items 78/79/92.
+- `npm run test:ui -- src/stores/app.test.ts`: PASS, 48 tests. `npm run typecheck`: PASS. Prettier and `git diff --check`: PASS. Focused ESLint: 0 errors, 14 pre-existing warnings.
+- `WORK_LOCK` remains; route-level audit completeness and the user-owned manual walkthrough also remain outstanding.
