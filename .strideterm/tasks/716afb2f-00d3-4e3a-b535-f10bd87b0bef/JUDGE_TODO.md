@@ -84,7 +84,8 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
 
 12. **PARTIAL** — General branch comparison remains in History, separate from PR Review.
    Evidence: src/components/workspace/git/GitBranchesTab.vue:238,377,1303; src/components/workspace/GitPane.vue:649.
-   Remaining: Compare rendering remains; verify compare entry points from the compact History view and accessible Branches destination.
+   Remaining: Compare selection is exercised through the compact History picker and the selected range is rendered; verify narrow visual treatment and entry behavior through the accessible Branches destination manually.
+   Evidence (2026-10-21): `GitBranchesTab.test.ts` opens the compare picker, selects a base from its rendered options, verifies the `base..HEAD` graph request and confirms the compare heading appears. The adjacent regression verifies opting into base updates changes the request to `base...HEAD`.
 
 13. **IMPLEMENTED** — First visit selects Review for review workspace, otherwise Changes if dirty or History if clean; subsequent visits respect scoped saved choice.
    Evidence: src/components/workspace/GitPane.vue:623,632; src/stores/git-ui.ts:1414,1423,1445; src/stores/git-ui.test.ts:46,64.

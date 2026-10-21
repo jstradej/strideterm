@@ -174,3 +174,4 @@
 - [x] Verify the real GitPane keeps one remote Git detail interest across new-view setting off/on transitions and releases it on unmount; GitPane suite passes 34/34.
 - [x] Verify the History reference selection is restored when the History pane remounts; focused GitBranchesTab lifecycle test passes.
 - [x] Verify History base comparison queries use `base..HEAD` by default and `base...HEAD` when base updates are included; focused GitBranchesTab test passes.
+- [x] Exercise base selection through the rendered compact History compare picker and assert the compare heading and graph request.

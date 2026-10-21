@@ -226,7 +226,13 @@ describe("GitBranchesTab compact history picker", () => {
     mountedWrappers.push(picker);
     const comparePicker = picker.findComponent(BranchSelectPopover);
     expect(comparePicker.exists()).toBe(true);
-    comparePicker.vm.$emit("update:modelValue", "main");
+    await picker.get(".git-branches__cselect--compare .branch-picker__button").trigger("click");
+    await flushPromises();
+    const mainOption = Array.from(document.body.querySelectorAll('[role="option"]')).find((row) =>
+      row.textContent?.includes("main"),
+    );
+    expect(mainOption).toBeTruthy();
+    mainOption!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
     await flushPromises();
     await vi.advanceTimersByTimeAsync(250);
     await flushPromises();
@@ -234,6 +240,7 @@ describe("GitBranchesTab compact history picker", () => {
       "ws-compare-filter",
       expect.objectContaining({ branch: "main..topic" }),
     );
+    expect(picker.text()).toContain("main … HEAD");
 
     await picker.get('button[title^="Switch to walking base..."]').trigger("click");
     await vi.advanceTimersByTimeAsync(250);
