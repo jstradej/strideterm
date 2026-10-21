@@ -480,6 +480,7 @@ function onButtonKeydown(e: KeyboardEvent): void {
       e.preventDefault();
       e.stopPropagation();
       closePopover();
+      buttonRef.value?.focus();
     }
   } else if (e.key === "Tab") {
     closePopover();

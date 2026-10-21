@@ -181,7 +181,8 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
 37. **PARTIAL** — Picker supports keyboard open/search/select/Escape/focus return; context menus and relevant shortcuts remain usable.
    Evidence: src/components/workspace/git/GitBranchesTab.vue:5,17,67,210; src/components/workspace/git/GitBranchesTab.test.ts:104.
    Evidence: History ref picker is a labeled native select and a component test verifies it is tabbable and receives focus. More→Branches routes to the existing branch-management component and is covered by GitPane destination tests.
-   Remaining: Full native open/search/select/Escape behavior and narrow-window review remain for the user visual walkthrough.
+   Evidence (2026-10-21): `BranchSelectPopover.test.ts` exercises keyboard open, search, Enter selection, Escape close, and focus return to the picker button. The History ref control is a native select; its browser keyboard behavior and narrow-window presentation remain for the manual walkthrough.
+   Remaining: Manual check of native History select behavior and narrow-window layout remains.
 
 38. **PARTIAL** — Narrow layout uses list/detail and inline diff; long refs/paths/hundreds of branches remain usable.
    Evidence: src/components/workspace/git/GitBranchesTab.vue:538,566; src/components/workspace/git/GitChangesTab.vue:389,611; src/components/shared/MonacoDiffPanel.vue:172,291.
@@ -448,7 +449,8 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
 
 93. **PARTIAL** — Acceptance: keyboard picker open/search/select/close and narrow layout work with long refs/paths and hundreds of branches.
    Evidence: src/components/workspace/git/GitBranchesTab.test.ts:104; src/components/workspace/git/GitBranchesTab.vue:538,566; .strideterm/tasks/716afb2f-00d3-4e3a-b535-f10bd87b0bef/MANUAL_VERIFICATION.md:7,9.
-   Remaining: Compact commit search and diff entry are implemented. Keyboard/focus return, long refs/paths and hundreds-of-branches scaling still need user visual review.
+   Evidence (2026-10-21): Branch management picker keyboard open/search/select/Escape and focus return are automated in `BranchSelectPopover.test.ts`. The History picker is a native select.
+   Remaining: Long refs/paths, large-list presentation, and narrow-window keyboard/focus acceptance remain for the user visual review.
 
 94. **PARTIAL** — Acceptance: each existing inventoried action has an accessible new-view route and conflict state stays prominent.
    Evidence: src/components/workspace/GitPane.vue:302,322,338,348,649; .strideterm/tasks/716afb2f-00d3-4e3a-b535-f10bd87b0bef/IMPLEMENTATION_INVENTORY.md:11,13.
