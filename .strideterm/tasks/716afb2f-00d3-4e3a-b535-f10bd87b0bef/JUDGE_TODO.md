@@ -545,11 +545,11 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
 
 120. **PARTIAL** — TODO Done: Review uses provider-owned matching PR workspace for true diff and persisted drafts.
    Evidence: src/components/workspace/GitPane.vue:369,534; src/components/workspace/AzureReviewPane.vue:1274-1276; electron/backend/file-manager.ts:1122-1135; AzureReviewPane.test.ts:833-853; file-manager.test.ts:415-434.
-   Remaining: True pinned range, local unstaged exclusion, provider-owned saved draft restoration, unsaved editor survival across pane unmount, and editor survival through Settings off/on transitions are automated. Review file-switch remains for manual acceptance.
+   Remaining: True pinned range, local unstaged exclusion, provider-owned saved draft restoration, unsaved editor survival across pane unmount and changed-file selection, and editor survival through Settings off/on transitions are automated. Visual review of the Review layout remains with the user.
 
 121. **PARTIAL** — TODO Done: staged message survives views; clear root-specific selections on root changes.
    Evidence: src/components/workspace/git/GitChangesTab.vue:653,826,857,870,902,932; src/stores/git-ui.ts:384,390,394,400; src/components/workspace/git/GitBranchesTab.vue:730,1157.
-   Remaining: Staged/classic drafts and History query state are scoped; async commit completion captures its originating root; late graph responses are rejected; unsaved editor state survives pane unmount and setting off/on transitions. The busy-operation toggle has integration coverage. History reference selection is now tested across pane unmount/remount. Full GitPane setting-toggle restoration of the reference and file-switch behavior remain for manual acceptance.
+   Remaining: Staged/classic drafts and History query state are scoped; async commit completion captures its originating root; late graph responses are rejected; unsaved Review editor state survives pane unmount, changed-file selection, and setting off/on transitions. The busy-operation toggle has integration coverage. History reference selection is tested across pane unmount/remount. Full GitPane setting-toggle restoration of the selected History reference remains untested; visual/focus acceptance remains manual.
 
 122. **PARTIAL** — TODO Done: focused index, long acceptance/dedup, stale read and Review routing tests.
    Evidence: electron/backend/git-manager.test.ts:3943; electron/backend/runtime.test.ts:8481; src/stores/git-ui.test.ts:64; src/components/workspace/GitPane.test.ts:152.
