@@ -215,7 +215,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
 47. **PARTIAL** — Buttons/menu/shortcuts share one store/runtime/audit path; stage/index APIs use mutation guard, repository lock and audit.
    Evidence: src/components/workspace/git/GitChangesTab.vue:572,583,607; electron/backend/git-manager.ts:2203,2234,2467; electron/backend/git-manager.ts:4278,4293.
    Evidence: `electron/backend/runtime.test.ts:8482` asserts each stage-file, unstage-file, commit-staged, create-tag, and delete-tag route calls its matching manager write exactly once with the resolved root. `electron/backend/git-manager.test.ts:3988` verifies the three index outcomes plus successful local tag create/delete each produce exactly one system Git audit row.
-   Remaining: Extend route/audit pairing to the remaining branch, stash, worktree, and provider mutation entry points; complete menu/shortcut inventory mapping.
+   Remaining: Route-level evidence now covers index/local tag, branch/history/stash dispatch, stash writes, worktree add/remove, provider comments/votes/review submission, PR creation, and Azure thread update. Remaining routes still need per-entry-point mapping and assertions; complete menu/shortcut inventory mapping.
 
 48. **IMPLEMENTED** — Check rejected promises and structured ok:false; promise success must not mean Git success.
    Evidence: src/stores/git-ui.ts:465,471,481,506,1290; electron/backend/runtime-git-handlers.ts:143; src/stores/git-ui.test.ts:141.
@@ -336,7 +336,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
    Evidence: Stash, pop, apply, drop and branch-from-stash now run under the per-worktree write lock and emit one system Git audit row; a real temporary-repo test checks successful and failed outcomes and the resolved root. Full GitManager suite passes 178 tests (2 skipped), typecheck passes.
    Evidence: Worktree removal now runs under the per-worktree lock and emits an audited write outcome; the fast-path manager test asserts one row with root. Worktree/stash/index audit tests pass and repository typecheck passes.
    Evidence: Runtime worktree creation now uses the shared per-worktree lock and records success/failure with root and branch; success and Git-failure runtime tests assert its audit data.
-   Remaining: Provider and other remaining mutation families still need route/audit reconciliation.
+   Evidence (2026-10-21): GitHub PR creation, Azure DevOps PR creation, and Azure DevOps thread status update each have focused assertions for exactly one successful classified provider write audit entry. Provider PR/thread gaps are closed; other mutation families and inventory-wide route reconciliation remain.
 
 78. **PARTIAL** — Stage 6: involved long Git actions use generic flow for both layouts/remote; reconnect and dedup verified.
    Evidence: `runtime-git-handlers.ts` routes fetch/pull/push/force-push, merge/rebase, remote branch deletion, and network tag writes through OperationRegistry; mobile route policy classifies the guarded routes. `git-ui.test.ts` covers event/payload resolution and duplicate terminal delivery for fetch/pull/push.
@@ -400,7 +400,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
    Evidence: Runtime worktree creation success/failure and manager worktree removal audit paths are now covered; focused runtime worktree cases pass (3).
    Evidence: Provider manager tests assert GitHub conversation comments and Azure comment/vote requests each produce exactly one classified successful user-initiated write audit entry.
    Evidence: GitHub review submission now has an exact single-write audit assertion alongside conversation comment coverage; Azure comment/vote writes are also asserted.
-   Remaining: Audit provider PR creation and thread-update mutations; complete individual menu/shortcut mapping and visual acceptance.
+   Evidence (2026-10-21): Focused provider-manager tests assert exactly one successful classified write audit row for GitHub PR creation, Azure PR creation, and Azure thread status update. The provider PR/thread audit gap is closed. Remaining: complete individual menu/shortcut mapping and user visual acceptance; other route-level action classes are tracked under 47/77.
 
 92. **PARTIAL** — Acceptance: controlled slow backend proves start before relay timeout, reconnect outcome, dedup and profile isolation, without timeout increase.
    Evidence: Gated OperationRegistry tests cover prompt fetch/rebase acceptance, dedup, tag/force-push/remote-delete, and profile/workspace isolation; store tests verify event plus payload completion for fetch/pull/push, one notification per failure, and pull recovery from persisted outcomes.
