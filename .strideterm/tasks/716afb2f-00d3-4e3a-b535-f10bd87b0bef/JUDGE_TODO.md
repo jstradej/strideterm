@@ -287,7 +287,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
 
 60. **PARTIAL** — Update both UI consumers and remote long-operation path; verify reconnect/dedup and no cross-profile/workspace result leakage.
    Evidence: `git-ui.ts` resolves accepted fetch, pull, and ordinary push operations from the terminal event or persisted lastResults payload; `git-ui.test.ts` delivers the same terminal failure through both channels for all three and asserts one error notification. Backend profile isolation is covered by `runtime.test.ts:8746`.
-   Evidence: `src/transport.test.ts:1629` integrates actual remote transport reconnect with pending UI pull/push, switches to p2 without exposing the p1 result, then restores p1 and resolves from its persisted outcome; each action is accepted once. `runtime.test.ts:8746` independently covers backend cross-profile outcomes.
+   Evidence: `src/transport.test.ts:1629` integrates actual remote transport reconnect with pending UI fetch/pull/push, switches to p2 without exposing the p1 result, then restores p1 and resolves from its persisted outcome; each action is accepted once. `runtime.test.ts:8746` independently covers backend cross-profile outcomes.
    Remaining: User visual acceptance remains open; exact audit-route coverage is tracked under 77/91.
 
 61. **PARTIAL** — Stage 1: inventory matrix classic/new × normal/review × local/remote × root plus verified permissions/audit/result variants.
