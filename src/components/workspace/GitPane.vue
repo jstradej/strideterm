@@ -79,6 +79,15 @@
           <span :class="['workspace-chip', isLinkedWorktree && 'workspace-chip--alert']">
             <strong>{{ snapshot.isMainWorktree ? "main" : "linked" }}</strong> worktree
           </span>
+          <details class="git-view__repo-details">
+            <summary aria-label="Show full repository path and working branch">Details</summary>
+            <dl class="git-view__repo-details-panel">
+              <dt>Repository path</dt>
+              <dd>{{ activeRootPath || snapshot.root }}</dd>
+              <dt>Working branch</dt>
+              <dd>{{ snapshot.branch || "Detached HEAD" }}</dd>
+            </dl>
+          </details>
           <!-- ahead/behind only when upstream exists -->
           <template v-if="snapshot.upstream">
             <span v-if="snapshot.aheadCount > 0" class="workspace-chip">

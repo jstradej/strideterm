@@ -66,6 +66,49 @@
   align-items: center;
 }
 
+.git-view__repo-details {
+  position: relative;
+}
+
+.git-view__repo-details > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 11px;
+  list-style-position: inside;
+  padding: 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.git-view__repo-details-panel {
+  position: absolute;
+  z-index: 70;
+  top: calc(100% + 4px);
+  left: 0;
+  width: min(360px, calc(100vw - 32px));
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-elevated);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  font-size: 11px;
+}
+
+.git-view__repo-details-panel dt {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.git-view__repo-details-panel dd {
+  margin: 2px 0 8px;
+  overflow-wrap: anywhere;
+}
+
+.git-view__repo-details-panel dd:last-child {
+  margin-bottom: 0;
+}
+
 /* Push the action button cluster to the right edge of the toolbar so the
    summary chips stay left and the buttons don't float in the middle. */
 .git-view__actions {

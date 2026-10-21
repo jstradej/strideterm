@@ -138,6 +138,25 @@ beforeEach(() => {
 });
 
 describe("GitPane repo picker", () => {
+  test("exposes the full active repository path and working branch in a focusable details control", async () => {
+    const workspaceId = "ws-long-repository-details";
+    const wrapper = mountPane(workspaceId, [buildWorkspace({ id: workspaceId })]);
+    const appStore = useAppStore();
+    appStore.payload = {
+      ...appStore.payload!,
+      appState: { ...appStore.payload!.appState!, settings: { git: { ui: { newView: true } } } },
+    } as StatePayload;
+    const longRoot = "C:/work/customer-projects/very-long/repository/path/services/catalog-api";
+    useGitUiStore().setActiveRoot(workspaceId, longRoot);
+    await flushPromises();
+
+    const details = wrapper.get(".git-view__repo-details");
+    expect(details.get("summary").attributes("aria-label")).toBe("Show full repository path and working branch");
+    await details.get("summary").trigger("click");
+    expect(details.text()).toContain(longRoot);
+    expect(details.text()).toContain("main");
+  });
+
   test("keeps the classic tabs by default and renders three opt-in views with legacy tools", async () => {
     const ws = buildWorkspace({ id: "ws-new-git-view" });
     const wrapper = mountPane("ws-new-git-view", [ws]);
