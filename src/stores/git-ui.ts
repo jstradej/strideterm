@@ -725,6 +725,8 @@ export const useGitUiStore = defineStore("git-ui", () => {
         operationState: null,
         at: new Date().toISOString(),
       };
+      const { useNotificationStore } = await import("./notifications.js");
+      useNotificationStore().showError("Git action failed", ui.lastResult.summary, { workspaceId });
       return actionResponse;
     } finally {
       clearBusy(workspaceId);

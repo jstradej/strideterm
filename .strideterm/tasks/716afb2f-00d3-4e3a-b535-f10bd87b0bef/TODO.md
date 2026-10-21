@@ -137,3 +137,4 @@
 - [x] Route conflict resolve and unresolve through the per-worktree lock and system Git audit; real-conflict regression asserts one resolved-root audit outcome for successful and failed resolve/undo requests.
 - [x] Reject conflict paths that escape the repository in detail, resolve and undo routes; real-repository regression verifies an outside file remains unchanged.
 - [x] Re-run all GitManager backend tests after conflict locking/audit/path validation; 181 passed / 2 skipped.
+- [x] Show a standard Git failure notification and persistent log record when a long-operation start request rejects; Git UI store regression, typecheck, touched-file ESLint, Prettier and diff check pass.

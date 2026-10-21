@@ -238,6 +238,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
    Evidence: OperationRegistry failure logs now include operation ID, kind, effective profile, origin workspace, optional repository root, step, elapsed duration, and stable error code; a regression verifies the correlation fields and duration.
    Evidence: Long Git failure outcomes now carry a stable `git_operation_failed` code plus bounded warnings, conflict paths, and raw output through the event/payload schema to the Git operation card. Runtime, store, and registry regressions cover this path.
    Evidence: `electron/backend/runtime.test.ts:14771` now exercises structured warning/conflict/raw-output propagation through fetch, push, force push, remote branch/tag writes, merge, and rebase; the nine-case focused runtime test passes. `runtime-git-handlers.ts:68-115,295-318` builds a bounded user-facing failure and structured error metadata; `operation-registry.ts:122-145` preserves bounded warning/conflict/output fields and logs operation id/profile/workspace/root/step/duration.
+   Evidence: `src/stores/git-ui.test.ts` covers a rejected fetch-start transport request: the busy state releases, an error result remains visible, and the standard notification path records the failure to `strideterm.log`.
    Remaining: Audit generic rejected-promise classification for each manager/runtime route, verify cancellation/blocked/partial distinctions, and complete user visual acceptance.
 
 52. **PARTIAL** — Busy always releases, prevents duplicate launch; uncertain write results trigger state verification before user retry, never automatic write retry.
@@ -927,6 +928,10 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 ## Worker continuation (conflict mutation lock and audit)
 
 - Routed conflict resolve and unresolve through the shared per-worktree write lock and system Git audit wrapper. A real merge-conflict regression verifies one resolved-root audit row for success and failure on each route.
-- Routed conflict resolve and unresolve through the shared per-worktree write lock and system Git audit wrapper. A real merge-conflict regression verifies one resolved-root audit row for success and failure on each route.
 - Conflict detail, resolve, and unresolve now reject `../` paths using the existing stage-path normalizer; a real-repository test confirms an outside file cannot be read or overwritten through these routes.
 - Focused conflict regressions pass (2 passed / 181 skipped), and the full GitManager test file passes (181 passed / 2 skipped). Typecheck, touched-file ESLint (0 errors / 131 warnings), Prettier, and `git diff --check` pass. Full visual walkthrough and other audit families remain open; WORK_LOCK stays.
+
+## Worker continuation (rejected Git start diagnostics)
+
+- When a long-operation start promise rejects, `runGitAction` now sends the standard Git failure notification in addition to retaining its inline result. The notification path persists the raw failure to `strideterm.log`.
+- `npm run test:ui -- src/stores/git-ui.test.ts -t "rejected long-operation start"`: 1 passed / 62 skipped. Typecheck passes; touched-file ESLint reports 0 errors / 70 warnings; Prettier and `git diff --check` pass. Remaining audit/lifecycle coverage and user visual walkthrough stay open; WORK_LOCK remains.

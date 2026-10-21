@@ -215,6 +215,33 @@ describe("git-ui store", () => {
   });
 
   describe("runGitAction payload adoption", () => {
+    test("surfaces and records a rejected long-operation start", async () => {
+      const request = vi.fn().mockRejectedValue(new Error("Remote transport disconnected."));
+      const store = useGitUiStore();
+      store.init({ gitFetch: request } as unknown as Transport);
+      store.setActiveRoot("ws1", "/repo/a");
+      const priorFailureCount = useNotificationStore().items.filter(
+        (toast) => toast.title === "Git action failed",
+      ).length;
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      try {
+        await store.gitFetch("ws1");
+      } finally {
+        consoleError.mockRestore();
+      }
+
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(store.get("ws1").busyAction).toBe("");
+      expect(store.get("ws1").lastResult).toMatchObject({
+        ok: false,
+        summary: "Remote transport disconnected.",
+      });
+      expect(useNotificationStore().items.filter((toast) => toast.title === "Git action failed")).toHaveLength(
+        priorFailureCount + 1,
+      );
+    });
+
     test.each([
       ["fetch", "gitFetch"],
       ["pull", "gitPull"],
