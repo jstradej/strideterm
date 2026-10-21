@@ -8,11 +8,14 @@
 ## To Do
 
 - [ ] Complete the user's visual review using `MANUAL_VERIFICATION.md` in their `dev.ps1` session; adjust anything they report.
-- [x] Finish the seven implementation stages, with visual confirmation delegated to the user as specified in the source plan.
-- [x] Run focused UI/backend tests, full lint, direct frontend/backend/preload typechecks, safe production build, and complete diff review.
+- [ ] Finish remaining audit findings in `JUDGE_TODO.md`, including Review diff source, Changes draft/context persistence, narrow workflows, audit/error paths, long operations and regression coverage.
+- [ ] Re-run the full numbered self-audit against the current tree and update each requirement with verifiable evidence.
+- [ ] Resolve the full typecheck failures and run the project checks required by `WORKER.md` after implementation changes.
 - [x] Commit implementation changes locally without pushing.
 
 ## In Progress
+
+- [ ] Repair and verify the judge-confirmed More routing and staged-hunk validation gaps; commit `7aad383b` contains the initial fixes.
 
 ## Done
 
@@ -30,3 +33,4 @@
 - [x] Render the provider-owned review pane in Review, keyed to the linked PR workspace so its provider diff and persisted drafts remain available.
 - [x] Preserve staged commit messages across view changes and clear root-specific selections on root changes.
 - [x] Add focused tests for new index operations, long-operation acceptance/deduplication, stale reads and Review routing.
+- [x] Ensure More routes take precedence over History/Changes and expose Branches; require selected hunk text to match the token-verified server diff (`7aad383b`).
