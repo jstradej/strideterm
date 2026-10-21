@@ -644,3 +644,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 - Current repository `npm run typecheck`: passes. `npm run lint`: passes with 0 errors / 4,678 existing warnings; repository Prettier check passes. `$env:VITE_BUILD_WATCH='1'; npm run build`: passes. No Electron app or dev server was launched.
 - Full backend was last run successfully immediately before the latest frontend-only History picker changes: 224 files / 5,465 passed / 7 skipped with four workers. Backend sources are unchanged since that run.
 - Remaining: user-owned `MANUAL_VERIFICATION.md` walkthrough, detailed lifecycle/reconnect/route-audit coverage, and remaining numbered partial requirements. WORK_LOCK remains in place; this is not an assertion of completion.
+
+## Worker continuation correction (`1ead33cc`)
+
+- When completed branch/tag reads prove a persisted selected ref is gone, History now clears it to all commits and displays a `role="status"` explanation. Selecting another ref clears that notice. Added a reactive component regression for a deleted remote ref. `GitBranchesTab.test.ts` passes 11 tests; repository typecheck, touched-file Prettier and `git diff --check` pass. This closes the silent-prune behavior in audit item 69, while empty/detached/large-list and manual root/profile checks remain open.
+- The latest full UI/lint/build verification was run before this small UI follow-up; its focused test and typecheck passed after the change. Manual walkthrough, broader reconnect/audit coverage, and other numbered partial items remain; WORK_LOCK remains present.
