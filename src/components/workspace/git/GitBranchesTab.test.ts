@@ -21,7 +21,13 @@ const gitDeleteBranch = vi.fn();
 const gitDeleteRemoteBranch = vi.fn();
 const gitCreateTag = vi.fn();
 const gitRemoveWorktree = vi.fn();
-const getHistorySelection = vi.fn((_workspaceId: string, _rootPath: string, _profileId: string) => historySelection);
+const historySelections = new Map<string, typeof historySelection>();
+const historySelectionKey = (workspaceId: string, rootPath: string, profileId: string) =>
+  `${profileId}::${workspaceId}::${rootPath}`;
+const getHistorySelection = vi.fn(
+  (workspaceId: string, rootPath: string, profileId: string) =>
+    historySelections.get(historySelectionKey(workspaceId, rootPath, profileId)) || historySelection,
+);
 
 vi.mock("../../../stores/app.js", () => ({
   useAppStore: () => ({
@@ -40,12 +46,14 @@ vi.mock("../../../stores/git-ui.js", () => ({
     getGitHistoryPreferences: () => ({ favorites: [], recent: [] }),
     getGitHistorySelection: getHistorySelection,
     setGitHistorySelection: (
-      _workspaceId: string,
-      _rootPath: string,
-      _profileId: string,
+      workspaceId: string,
+      rootPath: string,
+      profileId: string,
       patch: Record<string, string>,
     ) => {
-      Object.assign(historySelection, patch);
+      const selection =
+        historySelections.get(historySelectionKey(workspaceId, rootPath, profileId)) || historySelection;
+      Object.assign(selection, patch);
     },
     toggleGitHistoryFavorite: vi.fn(),
     recordGitHistoryRef: vi.fn(),
@@ -123,6 +131,7 @@ beforeEach(() => {
   gitCreateTag.mockClear();
   gitRemoveWorktree.mockClear();
   getHistorySelection.mockClear();
+  historySelections.clear();
   document.body.innerHTML = "";
 });
 
@@ -188,6 +197,50 @@ describe("GitBranchesTab compact history picker", () => {
     await flushPromises();
     expect(getHistorySelection).toHaveBeenCalledWith("ws-scoped-history", "/repo/scoped", "profile-scoped");
     expect(picker.find('[aria-label="History reference"]').exists()).toBe(true);
+  });
+
+  test("restores the visible History selection when switching roots and profiles", async () => {
+    historySelections.set(historySelectionKey("ws-scope-switch", "/repo/a", "profile-a"), {
+      ref: "feature/a",
+      commitSearch: "alpha",
+    });
+    historySelections.set(historySelectionKey("ws-scope-switch", "/repo/b", "profile-a"), {
+      ref: "feature/b",
+      commitSearch: "beta",
+    });
+    historySelections.set(historySelectionKey("ws-scope-switch", "/repo/a", "profile-b"), {
+      ref: "release/a",
+      commitSearch: "release",
+    });
+    const picker = mount(GitBranchesTab, {
+      props: {
+        workspaceId: "ws-scope-switch",
+        activeRootPath: "/repo/a",
+        profileId: "profile-a",
+        snapshot: { dirty: false, branch: "main" },
+        gitUi: {
+          branchList: {
+            current: "main",
+            local: [{ name: "main" }, { name: "feature/a" }, { name: "feature/b" }, { name: "release/a" }],
+            remotes: [],
+            defaultBranch: "main",
+            defaultRemote: "",
+          },
+          graph: { commits: [], head: "", refs: {} },
+          tags: [],
+        },
+        compactHistory: true,
+      },
+    });
+    const select = () => picker.get<HTMLSelectElement>('[aria-label="History reference"]').element;
+    expect(select().value).toBe("feature/a");
+
+    await picker.setProps({ activeRootPath: "/repo/b" } as never);
+    expect(select().value).toBe("feature/b");
+    await picker.setProps({ activeRootPath: "/repo/a", profileId: "profile-b" } as never);
+    expect(select().value).toBe("release/a");
+    await picker.setProps({ profileId: "profile-a" } as never);
+    expect(select().value).toBe("feature/a");
   });
 
   test("keeps a persisted ref selection while branch and tag reads are pending", async () => {
