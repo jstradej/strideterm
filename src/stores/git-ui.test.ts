@@ -308,9 +308,9 @@ describe("git-ui store", () => {
         expect.objectContaining({ rootPath: "/repo/a", action: "resolve:conflict.txt" }),
       ]);
 
-      store.setActiveRoot("ws-conflict-root", "/repo/a");
-      await store.refreshGit("ws-conflict-root");
+      await store.refreshRoot("ws-conflict-root", "/repo/a");
       expect(store.get("ws-conflict-root").uncertainWrites).toEqual({});
+      expect(store.getActiveRoot("ws-conflict-root")).toBe("/repo/b");
       await store.resolveConflictFile("ws-conflict-root", "conflict.txt", "ours");
       expect(resolveConflict).toHaveBeenCalledTimes(2);
     });

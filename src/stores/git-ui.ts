@@ -669,7 +669,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
         // assignment jumps a remote/mobile viewer to whatever the desktop
         // has open (see store.adoptPayload).
         appStore.adoptPayload(response.payload as StatePayload);
-        if (busyAction === "refresh") {
+        if (busyAction === "refresh" || busyAction.startsWith("refresh:")) {
           const refreshedSnapshot = appStore.getGitSnapshot(workspaceId, actionRootPath) as GitSnapshot | null;
           if (refreshedSnapshot?.available === true) {
             ui.uncertainWrites = Object.fromEntries(
@@ -2481,12 +2481,17 @@ export const useGitUiStore = defineStore("git-ui", () => {
   }
 
   async function refreshRoot(workspaceId: string, rootPath: string): Promise<void> {
-    await runGitAction(workspaceId, `refresh:${rootPath}`, async () => {
-      const payload = await (_api as Transport & { refreshGit: (id: string) => Promise<unknown> }).refreshGit!(
-        workspaceId,
-      );
-      return { payload };
-    });
+    await runGitAction(
+      workspaceId,
+      `refresh:${rootPath}`,
+      async () => {
+        const payload = await (_api as Transport & { refreshGit: (id: string) => Promise<unknown> }).refreshGit!(
+          workspaceId,
+        );
+        return { payload };
+      },
+      { rootPath },
+    );
   }
 
   async function pullRoot(workspaceId: string, rootPath: string): Promise<void> {
