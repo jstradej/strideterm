@@ -160,6 +160,53 @@ describe("GitPane repo picker", () => {
     expect(wrapper.findComponent({ name: "GitBranchesTab" }).exists()).toBe(true);
   });
 
+  test.each([
+    ["branch", "GitBranchTab"],
+    ["branches", "GitBranchesTab"],
+    ["stashes", "GitStashesTab"],
+    ["pr", "GitPullRequestTab"],
+    ["worktrees", "GitWorktreeList"],
+    ["bulk", "BulkRepoTable"],
+    ["conflicts", "GitConflictsTab"],
+  ])("More routes %s to its existing tool", async (destination, componentName) => {
+    const workspaceId = `ws-more-${destination}`;
+    const ws = buildWorkspace({
+      id: workspaceId,
+      ...(destination === "bulk" ? { gitRoots: ["/ms/api", "/ms/web"] } : {}),
+    });
+    const wrapper = mountPane(workspaceId, [ws]);
+    const appStore = useAppStore();
+    appStore.payload = {
+      ...appStore.payload!,
+      appState: { ...appStore.payload!.appState!, settings: { git: { ui: { newView: true } } } },
+    } as StatePayload;
+    if (destination === "conflicts") {
+      const payload = appStore.payload!;
+      const snapshot = payload.git!.workspaces[workspaceId];
+      appStore.payload = {
+        ...payload,
+        git: {
+          ...payload.git!,
+          workspaces: {
+            ...payload.git!.workspaces,
+            [workspaceId]: {
+              ...snapshot,
+              operationState: { ...snapshot.operationState, conflicts: [{ path: "src/conflict.ts" }] },
+            },
+          },
+        },
+      } as StatePayload;
+    }
+    await flushPromises();
+
+    const more = wrapper.get<HTMLSelectElement>('[aria-label="More Git tools"]');
+    const availableDestinations = Array.from(more.element.options).map((option) => option.value);
+    expect(availableDestinations).toContain(destination);
+    await more.setValue(destination);
+    await flushPromises();
+    expect(wrapper.findComponent({ name: componentName }).exists()).toBe(true);
+  });
+
   test("falls back with an explanation when a saved More tool is unavailable", async () => {
     const ws = buildWorkspace({ id: "ws-unavailable-more-tool" });
     const wrapper = mountPane("ws-unavailable-more-tool", [ws]);
