@@ -302,7 +302,7 @@
         <GitBranchesTab
           v-else-if="
             (!useNewGitView && activeTab === 'branches') ||
-            (useNewGitView && activeGitView === 'history') ||
+            (useNewGitView && !activeLegacyDestination && activeGitView === 'history') ||
             (useNewGitView && activeLegacyDestination === 'branches')
           "
           :workspace-id="workspaceId"
@@ -315,14 +315,14 @@
           :compare="compare"
           :base-branch-options="baseBranchOptions"
           :remote-names="remoteNames"
-          :compact-history="useNewGitView && activeGitView === 'history'"
+          :compact-history="useNewGitView && !activeLegacyDestination && activeGitView === 'history'"
         />
 
         <!-- ===== Changes tab ===== -->
         <GitChangesTab
           v-else-if="
             (!useNewGitView && activeTab === 'changes') ||
-            (useNewGitView && activeGitView === 'changes') ||
+            (useNewGitView && !activeLegacyDestination && activeGitView === 'changes') ||
             (useNewGitView && activeLegacyDestination === 'changes')
           "
           :workspace-id="workspaceId"
@@ -646,7 +646,7 @@ const newGitViews = [
   { id: "review", label: "Review" },
 ] as const;
 const activeLegacyDestination = computed(() => gitUiStore.getNewViewLegacyDestination(props.workspaceId));
-const legacyDestinations = computed(() => tabs.value.filter((tab) => tab.id !== "branches" && tab.id !== "changes"));
+const legacyDestinations = computed(() => tabs.value.filter((tab) => tab.id !== "changes"));
 function onLegacyDestinationChange(event: Event) {
   const destination = (event.target as HTMLSelectElement).value;
   gitUiStore.setNewViewLegacyDestination(props.workspaceId, destination || "");

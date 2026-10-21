@@ -2218,6 +2218,11 @@ export class GitManager extends EventEmitter {
         ) {
           throw new Error("This diff changed after it was loaded. Refresh it and try again.");
         }
+        // The token proves which server diff was reviewed, but it must not
+        // authorize arbitrary patch text supplied alongside that token.
+        if (!(current.stdout || "").includes(hunk)) {
+          throw new Error("The selected hunk does not match the current diff. Refresh it and try again.");
+        }
         const applyArgs = action === "unstage" ? ["apply", "--cached", "--reverse", "-"] : ["apply", "--cached", "-"];
         const { stdout } = await this.execGit(cwd, applyArgs, { stdin: hunk });
         return { stdout: stdout || `${action === "stage" ? "Staged" : "Unstaged"} hunk in ${normalized}.`, stderr: "" };
