@@ -649,3 +649,7 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - When completed branch/tag reads prove a persisted selected ref is gone, History now clears it to all commits and displays a `role="status"` explanation. Selecting another ref clears that notice. Added a reactive component regression for a deleted remote ref. `GitBranchesTab.test.ts` passes 11 tests; repository typecheck, touched-file Prettier and `git diff --check` pass. This closes the silent-prune behavior in audit item 69, while empty/detached/large-list and manual root/profile checks remain open.
 - The latest full UI/lint/build verification was run before this small UI follow-up; its focused test and typecheck passed after the change. Manual walkthrough, broader reconnect/audit coverage, and other numbered partial items remain; WORK_LOCK remains present.
+
+## Worker continuation (`read-only picker coverage`)
+
+- Expanded the History picker contract test to assert no checkout (local or remote), branch create/rename/delete, remote branch delete, tag create, worktree removal, fetch, or push occurs when selecting a ref. The picker suite passes 11 tests, repository typecheck passes, Prettier and diff checks pass. This strengthens audit item 85; broader inventory mutation/audit mapping and manual acceptance remain open.
