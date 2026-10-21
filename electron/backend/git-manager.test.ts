@@ -4055,17 +4055,25 @@ describe("GitManager", () => {
       await fs.writeFile(path.join(root, "a.txt"), "staged for audit\n", "utf8");
 
       expect((await auditMgr.stageFile(workspace, { path: "a.txt" })).ok).toBe(true);
+      expect((await auditMgr.unstageFile(workspace, { path: "a.txt" })).ok).toBe(true);
+      expect((await auditMgr.stageFile(workspace, { path: "a.txt" })).ok).toBe(true);
       expect((await auditMgr.commitStaged(workspace, { message: "audited index commit" })).ok).toBe(true);
       expect((await auditMgr.commitStaged(workspace, { message: "empty index" })).ok).toBe(false);
       expect((await auditMgr.createTag(workspace, { tagName: "v1.0.0" })).ok).toBe(true);
+      expect((await auditMgr.createTag(workspace, { tagName: "v1.0.0" })).ok).toBe(false);
       expect((await auditMgr.deleteTag(workspace, { tagName: "v1.0.0" })).ok).toBe(true);
+      expect((await auditMgr.deleteTag(workspace, { tagName: "v-missing" })).ok).toBe(false);
 
       expect(entries.map((entry) => [entry.operation, entry.category, entry.success])).toEqual([
+        ["gitStage-file", "write", true],
+        ["gitUnstage-file", "write", true],
         ["gitStage-file", "write", true],
         ["gitCommit-staged", "write", true],
         ["gitCommit-staged", "write", false],
         ["gitCreate-tag", "write", true],
+        ["gitCreate-tag", "write", false],
         ["gitDelete-tag", "write", true],
+        ["gitDelete-tag", "write", false],
       ]);
       expect(entries.every((entry) => entry.connectionId === "system-ws-index-audit")).toBe(true);
       expect(entries.every((entry) => entry.rootPath === root)).toBe(true);
