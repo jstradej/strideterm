@@ -988,3 +988,4 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Routed synchronous merge-into-base through the shared target-worktree lock and Git audit helper while retaining the local sibling-worktree behavior. A real sibling-worktree test verifies successful merge and dirty-target rejection each emit one system Git write audit row with the resolved target root. Focused test passes (1 passed / 186 skipped). Other audit families and user visual review remain open; WORK_LOCK stays present.
 - Verification: merge-into-base sibling-worktree audit test passes (1 passed / 186 skipped); `npm run typecheck` passes; focused ESLint 0 errors / 134 warnings; Prettier and `git diff --check` pass.
+- Full GitManager regression after commit-all and merge-into-base lock/audit changes: 185 passed / 2 skipped. `npm run typecheck` passes; touched-file ESLint 0 errors / 134 warnings; Prettier and diff checks pass.
