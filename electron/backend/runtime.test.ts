@@ -8768,6 +8768,30 @@ describe("runtime integration", () => {
     });
   });
 
+  test("rejects a caller-supplied Git root outside a single-repository workspace before accepting fetch", async () => {
+    const fixture = await createFixture({
+      initialState: {
+        activeProjectId: "backend",
+        projects: [
+          {
+            id: "backend",
+            name: "Backend",
+            kind: "terminal",
+            cwd: "/tmp/backend",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", startup: "default" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    await expect(fixture.runtime.gitFetch({ projectId: "backend", rootPath: "/tmp/other-repository" })).rejects.toThrow(
+      /Root path not found in workspace gitRoots/,
+    );
+    expect(fixture.git.actions).toEqual([]);
+  });
+
   test("long Git fetch accepts promptly and deduplicates an idempotent retry", async () => {
     const fixture = await createFixture({ initialState: makeProfileSwitchState() });
     fixtures.push(fixture);

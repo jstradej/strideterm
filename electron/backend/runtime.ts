@@ -6154,7 +6154,17 @@ export async function createRuntime({
     if (!rootPath) {
       return roots[0] || "";
     }
-    if (!roots.length) return rootPath; // single-repo, accept any rootPath
+    if (!roots.length) {
+      const singleRoot = workspace.cwd || "";
+      if (!singleRoot) return null;
+      const normalizedRequested = path.resolve(rootPath).replace(/[\\/]+$/, "");
+      const normalizedSingle = path.resolve(singleRoot).replace(/[\\/]+$/, "");
+      const sameRoot =
+        process.platform === "win32"
+          ? normalizedRequested.toLowerCase() === normalizedSingle.toLowerCase()
+          : normalizedRequested === normalizedSingle;
+      return sameRoot ? singleRoot : null;
+    }
     if (roots.includes(rootPath)) return rootPath;
     // normalize comparison
     const normalized = rootPath.replace(/\\/g, "/").replace(/\/+$/, "");
