@@ -130,3 +130,4 @@
 - [x] Route runtime worktree creation through the same per-worktree lock and audit contract; create success and Git failure regressions assert exact audit outcome/root. Three focused runtime cases pass.
 - [x] Assert GitHub comment and Azure comment/vote provider writes each produce a single successful user-initiated audit record per API mutation; two focused provider-manager tests pass.
 - [x] Verify GitHub review submission emits exactly one classified successful user-initiated audit entry; focused manager test passes.
+- [x] Verify GitHub PR creation and Azure PR creation/thread status updates each emit one classified successful user-initiated provider audit entry; focused provider-manager tests pass.

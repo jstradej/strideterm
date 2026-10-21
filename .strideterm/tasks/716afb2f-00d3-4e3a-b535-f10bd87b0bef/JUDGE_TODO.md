@@ -39,6 +39,8 @@ Continuation correction (`9b10429e`): History now waits for branch and tag reads
 
 Full per-requirement ledger (122 items)
 
+Worker continuation (provider PR creation and thread update audit): GitHub PR creation, Azure DevOps PR creation, and Azure DevOps thread status update tests now assert exactly one successful `category: write` audit entry with the expected operation, connection ID, and `userInitiated: true`. The focused provider manager tests pass (5 audit-related tests across both files); `npm run typecheck` passes; touched-file Prettier passes; ESLint reports 0 errors and 23 warnings; `git diff --check` passes. This adds evidence to requirements 77 and 91; inventory-wide per-action coverage and the user-owned manual visual review remain open.
+
 1. **IMPLEMENTED** — Opt-in Git setting is explicit, reversible and default-off, including old/invalid saved values.
    Evidence: electron/shared/types/state.ts:265; electron/backend/default-state.ts:627,1564; src/components/dialogs/settings/SettingsGitTab.vue:7; src/components/workspace/GitPane.vue:622.
 

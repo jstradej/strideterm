@@ -52,8 +52,32 @@ function createReviewStore(initial: any = {}) {
 }
 
 function createFetchStub() {
-  return vi.fn(async (url, _options = {}) => {
+  return vi.fn(async (url, options = {}) => {
     const href = String(url);
+    if (href.endsWith("/_apis/git/repositories?api-version=7.1")) {
+      return {
+        ok: true,
+        json: async () => ({
+          value: [
+            {
+              id: "repo-1",
+              name: "web-app",
+              remoteUrl: "https://dev.azure.com/acme/Platform/_git/web-app",
+            },
+          ],
+        }),
+      };
+    }
+    if (href.includes("/_apis/git/repositories/repo-1/pullrequests") && options.method === "POST") {
+      return {
+        ok: true,
+        json: async () => ({
+          pullRequestId: 124,
+          title: "Create PR",
+          _links: { web: { href: "https://dev.azure.com/acme/Platform/_git/web-app/pullrequest/124" } },
+        }),
+      };
+    }
     if (href.includes("/_apis/projects")) {
       return {
         ok: true,
@@ -211,7 +235,7 @@ function createFetchStub() {
         json: async () => ({ ok: true }),
       };
     }
-    if (href.includes("/comments?") || href.endsWith("/threads?api-version=7.1")) {
+    if (href.includes("/comments?") || href.endsWith("/threads?api-version=7.1") || href.includes("/threads/10?")) {
       return {
         ok: true,
         json: async () => ({ ok: true }),
@@ -1300,6 +1324,63 @@ describe("createPullRequestForWorkspace — cross-profile connection guard", () 
         workspaceProfileId: "profile-b",
       }),
     ).rejects.toThrow(/Cross-profile refused.*profile-a.*profile-b/s);
+  });
+
+  test("audits one successful user-initiated PR creation", async () => {
+    const entries: Record<string, unknown>[] = [];
+    const { manager } = createManager({ auditLogStore: { logEntry: (entry) => entries.push(entry) } });
+    manager.setSnapshot({ connections: [{ ...connection, profileId: "default" }] } as never);
+
+    await expect(
+      manager.createPullRequestForWorkspace({
+        remoteUrl: "https://dev.azure.com/acme/Platform/_git/web-app",
+        sourceBranch: "feature/audit",
+        targetBranch: "main",
+        title: "Create PR",
+        description: "Audited creation",
+        connectionId: "ado-main",
+        workspaceProfileId: "default",
+      }),
+    ).resolves.toEqual({
+      pullRequestId: 124,
+      url: "https://dev.azure.com/acme/Platform/_git/web-app/pullrequest/124",
+      title: "Create PR",
+    });
+
+    expect(entries.filter((entry) => entry.category === "write")).toMatchObject([
+      { operation: "createPullRequest", connectionId: "ado-main", success: true, userInitiated: true },
+    ]);
+  });
+});
+
+describe("AzureDevOpsManager updateThreadStatus audit", () => {
+  test("audits one successful user-initiated thread update", async () => {
+    const entries: Record<string, unknown>[] = [];
+    const prKey = createPullRequestKey("ado-main", "repo-1", 123);
+    const { manager } = createManager({
+      auditLogStore: { logEntry: (entry) => entries.push(entry) },
+    });
+    manager.setSnapshot({
+      connections: [{ ...connection, profileId: "default" }],
+      pullRequests: {
+        [prKey]: {
+          prKey,
+          connectionId: "ado-main",
+          orgUrl: connection.orgUrl,
+          project: { id: "project-1", name: "Platform" },
+          repository: { id: "repo-1", name: "web-app" },
+          pullRequest: { id: 123 },
+          threads: [],
+        },
+      },
+      inbox: { needsMyReview: [], myPullRequests: [], recentlyUpdated: [], needsAttention: [] },
+    } as never);
+
+    await manager.updateThreadStatus({ prKey, threadId: 10, status: "fixed" });
+
+    expect(entries.filter((entry) => entry.category === "write")).toMatchObject([
+      { operation: "updateThread", connectionId: "ado-main", success: true, userInitiated: true },
+    ]);
   });
 });
 

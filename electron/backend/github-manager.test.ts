@@ -100,8 +100,11 @@ function createFetchStub({
   combinedStatusByRef = {} as Record<string, unknown>,
   branches = [] as Array<{ name: string }>,
 } = {}) {
-  return vi.fn(async (url: unknown, _options?: unknown) => {
+  return vi.fn(async (url: unknown, options?: unknown) => {
     const href = String(url);
+    if (href.endsWith("/pulls") && (options as { method?: string } | undefined)?.method === "POST") {
+      return jsonOk({ number: 43, html_url: "https://github.com/acme/web/pull/43", title: "Create PR" });
+    }
     if (href.includes("/search/issues")) {
       return jsonOk({ items: searchItems });
     }
@@ -179,6 +182,35 @@ const connection = {
   tokenRef: "cred:gh-main",
   enabled: true,
 };
+
+describe("GitHubManager createPullRequestForWorkspace audit", () => {
+  test("records one successful user-initiated PR creation", async () => {
+    const entries: Record<string, unknown>[] = [];
+    const { manager } = createManager({ auditLogStore: { logEntry: (entry) => entries.push(entry) } });
+    manager.setSnapshot({
+      connections: [{ ...connection, profileId: "default", tokenRef: "cred:gh-main" }],
+      pullRequests: {},
+      inbox: { needsMyReview: [], myPullRequests: [], recentlyUpdated: [], needsAttention: [] },
+    } as never);
+
+    await expect(
+      manager.createPullRequestForWorkspace({
+        connectionId: "gh-main",
+        owner: "acme",
+        repo: "web",
+        sourceBranch: "feature/audit",
+        targetBranch: "main",
+        title: "Create PR",
+        description: "Audited creation",
+        workspaceProfileId: "default",
+      }),
+    ).resolves.toEqual({ pullRequestNumber: 43, url: "https://github.com/acme/web/pull/43", title: "Create PR" });
+
+    expect(entries.filter((entry) => entry.category === "write")).toMatchObject([
+      { operation: "createPullRequest", connectionId: "gh-main", success: true, userInitiated: true },
+    ]);
+  });
+});
 
 describe("GitHubManager authenticated identity cache", () => {
   test("coalesces identity requests and invalidates by profile, host, and token fingerprint", async () => {
