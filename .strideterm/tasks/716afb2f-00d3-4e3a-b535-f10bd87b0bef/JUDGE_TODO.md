@@ -665,3 +665,7 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 ## Worker continuation (`operation card visibility`)
 
 - Added component-level regressions proving History and Changes render the shared operation status card during an active fetch. The existing GitPane test verifies Review's parent-rendered card. `GitBranchesTab.test.ts` and `GitChangesTab.test.ts` pass 29 combined tests; repository typecheck and touched-file Prettier pass. This strengthens audit items 10 and 94; across-view conflict, operation completion, and human visual acceptance remain open.
+
+## Worker continuation (`History scope wiring`)
+
+- Added a component regression confirming History passes its active workspace, repository root, and profile into the scoped selection store getter. The focused GitBranchesTab suite passes 14 tests; repository typecheck, touched-file Prettier/ESLint and `git diff --check` pass. This adds UI wiring evidence to audit item 69; actual profile/root switching acceptance still needs broader lifecycle tests and the user walkthrough.

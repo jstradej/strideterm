@@ -91,3 +91,4 @@
 - [x] Commit empty/detached History regression as `276b50f6`.
 - [x] Add compact History coverage for 400 refs and search filtering; GitBranchesTab suite passes 13 tests, repository typecheck passes, touched-file Prettier/ESLint and diff check pass. Committed as `9e62ee37`.
 - [x] Verify History and Changes each render the shared operation card while a fetch is busy; GitBranchesTab/GitChangesTab suites pass 29 tests, repository typecheck and touched-file Prettier pass. Committed as `61c44782`.
+- [x] Verify the History picker reads selection state with the active profile/workspace/root tuple; GitBranchesTab suite passes 14 tests, repository typecheck, Prettier and diff check pass. Committed as `530c7908`.
