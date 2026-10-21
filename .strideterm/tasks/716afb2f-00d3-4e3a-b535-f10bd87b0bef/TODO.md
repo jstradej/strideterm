@@ -175,3 +175,4 @@
 - [x] Verify the History reference selection is restored when the History pane remounts; focused GitBranchesTab lifecycle test passes.
 - [x] Verify History base comparison queries use `base..HEAD` by default and `base...HEAD` when base updates are included; focused GitBranchesTab test passes.
 - [x] Exercise base selection through the rendered compact History compare picker and assert the compare heading and graph request.
+- [x] Verify the selected History author is forwarded as a graph query filter.

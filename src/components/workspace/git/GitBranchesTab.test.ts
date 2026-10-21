@@ -253,6 +253,53 @@ describe("GitBranchesTab compact history picker", () => {
     vi.useRealTimers();
   });
 
+  test("sends the selected commit author as a graph filter", async () => {
+    vi.useFakeTimers();
+    const gitUi = reactive({
+      branchList: { current: "main", local: [{ name: "main", isCurrent: true }], remotes: [] },
+      graph: { commits: [] as Array<Record<string, unknown>>, head: "", refs: {} },
+    });
+    const picker = mount(GitBranchesTab, {
+      props: {
+        workspaceId: "ws-author-filter",
+        snapshot: { dirty: false, branch: "main" },
+        gitUi,
+        activeRootPath: "/repo",
+        compactHistory: true,
+      },
+    });
+    mountedWrappers.push(picker);
+    await flushPromises();
+    gitUi.graph.commits = [
+      {
+        hash: "abc123456789",
+        shortHash: "abc1234",
+        parents: [],
+        subject: "A commit",
+        author: "Ada Example",
+        relativeDate: "today",
+        isoDate: "2026-10-21T00:00:00.000Z",
+        refs: [],
+      },
+    ];
+    await flushPromises();
+    const filterRow = picker.get(".git-branches__filters");
+    const authorSelect = filterRow
+      .findAllComponents(CustomSelect)
+      .find((select) => select.classes().includes("git-branches__cselect--user"));
+    expect(authorSelect).toBeTruthy();
+    expect(authorSelect!.props("options")).toContainEqual({ value: "Ada Example", label: "Ada Example" });
+    authorSelect!.vm.$emit("update:modelValue", "Ada Example");
+    await vi.advanceTimersByTimeAsync(250);
+    await flushPromises();
+    expect(gitLoadGraph).toHaveBeenLastCalledWith(
+      "ws-author-filter",
+      expect.objectContaining({ author: "Ada Example" }),
+    );
+    picker.unmount();
+    vi.useRealTimers();
+  });
+
   test("surfaces tag read failures in History", async () => {
     const picker = mountTab({ tagsError: "Could not load tags." });
     expect(picker.get('[role="alert"]').text()).toBe("Could not load tags.");
