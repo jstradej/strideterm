@@ -960,5 +960,4 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 ## Worker continuation (classic Changes root-scoped draft lifecycle)
 
 - Corrected requirement 63: classic commit text and selected paths already use the Git UI store, and new mounted coverage proves they remain isolated across repository roots and restore when returning to the original root. Focused test: 1 passed / 17 skipped. User visual walkthrough remains open; WORK_LOCK stays present.
-- Verification: focused GitChangesTab case passes (1 passed); 
-pm run typecheck passes; ESLint 0 errors / 2 warnings; Prettier and git diff --check pass.
+- Verification: focused GitChangesTab case passes (1 passed); `npm run typecheck` passes; ESLint 0 errors / 2 warnings; Prettier and `git diff --check` pass.
