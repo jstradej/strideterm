@@ -742,3 +742,9 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 - `npm run typecheck` passes on the current tree. `CLAUDE.md` warns against plain builds while the user's watcher may be active; no build, app, or dev server was launched in this continuation.
 - No source changes were needed after the latest focused lifecycle additions. The automated coverage now includes persisted and unsaved review drafts across pane unmounts and busy operation state across view toggles. Remaining renderer disconnect/reconnect integration, broad route audit, and narrow/keyboard visual acceptance remain recorded above.
 - The required `MANUAL_VERIFICATION.md` walkthrough must be performed by the user in their existing `dev.ps1` session, so `WORK_LOCK` remains present and TODO's user-owned visual review item stays open.
+
+## Worker continuation (History root/profile switch lifecycle)
+
+- Added a mounted History picker regression that restores distinct saved refs across repository roots and profiles, and restores the original visible ref when switching back. This strengthens requirement 86 and closes the automated root/profile-switch portion noted in TODO; keyboard/narrow visuals remain manual.
+- `npm run test:ui -- src/components/workspace/git/GitBranchesTab.test.ts`: PASS, 17 tests. `npm run typecheck`: PASS. Touched-file Prettier, ESLint (0 errors; one existing security warning), and `git diff --check`: PASS.
+- `WORK_LOCK` remains because renderer disconnect/reconnect integration, route/audit inventory completeness, and the user-owned visual walkthrough are still open.
