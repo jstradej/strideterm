@@ -222,6 +222,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
    Evidence: Conflict resolve and unresolve now take the shared per-worktree lock and emit exactly one system Git audit outcome; a real conflict test covers success and failure for both routes.
    Evidence: Conflict detail/resolve/unresolve now use the stage-path normalizer, rejecting traversal paths before reading or writing outside the selected root. A real-repository regression confirms outside content stays unchanged.
    Evidence: A real local bare remote test verifies successful remote-branch deletion and failed deletion after the remote URL becomes unavailable each emit exactly one system Git write audit row with the workspace root.
+   Evidence: A real local bare remote test verifies push-tag, push-all-tags, and remote-tag deletion each emit one success and one unavailable-remote failure audit row with the workspace root.
    Remaining: Route-level evidence covers index/local tag, branch/history/stash dispatch and writes, worktree add/remove, provider comments/votes/review submission, PR creation, and Azure thread update. Other mutation families still need assertions; manual menu/shortcut walkthrough remains.
 
 48. **IMPLEMENTED** — Check rejected promises and structured ok:false; promise success must not mean Git success.
@@ -349,6 +350,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
    Evidence: Local branch create/checkout/rename/delete success and delete failure each emit one system Git audit outcome with the workspace root; focused backend test passes.
    Evidence: Remote branch checkout success and missing-remote failure each emit one system Git write audit outcome with the workspace root; the same real-repository regression verifies both.
    Evidence: Remote branch deletion success and missing-remote failure each emit one system Git audit outcome with the workspace root; a local bare-remote integration test verifies both.
+   Evidence: Remote tag push, push-all-tags, and remote tag deletion success/failure each emit one system Git audit outcome with the workspace root; a local bare-remote integration test verifies all six attempts.
    Evidence: Conflict resolve and undo success/failure each emit one system Git audit outcome with the resolved root; the focused real-conflict regression passes.
    Evidence: Conflict detail/resolve/unresolve reject repository traversal paths, and the regression confirms an outside file is not modified.
    Evidence (2026-10-21): GitHub PR creation, Azure DevOps PR creation, and Azure DevOps thread status update each have focused assertions for exactly one successful classified provider write audit entry. Provider PR/thread gaps are closed; other mutation families and inventory-wide route reconciliation remain.
@@ -967,3 +969,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Added a compact History regression for entering a relative path filter. It verifies the graph query receives the path and the active filter chip is rendered. Focused case passes (1 passed / 19 skipped). Narrow human review and broader acceptance remain open; WORK_LOCK stays.
 - Verification: focused GitBranchesTab path-filter case passes (1 passed / 19 skipped); `npm run typecheck` passes; ESLint reports 0 errors / 1 warning; Prettier and `git diff --check` pass.
+
+## Worker continuation (remote tag mutation audit)
+
+- Added a local bare-remote integration test covering push-tag, push-all-tags, and remote-tag deletion. Each of the three operations is exercised once successfully and once against an unavailable remote; the six attempts each produce exactly one system Git write audit row with the workspace root. Focused backend case passes (1 passed / 184 skipped). Other mutation families and manual review remain open; WORK_LOCK stays present.
+- Verification: bare-remote tag audit case passes (1 passed / 184 skipped); `npm run typecheck` passes; focused ESLint 0 errors / 93 warnings; Prettier and `git diff --check` pass.

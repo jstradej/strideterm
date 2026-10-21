@@ -143,3 +143,4 @@
 - [x] Verify pull and push start-response loss releases busy without an automatic retry, and an explicit retry reuses the same scoped idempotency key; focused store cases pass.
 - [x] Verify classic Changes commit text and selected paths are isolated by repository root and restored when returning; focused mounted lifecycle regression passes.
 - [x] Verify a relative History path filter reaches the graph query and appears as an active filter chip; focused GitBranchesTab test passes.
+- [x] Verify remote tag push, push-all-tags, and remote deletion each emit one resolved-root system Git audit row on success and failure against a local bare remote.

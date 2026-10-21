@@ -4132,6 +4132,37 @@ describe("GitManager", () => {
       expect(entries.every((entry) => entry.rootPath === root)).toBe(true);
     });
 
+    test("records successful and failed remote tag write audit outcomes", async () => {
+      const entries: Record<string, unknown>[] = [];
+      const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
+      const root = await initRepo();
+      const remoteRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-git-tag-remote-audit-"));
+      tempPaths.push(remoteRoot);
+      execFileSync("git", ["init", "--bare", "-q", remoteRoot]);
+      const workspace = { id: "ws-remote-tag-audit", cwd: root, kind: "terminal" as const };
+      rg(root, ["tag", "v-audit"]);
+      rg(root, ["remote", "add", "origin", remoteRoot]);
+
+      expect((await auditMgr.pushTag(workspace, { tagName: "v-audit" })).ok).toBe(true);
+      expect((await auditMgr.pushAllTags(workspace)).ok).toBe(true);
+      expect((await auditMgr.deleteRemoteTag(workspace, { tagName: "v-audit" })).ok).toBe(true);
+      rg(root, ["remote", "set-url", "origin", `${remoteRoot}-missing`]);
+      expect((await auditMgr.pushTag(workspace, { tagName: "v-audit" })).ok).toBe(false);
+      expect((await auditMgr.pushAllTags(workspace)).ok).toBe(false);
+      expect((await auditMgr.deleteRemoteTag(workspace, { tagName: "v-audit" })).ok).toBe(false);
+
+      expect(entries.map((entry) => [entry.operation, entry.category, entry.success])).toEqual([
+        ["gitPush-tag", "write", true],
+        ["gitPush-all-tags", "write", true],
+        ["gitDelete-remote-tag", "write", true],
+        ["gitPush-tag", "write", false],
+        ["gitPush-all-tags", "write", false],
+        ["gitDelete-remote-tag", "write", false],
+      ]);
+      expect(entries.every((entry) => entry.connectionId === "system-ws-remote-tag-audit")).toBe(true);
+      expect(entries.every((entry) => entry.rootPath === root)).toBe(true);
+    });
+
     test("records one success or failure audit row per stash mutation", async () => {
       const entries: Record<string, unknown>[] = [];
       const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
