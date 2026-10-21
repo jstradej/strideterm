@@ -1476,7 +1476,7 @@ watch(
       selectedRef.value = "";
       gitUiStore.gitSelectCommit(props.workspaceId, "");
     }
-    if (multiSelectedRefs.value.size > 0) {
+    if (refsReady && multiSelectedRefs.value.size > 0) {
       let changed = false;
       const next = new Set<string>();
       for (const r of multiSelectedRefs.value) {
