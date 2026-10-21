@@ -1250,6 +1250,29 @@ describe("PR-linked checkouts", () => {
     });
   });
 
+  test("requires a repository refresh before retrying a review push after a lost response", async () => {
+    linked("pr-7-feature-login");
+    pushReviewCheckout
+      .mockRejectedValueOnce(new Error("Remote transport disconnected."))
+      .mockResolvedValue({ status: "pushed", message: "Pushed abc to feature/login." });
+    const transport = api();
+    const store = useGitUiStore();
+    store.init({ ...transport, refreshGit: vi.fn().mockResolvedValue({ fresh: true }) } as unknown as Transport);
+    store.setActiveRoot("ws1", "/repo/review");
+
+    await store.gitPush("ws1");
+    expect(pushReviewCheckout).toHaveBeenCalledTimes(1);
+    expect(store.get("ws1").lastResult?.summary).toContain("outcome is uncertain");
+
+    await store.gitPush("ws1");
+    expect(pushReviewCheckout).toHaveBeenCalledTimes(1);
+    expect(store.get("ws1").lastResult?.summary).toContain("Refresh this repository");
+
+    await store.refreshGit("ws1");
+    await store.gitPush("ws1");
+    expect(pushReviewCheckout).toHaveBeenCalledTimes(2);
+  });
+
   test("on any other branch the ordinary push acts on that branch, even in a PR-linked workspace", async () => {
     linked("develop");
     const transport = api();

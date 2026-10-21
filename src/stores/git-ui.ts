@@ -216,7 +216,7 @@ const PUSH_PROGRESS_MAX = 100_000;
 // A review Git step includes the user's decision in the proposal dialog and a
 // push that may run for minutes; the runtime's operation and the operation wait
 // own their own limits, so the generic backstop must not cut either short.
-const REVIEW_GIT_STEP_OPTS = { timeoutMs: 0 };
+const REVIEW_GIT_STEP_OPTS = { timeoutMs: 0, requireRefreshBeforeRetry: true };
 // Fetch-first merge/rebase waits for the generic operation to finish, so the
 // short renderer IPC backstop must not discard that accepted operation.
 const GIT_OPERATION_WAIT_OPTS = { timeoutMs: 0 };
