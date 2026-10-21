@@ -170,11 +170,12 @@ Full per-requirement ledger (122 items)
 
 36. **PARTIAL** — Inventory every existing button/context menu/shortcut with its store, permission, audit, results and new UI destination before decomposition.
    Evidence: .strideterm/tasks/716afb2f-00d3-4e3a-b535-f10bd87b0bef/IMPLEMENTATION_INVENTORY.md:7,11,13; src/components/workspace/GitPane.vue:649.
-   Remaining: Inventory groups capabilities, omits individual menus/shortcuts/result variants and claims nonexistent More→Branches/pane-wide card. Correct and complete the actionable inventory.
+   Remaining: Inventory groups capabilities and omits individual menus/shortcuts/result variants. More→Branches is present and tested, and the shared operation card is rendered in the primary views; complete the actionable menu/shortcut-to-result mapping.
 
 37. **PARTIAL** — Picker supports keyboard open/search/select/Escape/focus return; context menus and relevant shortcuts remain usable.
    Evidence: src/components/workspace/git/GitBranchesTab.vue:5,17,67,210; src/components/workspace/git/GitBranchesTab.test.ts:104.
-   Remaining: Native select/search exists; keyboard/focus contract is untested, and compact mode removes branch context-menu access. Verify complete keyboard sequence and restore management entry.
+   Evidence: History ref picker is a labeled native select and a component test verifies it is tabbable and receives focus. More→Branches routes to the existing branch-management component and is covered by GitPane destination tests.
+   Remaining: Full native open/search/select/Escape behavior and narrow-window review remain for the user visual walkthrough.
 
 38. **PARTIAL** — Narrow layout uses list/detail and inline diff; long refs/paths/hundreds of branches remain usable.
    Evidence: src/components/workspace/git/GitBranchesTab.vue:538,566; src/components/workspace/git/GitChangesTab.vue:389,611; src/components/shared/MonacoDiffPanel.vue:172,291.
@@ -285,7 +286,8 @@ Full per-requirement ledger (122 items)
 
 67. **PARTIAL** — Stage 3: reusable history/range selection with searchable picker and accessible branch management.
    Evidence: src/components/workspace/git/GitBranchesTab.vue:5,210; src/components/workspace/GitPane.vue:649.
-   Remaining: Branch management path and HEAD/all semantics are implemented. Keyboard/focus behavior remains for manual verification.
+   Evidence: Branch management is reachable from More and the picker select's focusability is tested. HEAD and all-ref selection issue distinct read queries.
+   Remaining: Human verification of native keyboard behavior remains.
 
 68. **PARTIAL** — Stage 3: align subjects/quieten refs, adjustable detail and preserved filters/compare.
    Evidence: src/components/workspace/git/GitTreeGraph.vue:108; src/components/workspace/git/GitBranchesTab.vue:67,479.
@@ -455,7 +457,7 @@ Full per-requirement ledger (122 items)
 
 112. **PARTIAL** — TODO Done: record complete existing action/capability inventory.
    Evidence: .strideterm/tasks/716afb2f-00d3-4e3a-b535-f10bd87b0bef/IMPLEMENTATION_INVENTORY.md:7,11,13.
-   Remaining: Capability routes and current cards are reconciled. Complete individual shortcut/context-menu/result-variant mapping if those paths are in scope, then review manually.
+   Remaining: Capability routes and current cards are reconciled, including Branches in More and shared operation cards. Complete individual shortcut/context-menu/result-variant mapping, then review manually.
 
 113. **IMPLEMENTED** — TODO Done: audited file stage/unstage and commit-staged APIs across desktop/remote; index-only semantics.
    Evidence: electron/backend/git-manager.ts:2228,2244,2267,2467; src/stores/git-ui.ts:1302,1313,1338; electron/backend/git-manager.test.ts:3960.
@@ -831,3 +833,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 - Full backend at four workers: 224 files, 5,468 passed, 7 skipped.
 - `npm run typecheck`: pass. `npm run lint`: pass, 0 errors / 4,685 warnings; full Prettier check clean. `git diff --check`: pass. No app/dev server/build was launched; CLAUDE.md recommends typecheck and only a watch-compatible build when necessary.
 - The remaining numbered audit and user-owned manual walkthrough are incomplete. WORK_LOCK remains.
+
+## Worker continuation (History picker focus and management route)
+
+- Added a mounted accessibility regression verifying the compact History reference select has native tab order, is focusable, and has an accessible label. Existing GitPane tests verify More exposes and routes to Branches management. Focused picker test passes; repository typecheck, touched-file Prettier, ESLint (0 errors; one existing warning), and `git diff --check` pass.
+- Corrected stale audit text claiming More→Branches was absent. Full open/keyboard/Escape interaction and narrow visual behavior remain assigned to the user's manual walkthrough; complete shortcut/context-menu inventory remains open, so WORK_LOCK stays.
