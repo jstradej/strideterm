@@ -268,6 +268,39 @@ describe("GitPane repo picker", () => {
     expect(wrapper.findComponent({ name: "GitOperationCard" }).exists()).toBe(true);
   });
 
+  test.each(["History", "Changes", "Review"] as const)("keeps conflict resolution visible in %s", async (view) => {
+    const workspaceId = `ws-conflicts-${view.toLowerCase()}`;
+    const ws = buildWorkspace({ id: workspaceId });
+    const wrapper = mountPane(workspaceId, [ws]);
+    const appStore = useAppStore();
+    const base = appStore.payload!;
+    const snapshot = base.git!.workspaces[workspaceId];
+    appStore.payload = {
+      ...base,
+      appState: { ...base.appState!, settings: { git: { ui: { newView: true } } } },
+      git: {
+        ...base.git!,
+        workspaces: {
+          ...base.git!.workspaces,
+          [workspaceId]: {
+            ...snapshot,
+            operationState: { ...snapshot.operationState, conflicts: [{ path: "src/conflict.ts" }] },
+          },
+        },
+      },
+    } as StatePayload;
+    await flushPromises();
+    if (view !== "History") {
+      await wrapper
+        .findAll('[role="tab"]')
+        .find((tab) => tab.text() === view)!
+        .trigger("click");
+      await flushPromises();
+    }
+
+    expect(wrapper.get('[aria-label="Open conflict resolution"]').text()).toContain("Resolve conflicts");
+  });
+
   test("a running Git operation survives turning the opt-in view off and back on", async () => {
     const ws = buildWorkspace({ id: "ws-toggle-operation" });
     const wrapper = mountPane("ws-toggle-operation", [ws]);
