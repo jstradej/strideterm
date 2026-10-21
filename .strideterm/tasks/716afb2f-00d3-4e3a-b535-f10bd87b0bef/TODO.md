@@ -73,3 +73,4 @@
 - [x] Re-run full UI/backend suites, typecheck, lint/Prettier and the safe production build after this continuation; see JUDGE_TODO for results and remaining user/manual acceptance.
 - [x] Reconcile the action inventory with current generic operation paths, guarded remote routes, scoped History state, and current healthy-check results; mobile route-policy suite passes all 50 cases.
 - [x] Prevent duplicate same-action launches while a Git action is pending; store regression, typecheck, focused lint/format and safe build pass.
+- [x] Emit local Git write audit entries for stage/unstage/hunk/index commit actions, including success/failure and resolved root; real-repository audit test and full GitManager suite pass.

@@ -2634,7 +2634,7 @@ export class GitManager extends EventEmitter {
       const durationMs = Date.now() - startTime;
       log.info("git action completed", { type, label, durationMs });
       const remoteUrl = String(Object.values((snapshot.remotes as Record<string, unknown>) || {})[0] || "");
-      const auditExtra = rootPath ? { ...extraAudit, rootPath } : extraAudit;
+      const auditExtra = { ...extraAudit, rootPath: effectiveCwd };
       this._logGitAudit({
         type,
         connection,
@@ -2656,7 +2656,7 @@ export class GitManager extends EventEmitter {
       const err = error as { stdout?: string; stderr?: string };
       log.warn("git action failed", { type, label, err: extractErrorMessage(error) });
       const remoteUrlOnError = String(Object.values((snapshot.remotes as Record<string, unknown>) || {})[0] || "");
-      const auditExtraOnError = rootPath ? { ...extraAudit, rootPath } : extraAudit;
+      const auditExtraOnError = { ...extraAudit, rootPath: effectiveCwd };
       this._logGitAudit({
         type,
         connection,
@@ -2717,7 +2717,31 @@ export class GitManager extends EventEmitter {
       "delete-remote-tag",
     ]);
     const isRemoteOp = REMOTE_OPS.has(type);
-    const writeOps = new Set(["push", "push-tag", "push-all-tags", "delete-remote-tag", "force-push"]);
+    const writeOps = new Set([
+      "force-push",
+      "push",
+      "push-tag",
+      "push-all-tags",
+      "delete-remote-tag",
+      "pull",
+      "checkout",
+      "checkout-remote",
+      "create-branch",
+      "rename-branch",
+      "delete-branch",
+      "delete-remote-branch",
+      "create-tag",
+      "delete-tag",
+      "cherry-pick",
+      "squash",
+      "merge",
+      "rebase",
+      "stage-file",
+      "unstage-file",
+      "stage-hunk",
+      "unstage-hunk",
+      "commit-staged",
+    ]);
 
     try {
       if (connection?.id && this.auditLogStore) {
@@ -2741,7 +2765,7 @@ export class GitManager extends EventEmitter {
           userInitiated: true,
           ...extra,
         });
-      } else if (!connection?.id && isRemoteOp && this.gitAuditLogStore) {
+      } else if (!connection?.id && this.gitAuditLogStore && (isRemoteOp || writeOps.has(type))) {
         this.gitAuditLogStore.logEntry({
           timestamp: new Date().toISOString(),
           connectionId: `system-${workspaceId || "unknown"}`,
@@ -2756,7 +2780,7 @@ export class GitManager extends EventEmitter {
           durationMs: durationMs ?? null,
           resourceType: "git",
           resourceId: `${type}@${remoteUrl || "unknown"}`,
-          summary: `git ${type} (system credentials)`,
+          summary: `git ${type} (${isRemoteOp ? "system credentials" : "local repository"})`,
           userInitiated: true,
           ...extra,
         });
