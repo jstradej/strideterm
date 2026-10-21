@@ -181,3 +181,4 @@
 - [x] Assert push-all-tags and remote-tag deletion dispatch one manager write with the resolved root through the generic operation registry.
 - [x] Reconcile stale Review draft audit text with the existing changed-file editor lifecycle test and clarify remaining History setting-toggle coverage.
 - [x] Verify the selected History ref survives the GitPane new-view setting being turned off and on with the real child view mounted.
+- [x] Reconcile requirement 122 with existing fetch/pull/push transport reconnect and profile-switch coverage.

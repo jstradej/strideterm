@@ -553,7 +553,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
 
 122. **PARTIAL** — TODO Done: focused index, long acceptance/dedup, stale read and Review routing tests.
    Evidence: electron/backend/git-manager.test.ts:3943; electron/backend/runtime.test.ts:8481; src/stores/git-ui.test.ts:64; src/components/workspace/GitPane.test.ts:152.
-   Evidence: Runtime index routes each call one manager write with the resolved root; More destination routing covers every currently available legacy tool. Remaining: Full reconnect integration, complete menu/shortcut-to-audit inventory, and user visual acceptance remain open.
+   Evidence: Runtime index routes each call one manager write with the resolved root; More destination routing covers every currently available legacy tool. `src/transport.test.ts` covers pending fetch, pull, and push through disconnect/reconnect and profile switching, including single start and restored result. Remaining: complete menu/shortcut-to-audit inventory and user visual acceptance.
 
 ## Worker continuation correction (2026-10-21)
 
