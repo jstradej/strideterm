@@ -824,3 +824,10 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Expanded the fetch/pull/push terminal failure regression to seed a root-scoped staged commit message and assert it remains after the action error, warnings, and raw output are surfaced. All three focused cases pass; repository typecheck and touched-file Prettier pass; ESLint reports 0 errors and 17 existing warnings; `git diff --check` passes.
 - Renderer disconnect behavior and user visual acceptance remain open with the broader route/lifecycle audit; WORK_LOCK stays.
+
+## Worker continuation verification refresh (current tree)
+
+- Full UI: 214 files and 3,072 tests passed; one existing transport temporary-pause reconnect-timer assertion failed under full-suite load. The exact test passes alone (1 passed / 122 skipped).
+- Full backend at four workers: 224 files, 5,468 passed, 7 skipped.
+- `npm run typecheck`: pass. `npm run lint`: pass, 0 errors / 4,685 warnings; full Prettier check clean. `git diff --check`: pass. No app/dev server/build was launched; CLAUDE.md recommends typecheck and only a watch-compatible build when necessary.
+- The remaining numbered audit and user-owned manual walkthrough are incomplete. WORK_LOCK remains.

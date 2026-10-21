@@ -117,3 +117,4 @@
 - [x] Verify History distinguishes an empty commit-search result from a graph query error. GitBranchesTab suite passes 18 tests; typecheck, touched-file Prettier/ESLint (0 errors), and diff check pass.
 - [x] Add a keyboard-focusable Git header details disclosure for the full active repository path and working branch. GitPane targeted test passes; typecheck, touched-file Prettier/ESLint (0 errors), and diff check pass.
 - [x] Verify fetch/pull/push terminal failure results and diagnostics do not clear the active root's staged commit draft. Three focused Git UI store cases pass; typecheck, Prettier, ESLint (0 errors), and diff check pass.
+- [x] Re-run healthy checks on the current tree: backend suite passes 224 files / 5,468 tests (7 skipped); full lint has 0 errors / 4,685 warnings and Prettier is clean; typecheck passes. Full UI has 214 files / 3,072 passing tests and one transport reconnect timing failure; that test passes alone.
