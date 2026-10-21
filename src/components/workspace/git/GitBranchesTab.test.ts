@@ -121,6 +121,11 @@ afterEach(async () => {
 });
 
 describe("GitBranchesTab compact history picker", () => {
+  test("surfaces tag read failures in History", async () => {
+    const picker = mountTab({ tagsError: "Could not load tags." });
+    expect(picker.get('[role="alert"]').text()).toBe("Could not load tags.");
+  });
+
   test("compact History skips the hidden branch-tree step on narrow layouts", async () => {
     mobileViewport.isNarrow.value = true;
     mobileViewport.isMobile.value = true;

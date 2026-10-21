@@ -1,5 +1,6 @@
 <template>
   <div class="git-section git-branches" :class="{ 'git-branches--mobile': isMobile }">
+    <p v-if="gitUi.tagsError" class="git-branches__pane-error" role="alert">{{ gitUi.tagsError }}</p>
     <!-- Compact toolbar (search + filters + actions).
          Desktop: single row. Mobile: stacked with view-switcher tabs. -->
     <div v-if="compactHistory" class="git-history-picker">
