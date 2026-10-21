@@ -147,3 +147,4 @@
 - [x] Bring custom commit-all onto the shared per-worktree lock and system Git audit path; real-repository test verifies success and rejected empty selection each produce one resolved-root audit row.
 - [x] Lock and audit synchronous merge-into-base against the base worktree; real sibling-worktree test verifies success and dirty-target rejection each record one resolved-target-root outcome.
 - [x] Classify bisect continue/abort/skip audit outcomes as writes and add success/failure classification coverage with the resolved root.
+- [x] Verify History cherry-pick success and Git failure each emit exactly one resolved-root system write audit entry in a real repository.

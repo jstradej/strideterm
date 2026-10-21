@@ -4134,6 +4134,39 @@ describe("GitManager", () => {
       expect(entries.every((entry) => entry.rootPath === root)).toBe(true);
     });
 
+    test("records one resolved-root audit outcome for successful and failed cherry-picks", async () => {
+      const entries: Record<string, unknown>[] = [];
+      const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
+      const root = await initRepo();
+      const baseBranch = rg(root, ["branch", "--show-current"]).trim();
+      rg(root, ["checkout", "-b", "cherry-source"]);
+      await fs.writeFile(path.join(root, "cherry.txt"), "picked commit\n", "utf8");
+      rg(root, ["add", "cherry.txt"]);
+      rg(root, ["commit", "-q", "-m", "source commit"]);
+      const sourceCommit = rg(root, ["rev-parse", "HEAD"]).trim();
+      rg(root, ["checkout", baseBranch]);
+
+      expect(
+        (await auditMgr.cherryPick({ id: "ws-cherry-audit", cwd: root, kind: "terminal" }, { hashes: [sourceCommit] }))
+          .ok,
+      ).toBe(true);
+      expect(
+        (
+          await auditMgr.cherryPick(
+            { id: "ws-cherry-audit", cwd: root, kind: "terminal" },
+            { hashes: ["0000000000000000000000000000000000000000"] },
+          )
+        ).ok,
+      ).toBe(false);
+
+      expect(entries.map((entry) => [entry.operation, entry.category, entry.success])).toEqual([
+        ["gitCherry-pick", "write", true],
+        ["gitCherry-pick", "write", false],
+      ]);
+      expect(entries.every((entry) => entry.connectionId === "system-ws-cherry-audit")).toBe(true);
+      expect(entries.every((entry) => entry.rootPath === root)).toBe(true);
+    });
+
     test("records successful and failed remote branch deletion audit outcomes", async () => {
       const entries: Record<string, unknown>[] = [];
       const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
