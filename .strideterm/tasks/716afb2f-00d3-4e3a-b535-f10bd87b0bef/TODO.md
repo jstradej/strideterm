@@ -8,9 +8,9 @@
 ## To Do
 
 - [ ] Complete the user's visual review using `MANUAL_VERIFICATION.md` in their `dev.ps1` session; adjust anything they report.
-- [ ] Finish remaining audit findings in `JUDGE_TODO.md`, including long operations, scoped read/draft lifecycle coverage, and responsive browser diff verification.
+- [ ] Finish remaining audit findings in `JUDGE_TODO.md`, including long operations and scoped read/draft lifecycle coverage.
 - [ ] Re-run the full numbered self-audit against the current tree and update each requirement with verifiable evidence.
-- [ ] Resolve full unit/E2E failures and complete the user visual review; rerun project checks after remaining implementation changes.
+- [ ] Resolve remaining full-suite failures and complete the user visual review; rerun project checks after remaining implementation changes.
 - [x] Commit implementation changes locally without pushing.
 
 ## In Progress
@@ -39,12 +39,19 @@
 - [x] Keep a conflict resolution action in the shared Git frame and exercise More destination routing in GitPane tests.
 - [x] Render operation outcomes inside Changes and send structured `{ ok: false }` mutation results through the standard error toast; GitChangesTab/store tests pass.
 - [x] Add a typed two-revision file diff through Electron and remote transport; provider summaries now supply source/target commit IDs and Review compares those pinned commits instead of local branches or the working copy.
-- [x] Re-run focused GitPane/History UI and GitManager tag/hunk tests, full lint, formatting check and safe production build; all pass. Full typecheck remains failing in unrelated existing test typings (see `JUDGE_TODO.md`); remaining implementation work is still open.
+- [x] Re-run focused GitPane/History UI and GitManager tag/hunk tests, full lint, formatting check and safe production build; all pass. Full typecheck was subsequently restored and passes; remaining implementation work is still open.
 - [x] Persist classic Changes commit text and selected paths by workspace/root, clear them only after successful commits, and clear staged-message completion against the captured root. Lifecycle tests pass.
 - [x] Restore compact History commit-text search across message, author and hash, with a distinct no-match status; picker and GitPane UI suites pass.
 - [x] Add the narrow Changes diff layer label, stage/unstage file and hunk actions, and commit-staged controls; its focused UI test passes.
 - [x] Classify stage/unstage/commit-staged remote routes for mobile policy and correct the tag failure assertion; route policy (50), runtime/remote (212), focused GitManager (3), and GitPane/History/Changes/Review/store UI (110) tests pass.
-- [x] Re-run project lint (0 errors; 4651 existing warnings, Prettier clean), watch-compatible production build, and focused UI/backend checks. Full typecheck still fails in unrelated test typings; the full Git backend run found and fixed the route-policy failure plus stale tag assertion.
+- [x] Re-run project lint (0 errors; existing warnings, Prettier clean), watch-compatible production build, and focused UI/backend checks. The full Git backend run found and fixed the route-policy failure plus stale tag assertion; repository-wide typecheck was later restored.
 - [x] Fix repository-wide TypeScript test errors in task-round, mobile invitation, SSH fixture, and component test typings; `npm run typecheck` passes.
-- [x] Re-run project lint/format, full UI suite (214 files, 3,021 tests), focused Git UI (110), route policy (50), AppX config (9), and `npm run typecheck`; all pass.
-- [ ] Investigate full-suite blockers: backend has 6 failures across 3 files (missing Monaco codicon TTF asset and Windows native OpenSSH test timeouts); browser E2E has 10 failures (9 Git Changes Monaco text rendering checks and 1 settings screenshot mismatch). User visual review remains pending.
+- [x] Re-run project lint/format, full UI suite (214 files, 3,024 tests), focused Git UI, route policy (50), AppX config (9), and `npm run typecheck`; all pass.
+- [x] Fix the E2E mock's missing `/git/diff-preview` fixture route; all nine responsive Git Changes viewport cases now pass.
+- [ ] Investigate remaining verification blockers: full backend run now passes 223 files; its native Windows OpenSSH integration failed under suite load but passes alone. Browser E2E reports the known settings screenshot mismatch and one file-manager visibility failure under parallel load (passes alone). User visual review remains pending.
+- [x] Resolve backend codicon test failures by resolving Monaco's real installed package path instead of assuming a worktree-local `node_modules`; the two affected backend files pass 74 tests.
+- [x] Persist the Settings → Git new-view checkbox through the dialog's form and save payload; integration coverage mounts the real tab and verifies the sibling `showAllActions` preference is preserved.
+- [x] Reject caller-supplied Git roots outside a single-repository workspace before accepting long fetch operations; runtime regression and the full 509-test runtime suite pass.
+- [x] Make History favorite/recent preferences reactive after localStorage updates; store and History component suites pass.
+- [x] Deduplicate overlapping fetch/pull/push operations by profile, workspace, root, kind, and inputs, even when requests have distinct idempotency keys; runtime suite passes 510 tests.
+- [x] Re-run repository verification on the current tree: typecheck, production build, lint/Prettier; UI and backend suites reported only load-sensitive timeouts also covered by isolated passes. User visual review and remaining audit items stay open.
