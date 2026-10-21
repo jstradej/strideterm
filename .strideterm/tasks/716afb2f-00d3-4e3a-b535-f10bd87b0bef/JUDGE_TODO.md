@@ -221,7 +221,7 @@ Full per-requirement ledger (122 items)
    Evidence: electron/backend/operation-registry.ts:216; electron/backend/git-manager.ts:2643,2686,2755; electron/backend/runtime-git-handlers.ts:143.
    Evidence: OperationRegistry failure logs now include operation ID, kind, effective profile, origin workspace, optional repository root, step, elapsed duration, and stable error code; a regression verifies the correlation fields and duration.
    Evidence: Long Git failure outcomes now carry a stable `git_operation_failed` code plus bounded warnings, conflict paths, and raw output through the event/payload schema to the Git operation card. Runtime, store, and registry regressions cover this path.
-   Remaining: Other long runners may still collapse structured failures into generic summaries; audit them individually.
+   Remaining: Other long runners may still collapse structured failures into generic summaries; audit them individually. Result-classification and user visual acceptance requirements remain open.
 
 52. **PARTIAL** — Busy always releases, prevents duplicate launch; uncertain write results trigger state verification before user retry, never automatic write retry.
    Evidence: src/stores/git-ui.ts:446,521,610,633; src/components/workspace/git/GitChangesTab.vue:605; src/components/workspace/GitPane.vue:144.
@@ -789,3 +789,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Long Git failures now retain stable `git_operation_failed` classification, bounded warnings, conflict paths, and raw output in the generic operation outcome. Those diagnostics pass through the shared operation event schema and store to the Git status card. OperationRegistry tests pass 10; the focused runtime failure regression passes; `git-ui.test.ts` passes 59; repository typecheck, touched-file Prettier, ESLint (0 errors; existing warnings), and `git diff --check` pass.
 - Other long-operation result classifications and remaining manual/inventory audit items remain open. WORK_LOCK stays.
+
+## Worker continuation (long Git outcome propagation)
+
+- Re-audited requirements 51, 78, 89, and 92. Long Git failures preserve bounded diagnostic metadata from the structured manager result through OperationRegistry persistence, event/payload validation, Git UI store mapping, and the shared operation card. Targeted runtime, registry, and store tests pass; repository typecheck and touched-file format/lint checks pass. Full renderer transport reconnect and other long-runner classification remain separate open requirements.
+- Manual `MANUAL_VERIFICATION.md` remains user-owned in the existing `dev.ps1` session. WORK_LOCK remains present.
