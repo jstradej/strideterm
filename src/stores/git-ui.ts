@@ -354,7 +354,37 @@ export const useGitUiStore = defineStore("git-ui", () => {
   // state) stays workspace-owned in the backend payload.
   const state = ref<Record<string, GitUiState>>({});
   const gitHistoryPreferences = ref<Record<string, { favorites: string[]; recent: string[] }>>({});
-  const gitHistorySelections = ref<Record<string, { ref: string; commitSearch: string }>>({});
+  type GitHistorySelection = {
+    ref: string;
+    commitSearch: string;
+    showRemotes: boolean;
+    userFilter: string;
+    dateFilter: "all" | "today" | "week" | "month" | "custom";
+    customSince: string;
+    customUntil: string;
+    pathsFilter: string[];
+    topoOrder: boolean;
+    graphLimit: number;
+    compareBase: string;
+    includeBaseUpdates: boolean;
+    viewMode: "graph" | "flat";
+  };
+  const defaultGitHistorySelection = (): GitHistorySelection => ({
+    ref: "",
+    commitSearch: "",
+    showRemotes: true,
+    userFilter: "",
+    dateFilter: "all",
+    customSince: "",
+    customUntil: "",
+    pathsFilter: [],
+    topoOrder: false,
+    graphLimit: 500,
+    compareBase: "",
+    includeBaseUpdates: false,
+    viewMode: "graph",
+  });
+  const gitHistorySelections = ref<Record<string, GitHistorySelection>>({});
   const readGeneration = new Map<string, number>();
   const recentGitOperationOutcomes = new Map<string, OperationFinished>();
   const gitOperationWaiters = new Map<string, Set<(outcome: OperationFinished) => void>>();
@@ -1849,10 +1879,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   function getGitHistorySelection(workspaceId: string, rootPath = getActiveRoot(workspaceId), profileId = "default") {
     return {
-      ...(gitHistorySelections.value[gitHistorySelectionKey(workspaceId, rootPath, profileId)] || {
-        ref: "",
-        commitSearch: "",
-      }),
+      ...defaultGitHistorySelection(),
+      ...(gitHistorySelections.value[gitHistorySelectionKey(workspaceId, rootPath, profileId)] || {}),
+      pathsFilter: [
+        ...(gitHistorySelections.value[gitHistorySelectionKey(workspaceId, rootPath, profileId)]?.pathsFilter || []),
+      ],
     };
   }
 
@@ -1860,13 +1891,17 @@ export const useGitUiStore = defineStore("git-ui", () => {
     workspaceId: string,
     rootPath: string,
     profileId: string,
-    selection: { ref?: string; commitSearch?: string },
+    selection: Partial<GitHistorySelection>,
   ): void {
     const key = gitHistorySelectionKey(workspaceId, rootPath, profileId);
     const current = getGitHistorySelection(workspaceId, rootPath, profileId);
     gitHistorySelections.value = {
       ...gitHistorySelections.value,
-      [key]: { ref: selection.ref ?? current.ref, commitSearch: selection.commitSearch ?? current.commitSearch },
+      [key]: {
+        ...current,
+        ...selection,
+        pathsFilter: selection.pathsFilter ? [...selection.pathsFilter] : current.pathsFilter,
+      },
     };
   }
 

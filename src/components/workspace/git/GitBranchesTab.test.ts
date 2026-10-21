@@ -76,7 +76,21 @@ vi.mock("../../../stores/git-ui.js", () => ({
     azureCreatePullRequest,
   }),
 }));
-const historySelection = reactive({ ref: "", commitSearch: "" });
+const historySelection = reactive({
+  ref: "",
+  commitSearch: "",
+  showRemotes: true,
+  userFilter: "",
+  dateFilter: "all" as "all" | "today" | "week" | "month" | "custom",
+  customSince: "",
+  customUntil: "",
+  pathsFilter: [] as string[],
+  topoOrder: false,
+  graphLimit: 500,
+  compareBase: "",
+  includeBaseUpdates: false,
+  viewMode: "graph" as "graph" | "flat",
+});
 vi.mock("../../../stores/notifications.js", () => ({
   useNotificationStore: () => ({ showError, addEvent }),
 }));
@@ -142,7 +156,21 @@ afterEach(async () => {
   mountedWrappers.length = 0;
   document.body.innerHTML = "";
   await flushPromises();
-  Object.assign(historySelection, { ref: "", commitSearch: "" });
+  Object.assign(historySelection, {
+    ref: "",
+    commitSearch: "",
+    showRemotes: true,
+    userFilter: "",
+    dateFilter: "all",
+    customSince: "",
+    customUntil: "",
+    pathsFilter: [],
+    topoOrder: false,
+    graphLimit: 500,
+    compareBase: "",
+    includeBaseUpdates: false,
+    viewMode: "graph",
+  });
 });
 
 describe("GitBranchesTab compact history picker", () => {
@@ -436,14 +464,31 @@ describe("GitBranchesTab compact history picker", () => {
 
   test("restores the visible History selection when switching roots and profiles", async () => {
     historySelections.set(historySelectionKey("ws-scope-switch", "/repo/a", "profile-a"), {
+      ...historySelection,
       ref: "feature/a",
       commitSearch: "alpha",
+      dateFilter: "custom",
+      customSince: "2026-01-01",
+      customUntil: "2026-02-01",
+      pathsFilter: ["src/a.ts"],
+      topoOrder: true,
+      graphLimit: 1000,
+      viewMode: "flat",
     });
     historySelections.set(historySelectionKey("ws-scope-switch", "/repo/b", "profile-a"), {
+      ...historySelection,
       ref: "feature/b",
       commitSearch: "beta",
+      dateFilter: "all",
+      customSince: "",
+      customUntil: "",
+      pathsFilter: [],
+      topoOrder: false,
+      graphLimit: 300,
+      viewMode: "graph",
     });
     historySelections.set(historySelectionKey("ws-scope-switch", "/repo/a", "profile-b"), {
+      ...historySelection,
       ref: "release/a",
       commitSearch: "release",
     });
@@ -464,18 +509,31 @@ describe("GitBranchesTab compact history picker", () => {
           graph: { commits: [], head: "", refs: {} },
           tags: [],
         },
+        baseBranchOptions: ["origin/main"],
         compactHistory: true,
       },
     });
     const select = () => picker.get<HTMLSelectElement>('[aria-label="History reference"]').element;
     expect(select().value).toBe("feature/a");
+    expect(picker.findAll<HTMLInputElement>('input[type="date"]').map((input) => input.element.value)).toEqual([
+      "2026-01-01",
+      "2026-02-01",
+    ]);
+    expect(picker.get(".git-branches__path-chip").text()).toContain("src/a.ts");
+    expect(picker.text()).toContain("Sort: Topo");
+    expect(picker.text()).toContain("View: Flat");
 
     await picker.setProps({ activeRootPath: "/repo/b" } as never);
     expect(select().value).toBe("feature/b");
+    expect(picker.findAll('input[type="date"]')).toHaveLength(0);
+    expect(picker.findAll(".git-branches__path-chip")).toHaveLength(0);
+    expect(picker.text()).toContain("Sort: Date");
+    expect(picker.text()).toContain("View: Graph");
     await picker.setProps({ activeRootPath: "/repo/a", profileId: "profile-b" } as never);
     expect(select().value).toBe("release/a");
     await picker.setProps({ profileId: "profile-a" } as never);
     expect(select().value).toBe("feature/a");
+    expect(picker.get<HTMLInputElement>('input[type="date"]').element.value).toBe("2026-01-01");
   });
 
   test("keeps a persisted ref selection while branch and tag reads are pending", async () => {
@@ -798,6 +856,7 @@ describe("GitBranchesTab compact history picker", () => {
   test("reloads the selected history query when the root changes but its ref is the same", async () => {
     vi.useFakeTimers();
     historySelections.set(historySelectionKey("ws-root-history", "/repo-b", "default"), {
+      ...historySelection,
       ref: "topic-b",
       commitSearch: "",
     });

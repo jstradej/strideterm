@@ -70,15 +70,39 @@ describe("git-ui store", () => {
     expect(store.getGitView("ws::2", "/repo", "profile")).toBe("history");
     expect(store.getGitView("ws", "/repo", "profile::2")).toBe("review");
   });
-  test("History ref and search restore per profile, workspace, and root", () => {
+  test("History query restores and isolates filters per profile, workspace, and root", () => {
     const store = useGitUiStore();
-    store.setGitHistorySelection("ws1", "/repo/a", "profile-a", { ref: "feature/a", commitSearch: "fix" });
+    store.setGitHistorySelection("ws1", "/repo/a", "profile-a", {
+      ref: "feature/a",
+      commitSearch: "fix",
+      userFilter: "Ada",
+      pathsFilter: ["src/main.ts"],
+      compareBase: "origin/main",
+      dateFilter: "custom",
+      customSince: "2026-01-01",
+      customUntil: "2026-02-01",
+      topoOrder: true,
+      graphLimit: 1000,
+      viewMode: "flat",
+    });
     expect(store.getGitHistorySelection("ws1", "/repo/a", "profile-a")).toEqual({
       ref: "feature/a",
       commitSearch: "fix",
+      showRemotes: true,
+      userFilter: "Ada",
+      dateFilter: "custom",
+      customSince: "2026-01-01",
+      customUntil: "2026-02-01",
+      pathsFilter: ["src/main.ts"],
+      topoOrder: true,
+      graphLimit: 1000,
+      compareBase: "origin/main",
+      includeBaseUpdates: false,
+      viewMode: "flat",
     });
-    expect(store.getGitHistorySelection("ws1", "/repo/b", "profile-a")).toEqual({ ref: "", commitSearch: "" });
-    expect(store.getGitHistorySelection("ws1", "/repo/a", "profile-b")).toEqual({ ref: "", commitSearch: "" });
+    expect(store.getGitHistorySelection("ws1", "/repo/b", "profile-a").userFilter).toBe("");
+    expect(store.getGitHistorySelection("ws1", "/repo/b", "profile-a").pathsFilter).toEqual([]);
+    expect(store.getGitHistorySelection("ws1", "/repo/a", "profile-b").compareBase).toBe("");
   });
 
   test("persists new-view selection and ignores out-of-order history responses", async () => {

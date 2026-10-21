@@ -745,10 +745,38 @@ const props = withDefaults(
 const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
 const { isMobile } = useIsNarrow();
+type GitHistorySelection = ReturnType<typeof gitUiStore.getGitHistorySelection>;
+const defaultHistorySelection: GitHistorySelection = {
+  ref: "",
+  commitSearch: "",
+  showRemotes: true,
+  userFilter: "",
+  dateFilter: "all",
+  customSince: "",
+  customUntil: "",
+  pathsFilter: [],
+  topoOrder: false,
+  graphLimit: 500,
+  compareBase: "",
+  includeBaseUpdates: false,
+  viewMode: "graph",
+};
+function historyField<K extends keyof GitHistorySelection>(key: K) {
+  return computed({
+    get: () =>
+      gitUiStore.getGitHistorySelection(props.workspaceId, props.activeRootPath || "", props.profileId || "default")[
+        key
+      ] ?? defaultHistorySelection[key],
+    set: (value: GitHistorySelection[K]) =>
+      gitUiStore.setGitHistorySelection(props.workspaceId, props.activeRootPath || "", props.profileId || "default", {
+        [key]: value,
+      }),
+  });
+}
 
 const search = ref("");
 const showLocal = ref(true);
-const showRemotes = ref(true);
+const showRemotes = historyField("showRemotes");
 const showTags = ref(false);
 const showMerged = ref(false);
 // Filter branches by last-activity date. Cutoff is derived from a unix
@@ -1145,27 +1173,27 @@ const refs = computed<Record<string, string>>(() => (props.gitUi?.graph?.refs as
 // their endpoint and rendered as orphan verticals (see the "Filter by user
 // breaks the graph" issue).
 
-const userFilter = ref<string>("");
-const dateFilter = ref<"all" | "today" | "week" | "month" | "custom">("all");
-const customSince = ref<string>(""); // YYYY-MM-DD
-const customUntil = ref<string>(""); // YYYY-MM-DD
-const pathsFilter = ref<string[]>([]);
+const userFilter = historyField("userFilter");
+const dateFilter = historyField("dateFilter");
+const customSince = historyField("customSince"); // YYYY-MM-DD
+const customUntil = historyField("customUntil"); // YYYY-MM-DD
+const pathsFilter = historyField("pathsFilter");
 const pathsInput = ref<string>("");
-const topoOrder = ref<boolean>(false);
-const graphLimit = ref<number>(500);
+const topoOrder = historyField("topoOrder");
+const graphLimit = historyField("graphLimit");
 const limitOptions = [100, 300, 500, 1000, 2000];
 
 // "Compare with base" — ported from the History tab. When set, the graph
 // walks `base..HEAD` (or `base...HEAD` if includeBaseUpdates is on) instead
 // of the whole repo, so the user sees only commits that are part of the
 // current branch's diff against base.
-const compareBase = ref<string>("");
+const compareBase = historyField("compareBase");
 // When on, walk `base...HEAD` (3-dot symmetric difference) instead of
 // `base..HEAD`. User sees both their work AND base updates they're missing.
-const includeBaseUpdates = ref<boolean>(false);
+const includeBaseUpdates = historyField("includeBaseUpdates");
 // Graph (lanes/topology) vs Flat (plain commit list, History-style). Same
 // underlying data — toggle just swaps the renderer.
-const viewMode = ref<"graph" | "flat">("graph");
+const viewMode = historyField("viewMode");
 // Pick the freshest ahead/behind counts for the CURRENT compareBase.
 //
 // Two sources:
