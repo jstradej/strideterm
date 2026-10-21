@@ -159,3 +159,4 @@
 - [x] Cover conflict resolve/unresolve/skip/continue/abort in the runtime one-dispatch/resolved-root matrix; focused runtime case passes.
 - [x] Cover synchronous merge-into-base in the runtime one-dispatch/resolved-root matrix; focused runtime case passes.
 - [x] Cover worktree removal in the runtime one-dispatch/resolved-root matrix; focused runtime case passes.
+- [x] Assert create-worktree audit duration on both successful creation and Git failure routes.

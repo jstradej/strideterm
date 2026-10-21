@@ -5267,6 +5267,7 @@ describe("runtime integration", () => {
     expect(fixture.git.auditEntries[0]).toMatchObject({
       type: "create-worktree",
       success: true,
+      durationMs: expect.any(Number),
       workspaceId: "frontend",
       extra: {
         rootPath: projectRoot,
@@ -5385,6 +5386,7 @@ describe("runtime integration", () => {
       expect(fixture.git.auditEntries[0]).toMatchObject({
         type: "create-worktree",
         success: false,
+        durationMs: expect.any(Number),
         workspaceId: "frontend",
         extra: { rootPath: expect.any(String), branch: "feature-x" },
       });
