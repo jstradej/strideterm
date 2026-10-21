@@ -32,10 +32,12 @@ const gitSelectDiff = vi.fn();
 const openConflictDialog = vi.fn();
 const gitSwitchTab = vi.fn();
 const gitCommitAll = vi.fn(async () => true);
+const gitCommitStaged = vi.fn(async () => true);
 const gitStageFile = vi.fn(async () => true);
 const gitUnstageFile = vi.fn(async () => true);
 const classicMessages = new Map<string, string>();
 const classicPaths = new Map<string, string[]>();
+const stagedMessages = new Map<string, string>();
 const classicStateRevision = ref(0);
 const showError = vi.fn();
 let observedWidth = 390;
@@ -64,6 +66,7 @@ vi.mock("../../../stores/git-ui.js", () => ({
     gitSwitchTab,
     gitCreateBranch: vi.fn(),
     gitCommitAll,
+    gitCommitStaged,
     gitStageFile,
     gitUnstageFile,
     getClassicCommitMessage: (workspaceId: string, rootPath: string) => {
@@ -82,8 +85,14 @@ vi.mock("../../../stores/git-ui.js", () => ({
       classicPaths.set(`${workspaceId}:${rootPath}`, paths),
       classicStateRevision.value++
     ),
-    getStagedCommitMessage: () => "",
-    setStagedCommitMessage: vi.fn(),
+    getStagedCommitMessage: (workspaceId: string, rootPath: string) => {
+      classicStateRevision.value;
+      return stagedMessages.get(`${workspaceId}:${rootPath}`) || "";
+    },
+    setStagedCommitMessage: (workspaceId: string, rootPath: string, message: string) => (
+      stagedMessages.set(`${workspaceId}:${rootPath}`, message),
+      classicStateRevision.value++
+    ),
   }),
 }));
 vi.mock("../../../stores/git-stash.js", () => ({
@@ -156,11 +165,14 @@ beforeEach(() => {
   gitSwitchTab.mockReset();
   gitCommitAll.mockReset();
   gitCommitAll.mockResolvedValue(true);
+  gitCommitStaged.mockReset();
+  gitCommitStaged.mockResolvedValue(true);
   gitStageFile.mockReset();
   gitUnstageFile.mockReset();
   showError.mockClear();
   classicMessages.clear();
   classicPaths.clear();
+  stagedMessages.clear();
   classicStateRevision.value++;
   monacoPayloads.mockReset();
   document.body.innerHTML = "";
@@ -177,6 +189,30 @@ afterEach(async () => {
 });
 
 describe("GitChangesTab", () => {
+  test("retains the staged commit message when the backend rejects the commit", async () => {
+    observedWidth = 900;
+    gitCommitStaged.mockResolvedValue(false);
+    const wrapper = mountTab({
+      newView: true,
+      snapshot: {
+        dirty: true,
+        staged: [{ path: "ready.txt", code: "M", scope: "staged" }],
+        unstaged: [],
+        untracked: [],
+      },
+    });
+    await flushPromises();
+
+    const message = wrapper.get('input[name="commit-staged-message"]');
+    await message.setValue("keep this staged draft");
+    await wrapper.get(".git-commit-form button").trigger("click");
+    await flushPromises();
+
+    expect(gitCommitStaged).toHaveBeenCalledWith("ws1", "keep this staged draft");
+    expect((message.element as HTMLInputElement).value).toBe("keep this staged draft");
+    expect(stagedMessages.get("ws1:/repo")).toBe("keep this staged draft");
+  });
+
   test("keeps the shared operation status visible while Changes is active", async () => {
     const pane = mountTab({ gitUi: { busyAction: "fetch", busyPhase: "Fetching…" } });
     await flushPromises();

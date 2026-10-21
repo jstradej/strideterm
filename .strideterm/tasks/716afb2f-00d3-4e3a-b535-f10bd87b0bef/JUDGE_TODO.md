@@ -361,7 +361,8 @@ Full per-requirement ledger (122 items)
 
 89. **PARTIAL** — Acceptance: process/ok:false/auth/hook/stale/disconnect failures have visible result+diagnostics and retain draft.
    Evidence: src/stores/git-ui.ts:481,506; src/components/workspace/git/GitChangesTab.vue:572,590,605; electron/backend/git-manager.test.ts:4030.
-   Remaining: Structured stage/commit failures are now toasted and operation outcome card is rendered. Disconnect/hook/draft retention and diagnostics still need requested lifecycle tests.
+   Evidence: `GitChangesTab.test.ts` now verifies a failed staged commit preserves its root-scoped draft; store/network failure tests verify structured errors reach the action banner and notification path.
+   Remaining: Explicit disconnect and failing pre-push-hook UI retention scenarios still need lifecycle coverage and user visual acceptance.
 
 90. **IMPLEMENTED** — Acceptance: real temporary-repo manager tests verify successful and failed audited writes, plus normal and strict review audit sink failures.
    Evidence: electron/backend/git-manager.test.ts:3944,3960,1103,1840; electron/backend/review-git/engine.test.ts:388,398.
@@ -707,3 +708,9 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 - Fetch, pull, and ordinary push now wait for the accepted OperationRegistry result before clearing busy state or showing completion. The store resolves from the live operation event or persisted `operations.lastResults`; `git-ui.test.ts` covers terminal failure events for all three actions and pull recovery after a missed event.
 - Focused Git UI store suite passes 58 tests; full UI passes 214 files / 3,054 tests; typecheck, full lint (0 errors / 4,680 warnings; Prettier clean), and watch-compatible build pass. Backend sources are unchanged; the recorded full backend run is 224 files / 5,465 passed / 7 skipped.
 - Commit this continuation after verification. User visual walkthrough and renderer reconnect/profile-switch acceptance remain open; WORK_LOCK stays.
+
+## Worker continuation (staged draft retry)
+
+- Added a Changes component regression confirming `gitCommitStaged` returning failure leaves the submitted root-scoped message in both the input and store for retry. `GitChangesTab.test.ts` passes 17 tests.
+- Full UI passes 214 files / 3,055 tests; typecheck, focused ESLint (0 errors / 2 warnings), touched-file Prettier and `git diff --check` pass. Backend and implementation code did not change in this follow-up.
+- Updated the action inventory's operation-completion description and current verification counts. User visual/manual review, disconnect/pre-push-hook lifecycle scenarios, and broader inventory/audit requirements remain open; WORK_LOCK stays.
