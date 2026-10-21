@@ -86,3 +86,4 @@
 - [x] Explain when a selected History ref disappears after successful branch/tag reads, and clear the notice when the user selects another ref. Focused GitBranchesTab suite passes 11 tests; typecheck, touched-file Prettier and diff check pass. Committed as `1ead33cc`.
 - [x] Expand the read-only History picker regression to assert no local/remote checkout, branch create/rename/delete, tag create, worktree removal, fetch, or push calls. Focused GitBranchesTab suite passes 11 tests; typecheck, Prettier and diff check pass; committed as `273a5909`.
 
+- [x] Extend the History read-only picker contract test to assert no local/remote checkout, branch create/rename/delete, remote branch delete, tag create, worktree removal, fetch, or push when selecting a ref. GitBranchesTab suite passes 11 tests; typecheck, Prettier and diff check pass; committed as `273a5909`.

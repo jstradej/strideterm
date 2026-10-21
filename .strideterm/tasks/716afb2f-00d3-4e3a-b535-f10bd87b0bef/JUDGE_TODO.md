@@ -286,7 +286,7 @@ Full per-requirement ledger (122 items)
 
 69. **PARTIAL** — Stage 3: deleted/invalid refs, detached/empty repo, hundreds of refs and root/profile switching are handled.
    Evidence: src/components/workspace/git/GitBranchesTab.vue:1157,1375,733; src/components/workspace/GitPane.vue:75,302.
-   Remaining: Deleted selection is silently cleared; HEAD/all and default profile errors remain. Add explicit empty/detached/large-list/root/profile behavior tests.
+   Remaining: Deleted selections now produce a status message after successful ref reads (continuation `1ead33cc`). Add explicit empty/detached/large-list behavior tests; root/profile switching still needs broader automated and manual acceptance.
 
 70. **IMPLEMENTED** — Stage 4: provider-backed Review shows source/target/base and expands accurate PR diff.
    Evidence: src/components/workspace/GitPane.vue:369; src/components/workspace/AzureReviewPane.vue:1274,1276; electron/backend/file-manager.ts:1122.
@@ -346,7 +346,7 @@ Full per-requirement ledger (122 items)
 
 85. **PARTIAL** — Acceptance: explicit picker test proves only read query changes, no checkout/fetch/other mutations.
    Evidence: src/components/workspace/git/GitBranchesTab.test.ts:104.
-   Evidence: Picker regression verifies graph query and no checkout/create/fetch/push. Add explicit non-call assertions for remaining tag/branch mutation APIs for exhaustive acceptance.
+   Evidence: Picker regression verifies graph query and no checkout/create/rename/delete (local or remote), tag create, worktree removal, fetch, or push. `GitBranchesTab.test.ts` passes 11 tests. Full shortcut/context-menu audit remains.
 
 86. **IMPLEMENTED** — Acceptance: working branch stays correct while browsing other refs; results not mixed across profiles/roots.
    Evidence: src/components/workspace/git/GitBranchesTab.vue:60,733; src/components/workspace/GitPane.vue:302; src/stores/git-ui.test.ts:64,87.
