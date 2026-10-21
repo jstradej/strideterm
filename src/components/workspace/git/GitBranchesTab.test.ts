@@ -89,6 +89,7 @@ const mobileViewport = { isNarrow: ref(false), isMobile: ref(false) };
 import GitBranchesTab from "./GitBranchesTab.vue";
 import GitChangeTree from "./GitChangeTree.vue";
 import CustomSelect from "../../common/CustomSelect.vue";
+import BranchSelectPopover from "./BranchSelectPopover.vue";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mountedWrappers: VueWrapper<any>[] = [];
@@ -195,6 +196,51 @@ describe("GitBranchesTab compact history picker", () => {
     expect(gitLoadGraph).toHaveBeenLastCalledWith(
       "ws1",
       expect.objectContaining({ sinceDate: "2026-02-01", untilDate: "2026-02-28", limit: 500 }),
+    );
+    picker.unmount();
+    vi.useRealTimers();
+  });
+
+  test("queries the selected base range and includes base updates only when requested", async () => {
+    vi.useFakeTimers();
+    const picker = mount(GitBranchesTab, {
+      props: {
+        workspaceId: "ws-compare-filter",
+        snapshot: { dirty: false, branch: "topic" },
+        gitUi: {
+          branchList: {
+            current: "topic",
+            local: [{ name: "topic", isCurrent: true }],
+            remotes: [],
+            defaultBranch: "main",
+            defaultRemote: "origin",
+          },
+          graph: { commits: [], head: "", refs: {} },
+          selectedCommit: "",
+        },
+        activeRootPath: "/repo",
+        compactHistory: true,
+        baseBranchOptions: ["main"],
+      },
+    });
+    mountedWrappers.push(picker);
+    const comparePicker = picker.findComponent(BranchSelectPopover);
+    expect(comparePicker.exists()).toBe(true);
+    comparePicker.vm.$emit("update:modelValue", "main");
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(250);
+    await flushPromises();
+    expect(gitLoadGraph).toHaveBeenLastCalledWith(
+      "ws-compare-filter",
+      expect.objectContaining({ branch: "main..topic" }),
+    );
+
+    await picker.get('button[title^="Switch to walking base..."]').trigger("click");
+    await vi.advanceTimersByTimeAsync(250);
+    await flushPromises();
+    expect(gitLoadGraph).toHaveBeenLastCalledWith(
+      "ws-compare-filter",
+      expect.objectContaining({ branch: "main...topic" }),
     );
     picker.unmount();
     vi.useRealTimers();
