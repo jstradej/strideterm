@@ -165,7 +165,8 @@ Full per-requirement ledger (122 items)
 
 35. **PARTIAL** — Commit message, file selection and operation state survive view/layout switches; failure retains draft for retry.
    Evidence: src/components/workspace/git/GitChangesTab.vue:536,605,772,871; src/components/workspace/GitPane.vue:322.
-   Remaining: Classic message and selected paths are scoped and persist across view switches. Saved provider drafts and an unsaved TextAreaDialog editor survive Review unmount, file selection changes, and actual Settings control off/on transitions. Disconnect/hook failure retention for applicable drafts and visual confirmation remain.
+   Evidence: Fetch, pull, and push terminal failure tests also verify the root-scoped staged commit draft remains available after the operation error and diagnostics are displayed.
+   Remaining: Classic message and selected paths are scoped and persist across view switches. Saved provider drafts and an unsaved TextAreaDialog editor survive Review unmount, file selection changes, and actual Settings control off/on transitions. Renderer disconnect and user visual acceptance remain open.
 
 36. **PARTIAL** — Inventory every existing button/context menu/shortcut with its store, permission, audit, results and new UI destination before decomposition.
    Evidence: .strideterm/tasks/716afb2f-00d3-4e3a-b535-f10bd87b0bef/IMPLEMENTATION_INVENTORY.md:7,11,13; src/components/workspace/GitPane.vue:649.
@@ -818,3 +819,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Added a native `<details>` control to the shared Git toolbar. Keyboard users can reveal the full active root path and working branch; long paths wrap within the disclosure. The mounted GitPane regression verifies the disclosure content for a long root. Focused GitPane test and repository typecheck pass; touched-file Prettier passes; ESLint reports 0 errors and 4 existing warnings; `git diff --check` passes.
 - Requirement 9 still needs human narrow-layout review. Route/menu inventory, reconnect, and other scoped lifecycle requirements also remain open. WORK_LOCK stays.
+
+## Worker continuation (network failure keeps staged draft)
+
+- Expanded the fetch/pull/push terminal failure regression to seed a root-scoped staged commit message and assert it remains after the action error, warnings, and raw output are surfaced. All three focused cases pass; repository typecheck and touched-file Prettier pass; ESLint reports 0 errors and 17 existing warnings; `git diff --check` passes.
+- Renderer disconnect behavior and user visual acceptance remain open with the broader route/lifecycle audit; WORK_LOCK stays.

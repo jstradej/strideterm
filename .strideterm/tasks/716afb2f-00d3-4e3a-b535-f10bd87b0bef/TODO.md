@@ -116,3 +116,4 @@
 - [x] Verify conflict resolution remains available in the shared toolbar across History, Changes, and Review. GitPane targeted tests pass for all three views; repository typecheck, touched-file Prettier/ESLint (0 errors), and diff check pass.
 - [x] Verify History distinguishes an empty commit-search result from a graph query error. GitBranchesTab suite passes 18 tests; typecheck, touched-file Prettier/ESLint (0 errors), and diff check pass.
 - [x] Add a keyboard-focusable Git header details disclosure for the full active repository path and working branch. GitPane targeted test passes; typecheck, touched-file Prettier/ESLint (0 errors), and diff check pass.
+- [x] Verify fetch/pull/push terminal failure results and diagnostics do not clear the active root's staged commit draft. Three focused Git UI store cases pass; typecheck, Prettier, ESLint (0 errors), and diff check pass.
