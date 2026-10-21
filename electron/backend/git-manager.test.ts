@@ -4126,6 +4126,47 @@ describe("GitManager", () => {
       expect(entries.every((entry) => entry.rootPath === "/repo")).toBe(true);
     });
 
+    test("records one resolved-root audit outcome for successful and failed merge/rebase writes", async () => {
+      const entries: Record<string, unknown>[] = [];
+      const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
+      const makeDivergedRepo = async (name: string) => {
+        const root = await initRepo();
+        const base = rg(root, ["branch", "--show-current"]).trim();
+        rg(root, ["checkout", "-q", "-b", `${name}-feature`]);
+        await fs.writeFile(path.join(root, `${name}-feature.txt`), "feature\n", "utf8");
+        rg(root, ["add", "-A"]);
+        rg(root, ["commit", "-q", "-m", `${name} feature`]);
+        rg(root, ["checkout", "-q", base]);
+        await fs.writeFile(path.join(root, `${name}-base.txt`), "base update\n", "utf8");
+        rg(root, ["add", "-A"]);
+        rg(root, ["commit", "-q", "-m", `${name} base update`]);
+        rg(root, ["checkout", "-q", `${name}-feature`]);
+        return { root, base, workspace: { id: `ws-${name}-audit`, cwd: root, kind: "terminal" as const } };
+      };
+
+      const mergeRepo = await makeDivergedRepo("merge");
+      expect((await auditMgr.mergeIntoCurrent(mergeRepo.workspace, { baseBranch: mergeRepo.base })).ok).toBe(true);
+      expect((await auditMgr.mergeIntoCurrent(mergeRepo.workspace, { baseBranch: "missing-merge-base" })).ok).toBe(
+        false,
+      );
+
+      const rebaseRepo = await makeDivergedRepo("rebase");
+      expect((await auditMgr.rebaseOnto(rebaseRepo.workspace, { baseBranch: rebaseRepo.base })).ok).toBe(true);
+      expect((await auditMgr.rebaseOnto(rebaseRepo.workspace, { baseBranch: "missing-rebase-base" })).ok).toBe(false);
+
+      expect(entries.map((entry) => [entry.operation, entry.category, entry.success])).toEqual([
+        ["gitMerge", "write", true],
+        ["gitMerge", "write", false],
+        ["gitRebase", "write", true],
+        ["gitRebase", "write", false],
+      ]);
+      expect(entries[0]).toMatchObject({ connectionId: "system-ws-merge-audit", rootPath: mergeRepo.root });
+      expect(entries[1]).toMatchObject({ connectionId: "system-ws-merge-audit", rootPath: mergeRepo.root });
+      expect(entries[2]).toMatchObject({ connectionId: "system-ws-rebase-audit", rootPath: rebaseRepo.root });
+      expect(entries[3]).toMatchObject({ connectionId: "system-ws-rebase-audit", rootPath: rebaseRepo.root });
+      expect(entries.every((entry) => typeof entry.durationMs === "number" && entry.durationMs >= 0)).toBe(true);
+    });
+
     test("records a resolved-root write audit for aborting a real bisect operation", async () => {
       const entries: Record<string, unknown>[] = [];
       const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
