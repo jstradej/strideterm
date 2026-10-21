@@ -197,6 +197,26 @@ describe("GitPane repo picker", () => {
     expect(reviewPane.exists()).toBe(true);
     expect(reviewPane.props("workspaceId")).toBe("ws-provider-review");
   });
+
+  test("Review keeps the shared Git operation status visible", async () => {
+    const ws = buildWorkspace({ id: "ws-review-operation" });
+    const wrapper = mountPane("ws-review-operation", [ws]);
+    const appStore = useAppStore();
+    appStore.payload = {
+      ...appStore.payload!,
+      appState: { ...appStore.payload!.appState!, settings: { git: { ui: { newView: true } } } },
+    } as StatePayload;
+    const gitUiStore = useGitUiStore();
+    gitUiStore.get("ws-review-operation").busyAction = "fetch";
+    await flushPromises();
+    await wrapper
+      .findAll('[role="tab"]')
+      .find((tab) => tab.text() === "Review")!
+      .trigger("click");
+    await flushPromises();
+
+    expect(wrapper.findComponent({ name: "GitOperationCard" }).exists()).toBe(true);
+  });
   test("repo picker is shown when workspace has 2+ gitRoots", () => {
     const ws = buildWorkspace({ id: "ws-multi", gitRoots: ["/ms/api", "/ms/web"] });
     const wrapper = mountPane("ws-multi", [ws]);

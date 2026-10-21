@@ -380,23 +380,22 @@
           :active-connection-label="activeConnectionLabel"
         />
 
-        <AzureReviewPane
-          v-else-if="useNewGitView && activeGitView === 'review' && reviewLink"
-          :workspace-id="providerReviewWorkspaceId"
-        />
-
-        <section
-          v-else-if="useNewGitView && activeGitView === 'review' && !reviewLink"
-          class="git-new-review-empty"
-          aria-live="polite"
-        >
-          <h2>No pull request is linked to this workspace</h2>
-          <p>
-            Link a pull request to review its provider diff and comments. Choosing Review does not create or publish
-            one.
-          </p>
-          <button type="button" class="button button--ghost" @click="openLegacyPrTool">Open pull request tools</button>
-        </section>
+        <template v-else-if="useNewGitView && activeGitView === 'review'">
+          <!-- Operation state belongs to the shared Git frame, so it remains
+               visible while the provider-owned Review pane is active. -->
+          <GitOperationCard :snapshot="snapshot" :workspace-id="workspaceId" :git-ui="gitUi" />
+          <AzureReviewPane v-if="reviewLink" :workspace-id="providerReviewWorkspaceId" />
+          <section v-else class="git-new-review-empty" aria-live="polite">
+            <h2>No pull request is linked to this workspace</h2>
+            <p>
+              Link a pull request to review its provider diff and comments. Choosing Review does not create or publish
+              one.
+            </p>
+            <button type="button" class="button button--ghost" @click="openLegacyPrTool">
+              Open pull request tools
+            </button>
+          </section>
+        </template>
 
         <!-- ===== Worktrees tab ===== -->
         <template

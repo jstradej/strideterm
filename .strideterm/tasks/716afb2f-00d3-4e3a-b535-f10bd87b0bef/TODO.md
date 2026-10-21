@@ -66,3 +66,4 @@
 - [x] Re-run full typecheck and lint/Prettier after final audit/test/snapshot changes; both pass (lint 0 errors, 4,659 warnings).
 - [x] Separate History refs from commit subjects into aligned columns on desktop and compact layouts; GitTreeGraph tests (13), typecheck, focused lint/format and safe production build pass.
 - [x] Explain and fall back when a persisted More destination becomes unavailable, while preserving the stored destination for restoration; GitPane regression and the full UI suite pass.
+- [x] Keep the shared Git operation status card visible in the new Review view, including its unlinked-PR empty state; focused GitPane tests pass.
