@@ -59,7 +59,7 @@ This index records the concrete UI entry points found in the existing Git shell.
 | Provider select/create PR, choose PR commit | Existing provider panes/stores; profile/connection guard and read request context apply | Provider loading/error state and selected PR details; PR creation audited | More → Pull Request and Review |
 | Provider submit review / vote / comment / thread status | Provider review pane/store/engine; provider permission, PR state and strict audit intent/outcome contract | Provider inline error/status and persisted draft; mutation audit (comment/review/vote/thread tests) | Review |
 
-The action classes and routes above are covered by `GitPane.test.ts` More-destination tests, `useCommitContextMenu.test.ts`, `GitBranchesTab.test.ts`, `GitChangesTab.test.ts`, and the stash/worktree/conflict suites. A manual visual pass is still needed for discoverability, focus, and narrow-window presentation; this table does not substitute for that acceptance step.
+The action classes and routes above are covered by `GitPane.test.ts` More-destination tests, `useCommitContextMenu.test.ts`, `GitBranchesTab.test.ts`, `GitChangesTab.test.ts`, and the stash/worktree/conflict suites. The user waived the manual visual walkthrough; no claim about visual discoverability or narrow-window presentation is made here.
 
 ## Client/context matrix
 
@@ -83,8 +83,7 @@ The shared Git toolbar includes a keyboard-focusable native Details disclosure f
 
 ## Remaining verification boundaries
 
-- Human visual verification remains with the user: the plan explicitly keeps Electron and the dev server out of agent verification. No app process has been launched.
-- The existing classic tabs remain the destination for specialized branch, stash, worktree, bulk, and conflict tools; More routing prioritizes these destinations over the selected new view. Verify each via the More selector in the user's visual pass.
-- The native ref select provides keyboard search/selection/escape behavior; a user visual pass should still check long refs, a large branch list, and narrow-window sizing.
-- Latest recorded verification (2026-10-21): full backend at four workers passes 224 files / 5,502 tests (7 skipped); after the merge/rebase audit addition, the full GitManager file passes 192 tests / 2 skipped. Full UI passes with four workers at 215 files / 3,104 tests; the default-concurrency run has a temporary-pause timer failure that passes alone and in the four-worker suite. `npm run typecheck`, full lint (0 errors / 4,717 warnings; Prettier clean), and watch-compatible production build pass. See `JUDGE_TODO.md` for continuation evidence and user-owned manual review status.
+- The user waived manual visual verification. No app process was launched.
+- The route tests cover More routing and the native ref picker is exercised through automated selection/search tests; visual discoverability and narrow-window presentation were not independently assessed.
+- Latest recorded verification (2026-10-21): full backend at four workers passes 224 files / 5,507 tests (7 skipped); full UI passes with four workers at 215 files / 3,104 tests. `npm run typecheck`, focused ESLint (0 errors; existing warnings), touched-file Prettier, and watch-compatible production build pass. See `JUDGE_TODO.md` for remaining route-by-route audit reconciliation.
 - The runtime operation coverage includes long fetch/pull/push/force-push, remote branch deletion, merge/rebase (including fetch-first), and network-backed tag push/delete actions. Remote slot routes are profile/session guarded; slot-aware merge/rebase, tag and remote branch mutation routes validate their payload schemas before dispatch. `merge-into-base` is a local sibling-worktree operation and remains synchronous.

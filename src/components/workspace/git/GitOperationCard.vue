@@ -61,7 +61,12 @@
     <template v-if="result">
       <div :class="['git-operation-banner', `git-operation-banner--${result.ok ? 'ok' : 'error'}`]">
         <div class="section-head">
-          <strong>{{ result.summary || (result.ok ? "Git action completed." : "Git action failed.") }}</strong>
+          <div>
+            <strong>{{ result.summary || (result.ok ? "Git action completed." : "Git action failed.") }}</strong>
+            <p v-if="result.classification" class="git-operation-classification" data-testid="operation-classification">
+              {{ classificationLabel(result.classification) }}
+            </p>
+          </div>
           <button type="button" class="button button--ghost" @click="gitUiStore.gitClearResult(workspaceId)">
             Clear
           </button>
@@ -125,5 +130,20 @@ function openConflictDialog() {
   const rootPath = gitUiStore.getActiveRoot(props.workspaceId);
   gitUiStore.openConflictDialog(props.workspaceId, rootPath);
   gitUiStore.gitSwitchTab(props.workspaceId, "conflicts");
+}
+
+function classificationLabel(classification: string): string {
+  switch (classification) {
+    case "blocked":
+      return "Blocked before completion";
+    case "cancelled":
+      return "Cancelled";
+    case "partial":
+      return "Partially completed";
+    case "interrupted":
+      return "Interrupted; verify repository state";
+    default:
+      return "Failed";
+  }
 }
 </script>

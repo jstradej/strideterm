@@ -26,6 +26,15 @@ const operationOutcomeBase = {
   finishedAt: z.string().min(1),
 };
 
+export const operationFailureClassificationSchema = z.enum([
+  "blocked",
+  "cancelled",
+  "partial",
+  "failed",
+  "interrupted",
+]);
+export type OperationFailureClassification = z.infer<typeof operationFailureClassificationSchema>;
+
 export const operationFinishedSchema = z
   .union([
     z.object({ ...operationOutcomeBase, result: z.record(z.string(), z.unknown()) }).strict(),
@@ -36,6 +45,7 @@ export const operationFinishedSchema = z
           .object({
             code: z.string().min(1),
             message: z.string(),
+            classification: operationFailureClassificationSchema.optional(),
             warnings: z.array(z.string()).optional(),
             conflicts: z.array(z.string()).optional(),
             rawOutput: z.string().optional(),

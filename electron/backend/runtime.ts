@@ -7355,6 +7355,7 @@ export async function createRuntime({
             : {}),
           error: {
             code: "interrupted",
+            ...(record.kind.startsWith("git.") ? { classification: "interrupted" as const } : {}),
             message: record.kind.startsWith("git.")
               ? "The runtime stopped during this Git operation. Check the repository state before retrying."
               : record.kind === "review-pr-action"
@@ -7367,6 +7368,7 @@ export async function createRuntime({
             status: "interrupted" as const,
             error: {
               code: "interrupted",
+              classification: "interrupted",
               message: "The runtime stopped before the temporary review setup finished. Start setup again.",
             },
           })
@@ -7376,6 +7378,7 @@ export async function createRuntime({
               workspaceId: String(record.artifacts.workspaceId || "") || undefined,
               error: {
                 code: "interrupted",
+                classification: "interrupted",
                 message:
                   "The runtime stopped before it could confirm that the review agent started. Retry to start a new review.",
               },

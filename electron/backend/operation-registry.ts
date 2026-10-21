@@ -10,6 +10,7 @@ import {
   type OperationFinished,
   type OperationRunning,
   type OperationStatus,
+  type OperationFailureClassification,
   type OperationsState,
 } from "../shared/operation-events.js";
 
@@ -69,6 +70,7 @@ export type OperationRunner = (handle: OperationHandle) => Promise<Record<string
 export interface OperationError {
   code: string;
   message: string;
+  classification?: OperationFailureClassification;
   warnings?: string[];
   conflicts?: string[];
   rawOutput?: string;
@@ -120,8 +122,26 @@ const STABLE_ERROR_CODES: ReadonlySet<string> = new Set(INTERNAL_MCP_ERROR_CODES
 
 // Raw errno codes (EPERM, ENOENT, ...) are not part of the contract an agent can act on.
 function errorOf(err: unknown): OperationError {
-  const details = err as { code?: unknown; warnings?: unknown; conflicts?: unknown; rawOutput?: unknown };
+  const details = err as {
+    code?: unknown;
+    name?: unknown;
+    classification?: unknown;
+    warnings?: unknown;
+    conflicts?: unknown;
+    rawOutput?: unknown;
+  };
   const code = typeof details?.code === "string" ? details.code : "";
+  const candidate = details?.classification;
+  const classification: OperationFailureClassification =
+    candidate === "blocked" ||
+    candidate === "cancelled" ||
+    candidate === "partial" ||
+    candidate === "failed" ||
+    candidate === "interrupted"
+      ? candidate
+      : code === "cancelled" || code === "canceled" || details?.name === "AbortError"
+        ? "cancelled"
+        : "failed";
   // Operation errors are persisted and replayed to a different client after
   // reconnect. Apply the same credential redaction used by the log formatter
   // before any of these strings enter that durable record.
@@ -142,6 +162,7 @@ function errorOf(err: unknown): OperationError {
   return {
     code: STABLE_ERROR_CODES.has(code) ? code : code === "git_operation_failed" ? code : "internal_error",
     message: message.slice(0, 6000),
+    classification,
     ...(warnings?.length ? { warnings } : {}),
     ...(conflicts?.length ? { conflicts } : {}),
     ...(rawOutput ? { rawOutput } : {}),
@@ -307,7 +328,8 @@ export function createOperationRegistry(options: OperationRegistryOptions) {
         try {
           outcome = await reconcile(record);
         } catch (err) {
-          outcome = { status: "interrupted", error: { code: "interrupted", message: errorOf(err).message } };
+          const error = errorOf(err);
+          outcome = { status: "interrupted", error: { ...error, code: "interrupted" } };
         }
         await finish(record, outcome);
       }

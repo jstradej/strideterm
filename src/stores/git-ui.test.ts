@@ -504,6 +504,7 @@ describe("git-ui store", () => {
         finishedAt: new Date().toISOString(),
         error: {
           code: "git_operation_failed",
+          classification: "partial",
           message: "Pull failed.",
           warnings: ["Local changes were restored."],
           conflicts: ["src/conflicted.ts"],
@@ -517,6 +518,7 @@ describe("git-ui store", () => {
         warnings: ["Local changes were restored."],
         conflicts: ["src/conflicted.ts"],
         rawOutput: "hook: validation failed",
+        classification: "partial",
       });
     });
 

@@ -65,6 +65,7 @@ interface GitUiState {
     conflicts: unknown[];
     rawOutput: string;
     operationState: unknown;
+    classification?: "blocked" | "cancelled" | "partial" | "failed" | "interrupted";
     at: string;
   } | null;
   /** A synchronous index/commit request lost its response; refresh this root before retrying it. */
@@ -473,7 +474,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
   async function resolveLongGitAction(
     appStore: { payload?: unknown },
     start: { operationId?: string; started?: boolean; result?: { ok?: boolean } } | null,
-  ): Promise<{ result?: { ok?: boolean; summary?: string; warnings?: unknown[] } } | null> {
+  ): Promise<{ result?: { ok?: boolean; summary?: string; warnings?: unknown[]; classification?: string } } | null> {
     if (!start?.started) return start;
     if (!start.operationId) {
       return {
@@ -496,6 +497,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
       result: {
         ok: false,
         summary: outcome.error.message,
+        classification: outcome.error.classification,
         ...(outcome.error.warnings?.length ? { warnings: outcome.error.warnings } : {}),
         ...(outcome.error.conflicts?.length ? { conflicts: outcome.error.conflicts } : {}),
         ...(outcome.error.rawOutput ? { rawOutput: outcome.error.rawOutput } : {}),

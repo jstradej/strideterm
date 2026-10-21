@@ -8,7 +8,7 @@
 ## To Do
 
 - [x] User waived the manual visual review requirement; no `dev.ps1` walkthrough is required.
-- [ ] Finish remaining inventory-wide permission/audit reconciliation in `JUDGE_TODO.md` (requirements 36, 47, 51, 52, 77, 91, 94, 122).
+- [ ] Finish remaining inventory-wide permission/audit reconciliation in `JUDGE_TODO.md` (requirements 36, 47, 51, 52, 77, 91, 94, 122). Long-operation diagnostics now retain blocked/cancelled/partial/failed/interrupted classification; remaining route-by-route rejection and audit mapping is still open.
 - [ ] Re-run the full numbered self-audit against the current tree and update each requirement with verifiable evidence.
 - [x] Commit implementation changes locally without pushing.
 

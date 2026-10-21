@@ -99,16 +99,29 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
     return lines.join("\n\n");
   }
 
-  function gitFailure(kind: string, result: Record<string, unknown>): Error & { warnings: string[] } {
-    const operationState = result.operationState as { conflicts?: unknown } | undefined;
+  function gitFailure(
+    kind: string,
+    result: Record<string, unknown>,
+    classification?: "blocked" | "cancelled" | "partial" | "failed" | "interrupted",
+  ): Error & { warnings: string[]; classification: "blocked" | "cancelled" | "partial" | "failed" | "interrupted" } {
+    const operationState = result.operationState as { inProgress?: unknown; conflicts?: unknown } | undefined;
     const conflicts = Array.isArray(operationState?.conflicts)
       ? operationState.conflicts.map(String).filter(Boolean)
       : Array.isArray(result.conflicts)
         ? result.conflicts.map(String).filter(Boolean)
         : [];
     const warnings = Array.isArray(result.warnings) ? result.warnings.map(String).filter(Boolean) : [];
+    const summary = String(result.summary || "");
+    const outcomeClass =
+      classification ||
+      (conflicts.length > 0 || operationState?.inProgress === true
+        ? "partial"
+        : /\bblocked\b|requires manual resolution/i.test(summary)
+          ? "blocked"
+          : "failed");
     return Object.assign(new Error(gitFailureMessage(kind, result)), {
       code: "git_operation_failed",
+      classification: outcomeClass,
       warnings,
       conflicts,
       rawOutput: String(result.rawOutput || "")
@@ -299,7 +312,7 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
                 );
         }
         if (result?.result?.ok === false) {
-          const failure = gitFailure(kind, result.result);
+          const failure = gitFailure(kind, result.result, input.fetchFirst === true ? "partial" : undefined);
           if (priorWarnings.length) {
             failure.warnings = [...priorWarnings, ...failure.warnings];
           }

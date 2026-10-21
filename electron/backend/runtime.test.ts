@@ -9223,8 +9223,32 @@ describe("runtime integration", () => {
     expect(outcome).toMatchObject({ kind: "git.rebase", profileId: "profile-a" });
     expect("error" in outcome && outcome.error).toMatchObject({
       code: "git_operation_failed",
+      classification: "partial",
       message: expect.stringContaining("Rebase blocked by local changes."),
       warnings: ["Fetch used a fallback ref.", "Commit or stash the local changes first."],
+    });
+  });
+
+  test("classifies a rejected Git merge as blocked instead of failed", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).mergeIntoCurrent = vi.fn(async () => ({
+      ok: false,
+      summary: "Merge blocked by local changes.",
+    }));
+    const waitForGitOperation = watchOperation(fixture);
+
+    const started = await fixture.runtime.gitMergeIntoCurrent({
+      workspaceId: "ws-a1",
+      baseBranch: "feature",
+    });
+    const outcome = await waitForGitOperation(started.operationId);
+
+    expect("error" in outcome && outcome.error).toMatchObject({
+      code: "git_operation_failed",
+      classification: "blocked",
+      message: expect.stringContaining("Merge blocked by local changes."),
     });
   });
 

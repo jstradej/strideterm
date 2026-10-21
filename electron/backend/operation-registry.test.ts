@@ -127,6 +127,28 @@ describe("operation registry", () => {
     );
   });
 
+  test("preserves blocked, cancelled, partial, and failed classifications in outcomes", async () => {
+    const registry = create();
+    const cases = [
+      { idempotencyKey: "blocked-001", classification: "blocked", code: "git_operation_failed", expected: "blocked" },
+      { idempotencyKey: "partial-001", classification: "partial", code: "git_operation_failed", expected: "partial" },
+      { idempotencyKey: "failed-001", classification: "failed", code: "git_operation_failed", expected: "failed" },
+      { idempotencyKey: "cancelled-1", code: "cancelled", classification: undefined, expected: "cancelled" },
+    ] as const;
+
+    for (const item of cases) {
+      const { record } = await registry.accept(input({ idempotencyKey: item.idempotencyKey }), async () => {
+        throw Object.assign(new Error(`${item.idempotencyKey} outcome`), {
+          code: item.code,
+          ...(item.classification ? { classification: item.classification } : {}),
+        });
+      });
+      await settle(registry, record.operationId);
+      expect(registry.get(record.operationId, "default")?.error?.classification).toBe(item.expected);
+      expect(events.at(-1)).toMatchObject({ error: { classification: item.expected } });
+    }
+  });
+
   test("redacts credentials from persisted rejected-operation diagnostics", async () => {
     const registry = create();
     const { record } = await registry.accept(input(), async () => {

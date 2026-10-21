@@ -6,6 +6,24 @@ import GitOperationCard from "./GitOperationCard.vue";
 beforeEach(() => setActivePinia(createPinia()));
 
 describe("GitOperationCard push diagnostics", () => {
+  test("labels classified long-operation results", () => {
+    const wrapper = mount(GitOperationCard, {
+      props: {
+        workspaceId: "ws-1",
+        snapshot: {},
+        gitUi: {
+          lastResult: {
+            ok: false,
+            summary: "Fetch completed, but rebase was blocked.",
+            classification: "partial",
+          },
+        },
+      },
+    });
+
+    expect(wrapper.get('[data-testid="operation-classification"]').text()).toBe("Partially completed");
+  });
+
   test("shows live pre-push output and retains hook failure diagnostics after completion", async () => {
     const wrapper = mount(GitOperationCard, {
       props: {
