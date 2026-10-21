@@ -2060,15 +2060,17 @@ async function showToast(body: string, kind: "info" | "error" | "success" = "inf
 }
 
 watch(
-  () => selectedHash.value,
-  (hash) => {
+  () => [selectedHash.value, props.activeRootPath] as const,
+  ([hash]) => {
+    // A commit SHA can exist in multiple repositories. Treat a root switch as
+    // a new read identity even when the selected SHA itself is unchanged.
+    commitFilesSeq += 1;
+    commitFiles.value = [];
+    commitFilesLoading.value = false;
+    commitFilesError.value = "";
     selectedCommitFile.value = "";
-    commitDiffPayload.value = null;
+    commitDiffLoader.clear();
     if (hash) loadCommitFiles(hash);
-    else {
-      commitFiles.value = [];
-      commitFilesError.value = "";
-    }
   },
   { immediate: true },
 );

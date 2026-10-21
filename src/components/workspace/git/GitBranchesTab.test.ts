@@ -591,6 +591,26 @@ describe("GitBranchesTab — loadCommitFiles surfaces a load failure", () => {
     expect(wrapper.find(".git-branches__commit-files .git-branches__placeholder").exists()).toBe(false);
     expect(wrapper.findComponent(GitChangeTree).exists()).toBe(true);
   });
+
+  test("reloads commit files when the repository root changes but the selected hash is the same", async () => {
+    let finishA!: (result: { files: Array<{ path: string; code: string }> }) => void;
+    fakeApi.fileCommitFiles = vi.fn(({ rootPath }: { rootPath: string }) =>
+      rootPath === "/repo"
+        ? new Promise<{ files: Array<{ path: string; code: string }> }>((resolve) => (finishA = resolve))
+        : Promise.resolve({ files: [{ path: "from-b.ts", code: "M" }] }),
+    );
+    const wrapper = mountTab({ selectedCommit: "same-sha" });
+    await vi.waitFor(() => expect(fakeApi.fileCommitFiles).toHaveBeenCalledTimes(1));
+
+    await wrapper.setProps({ activeRootPath: "/repo-b" } as never);
+    await flushPromises();
+    expect(fakeApi.fileCommitFiles).toHaveBeenNthCalledWith(1, { rootPath: "/repo", hash: "same-sha" });
+    expect(fakeApi.fileCommitFiles).toHaveBeenNthCalledWith(2, { rootPath: "/repo-b", hash: "same-sha" });
+    finishA({ files: [{ path: "from-a.ts", code: "M" }] });
+    await flushPromises();
+    expect(wrapper.text()).toContain("from-b.ts");
+    expect(wrapper.text()).not.toContain("from-a.ts");
+  });
 });
 
 /**
