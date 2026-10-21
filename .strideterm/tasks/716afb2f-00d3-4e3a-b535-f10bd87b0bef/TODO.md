@@ -67,3 +67,7 @@
 - [x] Separate History refs from commit subjects into aligned columns on desktop and compact layouts; GitTreeGraph tests (13), typecheck, focused lint/format and safe production build pass.
 - [x] Explain and fall back when a persisted More destination becomes unavailable, while preserving the stored destination for restoration; GitPane regression and the full UI suite pass.
 - [x] Keep the shared Git operation status card visible in the new Review view, including its unlinked-PR empty state; focused GitPane tests pass.
+- [x] Run merge/rebase, including optional fetch-first, inside the generic long-operation registry so disconnects cannot split fetch from integration; the runtime and Git UI regressions pass.
+- [x] Route remote tag push, push-all-tags and remote tag deletion through the generic long-operation registry; validate remote payloads and verify operation deduplication.
+- [x] Scope compact History ref/search state by profile/workspace/root, skip its hidden mobile branch-tree step, and prevent post-action diff refreshes from crossing repository roots.
+- [x] Re-run full UI/backend suites, typecheck, lint/Prettier and the safe production build after this continuation; see JUDGE_TODO for results and remaining user/manual acceptance.

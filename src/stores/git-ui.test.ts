@@ -1,9 +1,10 @@
 import { describe, expect, test, beforeEach, vi } from "vitest";
-import { computed, nextTick } from "vue";
+import { computed, nextTick, reactive } from "vue";
 import { setActivePinia, createPinia } from "pinia";
 import { useGitUiStore } from "./git-ui.js";
 import { useNotificationStore } from "./notifications.js";
 import type { Transport } from "../transport.js";
+import type { OperationFinished } from "../../electron/shared/operation-events.js";
 
 // gitSelectDiff is the only one of the three diff-preview loaders that reads
 // the app store's git snapshot (to resolve rootPath/baseBranch), so it needs
@@ -22,13 +23,13 @@ const pushReviewCheckout = vi.fn(
   async (_workspaceId: string, _options?: { force?: boolean }): Promise<unknown> => null,
 );
 const rebaseReviewCheckout = vi.fn(async (_workspaceId: string): Promise<unknown> => null);
-const appStoreMock = {
+const appStoreMock = reactive({
   getGitSnapshot,
   adoptPayload,
   payload: null as unknown,
   pushReviewCheckout,
   rebaseReviewCheckout,
-};
+});
 vi.mock("./app.js", () => ({
   useAppStore: () => appStoreMock,
 }));
@@ -60,6 +61,17 @@ describe("git-ui store", () => {
     store.gitSwitchView("ws1", "changes", "/repo/a", "profile-b", "azure:123");
     expect(store.getGitView("ws1", "/repo/a", "profile-b", "azure:123")).toBe("changes");
     expect(store.getGitView("ws1", "/repo/a", "profile-b", "github:123")).toBeUndefined();
+  });
+
+  test("History ref and search restore per profile, workspace, and root", () => {
+    const store = useGitUiStore();
+    store.setGitHistorySelection("ws1", "/repo/a", "profile-a", { ref: "feature/a", commitSearch: "fix" });
+    expect(store.getGitHistorySelection("ws1", "/repo/a", "profile-a")).toEqual({
+      ref: "feature/a",
+      commitSearch: "fix",
+    });
+    expect(store.getGitHistorySelection("ws1", "/repo/b", "profile-a")).toEqual({ ref: "", commitSearch: "" });
+    expect(store.getGitHistorySelection("ws1", "/repo/a", "profile-b")).toEqual({ ref: "", commitSearch: "" });
   });
 
   test("persists new-view selection and ignores out-of-order history responses", async () => {
@@ -193,6 +205,29 @@ describe("git-ui store", () => {
       await store.gitFetch("ws1");
 
       expect(adoptPayload).toHaveBeenCalledWith(responsePayload);
+    });
+
+    test("post-action diff refresh stays on the originating root and ignores a changed selection", async () => {
+      let finishAction!: (value: unknown) => void;
+      let finishPreview!: (value: unknown) => void;
+      const gitFetch = vi.fn(() => new Promise((resolve) => (finishAction = resolve)));
+      const gitDiffPreview = vi.fn(() => new Promise((resolve) => (finishPreview = resolve)));
+      const store = useGitUiStore();
+      store.init({ gitFetch, gitDiffPreview } as unknown as Transport);
+      store.setActiveRoot("ws1", "/repo/a");
+      store.get("ws1").selectedDiff = { path: "a.txt", scope: "unstaged" };
+      const pending = store.gitFetch("ws1");
+      await vi.waitFor(() => expect(gitFetch).toHaveBeenCalledTimes(1));
+      finishAction({ result: { ok: true } });
+      await vi.waitFor(() => expect(gitDiffPreview).toHaveBeenCalledTimes(1));
+      store.setActiveRoot("ws1", "/repo/b");
+      store.get("ws1").selectedDiff = { path: "b.txt", scope: "staged" };
+      finishPreview({ ok: true, path: "a.txt", diff: "old root" });
+      await pending;
+      expect(gitDiffPreview).toHaveBeenCalledWith(
+        expect.objectContaining({ workspaceId: "ws1", rootPath: "/repo/a", path: "a.txt" }),
+      );
+      expect(store.get("ws1").diffPreview).not.toMatchObject({ path: "a.txt", diff: "old root" });
     });
   });
 });
@@ -801,5 +836,90 @@ describe("PR-linked checkouts", () => {
 
     expect(rebaseReviewCheckout).not.toHaveBeenCalled();
     expect(store.get("ws1").pendingAction).toMatchObject({ type: "rebase", baseBranch: "origin/release/1.0" });
+  });
+});
+
+describe("branch update waits for its accepted long operation", () => {
+  function setupFetchFirst(type: "merge" | "rebase") {
+    let finishOperation: ((event: OperationFinished) => void) | undefined;
+    const gitMergeIntoCurrent = vi.fn().mockResolvedValue({ started: true, operationId: "op-update" });
+    const gitRebaseOnto = vi.fn().mockResolvedValue({ started: true, operationId: "op-update" });
+    const api = {
+      onOperationFinished: (handler: (event: OperationFinished) => void) => {
+        finishOperation = handler;
+      },
+      gitMergeIntoCurrent,
+      gitRebaseOnto,
+    } as unknown as Transport;
+    const store = useGitUiStore();
+    store.init(api);
+    store.setPendingGitAction("ws1", {
+      type,
+      baseBranch: "origin/main",
+      fetchFirst: true,
+      snapshot: { available: true, branch: "feature", operationState: { inProgress: false } },
+    });
+    return {
+      store,
+      finish: (event: OperationFinished) => finishOperation?.(event),
+      gitMergeIntoCurrent,
+      gitRebaseOnto,
+    };
+  }
+
+  const updateOutcome = (type: "merge" | "rebase"): OperationFinished => ({
+    operationId: "op-update",
+    kind: `git.${type}`,
+    profileId: "default",
+    rootPath: "/repo",
+    finishedAt: new Date().toISOString(),
+    result: { ok: true, summary: `${type} completed.` },
+  });
+
+  test.each(["merge", "rebase"] as const)("keeps %s busy until its long operation completes", async (type) => {
+    const { store, finish, gitMergeIntoCurrent, gitRebaseOnto } = setupFetchFirst(type);
+    const pending = store.gitConfirmAction("ws1");
+    await vi.waitFor(() => expect(store.get("ws1").busyAction).toBe(type));
+
+    expect(type === "merge" ? gitMergeIntoCurrent : gitRebaseOnto).toHaveBeenCalledWith(
+      expect.objectContaining({ fetchFirst: true }),
+    );
+    finish(updateOutcome(type));
+    await pending;
+
+    expect(type === "merge" ? gitMergeIntoCurrent : gitRebaseOnto).toHaveBeenCalledTimes(1);
+    expect(store.get("ws1").busyAction).toBe("");
+  });
+
+  test("shows an error from the fetch-first operation and does not issue a second mutation", async () => {
+    const { store, finish, gitMergeIntoCurrent, gitRebaseOnto } = setupFetchFirst("rebase");
+    const pending = store.gitConfirmAction("ws1");
+    await vi.waitFor(() => expect(store.get("ws1").busyAction).toBe("rebase"));
+    finish({
+      operationId: "op-update",
+      kind: "git.rebase",
+      profileId: "default",
+      rootPath: "/repo",
+      finishedAt: new Date().toISOString(),
+      error: { code: "internal_error", message: "Remote authentication failed." },
+    });
+    await pending;
+
+    expect(gitMergeIntoCurrent).not.toHaveBeenCalled();
+    expect(gitRebaseOnto).toHaveBeenCalledTimes(1);
+    expect(store.get("ws1").lastResult).toMatchObject({ ok: false, summary: "Remote authentication failed." });
+  });
+
+  test("recovers the update result from the operations payload when its event was missed", async () => {
+    const { store, gitRebaseOnto } = setupFetchFirst("rebase");
+    const pending = store.gitConfirmAction("ws1");
+    await vi.waitFor(() => expect(store.get("ws1").busyAction).toBe("rebase"));
+    appStoreMock.payload = { operations: { lastResults: [] } };
+    await nextTick();
+    appStoreMock.payload = { operations: { lastResults: [updateOutcome("rebase")] } };
+
+    await pending;
+
+    expect(gitRebaseOnto).toHaveBeenCalledTimes(1);
   });
 });

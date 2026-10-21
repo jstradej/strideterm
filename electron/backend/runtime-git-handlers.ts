@@ -126,7 +126,7 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
   }
 
   async function startLongGitAction(
-    kind: "fetch" | "pull" | "push",
+    kind: "fetch" | "pull" | "push" | "merge" | "rebase" | "push-tag" | "push-all-tags" | "delete-remote-tag",
     workspace: WorkspaceState,
     rootPath: string,
     input: Record<string, unknown>,
@@ -134,7 +134,16 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
   ) {
     const profileId = String(workspace.profileId || "default");
     const idempotencyKey = String(input.idempotencyKey || randomUUID());
-    const operationInput = { kind, workspaceId: workspace.id, rootPath, stashDirty: input.stashDirty === true };
+    const operationInput = {
+      kind,
+      workspaceId: workspace.id,
+      rootPath,
+      ...(kind === "pull" ? { stashDirty: input.stashDirty === true } : {}),
+      ...(kind === "merge" || kind === "rebase"
+        ? { baseBranch: String(input.baseBranch || ""), fetchFirst: input.fetchFirst === true }
+        : {}),
+      ...(kind === "push-tag" || kind === "delete-remote-tag" ? { tagName: String(input.tagName || "") } : {}),
+    };
     const inputHash = JSON.stringify(operationInput);
     const existing = operations
       .list(profileId)
@@ -159,36 +168,94 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
         originWorkspaceId: workspace.id,
         idempotencyKey,
         inputHash,
-        initialStep: kind,
-        intent: { workspaceId: workspace.id, rootPath, kind },
+        initialStep: input.fetchFirst === true && (kind === "merge" || kind === "rebase") ? "fetch" : kind,
+        intent: {
+          workspaceId: workspace.id,
+          rootPath,
+          kind,
+          ...(input.fetchFirst === true ? { fetchFirst: true } : {}),
+        },
       },
       async (handle) => {
-        await handle.update({ workspaceId: workspace.id, step: kind });
-        const result =
-          kind === "fetch"
-            ? await runGitWorkspaceAction(workspace, git.fetch(workspace, { connection, rootPath }))
-            : kind === "pull"
+        await handle.update({
+          workspaceId: workspace.id,
+          step: input.fetchFirst === true && (kind === "merge" || kind === "rebase") ? "fetch" : kind,
+        });
+        let result;
+        let priorWarnings: string[] = [];
+        if (kind === "fetch") {
+          result = await runGitWorkspaceAction(workspace, git.fetch(workspace, { connection, rootPath }));
+        } else if (kind === "pull") {
+          result = await runGitWorkspaceMutation(
+            workspace,
+            git.pull(workspace, { connection, rootPath, stashDirty: input.stashDirty === true }),
+            windowId,
+          );
+        } else if (kind === "push") {
+          result = await runGitWorkspaceMutation(
+            workspace,
+            git.push(workspace, {
+              connection,
+              rootPath,
+              onProgress: (chunk: string) => ctx.emitGitProgress({ workspaceId: workspace.id, rootPath, chunk }),
+            }),
+            windowId,
+          );
+        } else if (kind === "push-tag") {
+          result = await runGitWorkspaceMutation(
+            workspace,
+            git.pushTag(workspace, { ...input, connection, rootPath }),
+            windowId,
+          );
+        } else if (kind === "push-all-tags") {
+          result = await runGitWorkspaceMutation(
+            workspace,
+            git.pushAllTags(workspace, { connection, rootPath }),
+            windowId,
+          );
+        } else if (kind === "delete-remote-tag") {
+          result = await runGitWorkspaceMutation(
+            workspace,
+            git.deleteRemoteTag(workspace, { ...input, connection, rootPath }),
+            windowId,
+          );
+        } else {
+          if (input.fetchFirst === true) {
+            const fetchResponse = await runGitWorkspaceAction(
+              workspace,
+              git.fetch(workspace, { connection, rootPath }),
+            );
+            if (fetchResponse?.result?.ok === false) {
+              throw new Error(gitFailureMessage("fetch", fetchResponse.result));
+            }
+            priorWarnings = Array.isArray(fetchResponse?.result?.warnings)
+              ? fetchResponse.result.warnings.map(String)
+              : [];
+          }
+          await handle.update({ step: kind });
+          result =
+            kind === "merge"
               ? await runGitWorkspaceMutation(
                   workspace,
-                  git.pull(workspace, { connection, rootPath, stashDirty: input.stashDirty === true }),
+                  git.mergeIntoCurrent(workspace, { ...input, connection, rootPath }),
                   windowId,
                 )
               : await runGitWorkspaceMutation(
                   workspace,
-                  git.push(workspace, {
-                    connection,
-                    rootPath,
-                    onProgress: (chunk: string) => ctx.emitGitProgress({ workspaceId: workspace.id, rootPath, chunk }),
-                  }),
+                  git.rebaseOnto(workspace, { ...input, connection, rootPath }),
                   windowId,
                 );
+        }
         if (result?.result?.ok === false) {
           throw new Error(gitFailureMessage(kind, result.result));
         }
         return {
           ok: true,
           summary: String(result?.result?.summary || `${kind} completed.`),
-          warnings: Array.isArray(result?.result?.warnings) ? result.result.warnings : [],
+          warnings: [
+            ...priorWarnings,
+            ...(Array.isArray(result?.result?.warnings) ? result.result.warnings.map(String) : []),
+          ],
         };
       },
     );
@@ -220,6 +287,24 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
       return startLongGitAction("push", workspace, rootPath, payload, windowId);
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitPushTag(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return startLongGitAction("push-tag", workspace, rootPath, payload, windowId);
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitPushAllTags(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return startLongGitAction("push-all-tags", workspace, rootPath, payload, windowId);
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitDeleteRemoteTag(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return startLongGitAction("delete-remote-tag", workspace, rootPath, payload, windowId);
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitCheckoutBranch(payload: any = {}, windowId?: string) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
@@ -234,24 +319,14 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitMergeIntoCurrent(payload: any = {}, windowId?: string) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
-      const connection = resolveGitConnection(workspace);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
-      return runGitWorkspaceMutation(
-        workspace,
-        git.mergeIntoCurrent(workspace, { ...payload, connection, rootPath }),
-        windowId,
-      );
+      return startLongGitAction("merge", workspace, rootPath, payload, windowId);
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitRebaseOnto(payload: any = {}, windowId?: string) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
-      const connection = resolveGitConnection(workspace);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
-      return runGitWorkspaceMutation(
-        workspace,
-        git.rebaseOnto(workspace, { ...payload, connection, rootPath }),
-        windowId,
-      );
+      return startLongGitAction("rebase", workspace, rootPath, payload, windowId);
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitCherryPick(payload: any = {}, windowId?: string) {
@@ -489,30 +564,6 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
       return runGitWorkspaceMutation(workspace, git.deleteTag(workspace, { ...payload, rootPath }), windowId);
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async gitPushTag(payload: any = {}, windowId?: string) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
-      const connection = resolveGitConnection(workspace);
-      const rootPath = resolveRootPath(workspace, payload.rootPath);
-      return runGitWorkspaceMutation(workspace, git.pushTag(workspace, { ...payload, connection, rootPath }), windowId);
-    },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async gitPushAllTags(payload: any = {}, windowId?: string) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
-      const connection = resolveGitConnection(workspace);
-      const rootPath = resolveRootPath(workspace, payload.rootPath);
-      return runGitWorkspaceMutation(workspace, git.pushAllTags(workspace, { connection, rootPath }), windowId);
-    },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async gitDeleteRemoteTag(payload: any = {}, windowId?: string) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
-      const connection = resolveGitConnection(workspace);
-      const rootPath = resolveRootPath(workspace, payload.rootPath);
-      return runGitWorkspaceMutation(
-        workspace,
-        git.deleteRemoteTag(workspace, { ...payload, connection, rootPath }),
-        windowId,
-      );
-    },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitForcePushWithLease(payload: any = {}, windowId?: string) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);

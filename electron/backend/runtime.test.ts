@@ -8844,6 +8844,131 @@ describe("runtime integration", () => {
     await waitForGitOperation(first.operationId);
   });
 
+  test("long Git rebase accepts promptly and reports its outcome after the rebase settles", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    let releaseRebase!: () => void;
+    const gate = new Promise<void>((resolve) => (releaseRebase = resolve));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rebase = vi.fn(async () => {
+      await gate;
+      return { ok: true, summary: "Rebase completed.", warnings: [] };
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).rebaseOnto = rebase;
+    const waitForGitOperation = watchOperation(fixture);
+
+    const started = await fixture.runtime.gitRebaseOnto({ workspaceId: "ws-a1", baseBranch: "origin/main" });
+    expect(started).toMatchObject({ started: true, replayed: false, operationId: expect.any(String) });
+    await vi.waitFor(() => expect(rebase).toHaveBeenCalledTimes(1));
+    const replay = await fixture.runtime.gitRebaseOnto({ workspaceId: "ws-a1", baseBranch: "origin/main" });
+    expect(replay).toEqual({ started: true, operationId: started.operationId, replayed: true });
+    releaseRebase();
+
+    await expect(waitForGitOperation(started.operationId)).resolves.toMatchObject({
+      kind: "git.rebase",
+      profileId: "profile-a",
+      workspaceId: "ws-a1",
+      result: { ok: true, summary: "Rebase completed." },
+    });
+  });
+
+  test("remote tag push runs as a deduplicated long Git operation", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    let releasePush!: () => void;
+    const gate = new Promise<void>((resolve) => (releasePush = resolve));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pushTag = vi.fn(async () => {
+      await gate;
+      return { ok: true, summary: "Tag pushed.", warnings: [] };
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).pushTag = pushTag;
+    const waitForGitOperation = watchOperation(fixture);
+
+    const started = await fixture.runtime.gitPushTag({ workspaceId: "ws-a1", tagName: "v1.2.3" });
+    await vi.waitFor(() => expect(pushTag).toHaveBeenCalledTimes(1));
+    const replay = await fixture.runtime.gitPushTag({ workspaceId: "ws-a1", tagName: "v1.2.3" });
+    expect(replay).toEqual({ started: true, operationId: started.operationId, replayed: true });
+    releasePush();
+    await expect(waitForGitOperation(started.operationId)).resolves.toMatchObject({
+      kind: "git.push-tag",
+      profileId: "profile-a",
+      workspaceId: "ws-a1",
+      result: { ok: true, summary: "Tag pushed." },
+    });
+  });
+
+  test("fetch-first Git rebase runs fetch and rebase inside one accepted operation", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    let releaseFetch!: () => void;
+    let releaseRebase!: () => void;
+    const fetchGate = new Promise<void>((resolve) => (releaseFetch = resolve));
+    const rebaseGate = new Promise<void>((resolve) => (releaseRebase = resolve));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fetch = vi.fn(async () => {
+      await fetchGate;
+      return { ok: true, summary: "Fetch completed.", warnings: [] };
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rebase = vi.fn(async () => {
+      await rebaseGate;
+      return { ok: true, summary: "Rebase completed.", warnings: [] };
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).fetch = fetch;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).rebaseOnto = rebase;
+    const waitForGitOperation = watchOperation(fixture);
+
+    const started = await fixture.runtime.gitRebaseOnto({
+      workspaceId: "ws-a1",
+      baseBranch: "origin/main",
+      fetchFirst: true,
+    });
+    expect(started).toMatchObject({ started: true, replayed: false, operationId: expect.any(String) });
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    expect(rebase).not.toHaveBeenCalled();
+    releaseFetch();
+    await vi.waitFor(() => expect(rebase).toHaveBeenCalledTimes(1));
+    releaseRebase();
+
+    await expect(waitForGitOperation(started.operationId)).resolves.toMatchObject({
+      kind: "git.rebase",
+      profileId: "profile-a",
+      workspaceId: "ws-a1",
+      result: { ok: true, summary: "Rebase completed." },
+    });
+  });
+
+  test("fetch-first Git rebase reports fetch failure without starting the rebase", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fetch = vi.fn(async () => ({ ok: false, summary: "Fetch failed.", warnings: ["Authentication failed."] }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rebase = vi.fn();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).fetch = fetch;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).rebaseOnto = rebase;
+    const waitForGitOperation = watchOperation(fixture);
+
+    const started = await fixture.runtime.gitRebaseOnto({
+      workspaceId: "ws-a1",
+      baseBranch: "origin/main",
+      fetchFirst: true,
+    });
+    const outcome = await waitForGitOperation(started.operationId);
+
+    expect(outcome).toMatchObject({ kind: "git.rebase", profileId: "profile-a" });
+    expect("error" in outcome && outcome.error.message).toContain("Fetch failed.");
+    expect("error" in outcome && outcome.error.message).toContain("Authentication failed.");
+    expect(rebase).not.toHaveBeenCalled();
+  });
+
   test("long Git fetches in separate profiles have isolated operations and outcomes", async () => {
     const fixture = await createFixture({ initialState: makeProfileSwitchState() });
     fixtures.push(fixture);

@@ -3602,8 +3602,10 @@ export async function startRemoteServer({
     "/api/git/push": (body, windowId) => runtime.gitPush(body, windowId),
     "/api/git/checkout-branch": (body, windowId) => runtime.gitCheckoutBranch(body, windowId),
     "/api/git/create-branch": (body, windowId) => runtime.gitCreateBranch(body, windowId),
-    "/api/git/merge-into-current": (body, windowId) => runtime.gitMergeIntoCurrent(body, windowId),
-    "/api/git/rebase-onto": (body, windowId) => runtime.gitRebaseOnto(body, windowId),
+    "/api/git/merge-into-current": (body, windowId) =>
+      runtime.gitMergeIntoCurrent(validateIpc(gitPayloadSchema, body, "POST /api/git/merge-into-current"), windowId),
+    "/api/git/rebase-onto": (body, windowId) =>
+      runtime.gitRebaseOnto(validateIpc(gitPayloadSchema, body, "POST /api/git/rebase-onto"), windowId),
     // Cherry-pick / squash rewrite history in the workspace's cwd —
     // validate like the IPC path (hash regex blocks option injection).
     "/api/git/cherry-pick": (body, windowId) =>
@@ -3660,9 +3662,12 @@ export async function startRemoteServer({
     "/api/git/list-tags": (body, windowId) => runtime.gitListTags(body, windowId),
     "/api/git/create-tag": (body, windowId) => runtime.gitCreateTag(body, windowId),
     "/api/git/delete-tag": (body, windowId) => runtime.gitDeleteTag(body, windowId),
-    "/api/git/push-tag": (body, windowId) => runtime.gitPushTag(body, windowId),
-    "/api/git/push-all-tags": (body, windowId) => runtime.gitPushAllTags(body, windowId),
-    "/api/git/delete-remote-tag": (body, windowId) => runtime.gitDeleteRemoteTag(body, windowId),
+    "/api/git/push-tag": (body, windowId) =>
+      runtime.gitPushTag(validateIpc(gitPayloadSchema, body, "POST /api/git/push-tag"), windowId),
+    "/api/git/push-all-tags": (body, windowId) =>
+      runtime.gitPushAllTags(validateIpc(gitPayloadSchema, body, "POST /api/git/push-all-tags"), windowId),
+    "/api/git/delete-remote-tag": (body, windowId) =>
+      runtime.gitDeleteRemoteTag(validateIpc(gitPayloadSchema, body, "POST /api/git/delete-remote-tag"), windowId),
     "/api/git/force-push-with-lease": (body, windowId) => runtime.gitForcePushWithLease(body, windowId),
     "/api/git/list-branches": (body, windowId) =>
       runtime.gitListBranches(validateIpc(gitBranchListSchema, body, "POST /api/git/list-branches"), windowId),

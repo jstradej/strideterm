@@ -1,7 +1,8 @@
 import { defineStore } from "pinia";
-import { ref } from "vue";
+import { ref, watch } from "vue";
 import type { Transport, CallableTransport } from "../transport.js";
 import type { StatePayload } from "../../electron/shared/types/state.js";
+import { operationFinishedSchema, type OperationFinished } from "../../electron/shared/operation-events.js";
 import { rlog } from "../lib/renderer-log.js";
 import { managedReviewBranchAlias, sourceBranchName } from "../../electron/shared/review-source-identity.js";
 
@@ -211,6 +212,9 @@ const PUSH_PROGRESS_MAX = 100_000;
 // push that may run for minutes; the runtime's operation and the operation wait
 // own their own limits, so the generic backstop must not cut either short.
 const REVIEW_GIT_STEP_OPTS = { timeoutMs: 0 };
+// Fetch-first merge/rebase waits for the generic operation to finish, so the
+// short renderer IPC backstop must not discard that accepted operation.
+const GIT_OPERATION_WAIT_OPTS = { timeoutMs: 0 };
 
 function withGitTimeout<T>(promise: Promise<T>, ms: number, action: string): Promise<T> {
   if (!ms || ms <= 0) return promise;
@@ -335,7 +339,10 @@ export const useGitUiStore = defineStore("git-ui", () => {
   // state) stays workspace-owned in the backend payload.
   const state = ref<Record<string, GitUiState>>({});
   const gitHistoryPreferences = ref<Record<string, { favorites: string[]; recent: string[] }>>({});
+  const gitHistorySelections = ref<Record<string, { ref: string; commitSearch: string }>>({});
   const readGeneration = new Map<string, number>();
+  const recentGitOperationOutcomes = new Map<string, OperationFinished>();
+  const gitOperationWaiters = new Map<string, Set<(outcome: OperationFinished) => void>>();
   function nextReadGeneration(key: string): number {
     const next = (readGeneration.get(key) || 0) + 1;
     readGeneration.set(key, next);
@@ -346,6 +353,9 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   function init(api: Transport): void {
     _api = api;
+    api.onOperationFinished?.((outcome) => {
+      rememberGitOperationOutcome(outcome);
+    });
     // Live push output (streamed git stdout/stderr, incl. pre-push hook). Keyed
     // by workspaceId — the busy banner is per-workspace, like busyAction. Kept
     // bounded to the tail (where a hook's error summary lives) so a chatty hook
@@ -356,6 +366,88 @@ export const useGitUiStore = defineStore("git-ui", () => {
       const next = (ui.pushProgress || "") + chunk;
       ui.pushProgress = next.length > PUSH_PROGRESS_MAX ? next.slice(next.length - PUSH_PROGRESS_MAX) : next;
     });
+  }
+
+  function rememberGitOperationOutcome(outcome: OperationFinished): void {
+    recentGitOperationOutcomes.set(outcome.operationId, outcome);
+    while (recentGitOperationOutcomes.size > 100) {
+      const oldest = recentGitOperationOutcomes.keys().next().value;
+      if (!oldest) break;
+      recentGitOperationOutcomes.delete(oldest);
+    }
+    const waiters = gitOperationWaiters.get(outcome.operationId);
+    if (!waiters) return;
+    gitOperationWaiters.delete(outcome.operationId);
+    for (const resolve of waiters) resolve(outcome);
+  }
+
+  function findGitOperationOutcome(appStore: { payload?: unknown }, operationId: string): OperationFinished | null {
+    const payload = appStore.payload as { operations?: { lastResults?: unknown[] } } | null | undefined;
+    const value =
+      recentGitOperationOutcomes.get(operationId) ??
+      payload?.operations?.lastResults?.find(
+        (item) => (item as { operationId?: unknown })?.operationId === operationId,
+      );
+    const parsed = operationFinishedSchema.safeParse(value);
+    if (!parsed.success) return null;
+    rememberGitOperationOutcome(parsed.data);
+    return parsed.data;
+  }
+
+  async function waitForGitOperation(appStore: { payload?: unknown }, operationId: string): Promise<OperationFinished> {
+    const existing = findGitOperationOutcome(appStore, operationId);
+    if (existing) return existing;
+    return new Promise((resolve) => {
+      const waiters = gitOperationWaiters.get(operationId) || new Set<(outcome: OperationFinished) => void>();
+      let stopWatching = () => {};
+      const settle = (outcome: OperationFinished) => {
+        waiters.delete(settle);
+        if (!waiters.size) gitOperationWaiters.delete(operationId);
+        stopWatching();
+        resolve(outcome);
+      };
+      waiters.add(settle);
+      gitOperationWaiters.set(operationId, waiters);
+      stopWatching = watch(
+        () =>
+          (appStore.payload as { operations?: { lastResults?: unknown[] } } | null | undefined)?.operations
+            ?.lastResults,
+        () => {
+          const outcome = findGitOperationOutcome(appStore, operationId);
+          if (outcome) settle(outcome);
+        },
+      );
+      // The outcome may have landed between the first lookup and waiter registration.
+      const arrived = findGitOperationOutcome(appStore, operationId);
+      if (arrived) {
+        settle(arrived);
+      }
+    });
+  }
+
+  async function resolveLongGitAction(
+    appStore: { payload?: unknown },
+    start: { operationId?: string; started?: boolean; result?: { ok?: boolean } } | null,
+  ): Promise<{ result?: { ok?: boolean; summary?: string; warnings?: unknown[] } } | null> {
+    if (!start?.started) return start;
+    if (!start.operationId) {
+      return {
+        result: {
+          ok: false,
+          summary: "The Git action was accepted without an operation ID, so its result could not be verified.",
+        },
+      };
+    }
+    const outcome = await waitForGitOperation(appStore, start.operationId);
+    if ("result" in outcome) {
+      return {
+        result: {
+          ...(outcome.result as { summary?: string; warnings?: unknown[] }),
+          ok: outcome.result.ok !== false,
+        },
+      };
+    }
+    return { result: { ok: false, summary: outcome.error.message } };
   }
 
   function ensure(workspaceId: string): GitUiState {
@@ -468,6 +560,8 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
     const ui = ensure(workspaceId);
     let actionResponse: unknown = null;
+    const actionRootPath = getActiveRoot(workspaceId);
+    const selectedDiffAtStart = ui.selectedDiff ? { ...ui.selectedDiff } : null;
     ui.busyAction = busyAction;
     ui.busyPhase = opts.label || defaultBusyLabel(busyAction);
     // Start each push/force-push with a clean live-output buffer; chunks stream
@@ -518,18 +612,29 @@ export const useGitUiStore = defineStore("git-ui", () => {
         gitSwitchTab(workspaceId, "conflicts");
       }
 
-      if (ui.selectedDiff?.path) {
-        const rootPath = getActiveRoot(workspaceId);
-        const snapshot = appStore.getGitSnapshot(workspaceId, rootPath) as GitSnapshot | null;
+      if (
+        selectedDiffAtStart?.path &&
+        getActiveRoot(workspaceId) === actionRootPath &&
+        ui.selectedDiff?.path === selectedDiffAtStart.path &&
+        ui.selectedDiff.scope === selectedDiffAtStart.scope
+      ) {
+        const snapshot = appStore.getGitSnapshot(workspaceId, actionRootPath) as GitSnapshot | null;
         const preview = await (_api as Transport & { gitDiffPreview: (p: unknown) => Promise<unknown> })
           .gitDiffPreview!({
           workspaceId,
-          path: ui.selectedDiff.path,
-          scope: ui.selectedDiff.scope,
+          path: selectedDiffAtStart.path,
+          scope: selectedDiffAtStart.scope,
           baseBranch: snapshot?.baseBranch || snapshot?.compareWithBase?.baseBranch || "",
-          rootPath,
+          rootPath: actionRootPath,
         }).catch(() => null);
-        if (preview) ui.diffPreview = preview;
+        if (
+          preview &&
+          getActiveRoot(workspaceId) === actionRootPath &&
+          ui.selectedDiff?.path === selectedDiffAtStart.path &&
+          ui.selectedDiff.scope === selectedDiffAtStart.scope
+        ) {
+          ui.diffPreview = preview;
+        }
       }
 
       return response;
@@ -1031,6 +1136,9 @@ export const useGitUiStore = defineStore("git-ui", () => {
     if (!pending) return;
     ui.pendingAction = null;
 
+    const { useAppStore } = await import("./app.js");
+    const appStore = useAppStore();
+
     const rootPath = getActiveRoot(workspaceId);
 
     // Destructive actions dispatched by buildDestructiveConfirm
@@ -1044,8 +1152,15 @@ export const useGitUiStore = defineStore("git-ui", () => {
         );
         await gitListTags(workspaceId);
       } else if (action === "deleteRemoteTag") {
-        await runGitAction(workspaceId, "delete-remote-tag", () =>
-          api.gitDeleteRemoteTag({ workspaceId, tagName: p!.tagName, rootPath }),
+        await runGitAction(
+          workspaceId,
+          "delete-remote-tag",
+          async () =>
+            resolveLongGitAction(
+              appStore,
+              await api.gitDeleteRemoteTag({ workspaceId, tagName: p!.tagName, rootPath }),
+            ),
+          { timeoutMs: 0 },
         );
         await gitListTags(workspaceId);
       } else if (action === "removeWorktree") {
@@ -1083,21 +1198,38 @@ export const useGitUiStore = defineStore("git-ui", () => {
       );
       return;
     }
-    const payload = { workspaceId, baseBranch: pending.baseBranch, stashDirty: pending.stashDirty, rootPath };
+    const payload = {
+      workspaceId,
+      baseBranch: pending.baseBranch,
+      stashDirty: pending.stashDirty,
+      fetchFirst: pending.fetchFirst === true,
+      rootPath,
+    };
     const fetchFirst = !!pending.fetchFirst;
     const baseLabel = pending.baseBranch || "base";
-    await runGitAction(workspaceId, pending.type, async () => {
-      if (fetchFirst) {
-        // Pull the latest remote refs first so the base is current. If the
-        // fetch fails (offline / auth), surface that and don't rebase/merge
-        // onto a stale base.
-        setBusyPhase(workspaceId, `Fetching ${baseLabel}…`);
-        const fetchResp = (await api.gitFetch({ workspaceId, rootPath })) as { result?: { ok?: boolean } } | null;
-        if (fetchResp?.result && fetchResp.result.ok === false) return fetchResp;
-      }
-      setBusyPhase(workspaceId, pending.type === "merge" ? `Merging ${baseLabel} in…` : `Rebasing onto ${baseLabel}…`);
-      return pending.type === "merge" ? api.gitMergeIntoCurrent(payload) : api.gitRebaseOnto(payload);
-    });
+    await runGitAction(
+      workspaceId,
+      pending.type,
+      async () => {
+        setBusyPhase(
+          workspaceId,
+          fetchFirst
+            ? `Fetching and ${pending.type === "merge" ? "merging into" : "rebasing onto"} ${baseLabel}…`
+            : pending.type === "merge"
+              ? `Merging ${baseLabel} in…`
+              : `Rebasing onto ${baseLabel}…`,
+        );
+        const start = (await (pending.type === "merge"
+          ? api.gitMergeIntoCurrent(payload)
+          : api.gitRebaseOnto(payload))) as {
+          operationId?: string;
+          started?: boolean;
+          result?: { ok?: boolean };
+        } | null;
+        return await resolveLongGitAction(appStore, start);
+      },
+      GIT_OPERATION_WAIT_OPTS,
+    );
   }
 
   function confirmDeleteLocalTag(workspaceId: string, tagName: string): void {
@@ -1496,6 +1628,33 @@ export const useGitUiStore = defineStore("git-ui", () => {
     return `strideterm:git-history:${encodeURIComponent(profileId)}:${encodeURIComponent(workspaceId)}:${encodeURIComponent(rootPath || "default-root")}`;
   }
 
+  function gitHistorySelectionKey(workspaceId: string, rootPath: string, profileId: string): string {
+    return `${encodeURIComponent(profileId)}::${encodeURIComponent(workspaceId)}::${encodeURIComponent(rootPath || "default-root")}`;
+  }
+
+  function getGitHistorySelection(workspaceId: string, rootPath = getActiveRoot(workspaceId), profileId = "default") {
+    return {
+      ...(gitHistorySelections.value[gitHistorySelectionKey(workspaceId, rootPath, profileId)] || {
+        ref: "",
+        commitSearch: "",
+      }),
+    };
+  }
+
+  function setGitHistorySelection(
+    workspaceId: string,
+    rootPath: string,
+    profileId: string,
+    selection: { ref?: string; commitSearch?: string },
+  ): void {
+    const key = gitHistorySelectionKey(workspaceId, rootPath, profileId);
+    const current = getGitHistorySelection(workspaceId, rootPath, profileId);
+    gitHistorySelections.value = {
+      ...gitHistorySelections.value,
+      [key]: { ref: selection.ref ?? current.ref, commitSearch: selection.commitSearch ?? current.commitSearch },
+    };
+  }
+
   function getGitHistoryPreferences(workspaceId: string, rootPath = getActiveRoot(workspaceId), profileId = "default") {
     const key = gitHistoryPreferencesKey(workspaceId, rootPath, profileId);
     const cached = gitHistoryPreferences.value[key];
@@ -1638,35 +1797,59 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   async function gitPushTag(workspaceId: string, tagName: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "push-tag", () =>
-      (_api as Transport & { gitPushTag: (p: unknown) => Promise<unknown> }).gitPushTag!({
-        workspaceId,
-        tagName,
-        rootPath,
-      }),
+    await runGitAction(
+      workspaceId,
+      "push-tag",
+      async () => {
+        const { useAppStore } = await import("./app.js");
+        const start = (await (_api as Transport & { gitPushTag: (p: unknown) => Promise<unknown> }).gitPushTag!({
+          workspaceId,
+          tagName,
+          rootPath,
+        })) as { operationId?: string; started?: boolean };
+        return resolveLongGitAction(useAppStore(), start);
+      },
+      { timeoutMs: 0 },
     );
     await gitListTags(workspaceId);
   }
 
   async function gitPushAllTags(workspaceId: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "push-all-tags", () =>
-      (_api as Transport & { gitPushAllTags: (p: unknown) => Promise<unknown> }).gitPushAllTags!({
-        workspaceId,
-        rootPath,
-      }),
+    await runGitAction(
+      workspaceId,
+      "push-all-tags",
+      async () => {
+        const { useAppStore } = await import("./app.js");
+        const start = (await (_api as Transport & { gitPushAllTags: (p: unknown) => Promise<unknown> }).gitPushAllTags!(
+          {
+            workspaceId,
+            rootPath,
+          },
+        )) as { operationId?: string; started?: boolean };
+        return resolveLongGitAction(useAppStore(), start);
+      },
+      { timeoutMs: 0 },
     );
     await gitListTags(workspaceId);
   }
 
   async function gitDeleteRemoteTag(workspaceId: string, tagName: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "delete-remote-tag", () =>
-      (_api as Transport & { gitDeleteRemoteTag: (p: unknown) => Promise<unknown> }).gitDeleteRemoteTag!({
-        workspaceId,
-        tagName,
-        rootPath,
-      }),
+    await runGitAction(
+      workspaceId,
+      "delete-remote-tag",
+      async () => {
+        const { useAppStore } = await import("./app.js");
+        const start = (await (_api as Transport & { gitDeleteRemoteTag: (p: unknown) => Promise<unknown> })
+          .gitDeleteRemoteTag!({
+          workspaceId,
+          tagName,
+          rootPath,
+        })) as { operationId?: string; started?: boolean };
+        return resolveLongGitAction(useAppStore(), start);
+      },
+      { timeoutMs: 0 },
     );
     await gitListTags(workspaceId);
   }
@@ -2158,6 +2341,8 @@ export const useGitUiStore = defineStore("git-ui", () => {
     gitSwitchView,
     getGitView,
     getGitHistoryPreferences,
+    getGitHistorySelection,
+    setGitHistorySelection,
     toggleGitHistoryFavorite,
     recordGitHistoryRef,
     setNewViewLegacyDestination,

@@ -159,13 +159,19 @@
     </div>
 
     <!-- Mobile view switcher (Tree → Commits → Diff). Hidden on desktop. -->
-    <nav v-if="isMobile" class="git-branches__mobile-tabs" role="tablist" aria-label="Branches view">
+    <nav
+      v-if="isMobile"
+      class="git-branches__mobile-tabs"
+      role="tablist"
+      :aria-label="compactHistory ? 'History view' : 'Branches view'"
+    >
       <button
         type="button"
         :class="['git-branches__mobile-tab', mobileView === 'tree' && 'git-branches__mobile-tab--active']"
+        :disabled="compactHistory"
         @click="mobileView = 'tree'"
       >
-        Tree
+        {{ compactHistory ? "History" : "Tree" }}
       </button>
       <button
         type="button"
@@ -750,8 +756,23 @@ const mobileView = ref<"tree" | "commits" | "diff">("tree");
 
 // Which ref is selected in the branch tree (acts as a graph filter).
 // Empty string = no filter (shows the full Log).
-const selectedRef = ref<string>("");
-const historyCommitSearch = ref("");
+const selectedRef = computed({
+  get: () =>
+    gitUiStore.getGitHistorySelection(props.workspaceId, props.activeRootPath || "", props.profileId || "default").ref,
+  set: (ref: string) =>
+    gitUiStore.setGitHistorySelection(props.workspaceId, props.activeRootPath || "", props.profileId || "default", {
+      ref,
+    }),
+});
+const historyCommitSearch = computed({
+  get: () =>
+    gitUiStore.getGitHistorySelection(props.workspaceId, props.activeRootPath || "", props.profileId || "default")
+      .commitSearch,
+  set: (commitSearch: string) =>
+    gitUiStore.setGitHistorySelection(props.workspaceId, props.activeRootPath || "", props.profileId || "default", {
+      commitSearch,
+    }),
+});
 const historySearch = ref("");
 const historyPreferences = computed(() =>
   gitUiStore.getGitHistoryPreferences(props.workspaceId, props.activeRootPath || "", props.profileId || "default"),
@@ -1823,6 +1844,14 @@ function onMobileSelectCommit(hash: string) {
   onSelectCommit(hash);
   if (hash) mobileView.value = "diff";
 }
+
+watch(
+  () => props.compactHistory,
+  (compact) => {
+    if (compact && mobileView.value === "tree") mobileView.value = "commits";
+  },
+  { immediate: true },
+);
 
 function onSelectCommitFile(path: string) {
   selectedCommitFile.value = path;

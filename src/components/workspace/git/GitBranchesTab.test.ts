@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach, vi } from "vitest";
-import { ref } from "vue";
+import { reactive, ref } from "vue";
 import { mount, flushPromises, type VueWrapper } from "@vue/test-utils";
 import { setActivePinia, createPinia } from "pinia";
 
@@ -27,6 +27,15 @@ vi.mock("../../../stores/git-ui.js", () => ({
     gitListTags: vi.fn(),
     gitLoadGraph,
     getGitHistoryPreferences: () => ({ favorites: [], recent: [] }),
+    getGitHistorySelection: (_workspaceId: string, _rootPath: string, _profileId: string) => historySelection,
+    setGitHistorySelection: (
+      _workspaceId: string,
+      _rootPath: string,
+      _profileId: string,
+      patch: Record<string, string>,
+    ) => {
+      Object.assign(historySelection, patch);
+    },
     toggleGitHistoryFavorite: vi.fn(),
     recordGitHistoryRef: vi.fn(),
     gitFetchBaseComparison: vi.fn(),
@@ -48,12 +57,15 @@ vi.mock("../../../stores/git-ui.js", () => ({
     azureCreatePullRequest,
   }),
 }));
+const historySelection = reactive({ ref: "", commitSearch: "" });
 vi.mock("../../../stores/notifications.js", () => ({
   useNotificationStore: () => ({ showError, addEvent }),
 }));
 vi.mock("../../../composables/useIsNarrow.js", () => ({
-  useIsNarrow: () => ({ isNarrow: ref(false), isMobile: ref(false) }),
+  useIsNarrow: () => mobileViewport,
 }));
+
+const mobileViewport = { isNarrow: ref(false), isMobile: ref(false) };
 
 import GitBranchesTab from "./GitBranchesTab.vue";
 import GitChangeTree from "./GitChangeTree.vue";
@@ -96,11 +108,42 @@ afterEach(async () => {
   mountedWrappers.length = 0;
   document.body.innerHTML = "";
   await flushPromises();
+  Object.assign(historySelection, { ref: "", commitSearch: "" });
 });
 
 describe("GitBranchesTab compact history picker", () => {
+  test("compact History skips the hidden branch-tree step on narrow layouts", async () => {
+    mobileViewport.isNarrow.value = true;
+    mobileViewport.isMobile.value = true;
+    const picker = mount(GitBranchesTab, {
+      props: {
+        workspaceId: "ws-mobile-history",
+        snapshot: { dirty: false, branch: "main" },
+        gitUi: {
+          branchList: { current: "main", local: [{ name: "main", isCurrent: true }], remotes: [] },
+          graph: {
+            commits: [{ hash: "abc123456789", shortHash: "abc1234", message: "History entry" }],
+            head: "abc123456789",
+            refs: {},
+          },
+        },
+        compactHistory: true,
+      },
+    });
+    await flushPromises();
+    expect(picker.get('[role="tablist"]').attributes("aria-label")).toBe("History view");
+    expect(picker.get('[role="tablist"] button').text()).toBe("History");
+    expect(picker.find(".git-branches__commits-pane").exists()).toBe(true);
+    expect(picker.find(".git-branches__diff-pane--mobile").exists()).toBe(false);
+    expect(historySelection.ref).toBe("");
+    picker.unmount();
+    mobileViewport.isNarrow.value = false;
+    mobileViewport.isMobile.value = false;
+  });
+
   test("selecting a named reference only changes the graph query", async () => {
     vi.useFakeTimers();
+    mobileViewport.isMobile.value = false;
     const picker = mount(GitBranchesTab, {
       props: {
         workspaceId: "ws1",
@@ -126,6 +169,7 @@ describe("GitBranchesTab compact history picker", () => {
     await flushPromises();
     const select = picker.get('[aria-label="History reference"]');
     await select.setValue("origin/main");
+    expect(historySelection.ref).toBe("origin/main");
     await flushPromises();
     await vi.advanceTimersByTimeAsync(300);
     await flushPromises();
@@ -140,6 +184,7 @@ describe("GitBranchesTab compact history picker", () => {
 
   test("HEAD and all references issue distinct graph queries", async () => {
     vi.useFakeTimers();
+    mobileViewport.isMobile.value = false;
     const picker = mount(GitBranchesTab, {
       props: {
         workspaceId: "ws-head-scope",
@@ -162,11 +207,13 @@ describe("GitBranchesTab compact history picker", () => {
 
     await select.setValue("HEAD");
     await flushPromises();
+    expect(historySelection.ref).toBe("HEAD");
     await vi.advanceTimersByTimeAsync(300);
     expect(gitLoadGraph).toHaveBeenLastCalledWith("ws-head-scope", expect.objectContaining({ branch: "HEAD" }));
 
     await select.setValue("__ALL__");
     await flushPromises();
+    expect(historySelection.ref).toBe("");
     await vi.advanceTimersByTimeAsync(300);
     expect(gitLoadGraph).toHaveBeenLastCalledWith("ws-head-scope", expect.objectContaining({ branch: "" }));
 
