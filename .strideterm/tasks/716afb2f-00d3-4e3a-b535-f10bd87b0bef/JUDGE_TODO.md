@@ -204,6 +204,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
 44. **IMPLEMENTED** — State is isolated by profile/workspace/root/PR and late results from old context are ignored.
    Evidence: src/stores/git-ui.ts:1414,1464,867,1394; src/components/workspace/GitPane.vue:302; src/components/workspace/git/GitBranchesTab.vue:733; src/stores/git-ui.ts:491.
    Evidence: Picker receives profile; History ref/search preferences are context-scoped; post-action preview captures originating root and selection scope.
+   Evidence (2026-10-21): Git view preference keys URI-encode profile/workspace/root/PR components before joining, and a regression proves delimiter-bearing identifiers cannot alias; git-ui store suite passes 71 tests (commit a5cc9435).
 
 45. **PARTIAL** — Drafts/mutations outlive component; switching layout neither cancels nor reissues mutation and retains its result; remove only UI reads/subscriptions.
    Evidence: src/stores/git-ui.ts:437,1338; src/components/workspace/git/GitBranchesTab.vue:1407; src/components/workspace/git/GitChangesTab.vue:605,772,871.
@@ -374,12 +375,12 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
 
 78. **PARTIAL** — Stage 6: involved long Git actions use generic flow for both layouts/remote; reconnect and dedup verified.
    Evidence: `runtime-git-handlers.ts` routes fetch/pull/push/force-push, merge/rebase, remote branch deletion, and network tag writes through OperationRegistry; mobile route policy classifies the guarded routes. `git-ui.test.ts` covers event/payload resolution and duplicate terminal delivery for fetch/pull/push.
-   Evidence: `src/transport.test.ts:1629` verifies pending pull/push survive actual transport disconnect/reconnect and profile switching, then resolve from persisted results without resubmission.
+   Evidence: `src/transport.test.ts:1629` verifies pending fetch/pull/push survive actual transport disconnect/reconnect and profile switching, then resolve from persisted results without resubmission.
    Evidence (2026-10-21): Lost-start-response idempotency keys now remain scoped by workspace/root/action/input variant across force push, remote branch deletion, merge/rebase, remote tag mutations, and bulk fetch/pull; retry coverage verifies tag push and remote branch deletion reuse keys, and merge/rebase assert the key in their accepted start payload. Git UI store suite passes 62 tests and typecheck passes. Remaining: Inventory-wide route/audit assertions and user visual acceptance are still incomplete.
 
 79. **PARTIAL** — Stage 6: layout/profile changes or client disconnect do not cancel accepted work or misroute its result.
    Evidence: electron/backend/operation-registry.ts:123,187; `git-ui.test.ts` verifies pull can recover its terminal result from the persisted lastResults payload after a missed event; runtime tests verify distinct profile/workspace operation IDs and outcomes.
-   Evidence: `src/transport.test.ts:1629` verifies pending pull/push across remote disconnect/reconnect and profile switch, keeping the action pending in p2 and resolving from p1's persisted result after restoration. Root-scoped diff refresh and staged commit completion use the originating root; branch/tag refreshes remain protected by read-generation and active-root checks.
+   Evidence: `src/transport.test.ts:1629` verifies pending fetch/pull/push across remote disconnect/reconnect and profile switch, keeping each action pending in p2 and resolving from p1's persisted result after restoration. Root-scoped diff refresh and staged commit completion use the originating root; branch/tag refreshes remain protected by read-generation and active-root checks.
    Remaining: User visual acceptance remains open.
 
 80. **IMPLEMENTED** — Stage 7: run lint, relevant UI/backend tests and production build after Vue layout changes, meeting project healthy checks.
@@ -420,7 +421,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
    Evidence: src/stores/git-ui.ts:481,506; src/components/workspace/git/GitChangesTab.vue:572,590,605; electron/backend/git-manager.test.ts:4030.
    Evidence: `GitChangesTab.test.ts` now verifies a failed staged commit preserves its root-scoped draft; store/network failure tests verify structured errors reach the action banner and notification path.
    Evidence: `git-ui.test.ts` now verifies fetch/pull/push failure outcomes retain structured warnings and raw output, including a rejected pre-push hook. `GitOperationCard.test.ts` verifies streamed hook output while busy and warning/raw failure details after completion.
-   Evidence: `src/transport.test.ts:1629` exercises pending pull/push terminal failures through a real remote socket disconnect/reconnect and profile switch; the store clears busy state, displays the failure, and retains the staged commit draft after the original profile returns.
+   Evidence: `src/transport.test.ts:1629` exercises pending fetch/pull/push terminal failures through a real remote socket disconnect/reconnect and profile switch; the store clears busy state, displays the failure, and retains the staged commit draft after the original profile returns.
    Remaining: User visual acceptance remains open.
 
 90. **IMPLEMENTED** — Acceptance: real temporary-repo manager tests verify successful and failed audited writes, plus normal and strict review audit sink failures.
