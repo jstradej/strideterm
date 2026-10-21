@@ -111,7 +111,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
 19. **PARTIAL** — Preserve History search/author/path/date/limit/compare filters and formally define all-branches backend semantics.
    Evidence: src/components/workspace/git/GitBranchesTab.vue:67,70,292,367,377,1303; electron/backend/git-manager.ts:4805.
    Remaining: Compact commit search and distinct HEAD/all semantics are implemented. Verify compare entry points and narrow filter usability during manual review.
-   Evidence (2026-10-21): The backend contract now states that All branches and tags walks local heads, remote-tracking refs, tags, and HEAD, with Git revision-walk deduplicating reachable commits. git-manager.test.ts asserts all four rev inputs and existing filter wiring; focused logGraph filter suite passes 3 tests. Remaining search/filter interaction acceptance stays with UI tests and manual review.
+   Evidence (2026-10-21): The backend contract now states that All branches and tags walks local heads, remote-tracking refs, tags, and HEAD, with Git revision-walk deduplicating reachable commits. git-manager.test.ts asserts all four rev inputs and existing filter wiring; focused logGraph filter suite passes 5 tests. `GitBranchesTab.test.ts` also verifies custom since/until dates and the chosen result limit reach the graph query (focused test passes). Remaining compare entry-point and narrow filter usability acceptance stays with manual review.
 
 20. **IMPLEMENTED** — Selected commit detail has complete message and changed files, expandable diff and adjustable panel ratios.
    Evidence: src/components/workspace/git/GitBranchesTab.vue:446,452,459,479,485,497,538,566.

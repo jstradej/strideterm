@@ -88,6 +88,7 @@ const mobileViewport = { isNarrow: ref(false), isMobile: ref(false) };
 
 import GitBranchesTab from "./GitBranchesTab.vue";
 import GitChangeTree from "./GitChangeTree.vue";
+import CustomSelect from "../../common/CustomSelect.vue";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mountedWrappers: VueWrapper<any>[] = [];
@@ -146,7 +147,21 @@ afterEach(async () => {
 describe("GitBranchesTab compact history picker", () => {
   test("applies a relative path filter to the History graph query", async () => {
     vi.useFakeTimers();
-    const picker = mountTab();
+    const picker = mount(GitBranchesTab, {
+      props: {
+        workspaceId: "ws1",
+        snapshot: { dirty: false, branch: "main" },
+        gitUi: {
+          branchList: { current: "main", locals: [], remotes: [], defaultBranch: "", defaultRemote: "" },
+          graph: { commits: [], head: "", refs: {} },
+          selectedCommit: "",
+        },
+        activeRootPath: "/repo",
+        compactHistory: true,
+      },
+      attachTo: document.body,
+    });
+    mountedWrappers.push(picker);
     const pathInput = picker.get('input[placeholder="+ path…"]');
     await pathInput.setValue("src/app.ts");
     await pathInput.trigger("keydown.enter");
@@ -155,6 +170,32 @@ describe("GitBranchesTab compact history picker", () => {
 
     expect(gitLoadGraph).toHaveBeenLastCalledWith("ws1", expect.objectContaining({ paths: ["src/app.ts"] }));
     expect(picker.text()).toContain("src/app.ts");
+    picker.unmount();
+    vi.useRealTimers();
+  });
+
+  test("applies custom date bounds and the selected result limit to the History query", async () => {
+    vi.useFakeTimers();
+    const picker = mountTab();
+    const filterRow = picker.get(".git-branches__filters");
+    const selects = filterRow.findAllComponents(CustomSelect);
+    const dateSelect = selects.find((select) => select.classes().includes("git-branches__cselect--date"));
+    expect(dateSelect).toBeTruthy();
+    dateSelect!.vm.$emit("update:modelValue", "custom");
+    await flushPromises();
+
+    await picker.get('input[title="Show commits on or after this date"]').setValue("2026-02-01");
+    await picker.get('input[title="Show commits on or before this date"]').setValue("2026-02-28");
+    const limitSelect = selects.find((select) => select.classes().includes("git-branches__cselect--limit"));
+    expect(limitSelect).toBeTruthy();
+    limitSelect!.vm.$emit("update:modelValue", 500);
+    await vi.advanceTimersByTimeAsync(500);
+    await flushPromises();
+
+    expect(gitLoadGraph).toHaveBeenLastCalledWith(
+      "ws1",
+      expect.objectContaining({ sinceDate: "2026-02-01", untilDate: "2026-02-28", limit: 500 }),
+    );
     picker.unmount();
     vi.useRealTimers();
   });
