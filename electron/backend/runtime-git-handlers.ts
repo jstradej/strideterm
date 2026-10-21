@@ -99,7 +99,7 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
     return lines.join("\n\n");
   }
 
-  function gitFailure(kind: string, result: Record<string, unknown>): Error {
+  function gitFailure(kind: string, result: Record<string, unknown>): Error & { warnings: string[] } {
     const operationState = result.operationState as { conflicts?: unknown } | undefined;
     const conflicts = Array.isArray(operationState?.conflicts)
       ? operationState.conflicts.map(String).filter(Boolean)
