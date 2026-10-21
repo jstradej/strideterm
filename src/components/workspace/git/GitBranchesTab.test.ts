@@ -14,7 +14,13 @@ const gitLoadGraph = vi.fn();
 const gitFetch = vi.fn();
 const gitPush = vi.fn();
 const gitCheckoutBranch = vi.fn();
+const gitCheckoutRemoteBranch = vi.fn();
 const gitCreateBranch = vi.fn();
+const gitRenameBranch = vi.fn();
+const gitDeleteBranch = vi.fn();
+const gitDeleteRemoteBranch = vi.fn();
+const gitCreateTag = vi.fn();
+const gitRemoveWorktree = vi.fn();
 
 vi.mock("../../../stores/app.js", () => ({
   useAppStore: () => ({
@@ -46,16 +52,16 @@ vi.mock("../../../stores/git-ui.js", () => ({
     gitSelectCommit: vi.fn(),
     gitCreateBranch,
     gitCheckoutBranch,
-    gitCheckoutRemoteBranch: vi.fn(),
-    gitRenameBranch: vi.fn(),
-    gitDeleteBranch: vi.fn(),
-    gitDeleteRemoteBranch: vi.fn(),
+    gitCheckoutRemoteBranch,
+    gitRenameBranch,
+    gitDeleteBranch,
+    gitDeleteRemoteBranch,
     gitMergeBase: vi.fn(),
     gitRebaseBase: vi.fn(),
     gitCherryPick: vi.fn(),
     gitSquashCommits: vi.fn(),
-    gitCreateTag: vi.fn(),
-    gitRemoveWorktree: vi.fn(),
+    gitCreateTag,
+    gitRemoveWorktree,
     confirmRemoveWorktreeDeleteBranch: vi.fn(),
     azureListRemoteBranches: vi.fn(),
     azureCreatePullRequest,
@@ -108,7 +114,13 @@ beforeEach(() => {
   gitFetch.mockClear();
   gitPush.mockClear();
   gitCheckoutBranch.mockClear();
+  gitCheckoutRemoteBranch.mockClear();
   gitCreateBranch.mockClear();
+  gitRenameBranch.mockClear();
+  gitDeleteBranch.mockClear();
+  gitDeleteRemoteBranch.mockClear();
+  gitCreateTag.mockClear();
+  gitRemoveWorktree.mockClear();
   document.body.innerHTML = "";
 });
 
@@ -243,7 +255,13 @@ describe("GitBranchesTab compact history picker", () => {
     expect(picker.find('[aria-label="History reference"]').element).toBe(select.element);
     expect(gitLoadGraph).toHaveBeenCalledWith("ws1", expect.objectContaining({ branch: "origin/main" }));
     expect(gitCheckoutBranch).not.toHaveBeenCalled();
+    expect(gitCheckoutRemoteBranch).not.toHaveBeenCalled();
     expect(gitCreateBranch).not.toHaveBeenCalled();
+    expect(gitRenameBranch).not.toHaveBeenCalled();
+    expect(gitDeleteBranch).not.toHaveBeenCalled();
+    expect(gitDeleteRemoteBranch).not.toHaveBeenCalled();
+    expect(gitCreateTag).not.toHaveBeenCalled();
+    expect(gitRemoveWorktree).not.toHaveBeenCalled();
     expect(gitFetch).not.toHaveBeenCalled();
     expect(gitPush).not.toHaveBeenCalled();
     picker.unmount();
