@@ -844,6 +844,7 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Expanded `IMPLEMENTATION_INVENTORY.md` with the inspected toolbar, branch/commit/file context menu, Changes, stash, worktree, conflict, bulk, and provider routes, noting dispatch/guard, result surface, and new-view destination where verified. `git diff --check` and Prettier pass.
 - Requirement 36 remains partial: some grouped action classes still need per-action audit/result mapping; the user's visual walkthrough remains open. WORK_LOCK stays.
+- Current-tree verification after this continuation: `npm run typecheck` passes; `npm run lint` passes with 0 errors / 4,685 warnings and full Prettier clean; `git diff --check` passes. Documentation-only edits were committed as `70b6b454` (`docs map Git action entry points`). WORK_LOCK remains.
 
 ## Worker continuation (lifecycle self-audit reconciliation)
 
