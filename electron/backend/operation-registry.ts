@@ -213,7 +213,16 @@ export function createOperationRegistry(options: OperationRegistryOptions) {
       await finish(record, { status: "succeeded", result });
     } catch (err) {
       const error = errorOf(err);
-      log.warn("operation failed", { operationId: record.operationId, kind: record.kind, step: record.step, ...error });
+      log.warn("operation failed", {
+        operationId: record.operationId,
+        kind: record.kind,
+        profileId: record.profileId,
+        originWorkspaceId: record.originWorkspaceId,
+        ...(typeof record.intent.rootPath === "string" ? { rootPath: record.intent.rootPath } : {}),
+        step: record.step,
+        durationMs: Math.max(0, now() - Date.parse(record.createdAt)),
+        ...error,
+      });
       await finish(record, {
         status: "failed",
         error,

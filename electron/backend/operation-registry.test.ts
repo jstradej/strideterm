@@ -9,7 +9,7 @@ import {
 } from "./operation-registry.js";
 import { operationFinishedSchema, type OperationFinished } from "../shared/operation-events.js";
 
-const log = { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn(), trace: vi.fn() } as never;
+const log = { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn(), trace: vi.fn() };
 
 describe("operation registry", () => {
   let dir: string;
@@ -30,7 +30,7 @@ describe("operation registry", () => {
   const create = () =>
     createOperationRegistry({
       dir,
-      log,
+      log: log as never,
       now: () => clock,
       emitFinished: (event) => events.push(event),
       onChange: () => {
@@ -99,8 +99,10 @@ describe("operation registry", () => {
   });
 
   test("a throwing run becomes a failed outcome with the error's own code", async () => {
+    log.warn.mockClear();
     const registry = create();
-    const { record } = await registry.accept(input(), async () => {
+    const { record } = await registry.accept(input({ intent: { rootPath: "C:/repo" } }), async () => {
+      clock += 1250;
       throw Object.assign(new Error("branch exists"), { code: "checkout_conflict" });
     });
     await settle(registry, record.operationId);
@@ -111,6 +113,18 @@ describe("operation registry", () => {
     });
     expect(events[0]).toMatchObject({ error: { code: "checkout_conflict", message: "branch exists" } });
     expect("result" in events[0]).toBe(false);
+    expect(log.warn).toHaveBeenCalledWith(
+      "operation failed",
+      expect.objectContaining({
+        operationId: record.operationId,
+        kind: "task.provision",
+        profileId: "default",
+        originWorkspaceId: "parent",
+        rootPath: "C:/repo",
+        durationMs: 1250,
+        code: "checkout_conflict",
+      }),
+    );
   });
 
   test("the same key and input is one operation, even when the requests race; another input conflicts", async () => {
