@@ -673,3 +673,7 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 ## Worker continuation (`tag read failure and selected ref`)
 
 - Added a reactive regression where a branch list changes while tag loading has failed. The selected tag remains selected and the History alert stays visible, rather than treating the absent tag data as evidence of deletion. GitBranchesTab suite passes 15 tests; repository typecheck, touched-file Prettier/ESLint and `git diff --check` pass. This verifies the tag-error pruning guard; other scoped lifecycle and manual visual requirements remain.
+
+## Worker continuation (`empty ref load completion`)
+
+- The stale-ref watcher now observes branch/tag loading and tag-error state as well as ref names. A completed successful fetch that returns the same empty lists now rechecks and prunes a stale selection; pending reads and failed tag reads still preserve it. Added a component regression for the pending → successful empty transition. `GitBranchesTab.test.ts` passes 16 tests; repository typecheck, touched-file Prettier/ESLint and `git diff --check` pass. WORK_LOCK remains because user visual review and other lifecycle/audit items are open.
