@@ -209,7 +209,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
 45. **PARTIAL** — Drafts/mutations outlive component; switching layout neither cancels nor reissues mutation and retains its result; remove only UI reads/subscriptions.
    Evidence: src/stores/git-ui.ts:437,1338; src/components/workspace/git/GitBranchesTab.vue:1407; src/components/workspace/git/GitChangesTab.vue:605,772,871.
    Evidence: An unsaved editor-dialog value survives pane unmount, file selection changes, and Settings off/on; a busy fetch survives view-setting off/on; failed fetch/pull/push keeps the scoped staged message and terminal result. These are covered by AzureReviewPane, GitPane, and git-ui store regressions.
-   Evidence: `src/transport.test.ts:1629` exercises real `createRemoteTransport`, `appStore`, and `git-ui` store flow for pending pull and push across socket loss/reconnect, a switch to profile p2 with no result, and return to p1 with the persisted outcome. It verifies busy state and staged commit draft remain while pending, resolves on p1 restoration, and only one request was sent.
+   Evidence: `src/transport.test.ts:1629` exercises real `createRemoteTransport`, `appStore`, and `git-ui` store flow for pending fetch, pull, and push across socket loss/reconnect, a switch to profile p2 with no result, and return to p1 with the persisted outcome. It verifies busy state and staged commit draft remain while pending, resolves on p1 restoration, and only one request was sent.
    Remaining: User visual acceptance remains open.
 
 46. **IMPLEMENTED** — Switching back restores classic; missing/invalid saved flag is safe false, malformed new payload is rejected.
