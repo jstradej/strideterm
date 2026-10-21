@@ -341,7 +341,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
 78. **PARTIAL** — Stage 6: involved long Git actions use generic flow for both layouts/remote; reconnect and dedup verified.
    Evidence: `runtime-git-handlers.ts` routes fetch/pull/push/force-push, merge/rebase, remote branch deletion, and network tag writes through OperationRegistry; mobile route policy classifies the guarded routes. `git-ui.test.ts` covers event/payload resolution and duplicate terminal delivery for fetch/pull/push.
    Evidence: `src/transport.test.ts:1629` verifies pending pull/push survive actual transport disconnect/reconnect and profile switching, then resolve from persisted results without resubmission.
-   Remaining: Inventory-wide route/audit assertions and user visual acceptance are still incomplete.
+   Evidence (2026-10-21): Lost-start-response idempotency keys now remain scoped by workspace/root/action/input variant across force push, remote branch deletion, merge/rebase, remote tag mutations, and bulk fetch/pull; retry coverage verifies tag push reuses its key. Git UI store suite passes 61 tests and typecheck passes. Remaining: Inventory-wide route/audit assertions and user visual acceptance are still incomplete.
 
 79. **PARTIAL** — Stage 6: layout/profile changes or client disconnect do not cancel accepted work or misroute its result.
    Evidence: electron/backend/operation-registry.ts:123,187; `git-ui.test.ts` verifies pull can recover its terminal result from the persisted lastResults payload after a missed event; runtime tests verify distinct profile/workspace operation IDs and outcomes.
@@ -893,3 +893,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 - Re-read `PROMPT.worker.md`, TODO, WORKER, TASK, the current source plan, implementation inventory, and the 122-item ledger. Reconciled provider PR creation and Azure thread status audit statements in requirements 47, 77, and 91; focused assertions now cover GitHub PR creation/review/comment and Azure PR creation/thread update/comment/vote writes.
 - Re-ran `npm run test:backend -- electron/backend/github-manager.test.ts electron/backend/azure-devops-manager.test.ts -t "audit"`: 5 passed, 67 skipped. `npm run typecheck`: pass. Earlier touched-file Prettier/ESLint and `git diff --check` passed after the test addition.
 - Open work remains: user-owned `MANUAL_VERIFICATION.md` walkthrough, per-entry-point menu/shortcut/result/audit reconciliation, remaining long-operation uncertainty and lifecycle acceptance. No application or dev server was launched. Keep WORK_LOCK.
+
+## Worker continuation (long Git lost-start retry keys)
+
+- Added one shared long-action runner that keeps each scoped idempotency key when a start response is lost and clears it only after a known response. Applied it to remote branch deletion, force push, merge/rebase, remote tag push/push-all/delete, and bulk fetch/pull; the existing fetch/pull/push path follows the same retention rule. The tag-push regression checks retry key reuse and cleanup after a known result. Existing merge/rebase lifecycle cases now wait for API dispatch explicitly.
+- `npm run test:ui -- src/stores/git-ui.test.ts`: 61 passed. `npm run typecheck`: pass. Touched-file Prettier passes; ESLint 0 errors / 70 existing warnings; `git diff --check` passes. Renderer reconnect tests, unverified-result recovery, route-wide audit and the manual walkthrough remain open; WORK_LOCK stays.

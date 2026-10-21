@@ -499,6 +499,39 @@ export const useGitUiStore = defineStore("git-ui", () => {
     ui.pendingLongOperationKeys = remaining;
   }
 
+  async function runLongGitAction(
+    workspaceId: string,
+    busyAction: string,
+    operationKind: string,
+    variant: string,
+    start: (input: { workspaceId: string; rootPath: string; idempotencyKey: string }) => Promise<unknown>,
+    rootPathOverride?: string,
+  ): Promise<unknown> {
+    const rootPath = rootPathOverride ?? getActiveRoot(workspaceId);
+    const idempotencyKey = longOperationKey(workspaceId, rootPath, operationKind, variant);
+    const response = await runGitAction(
+      workspaceId,
+      busyAction,
+      async () => {
+        const startResult = await start({ workspaceId, rootPath, idempotencyKey });
+        const { useAppStore } = await import("./app.js");
+        return resolveLongGitAction(
+          useAppStore(),
+          startResult as {
+            operationId?: string;
+            started?: boolean;
+            result?: { ok?: boolean };
+          } | null,
+        );
+      },
+      { timeoutMs: 0 },
+    );
+    // A null result means the start response was lost or this action was
+    // already busy. Keep its key so an explicit retry can replay acceptance.
+    if (response !== null) clearLongOperationKey(workspaceId, rootPath, operationKind, variant);
+    return response;
+  }
+
   function get(workspaceId: string): GitUiState {
     return state.value[workspaceId] || {};
   }
@@ -982,25 +1015,13 @@ export const useGitUiStore = defineStore("git-ui", () => {
   }
 
   async function gitDeleteRemoteBranch(workspaceId: string, branch: string, remote: string): Promise<void> {
-    const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(
+    await runLongGitAction(
       workspaceId,
       "delete-remote-branch",
-      async () => {
-        const { useAppStore } = await import("./app.js");
-        const start = (await (_api as CallableTransport).gitDeleteRemoteBranch({
-          workspaceId,
-          branch,
-          remote,
-          rootPath,
-        })) as {
-          operationId?: string;
-          started?: boolean;
-          result?: { ok?: boolean };
-        } | null;
-        return resolveLongGitAction(useAppStore(), start);
-      },
-      { timeoutMs: 0 },
+      "delete-remote-branch",
+      `${remote}/${branch}`,
+      ({ workspaceId, rootPath, idempotencyKey }) =>
+        (_api as CallableTransport).gitDeleteRemoteBranch({ workspaceId, branch, remote, rootPath, idempotencyKey }),
     );
     await gitListBranches(workspaceId);
   }
@@ -1120,12 +1141,18 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const ws = workspace as any;
     const roots: string[] = ws?.gitRoots?.length ? ws.gitRoots : [ws?.cwd].filter(Boolean);
     for (const rootPath of roots) {
-      await runGitAction(workspaceId, `bulk-fetch:${rootPath}`, () =>
-        (_api as Transport & { gitFetch: (p: unknown) => Promise<unknown> }).gitFetch!({
-          workspaceId,
-          rootPath,
-          idempotencyKey: newGitIdempotencyKey(),
-        }),
+      await runLongGitAction(
+        workspaceId,
+        `bulk-fetch:${rootPath}`,
+        "fetch",
+        "bulk",
+        ({ workspaceId, rootPath, idempotencyKey }) =>
+          (_api as Transport & { gitFetch: (p: unknown) => Promise<unknown> }).gitFetch!({
+            workspaceId,
+            rootPath,
+            idempotencyKey,
+          }),
+        rootPath,
       );
     }
   }
@@ -1143,12 +1170,18 @@ export const useGitUiStore = defineStore("git-ui", () => {
       // Skip dirty repos
       const snap = entry?.roots?.[rootPath] || (entry?.rootPath === rootPath ? entry : null);
       if (snap?.dirty) continue;
-      await runGitAction(workspaceId, `bulk-pull:${rootPath}`, () =>
-        (_api as Transport & { gitPull: (p: unknown) => Promise<unknown> }).gitPull!({
-          workspaceId,
-          rootPath,
-          idempotencyKey: newGitIdempotencyKey(),
-        }),
+      await runLongGitAction(
+        workspaceId,
+        `bulk-pull:${rootPath}`,
+        "pull",
+        "bulk",
+        ({ workspaceId, rootPath, idempotencyKey }) =>
+          (_api as Transport & { gitPull: (p: unknown) => Promise<unknown> }).gitPull!({
+            workspaceId,
+            rootPath,
+            idempotencyKey,
+          }),
+        rootPath,
       );
     }
   }
@@ -1220,9 +1253,6 @@ export const useGitUiStore = defineStore("git-ui", () => {
     if (!pending) return;
     ui.pendingAction = null;
 
-    const { useAppStore } = await import("./app.js");
-    const appStore = useAppStore();
-
     const rootPath = getActiveRoot(workspaceId);
 
     // Destructive actions dispatched by buildDestructiveConfirm
@@ -1236,15 +1266,13 @@ export const useGitUiStore = defineStore("git-ui", () => {
         );
         await gitListTags(workspaceId);
       } else if (action === "deleteRemoteTag") {
-        await runGitAction(
+        await runLongGitAction(
           workspaceId,
           "delete-remote-tag",
-          async () =>
-            resolveLongGitAction(
-              appStore,
-              await api.gitDeleteRemoteTag({ workspaceId, tagName: p!.tagName, rootPath }),
-            ),
-          { timeoutMs: 0 },
+          "delete-remote-tag",
+          String(p!.tagName || ""),
+          ({ workspaceId, rootPath, idempotencyKey }) =>
+            api.gitDeleteRemoteTag({ workspaceId, tagName: p!.tagName, rootPath, idempotencyKey }),
         );
         await gitListTags(workspaceId);
       } else if (action === "removeWorktree") {
@@ -1264,15 +1292,13 @@ export const useGitUiStore = defineStore("git-ui", () => {
             REVIEW_GIT_STEP_OPTS,
           );
         } else {
-          await runGitAction(
+          await runLongGitAction(
             workspaceId,
             "force-push",
-            async () => {
-              const { useAppStore } = await import("./app.js");
-              const start = await api.gitForcePushWithLease({ workspaceId, rootPath });
-              return resolveLongGitAction(useAppStore(), start);
-            },
-            { timeoutMs: 0 },
+            "force-push",
+            "",
+            ({ workspaceId, rootPath, idempotencyKey }) =>
+              api.gitForcePushWithLease({ workspaceId, rootPath, idempotencyKey }),
           );
         }
       }
@@ -1300,10 +1326,17 @@ export const useGitUiStore = defineStore("git-ui", () => {
     };
     const fetchFirst = !!pending.fetchFirst;
     const baseLabel = pending.baseBranch || "base";
-    await runGitAction(
+    const actionVariant = JSON.stringify([
+      pending.baseBranch,
+      pending.fetchFirst === true,
+      pending.stashDirty === true,
+    ]);
+    await runLongGitAction(
       workspaceId,
       pending.type,
-      async () => {
+      pending.type,
+      actionVariant,
+      async ({ workspaceId, rootPath, idempotencyKey }) => {
         setBusyPhase(
           workspaceId,
           fetchFirst
@@ -1312,16 +1345,10 @@ export const useGitUiStore = defineStore("git-ui", () => {
               ? `Merging ${baseLabel} in…`
               : `Rebasing onto ${baseLabel}…`,
         );
-        const start = (await (pending.type === "merge"
-          ? api.gitMergeIntoCurrent(payload)
-          : api.gitRebaseOnto(payload))) as {
-          operationId?: string;
-          started?: boolean;
-          result?: { ok?: boolean };
-        } | null;
-        return await resolveLongGitAction(appStore, start);
+        return pending.type === "merge"
+          ? api.gitMergeIntoCurrent({ ...payload, rootPath, idempotencyKey })
+          : api.gitRebaseOnto({ ...payload, rootPath, idempotencyKey });
       },
-      GIT_OPERATION_WAIT_OPTS,
     );
   }
 
@@ -1889,60 +1916,46 @@ export const useGitUiStore = defineStore("git-ui", () => {
   }
 
   async function gitPushTag(workspaceId: string, tagName: string): Promise<void> {
-    const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(
-      workspaceId,
-      "push-tag",
-      async () => {
-        const { useAppStore } = await import("./app.js");
-        const start = (await (_api as Transport & { gitPushTag: (p: unknown) => Promise<unknown> }).gitPushTag!({
-          workspaceId,
-          tagName,
-          rootPath,
-        })) as { operationId?: string; started?: boolean };
-        return resolveLongGitAction(useAppStore(), start);
-      },
-      { timeoutMs: 0 },
+    await runLongGitAction(workspaceId, "push-tag", "push-tag", tagName, ({ workspaceId, rootPath, idempotencyKey }) =>
+      (_api as Transport & { gitPushTag: (p: unknown) => Promise<unknown> }).gitPushTag!({
+        workspaceId,
+        tagName,
+        rootPath,
+        idempotencyKey,
+      }),
     );
     await gitListTags(workspaceId);
   }
 
   async function gitPushAllTags(workspaceId: string): Promise<void> {
-    const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(
+    await runLongGitAction(
       workspaceId,
       "push-all-tags",
-      async () => {
-        const { useAppStore } = await import("./app.js");
-        const start = (await (_api as Transport & { gitPushAllTags: (p: unknown) => Promise<unknown> }).gitPushAllTags!(
-          {
-            workspaceId,
-            rootPath,
-          },
-        )) as { operationId?: string; started?: boolean };
-        return resolveLongGitAction(useAppStore(), start);
-      },
-      { timeoutMs: 0 },
+      "push-all-tags",
+      "",
+      ({ workspaceId, rootPath, idempotencyKey }) =>
+        (_api as Transport & { gitPushAllTags: (p: unknown) => Promise<unknown> }).gitPushAllTags!({
+          workspaceId,
+          rootPath,
+          idempotencyKey,
+        }),
     );
     await gitListTags(workspaceId);
   }
 
   async function gitDeleteRemoteTag(workspaceId: string, tagName: string): Promise<void> {
-    const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(
+    await runLongGitAction(
       workspaceId,
       "delete-remote-tag",
-      async () => {
-        const { useAppStore } = await import("./app.js");
-        const start = (await (_api as Transport & { gitDeleteRemoteTag: (p: unknown) => Promise<unknown> })
-          .gitDeleteRemoteTag!({
+      "delete-remote-tag",
+      tagName,
+      ({ workspaceId, rootPath, idempotencyKey }) =>
+        (_api as Transport & { gitDeleteRemoteTag: (p: unknown) => Promise<unknown> }).gitDeleteRemoteTag!({
           workspaceId,
           tagName,
           rootPath,
-        })) as { operationId?: string; started?: boolean };
-        return resolveLongGitAction(useAppStore(), start);
-      },
-      { timeoutMs: 0 },
+          idempotencyKey,
+        }),
     );
     await gitListTags(workspaceId);
   }

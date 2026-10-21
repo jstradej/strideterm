@@ -381,6 +381,30 @@ describe("git-ui store", () => {
       expect(store.get("ws1").busyAction).toBe("");
     });
 
+    test("reuses a tag-push idempotency key after its start response is lost", async () => {
+      const pushTag = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("Connection lost before the operation ID arrived."))
+        .mockResolvedValueOnce({ result: { ok: true, summary: "Tag pushed." } });
+      const store = useGitUiStore();
+      store.init({ gitPushTag: pushTag, gitListTags: vi.fn().mockResolvedValue({ tags: [] }) } as unknown as Transport);
+      store.setActiveRoot("ws1", "/repo/a");
+
+      await store.gitPushTag("ws1", "v1.2.3");
+      await store.gitPushTag("ws1", "v1.2.3");
+
+      expect(pushTag).toHaveBeenCalledTimes(2);
+      expect(pushTag.mock.calls[0]![0]).toMatchObject({
+        rootPath: "/repo/a",
+        tagName: "v1.2.3",
+        idempotencyKey: expect.any(String),
+      });
+      expect(pushTag.mock.calls[1]![0]).toMatchObject({
+        idempotencyKey: pushTag.mock.calls[0]![0].idempotencyKey,
+      });
+      expect(store.get("ws1").pendingLongOperationKeys).toEqual({});
+    });
+
     test("adopts the action payload through adoptPayload, not a raw store write", async () => {
       const store = useGitUiStore();
       const responsePayload = { appState: { workspaces: [] } };
@@ -1066,6 +1090,7 @@ describe("branch update waits for its accepted long operation", () => {
     const { store, finish, gitMergeIntoCurrent, gitRebaseOnto } = setupFetchFirst(type);
     const pending = store.gitConfirmAction("ws1");
     await vi.waitFor(() => expect(store.get("ws1").busyAction).toBe(type));
+    await vi.waitFor(() => expect(type === "merge" ? gitMergeIntoCurrent : gitRebaseOnto).toHaveBeenCalled());
 
     expect(type === "merge" ? gitMergeIntoCurrent : gitRebaseOnto).toHaveBeenCalledWith(
       expect.objectContaining({ fetchFirst: true }),
