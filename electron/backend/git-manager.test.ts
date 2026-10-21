@@ -1888,6 +1888,52 @@ describe("GitManager", () => {
       expect(successEntry).toBeTruthy();
       expect((successEntry!.extra as Record<string, unknown>)?.rootPath).toBe(subPath);
     });
+
+    test.each([
+      { outcome: "success", shouldReject: false },
+      { outcome: "failure", shouldReject: true },
+    ])("runWriteAction emits exactly one audit outcome for a $outcome mutation", async ({ shouldReject }) => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-audit-count-"));
+      tempPaths.push(root);
+      const gitAuditLogStore = { logEntry: vi.fn() };
+      const mgr = new GitManager({ gitAuditLogStore });
+      const operationState = { kind: "", inProgress: false, conflicts: [] };
+      const snapshot = {
+        available: true,
+        rootPath: root,
+        operationState,
+        remotes: {},
+        dirty: false,
+      };
+      mgr._inspectRoot = vi.fn().mockResolvedValue(snapshot);
+      const actionError = new Error("rejected by git");
+
+      const result = await mgr.runWriteAction(
+        { id: "ws-audit-count", cwd: root },
+        {
+          type: "create-branch",
+          label: "Create branch",
+          rootPath: root,
+          skipPreflight: true,
+          run: async () => {
+            if (shouldReject) throw actionError;
+            return { stdout: "created", stderr: "" };
+          },
+        },
+      );
+
+      expect(result.ok).toBe(!shouldReject);
+      expect(gitAuditLogStore.logEntry).toHaveBeenCalledTimes(1);
+      expect(gitAuditLogStore.logEntry).toHaveBeenCalledWith(
+        expect.objectContaining({
+          operation: "gitCreate-branch",
+          category: "write",
+          success: !shouldReject,
+          durationMs: expect.any(Number),
+          rootPath: root,
+        }),
+      );
+    });
   });
 
   // ─── inspectWorkspaceRoots ────────────────────────────────────────

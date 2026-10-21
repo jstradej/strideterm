@@ -220,6 +220,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
 47. **PARTIAL** — Buttons/menu/shortcuts share one store/runtime/audit path; stage/index APIs use mutation guard, repository lock and audit.
    Evidence: src/components/workspace/git/GitChangesTab.vue:572,583,607; electron/backend/git-manager.ts:2203,2234,2467; electron/backend/git-manager.ts:4278,4293.
    Evidence: `electron/backend/runtime.test.ts:8482` asserts each stage-file, unstage-file, commit-staged, create-tag, and delete-tag route calls its matching manager write exactly once with the resolved root. `electron/backend/git-manager.test.ts:3988` verifies the three index outcomes plus successful local tag create/delete each produce exactly one system Git audit row.
+   Evidence: `electron/backend/git-manager.test.ts:1898-1933` proves the shared `runWriteAction` emits exactly one resolved-root audit row for both successful and Git-rejected generic mutations.
    Evidence: `electron/backend/git-manager.stash.test.ts` exercises successful stash patch import and rejected path traversal against a real repository, asserting exactly one audit outcome per attempt with resolved root. The manager routes import through the per-worktree lock and shared audit wrapper.
    Evidence: `electron/backend/git-manager.test.ts` real-repository coverage asserts one resolved-root write audit outcome for local branch create, checkout, rename, delete success/failure, and remote branch checkout success/failure.
    Evidence: Conflict resolve and unresolve now take the shared per-worktree lock and emit exactly one system Git audit outcome; a real conflict test covers success and failure for both routes.
@@ -437,6 +438,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
 91. **PARTIAL** — Acceptance: button/menu/shortcut use same audited path; one mutation yields no duplicate audit (review intent/outcome is expected pair).
    Evidence: electron/backend/git-manager.ts:2203,4278; src/components/workspace/GitPane.test.ts:138; .strideterm/tasks/716afb2f-00d3-4e3a-b535-f10bd87b0bef/IMPLEMENTATION_INVENTORY.md:11.
    Evidence: `runtime.test.ts` asserts one resolved-root manager dispatch for index/local-tag plus branch, commit-history and stash mutation routes; `git-manager.test.ts` verifies exact audit rows for index/tag and stash mutations. Existing `runGitAction` tests and the action inventory map visible UI routes to the store/runtime path.
+   Evidence: `git-manager.test.ts:1898-1933` directly asserts one generic write audit row per success or Git rejection.
    Evidence: Worktree remove now has a single audit-row assertion in the fast-path manager regression.
    Evidence: Runtime worktree creation success/failure and manager worktree removal audit paths are now covered; focused runtime worktree cases pass (3).
    Evidence: Provider manager tests assert GitHub conversation comments and Azure comment/vote requests each produce exactly one classified successful user-initiated write audit entry.
@@ -1191,3 +1193,8 @@ pm run test:ui -- src/stores/git-ui.test.ts passes 71 tests. This strengthens re
 
 - Reconciled requirement 94 to current shell routes and automated coverage: the action index at `IMPLEMENTATION_INVENTORY.md:18-68` maps existing actions to primary/More destinations; `GitPane.vue` mounts those destinations; `GitPane.test.ts:183-220` exercises available More destinations; and `GitPane.test.ts:291-327` verifies the conflict action stays visible in History, Changes, and Review. Requirement 94 is now implemented. The user waived manual visual review.
 - Remaining route-specific rejection and audit-count evidence is still open in requirements 47/51/52/77/91. Requirement 122 is implemented; keep WORK_LOCK and verdict `continue`.
+
+## Worker continuation (central Git audit cardinality)
+
+- Added a table-driven regression at `electron/backend/git-manager.test.ts:1898-1933` proving each generic mutation result writes exactly one resolved-root `write` audit row on both success and Git rejection. The full GitManager test file passes 194 tests / 2 skipped; focused provider manager suites pass 77/77; repository typecheck passes; touched-file Prettier and ESLint pass (0 ESLint errors).
+- The shared wrapper covers `runWriteAction` routes, while exact UI/runtime mapping and specialized action rejection variants remain under requirements 47/77/91. Keep `WORK_LOCK` and verdict `continue` until the remaining route matrix is resolved.

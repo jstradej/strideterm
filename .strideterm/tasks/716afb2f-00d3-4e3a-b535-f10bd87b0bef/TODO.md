@@ -22,6 +22,7 @@
 - [x] Assert one failed provider audit row each when GitHub conversation comments, inline comments, thread replies, and submitted reviews receive HTTP 403; `github-manager.test.ts` passes all 33 tests.
 - [x] Assert one failed provider audit row each when Azure DevOps comments, votes, and thread status updates receive HTTP 403; `azure-devops-manager.test.ts` passes all 44 tests.
 - [x] Assert one failed provider audit row for GitHub and Azure DevOps PR creation when HTTP 403 rejects the provider write; focused manager suites pass.
+- [x] Add centralized GitManager audit cardinality coverage for one successful and one Git-rejected mutation; focused cases pass and the full GitManager file passes 194 tests / 2 skipped. Prettier passes; ESLint has 0 errors (existing warnings).
 
 - [x] Add opt-in setting defaulting off, normalization, explicit boolean schema validation, Settings control, and safe nested merge coverage.
 - [x] Add separate new-view selection and opt-in History / Changes / Review shell with a More path to preserved existing tools.
