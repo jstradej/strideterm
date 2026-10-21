@@ -23,6 +23,16 @@ describe("mobile error copy", () => {
     expect(mobileResultReasonCopy("device-revoked-remotely", "approve")).toContain("has been revoked");
   });
 
+  test("says so when the mobile service is older than this desktop", () => {
+    const wrapped = (reason: string) =>
+      new Error(
+        `Error invoking remote method 'mobile:pairing:create': MobileFirebaseCallableError: createPairingInvitation failed (INVALID_ARGUMENT: ${reason})`,
+      );
+
+    expect(mobileErrorCopy(wrapped("unknown-capability"), "pair")).toContain("Limit what this phone may use");
+    expect(mobileErrorCopy(wrapped("unknown-field"), "pair")).toContain("older than this version of strIDEterm");
+  });
+
   test("uses a fixed action fallback for unknown errors and never exposes backend text", () => {
     const secret = "database path /private/customer-17 and token=abc123";
     const copy = mobileErrorCopy(new Error(`unrecognized refusal: ${secret}`), "pair");
