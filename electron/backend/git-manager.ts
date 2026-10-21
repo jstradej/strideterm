@@ -2769,6 +2769,7 @@ export class GitManager extends EventEmitter {
       "stage-hunk",
       "unstage-hunk",
       "commit-staged",
+      "commit-all",
       "stash",
       "stash-pop",
       "stash-apply",
@@ -2975,33 +2976,47 @@ export class GitManager extends EventEmitter {
     const safePaths = clean(paths);
     const safePrev = clean(previousPaths);
 
-    return this.serializeCommit(effectiveCwd, async () => {
-      try {
-        if (scoped) {
-          if (!safePaths.length) {
-            return createStructuredResult({
-              ok: false,
-              summary: "No valid files were selected to commit.",
-            });
+    const startedAt = Date.now();
+    const result = await sharedReviewGitLocks.withWorktree(effectiveCwd, () =>
+      this.serializeCommit(effectiveCwd, async () => {
+        try {
+          if (scoped) {
+            if (!safePaths.length) {
+              return createStructuredResult({
+                ok: false,
+                summary: "No valid files were selected to commit.",
+              });
+            }
+            return await this.commitScopedPaths(effectiveCwd, commitMessage, safePaths, safePrev);
           }
-          return await this.commitScopedPaths(effectiveCwd, commitMessage, safePaths, safePrev);
+          await this.execGit(effectiveCwd, ["add", "-A"]);
+          const result = await this.execGit(effectiveCwd, ["commit", "-m", commitMessage]);
+          return createStructuredResult({
+            ok: true,
+            summary: "Changes committed successfully.",
+            rawOutput: joinRawOutput(result.stdout, result.stderr),
+          });
+        } catch (error) {
+          const err = error as { stdout?: string; stderr?: string };
+          return createStructuredResult({
+            ok: false,
+            summary: "Commit failed.",
+            rawOutput: joinRawOutput(err.stdout, err.stderr),
+          });
         }
-        await this.execGit(effectiveCwd, ["add", "-A"]);
-        const result = await this.execGit(effectiveCwd, ["commit", "-m", commitMessage]);
-        return createStructuredResult({
-          ok: true,
-          summary: "Changes committed successfully.",
-          rawOutput: joinRawOutput(result.stdout, result.stderr),
-        });
-      } catch (error) {
-        const err = error as { stdout?: string; stderr?: string };
-        return createStructuredResult({
-          ok: false,
-          summary: "Commit failed.",
-          rawOutput: joinRawOutput(err.stdout, err.stderr),
-        });
-      }
+      }),
+    );
+    this._logGitAudit({
+      type: "commit-all",
+      connection: null,
+      success: result.ok === true,
+      durationMs: Date.now() - startedAt,
+      errorMessage: result.ok === true ? undefined : String(result.summary || "Commit failed."),
+      workspaceId: workspace?.id || "",
+      remoteUrl: "",
+      extra: { rootPath: effectiveCwd, ...(scoped ? { paths: safePaths } : {}) },
     });
+    return result;
   }
 
   /**

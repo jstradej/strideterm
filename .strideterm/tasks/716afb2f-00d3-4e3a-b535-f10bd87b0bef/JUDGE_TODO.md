@@ -350,7 +350,9 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
    Evidence: Local branch create/checkout/rename/delete success and delete failure each emit one system Git audit outcome with the workspace root; focused backend test passes.
    Evidence: Remote branch checkout success and missing-remote failure each emit one system Git write audit outcome with the workspace root; the same real-repository regression verifies both.
    Evidence: Remote branch deletion success and missing-remote failure each emit one system Git audit outcome with the workspace root; a local bare-remote integration test verifies both.
+   Evidence: Scoped commit-all now takes the shared per-worktree lock and emits one system Git write audit outcome for success or rejected empty selection; a real repository test asserts both outcomes and resolved root.
    Evidence: Remote tag push, push-all-tags, and remote tag deletion success/failure each emit one system Git audit outcome with the workspace root; a local bare-remote integration test verifies all six attempts.
+   Evidence: Scoped commit-all success and rejected empty selection each emit one system Git write audit row with the workspace root in a real repository regression.
    Evidence: Conflict resolve and undo success/failure each emit one system Git audit outcome with the resolved root; the focused real-conflict regression passes.
    Evidence: Conflict detail/resolve/unresolve reject repository traversal paths, and the regression confirms an outside file is not modified.
    Evidence (2026-10-21): GitHub PR creation, Azure DevOps PR creation, and Azure DevOps thread status update each have focused assertions for exactly one successful classified provider write audit entry. Provider PR/thread gaps are closed; other mutation families and inventory-wide route reconciliation remain.
@@ -974,3 +976,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Added a local bare-remote integration test covering push-tag, push-all-tags, and remote-tag deletion. Each of the three operations is exercised once successfully and once against an unavailable remote; the six attempts each produce exactly one system Git write audit row with the workspace root. Focused backend case passes (1 passed / 184 skipped). Other mutation families and manual review remain open; WORK_LOCK stays present.
 - Verification: bare-remote tag audit case passes (1 passed / 184 skipped); `npm run typecheck` passes; focused ESLint 0 errors / 93 warnings; Prettier and `git diff --check` pass.
+
+## Worker continuation (commit-all lock and audit)
+
+- The custom serialized commit-all path bypassed the shared per-worktree lock and system Git audit. It now takes that lock while preserving per-root commit serialization, records one write audit outcome with the resolved root for success and structured rejection, and remains audit-best-effort. Real repository regression passes (1 passed / 185 skipped). Other audit families and user visual walkthrough remain open; WORK_LOCK stays present.
+- Verification: scoped commit-all audit regression passes (1 passed / 185 skipped); `npm run typecheck` passes; focused ESLint 0 errors / 132 warnings across the two backend files; Prettier and `git diff --check` pass.
