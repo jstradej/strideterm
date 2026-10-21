@@ -1459,6 +1459,9 @@ watch(
     branchList.value.local.map((b) => b.name).join("\n"),
     branchList.value.remotes.map((r) => r.name).join("\n"),
     tags.value.map((t) => t.name).join("\n"),
+    branchesLoading.value,
+    props.gitUi?.tagsLoading === true,
+    props.gitUi?.tagsError || "",
   ],
   () => {
     const validRefs = new Set<string>();

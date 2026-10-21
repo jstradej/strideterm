@@ -211,6 +211,32 @@ describe("GitBranchesTab compact history picker", () => {
     expect(picker.get('[aria-label="History reference"]').element).toHaveProperty("value", "origin/topic");
   });
 
+  test("prunes a missing ref when successful loading finishes with empty ref lists", async () => {
+    Object.assign(historySelection, { ref: "gone/branch", commitSearch: "" });
+    const gitUi = reactive({
+      branchList: { current: "", local: [], remotes: [], defaultBranch: "", defaultRemote: "" },
+      graph: { commits: [], head: "", refs: {} },
+      tags: [],
+      branchesLoading: true,
+      tagsLoading: true,
+      tagsError: "",
+    });
+    const picker = mount(GitBranchesTab, {
+      props: {
+        workspaceId: "ws-empty-ref-load",
+        snapshot: { dirty: false, branch: "" },
+        gitUi,
+        compactHistory: true,
+      },
+    });
+    expect(historySelection.ref).toBe("gone/branch");
+    gitUi.branchesLoading = false;
+    gitUi.tagsLoading = false;
+    await flushPromises();
+    expect(historySelection.ref).toBe("");
+    expect(picker.get('[role="status"]').text()).toContain("Reference “gone/branch” is no longer available");
+  });
+
   test("explains when a selected ref disappears after successful reads", async () => {
     Object.assign(historySelection, { ref: "origin/topic", commitSearch: "" });
     const gitUi = reactive({
