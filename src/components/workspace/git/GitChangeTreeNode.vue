@@ -59,9 +59,7 @@
       <span v-if="grouped && isDir" class="gct-node__count">{{ node.fileCount }}</span>
       <template v-if="node.kind === 'file' && stagingEnabled">
         <button
-          v-for="entry in visibleScopes.filter(
-            (item: ScopeEntry) => item.scope !== 'conflict' && item.scope !== 'untracked',
-          )"
+          v-for="entry in visibleScopes.filter((item: ScopeEntry) => item.scope !== 'conflict')"
           :key="entry.scope"
           type="button"
           class="gct-node__stage"

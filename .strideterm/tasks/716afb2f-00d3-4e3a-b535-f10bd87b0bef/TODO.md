@@ -8,9 +8,9 @@
 ## To Do
 
 - [ ] Finish the full seven-stage implementation and every acceptance criterion in `sources/01-plan-git-new-view.md`.
-- [ ] Finish profile/workspace/root/PR-scoped UI state persistence, stale query protection, and history favorites/recent selections.
+- [ ] Complete remaining profile/workspace/root/PR state details and stale query handling for non-graph read requests.
 - [ ] Build a dedicated provider PR review layout with the true source/target/base, dominant diff, compact file navigation, and preserved drafts.
-- [ ] Integrate staged hunk, empty-index, rename/delete, binary, and conflict edge-case coverage for the new index operations.
+- [ ] Add comprehensive staged hunk coverage for multiple hunks, rename/delete and conflict edge cases.
 - [ ] Integrate long-running Git actions with a suitable generic operation contract for Electron and remote clients, including event/payload dedupe and profile scoping.
 - [ ] Complete Changes layout and retain/verify every action, conflict path, keyboard behavior, narrow layout, and operation state.
 - [ ] Complete query error/stale distinctions, adjustable commit detail, and remaining acceptance coverage.
@@ -24,6 +24,9 @@
 - [x] Record existing action/capability inventory and explicit uncovered requirements in `IMPLEMENTATION_INVENTORY.md`.
 - [x] Add audited stage/unstage file and commit-staged endpoints across Electron and remote transport; verify the commit consumes only the index.
 - [x] Add a diff-token-guarded first-hunk staging flow using backend diff preview, repository write lock and best-effort audit.
+- [x] Persist selected view through workspace UI state; normalize only supported preference values and scope by profile/workspace/root/PR.
+- [x] Ignore out-of-order graph reads; add root-scoped favorite and recent ref picker groups.
+- [x] Support untracked file staging and reverse cached hunk application for explicit hunk unstaging.
 - [x] Add input/result tests for new index operations, formatter and lint checks for changed files.
 - [ ] Finish remaining plan work, final checks and commit this implementation slice.
 

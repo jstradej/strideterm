@@ -10465,7 +10465,7 @@ export async function createRuntime({
       // Cross-profile guard: UI state mutations target a specific workspace
       // and must not be honoured from a window bound to another profile.
       assertWorkspaceInViewerProfile(String(workspaceId), windowId);
-      const { activeViewId, splitLayout, splitViewIds, activeRootPath } = uiState;
+      const { activeViewId, splitLayout, splitViewIds, activeRootPath, gitViewPreferences } = uiState;
       let changed = false;
       await store.mutate((draft: AppState) => {
         const workspace = findWorkspace(draft, workspaceId);
@@ -10489,6 +10489,18 @@ export async function createRuntime({
         }
         if (typeof activeRootPath === "string") {
           workspace.activeRootPath = activeRootPath;
+          changed = true;
+        }
+        if (gitViewPreferences && typeof gitViewPreferences === "object" && !Array.isArray(gitViewPreferences)) {
+          const safePreferences = Object.fromEntries(
+            Object.entries(gitViewPreferences).filter(
+              ([key, view]) => key.length <= 2048 && ["history", "changes", "review"].includes(String(view)),
+            ),
+          );
+          workspace.gitViewPreferences = {
+            ...((workspace.gitViewPreferences as Record<string, string> | undefined) || {}),
+            ...safePreferences,
+          };
           changed = true;
         }
       });

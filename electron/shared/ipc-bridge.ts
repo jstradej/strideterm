@@ -635,6 +635,7 @@ export interface StridetermAPI {
     workspaceId: string;
     rootPath?: string;
     path: string;
+    action: "stage" | "unstage";
     scope: "staged" | "unstaged";
     diffToken: string;
     hunk: string;

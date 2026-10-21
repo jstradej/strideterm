@@ -572,6 +572,7 @@ export interface WorkspaceState {
   cwd: string;
   gitRoots: string[];
   activeRootPath: string;
+  gitViewPreferences?: Record<string, "history" | "changes" | "review">;
   notes: string;
   profileId: string;
   connectionId: string;

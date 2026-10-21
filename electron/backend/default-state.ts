@@ -273,12 +273,22 @@ function normalizeWorkspaceUIState(
   splitLayout: string | null;
   splitViewIds: string[];
   activeRootPath: string;
+  gitViewPreferences: Record<string, "history" | "changes" | "review">;
 } {
   const activePanel = activePanelId ? panels.find((p) => p.id === activePanelId) : null;
   const fallbackViewId = panelViewId(activePanel, workspaceId);
   const rawViewId = typeof workspace.activeViewId === "string" ? workspace.activeViewId : "";
   const canonicalRaw = canonicalizeViewId(rawViewId, workspaceId, panels);
   const activeViewId = isValidWorkspaceViewId(canonicalRaw, workspaceId, panels) ? canonicalRaw : fallbackViewId;
+  const rawGitViewPreferences =
+    workspace.gitViewPreferences && typeof workspace.gitViewPreferences === "object"
+      ? (workspace.gitViewPreferences as Record<string, unknown>)
+      : {};
+  const gitViewPreferences = Object.fromEntries(
+    Object.entries(rawGitViewPreferences).filter(
+      ([key, view]) => key.length <= 2048 && (view === "history" || view === "changes" || view === "review"),
+    ),
+  ) as Record<string, "history" | "changes" | "review">;
 
   const rawLayout = workspace.splitLayout;
   const rawSplitIds: string[] = Array.isArray(workspace.splitViewIds) ? (workspace.splitViewIds as string[]) : [];
@@ -286,13 +296,20 @@ function normalizeWorkspaceUIState(
     .map((id) => canonicalizeViewId(id, workspaceId, panels))
     .filter((id) => isValidWorkspaceViewId(id, workspaceId, panels));
   if (!VALID_SPLIT_LAYOUTS.has(rawLayout) || canonicalSplitIds.length < 2) {
-    return { activeViewId, splitLayout: null, splitViewIds: [], activeRootPath: workspace.activeRootPath || "" };
+    return {
+      activeViewId,
+      splitLayout: null,
+      splitViewIds: [],
+      activeRootPath: workspace.activeRootPath || "",
+      gitViewPreferences,
+    };
   }
   return {
     activeViewId,
     splitLayout: rawLayout,
     splitViewIds: canonicalSplitIds,
     activeRootPath: workspace.activeRootPath || "",
+    gitViewPreferences,
   };
 }
 
@@ -364,7 +381,7 @@ export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
     ? workspace.activePanelId
     : fallbackPanelId;
   const workspaceId = workspace.id || `workspace-${index + 1}`;
-  const { activeViewId, splitLayout, splitViewIds, activeRootPath } = normalizeWorkspaceUIState(
+  const { activeViewId, splitLayout, splitViewIds, activeRootPath, gitViewPreferences } = normalizeWorkspaceUIState(
     workspace,
     workspaceId,
     panels,
@@ -401,6 +418,7 @@ export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
         .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "accent" }));
     })(),
     activeRootPath: activeRootPath || "",
+    gitViewPreferences,
     notes: repairVisibleText(workspace.notes || ""),
     profileId: workspace.profileId || "default",
     connectionId: workspace.connectionId || workspace.quickfix?.connectionId || workspace.review?.connectionId || "",

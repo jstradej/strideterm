@@ -1343,6 +1343,20 @@ describe("default state", () => {
     expect(workspace.activeRootPath).toBe("C:/work/ms/api");
   });
 
+  test("Git view preferences are normalized to supported view ids", () => {
+    const workspace = normalizeWorkspace({
+      id: "ws-git-views",
+      name: "Git views",
+      cwd: "C:/work/repo",
+      panels: [{ id: "shell", title: "Shell", command: "" }],
+      gitViewPreferences: {
+        "default::ws-git-views::root::no-review": "history",
+        invalid: "checkout",
+      },
+    });
+    expect(workspace.gitViewPreferences).toEqual({ "default::ws-git-views::root::no-review": "history" });
+  });
+
   test("normalizeState indexes gitRoots in byCwd so worktree children find multi-repo parent", () => {
     const state = normalizeState({
       workspaces: [

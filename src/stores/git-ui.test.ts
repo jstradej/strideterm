@@ -61,6 +61,41 @@ describe("git-ui store", () => {
     expect(store.getGitView("ws1", "/repo/a", "profile-b", "github:123")).toBeUndefined();
   });
 
+  test("persists new-view selection and ignores out-of-order history responses", async () => {
+    const requests: Array<(value: unknown) => void> = [];
+    const api = {
+      setWorkspaceUIState: vi.fn().mockResolvedValue(null),
+      gitLogGraph: vi.fn(() => new Promise((resolve) => requests.push(resolve))),
+    } as unknown as Transport;
+    const store = useGitUiStore();
+    store.init(api);
+    store.gitSwitchView("ws1", "review", "/repo/a", "profile-a", "pr-1");
+    expect(api.setWorkspaceUIState).toHaveBeenCalledWith("ws1", {
+      gitViewPreferences: { "profile-a::ws1::/repo/a::pr-1": "review" },
+    });
+
+    store.setActiveRoot("ws1", "/repo/a");
+    const first = store.gitLoadGraph("ws1", { branch: "main", force: true });
+    const second = store.gitLoadGraph("ws1", { branch: "feature", force: true });
+    requests[1]({ ok: true, head: "new", commits: [{ hash: "new" }], refs: {} });
+    await second;
+    requests[0]({ ok: true, head: "old", commits: [{ hash: "old" }], refs: {} });
+    await first;
+    expect(store.get("ws1").graph?.head).toBe("new");
+  });
+
+  test("history favorites and recent refs stay scoped to profile, workspace, and root", () => {
+    const store = useGitUiStore();
+    store.toggleGitHistoryFavorite("ws1", "main", "/repo/a", "profile-a");
+    store.recordGitHistoryRef("ws1", "main", "/repo/a", "profile-a");
+    expect(store.getGitHistoryPreferences("ws1", "/repo/a", "profile-a")).toEqual({
+      favorites: ["main"],
+      recent: ["main"],
+    });
+    expect(store.getGitHistoryPreferences("ws1", "/repo/b", "profile-a")).toEqual({ favorites: [], recent: [] });
+    expect(store.getGitHistoryPreferences("ws1", "/repo/a", "profile-b")).toEqual({ favorites: [], recent: [] });
+  });
+
   test("index action results preserve structured success instead of depending on a cleared banner", async () => {
     const store = useGitUiStore();
     store.init({ gitStageFile: async () => ({ payload: {}, result: { ok: true } }) } as unknown as Transport);

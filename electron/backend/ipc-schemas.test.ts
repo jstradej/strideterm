@@ -19,6 +19,7 @@ import {
   gitStageFileSchema,
   gitStageHunkSchema,
   gitCommitStagedSchema,
+  workspaceUIStateSchema,
   settingsSchema,
   gitRemoteBranchDeleteSchema,
   terminalResizeSchema,
@@ -65,6 +66,22 @@ describe("ipc-schemas", () => {
     expect(validateIpc(settingsSchema, { git: { ui: { updateStrategy: "merge" } } }, "settings:update")).toMatchObject({
       git: { ui: { updateStrategy: "merge" } },
     });
+  });
+  test("validates persisted Git view preference ids", () => {
+    expect(
+      validateIpc(
+        workspaceUIStateSchema,
+        { workspaceId: "ws", uiState: { gitViewPreferences: { "profile::ws::root::pr": "review" } } },
+        "workspace:set-ui-state",
+      ).uiState.gitViewPreferences,
+    ).toEqual({ "profile::ws::root::pr": "review" });
+    expect(() =>
+      validateIpc(
+        workspaceUIStateSchema,
+        { workspaceId: "ws", uiState: { gitViewPreferences: { "profile::ws::root::pr": "checkout" } } },
+        "workspace:set-ui-state",
+      ),
+    ).toThrow();
   });
   describe("sshKeyTransferStartSchema", () => {
     const base = { profileId: "default", keyId: "key-1" };

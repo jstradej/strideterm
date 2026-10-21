@@ -122,6 +122,7 @@ export const workspaceUIStateSchema = z.object({
     splitLayout: z.enum(["cols", "rows", "top-split", "left-split", "grid"]).nullable().optional(),
     splitViewIds: z.array(z.string()).optional(),
     activeRootPath: z.string().optional(),
+    gitViewPreferences: z.record(z.string(), z.enum(["history", "changes", "review"])).optional(),
   }),
 });
 export type WorkspaceUIState = z.infer<typeof workspaceUIStateSchema>;
@@ -329,6 +330,7 @@ export const gitStageFileSchema = z.object({
 export type GitStageFile = z.infer<typeof gitStageFileSchema>;
 
 export const gitStageHunkSchema = gitStageFileSchema.extend({
+  action: z.enum(["stage", "unstage"]).default("stage"),
   scope: z.enum(["staged", "unstaged"]).default("unstaged"),
   diffToken: z.string().regex(/^[a-f0-9]{64}$/),
   hunk: z.string().min(1).max(2_000_000),

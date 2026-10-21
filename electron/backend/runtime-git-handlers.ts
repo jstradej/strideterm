@@ -251,6 +251,7 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
         workspace,
         git.stageHunk(workspace, {
           path: payload.path,
+          action: payload.action,
           scope: payload.scope,
           diffToken: payload.diffToken,
           hunk: payload.hunk,

@@ -1082,6 +1082,11 @@ export const useAppStore = defineStore("app", () => {
 
   function applyWorkspaceUIStateFromEntry(wsEntry: AnyApi, workspaceId: string, { optimisticOnly = false } = {}): void {
     if (!workspaceId) return;
+    const gitUiState = useGitUiStore().get(workspaceId);
+    gitUiState.workspaceGitViewPreferences = {
+      ...((gitUiState.workspaceGitViewPreferences as Record<string, unknown> | undefined) || {}),
+      ...((wsEntry?.gitViewPreferences as Record<string, unknown> | undefined) || {}),
+    };
     const nextSplit = resolveSplitForWorkspace(wsEntry, workspaceId);
     splitGroup.value = nextSplit;
     if (nextSplit) _splitGroupCache.set(workspaceId, nextSplit);

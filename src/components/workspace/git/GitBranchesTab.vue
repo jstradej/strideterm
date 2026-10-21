@@ -16,6 +16,16 @@
         <span>History range</span>
         <select :value="selectedRef || 'HEAD'" aria-label="History reference" @change="onHistoryRefChange">
           <option value="HEAD">HEAD · {{ branchList.current || "detached" }}</option>
+          <optgroup v-if="historyPreferences.favorites.length" label="Favorites">
+            <option v-for="ref in historyPreferences.favorites" :key="`favorite:${ref}`" :value="ref">
+              {{ historyRefLabel(ref) }}
+            </option>
+          </optgroup>
+          <optgroup v-if="historyPreferences.recent.length" label="Recent">
+            <option v-for="ref in historyPreferences.recent" :key="`recent:${ref}`" :value="ref">
+              {{ historyRefLabel(ref) }}
+            </option>
+          </optgroup>
           <optgroup label="Local branches">
             <option v-for="branch in filteredHistoryBranches" :key="`local:${branch.name}`" :value="branch.name">
               Branch · {{ branch.name }}{{ branch.isCurrent ? " (working branch)" : "" }}
@@ -33,6 +43,20 @@
           </optgroup>
         </select>
       </label>
+      <button
+        type="button"
+        class="button button--ghost button--small"
+        :disabled="!historyFavoriteRef"
+        :aria-pressed="historyPreferences.favorites.includes(historyFavoriteRef)"
+        :aria-label="
+          historyPreferences.favorites.includes(historyFavoriteRef)
+            ? 'Remove history favorite'
+            : 'Favorite history reference'
+        "
+        @click="toggleHistoryFavorite"
+      >
+        {{ historyPreferences.favorites.includes(historyFavoriteRef) ? "★" : "☆" }}
+      </button>
       <span class="git-history-picker__current"
         >Working branch: <strong>{{ branchList.current || "Detached HEAD" }}</strong></span
       >
@@ -652,6 +676,7 @@ const props = withDefaults(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     gitUi: Record<string, any>;
     activeRootPath?: string;
+    profileId?: string;
     hasAzureConnection?: boolean;
     activeConnectionId?: string;
     baseBranch?: string;
@@ -663,6 +688,7 @@ const props = withDefaults(
   }>(),
   {
     activeRootPath: "",
+    profileId: "default",
     hasAzureConnection: false,
     activeConnectionId: "",
     baseBranch: "",
@@ -703,6 +729,25 @@ const mobileView = ref<"tree" | "commits" | "diff">("tree");
 // Empty string = no filter (shows the full Log).
 const selectedRef = ref<string>("");
 const historySearch = ref("");
+const historyPreferences = computed(() =>
+  gitUiStore.getGitHistoryPreferences(props.workspaceId, props.activeRootPath || "", props.profileId || "default"),
+);
+const historyFavoriteRef = computed(() => selectedRef.value || "HEAD");
+function historyRefLabel(ref: string): string {
+  if (ref === "HEAD") return `HEAD · ${branchList.value.current || "detached"}`;
+  if (tags.value.some((tag: { name?: string }) => tag.name === ref)) return `Tag · ${ref}`;
+  if (branchList.value.remotes.some((branch: { name?: string }) => branch.name === ref))
+    return `Remote branch · ${ref}`;
+  return `Branch · ${ref}`;
+}
+function toggleHistoryFavorite() {
+  gitUiStore.toggleGitHistoryFavorite(
+    props.workspaceId,
+    historyFavoriteRef.value,
+    props.activeRootPath || "",
+    props.profileId || "default",
+  );
+}
 const filteredHistoryBranches = computed(() =>
   branchList.value.local.filter((branch) => branch.name.toLowerCase().includes(historySearch.value.toLowerCase())),
 );
@@ -714,7 +759,9 @@ const filteredHistoryTags = computed(() =>
 );
 function onHistoryRefChange(event: Event) {
   const value = (event.target as HTMLSelectElement).value;
-  onSelectRef(value === "HEAD" ? "" : value);
+  const selected = value === "HEAD" ? "" : value;
+  onSelectRef(selected);
+  gitUiStore.recordGitHistoryRef(props.workspaceId, value, props.activeRootPath || "", props.profileId || "default");
 }
 
 // Ctrl/Cmd-click multi-selection of local branches for bulk delete.

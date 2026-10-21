@@ -274,6 +274,7 @@
           :workspace-id="workspaceId"
           :snapshot="snapshot"
           :git-ui="gitUi"
+          :profile-id="workspace?.profileId || 'default'"
           :operation="operation"
           :workspaces="workspaces"
           :is-empty-repo="isEmptyRepo"

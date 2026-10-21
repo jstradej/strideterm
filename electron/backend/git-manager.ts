@@ -2179,25 +2179,30 @@ export class GitManager extends EventEmitter {
     workspace: WorkspaceRef,
     {
       path: filePath,
+      action = "stage",
       scope = "unstaged",
       diffToken,
       hunk,
       rootPath = "",
-    }: { path: string; scope?: string; diffToken: string; hunk: string; rootPath?: string },
+    }: { path: string; action?: string; scope?: string; diffToken: string; hunk: string; rootPath?: string },
   ): Promise<Record<string, unknown>> {
     const normalized = normalizeStagePath(filePath);
     if (!normalized || !/^[a-f0-9]{64}$/.test(diffToken) || !hunk || hunk.length > 2_000_000) {
       return createStructuredResult({ ok: false, summary: "Invalid or incomplete hunk staging request." });
     }
-    if (scope !== "unstaged" && scope !== "staged") {
+    if (
+      (action !== "stage" && action !== "unstage") ||
+      (action === "stage" && scope !== "unstaged") ||
+      (action === "unstage" && scope !== "staged")
+    ) {
       return createStructuredResult({
         ok: false,
-        summary: "Only staged or unstaged text diffs can be staged by hunk.",
+        summary: "Hunk stage/unstage must target the matching index or working-tree diff.",
       });
     }
     return this.runWriteAction(workspace, {
-      type: "stage-hunk",
-      label: `Stage hunk in ${normalized}`,
+      type: action === "stage" ? "stage-hunk" : "unstage-hunk",
+      label: `${action === "stage" ? "Stage" : "Unstage"} hunk in ${normalized}`,
       allowDirty: true,
       rootPath,
       extraAudit: { path: normalized, scope },
@@ -2213,8 +2218,9 @@ export class GitManager extends EventEmitter {
         ) {
           throw new Error("This diff changed after it was loaded. Refresh it and try again.");
         }
-        const { stdout } = await this.execGit(cwd, ["apply", "--cached", "-"], { stdin: hunk });
-        return { stdout: stdout || `Staged hunk in ${normalized}.`, stderr: "" };
+        const applyArgs = action === "unstage" ? ["apply", "--cached", "--reverse", "-"] : ["apply", "--cached", "-"];
+        const { stdout } = await this.execGit(cwd, applyArgs, { stdin: hunk });
+        return { stdout: stdout || `${action === "stage" ? "Staged" : "Unstaged"} hunk in ${normalized}.`, stderr: "" };
       },
     });
   }
@@ -2666,7 +2672,7 @@ export class GitManager extends EventEmitter {
         ok: false,
         summary: hasConflictState
           ? `${label} stopped because Git reported conflicts or requires manual resolution.`
-          : type === "stage-hunk"
+          : type.endsWith("-hunk")
             ? `${label} failed: ${extractErrorMessage(error)}`
             : `${label} failed.`,
         warnings,

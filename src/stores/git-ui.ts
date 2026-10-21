@@ -94,6 +94,7 @@ interface GitUiState {
     defaultRemote: string;
   };
   graphLoading?: boolean;
+  graphRequestId?: number;
   graphError?: string;
   graph?: {
     head: string;
@@ -784,6 +785,8 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const { workspaceId: _ignored, ...payloadForKey } = payload;
     void _ignored;
     const cacheKey = JSON.stringify(payloadForKey);
+    const requestId = Number(ui.graphRequestId || 0) + 1;
+    ui.graphRequestId = requestId;
     const now = Date.now();
     if (
       !opts.force &&
@@ -805,6 +808,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
         refs?: Record<string, string>;
         error?: string;
       };
+      if (ui.graphRequestId !== requestId || getActiveRoot(workspaceId) !== rootPath) return;
       if (result?.ok) {
         ui.graph = {
           head: result.head || "",
@@ -822,13 +826,14 @@ export const useGitUiStore = defineStore("git-ui", () => {
         if (ui.graphError) console.warn(`[git-ui] gitLoadGraph(${workspaceId}) reported error:`, ui.graphError);
       }
     } catch (error) {
+      if (ui.graphRequestId !== requestId || getActiveRoot(workspaceId) !== rootPath) return;
       ui.graph = { head: "", commits: [], refs: {} };
       ui.graphError = (error as Error)?.message || "Failed to load graph.";
       ui.graphKey = undefined;
       ui.graphFetchedAt = undefined;
       console.error(`[git-ui] gitLoadGraph(${workspaceId}) threw:`, error);
     } finally {
-      ui.graphLoading = false;
+      if (ui.graphRequestId === requestId) ui.graphLoading = false;
     }
   }
 
@@ -1254,7 +1259,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   async function gitStageHunk(
     workspaceId: string,
-    input: { path: string; scope: "staged" | "unstaged"; diffToken: string; hunk: string },
+    input: { path: string; action: "stage" | "unstage"; scope: "staged" | "unstaged"; diffToken: string; hunk: string },
   ): Promise<boolean> {
     const rootPath = getActiveRoot(workspaceId);
     return runIndexAction(workspaceId, "stage-hunk", () =>
@@ -1333,10 +1338,18 @@ export const useGitUiStore = defineStore("git-ui", () => {
     reviewKey = "",
   ): void {
     const key = gitViewKey(workspaceId, rootPath, profileId, reviewKey);
-    ensure(workspaceId).gitViewsByRoot = {
-      ...((ensure(workspaceId).gitViewsByRoot as Record<string, "history" | "changes" | "review"> | undefined) || {}),
+    const ui = ensure(workspaceId);
+    ui.gitViewsByRoot = {
+      ...((ui.gitViewsByRoot as Record<string, "history" | "changes" | "review"> | undefined) || {}),
       [key]: view,
     };
+    if (_api?.setWorkspaceUIState) {
+      (_api.setWorkspaceUIState as (id: string, patch: Record<string, unknown>) => Promise<unknown>)(workspaceId, {
+        gitViewPreferences: { [key]: view },
+      }).catch((error) =>
+        rlog("warn", "[git-ui] failed to persist Git view preference", { workspaceId, error: String(error) }),
+      );
+    }
   }
 
   function getGitView(
@@ -1345,8 +1358,83 @@ export const useGitUiStore = defineStore("git-ui", () => {
     profileId = "default",
     reviewKey = "",
   ): "history" | "changes" | "review" | undefined {
-    const views = ensure(workspaceId).gitViewsByRoot as Record<string, "history" | "changes" | "review"> | undefined;
+    const ui = ensure(workspaceId);
+    const workspacePreferences =
+      (ui.workspaceGitViewPreferences as Record<string, "history" | "changes" | "review"> | undefined) || {};
+    const payloadPreferences =
+      (ui.gitViewPreferences as Record<string, "history" | "changes" | "review"> | undefined) || {};
+    const views = {
+      ...workspacePreferences,
+      ...payloadPreferences,
+      ...((ui.gitViewsByRoot as Record<string, "history" | "changes" | "review"> | undefined) || {}),
+    };
     return views?.[gitViewKey(workspaceId, rootPath, profileId, reviewKey)];
+  }
+
+  function gitHistoryPreferencesKey(workspaceId: string, rootPath: string, profileId: string): string {
+    return `strideterm:git-history:${encodeURIComponent(profileId)}:${encodeURIComponent(workspaceId)}:${encodeURIComponent(rootPath || "default-root")}`;
+  }
+
+  function getGitHistoryPreferences(workspaceId: string, rootPath = getActiveRoot(workspaceId), profileId = "default") {
+    const key = gitHistoryPreferencesKey(workspaceId, rootPath, profileId);
+    try {
+      const stored = JSON.parse(globalThis.localStorage?.getItem(key) || "null");
+      if (stored && Array.isArray(stored.favorites) && Array.isArray(stored.recent)) {
+        return {
+          favorites: stored.favorites.filter((ref: unknown) => typeof ref === "string").slice(0, 100),
+          recent: stored.recent.filter((ref: unknown) => typeof ref === "string").slice(0, 20),
+        };
+      }
+    } catch {
+      // Storage is optional; refs remain usable if the browser blocks it.
+    }
+    return { favorites: [] as string[], recent: [] as string[] };
+  }
+
+  function updateGitHistoryPreferences(
+    workspaceId: string,
+    rootPath: string,
+    profileId: string,
+    update: (preferences: { favorites: string[]; recent: string[] }) => { favorites: string[]; recent: string[] },
+  ): void {
+    const key = gitHistoryPreferencesKey(workspaceId, rootPath, profileId);
+    const next = update(getGitHistoryPreferences(workspaceId, rootPath, profileId));
+    try {
+      globalThis.localStorage?.setItem(
+        key,
+        JSON.stringify({ favorites: next.favorites.slice(0, 100), recent: next.recent.slice(0, 20) }),
+      );
+    } catch {
+      rlog("warn", "[git-ui] failed to persist history references", { workspaceId, profileId });
+    }
+  }
+
+  function toggleGitHistoryFavorite(
+    workspaceId: string,
+    ref: string,
+    rootPath = getActiveRoot(workspaceId),
+    profileId = "default",
+  ): void {
+    if (!ref) return;
+    updateGitHistoryPreferences(workspaceId, rootPath, profileId, (preferences) => ({
+      ...preferences,
+      favorites: preferences.favorites.includes(ref)
+        ? preferences.favorites.filter((item) => item !== ref)
+        : [ref, ...preferences.favorites],
+    }));
+  }
+
+  function recordGitHistoryRef(
+    workspaceId: string,
+    ref: string,
+    rootPath = getActiveRoot(workspaceId),
+    profileId = "default",
+  ): void {
+    if (!ref) return;
+    updateGitHistoryPreferences(workspaceId, rootPath, profileId, (preferences) => ({
+      ...preferences,
+      recent: [ref, ...preferences.recent.filter((item) => item !== ref)],
+    }));
   }
 
   function setNewViewLegacyDestination(workspaceId: string, destination: string): void {
@@ -1908,6 +1996,9 @@ export const useGitUiStore = defineStore("git-ui", () => {
     gitSwitchTab,
     gitSwitchView,
     getGitView,
+    getGitHistoryPreferences,
+    toggleGitHistoryFavorite,
+    recordGitHistoryRef,
     setNewViewLegacyDestination,
     getNewViewLegacyDestination,
     gitClearResult,

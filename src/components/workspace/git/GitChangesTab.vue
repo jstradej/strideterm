@@ -270,7 +270,7 @@
                     :disabled="!!gitUi.busyAction || operation.inProgress || monacoDiffLoading"
                     @click="onStageHunk"
                   >
-                    Stage first hunk
+                    {{ gitUi.selectedDiff?.scope === "staged" ? "Unstage first hunk" : "Stage first hunk" }}
                   </button>
                   <MonacoDiffPanel
                     v-if="gitUi.selectedDiff?.path"
@@ -557,7 +557,7 @@ const diffLayerLabel = computed(() => {
   return "Index → Working tree";
 });
 function onStageFile(payload: { path: string; staged: boolean; scope: string }) {
-  if (payload.scope === "conflict" || payload.scope === "untracked") return;
+  if (payload.scope === "conflict") return;
   if (payload.staged) void gitUiStore.gitUnstageFile(props.workspaceId, payload.path);
   else void gitUiStore.gitStageFile(props.workspaceId, payload.path);
 }
@@ -572,6 +572,7 @@ async function onStageHunk() {
   const staged = selection.scope === "staged";
   const ok = await gitUiStore.gitStageHunk(props.workspaceId, {
     path: selection.path,
+    action: staged ? "unstage" : "stage",
     scope: staged ? "staged" : "unstaged",
     diffToken: token,
     hunk: `${String(preview?.diffHeader || "")}${hunk}`,

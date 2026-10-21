@@ -3979,6 +3979,10 @@ describe("GitManager", () => {
       expect((await mgr.commitStaged(workspace, { message: "empty" })).ok).toBe(false);
       expect((await mgr.stageFile(workspace, { path: "../outside" })).ok).toBe(false);
       expect((await mgr.stageFile(workspace, { path: "-A" })).ok).toBe(false);
+      await fs.writeFile(path.join(root, "new.txt"), "new\n", "utf8");
+      expect((await mgr.stageFile(workspace, { path: "new.txt" })).ok).toBe(true);
+      expect((await mgr.commitStaged(workspace, { message: "add untracked file" })).ok).toBe(true);
+      expect(rg(root, ["show", "HEAD:new.txt"]).trim()).toBe("new");
     });
 
     test("stages a fresh verified hunk and refuses a stale token", async () => {
@@ -3993,7 +3997,41 @@ describe("GitManager", () => {
       expect((await mgr.stageHunk(workspace, { path: "a.txt", diffToken: token, hunk: `${header}${hunk}` })).ok).toBe(
         true,
       );
-      const stale = await mgr.stageHunk(workspace, { path: "a.txt", diffToken: token, hunk: `${header}${hunk}` });
+      const stagedPreview = await mgr.diffPreview(workspace, { path: "a.txt", scope: "staged" });
+      const stagedDiff = String(stagedPreview.diff);
+      const stagedHeader = stagedDiff.split(/^(?=@@ )/m)[0] || "";
+      const stagedHunk = stagedDiff.split(/(?=^@@ )/m).find((part) => part.startsWith("@@ ")) || "";
+      expect(
+        (
+          await mgr.stageHunk(workspace, {
+            path: "a.txt",
+            action: "unstage",
+            scope: "staged",
+            diffToken: String(stagedPreview.diffToken),
+            hunk: `${stagedHeader}${stagedHunk}`,
+          })
+        ).ok,
+      ).toBe(true);
+      expect(rg(root, ["diff", "--cached", "--", "a.txt"]).trim()).toBe("");
+      await fs.writeFile(path.join(root, "a.txt"), "changed again\n", "utf8");
+      const nextPreview = await mgr.diffPreview(workspace, { path: "a.txt" });
+      const nextDiff = String(nextPreview.diff);
+      const nextHeader = nextDiff.split(/^(?=@@ )/m)[0] || "";
+      const nextHunk = nextDiff.split(/(?=^@@ )/m).find((part) => part.startsWith("@@ ")) || "";
+      expect(
+        (
+          await mgr.stageHunk(workspace, {
+            path: "a.txt",
+            diffToken: String(nextPreview.diffToken),
+            hunk: `${nextHeader}${nextHunk}`,
+          })
+        ).ok,
+      ).toBe(true);
+      const stale = await mgr.stageHunk(workspace, {
+        path: "a.txt",
+        diffToken: String(nextPreview.diffToken),
+        hunk: `${nextHeader}${nextHunk}`,
+      });
       expect(stale.ok).toBe(false);
       expect(stale.summary).toContain("diff changed");
     });
