@@ -181,6 +181,13 @@ describe("AzureReviewPane — persisted drafts survive view unmounts", () => {
 
   test("an unsaved comment editor stays mounted while Review changes views", async () => {
     const appStore = useAppStore();
+    const payload = buildPayload();
+    const reviewDetails = (payload as unknown as { azureDevops: { pullRequests: Record<string, unknown> } }).azureDevops
+      .pullRequests["ado:1"] as { changedFiles: Array<Record<string, unknown>> };
+    reviewDetails.changedFiles = [
+      { path: "src/first.ts", changeType: "edit" },
+      { path: "src/second.ts", changeType: "edit" },
+    ];
     const dialog = mount(DialogOverlay, { attachTo: document.body });
     appStore.openDialog("TextAreaDialog", {
       title: "Edit review draft",
@@ -198,8 +205,13 @@ describe("AzureReviewPane — persisted drafts survive view unmounts", () => {
     textarea!.dispatchEvent(new Event("input", { bubbles: true }));
     await flushPromises();
 
-    const pane = mountPane("azure-devops", { includeComments: true });
+    useGitUiStore().reviewSwitchTab("ws-review", "files");
+    const pane = mountPane("azure-devops", { includeComments: true, payload });
     await flushPromises();
+    await pane.get('.gct-node__row[title="Modified in pull request: src/second.ts"]').trigger("click");
+    await vi.waitFor(() => expect(useGitUiStore().get("ws-review").reviewSelectedFile).toBe("src/second.ts"));
+    expect(useGitUiStore().get("ws-review").reviewSelectedFile).toBe("src/second.ts");
+    expect(document.body.querySelector("textarea")).toHaveProperty("value", "Unsaved edit that should remain open.");
     pane.unmount();
     await flushPromises();
 
