@@ -8834,6 +8834,7 @@ describe("runtime integration", () => {
       ["gitSquashCommits", "squashCommits", { hashes: ["abc123", "def456"], message: "Squash" }],
       ["gitContinueOperation", "continueOperation", {}],
       ["gitAbortOperation", "abortOperation", {}],
+      ["gitSkipCommit", "skipCommit", {}],
       ["gitStash", "stash", { message: "save work", paths: ["src/a.ts"] }],
       ["gitStashPop", "stashPop", { ref: "stash@{0}" }],
       ["gitStashApply", "stashApply", { ref: "stash@{0}" }],
