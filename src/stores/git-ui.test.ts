@@ -276,6 +276,45 @@ describe("git-ui store", () => {
       expect(checkout).toHaveBeenCalledTimes(2);
     });
 
+    test("scopes conflict-action uncertainty to the dialog root after switching active roots", async () => {
+      const resolveConflict = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("Remote transport disconnected."))
+        .mockResolvedValueOnce({ result: { ok: true } });
+      getGitSnapshot.mockReturnValue({ available: true });
+      const store = useGitUiStore();
+      store.init({
+        gitListConflicts: vi.fn().mockResolvedValue({ entries: [] }),
+        gitResolveConflict: resolveConflict,
+        refreshGit: vi.fn().mockResolvedValue({ fresh: true }),
+      } as unknown as Transport);
+      store.setActiveRoot("ws-conflict-root", "/repo/a");
+      store.openConflictDialog("ws-conflict-root", "/repo/a");
+      await vi.waitFor(() => expect(store.get("ws-conflict-root").conflictDialog?.loading).toBe(false));
+
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        await store.resolveConflictFile("ws-conflict-root", "conflict.txt", "ours");
+      } finally {
+        consoleError.mockRestore();
+      }
+      expect(Object.values(store.get("ws-conflict-root").uncertainWrites || {})).toEqual([
+        expect.objectContaining({ rootPath: "/repo/a", action: "resolve:conflict.txt" }),
+      ]);
+
+      store.setActiveRoot("ws-conflict-root", "/repo/b");
+      await store.refreshGit("ws-conflict-root");
+      expect(Object.values(store.get("ws-conflict-root").uncertainWrites || {})).toEqual([
+        expect.objectContaining({ rootPath: "/repo/a", action: "resolve:conflict.txt" }),
+      ]);
+
+      store.setActiveRoot("ws-conflict-root", "/repo/a");
+      await store.refreshGit("ws-conflict-root");
+      expect(store.get("ws-conflict-root").uncertainWrites).toEqual({});
+      await store.resolveConflictFile("ws-conflict-root", "conflict.txt", "ours");
+      expect(resolveConflict).toHaveBeenCalledTimes(2);
+    });
+
     test("surfaces and records a rejected long-operation start", async () => {
       const request = vi.fn().mockRejectedValue(new Error("Remote transport disconnected."));
       const store = useGitUiStore();

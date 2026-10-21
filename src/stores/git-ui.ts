@@ -628,11 +628,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
     workspaceId: string,
     busyAction: string,
     runner: () => Promise<unknown>,
-    opts: { label?: string; timeoutMs?: number; requireRefreshBeforeRetry?: boolean } = {},
+    opts: { label?: string; timeoutMs?: number; rootPath?: string; requireRefreshBeforeRetry?: boolean } = {},
   ): Promise<unknown> {
     const ui = ensure(workspaceId);
     if (ui.busyAction === busyAction) return null;
-    const actionRootPath = getActiveRoot(workspaceId);
+    const actionRootPath = opts.rootPath ?? getActiveRoot(workspaceId);
     const uncertainWriteKey = JSON.stringify([actionRootPath, busyAction]);
     if (opts.requireRefreshBeforeRetry && ui.uncertainWrites?.[uncertainWriteKey]) {
       const summary = `The previous ${busyAction} response was lost. Refresh this repository and verify its state before retrying.`;
@@ -2368,7 +2368,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
           mode,
           content,
         }),
-      { requireRefreshBeforeRetry: true },
+      { rootPath: dlg.rootPath, requireRefreshBeforeRetry: true },
     );
     await loadConflicts(workspaceId);
   }
@@ -2381,7 +2381,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
       workspaceId,
       `unresolve:${filePath}`,
       () => (_api as CallableTransport).gitUnresolveConflict({ workspaceId, rootPath: dlg.rootPath, filePath }),
-      { requireRefreshBeforeRetry: true },
+      { rootPath: dlg.rootPath, requireRefreshBeforeRetry: true },
     );
     await loadConflicts(workspaceId);
   }
@@ -2395,7 +2395,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
       workspaceId,
       "skip",
       () => (_api as CallableTransport).gitSkipCommit({ workspaceId, rootPath: dlg.rootPath }),
-      { requireRefreshBeforeRetry: true },
+      { rootPath: dlg.rootPath, requireRefreshBeforeRetry: true },
     );
     // After skip, check if there are more conflicts (rebase may pause again)
     await refreshGit(workspaceId);
@@ -2416,7 +2416,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
       workspaceId,
       "continue",
       () => (_api as CallableTransport).gitContinueOperation({ workspaceId, rootPath: dlg.rootPath }),
-      { requireRefreshBeforeRetry: true },
+      { rootPath: dlg.rootPath, requireRefreshBeforeRetry: true },
     );
     // After continue, operation may stop again (next conflicting commit in rebase)
     await refreshGit(workspaceId);
@@ -2475,7 +2475,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
       workspaceId,
       "abort",
       () => (_api as CallableTransport).gitAbortOperation({ workspaceId, rootPath: dlg.rootPath }),
-      { requireRefreshBeforeRetry: true },
+      { rootPath: dlg.rootPath, requireRefreshBeforeRetry: true },
     );
     closeConflictDialog(workspaceId);
   }
