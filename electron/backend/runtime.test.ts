@@ -9048,6 +9048,45 @@ describe("runtime integration", () => {
     );
   });
 
+  test.each(["pull", "push"] as const)("long Git %s operations isolate profile outcomes", async (action) => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    let releaseA!: () => void;
+    let releaseB!: () => void;
+    const gateA = new Promise<void>((resolve) => (releaseA = resolve));
+    const gateB = new Promise<void>((resolve) => (releaseB = resolve));
+    const gitAction = vi
+      .fn()
+      .mockImplementationOnce(async () => {
+        await gateA;
+        return { result: { ok: true, summary: `${action} profile A completed.` } };
+      })
+      .mockImplementationOnce(async () => {
+        await gateB;
+        return { result: { ok: true, summary: `${action} profile B completed.` } };
+      });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any)[action] = gitAction;
+    const waitForGitOperation = watchOperation(fixture);
+    const start = action === "pull" ? fixture.runtime.gitPull : fixture.runtime.gitPush;
+
+    const profileA = await start({ workspaceId: "ws-a1", idempotencyKey: "same-key" });
+    const profileB = await start({ workspaceId: "ws-b1", idempotencyKey: "same-key" });
+
+    expect(profileA.operationId).not.toBe(profileB.operationId);
+    await vi.waitFor(() => expect(gitAction).toHaveBeenCalledTimes(2));
+    releaseA();
+    releaseB();
+    await expect(
+      Promise.all([waitForGitOperation(profileA.operationId), waitForGitOperation(profileB.operationId)]),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: `git.${action}`, profileId: "profile-a", workspaceId: "ws-a1" }),
+        expect.objectContaining({ kind: `git.${action}`, profileId: "profile-b", workspaceId: "ws-b1" }),
+      ]),
+    );
+  });
+
   test("saves and deletes profiles while preserving a fallback default profile", async () => {
     const fixture = await createFixture();
     fixtures.push(fixture);

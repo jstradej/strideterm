@@ -320,11 +320,11 @@ Full per-requirement ledger (122 items)
 
 78. **PARTIAL** — Stage 6: involved long Git actions use generic flow for both layouts/remote; reconnect and dedup verified.
    Evidence: `runtime-git-handlers.ts` routes fetch/pull/push/force-push, merge/rebase, remote branch deletion, and network tag writes through OperationRegistry; mobile route policy classifies the guarded routes. `git-ui.test.ts` covers event/payload resolution and duplicate terminal delivery for fetch/pull/push.
-   Remaining: End-to-end renderer reconnect and cross-profile pull/push coverage remain; inventory-wide route/audit assertions are still incomplete.
+   Remaining: End-to-end renderer reconnect during pending pull/push remains; inventory-wide route/audit assertions are still incomplete.
 
 79. **PARTIAL** — Stage 6: layout/profile changes or client disconnect do not cancel accepted work or misroute its result.
    Evidence: electron/backend/operation-registry.ts:123,187; `git-ui.test.ts` verifies pull can recover its terminal result from the persisted lastResults payload after a missed event; runtime tests verify distinct profile/workspace operation IDs and outcomes.
-   Remaining: Renderer reconnect while a Git action is pending and pull/push profile switching need end-to-end lifecycle coverage. Root-scoped diff refresh and staged commit completion use the originating root; branch/tag refreshes remain protected by read-generation and active-root checks.
+   Remaining: Renderer reconnect while a Git action is pending still needs end-to-end coverage. Root-scoped diff refresh and staged commit completion use the originating root; branch/tag refreshes remain protected by read-generation and active-root checks.
 
 80. **IMPLEMENTED** — Stage 7: run lint, relevant UI/backend tests and production build after Vue layout changes, meeting project healthy checks.
    Evidence: CLAUDE.md:15; docs/development.md:66; package.json:30; electron/backend/agent-task-runner.callbacks.test.ts:214; electron/backend/runtime.test.ts:1511.
@@ -375,7 +375,7 @@ Full per-requirement ledger (122 items)
 
 92. **PARTIAL** — Acceptance: controlled slow backend proves start before relay timeout, reconnect outcome, dedup and profile isolation, without timeout increase.
    Evidence: Gated OperationRegistry tests cover prompt fetch/rebase acceptance, dedup, tag/force-push/remote-delete, and profile/workspace isolation; store tests verify event plus payload completion for fetch/pull/push, one notification per failure, and pull recovery from persisted outcomes.
-   Remaining: Add renderer integration for a real disconnect/reconnect during pending pull/push and cross-profile pull/push isolation.
+   Remaining: Add renderer integration for a real disconnect/reconnect during pending pull/push. Backend cross-profile pull/push isolation is now covered.
 
 93. **PARTIAL** — Acceptance: keyboard picker open/search/select/close and narrow layout work with long refs/paths and hundreds of branches.
    Evidence: src/components/workspace/git/GitBranchesTab.test.ts:104; src/components/workspace/git/GitBranchesTab.vue:538,566; .strideterm/tasks/716afb2f-00d3-4e3a-b535-f10bd87b0bef/MANUAL_VERIFICATION.md:7,9.
@@ -730,3 +730,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Reconciled numbered findings 78, 79, and 92 with the current long-operation coverage: registry-backed network operations, duplicate event/payload terminal delivery, pull recovery from persisted outcome, and backend profile isolation are implemented and tested. Remaining lifecycle gaps are renderer reconnect during pending pull/push and cross-profile pull/push integration coverage.
 - Root-scoped post-action diff refresh and staged commit completion capture the originating root; branch/tag read responses check request generation and active root before assignment. Route-wide exact audit counts and manual accessibility/visual checks remain outstanding.
+
+## Worker continuation (pull/push profile isolation)
+
+- Added gated runtime tests for pull and push accepted concurrently in separate profiles with identical idempotency keys. Each action receives a distinct operation ID, and each terminal result carries the matching profile and workspace.
+- Focused runtime tests pass (2 passed, 517 skipped); repository typecheck passes; focused ESLint has 0 errors / 130 existing warnings; Prettier and diff check pass. Renderer disconnect/reconnect acceptance, route audit coverage and the manual walkthrough remain open; WORK_LOCK stays.
