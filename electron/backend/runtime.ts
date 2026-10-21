@@ -7170,6 +7170,7 @@ export async function createRuntime({
     resolveGitRootPath,
     runGitWorkspaceAction,
     recordWorkspaceWork,
+    operations,
     emitGitProgress: (payload) => events.emit("git:push-progress", payload),
     syncWorktrees: async () => {
       await syncWorktrees();
@@ -7334,13 +7335,18 @@ export async function createRuntime({
     await internalMcpBroker.start();
   }
   await operations.load((record) =>
+    record.kind.startsWith("git.") ||
     ["review-pr-action", "review-pr-action-proposal", "review-pr-inspect"].includes(record.kind)
       ? Promise.resolve({
           status: "interrupted" as const,
+          ...(record.kind.startsWith("git.")
+            ? { workspaceId: String(record.intent.workspaceId || "") || undefined }
+            : {}),
           error: {
             code: "interrupted",
-            message:
-              record.kind === "review-pr-action"
+            message: record.kind.startsWith("git.")
+              ? "The runtime stopped during this Git operation. Check the repository state before retrying."
+              : record.kind === "review-pr-action"
                 ? "The runtime stopped while this provider action may have been applied. Inspect the pull request before retrying; it was not replayed."
                 : "The runtime stopped before the pull request inspection finished. Request a fresh inspection.",
           },

@@ -286,6 +286,7 @@ export const gitPayloadSchema = z
     workspaceId: nonEmptyString,
     baseBranch: safeGitRef.optional(),
     rootPath: z.string().optional(),
+    idempotencyKey: z.string().min(1).max(200).optional(),
   })
   .passthrough();
 export type GitPayload = z.infer<typeof gitPayloadSchema>;

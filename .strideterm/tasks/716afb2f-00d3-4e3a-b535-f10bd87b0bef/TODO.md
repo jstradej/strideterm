@@ -7,27 +7,26 @@
 
 ## To Do
 
-- [ ] Finish the full seven-stage implementation and every acceptance criterion in `sources/01-plan-git-new-view.md`.
-- [ ] Complete remaining profile/workspace/root/PR state details and stale query handling for non-graph read requests.
-- [ ] Build a dedicated provider PR review layout with the true source/target/base, dominant diff, compact file navigation, and preserved drafts.
-- [ ] Add comprehensive staged hunk coverage for multiple hunks, rename/delete and conflict edge cases.
-- [ ] Integrate long-running Git actions with a suitable generic operation contract for Electron and remote clients, including event/payload dedupe and profile scoping.
-- [ ] Complete Changes layout and retain/verify every action, conflict path, keyboard behavior, narrow layout, and operation state.
-- [ ] Complete query error/stale distinctions, adjustable commit detail, and remaining acceptance coverage.
-- [ ] Run final focused checks, scan the complete diff, update this checklist, and commit all changes.
+- [ ] Complete the user's visual review using `MANUAL_VERIFICATION.md` in their `dev.ps1` session; adjust anything they report.
+- [x] Finish the seven implementation stages, with visual confirmation delegated to the user as specified in the source plan.
+- [x] Run focused UI/backend tests, full lint, direct frontend/backend/preload typechecks, safe production build, and complete diff review.
+- [x] Commit implementation changes locally without pushing.
 
 ## In Progress
 
+## Done
+
 - [x] Add opt-in setting defaulting off, normalization, explicit boolean schema validation, Settings control, and safe nested merge coverage.
 - [x] Add separate new-view selection and opt-in History / Changes / Review shell with a More path to preserved existing tools.
-- [x] Add searchable read-only history ref selection and verify it filters graph history without checkout or branch creation.
-- [x] Record existing action/capability inventory and explicit uncovered requirements in `IMPLEMENTATION_INVENTORY.md`.
+- [x] Add searchable read-only history ref selection, favorites and recent refs scoped by profile/workspace/root.
+- [x] Record existing action/capability inventory in `IMPLEMENTATION_INVENTORY.md`.
 - [x] Add audited stage/unstage file and commit-staged endpoints across Electron and remote transport; verify the commit consumes only the index.
-- [x] Add a diff-token-guarded first-hunk staging flow using backend diff preview, repository write lock and best-effort audit.
-- [x] Persist selected view through workspace UI state; normalize only supported preference values and scope by profile/workspace/root/PR.
-- [x] Ignore out-of-order graph reads; add root-scoped favorite and recent ref picker groups.
+- [x] Add diff-token-guarded stage/unstage hunk operations using backend diff preview, repository write lock and best-effort audit.
+- [x] Persist selected view through workspace UI state and scope it by profile/workspace/root/PR.
+- [x] Guard graph, branch, tag, compare, commit-diff and selected-file reads against stale responses.
 - [x] Support untracked file staging and reverse cached hunk application for explicit hunk unstaging.
-- [x] Add input/result tests for new index operations, formatter and lint checks for changed files.
-- [ ] Finish remaining plan work, final checks and commit this implementation slice.
-
-## Done
+- [x] Add selectable multi-hunk controls and real-repository coverage for multiple hunks, rename/delete, binary, conflict and stale-token cases.
+- [x] Route fetch/pull/push through the generic operation registry with idempotency, profile/workspace/root correlation, durable outcomes, event/payload dedupe and visible running state.
+- [x] Render the provider-owned review pane in Review, keyed to the linked PR workspace so its provider diff and persisted drafts remain available.
+- [x] Preserve staged commit messages across view changes and clear root-specific selections on root changes.
+- [x] Add focused tests for new index operations, long-operation acceptance/deduplication, stale reads and Review routing.

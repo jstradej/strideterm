@@ -105,6 +105,9 @@
           <span v-if="operation.inProgress" class="workspace-chip workspace-chip--alert">
             <strong>{{ operation.kind }}</strong> in progress
           </span>
+          <span v-if="longGitOperation" class="workspace-chip workspace-chip--alert" role="status">
+            <strong>{{ longGitOperation.kind.replace("git.", "") }}</strong> in progress
+          </span>
         </div>
         <div class="git-view__actions">
           <!-- Repo picker (multi-root workspaces only) — inline with actions, compact -->
@@ -138,7 +141,7 @@
             type="button"
             data-testid="fetch-button"
             :class="['button', 'button--ghost', gitUi.busyAction === 'fetch' && 'button--busy']"
-            :disabled="!!gitUi.busyAction || !!gitUi.pendingAction || operation.inProgress"
+            :disabled="!!gitUi.busyAction || !!gitUi.pendingAction || operation.inProgress || !!longGitOperation"
             title="git fetch — download remote refs and tags from origin so the ahead/behind counts update. Working tree, current branch, and uncommitted changes are not touched."
             @click="gitUiStore.gitFetch(workspaceId)"
           >
@@ -363,6 +366,11 @@
           :active-connection-label="activeConnectionLabel"
         />
 
+        <AzureReviewPane
+          v-else-if="useNewGitView && activeGitView === 'review' && reviewLink"
+          :workspace-id="providerReviewWorkspaceId"
+        />
+
         <section
           v-else-if="useNewGitView && activeGitView === 'review' && !reviewLink"
           class="git-new-review-empty"
@@ -374,7 +382,6 @@
             one.
           </p>
           <button type="button" class="button button--ghost" @click="openLegacyPrTool">Open pull request tools</button>
-          <button v-if="reviewLink" type="button" class="button" @click="openProviderReview">Open PR review</button>
         </section>
 
         <!-- ===== Worktrees tab ===== -->
@@ -467,6 +474,7 @@ import GitPullRequestTab from "./git/GitPullRequestTab.vue";
 import GitWorktreeList from "./git/GitWorktreeList.vue";
 import GitOperationCard from "./git/GitOperationCard.vue";
 import GitStrategySplitButton from "./git/GitStrategySplitButton.vue";
+import AzureReviewPane from "./AzureReviewPane.vue";
 import type { StrategyOption, UpdateStrategy } from "./git/update-strategy.js";
 import BulkRepoTable from "./git/BulkRepoTable.vue";
 import ConfirmDialog from "../dialogs/ConfirmDialog.vue";
@@ -510,6 +518,7 @@ const gitUi = computed(() => gitUiStore.get(props.workspaceId));
 const workspaces = computed(() => appStore.filteredWorkspaces);
 
 const workspace = computed(() => (appStore.filteredWorkspaces || []).find((ws) => ws.id === props.workspaceId));
+type RunningGitOperation = { profileId: string; workspaceId?: string; rootPath?: string; kind: string };
 // A PR link is context, not a capability gate: every Git action is available,
 // and the runtime inspects the real checkout state for each one. What the link
 // does change is where the PR-targeted actions go (Push → the PR's source
@@ -523,6 +532,15 @@ const reviewLink = computed(() => {
     targetBranch: String(review.pullRequest?.targetRefName || "").replace(/^refs\/heads\//, ""),
     role: review.role || "",
   };
+});
+const providerReviewWorkspaceId = computed(() => {
+  const linked = appStore.filteredWorkspaces.find(
+    (ws) =>
+      ws.review?.prKey === workspace.value?.review?.prKey &&
+      ws.profileId === workspace.value?.profileId &&
+      (ws.kind === "review" || ws.kind === "azure" || ws.kind === "github"),
+  );
+  return linked?.id || props.workspaceId;
 });
 
 // Multi-repo computed values
@@ -538,7 +556,24 @@ const allRootsSnapshots = computed(() => {
   return Object.entries(entry.roots).map(([rootPath, snap]: [string, any]) => ({ rootPath, ...snap }));
 });
 const isLinkedWorktree = computed(() => snapshot.value?.isWorktree && !snapshot.value?.isMainWorktree);
-const operation = computed(() => snapshot.value?.operationState || {});
+const longGitOperation = computed(() => {
+  const profileId = String(workspace.value?.profileId || "default");
+  const payload = appStore.payload as { operations?: { running?: RunningGitOperation[] } } | null;
+  return (
+    payload?.operations?.running?.find(
+      (item) =>
+        item.profileId === profileId &&
+        item.workspaceId === props.workspaceId &&
+        (!item.rootPath || item.rootPath === activeRootPath.value) &&
+        ["git.fetch", "git.pull", "git.push"].includes(item.kind),
+    ) || null
+  );
+});
+const operation = computed(() =>
+  longGitOperation.value
+    ? { ...(snapshot.value?.operationState || {}), kind: longGitOperation.value.kind, inProgress: true }
+    : snapshot.value?.operationState || {},
+);
 
 // Pending confirm (rebase/merge/force-push/delete…) rendered as a modal below
 const pendingAction = computed(() => gitUi.value.pendingAction || null);
@@ -626,21 +661,6 @@ function selectNewView(view: "history" | "changes" | "review") {
     workspace.value?.profileId || "default",
     String(workspace.value?.review?.prKey || ""),
   );
-}
-
-function openProviderReview() {
-  const link = reviewLink.value;
-  if (!link) return;
-  const candidate = appStore.filteredWorkspaces.find(
-    (ws) =>
-      ws.review?.prKey === workspace.value?.review?.prKey &&
-      (ws.kind === "review" || ws.kind === "azure" || ws.kind === "github"),
-  );
-  if (candidate) {
-    void appStore.activateWorkspace(candidate.id);
-    return;
-  }
-  openLegacyPrTool();
 }
 
 function openLegacyPrTool() {
@@ -745,7 +765,8 @@ const showNewWorktree = computed(() => {
 // Pull state
 const pullIsPrimary = computed(() => primaryAction.value === "pull");
 const pullDisabled = computed(() => {
-  if (!!gitUi.value.busyAction || operation.value.inProgress || !!gitUi.value.pendingAction) return true;
+  if (!!gitUi.value.busyAction || operation.value.inProgress || !!gitUi.value.pendingAction || !!longGitOperation.value)
+    return true;
   if (!snapshot.value?.upstream) return true;
   if (isDetachedHead.value) return true;
   if ((snapshot.value?.behindCount || 0) === 0 && !isDiverged.value) return true;
@@ -835,7 +856,8 @@ const pushLabel = computed(() => {
 });
 const pushIsPrimary = computed(() => primaryAction.value === "push");
 const pushDisabled = computed(() => {
-  if (!!gitUi.value.busyAction || operation.value.inProgress || !!gitUi.value.pendingAction) return true;
+  if (!!gitUi.value.busyAction || operation.value.inProgress || !!gitUi.value.pendingAction || !!longGitOperation.value)
+    return true;
   if (appStore.isReviewGitBusy?.(props.workspaceId)) return true;
   if (isDiverged.value && !showAllActions.value) return true;
   if (!canPush.value) return true;

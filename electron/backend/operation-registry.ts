@@ -148,6 +148,7 @@ export function createOperationRegistry(options: OperationRegistryOptions) {
       kind: record.kind,
       profileId: record.profileId,
       ...(record.workspaceId ? { workspaceId: record.workspaceId } : {}),
+      ...(typeof record.intent.rootPath === "string" ? { rootPath: record.intent.rootPath } : {}),
       finishedAt: record.finishedAt,
     };
     if (record.status === "succeeded") return { ...base, result: record.result ?? {} };
@@ -350,6 +351,7 @@ export function createOperationRegistry(options: OperationRegistryOptions) {
             profileId: record.profileId,
             step: record.step,
             ...(record.workspaceId ? { workspaceId: record.workspaceId } : {}),
+            ...(typeof record.intent.rootPath === "string" ? { rootPath: record.intent.rootPath } : {}),
             startedAt: record.createdAt,
           });
           continue;

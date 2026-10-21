@@ -4035,5 +4035,88 @@ describe("GitManager", () => {
       expect(stale.ok).toBe(false);
       expect(stale.summary).toContain("diff changed");
     });
+
+    test("stages a selected later hunk while leaving the other hunk unstaged", async () => {
+      const root = await initRepo();
+      const workspace = { id: "ws-multi-hunk", cwd: root, kind: "terminal" as const };
+      const baseLines = Array.from({ length: 40 }, (_, index) => `line ${index + 1}`);
+      await fs.writeFile(path.join(root, "a.txt"), `${baseLines.join("\n")}\n`, "utf8");
+      rg(root, ["add", "a.txt"]);
+      rg(root, ["commit", "-q", "-m", "long base"]);
+      const changedLines = [...baseLines];
+      changedLines[1] = "line two changed";
+      changedLines[34] = "line thirty-five changed";
+      await fs.writeFile(path.join(root, "a.txt"), `${changedLines.join("\n")}\n`, "utf8");
+
+      const preview = await mgr.diffPreview(workspace, { path: "a.txt" });
+      const header = String(preview.diff).split(/^(?=@@ )/m)[0] || "";
+      const hunks = String(preview.diff)
+        .split(/(?=^@@ )/m)
+        .filter((part) => part.startsWith("@@ "));
+      expect(hunks).toHaveLength(2);
+      expect(
+        (
+          await mgr.stageHunk(workspace, {
+            path: "a.txt",
+            diffToken: String(preview.diffToken),
+            hunk: `${header}${hunks[1]}`,
+          })
+        ).ok,
+      ).toBe(true);
+      expect(rg(root, ["diff", "--cached", "--", "a.txt"])).toContain("line thirty-five changed");
+      expect(rg(root, ["diff", "--cached", "--", "a.txt"])).not.toContain("line two changed");
+      expect(rg(root, ["diff", "--", "a.txt"])).toContain("line two changed");
+      expect(rg(root, ["diff", "--", "a.txt"])).not.toContain("line thirty-five changed");
+    });
+
+    test("stage and unstage file operations handle a deletion and a renamed path", async () => {
+      const root = await initRepo();
+      const workspace = { id: "ws-file-kinds", cwd: root, kind: "terminal" as const };
+      await fs.rm(path.join(root, "a.txt"));
+      expect((await mgr.stageFile(workspace, { path: "a.txt" })).ok).toBe(true);
+      expect(rg(root, ["diff", "--cached", "--name-status"])).toContain("D\ta.txt");
+      expect((await mgr.unstageFile(workspace, { path: "a.txt" })).ok).toBe(true);
+      expect(rg(root, ["diff", "--cached", "--name-status"]).trim()).toBe("");
+
+      await fs.rename(path.join(root, "b.txt"), path.join(root, "renamed.txt"));
+      expect((await mgr.stageFile(workspace, { path: "renamed.txt" })).ok).toBe(true);
+      expect((await mgr.stageFile(workspace, { path: "b.txt" })).ok).toBe(true);
+      expect(rg(root, ["diff", "--cached", "--name-status"])).toMatch(
+        /(?:R\d+\tb\.txt\trenamed\.txt|D\tb\.txt|A\trenamed\.txt)/,
+      );
+      expect((await mgr.unstageFile(workspace, { path: "renamed.txt" })).ok).toBe(true);
+      expect((await mgr.unstageFile(workspace, { path: "b.txt" })).ok).toBe(true);
+      expect(rg(root, ["diff", "--cached", "--name-status"]).trim()).toBe("");
+    });
+
+    test("hunk staging refuses binary content and unresolved conflict paths", async () => {
+      const root = await initRepo();
+      const workspace = { id: "ws-unsupported-hunks", cwd: root, kind: "terminal" as const };
+      await fs.writeFile(path.join(root, "a.txt"), Buffer.from([0, 1, 2, 3, 0, 255]));
+      const binaryPreview = await mgr.diffPreview(workspace, { path: "a.txt" });
+      const binaryResult = await mgr.stageHunk(workspace, {
+        path: "a.txt",
+        diffToken: String(binaryPreview.diffToken),
+        hunk: String(binaryPreview.diffHeader || "") + "@@ -1 +1 @@\n+binary\n",
+      });
+      expect(binaryResult.ok).toBe(false);
+
+      const baseBranch = rg(root, ["branch", "--show-current"]).trim();
+      rg(root, ["checkout", "-q", "-b", "side"]);
+      await fs.writeFile(path.join(root, "b.txt"), "side version\n", "utf8");
+      rg(root, ["add", "b.txt"]);
+      rg(root, ["commit", "-q", "-m", "side change"]);
+      rg(root, ["checkout", "-q", baseBranch]);
+      await fs.writeFile(path.join(root, "b.txt"), "main version\n", "utf8");
+      rg(root, ["add", "b.txt"]);
+      rg(root, ["commit", "-q", "-m", "base change"]);
+      expect(() => rg(root, ["merge", "side"])).toThrow();
+      const conflictResult = await mgr.stageHunk(workspace, {
+        path: "b.txt",
+        diffToken: "a".repeat(64),
+        hunk: "@@ -1 +1 @@\n+resolved\n",
+      });
+      expect(conflictResult.ok).toBe(false);
+    });
   });
 });

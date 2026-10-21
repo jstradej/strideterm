@@ -84,6 +84,48 @@ describe("git-ui store", () => {
     expect(store.get("ws1").graph?.head).toBe("new");
   });
 
+  test("ignores stale branch and tag reads after the repository root changes", async () => {
+    const branchRequests: Array<(value: unknown) => void> = [];
+    const tagRequests: Array<(value: unknown) => void> = [];
+    const api = {
+      gitListBranches: vi.fn(() => new Promise((resolve) => branchRequests.push(resolve))),
+      gitListTags: vi.fn(() => new Promise((resolve) => tagRequests.push(resolve))),
+    } as unknown as Transport;
+    const store = useGitUiStore();
+    store.init(api);
+    store.setActiveRoot("ws1", "/repo/a");
+    const branchesA = store.gitListBranches("ws1", { force: true });
+    const tagsA = store.gitListTags("ws1");
+    store.setActiveRoot("ws1", "/repo/b");
+    const branchesB = store.gitListBranches("ws1", { force: true });
+    const tagsB = store.gitListTags("ws1");
+    branchRequests[1]({ ok: true, current: "feature", local: [{ name: "feature" }] });
+    tagRequests[1]({ ok: true, tags: [{ name: "release-b" }] });
+    await Promise.all([branchesB, tagsB]);
+    branchRequests[0]({ ok: true, current: "main", local: [{ name: "main" }] });
+    tagRequests[0]({ ok: true, tags: [{ name: "release-a" }] });
+    await Promise.all([branchesA, tagsA]);
+    expect(store.get("ws1").branchList?.current).toBe("feature");
+    expect(store.get("ws1").tags).toEqual([{ name: "release-b" }]);
+  });
+
+  test("does not let an old file diff replace the currently selected file", async () => {
+    const requests: Array<(value: unknown) => void> = [];
+    const store = useGitUiStore();
+    store.setActiveRoot("ws1", "/repo/a");
+    store.init({
+      gitDiffPreview: vi.fn(() => new Promise((resolve) => requests.push(resolve))),
+    } as unknown as Transport);
+    const first = store.gitSelectDiff("ws1", "first.txt", "unstaged");
+    const second = store.gitSelectDiff("ws1", "second.txt", "unstaged");
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+    requests[1]({ ok: true, path: "second.txt", diff: "new selection" });
+    await second;
+    requests[0]({ ok: true, path: "first.txt", diff: "stale selection" });
+    await first;
+    expect(store.get("ws1").diffPreview).toMatchObject({ path: "second.txt", diff: "new selection" });
+  });
+
   test("history favorites and recent refs stay scoped to profile, workspace, and root", () => {
     const store = useGitUiStore();
     store.toggleGitHistoryFavorite("ws1", "main", "/repo/a", "profile-a");
@@ -195,7 +237,7 @@ describe("git-ui store", () => {
       });
 
       await pending;
-      expect(gitCommitDiff).toHaveBeenCalledWith({ workspaceId: "ws1", hash: "abc123" });
+      expect(gitCommitDiff).toHaveBeenCalledWith({ workspaceId: "ws1", hash: "abc123", rootPath: "" });
       expect(store.get("ws1").commitDiffPreview).toEqual({
         ok: true,
         hash: "abc123",

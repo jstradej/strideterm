@@ -1,5 +1,7 @@
 import { resolveRootPath as resolveRootPathShared } from "./shared/runtime-provider-guards.js";
 import type { WorkspaceState } from "../shared/types/state.js";
+import type { OperationRegistry } from "./operation-registry.js";
+import { randomUUID } from "node:crypto";
 
 /**
  * Runtime context subset consumed by git handlers.
@@ -25,6 +27,7 @@ interface GitHandlerCtx {
   syncWorktrees: () => Promise<void>;
   /** Emit a live push-progress frame (streamed git output, incl. pre-push hook) to connected clients. */
   emitGitProgress: (payload: { workspaceId: string; rootPath: string; chunk: string }) => void;
+  operations: Pick<OperationRegistry, "accept">;
 }
 
 /**
@@ -42,6 +45,7 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
     runGitWorkspaceAction,
     recordWorkspaceWork,
     syncWorktrees,
+    operations,
   } = ctx;
 
   function resolveRootPath(workspace: WorkspaceState, rawRootPath: string): string {
@@ -82,9 +86,9 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
    * fresh broadcast with a pre-stamp state (V3 review, §4 P2).
    *
    * Read-only operations (log, diff, compare, list, stash inspection) keep
-   * using the plain `runGitWorkspaceAction`: looking is not working. There is
-   * no separate stage/unstage call to cover — the built-in Git tab commits
-   * the paths the user selected, so staging happens inside `gitCommitAll`.
+   * using the plain `runGitWorkspaceAction`: looking is not working. Stage,
+   * unstage and commit-staged APIs use the manager's audited write actions;
+   * the legacy selected-path commit retains its existing semantics.
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async function runGitWorkspaceMutation(workspace: WorkspaceState, action: Promise<any>, windowId?: string) {
@@ -92,6 +96,57 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
     if (!isGitSuccess(response?.result)) return response;
     await recordWorkspaceWork(workspace.id, windowId);
     return { ...response, payload: getPayload() };
+  }
+
+  async function startLongGitAction(
+    kind: "fetch" | "pull" | "push",
+    workspace: WorkspaceState,
+    rootPath: string,
+    input: Record<string, unknown>,
+    windowId?: string,
+  ) {
+    const profileId = String(workspace.profileId || "default");
+    const idempotencyKey = String(input.idempotencyKey || randomUUID());
+    const operationInput = { kind, workspaceId: workspace.id, rootPath, stashDirty: input.stashDirty === true };
+    const inputHash = JSON.stringify(operationInput);
+    const connection = resolveGitConnection(workspace);
+    const accepted = await operations.accept(
+      {
+        kind: `git.${kind}`,
+        profileId,
+        originWorkspaceId: workspace.id,
+        idempotencyKey,
+        inputHash,
+        initialStep: kind,
+        intent: { workspaceId: workspace.id, rootPath, kind },
+      },
+      async (handle) => {
+        await handle.update({ workspaceId: workspace.id, step: kind });
+        const result =
+          kind === "fetch"
+            ? await runGitWorkspaceAction(workspace, git.fetch(workspace, { connection, rootPath }))
+            : kind === "pull"
+              ? await runGitWorkspaceMutation(
+                  workspace,
+                  git.pull(workspace, { connection, rootPath, stashDirty: input.stashDirty === true }),
+                  windowId,
+                )
+              : await runGitWorkspaceMutation(
+                  workspace,
+                  git.push(workspace, {
+                    connection,
+                    rootPath,
+                    onProgress: (chunk: string) => ctx.emitGitProgress({ workspaceId: workspace.id, rootPath, chunk }),
+                  }),
+                  windowId,
+                );
+        if (result?.result?.ok === false) {
+          throw new Error(String(result.result.summary || `${kind} failed.`));
+        }
+        return { ok: true, summary: String(result?.result?.summary || `${kind} completed.`) };
+      },
+    );
+    return { started: true, operationId: accepted.record.operationId, replayed: accepted.replayed };
   }
 
   return {
@@ -103,25 +158,20 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitFetch(payload: any = {}, windowId?: string) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
-      const connection = resolveGitConnection(workspace);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
-      return runGitWorkspaceAction(workspace, git.fetch(workspace, { connection, rootPath }));
+      return startLongGitAction("fetch", workspace, rootPath, payload, windowId);
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitPull(payload: any = {}, windowId?: string) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
-      const connection = resolveGitConnection(workspace);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
-      const stashDirty = Boolean(payload.stashDirty);
-      return runGitWorkspaceMutation(workspace, git.pull(workspace, { connection, rootPath, stashDirty }), windowId);
+      return startLongGitAction("pull", workspace, rootPath, payload, windowId);
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitPush(payload: any = {}, windowId?: string) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
-      const connection = resolveGitConnection(workspace);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
-      const onProgress = (chunk: string) => ctx.emitGitProgress({ workspaceId: workspace.id, rootPath, chunk });
-      return runGitWorkspaceMutation(workspace, git.push(workspace, { connection, rootPath, onProgress }), windowId);
+      return startLongGitAction("push", workspace, rootPath, payload, windowId);
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitCheckoutBranch(payload: any = {}, windowId?: string) {

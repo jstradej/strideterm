@@ -258,20 +258,26 @@
                 </div>
                 <div class="git-monaco-host">
                   <p v-if="newView && gitUi.selectedDiff?.path" class="git-changes__diff-scope">{{ diffLayerLabel }}</p>
-                  <button
+                  <div
                     v-if="
                       newView &&
                       gitUi.selectedDiff?.scope !== 'untracked' &&
                       gitUi.selectedDiff?.scope !== 'conflict' &&
                       monacoDiffPayload?.diffToken
                     "
-                    type="button"
-                    class="button button--ghost button--small"
-                    :disabled="!!gitUi.busyAction || operation.inProgress || monacoDiffLoading"
-                    @click="onStageHunk"
+                    class="git-changes__hunk-actions"
                   >
-                    {{ gitUi.selectedDiff?.scope === "staged" ? "Unstage first hunk" : "Stage first hunk" }}
-                  </button>
+                    <button
+                      v-for="(hunk, index) in diffHunks"
+                      :key="`${index}:${hunk.slice(0, 40)}`"
+                      type="button"
+                      class="button button--ghost button--small"
+                      :disabled="!!gitUi.busyAction || operation.inProgress || monacoDiffLoading"
+                      @click="onStageHunk(hunk, index)"
+                    >
+                      {{ gitUi.selectedDiff?.scope === "staged" ? "Unstage" : "Stage" }} hunk {{ index + 1 }}
+                    </button>
+                  </div>
                   <MonacoDiffPanel
                     v-if="gitUi.selectedDiff?.path"
                     :payload="monacoDiffPayload"
@@ -527,7 +533,10 @@ const mobileLayout = ref<"single" | "split">("single");
 const activeFilter = ref("all");
 const commitBusy = ref(false);
 const commitMessageId = useId();
-const stagedCommitMessage = ref("");
+const stagedCommitMessage = computed({
+  get: () => gitUiStore.getStagedCommitMessage(props.workspaceId, props.activeRootPath),
+  set: (message: string) => gitUiStore.setStagedCommitMessage(props.workspaceId, props.activeRootPath, message),
+});
 const commitMessageInput = ref<HTMLTextAreaElement | null>(null);
 const mobileExpandedDirectories = ref<Set<string>>(new Set());
 let resizeObserver: ResizeObserver | null = null;
@@ -556,19 +565,20 @@ const diffLayerLabel = computed(() => {
   if (scope === "untracked") return "Untracked file · not in Index";
   return "Index → Working tree";
 });
+const diffHunks = computed(() => {
+  const diff = String((monacoDiffPayload.value as Record<string, unknown> | null)?.diff || "");
+  return diff.split(/(?=^@@ )/m).filter((part) => part.startsWith("@@ "));
+});
 function onStageFile(payload: { path: string; staged: boolean; scope: string }) {
   if (payload.scope === "conflict") return;
   if (payload.staged) void gitUiStore.gitUnstageFile(props.workspaceId, payload.path);
   else void gitUiStore.gitStageFile(props.workspaceId, payload.path);
 }
-async function onStageHunk() {
+async function onStageHunk(hunk: string, index: number) {
   const selection = props.gitUi.selectedDiff;
   const preview = monacoDiffPayload.value as Record<string, unknown> | null;
-  const diff = String(preview?.diff || "");
   const token = String(preview?.diffToken || "");
-  if (!selection?.path || !token || !diff) return;
-  const hunk = diff.split(/(?=^@@ )/m).find((part) => part.startsWith("@@ ")) || "";
-  if (!hunk) return;
+  if (!selection?.path || !token || !hunk) return;
   const staged = selection.scope === "staged";
   const ok = await gitUiStore.gitStageHunk(props.workspaceId, {
     path: selection.path,
@@ -579,14 +589,23 @@ async function onStageHunk() {
   });
   if (!ok)
     notifications.showError(
-      "Could not stage hunk",
+      "Could not apply hunk",
       "The diff changed or the selected hunk could not be staged. Refresh the diff and try again.",
     );
-  else void diffLoader.load(selection.path, selection.scope);
+  else {
+    void diffLoader.load(selection.path, selection.scope);
+    notifications.pushEphemeralToast({
+      title: "Git",
+      body: `Hunk ${index + 1} updated.`,
+      kind: "info",
+      durationMs: 2500,
+    });
+  }
 }
 async function onCommitStaged() {
   if (!stagedCommitMessage.value.trim()) return;
-  if (await gitUiStore.gitCommitStaged(props.workspaceId, stagedCommitMessage.value)) stagedCommitMessage.value = "";
+  if (await gitUiStore.gitCommitStaged(props.workspaceId, stagedCommitMessage.value))
+    gitUiStore.setStagedCommitMessage(props.workspaceId, props.activeRootPath, "");
 }
 
 function updateMobileLayout() {

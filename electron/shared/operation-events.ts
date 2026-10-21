@@ -20,6 +20,8 @@ const operationOutcomeBase = {
   profileId: z.string().min(1),
   /** The workspace the operation produced or acts on, when it has one. */
   workspaceId: z.string().optional(),
+  /** Repository root for multi-root Git operations. */
+  rootPath: z.string().optional(),
   /** ISO timestamp of the end of the run. */
   finishedAt: z.string().min(1),
 };
@@ -52,6 +54,7 @@ export interface OperationRunning {
   profileId: string;
   step: string;
   workspaceId?: string;
+  rootPath?: string;
   startedAt: string;
 }
 

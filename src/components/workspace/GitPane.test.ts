@@ -149,6 +149,27 @@ describe("GitPane repo picker", () => {
     expect(wrapper.findAll('[role="tab"]').map((tab) => tab.text())).toEqual(["History", "Changes", "Review"]);
     expect(wrapper.find('[aria-label="More Git tools"]').exists()).toBe(true);
   });
+  test("Review renders the linked provider review workspace using its PR data and drafts", async () => {
+    const linked = buildWorkspace({
+      id: "ws-linked",
+      review: { prKey: "azure:repo:42", provider: "azure-devops", role: "reviewer" },
+    });
+    const providerReview = buildWorkspace({
+      id: "ws-provider-review",
+      kind: "review",
+      review: { prKey: "azure:repo:42", provider: "azure-devops", role: "reviewer" },
+    });
+    const wrapper = mountPane("ws-linked", [linked, providerReview]);
+    const appStore = useAppStore();
+    appStore.payload = {
+      ...appStore.payload!,
+      appState: { ...appStore.payload!.appState!, settings: { git: { ui: { newView: true } } } },
+    } as StatePayload;
+    await flushPromises();
+    const reviewPane = wrapper.findComponent({ name: "AzureReviewPane" });
+    expect(reviewPane.exists()).toBe(true);
+    expect(reviewPane.props("workspaceId")).toBe("ws-provider-review");
+  });
   test("repo picker is shown when workspace has 2+ gitRoots", () => {
     const ws = buildWorkspace({ id: "ws-multi", gitRoots: ["/ms/api", "/ms/web"] });
     const wrapper = mountPane("ws-multi", [ws]);

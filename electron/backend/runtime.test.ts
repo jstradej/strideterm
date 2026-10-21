@@ -30,6 +30,7 @@ import { createStore } from "./store.js";
 import { createCredentialStore } from "./shared/credential-store.js";
 import { shortPathKey } from "./azure-devops-utils.js";
 import { REMOTE_ACCESS_TOKEN_REF } from "./shared/connection-secret.js";
+import { OPERATION_FINISHED_CHANNEL, type OperationFinished } from "../shared/operation-events.js";
 import type { AppState, TabTemplate, WorkspaceState } from "../shared/types/state.js";
 import { APP_CONFIG } from "../../config/app-config.js";
 import { readFileContent, withCallerProfile } from "./file-manager.js";
@@ -1064,6 +1065,21 @@ const tempPaths: string[] = [];
 // after `runtime.stop()` often hits ENOTEMPTY / EBUSY. Node's `maxRetries`
 // + `retryDelay` is the canonical workaround.
 const RM_OPTS = { recursive: true, force: true, maxRetries: 5, retryDelay: 100 };
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- runtime test fixture is shared across manager variants
+function watchOperation(fixture: { runtime: any }): (operationId: string) => Promise<OperationFinished> {
+  const outcomes = new Map<string, OperationFinished>();
+  const waiters = new Map<string, (event: OperationFinished) => void>();
+  fixture.runtime.on(OPERATION_FINISHED_CHANNEL, (event: OperationFinished) => {
+    outcomes.set(event.operationId, event);
+    waiters.get(event.operationId)?.(event);
+  });
+  return (operationId) => {
+    const outcome = outcomes.get(operationId);
+    if (outcome) return Promise.resolve(outcome);
+    return new Promise((resolve) => waiters.set(operationId, resolve));
+  };
+}
 
 /**
  * An OS keychain that works. Mobile's keys are never stored as plaintext, so a runtime whose store has
@@ -5787,6 +5803,7 @@ describe("runtime integration", () => {
     fixture.git.actions.length = 0;
 
     await fixture.runtime.gitFetch({ workspaceId: "ws-b" });
+    await vi.waitFor(() => expect(fixture.git.actions.some((a: { kind: string }) => a.kind === "fetch")).toBe(true));
 
     const action = fixture.git.actions.find((a: { kind: string }) => a.kind === "fetch");
     expect(action).toBeDefined();
@@ -8725,18 +8742,16 @@ describe("runtime integration", () => {
     fixtures.push(fixture);
 
     await fixture.runtime.refreshGitState("backend");
+    const waitForGitOperation = watchOperation(fixture);
     const fetchResult = await fixture.runtime.gitFetch({ projectId: "backend" });
+    await waitForGitOperation(fetchResult.operationId);
     const diffResult = await fixture.runtime.gitDiffPreview({
       projectId: "backend",
       path: "src/app.js",
       scope: "unstaged",
     });
 
-    expect(fetchResult.result).toMatchObject({
-      ok: true,
-      summary: "Fetch completed.",
-    });
-    expect(fetchResult.payload.git.activeWorkspace).toBeTruthy();
+    expect(fetchResult).toMatchObject({ started: true, operationId: expect.any(String), replayed: false });
     expect(fixture.git.actions[0]).toMatchObject({
       kind: "fetch",
       workspaceId: "backend",
@@ -8749,6 +8764,34 @@ describe("runtime integration", () => {
     expect(fixture.git.actions[1]).toMatchObject({
       kind: "diff",
       workspaceId: "backend",
+    });
+  });
+
+  test("long Git fetch accepts promptly and deduplicates an idempotent retry", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    let releaseFetch!: () => void;
+    const gate = new Promise<void>((resolve) => (releaseFetch = resolve));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fetch = vi.fn(async () => {
+      await gate;
+      return { ok: true, summary: "Fetch completed." };
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).fetch = fetch;
+    const waitForGitOperation = watchOperation(fixture);
+    const first = await fixture.runtime.gitFetch({ workspaceId: "ws-a1", idempotencyKey: "fetch-once" });
+    expect(first).toMatchObject({ started: true, replayed: false });
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    const replay = await fixture.runtime.gitFetch({ workspaceId: "ws-a1", idempotencyKey: "fetch-once" });
+    expect(replay).toMatchObject({ operationId: first.operationId, replayed: true });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    releaseFetch();
+    await expect(waitForGitOperation(first.operationId)).resolves.toMatchObject({
+      kind: "git.fetch",
+      profileId: "profile-a",
+      workspaceId: "ws-a1",
+      rootPath: "",
     });
   });
 
@@ -14639,12 +14682,15 @@ describe("workspace lastWorkedAt — the work allowlist", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (fixture.git as any).checkoutBranch = vi.fn(async () => ({ ok: false, summary: "Invalid branch name." }));
 
+    const waitForGitOperation = watchOperation(fixture);
     const pushed = await fixture.runtime.gitPush({ workspaceId: "ws-a1" });
+    await waitForGitOperation(pushed.operationId);
     const checked = await fixture.runtime.gitCheckoutBranch({ workspaceId: "ws-a1", branch: "-oops" });
     await fixture.store.flush();
 
-    // The refusal still reaches the caller verbatim.
-    expect(pushed.result.ok).toBe(false);
+    // The long action is accepted immediately; its structured refusal remains
+    // available through the generic operation outcome.
+    expect(pushed).toMatchObject({ started: true, operationId: expect.any(String) });
     expect(checked.result.ok).toBe(false);
     expect(workedAt(fixture, "ws-a1")).toBeUndefined();
   });
@@ -14725,7 +14771,11 @@ describe("workspace lastWorkedAt — the work allowlist", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (fixture.git as any).push = vi.fn(() => Promise.reject(new Error("remote rejected")));
 
-    await expect(fixture.runtime.gitPush({ workspaceId: "ws-a1" })).rejects.toThrow();
+    const waitForGitOperation = watchOperation(fixture);
+    const push = await fixture.runtime.gitPush({ workspaceId: "ws-a1" });
+    expect(push).toMatchObject({ started: true, operationId: expect.any(String) });
+    const outcome = await waitForGitOperation(push.operationId);
+    expect(outcome).toHaveProperty("error");
     await fixture.store.flush();
 
     expect(workedAt(fixture, "ws-a1")).toBeUndefined();

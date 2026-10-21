@@ -8,6 +8,8 @@ import { managedReviewBranchAlias, sourceBranchName } from "../../electron/share
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type GitSnapshot = Record<string, any>;
 
+const newGitIdempotencyKey = (): string => crypto.randomUUID();
+
 interface PendingGitAction {
   type: string;
   baseBranch: string;
@@ -75,6 +77,7 @@ interface GitUiState {
   activeTab?: string;
   /** New Git layout selection, deliberately separate from legacy tab ids. */
   activeGitView?: "history" | "changes" | "review";
+  stagedCommitMessages?: Record<string, string>;
   tags?: unknown[];
   tagsLoading?: boolean;
   tagsError?: string;
@@ -277,19 +280,23 @@ function computeSnapshotHash(snapshot: GitSnapshot | null): string {
 // sensible while (or if) the fetch fails.
 async function loadDiffPreview(
   ui: GitUiState,
+  requestId: number,
   field: "diffPreview" | "commitDiffPreview" | "reviewFileDiffPreview",
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   identity: Record<string, any>,
   loadingSummary: string,
   errorFallback: string,
+  isCurrent: () => boolean,
   fetch: () => Promise<unknown>,
 ): Promise<void> {
   ui[field] = { ok: true, ...identity, diff: "", summary: loadingSummary };
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ui[field] = (await fetch()) as any;
+    const result = (await fetch()) as any;
+    if (isCurrent()) ui[field] = result;
   } catch (error) {
-    ui[field] = { ok: false, ...identity, diff: "", summary: (error as Error)?.message || errorFallback };
+    if (isCurrent())
+      ui[field] = { ok: false, ...identity, diff: "", summary: (error as Error)?.message || errorFallback };
   }
 }
 
@@ -325,6 +332,12 @@ export const useGitUiStore = defineStore("git-ui", () => {
   // flip the other's view. Durable git data (snapshots, branches, repo
   // state) stays workspace-owned in the backend payload.
   const state = ref<Record<string, GitUiState>>({});
+  const readGeneration = new Map<string, number>();
+  function nextReadGeneration(key: string): number {
+    const next = (readGeneration.get(key) || 0) + 1;
+    readGeneration.set(key, next);
+    return next;
+  }
 
   let _api: Transport | null = null;
 
@@ -355,6 +368,16 @@ export const useGitUiStore = defineStore("git-ui", () => {
     return state.value[workspaceId] || {};
   }
 
+  function getStagedCommitMessage(workspaceId: string, rootPath: string): string {
+    return ensure(workspaceId).stagedCommitMessages?.[rootPath || "default-root"] || "";
+  }
+
+  function setStagedCommitMessage(workspaceId: string, rootPath: string, message: string): void {
+    const ui = ensure(workspaceId);
+    const key = rootPath || "default-root";
+    ui.stagedCommitMessages = { ...(ui.stagedCommitMessages || {}), [key]: message };
+  }
+
   function clearBusy(workspaceId: string): void {
     const ui = ensure(workspaceId);
     ui.busyAction = "";
@@ -375,15 +398,34 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   function setActiveRoot(workspaceId: string, rootPath: string): void {
     const ui = ensure(workspaceId);
+    const nextRoot = rootPath || "";
+    if ((ui.activeRootPath || "") !== nextRoot) {
+      ui.selectedDiff = null;
+      ui.diffPreview = null;
+      ui.selectedCommit = "";
+      ui.commitDiffPreview = null;
+      ui.branchList = undefined;
+      ui.branchListKey = undefined;
+      ui.branchListFetchedAt = undefined;
+      ui.tags = [];
+      ui.tagsError = "";
+      ui.graph = undefined;
+      ui.graphKey = undefined;
+      ui.graphFetchedAt = undefined;
+      ui.baseComparison = null;
+      ui.baseComparisonKey = undefined;
+      ui.reviewSelectedFile = "";
+      ui.reviewFileDiffPreview = undefined;
+    }
     // The LIVE active root is viewer-local (this renderer only). The
     // persisted workspace.activeRootPath below is just the durable DEFAULT
     // used to seed a fresh viewer on reload/first open — sibling windows
     // showing this workspace keep their own in-memory root and are never
     // flipped by this write (see getActiveGitSnapshot in app.ts).
-    ui.activeRootPath = rootPath || "";
+    ui.activeRootPath = nextRoot;
     if (_api?.setWorkspaceUIState) {
       (_api.setWorkspaceUIState as (id: string, patch: Record<string, unknown>) => Promise<unknown>)(workspaceId, {
-        activeRootPath: rootPath || "",
+        activeRootPath: nextRoot,
       }).catch(() => {});
     }
   }
@@ -568,7 +610,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
   async function gitFetch(workspaceId: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
     await runGitAction(workspaceId, "fetch", () =>
-      (_api as Transport & { gitFetch: (p: unknown) => Promise<unknown> }).gitFetch!({ workspaceId, rootPath }),
+      (_api as Transport & { gitFetch: (p: unknown) => Promise<unknown> }).gitFetch!({
+        workspaceId,
+        rootPath,
+        idempotencyKey: newGitIdempotencyKey(),
+      }),
     );
   }
 
@@ -579,6 +625,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
         workspaceId,
         rootPath,
         stashDirty,
+        idempotencyKey: newGitIdempotencyKey(),
       }),
     );
   }
@@ -590,7 +637,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
     }
     const rootPath = getActiveRoot(workspaceId);
     await runGitAction(workspaceId, "push", () =>
-      (_api as Transport & { gitPush: (p: unknown) => Promise<unknown> }).gitPush!({ workspaceId, rootPath }),
+      (_api as Transport & { gitPush: (p: unknown) => Promise<unknown> }).gitPush!({
+        workspaceId,
+        rootPath,
+        idempotencyKey: newGitIdempotencyKey(),
+      }),
     );
   }
 
@@ -667,10 +718,13 @@ export const useGitUiStore = defineStore("git-ui", () => {
     ) {
       return;
     }
+    const requestId = nextReadGeneration(`${workspaceId}:branches`);
     ui.branchesLoading = true;
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const result = (await (_api as CallableTransport).gitListBranches({ workspaceId, rootPath })) as any;
+      if (requestId !== readGeneration.get(`${workspaceId}:branches`) || getActiveRoot(workspaceId) !== rootPath)
+        return;
       if (result?.ok) {
         ui.branchList = {
           current: result.current || "",
@@ -690,12 +744,14 @@ export const useGitUiStore = defineStore("git-ui", () => {
         ui.branchListFetchedAt = undefined;
       }
     } catch (error) {
+      if (requestId !== readGeneration.get(`${workspaceId}:branches`) || getActiveRoot(workspaceId) !== rootPath)
+        return;
       ui.branchList = { current: "", upstream: "", local: [], remotes: [], defaultBranch: "", defaultRemote: "" };
       ui.branchesError = (error as Error)?.message || "Failed to load branches.";
       ui.branchListKey = undefined;
       ui.branchListFetchedAt = undefined;
     } finally {
-      ui.branchesLoading = false;
+      if (requestId === readGeneration.get(`${workspaceId}:branches`)) ui.branchesLoading = false;
     }
   }
 
@@ -846,7 +902,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const roots: string[] = ws?.gitRoots?.length ? ws.gitRoots : [ws?.cwd].filter(Boolean);
     for (const rootPath of roots) {
       await runGitAction(workspaceId, `bulk-fetch:${rootPath}`, () =>
-        (_api as Transport & { gitFetch: (p: unknown) => Promise<unknown> }).gitFetch!({ workspaceId, rootPath }),
+        (_api as Transport & { gitFetch: (p: unknown) => Promise<unknown> }).gitFetch!({
+          workspaceId,
+          rootPath,
+          idempotencyKey: newGitIdempotencyKey(),
+        }),
       );
     }
   }
@@ -865,7 +925,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
       const snap = entry?.roots?.[rootPath] || (entry?.rootPath === rootPath ? entry : null);
       if (snap?.dirty) continue;
       await runGitAction(workspaceId, `bulk-pull:${rootPath}`, () =>
-        (_api as Transport & { gitPull: (p: unknown) => Promise<unknown> }).gitPull!({ workspaceId, rootPath }),
+        (_api as Transport & { gitPull: (p: unknown) => Promise<unknown> }).gitPull!({
+          workspaceId,
+          rootPath,
+          idempotencyKey: newGitIdempotencyKey(),
+        }),
       );
     }
   }
@@ -1287,8 +1351,26 @@ export const useGitUiStore = defineStore("git-ui", () => {
     if (!hash) return;
     const ui = ensure(workspaceId);
     ui.selectedCommit = hash;
-    await loadDiffPreview(ui, "commitDiffPreview", { hash }, "Loading...", "Failed to load commit diff.", () =>
-      (_api as Transport & { gitCommitDiff: (p: unknown) => Promise<unknown> }).gitCommitDiff!({ workspaceId, hash }),
+    const rootPath = getActiveRoot(workspaceId);
+    const requestKey = `${workspaceId}:commit-diff`;
+    const requestId = nextReadGeneration(requestKey);
+    await loadDiffPreview(
+      ui,
+      requestId,
+      "commitDiffPreview",
+      { hash },
+      "Loading...",
+      "Failed to load commit diff.",
+      () =>
+        requestId === readGeneration.get(requestKey) &&
+        getActiveRoot(workspaceId) === rootPath &&
+        ui.selectedCommit === hash,
+      () =>
+        (_api as Transport & { gitCommitDiff: (p: unknown) => Promise<unknown> }).gitCommitDiff!({
+          workspaceId,
+          hash,
+          rootPath,
+        }),
     );
   }
 
@@ -1300,12 +1382,20 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const snapshot = appStore.getGitSnapshot(workspaceId, rootPath) as GitSnapshot | null;
     const ui = ensure(workspaceId);
     ui.selectedDiff = { path, scope };
+    const requestKey = `${workspaceId}:working-diff`;
+    const requestId = nextReadGeneration(requestKey);
     await loadDiffPreview(
       ui,
+      requestId,
       "diffPreview",
       { path, scope },
       "Loading diff preview...",
       "Diff preview failed to load.",
+      () =>
+        requestId === readGeneration.get(requestKey) &&
+        getActiveRoot(workspaceId) === rootPath &&
+        ui.selectedDiff?.path === path &&
+        ui.selectedDiff?.scope === scope,
       () =>
         (_api as Transport & { gitDiffPreview: (p: unknown) => Promise<unknown> }).gitDiffPreview!({
           workspaceId,
@@ -1467,17 +1557,20 @@ export const useGitUiStore = defineStore("git-ui", () => {
   async function gitListTags(workspaceId: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
     const ui = ensure(workspaceId);
+    const requestId = nextReadGeneration(`${workspaceId}:tags`);
     ui.tagsLoading = true;
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const result = (await (_api as CallableTransport).gitListTags({ workspaceId, rootPath })) as any;
+      if (requestId !== readGeneration.get(`${workspaceId}:tags`) || getActiveRoot(workspaceId) !== rootPath) return;
       ui.tags = result?.tags || [];
       ui.tagsError = result?.ok === false ? result.summary : "";
     } catch (error) {
+      if (requestId !== readGeneration.get(`${workspaceId}:tags`) || getActiveRoot(workspaceId) !== rootPath) return;
       ui.tags = [];
       ui.tagsError = (error as Error)?.message || "Failed to load tags.";
     } finally {
-      ui.tagsLoading = false;
+      if (requestId === readGeneration.get(`${workspaceId}:tags`)) ui.tagsLoading = false;
     }
   }
 
@@ -1572,6 +1665,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     ) {
       return;
     }
+    const requestId = nextReadGeneration(`${workspaceId}:base-comparison`);
     ui.baseComparisonKey = cacheKey;
     ui.baseComparisonLoading = true;
     try {
@@ -1583,6 +1677,12 @@ export const useGitUiStore = defineStore("git-ui", () => {
         behindCount?: number;
         error?: string;
       } | null;
+      if (
+        requestId !== readGeneration.get(`${workspaceId}:base-comparison`) ||
+        getActiveRoot(workspaceId) !== rootPath ||
+        ui.baseComparisonKey !== cacheKey
+      )
+        return;
       if (!result || !result.ok) {
         ui.baseComparison = {
           baseBranch,
@@ -1600,6 +1700,12 @@ export const useGitUiStore = defineStore("git-ui", () => {
         };
       }
     } catch (error) {
+      if (
+        requestId !== readGeneration.get(`${workspaceId}:base-comparison`) ||
+        getActiveRoot(workspaceId) !== rootPath ||
+        ui.baseComparisonKey !== cacheKey
+      )
+        return;
       ui.baseComparison = {
         baseBranch,
         aheadCount: 0,
@@ -1608,8 +1714,10 @@ export const useGitUiStore = defineStore("git-ui", () => {
         error: (error as Error)?.message || "Failed to compare",
       };
     } finally {
-      ui.baseComparisonLoading = false;
-      ui.baseComparisonFetchedAt = Date.now();
+      if (requestId === readGeneration.get(`${workspaceId}:base-comparison`)) {
+        ui.baseComparisonLoading = false;
+        ui.baseComparisonFetchedAt = Date.now();
+      }
     }
   }
 
@@ -1723,12 +1831,19 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const resolvedBase = baseBranch || snapshot?.baseBranch || snapshot?.compareWithBase?.baseBranch || "";
     const ui = ensure(workspaceId);
     ui.reviewSelectedFile = filePath;
+    const requestKey = `${workspaceId}:review-file-diff`;
+    const requestId = nextReadGeneration(requestKey);
     await loadDiffPreview(
       ui,
+      requestId,
       "reviewFileDiffPreview",
       { path: filePath },
       "Loading diff preview...",
       "Diff preview failed to load.",
+      () =>
+        requestId === readGeneration.get(requestKey) &&
+        getActiveRoot(workspaceId) === rootPath &&
+        ui.reviewSelectedFile === filePath,
       () =>
         (_api as Transport & { gitDiffPreview: (p: unknown) => Promise<unknown> }).gitDiffPreview!({
           workspaceId,
@@ -1930,7 +2045,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   async function pullRoot(workspaceId: string, rootPath: string): Promise<void> {
     await runGitAction(workspaceId, `pull:${rootPath}`, () =>
-      (_api as Transport & { gitPull: (p: unknown) => Promise<unknown> }).gitPull!({ workspaceId, rootPath }),
+      (_api as Transport & { gitPull: (p: unknown) => Promise<unknown> }).gitPull!({
+        workspaceId,
+        rootPath,
+        idempotencyKey: newGitIdempotencyKey(),
+      }),
     );
   }
 
@@ -1944,6 +2063,8 @@ export const useGitUiStore = defineStore("git-ui", () => {
   return {
     // Read accessor
     get,
+    getStagedCommitMessage,
+    setStagedCommitMessage,
     cleanup,
     init,
     // Active root management

@@ -156,6 +156,12 @@ describe("ipc-schemas", () => {
     test("throws on null payload", () => {
       expect(() => validateIpc(gitPayloadSchema, null, "test")).toThrow();
     });
+
+    test("validates optional long Git idempotency keys", () => {
+      expect(gitPayloadSchema.safeParse({ workspaceId: "ws-1", idempotencyKey: "client-op-1" }).success).toBe(true);
+      expect(gitPayloadSchema.safeParse({ workspaceId: "ws-1", idempotencyKey: "" }).success).toBe(false);
+      expect(gitPayloadSchema.safeParse({ workspaceId: "ws-1", idempotencyKey: "x".repeat(201) }).success).toBe(false);
+    });
   });
 
   describe("accountSignInStartSchema", () => {
