@@ -1033,6 +1033,7 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Rechecked `runWriteAction` diagnostics and found failed `execGit` actions omitted duration even though successful actions included it. Failure audit records now include elapsed milliseconds. The cherry-pick success/failure audit test verifies both entries have a nonnegative duration.
 - Focused cherry-pick case passes; full GitManager suite passes (188 passed / 2 skipped); repository typecheck passes; touched-file ESLint reports 0 errors / 137 existing warnings; Prettier and `git diff --check` pass. Requirements 47/51/77 remain partial for inventory-wide route and uncertain synchronous-write recovery; WORK_LOCK remains.
+- OperationRegistry now applies the shared logger credential redactor before persisting and emitting rejected-operation message, warning, and raw-output diagnostics. Regression verifies known token and bearer shapes do not appear in the durable outcome or finish event. `npm run test:backend -- electron/backend/operation-registry.test.ts` passes (11 tests); touched-file Prettier, ESLint (0 errors), and `git diff --check` pass. Requirement 51's generic diagnostic redaction gap is closed; route-by-route classification, blocked/cancelled/partial distinctions, inventory-wide audit mapping, and the user visual review remain open. WORK_LOCK remains.
 
 ## Worker continuation (uncertain index/commit response recovery)
 

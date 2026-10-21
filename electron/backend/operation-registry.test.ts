@@ -127,6 +127,26 @@ describe("operation registry", () => {
     );
   });
 
+  test("redacts credentials from persisted rejected-operation diagnostics", async () => {
+    const registry = create();
+    const { record } = await registry.accept(input(), async () => {
+      throw Object.assign(new Error("request failed at https://example.test/?access_token=super-secret-token"), {
+        code: "git_operation_failed",
+        warnings: ["Authorization: Bearer abcdefghijklmnopqrstuvwxyz-secret"],
+        rawOutput: "remote returned https://example.test/?auth=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.signature",
+      });
+    });
+    await settle(registry, record.operationId);
+
+    const outcome = registry.get(record.operationId, "default")!;
+    expect(outcome.error?.message).toContain("access_token=[REDACTED]");
+    expect(outcome.error?.message).not.toContain("super-secret-token");
+    expect(outcome.error?.warnings?.[0]).toContain("Bearer [REDACTED]");
+    expect(outcome.error?.rawOutput).toContain("auth=[REDACTED]");
+    expect(JSON.stringify(outcome)).not.toContain("abcdefghijklmnopqrstuvwxyz-secret");
+    expect(JSON.stringify(events)).not.toContain("super-secret-token");
+  });
+
   test("the same key and input is one operation, even when the requests race; another input conflicts", async () => {
     const registry = create();
     const runner = vi.fn(async () => ({}));

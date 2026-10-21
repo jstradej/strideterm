@@ -2,7 +2,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import type { Logger } from "./logger.js";
+import { redactSecrets, type Logger } from "./logger.js";
 import { writeFileAtomic } from "./shared/fs-durable.js";
 import { INTERNAL_MCP_ERROR_CODES } from "../shared/internal-mcp.js";
 import {
@@ -122,20 +122,23 @@ const STABLE_ERROR_CODES: ReadonlySet<string> = new Set(INTERNAL_MCP_ERROR_CODES
 function errorOf(err: unknown): OperationError {
   const details = err as { code?: unknown; warnings?: unknown; conflicts?: unknown; rawOutput?: unknown };
   const code = typeof details?.code === "string" ? details.code : "";
-  const message = err instanceof Error ? err.message : String(err);
+  // Operation errors are persisted and replayed to a different client after
+  // reconnect. Apply the same credential redaction used by the log formatter
+  // before any of these strings enter that durable record.
+  const message = redactSecrets(err instanceof Error ? err.message : String(err));
   const warnings = Array.isArray(details?.warnings)
     ? details.warnings
         .map(String)
-        .map((value) => value.slice(0, 1000))
+        .map((value) => redactSecrets(value).slice(0, 1000))
         .slice(0, 20)
     : undefined;
   const conflicts = Array.isArray(details?.conflicts)
     ? details.conflicts
         .map(String)
-        .map((value) => value.slice(0, 1000))
+        .map((value) => redactSecrets(value).slice(0, 1000))
         .slice(0, 100)
     : undefined;
-  const rawOutput = typeof details?.rawOutput === "string" ? details.rawOutput.slice(-6000) : undefined;
+  const rawOutput = typeof details?.rawOutput === "string" ? redactSecrets(details.rawOutput).slice(-6000) : undefined;
   return {
     code: STABLE_ERROR_CODES.has(code) ? code : code === "git_operation_failed" ? code : "internal_error",
     message: message.slice(0, 6000),

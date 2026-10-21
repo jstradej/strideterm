@@ -160,3 +160,4 @@
 - [x] Cover synchronous merge-into-base in the runtime one-dispatch/resolved-root matrix; focused runtime case passes.
 - [x] Cover worktree removal in the runtime one-dispatch/resolved-root matrix; focused runtime case passes.
 - [x] Assert create-worktree audit duration on both successful creation and Git failure routes.
+- [x] Redact credential-shaped values from durable generic long-operation error messages, warnings, and raw output; operation registry regression and focused style checks pass.
