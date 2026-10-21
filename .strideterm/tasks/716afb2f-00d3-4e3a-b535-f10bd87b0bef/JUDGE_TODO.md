@@ -363,7 +363,8 @@ Full per-requirement ledger (122 items)
 89. **PARTIAL** — Acceptance: process/ok:false/auth/hook/stale/disconnect failures have visible result+diagnostics and retain draft.
    Evidence: src/stores/git-ui.ts:481,506; src/components/workspace/git/GitChangesTab.vue:572,590,605; electron/backend/git-manager.test.ts:4030.
    Evidence: `GitChangesTab.test.ts` now verifies a failed staged commit preserves its root-scoped draft; store/network failure tests verify structured errors reach the action banner and notification path.
-   Remaining: Explicit disconnect and failing pre-push-hook UI retention scenarios still need lifecycle coverage and user visual acceptance.
+   Evidence: `git-ui.test.ts` now verifies fetch/pull/push failure outcomes retain structured warnings and raw output, including a rejected pre-push hook. `GitOperationCard.test.ts` verifies streamed hook output while busy and warning/raw failure details after completion.
+   Remaining: Explicit disconnect-through-pending-action lifecycle coverage and user visual acceptance remain open.
 
 90. **IMPLEMENTED** — Acceptance: real temporary-repo manager tests verify successful and failed audited writes, plus normal and strict review audit sink failures.
    Evidence: electron/backend/git-manager.test.ts:3944,3960,1103,1840; electron/backend/review-git/engine.test.ts:388,398.
@@ -772,3 +773,7 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 - Added a `test.each` component regression covering all More destinations exposed by current repository state: Overview, Branches, Stashes, Pull Request, Worktrees, Bulk (multi-root only), and Conflicts (only while conflicts exist). Changes remains a primary view and is intentionally absent from More. This adds automated evidence for requirements 72, 94, and TODO inventory routing.
 - `npm run test:ui -- src/components/workspace/GitPane.test.ts`: PASS, 29 tests. `npm run typecheck`: PASS. Prettier and `git diff --check`: PASS. Focused ESLint: 0 errors / 3 pre-existing warnings.
 - `WORK_LOCK` stays because visual acceptance, full shortcut/menu inventory, and end-to-end reconnect work remain open.
+
+## Worker continuation (pre-push diagnostics UI regression)
+
+- Focused GitOperationCard and git-ui suites pass 59 tests. Repository typecheck and touched-file Prettier pass; ESLint reports 0 errors and 15 existing warnings in git-ui.test.ts. `git diff --check` passes. Hook diagnostics reach the operation card; pending disconnect-through-action, broad route/menu audit, and user-owned `MANUAL_VERIFICATION.md` walkthrough remain open, so WORK_LOCK stays.
