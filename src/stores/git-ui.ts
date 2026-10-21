@@ -334,6 +334,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
   // flip the other's view. Durable git data (snapshots, branches, repo
   // state) stays workspace-owned in the backend payload.
   const state = ref<Record<string, GitUiState>>({});
+  const gitHistoryPreferences = ref<Record<string, { favorites: string[]; recent: string[] }>>({});
   const readGeneration = new Map<string, number>();
   function nextReadGeneration(key: string): number {
     const next = (readGeneration.get(key) || 0) + 1;
@@ -1497,18 +1498,24 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   function getGitHistoryPreferences(workspaceId: string, rootPath = getActiveRoot(workspaceId), profileId = "default") {
     const key = gitHistoryPreferencesKey(workspaceId, rootPath, profileId);
+    const cached = gitHistoryPreferences.value[key];
+    if (cached) return { favorites: [...cached.favorites], recent: [...cached.recent] };
     try {
       const stored = JSON.parse(globalThis.localStorage?.getItem(key) || "null");
       if (stored && Array.isArray(stored.favorites) && Array.isArray(stored.recent)) {
-        return {
+        const preferences = {
           favorites: stored.favorites.filter((ref: unknown) => typeof ref === "string").slice(0, 100),
           recent: stored.recent.filter((ref: unknown) => typeof ref === "string").slice(0, 20),
         };
+        gitHistoryPreferences.value = { ...gitHistoryPreferences.value, [key]: preferences };
+        return { favorites: [...preferences.favorites], recent: [...preferences.recent] };
       }
     } catch {
       // Storage is optional; refs remain usable if the browser blocks it.
     }
-    return { favorites: [] as string[], recent: [] as string[] };
+    const empty = { favorites: [] as string[], recent: [] as string[] };
+    gitHistoryPreferences.value = { ...gitHistoryPreferences.value, [key]: empty };
+    return { favorites: [], recent: [] };
   }
 
   function updateGitHistoryPreferences(
@@ -1519,11 +1526,10 @@ export const useGitUiStore = defineStore("git-ui", () => {
   ): void {
     const key = gitHistoryPreferencesKey(workspaceId, rootPath, profileId);
     const next = update(getGitHistoryPreferences(workspaceId, rootPath, profileId));
+    const preferences = { favorites: next.favorites.slice(0, 100), recent: next.recent.slice(0, 20) };
+    gitHistoryPreferences.value = { ...gitHistoryPreferences.value, [key]: preferences };
     try {
-      globalThis.localStorage?.setItem(
-        key,
-        JSON.stringify({ favorites: next.favorites.slice(0, 100), recent: next.recent.slice(0, 20) }),
-      );
+      globalThis.localStorage?.setItem(key, JSON.stringify(preferences));
     } catch {
       rlog("warn", "[git-ui] failed to persist history references", { workspaceId, profileId });
     }

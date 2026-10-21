@@ -1,4 +1,5 @@
 import { describe, expect, test, beforeEach, vi } from "vitest";
+import { computed, nextTick } from "vue";
 import { setActivePinia, createPinia } from "pinia";
 import { useGitUiStore } from "./git-ui.js";
 import { useNotificationStore } from "./notifications.js";
@@ -82,6 +83,21 @@ describe("git-ui store", () => {
     requests[0]({ ok: true, head: "old", commits: [{ hash: "old" }], refs: {} });
     await first;
     expect(store.get("ws1").graph?.head).toBe("new");
+  });
+
+  test("updates favorites and recent refs reactively without rereading storage", async () => {
+    const store = useGitUiStore();
+    const preferences = computed(() => store.getGitHistoryPreferences("ws-history", "/repo", "profile-a"));
+
+    expect(preferences.value).toEqual({ favorites: [], recent: [] });
+    store.toggleGitHistoryFavorite("ws-history", "feature/topic", "/repo", "profile-a");
+    store.recordGitHistoryRef("ws-history", "feature/topic", "/repo", "profile-a");
+    await nextTick();
+
+    expect(preferences.value).toEqual({ favorites: ["feature/topic"], recent: ["feature/topic"] });
+    store.toggleGitHistoryFavorite("ws-history", "feature/topic", "/repo", "profile-a");
+    await nextTick();
+    expect(preferences.value.favorites).toEqual([]);
   });
 
   test("ignores stale branch and tag reads after the repository root changes", async () => {
