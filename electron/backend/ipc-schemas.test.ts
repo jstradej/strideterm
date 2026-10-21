@@ -3,6 +3,7 @@ import {
   validateIpc,
   workspaceSchema,
   reviewBridgeQueueSchema,
+  reviewGitStartSchema,
   workspaceIdSchema,
   workspaceDeleteOptionsSchema,
   azureCommentSchema,
@@ -41,6 +42,16 @@ import {
 } from "./ipc-schemas.js";
 
 describe("ipc-schemas", () => {
+  test("review Git operation starts accept an optional bounded idempotency key", () => {
+    expect(reviewGitStartSchema.safeParse({ kind: "push", workspaceId: "ws-1" }).success).toBe(true);
+    expect(
+      reviewGitStartSchema.safeParse({ kind: "push", workspaceId: "ws-1", idempotencyKey: "retry-key-123" }).success,
+    ).toBe(true);
+    expect(reviewGitStartSchema.safeParse({ kind: "push", workspaceId: "ws-1", idempotencyKey: "short" }).success).toBe(
+      false,
+    );
+  });
+
   test("validates stage-file paths and non-empty commit-staged messages", () => {
     expect(validateIpc(gitStageFileSchema, { workspaceId: "ws", path: "src/a.ts" }, "git:stage-file")).toMatchObject({
       workspaceId: "ws",

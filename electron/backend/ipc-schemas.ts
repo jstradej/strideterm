@@ -257,6 +257,7 @@ export const reviewGitStartSchema = z
   .object({
     kind: reviewGitOperationKindSchema,
     workspaceId: nonEmptyString,
+    idempotencyKey: z.string().trim().min(8).max(100).optional(),
     confirmation: reviewGitConfirmationSchema.optional(),
   })
   .strict();

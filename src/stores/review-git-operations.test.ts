@@ -69,7 +69,11 @@ describe("run", () => {
     const { ops, startReviewGitOperation } = setup();
     const pending = ops.run("push", "ws-1");
     await vi.waitFor(() => expect(startReviewGitOperation).toHaveBeenCalled());
-    expect(startReviewGitOperation).toHaveBeenCalledWith({ kind: "push", workspaceId: "ws-1" });
+    expect(startReviewGitOperation).toHaveBeenCalledWith({
+      kind: "push",
+      workspaceId: "ws-1",
+      idempotencyKey: expect.any(String),
+    });
 
     ops.reportOperation(event());
 
@@ -108,6 +112,20 @@ describe("run", () => {
     startReviewGitOperation.mockRejectedValueOnce(new Error("Cross-profile refused"));
     await expect(ops.run("refresh", "ws-1")).rejects.toThrow("Cross-profile refused");
   });
+
+  it("reuses the same idempotency key when retrying a start whose response was lost", async () => {
+    const { ops, startReviewGitOperation } = setup();
+    startReviewGitOperation.mockRejectedValueOnce(new Error("Remote transport disconnected."));
+
+    await expect(ops.run("push", "ws-1")).rejects.toThrow("Remote transport disconnected.");
+    const lostStart = startReviewGitOperation.mock.calls[0][0];
+
+    const retry = ops.run("push", "ws-1");
+    await vi.waitFor(() => expect(startReviewGitOperation).toHaveBeenCalledTimes(2));
+    expect(startReviewGitOperation.mock.calls[1][0]).toEqual(lostStart);
+    ops.reportOperation(event());
+    await expect(retry).resolves.toMatchObject({ status: "pushed" });
+  });
 });
 
 describe("consent", () => {
@@ -142,11 +160,15 @@ describe("consent", () => {
     });
     expect(dialog.message).toContain("aaaaaaaa my local commit");
     expect(dialog.message).toContain("bbbbbbbb rewritten");
-    expect(startReviewGitOperation).toHaveBeenNthCalledWith(1, { kind: "refresh", workspaceId: "ws-1" });
+    expect(startReviewGitOperation).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ kind: "refresh", workspaceId: "ws-1", idempotencyKey: expect.any(String) }),
+    );
     // The continuation names the proposal AND hands back the facts the user was shown.
     expect(startReviewGitOperation).toHaveBeenNthCalledWith(2, {
       kind: "refresh",
       workspaceId: "ws-1",
+      idempotencyKey: expect.any(String),
       confirmation: {
         proposalId: "prop-1",
         facts: { headSha: "a".repeat(40), liveSha: "b".repeat(40), baselineSha: null },
@@ -211,11 +233,15 @@ describe("consent", () => {
     expect(startReviewGitOperation).toHaveBeenNthCalledWith(2, {
       kind: "push-and-publish",
       workspaceId: "ws-1",
+      idempotencyKey: expect.any(String),
       confirmation: {
         proposalId: "prop-9",
         facts: { headSha: "a".repeat(40), liveSha: "b".repeat(40), baselineSha: null },
       },
     });
+    expect(startReviewGitOperation.mock.calls[0][0].idempotencyKey).not.toBe(
+      startReviewGitOperation.mock.calls[1][0].idempotencyKey,
+    );
     expect(outcome.publish.published).toEqual(["c1"]);
   });
 
