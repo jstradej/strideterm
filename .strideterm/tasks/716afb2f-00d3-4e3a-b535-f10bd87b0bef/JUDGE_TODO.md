@@ -396,7 +396,8 @@ Full per-requirement ledger (122 items)
    Evidence: `runtime.test.ts` asserts one resolved-root manager dispatch for index/local-tag plus branch, commit-history and stash mutation routes; `git-manager.test.ts` verifies exact audit rows for index/tag and stash mutations. Existing `runGitAction` tests and the action inventory map visible UI routes to the store/runtime path.
    Evidence: Worktree remove now has a single audit-row assertion in the fast-path manager regression.
    Evidence: Runtime worktree creation success/failure and manager worktree removal audit paths are now covered; focused runtime worktree cases pass (3).
-   Remaining: Provider mutation route/audit assertions and individual menu/shortcut mapping remain.
+   Evidence: Provider manager tests assert GitHub conversation comments and Azure comment/vote requests each produce exactly one classified successful user-initiated write audit entry.
+   Remaining: Complete individual menu/shortcut mapping and audit other provider mutation families (review submission, PR creation, thread updates); visual acceptance remains open.
 
 92. **PARTIAL** — Acceptance: controlled slow backend proves start before relay timeout, reconnect outcome, dedup and profile isolation, without timeout increase.
    Evidence: Gated OperationRegistry tests cover prompt fetch/rebase acceptance, dedup, tag/force-push/remote-delete, and profile/workspace isolation; store tests verify event plus payload completion for fetch/pull/push, one notification per failure, and pull recovery from persisted outcomes.

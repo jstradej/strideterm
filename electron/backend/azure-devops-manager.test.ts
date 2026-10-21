@@ -225,6 +225,7 @@ function createFetchStub() {
 function createManager({
   trackedPullRequests = {},
   secrets = { "cred:ado-main": "pat-123" },
+  auditLogStore = null as { logEntry(entry: Record<string, unknown>): void } | null,
   execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" }),
   reviewBridgeStore = {
     syncPullRequest: vi.fn(),
@@ -242,6 +243,7 @@ function createManager({
     reviewBridgeStore: reviewBridgeStore as any,
     fetchImpl: fetchImpl as unknown as typeof fetch,
     execFileTextImpl,
+    auditLogStore,
     now: () => new Date("2026-03-17T10:00:00.000Z").getTime(),
   });
   manager.supportsGitConfigEnv = async () => true;
@@ -902,7 +904,8 @@ describe("AzureDevOpsManager", () => {
   });
 
   test("sends comment and vote requests", async () => {
-    const { manager, fetchImpl } = createManager();
+    const auditEntries: Record<string, unknown>[] = [];
+    const { manager, fetchImpl } = createManager({ auditLogStore: { logEntry: (entry) => auditEntries.push(entry) } });
     await manager.sync({
       connections: [connection],
       workspaces: [],
@@ -941,6 +944,20 @@ describe("AzureDevOpsManager", () => {
         ([url, options]) => String(url).includes("/reviewers/reviewer-1") && options.method === "PUT",
       ),
     ).toBe(true);
+    expect(auditEntries.filter((entry) => entry.category === "write")).toMatchObject([
+      {
+        operation: "createThread",
+        connectionId: "ado-main",
+        success: true,
+        userInitiated: true,
+      },
+      {
+        operation: "setVote",
+        connectionId: "ado-main",
+        success: true,
+        userInitiated: true,
+      },
+    ]);
   });
 
   test.each([

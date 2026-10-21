@@ -146,11 +146,13 @@ function createManager({
   secrets = { "cred:gh-main": "ghp-token" },
   trackedPullRequests = {},
   fetchOverrides = {},
+  auditLogStore,
   now = () => new Date("2026-03-17T10:00:00.000Z").getTime(),
 }: {
   secrets?: Record<string, string>;
   trackedPullRequests?: Record<string, unknown>;
   fetchOverrides?: Parameters<typeof createFetchStub>[0];
+  auditLogStore?: { logEntry(entry: Record<string, unknown>): void };
   now?: () => number;
 } = {}) {
   const reviewStore = createReviewStore({ trackedPullRequests });
@@ -162,6 +164,7 @@ function createManager({
     reviewStore: reviewStore as any,
     fetchImpl: fetchImpl as unknown as typeof fetch,
     execFileTextImpl: vi.fn().mockResolvedValue({ stdout: "", stderr: "" }),
+    auditLogStore,
     now,
   });
   manager.supportsGitConfigEnv = async () => true;
@@ -408,6 +411,28 @@ describe("GitHubManager addPullRequestComment", () => {
     await manager.addPullRequestComment({ prKey, body: "Fixed.", threadId: 777, filePath: "src/parser.ts" });
     expect(posts()).toEqual([
       { url: "https://api.github.com/repos/acme/web/pulls/42/comments/777/replies", body: { body: "Fixed." } },
+    ]);
+  });
+
+  test("audits one successful provider write for a PR conversation comment", async () => {
+    const entries: Record<string, unknown>[] = [];
+    const prKey = createPullRequestKey("gh-main", "acme", "web", 42);
+    const pr = defaultPr("acme", "web", 42);
+    const { manager } = createManager({
+      auditLogStore: { logEntry: (entry) => entries.push(entry) },
+      fetchOverrides: { searchItems: [searchItem("acme", "web", 42)], prsByNumber: { 42: pr } },
+    });
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+
+    await manager.addPullRequestComment({ prKey, body: "One audited comment." });
+
+    expect(entries.filter((entry) => entry.category === "write")).toMatchObject([
+      {
+        operation: "createIssueComment",
+        connectionId: "gh-main",
+        success: true,
+        userInitiated: true,
+      },
     ]);
   });
 
