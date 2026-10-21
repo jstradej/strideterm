@@ -468,6 +468,41 @@ describe("GitHubManager addPullRequestComment", () => {
     ]);
   });
 
+  test("audits inline review comments and thread replies as separate provider writes", async () => {
+    const entries: Record<string, unknown>[] = [];
+    const prKey = createPullRequestKey("gh-main", "acme", "web", 42);
+    const pr = defaultPr("acme", "web", 42, { head: { sha: "sha-42", ref: "feature" } });
+    const { manager } = createManager({
+      auditLogStore: { logEntry: (entry) => entries.push(entry) },
+      fetchOverrides: { searchItems: [searchItem("acme", "web", 42)], prsByNumber: { 42: pr } },
+    });
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+
+    await manager.addPullRequestComment({ prKey, body: "Inline note.", filePath: "src/parser.ts", lineNumber: 12 });
+    await manager.addPullRequestComment({
+      prKey,
+      body: "Reply to thread.",
+      threadId: 777,
+      filePath: "src/parser.ts",
+    });
+
+    expect(entries.filter((entry) => entry.category === "write")).toMatchObject([
+      {
+        operation: "createReviewComment",
+        connectionId: "gh-main",
+        success: true,
+        userInitiated: true,
+      },
+      {
+        operation: "createReviewComment",
+        connectionId: "gh-main",
+        success: true,
+        userInitiated: true,
+      },
+    ]);
+    expect(entries.filter((entry) => entry.category === "write")).toHaveLength(2);
+  });
+
   test("audits one successful submitted PR review", async () => {
     const entries: Record<string, unknown>[] = [];
     const prKey = createPullRequestKey("gh-main", "acme", "web", 42);
