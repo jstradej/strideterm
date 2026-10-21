@@ -245,7 +245,12 @@ describe("git-ui store", () => {
         workspaceId: "ws1",
         rootPath: "/repo/a",
         finishedAt: new Date().toISOString(),
-        result: { ok: false, summary: `${action} failed after acceptance` },
+        result: {
+          ok: false,
+          summary: `${action} failed after acceptance`,
+          warnings: ["Pre-push hook rejected the update."],
+          rawOutput: "pre-push hook: typecheck failed",
+        },
       };
       appStoreMock.payload = { operations: { lastResults: [outcome] } };
       finish(outcome);
@@ -255,6 +260,8 @@ describe("git-ui store", () => {
       expect(store.get("ws1").lastResult).toMatchObject({
         ok: false,
         summary: `${action} failed after acceptance`,
+        warnings: ["Pre-push hook rejected the update."],
+        rawOutput: "pre-push hook: typecheck failed",
       });
       expect(useNotificationStore().items.filter((toast) => toast.title === "Git action failed")).toHaveLength(
         priorFailureCount + 1,
