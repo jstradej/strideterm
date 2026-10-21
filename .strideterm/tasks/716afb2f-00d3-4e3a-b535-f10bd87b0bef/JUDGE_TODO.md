@@ -760,3 +760,9 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 - Added a runtime integration regression calling the stage-file, unstage-file, and commit-staged handlers. It asserts each manager mutation is invoked exactly once with the workspace and validated root. This adds route-boundary evidence to requirement 91; the GitManager real-repository audit test still proves the audit entry behavior at the manager boundary.
 - Focused runtime test: 1 passed / 519 skipped. Repository `npm run typecheck`: PASS. Touched-file Prettier: PASS; ESLint: 0 errors / 130 existing warnings; `git diff --check`: PASS.
 - Full menu/shortcut mapping, renderer reconnect end-to-end, and manual visual acceptance remain open, so keep `WORK_LOCK`.
+
+## Worker continuation (Settings toggle and unsaved Review editor)
+
+- Added a GitPane integration regression that mounts the actual `SettingsGitTab` checkbox and app-level `DialogOverlay`, edits an unsaved TextAreaDialog comment, applies the off/on setting transitions to the saved settings snapshot, and confirms the editor remains open with its text after both transitions. This closes the automated portion of requirement 84; duplicate subscription/mutation checks and visual confirmation remain manual.
+- `npm run test:ui -- src/components/workspace/GitPane.test.ts`: PASS, 22 tests. `npm run typecheck`: PASS. Prettier and `git diff --check`: PASS. Focused ESLint: 0 errors / 2 pre-existing warnings.
+- `WORK_LOCK` remains because the user visual walkthrough and broader menu/shortcut and reconnect audit are still open.
