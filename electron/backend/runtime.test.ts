@@ -15033,6 +15033,12 @@ describe("workspace lastWorkedAt — the work allowlist", () => {
     });
     expect("error" in outcome).toBe(true);
     if ("error" in outcome) {
+      expect(outcome.error).toMatchObject({
+        code: "git_operation_failed",
+        warnings: ["Saved local changes were restored."],
+        conflicts: ["src/conflicted.ts"],
+        rawOutput: "pre-pull check: generated client is out of date",
+      });
       expect(outcome.error.message).toContain("pre-pull check: generated client is out of date");
       expect(outcome.error.message).toContain("Saved local changes were restored.");
       expect(outcome.error.message).toContain("src/conflicted.ts");

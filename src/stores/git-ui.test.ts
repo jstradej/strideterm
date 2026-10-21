@@ -268,6 +268,45 @@ describe("git-ui store", () => {
       );
     });
 
+    test("retains diagnostics from a failed long-operation error", async () => {
+      let finish!: (outcome: OperationFinished) => void;
+      const onOperationFinished = vi.fn((handler: (outcome: OperationFinished) => void) => {
+        finish = handler;
+      });
+      const store = useGitUiStore();
+      store.init({
+        gitPull: vi.fn().mockResolvedValue({ started: true, operationId: "op-pull-diagnostics" }),
+        onOperationFinished,
+      } as unknown as Transport);
+      store.setActiveRoot("ws1", "/repo/a");
+      appStoreMock.payload = { operations: { lastResults: [] } };
+      const pending = store.gitPull("ws1");
+      await vi.waitFor(() => expect(store.get("ws1").busyAction).toBe("pull"));
+      finish({
+        operationId: "op-pull-diagnostics",
+        kind: "git.pull",
+        profileId: "profile-a",
+        workspaceId: "ws1",
+        rootPath: "/repo/a",
+        finishedAt: new Date().toISOString(),
+        error: {
+          code: "git_operation_failed",
+          message: "Pull failed.",
+          warnings: ["Local changes were restored."],
+          conflicts: ["src/conflicted.ts"],
+          rawOutput: "hook: validation failed",
+        },
+      } as OperationFinished);
+      await pending;
+      expect(store.get("ws1").lastResult).toMatchObject({
+        ok: false,
+        summary: "Pull failed.",
+        warnings: ["Local changes were restored."],
+        conflicts: ["src/conflicted.ts"],
+        rawOutput: "hook: validation failed",
+      });
+    });
+
     test("recovers a pull outcome from the persisted operation payload after a missed event", async () => {
       const request = vi.fn().mockResolvedValue({ started: true, operationId: "op-pull-replay" });
       const store = useGitUiStore();

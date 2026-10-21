@@ -47,7 +47,7 @@ export interface OperationRecord {
   /** The workspace this operation created; deleting it deletes this record. */
   workspaceId?: string;
   result?: Record<string, unknown>;
-  error?: { code: string; message: string };
+  error?: OperationError;
   createdAt: string;
   updatedAt: string;
   finishedAt?: string;
@@ -66,9 +66,17 @@ export interface OperationHandle {
 
 export type OperationRunner = (handle: OperationHandle) => Promise<Record<string, unknown>>;
 
+export interface OperationError {
+  code: string;
+  message: string;
+  warnings?: string[];
+  conflicts?: string[];
+  rawOutput?: string;
+}
+
 export type OperationOutcome =
   | { status: "succeeded"; result: Record<string, unknown>; workspaceId?: string }
-  | { status: "failed" | "interrupted"; error: { code: string; message: string }; workspaceId?: string };
+  | { status: "failed" | "interrupted"; error: OperationError; workspaceId?: string };
 
 export class OperationIdempotencyConflictError extends Error {
   readonly code = "idempotency_conflict";
@@ -111,10 +119,30 @@ function keyOf(profileId: string, originWorkspaceId: string, idempotencyKey: str
 const STABLE_ERROR_CODES: ReadonlySet<string> = new Set(INTERNAL_MCP_ERROR_CODES);
 
 // Raw errno codes (EPERM, ENOENT, ...) are not part of the contract an agent can act on.
-function errorOf(err: unknown): { code: string; message: string } {
-  const code = typeof (err as { code?: unknown })?.code === "string" ? (err as { code: string }).code : "";
+function errorOf(err: unknown): OperationError {
+  const details = err as { code?: unknown; warnings?: unknown; conflicts?: unknown; rawOutput?: unknown };
+  const code = typeof details?.code === "string" ? details.code : "";
   const message = err instanceof Error ? err.message : String(err);
-  return { code: STABLE_ERROR_CODES.has(code) ? code : "internal_error", message };
+  const warnings = Array.isArray(details?.warnings)
+    ? details.warnings
+        .map(String)
+        .map((value) => value.slice(0, 1000))
+        .slice(0, 20)
+    : undefined;
+  const conflicts = Array.isArray(details?.conflicts)
+    ? details.conflicts
+        .map(String)
+        .map((value) => value.slice(0, 1000))
+        .slice(0, 100)
+    : undefined;
+  const rawOutput = typeof details?.rawOutput === "string" ? details.rawOutput.slice(-6000) : undefined;
+  return {
+    code: STABLE_ERROR_CODES.has(code) ? code : code === "git_operation_failed" ? code : "internal_error",
+    message: message.slice(0, 6000),
+    ...(warnings?.length ? { warnings } : {}),
+    ...(conflicts?.length ? { conflicts } : {}),
+    ...(rawOutput ? { rawOutput } : {}),
+  };
 }
 
 function isTerminal(status: OperationStatus): boolean {

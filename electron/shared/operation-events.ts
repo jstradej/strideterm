@@ -32,7 +32,15 @@ export const operationFinishedSchema = z
     z
       .object({
         ...operationOutcomeBase,
-        error: z.object({ code: z.string().min(1), message: z.string() }).strict(),
+        error: z
+          .object({
+            code: z.string().min(1),
+            message: z.string(),
+            warnings: z.array(z.string()).optional(),
+            conflicts: z.array(z.string()).optional(),
+            rawOutput: z.string().optional(),
+          })
+          .strict(),
       })
       .strict(),
   ])

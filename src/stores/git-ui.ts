@@ -458,7 +458,15 @@ export const useGitUiStore = defineStore("git-ui", () => {
         },
       };
     }
-    return { result: { ok: false, summary: outcome.error.message } };
+    return {
+      result: {
+        ok: false,
+        summary: outcome.error.message,
+        ...(outcome.error.warnings?.length ? { warnings: outcome.error.warnings } : {}),
+        ...(outcome.error.conflicts?.length ? { conflicts: outcome.error.conflicts } : {}),
+        ...(outcome.error.rawOutput ? { rawOutput: outcome.error.rawOutput } : {}),
+      },
+    };
   }
 
   function ensure(workspaceId: string): GitUiState {

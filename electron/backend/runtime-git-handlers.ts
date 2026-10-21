@@ -99,6 +99,24 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
     return lines.join("\n\n");
   }
 
+  function gitFailure(kind: string, result: Record<string, unknown>): Error {
+    const operationState = result.operationState as { conflicts?: unknown } | undefined;
+    const conflicts = Array.isArray(operationState?.conflicts)
+      ? operationState.conflicts.map(String).filter(Boolean)
+      : Array.isArray(result.conflicts)
+        ? result.conflicts.map(String).filter(Boolean)
+        : [];
+    const warnings = Array.isArray(result.warnings) ? result.warnings.map(String).filter(Boolean) : [];
+    return Object.assign(new Error(gitFailureMessage(kind, result)), {
+      code: "git_operation_failed",
+      warnings,
+      conflicts,
+      rawOutput: String(result.rawOutput || "")
+        .trim()
+        .slice(-6000),
+    });
+  }
+
   /**
    * `runGitWorkspaceAction` for the operations the V2 plan counts as user
    * work: commit, push/pull, checkout/branch, merge/rebase/stash and their
@@ -260,7 +278,7 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
               git.fetch(workspace, { connection, rootPath }),
             );
             if (fetchResponse?.result?.ok === false) {
-              throw new Error(gitFailureMessage("fetch", fetchResponse.result));
+              throw gitFailure("fetch", fetchResponse.result);
             }
             priorWarnings = Array.isArray(fetchResponse?.result?.warnings)
               ? fetchResponse.result.warnings.map(String)
@@ -281,7 +299,7 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
                 );
         }
         if (result?.result?.ok === false) {
-          throw new Error(gitFailureMessage(kind, result.result));
+          throw gitFailure(kind, result.result);
         }
         return {
           ok: true,
