@@ -185,3 +185,4 @@
 - [x] Restore focus to the branch picker after Escape and test keyboard search/select/Escape interactions.
 - [x] Re-run the full UI suite after History filter and picker keyboard changes; 215 files / 3,104 tests pass.
 - [x] Re-run repository lint/Prettier and production build; lint has 0 errors / 4,715 warnings, formatting is clean, and build succeeds.
+- [x] Re-run current-tree verification after the latest changes: `npm run typecheck` passes; full UI passes 215 files / 3,104 tests; full backend with `--maxWorkers=4` passes 224 files / 5,502 tests (7 skipped); lint reports 0 errors / 4,715 warnings and Prettier is clean; `VITE_BUILD_WATCH=1 npm run build` succeeds; `git diff --check` passes. The user-owned visual walkthrough and remaining broad route/audit acceptance stay open.
