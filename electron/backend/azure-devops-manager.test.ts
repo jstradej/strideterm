@@ -1384,6 +1384,47 @@ describe("createPullRequestForWorkspace — cross-profile connection guard", () 
       { operation: "createPullRequest", connectionId: "ado-main", success: true, userInitiated: true },
     ]);
   });
+
+  test("audits one failed user-initiated PR creation", async () => {
+    const entries: Record<string, unknown>[] = [];
+    const { manager, fetchImpl } = createManager({ auditLogStore: { logEntry: (entry) => entries.push(entry) } });
+    manager.setSnapshot({ connections: [{ ...connection, profileId: "default" }] } as never);
+    const baseFetch = fetchImpl.getMockImplementation()!;
+    fetchImpl.mockImplementation(async (url, options) => {
+      if ((options as RequestInit | undefined)?.method === "POST") {
+        return {
+          ok: false,
+          status: 403,
+          json: async () => ({ ok: false }),
+          text: async () => JSON.stringify({ message: "Write permission denied" }),
+        };
+      }
+      return baseFetch!(url, options);
+    });
+
+    await expect(
+      manager.createPullRequestForWorkspace({
+        remoteUrl: "https://dev.azure.com/acme/Platform/_git/web-app",
+        sourceBranch: "feature/audit",
+        targetBranch: "main",
+        title: "Create PR",
+        description: "Denied creation",
+        connectionId: "ado-main",
+        workspaceProfileId: "default",
+      }),
+    ).rejects.toThrow(/403/);
+
+    expect(entries.filter((entry) => entry.category === "write")).toMatchObject([
+      {
+        operation: "createPullRequest",
+        connectionId: "ado-main",
+        success: false,
+        userInitiated: true,
+        statusCode: 403,
+      },
+    ]);
+    expect(entries.filter((entry) => entry.category === "write")).toHaveLength(1);
+  });
 });
 
 describe("AzureDevOpsManager updateThreadStatus audit", () => {

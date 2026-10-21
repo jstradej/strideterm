@@ -210,6 +210,47 @@ describe("GitHubManager createPullRequestForWorkspace audit", () => {
       { operation: "createPullRequest", connectionId: "gh-main", success: true, userInitiated: true },
     ]);
   });
+
+  test("records one failed user-initiated PR creation", async () => {
+    const entries: Record<string, unknown>[] = [];
+    const { manager, fetchImpl } = createManager({ auditLogStore: { logEntry: (entry) => entries.push(entry) } });
+    manager.setSnapshot({
+      connections: [{ ...connection, profileId: "default", tokenRef: "cred:gh-main" }],
+      pullRequests: {},
+      inbox: { needsMyReview: [], myPullRequests: [], recentlyUpdated: [], needsAttention: [] },
+    } as never);
+    const baseFetch = fetchImpl.getMockImplementation()!;
+    fetchImpl.mockImplementation(async (url, options) => {
+      if (String(url).endsWith("/pulls") && (options as RequestInit | undefined)?.method === "POST") {
+        return {
+          ok: false,
+          status: 403,
+          headers: { get: () => null },
+          json: async () => ({ message: "Write permission denied" }),
+          text: async () => JSON.stringify({ message: "Write permission denied" }),
+        };
+      }
+      return baseFetch!(url, options);
+    });
+
+    await expect(
+      manager.createPullRequestForWorkspace({
+        connectionId: "gh-main",
+        owner: "acme",
+        repo: "web",
+        sourceBranch: "feature/audit",
+        targetBranch: "main",
+        title: "Create PR",
+        description: "Denied creation",
+        workspaceProfileId: "default",
+      }),
+    ).rejects.toThrow(/403/);
+
+    expect(entries.filter((entry) => entry.category === "write")).toMatchObject([
+      { operation: "createPullRequest", connectionId: "gh-main", success: false, userInitiated: true, statusCode: 403 },
+    ]);
+    expect(entries.filter((entry) => entry.category === "write")).toHaveLength(1);
+  });
 });
 
 describe("GitHubManager authenticated identity cache", () => {
