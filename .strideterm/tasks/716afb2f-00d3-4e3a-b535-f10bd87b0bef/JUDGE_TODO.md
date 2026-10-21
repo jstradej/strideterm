@@ -73,7 +73,8 @@ Full per-requirement ledger (122 items)
 
 10. **PARTIAL** — Running operations and conflicts remain visible across views; primary conflict action is outside overflow.
    Evidence: src/components/workspace/GitPane.vue:105,108,245,348,418; src/components/workspace/git/GitBranchesTab.vue:205; src/components/workspace/git/GitOperationCard.vue:36.
-   Remaining: History and Changes component tests verify their operation cards during fetch; Review is covered in GitPane tests. Full cross-view conflict state and user visual acceptance remain open.
+   Evidence: GitPane mounted tests cover History, Changes, and Review with conflicted paths and verify the shared conflict-resolution toolbar action remains visible in every view.
+   Remaining: User visual acceptance remains open.
 
 11. **IMPLEMENTED** — Unlinked Review has an explained empty state with existing PR selection/creation entry point.
    Evidence: src/components/workspace/GitPane.vue:374,379,384,668.
@@ -162,7 +163,7 @@ Full per-requirement ledger (122 items)
 
 35. **PARTIAL** — Commit message, file selection and operation state survive view/layout switches; failure retains draft for retry.
    Evidence: src/components/workspace/git/GitChangesTab.vue:536,605,772,871; src/components/workspace/GitPane.vue:322.
-   Remaining: Classic message and selected paths are scoped and persist across view switches. Saved provider drafts and an unsaved TextAreaDialog editor survive Review unmount and actual Settings control off/on transitions. Explicit file-switch plus disconnect/hook failure retention and visual confirmation remain.
+   Remaining: Classic message and selected paths are scoped and persist across view switches. Saved provider drafts and an unsaved TextAreaDialog editor survive Review unmount, file selection changes, and actual Settings control off/on transitions. Disconnect/hook failure retention for applicable drafts and visual confirmation remain.
 
 36. **PARTIAL** — Inventory every existing button/context menu/shortcut with its store, permission, audit, results and new UI destination before decomposition.
    Evidence: .strideterm/tasks/716afb2f-00d3-4e3a-b535-f10bd87b0bef/IMPLEMENTATION_INVENTORY.md:7,11,13; src/components/workspace/GitPane.vue:649.
@@ -800,3 +801,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Extended the unsaved Review editor lifecycle regression with two changed files. It selects the second file while the TextAreaDialog is open and confirms the text remains unchanged; focused AzureReviewPane test passes. Repository typecheck, touched-file Prettier, ESLint (0 errors; 8 existing warnings), and `git diff --check` pass.
 - The user-owned visual walkthrough and broader lifecycle/reconnect/inventory audit remain open. WORK_LOCK stays present.
+
+## Worker continuation (cross-view conflict action)
+
+- Added a mounted `test.each` across the three primary views. With a conflict in the current Git snapshot, the shared “Resolve conflicts” toolbar action remains exposed in History, Changes, and Review. Three focused GitPane cases pass; repository typecheck, touched-file Prettier, ESLint (0 errors; 4 existing warnings), and `git diff --check` pass.
+- Reconciled requirement 10's cross-view conflict evidence and requirement 35's Review file-switch evidence. Manual visual verification and broader audit remain open; WORK_LOCK stays.
