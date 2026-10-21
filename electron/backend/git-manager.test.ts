@@ -3425,6 +3425,38 @@ describe("GitManager", () => {
       expect(entries.every((entry) => entry.rootPath === root)).toBe(true);
     });
 
+    test("rejects traversal paths in conflict reads and writes", async () => {
+      const entries: Record<string, unknown>[] = [];
+      const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
+      const root = await makeBothModifiedRepo();
+      const workspace = ws(root);
+      const outsidePath = path.join(root, "..", `${path.basename(root)}-outside.txt`);
+      await fs.writeFile(outsidePath, "keep this file outside the repository\n", "utf8");
+
+      try {
+        const outsideRelativePath = `../${path.basename(outsidePath)}`;
+        expect((await auditMgr.conflictDetail(workspace, { filePath: outsideRelativePath })).ok).toBe(false);
+        expect(
+          (
+            await auditMgr.resolveConflict(workspace, {
+              filePath: outsideRelativePath,
+              mode: "manual",
+              content: "must not escape the repository\n",
+            })
+          ).ok,
+        ).toBe(false);
+        expect((await auditMgr.unresolveConflict(workspace, { filePath: outsideRelativePath })).ok).toBe(false);
+        expect(await fs.readFile(outsidePath, "utf8")).toBe("keep this file outside the repository\n");
+        expect(entries.map((entry) => [entry.operation, entry.success])).toEqual([
+          ["gitResolve-conflict", false],
+          ["gitUnresolve-conflict", false],
+        ]);
+        expect(entries.every((entry) => entry.rootPath === root)).toBe(true);
+      } finally {
+        await fs.rm(outsidePath, { force: true });
+      }
+    });
+
     test("lists a both-modified conflict and reads its three stages", async () => {
       const root = await makeBothModifiedRepo();
       const list = await mgr.listConflicts(ws(root));

@@ -1988,8 +1988,8 @@ export class GitManager extends EventEmitter {
     if (!effectiveCwd || !filePath) {
       return { ok: false, summary: "File path and workspace directory are required." };
     }
-    // Sanitize path
-    const normalized = filePath.replace(/\\/g, "/").replace(/^\/+/, "");
+    const normalized = normalizeStagePath(filePath);
+    if (!normalized) return createStructuredResult({ ok: false, summary: "Invalid conflict file path." });
 
     const readStage = async (stage: number): Promise<string> => {
       try {
@@ -2064,7 +2064,8 @@ export class GitManager extends EventEmitter {
     if (!effectiveCwd || !filePath) {
       return createStructuredResult({ ok: false, summary: "File path and workspace directory are required." });
     }
-    const normalized = filePath.replace(/\\/g, "/").replace(/^\/+/, "");
+    const normalized = normalizeStagePath(filePath);
+    if (!normalized) return createStructuredResult({ ok: false, summary: "Invalid conflict file path." });
     try {
       if (mode === "delete") {
         await this.execGit(effectiveCwd, ["rm", "-f", "--", normalized]);
@@ -2118,7 +2119,8 @@ export class GitManager extends EventEmitter {
     if (!effectiveCwd || !filePath) {
       return createStructuredResult({ ok: false, summary: "File path and workspace directory are required." });
     }
-    const normalized = filePath.replace(/\\/g, "/").replace(/^\/+/, "");
+    const normalized = normalizeStagePath(filePath);
+    if (!normalized) return createStructuredResult({ ok: false, summary: "Invalid conflict file path." });
     try {
       await this.execGit(effectiveCwd, ["checkout", "-m", "--", normalized]);
       return createStructuredResult({ ok: true, summary: `Restored conflict markers in ${normalized}.` });
