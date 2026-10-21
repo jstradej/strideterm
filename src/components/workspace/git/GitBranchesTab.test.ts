@@ -180,14 +180,14 @@ describe("GitBranchesTab compact history picker", () => {
     const picker = mountTab();
     const filterRow = picker.get(".git-branches__filters");
     const selects = filterRow.findAllComponents(CustomSelect);
-    const dateSelect = selects.find((select) => select.classes().includes("git-branches__cselect--date"));
+    const dateSelect = selects.find((select: VueWrapper) => select.classes().includes("git-branches__cselect--date"));
     expect(dateSelect).toBeTruthy();
     dateSelect!.vm.$emit("update:modelValue", "custom");
     await flushPromises();
 
     await picker.get('input[title="Show commits on or after this date"]').setValue("2026-02-01");
     await picker.get('input[title="Show commits on or before this date"]').setValue("2026-02-28");
-    const limitSelect = selects.find((select) => select.classes().includes("git-branches__cselect--limit"));
+    const limitSelect = selects.find((select: VueWrapper) => select.classes().includes("git-branches__cselect--limit"));
     expect(limitSelect).toBeTruthy();
     limitSelect!.vm.$emit("update:modelValue", 500);
     await vi.advanceTimersByTimeAsync(500);
@@ -286,7 +286,7 @@ describe("GitBranchesTab compact history picker", () => {
     const filterRow = picker.get(".git-branches__filters");
     const authorSelect = filterRow
       .findAllComponents(CustomSelect)
-      .find((select) => select.classes().includes("git-branches__cselect--user"));
+      .find((select: VueWrapper) => select.classes().includes("git-branches__cselect--user"));
     expect(authorSelect).toBeTruthy();
     expect(authorSelect!.props("options")).toContainEqual({ value: "Ada Example", label: "Ada Example" });
     authorSelect!.vm.$emit("update:modelValue", "Ada Example");
@@ -319,6 +319,40 @@ describe("GitBranchesTab compact history picker", () => {
     await vi.advanceTimersByTimeAsync(250);
     await flushPromises();
     expect(gitLoadGraph).toHaveBeenLastCalledWith("ws-topo-filter", expect.objectContaining({ topoOrder: true }));
+    picker.unmount();
+    vi.useRealTimers();
+  });
+
+  test("clears an active History path filter and reloads the unfiltered graph", async () => {
+    vi.useFakeTimers();
+    const picker = mount(GitBranchesTab, {
+      props: {
+        workspaceId: "ws-clear-history-filter",
+        snapshot: { dirty: false, branch: "main" },
+        gitUi: {
+          branchList: { current: "main", local: [{ name: "main", isCurrent: true }], remotes: [] },
+          graph: { commits: [], head: "", refs: {} },
+        },
+        activeRootPath: "/repo",
+        compactHistory: true,
+      },
+    });
+    mountedWrappers.push(picker);
+    const pathInput = picker.get('input[placeholder="+ path…"]');
+    await pathInput.setValue("src/feature.ts");
+    await pathInput.trigger("keydown.enter");
+    await vi.advanceTimersByTimeAsync(250);
+    await flushPromises();
+    expect(gitLoadGraph).toHaveBeenLastCalledWith(
+      "ws-clear-history-filter",
+      expect.objectContaining({ paths: ["src/feature.ts"] }),
+    );
+
+    await picker.get('button[title="Clear all commit filters"]').trigger("click");
+    await vi.advanceTimersByTimeAsync(250);
+    await flushPromises();
+    expect(gitLoadGraph).toHaveBeenLastCalledWith("ws-clear-history-filter", expect.objectContaining({ paths: [] }));
+    expect(picker.get('button[title="No active filters to clear"]').attributes("disabled")).toBeDefined();
     picker.unmount();
     vi.useRealTimers();
   });

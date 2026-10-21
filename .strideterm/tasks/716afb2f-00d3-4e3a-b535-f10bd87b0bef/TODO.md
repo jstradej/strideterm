@@ -177,3 +177,4 @@
 - [x] Exercise base selection through the rendered compact History compare picker and assert the compare heading and graph request.
 - [x] Verify the selected History author is forwarded as a graph query filter.
 - [x] Verify toggling topological ordering forwards `topoOrder: true` to the History graph query.
+- [x] Verify Clear removes the active History path filter and reloads without path restrictions.
