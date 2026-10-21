@@ -8838,6 +8838,7 @@ describe("runtime integration", () => {
       ["gitSkipCommit", "skipCommit", {}],
       ["gitResolveConflict", "resolveConflict", { filePath: "src/a.ts", mode: "ours" }],
       ["gitUnresolveConflict", "unresolveConflict", { filePath: "src/a.ts" }],
+      ["gitRemoveWorktree", "removeWorktree", { worktreePath: "/tmp/a1/.strideterm/tree/old", deleteBranch: false }],
       ["gitStash", "stash", { message: "save work", paths: ["src/a.ts"] }],
       ["gitStashPop", "stashPop", { ref: "stash@{0}" }],
       ["gitStashApply", "stashApply", { ref: "stash@{0}" }],
