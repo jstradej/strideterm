@@ -108,3 +108,4 @@
 - [x] Verify the app store accepts and reports a missed Git pull outcome from the lower-revision snapshot received after reconnect. `app.test.ts` passes 48 tests; repository typecheck, Prettier, ESLint (0 errors), and diff checks pass.
 - [x] Verify runtime stage, unstage, and commit-staged handlers each dispatch exactly one manager write with the validated workspace root. Focused runtime regression passes; repository typecheck, touched-file Prettier/ESLint, and diff checks pass.
 - [x] Verify an unsaved Review comment editor survives turning the new view off and back on through the Settings Git control. GitPane integration suite passes 22 tests; typecheck, touched-file Prettier/ESLint, and diff checks pass.
+- [x] Verify More routes all available legacy tools, including conditional Bulk and Conflicts, to their existing components. GitPane suite passes 29 tests; repository typecheck, Prettier, ESLint (0 errors), and diff checks pass.

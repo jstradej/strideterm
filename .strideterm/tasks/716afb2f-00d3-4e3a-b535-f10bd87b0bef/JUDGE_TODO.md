@@ -127,7 +127,7 @@ Full per-requirement ledger (122 items)
 
 25. **PARTIAL** — Reuse review data/comments and preserve comment drafts across files, views and setting changes.
    Evidence: src/components/workspace/GitPane.vue:369; src/components/workspace/AzureReviewPane.vue:691,919; src/components/workspace/GitPane.test.ts:152.
-   Evidence: AzureReviewPane regression verifies provider-owned saved draft restoration after Review remount; a DialogOverlay integration regression edits an unsaved TextAreaDialog value, unmounts Review, and verifies the live editor/value survive. File-switch and manual setting-toggle confirmation remain.
+   Evidence: AzureReviewPane regression verifies provider-owned saved draft restoration after Review remount; GitPane integration mounts SettingsGitTab and DialogOverlay, then confirms an unsaved TextAreaDialog value survives toggling the new-view setting off and on. File-switch behavior remains for manual confirmation.
 
 26. **IMPLEMENTED** — PR linkage alone does not disable normal Git; actual branch/state/permissions/review operation guards decide routing.
    Evidence: src/components/workspace/GitPane.vue:520,860; src/stores/git-ui.ts:535,633; src/stores/git-ui.test.ts:650,669; src/stores/git-ui.ts:575.
@@ -161,7 +161,7 @@ Full per-requirement ledger (122 items)
 
 35. **PARTIAL** — Commit message, file selection and operation state survive view/layout switches; failure retains draft for retry.
    Evidence: src/components/workspace/git/GitChangesTab.vue:536,605,772,871; src/components/workspace/GitPane.vue:322.
-   Remaining: Classic message and selected paths are scoped and persist across view switches. Saved provider drafts survive Review unmount; unsaved TextAreaDialog editor draft round-trip and setting-change lifecycle remain unverified.
+   Remaining: Classic message and selected paths are scoped and persist across view switches. Saved provider drafts and an unsaved TextAreaDialog editor survive Review unmount and actual Settings control off/on transitions. Explicit file-switch plus disconnect/hook failure retention and visual confirmation remain.
 
 36. **PARTIAL** — Inventory every existing button/context menu/shortcut with its store, permission, audit, results and new UI destination before decomposition.
    Evidence: .strideterm/tasks/716afb2f-00d3-4e3a-b535-f10bd87b0bef/IMPLEMENTATION_INVENTORY.md:7,11,13; src/components/workspace/GitPane.vue:649.
@@ -343,7 +343,7 @@ Full per-requirement ledger (122 items)
 84. **PARTIAL** — Acceptance: layout toggle keeps message/comments/root/running actions and creates no double mutations/subscriptions/notifications.
    Evidence: src/components/workspace/GitPane.test.ts:138,152; src/components/workspace/git/GitChangesTab.vue:772,871; src/stores/git-ui.ts:437.
    Evidence: `GitPane.test.ts` toggles the saved setting off and back on while a fetch is busy and verifies the busy state and operation card survive. Classic message/selection persist by workspace/root; saved Review drafts and an open unsaved TextAreaDialog survive pane unmount.
-   Remaining: Verify comment editor contents across the real Settings UI toggle and check for duplicate subscriptions/mutations visually.
+   Remaining: Unsaved comment text now has an integration test across the actual Settings Git control's off/on transition. Check for duplicate subscriptions/mutations and cross-view conflict visibility in the manual visual pass.
 
 85. **PARTIAL** — Acceptance: explicit picker test proves only read query changes, no checkout/fetch/other mutations.
    Evidence: src/components/workspace/git/GitBranchesTab.test.ts:104.
@@ -383,14 +383,14 @@ Full per-requirement ledger (122 items)
 
 94. **PARTIAL** — Acceptance: each existing inventoried action has an accessible new-view route and conflict state stays prominent.
    Evidence: src/components/workspace/GitPane.vue:302,322,338,348,649; .strideterm/tasks/716afb2f-00d3-4e3a-b535-f10bd87b0bef/IMPLEMENTATION_INVENTORY.md:11,13.
-   Remaining: More routing takes precedence for Branches/Stashes and common conflict action exists. Finish visual review of all specialized destinations and operation visibility.
+   Evidence: GitPane test.each covers More routing to Overview, Branches, Stashes, Pull Request, Worktrees, Bulk, and Conflicts when available; Changes stays in the primary shell. Remaining: Finish visual review of specialized destinations and operation visibility.
 
 95. **IMPLEMENTED** — Run named relevant GitPane/pull-strategy/Branches/Changes/store/review-store/default/schema/review-engine tests plus new index tests.
    Evidence: src/components/workspace/GitPane.test.ts:138; src/components/workspace/git/GitBranchesTab.test.ts:104; src/stores/git-ui.test.ts:46; electron/backend/git-manager.test.ts:3943; independent runs: 125 UI + 1331 backend passed.
 
 96. **PARTIAL** — Add meaningful new picker/settings/index tests, not merely smoke passes; test state/actions/contracts rather than xterm/canvas.
    Evidence: src/components/workspace/GitPane.test.ts:138,152; src/components/workspace/git/GitBranchesTab.test.ts:104; electron/backend/git-manager.test.ts:3943; search rg --files src/components/dialogs/settings finds no SettingsGitTab test.
-   Remaining: Settings save control and picker query/scope behavior have integration tests; keyboard/focus and full settings restart/toggle lifecycle remain for manual or purposeful coverage.
+   Remaining: Settings save control and off/on draft lifecycle, picker query/scope behavior, and restart persistence have tests. Keyboard/focus and visual confirmation remain manual.
 
 97. **IMPLEMENTED** — Visual concept is illustrative, no pixel match/API invention; user supplies visual confirmation rather than agent running app.
    Evidence: .strideterm/tasks/716afb2f-00d3-4e3a-b535-f10bd87b0bef/MANUAL_VERIFICATION.md:3; git diff --name-only f8ba69b0..HEAD contains no concept asset/provider engine rewrite.
@@ -471,19 +471,19 @@ Full per-requirement ledger (122 items)
 
 119. **PARTIAL** — TODO Done: fetch/pull/push generic operations, idempotency, correlation, durable results, event/payload dedup, visible running.
    Evidence: electron/backend/runtime-git-handlers.ts:101; `src/stores/git-ui.ts` waits for terminal fetch/pull/push outcomes; `git-ui.test.ts` covers event completion and pull lastResults recovery; runtime tests cover same-action dedupe and profile-isolated operation IDs/outcomes.
-   Remaining: Structured terminal diagnostics and same-action dedupe are implemented. End-to-end renderer reconnect and profile-switch lifecycle tests remain incomplete.
+   Evidence: App-store reconnect regression proves a missed pull outcome in the lower-revision post-restart snapshot is applied and reported. Remaining: One end-to-end test spanning a pending git-ui action through the actual transport reconnect and profile switch is still incomplete.
 
 120. **PARTIAL** — TODO Done: Review uses provider-owned matching PR workspace for true diff and persisted drafts.
    Evidence: src/components/workspace/GitPane.vue:369,534; src/components/workspace/AzureReviewPane.vue:1274-1276; electron/backend/file-manager.ts:1122-1135; AzureReviewPane.test.ts:833-853; file-manager.test.ts:415-434.
-   Remaining: True pinned range, local unstaged exclusion, provider-owned saved draft restoration, and open unsaved editor survival across pane unmount are verified. Review file-switch and actual setting-toggle round-trip remain for manual acceptance.
+   Remaining: True pinned range, local unstaged exclusion, provider-owned saved draft restoration, unsaved editor survival across pane unmount, and editor survival through Settings off/on transitions are automated. Review file-switch remains for manual acceptance.
 
 121. **PARTIAL** — TODO Done: staged message survives views; clear root-specific selections on root changes.
    Evidence: src/components/workspace/git/GitChangesTab.vue:653,826,857,870,902,932; src/stores/git-ui.ts:384,390,394,400; src/components/workspace/git/GitBranchesTab.vue:730,1157.
-   Remaining: Staged/classic drafts and History query state are scoped; async commit completion captures its originating root; late graph responses are rejected; unsaved editor state survives pane unmount. The busy-operation setting toggle now has integration coverage; reference-filter and comment-editor toggle round-trip remain for manual acceptance.
+   Remaining: Staged/classic drafts and History query state are scoped; async commit completion captures its originating root; late graph responses are rejected; unsaved editor state survives pane unmount and setting off/on transitions. The busy-operation toggle has integration coverage. Reference-filter toggle and file-switch behavior remain for manual acceptance.
 
 122. **PARTIAL** — TODO Done: focused index, long acceptance/dedup, stale read and Review routing tests.
    Evidence: electron/backend/git-manager.test.ts:3943; electron/backend/runtime.test.ts:8481; src/stores/git-ui.test.ts:64; src/components/workspace/GitPane.test.ts:152.
-   Remaining: Forged cross-file patch and actual More routing regressions now exist; PR range/local-edit exclusion is now covered. Broad reconnect, draft and scoped lifecycle acceptance tests remain.
+   Evidence: Runtime index routes each call one manager write with the resolved root; More destination routing covers every currently available legacy tool. Remaining: Full reconnect integration, complete menu/shortcut-to-audit inventory, and user visual acceptance remain open.
 
 ## Worker continuation correction (2026-10-21)
 
@@ -766,3 +766,9 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 - Added a GitPane integration regression that mounts the actual `SettingsGitTab` checkbox and app-level `DialogOverlay`, edits an unsaved TextAreaDialog comment, applies the off/on setting transitions to the saved settings snapshot, and confirms the editor remains open with its text after both transitions. This closes the automated portion of requirement 84; duplicate subscription/mutation checks and visual confirmation remain manual.
 - `npm run test:ui -- src/components/workspace/GitPane.test.ts`: PASS, 22 tests. `npm run typecheck`: PASS. Prettier and `git diff --check`: PASS. Focused ESLint: 0 errors / 2 pre-existing warnings.
 - `WORK_LOCK` remains because the user visual walkthrough and broader menu/shortcut and reconnect audit are still open.
+
+## Worker continuation (More destinations)
+
+- Added a `test.each` component regression covering all More destinations exposed by current repository state: Overview, Branches, Stashes, Pull Request, Worktrees, Bulk (multi-root only), and Conflicts (only while conflicts exist). Changes remains a primary view and is intentionally absent from More. This adds automated evidence for requirements 72, 94, and TODO inventory routing.
+- `npm run test:ui -- src/components/workspace/GitPane.test.ts`: PASS, 29 tests. `npm run typecheck`: PASS. Prettier and `git diff --check`: PASS. Focused ESLint: 0 errors / 3 pre-existing warnings.
+- `WORK_LOCK` stays because visual acceptance, full shortcut/menu inventory, and end-to-end reconnect work remain open.
