@@ -165,3 +165,4 @@
 - [x] Reuse profile/workspace/action/proposal-scoped idempotency keys for Review Git starts when a start response is lost, preventing an explicit retry from launching a duplicate provider Git write.
 - [x] Re-key History commit-file reads by repository root even when the selected hash is unchanged, and invalidate in-flight commit diffs when the root changes.
 - [x] Re-run the selected History graph query on root changes even when the saved ref string is identical.
+- [x] Fix transport test isolation by suspending every bridge created during each test; full UI suite passes 215 files / 3,093 tests, including the previously timing-sensitive temporary-pause case. User visual review and remaining audit lifecycle coverage remain open.

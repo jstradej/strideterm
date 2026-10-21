@@ -1072,3 +1072,7 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Added a deferred-response test proving the automatic diff refresh started for a mutation in root A cannot replace the selected file preview after the user switches to root B. The root-B selected path and diff remain in the store after root A's response settles.
 - Git UI store suite passes 70/70. Other lifecycle cases and visual acceptance remain open; WORK_LOCK stays present.
+
+## Worker continuation (transport test bridge cleanup)
+
+- Transport tests now track every bridge created by each test and suspend all bridges in teardown. This prevents older transports' global visibility/focus listeners and reconnect timers from reacting to later tests' mocks. Full UI suite passes 215 files / 3,093 tests, including the formerly flaky temporary-pause case. User visual review and remaining long-operation/scoped read-draft lifecycle audit findings remain open; WORK_LOCK stays present.
