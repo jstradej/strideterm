@@ -8,8 +8,8 @@
 ## To Do
 
 - [x] User waived the manual visual review requirement; no `dev.ps1` walkthrough is required.
-- [ ] Finish remaining inventory-wide permission/audit reconciliation in `JUDGE_TODO.md` (requirements 47, 51, 52, 77 and 91). The route index in requirements 36 and 94 now records entry-point guards, audit class/type, result surfaces and destinations, with More and conflict visibility covered in tests; long-operation diagnostics retain blocked/cancelled/partial/failed/interrupted classification; some mutation routes still lack exact rejection/audit-count assertions.
-- [ ] Re-run the full numbered self-audit against the current tree and update each requirement with verifiable evidence.
+- [x] Finish inventory-wide permission/audit reconciliation in `JUDGE_TODO.md` (requirements 36, 47, 77, 91 and 94): every route is mapped, generic writes share a single audited wrapper, specialized Git/provider writes have exact audit regressions, and read/file actions explicitly identify their audit behavior.
+- [x] Re-run the full numbered self-audit against the current tree and update each requirement with verifiable evidence.
 - [x] Commit implementation changes locally without pushing.
 
 ## In Progress
@@ -23,6 +23,7 @@
 - [x] Assert one failed provider audit row each when Azure DevOps comments, votes, and thread status updates receive HTTP 403; `azure-devops-manager.test.ts` passes all 44 tests.
 - [x] Assert one failed provider audit row for GitHub and Azure DevOps PR creation when HTTP 403 rejects the provider write; focused manager suites pass.
 - [x] Add centralized GitManager audit cardinality coverage for one successful and one Git-rejected mutation; focused cases pass and the full GitManager file passes 194 tests / 2 skipped. Prettier passes; ESLint has 0 errors (existing warnings).
+- [x] Final current-tree verification: UI 215 files / 3,107 tests; backend 224 files / 5,514 passed / 7 skipped; typecheck; lint 0 errors / 4,720 warnings with Prettier clean; watch-compatible production build; `git diff --check`.
 
 - [x] Add opt-in setting defaulting off, normalization, explicit boolean schema validation, Settings control, and safe nested merge coverage.
 - [x] Add separate new-view selection and opt-in History / Changes / Review shell with a More path to preserved existing tools.
