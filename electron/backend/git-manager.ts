@@ -2779,6 +2779,7 @@ export class GitManager extends EventEmitter {
       "stash-import",
       "resolve-conflict",
       "unresolve-conflict",
+      "bisect",
       "remove-worktree",
       "create-worktree",
     ]);

@@ -223,6 +223,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
    Evidence: Conflict detail/resolve/unresolve now use the stage-path normalizer, rejecting traversal paths before reading or writing outside the selected root. A real-repository regression confirms outside content stays unchanged.
    Evidence: A real local bare remote test verifies successful remote-branch deletion and failed deletion after the remote URL becomes unavailable each emit exactly one system Git write audit row with the workspace root.
    Evidence: A real local bare remote test verifies push-tag, push-all-tags, and remote-tag deletion each emit one success and one unavailable-remote failure audit row with the workspace root.
+   Evidence: Continue/abort/skip use the detected Git operation kind as their audit type. Added `bisect` to the write classifier and a regression verifies both successful and failed bisect outcomes are categorized as writes with the repository root.
    Remaining: Route-level evidence covers index/local tag, branch/history/stash dispatch and writes, worktree add/remove, provider comments/votes/review submission, PR creation, and Azure thread update. Other mutation families still need assertions; manual menu/shortcut walkthrough remains.
 
 48. **IMPLEMENTED** — Check rejected promises and structured ok:false; promise success must not mean Git success.
@@ -355,6 +356,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
    Evidence: Remote tag push, push-all-tags, and remote tag deletion success/failure each emit one system Git audit outcome with the workspace root; a local bare-remote integration test verifies all six attempts.
    Evidence: Scoped commit-all success and rejected empty selection each emit one system Git write audit row with the workspace root in a real repository regression.
    Evidence: Merge-into-base success and dirty-target rejection each emit one system Git write audit row with the resolved target worktree root.
+   Evidence: Bisect continue/abort audit types are classified as writes; the focused classification regression covers success and failure outcomes.
    Evidence: Conflict resolve and undo success/failure each emit one system Git audit outcome with the resolved root; the focused real-conflict regression passes.
    Evidence: Conflict detail/resolve/unresolve reject repository traversal paths, and the regression confirms an outside file is not modified.
    Evidence (2026-10-21): GitHub PR creation, Azure DevOps PR creation, and Azure DevOps thread status update each have focused assertions for exactly one successful classified provider write audit entry. Provider PR/thread gaps are closed; other mutation families and inventory-wide route reconciliation remain.
@@ -991,3 +993,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 - Full GitManager regression after commit-all and merge-into-base lock/audit changes: 185 passed / 2 skipped. `npm run typecheck` passes; touched-file ESLint 0 errors / 134 warnings; Prettier and diff checks pass.
 - Expanded the index/local-tag audit regression to include file unstage plus create/delete tag Git failures, confirming one audit row per attempted route. Focused case passes (1 passed / 186 skipped); `npm run typecheck`, touched-file ESLint (0 errors / 96 warnings), Prettier, and diff check pass.
 - Corrected the shared mutation helper's fallback error summary so merge-into-base and other non-stash operations no longer report a stash failure. Focused merge audit case passes (1 passed / 186 skipped); `npm run typecheck`, focused ESLint (0 errors / 38 warnings), Prettier, and `git diff --check` pass.
+
+## Worker continuation (bisect audit classification)
+
+- Found that continue/abort/skip log using the operation-state kind `bisect`, but the system Git audit write classifier omitted that kind. Added `bisect` to the write set and a regression asserting successful and failed outcomes are both write entries with the root path. This closes the classification gap for bisect lifecycle mutations; other action-route audit coverage and manual review remain open.
+- Focused backend test passes (1 passed / 187 skipped); `npm run typecheck` passes; touched-file ESLint reports 0 errors / 134 warnings; Prettier and `git diff --check` pass.

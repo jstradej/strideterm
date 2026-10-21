@@ -4079,6 +4079,28 @@ describe("GitManager", () => {
       expect(entries.every((entry) => entry.rootPath === root)).toBe(true);
     });
 
+    test("classifies bisect continuation and abort audit outcomes as writes", () => {
+      const entries: Record<string, unknown>[] = [];
+      const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
+
+      for (const success of [true, false]) {
+        auditMgr._logGitAudit({
+          type: "bisect",
+          connection: null,
+          success,
+          workspaceId: "ws-bisect-audit",
+          remoteUrl: "",
+          extra: { rootPath: "/repo" },
+        });
+      }
+
+      expect(entries.map((entry) => [entry.operation, entry.category, entry.success])).toEqual([
+        ["gitBisect", "write", true],
+        ["gitBisect", "write", false],
+      ]);
+      expect(entries.every((entry) => entry.rootPath === "/repo")).toBe(true);
+    });
+
     test("records one resolved-root audit outcome for each local and remote branch mutation", async () => {
       const entries: Record<string, unknown>[] = [];
       const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
