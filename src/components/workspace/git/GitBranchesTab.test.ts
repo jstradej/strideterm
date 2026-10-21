@@ -219,6 +219,27 @@ describe("GitBranchesTab compact history picker", () => {
     mobileViewport.isMobile.value = false;
   });
 
+  test("shows detached HEAD and an empty-history state in a repository without commits", async () => {
+    mobileViewport.isNarrow.value = false;
+    mobileViewport.isMobile.value = false;
+    const picker = mount(GitBranchesTab, {
+      props: {
+        workspaceId: "ws-empty-history",
+        snapshot: { dirty: false, branch: "" },
+        gitUi: {
+          branchList: { current: "", local: [], remotes: [], defaultBranch: "", defaultRemote: "" },
+          graph: { commits: [], head: "", refs: {} },
+          tags: [],
+        },
+        compactHistory: true,
+      },
+    });
+    await flushPromises();
+    expect(picker.get('[aria-label="History reference"]').text()).toContain("HEAD · detached");
+    expect(picker.findAll(".git-history-picker__current")[0].text()).toContain("Working branch: Detached HEAD");
+    expect(picker.findAll(".git-tree__placeholder").some((node) => node.text() === "No commits found.")).toBe(true);
+  });
+
   test("selecting a named reference only changes the graph query", async () => {
     vi.useFakeTimers();
     mobileViewport.isMobile.value = false;
