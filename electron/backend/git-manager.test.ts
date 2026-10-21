@@ -4167,6 +4167,32 @@ describe("GitManager", () => {
       expect(entries.every((entry) => entry.rootPath === root)).toBe(true);
     });
 
+    test("records a single resolved-root write audit outcome for History squash", async () => {
+      const entries: Record<string, unknown>[] = [];
+      const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
+      const root = await initRepo();
+      await fs.writeFile(path.join(root, "a.txt"), "second commit\n", "utf8");
+      rg(root, ["commit", "-q", "-am", "second commit"]);
+      await fs.writeFile(path.join(root, "b.txt"), "third commit\n", "utf8");
+      rg(root, ["commit", "-q", "-am", "third commit"]);
+      const selected = rg(root, ["log", "-2", "--format=%H"]).trim().split(/\r?\n/u);
+
+      expect(
+        (
+          await auditMgr.squashCommits(
+            { id: "ws-squash-audit", cwd: root, kind: "terminal" },
+            { hashes: selected, message: "squashed history" },
+          )
+        ).ok,
+      ).toBe(true);
+      expect(rg(root, ["log", "-1", "--format=%s"]).trim()).toBe("squashed history");
+      expect(entries.map((entry) => [entry.operation, entry.category, entry.success])).toEqual([
+        ["gitSquash", "write", true],
+      ]);
+      expect(entries[0].connectionId).toBe("system-ws-squash-audit");
+      expect(entries[0].rootPath).toBe(root);
+    });
+
     test("records successful and failed remote branch deletion audit outcomes", async () => {
       const entries: Record<string, unknown>[] = [];
       const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
