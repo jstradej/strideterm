@@ -217,7 +217,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
    Evidence: src/components/workspace/git/GitChangesTab.vue:572,583,607; electron/backend/git-manager.ts:2203,2234,2467; electron/backend/git-manager.ts:4278,4293.
    Evidence: `electron/backend/runtime.test.ts:8482` asserts each stage-file, unstage-file, commit-staged, create-tag, and delete-tag route calls its matching manager write exactly once with the resolved root. `electron/backend/git-manager.test.ts:3988` verifies the three index outcomes plus successful local tag create/delete each produce exactly one system Git audit row.
    Evidence: `electron/backend/git-manager.stash.test.ts` exercises successful stash patch import and rejected path traversal against a real repository, asserting exactly one audit outcome per attempt with resolved root. The manager routes import through the per-worktree lock and shared audit wrapper.
-   Evidence: `electron/backend/git-manager.test.ts` real-repository coverage asserts one resolved-root write audit outcome for each local branch create, checkout, rename, successful delete, and failed delete.
+   Evidence: `electron/backend/git-manager.test.ts` real-repository coverage asserts one resolved-root write audit outcome for local branch create, checkout, rename, delete success/failure, and remote branch checkout success/failure.
    Evidence: Conflict resolve and unresolve now take the shared per-worktree lock and emit exactly one system Git audit outcome; a real conflict test covers success and failure for both routes.
    Evidence: Conflict detail/resolve/unresolve now use the stage-path normalizer, rejecting traversal paths before reading or writing outside the selected root. A real-repository regression confirms outside content stays unchanged.
    Remaining: Route-level evidence covers index/local tag, branch/history/stash dispatch and writes, worktree add/remove, provider comments/votes/review submission, PR creation, and Azure thread update. Other mutation families still need assertions; manual menu/shortcut walkthrough remains.
@@ -344,6 +344,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
    Evidence: Worktree removal now runs under the per-worktree lock and emits an audited write outcome; the fast-path manager test asserts one row with root. Worktree/stash/index audit tests pass and repository typecheck passes.
    Evidence: Runtime worktree creation now uses the shared per-worktree lock and records success/failure with root and branch; success and Git-failure runtime tests assert its audit data.
    Evidence: Local branch create/checkout/rename/delete success and delete failure each emit one system Git audit outcome with the workspace root; focused backend test passes.
+   Evidence: Remote branch checkout success and missing-remote failure each emit one system Git write audit outcome with the workspace root; the same real-repository regression verifies both.
    Evidence: Conflict resolve and undo success/failure each emit one system Git audit outcome with the resolved root; the focused real-conflict regression passes.
    Evidence: Conflict detail/resolve/unresolve reject repository traversal paths, and the regression confirms an outside file is not modified.
    Evidence (2026-10-21): GitHub PR creation, Azure DevOps PR creation, and Azure DevOps thread status update each have focused assertions for exactly one successful classified provider write audit entry. Provider PR/thread gaps are closed; other mutation families and inventory-wide route reconciliation remain.
@@ -935,3 +936,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - When a long-operation start promise rejects, `runGitAction` now sends the standard Git failure notification in addition to retaining its inline result. The notification path persists the raw failure to `strideterm.log`.
 - `npm run test:ui -- src/stores/git-ui.test.ts -t "rejected long-operation start"`: 1 passed / 62 skipped. Typecheck passes; touched-file ESLint reports 0 errors / 70 warnings; Prettier and `git diff --check` pass. Remaining audit/lifecycle coverage and user visual walkthrough stay open; WORK_LOCK remains.
+
+## Worker continuation (remote branch checkout audit)
+
+- Extended the real-repository branch audit test to cover remote-tracking branch checkout success and a missing remote-tracking ref failure. Each attempt produces exactly one resolved-root system Git audit row.
+- `npm run test:backend -- electron/backend/git-manager.test.ts -t "local and remote branch mutation"`: 1 passed / 182 skipped. `npm run typecheck` passes; touched-file ESLint has 0 errors / 93 warnings; Prettier and `git diff --check` pass. Remaining audit route families and user visual acceptance remain open; WORK_LOCK stays.

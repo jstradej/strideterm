@@ -4071,7 +4071,7 @@ describe("GitManager", () => {
       expect(entries.every((entry) => entry.rootPath === root)).toBe(true);
     });
 
-    test("records one resolved-root audit outcome for each local branch mutation", async () => {
+    test("records one resolved-root audit outcome for each local and remote branch mutation", async () => {
       const entries: Record<string, unknown>[] = [];
       const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
       const root = await initRepo();
@@ -4084,6 +4084,12 @@ describe("GitManager", () => {
       );
       expect((await auditMgr.deleteBranch(workspace, { branch: "renamed-feature" })).ok).toBe(true);
       expect((await auditMgr.deleteBranch(workspace, { branch: "missing-feature" })).ok).toBe(false);
+      rg(root, ["remote", "add", "origin", root]);
+      rg(root, ["update-ref", "refs/remotes/origin/remote-feature", "HEAD"]);
+      expect((await auditMgr.checkoutRemoteBranch(workspace, { remoteBranch: "origin/remote-feature" })).ok).toBe(true);
+      expect((await auditMgr.checkoutRemoteBranch(workspace, { remoteBranch: "origin/missing-feature" })).ok).toBe(
+        false,
+      );
 
       expect(entries.map((entry) => [entry.operation, entry.category, entry.success])).toEqual([
         ["gitCreate-branch", "write", true],
@@ -4091,6 +4097,8 @@ describe("GitManager", () => {
         ["gitRename-branch", "write", true],
         ["gitDelete-branch", "write", true],
         ["gitDelete-branch", "write", false],
+        ["gitCheckout-remote", "write", true],
+        ["gitCheckout-remote", "write", false],
       ]);
       expect(entries.every((entry) => entry.connectionId === "system-ws-branch-audit")).toBe(true);
       expect(entries.every((entry) => entry.rootPath === root)).toBe(true);
