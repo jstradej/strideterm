@@ -1068,7 +1068,7 @@ describe("GitManager", () => {
     const result = await manager.deleteTag({ id: "ws-1", cwd: root }, { tagName: "v1.0.0" });
 
     expect(result.ok).toBe(false);
-    expect(result.summary).toContain("Failed");
+    expect(result.summary).toContain("tag 'v1.0.0' not found");
   });
 
   // ─── cherry-pick / squash ────────────────────────────────────────

@@ -8,8 +8,8 @@ This task snapshot is the working contract for the opt-in Git layout. The first 
 | --- | --- | --- | --- |
 | Refresh, fetch, pull, push, publish | Shared GitPane toolbar → `git-ui` store → runtime Git handlers → GitManager | Shared toolbar remains visible | Fetch/pull/push use runtime workspace action; pull/push are mutation wrappers; GitManager write path audits. Remote routes are slot/profile scoped. |
 | Checkout, create/rename/delete branch, remote branch actions, tags, cherry-pick, revert/reset, compare | Branches tab / Overview → `git-ui` store → runtime handlers | More → Branches / Overview | Existing confirmation and mutation wrappers remain; read-only ref selection uses `gitLoadGraph`, not checkout. |
-| Stashes and worktrees | Stashes and Worktrees tabs; Overview worktree actions | More → Stashes / Worktrees / Overview | Existing handlers remain available. |
-| Conflicts | Conditional Conflicts tab and operation card | More → Conflicts; operation card stays pane level | Conflict visibility continues to depend on current operation state. |
+| Stashes and worktrees | Stashes and Worktrees tabs; Overview worktree actions | More selector → Stashes / Worktrees / Overview | Existing handlers remain available; More destination routing takes precedence over the active new view. |
+| Conflicts | Conditional Conflicts tab and operation card | Shared conflict resolution action in the Git frame; More selector → Conflicts | Conflict visibility continues to depend on current operation state. |
 | Multi-root/bulk | Root picker and Bulk tab | Shared root picker; More → Bulk | Uses current per-root store methods. |
 | PR/provider actions, review comments and drafts | Pull Request tab, provider review panes/stores | Review mounts the existing provider review pane for the matching PR/profile, with the provider's true base/source/target diff and existing comment/draft controls. Unlinked Review explains the missing link. | Provider pane owns durable comment drafts. No viewed/unreviewed state is invented. |
 | External lazygit | Shared toolbar | Shared toolbar | Existing detection and action remain. |
@@ -23,11 +23,13 @@ This task snapshot is the working contract for the opt-in Git layout. The first 
 | New opt-in | Standard or review-linked | Electron or existing web/remote renderer | New selected view is distinct from legacy `activeTab`; legacy tools remain in More. |
 | New history picker | Standard or review-linked | Electron or existing web/remote renderer | Selection sets only the graph query; backend `logGraph` supports a single ref or all branches/remotes/tags/HEAD query. |
 
-The picker currently shares the legacy branch-history component/data path. Favorites and recent refs persist in browser storage scoped by profile/workspace/root. Graph, branch, tag, compare, commit diff, and working diff results have request/context guards; root changes clear root-specific selection and stale preview data.
+The picker currently shares the legacy branch-history component/data path. Favorites and recent refs persist in browser storage scoped by profile/workspace/root. Graph, branch, tag, compare, commit diff, and working diff results have request/context guards; root changes clear root-specific selection and stale preview data. The compact History picker separately retains commit text search by message, author, or hash and reports no-match state.
+
+The narrow Changes diff also provides the layer label, stage/unstage file and hunk actions, and Commit staged. These controls use the same store APIs as desktop Changes.
 
 ## Remaining verification boundaries
 
 - Human visual verification remains with the user: the plan explicitly keeps Electron and the dev server out of agent verification. No app process has been launched.
-- The existing classic tabs remain the destination for specialized branch, stash, worktree, bulk, and conflict tools; verify each via the More selector in the user's visual pass.
+- The existing classic tabs remain the destination for specialized branch, stash, worktree, bulk, and conflict tools; More routing prioritizes these destinations over the selected new view. Verify each via the More selector in the user's visual pass.
 - The native ref select provides keyboard search/selection/escape behavior; a user visual pass should still check long refs, a large branch list, and narrow-window sizing.
-- Focused UI/backend suites, changed-file ESLint, direct frontend/backend typechecks, and a safe production build were run. The repository-wide typecheck still reports existing unrelated errors under `tsconfig.tests.json`.
+- Focused UI/backend suites, full lint, frontend/backend/preload build typechecks, and a safe production build pass. The repository-wide typecheck still reports existing unrelated errors under test configurations; see `JUDGE_TODO.md`.

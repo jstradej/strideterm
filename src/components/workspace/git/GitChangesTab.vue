@@ -391,6 +391,52 @@
             class="git-changes__mobile-diff"
             :class="{ 'is-visible': mobileMode === 'diff' || mobileLayout === 'split' }"
           >
+            <div v-if="newView && gitUi.selectedDiff?.path" class="git-changes__mobile-staging">
+              <strong>{{ diffLayerLabel }}</strong>
+              <button
+                type="button"
+                class="button button--small"
+                :disabled="!!gitUi.busyAction || operation.inProgress || gitUi.selectedDiff.scope === 'conflict'"
+                @click="
+                  onStageFile({
+                    path: gitUi.selectedDiff.path,
+                    staged: gitUi.selectedDiff.scope === 'staged',
+                    scope: gitUi.selectedDiff.scope,
+                  })
+                "
+              >
+                {{ gitUi.selectedDiff.scope === "staged" ? "Unstage file" : "Stage file" }}
+              </button>
+              <button
+                v-for="(hunk, index) in diffHunks"
+                :key="`mobile-hunk:${index}`"
+                type="button"
+                class="button button--ghost button--small"
+                :disabled="!!gitUi.busyAction || operation.inProgress"
+                @click="onStageHunk(hunk, index)"
+              >
+                {{ gitUi.selectedDiff.scope === "staged" ? "Unstage" : "Stage" }} hunk {{ index + 1 }}
+              </button>
+              <div class="git-commit-form">
+                <input
+                  v-model="stagedCommitMessage"
+                  name="mobile-commit-staged-message"
+                  type="text"
+                  placeholder="Commit staged changes"
+                  :disabled="!!gitUi.busyAction || operation.inProgress"
+                />
+                <button
+                  type="button"
+                  class="button button--small"
+                  :disabled="
+                    !!gitUi.busyAction || !stagedCommitMessage.trim() || stagedFiles.size === 0 || operation.inProgress
+                  "
+                  @click="onCommitStaged"
+                >
+                  Commit staged ({{ stagedFiles.size }})
+                </button>
+              </div>
+            </div>
             <MonacoDiffPanel
               v-if="compactChanges && gitUi.selectedDiff?.path"
               :payload="monacoDiffPayload"
@@ -1277,6 +1323,34 @@ useContextMenu({
 .git-changes__mobile-diff > :deep(.mdp) {
   flex: 1;
   min-height: 0;
+}
+
+.git-changes__mobile-staging {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.git-changes__mobile-staging > strong {
+  flex-basis: 100%;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.git-changes__mobile-staging .git-commit-form {
+  display: flex;
+  flex: 1 1 100%;
+  gap: 6px;
+  min-width: 0;
+}
+
+.git-changes__mobile-staging .git-commit-form input {
+  flex: 1;
+  min-width: 0;
 }
 
 .git-changes--mobile[data-layout="single"] .git-changes__mobile-list.is-visible,

@@ -8,7 +8,7 @@
 ## To Do
 
 - [ ] Complete the user's visual review using `MANUAL_VERIFICATION.md` in their `dev.ps1` session; adjust anything they report.
-- [ ] Finish remaining audit findings in `JUDGE_TODO.md`, including Changes draft/context persistence, narrow workflows, long operations and regression coverage.
+- [ ] Finish remaining audit findings in `JUDGE_TODO.md`, including the compact History flow, scoped reads/drafts, long operations and regression coverage.
 - [ ] Re-run the full numbered self-audit against the current tree and update each requirement with verifiable evidence.
 - [ ] Resolve the full typecheck failures and run the project checks required by `WORKER.md` after implementation changes.
 - [x] Commit implementation changes locally without pushing.
@@ -42,3 +42,6 @@
 - [x] Re-run focused GitPane/History UI and GitManager tag/hunk tests, full lint, formatting check and safe production build; all pass. Full typecheck remains failing in unrelated existing test typings (see `JUDGE_TODO.md`); remaining implementation work is still open.
 - [x] Persist classic Changes commit text and selected paths by workspace/root, clear them only after successful commits, and clear staged-message completion against the captured root. Lifecycle tests pass.
 - [x] Restore compact History commit-text search across message, author and hash, with a distinct no-match status; picker and GitPane UI suites pass.
+- [x] Add the narrow Changes diff layer label, stage/unstage file and hunk actions, and commit-staged controls; its focused UI test passes.
+- [x] Classify stage/unstage/commit-staged remote routes for mobile policy and correct the tag failure assertion; route policy (50), runtime/remote (212), focused GitManager (3), and GitPane/History/Changes/Review/store UI (110) tests pass.
+- [x] Re-run project lint (0 errors; 4651 existing warnings, Prettier clean), watch-compatible production build, and focused UI/backend checks. Full typecheck still fails in unrelated test typings; the full Git backend run found and fixed the route-policy failure plus stale tag assertion.

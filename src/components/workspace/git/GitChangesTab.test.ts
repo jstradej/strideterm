@@ -32,6 +32,8 @@ const gitSelectDiff = vi.fn();
 const openConflictDialog = vi.fn();
 const gitSwitchTab = vi.fn();
 const gitCommitAll = vi.fn(async () => true);
+const gitStageFile = vi.fn(async () => true);
+const gitUnstageFile = vi.fn(async () => true);
 const classicMessages = new Map<string, string>();
 const classicPaths = new Map<string, string[]>();
 const classicStateRevision = ref(0);
@@ -62,6 +64,8 @@ vi.mock("../../../stores/git-ui.js", () => ({
     gitSwitchTab,
     gitCreateBranch: vi.fn(),
     gitCommitAll,
+    gitStageFile,
+    gitUnstageFile,
     getClassicCommitMessage: (workspaceId: string, rootPath: string) => {
       classicStateRevision.value;
       return classicMessages.get(`${workspaceId}:${rootPath}`) || "";
@@ -152,6 +156,8 @@ beforeEach(() => {
   gitSwitchTab.mockReset();
   gitCommitAll.mockReset();
   gitCommitAll.mockResolvedValue(true);
+  gitStageFile.mockReset();
+  gitUnstageFile.mockReset();
   showError.mockClear();
   classicMessages.clear();
   classicPaths.clear();
@@ -188,6 +194,31 @@ describe("GitChangesTab", () => {
     expect((second.findComponent(GitChangeTree).props() as Record<string, unknown>).selectedSet).toEqual(
       new Set(["a.txt"]),
     );
+  });
+
+  test("shows staging controls and layer label in the narrow new-view diff", async () => {
+    fakeApi.gitDiffPreview = vi.fn(async () => ({
+      ok: true,
+      diffHeader: "diff --git a/a.txt b/a.txt\n",
+      diff: "@@ -1 +1 @@\n-old\n+new\n",
+      diffToken: "a".repeat(64),
+    }));
+    const wrapper = mountTab({
+      newView: true,
+      gitUi: { selectedDiff: { path: "a.txt", scope: "unstaged" } },
+      snapshot: {
+        dirty: true,
+        staged: [],
+        unstaged: [{ path: "a.txt", code: "M", scope: "unstaged" }],
+        untracked: [],
+        diffStat: null,
+      },
+    });
+    await flushPromises();
+    expect(wrapper.find(".git-changes__mobile-staging").text()).toContain("Index → Working tree");
+    expect(wrapper.find(".git-changes__mobile-staging").text()).toContain("Stage file");
+    expect(wrapper.find(".git-changes__mobile-staging").text()).toContain("Stage hunk 1");
+    expect(wrapper.find(".git-changes__mobile-staging").text()).toContain("Commit staged");
   });
 
   test("opens a file diff from the mobile list and returns to the list", async () => {
