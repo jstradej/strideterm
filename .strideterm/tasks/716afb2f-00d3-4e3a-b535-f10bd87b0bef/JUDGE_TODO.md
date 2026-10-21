@@ -669,3 +669,7 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 ## Worker continuation (`History scope wiring`)
 
 - Added a component regression confirming History passes its active workspace, repository root, and profile into the scoped selection store getter. The focused GitBranchesTab suite passes 14 tests; repository typecheck, touched-file Prettier/ESLint and `git diff --check` pass. This adds UI wiring evidence to audit item 69; actual profile/root switching acceptance still needs broader lifecycle tests and the user walkthrough.
+
+## Worker continuation (`tag read failure and selected ref`)
+
+- Added a reactive regression where a branch list changes while tag loading has failed. The selected tag remains selected and the History alert stays visible, rather than treating the absent tag data as evidence of deletion. GitBranchesTab suite passes 15 tests; repository typecheck, touched-file Prettier/ESLint and `git diff --check` pass. This verifies the tag-error pruning guard; other scoped lifecycle and manual visual requirements remain.
