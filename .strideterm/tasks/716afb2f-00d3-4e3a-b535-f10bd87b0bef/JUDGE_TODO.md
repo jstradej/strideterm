@@ -284,9 +284,10 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
    Evidence: .strideterm/tasks/716afb2f-00d3-4e3a-b535-f10bd87b0bef/IMPLEMENTATION_INVENTORY.md:15,17; src/components/workspace/AzureReviewPane.vue:1276.
    Evidence: Inventory records provider-pinned source/target diff, narrow Changes staging capability, and registry-backed long operations.
 
-63. **PARTIAL** — Stage 1: define scoped view/draft preservation with minimal shared extraction and no copied entire old tabs.
+63. **IMPLEMENTED** — Stage 1: define scoped view/draft preservation with minimal shared extraction and no copied entire old tabs.
    Evidence: src/components/workspace/GitPane.vue:302,322; src/stores/git-ui.ts:1414; src/components/workspace/git/GitChangesTab.vue:772.
-   Remaining: Existing tabs reused without wholesale copy; classic drafts/selections still component-local. Finish store-backed draft design.
+   Evidence: Classic commit text and selected paths use the shared Git UI store keyed by workspace/root; GitChangesTab tests verify remount persistence and isolation/restoration across repository roots.
+   Remaining: User visual walkthrough remains open.
 
 64. **IMPLEMENTED** — Stage 2: validated/persisted default-off toggle with migration and nested-merge tests.
    Evidence: electron/backend/default-state.test.ts:2101; electron/backend/ipc-schemas.test.ts:60; electron/backend/runtime.test.ts:4849; src/components/dialogs/settings/SettingsGitTab.vue:7.
@@ -955,3 +956,9 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Added pull and push store regressions for a rejected start request: the action runs once, busy clears, and the idempotency key is retained. An explicit retry reuses that key and clears it only after a known result. Focused cases pass; broader synchronous-write uncertainty and user visual acceptance remain open; WORK_LOCK stays present.
 - Verification: focused pull/push cases pass (2 passed); `npm run typecheck` passes; touched-file ESLint reports 0 errors / 17 warnings; Prettier and `git diff --check` pass.
+
+## Worker continuation (classic Changes root-scoped draft lifecycle)
+
+- Corrected requirement 63: classic commit text and selected paths already use the Git UI store, and new mounted coverage proves they remain isolated across repository roots and restore when returning to the original root. Focused test: 1 passed / 17 skipped. User visual walkthrough remains open; WORK_LOCK stays present.
+- Verification: focused GitChangesTab case passes (1 passed); 
+pm run typecheck passes; ESLint 0 errors / 2 warnings; Prettier and git diff --check pass.

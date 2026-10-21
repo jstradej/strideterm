@@ -238,6 +238,29 @@ describe("GitChangesTab", () => {
     );
   });
 
+  test("scopes classic commit text and selected paths by repository root", async () => {
+    observedWidth = 800;
+    const files = [{ path: "a.txt", code: "M", scope: "unstaged" }];
+    const first = mountTab({ activeRootPath: "/repo/a", snapshot: { dirty: true, unstaged: files } });
+    await flushPromises();
+    await first.get('input[name="commit-message"]').setValue("repo A draft");
+    first.findComponent(GitChangeTree).vm.$emit("toggle-select", "a.txt");
+    first.unmount();
+
+    const otherRoot = mountTab({ activeRootPath: "/repo/b", snapshot: { dirty: true, unstaged: files } });
+    await flushPromises();
+    expect((otherRoot.get('input[name="commit-message"]').element as HTMLInputElement).value).toBe("");
+    expect((otherRoot.findComponent(GitChangeTree).props() as Record<string, unknown>).selectedSet).toEqual(new Set());
+    otherRoot.unmount();
+
+    const restored = mountTab({ activeRootPath: "/repo/a", snapshot: { dirty: true, unstaged: files } });
+    await flushPromises();
+    expect((restored.get('input[name="commit-message"]').element as HTMLInputElement).value).toBe("repo A draft");
+    expect((restored.findComponent(GitChangeTree).props() as Record<string, unknown>).selectedSet).toEqual(
+      new Set(["a.txt"]),
+    );
+  });
+
   test("shows staging controls and layer label in the narrow new-view diff", async () => {
     fakeApi.gitDiffPreview = vi.fn(async () => ({
       ok: true,
