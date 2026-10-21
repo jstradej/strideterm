@@ -8797,6 +8797,44 @@ describe("runtime integration", () => {
     expect(deleteTag).toHaveBeenCalledWith(workspace, { workspaceId: "ws-a1", rootPath: "/tmp/a1", tagName: "v1.0.0" });
   });
 
+  test("branch, history and stash mutation routes dispatch one manager write with the resolved root", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    const routes = [
+      ["gitCheckoutBranch", "checkoutBranch", { branch: "feature/a" }],
+      ["gitCreateBranch", "createBranch", { branch: "feature/b", startPoint: "main" }],
+      ["gitDeleteBranch", "deleteBranch", { branch: "feature/old", force: false }],
+      ["gitRenameBranch", "renameBranch", { branch: "feature/a", newName: "feature/b" }],
+      ["gitCherryPick", "cherryPick", { hashes: ["abc123"] }],
+      ["gitSquashCommits", "squashCommits", { hashes: ["abc123", "def456"], message: "Squash" }],
+      ["gitContinueOperation", "continueOperation", {}],
+      ["gitAbortOperation", "abortOperation", {}],
+      ["gitStash", "stash", { message: "save work", paths: ["src/a.ts"] }],
+      ["gitStashPop", "stashPop", { ref: "stash@{0}" }],
+      ["gitStashApply", "stashApply", { ref: "stash@{0}" }],
+      ["gitStashDrop", "stashDrop", { ref: "stash@{0}" }],
+      ["gitStashBranch", "stashBranch", { ref: "stash@{0}", branchName: "from-stash", switchImmediately: true }],
+      ["gitStashImport", "stashImportPatch", { patch: "diff --git a/a b/a", message: "import" }],
+      ["gitCommitAll", "commitAll", { message: "Commit all", paths: ["src/a.ts"] }],
+    ] as const;
+    const managerWrites = new Map<string, ReturnType<typeof vi.fn>>();
+    for (const [, managerMethod] of routes) {
+      if (managerWrites.has(managerMethod)) continue;
+      const write = vi.fn(async () => ({ ok: true, summary: "Done." }));
+      managerWrites.set(managerMethod, write);
+      Object.assign(fixture.git, { [managerMethod]: write });
+    }
+
+    const workspace = expect.objectContaining({ id: "ws-a1", profileId: "profile-a" });
+    for (const [route, managerMethod, operationPayload] of routes) {
+      await fixture.runtime[route]({ workspaceId: "ws-a1", rootPath: "/tmp/a1", ...operationPayload });
+      const write = managerWrites.get(managerMethod)!;
+      expect(write, route).toHaveBeenCalledTimes(1);
+      expect(write, route).toHaveBeenCalledWith(workspace, expect.objectContaining({ rootPath: "/tmp/a1" }));
+      write.mockClear();
+    }
+  });
+
   test("rejects a caller-supplied Git root outside a single-repository workspace before accepting fetch", async () => {
     const fixture = await createFixture({
       initialState: {

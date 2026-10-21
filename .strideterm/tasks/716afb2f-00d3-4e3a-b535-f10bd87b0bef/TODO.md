@@ -124,3 +124,4 @@
 - [x] Integrate pending Git pull/push through real remote transport disconnect/reconnect and profile switching; verify p2 cannot settle p1's operation and returning to p1 applies the persisted outcome once.
 - [x] Verify index and local-tag runtime routes each dispatch one manager write with the resolved root, and real-repository manager tests record exactly one audit row per index/tag mutation.
 - [x] Reuse fetch/pull/push idempotency keys when a start response is lost, so retry can replay the accepted operation instead of launching a second write; Git UI store suite passes 60 tests and repository typecheck passes.
+- [x] Extend runtime single-dispatch/root assertions across branch checkout/create/delete/rename, cherry-pick/squash/continue/abort, stash lifecycle/import, and commit-all mutation routes; focused runtime regression and repository typecheck pass.
