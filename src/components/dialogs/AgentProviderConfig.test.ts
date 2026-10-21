@@ -21,6 +21,15 @@ function mountConfig(role: "worker" | "judge", overrides: Record<string, unknown
   });
 }
 
+// Emits exactly what CustomSelect's select() does, in its order, while the
+// prop still holds the previous provider — the parent has not re-rendered yet.
+async function selectProvider(wrapper: ReturnType<typeof mount>, value: string) {
+  const select = wrapper.findComponent(CustomSelect);
+  select.vm.$emit("update:modelValue", value);
+  select.vm.$emit("change", value);
+  await wrapper.vm.$nextTick();
+}
+
 function lastEmitted<T>(wrapper: ReturnType<typeof mount>, event: string): T {
   const calls = wrapper.emitted(event);
   return calls![calls!.length - 1][0] as T;
@@ -68,21 +77,14 @@ describe("AgentProviderConfig", () => {
         providerOptions,
       },
     });
-    // Simulate the CustomSelect's own v-model update having already flowed
-    // the new providerId into the prop (as it would synchronously in real
-    // usage) before its @change handler fires.
-    // setProps's typing is too strict on script-setup components; cast to
-    // accept the prop name the component does take (see
-    // TerminalSearchOverlay.test.ts for the same precedent).
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await (wrapper as any).setProps({ provider: { providerId: "codex", model: "opus", skipPermissions: false } });
-    await wrapper.findComponent(CustomSelect).vm.$emit("change");
+    await selectProvider(wrapper, "codex");
     // codex suggests no worker model, so the worker gets "Default" (Codex picks
     // its own recommended model); codex defaults to skipPermissions: true.
     const updated = lastEmitted<{ providerId: string; model: string; effort: string; skipPermissions: boolean }>(
       wrapper,
       "update:provider",
     );
+    expect(updated.providerId).toBe("codex");
     expect(updated.model).toBe("");
     expect(updated.effort).toBe("");
     expect(updated.skipPermissions).toBe(true);
@@ -107,10 +109,9 @@ describe("AgentProviderConfig", () => {
         providerOptions,
       },
     });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await (wrapper as any).setProps({ provider: { providerId: "codex", model: "", skipPermissions: true } });
-    await wrapper.findComponent(CustomSelect).vm.$emit("change");
-    const updated = lastEmitted<{ model: string; effort: string }>(wrapper, "update:provider");
+    await selectProvider(wrapper, "codex");
+    const updated = lastEmitted<{ providerId: string; model: string; effort: string }>(wrapper, "update:provider");
+    expect(updated.providerId).toBe("codex");
     expect(updated.model).toBe("gpt-6.1-sol");
     expect(updated.effort).toBe("xhigh");
   });
