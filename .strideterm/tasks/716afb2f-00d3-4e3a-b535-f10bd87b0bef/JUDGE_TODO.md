@@ -637,3 +637,10 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - History now renders a temporary option for a persisted ref while its sources load, preserving the select's visible value as well as the scoped store value. Ref pruning waits for branch and tag lists to be available; a tag read error no longer looks like a deleted tag. The History picker test asserts the saved value remains in the actual select. Focused `GitBranchesTab.test.ts` passes 10 tests, repository `npm run typecheck` passes, Prettier and `git diff --check` pass.
 - The initial audit ledger's item 69 still has open empty/detached/large-list and human root/profile acceptance; the deleted-ref pruning behavior is implemented once both lists are available. User visual verification and broader lifecycle/audit coverage remain outstanding, so WORK_LOCK remains.
+
+## Worker continuation verification refresh (2026-10-21)
+
+- Current full renderer UI suite: `npm run test:ui` passes 214 files / 3,042 tests after the History picker loading-state change.
+- Current repository `npm run typecheck`: passes. `npm run lint`: passes with 0 errors / 4,678 existing warnings; repository Prettier check passes. `$env:VITE_BUILD_WATCH='1'; npm run build`: passes. No Electron app or dev server was launched.
+- Full backend was last run successfully immediately before the latest frontend-only History picker changes: 224 files / 5,465 passed / 7 skipped with four workers. Backend sources are unchanged since that run.
+- Remaining: user-owned `MANUAL_VERIFICATION.md` walkthrough, detailed lifecycle/reconnect/route-audit coverage, and remaining numbered partial requirements. WORK_LOCK remains in place; this is not an assertion of completion.
