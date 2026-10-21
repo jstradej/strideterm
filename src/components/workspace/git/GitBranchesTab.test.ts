@@ -240,6 +240,42 @@ describe("GitBranchesTab compact history picker", () => {
     expect(picker.findAll(".git-tree__placeholder").some((node) => node.text() === "No commits found.")).toBe(true);
   });
 
+  test("renders and filters a large History ref list", async () => {
+    mobileViewport.isNarrow.value = false;
+    mobileViewport.isMobile.value = false;
+    const branches = Array.from({ length: 400 }, (_, index) => ({
+      name: `feature/topic-${String(index).padStart(3, "0")}`,
+      isCurrent: index === 0,
+    }));
+    const picker = mount(GitBranchesTab, {
+      props: {
+        workspaceId: "ws-large-history",
+        snapshot: { dirty: false, branch: branches[0]!.name },
+        gitUi: {
+          branchList: {
+            current: branches[0]!.name,
+            local: branches,
+            remotes: [],
+            defaultBranch: "",
+            defaultRemote: "",
+          },
+          graph: { commits: [], head: "", refs: {} },
+          tags: [],
+        },
+        compactHistory: true,
+      },
+    });
+    await flushPromises();
+    const select = picker.get('[aria-label="History reference"]');
+    expect(select.findAll("option").some((option) => option.text().includes("feature/topic-399"))).toBe(true);
+
+    await picker.get('[aria-label="Search history references"]').setValue("feature/topic-399");
+    expect(select.findAll("option").filter((option) => option.text().includes("feature/topic-")).length).toBeLessThan(
+      5,
+    );
+    expect(select.text()).toContain("feature/topic-399");
+  });
+
   test("selecting a named reference only changes the graph query", async () => {
     vi.useFakeTimers();
     mobileViewport.isMobile.value = false;
