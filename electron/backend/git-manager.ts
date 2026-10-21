@@ -2649,9 +2649,9 @@ export class GitManager extends EventEmitter {
       }
     }
 
+    const startTime = Date.now();
     try {
       log.debug("git action starting", { type, label, cwd: effectiveCwd, baseBranch: resolvedBaseBranch });
-      const startTime = Date.now();
       const actionResult = await run(effectiveCwd, resolvedBaseBranch);
       let restoreOutput = "";
       if (stashLabel) {
@@ -2689,6 +2689,7 @@ export class GitManager extends EventEmitter {
         type,
         connection,
         success: false,
+        durationMs: Date.now() - startTime,
         errorMessage: extractErrorMessage(error),
         workspaceId: workspace.id,
         remoteUrl: remoteUrlOnError,

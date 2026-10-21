@@ -4165,6 +4165,7 @@ describe("GitManager", () => {
       ]);
       expect(entries.every((entry) => entry.connectionId === "system-ws-cherry-audit")).toBe(true);
       expect(entries.every((entry) => entry.rootPath === root)).toBe(true);
+      expect(entries.every((entry) => typeof entry.durationMs === "number" && entry.durationMs >= 0)).toBe(true);
     });
 
     test("records a single resolved-root write audit outcome for History squash", async () => {

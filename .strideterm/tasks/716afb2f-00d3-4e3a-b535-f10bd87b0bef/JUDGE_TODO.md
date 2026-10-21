@@ -244,6 +244,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
    Evidence: Long Git failure outcomes now carry a stable `git_operation_failed` code plus bounded warnings, conflict paths, and raw output through the event/payload schema to the Git operation card. Runtime, store, and registry regressions cover this path.
    Evidence: `electron/backend/runtime.test.ts:14771` now exercises structured warning/conflict/raw-output propagation through fetch, push, force push, remote branch/tag writes, merge, and rebase; the nine-case focused runtime test passes. `runtime-git-handlers.ts:68-115,295-318` builds a bounded user-facing failure and structured error metadata; `operation-registry.ts:122-145` preserves bounded warning/conflict/output fields and logs operation id/profile/workspace/root/step/duration.
    Evidence: `src/stores/git-ui.test.ts` covers a rejected fetch-start transport request: the busy state releases, an error result remains visible, and the standard notification path records the failure to `strideterm.log`.
+   Evidence: `runWriteAction` now records elapsed duration for rejected Git writes as well as successful writes; the real cherry-pick success/failure audit regression asserts duration on both rows.
    Remaining: Audit generic rejected-promise classification for each manager/runtime route, verify cancellation/blocked/partial distinctions, and complete user visual acceptance.
 
 52. **PARTIAL** — Busy always releases, prevents duplicate launch; uncertain write results trigger state verification before user retry, never automatic write retry.
@@ -1015,3 +1016,9 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Re-ran the full GitManager backend test file after recent audit coverage additions: 188 passed / 2 skipped. Repository typecheck passes; touched-file Prettier passes; ESLint reports 0 errors / 99 existing warnings; `git diff --check` passes.
 - Re-read the current prompt, TODO, worker verification checklist, manual walkthrough and the numbered audit. Outstanding requirements remain the user-owned visual walkthrough, keyboard/narrow human acceptance, and several inventory-wide routes and uncertain synchronous-write lifecycle behaviors; WORK_LOCK stays present.
+
+## Worker continuation (failed Git audit duration)
+
+- Fixed `runWriteAction` to include elapsed duration in audit rows when the Git command rejects. Strengthened the real-repository cherry-pick audit test to assert duration is present for both success and failure.
+- Focused cherry-pick audit test passes (1 passed / 189 skipped); full GitManager suite passes (188 passed / 2 skipped); `npm run typecheck` passes; touched-file ESLint reports 0 errors / 137 existing warnings; Prettier and `git diff --check` pass.
+- Re-audited requirements 47, 51, and 77 against current manager paths and real-repository evidence. These remain partial because full route inventory and uncertain synchronous-write outcome recovery are not complete; manual visual acceptance remains user-owned. WORK_LOCK stays present.

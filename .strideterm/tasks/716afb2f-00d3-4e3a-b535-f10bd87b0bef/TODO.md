@@ -150,3 +150,4 @@
 - [x] Verify History cherry-pick success and Git failure each emit exactly one resolved-root system write audit entry in a real repository.
 - [x] Verify History squash creates the requested commit and emits one resolved-root system write audit entry in a real repository.
 - [x] Re-run the full GitManager backend test file after recent audit coverage additions: 188 passed / 2 skipped; typecheck, touched-file Prettier/ESLint (0 errors), and diff check pass.
+- [x] Include elapsed duration on failed generic Git mutation audit rows; assert duration for real cherry-pick success/failure and rerun full GitManager suite (188 passed / 2 skipped).
