@@ -1137,3 +1137,9 @@ pm run test:ui -- src/stores/git-ui.test.ts passes 71 tests. This strengthens re
 
 - Cross-checked the top-level action inventory against `GitPane`, Git store/transport/runtime handlers, and GitManager. Corrected a false-positive `revert/reset` capability: no user-facing Git reset/revert action or route exists in this shell; the manager's reset commands are internal squash/index-reconciliation steps. The inventory now records that boundary instead of implying an exposed route with no entry point.
 - This narrows requirement 36's route list; exhaustive permission/result/audit variants for the actual listed routes remain open. `git diff --check` passes.
+
+## Worker continuation (confirmed local tag delete retry guard)
+
+- The UI confirmation path for deleting a local tag bypassed the store's uncertain-write guard even though direct tag-delete calls had it. The confirmation path now captures the selected root and requires a successful refresh of that same repository before retrying after a lost response. Added a regression covering disconnect, blocked duplicate attempt, successful root refresh, and allowed retry; all 72 Git UI store tests pass.
+- Current-tree verification: full UI 215 files / 3,106 passed; full backend 224 files / 5,507 passed / 7 skipped; repository typecheck; full lint 0 errors / 4,720 warnings with Prettier clean; watch-compatible build. `git diff --check` passes.
+- This closes one concrete uncertain-write route gap; route-by-route permission/result/audit reconciliation and the full 122-item self-audit remain open. User waived visual verification. Keep `WORK_LOCK` and verdict `continue` until the remaining audit is reconciled.

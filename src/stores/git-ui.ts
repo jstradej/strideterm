@@ -1363,8 +1363,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const api = _api as any;
       if (action === "deleteLocalTag") {
-        await runGitAction(workspaceId, "delete-tag", () =>
-          api.gitDeleteTag({ workspaceId, tagName: p!.tagName, rootPath }),
+        await runGitAction(
+          workspaceId,
+          "delete-tag",
+          () => api.gitDeleteTag({ workspaceId, tagName: p!.tagName, rootPath }),
+          { rootPath, requireRefreshBeforeRetry: true },
         );
         await gitListTags(workspaceId);
       } else if (action === "deleteRemoteTag") {

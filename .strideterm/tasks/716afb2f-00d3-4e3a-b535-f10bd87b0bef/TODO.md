@@ -16,6 +16,8 @@
 
 ## Done
 
+- [x] Guard confirmed local tag deletion against duplicate retry after a lost response; require a successful refresh of the same repository root first.
+
 - [x] Add opt-in setting defaulting off, normalization, explicit boolean schema validation, Settings control, and safe nested merge coverage.
 - [x] Add separate new-view selection and opt-in History / Changes / Review shell with a More path to preserved existing tools.
 - [x] Add searchable read-only history ref selection, favorites and recent refs scoped by profile/workspace/root.

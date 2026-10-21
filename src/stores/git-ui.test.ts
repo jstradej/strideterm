@@ -333,6 +333,37 @@ describe("git-ui store", () => {
       expect(refreshGit).toHaveBeenCalledTimes(2);
     });
 
+    test("requires repository refresh before retrying confirmed local-tag deletion after a lost response", async () => {
+      const deleteTag = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("Remote transport disconnected."))
+        .mockResolvedValue({ result: { ok: true, summary: "Deleted tag v1.2.3." } });
+      getGitSnapshot.mockReturnValue({ available: true });
+      const store = useGitUiStore();
+      store.init({
+        gitDeleteTag: deleteTag,
+        gitListTags: vi.fn().mockResolvedValue({ ok: true, tags: [] }),
+        refreshGit: vi.fn().mockResolvedValue({ fresh: true }),
+      } as unknown as Transport);
+      store.setActiveRoot("ws-uncertain-tag", "/repo/a");
+
+      store.confirmDeleteLocalTag("ws-uncertain-tag", "v1.2.3");
+      await store.gitConfirmAction("ws-uncertain-tag");
+      expect(store.get("ws-uncertain-tag").lastResult?.summary).toContain("outcome is uncertain");
+      expect(deleteTag).toHaveBeenCalledTimes(1);
+
+      store.confirmDeleteLocalTag("ws-uncertain-tag", "v1.2.3");
+      await store.gitConfirmAction("ws-uncertain-tag");
+      expect(deleteTag).toHaveBeenCalledTimes(1);
+      expect(store.get("ws-uncertain-tag").lastResult?.summary).toContain("Refresh this repository");
+
+      await store.refreshGit("ws-uncertain-tag");
+      store.confirmDeleteLocalTag("ws-uncertain-tag", "v1.2.3");
+      await store.gitConfirmAction("ws-uncertain-tag");
+      expect(deleteTag).toHaveBeenCalledTimes(2);
+      expect(store.get("ws-uncertain-tag").lastResult).toBeNull();
+    });
+
     test("requires repository verification before retrying a branch mutation with a lost response", async () => {
       const checkout = vi
         .fn()
