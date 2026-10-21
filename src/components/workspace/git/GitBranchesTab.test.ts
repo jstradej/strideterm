@@ -21,6 +21,7 @@ const gitDeleteBranch = vi.fn();
 const gitDeleteRemoteBranch = vi.fn();
 const gitCreateTag = vi.fn();
 const gitRemoveWorktree = vi.fn();
+const getHistorySelection = vi.fn((_workspaceId: string, _rootPath: string, _profileId: string) => historySelection);
 
 vi.mock("../../../stores/app.js", () => ({
   useAppStore: () => ({
@@ -37,7 +38,7 @@ vi.mock("../../../stores/git-ui.js", () => ({
     gitFetch,
     gitPush,
     getGitHistoryPreferences: () => ({ favorites: [], recent: [] }),
-    getGitHistorySelection: (_workspaceId: string, _rootPath: string, _profileId: string) => historySelection,
+    getGitHistorySelection: getHistorySelection,
     setGitHistorySelection: (
       _workspaceId: string,
       _rootPath: string,
@@ -121,6 +122,7 @@ beforeEach(() => {
   gitDeleteRemoteBranch.mockClear();
   gitCreateTag.mockClear();
   gitRemoveWorktree.mockClear();
+  getHistorySelection.mockClear();
   document.body.innerHTML = "";
 });
 
@@ -136,6 +138,26 @@ describe("GitBranchesTab compact history picker", () => {
   test("surfaces tag read failures in History", async () => {
     const picker = mountTab({ tagsError: "Could not load tags." });
     expect(picker.get('[role="alert"]').text()).toBe("Could not load tags.");
+  });
+
+  test("reads History selection scoped to the active profile, workspace, and root", async () => {
+    const picker = mount(GitBranchesTab, {
+      props: {
+        workspaceId: "ws-scoped-history",
+        activeRootPath: "/repo/scoped",
+        profileId: "profile-scoped",
+        snapshot: { dirty: false, branch: "main" },
+        gitUi: {
+          branchList: { current: "main", local: [], remotes: [], defaultBranch: "", defaultRemote: "" },
+          graph: { commits: [], head: "", refs: {} },
+          tags: [],
+        },
+        compactHistory: true,
+      },
+    });
+    await flushPromises();
+    expect(getHistorySelection).toHaveBeenCalledWith("ws-scoped-history", "/repo/scoped", "profile-scoped");
+    expect(picker.find('[aria-label="History reference"]').exists()).toBe(true);
   });
 
   test("keeps a persisted ref selection while branch and tag reads are pending", async () => {
