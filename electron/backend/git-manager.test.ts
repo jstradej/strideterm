@@ -4101,6 +4101,44 @@ describe("GitManager", () => {
       expect(entries.every((entry) => entry.rootPath === "/repo")).toBe(true);
     });
 
+    test("records a resolved-root write audit for aborting a real bisect operation", async () => {
+      const entries: Record<string, unknown>[] = [];
+      const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
+      const root = await initRepo();
+      const workspace = { id: "ws-bisect-audit", cwd: root, kind: "terminal" as const };
+
+      await fs.writeFile(path.join(root, "a.txt"), "middle\n", "utf8");
+      rg(root, ["add", "-A"]);
+      rg(root, ["commit", "-q", "-m", "middle"]);
+      await fs.writeFile(path.join(root, "a.txt"), "tip\n", "utf8");
+      rg(root, ["add", "-A"]);
+      rg(root, ["commit", "-q", "-m", "tip"]);
+      rg(root, ["bisect", "start"]);
+      rg(root, ["bisect", "bad", "HEAD"]);
+      rg(root, ["bisect", "good", "HEAD^^"]);
+      expect((await auditMgr.inspectWorkspace(workspace)).operationState).toMatchObject({
+        kind: "bisect",
+        inProgress: true,
+      });
+
+      const result = await auditMgr.abortOperation(workspace, { rootPath: root });
+
+      expect(result.ok).toBe(true);
+      expect((await auditMgr.inspectWorkspace(workspace)).operationState).not.toMatchObject({
+        kind: "bisect",
+        inProgress: true,
+      });
+      expect(rg(root, ["status", "--porcelain"]).trim()).toBe("");
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        operation: "gitBisect",
+        category: "write",
+        success: true,
+        rootPath: root,
+        durationMs: expect.any(Number),
+      });
+    });
+
     test("records one resolved-root audit outcome for each local and remote branch mutation", async () => {
       const entries: Record<string, unknown>[] = [];
       const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });

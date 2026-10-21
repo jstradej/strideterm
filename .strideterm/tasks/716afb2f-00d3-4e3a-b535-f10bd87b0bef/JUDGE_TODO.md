@@ -225,6 +225,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
    Evidence: A real local bare remote test verifies push-tag, push-all-tags, and remote-tag deletion each emit one success and one unavailable-remote failure audit row with the workspace root.
    Evidence: A real-repository History mutation test verifies cherry-pick success and a valid-format missing-commit failure each emit exactly one system Git write audit row with the resolved root. A History squash regression verifies the resulting commit and exactly one resolved-root write audit outcome.
    Evidence: Continue/abort/skip use the detected Git operation kind as their audit type. Added `bisect` to the write classifier and a regression verifies both successful and failed bisect outcomes are categorized as writes with the repository root.
+   Evidence: A real Git repository regression starts a multi-commit bisect session, confirms the detected operation state, aborts it through `GitManager`, verifies the operation ended, and asserts exactly one successful `gitBisect` write audit row with resolved root and duration.
    Remaining: Route-level evidence covers index/local tag, branch/history/stash dispatch and writes, worktree add/remove, provider comments/votes/review submission, PR creation, and Azure thread update. Other mutation families still need assertions; manual menu/shortcut walkthrough remains.
 
 48. **IMPLEMENTED** — Check rejected promises and structured ok:false; promise success must not mean Git success.
@@ -1048,3 +1049,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - The bulk `refreshRoot` action now identifies itself as a refresh for uncertainty recovery and passes the requested root through the store action context. This lets a successful refresh of a non-active root clear only that root's lost-response markers; refreshing a different active root continues to leave them intact.
 - Strengthened the conflict-root regression to verify active root B cannot clear root A's marker, then `refreshRoot(A)` clears it without switching active roots and permits the retry. Git UI store suite passes 68/68 and repository typecheck passes. Provider review, route audit, and user visual acceptance remain open; WORK_LOCK stays present.
+
+## Worker continuation (real bisect mutation audit)
+
+- Added a real-repository test that creates a three-commit history, starts bisect with a known good/bad range, verifies GitManager detects the in-progress bisect, aborts through `abortOperation`, and confirms the operation ends with exactly one `gitBisect` write audit row containing the resolved root and duration.
+- Focused backend case passes (1 passed / 190 skipped). Broader action-route audit and user visual verification remain open; WORK_LOCK stays present.

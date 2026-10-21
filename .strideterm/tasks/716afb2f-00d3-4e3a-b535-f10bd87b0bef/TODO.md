@@ -146,7 +146,7 @@
 - [x] Verify remote tag push, push-all-tags, and remote deletion each emit one resolved-root system Git audit row on success and failure against a local bare remote.
 - [x] Bring custom commit-all onto the shared per-worktree lock and system Git audit path; real-repository test verifies success and rejected empty selection each produce one resolved-root audit row.
 - [x] Lock and audit synchronous merge-into-base against the base worktree; real sibling-worktree test verifies success and dirty-target rejection each record one resolved-target-root outcome.
-- [x] Classify bisect continue/abort/skip audit outcomes as writes and add success/failure classification coverage with the resolved root.
+- [x] Classify bisect continue/abort/skip audit outcomes as writes; verify helper classification and a real bisect abort emits one resolved-root audit row.
 - [x] Verify History cherry-pick success and Git failure each emit exactly one resolved-root system write audit entry in a real repository.
 - [x] Verify History squash creates the requested commit and emits one resolved-root system write audit entry in a real repository.
 - [x] Re-run the full GitManager backend test file after recent audit coverage additions: 188 passed / 2 skipped; typecheck, touched-file Prettier/ESLint (0 errors), and diff check pass.
