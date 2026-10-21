@@ -172,7 +172,8 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
 
 36. **PARTIAL** — Inventory every existing button/context menu/shortcut with its store, permission, audit, results and new UI destination before decomposition.
    Evidence: .strideterm/tasks/716afb2f-00d3-4e3a-b535-f10bd87b0bef/IMPLEMENTATION_INVENTORY.md:17-37 now maps shared toolbar, branch, commit context, file context, Changes, stash, worktree, conflict, bulk, and provider entry points to dispatch/guards, result surface, and new-view destination. `useCommitContextMenu.ts:95-188` confirms commit menu actions; `GitPane.vue:148-224` confirms shared toolbar actions.
-   Remaining: The action index is component/action-class level. The original stage asks for every existing entry point with exact permission/audit and result variant, and the table groups some branch/stash/provider sub-actions; no Git-specific shortcut was found in the inspected shell. Verify and expand exact per-action guards/audit/results before marking complete. Human discoverability review also remains.
+   Evidence: The index now has individual rows for toolbar, branch, commit, Changes, stash, worktree, conflict, bulk, and provider actions, including dispatch/guard, result surface, and destination. It distinguishes stash import's write lock/audit from export's read-only path.
+   Remaining: Reconcile any permission/audit variants that still need deeper route-level evidence. Human discoverability review also remains.
 
 37. **PARTIAL** — Picker supports keyboard open/search/select/Escape/focus return; context menus and relevant shortcuts remain usable.
    Evidence: src/components/workspace/git/GitBranchesTab.vue:5,17,67,210; src/components/workspace/git/GitBranchesTab.test.ts:104.
@@ -215,7 +216,8 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
 47. **PARTIAL** — Buttons/menu/shortcuts share one store/runtime/audit path; stage/index APIs use mutation guard, repository lock and audit.
    Evidence: src/components/workspace/git/GitChangesTab.vue:572,583,607; electron/backend/git-manager.ts:2203,2234,2467; electron/backend/git-manager.ts:4278,4293.
    Evidence: `electron/backend/runtime.test.ts:8482` asserts each stage-file, unstage-file, commit-staged, create-tag, and delete-tag route calls its matching manager write exactly once with the resolved root. `electron/backend/git-manager.test.ts:3988` verifies the three index outcomes plus successful local tag create/delete each produce exactly one system Git audit row.
-   Remaining: Route-level evidence now covers index/local tag, branch/history/stash dispatch, stash writes, worktree add/remove, provider comments/votes/review submission, PR creation, and Azure thread update. Remaining routes still need per-entry-point mapping and assertions; complete menu/shortcut inventory mapping.
+   Evidence: `electron/backend/git-manager.stash.test.ts` exercises successful stash patch import and rejected path traversal against a real repository, asserting exactly one audit outcome per attempt with resolved root. The manager routes import through the per-worktree lock and shared audit wrapper.
+   Remaining: Route-level evidence covers index/local tag, branch/history/stash dispatch and writes, worktree add/remove, provider comments/votes/review submission, PR creation, and Azure thread update. Other mutation families still need assertions; manual menu/shortcut walkthrough remains.
 
 48. **IMPLEMENTED** — Check rejected promises and structured ok:false; promise success must not mean Git success.
    Evidence: src/stores/git-ui.ts:465,471,481,506,1290; electron/backend/runtime-git-handlers.ts:143; src/stores/git-ui.test.ts:141.
@@ -904,3 +906,9 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Added a lost-start-response retry test for remote branch deletion and asserted merge/rebase starts carry an idempotency key. Expanded the context matrix from three grouped rows to explicit classic/new × standard/PR-linked × Electron/remote combinations plus the common History query behavior, with root/view scoping and provider/remote route notes.
 - `npm run test:ui -- src/stores/git-ui.test.ts`: 62 passed. `npm run typecheck`: pass. Prettier and `git diff --check` pass. Detailed per-entry permissions/audit/results, other lifecycle gaps, and user visual verification remain open; WORK_LOCK stays.
+
+## Worker continuation (action index and stash import audit)
+
+- Expanded the action inventory into individual UI entry-point rows across toolbar, branches, commits, Changes, stashes, worktrees, conflicts, bulk and provider panes. The client/context matrix records classic/new, normal/PR-linked and Electron/remote combinations.
+- Routed stash patch import through the shared per-worktree lock and Git audit wrapper. A real-repository test checks one audit row for success and one for rejected path traversal.
+- Focused backend regression passes (1 passed / 34 skipped); repository typecheck passes. Detailed remaining mutation-family audits and user visual acceptance remain open; WORK_LOCK stays.

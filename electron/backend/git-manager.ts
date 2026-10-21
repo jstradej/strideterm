@@ -2746,6 +2746,7 @@ export class GitManager extends EventEmitter {
       "stash-apply",
       "stash-drop",
       "stash-branch",
+      "stash-import",
       "remove-worktree",
       "create-worktree",
     ]);
@@ -3699,7 +3700,7 @@ export class GitManager extends EventEmitter {
   private async runAuditedGitMutation(
     workspace: WorkspaceRef | null,
     rootPath: string,
-    type: "stash" | "stash-pop" | "stash-apply" | "stash-drop" | "stash-branch" | "remove-worktree",
+    type: "stash" | "stash-pop" | "stash-apply" | "stash-drop" | "stash-branch" | "stash-import" | "remove-worktree",
     run: (cwd: string) => Promise<Record<string, unknown>>,
   ): Promise<Record<string, unknown>> {
     const cwd = rootPath || String(workspace?.cwd || "");
@@ -4151,6 +4152,19 @@ export class GitManager extends EventEmitter {
   async stashImportPatch(
     workspace: WorkspaceRef | null,
     { rootPath = "", patch = "", message = "" }: { rootPath?: string; patch?: string; message?: string } = {},
+  ): Promise<Record<string, unknown>> {
+    const effectiveCwd = rootPath || workspace?.cwd;
+    if (!effectiveCwd) {
+      return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
+    }
+    return this.runAuditedGitMutation(workspace, effectiveCwd, "stash-import", (cwd) =>
+      this.stashImportPatchUnlocked(workspace, { rootPath: cwd, patch, message }),
+    );
+  }
+
+  private async stashImportPatchUnlocked(
+    workspace: WorkspaceRef | null,
+    { rootPath = "", patch = "", message = "" }: { rootPath?: string; patch?: string; message?: string },
   ): Promise<Record<string, unknown>> {
     const effectiveCwd = rootPath || workspace?.cwd;
     if (!effectiveCwd) {

@@ -132,3 +132,4 @@
 - [x] Verify GitHub review submission emits exactly one classified successful user-initiated audit entry; focused manager test passes.
 - [x] Verify GitHub PR creation and Azure PR creation/thread status updates each emit one classified successful user-initiated provider audit entry; focused provider-manager tests pass.
 - [x] Reuse idempotency keys after lost start responses across long Git network actions (branch deletion, force push, merge/rebase, tag writes, and bulk fetch/pull); focused store lifecycle tests and typecheck pass.
+- [x] Route stash patch import through the per-worktree lock and system Git audit, with real-repository success and rejected-path audit coverage.

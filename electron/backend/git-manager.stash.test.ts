@@ -23,13 +23,13 @@ afterEach(async () => {
   await Promise.all(tempPaths.splice(0).map((p) => fs.rm(p, { recursive: true, force: true })));
 });
 
-async function makeStashRepo() {
+async function makeStashRepo(gitAuditLogStore?: { logEntry(entry: Record<string, unknown>): void }) {
   // realpath the tmp dir: on macOS os.tmpdir() is under /var/folders, and the
   // un-resolved /var prefix trips file-manager's sensitive-path denylist that
   // stashFileDiff routes through (/var → /private/var after realpath).
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-stash-")));
   tempPaths.push(root);
-  const manager = new GitManager({});
+  const manager = new GitManager({ gitAuditLogStore });
   const g = (args: string[]) => manager.execGit(root, args);
   await g(["init", "-b", "master"]);
   await g(["config", "user.email", "t@example.com"]);
@@ -419,6 +419,35 @@ describe("GitManager stash lifecycle (real git)", () => {
     expect(imported.ok).toBe(true);
     const list = stashList(await manager.listStashes(null, { rootPath: root }));
     expect(list[0].customMessage).toBe("reimported");
+  });
+
+  test("stashImportPatch is locked and records one success or failure audit per request", async () => {
+    const entries: Record<string, unknown>[] = [];
+    const { root, manager, g } = await makeStashRepo({ logEntry: (entry) => entries.push(entry) });
+    await fs.writeFile(path.join(root, "base.txt"), "line1\nROUNDTRIP\n", "utf8");
+    await manager.stash(null, { rootPath: root, message: "exported", includeUntracked: false });
+    const exported = await manager.stashExportPatch(null, { rootPath: root, ref: "stash@{0}" });
+    expect(exported.ok).toBe(true);
+    await manager.stashDrop(null, { rootPath: root, ref: "stash@{0}" });
+    await g(["checkout", "--", "base.txt"]).catch(() => undefined);
+
+    const imported = await manager.stashImportPatch(null, {
+      rootPath: root,
+      patch: String(exported.patch),
+      message: "audited import",
+    });
+    const rejected = await manager.stashImportPatch(null, {
+      rootPath: root,
+      patch: "diff --git a/../../escape.txt b/../../escape.txt\n",
+      message: "unsafe import",
+    });
+
+    expect(imported.ok).toBe(true);
+    expect(rejected.ok).toBe(false);
+    expect(entries.filter((entry) => entry.operation === "gitStash-import")).toMatchObject([
+      { category: "write", success: true, resourceType: "git", rootPath: root },
+      { category: "write", success: false, resourceType: "git", rootPath: root },
+    ]);
   });
 
   test("stashExportPatch includes untracked files when the stash had -u", async () => {
