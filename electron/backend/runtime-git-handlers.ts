@@ -27,7 +27,7 @@ interface GitHandlerCtx {
   syncWorktrees: () => Promise<void>;
   /** Emit a live push-progress frame (streamed git output, incl. pre-push hook) to connected clients. */
   emitGitProgress: (payload: { workspaceId: string; rootPath: string; chunk: string }) => void;
-  operations: Pick<OperationRegistry, "accept">;
+  operations: Pick<OperationRegistry, "accept" | "list">;
 }
 
 /**
@@ -109,6 +109,21 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
     const idempotencyKey = String(input.idempotencyKey || randomUUID());
     const operationInput = { kind, workspaceId: workspace.id, rootPath, stashDirty: input.stashDirty === true };
     const inputHash = JSON.stringify(operationInput);
+    const existing = operations
+      .list(profileId)
+      .find(
+        (record) =>
+          record.kind === `git.${kind}` &&
+          record.originWorkspaceId === workspace.id &&
+          record.intent.rootPath === rootPath &&
+          (record.status === "accepted" || record.status === "running"),
+      );
+    if (existing) {
+      if (existing.inputHash !== inputHash) {
+        throw new Error(`A Git ${kind} operation is already running for this repository.`);
+      }
+      return { started: true, operationId: existing.operationId, replayed: true };
+    }
     const connection = resolveGitConnection(workspace);
     const accepted = await operations.accept(
       {

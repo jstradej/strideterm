@@ -8820,6 +8820,30 @@ describe("runtime integration", () => {
     });
   });
 
+  test("long Git fetch deduplicates concurrent requests with different idempotency keys", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    let releaseFetch!: () => void;
+    const gate = new Promise<void>((resolve) => (releaseFetch = resolve));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fetch = vi.fn(async () => {
+      await gate;
+      return { ok: true, summary: "Fetch completed." };
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).fetch = fetch;
+    const waitForGitOperation = watchOperation(fixture);
+
+    const first = await fixture.runtime.gitFetch({ workspaceId: "ws-a1", idempotencyKey: "click-one" });
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    const second = await fixture.runtime.gitFetch({ workspaceId: "ws-a1", idempotencyKey: "click-two" });
+
+    expect(second).toEqual({ started: true, operationId: first.operationId, replayed: true });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    releaseFetch();
+    await waitForGitOperation(first.operationId);
+  });
+
   test("saves and deletes profiles while preserving a fallback default profile", async () => {
     const fixture = await createFixture();
     fixtures.push(fixture);
