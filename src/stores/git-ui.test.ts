@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, vi } from "vitest";
-import { computed, nextTick, reactive } from "vue";
+import { computed, isReactive, nextTick, reactive } from "vue";
 import { setActivePinia, createPinia } from "pinia";
 import { useGitUiStore } from "./git-ui.js";
 import { useNotificationStore } from "./notifications.js";
@@ -95,6 +95,26 @@ describe("git-ui store", () => {
     requests[0]({ ok: true, head: "old", commits: [{ hash: "old" }], refs: {} });
     await first;
     expect(store.get("ws1").graph?.head).toBe("new");
+  });
+
+  test("keeps large graph and diff read payloads outside deep reactivity", async () => {
+    const graph = { head: "abc", commits: [{ hash: "abc", message: "commit" }], refs: { main: "abc" } };
+    const diff = { ok: true, path: "large.txt", scope: "unstaged", diff: "+content", summary: "loaded" };
+    const store = useGitUiStore();
+    store.init({
+      gitLogGraph: vi.fn().mockResolvedValue({ ok: true, ...graph }),
+      gitDiffPreview: vi.fn().mockResolvedValue(diff),
+    } as unknown as Transport);
+    store.setActiveRoot("ws-shallow-git", "/repo");
+
+    await store.gitLoadGraph("ws-shallow-git", { branch: "main", force: true });
+    await store.gitSelectDiff("ws-shallow-git", "large.txt", "unstaged");
+
+    expect(isReactive(store.get("ws-shallow-git").graph)).toBe(false);
+    expect(isReactive(store.get("ws-shallow-git").graph?.commits)).toBe(false);
+    expect(isReactive(store.get("ws-shallow-git").diffPreview)).toBe(false);
+    expect(store.get("ws-shallow-git").graph?.head).toBe("abc");
+    expect(store.get("ws-shallow-git").diffPreview).toMatchObject({ diff: "+content" });
   });
 
   test("ignores an old History graph response after switching repository roots", async () => {

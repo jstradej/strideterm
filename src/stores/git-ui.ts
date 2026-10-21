@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { ref, watch } from "vue";
+import { markRaw, ref, watch } from "vue";
 import type { Transport, CallableTransport } from "../transport.js";
 import type { StatePayload } from "../../electron/shared/types/state.js";
 import { operationFinishedSchema, type OperationFinished } from "../../electron/shared/operation-events.js";
@@ -295,15 +295,26 @@ async function loadDiffPreview(
   isCurrent: () => boolean,
   fetch: () => Promise<unknown>,
 ): Promise<void> {
-  ui[field] = { ok: true, ...identity, diff: "", summary: loadingSummary };
+  ui[field] = markGitReadPayload({ ok: true, ...identity, diff: "", summary: loadingSummary });
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result = (await fetch()) as any;
-    if (isCurrent()) ui[field] = result;
+    if (isCurrent()) ui[field] = markGitReadPayload(result);
   } catch (error) {
     if (isCurrent())
-      ui[field] = { ok: false, ...identity, diff: "", summary: (error as Error)?.message || errorFallback };
+      ui[field] = markGitReadPayload({
+        ok: false,
+        ...identity,
+        diff: "",
+        summary: (error as Error)?.message || errorFallback,
+      });
   }
+}
+
+// Large Git read payloads are immutable and replaced as a whole, so keep them
+// out of Vue's deep proxy conversion while the containing UI state stays reactive.
+function markGitReadPayload<T>(value: T): T {
+  return value && typeof value === "object" ? (markRaw(value as object) as T) : value;
 }
 
 function buildDestructiveConfirm({
@@ -861,14 +872,14 @@ export const useGitUiStore = defineStore("git-ui", () => {
       if (requestId !== readGeneration.get(`${workspaceId}:branches`) || getActiveRoot(workspaceId) !== rootPath)
         return;
       if (result?.ok) {
-        ui.branchList = {
+        ui.branchList = markGitReadPayload({
           current: result.current || "",
           upstream: result.upstream || "",
           local: result.local || [],
           remotes: result.remotes || [],
           defaultBranch: result.defaultBranch || "",
           defaultRemote: result.defaultRemote || "",
-        };
+        });
         ui.branchesError = "";
         ui.branchListKey = rootPath;
         ui.branchListFetchedAt = Date.now();
@@ -1017,11 +1028,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
       };
       if (ui.graphRequestId !== requestId || getActiveRoot(workspaceId) !== rootPath) return;
       if (result?.ok) {
-        ui.graph = {
+        ui.graph = markGitReadPayload({
           head: result.head || "",
           commits: result.commits || [],
           refs: result.refs || {},
-        };
+        });
         ui.graphError = "";
         ui.graphKey = cacheKey;
         ui.graphFetchedAt = Date.now();
@@ -1783,7 +1794,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const result = (await (_api as CallableTransport).gitListTags({ workspaceId, rootPath })) as any;
       if (requestId !== readGeneration.get(`${workspaceId}:tags`) || getActiveRoot(workspaceId) !== rootPath) return;
-      ui.tags = result?.tags || [];
+      ui.tags = markGitReadPayload(result?.tags || []);
       ui.tagsError = result?.ok === false ? result.summary : "";
     } catch (error) {
       if (requestId !== readGeneration.get(`${workspaceId}:tags`) || getActiveRoot(workspaceId) !== rootPath) return;
