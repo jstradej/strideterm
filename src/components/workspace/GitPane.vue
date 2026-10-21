@@ -277,6 +277,10 @@
         :class="['git-view__panel', isSwitchingRepo && 'git-view__panel--busy']"
         style="min-height: 0; overflow: auto; display: flex; flex-direction: column"
       >
+        <div v-if="unavailableLegacyDestination" class="git-view__fallback" role="status">
+          {{ legacyDestinationLabel }} is unavailable right now. Showing {{ activeGitViewLabel }}; your More selection
+          is kept.
+        </div>
         <div v-if="isSwitchingRepo" class="git-view__overlay" aria-hidden="true">
           <div class="git-view__spinner"></div>
         </div>
@@ -655,8 +659,19 @@ const newGitViews = [
   { id: "changes", label: "Changes" },
   { id: "review", label: "Review" },
 ] as const;
-const activeLegacyDestination = computed(() => gitUiStore.getNewViewLegacyDestination(props.workspaceId));
 const legacyDestinations = computed(() => tabs.value.filter((tab) => tab.id !== "changes"));
+const storedLegacyDestination = computed(() => gitUiStore.getNewViewLegacyDestination(props.workspaceId));
+const activeLegacyDestination = computed(() =>
+  legacyDestinations.value.some((tab) => tab.id === storedLegacyDestination.value) ? storedLegacyDestination.value : "",
+);
+const unavailableLegacyDestination = computed(
+  () => useNewGitView.value && !!storedLegacyDestination.value && !activeLegacyDestination.value,
+);
+const legacyDestinationLabel = computed(() => {
+  const tab = tabs.value.find((item) => item.id === storedLegacyDestination.value);
+  return tab?.label || storedLegacyDestination.value.replace(/\b\w/g, (letter) => letter.toUpperCase());
+});
+const activeGitViewLabel = computed(() => newGitViews.find((view) => view.id === activeGitView.value)?.label || "Git");
 function onLegacyDestinationChange(event: Event) {
   const destination = (event.target as HTMLSelectElement).value;
   gitUiStore.setNewViewLegacyDestination(props.workspaceId, destination || "");
@@ -1165,6 +1180,13 @@ const switchBranchOptionsList = computed(() => switchBranchOptions.value.map((b)
 
 .git-tabs--new {
   align-items: center;
+}
+
+.git-view__fallback {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .git-new-view__more {

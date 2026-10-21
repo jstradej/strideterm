@@ -156,6 +156,26 @@ describe("GitPane repo picker", () => {
     await flushPromises();
     expect(wrapper.findComponent({ name: "GitBranchesTab" }).exists()).toBe(true);
   });
+
+  test("falls back with an explanation when a saved More tool is unavailable", async () => {
+    const ws = buildWorkspace({ id: "ws-unavailable-more-tool" });
+    const wrapper = mountPane("ws-unavailable-more-tool", [ws]);
+    const appStore = useAppStore();
+    appStore.payload = {
+      ...appStore.payload!,
+      appState: { ...appStore.payload!.appState!, settings: { git: { ui: { newView: true } } } },
+    } as StatePayload;
+    const gitUiStore = useGitUiStore();
+    gitUiStore.setNewViewLegacyDestination("ws-unavailable-more-tool", "conflicts");
+    await flushPromises();
+
+    expect(wrapper.find(".git-view__fallback").text()).toContain("Conflicts is unavailable right now");
+    expect(wrapper.find(".git-view__fallback").text()).toContain("Showing History");
+    expect(wrapper.find('[aria-label="More Git tools"]').element).toHaveProperty("value", "");
+    expect(gitUiStore.getNewViewLegacyDestination("ws-unavailable-more-tool")).toBe("conflicts");
+    expect(wrapper.findComponent({ name: "GitBranchesTab" }).exists()).toBe(true);
+  });
+
   test("Review renders the linked provider review workspace using its PR data and drafts", async () => {
     const linked = buildWorkspace({
       id: "ws-linked",
