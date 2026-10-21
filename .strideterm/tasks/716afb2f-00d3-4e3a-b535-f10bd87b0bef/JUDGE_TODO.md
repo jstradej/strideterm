@@ -950,3 +950,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 - `npm run test:backend -- electron/backend/git-manager.test.ts -t "successful and failed remote branch deletion"`: 1 passed / 183 skipped. Other audit families and user visual acceptance remain open; WORK_LOCK stays.
 
 - Verification: `npm run typecheck` passes; focused ESLint reports 0 errors / 93 warnings; Prettier and `git diff --check` pass.
+
+## Worker continuation (pull/push uncertain start response)
+
+- Added pull and push store regressions for a rejected start request: the action runs once, busy clears, and the idempotency key is retained. An explicit retry reuses that key and clears it only after a known result. Focused cases pass; broader synchronous-write uncertainty and user visual acceptance remain open; WORK_LOCK stays present.
+- Verification: focused pull/push cases pass (2 passed); `npm run typecheck` passes; touched-file ESLint reports 0 errors / 17 warnings; Prettier and `git diff --check` pass.

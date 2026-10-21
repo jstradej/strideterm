@@ -408,6 +408,35 @@ describe("git-ui store", () => {
       expect(store.get("ws1").busyAction).toBe("");
     });
 
+    test.each([
+      ["pull", "gitPull", (store: ReturnType<typeof useGitUiStore>) => store.gitPull("ws1")],
+      ["push", "gitPush", (store: ReturnType<typeof useGitUiStore>) => store.gitPush("ws1")],
+    ] as const)(
+      "reuses the %s key after a lost start response without automatically retrying",
+      async (_action, method, run) => {
+        const request = vi
+          .fn()
+          .mockRejectedValueOnce(new Error("Connection lost before the operation ID arrived."))
+          .mockResolvedValueOnce({ result: { ok: true, summary: "Recovered." } });
+        const store = useGitUiStore();
+        store.init({ [method]: request } as unknown as Transport);
+        store.setActiveRoot("ws1", "/repo/a");
+
+        await run(store);
+        expect(request).toHaveBeenCalledTimes(1);
+        expect(store.get("ws1").busyAction).toBe("");
+        expect(store.get("ws1").pendingLongOperationKeys).toBeTruthy();
+        await run(store);
+
+        expect(request).toHaveBeenCalledTimes(2);
+        expect(request.mock.calls[1]![0]).toMatchObject({
+          rootPath: "/repo/a",
+          idempotencyKey: request.mock.calls[0]![0].idempotencyKey,
+        });
+        expect(store.get("ws1").pendingLongOperationKeys).toEqual({});
+      },
+    );
+
     test("reuses a tag-push idempotency key after its start response is lost", async () => {
       const pushTag = vi
         .fn()
