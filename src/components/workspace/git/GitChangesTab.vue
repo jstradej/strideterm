@@ -605,9 +605,13 @@ async function onStageHunk(hunk: string, index: number) {
   }
 }
 async function onCommitStaged() {
-  if (!stagedCommitMessage.value.trim()) return;
-  if (await gitUiStore.gitCommitStaged(props.workspaceId, stagedCommitMessage.value))
-    gitUiStore.setStagedCommitMessage(props.workspaceId, props.activeRootPath, "");
+  const workspaceId = props.workspaceId;
+  const rootPath = props.activeRootPath;
+  const message = stagedCommitMessage.value;
+  if (!message.trim()) return;
+  if (await gitUiStore.gitCommitStaged(workspaceId, message)) {
+    gitUiStore.setStagedCommitMessage(workspaceId, rootPath, "");
+  }
 }
 
 function updateMobileLayout() {
@@ -771,14 +775,15 @@ watch(
   },
 );
 
-const commitMessage = ref("");
+const commitMessage = computed({
+  get: () => gitUiStore.getClassicCommitMessage(props.workspaceId, props.activeRootPath),
+  set: (message: string) => gitUiStore.setClassicCommitMessage(props.workspaceId, props.activeRootPath, message),
+});
 
 watch(
   () => [props.workspaceId, props.activeRootPath],
   () => {
-    selectedPaths.value = new Set();
     mobileExpandedDirectories.value = new Set();
-    commitMessage.value = "";
     activeFilter.value = "all";
     mobileMode.value = compactChanges.value ? "list" : "";
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
@@ -803,17 +808,22 @@ function commitSelection(): { paths: string[]; previousPaths: string[] } {
   return buildCommitSelection(allChangedFiles.value, selectedPaths.value);
 }
 
-function onCommitAll() {
+async function onCommitAll() {
   const msg = commitMessage.value.trim();
   if (!msg) return;
   const { paths, previousPaths } = commitSelection();
-  gitUiStore.gitCommitAll(
+  const workspaceId = props.workspaceId;
+  const rootPath = props.activeRootPath;
+  const committed = await gitUiStore.gitCommitAll(
     props.workspaceId,
     msg,
     paths.length ? paths : undefined,
     previousPaths.length ? previousPaths : undefined,
   );
-  commitMessage.value = "";
+  if (committed) {
+    gitUiStore.setClassicCommitMessage(workspaceId, rootPath, "");
+    gitUiStore.setClassicSelectedPaths(workspaceId, rootPath, []);
+  }
 }
 
 function returnToList() {
@@ -836,15 +846,16 @@ async function submitMobileCommit() {
   const rootPath = props.activeRootPath;
   commitBusy.value = true;
   try {
-    await gitUiStore.gitCommitAll(
+    const committed = await gitUiStore.gitCommitAll(
       props.workspaceId,
       message,
       paths.length ? paths : undefined,
       previousPaths.length ? previousPaths : undefined,
     );
-    if (workspaceId !== props.workspaceId || rootPath !== props.activeRootPath || props.gitUi.lastResult?.ok === false)
-      return;
-    commitMessage.value = "";
+    if (!committed) return;
+    gitUiStore.setClassicCommitMessage(workspaceId, rootPath, "");
+    gitUiStore.setClassicSelectedPaths(workspaceId, rootPath, []);
+    if (workspaceId !== props.workspaceId || rootPath !== props.activeRootPath) return;
     mobileMode.value = "list";
     updateMobileLayout();
   } finally {
@@ -870,7 +881,10 @@ const stashState = computed(() => stashStore.get(props.workspaceId));
 const stashBusy = computed(() => stashState.value.busyAction === "create");
 const includeUntracked = computed(() => stashState.value.includeUntrackedNext);
 const stashMessage = ref("");
-const selectedPaths = ref<Set<string>>(new Set());
+const selectedPaths = computed<Set<string>>({
+  get: () => new Set(gitUiStore.getClassicSelectedPaths(props.workspaceId, props.activeRootPath)),
+  set: (paths) => gitUiStore.setClassicSelectedPaths(props.workspaceId, props.activeRootPath, [...paths]),
+});
 
 // Distinct repo-relative paths (a file can appear twice — staged + unstaged —
 // but a stash takes the whole path, so collapse to one entry per path).

@@ -78,6 +78,8 @@ interface GitUiState {
   /** New Git layout selection, deliberately separate from legacy tab ids. */
   activeGitView?: "history" | "changes" | "review";
   stagedCommitMessages?: Record<string, string>;
+  classicCommitMessages?: Record<string, string>;
+  classicSelectedPaths?: Record<string, string[]>;
   tags?: unknown[];
   tagsLoading?: boolean;
   tagsError?: string;
@@ -376,6 +378,26 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const ui = ensure(workspaceId);
     const key = rootPath || "default-root";
     ui.stagedCommitMessages = { ...(ui.stagedCommitMessages || {}), [key]: message };
+  }
+
+  function getClassicCommitMessage(workspaceId: string, rootPath: string): string {
+    return ensure(workspaceId).classicCommitMessages?.[rootPath || "default-root"] || "";
+  }
+
+  function setClassicCommitMessage(workspaceId: string, rootPath: string, message: string): void {
+    const ui = ensure(workspaceId);
+    const key = rootPath || "default-root";
+    ui.classicCommitMessages = { ...(ui.classicCommitMessages || {}), [key]: message };
+  }
+
+  function getClassicSelectedPaths(workspaceId: string, rootPath: string): string[] {
+    return [...(ensure(workspaceId).classicSelectedPaths?.[rootPath || "default-root"] || [])];
+  }
+
+  function setClassicSelectedPaths(workspaceId: string, rootPath: string, paths: string[]): void {
+    const ui = ensure(workspaceId);
+    const key = rootPath || "default-root";
+    ui.classicSelectedPaths = { ...(ui.classicSelectedPaths || {}), [key]: [...new Set(paths)] };
   }
 
   function clearBusy(workspaceId: string): void {
@@ -1277,10 +1299,10 @@ export const useGitUiStore = defineStore("git-ui", () => {
     message: string,
     paths?: string[],
     previousPaths?: string[],
-  ): Promise<void> {
-    if (!message) return;
+  ): Promise<boolean> {
+    if (!message) return false;
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "commit", () =>
+    const response = await runGitAction(workspaceId, "commit", () =>
       (_api as Transport & { gitCommitAll: (p: unknown) => Promise<unknown> }).gitCommitAll!({
         workspaceId,
         message,
@@ -1292,6 +1314,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
         ...(previousPaths && previousPaths.length ? { previousPaths } : {}),
       }),
     );
+    return (response as { result?: { ok?: boolean } } | null)?.result?.ok === true;
   }
 
   async function runIndexAction(workspaceId: string, action: string, runner: () => Promise<unknown>): Promise<boolean> {
@@ -2072,6 +2095,10 @@ export const useGitUiStore = defineStore("git-ui", () => {
     get,
     getStagedCommitMessage,
     setStagedCommitMessage,
+    getClassicCommitMessage,
+    setClassicCommitMessage,
+    getClassicSelectedPaths,
+    setClassicSelectedPaths,
     cleanup,
     init,
     // Active root management

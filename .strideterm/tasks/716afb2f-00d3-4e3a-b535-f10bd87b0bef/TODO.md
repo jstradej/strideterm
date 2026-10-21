@@ -11,7 +11,6 @@
 - [ ] Finish remaining audit findings in `JUDGE_TODO.md`, including Changes draft/context persistence, narrow workflows, long operations and regression coverage.
 - [ ] Re-run the full numbered self-audit against the current tree and update each requirement with verifiable evidence.
 - [ ] Resolve the full typecheck failures and run the project checks required by `WORKER.md` after implementation changes.
-- [ ] Complete user's visual review in their `dev.ps1` session; this remains user-owned.
 - [x] Commit implementation changes locally without pushing.
 
 ## In Progress
@@ -41,3 +40,4 @@
 - [x] Render operation outcomes inside Changes and send structured `{ ok: false }` mutation results through the standard error toast; GitChangesTab/store tests pass.
 - [x] Add a typed two-revision file diff through Electron and remote transport; provider summaries now supply source/target commit IDs and Review compares those pinned commits instead of local branches or the working copy.
 - [x] Re-run focused GitPane/History UI and GitManager tag/hunk tests, full lint, formatting check and safe production build; all pass. Full typecheck remains failing in unrelated existing test typings (see `JUDGE_TODO.md`); remaining implementation work is still open.
+- [x] Persist classic Changes commit text and selected paths by workspace/root, clear them only after successful commits, and clear staged-message completion against the captured root. Lifecycle tests pass.

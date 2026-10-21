@@ -31,7 +31,10 @@ const gitClearSelectedDiff = vi.fn();
 const gitSelectDiff = vi.fn();
 const openConflictDialog = vi.fn();
 const gitSwitchTab = vi.fn();
-const gitCommitAll = vi.fn(async () => {});
+const gitCommitAll = vi.fn(async () => true);
+const classicMessages = new Map<string, string>();
+const classicPaths = new Map<string, string[]>();
+const classicStateRevision = ref(0);
 const showError = vi.fn();
 let observedWidth = 390;
 
@@ -59,6 +62,24 @@ vi.mock("../../../stores/git-ui.js", () => ({
     gitSwitchTab,
     gitCreateBranch: vi.fn(),
     gitCommitAll,
+    getClassicCommitMessage: (workspaceId: string, rootPath: string) => {
+      classicStateRevision.value;
+      return classicMessages.get(`${workspaceId}:${rootPath}`) || "";
+    },
+    setClassicCommitMessage: (workspaceId: string, rootPath: string, message: string) => (
+      classicMessages.set(`${workspaceId}:${rootPath}`, message),
+      classicStateRevision.value++
+    ),
+    getClassicSelectedPaths: (workspaceId: string, rootPath: string) => {
+      classicStateRevision.value;
+      return classicPaths.get(`${workspaceId}:${rootPath}`) || [];
+    },
+    setClassicSelectedPaths: (workspaceId: string, rootPath: string, paths: string[]) => (
+      classicPaths.set(`${workspaceId}:${rootPath}`, paths),
+      classicStateRevision.value++
+    ),
+    getStagedCommitMessage: () => "",
+    setStagedCommitMessage: vi.fn(),
   }),
 }));
 vi.mock("../../../stores/git-stash.js", () => ({
@@ -130,8 +151,11 @@ beforeEach(() => {
   openConflictDialog.mockReset();
   gitSwitchTab.mockReset();
   gitCommitAll.mockReset();
-  gitCommitAll.mockResolvedValue(undefined);
+  gitCommitAll.mockResolvedValue(true);
   showError.mockClear();
+  classicMessages.clear();
+  classicPaths.clear();
+  classicStateRevision.value++;
   monacoPayloads.mockReset();
   document.body.innerHTML = "";
 });
@@ -147,6 +171,25 @@ afterEach(async () => {
 });
 
 describe("GitChangesTab", () => {
+  test("keeps the classic commit draft when the Changes view remounts", async () => {
+    observedWidth = 800;
+    const first = mountTab({ snapshot: { dirty: true, unstaged: [{ path: "a.txt", code: "M", scope: "unstaged" }] } });
+    await flushPromises();
+    const message = first.find('input[name="commit-message"]');
+    await message.setValue("keep this draft");
+    first.findComponent(GitChangeTree).vm.$emit("toggle-select", "a.txt");
+    expect(classicMessages.get("ws1:/repo")).toBe("keep this draft");
+    expect(classicPaths.get("ws1:/repo")).toEqual(["a.txt"]);
+    first.unmount();
+
+    const second = mountTab({ snapshot: { dirty: true, unstaged: [{ path: "a.txt", code: "M", scope: "unstaged" }] } });
+    await flushPromises();
+    expect((second.find('input[name="commit-message"]').element as HTMLInputElement).value).toBe("keep this draft");
+    expect((second.findComponent(GitChangeTree).props() as Record<string, unknown>).selectedSet).toEqual(
+      new Set(["a.txt"]),
+    );
+  });
+
   test("opens a file diff from the mobile list and returns to the list", async () => {
     const wrapper = mountTab({
       snapshot: {
@@ -307,8 +350,8 @@ describe("GitChangesTab", () => {
     let resolveCommit: (() => void) | undefined;
     gitCommitAll.mockImplementationOnce(
       () =>
-        new Promise<void>((resolve) => {
-          resolveCommit = resolve;
+        new Promise<boolean>((resolve) => {
+          resolveCommit = () => resolve(false);
         }),
     );
     const wrapper = mountTab({
@@ -334,7 +377,7 @@ describe("GitChangesTab", () => {
     );
 
     await wrapper.setProps({ gitUi: { lastResult: { ok: true } } });
-    gitCommitAll.mockResolvedValueOnce(undefined);
+    gitCommitAll.mockResolvedValueOnce(true);
     await wrapper.findAll(".git-changes__mobile-dock .button").at(-1)!.trigger("click");
     await flushPromises();
     expect(wrapper.attributes("data-mode")).toBe("list");
