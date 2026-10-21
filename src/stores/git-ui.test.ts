@@ -195,6 +195,22 @@ describe("git-ui store", () => {
   });
 
   describe("runGitAction payload adoption", () => {
+    test("blocks a duplicate action while the first request is still pending", async () => {
+      let finishFetch!: (value: unknown) => void;
+      const gitFetch = vi.fn(() => new Promise((resolve) => (finishFetch = resolve)));
+      const store = useGitUiStore();
+      store.init({ gitFetch } as unknown as Transport);
+
+      const first = store.gitFetch("ws1");
+      const duplicate = await store.gitFetch("ws1");
+      expect(duplicate).toBeUndefined();
+      await vi.waitFor(() => expect(gitFetch).toHaveBeenCalledTimes(1));
+      expect(store.get("ws1").busyAction).toBe("fetch");
+      finishFetch({ result: { ok: true, summary: "Fetch complete." } });
+      await first;
+      expect(store.get("ws1").busyAction).toBe("");
+    });
+
     test("adopts the action payload through adoptPayload, not a raw store write", async () => {
       const store = useGitUiStore();
       const responsePayload = { appState: { workspaces: [] } };

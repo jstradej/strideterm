@@ -555,10 +555,8 @@ export const useGitUiStore = defineStore("git-ui", () => {
     runner: () => Promise<unknown>,
     opts: { label?: string; timeoutMs?: number } = {},
   ): Promise<unknown> {
-    const { useAppStore } = await import("./app.js");
-    const appStore = useAppStore();
-
     const ui = ensure(workspaceId);
+    if (ui.busyAction === busyAction) return null;
     let actionResponse: unknown = null;
     const actionRootPath = getActiveRoot(workspaceId);
     const selectedDiffAtStart = ui.selectedDiff ? { ...ui.selectedDiff } : null;
@@ -569,6 +567,8 @@ export const useGitUiStore = defineStore("git-ui", () => {
     if (busyAction === "push" || busyAction === "force-push") ui.pushProgress = "";
 
     try {
+      const { useAppStore } = await import("./app.js");
+      const appStore = useAppStore();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const response = (await withGitTimeout(runner(), opts.timeoutMs ?? GIT_ACTION_TIMEOUT_MS, busyAction)) as any;
       actionResponse = response;
