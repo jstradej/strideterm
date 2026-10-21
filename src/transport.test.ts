@@ -3,9 +3,13 @@
  * activations to the correct /api/remote-client/* endpoints.
  */
 import { describe, it, expect, vi, beforeEach, afterEach, test } from "vitest";
+import { createPinia, setActivePinia } from "pinia";
+import { nextTick } from "vue";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createRemoteTransport, createTransport } from "./transport.js";
+import { useAppStore } from "./stores/app.js";
+import { useGitUiStore } from "./stores/git-ui.js";
 
 interface MockWebSocketEvent {
   code?: number;
@@ -1617,6 +1621,122 @@ describe("remote transport endpoint routing", () => {
     second.message({ type: "state:updated", payload: { coreRevision: 6 } });
     expect(states).toHaveLength(2);
   });
+
+  it.each([
+    ["pull", "/api/git/pull", "gitPull", "git.pull"],
+    ["push", "/api/git/push", "gitPush", "git.push"],
+  ] as const)(
+    "resolves a pending Git %s from its scoped result after reconnect and profile switching",
+    async (action, endpoint, storeMethod, operationKind) => {
+      vi.useFakeTimers();
+      setActivePinia(createPinia());
+      const workspace = (id: string, profileId: string) => ({
+        id,
+        name: id,
+        profileId,
+        kind: "terminal",
+        cwd: "/repo",
+        gitRoots: ["/repo"],
+        activePanelId: `${id}:panel`,
+        panels: [{ id: `${id}:panel`, title: "Terminal", command: "" }],
+      });
+      const payload = (profileId: string, workspaceId: string, coreRevision: number, lastResults: unknown[] = []) => {
+        const activeWorkspace = workspace(workspaceId, profileId);
+        return {
+          coreRevision,
+          meta: { appVersion: "test", platform: "test", repositoryUrl: "", versionCheck: {}, recoveryCandidates: [] },
+          appState: {
+            activeWorkspaceId: workspaceId,
+            profiles: [
+              { id: "p1", name: "Profile 1", color: "#fff", workspaceIds: ["ws1"] },
+              { id: "p2", name: "Profile 2", color: "#fff", workspaceIds: ["ws2"] },
+            ],
+            workspaces: [workspace("ws1", "p1"), workspace("ws2", "p2")],
+            windowSlots: [],
+            settings: {},
+            tabTemplates: [],
+            ssh: { hosts: [], keys: [], certificates: [], knownHosts: {}, settings: {} },
+          },
+          remoteClient: { id: "remote-test", profileId, activeWorkspaceId: workspaceId, activeSessionId: "" },
+          workspace: { workspace: activeWorkspace, project: activeWorkspace, sessions: [] },
+          git: { workspaces: {}, activeWorkspace: null, connections: [] },
+          attention: { sessions: {}, alerts: [] },
+          operations: { running: [], lastResults },
+        };
+      };
+      const initial = payload("p1", "ws1", 9);
+      const outcome = {
+        operationId: `op-${action}-profile-switch`,
+        kind: operationKind,
+        profileId: "p1",
+        workspaceId: "ws1",
+        rootPath: "/repo",
+        finishedAt: new Date().toISOString(),
+        error: { code: "git_operation_failed", message: `${action} failed while disconnected.` },
+      };
+      const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+      globalThis.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+        const pathname = String(url);
+        const body = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+        requests.push({ url: pathname, body });
+        const responseBody =
+          pathname === endpoint
+            ? { started: true, operationId: `op-${action}-profile-switch` }
+            : pathname === "/api/remote-client/profile/activate" && body.profileId === "p2"
+              ? payload("p2", "ws2", 10)
+              : pathname === "/api/remote-client/profile/activate"
+                ? payload("p1", "ws1", 11, [outcome])
+                : pathname === "/api/state"
+                  ? initial
+                  : {};
+        return { ok: true, json: async () => responseBody } as Response;
+      });
+
+      const transport = createRemoteTransport();
+      const appStore = useAppStore();
+      const gitUi = useGitUiStore();
+      appStore.init(transport);
+      gitUi.init(transport);
+      const first = MockWebSocket.instances[0];
+      first.open();
+      first.message({ type: "state:updated", payload: initial });
+      await vi.waitFor(() => expect(appStore.myActiveProfileId).toBe("p1"));
+      gitUi.setActiveRoot("ws1", "/repo");
+      gitUi.setStagedCommitMessage("ws1", "/repo", "Keep the staged commit draft after reconnect.");
+
+      let settled = false;
+      const pending = gitUi[storeMethod]("ws1").finally(() => {
+        settled = true;
+      });
+      await vi.waitFor(() => expect(requests.map((request) => request.url)).toContain(endpoint));
+      await vi.waitFor(() => expect(gitUi.get("ws1").busyAction).toBe(action));
+
+      first.close(1006);
+      await vi.advanceTimersByTimeAsync(500);
+      const second = MockWebSocket.instances[1];
+      second.open();
+      await appStore.activateProfile("p2");
+      await nextTick();
+
+      expect(appStore.myActiveProfileId).toBe("p2");
+      expect(settled).toBe(false);
+      expect(gitUi.get("ws1").busyAction).toBe(action);
+
+      await appStore.activateProfile("p1");
+      await pending;
+      expect(appStore.myActiveProfileId).toBe("p1");
+      expect(gitUi.get("ws1").busyAction).toBe("");
+      expect(gitUi.get("ws1").lastResult).toMatchObject({
+        ok: false,
+        summary: `${action} failed while disconnected.`,
+      });
+      expect(gitUi.getStagedCommitMessage("ws1", "/repo")).toBe("Keep the staged commit draft after reconnect.");
+      expect(requests.filter((request) => request.url === endpoint)).toHaveLength(1);
+      expect(requests.find((request) => request.url === endpoint)?.body).toEqual(
+        expect.objectContaining({ workspaceId: "ws1", rootPath: "/repo", idempotencyKey: expect.any(String) }),
+      );
+    },
+  );
 
   it("stops a WebSocket handshake that stays CONNECTING instead of leaving the reconnect banner forever", async () => {
     vi.useFakeTimers();

@@ -204,7 +204,8 @@ Full per-requirement ledger (122 items)
 45. **PARTIAL** — Drafts/mutations outlive component; switching layout neither cancels nor reissues mutation and retains its result; remove only UI reads/subscriptions.
    Evidence: src/stores/git-ui.ts:437,1338; src/components/workspace/git/GitBranchesTab.vue:1407; src/components/workspace/git/GitChangesTab.vue:605,772,871.
    Evidence: An unsaved editor-dialog value survives pane unmount, file selection changes, and Settings off/on; a busy fetch survives view-setting off/on; failed fetch/pull/push keeps the scoped staged message and terminal result. These are covered by AzureReviewPane, GitPane, and git-ui store regressions.
-   Remaining: End-to-end transport disconnect/reconnect while a Git action is pending remains untested; manual visual acceptance remains open.
+   Evidence: `src/transport.test.ts:1629` exercises real `createRemoteTransport`, `appStore`, and `git-ui` store flow for pending pull and push across socket loss/reconnect, a switch to profile p2 with no result, and return to p1 with the persisted outcome. It verifies busy state and staged commit draft remain while pending, resolves on p1 restoration, and only one request was sent.
+   Remaining: User visual acceptance remains open.
 
 46. **IMPLEMENTED** — Switching back restores classic; missing/invalid saved flag is safe false, malformed new payload is rejected.
    Evidence: src/components/workspace/GitPane.vue:232,622; electron/backend/default-state.ts:1564; electron/backend/ipc-schemas.test.ts:60; electron/backend/default-state.test.ts:2101.
@@ -261,7 +262,8 @@ Full per-requirement ledger (122 items)
 
 60. **PARTIAL** — Update both UI consumers and remote long-operation path; verify reconnect/dedup and no cross-profile/workspace result leakage.
    Evidence: `git-ui.ts` resolves accepted fetch, pull, and ordinary push operations from the terminal event or persisted lastResults payload; `git-ui.test.ts` delivers the same terminal failure through both channels for all three and asserts one error notification. Backend profile isolation is covered by `runtime.test.ts:8746`.
-   Remaining: Renderer-level disconnect/reconnect and profile-switch lifecycle are still not exercised end to end.
+   Evidence: `src/transport.test.ts:1629` integrates actual remote transport reconnect with pending UI pull/push, switches to p2 without exposing the p1 result, then restores p1 and resolves from its persisted outcome; each action is accepted once. `runtime.test.ts:8746` independently covers backend cross-profile outcomes.
+   Remaining: User visual acceptance remains open; exact audit-route coverage is tracked under 77/91.
 
 61. **PARTIAL** — Stage 1: inventory matrix classic/new × normal/review × local/remote × root plus verified permissions/audit/result variants.
    Evidence: .strideterm/tasks/716afb2f-00d3-4e3a-b535-f10bd87b0bef/IMPLEMENTATION_INVENTORY.md:7,21.
@@ -331,11 +333,13 @@ Full per-requirement ledger (122 items)
 
 78. **PARTIAL** — Stage 6: involved long Git actions use generic flow for both layouts/remote; reconnect and dedup verified.
    Evidence: `runtime-git-handlers.ts` routes fetch/pull/push/force-push, merge/rebase, remote branch deletion, and network tag writes through OperationRegistry; mobile route policy classifies the guarded routes. `git-ui.test.ts` covers event/payload resolution and duplicate terminal delivery for fetch/pull/push.
-   Remaining: End-to-end renderer reconnect during pending pull/push remains; inventory-wide route/audit assertions are still incomplete.
+   Evidence: `src/transport.test.ts:1629` verifies pending pull/push survive actual transport disconnect/reconnect and profile switching, then resolve from persisted results without resubmission.
+   Remaining: Inventory-wide route/audit assertions and user visual acceptance are still incomplete.
 
 79. **PARTIAL** — Stage 6: layout/profile changes or client disconnect do not cancel accepted work or misroute its result.
    Evidence: electron/backend/operation-registry.ts:123,187; `git-ui.test.ts` verifies pull can recover its terminal result from the persisted lastResults payload after a missed event; runtime tests verify distinct profile/workspace operation IDs and outcomes.
-   Remaining: Renderer reconnect while a Git action is pending still needs end-to-end coverage. Root-scoped diff refresh and staged commit completion use the originating root; branch/tag refreshes remain protected by read-generation and active-root checks.
+   Evidence: `src/transport.test.ts:1629` verifies pending pull/push across remote disconnect/reconnect and profile switch, keeping the action pending in p2 and resolving from p1's persisted result after restoration. Root-scoped diff refresh and staged commit completion use the originating root; branch/tag refreshes remain protected by read-generation and active-root checks.
+   Remaining: User visual acceptance remains open.
 
 80. **IMPLEMENTED** — Stage 7: run lint, relevant UI/backend tests and production build after Vue layout changes, meeting project healthy checks.
    Evidence: CLAUDE.md:15; docs/development.md:66; package.json:30; electron/backend/agent-task-runner.callbacks.test.ts:214; electron/backend/runtime.test.ts:1511.
@@ -375,7 +379,8 @@ Full per-requirement ledger (122 items)
    Evidence: src/stores/git-ui.ts:481,506; src/components/workspace/git/GitChangesTab.vue:572,590,605; electron/backend/git-manager.test.ts:4030.
    Evidence: `GitChangesTab.test.ts` now verifies a failed staged commit preserves its root-scoped draft; store/network failure tests verify structured errors reach the action banner and notification path.
    Evidence: `git-ui.test.ts` now verifies fetch/pull/push failure outcomes retain structured warnings and raw output, including a rejected pre-push hook. `GitOperationCard.test.ts` verifies streamed hook output while busy and warning/raw failure details after completion.
-   Remaining: Explicit disconnect-through-pending-action lifecycle coverage and user visual acceptance remain open.
+   Evidence: `src/transport.test.ts:1629` exercises pending pull/push terminal failures through a real remote socket disconnect/reconnect and profile switch; the store clears busy state, displays the failure, and retains the staged commit draft after the original profile returns.
+   Remaining: User visual acceptance remains open.
 
 90. **IMPLEMENTED** — Acceptance: real temporary-repo manager tests verify successful and failed audited writes, plus normal and strict review audit sink failures.
    Evidence: electron/backend/git-manager.test.ts:3944,3960,1103,1840; electron/backend/review-git/engine.test.ts:388,398.
@@ -387,7 +392,8 @@ Full per-requirement ledger (122 items)
 
 92. **PARTIAL** — Acceptance: controlled slow backend proves start before relay timeout, reconnect outcome, dedup and profile isolation, without timeout increase.
    Evidence: Gated OperationRegistry tests cover prompt fetch/rebase acceptance, dedup, tag/force-push/remote-delete, and profile/workspace isolation; store tests verify event plus payload completion for fetch/pull/push, one notification per failure, and pull recovery from persisted outcomes.
-   Remaining: Add renderer integration for a real disconnect/reconnect during pending pull/push. Backend cross-profile pull/push isolation is now covered.
+   Evidence: `src/transport.test.ts:1629` now exercises pending pull and push over actual remote transport reconnect and profile switching, checks persisted result delivery, and asserts one start request per action. Backend cross-profile pull/push isolation remains covered by `runtime.test.ts:8746`.
+   Remaining: User visual acceptance remains open.
 
 93. **PARTIAL** — Acceptance: keyboard picker open/search/select/close and narrow layout work with long refs/paths and hundreds of branches.
    Evidence: src/components/workspace/git/GitBranchesTab.test.ts:104; src/components/workspace/git/GitBranchesTab.vue:538,566; .strideterm/tasks/716afb2f-00d3-4e3a-b535-f10bd87b0bef/MANUAL_VERIFICATION.md:7,9.
@@ -483,7 +489,8 @@ Full per-requirement ledger (122 items)
 
 119. **PARTIAL** — TODO Done: fetch/pull/push generic operations, idempotency, correlation, durable results, event/payload dedup, visible running.
    Evidence: electron/backend/runtime-git-handlers.ts:101; `src/stores/git-ui.ts` waits for terminal fetch/pull/push outcomes; `git-ui.test.ts` covers event completion and pull lastResults recovery; runtime tests cover same-action dedupe and profile-isolated operation IDs/outcomes.
-   Evidence: App-store reconnect regression proves a missed pull outcome in the lower-revision post-restart snapshot is applied and reported. Remaining: One end-to-end test spanning a pending git-ui action through the actual transport reconnect and profile switch is still incomplete.
+   Evidence: App-store reconnect regression proves a missed pull outcome in the lower-revision post-restart snapshot is applied and reported. `src/transport.test.ts:1629` spans pending `git-ui` pull/push actions through actual transport reconnect and profile switching, restoring the original profile's persisted result without issuing a second Git request.
+   Remaining: User visual acceptance remains open.
 
 120. **PARTIAL** — TODO Done: Review uses provider-owned matching PR workspace for true diff and persisted drafts.
    Evidence: src/components/workspace/GitPane.vue:369,534; src/components/workspace/AzureReviewPane.vue:1274-1276; electron/backend/file-manager.ts:1122-1135; AzureReviewPane.test.ts:833-853; file-manager.test.ts:415-434.
@@ -850,7 +857,12 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 ## Worker continuation (long-operation failure coverage)
 
 - Added nine table-driven runtime cases covering structured diagnostics across every registered long Git action family: fetch, push, force push, remote branch/tag writes, merge, and rebase. `npm run test:backend -- electron/backend/runtime.test.ts -t "preserves structured diagnostics for long Git"` passes 9 tests; `npm run typecheck`, focused ESLint (0 errors), Prettier, and `git diff --check` pass.
-- Requirement 51's structured manager failure propagation is now checked across all long Git routes. Generic rejected-promise classification, end-to-end pending-action reconnect, detailed per-action audit mapping, and user visual verification remain open; WORK_LOCK stays present.
+- Requirement 51's structured manager failure propagation is now checked across all long Git routes. Generic rejected-promise classification, detailed per-action audit mapping, and user visual verification remain open; WORK_LOCK stays present.
+
+## Worker continuation (renderer reconnect and profile lifecycle)
+
+- Added an integration test using actual `createRemoteTransport`, `useAppStore`, and `useGitUiStore`. Pending pull and push each survive WebSocket disconnect/reconnect, remain pending when the renderer switches to profile p2, then resolve once from p1's persisted result after switching back. The test asserts the operation's workspace/root, unique idempotency key, and one start request per action.
+- Full `npm run test:ui -- src/transport.test.ts` passes 125 tests; `npm run typecheck` passes; focused ESLint has 0 errors / 69 existing warnings; Prettier and `git diff --check` pass. This closes the end-to-end reconnect/profile-switch test gap recorded under 45/60/78/79/89/92/119; visual acceptance and wider route/audit inventory remain open.
 
 ## Worker continuation (lifecycle self-audit reconciliation)
 
