@@ -55,3 +55,4 @@
 - [x] Make History favorite/recent preferences reactive after localStorage updates; store and History component suites pass.
 - [x] Deduplicate overlapping fetch/pull/push operations by profile, workspace, root, kind, and inputs, even when requests have distinct idempotency keys; runtime suite passes 510 tests.
 - [x] Re-run repository verification on the current tree: typecheck, production build, lint/Prettier; UI and backend suites reported only load-sensitive timeouts also covered by isolated passes. User visual review and remaining audit items stay open.
+- [x] Add a slow-fetch regression proving same-key Git operations in two profiles receive separate operation IDs and profile/workspace-scoped outcomes; the focused runtime test passes.

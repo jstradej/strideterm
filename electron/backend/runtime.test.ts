@@ -8844,6 +8844,36 @@ describe("runtime integration", () => {
     await waitForGitOperation(first.operationId);
   });
 
+  test("long Git fetches in separate profiles have isolated operations and outcomes", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    let releaseFetch!: () => void;
+    const gate = new Promise<void>((resolve) => (releaseFetch = resolve));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fetch = vi.fn(async () => {
+      await gate;
+      return { ok: true, summary: "Fetch completed." };
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).fetch = fetch;
+    const waitForGitOperation = watchOperation(fixture);
+
+    const profileA = await fixture.runtime.gitFetch({ workspaceId: "ws-a1", idempotencyKey: "same-key" });
+    const profileB = await fixture.runtime.gitFetch({ workspaceId: "ws-b1", idempotencyKey: "same-key" });
+
+    expect(profileA.operationId).not.toBe(profileB.operationId);
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    releaseFetch();
+    await expect(
+      Promise.all([waitForGitOperation(profileA.operationId), waitForGitOperation(profileB.operationId)]),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "git.fetch", profileId: "profile-a", workspaceId: "ws-a1" }),
+        expect.objectContaining({ kind: "git.fetch", profileId: "profile-b", workspaceId: "ws-b1" }),
+      ]),
+    );
+  });
+
   test("saves and deletes profiles while preserving a fallback default profile", async () => {
     const fixture = await createFixture();
     fixtures.push(fixture);
