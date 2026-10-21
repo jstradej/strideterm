@@ -2387,6 +2387,27 @@ describe("GitManager", () => {
       expect(logCall).not.toContain("--topo-order");
     });
 
+    test("limits graph results to the requested bound and walks an explicit branch only", async () => {
+      const { mgr, calls } = captureLogArgs();
+      await mgr.logGraph({ id: "ws1", cwd: "/repo" }, { rootPath: "/repo", limit: 37, branch: "release/2.0" });
+      const logCall = calls.find((c) => c[0] === "log");
+      expect(logCall).toContain("-n");
+      expect(logCall?.[logCall.indexOf("-n") + 1]).toBe("37");
+      expect(logCall).toContain("release/2.0");
+      expect(logCall).not.toContain("--branches");
+      expect(logCall).not.toContain("--remotes");
+      expect(logCall).not.toContain("--tags");
+    });
+
+    test("local-only graph range excludes remote tracking refs and tags", async () => {
+      const { mgr, calls } = captureLogArgs();
+      await mgr.logGraph({ id: "ws1", cwd: "/repo" }, { rootPath: "/repo", includeRemotes: false });
+      const logCall = calls.find((c) => c[0] === "log");
+      expect(logCall).toContain("--branches");
+      expect(logCall).toContain("HEAD");
+      expect(logCall).not.toContain("--remotes");
+      expect(logCall).not.toContain("--tags");
+    });
     test("drops paths starting with '-' (defense in depth even after schema validation)", async () => {
       const { mgr, calls } = captureLogArgs();
       // Bypassing the schema directly here to exercise the inner guard.
