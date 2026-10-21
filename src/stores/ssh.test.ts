@@ -154,7 +154,7 @@ describe("ssh store", () => {
         name: "new host",
         host: "mini.local",
         username: "dev",
-        auth: { methods: ["publickey"], keyRef: "key-1" },
+        auth: { methods: ["publickey" as const], keyRef: "key-1" },
       },
     };
 

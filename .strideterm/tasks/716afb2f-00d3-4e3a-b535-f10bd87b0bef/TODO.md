@@ -8,9 +8,9 @@
 ## To Do
 
 - [ ] Complete the user's visual review using `MANUAL_VERIFICATION.md` in their `dev.ps1` session; adjust anything they report.
-- [ ] Finish remaining audit findings in `JUDGE_TODO.md`, including the compact History flow, scoped reads/drafts, long operations and regression coverage.
+- [ ] Finish remaining audit findings in `JUDGE_TODO.md`, including long operations, scoped read/draft lifecycle coverage, and responsive browser diff verification.
 - [ ] Re-run the full numbered self-audit against the current tree and update each requirement with verifiable evidence.
-- [ ] Resolve the full typecheck failures and run the project checks required by `WORKER.md` after implementation changes.
+- [ ] Resolve full unit/E2E failures and complete the user visual review; rerun project checks after remaining implementation changes.
 - [x] Commit implementation changes locally without pushing.
 
 ## In Progress
@@ -45,3 +45,6 @@
 - [x] Add the narrow Changes diff layer label, stage/unstage file and hunk actions, and commit-staged controls; its focused UI test passes.
 - [x] Classify stage/unstage/commit-staged remote routes for mobile policy and correct the tag failure assertion; route policy (50), runtime/remote (212), focused GitManager (3), and GitPane/History/Changes/Review/store UI (110) tests pass.
 - [x] Re-run project lint (0 errors; 4651 existing warnings, Prettier clean), watch-compatible production build, and focused UI/backend checks. Full typecheck still fails in unrelated test typings; the full Git backend run found and fixed the route-policy failure plus stale tag assertion.
+- [x] Fix repository-wide TypeScript test errors in task-round, mobile invitation, SSH fixture, and component test typings; `npm run typecheck` passes.
+- [x] Re-run project lint/format, full UI suite (214 files, 3,021 tests), focused Git UI (110), route policy (50), AppX config (9), and `npm run typecheck`; all pass.
+- [ ] Investigate full-suite blockers: backend has 6 failures across 3 files (missing Monaco codicon TTF asset and Windows native OpenSSH test timeouts); browser E2E has 10 failures (9 Git Changes Monaco text rendering checks and 1 settings screenshot mismatch). User visual review remains pending.

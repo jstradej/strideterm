@@ -82,7 +82,11 @@ describe("RemoteAccessPanel", () => {
   test("uses the canonical entitlement when the overview summary is missing", async () => {
     vi.useFakeTimers();
     mocks.pairAuthorization = "ok";
-    mocks.entitlement = { state: "trial", notAfter: Date.now() + MOBILE_TRIAL_WARNING_WINDOW_MS + 1_000 };
+    mocks.entitlement = {
+      state: "trial",
+      source: "trial",
+      notAfter: Date.now() + MOBILE_TRIAL_WARNING_WINDOW_MS + 1_000,
+    };
     const wrapper = mount(RemoteAccessPanel);
     try {
       expect(wrapper.find(".remote-pill--mobile-warning").exists()).toBe(false);
@@ -97,7 +101,11 @@ describe("RemoteAccessPanel", () => {
   test("canonical trial without source schedules its expiry warning", async () => {
     vi.useFakeTimers();
     mocks.pairAuthorization = "ok";
-    mocks.entitlement = { state: "trial", notAfter: Date.now() + MOBILE_TRIAL_WARNING_WINDOW_MS + 1_000 };
+    mocks.entitlement = {
+      state: "trial",
+      source: "trial",
+      notAfter: Date.now() + MOBILE_TRIAL_WARNING_WINDOW_MS + 1_000,
+    };
     const wrapper = mount(RemoteAccessPanel);
 
     try {

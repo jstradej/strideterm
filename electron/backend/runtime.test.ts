@@ -1510,6 +1510,7 @@ describe("runtime integration", () => {
     const sessionId = createSessionId(workspace.id, "agent");
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const savedWorkspace = fixture.store.getState().workspaces.find((item: any) => item.id === workspace.id);
+    if (!savedWorkspace) throw new Error("Saved workspace fixture was not found.");
     const disabledPanel = savedWorkspace.panels.find((item: { id: string }) => item.id === "agent-off");
     expect(
       fixture.sessionManager.getSessionLaunch({
@@ -9487,10 +9488,10 @@ describe("runtime integration", () => {
         const manager = fixture.runtime._mobileManagerForTest() as any;
         const ownDeviceId = manager.ownDeviceId as string;
 
-        const qr = await fixture.runtime.createMobilePairingInvitation({
+        const qr = (await fixture.runtime.createMobilePairingInvitation({
           profileAllowlist: ["default"],
           capabilities: ["task.control"],
-        });
+        })) as import("./mobile/mobile-pairing.js").QrPairingPayload;
         const deviceKeyPair = generateX25519KeyPair();
         const devicePublicKeyBase64 = exportRawPublicKey(deviceKeyPair.publicKey).toString("base64");
         const deviceSessionKey = deriveSessionKey(
@@ -9925,10 +9926,10 @@ describe("runtime integration", () => {
       fixtures.push(fixture);
       await fixture.runtime.setMobileEnabled(true);
 
-      const invitation = await fixture.runtime.createMobilePairingInvitation({
+      const invitation = (await fixture.runtime.createMobilePairingInvitation({
         profileAllowlist: ["default"],
         capabilities: ["task.control"],
-      });
+      })) as import("./mobile/mobile-pairing.js").QrPairingPayload;
       expect(invitation).toMatchObject({
         protocolVersion: PROTOCOL_VERSION,
         pairingId: expect.any(String),
@@ -9956,10 +9957,10 @@ describe("runtime integration", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test-only reach into a private field, mirrors this file's existing (telegramManager as any).forwardAlert pattern
       const ownDeviceId = (manager as any).ownDeviceId as string;
 
-      const qr = await fixture.runtime.createMobilePairingInvitation({
+      const qr = (await fixture.runtime.createMobilePairingInvitation({
         profileAllowlist: ["default"],
         capabilities: ["task.control"],
-      });
+      })) as import("./mobile/mobile-pairing.js").QrPairingPayload;
       // A claim built exactly as a phone builds one (review 3 §P0.1): the pairingId it consumed, the
       // server-computed grant commitment over the ticked grants, and a real key proof derived from the
       // QR public key and the QR challenge. A stub proof would be refused here — which is the point.
@@ -13352,7 +13353,7 @@ describe("headless pull request review start", () => {
       entry.launch?.args?.join(" ").includes("Perform a basic code review"),
     );
     expect(reviewLaunches).toHaveLength(1);
-    expect(reviewLaunches[0].launch.args.join(" ")).toContain("--review-draft-only");
+    expect(reviewLaunches[0].launch?.args?.join(" ")).toContain("--review-draft-only");
     expect(fixture.store.getState().workspaces.find((item) => item.id === "isolated-review")?.profileId).toBe(
       "profile-a",
     );

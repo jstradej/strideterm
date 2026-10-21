@@ -89,7 +89,7 @@ function createFixture(
       knownHosts: {},
       settings: {},
     },
-    settings: { ssh: { defaultLaunchVia: "ssh2" } },
+    settings: { ssh: { defaultLaunchVia: "ssh2" as const } },
   };
   const store = {
     getState: () => state,
@@ -129,7 +129,9 @@ async function connectClient(env: NodeJS.ProcessEnv): Promise<{ client: Client; 
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: ["--import", "tsx", stdioEntry, "--ssh-mcp"],
-    env: { ...process.env, ...env },
+    env: Object.fromEntries(
+      Object.entries({ ...process.env, ...env }).filter((entry): entry is [string, string] => entry[1] !== undefined),
+    ),
     stderr: "pipe",
   });
   let stderr = "";

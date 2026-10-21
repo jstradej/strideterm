@@ -123,15 +123,10 @@ describe("AgentProviderConfig", () => {
     const selects = wrapper.findAllComponents(CustomSelect);
     expect(selects).toHaveLength(2);
     const effortSelect = selects[1];
-    expect(effortSelect.props("modelValue")).toBe("xhigh");
-    expect((effortSelect.props("options") as Array<{ value: string }>).map((o) => o.value)).toEqual([
-      "",
-      "minimal",
-      "low",
-      "medium",
-      "high",
-      "xhigh",
-    ]);
+    expect((effortSelect.vm.$props as { modelValue?: string }).modelValue).toBe("xhigh");
+    expect(
+      ((effortSelect.vm.$props as { options?: Array<{ value: string }> }).options || []).map((o) => o.value),
+    ).toEqual(["", "minimal", "low", "medium", "high", "xhigh"]);
     await effortSelect.vm.$emit("update:modelValue", "high");
     expect(lastEmitted<{ effort: string }>(wrapper, "update:provider").effort).toBe("high");
 
