@@ -169,8 +169,8 @@ Full per-requirement ledger (122 items)
    Remaining: Classic message and selected paths are scoped and persist across view switches. Saved provider drafts and an unsaved TextAreaDialog editor survive Review unmount, file selection changes, and actual Settings control off/on transitions. Renderer disconnect and user visual acceptance remain open.
 
 36. **PARTIAL** — Inventory every existing button/context menu/shortcut with its store, permission, audit, results and new UI destination before decomposition.
-   Evidence: .strideterm/tasks/716afb2f-00d3-4e3a-b535-f10bd87b0bef/IMPLEMENTATION_INVENTORY.md:7,11,13; src/components/workspace/GitPane.vue:649.
-   Remaining: Inventory groups capabilities and omits individual menus/shortcuts/result variants. More→Branches is present and tested, and the shared operation card is rendered in the primary views; complete the actionable menu/shortcut-to-result mapping.
+   Evidence: .strideterm/tasks/716afb2f-00d3-4e3a-b535-f10bd87b0bef/IMPLEMENTATION_INVENTORY.md:17-37 now maps shared toolbar, branch, commit context, file context, Changes, stash, worktree, conflict, bulk, and provider entry points to dispatch/guards, result surface, and new-view destination. `useCommitContextMenu.ts:95-188` confirms commit menu actions; `GitPane.vue:148-224` confirms shared toolbar actions.
+   Remaining: The action index is component/action-class level. The original stage asks for every existing entry point with exact permission/audit and result variant, and the table groups some branch/stash/provider sub-actions; no Git-specific shortcut was found in the inspected shell. Verify and expand exact per-action guards/audit/results before marking complete. Human discoverability review also remains.
 
 37. **PARTIAL** — Picker supports keyboard open/search/select/Escape/focus return; context menus and relevant shortcuts remain usable.
    Evidence: src/components/workspace/git/GitBranchesTab.vue:5,17,67,210; src/components/workspace/git/GitBranchesTab.test.ts:104.
@@ -839,6 +839,11 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Added a mounted accessibility regression verifying the compact History reference select has native tab order, is focusable, and has an accessible label. Existing GitPane tests verify More exposes and routes to Branches management. Focused picker test passes; repository typecheck, touched-file Prettier, ESLint (0 errors; one existing warning), and `git diff --check` pass.
 - Corrected stale audit text claiming More→Branches was absent. Full open/keyboard/Escape interaction and narrow visual behavior remain assigned to the user's manual walkthrough; complete shortcut/context-menu inventory remains open, so WORK_LOCK stays.
+
+## Worker continuation (action entry-point index)
+
+- Expanded `IMPLEMENTATION_INVENTORY.md` with the inspected toolbar, branch/commit/file context menu, Changes, stash, worktree, conflict, bulk, and provider routes, noting dispatch/guard, result surface, and new-view destination where verified. `git diff --check` and Prettier pass.
+- Requirement 36 remains partial: some grouped action classes still need per-action audit/result mapping; the user's visual walkthrough remains open. WORK_LOCK stays.
 
 ## Worker continuation (lifecycle self-audit reconciliation)
 
