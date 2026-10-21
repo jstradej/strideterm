@@ -104,7 +104,7 @@ function makeSnapshot(rootPath: string = "/ms/api"): GitSnapshot {
 function mountPane(
   workspaceId: string,
   workspaces: any[] = [], // eslint-disable-line @typescript-eslint/no-explicit-any
-  options: { connections?: any[]; activeProfileId?: string } = {}, // eslint-disable-line @typescript-eslint/no-explicit-any
+  options: { connections?: any[]; activeProfileId?: string; deep?: boolean; newView?: boolean } = {}, // eslint-disable-line @typescript-eslint/no-explicit-any
 ) {
   const appStore = useAppStore();
   const activeProfileId = options.activeProfileId ?? "default";
@@ -119,6 +119,7 @@ function mountPane(
       activeProfileId,
       profiles,
       windowSlots: [{ id: "win-test", profileId: activeProfileId, activeWorkspaceId: workspaceId }],
+      ...(options.newView ? { settings: { git: { ui: { newView: true } } } } : {}),
     },
     git: {
       workspaces: {
@@ -127,9 +128,8 @@ function mountPane(
       connections: options.connections || [],
     },
   } as unknown as StatePayload;
-  return shallowMount(GitPane, {
-    props: { workspaceId },
-  });
+  const mountOptions = { props: { workspaceId } };
+  return options.deep ? mount(GitPane, mountOptions) : shallowMount(GitPane, mountOptions);
 }
 
 beforeEach(() => {
@@ -389,6 +389,44 @@ describe("GitPane repo picker", () => {
     await flushPromises();
     expect(gitUiStore.get("ws-toggle-operation").busyAction).toBe("fetch");
     expect(wrapper.findComponent({ name: "GitOperationCard" }).exists()).toBe(true);
+  });
+
+  test("the selected History reference survives the actual view-setting toggle", async () => {
+    const workspaceId = "ws-toggle-history-reference";
+    const workspace = buildWorkspace({ id: workspaceId, activeRootPath: "/ms/api", gitRoots: ["/ms/api"] });
+    const wrapper = mountPane(workspaceId, [workspace], { deep: true, newView: true });
+    const appStore = useAppStore();
+    const gitUiStore = useGitUiStore();
+    gitUiStore.setActiveRoot(workspaceId, "/ms/api");
+    Object.assign(gitUiStore.get(workspaceId), {
+      branchList: {
+        current: "main",
+        upstream: "origin/main",
+        local: [{ name: "main", isCurrent: true }],
+        remotes: [{ name: "origin/release", shortName: "release", remote: "origin" }],
+        defaultBranch: "main",
+        defaultRemote: "origin",
+      },
+      tags: [],
+    });
+    gitUiStore.setGitHistorySelection(workspaceId, "/ms/api", "default", { ref: "origin/release" });
+    await flushPromises();
+    expect((wrapper.get('[aria-label="History reference"]').element as HTMLSelectElement).value).toBe("origin/release");
+
+    appStore.payload = {
+      ...appStore.payload!,
+      appState: { ...appStore.payload!.appState!, settings: { git: { ui: { newView: false } } } },
+    } as StatePayload;
+    await flushPromises();
+    expect(wrapper.find('[aria-label="Git sections"]').exists()).toBe(true);
+
+    appStore.payload = {
+      ...appStore.payload!,
+      appState: { ...appStore.payload!.appState!, settings: { git: { ui: { newView: true } } } },
+    } as StatePayload;
+    await flushPromises();
+    expect((wrapper.get('[aria-label="History reference"]').element as HTMLSelectElement).value).toBe("origin/release");
+    wrapper.unmount();
   });
 
   test("an unsaved Review editor survives toggling the view through the Settings control", async () => {

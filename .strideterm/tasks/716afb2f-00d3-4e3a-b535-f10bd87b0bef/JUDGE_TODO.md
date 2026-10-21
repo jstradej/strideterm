@@ -549,7 +549,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
 
 121. **PARTIAL** — TODO Done: staged message survives views; clear root-specific selections on root changes.
    Evidence: src/components/workspace/git/GitChangesTab.vue:653,826,857,870,902,932; src/stores/git-ui.ts:384,390,394,400; src/components/workspace/git/GitBranchesTab.vue:730,1157.
-   Remaining: Staged/classic drafts and History query state are scoped; async commit completion captures its originating root; late graph responses are rejected; unsaved Review editor state survives pane unmount, changed-file selection, and setting off/on transitions. The busy-operation toggle has integration coverage. History reference selection is tested across pane unmount/remount. Full GitPane setting-toggle restoration of the selected History reference remains untested; visual/focus acceptance remains manual.
+   Remaining: Staged/classic drafts and History query state are scoped; async commit completion captures its originating root; late graph responses are rejected; unsaved Review editor state survives pane unmount, changed-file selection, and setting off/on transitions. The busy-operation toggle has integration coverage. History reference selection is tested across pane unmount/remount and through the actual GitPane off/on setting toggle. Visual/focus acceptance remains manual.
 
 122. **PARTIAL** — TODO Done: focused index, long acceptance/dedup, stale read and Review routing tests.
    Evidence: electron/backend/git-manager.test.ts:3943; electron/backend/runtime.test.ts:8481; src/stores/git-ui.test.ts:64; src/components/workspace/GitPane.test.ts:152.
