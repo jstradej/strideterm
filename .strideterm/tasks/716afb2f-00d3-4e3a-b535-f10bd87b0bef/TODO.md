@@ -178,3 +178,4 @@
 - [x] Verify the selected History author is forwarded as a graph query filter.
 - [x] Verify toggling topological ordering forwards `topoOrder: true` to the History graph query.
 - [x] Verify Clear removes the active History path filter and reloads without path restrictions.
+- [x] Assert push-all-tags and remote-tag deletion dispatch one manager write with the resolved root through the generic operation registry.

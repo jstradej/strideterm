@@ -8999,6 +8999,52 @@ describe("runtime integration", () => {
     });
   });
 
+  test("push-all-tags and remote-tag deletion dispatch once with the resolved repository root", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    const pushAllTags = vi.fn(async () => ({ ok: true, summary: "Tags pushed.", warnings: [] }));
+    const deleteRemoteTag = vi.fn(async () => ({ ok: true, summary: "Remote tag deleted.", warnings: [] }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    Object.assign(fixture.git as any, { pushAllTags, deleteRemoteTag });
+    const waitForGitOperation = watchOperation(fixture);
+
+    const pushed = await fixture.runtime.gitPushAllTags({ workspaceId: "ws-a1", rootPath: "/tmp/a1" });
+    expect(pushed).toMatchObject({ started: true, operationId: expect.any(String) });
+    await expect(waitForGitOperation(pushed.operationId)).resolves.toMatchObject({
+      kind: "git.push-all-tags",
+      workspaceId: "ws-a1",
+      rootPath: "/tmp/a1",
+      result: { ok: true, summary: "Tags pushed." },
+    });
+    expect(pushAllTags).toHaveBeenCalledTimes(1);
+    expect(pushAllTags).toHaveBeenCalledWith(expect.objectContaining({ id: "ws-a1" }), {
+      connection: null,
+      rootPath: "/tmp/a1",
+    });
+
+    const deleted = await fixture.runtime.gitDeleteRemoteTag({
+      workspaceId: "ws-a1",
+      rootPath: "/tmp/a1",
+      tagName: "v1.2.3",
+      remote: "upstream",
+    });
+    expect(deleted).toMatchObject({ started: true, operationId: expect.any(String) });
+    await expect(waitForGitOperation(deleted.operationId)).resolves.toMatchObject({
+      kind: "git.delete-remote-tag",
+      workspaceId: "ws-a1",
+      rootPath: "/tmp/a1",
+      result: { ok: true, summary: "Remote tag deleted." },
+    });
+    expect(deleteRemoteTag).toHaveBeenCalledTimes(1);
+    expect(deleteRemoteTag).toHaveBeenCalledWith(expect.objectContaining({ id: "ws-a1" }), {
+      workspaceId: "ws-a1",
+      tagName: "v1.2.3",
+      remote: "upstream",
+      connection: null,
+      rootPath: "/tmp/a1",
+    });
+  });
+
   test("force push and remote branch deletion run as deduplicated long Git operations", async () => {
     const fixture = await createFixture({ initialState: makeProfileSwitchState() });
     fixtures.push(fixture);
