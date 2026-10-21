@@ -122,3 +122,5 @@
 - [x] Expand the implementation inventory with concrete toolbar, branch/commit/file menu, Changes, stash, worktree, conflict, bulk, and provider action routes, guards, result surfaces, and new-view destinations; `git diff --check` and Prettier pass. The detailed per-action audit and visual walkthrough remain open.
 - [x] Verify structured diagnostics survive each long Git operation route (fetch, push, force push, remote branch/tag mutations, merge, rebase) with a table-driven runtime regression; 9 cases pass.
 - [x] Integrate pending Git pull/push through real remote transport disconnect/reconnect and profile switching; verify p2 cannot settle p1's operation and returning to p1 applies the persisted outcome once.
+- [x] Verify index and local-tag runtime routes each dispatch one manager write with the resolved root, and real-repository manager tests record exactly one audit row per index/tag mutation.
+- [x] Reuse fetch/pull/push idempotency keys when a start response is lost, so retry can replay the accepted operation instead of launching a second write; Git UI store suite passes 60 tests and repository typecheck passes.

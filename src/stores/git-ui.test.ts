@@ -356,6 +356,31 @@ describe("git-ui store", () => {
       expect(store.get("ws1").busyAction).toBe("");
     });
 
+    test("reuses the long-operation idempotency key after a lost start response", async () => {
+      const request = vi
+        .fn()
+        .mockRejectedValueOnce({ message: "Connection lost before the operation ID arrived." })
+        .mockResolvedValueOnce({ result: { ok: true, summary: "Fetch recovered." } });
+      const store = useGitUiStore();
+      store.init({ gitFetch: request } as unknown as Transport);
+      store.setActiveRoot("ws1", "/repo/a");
+
+      await store.gitFetch("ws1");
+      expect(store.get("ws1").lastResult).toMatchObject({ ok: false });
+      await store.gitFetch("ws1");
+
+      expect(request).toHaveBeenCalledTimes(2);
+      expect(request.mock.calls[0][0]).toMatchObject({
+        rootPath: "/repo/a",
+        idempotencyKey: expect.any(String),
+      });
+      expect(request.mock.calls[1][0]).toMatchObject({
+        rootPath: "/repo/a",
+        idempotencyKey: request.mock.calls[0][0].idempotencyKey,
+      });
+      expect(store.get("ws1").busyAction).toBe("");
+    });
+
     test("adopts the action payload through adoptPayload, not a raw store write", async () => {
       const store = useGitUiStore();
       const responsePayload = { appState: { workspaces: [] } };

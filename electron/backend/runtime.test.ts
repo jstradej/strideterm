@@ -8768,17 +8768,21 @@ describe("runtime integration", () => {
     });
   });
 
-  test("index mutation runtime routes dispatch one manager write with the resolved root", async () => {
+  test("index and local-tag routes dispatch one manager write with the resolved root", async () => {
     const fixture = await createFixture({ initialState: makeProfileSwitchState() });
     fixtures.push(fixture);
     const stageFile = vi.fn(async () => ({ ok: true, summary: "Staged." }));
     const unstageFile = vi.fn(async () => ({ ok: true, summary: "Unstaged." }));
     const commitStaged = vi.fn(async () => ({ ok: true, summary: "Committed index." }));
-    Object.assign(fixture.git, { stageFile, unstageFile, commitStaged });
+    const createTag = vi.fn(async () => ({ ok: true, summary: "Tag created." }));
+    const deleteTag = vi.fn(async () => ({ ok: true, summary: "Tag deleted." }));
+    Object.assign(fixture.git, { stageFile, unstageFile, commitStaged, createTag, deleteTag });
 
     await fixture.runtime.gitStageFile({ workspaceId: "ws-a1", rootPath: "/tmp/a1", path: "src/a.ts" });
     await fixture.runtime.gitUnstageFile({ workspaceId: "ws-a1", rootPath: "/tmp/a1", path: "src/a.ts" });
     await fixture.runtime.gitCommitStaged({ workspaceId: "ws-a1", rootPath: "/tmp/a1", message: "index only" });
+    await fixture.runtime.gitCreateTag({ workspaceId: "ws-a1", rootPath: "/tmp/a1", tagName: "v1.0.0" });
+    await fixture.runtime.gitDeleteTag({ workspaceId: "ws-a1", rootPath: "/tmp/a1", tagName: "v1.0.0" });
 
     const workspace = expect.objectContaining({ id: "ws-a1", profileId: "profile-a" });
     expect(stageFile).toHaveBeenCalledTimes(1);
@@ -8787,6 +8791,10 @@ describe("runtime integration", () => {
     expect(unstageFile).toHaveBeenCalledWith(workspace, { path: "src/a.ts", rootPath: "/tmp/a1" });
     expect(commitStaged).toHaveBeenCalledTimes(1);
     expect(commitStaged).toHaveBeenCalledWith(workspace, { message: "index only", rootPath: "/tmp/a1" });
+    expect(createTag).toHaveBeenCalledTimes(1);
+    expect(createTag).toHaveBeenCalledWith(workspace, { workspaceId: "ws-a1", rootPath: "/tmp/a1", tagName: "v1.0.0" });
+    expect(deleteTag).toHaveBeenCalledTimes(1);
+    expect(deleteTag).toHaveBeenCalledWith(workspace, { workspaceId: "ws-a1", rootPath: "/tmp/a1", tagName: "v1.0.0" });
   });
 
   test("rejects a caller-supplied Git root outside a single-repository workspace before accepting fetch", async () => {

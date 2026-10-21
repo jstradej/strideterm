@@ -212,7 +212,8 @@ Full per-requirement ledger (122 items)
 
 47. **PARTIAL** — Buttons/menu/shortcuts share one store/runtime/audit path; stage/index APIs use mutation guard, repository lock and audit.
    Evidence: src/components/workspace/git/GitChangesTab.vue:572,583,607; electron/backend/git-manager.ts:2203,2234,2467; electron/backend/git-manager.ts:4278,4293.
-   Remaining: Local and remote tag writes plus index writes are audited; branch manager mutations retain manager audit. Route-level exact single-mutation/single-audit assertions and exhaustive inventory coverage remain.
+   Evidence: `electron/backend/runtime.test.ts:8482` asserts each stage-file, unstage-file, commit-staged, create-tag, and delete-tag route calls its matching manager write exactly once with the resolved root. `electron/backend/git-manager.test.ts:3988` verifies the three index outcomes plus successful local tag create/delete each produce exactly one system Git audit row.
+   Remaining: Extend route/audit pairing to the remaining branch, stash, worktree, and provider mutation entry points; complete menu/shortcut inventory mapping.
 
 48. **IMPLEMENTED** — Check rejected promises and structured ok:false; promise success must not mean Git success.
    Evidence: src/stores/git-ui.ts:465,471,481,506,1290; electron/backend/runtime-git-handlers.ts:143; src/stores/git-ui.test.ts:141.
@@ -329,7 +330,8 @@ Full per-requirement ledger (122 items)
 
 77. **PARTIAL** — Stage 6: structured errors and audit coverage verified for every inventory input route.
    Evidence: src/stores/git-ui.ts:481; electron/backend/git-manager.ts:4278,4293; src/components/workspace/git/GitChangesTab.vue:605.
-   Remaining: Local tags now use audited wrapper; Changes surfaces structured failures and route policy classifies new APIs. Route-level single-audit assertions and full inventory audit coverage remain.
+   Evidence: Runtime route tests assert one resolved-root manager call for index and local-tag writes; the real-repository manager audit test verifies one audit row per index/local-tag mutation. Changes surfaces structured failures and route policy classifies new APIs.
+   Remaining: Audit route-level single-call and manager audit behavior for remaining mutation families, then reconcile full inventory.
 
 78. **PARTIAL** — Stage 6: involved long Git actions use generic flow for both layouts/remote; reconnect and dedup verified.
    Evidence: `runtime-git-handlers.ts` routes fetch/pull/push/force-push, merge/rebase, remote branch deletion, and network tag writes through OperationRegistry; mobile route policy classifies the guarded routes. `git-ui.test.ts` covers event/payload resolution and duplicate terminal delivery for fetch/pull/push.
@@ -388,7 +390,8 @@ Full per-requirement ledger (122 items)
 
 91. **PARTIAL** — Acceptance: button/menu/shortcut use same audited path; one mutation yields no duplicate audit (review intent/outcome is expected pair).
    Evidence: electron/backend/git-manager.ts:2203,4278; src/components/workspace/GitPane.test.ts:138; .strideterm/tasks/716afb2f-00d3-4e3a-b535-f10bd87b0bef/IMPLEMENTATION_INVENTORY.md:11.
-   Remaining: Local/remote tag writes and index actions are audited; branch manager mutations retain manager audit. Add route-level exact single-mutation/single-audit assertions and complete menu/shortcut audit mapping.
+   Evidence: `runtime.test.ts:8482` asserts one manager dispatch per index/local-tag API route; `git-manager.test.ts:3988` asserts exactly one audit row per real index/local-tag write. Existing `runGitAction` tests and the action inventory map visible UI routes to the store/runtime path.
+   Remaining: Add equivalent exact route/audit assertions for the remaining branch, stash, worktree, and provider mutation families and complete the individual menu/shortcut mapping.
 
 92. **PARTIAL** — Acceptance: controlled slow backend proves start before relay timeout, reconnect outcome, dedup and profile isolation, without timeout increase.
    Evidence: Gated OperationRegistry tests cover prompt fetch/rebase acceptance, dedup, tag/force-push/remote-delete, and profile/workspace isolation; store tests verify event plus payload completion for fetch/pull/push, one notification per failure, and pull recovery from persisted outcomes.
@@ -863,6 +866,12 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Added an integration test using actual `createRemoteTransport`, `useAppStore`, and `useGitUiStore`. Pending pull and push each survive WebSocket disconnect/reconnect, remain pending when the renderer switches to profile p2, then resolve once from p1's persisted result after switching back. The test asserts the operation's workspace/root, unique idempotency key, and one start request per action.
 - Full `npm run test:ui -- src/transport.test.ts` passes 125 tests; `npm run typecheck` passes; focused ESLint has 0 errors / 69 existing warnings; Prettier and `git diff --check` pass. This closes the end-to-end reconnect/profile-switch test gap recorded under 45/60/78/79/89/92/119; visual acceptance and wider route/audit inventory remain open.
+
+## Worker continuation (index and local-tag route/audit pairing)
+
+- Extended runtime routing coverage to stage-file, unstage-file, commit-staged, local-tag create, and local-tag delete; every manager method is called once with the explicit resolved root. Extended the real temporary-repository audit test to assert exactly one successful/failed audit row per index action and one successful row for each local tag action.
+- `npm run test:backend -- electron/backend/runtime.test.ts electron/backend/git-manager.test.ts -t "index and local-tag routes dispatch one manager write|records successful and failed index and local-tag writes"` passes 2 tests. Remaining route families and full visual/manual acceptance remain open.
+- Lost-start-response retry audit: ordinary fetch, pull, and push now retain an idempotency key scoped to workspace state + root + action (and pull stash mode). A null response keeps the key; any returned response clears it. The Git UI regression simulates a lost fetch start response and verifies retry reuses the key. Store suite: 60 passed; repository typecheck passes. Other mutation route audits and the user-owned manual walkthrough remain open; WORK_LOCK stays.
 
 ## Worker continuation (lifecycle self-audit reconciliation)
 

@@ -78,6 +78,8 @@ interface GitUiState {
   activeTab?: string;
   /** New Git layout selection, deliberately separate from legacy tab ids. */
   activeGitView?: "history" | "changes" | "review";
+  /** Reuse an accepted-operation key if its start response was lost; keyed by action inputs and root. */
+  pendingLongOperationKeys?: Record<string, string>;
   stagedCommitMessages?: Record<string, string>;
   classicCommitMessages?: Record<string, string>;
   classicSelectedPaths?: Record<string, string[]>;
@@ -478,6 +480,25 @@ export const useGitUiStore = defineStore("git-ui", () => {
     return state.value[workspaceId];
   }
 
+  function longOperationKey(workspaceId: string, rootPath: string, action: string, variant = ""): string {
+    const ui = ensure(workspaceId);
+    const scope = JSON.stringify([rootPath, action, variant]);
+    const existing = ui.pendingLongOperationKeys?.[scope];
+    if (existing) return existing;
+    const key = newGitIdempotencyKey();
+    ui.pendingLongOperationKeys = { ...(ui.pendingLongOperationKeys || {}), [scope]: key };
+    return key;
+  }
+
+  function clearLongOperationKey(workspaceId: string, rootPath: string, action: string, variant = ""): void {
+    const ui = ensure(workspaceId);
+    const scope = JSON.stringify([rootPath, action, variant]);
+    if (!ui.pendingLongOperationKeys?.[scope]) return;
+    const { [scope]: _cleared, ...remaining } = ui.pendingLongOperationKeys;
+    void _cleared;
+    ui.pendingLongOperationKeys = remaining;
+  }
+
   function get(workspaceId: string): GitUiState {
     return state.value[workspaceId] || {};
   }
@@ -763,7 +784,8 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   async function gitFetch(workspaceId: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(
+    const idempotencyKey = longOperationKey(workspaceId, rootPath, "fetch");
+    const response = await runGitAction(
       workspaceId,
       "fetch",
       async () => {
@@ -771,17 +793,20 @@ export const useGitUiStore = defineStore("git-ui", () => {
         const start = await (_api as Transport & { gitFetch: (p: unknown) => Promise<unknown> }).gitFetch!({
           workspaceId,
           rootPath,
-          idempotencyKey: newGitIdempotencyKey(),
+          idempotencyKey,
         });
         return resolveLongGitAction(useAppStore(), start as { operationId?: string; started?: boolean } | null);
       },
       GIT_OPERATION_WAIT_OPTS,
     );
+    if (response !== null) clearLongOperationKey(workspaceId, rootPath, "fetch");
   }
 
   async function gitPull(workspaceId: string, { stashDirty = false }: { stashDirty?: boolean } = {}): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(
+    const variant = stashDirty ? "stash-dirty" : "keep-dirty";
+    const idempotencyKey = longOperationKey(workspaceId, rootPath, "pull", variant);
+    const response = await runGitAction(
       workspaceId,
       "pull",
       async () => {
@@ -790,12 +815,13 @@ export const useGitUiStore = defineStore("git-ui", () => {
           workspaceId,
           rootPath,
           stashDirty,
-          idempotencyKey: newGitIdempotencyKey(),
+          idempotencyKey,
         });
         return resolveLongGitAction(useAppStore(), start as { operationId?: string; started?: boolean } | null);
       },
       GIT_OPERATION_WAIT_OPTS,
     );
+    if (response !== null) clearLongOperationKey(workspaceId, rootPath, "pull", variant);
   }
 
   async function gitPush(workspaceId: string): Promise<void> {
@@ -804,7 +830,8 @@ export const useGitUiStore = defineStore("git-ui", () => {
       return;
     }
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(
+    const idempotencyKey = longOperationKey(workspaceId, rootPath, "push");
+    const response = await runGitAction(
       workspaceId,
       "push",
       async () => {
@@ -812,12 +839,13 @@ export const useGitUiStore = defineStore("git-ui", () => {
         const start = await (_api as Transport & { gitPush: (p: unknown) => Promise<unknown> }).gitPush!({
           workspaceId,
           rootPath,
-          idempotencyKey: newGitIdempotencyKey(),
+          idempotencyKey,
         });
         return resolveLongGitAction(useAppStore(), start as { operationId?: string; started?: boolean } | null);
       },
       GIT_OPERATION_WAIT_OPTS,
     );
+    if (response !== null) clearLongOperationKey(workspaceId, rootPath, "push");
   }
 
   async function gitCheckoutBranch(workspaceId: string, branch: string): Promise<void> {

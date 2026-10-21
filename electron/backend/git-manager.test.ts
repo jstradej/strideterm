@@ -3985,7 +3985,7 @@ describe("GitManager", () => {
       expect(rg(root, ["show", "HEAD:new.txt"]).trim()).toBe("new");
     });
 
-    test("records successful and failed index writes in the system Git audit log", async () => {
+    test("records successful and failed index and local-tag writes in the system Git audit log", async () => {
       const entries: Record<string, unknown>[] = [];
       const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
       const root = await initRepo();
@@ -3995,11 +3995,15 @@ describe("GitManager", () => {
       expect((await auditMgr.stageFile(workspace, { path: "a.txt" })).ok).toBe(true);
       expect((await auditMgr.commitStaged(workspace, { message: "audited index commit" })).ok).toBe(true);
       expect((await auditMgr.commitStaged(workspace, { message: "empty index" })).ok).toBe(false);
+      expect((await auditMgr.createTag(workspace, { tagName: "v1.0.0" })).ok).toBe(true);
+      expect((await auditMgr.deleteTag(workspace, { tagName: "v1.0.0" })).ok).toBe(true);
 
       expect(entries.map((entry) => [entry.operation, entry.category, entry.success])).toEqual([
         ["gitStage-file", "write", true],
         ["gitCommit-staged", "write", true],
         ["gitCommit-staged", "write", false],
+        ["gitCreate-tag", "write", true],
+        ["gitDelete-tag", "write", true],
       ]);
       expect(entries.every((entry) => entry.connectionId === "system-ws-index-audit")).toBe(true);
       expect(entries.every((entry) => entry.rootPath === root)).toBe(true);
