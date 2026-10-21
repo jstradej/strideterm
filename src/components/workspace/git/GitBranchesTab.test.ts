@@ -127,6 +127,7 @@ describe("GitBranchesTab compact history picker", () => {
   });
 
   test("keeps a persisted ref selection while branch and tag reads are pending", async () => {
+    Object.assign(historySelection, { ref: "origin/topic", commitSearch: "" });
     mobileViewport.isNarrow.value = false;
     const picker = mount(GitBranchesTab, {
       props: {
@@ -140,11 +141,10 @@ describe("GitBranchesTab compact history picker", () => {
         },
         compactHistory: true,
       },
-      attrs: {},
     });
-    historySelection.ref = "origin/topic";
     await flushPromises();
     expect(historySelection.ref).toBe("origin/topic");
+    expect(picker.get('[aria-label="History reference"]').element).toHaveProperty("value", "origin/topic");
   });
 
   test("compact History skips the hidden branch-tree step on narrow layouts", async () => {

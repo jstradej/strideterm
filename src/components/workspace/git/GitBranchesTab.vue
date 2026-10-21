@@ -18,6 +18,18 @@
         <select :value="selectedRef || '__ALL__'" aria-label="History reference" @change="onHistoryRefChange">
           <option value="__ALL__">All branches and tags</option>
           <option value="HEAD">HEAD · {{ branchList.current || "detached" }}</option>
+          <option
+            v-if="
+              selectedRef &&
+              (branchesLoading || gitUi.tagsLoading) &&
+              !branchList.local.some((branch) => branch.name === selectedRef) &&
+              !branchList.remotes.some((branch) => branch.name === selectedRef) &&
+              !tags.some((tag) => tag.name === selectedRef)
+            "
+            :value="selectedRef"
+          >
+            Loading {{ selectedRef }}…
+          </option>
           <optgroup v-if="historyPreferences.favorites.length" label="Favorites">
             <option v-for="ref in historyPreferences.favorites" :key="`favorite:${ref}`" :value="ref">
               {{ historyRefLabel(ref) }}
@@ -1451,9 +1463,9 @@ watch(
     for (const b of branchList.value.local) validRefs.add(b.name);
     for (const r of branchList.value.remotes) validRefs.add(r.name);
     for (const t of tags.value) validRefs.add(t.name);
-    // Empty arrays can mean the initial branch/tag reads have not arrived yet.
-    // Do not discard a persisted selection until each ref source has completed.
-    const refsReady = !branchesLoading.value && !props.gitUi?.tagsLoading;
+    // Empty arrays can mean the initial reads have not arrived or a read failed.
+    // Do not discard a persisted selection until both sources are available.
+    const refsReady = !branchesLoading.value && !props.gitUi?.tagsLoading && !props.gitUi?.tagsError;
     if (refsReady && selectedRef.value && !validRefs.has(selectedRef.value)) {
       selectedRef.value = "";
       gitUiStore.gitSelectCommit(props.workspaceId, "");
