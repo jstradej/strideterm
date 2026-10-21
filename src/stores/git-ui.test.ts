@@ -228,6 +228,7 @@ describe("git-ui store", () => {
       const store = useGitUiStore();
       store.init({ [method]: request, onOperationFinished } as unknown as Transport);
       store.setActiveRoot("ws1", "/repo/a");
+      store.setStagedCommitMessage("ws1", "/repo/a", "Keep this commit draft after network failure");
       appStoreMock.payload = { operations: { lastResults: [] } };
       const priorFailureCount = useNotificationStore().items.filter(
         (toast) => toast.title === "Git action failed",
@@ -263,6 +264,7 @@ describe("git-ui store", () => {
         warnings: ["Pre-push hook rejected the update."],
         rawOutput: "pre-push hook: typecheck failed",
       });
+      expect(store.getStagedCommitMessage("ws1", "/repo/a")).toBe("Keep this commit draft after network failure");
       expect(useNotificationStore().items.filter((toast) => toast.title === "Git action failed")).toHaveLength(
         priorFailureCount + 1,
       );
