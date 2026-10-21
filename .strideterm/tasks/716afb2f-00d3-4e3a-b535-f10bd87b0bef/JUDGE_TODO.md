@@ -1190,4 +1190,4 @@ pm run test:ui -- src/stores/git-ui.test.ts passes 71 tests. This strengthens re
 ## Worker continuation (new-view route and conflict visibility audit)
 
 - Reconciled requirement 94 to current shell routes and automated coverage: the action index at `IMPLEMENTATION_INVENTORY.md:18-68` maps existing actions to primary/More destinations; `GitPane.vue` mounts those destinations; `GitPane.test.ts:183-220` exercises available More destinations; and `GitPane.test.ts:291-327` verifies the conflict action stays visible in History, Changes, and Review. Requirement 94 is now implemented. The user waived manual visual review.
-- Remaining route-specific rejection and audit-count evidence is still open in requirements 47/51/52/77/91/122. Keep WORK_LOCK and verdict `continue`.
+- Remaining route-specific rejection and audit-count evidence is still open in requirements 47/51/52/77/91. Requirement 122 is implemented; keep WORK_LOCK and verdict `continue`.
