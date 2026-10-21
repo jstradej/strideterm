@@ -8822,7 +8822,7 @@ describe("runtime integration", () => {
     expect(deleteTag).toHaveBeenCalledWith(workspace, { workspaceId: "ws-a1", rootPath: "/tmp/a1", tagName: "v1.0.0" });
   });
 
-  test("branch, history and stash mutation routes dispatch one manager write with the resolved root", async () => {
+  test("branch, history, stash and conflict mutation routes dispatch one manager write with the resolved root", async () => {
     const fixture = await createFixture({ initialState: makeProfileSwitchState() });
     fixtures.push(fixture);
     const routes = [
@@ -8835,6 +8835,8 @@ describe("runtime integration", () => {
       ["gitContinueOperation", "continueOperation", {}],
       ["gitAbortOperation", "abortOperation", {}],
       ["gitSkipCommit", "skipCommit", {}],
+      ["gitResolveConflict", "resolveConflict", { filePath: "src/a.ts", mode: "ours" }],
+      ["gitUnresolveConflict", "unresolveConflict", { filePath: "src/a.ts" }],
       ["gitStash", "stash", { message: "save work", paths: ["src/a.ts"] }],
       ["gitStashPop", "stashPop", { ref: "stash@{0}" }],
       ["gitStashApply", "stashApply", { ref: "stash@{0}" }],
