@@ -183,3 +183,4 @@
 - [x] Verify the selected History ref survives the GitPane new-view setting being turned off and on with the real child view mounted.
 - [x] Reconcile requirement 122 with existing fetch/pull/push transport reconnect and profile-switch coverage.
 - [x] Restore focus to the branch picker after Escape and test keyboard search/select/Escape interactions.
+- [x] Re-run the full UI suite after History filter and picker keyboard changes; 215 files / 3,104 tests pass.
