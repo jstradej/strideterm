@@ -249,8 +249,8 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
 
 52. **PARTIAL** — Busy always releases, prevents duplicate launch; uncertain write results trigger state verification before user retry, never automatic write retry.
    Evidence: src/stores/git-ui.ts:446,521,610,633; src/components/workspace/git/GitChangesTab.vue:605; src/components/workspace/GitPane.vue:144.
-   Evidence: Synchronous index and commit writes mark a rejected transport response as uncertain; the same root/action is blocked from retry until a successful refresh returns that root's Git snapshot. A store regression verifies rejected start, retry suppression, root-scoped refresh, and retry after verification.
-   Remaining: User visual acceptance remains; broader synchronous mutation families outside index and commit still need the same uncertain-response recovery contract.
+   Evidence: Synchronous local index/commit, branch, history, local tag, stash-pop, worktree, conflict, abort/continue/skip, and merge-into-base writes mark a rejected transport response as uncertain; the same root/action is blocked from retry until a successful refresh returns that root's Git snapshot. Store regressions cover index and branch mutation lost responses, retry suppression, root-scoped refresh, and retry after verification.
+   Remaining: User visual acceptance remains. Review-provider synchronous writes and inventory-wide route checks still need verification against their own operation/audit contracts.
 
 53. **IMPLEMENTED** — Ordinary Git retains best-effort audit and throttled sink diagnostics, without converting successful mutation into failed commit or claiming audit saved.
    Evidence: electron/backend/git-manager.ts:2624,2686,2752; electron/backend/git-manager.test.ts:1103.
@@ -1033,3 +1033,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Added a root-scoped uncertainty guard for stage/unstage file, stage/unstage hunk, commit-staged, and classic commit-all. When their request rejects without a known Git result, the store records the uncertain action, displays a warning, and blocks retry of that same action/root until an explicit refresh returns a usable Git snapshot. A refresh of another root leaves the guard in place.
 - `git-ui.test.ts` passes all 66 tests, including lost-response/retry suppression/root-refresh coverage; `npm run typecheck` passes; touched-file ESLint reports 0 errors; Prettier and `git diff --check` pass. Other synchronous writes and manual visual acceptance remain open; WORK_LOCK stays.
+
+## Worker continuation (uncertain local Git mutation recovery)
+
+- Extended refresh-before-retry uncertainty handling to synchronous branch checkout/create/delete/rename, remote-branch checkout, cherry-pick/squash, local tag create/delete, stash-pop, worktree removal, conflict resolve/unresolve/continue/skip/abort, and merge-into-base actions. A rejected IPC response records the root/action and blocks that action from being repeated until a usable snapshot is returned by explicit refresh.
+- Added a branch checkout lost-response regression covering rejection, retry suppression, and retry after successful verification. `npm run test:ui -- src/stores/git-ui.test.ts` passes 67/67; `npm run typecheck` passes; touched-file ESLint and Prettier pass; `git diff --check` passes. Provider-review synchronous writes, broader route audit, and user visual acceptance remain open; WORK_LOCK stays present.

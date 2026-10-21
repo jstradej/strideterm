@@ -922,24 +922,32 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   async function gitCheckoutBranch(workspaceId: string, branch: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "checkout", () =>
-      (_api as Transport & { gitCheckoutBranch: (p: unknown) => Promise<unknown> }).gitCheckoutBranch!({
-        workspaceId,
-        branch,
-        rootPath,
-      }),
+    await runGitAction(
+      workspaceId,
+      "checkout",
+      () =>
+        (_api as Transport & { gitCheckoutBranch: (p: unknown) => Promise<unknown> }).gitCheckoutBranch!({
+          workspaceId,
+          branch,
+          rootPath,
+        }),
+      { requireRefreshBeforeRetry: true },
     );
   }
 
   async function gitCreateBranch(workspaceId: string, branch: string, startPoint: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "create-branch", () =>
-      (_api as Transport & { gitCreateBranch: (p: unknown) => Promise<unknown> }).gitCreateBranch!({
-        workspaceId,
-        branch,
-        startPoint,
-        rootPath,
-      }),
+    await runGitAction(
+      workspaceId,
+      "create-branch",
+      () =>
+        (_api as Transport & { gitCreateBranch: (p: unknown) => Promise<unknown> }).gitCreateBranch!({
+          workspaceId,
+          branch,
+          startPoint,
+          rootPath,
+        }),
+      { requireRefreshBeforeRetry: true },
     );
   }
 
@@ -950,24 +958,32 @@ export const useGitUiStore = defineStore("git-ui", () => {
   // "An object could not be cloned" error before the action ever runs.
   async function gitCherryPick(workspaceId: string, hashes: string[]): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "cherry-pick", () =>
-      (_api as Transport & { gitCherryPick: (p: unknown) => Promise<unknown> }).gitCherryPick!({
-        workspaceId,
-        hashes: [...hashes],
-        rootPath,
-      }),
+    await runGitAction(
+      workspaceId,
+      "cherry-pick",
+      () =>
+        (_api as Transport & { gitCherryPick: (p: unknown) => Promise<unknown> }).gitCherryPick!({
+          workspaceId,
+          hashes: [...hashes],
+          rootPath,
+        }),
+      { requireRefreshBeforeRetry: true },
     );
   }
 
   async function gitSquashCommits(workspaceId: string, hashes: string[], message: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "squash", () =>
-      (_api as Transport & { gitSquashCommits: (p: unknown) => Promise<unknown> }).gitSquashCommits!({
-        workspaceId,
-        hashes: [...hashes],
-        message,
-        rootPath,
-      }),
+    await runGitAction(
+      workspaceId,
+      "squash",
+      () =>
+        (_api as Transport & { gitSquashCommits: (p: unknown) => Promise<unknown> }).gitSquashCommits!({
+          workspaceId,
+          hashes: [...hashes],
+          message,
+          rootPath,
+        }),
+      { requireRefreshBeforeRetry: true },
     );
   }
 
@@ -1032,8 +1048,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   async function gitDeleteBranch(workspaceId: string, branch: string, force: boolean): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "delete-branch", () =>
-      (_api as CallableTransport).gitDeleteBranch({ workspaceId, branch, force, rootPath }),
+    await runGitAction(
+      workspaceId,
+      "delete-branch",
+      () => (_api as CallableTransport).gitDeleteBranch({ workspaceId, branch, force, rootPath }),
+      { requireRefreshBeforeRetry: true },
     );
     // Race-net: branchList may have been stale (worktree created since the
     // last refresh). When the backend rejects with the structured code, fall
@@ -1067,8 +1086,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   async function gitRenameBranch(workspaceId: string, branch: string, newName: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "rename-branch", () =>
-      (_api as CallableTransport).gitRenameBranch({ workspaceId, branch, newName, rootPath }),
+    await runGitAction(
+      workspaceId,
+      "rename-branch",
+      () => (_api as CallableTransport).gitRenameBranch({ workspaceId, branch, newName, rootPath }),
+      { requireRefreshBeforeRetry: true },
     );
     await gitListBranches(workspaceId);
   }
@@ -1079,8 +1101,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
     localBranch: string,
   ): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "checkout-remote", () =>
-      (_api as CallableTransport).gitCheckoutRemoteBranch({ workspaceId, remoteBranch, localBranch, rootPath }),
+    await runGitAction(
+      workspaceId,
+      "checkout-remote",
+      () => (_api as CallableTransport).gitCheckoutRemoteBranch({ workspaceId, remoteBranch, localBranch, rootPath }),
+      { requireRefreshBeforeRetry: true },
     );
     await gitListBranches(workspaceId);
   }
@@ -1315,12 +1340,18 @@ export const useGitUiStore = defineStore("git-ui", () => {
         );
         await gitListTags(workspaceId);
       } else if (action === "removeWorktree") {
-        await runGitAction(workspaceId, "remove-worktree", () =>
-          api.gitRemoveWorktree({ workspaceId, worktreePath: p!.worktreePath, deleteBranch: false }),
+        await runGitAction(
+          workspaceId,
+          "remove-worktree",
+          () => api.gitRemoveWorktree({ workspaceId, worktreePath: p!.worktreePath, deleteBranch: false }),
+          { requireRefreshBeforeRetry: true },
         );
       } else if (action === "removeWorktreeDeleteBranch") {
-        await runGitAction(workspaceId, "remove-worktree", () =>
-          api.gitRemoveWorktree({ workspaceId, worktreePath: p!.worktreePath, deleteBranch: true }),
+        await runGitAction(
+          workspaceId,
+          "remove-worktree",
+          () => api.gitRemoveWorktree({ workspaceId, worktreePath: p!.worktreePath, deleteBranch: true }),
+          { requireRefreshBeforeRetry: true },
         );
       } else if (action === "forcePushWithLease") {
         if ((await pullRequestContext(workspaceId)).onPullRequestBranch) {
@@ -1347,12 +1378,17 @@ export const useGitUiStore = defineStore("git-ui", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const api = _api as any;
     if (pending.type === "abort") {
-      await runGitAction(workspaceId, "abort", () => api.gitAbortOperation({ workspaceId, rootPath }));
+      await runGitAction(workspaceId, "abort", () => api.gitAbortOperation({ workspaceId, rootPath }), {
+        requireRefreshBeforeRetry: true,
+      });
       return;
     }
     if (pending.type === "merge-into-base") {
-      await runGitAction(workspaceId, "merge-into-base", () =>
-        api.gitMergeCurrentIntoBase({ workspaceId, baseBranch: pending.baseBranch, rootPath }),
+      await runGitAction(
+        workspaceId,
+        "merge-into-base",
+        () => api.gitMergeCurrentIntoBase({ workspaceId, baseBranch: pending.baseBranch, rootPath }),
+        { requireRefreshBeforeRetry: true },
       );
       return;
     }
@@ -1488,11 +1524,15 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   async function gitContinue(workspaceId: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "continue", () =>
-      (_api as Transport & { gitContinueOperation: (p: unknown) => Promise<unknown> }).gitContinueOperation!({
-        workspaceId,
-        rootPath,
-      }),
+    await runGitAction(
+      workspaceId,
+      "continue",
+      () =>
+        (_api as Transport & { gitContinueOperation: (p: unknown) => Promise<unknown> }).gitContinueOperation!({
+          workspaceId,
+          rootPath,
+        }),
+      { requireRefreshBeforeRetry: true },
     );
   }
 
@@ -1577,12 +1617,16 @@ export const useGitUiStore = defineStore("git-ui", () => {
   }
 
   async function gitRemoveWorktree(workspaceId: string, worktreePath: string, deleteBranch: boolean): Promise<void> {
-    await runGitAction(workspaceId, "remove-worktree", () =>
-      (_api as Transport & { gitRemoveWorktree: (p: unknown) => Promise<unknown> }).gitRemoveWorktree!({
-        workspaceId,
-        worktreePath,
-        deleteBranch,
-      }),
+    await runGitAction(
+      workspaceId,
+      "remove-worktree",
+      () =>
+        (_api as Transport & { gitRemoveWorktree: (p: unknown) => Promise<unknown> }).gitRemoveWorktree!({
+          workspaceId,
+          worktreePath,
+          deleteBranch,
+        }),
+      { requireRefreshBeforeRetry: true },
     );
   }
 
@@ -1905,8 +1949,12 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   async function gitStashPop(workspaceId: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "stash-pop", () =>
-      (_api as Transport & { gitStashPop: (p: unknown) => Promise<unknown> }).gitStashPop!({ workspaceId, rootPath }),
+    await runGitAction(
+      workspaceId,
+      "stash-pop",
+      () =>
+        (_api as Transport & { gitStashPop: (p: unknown) => Promise<unknown> }).gitStashPop!({ workspaceId, rootPath }),
+      { requireRefreshBeforeRetry: true },
     );
   }
 
@@ -1934,26 +1982,34 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   async function gitCreateTag(workspaceId: string, tagName: string, message: string, commit = ""): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "create-tag", () =>
-      (_api as Transport & { gitCreateTag: (p: unknown) => Promise<unknown> }).gitCreateTag!({
-        workspaceId,
-        tagName,
-        message: message || "",
-        commit: commit || "",
-        rootPath,
-      }),
+    await runGitAction(
+      workspaceId,
+      "create-tag",
+      () =>
+        (_api as Transport & { gitCreateTag: (p: unknown) => Promise<unknown> }).gitCreateTag!({
+          workspaceId,
+          tagName,
+          message: message || "",
+          commit: commit || "",
+          rootPath,
+        }),
+      { requireRefreshBeforeRetry: true },
     );
     await gitListTags(workspaceId);
   }
 
   async function gitDeleteTag(workspaceId: string, tagName: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "delete-tag", () =>
-      (_api as Transport & { gitDeleteTag: (p: unknown) => Promise<unknown> }).gitDeleteTag!({
-        workspaceId,
-        tagName,
-        rootPath,
-      }),
+    await runGitAction(
+      workspaceId,
+      "delete-tag",
+      () =>
+        (_api as Transport & { gitDeleteTag: (p: unknown) => Promise<unknown> }).gitDeleteTag!({
+          workspaceId,
+          tagName,
+          rootPath,
+        }),
+      { requireRefreshBeforeRetry: true },
     );
     await gitListTags(workspaceId);
   }
@@ -2301,8 +2357,18 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const ui = ensure(workspaceId);
     const dlg = ui.conflictDialog;
     if (!dlg) return;
-    await runGitAction(workspaceId, `resolve:${filePath}`, () =>
-      (_api as CallableTransport).gitResolveConflict({ workspaceId, rootPath: dlg.rootPath, filePath, mode, content }),
+    await runGitAction(
+      workspaceId,
+      `resolve:${filePath}`,
+      () =>
+        (_api as CallableTransport).gitResolveConflict({
+          workspaceId,
+          rootPath: dlg.rootPath,
+          filePath,
+          mode,
+          content,
+        }),
+      { requireRefreshBeforeRetry: true },
     );
     await loadConflicts(workspaceId);
   }
@@ -2311,8 +2377,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const ui = ensure(workspaceId);
     const dlg = ui.conflictDialog;
     if (!dlg) return;
-    await runGitAction(workspaceId, `unresolve:${filePath}`, () =>
-      (_api as CallableTransport).gitUnresolveConflict({ workspaceId, rootPath: dlg.rootPath, filePath }),
+    await runGitAction(
+      workspaceId,
+      `unresolve:${filePath}`,
+      () => (_api as CallableTransport).gitUnresolveConflict({ workspaceId, rootPath: dlg.rootPath, filePath }),
+      { requireRefreshBeforeRetry: true },
     );
     await loadConflicts(workspaceId);
   }
@@ -2322,8 +2391,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const dlg = ui.conflictDialog;
     if (!dlg) return;
     const kind = await currentOperationKind(workspaceId, dlg.rootPath);
-    await runGitAction(workspaceId, "skip", () =>
-      (_api as CallableTransport).gitSkipCommit({ workspaceId, rootPath: dlg.rootPath }),
+    await runGitAction(
+      workspaceId,
+      "skip",
+      () => (_api as CallableTransport).gitSkipCommit({ workspaceId, rootPath: dlg.rootPath }),
+      { requireRefreshBeforeRetry: true },
     );
     // After skip, check if there are more conflicts (rebase may pause again)
     await refreshGit(workspaceId);
@@ -2340,8 +2412,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const dlg = ui.conflictDialog;
     if (!dlg) return;
     const kind = await currentOperationKind(workspaceId, dlg.rootPath);
-    await runGitAction(workspaceId, "continue", () =>
-      (_api as CallableTransport).gitContinueOperation({ workspaceId, rootPath: dlg.rootPath }),
+    await runGitAction(
+      workspaceId,
+      "continue",
+      () => (_api as CallableTransport).gitContinueOperation({ workspaceId, rootPath: dlg.rootPath }),
+      { requireRefreshBeforeRetry: true },
     );
     // After continue, operation may stop again (next conflicting commit in rebase)
     await refreshGit(workspaceId);
@@ -2396,8 +2471,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const ui = ensure(workspaceId);
     const dlg = ui.conflictDialog;
     if (!dlg) return;
-    await runGitAction(workspaceId, "abort", () =>
-      (_api as CallableTransport).gitAbortOperation({ workspaceId, rootPath: dlg.rootPath }),
+    await runGitAction(
+      workspaceId,
+      "abort",
+      () => (_api as CallableTransport).gitAbortOperation({ workspaceId, rootPath: dlg.rootPath }),
+      { requireRefreshBeforeRetry: true },
     );
     closeConflictDialog(workspaceId);
   }

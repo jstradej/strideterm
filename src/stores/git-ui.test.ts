@@ -249,6 +249,33 @@ describe("git-ui store", () => {
       expect(refreshGit).toHaveBeenCalledTimes(2);
     });
 
+    test("requires repository verification before retrying a branch mutation with a lost response", async () => {
+      const checkout = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("Remote transport disconnected."))
+        .mockResolvedValueOnce({ result: { ok: true } });
+      const store = useGitUiStore();
+      store.init({ gitCheckoutBranch: checkout } as unknown as Transport);
+      store.setActiveRoot("ws-uncertain-branch", "/repo/a");
+
+      await store.gitCheckoutBranch("ws-uncertain-branch", "feature/example");
+      expect(store.get("ws-uncertain-branch").lastResult?.summary).toContain("outcome is uncertain");
+      expect(Object.keys(store.get("ws-uncertain-branch").uncertainWrites || {})).toHaveLength(1);
+
+      await store.gitCheckoutBranch("ws-uncertain-branch", "feature/example");
+      expect(checkout).toHaveBeenCalledTimes(1);
+
+      getGitSnapshot.mockReturnValue({ available: true });
+      store.init({
+        gitCheckoutBranch: checkout,
+        refreshGit: vi.fn().mockResolvedValue({ fresh: true }),
+      } as unknown as Transport);
+      await store.refreshGit("ws-uncertain-branch");
+      expect(store.get("ws-uncertain-branch").uncertainWrites).toEqual({});
+      await store.gitCheckoutBranch("ws-uncertain-branch", "feature/example");
+      expect(checkout).toHaveBeenCalledTimes(2);
+    });
+
     test("surfaces and records a rejected long-operation start", async () => {
       const request = vi.fn().mockRejectedValue(new Error("Remote transport disconnected."));
       const store = useGitUiStore();
