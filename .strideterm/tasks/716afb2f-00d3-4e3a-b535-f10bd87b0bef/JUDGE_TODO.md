@@ -653,3 +653,7 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 ## Worker continuation (`read-only picker coverage`)
 
 - Expanded the History picker contract test to assert no checkout (local or remote), branch create/rename/delete, remote branch delete, tag create, worktree removal, fetch, or push occurs when selecting a ref. The picker suite passes 11 tests, repository typecheck passes, Prettier and diff checks pass. This strengthens audit item 85; broader inventory mutation/audit mapping and manual acceptance remain open.
+
+## Worker continuation (`empty/detached History`)
+
+- Added a compact History regression for a repository with no commits and no current branch. It asserts the explicit detached HEAD picker label, detached working-branch label, and empty-history graph state. Focused `GitBranchesTab.test.ts` passes 12 tests; touched-file Prettier and `git diff --check` pass. This reduces the automated gap in item 69; hundreds-of-refs, root/profile switching, visual keyboard/narrow checks, and other audit findings remain open.
