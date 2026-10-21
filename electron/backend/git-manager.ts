@@ -4965,7 +4965,7 @@ export class GitManager extends EventEmitter {
     // Choose what to walk:
     //   - branch (string)            → just that ref
     //   - includeRemotes=false       → only local heads + HEAD
-    //   - default                    → all heads + remotes + HEAD (IDEA "Log")
+    //   - default                    → local heads + remote-tracking refs + tags + HEAD; git log revision-walk deduplicates reachable commits (History "All branches and tags") (IDEA "Log")
     let walkArgs: string[];
     if (branch && !branch.startsWith("-")) {
       walkArgs = [branch];

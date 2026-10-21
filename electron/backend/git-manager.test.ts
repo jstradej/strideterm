@@ -2376,6 +2376,10 @@ describe("GitManager", () => {
       await mgr.logGraph({ id: "ws1", cwd: "/repo" }, { rootPath: "/repo" });
       const logCall = calls.find((c) => c[0] === "log");
       expect(logCall).toBeTruthy();
+      expect(logCall).toContain("--branches");
+      expect(logCall).toContain("--remotes");
+      expect(logCall).toContain("--tags");
+      expect(logCall).toContain("HEAD");
       expect(logCall!.some((a) => a.startsWith("--since="))).toBe(false);
       expect(logCall!.some((a) => a.startsWith("--until="))).toBe(false);
       expect(logCall!.some((a) => a.startsWith("--author="))).toBe(false);
