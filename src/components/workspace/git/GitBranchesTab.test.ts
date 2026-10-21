@@ -140,6 +140,36 @@ describe("GitBranchesTab compact history picker", () => {
     expect(picker.get('[role="alert"]').text()).toBe("Could not load tags.");
   });
 
+  test("preserves a selected tag when tag reads fail during branch refresh", async () => {
+    Object.assign(historySelection, { ref: "v1.2.3", commitSearch: "" });
+    const gitUi = reactive({
+      branchList: {
+        current: "main",
+        local: [{ name: "main", isCurrent: true }],
+        remotes: [],
+        defaultBranch: "main",
+        defaultRemote: "",
+      },
+      graph: { commits: [], head: "", refs: {} },
+      tags: [],
+      tagsLoading: false,
+      tagsError: "Tag list unavailable.",
+      branchesLoading: false,
+    });
+    const picker = mount(GitBranchesTab, {
+      props: {
+        workspaceId: "ws-tag-read-error",
+        snapshot: { dirty: false, branch: "main" },
+        gitUi,
+        compactHistory: true,
+      },
+    });
+    gitUi.branchList.local.push({ name: "another-branch", isCurrent: false });
+    await flushPromises();
+    expect(historySelection.ref).toBe("v1.2.3");
+    expect(picker.get('[role="alert"]').text()).toContain("Tag list unavailable.");
+  });
+
   test("reads History selection scoped to the active profile, workspace, and root", async () => {
     const picker = mount(GitBranchesTab, {
       props: {
