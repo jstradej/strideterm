@@ -4104,6 +4104,34 @@ describe("GitManager", () => {
       expect(entries.every((entry) => entry.rootPath === root)).toBe(true);
     });
 
+    test("records successful and failed remote branch deletion audit outcomes", async () => {
+      const entries: Record<string, unknown>[] = [];
+      const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
+      const root = await initRepo();
+      const remoteRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-git-remote-audit-"));
+      tempPaths.push(remoteRoot);
+      execFileSync("git", ["init", "--bare", "-q", remoteRoot]);
+      const workspace = { id: "ws-remote-branch-audit", cwd: root, kind: "terminal" as const };
+      rg(root, ["branch", "remote-audit"]);
+      rg(root, ["remote", "add", "origin", remoteRoot]);
+      rg(root, ["push", "--quiet", "origin", "remote-audit"]);
+
+      expect((await auditMgr.deleteRemoteBranch(workspace, { branch: "remote-audit", remote: "origin" })).ok).toBe(
+        true,
+      );
+      rg(root, ["remote", "set-url", "origin", `${remoteRoot}-missing`]);
+      expect((await auditMgr.deleteRemoteBranch(workspace, { branch: "remote-audit", remote: "origin" })).ok).toBe(
+        false,
+      );
+
+      expect(entries.map((entry) => [entry.operation, entry.category, entry.success])).toEqual([
+        ["gitDelete-remote-branch", "write", true],
+        ["gitDelete-remote-branch", "write", false],
+      ]);
+      expect(entries.every((entry) => entry.connectionId === "system-ws-remote-branch-audit")).toBe(true);
+      expect(entries.every((entry) => entry.rootPath === root)).toBe(true);
+    });
+
     test("records one success or failure audit row per stash mutation", async () => {
       const entries: Record<string, unknown>[] = [];
       const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });

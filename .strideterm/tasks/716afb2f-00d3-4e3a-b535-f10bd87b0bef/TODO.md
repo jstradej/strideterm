@@ -139,3 +139,4 @@
 - [x] Re-run all GitManager backend tests after conflict locking/audit/path validation; 181 passed / 2 skipped.
 - [x] Show a standard Git failure notification and persistent log record when a long-operation start request rejects; Git UI store regression, typecheck, touched-file ESLint, Prettier and diff check pass.
 - [x] Extend real-repository Git audit coverage to remote branch checkout success/failure, asserting one resolved-root audit outcome per attempt.
+- [x] Verify remote branch deletion success and transport-to-missing-remote failure each emit one resolved-root system Git audit outcome using a local bare remote.

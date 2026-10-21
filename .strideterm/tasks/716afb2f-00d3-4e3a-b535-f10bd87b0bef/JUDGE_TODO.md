@@ -220,6 +220,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
    Evidence: `electron/backend/git-manager.test.ts` real-repository coverage asserts one resolved-root write audit outcome for local branch create, checkout, rename, delete success/failure, and remote branch checkout success/failure.
    Evidence: Conflict resolve and unresolve now take the shared per-worktree lock and emit exactly one system Git audit outcome; a real conflict test covers success and failure for both routes.
    Evidence: Conflict detail/resolve/unresolve now use the stage-path normalizer, rejecting traversal paths before reading or writing outside the selected root. A real-repository regression confirms outside content stays unchanged.
+   Evidence: A real local bare remote test verifies successful remote-branch deletion and failed deletion after the remote URL becomes unavailable each emit exactly one system Git write audit row with the workspace root.
    Remaining: Route-level evidence covers index/local tag, branch/history/stash dispatch and writes, worktree add/remove, provider comments/votes/review submission, PR creation, and Azure thread update. Other mutation families still need assertions; manual menu/shortcut walkthrough remains.
 
 48. **IMPLEMENTED** — Check rejected promises and structured ok:false; promise success must not mean Git success.
@@ -345,6 +346,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
    Evidence: Runtime worktree creation now uses the shared per-worktree lock and records success/failure with root and branch; success and Git-failure runtime tests assert its audit data.
    Evidence: Local branch create/checkout/rename/delete success and delete failure each emit one system Git audit outcome with the workspace root; focused backend test passes.
    Evidence: Remote branch checkout success and missing-remote failure each emit one system Git write audit outcome with the workspace root; the same real-repository regression verifies both.
+   Evidence: Remote branch deletion success and missing-remote failure each emit one system Git audit outcome with the workspace root; a local bare-remote integration test verifies both.
    Evidence: Conflict resolve and undo success/failure each emit one system Git audit outcome with the resolved root; the focused real-conflict regression passes.
    Evidence: Conflict detail/resolve/unresolve reject repository traversal paths, and the regression confirms an outside file is not modified.
    Evidence (2026-10-21): GitHub PR creation, Azure DevOps PR creation, and Azure DevOps thread status update each have focused assertions for exactly one successful classified provider write audit entry. Provider PR/thread gaps are closed; other mutation families and inventory-wide route reconciliation remain.
@@ -941,3 +943,10 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Extended the real-repository branch audit test to cover remote-tracking branch checkout success and a missing remote-tracking ref failure. Each attempt produces exactly one resolved-root system Git audit row.
 - `npm run test:backend -- electron/backend/git-manager.test.ts -t "local and remote branch mutation"`: 1 passed / 182 skipped. `npm run typecheck` passes; touched-file ESLint has 0 errors / 93 warnings; Prettier and `git diff --check` pass. Remaining audit route families and user visual acceptance remain open; WORK_LOCK stays.
+
+## Worker continuation (remote branch deletion audit)
+
+- Added a local bare-remote integration test for successful remote branch deletion and a failed deletion after changing the remote URL to an unavailable path. Each attempt records one system Git write audit outcome with the resolved root.
+- `npm run test:backend -- electron/backend/git-manager.test.ts -t "successful and failed remote branch deletion"`: 1 passed / 183 skipped. Other audit families and user visual acceptance remain open; WORK_LOCK stays.
+
+- Verification: `npm run typecheck` passes; focused ESLint reports 0 errors / 93 warnings; Prettier and `git diff --check` pass.
