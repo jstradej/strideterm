@@ -44,6 +44,22 @@
           </optgroup>
         </select>
       </label>
+      <label class="git-history-picker__search git-history-picker__search--commits">
+        <span>Find commits</span>
+        <input
+          v-model="historyCommitSearch"
+          type="search"
+          placeholder="Message, author, or hash…"
+          aria-label="Search commits"
+        />
+      </label>
+      <span
+        v-if="historyCommitSearch && !filteredHistoryCommits.length && !graphLoading && !graphError"
+        class="git-branches__placeholder"
+        role="status"
+      >
+        No commits match “{{ historyCommitSearch }}”.
+      </span>
       <button
         type="button"
         class="button button--ghost button--small"
@@ -422,7 +438,7 @@
             </div>
             <GitTreeGraph
               v-else-if="viewMode === 'graph'"
-              :commits="commits"
+              :commits="compactHistory ? filteredHistoryCommits : commits"
               :head="head"
               :refs="refs"
               :selected-hash="selectedHash"
@@ -438,7 +454,7 @@
               <div v-if="graphLoading && !commits.length" class="git-branches__placeholder">Loading…</div>
               <GitCommitLog
                 v-else
-                :commits="commits"
+                :commits="compactHistory ? filteredHistoryCommits : commits"
                 :selected-commit="selectedShortHash"
                 :ahead-count="0"
                 @select="onSelectCommitShort"
@@ -556,7 +572,7 @@
           <span v-if="loadedCount" class="git-branches__pane-count">{{ loadedCount }}</span>
         </div>
         <GitTreeGraph
-          :commits="commits"
+          :commits="compactHistory ? filteredHistoryCommits : commits"
           :head="head"
           :refs="refs"
           :selected-hash="selectedHash"
@@ -735,6 +751,7 @@ const mobileView = ref<"tree" | "commits" | "diff">("tree");
 // Which ref is selected in the branch tree (acts as a graph filter).
 // Empty string = no filter (shows the full Log).
 const selectedRef = ref<string>("");
+const historyCommitSearch = ref("");
 const historySearch = ref("");
 const historyPreferences = computed(() =>
   gitUiStore.getGitHistoryPreferences(props.workspaceId, props.activeRootPath || "", props.profileId || "default"),
@@ -1232,6 +1249,17 @@ const limitSelectOptions = computed(() =>
 // Server already filtered by --author, so the rendered commits ARE the raw
 // fetch result. No client-side filtering — that would re-fragment the chain.
 const commits = computed<GraphCommit[]>(() => rawCommits.value);
+const filteredHistoryCommits = computed(() => {
+  const query = historyCommitSearch.value.trim().toLocaleLowerCase();
+  if (!query) return commits.value;
+  return commits.value.filter((commit) =>
+    [commit.hash, commit.shortHash, commit.subject, commit.author].some((value) =>
+      String(value || "")
+        .toLocaleLowerCase()
+        .includes(query),
+    ),
+  );
+});
 
 const loadedCount = computed(() => commits.value.length);
 

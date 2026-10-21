@@ -41,3 +41,4 @@
 - [x] Add a typed two-revision file diff through Electron and remote transport; provider summaries now supply source/target commit IDs and Review compares those pinned commits instead of local branches or the working copy.
 - [x] Re-run focused GitPane/History UI and GitManager tag/hunk tests, full lint, formatting check and safe production build; all pass. Full typecheck remains failing in unrelated existing test typings (see `JUDGE_TODO.md`); remaining implementation work is still open.
 - [x] Persist classic Changes commit text and selected paths by workspace/root, clear them only after successful commits, and clear staged-message completion against the captured root. Lifecycle tests pass.
+- [x] Restore compact History commit-text search across message, author and hash, with a distinct no-match status; picker and GitPane UI suites pass.
