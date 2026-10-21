@@ -8,14 +8,13 @@
 ## To Do
 
 - [ ] Complete the user's visual review using `MANUAL_VERIFICATION.md` in their `dev.ps1` session; adjust anything they report.
-- [ ] Finish remaining audit findings in `JUDGE_TODO.md`, including Review diff source, Changes draft/context persistence, narrow workflows, audit/error paths, long operations and regression coverage.
+- [ ] Finish remaining audit findings in `JUDGE_TODO.md`, including Review diff source, Changes draft/context persistence, narrow workflows, conflict visibility, HEAD/all semantics, long operations and regression coverage.
 - [ ] Re-run the full numbered self-audit against the current tree and update each requirement with verifiable evidence.
 - [ ] Resolve the full typecheck failures and run the project checks required by `WORKER.md` after implementation changes.
+- [ ] Complete user's visual review in their `dev.ps1` session; this remains user-owned.
 - [x] Commit implementation changes locally without pushing.
 
 ## In Progress
-
-- [ ] Repair and verify the judge-confirmed More routing and staged-hunk validation gaps; commit `7aad383b` contains the initial fixes.
 
 ## Done
 
@@ -34,3 +33,7 @@
 - [x] Preserve staged commit messages across view changes and clear root-specific selections on root changes.
 - [x] Add focused tests for new index operations, long-operation acceptance/deduplication, stale reads and Review routing.
 - [x] Ensure More routes take precedence over History/Changes and expose Branches; require selected hunk text to match the token-verified server diff (`7aad383b`).
+- [x] Require each staged/unstaged hunk patch to match an exact hunk and diff header from the current token-verified server diff; add a cross-file forged-patch regression.
+- [x] Route local tag creation/deletion through the shared Git write lock and audit wrapper; preserve argv-level tag tests.
+- [x] Pass the selected profile into History, make the mobile compact diff reachable, and show known/unknown last-fetch state.
+- [x] Distinguish the HEAD history query from the all-branches query.

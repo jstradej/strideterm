@@ -2220,7 +2220,16 @@ export class GitManager extends EventEmitter {
         }
         // The token proves which server diff was reviewed, but it must not
         // authorize arbitrary patch text supplied alongside that token.
-        if (!(current.stdout || "").includes(hunk)) {
+        const currentDiff = current.stdout || "";
+        const suppliedHunks = hunk.split(/(?=^@@ )/m).filter((part) => part.startsWith("@@ "));
+        const currentHunks = currentDiff.split(/(?=^@@ )/m).filter((part) => part.startsWith("@@ "));
+        const currentHeader = currentDiff.split(/^(?=@@ )/m)[0] || "";
+        const suppliedHeader = hunk.split(/^(?=@@ )/m)[0] || "";
+        if (
+          suppliedHunks.length !== 1 ||
+          currentHeader !== suppliedHeader ||
+          suppliedHunks.some((selected) => !currentHunks.includes(selected))
+        ) {
           throw new Error("The selected hunk does not match the current diff. Refresh it and try again.");
         }
         const applyArgs = action === "unstage" ? ["apply", "--cached", "--reverse", "-"] : ["apply", "--cached", "-"];
@@ -4274,13 +4283,19 @@ export class GitManager extends EventEmitter {
     if (!name) {
       return createStructuredResult({ ok: false, summary: "Tag name is required." });
     }
-    const effectiveCwd = rootPath || workspace?.cwd;
-    if (!effectiveCwd) {
+    if (!workspace || !(rootPath || workspace.cwd)) {
       return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
     }
     const args = message ? ["tag", "-a", name, "-m", message] : ["tag", name];
     if (commit) args.push(commit);
-    return this.execToResult(effectiveCwd, args, `Tag '${name}' created.`, `Failed to create tag '${name}'.`);
+    return this.runWriteAction(workspace, {
+      type: "create-tag",
+      label: `Create tag ${name}`,
+      allowDirty: true,
+      rootPath,
+      extraAudit: { tagName: name, commit: commit || "HEAD" },
+      run: (cwd) => this.execGit(cwd, args),
+    });
   }
 
   async deleteTag(
@@ -4291,16 +4306,17 @@ export class GitManager extends EventEmitter {
     if (!name) {
       return createStructuredResult({ ok: false, summary: "Tag name is required." });
     }
-    const effectiveCwd = rootPath || workspace?.cwd;
-    if (!effectiveCwd) {
+    if (!workspace || !(rootPath || workspace.cwd)) {
       return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
     }
-    return this.execToResult(
-      effectiveCwd,
-      ["tag", "-d", name],
-      `Tag '${name}' deleted.`,
-      `Failed to delete tag '${name}'.`,
-    );
+    return this.runWriteAction(workspace, {
+      type: "delete-tag",
+      label: `Delete tag ${name}`,
+      allowDirty: true,
+      rootPath,
+      extraAudit: { tagName: name },
+      run: (cwd) => this.execGit(cwd, ["tag", "-d", name]),
+    });
   }
 
   async pushTag(

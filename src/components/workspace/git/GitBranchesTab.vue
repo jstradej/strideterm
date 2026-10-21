@@ -14,7 +14,8 @@
       </label>
       <label class="git-history-picker__select">
         <span>History range</span>
-        <select :value="selectedRef || 'HEAD'" aria-label="History reference" @change="onHistoryRefChange">
+        <select :value="selectedRef || '__ALL__'" aria-label="History reference" @change="onHistoryRefChange">
+          <option value="__ALL__">All branches and tags</option>
           <option value="HEAD">HEAD · {{ branchList.current || "detached" }}</option>
           <optgroup v-if="historyPreferences.favorites.length" label="Favorites">
             <option v-for="ref in historyPreferences.favorites" :key="`favorite:${ref}`" :value="ref">
@@ -60,6 +61,9 @@
       <span class="git-history-picker__current"
         >Working branch: <strong>{{ branchList.current || "Detached HEAD" }}</strong></span
       >
+      <span class="git-history-picker__fetch" aria-live="polite">
+        Last fetch: <strong>{{ snapshot.lastFetchAt ? formatDateLabel(snapshot.lastFetchAt) : "Unknown" }}</strong>
+      </span>
       <button v-if="selectedRef" type="button" class="button button--ghost button--small" @click="onSelectRef('')">
         All branches
       </button>
@@ -535,7 +539,10 @@
         @create-pr="onCreatePrForBranch"
       />
 
-      <div v-else-if="mobileView === 'commits' || compactHistory" class="git-branches__commits-pane">
+      <div
+        v-else-if="mobileView === 'commits' || (compactHistory && mobileView !== 'diff')"
+        class="git-branches__commits-pane"
+      >
         <div class="git-branches__pane-head">
           <button
             type="button"
@@ -759,7 +766,7 @@ const filteredHistoryTags = computed(() =>
 );
 function onHistoryRefChange(event: Event) {
   const value = (event.target as HTMLSelectElement).value;
-  const selected = value === "HEAD" ? "" : value;
+  const selected = value === "__ALL__" ? "" : value;
   onSelectRef(selected);
   gitUiStore.recordGitHistoryRef(props.workspaceId, value, props.activeRootPath || "", props.profileId || "default");
 }
@@ -1284,6 +1291,12 @@ const selectedCommitInfo = computed<GraphCommit | null>(
 function shortHashOf(hash: string): string {
   if (!hash) return "";
   return hash.length > 7 ? hash.slice(0, 7) : hash;
+}
+
+function formatDateLabel(value: string | null | undefined): string {
+  if (!value) return "Unknown";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "Unknown" : date.toLocaleString();
 }
 
 function refreshBranches(force = false) {

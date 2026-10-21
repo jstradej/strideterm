@@ -2394,7 +2394,7 @@ describe("GitManager", () => {
       });
       const mgr = new GitManager({ execGitImpl });
       await mgr.createTag({ id: "ws1", cwd: "/repo" }, { tagName: "v1.0.0", message: "release" });
-      expect(args[0]).toEqual(["tag", "-a", "v1.0.0", "-m", "release"]);
+      expect(args).toContainEqual(["tag", "-a", "v1.0.0", "-m", "release"]);
     });
 
     test("lightweight tag pinned to a commit hash when commit provided", async () => {
@@ -2405,7 +2405,7 @@ describe("GitManager", () => {
       });
       const mgr = new GitManager({ execGitImpl });
       await mgr.createTag({ id: "ws1", cwd: "/repo" }, { tagName: "v1.0.0", commit: "abc1234" });
-      expect(args[0]).toEqual(["tag", "v1.0.0", "abc1234"]);
+      expect(args).toContainEqual(["tag", "v1.0.0", "abc1234"]);
     });
   });
 
@@ -3994,6 +3994,12 @@ describe("GitManager", () => {
       const header = diff.split(/^(?=@@ )/m)[0] || "";
       const hunk = diff.split(/(?=^@@ )/m).find((part) => part.startsWith("@@ ")) || "";
       const token = String(preview.diffToken);
+      await fs.writeFile(path.join(root, "b.txt"), "forged target\n", "utf8");
+      const otherPreview = await mgr.diffPreview(workspace, { path: "b.txt" });
+      const forgedPatch = `${String(otherPreview.diffHeader || "")}${String(otherPreview.diff || "")}`;
+      const forged = await mgr.stageHunk(workspace, { path: "a.txt", diffToken: token, hunk: forgedPatch });
+      expect(forged.ok).toBe(false);
+      expect(rg(root, ["diff", "--cached", "--name-only"]).trim()).toBe("");
       expect((await mgr.stageHunk(workspace, { path: "a.txt", diffToken: token, hunk: `${header}${hunk}` })).ok).toBe(
         true,
       );

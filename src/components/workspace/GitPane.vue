@@ -309,6 +309,7 @@
           :snapshot="snapshot"
           :git-ui="gitUi"
           :active-root-path="activeRootPath"
+          :profile-id="workspace?.profileId || 'default'"
           :has-azure-connection="hasAzureConnection"
           :active-connection-id="activeConnectionId"
           :base-branch="effectiveBaseBranch"
