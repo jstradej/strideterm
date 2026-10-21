@@ -8768,6 +8768,27 @@ describe("runtime integration", () => {
     });
   });
 
+  test("index mutation runtime routes dispatch one manager write with the resolved root", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    const stageFile = vi.fn(async () => ({ ok: true, summary: "Staged." }));
+    const unstageFile = vi.fn(async () => ({ ok: true, summary: "Unstaged." }));
+    const commitStaged = vi.fn(async () => ({ ok: true, summary: "Committed index." }));
+    Object.assign(fixture.git, { stageFile, unstageFile, commitStaged });
+
+    await fixture.runtime.gitStageFile({ workspaceId: "ws-a1", rootPath: "/tmp/a1", path: "src/a.ts" });
+    await fixture.runtime.gitUnstageFile({ workspaceId: "ws-a1", rootPath: "/tmp/a1", path: "src/a.ts" });
+    await fixture.runtime.gitCommitStaged({ workspaceId: "ws-a1", rootPath: "/tmp/a1", message: "index only" });
+
+    const workspace = expect.objectContaining({ id: "ws-a1", profileId: "profile-a" });
+    expect(stageFile).toHaveBeenCalledTimes(1);
+    expect(stageFile).toHaveBeenCalledWith(workspace, { path: "src/a.ts", rootPath: "/tmp/a1" });
+    expect(unstageFile).toHaveBeenCalledTimes(1);
+    expect(unstageFile).toHaveBeenCalledWith(workspace, { path: "src/a.ts", rootPath: "/tmp/a1" });
+    expect(commitStaged).toHaveBeenCalledTimes(1);
+    expect(commitStaged).toHaveBeenCalledWith(workspace, { message: "index only", rootPath: "/tmp/a1" });
+  });
+
   test("rejects a caller-supplied Git root outside a single-repository workspace before accepting fetch", async () => {
     const fixture = await createFixture({
       initialState: {
