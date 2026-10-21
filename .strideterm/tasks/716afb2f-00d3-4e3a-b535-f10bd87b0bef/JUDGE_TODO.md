@@ -684,3 +684,7 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 - `npm run typecheck`: PASS after those changes. `$env:VITE_BUILD_WATCH='1'; npm run build`: PASS, including renderer, backend, preload, and shell integration copy. Existing chunk-size warnings remain.
 - Backend source has not changed since the last full stable run: 224 files / 5,465 passed / 7 skipped with four workers. No app or dev server was launched.
 - The manual `dev.ps1` walkthrough and broad reconnect/audit/accessibility acceptance remain open; WORK_LOCK remains.
+
+## Worker continuation correction (`multi-ref loading guard`)
+
+- The ref readiness guard now also protects multi-selected branch refs. Loading/error-state watcher callbacks no longer prune those selections while source lists are incomplete. GitBranchesTab suite passes 16 tests; touched-file Prettier/ESLint and diff checks pass. Remaining manual narrow/keyboard and broad operation/lifecycle requirements keep WORK_LOCK in place.
