@@ -203,7 +203,8 @@ Full per-requirement ledger (122 items)
 
 45. **PARTIAL** — Drafts/mutations outlive component; switching layout neither cancels nor reissues mutation and retains its result; remove only UI reads/subscriptions.
    Evidence: src/stores/git-ui.ts:437,1338; src/components/workspace/git/GitBranchesTab.vue:1407; src/components/workspace/git/GitChangesTab.vue:605,772,871.
-   Remaining: Mutations live in store/backend; classic message/selection and staged message are scoped, and late commit completion uses captured root. Unsaved editor-dialog draft and broader disconnect/view lifecycle tests remain.
+   Evidence: An unsaved editor-dialog value survives pane unmount, file selection changes, and Settings off/on; a busy fetch survives view-setting off/on; failed fetch/pull/push keeps the scoped staged message and terminal result. These are covered by AzureReviewPane, GitPane, and git-ui store regressions.
+   Remaining: End-to-end transport disconnect/reconnect while a Git action is pending remains untested; manual visual acceptance remains open.
 
 46. **IMPLEMENTED** — Switching back restores classic; missing/invalid saved flag is safe false, malformed new payload is rejected.
    Evidence: src/components/workspace/GitPane.vue:232,622; electron/backend/default-state.ts:1564; electron/backend/ipc-schemas.test.ts:60; electron/backend/default-state.test.ts:2101.
@@ -838,3 +839,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Added a mounted accessibility regression verifying the compact History reference select has native tab order, is focusable, and has an accessible label. Existing GitPane tests verify More exposes and routes to Branches management. Focused picker test passes; repository typecheck, touched-file Prettier, ESLint (0 errors; one existing warning), and `git diff --check` pass.
 - Corrected stale audit text claiming More→Branches was absent. Full open/keyboard/Escape interaction and narrow visual behavior remain assigned to the user's manual walkthrough; complete shortcut/context-menu inventory remains open, so WORK_LOCK stays.
+
+## Worker continuation (lifecycle self-audit reconciliation)
+
+- Re-read the task prompt, TODO, worker checklist, source plan, and the numbered audit. Corrected requirement 45's stale note: the unsaved review editor now has automated pane-unmount, file-switch, and Settings-toggle coverage; the running fetch and staged draft/result retention also have mounted/store regressions. Pending transport disconnect-through-action and visual walkthrough are still distinct open requirements.
+- Current tree retains the prior verification record: full backend passes 224 files / 5,468 tests (7 skipped); full lint 0 errors / 4,685 warnings with Prettier clean; typecheck passes. Full UI has one load-sensitive transport test failure that passes in isolation. No app, dev server, or build launched.
