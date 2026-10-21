@@ -217,6 +217,45 @@ describe("GitPane repo picker", () => {
 
     expect(wrapper.findComponent({ name: "GitOperationCard" }).exists()).toBe(true);
   });
+
+  test("a running Git operation survives turning the opt-in view off and back on", async () => {
+    const ws = buildWorkspace({ id: "ws-toggle-operation" });
+    const wrapper = mountPane("ws-toggle-operation", [ws]);
+    const appStore = useAppStore();
+    const gitUiStore = useGitUiStore();
+    gitUiStore.setActiveRoot("ws-toggle-operation", "/ms/api");
+    gitUiStore.get("ws-toggle-operation").busyAction = "fetch";
+    gitUiStore.get("ws-toggle-operation").busyPhase = "Fetching…";
+
+    appStore.payload = {
+      ...appStore.payload!,
+      appState: { ...appStore.payload!.appState!, settings: { git: { ui: { newView: true } } } },
+    } as StatePayload;
+    await flushPromises();
+    await wrapper
+      .findAll('[role="tab"]')
+      .find((tab) => tab.text() === "Review")!
+      .trigger("click");
+    await flushPromises();
+    expect(wrapper.findComponent({ name: "GitOperationCard" }).exists()).toBe(true);
+
+    appStore.payload = {
+      ...appStore.payload!,
+      appState: { ...appStore.payload!.appState!, settings: { git: { ui: { newView: false } } } },
+    } as StatePayload;
+    await flushPromises();
+    expect(wrapper.find('[aria-label="Git sections"]').exists()).toBe(true);
+    expect(gitUiStore.get("ws-toggle-operation").busyAction).toBe("fetch");
+
+    appStore.payload = {
+      ...appStore.payload!,
+      appState: { ...appStore.payload!.appState!, settings: { git: { ui: { newView: true } } } },
+    } as StatePayload;
+    await flushPromises();
+    expect(gitUiStore.get("ws-toggle-operation").busyAction).toBe("fetch");
+    expect(wrapper.findComponent({ name: "GitOperationCard" }).exists()).toBe(true);
+  });
+
   test("repo picker is shown when workspace has 2+ gitRoots", () => {
     const ws = buildWorkspace({ id: "ws-multi", gitRoots: ["/ms/api", "/ms/web"] });
     const wrapper = mountPane("ws-multi", [ws]);

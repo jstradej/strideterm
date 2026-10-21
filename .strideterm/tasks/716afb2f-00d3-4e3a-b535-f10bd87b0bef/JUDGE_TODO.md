@@ -342,7 +342,8 @@ Full per-requirement ledger (122 items)
 
 84. **PARTIAL** — Acceptance: layout toggle keeps message/comments/root/running actions and creates no double mutations/subscriptions/notifications.
    Evidence: src/components/workspace/GitPane.test.ts:138,152; src/components/workspace/git/GitChangesTab.vue:772,871; src/stores/git-ui.ts:437.
-   Remaining: Classic message/selection persist by workspace/root; saved Review drafts and an open unsaved TextAreaDialog survive pane unmount. Verify running-operation state across an actual setting toggle in the manual pass.
+   Evidence: `GitPane.test.ts` toggles the saved setting off and back on while a fetch is busy and verifies the busy state and operation card survive. Classic message/selection persist by workspace/root; saved Review drafts and an open unsaved TextAreaDialog survive pane unmount.
+   Remaining: Verify comment editor contents across the real Settings UI toggle and check for duplicate subscriptions/mutations visually.
 
 85. **PARTIAL** — Acceptance: explicit picker test proves only read query changes, no checkout/fetch/other mutations.
    Evidence: src/components/workspace/git/GitBranchesTab.test.ts:104.
@@ -478,7 +479,7 @@ Full per-requirement ledger (122 items)
 
 121. **PARTIAL** — TODO Done: staged message survives views; clear root-specific selections on root changes.
    Evidence: src/components/workspace/git/GitChangesTab.vue:653,826,857,870,902,932; src/stores/git-ui.ts:384,390,394,400; src/components/workspace/git/GitBranchesTab.vue:730,1157.
-   Remaining: Staged/classic drafts and History query state are scoped; async commit completion captures its originating root; late graph responses are rejected; unsaved editor state survives pane unmount. Reference filter and running-operation behavior during view toggles remain for manual acceptance.
+   Remaining: Staged/classic drafts and History query state are scoped; async commit completion captures its originating root; late graph responses are rejected; unsaved editor state survives pane unmount. The busy-operation setting toggle now has integration coverage; reference-filter and comment-editor toggle round-trip remain for manual acceptance.
 
 122. **PARTIAL** — TODO Done: focused index, long acceptance/dedup, stale read and Review routing tests.
    Evidence: electron/backend/git-manager.test.ts:3943; electron/backend/runtime.test.ts:8481; src/stores/git-ui.test.ts:64; src/components/workspace/GitPane.test.ts:152.
@@ -719,3 +720,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Expanded the fetch/pull/push operation tests so each terminal failure is delivered through both the operation event and persisted lastResults; one user-facing error notification is produced per accepted operation. `git-ui.test.ts` passes 58 tests; typecheck, focused ESLint (0 errors / existing warnings), Prettier and diff check pass.
 - No implementation changed in this test-only follow-up. The last full UI run remains 214 files / 3,055 tests; backend remains 224 files / 5,465 passed / 7 skipped. Renderer reconnect/profile-switch, manual visual and route inventory acceptance remain open; WORK_LOCK stays.
+
+## Worker continuation (setting toggle during operation)
+
+- Added a GitPane integration test that keeps fetch active while toggling the opt-in new view off and on; the busy store state survives and the operation card is present after restoring the new view.
+- GitPane tests pass 21 tests; full UI passes 214 files / 3,056 tests; typecheck passes. Comment-editor persistence through the actual Settings control and visual confirmation remain pending, along with other lifecycle/audit items; WORK_LOCK stays.
