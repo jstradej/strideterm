@@ -250,7 +250,7 @@ Full per-requirement ledger (122 items)
    Evidence: electron/backend/operation-registry.ts:147,343; src/stores/app-workspace-actions.ts:130,142,375,397,434; electron/shared/operation-events.ts:23.
 
 60. **PARTIAL** — Update both UI consumers and remote long-operation path; verify reconnect/dedup and no cross-profile/workspace result leakage.
-   Evidence: `git-ui.ts` resolves accepted fetch, pull, and ordinary push operations from the terminal event or persisted lastResults payload; `git-ui.test.ts` covers all three event outcomes and pull payload recovery. Backend profile isolation is covered by `runtime.test.ts:8746`.
+   Evidence: `git-ui.ts` resolves accepted fetch, pull, and ordinary push operations from the terminal event or persisted lastResults payload; `git-ui.test.ts` delivers the same terminal failure through both channels for all three and asserts one error notification. Backend profile isolation is covered by `runtime.test.ts:8746`.
    Remaining: Renderer-level disconnect/reconnect and profile-switch lifecycle are still not exercised end to end.
 
 61. **PARTIAL** — Stage 1: inventory matrix classic/new × normal/review × local/remote × root plus verified permissions/audit/result variants.
@@ -714,3 +714,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 - Added a Changes component regression confirming `gitCommitStaged` returning failure leaves the submitted root-scoped message in both the input and store for retry. `GitChangesTab.test.ts` passes 17 tests.
 - Full UI passes 214 files / 3,055 tests; typecheck, focused ESLint (0 errors / 2 warnings), touched-file Prettier and `git diff --check` pass. Backend and implementation code did not change in this follow-up.
 - Updated the action inventory's operation-completion description and current verification counts. User visual/manual review, disconnect/pre-push-hook lifecycle scenarios, and broader inventory/audit requirements remain open; WORK_LOCK stays.
+
+## Worker continuation (network outcome duplicate delivery)
+
+- Expanded the fetch/pull/push operation tests so each terminal failure is delivered through both the operation event and persisted lastResults; one user-facing error notification is produced per accepted operation. `git-ui.test.ts` passes 58 tests; typecheck, focused ESLint (0 errors / existing warnings), Prettier and diff check pass.
+- No implementation changed in this test-only follow-up. The last full UI run remains 214 files / 3,055 tests; backend remains 224 files / 5,465 passed / 7 skipped. Renderer reconnect/profile-switch, manual visual and route inventory acceptance remain open; WORK_LOCK stays.

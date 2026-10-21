@@ -219,7 +219,7 @@ describe("git-ui store", () => {
       ["fetch", "gitFetch"],
       ["pull", "gitPull"],
       ["push", "gitPush"],
-    ] as const)("keeps %s busy until its accepted operation emits a terminal failure", async (action, method) => {
+    ] as const)("handles %s failure delivered by event and payload exactly once", async (action, method) => {
       let finish!: (outcome: OperationFinished) => void;
       const onOperationFinished = vi.fn((handler: (outcome: OperationFinished) => void) => {
         finish = handler;
@@ -229,13 +229,16 @@ describe("git-ui store", () => {
       store.init({ [method]: request, onOperationFinished } as unknown as Transport);
       store.setActiveRoot("ws1", "/repo/a");
       appStoreMock.payload = { operations: { lastResults: [] } };
+      const priorFailureCount = useNotificationStore().items.filter(
+        (toast) => toast.title === "Git action failed",
+      ).length;
 
       const pending = store[action === "fetch" ? "gitFetch" : action === "pull" ? "gitPull" : "gitPush"]("ws1");
       await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1));
       await vi.waitFor(() => expect(store.get("ws1").busyAction).toBe(action));
       expect(store.get("ws1").lastResult).toBeUndefined();
 
-      finish({
+      const outcome: OperationFinished = {
         operationId: `op-${action}`,
         kind: `git.${action}`,
         profileId: "profile-a",
@@ -243,7 +246,9 @@ describe("git-ui store", () => {
         rootPath: "/repo/a",
         finishedAt: new Date().toISOString(),
         result: { ok: false, summary: `${action} failed after acceptance` },
-      });
+      };
+      appStoreMock.payload = { operations: { lastResults: [outcome] } };
+      finish(outcome);
       await pending;
 
       expect(store.get("ws1").busyAction).toBe("");
@@ -251,6 +256,9 @@ describe("git-ui store", () => {
         ok: false,
         summary: `${action} failed after acceptance`,
       });
+      expect(useNotificationStore().items.filter((toast) => toast.title === "Git action failed")).toHaveLength(
+        priorFailureCount + 1,
+      );
     });
 
     test("recovers a pull outcome from the persisted operation payload after a missed event", async () => {
