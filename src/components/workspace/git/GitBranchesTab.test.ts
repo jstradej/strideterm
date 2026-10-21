@@ -300,6 +300,29 @@ describe("GitBranchesTab compact history picker", () => {
     vi.useRealTimers();
   });
 
+  test("forwards the topological ordering toggle to the graph query", async () => {
+    vi.useFakeTimers();
+    const picker = mount(GitBranchesTab, {
+      props: {
+        workspaceId: "ws-topo-filter",
+        snapshot: { dirty: false, branch: "main" },
+        gitUi: {
+          branchList: { current: "main", local: [{ name: "main", isCurrent: true }], remotes: [] },
+          graph: { commits: [], head: "", refs: {} },
+        },
+        activeRootPath: "/repo",
+        compactHistory: true,
+      },
+    });
+    mountedWrappers.push(picker);
+    await picker.get('button[title^="Date order"]').trigger("click");
+    await vi.advanceTimersByTimeAsync(250);
+    await flushPromises();
+    expect(gitLoadGraph).toHaveBeenLastCalledWith("ws-topo-filter", expect.objectContaining({ topoOrder: true }));
+    picker.unmount();
+    vi.useRealTimers();
+  });
+
   test("surfaces tag read failures in History", async () => {
     const picker = mountTab({ tagsError: "Could not load tags." });
     expect(picker.get('[role="alert"]').text()).toBe("Could not load tags.");
