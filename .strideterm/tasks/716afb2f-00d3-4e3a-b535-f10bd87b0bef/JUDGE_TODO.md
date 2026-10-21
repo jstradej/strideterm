@@ -73,7 +73,7 @@ Full per-requirement ledger (122 items)
 
 10. **PARTIAL** — Running operations and conflicts remain visible across views; primary conflict action is outside overflow.
    Evidence: src/components/workspace/GitPane.vue:105,108,245,348,418; src/components/workspace/git/GitBranchesTab.vue:205; src/components/workspace/git/GitOperationCard.vue:36.
-   Remaining: A common conflict action exists. Operation result visibility and full across-view conflict/operation acceptance still need coverage.
+   Remaining: History and Changes component tests verify their operation cards during fetch; Review is covered in GitPane tests. Full cross-view conflict state and user visual acceptance remain open.
 
 11. **IMPLEMENTED** — Unlinked Review has an explained empty state with existing PR selection/creation entry point.
    Evidence: src/components/workspace/GitPane.vue:374,379,384,668.
@@ -173,7 +173,7 @@ Full per-requirement ledger (122 items)
 
 38. **PARTIAL** — Narrow layout uses list/detail and inline diff; long refs/paths/hundreds of branches remain usable.
    Evidence: src/components/workspace/git/GitBranchesTab.vue:538,566; src/components/workspace/git/GitChangesTab.vue:389,611; src/components/shared/MonacoDiffPanel.vue:172,291.
-   Remaining: Changes uses inline/list-detail; compact History's diff is unreachable and narrow staging differs. Fix these and perform the required scale/narrow verification.
+   Remaining: Compact History diff entry and narrow Changes stage/unstage controls are implemented; a 400-ref picker test verifies large-list filtering. Human narrow-window layout, long paths, and keyboard/focus behavior still need the manual pass.
 
 39. **IMPLEMENTED** — Respect existing themes/tokens; do not add textured surfaces.
    Evidence: src/components/workspace/GitPane.vue:1151; src/components/workspace/git/GitBranchesTab.vue:2014; src/components/workspace/git/GitChangesTab.vue:1311; committed UI diff adds no texture asset.
@@ -270,7 +270,7 @@ Full per-requirement ledger (122 items)
 
 65. **PARTIAL** — Stage 2: classic/new shell, three views and common operation context preserve all old functionality and switching back.
    Evidence: src/components/workspace/GitPane.vue:245,302,322,369,649.
-   Remaining: Three-view shell and back-switch exist; More shadowing and hidden Branches remove old actions. Fix navigation and common conflicts/errors.
+   Remaining: More routing and Branches/Stashes precedence are fixed and tested; operation state is surfaced in main views. Verify specialized destination/conflict behavior visually.
 
 66. **PARTIAL** — Stage 2: new selection independent of legacy migrations, one active data subscription, durable in-progress actions/inputs.
    Evidence: src/components/workspace/GitPane.vue:494,614,623; src/stores/git-ui.ts:1423; src/components/workspace/git/GitChangesTab.vue:772,871.
@@ -286,7 +286,7 @@ Full per-requirement ledger (122 items)
 
 69. **PARTIAL** — Stage 3: deleted/invalid refs, detached/empty repo, hundreds of refs and root/profile switching are handled.
    Evidence: src/components/workspace/git/GitBranchesTab.vue:1157,1375,733; src/components/workspace/GitPane.vue:75,302.
-   Remaining: Deleted selections now produce a status message after successful ref reads (continuation `1ead33cc`). Add explicit empty/detached/large-list behavior tests; root/profile switching still needs broader automated and manual acceptance.
+   Remaining: Deleted refs show a status; empty/detached, 400-ref filtering, loading completion, failed tag reads, and scoped profile/workspace/root getter wiring have tests. Actual root/profile switching and narrow/keyboard acceptance remain for the manual pass.
 
 70. **IMPLEMENTED** — Stage 4: provider-backed Review shows source/target/base and expands accurate PR diff.
    Evidence: src/components/workspace/GitPane.vue:369; src/components/workspace/AzureReviewPane.vue:1274,1276; electron/backend/file-manager.ts:1122.
@@ -298,7 +298,7 @@ Full per-requirement ledger (122 items)
 
 72. **PARTIAL** — Stage 4: retain conflicts/stashes/worktrees/bulk and inventory tools; viewed state only if real.
    Evidence: src/components/workspace/GitPane.vue:302,322,338,348,389,423; .strideterm/tasks/716afb2f-00d3-4e3a-b535-f10bd87b0bef/IMPLEMENTATION_INVENTORY.md:15.
-   Remaining: No fake viewed state added; More tools shadowed, conflicts not pane-wide. Restore and verify each route.
+   Remaining: No fake viewed state added; More precedence and shared conflict action are implemented. Verify every specialized destination and conflict state in the manual pass.
 
 73. **IMPLEMENTED** — Stage 5: typed/validated file+hunk stage/unstage and existing-index commit endpoints across Electron/remote transport/store/runtime.
    Evidence: electron/backend/ipc-schemas.ts:310,321,329; electron/shared/ipc-bridge.ts:625; electron/preload.cts:251; electron/backend/remote-server.ts:3613; src/transport.ts:2426; src/stores/git-ui.ts:1302,1313,1324,1338; electron/backend/runtime-git-handlers.ts:291.
