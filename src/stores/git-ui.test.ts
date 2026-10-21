@@ -63,6 +63,13 @@ describe("git-ui store", () => {
     expect(store.getGitView("ws1", "/repo/a", "profile-b", "github:123")).toBeUndefined();
   });
 
+  test("new Git view keys cannot collide when identifiers contain separators", () => {
+    const store = useGitUiStore();
+    store.gitSwitchView("ws::2", "history", "/repo", "profile");
+    store.gitSwitchView("ws", "review", "/repo", "profile::2");
+    expect(store.getGitView("ws::2", "/repo", "profile")).toBe("history");
+    expect(store.getGitView("ws", "/repo", "profile::2")).toBe("review");
+  });
   test("History ref and search restore per profile, workspace, and root", () => {
     const store = useGitUiStore();
     store.setGitHistorySelection("ws1", "/repo/a", "profile-a", { ref: "feature/a", commitSearch: "fix" });
@@ -84,7 +91,7 @@ describe("git-ui store", () => {
     store.init(api);
     store.gitSwitchView("ws1", "review", "/repo/a", "profile-a", "pr-1");
     expect(api.setWorkspaceUIState).toHaveBeenCalledWith("ws1", {
-      gitViewPreferences: { "profile-a::ws1::/repo/a::pr-1": "review" },
+      gitViewPreferences: { "profile-a::ws1::%2Frepo%2Fa::pr-1": "review" },
     });
 
     store.setActiveRoot("ws1", "/repo/a");

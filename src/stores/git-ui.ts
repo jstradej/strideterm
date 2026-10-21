@@ -1793,7 +1793,9 @@ export const useGitUiStore = defineStore("git-ui", () => {
     profileId = "default",
     reviewKey = "",
   ): string {
-    return `${profileId}::${workspaceId}::${rootPath || "default-root"}::${reviewKey || "no-review"}`;
+    return [profileId, workspaceId, rootPath || "default-root", reviewKey || "no-review"]
+      .map((part) => encodeURIComponent(part))
+      .join("::");
   }
 
   function gitSwitchView(

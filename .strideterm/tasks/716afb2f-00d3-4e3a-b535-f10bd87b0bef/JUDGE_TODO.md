@@ -1076,3 +1076,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 ## Worker continuation (transport test bridge cleanup)
 
 - Transport tests now track every bridge created by each test and suspend all bridges in teardown. This prevents older transports' global visibility/focus listeners and reconnect timers from reacting to later tests' mocks. Full UI suite passes 215 files / 3,093 tests, including the formerly flaky temporary-pause case. User visual review and remaining long-operation/scoped read-draft lifecycle audit findings remain open; WORK_LOCK stays present.
+
+## Worker continuation (unambiguous scoped view preference keys)
+
+- Git view preference keys now URI-encode each profile/workspace/root/PR segment before joining them, preventing :: inside identifiers from aliasing another view scope. Added a regression using colliding raw tuples; 
+pm run test:ui -- src/stores/git-ui.test.ts passes 71 tests. This strengthens requirements 44/66; manual UI acceptance and remaining inventory audit items stay open. WORK_LOCK remains present.
