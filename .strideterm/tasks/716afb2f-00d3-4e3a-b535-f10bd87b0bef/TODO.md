@@ -134,3 +134,4 @@
 - [x] Reuse idempotency keys after lost start responses across long Git network actions (branch deletion, force push, merge/rebase, tag writes, and bulk fetch/pull); focused store lifecycle tests and typecheck pass.
 - [x] Route stash patch import through the per-worktree lock and system Git audit, with real-repository success and rejected-path audit coverage.
 - [x] Verify local branch create, checkout, rename, and delete routes emit one resolved-root system Git audit outcome for each successful write and failed delete; focused real-repository regression, repository typecheck, and full lint/Prettier pass.
+- [x] Route conflict resolve and unresolve through the per-worktree lock and system Git audit; real-conflict regression asserts one resolved-root audit outcome for successful and failed resolve/undo requests.

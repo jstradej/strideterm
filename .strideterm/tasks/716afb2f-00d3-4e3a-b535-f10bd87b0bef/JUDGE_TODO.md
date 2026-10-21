@@ -218,6 +218,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
    Evidence: `electron/backend/runtime.test.ts:8482` asserts each stage-file, unstage-file, commit-staged, create-tag, and delete-tag route calls its matching manager write exactly once with the resolved root. `electron/backend/git-manager.test.ts:3988` verifies the three index outcomes plus successful local tag create/delete each produce exactly one system Git audit row.
    Evidence: `electron/backend/git-manager.stash.test.ts` exercises successful stash patch import and rejected path traversal against a real repository, asserting exactly one audit outcome per attempt with resolved root. The manager routes import through the per-worktree lock and shared audit wrapper.
    Evidence: `electron/backend/git-manager.test.ts` real-repository coverage asserts one resolved-root write audit outcome for each local branch create, checkout, rename, successful delete, and failed delete.
+   Evidence: Conflict resolve and unresolve now take the shared per-worktree lock and emit exactly one system Git audit outcome; a real conflict test covers success and failure for both routes.
    Remaining: Route-level evidence covers index/local tag, branch/history/stash dispatch and writes, worktree add/remove, provider comments/votes/review submission, PR creation, and Azure thread update. Other mutation families still need assertions; manual menu/shortcut walkthrough remains.
 
 48. **IMPLEMENTED** — Check rejected promises and structured ok:false; promise success must not mean Git success.
@@ -341,6 +342,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
    Evidence: Worktree removal now runs under the per-worktree lock and emits an audited write outcome; the fast-path manager test asserts one row with root. Worktree/stash/index audit tests pass and repository typecheck passes.
    Evidence: Runtime worktree creation now uses the shared per-worktree lock and records success/failure with root and branch; success and Git-failure runtime tests assert its audit data.
    Evidence: Local branch create/checkout/rename/delete success and delete failure each emit one system Git audit outcome with the workspace root; focused backend test passes.
+   Evidence: Conflict resolve and undo success/failure each emit one system Git audit outcome with the resolved root; the focused real-conflict regression passes.
    Evidence (2026-10-21): GitHub PR creation, Azure DevOps PR creation, and Azure DevOps thread status update each have focused assertions for exactly one successful classified provider write audit entry. Provider PR/thread gaps are closed; other mutation families and inventory-wide route reconciliation remain.
 
 78. **PARTIAL** — Stage 6: involved long Git actions use generic flow for both layouts/remote; reconnect and dedup verified.
@@ -919,3 +921,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Added a real-repository audit test for branch create, checkout, rename, delete success and delete failure. It asserts exactly one system Git write audit outcome per attempted mutation and the resolved repository root.
 - `npm run test:backend -- electron/backend/git-manager.test.ts -t "local branch mutation"`: 1 passed / 180 skipped. `npm run typecheck` passes. Full `npm run lint` passes with 0 errors / 4,700 warnings and Prettier clean. The app was not launched; user visual acceptance and remaining mutation-family coverage stay open, so WORK_LOCK remains.
+
+## Worker continuation (conflict mutation lock and audit)
+
+- Routed conflict resolve and unresolve through the shared per-worktree write lock and system Git audit wrapper. A real merge-conflict regression verifies one resolved-root audit row for success and failure on each route.
+- `npm run test:backend -- electron/backend/git-manager.test.ts -t "locks and audits conflict resolution"`: 1 passed / 181 skipped. `npm run typecheck` passes. Touched-file ESLint reports 0 errors / 129 existing warnings; Prettier and `git diff --check` pass. Full visual walkthrough and other audit families remain open; WORK_LOCK stays.

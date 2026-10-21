@@ -2040,6 +2040,19 @@ export class GitManager extends EventEmitter {
 
   async resolveConflict(
     workspace: WorkspaceRef,
+    input: { filePath: string; mode: "ours" | "theirs" | "manual" | "delete"; content?: string; rootPath?: string },
+  ): Promise<Record<string, unknown>> {
+    const effectiveCwd = input.rootPath || workspace?.cwd || "";
+    if (!effectiveCwd || !input.filePath) {
+      return createStructuredResult({ ok: false, summary: "File path and workspace directory are required." });
+    }
+    return this.runAuditedGitMutation(workspace, effectiveCwd, "resolve-conflict", (cwd) =>
+      this.resolveConflictUnlocked(workspace, { ...input, rootPath: cwd }),
+    );
+  }
+
+  private async resolveConflictUnlocked(
+    workspace: WorkspaceRef,
     {
       filePath,
       mode,
@@ -2085,6 +2098,19 @@ export class GitManager extends EventEmitter {
   }
 
   async unresolveConflict(
+    workspace: WorkspaceRef,
+    input: { filePath: string; rootPath?: string },
+  ): Promise<Record<string, unknown>> {
+    const effectiveCwd = input.rootPath || workspace?.cwd || "";
+    if (!effectiveCwd || !input.filePath) {
+      return createStructuredResult({ ok: false, summary: "File path and workspace directory are required." });
+    }
+    return this.runAuditedGitMutation(workspace, effectiveCwd, "unresolve-conflict", (cwd) =>
+      this.unresolveConflictUnlocked(workspace, { ...input, rootPath: cwd }),
+    );
+  }
+
+  private async unresolveConflictUnlocked(
     workspace: WorkspaceRef,
     { filePath, rootPath = "" }: { filePath: string; rootPath?: string },
   ): Promise<Record<string, unknown>> {
@@ -2747,6 +2773,8 @@ export class GitManager extends EventEmitter {
       "stash-drop",
       "stash-branch",
       "stash-import",
+      "resolve-conflict",
+      "unresolve-conflict",
       "remove-worktree",
       "create-worktree",
     ]);
@@ -3700,7 +3728,16 @@ export class GitManager extends EventEmitter {
   private async runAuditedGitMutation(
     workspace: WorkspaceRef | null,
     rootPath: string,
-    type: "stash" | "stash-pop" | "stash-apply" | "stash-drop" | "stash-branch" | "stash-import" | "remove-worktree",
+    type:
+      | "stash"
+      | "stash-pop"
+      | "stash-apply"
+      | "stash-drop"
+      | "stash-branch"
+      | "stash-import"
+      | "resolve-conflict"
+      | "unresolve-conflict"
+      | "remove-worktree",
     run: (cwd: string) => Promise<Record<string, unknown>>,
   ): Promise<Record<string, unknown>> {
     const cwd = rootPath || String(workspace?.cwd || "");
