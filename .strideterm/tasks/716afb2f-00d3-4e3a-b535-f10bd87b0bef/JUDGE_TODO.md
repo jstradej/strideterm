@@ -122,7 +122,8 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
 22. **PARTIAL** — History distinguishes loading/error/empty, avoids equating missing ticket search with absent change, and offers file history.
    Evidence: src/components/workspace/git/GitTreeGraph.vue:3,4,5; src/components/workspace/git/GitBranchesTab.vue:67,292,338,427.
    Evidence: Compact History test verifies a no-match query displays its own status, while a graph read failure hides that status and shows the query error.
-   Remaining: Path-filter file history behavior and human narrow-layout review remain.
+   Evidence: GitBranchesTab test verifies adding a relative path sends the path filter to the History graph query and shows the active filter chip.
+   Remaining: User narrow-layout review remains.
 
 23. **IMPLEMENTED** — Review uses the provider's pinned source/target commit IDs for its true diff range; local unstaged work is excluded.
    Evidence: src/components/workspace/AzureReviewPane.vue:1274-1276 requests `source: "range"` with `targetCommitId` and `sourceCommitId`; electron/backend/file-manager.ts:1122-1135 reads both sides via `readFileAtRevision`. AzureReviewPane.test.ts:833-853 checks the exact pinned refs, and file-manager.test.ts:415-434 now asserts a dirty working-tree edit is absent from a base/HEAD range.
@@ -961,3 +962,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Corrected requirement 63: classic commit text and selected paths already use the Git UI store, and new mounted coverage proves they remain isolated across repository roots and restore when returning to the original root. Focused test: 1 passed / 17 skipped. User visual walkthrough remains open; WORK_LOCK stays present.
 - Verification: focused GitChangesTab case passes (1 passed); `npm run typecheck` passes; ESLint 0 errors / 2 warnings; Prettier and `git diff --check` pass.
+
+## Worker continuation (History path filter contract)
+
+- Added a compact History regression for entering a relative path filter. It verifies the graph query receives the path and the active filter chip is rendered. Focused case passes (1 passed / 19 skipped). Narrow human review and broader acceptance remain open; WORK_LOCK stays.
+- Verification: focused GitBranchesTab path-filter case passes (1 passed / 19 skipped); `npm run typecheck` passes; ESLint reports 0 errors / 1 warning; Prettier and `git diff --check` pass.

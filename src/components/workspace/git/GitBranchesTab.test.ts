@@ -144,6 +144,21 @@ afterEach(async () => {
 });
 
 describe("GitBranchesTab compact history picker", () => {
+  test("applies a relative path filter to the History graph query", async () => {
+    vi.useFakeTimers();
+    const picker = mountTab();
+    const pathInput = picker.get('input[placeholder="+ path…"]');
+    await pathInput.setValue("src/app.ts");
+    await pathInput.trigger("keydown.enter");
+    await vi.advanceTimersByTimeAsync(500);
+    await flushPromises();
+
+    expect(gitLoadGraph).toHaveBeenLastCalledWith("ws1", expect.objectContaining({ paths: ["src/app.ts"] }));
+    expect(picker.text()).toContain("src/app.ts");
+    picker.unmount();
+    vi.useRealTimers();
+  });
+
   test("surfaces tag read failures in History", async () => {
     const picker = mountTab({ tagsError: "Could not load tags." });
     expect(picker.get('[role="alert"]').text()).toBe("Could not load tags.");
