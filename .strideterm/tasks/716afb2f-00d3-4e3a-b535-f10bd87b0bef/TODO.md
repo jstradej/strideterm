@@ -162,3 +162,4 @@
 - [x] Assert create-worktree audit duration on both successful creation and Git failure routes.
 - [x] Redact credential-shaped values from durable generic long-operation error messages, warnings, and raw output; operation registry regression and focused style checks pass.
 - [x] Preserve warnings from a successful fetch-first phase when merge/rebase subsequently fails; focused runtime regression passes.
+- [x] Reuse profile/workspace/action/proposal-scoped idempotency keys for Review Git starts when a start response is lost, preventing an explicit retry from launching a duplicate provider Git write.
