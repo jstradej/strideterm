@@ -1132,3 +1132,8 @@ pm run test:ui -- src/stores/git-ui.test.ts passes 71 tests. This strengthens re
 - Git operation cards carry the classification through the UI store and show a concise label. Tests cover the four registry categories plus runtime blocked/partial outcomes and the rendered UI label.
 - Verification on the current implementation: full UI suite 215 files / 3,104 passed; full backend suite 224 files / 5,507 passed / 7 skipped; repository typecheck; full lint 0 errors / 4,720 warnings with Prettier clean; watch-compatible production build. Focused changed-file tests: backend 3 classification cases, UI store/card 73 tests. Focused ESLint has 0 errors; `git diff --check` passes.
 - Requirement 51 remains partial only for the separate exhaustive per-route rejected-promise classification and action/audit matrix. Other inventory-wide action-route reconciliation remains open under requirements 36, 47, 52, 77, 91, 94, and 122. User waived manual visual review; no visual session was needed. Keep `WORK_LOCK` and verdict `continue` while route reconciliation remains.
+
+## Worker continuation (action inventory source check)
+
+- Cross-checked the top-level action inventory against `GitPane`, Git store/transport/runtime handlers, and GitManager. Corrected a false-positive `revert/reset` capability: no user-facing Git reset/revert action or route exists in this shell; the manager's reset commands are internal squash/index-reconciliation steps. The inventory now records that boundary instead of implying an exposed route with no entry point.
+- This narrows requirement 36's route list; exhaustive permission/result/audit variants for the actual listed routes remain open. `git diff --check` passes.
