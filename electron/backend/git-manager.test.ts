@@ -4018,6 +4018,31 @@ describe("GitManager", () => {
       expect(entries.every((entry) => entry.rootPath === root)).toBe(true);
     });
 
+    test("records one resolved-root audit outcome for each local branch mutation", async () => {
+      const entries: Record<string, unknown>[] = [];
+      const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
+      const root = await initRepo();
+      const workspace = { id: "ws-branch-audit", cwd: root, kind: "terminal" as const };
+
+      expect((await auditMgr.createBranch(workspace, { branch: "audit-feature" })).ok).toBe(true);
+      expect((await auditMgr.checkoutBranch(workspace, { branch: "master" })).ok).toBe(true);
+      expect((await auditMgr.renameBranch(workspace, { branch: "audit-feature", newName: "renamed-feature" })).ok).toBe(
+        true,
+      );
+      expect((await auditMgr.deleteBranch(workspace, { branch: "renamed-feature" })).ok).toBe(true);
+      expect((await auditMgr.deleteBranch(workspace, { branch: "missing-feature" })).ok).toBe(false);
+
+      expect(entries.map((entry) => [entry.operation, entry.category, entry.success])).toEqual([
+        ["gitCreate-branch", "write", true],
+        ["gitCheckout", "write", true],
+        ["gitRename-branch", "write", true],
+        ["gitDelete-branch", "write", true],
+        ["gitDelete-branch", "write", false],
+      ]);
+      expect(entries.every((entry) => entry.connectionId === "system-ws-branch-audit")).toBe(true);
+      expect(entries.every((entry) => entry.rootPath === root)).toBe(true);
+    });
+
     test("records one success or failure audit row per stash mutation", async () => {
       const entries: Record<string, unknown>[] = [];
       const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });

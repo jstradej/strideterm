@@ -217,6 +217,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
    Evidence: src/components/workspace/git/GitChangesTab.vue:572,583,607; electron/backend/git-manager.ts:2203,2234,2467; electron/backend/git-manager.ts:4278,4293.
    Evidence: `electron/backend/runtime.test.ts:8482` asserts each stage-file, unstage-file, commit-staged, create-tag, and delete-tag route calls its matching manager write exactly once with the resolved root. `electron/backend/git-manager.test.ts:3988` verifies the three index outcomes plus successful local tag create/delete each produce exactly one system Git audit row.
    Evidence: `electron/backend/git-manager.stash.test.ts` exercises successful stash patch import and rejected path traversal against a real repository, asserting exactly one audit outcome per attempt with resolved root. The manager routes import through the per-worktree lock and shared audit wrapper.
+   Evidence: `electron/backend/git-manager.test.ts` real-repository coverage asserts one resolved-root write audit outcome for each local branch create, checkout, rename, successful delete, and failed delete.
    Remaining: Route-level evidence covers index/local tag, branch/history/stash dispatch and writes, worktree add/remove, provider comments/votes/review submission, PR creation, and Azure thread update. Other mutation families still need assertions; manual menu/shortcut walkthrough remains.
 
 48. **IMPLEMENTED** — Check rejected promises and structured ok:false; promise success must not mean Git success.
@@ -339,6 +340,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
    Evidence: Stash, pop, apply, drop and branch-from-stash now run under the per-worktree write lock and emit one system Git audit row; a real temporary-repo test checks successful and failed outcomes and the resolved root. Full GitManager suite passes 178 tests (2 skipped), typecheck passes.
    Evidence: Worktree removal now runs under the per-worktree lock and emits an audited write outcome; the fast-path manager test asserts one row with root. Worktree/stash/index audit tests pass and repository typecheck passes.
    Evidence: Runtime worktree creation now uses the shared per-worktree lock and records success/failure with root and branch; success and Git-failure runtime tests assert its audit data.
+   Evidence: Local branch create/checkout/rename/delete success and delete failure each emit one system Git audit outcome with the workspace root; focused backend test passes.
    Evidence (2026-10-21): GitHub PR creation, Azure DevOps PR creation, and Azure DevOps thread status update each have focused assertions for exactly one successful classified provider write audit entry. Provider PR/thread gaps are closed; other mutation families and inventory-wide route reconciliation remain.
 
 78. **PARTIAL** — Stage 6: involved long Git actions use generic flow for both layouts/remote; reconnect and dedup verified.
@@ -912,3 +914,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 - Expanded the action inventory into individual UI entry-point rows across toolbar, branches, commits, Changes, stashes, worktrees, conflicts, bulk and provider panes. The client/context matrix records classic/new, normal/PR-linked and Electron/remote combinations.
 - Routed stash patch import through the shared per-worktree lock and Git audit wrapper. A real-repository test checks one audit row for success and one for rejected path traversal.
 - Focused backend regression passes (1 passed / 34 skipped); repository typecheck passes. Detailed remaining mutation-family audits and user visual acceptance remain open; WORK_LOCK stays.
+
+## Worker continuation (local branch mutation audit)
+
+- Added a real-repository audit test for branch create, checkout, rename, delete success and delete failure. It asserts exactly one system Git write audit outcome per attempted mutation and the resolved repository root.
+- `npm run test:backend -- electron/backend/git-manager.test.ts -t "local branch mutation"`: 1 passed / 180 skipped. `npm run typecheck` passes. Full `npm run lint` passes with 0 errors / 4,700 warnings and Prettier clean. The app was not launched; user visual acceptance and remaining mutation-family coverage stay open, so WORK_LOCK remains.
