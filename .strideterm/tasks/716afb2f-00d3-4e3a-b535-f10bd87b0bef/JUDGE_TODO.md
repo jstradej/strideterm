@@ -270,7 +270,8 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
 
 61. **PARTIAL** — Stage 1: inventory matrix classic/new × normal/review × local/remote × root plus verified permissions/audit/result variants.
    Evidence: .strideterm/tasks/716afb2f-00d3-4e3a-b535-f10bd87b0bef/IMPLEMENTATION_INVENTORY.md:7,21.
-   Remaining: Coarse three-row matrix exists; detailed routes/results/shortcuts and actual accessible new destinations are inaccurate/incomplete. Reconcile matrix to verified code.
+   Evidence (2026-10-21): Expanded the matrix to cover all eight classic/new × standard/PR-linked × Electron/remote combinations and a separate History query row. It records view preference and root scope, provider behavior, and shared route/guard assumptions.
+   Remaining: Exact per-entry permission/audit/result variants and shortcut mapping still need inventory-level reconciliation; accessibility and actual layout acceptance remain manual.
 
 62. **IMPLEMENTED** — Stage 1: verify provider review reuse, diff-component capabilities and OperationRegistry instead of assuming concept capabilities.
    Evidence: .strideterm/tasks/716afb2f-00d3-4e3a-b535-f10bd87b0bef/IMPLEMENTATION_INVENTORY.md:15,17; src/components/workspace/AzureReviewPane.vue:1276.
@@ -341,7 +342,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
 78. **PARTIAL** — Stage 6: involved long Git actions use generic flow for both layouts/remote; reconnect and dedup verified.
    Evidence: `runtime-git-handlers.ts` routes fetch/pull/push/force-push, merge/rebase, remote branch deletion, and network tag writes through OperationRegistry; mobile route policy classifies the guarded routes. `git-ui.test.ts` covers event/payload resolution and duplicate terminal delivery for fetch/pull/push.
    Evidence: `src/transport.test.ts:1629` verifies pending pull/push survive actual transport disconnect/reconnect and profile switching, then resolve from persisted results without resubmission.
-   Evidence (2026-10-21): Lost-start-response idempotency keys now remain scoped by workspace/root/action/input variant across force push, remote branch deletion, merge/rebase, remote tag mutations, and bulk fetch/pull; retry coverage verifies tag push reuses its key. Git UI store suite passes 61 tests and typecheck passes. Remaining: Inventory-wide route/audit assertions and user visual acceptance are still incomplete.
+   Evidence (2026-10-21): Lost-start-response idempotency keys now remain scoped by workspace/root/action/input variant across force push, remote branch deletion, merge/rebase, remote tag mutations, and bulk fetch/pull; retry coverage verifies tag push and remote branch deletion reuse keys, and merge/rebase assert the key in their accepted start payload. Git UI store suite passes 62 tests and typecheck passes. Remaining: Inventory-wide route/audit assertions and user visual acceptance are still incomplete.
 
 79. **PARTIAL** — Stage 6: layout/profile changes or client disconnect do not cancel accepted work or misroute its result.
    Evidence: electron/backend/operation-registry.ts:123,187; `git-ui.test.ts` verifies pull can recover its terminal result from the persisted lastResults payload after a missed event; runtime tests verify distinct profile/workspace operation IDs and outcomes.
@@ -898,3 +899,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Added one shared long-action runner that keeps each scoped idempotency key when a start response is lost and clears it only after a known response. Applied it to remote branch deletion, force push, merge/rebase, remote tag push/push-all/delete, and bulk fetch/pull; the existing fetch/pull/push path follows the same retention rule. The tag-push regression checks retry key reuse and cleanup after a known result. Existing merge/rebase lifecycle cases now wait for API dispatch explicitly.
 - `npm run test:ui -- src/stores/git-ui.test.ts`: 61 passed. `npm run typecheck`: pass. Touched-file Prettier passes; ESLint 0 errors / 70 existing warnings; `git diff --check` passes. Renderer reconnect tests, unverified-result recovery, route-wide audit and the manual walkthrough remain open; WORK_LOCK stays.
+
+## Worker continuation (retry route regression and matrix reconciliation)
+
+- Added a lost-start-response retry test for remote branch deletion and asserted merge/rebase starts carry an idempotency key. Expanded the context matrix from three grouped rows to explicit classic/new × standard/PR-linked × Electron/remote combinations plus the common History query behavior, with root/view scoping and provider/remote route notes.
+- `npm run test:ui -- src/stores/git-ui.test.ts`: 62 passed. `npm run typecheck`: pass. Prettier and `git diff --check` pass. Detailed per-entry permissions/audit/results, other lifecycle gaps, and user visual verification remain open; WORK_LOCK stays.

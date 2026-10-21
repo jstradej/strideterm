@@ -405,6 +405,34 @@ describe("git-ui store", () => {
       expect(store.get("ws1").pendingLongOperationKeys).toEqual({});
     });
 
+    test("reuses a remote branch deletion key after its start response is lost", async () => {
+      const deleteRemoteBranch = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("Connection lost before the operation ID arrived."))
+        .mockResolvedValueOnce({ result: { ok: true, summary: "Remote branch deleted." } });
+      const store = useGitUiStore();
+      store.init({
+        gitDeleteRemoteBranch: deleteRemoteBranch,
+        gitListBranches: vi.fn().mockResolvedValue({ ok: true, local: [], remotes: [] }),
+      } as unknown as Transport);
+      store.setActiveRoot("ws1", "/repo/a");
+
+      await store.gitDeleteRemoteBranch("ws1", "feature/old", "origin");
+      await store.gitDeleteRemoteBranch("ws1", "feature/old", "origin");
+
+      expect(deleteRemoteBranch).toHaveBeenCalledTimes(2);
+      expect(deleteRemoteBranch.mock.calls[0]![0]).toMatchObject({
+        rootPath: "/repo/a",
+        branch: "feature/old",
+        remote: "origin",
+        idempotencyKey: expect.any(String),
+      });
+      expect(deleteRemoteBranch.mock.calls[1]![0]).toMatchObject({
+        idempotencyKey: deleteRemoteBranch.mock.calls[0]![0].idempotencyKey,
+      });
+      expect(store.get("ws1").pendingLongOperationKeys).toEqual({});
+    });
+
     test("adopts the action payload through adoptPayload, not a raw store write", async () => {
       const store = useGitUiStore();
       const responsePayload = { appState: { workspaces: [] } };
@@ -1093,7 +1121,7 @@ describe("branch update waits for its accepted long operation", () => {
     await vi.waitFor(() => expect(type === "merge" ? gitMergeIntoCurrent : gitRebaseOnto).toHaveBeenCalled());
 
     expect(type === "merge" ? gitMergeIntoCurrent : gitRebaseOnto).toHaveBeenCalledWith(
-      expect.objectContaining({ fetchFirst: true }),
+      expect.objectContaining({ fetchFirst: true, idempotencyKey: expect.any(String) }),
     );
     finish(updateOutcome(type));
     await pending;
