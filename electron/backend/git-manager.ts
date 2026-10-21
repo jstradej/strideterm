@@ -3774,7 +3774,7 @@ export class GitManager extends EventEmitter {
         result = await run(cwd);
       } catch (error) {
         errorMessage = extractErrorMessage(error);
-        result = createStructuredResult({ ok: false, summary: errorMessage || "Git stash operation failed." });
+        result = createStructuredResult({ ok: false, summary: errorMessage || `Git ${type} operation failed.` });
       }
       this.invalidateSnapshotCache(targetWorkspace.id, cwd);
       this._logGitAudit({
