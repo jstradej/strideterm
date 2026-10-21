@@ -137,6 +137,42 @@ describe("GitBranchesTab compact history picker", () => {
     picker.unmount();
     vi.useRealTimers();
   });
+
+  test("HEAD and all references issue distinct graph queries", async () => {
+    vi.useFakeTimers();
+    const picker = mount(GitBranchesTab, {
+      props: {
+        workspaceId: "ws-head-scope",
+        snapshot: { dirty: false, branch: "main" },
+        gitUi: {
+          branchList: {
+            current: "main",
+            local: [{ name: "main", isCurrent: true }],
+            remotes: [],
+            defaultBranch: "main",
+            defaultRemote: "",
+          },
+          graph: { commits: [], head: "", refs: {} },
+        },
+        compactHistory: true,
+      },
+    });
+    await flushPromises();
+    const select = picker.get('[aria-label="History reference"]');
+
+    await select.setValue("HEAD");
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(300);
+    expect(gitLoadGraph).toHaveBeenLastCalledWith("ws-head-scope", expect.objectContaining({ branch: "HEAD" }));
+
+    await select.setValue("__ALL__");
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(300);
+    expect(gitLoadGraph).toHaveBeenLastCalledWith("ws-head-scope", expect.objectContaining({ branch: "" }));
+
+    picker.unmount();
+    vi.useRealTimers();
+  });
 });
 
 /**
