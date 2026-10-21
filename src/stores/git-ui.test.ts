@@ -85,6 +85,28 @@ describe("git-ui store", () => {
     expect(store.get("ws1").graph?.head).toBe("new");
   });
 
+  test("ignores an old History graph response after switching repository roots", async () => {
+    const requests: Array<(value: unknown) => void> = [];
+    const api = {
+      gitLogGraph: vi.fn(() => new Promise((resolve) => requests.push(resolve))),
+    } as unknown as Transport;
+    const store = useGitUiStore();
+    store.init(api);
+    store.setActiveRoot("ws1", "/repo/a");
+    const oldRootRequest = store.gitLoadGraph("ws1", { branch: "release-a", force: true });
+
+    store.setActiveRoot("ws1", "/repo/b");
+    const newRootRequest = store.gitLoadGraph("ws1", { branch: "release-b", force: true });
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+
+    requests[1]({ ok: true, head: "root-b", commits: [{ hash: "from-b" }], refs: {} });
+    await newRootRequest;
+    requests[0]({ ok: true, head: "root-a", commits: [{ hash: "from-a" }], refs: {} });
+    await oldRootRequest;
+
+    expect(store.get("ws1").graph).toMatchObject({ head: "root-b", commits: [{ hash: "from-b" }] });
+  });
+
   test("updates favorites and recent refs reactively without rereading storage", async () => {
     const store = useGitUiStore();
     const preferences = computed(() => store.getGitHistoryPreferences("ws-history", "/repo", "profile-a"));

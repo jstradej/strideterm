@@ -58,3 +58,4 @@
 - [x] Add a slow-fetch regression proving same-key Git operations in two profiles receive separate operation IDs and profile/workspace-scoped outcomes; the focused runtime test passes.
 - [x] Verify PR Review uses pinned provider source/target revisions and excludes local unstaged edits; AzureReviewPane tests (28) and file-manager tests (37) pass.
 - [x] Verify provider-owned saved Review drafts reappear after the AzureReviewPane is unmounted and reopened; all 29 AzureReviewPane tests and repository typecheck pass. Unsaved editor-dialog draft round-trip remains open.
+- [x] Add a cross-root History stale-response test; the Git UI store suite passes 46 tests and repository typecheck passes. Correct stale audit notes for the already-fixed compact mobile diff path.
