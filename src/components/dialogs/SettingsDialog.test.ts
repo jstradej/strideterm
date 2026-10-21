@@ -8,9 +8,13 @@ type AnySettings = Record<string, unknown>;
 
 beforeEach(() => setActivePinia(createPinia()));
 
-async function mountDialog(settings: AnySettings = {}, apiOverrides: AnySettings = {}) {
+async function mountDialog(
+  settings: AnySettings = {},
+  apiOverrides: AnySettings = {},
+  options: { initialTab?: string; mountGitTab?: boolean } = {},
+) {
   const wrapper = mount(SettingsDialog, {
-    props: { settings },
+    props: { settings, initialTab: options.initialTab },
     global: {
       provide: {
         [apiKey]: {
@@ -23,7 +27,7 @@ async function mountDialog(settings: AnySettings = {}, apiOverrides: AnySettings
         SettingsHookProviderSection: true,
         CustomSelect: true,
         SettingsTemplatesTab: true,
-        SettingsGitTab: true,
+        SettingsGitTab: options.mountGitTab ? false : true,
         SettingsSshTab: true,
         SettingsTelegramTab: true,
         SettingsAboutTab: true,
@@ -118,6 +122,23 @@ describe("SettingsDialog — notifications.agentsOnly", () => {
       agentHook: true,
       shellIntegration: false,
     });
+  });
+});
+
+describe("SettingsDialog — Git new view preference", () => {
+  test("defaults off and saves the real Git tab toggle without dropping sibling Git preferences", async () => {
+    const wrapper = await mountDialog(
+      { git: { ui: { newView: false, showAllActions: true } } },
+      {},
+      { initialTab: "git", mountGitTab: true },
+    );
+    const checkbox = wrapper.find('input[type="checkbox"]');
+    expect((checkbox.element as HTMLInputElement).checked).toBe(false);
+    await checkbox.setValue(true);
+    await clickSave(wrapper);
+
+    const git = lastSavedPayload(wrapper).git as { ui: { newView: boolean; showAllActions: boolean } };
+    expect(git.ui).toEqual({ newView: true, showAllActions: true });
   });
 });
 

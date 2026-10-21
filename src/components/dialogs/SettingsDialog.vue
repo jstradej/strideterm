@@ -308,7 +308,7 @@ interface SettingsObj {
     subagentCompletion?: boolean;
     autoApprovePermissions?: boolean;
   };
-  git?: { ui?: { showAllActions?: boolean } };
+  git?: { ui?: { newView?: boolean; showAllActions?: boolean } };
   externalPathOpener?: { mode?: string; command?: string };
   ssh?: {
     preferAgent?: boolean;
@@ -454,6 +454,7 @@ const form = reactive({
   },
   git: {
     ui: {
+      newView: props.settings.git?.ui?.newView ?? false,
       showAllActions: props.settings.git?.ui?.showAllActions ?? false,
     },
   },
@@ -632,7 +633,7 @@ async function handleSave() {
       autoApprovePermissions: form.notifications.autoApprovePermissions,
     },
     tabTemplates: templates.filter((t) => t.title || t.command).map((t) => ({ ...toRaw(t) })),
-    git: { ui: { showAllActions: form.git.ui.showAllActions } },
+    git: { ui: { newView: form.git.ui.newView, showAllActions: form.git.ui.showAllActions } },
     externalPathOpener: {
       mode: form.externalPathOpener.mode,
       command: form.externalPathOpener.command,
