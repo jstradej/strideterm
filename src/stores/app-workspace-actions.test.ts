@@ -138,7 +138,7 @@ describe("review agent preparation operation delivery", () => {
   });
 });
 
-describe("review PR action operation notifications", () => {
+describe("operation notifications", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     window.localStorage.clear();
@@ -284,6 +284,29 @@ describe("review PR action operation notifications", () => {
       expect(useNotificationStore().sessions).toHaveLength(0);
     },
   );
+  it("shows action-specific failures with retained Git diagnostics", () => {
+    const { ctx } = makeCtx({
+      appState: { workspaces: [{ id: "ws-A", name: "Project A" }] },
+      operations: { lastResults: [] },
+    });
+    const actions = createWorkspaceActions(ctx);
+
+    actions.reportOperationFinished({
+      operationId: "op-git-pull",
+      kind: "git.pull",
+      profileId: "profile-a",
+      workspaceId: "ws-A",
+      rootPath: "C:\\work\\a",
+      finishedAt: new Date().toISOString(),
+      error: { code: "internal_error", message: "Pull stopped.\n\nGit output:\nhook failed" },
+    });
+
+    const event = useNotificationStore().sessions[0]?.events[0];
+    expect(event?.title).toBe("Git Pull failed");
+    expect(event?.kind).toBe("error");
+    expect(event?.body).toContain("Git output:");
+    expect(event?.body).toContain("hook failed");
+  });
 });
 
 describe("createWorkspaceActions.deleteWorkspace (optimistic)", () => {

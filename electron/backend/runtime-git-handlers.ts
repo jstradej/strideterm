@@ -72,6 +72,33 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
     return true;
   }
 
+  function gitFailureMessage(kind: string, result: Record<string, unknown>): string {
+    const summary = String(result.summary || `Git ${kind} failed.`).trim();
+    const warnings = Array.isArray(result.warnings)
+      ? result.warnings.map((warning) => String(warning).trim()).filter(Boolean)
+      : [];
+    const rawOutput = String(result.rawOutput || "")
+      .trim()
+      .slice(-6000);
+    const operationState = result.operationState as
+      { kind?: unknown; inProgress?: unknown; conflicts?: unknown } | undefined;
+    const conflicts = Array.isArray(operationState?.conflicts)
+      ? operationState.conflicts.map((conflict) => String(conflict)).filter(Boolean)
+      : [];
+    const authenticationFailed = /authentication failed|\bunauthorized\b|\bforbidden\b|\b401\b|\b403\b/i.test(
+      `${summary}\n${rawOutput}`,
+    );
+    const lines = [authenticationFailed ? `Git ${kind} authentication failed.` : summary];
+    if (warnings.length) lines.push(`Warnings:\n${warnings.join("\n")}`);
+    if (operationState?.inProgress === true) {
+      const operationKind = String(operationState.kind || "Git operation");
+      lines.push(`Repository state: ${operationKind} requires manual resolution.`);
+    }
+    if (conflicts.length) lines.push(`Conflicts:\n${conflicts.join("\n")}`);
+    if (rawOutput) lines.push(`Git output:\n${rawOutput}`);
+    return lines.join("\n\n");
+  }
+
   /**
    * `runGitWorkspaceAction` for the operations the V2 plan counts as user
    * work: commit, push/pull, checkout/branch, merge/rebase/stash and their
@@ -156,9 +183,13 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
                   windowId,
                 );
         if (result?.result?.ok === false) {
-          throw new Error(String(result.result.summary || `${kind} failed.`));
+          throw new Error(gitFailureMessage(kind, result.result));
         }
-        return { ok: true, summary: String(result?.result?.summary || `${kind} completed.`) };
+        return {
+          ok: true,
+          summary: String(result?.result?.summary || `${kind} completed.`),
+          warnings: Array.isArray(result?.result?.warnings) ? result.result.warnings : [],
+        };
       },
     );
     return { started: true, operationId: accepted.record.operationId, replayed: accepted.replayed };

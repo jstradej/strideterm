@@ -251,6 +251,22 @@ function describeOperationFinished(operation: OperationFinished): { title: strin
       };
     }
   }
+  if (operation.kind.startsWith("git.")) {
+    const action = operation.kind.slice("git.".length).replace(/-/g, " ");
+    const label = action.charAt(0).toUpperCase() + action.slice(1);
+    if ("error" in operation) {
+      return { title: `Git ${label} failed`, body: operation.error.message, failed: true };
+    }
+    const summary = String(operation.result.summary || `Git ${action} completed.`);
+    const warnings = Array.isArray(operation.result.warnings)
+      ? operation.result.warnings.map((warning) => String(warning)).filter(Boolean)
+      : [];
+    return {
+      title: `Git ${label} completed`,
+      body: [summary, ...(warnings.length ? [`Warnings:\n${warnings.join("\n")}`] : [])].join("\n\n"),
+      failed: operation.result.ok === false,
+    };
+  }
   if ("error" in operation) return { title: "Operation failed", body: operation.error.message, failed: true };
   return { title: "Operation finished", body: operation.kind, failed: false };
 }
