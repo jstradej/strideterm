@@ -475,7 +475,7 @@ Full per-requirement ledger (122 items)
    Evidence: `.strideterm/tasks/716afb2f-00d3-4e3a-b535-f10bd87b0bef/WORK_LOCK` exists; `TODO.md` has an unchecked linked-provider visual item and empty In Progress/Blocked sections.
 
 105. **PARTIAL** — The `dev.ps1` walkthrough was run and findings were recorded. The exact linked-PR provider diff/comment-draft portion could not be exercised because no linked PR workspace or provider connection exists in the isolated QA profile.
-   Evidence: .strideterm/tasks/716afb2f-00d3-4e3a-b535-f10bd87b0bef/MANUAL_VERIFICATION.md:11-22. Automated Review scope and draft persistence evidence remains cited in requirements 40, 78, and 120. A linked-PR QA profile or user-authored waiver is still needed for the remaining visual acceptance.
+   Evidence: .strideterm/tasks/716afb2f-00d3-4e3a-b535-f10bd87b0bef/MANUAL_VERIFICATION.md:11-22 and the isolated linked-PR fixture follow-up below. The mock screenshot proves only fixture metadata and pinned local Git diff rendering; the Review Bridge fixture thread lacked comment context, and no real provider-backed draft round-trip was exercised. Automated Review scope and draft persistence evidence remains cited in requirements 40, 78, and 120. A real linked-PR QA profile or user-authored waiver is still needed for the remaining visual acceptance.
 
 106. **IMPLEMENTED** — TODO: finish all seven implementation stages.
    Evidence: .strideterm/tasks/716afb2f-00d3-4e3a-b535-f10bd87b0bef/TODO.md:10; src/components/workspace/GitPane.vue:303; electron/backend/git-manager.ts:2222.
@@ -539,3 +539,8 @@ Full per-requirement ledger (122 items)
 122. **IMPLEMENTED** — TODO Done: focused index, long acceptance/dedup, stale read and Review routing tests.
    Evidence: electron/backend/git-manager.test.ts:3943; electron/backend/runtime.test.ts:8481; src/stores/git-ui.test.ts:64; src/components/workspace/GitPane.test.ts:152.
     Evidence: Runtime index routes each call one manager write with the resolved root; More destination routing covers every currently available legacy tool. `src/transport.test.ts` covers pending fetch, pull, and push through disconnect/reconnect and profile switching, including single start and restored result. The route/audit inventory is complete and visual review remains pending (item 105).
+
+
+
+
+Worker verification refresh (2026-10-22): `npm run typecheck`, `npm run lint` (0 errors / 4,720 warnings; Prettier clean), and `VITE_BUILD_WATCH=1 npm run build` pass. `npm test` UI passes 215 files / 3,107 tests; its default-concurrency backend run stalled, then `npm run test:backend -- --maxWorkers=4` passed 224 files / 5,514 passed / 7 skipped. Store/AppX config tests pass 9/9. `npm run test:e2e` passes 142 / 147 with 5 skipped. The mock linked-PR follow-up is recorded in `MANUAL_VERIFICATION.md` and does not close requirement 105; `WORK_LOCK` stays present.
