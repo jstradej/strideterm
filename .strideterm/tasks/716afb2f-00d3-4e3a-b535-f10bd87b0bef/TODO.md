@@ -152,3 +152,4 @@
 - [x] Re-run the full GitManager backend test file after recent audit coverage additions: 188 passed / 2 skipped; typecheck, touched-file Prettier/ESLint (0 errors), and diff check pass.
 - [x] Include elapsed duration on failed generic Git mutation audit rows; assert duration for real cherry-pick success/failure and rerun full GitManager suite (188 passed / 2 skipped).
 - [x] Add elapsed duration to failed `runWriteAction` audit entries and assert it for success/failure; full GitManager suite passes (188 passed / 2 skipped).
+- [x] Require a successful root-specific refresh before retrying index or commit writes after a lost response; test retry suppression, different-root refresh isolation, and retry after verification.

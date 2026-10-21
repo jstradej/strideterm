@@ -215,6 +215,40 @@ describe("git-ui store", () => {
   });
 
   describe("runGitAction payload adoption", () => {
+    test("requires a successful root refresh before retrying an index write with a lost response", async () => {
+      const stageFile = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("Remote transport disconnected."))
+        .mockResolvedValueOnce({ result: { ok: true } });
+      const refreshGit = vi.fn().mockResolvedValue({ fresh: true });
+      getGitSnapshot.mockReturnValue({ available: true });
+      const store = useGitUiStore();
+      store.init({ gitStageFile: stageFile, refreshGit } as unknown as Transport);
+      store.setActiveRoot("ws-uncertain-index", "/repo/a");
+
+      expect(await store.gitStageFile("ws-uncertain-index", "a.txt")).toBe(false);
+      expect(store.get("ws-uncertain-index").lastResult).toMatchObject({
+        ok: false,
+        summary: expect.stringContaining("verify its state before retrying"),
+      });
+      expect(Object.keys(store.get("ws-uncertain-index").uncertainWrites || {})).toHaveLength(1);
+
+      store.setActiveRoot("ws-uncertain-index", "/repo/b");
+      await store.refreshGit("ws-uncertain-index");
+      expect(Object.keys(store.get("ws-uncertain-index").uncertainWrites || {})).toHaveLength(1);
+
+      store.setActiveRoot("ws-uncertain-index", "/repo/a");
+      expect(await store.gitStageFile("ws-uncertain-index", "a.txt")).toBe(false);
+      expect(stageFile).toHaveBeenCalledTimes(1);
+      expect(store.get("ws-uncertain-index").lastResult?.summary).toContain("Refresh this repository");
+
+      await store.refreshGit("ws-uncertain-index");
+      expect(store.get("ws-uncertain-index").uncertainWrites).toEqual({});
+      expect(await store.gitStageFile("ws-uncertain-index", "a.txt")).toBe(true);
+      expect(stageFile).toHaveBeenCalledTimes(2);
+      expect(refreshGit).toHaveBeenCalledTimes(2);
+    });
+
     test("surfaces and records a rejected long-operation start", async () => {
       const request = vi.fn().mockRejectedValue(new Error("Remote transport disconnected."));
       const store = useGitUiStore();

@@ -67,6 +67,8 @@ interface GitUiState {
     operationState: unknown;
     at: string;
   } | null;
+  /** A synchronous index/commit request lost its response; refresh this root before retrying it. */
+  uncertainWrites?: Record<string, { rootPath: string; action: string }>;
   conflictDialog?: ConflictDialogState | null;
   selectedDiff?: { path: string; scope: string } | null;
   diffPreview?: unknown;
@@ -626,12 +628,28 @@ export const useGitUiStore = defineStore("git-ui", () => {
     workspaceId: string,
     busyAction: string,
     runner: () => Promise<unknown>,
-    opts: { label?: string; timeoutMs?: number } = {},
+    opts: { label?: string; timeoutMs?: number; requireRefreshBeforeRetry?: boolean } = {},
   ): Promise<unknown> {
     const ui = ensure(workspaceId);
     if (ui.busyAction === busyAction) return null;
-    let actionResponse: unknown = null;
     const actionRootPath = getActiveRoot(workspaceId);
+    const uncertainWriteKey = JSON.stringify([actionRootPath, busyAction]);
+    if (opts.requireRefreshBeforeRetry && ui.uncertainWrites?.[uncertainWriteKey]) {
+      const summary = `The previous ${busyAction} response was lost. Refresh this repository and verify its state before retrying.`;
+      ui.lastResult = {
+        ok: false,
+        summary,
+        warnings: [],
+        conflicts: [],
+        rawOutput: "",
+        operationState: null,
+        at: new Date().toISOString(),
+      };
+      const { useNotificationStore } = await import("./notifications.js");
+      useNotificationStore().showError("Git action needs verification", summary, { workspaceId });
+      return null;
+    }
+    let actionResponse: unknown = null;
     const selectedDiffAtStart = ui.selectedDiff ? { ...ui.selectedDiff } : null;
     ui.busyAction = busyAction;
     ui.busyPhase = opts.label || defaultBusyLabel(busyAction);
@@ -651,6 +669,14 @@ export const useGitUiStore = defineStore("git-ui", () => {
         // assignment jumps a remote/mobile viewer to whatever the desktop
         // has open (see store.adoptPayload).
         appStore.adoptPayload(response.payload as StatePayload);
+        if (busyAction === "refresh") {
+          const refreshedSnapshot = appStore.getGitSnapshot(workspaceId, actionRootPath) as GitSnapshot | null;
+          if (refreshedSnapshot?.available === true) {
+            ui.uncertainWrites = Object.fromEntries(
+              Object.entries(ui.uncertainWrites || {}).filter(([, uncertain]) => uncertain.rootPath !== actionRootPath),
+            );
+          }
+        }
       }
       const result = response?.result;
       // Success path: surface a transient toast and drop any prior banner.
@@ -715,16 +741,27 @@ export const useGitUiStore = defineStore("git-ui", () => {
       // Surface to console as well — the in-app GitOperationCard banner reads
       // ui.lastResult, but DevTools is where we want a stack trace.
       console.error(`[git-ui] action "${busyAction}" failed for workspace ${workspaceId}:`, error);
+      const errorSummary = error instanceof Error ? error.message : String(error || "Git action failed.");
       ui.lastResult = {
         ok: false,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        summary: (error as any)?.message || "Git action failed.",
-        warnings: [],
+        summary: opts.requireRefreshBeforeRetry
+          ? `${errorSummary} The write outcome is uncertain; refresh this repository and verify its state before retrying.`
+          : errorSummary,
+        warnings: opts.requireRefreshBeforeRetry
+          ? ["The write response was lost. Refresh and inspect repository state before retrying this action."]
+          : [],
         conflicts: [],
         rawOutput: "",
         operationState: null,
         at: new Date().toISOString(),
       };
+      if (opts.requireRefreshBeforeRetry) {
+        const key = JSON.stringify([actionRootPath, busyAction]);
+        ui.uncertainWrites = {
+          ...(ui.uncertainWrites || {}),
+          [key]: { rootPath: actionRootPath, action: busyAction },
+        };
+      }
       const { useNotificationStore } = await import("./notifications.js");
       useNotificationStore().showError("Git action failed", ui.lastResult.summary, { workspaceId });
       return actionResponse;
@@ -1557,23 +1594,27 @@ export const useGitUiStore = defineStore("git-ui", () => {
   ): Promise<boolean> {
     if (!message) return false;
     const rootPath = getActiveRoot(workspaceId);
-    const response = await runGitAction(workspaceId, "commit", () =>
-      (_api as Transport & { gitCommitAll: (p: unknown) => Promise<unknown> }).gitCommitAll!({
-        workspaceId,
-        message,
-        rootPath,
-        // Omit entirely when nothing is selected so the backend commits the
-        // whole tree (matches the historical "Commit all" behaviour).
-        ...(paths && paths.length ? { paths } : {}),
-        // Rename old-names, sent separately so the backend never stages them.
-        ...(previousPaths && previousPaths.length ? { previousPaths } : {}),
-      }),
+    const response = await runGitAction(
+      workspaceId,
+      "commit",
+      () =>
+        (_api as Transport & { gitCommitAll: (p: unknown) => Promise<unknown> }).gitCommitAll!({
+          workspaceId,
+          message,
+          rootPath,
+          // Omit entirely when nothing is selected so the backend commits the
+          // whole tree (matches the historical "Commit all" behaviour).
+          ...(paths && paths.length ? { paths } : {}),
+          // Rename old-names, sent separately so the backend never stages them.
+          ...(previousPaths && previousPaths.length ? { previousPaths } : {}),
+        }),
+      { requireRefreshBeforeRetry: true },
     );
     return (response as { result?: { ok?: boolean } } | null)?.result?.ok === true;
   }
 
   async function runIndexAction(workspaceId: string, action: string, runner: () => Promise<unknown>): Promise<boolean> {
-    const response = (await runGitAction(workspaceId, action, runner)) as {
+    const response = (await runGitAction(workspaceId, action, runner, { requireRefreshBeforeRetry: true })) as {
       result?: { ok?: boolean };
       payload?: unknown;
     } | null;

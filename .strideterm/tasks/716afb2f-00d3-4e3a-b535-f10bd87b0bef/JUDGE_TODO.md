@@ -249,7 +249,8 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
 
 52. **PARTIAL** — Busy always releases, prevents duplicate launch; uncertain write results trigger state verification before user retry, never automatic write retry.
    Evidence: src/stores/git-ui.ts:446,521,610,633; src/components/workspace/git/GitChangesTab.vue:605; src/components/workspace/GitPane.vue:144.
-   Remaining: Same-action duplicate launches are suppressed and busy clears in finally. Uncertain write reconciliation after timeout/disconnect still needs a defined verification path and tests.
+   Evidence: Synchronous index and commit writes mark a rejected transport response as uncertain; the same root/action is blocked from retry until a successful refresh returns that root's Git snapshot. A store regression verifies rejected start, retry suppression, root-scoped refresh, and retry after verification.
+   Remaining: User visual acceptance remains; broader synchronous mutation families outside index and commit still need the same uncertain-response recovery contract.
 
 53. **IMPLEMENTED** — Ordinary Git retains best-effort audit and throttled sink diagnostics, without converting successful mutation into failed commit or claiming audit saved.
    Evidence: electron/backend/git-manager.ts:2624,2686,2752; electron/backend/git-manager.test.ts:1103.
@@ -1027,3 +1028,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Rechecked `runWriteAction` diagnostics and found failed `execGit` actions omitted duration even though successful actions included it. Failure audit records now include elapsed milliseconds. The cherry-pick success/failure audit test verifies both entries have a nonnegative duration.
 - Focused cherry-pick case passes; full GitManager suite passes (188 passed / 2 skipped); repository typecheck passes; touched-file ESLint reports 0 errors / 137 existing warnings; Prettier and `git diff --check` pass. Requirements 47/51/77 remain partial for inventory-wide route and uncertain synchronous-write recovery; WORK_LOCK remains.
+
+## Worker continuation (uncertain index/commit response recovery)
+
+- Added a root-scoped uncertainty guard for stage/unstage file, stage/unstage hunk, commit-staged, and classic commit-all. When their request rejects without a known Git result, the store records the uncertain action, displays a warning, and blocks retry of that same action/root until an explicit refresh returns a usable Git snapshot. A refresh of another root leaves the guard in place.
+- `git-ui.test.ts` passes all 66 tests, including lost-response/retry suppression/root-refresh coverage; `npm run typecheck` passes; touched-file ESLint reports 0 errors; Prettier and `git diff --check` pass. Other synchronous writes and manual visual acceptance remain open; WORK_LOCK stays.
