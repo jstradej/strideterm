@@ -479,6 +479,13 @@ export const useGitUiStore = defineStore("git-ui", () => {
         ui.lastResult = null;
       } else {
         ui.lastResult = result ? { ...result, at: new Date().toISOString() } : null;
+        if (result && result.ok === false) {
+          const { useNotificationStore } = await import("./notifications.js");
+          useNotificationStore().showError(
+            "Git action failed",
+            String(result.summary || "The Git action did not complete."),
+          );
+        }
       }
 
       // Auto-switch to the Conflicts tab when a git action produces conflicts

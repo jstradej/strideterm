@@ -6,6 +6,7 @@
     :data-mode="mobileMode ? mobileMode : undefined"
     :data-layout="compactChanges ? mobileLayout : undefined"
   >
+    <GitOperationCard :snapshot="snapshot" :workspace-id="workspaceId" :git-ui="gitUi" />
     <header v-if="mobileMode" class="git-changes__mobile-head">
       <button
         v-if="mobileMode === 'list'"
@@ -500,6 +501,7 @@ import { userFacingMessage } from "../../../lib/error-message.js";
 import { useContextMenu } from "../../../composables/useContextMenu.js";
 import GitDiffStat from "./GitDiffStat.vue";
 import GitChangeTree from "./GitChangeTree.vue";
+import GitOperationCard from "./GitOperationCard.vue";
 import { useIsNarrow } from "../../../composables/useIsNarrow.js";
 import { useMonacoDiffLoader } from "../../../composables/useMonacoDiffLoader.js";
 import { buildCommitSelection } from "./commit-selection.js";
