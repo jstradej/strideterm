@@ -7,8 +7,8 @@
 
 ## To Do
 
-- [ ] Complete the user's visual review using `MANUAL_VERIFICATION.md` in their `dev.ps1` session; adjust anything they report.
-- [ ] Finish remaining audit findings in `JUDGE_TODO.md`, including long operations and scoped read/draft lifecycle coverage.
+- [x] User waived the manual visual review requirement; no `dev.ps1` walkthrough is required.
+- [ ] Finish remaining inventory-wide permission/audit reconciliation in `JUDGE_TODO.md` (requirements 36, 47, 51, 52, 77, 91, 94, 122).
 - [ ] Re-run the full numbered self-audit against the current tree and update each requirement with verifiable evidence.
 - [x] Commit implementation changes locally without pushing.
 

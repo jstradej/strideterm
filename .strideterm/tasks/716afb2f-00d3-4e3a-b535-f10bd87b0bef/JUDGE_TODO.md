@@ -1119,3 +1119,9 @@ pm run test:ui -- src/stores/git-ui.test.ts passes 71 tests. This strengthens re
 
 - Added table-driven runtime regressions proving merge and rebase long-operation endpoints each dispatch exactly one matching manager write with the validated `/tmp/a1` root, resolved workspace/profile, and correctly scoped terminal operation outcome. The focused cases pass (2/2); the full runtime test file passes 534 tests. Repository typecheck passes; touched-file Prettier passes and ESLint reports 0 errors with existing warnings.
 - Full GitManager tests after adding success/failure audit evidence pass 192 tests / 2 skipped. Remaining audit/menu inventory and human visual acceptance remain open; keep `WORK_LOCK`.
+
+## Current-tree verification refresh and user waiver (2026-10-21)
+
+- The user explicitly waived the manual visual walkthrough. `TODO.md` records that waiver; this supersedes earlier notes that visual acceptance was waiting on the user. No app or `dev.ps1` session was launched.
+- Current-tree checks pass: full UI suite 215 files / 3,104 tests; full backend suite 224 files / 5,505 passed / 7 skipped; `npm run typecheck`; `npm run lint` (0 errors, 4,720 warnings; Prettier clean); and `VITE_BUILD_WATCH=1 npm run build`.
+- Re-read the task prompt, TASK, WORKER, TODO, manual checklist, implementation inventory, and all 122 audit requirements. Lifecycle coverage previously noted as open now has current evidence for saved/unsaved Review drafts across unmount/file/settings changes, busy fetch state across settings changes, and fetch/pull/push disconnect/profile reconnection. Current verification does not resolve the explicit inventory-wide permission/audit reconciliation still listed in requirements 36, 47, 51, 52, 77, 91, 94, and 122. Keep `WORK_LOCK` and verdict `continue` until those route mappings are reconciled with route-level evidence.
