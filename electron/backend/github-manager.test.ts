@@ -503,6 +503,56 @@ describe("GitHubManager addPullRequestComment", () => {
     expect(entries.filter((entry) => entry.category === "write")).toHaveLength(2);
   });
 
+  test("records failed inline review comments and thread replies as provider writes", async () => {
+    const entries: Record<string, unknown>[] = [];
+    const prKey = createPullRequestKey("gh-main", "acme", "web", 42);
+    const pr = defaultPr("acme", "web", 42, { head: { sha: "sha-42", ref: "feature" } });
+    const { manager, fetchImpl } = createManager({
+      auditLogStore: { logEntry: (entry) => entries.push(entry) },
+      fetchOverrides: { searchItems: [searchItem("acme", "web", 42)], prsByNumber: { 42: pr } },
+    });
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+    const baseFetch = fetchImpl.getMockImplementation()!;
+    fetchImpl.mockImplementation(async (url, options) => {
+      const href = String(url);
+      if (href.includes("/pulls/42/comments") && (options as RequestInit | undefined)?.method === "POST") {
+        return {
+          ok: false,
+          status: 403,
+          headers: { get: () => null },
+          json: async () => ({ message: "Review permission denied" }),
+          text: async () => JSON.stringify({ message: "Review permission denied" }),
+        };
+      }
+      return baseFetch!(url, options);
+    });
+
+    await expect(
+      manager.addPullRequestComment({ prKey, body: "Inline note.", filePath: "src/parser.ts", lineNumber: 12 }),
+    ).rejects.toThrow(/403/);
+    await expect(
+      manager.addPullRequestComment({ prKey, body: "Thread reply.", threadId: 777, filePath: "src/parser.ts" }),
+    ).rejects.toThrow(/403/);
+
+    expect(entries.filter((entry) => entry.category === "write")).toMatchObject([
+      {
+        operation: "createReviewComment",
+        connectionId: "gh-main",
+        success: false,
+        userInitiated: true,
+        statusCode: 403,
+      },
+      {
+        operation: "createReviewComment",
+        connectionId: "gh-main",
+        success: false,
+        userInitiated: true,
+        statusCode: 403,
+      },
+    ]);
+    expect(entries.filter((entry) => entry.category === "write")).toHaveLength(2);
+  });
+
   test("audits one successful submitted PR review", async () => {
     const entries: Record<string, unknown>[] = [];
     const prKey = createPullRequestKey("gh-main", "acme", "web", 42);
