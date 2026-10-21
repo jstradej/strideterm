@@ -108,6 +108,15 @@
           <span v-if="longGitOperation" class="workspace-chip workspace-chip--alert" role="status">
             <strong>{{ longGitOperation.kind.replace("git.", "") }}</strong> in progress
           </span>
+          <button
+            v-if="hasConflictsTab"
+            type="button"
+            class="workspace-chip workspace-chip--alert"
+            aria-label="Open conflict resolution"
+            @click="openConflictTool"
+          >
+            Resolve conflicts <strong>{{ operation.conflicts?.length || "" }}</strong>
+          </button>
         </div>
         <div class="git-view__actions">
           <!-- Repo picker (multi-root workspaces only) — inline with actions, compact -->
@@ -666,6 +675,11 @@ function selectNewView(view: "history" | "changes" | "review") {
 
 function openLegacyPrTool() {
   gitUiStore.setNewViewLegacyDestination(props.workspaceId, "pr");
+}
+
+function openConflictTool() {
+  if (useNewGitView.value) gitUiStore.setNewViewLegacyDestination(props.workspaceId, "conflicts");
+  else gitUiStore.gitSwitchTab(props.workspaceId, "conflicts");
 }
 
 const showAllActions = computed(() => appStore.payload?.appState?.settings?.git?.ui?.showAllActions === true);

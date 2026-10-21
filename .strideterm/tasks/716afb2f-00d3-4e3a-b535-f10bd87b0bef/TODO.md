@@ -37,3 +37,5 @@
 - [x] Route local tag creation/deletion through the shared Git write lock and audit wrapper; preserve argv-level tag tests.
 - [x] Pass the selected profile into History, make the mobile compact diff reachable, and show known/unknown last-fetch state.
 - [x] Distinguish the HEAD history query from the all-branches query.
+- [x] Keep a conflict resolution action in the shared Git frame and exercise More destination routing in GitPane tests.
+- [x] Re-run focused GitPane/History UI and GitManager tag/hunk tests, full lint, formatting check and safe production build; all pass. Full typecheck remains failing in unrelated existing test typings (see `JUDGE_TODO.md`); remaining implementation work is still open.

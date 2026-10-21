@@ -147,7 +147,14 @@ describe("GitPane repo picker", () => {
     await flushPromises();
     expect(wrapper.find('[aria-label="Git sections"]').exists()).toBe(false);
     expect(wrapper.findAll('[role="tab"]').map((tab) => tab.text())).toEqual(["History", "Changes", "Review"]);
-    expect(wrapper.find('[aria-label="More Git tools"]').exists()).toBe(true);
+    const more = wrapper.find('[aria-label="More Git tools"]');
+    expect(more.exists()).toBe(true);
+    await more.setValue("stashes");
+    await flushPromises();
+    expect(wrapper.findComponent({ name: "GitStashesTab" }).exists()).toBe(true);
+    await more.setValue("branches");
+    await flushPromises();
+    expect(wrapper.findComponent({ name: "GitBranchesTab" }).exists()).toBe(true);
   });
   test("Review renders the linked provider review workspace using its PR data and drafts", async () => {
     const linked = buildWorkspace({
