@@ -500,7 +500,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
 
 107. **PARTIAL** — TODO: focused tests/full lint/typechecks/safe build/complete diff review.
    Evidence: .strideterm/tasks/716afb2f-00d3-4e3a-b535-f10bd87b0bef/TODO.md:11; electron/backend/agent-task-runner.callbacks.test.ts:214; src/components/workspace/GitPane.vue:303.
-   Evidence: Current continuation full UI/backend suites, typecheck, full lint, touched-file Prettier/ESLint, safe production build and diff checks pass. Latest full UI run passes 215 files / 3,104 tests after the History filter and picker keyboard changes. User visual review and remaining lifecycle/audit coverage remain open.
+   Evidence: Current continuation full UI/backend suites, typecheck, full lint, touched-file Prettier/ESLint, production build and diff checks pass. Latest full UI run passes 215 files / 3,104 tests after History filter and picker keyboard changes. Current `npm run lint` passes with 0 errors / 4,715 warnings and Prettier clean; `npm run build` passes. User visual review and remaining lifecycle/audit coverage remain open.
 
 108. **IMPLEMENTED** — TODO: commit implementation locally without pushing.
    Evidence: git log -4 --oneline; initial git status --short clean.
