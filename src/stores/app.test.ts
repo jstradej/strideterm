@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
 import { nextTick } from "vue";
 import { useAppStore, resolveViewerProfileId } from "./app.js";
+import { useNotificationStore } from "./notifications.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -1536,6 +1537,44 @@ describe("handleBroadcastPayload — remote revision gate (bootstrap→WS handof
     transport._push(remotePayload(1, "v-after-restart"));
     await Promise.resolve();
     expect(((store as AnyApi).payload.meta as AnyApi).appVersion).toBe("v-after-restart");
+  });
+
+  it("reports a missed Git operation outcome from the post-reconnect snapshot", async () => {
+    const initial = remotePayload(9, "v9");
+    const transport = makeRemoteTransport(initial);
+    const store = useAppStore();
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(useNotificationStore().sessions).toHaveLength(0);
+
+    // The pull finishes while the renderer is disconnected, so there is no live
+    // operation:finished event. The reconnect snapshot carries lastResults.
+    transport._connectionState({ connected: false, reconnecting: true });
+    transport._connectionState({ connected: true, reconnected: true });
+    const resumed = remotePayload(1, "v1-after-restart");
+    resumed.operations = {
+      lastResults: [
+        {
+          operationId: "op-pull-missed-event",
+          kind: "git.pull",
+          profileId: "p1",
+          workspaceId: "ws1",
+          rootPath: "/repo",
+          finishedAt: new Date().toISOString(),
+          error: { code: "git_error", message: "Pull failed while disconnected." },
+        },
+      ],
+    };
+    transport._push(resumed);
+    await nextTick();
+
+    expect(((store as AnyApi).payload.meta as AnyApi).appVersion).toBe("v1-after-restart");
+    expect(useNotificationStore().sessions.flatMap((session: AnyApi) => session.events)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ title: "Git Pull failed", body: "Pull failed while disconnected.", kind: "error" }),
+      ]),
+    );
   });
 });
 
