@@ -2770,6 +2770,7 @@ export class GitManager extends EventEmitter {
       "unstage-hunk",
       "commit-staged",
       "commit-all",
+      "merge-into-base",
       "stash",
       "stash-pop",
       "stash-apply",
@@ -2896,37 +2897,40 @@ export class GitManager extends EventEmitter {
       });
     }
 
-    const dirtyState = await inspectWorktreeDirtyState(this.execGit.bind(this), targetCwd);
-    if (dirtyState.dirty) {
-      return createStructuredResult({
-        ok: false,
-        summary: `The ${resolvedBase} worktree has uncommitted changes. Commit or stash them first.`,
-      });
-    }
+    const sourceBranch = String(snapshot.branch || "");
+    return this.runAuditedGitMutation(workspace, targetCwd, "merge-into-base", async (cwd) => {
+      const dirtyState = await inspectWorktreeDirtyState(this.execGit.bind(this), cwd);
+      if (dirtyState.dirty) {
+        return createStructuredResult({
+          ok: false,
+          summary: `The ${resolvedBase} worktree has uncommitted changes. Commit or stash them first.`,
+        });
+      }
 
-    try {
-      const result = await this.execGit(targetCwd, ["merge", "--no-edit", String(snapshot.branch || "")]);
-      return createStructuredResult({
-        ok: true,
-        summary: `Merged ${snapshot.branch} into ${resolvedBase}.`,
-        rawOutput: joinRawOutput(result.stdout, result.stderr),
-      });
-    } catch (error) {
-      const err = error as { stdout?: string; stderr?: string };
-      const postSnapshot = await this.inspectOperationState(targetCwd, {
-        gitDir: path.join(targetCwd, ".git"),
-        gitCommonDir: String(snapshot.gitCommonDir || path.join(targetCwd, ".git")),
-      });
-      return createStructuredResult({
-        ok: false,
-        summary: postSnapshot.inProgress
-          ? `Merge stopped due to conflicts in the ${resolvedBase} worktree. Resolve them there.`
-          : `Merge of ${snapshot.branch} into ${resolvedBase} failed.`,
-        conflicts: postSnapshot.conflicts,
-        rawOutput: joinRawOutput(err.stdout, err.stderr),
-        operationState: postSnapshot.inProgress ? buildOperationState(postSnapshot) : undefined,
-      });
-    }
+      try {
+        const result = await this.execGit(cwd, ["merge", "--no-edit", sourceBranch]);
+        return createStructuredResult({
+          ok: true,
+          summary: `Merged ${sourceBranch} into ${resolvedBase}.`,
+          rawOutput: joinRawOutput(result.stdout, result.stderr),
+        });
+      } catch (error) {
+        const err = error as { stdout?: string; stderr?: string };
+        const postSnapshot = await this.inspectOperationState(cwd, {
+          gitDir: path.join(cwd, ".git"),
+          gitCommonDir: String(snapshot.gitCommonDir || path.join(cwd, ".git")),
+        });
+        return createStructuredResult({
+          ok: false,
+          summary: postSnapshot.inProgress
+            ? `Merge stopped due to conflicts in the ${resolvedBase} worktree. Resolve them there.`
+            : `Merge of ${sourceBranch} into ${resolvedBase} failed.`,
+          conflicts: postSnapshot.conflicts,
+          rawOutput: joinRawOutput(err.stdout, err.stderr),
+          operationState: postSnapshot.inProgress ? buildOperationState(postSnapshot) : undefined,
+        });
+      }
+    });
   }
 
   /**
@@ -3754,7 +3758,8 @@ export class GitManager extends EventEmitter {
       | "stash-import"
       | "resolve-conflict"
       | "unresolve-conflict"
-      | "remove-worktree",
+      | "remove-worktree"
+      | "merge-into-base",
     run: (cwd: string) => Promise<Record<string, unknown>>,
   ): Promise<Record<string, unknown>> {
     const cwd = rootPath || String(workspace?.cwd || "");

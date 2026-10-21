@@ -4185,6 +4185,31 @@ describe("GitManager", () => {
       expect(entries.every((entry) => entry.rootPath === root)).toBe(true);
     });
 
+    test("locks and audits merge-into-base against the target worktree", async () => {
+      const entries: Record<string, unknown>[] = [];
+      const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
+      const root = await initRepo();
+      const baseBranch = rg(root, ["branch", "--show-current"]).trim();
+      const featurePath = `${root}-feature-audit`;
+      tempPaths.push(featurePath);
+      rg(root, ["worktree", "add", "-b", "feature-audit", featurePath]);
+      await fs.writeFile(path.join(featurePath, "feature.txt"), "feature change\n", "utf8");
+      rg(featurePath, ["add", "feature.txt"]);
+      rg(featurePath, ["commit", "-q", "-m", "feature change"]);
+      const workspace = { id: "ws-merge-base-audit", cwd: featurePath, kind: "terminal" as const };
+
+      expect((await auditMgr.mergeCurrentIntoBase(workspace, { baseBranch, rootPath: featurePath })).ok).toBe(true);
+      await fs.writeFile(path.join(root, "dirty-base.txt"), "block the next merge\n", "utf8");
+      expect((await auditMgr.mergeCurrentIntoBase(workspace, { baseBranch, rootPath: featurePath })).ok).toBe(false);
+
+      expect(entries.map((entry) => [entry.operation, entry.category, entry.success])).toEqual([
+        ["gitMerge-into-base", "write", true],
+        ["gitMerge-into-base", "write", false],
+      ]);
+      expect(entries.every((entry) => entry.connectionId === "system-ws-merge-base-audit")).toBe(true);
+      expect(entries.every((entry) => path.resolve(String(entry.rootPath)) === path.resolve(root))).toBe(true);
+    });
+
     test("records one success or failure audit row per stash mutation", async () => {
       const entries: Record<string, unknown>[] = [];
       const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });

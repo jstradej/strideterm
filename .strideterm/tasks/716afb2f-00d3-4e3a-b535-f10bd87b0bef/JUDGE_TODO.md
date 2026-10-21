@@ -351,8 +351,10 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
    Evidence: Remote branch checkout success and missing-remote failure each emit one system Git write audit outcome with the workspace root; the same real-repository regression verifies both.
    Evidence: Remote branch deletion success and missing-remote failure each emit one system Git audit outcome with the workspace root; a local bare-remote integration test verifies both.
    Evidence: Scoped commit-all now takes the shared per-worktree lock and emits one system Git write audit outcome for success or rejected empty selection; a real repository test asserts both outcomes and resolved root.
+   Evidence: Merge-into-base now takes the target worktree lock and records exactly one system Git write outcome for a successful merge or dirty-target rejection; a real sibling-worktree test verifies the target root.
    Evidence: Remote tag push, push-all-tags, and remote tag deletion success/failure each emit one system Git audit outcome with the workspace root; a local bare-remote integration test verifies all six attempts.
    Evidence: Scoped commit-all success and rejected empty selection each emit one system Git write audit row with the workspace root in a real repository regression.
+   Evidence: Merge-into-base success and dirty-target rejection each emit one system Git write audit row with the resolved target worktree root.
    Evidence: Conflict resolve and undo success/failure each emit one system Git audit outcome with the resolved root; the focused real-conflict regression passes.
    Evidence: Conflict detail/resolve/unresolve reject repository traversal paths, and the regression confirms an outside file is not modified.
    Evidence (2026-10-21): GitHub PR creation, Azure DevOps PR creation, and Azure DevOps thread status update each have focused assertions for exactly one successful classified provider write audit entry. Provider PR/thread gaps are closed; other mutation families and inventory-wide route reconciliation remain.
@@ -981,3 +983,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - The custom serialized commit-all path bypassed the shared per-worktree lock and system Git audit. It now takes that lock while preserving per-root commit serialization, records one write audit outcome with the resolved root for success and structured rejection, and remains audit-best-effort. Real repository regression passes (1 passed / 185 skipped). Other audit families and user visual walkthrough remain open; WORK_LOCK stays present.
 - Verification: scoped commit-all audit regression passes (1 passed / 185 skipped); `npm run typecheck` passes; focused ESLint 0 errors / 132 warnings across the two backend files; Prettier and `git diff --check` pass.
+
+## Worker continuation (merge-into-base lock and audit)
+
+- Routed synchronous merge-into-base through the shared target-worktree lock and Git audit helper while retaining the local sibling-worktree behavior. A real sibling-worktree test verifies successful merge and dirty-target rejection each emit one system Git write audit row with the resolved target root. Focused test passes (1 passed / 186 skipped). Other audit families and user visual review remain open; WORK_LOCK stays present.
+- Verification: merge-into-base sibling-worktree audit test passes (1 passed / 186 skipped); `npm run typecheck` passes; focused ESLint 0 errors / 134 warnings; Prettier and `git diff --check` pass.
