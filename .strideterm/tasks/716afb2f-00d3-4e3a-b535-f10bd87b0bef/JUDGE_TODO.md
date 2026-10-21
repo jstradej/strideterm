@@ -1178,3 +1178,8 @@ pm run test:ui -- src/stores/git-ui.test.ts passes 71 tests. This strengthens re
 - Remaining route-wide Git permission/result/audit reconciliation is still open in TODO.md:9 and requirements 36/47/51/52/77/91/94/122. No claim of complete audit coverage; user waived manual visual verification. Keep `WORK_LOCK` and verdict `continue`.
 
 - After the latest provider PR failure tests and formatting, `npm run typecheck` passes and both manager test files pass together (77 tests); touched-file Prettier and diff check pass. Full backend verification on this exact test tree passes 224 files / 5,512 tests (7 skipped) in 322.03 seconds.
+
+## Worker continuation (provider inventory audit naming correction)
+
+- Reconciled the Azure thread status inventory row with the manager's actual audit event: the classified operation is `updateThread`, as asserted in `azure-devops-manager.test.ts:987-1028` and the success regression near line 1450. The user-facing action remains “thread status update.” This fixes the table's operation name; it does not change runtime behavior.
+- Current provider suites pass 77 tests combined; repository typecheck and the full backend suite (224 files / 5,512 passed / 7 skipped) pass. Touched provider test lint has 0 errors / 23 existing warnings, Prettier is clean, and `git diff --check` passes. The broad route-by-route evidence reconciliation remains open in TODO.md:9 and the numbered partial items 36/47/51/52/77/91/94/122; keep `WORK_LOCK` and verdict `continue`.
