@@ -436,6 +436,28 @@ describe("GitHubManager addPullRequestComment", () => {
     ]);
   });
 
+  test("audits one successful submitted PR review", async () => {
+    const entries: Record<string, unknown>[] = [];
+    const prKey = createPullRequestKey("gh-main", "acme", "web", 42);
+    const pr = defaultPr("acme", "web", 42);
+    const { manager } = createManager({
+      auditLogStore: { logEntry: (entry) => entries.push(entry) },
+      fetchOverrides: { searchItems: [searchItem("acme", "web", 42)], prsByNumber: { 42: pr } },
+    });
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+
+    await manager.submitPullRequestReview({ prKey, event: "APPROVE", body: "Looks good." });
+
+    expect(entries.filter((entry) => entry.category === "write")).toMatchObject([
+      {
+        operation: "submitReview",
+        connectionId: "gh-main",
+        success: true,
+        userInitiated: true,
+      },
+    ]);
+  });
+
   test.each([
     ["a comment with no location", {}],
     ["a reply to a conversation comment", { threadId: 555, filePath: "" }],

@@ -397,7 +397,8 @@ Full per-requirement ledger (122 items)
    Evidence: Worktree remove now has a single audit-row assertion in the fast-path manager regression.
    Evidence: Runtime worktree creation success/failure and manager worktree removal audit paths are now covered; focused runtime worktree cases pass (3).
    Evidence: Provider manager tests assert GitHub conversation comments and Azure comment/vote requests each produce exactly one classified successful user-initiated write audit entry.
-   Remaining: Complete individual menu/shortcut mapping and audit other provider mutation families (review submission, PR creation, thread updates); visual acceptance remains open.
+   Evidence: GitHub review submission now has an exact single-write audit assertion alongside conversation comment coverage; Azure comment/vote writes are also asserted.
+   Remaining: Audit provider PR creation and thread-update mutations; complete individual menu/shortcut mapping and visual acceptance.
 
 92. **PARTIAL** — Acceptance: controlled slow backend proves start before relay timeout, reconnect outcome, dedup and profile isolation, without timeout increase.
    Evidence: Gated OperationRegistry tests cover prompt fetch/rebase acceptance, dedup, tag/force-push/remote-delete, and profile/workspace isolation; store tests verify event plus payload completion for fetch/pull/push, one notification per failure, and pull recovery from persisted outcomes.
