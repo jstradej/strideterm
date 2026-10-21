@@ -127,7 +127,8 @@ Full per-requirement ledger (122 items)
 
 25. **PARTIAL** — Reuse review data/comments and preserve comment drafts across files, views and setting changes.
    Evidence: src/components/workspace/GitPane.vue:369; src/components/workspace/AzureReviewPane.vue:691,919; src/components/workspace/GitPane.test.ts:152.
-   Evidence: AzureReviewPane regression verifies provider-owned saved draft restoration after Review remount; GitPane integration mounts SettingsGitTab and DialogOverlay, then confirms an unsaved TextAreaDialog value survives toggling the new-view setting off and on. File-switch behavior remains for manual confirmation.
+   Evidence: AzureReviewPane regression verifies provider-owned saved draft restoration after Review remount; GitPane integration mounts SettingsGitTab and DialogOverlay, then confirms an unsaved TextAreaDialog value survives toggling the new-view setting off and on. A two-file Review regression switches the selected file while the unsaved editor is open and verifies its text remains.
+   Remaining: The user visual walkthrough remains pending.
 
 26. **IMPLEMENTED** — PR linkage alone does not disable normal Git; actual branch/state/permissions/review operation guards decide routing.
    Evidence: src/components/workspace/GitPane.vue:520,860; src/stores/git-ui.ts:535,633; src/stores/git-ui.test.ts:650,669; src/stores/git-ui.ts:575.
@@ -794,3 +795,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Re-audited requirements 51, 78, 89, and 92. Long Git failures preserve bounded diagnostic metadata from the structured manager result through OperationRegistry persistence, event/payload validation, Git UI store mapping, and the shared operation card. Targeted runtime, registry, and store tests pass; repository typecheck and touched-file format/lint checks pass. Full renderer transport reconnect and other long-runner classification remain separate open requirements.
 - Manual `MANUAL_VERIFICATION.md` remains user-owned in the existing `dev.ps1` session. WORK_LOCK remains present.
+
+## Worker continuation (Review draft file switch)
+
+- Extended the unsaved Review editor lifecycle regression with two changed files. It selects the second file while the TextAreaDialog is open and confirms the text remains unchanged; focused AzureReviewPane test passes. Repository typecheck, touched-file Prettier, ESLint (0 errors; 8 existing warnings), and `git diff --check` pass.
+- The user-owned visual walkthrough and broader lifecycle/reconnect/inventory audit remain open. WORK_LOCK stays present.
