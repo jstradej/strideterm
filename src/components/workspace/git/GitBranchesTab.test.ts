@@ -147,6 +147,37 @@ describe("GitBranchesTab compact history picker", () => {
     expect(picker.get('[aria-label="History reference"]').element).toHaveProperty("value", "origin/topic");
   });
 
+  test("explains when a selected ref disappears after successful reads", async () => {
+    Object.assign(historySelection, { ref: "origin/topic", commitSearch: "" });
+    const gitUi = reactive({
+      branchList: {
+        current: "main",
+        local: [],
+        remotes: [{ name: "origin/topic" }],
+        defaultBranch: "",
+        defaultRemote: "",
+      },
+      graph: { commits: [], head: "", refs: {} },
+      tags: [],
+      branchesLoading: true,
+      tagsLoading: true,
+    });
+    const picker = mount(GitBranchesTab, {
+      props: {
+        workspaceId: "ws-deleted-ref",
+        snapshot: { dirty: false, branch: "main" },
+        gitUi,
+        compactHistory: true,
+      },
+    });
+    gitUi.branchList.remotes = [];
+    gitUi.branchesLoading = false;
+    gitUi.tagsLoading = false;
+    await flushPromises();
+    expect(historySelection.ref).toBe("");
+    expect(picker.get('[role="status"]').text()).toContain("Reference “origin/topic” is no longer available");
+  });
+
   test("compact History skips the hidden branch-tree step on narrow layouts", async () => {
     mobileViewport.isNarrow.value = true;
     mobileViewport.isMobile.value = true;

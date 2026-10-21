@@ -57,6 +57,7 @@
           </optgroup>
         </select>
       </label>
+      <span v-if="historyRefNotice" class="git-branches__placeholder" role="status">{{ historyRefNotice }}</span>
       <label class="git-history-picker__search git-history-picker__search--commits">
         <span>Find commits</span>
         <input
@@ -787,6 +788,7 @@ const historyCommitSearch = computed({
     }),
 });
 const historySearch = ref("");
+const historyRefNotice = ref("");
 const historyPreferences = computed(() =>
   gitUiStore.getGitHistoryPreferences(props.workspaceId, props.activeRootPath || "", props.profileId || "default"),
 );
@@ -1467,6 +1469,7 @@ watch(
     // Do not discard a persisted selection until both sources are available.
     const refsReady = !branchesLoading.value && !props.gitUi?.tagsLoading && !props.gitUi?.tagsError;
     if (refsReady && selectedRef.value && !validRefs.has(selectedRef.value)) {
+      historyRefNotice.value = `Reference “${selectedRef.value}” is no longer available. Showing all commits.`;
       selectedRef.value = "";
       gitUiStore.gitSelectCommit(props.workspaceId, "");
     }
@@ -1501,6 +1504,7 @@ watch(
 // --- Branch tree interactions -------------------------------------------
 
 function onSelectRef(ref: string) {
+  historyRefNotice.value = "";
   selectedRef.value = ref;
   // A plain (non-Ctrl/Cmd) click clears the multi-selection — Ctrl/Cmd-click
   // emits "multi-toggle" instead, so reaching this handler means the user
