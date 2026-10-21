@@ -915,8 +915,24 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   async function gitDeleteRemoteBranch(workspaceId: string, branch: string, remote: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "delete-remote-branch", () =>
-      (_api as CallableTransport).gitDeleteRemoteBranch({ workspaceId, branch, remote, rootPath }),
+    await runGitAction(
+      workspaceId,
+      "delete-remote-branch",
+      async () => {
+        const { useAppStore } = await import("./app.js");
+        const start = (await (_api as CallableTransport).gitDeleteRemoteBranch({
+          workspaceId,
+          branch,
+          remote,
+          rootPath,
+        })) as {
+          operationId?: string;
+          started?: boolean;
+          result?: { ok?: boolean };
+        } | null;
+        return resolveLongGitAction(useAppStore(), start);
+      },
+      { timeoutMs: 0 },
     );
     await gitListBranches(workspaceId);
   }
@@ -1180,7 +1196,16 @@ export const useGitUiStore = defineStore("git-ui", () => {
             REVIEW_GIT_STEP_OPTS,
           );
         } else {
-          await runGitAction(workspaceId, "force-push", () => api.gitForcePushWithLease({ workspaceId, rootPath }));
+          await runGitAction(
+            workspaceId,
+            "force-push",
+            async () => {
+              const { useAppStore } = await import("./app.js");
+              const start = await api.gitForcePushWithLease({ workspaceId, rootPath });
+              return resolveLongGitAction(useAppStore(), start);
+            },
+            { timeoutMs: 0 },
+          );
         }
       }
       return;

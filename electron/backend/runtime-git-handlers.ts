@@ -126,7 +126,17 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
   }
 
   async function startLongGitAction(
-    kind: "fetch" | "pull" | "push" | "merge" | "rebase" | "push-tag" | "push-all-tags" | "delete-remote-tag",
+    kind:
+      | "fetch"
+      | "pull"
+      | "push"
+      | "force-push"
+      | "delete-remote-branch"
+      | "merge"
+      | "rebase"
+      | "push-tag"
+      | "push-all-tags"
+      | "delete-remote-tag",
     workspace: WorkspaceState,
     rootPath: string,
     input: Record<string, unknown>,
@@ -141,6 +151,9 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
       ...(kind === "pull" ? { stashDirty: input.stashDirty === true } : {}),
       ...(kind === "merge" || kind === "rebase"
         ? { baseBranch: String(input.baseBranch || ""), fetchFirst: input.fetchFirst === true }
+        : {}),
+      ...(kind === "delete-remote-branch"
+        ? { branch: String(input.branch || ""), remote: String(input.remote || "origin") }
         : {}),
       ...(kind === "push-tag" || kind === "delete-remote-tag" ? { tagName: String(input.tagName || "") } : {}),
     };
@@ -198,6 +211,27 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
               connection,
               rootPath,
               onProgress: (chunk: string) => ctx.emitGitProgress({ workspaceId: workspace.id, rootPath, chunk }),
+            }),
+            windowId,
+          );
+        } else if (kind === "force-push") {
+          result = await runGitWorkspaceMutation(
+            workspace,
+            git.forcePushWithLease(workspace, {
+              connection,
+              rootPath,
+              onProgress: (chunk: string) => ctx.emitGitProgress({ workspaceId: workspace.id, rootPath, chunk }),
+            }),
+            windowId,
+          );
+        } else if (kind === "delete-remote-branch") {
+          result = await runGitWorkspaceMutation(
+            workspace,
+            git.deleteRemoteBranch(workspace, {
+              branch: String(input.branch || ""),
+              remote: String(input.remote || "origin"),
+              connection,
+              rootPath,
             }),
             windowId,
           );
@@ -285,6 +319,24 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
       return startLongGitAction("push", workspace, rootPath, payload, windowId);
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitForcePushWithLease(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return startLongGitAction("force-push", workspace, rootPath, payload, windowId);
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitDeleteRemoteBranch(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return startLongGitAction(
+        "delete-remote-branch",
+        workspace,
+        rootPath,
+        { ...payload, branch: String(payload.branch || ""), remote: String(payload.remote || "origin") },
+        windowId,
+      );
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitPushTag(payload: any = {}, windowId?: string) {
@@ -565,17 +617,6 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async gitForcePushWithLease(payload: any = {}, windowId?: string) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
-      const connection = resolveGitConnection(workspace);
-      const rootPath = resolveRootPath(workspace, payload.rootPath);
-      const onProgress = (chunk: string) => ctx.emitGitProgress({ workspaceId: workspace.id, rootPath, chunk });
-      return runGitWorkspaceMutation(
-        workspace,
-        git.forcePushWithLease(workspace, { connection, rootPath, onProgress }),
-        windowId,
-      );
-    },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitListBranches(payload: any = {}, windowId?: string) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
@@ -593,21 +634,6 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
       );
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async gitDeleteRemoteBranch(payload: any = {}, windowId?: string) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
-      const connection = resolveGitConnection(workspace);
-      const rootPath = resolveRootPath(workspace, payload.rootPath);
-      return runGitWorkspaceMutation(
-        workspace,
-        git.deleteRemoteBranch(workspace, {
-          branch: payload.branch,
-          remote: payload.remote || "origin",
-          connection,
-          rootPath,
-        }),
-        windowId,
-      );
-    },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitRenameBranch(payload: any = {}, windowId?: string) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);

@@ -8900,6 +8900,55 @@ describe("runtime integration", () => {
     });
   });
 
+  test("force push and remote branch deletion run as deduplicated long Git operations", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const forcePush = vi.fn(async () => {
+      await gate;
+      return { ok: true, summary: "Force push completed.", warnings: [] };
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).forcePushWithLease = forcePush;
+    const waitForGitOperation = watchOperation(fixture);
+
+    const started = await fixture.runtime.gitForcePushWithLease({ workspaceId: "ws-a1" });
+    await vi.waitFor(() => expect(forcePush).toHaveBeenCalledTimes(1));
+    const replay = await fixture.runtime.gitForcePushWithLease({ workspaceId: "ws-a1" });
+    expect(replay).toEqual({ started: true, operationId: started.operationId, replayed: true });
+    release();
+    await expect(waitForGitOperation(started.operationId)).resolves.toMatchObject({
+      kind: "git.force-push",
+      profileId: "profile-a",
+      workspaceId: "ws-a1",
+      result: { ok: true, summary: "Force push completed." },
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const deleteRemoteBranch = vi.fn(async () => ({ ok: true, summary: "Remote branch deleted.", warnings: [] }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).deleteRemoteBranch = deleteRemoteBranch;
+    const deleted = await fixture.runtime.gitDeleteRemoteBranch({
+      workspaceId: "ws-a1",
+      branch: "feature/topic",
+      remote: "upstream",
+    });
+    await vi.waitFor(() => expect(deleteRemoteBranch).toHaveBeenCalledTimes(1));
+    expect(deleted).toMatchObject({ started: true, operationId: expect.any(String) });
+    await expect(waitForGitOperation(deleted.operationId)).resolves.toMatchObject({
+      kind: "git.delete-remote-branch",
+      profileId: "profile-a",
+      workspaceId: "ws-a1",
+      result: { ok: true, summary: "Remote branch deleted." },
+    });
+    expect(deleteRemoteBranch).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ branch: "feature/topic", remote: "upstream" }),
+    );
+  });
+
   test("fetch-first Git rebase runs fetch and rebase inside one accepted operation", async () => {
     const fixture = await createFixture({ initialState: makeProfileSwitchState() });
     fixtures.push(fixture);
