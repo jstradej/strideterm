@@ -15046,6 +15046,52 @@ describe("workspace lastWorkedAt — the work allowlist", () => {
     }
   });
 
+  test.each([
+    ["fetch", "gitFetch", "fetch", {}],
+    ["push", "gitPush", "push", {}],
+    ["force push", "gitForcePushWithLease", "forcePushWithLease", {}],
+    ["remote branch deletion", "gitDeleteRemoteBranch", "deleteRemoteBranch", { branch: "feature/topic" }],
+    ["tag push", "gitPushTag", "pushTag", { tagName: "v1.2.3" }],
+    ["push all tags", "gitPushAllTags", "pushAllTags", {}],
+    ["remote tag deletion", "gitDeleteRemoteTag", "deleteRemoteTag", { tagName: "v1.2.3" }],
+    ["merge", "gitMergeIntoCurrent", "mergeIntoCurrent", { baseBranch: "origin/main" }],
+    ["rebase", "gitRebaseOnto", "rebaseOnto", { baseBranch: "origin/main" }],
+  ] as const)(
+    "preserves structured diagnostics for long Git %s failures",
+    async (_label, runtimeMethod, gitMethod, input) => {
+      const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+      fixtures.push(fixture);
+      const failedAction = vi.fn(async () => ({
+        ok: false,
+        summary: "Remote operation was rejected.",
+        warnings: ["The pre-operation check failed."],
+        conflicts: ["src/conflicted.ts"],
+        operationState: { kind: "merge", inProgress: true, conflicts: ["src/conflicted.ts"] },
+        rawOutput: "hook: generated code is stale",
+      }));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (fixture.git as any)[gitMethod] = failedAction;
+      const waitForGitOperation = watchOperation(fixture);
+
+      const started = await fixture.runtime[runtimeMethod]({ workspaceId: "ws-a1", ...input });
+      const outcome = await waitForGitOperation(started.operationId);
+
+      expect(failedAction).toHaveBeenCalledTimes(1);
+      expect("error" in outcome).toBe(true);
+      if ("error" in outcome) {
+        expect(outcome.error).toMatchObject({
+          code: "git_operation_failed",
+          warnings: ["The pre-operation check failed."],
+          conflicts: ["src/conflicted.ts"],
+          rawOutput: "hook: generated code is stale",
+        });
+        expect(outcome.error.message).toContain("Remote operation was rejected.");
+        expect(outcome.error.message).toContain("src/conflicted.ts");
+        expect(outcome.error.message).toContain("generated code is stale");
+      }
+    },
+  );
+
   test("a successful git mutation stamps the persisted state AND the returned payload", async () => {
     // V3 review, §4 P2. `runGitWorkspaceAction` built the response payload
     // before the stamp, so a renderer adopting it overwrote the fresh

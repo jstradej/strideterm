@@ -228,7 +228,8 @@ Full per-requirement ledger (122 items)
    Evidence: electron/backend/operation-registry.ts:216; electron/backend/git-manager.ts:2643,2686,2755; electron/backend/runtime-git-handlers.ts:143.
    Evidence: OperationRegistry failure logs now include operation ID, kind, effective profile, origin workspace, optional repository root, step, elapsed duration, and stable error code; a regression verifies the correlation fields and duration.
    Evidence: Long Git failure outcomes now carry a stable `git_operation_failed` code plus bounded warnings, conflict paths, and raw output through the event/payload schema to the Git operation card. Runtime, store, and registry regressions cover this path.
-   Remaining: Other long runners may still collapse structured failures into generic summaries; audit them individually. Result-classification and user visual acceptance requirements remain open.
+   Evidence: `electron/backend/runtime.test.ts:14771` now exercises structured warning/conflict/raw-output propagation through fetch, push, force push, remote branch/tag writes, merge, and rebase; the nine-case focused runtime test passes. `runtime-git-handlers.ts:68-115,295-318` builds a bounded user-facing failure and structured error metadata; `operation-registry.ts:122-145` preserves bounded warning/conflict/output fields and logs operation id/profile/workspace/root/step/duration.
+   Remaining: Audit generic rejected-promise classification for each manager/runtime route, verify cancellation/blocked/partial distinctions, and complete user visual acceptance.
 
 52. **PARTIAL** — Busy always releases, prevents duplicate launch; uncertain write results trigger state verification before user retry, never automatic write retry.
    Evidence: src/stores/git-ui.ts:446,521,610,633; src/components/workspace/git/GitChangesTab.vue:605; src/components/workspace/GitPane.vue:144.
@@ -845,6 +846,11 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 - Expanded `IMPLEMENTATION_INVENTORY.md` with the inspected toolbar, branch/commit/file context menu, Changes, stash, worktree, conflict, bulk, and provider routes, noting dispatch/guard, result surface, and new-view destination where verified. `git diff --check` and Prettier pass.
 - Requirement 36 remains partial: some grouped action classes still need per-action audit/result mapping; the user's visual walkthrough remains open. WORK_LOCK stays.
 - Current-tree verification after this continuation: `npm run typecheck` passes; `npm run lint` passes with 0 errors / 4,685 warnings and full Prettier clean; `git diff --check` passes. Documentation-only edits were committed as `70b6b454` (`docs map Git action entry points`). WORK_LOCK remains.
+
+## Worker continuation (long-operation failure coverage)
+
+- Added nine table-driven runtime cases covering structured diagnostics across every registered long Git action family: fetch, push, force push, remote branch/tag writes, merge, and rebase. `npm run test:backend -- electron/backend/runtime.test.ts -t "preserves structured diagnostics for long Git"` passes 9 tests; `npm run typecheck`, focused ESLint (0 errors), Prettier, and `git diff --check` pass.
+- Requirement 51's structured manager failure propagation is now checked across all long Git routes. Generic rejected-promise classification, end-to-end pending-action reconnect, detailed per-action audit mapping, and user visual verification remain open; WORK_LOCK stays present.
 
 ## Worker continuation (lifecycle self-audit reconciliation)
 
