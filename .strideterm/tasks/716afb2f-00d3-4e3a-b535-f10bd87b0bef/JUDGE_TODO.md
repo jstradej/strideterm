@@ -735,3 +735,10 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Added gated runtime tests for pull and push accepted concurrently in separate profiles with identical idempotency keys. Each action receives a distinct operation ID, and each terminal result carries the matching profile and workspace.
 - Focused runtime tests pass (2 passed, 517 skipped); repository typecheck passes; focused ESLint has 0 errors / 130 existing warnings; Prettier and diff check pass. Renderer disconnect/reconnect acceptance, route audit coverage and the manual walkthrough remain open; WORK_LOCK stays.
+
+## Worker continuation verification refresh (2026-10-21)
+
+- Re-read `PROMPT.worker.md`, `TODO.md`, `WORKER.md`, `TASK.md`, `MANUAL_VERIFICATION.md`, the project `README.md`, and `CLAUDE.md`.
+- `npm run typecheck` passes on the current tree. `CLAUDE.md` warns against plain builds while the user's watcher may be active; no build, app, or dev server was launched in this continuation.
+- No source changes were needed after the latest focused lifecycle additions. The automated coverage now includes persisted and unsaved review drafts across pane unmounts and busy operation state across view toggles. Remaining renderer disconnect/reconnect integration, broad route audit, and narrow/keyboard visual acceptance remain recorded above.
+- The required `MANUAL_VERIFICATION.md` walkthrough must be performed by the user in their existing `dev.ps1` session, so `WORK_LOCK` remains present and TODO's user-owned visual review item stays open.
