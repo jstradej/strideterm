@@ -135,6 +135,20 @@ beforeEach(() => {
 });
 
 describe("GitPane repo picker", () => {
+  test("keeps the classic tabs by default and renders three opt-in views with legacy tools", async () => {
+    const ws = buildWorkspace({ id: "ws-new-git-view" });
+    const wrapper = mountPane("ws-new-git-view", [ws]);
+    expect(wrapper.find('[aria-label="Git sections"]').exists()).toBe(true);
+    const appStore = useAppStore();
+    appStore.payload = {
+      ...appStore.payload!,
+      appState: { ...appStore.payload!.appState!, settings: { git: { ui: { newView: true } } } },
+    } as StatePayload;
+    await flushPromises();
+    expect(wrapper.find('[aria-label="Git sections"]').exists()).toBe(false);
+    expect(wrapper.findAll('[role="tab"]').map((tab) => tab.text())).toEqual(["History", "Changes", "Review"]);
+    expect(wrapper.find('[aria-label="More Git tools"]').exists()).toBe(true);
+  });
   test("repo picker is shown when workspace has 2+ gitRoots", () => {
     const ws = buildWorkspace({ id: "ws-multi", gitRoots: ["/ms/api", "/ms/web"] });
     const wrapper = mountPane("ws-multi", [ws]);

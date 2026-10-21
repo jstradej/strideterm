@@ -2084,6 +2084,18 @@ describe("settings.git.ui.updateStrategy", () => {
   });
 });
 
+describe("settings.git.ui.newView", () => {
+  test("defaults off and safely normalizes older or malformed values", () => {
+    expect(createDefaultState().settings.git.ui.newView).toBe(false);
+    expect(normalizeState({ settings: { git: { ui: { showAllActions: true } } } }).settings.git.ui).toMatchObject({
+      newView: false,
+      showAllActions: true,
+    });
+    expect(normalizeState({ settings: { git: { ui: { newView: true } } } }).settings.git.ui.newView).toBe(true);
+    expect(normalizeState({ settings: { git: { ui: { newView: "enabled" } } } }).settings.git.ui.newView).toBe(false);
+  });
+});
+
 describe("workspace internal MCP option", () => {
   const base = { id: "w", name: "W", cwd: "/tmp/w", panels: [{ id: "p", title: "Shell", command: "" }] };
 

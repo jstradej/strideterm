@@ -73,6 +73,8 @@ interface GitUiState {
   selectedCommit?: string;
   commitDiffPreview?: unknown;
   activeTab?: string;
+  /** New Git layout selection, deliberately separate from legacy tab ids. */
+  activeGitView?: "history" | "changes" | "review";
   tags?: unknown[];
   tagsLoading?: boolean;
   tagsError?: string;
@@ -1252,6 +1254,40 @@ export const useGitUiStore = defineStore("git-ui", () => {
     ensure(workspaceId).activeTab = tab;
   }
 
+  function gitViewKey(workspaceId: string, rootPath = getActiveRoot(workspaceId), profileId = "default"): string {
+    return `${profileId}::${workspaceId}::${rootPath || "default-root"}`;
+  }
+
+  function gitSwitchView(
+    workspaceId: string,
+    view: "history" | "changes" | "review",
+    rootPath?: string,
+    profileId = "default",
+  ): void {
+    const key = gitViewKey(workspaceId, rootPath, profileId);
+    ensure(workspaceId).gitViewsByRoot = {
+      ...((ensure(workspaceId).gitViewsByRoot as Record<string, "history" | "changes" | "review"> | undefined) || {}),
+      [key]: view,
+    };
+  }
+
+  function getGitView(
+    workspaceId: string,
+    rootPath?: string,
+    profileId = "default",
+  ): "history" | "changes" | "review" | undefined {
+    const views = ensure(workspaceId).gitViewsByRoot as Record<string, "history" | "changes" | "review"> | undefined;
+    return views?.[gitViewKey(workspaceId, rootPath, profileId)];
+  }
+
+  function setNewViewLegacyDestination(workspaceId: string, destination: string): void {
+    ensure(workspaceId).newViewLegacyDestination = destination;
+  }
+
+  function getNewViewLegacyDestination(workspaceId: string): string {
+    return String(ensure(workspaceId).newViewLegacyDestination || "");
+  }
+
   function gitClearResult(workspaceId: string): void {
     ensure(workspaceId).lastResult = null;
   }
@@ -1797,6 +1833,10 @@ export const useGitUiStore = defineStore("git-ui", () => {
     gitSelectCommit,
     gitSelectDiff,
     gitSwitchTab,
+    gitSwitchView,
+    getGitView,
+    setNewViewLegacyDestination,
+    getNewViewLegacyDestination,
     gitClearResult,
     gitClearSelectedDiff,
     openLazygit,

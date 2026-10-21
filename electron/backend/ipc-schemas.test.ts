@@ -16,6 +16,7 @@ import {
   gitDiffPreviewSchema,
   gitLogPageSchema,
   gitLogGraphSchema,
+  settingsSchema,
   gitRemoteBranchDeleteSchema,
   terminalResizeSchema,
   profileSchema,
@@ -36,6 +37,17 @@ import {
 } from "./ipc-schemas.js";
 
 describe("ipc-schemas", () => {
+  test("validates the opt-in new Git view while preserving partial UI settings", () => {
+    expect(validateIpc(settingsSchema, { git: { ui: { newView: true } } }, "settings:update")).toMatchObject({
+      git: { ui: { newView: true } },
+    });
+    expect(() => validateIpc(settingsSchema, { git: { ui: { newView: "yes" } } }, "settings:update")).toThrow(
+      /IPC validation failed/,
+    );
+    expect(validateIpc(settingsSchema, { git: { ui: { updateStrategy: "merge" } } }, "settings:update")).toMatchObject({
+      git: { ui: { updateStrategy: "merge" } },
+    });
+  });
   describe("sshKeyTransferStartSchema", () => {
     const base = { profileId: "default", keyId: "key-1" };
     const draft = {

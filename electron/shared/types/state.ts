@@ -264,6 +264,8 @@ export interface IntegrationSettings {
 }
 
 export interface GitUiSettings {
+  /** Opt-in compact History / Changes / Review Git workspace layout. */
+  newView: boolean;
   showAllActions: boolean;
   /**
    * Which strategy the Update / Pull split buttons OFFER by default when the

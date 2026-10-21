@@ -10,6 +10,9 @@ const addEvent = vi.fn();
 const openDialog = vi.fn();
 const closeDialog = vi.fn();
 const azureCreatePullRequest = vi.fn();
+const gitLoadGraph = vi.fn();
+const gitCheckoutBranch = vi.fn();
+const gitCreateBranch = vi.fn();
 
 vi.mock("../../../stores/app.js", () => ({
   useAppStore: () => ({
@@ -22,11 +25,11 @@ vi.mock("../../../stores/git-ui.js", () => ({
   useGitUiStore: () => ({
     gitListBranches: vi.fn(),
     gitListTags: vi.fn(),
-    gitLoadGraph: vi.fn(),
+    gitLoadGraph,
     gitFetchBaseComparison: vi.fn(),
     gitSelectCommit: vi.fn(),
-    gitCreateBranch: vi.fn(),
-    gitCheckoutBranch: vi.fn(),
+    gitCreateBranch,
+    gitCheckoutBranch,
     gitCheckoutRemoteBranch: vi.fn(),
     gitRenameBranch: vi.fn(),
     gitDeleteBranch: vi.fn(),
@@ -90,6 +93,47 @@ afterEach(async () => {
   mountedWrappers.length = 0;
   document.body.innerHTML = "";
   await flushPromises();
+});
+
+describe("GitBranchesTab compact history picker", () => {
+  test("selecting a named reference only changes the graph query", async () => {
+    vi.useFakeTimers();
+    const picker = mount(GitBranchesTab, {
+      props: {
+        workspaceId: "ws1",
+        snapshot: { dirty: false, branch: "main" },
+        gitUi: {
+          branchList: {
+            current: "main",
+            upstream: "origin/main",
+            local: [
+              { name: "main", isCurrent: true },
+              { name: "feature/topic", isCurrent: false },
+            ],
+            remotes: [{ name: "origin/main", shortName: "main", remote: "origin" }],
+            defaultBranch: "main",
+            defaultRemote: "origin",
+          },
+          graph: { commits: [], head: "", refs: {} },
+          tags: [{ name: "v1.0.0" }],
+        },
+        compactHistory: true,
+      },
+    });
+    await flushPromises();
+    const select = picker.get('[aria-label="History reference"]');
+    await select.setValue("origin/main");
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(300);
+    await flushPromises();
+    expect(picker.find('[aria-label="Search history references"]').exists()).toBe(true);
+    expect(picker.find('[aria-label="History reference"]').element).toBe(select.element);
+    expect(gitLoadGraph).toHaveBeenCalledWith("ws1", expect.objectContaining({ branch: "origin/main" }));
+    expect(gitCheckoutBranch).not.toHaveBeenCalled();
+    expect(gitCreateBranch).not.toHaveBeenCalled();
+    picker.unmount();
+    vi.useRealTimers();
+  });
 });
 
 /**

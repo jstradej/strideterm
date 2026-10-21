@@ -2,7 +2,45 @@
   <div class="git-section git-branches" :class="{ 'git-branches--mobile': isMobile }">
     <!-- Compact toolbar (search + filters + actions).
          Desktop: single row. Mobile: stacked with view-switcher tabs. -->
-    <div class="git-branches__toolbar">
+    <div v-if="compactHistory" class="git-history-picker">
+      <label class="git-history-picker__search">
+        <span>Find reference</span>
+        <input
+          v-model="historySearch"
+          type="search"
+          placeholder="Branches and tags…"
+          aria-label="Search history references"
+        />
+      </label>
+      <label class="git-history-picker__select">
+        <span>History range</span>
+        <select :value="selectedRef || 'HEAD'" aria-label="History reference" @change="onHistoryRefChange">
+          <option value="HEAD">HEAD · {{ branchList.current || "detached" }}</option>
+          <optgroup label="Local branches">
+            <option v-for="branch in filteredHistoryBranches" :key="`local:${branch.name}`" :value="branch.name">
+              Branch · {{ branch.name }}{{ branch.isCurrent ? " (working branch)" : "" }}
+            </option>
+          </optgroup>
+          <optgroup label="Remote branches">
+            <option v-for="branch in filteredHistoryRemotes" :key="`remote:${branch.name}`" :value="branch.name">
+              Remote branch · {{ branch.name }}
+            </option>
+          </optgroup>
+          <optgroup label="Tags">
+            <option v-for="tag in filteredHistoryTags" :key="`tag:${tag.name}`" :value="tag.name">
+              Tag · {{ tag.name }}
+            </option>
+          </optgroup>
+        </select>
+      </label>
+      <span class="git-history-picker__current"
+        >Working branch: <strong>{{ branchList.current || "Detached HEAD" }}</strong></span
+      >
+      <button v-if="selectedRef" type="button" class="button button--ghost button--small" @click="onSelectRef('')">
+        All branches
+      </button>
+    </div>
+    <div v-else class="git-branches__toolbar">
       <div class="git-branches__search">
         <input
           v-model="search"
@@ -143,9 +181,9 @@
     <GitOperationCard :snapshot="snapshot" :workspace-id="workspaceId" :git-ui="gitUi" />
 
     <!-- ===== Desktop: 3-pane (tree | commits | diff) ===== -->
-    <div v-if="!isMobile" class="git-branches__body">
+    <div v-if="!isMobile" class="git-branches__body" :class="{ 'git-branches__body--history': compactHistory }">
       <Splitpanes class="default-theme git-branches__panes">
-        <Pane :size="22" :min-size="14">
+        <Pane v-if="!compactHistory" :size="22" :min-size="14">
           <BranchTreePane
             :tree="branchTree"
             :loading="branchesLoading"
@@ -452,7 +490,7 @@
     <!-- ===== Mobile: stacked single-pane wizard ===== -->
     <div v-else class="git-branches__mobile-body">
       <BranchTreePane
-        v-if="mobileView === 'tree'"
+        v-if="mobileView === 'tree' && !compactHistory"
         :tree="branchTree"
         :loading="branchesLoading"
         :selected-ref="selectedRef"
@@ -473,7 +511,7 @@
         @create-pr="onCreatePrForBranch"
       />
 
-      <div v-else-if="mobileView === 'commits'" class="git-branches__commits-pane">
+      <div v-else-if="mobileView === 'commits' || compactHistory" class="git-branches__commits-pane">
         <div class="git-branches__pane-head">
           <button
             type="button"
@@ -621,6 +659,7 @@ const props = withDefaults(
     compare?: Record<string, any>;
     baseBranchOptions?: string[];
     remoteNames?: string[];
+    compactHistory?: boolean;
   }>(),
   {
     activeRootPath: "",
@@ -630,6 +669,7 @@ const props = withDefaults(
     compare: () => ({}),
     baseBranchOptions: () => [],
     remoteNames: () => [],
+    compactHistory: false,
   },
 );
 
@@ -662,6 +702,20 @@ const mobileView = ref<"tree" | "commits" | "diff">("tree");
 // Which ref is selected in the branch tree (acts as a graph filter).
 // Empty string = no filter (shows the full Log).
 const selectedRef = ref<string>("");
+const historySearch = ref("");
+const filteredHistoryBranches = computed(() =>
+  branchList.value.local.filter((branch) => branch.name.toLowerCase().includes(historySearch.value.toLowerCase())),
+);
+const filteredHistoryRemotes = computed(() =>
+  branchList.value.remotes.filter((branch) => branch.name.toLowerCase().includes(historySearch.value.toLowerCase())),
+);
+const filteredHistoryTags = computed(() =>
+  tags.value.filter((tag) => tag.name.toLowerCase().includes(historySearch.value.toLowerCase())),
+);
+function onHistoryRefChange(event: Event) {
+  const value = (event.target as HTMLSelectElement).value;
+  onSelectRef(value === "HEAD" ? "" : value);
+}
 
 // Ctrl/Cmd-click multi-selection of local branches for bulk delete.
 // A plain click clears this; Ctrl/Cmd-click toggles a ref in the set.
@@ -1907,6 +1961,46 @@ watch(
   flex: 0 0 auto;
 }
 
+.git-history-picker {
+  display: flex;
+  align-items: end;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  flex-wrap: wrap;
+}
+
+.git-history-picker__select,
+.git-history-picker__search {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.git-history-picker__select select,
+.git-history-picker__search input {
+  min-width: 220px;
+  max-width: 34vw;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.git-history-picker__current {
+  padding: 0 4px 7px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.git-history-picker__current strong {
+  color: var(--text);
+}
+
 .git-branches--mobile .git-branches__toolbar {
   padding: 4px 6px;
   gap: 6px;
@@ -2032,6 +2126,10 @@ watch(
   flex: 1;
   min-height: 0;
   overflow: hidden;
+}
+
+.git-branches__body--history :deep(.splitpanes__pane:first-child) {
+  display: none;
 }
 
 .git-branches__panes,

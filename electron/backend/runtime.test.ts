@@ -4946,6 +4946,14 @@ describe("runtime integration", () => {
     expect(fixture.runtime.getNotifyServerInfo().port).toBeGreaterThan(0);
   });
 
+  test("updateSettings preserves sibling Git UI settings when enabling the new view", async () => {
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+    const before = fixture.runtime.getPayload().appState.settings.git.ui;
+    await fixture.runtime.updateSettings({ git: { ui: { newView: true } } });
+    expect(fixture.runtime.getPayload().appState.settings.git.ui).toEqual({ ...before, newView: true });
+  });
+
   test("STRIDETERM_NOTIFY_URL is injected into session env when notify server is running", async () => {
     const fixture = await createFixture({
       initialState: {

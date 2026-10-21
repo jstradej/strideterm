@@ -43,6 +43,21 @@ beforeEach(() => {
 });
 
 describe("git-ui store", () => {
+  test("new Git view selection is independent for each repository root", () => {
+    const store = useGitUiStore();
+    store.setActiveRoot("ws1", "/repo/a");
+    store.gitSwitchView("ws1", "history", "/repo/a");
+    store.setActiveRoot("ws1", "/repo/b");
+    expect(store.getGitView("ws1", "/repo/a")).toBe("history");
+    expect(store.getGitView("ws1", "/repo/b")).toBeUndefined();
+    store.gitSwitchView("ws1", "changes", "/repo/b");
+    expect(store.getGitView("ws1", "/repo/a")).toBe("history");
+    expect(store.getGitView("ws1", "/repo/b")).toBe("changes");
+    store.gitSwitchView("ws1", "review", "/repo/a", "profile-b");
+    expect(store.getGitView("ws1", "/repo/a", "profile-b")).toBe("review");
+    expect(store.getGitView("ws1", "/repo/a", "default")).toBe("history");
+  });
+
   describe("runGitAction payload adoption", () => {
     test("adopts the action payload through adoptPayload, not a raw store write", async () => {
       const store = useGitUiStore();

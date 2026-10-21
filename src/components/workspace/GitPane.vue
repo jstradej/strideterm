@@ -226,7 +226,7 @@
       </div>
 
       <!-- Tab nav -->
-      <nav class="git-tabs" role="tablist" aria-label="Git sections">
+      <nav v-if="!useNewGitView" class="git-tabs" role="tablist" aria-label="Git sections">
         <button
           v-for="tab in tabs"
           :key="tab.id"
@@ -239,6 +239,26 @@
           {{ tab.label }}<span v-if="tab.badge" class="git-tabs__badge">{{ tab.badge }}</span>
         </button>
       </nav>
+      <nav v-if="useNewGitView" class="git-tabs git-tabs--new" role="tablist" aria-label="Git views">
+        <button
+          v-for="view in newGitViews"
+          :key="view.id"
+          type="button"
+          role="tab"
+          :aria-selected="view.id === activeGitView ? 'true' : 'false'"
+          :class="['git-tabs__item', view.id === activeGitView && 'git-tabs__item--active']"
+          @click="selectNewView(view.id)"
+        >
+          {{ view.label }}
+        </button>
+        <label class="git-new-view__more">
+          <span>More</span>
+          <select :value="activeLegacyDestination" aria-label="More Git tools" @change="onLegacyDestinationChange">
+            <option value="">Choose a Git tool…</option>
+            <option v-for="tab in legacyDestinations" :key="tab.id" :value="tab.id">{{ tab.label }}</option>
+          </select>
+        </label>
+      </nav>
 
       <section
         role="tabpanel"
@@ -250,7 +270,7 @@
         </div>
         <!-- ===== Branch tab ===== -->
         <GitBranchTab
-          v-if="activeTab === 'branch'"
+          v-if="(!useNewGitView && activeTab === 'branch') || (useNewGitView && activeLegacyDestination === 'branch')"
           :workspace-id="workspaceId"
           :snapshot="snapshot"
           :git-ui="gitUi"
@@ -276,7 +296,11 @@
 
         <!-- ===== Branches tab (JetBrains-style branch list) ===== -->
         <GitBranchesTab
-          v-else-if="activeTab === 'branches'"
+          v-else-if="
+            (!useNewGitView && activeTab === 'branches') ||
+            (useNewGitView && activeGitView === 'history') ||
+            (useNewGitView && activeLegacyDestination === 'branches')
+          "
           :workspace-id="workspaceId"
           :snapshot="snapshot"
           :git-ui="gitUi"
@@ -287,11 +311,16 @@
           :compare="compare"
           :base-branch-options="baseBranchOptions"
           :remote-names="remoteNames"
+          :compact-history="useNewGitView && activeGitView === 'history'"
         />
 
         <!-- ===== Changes tab ===== -->
         <GitChangesTab
-          v-else-if="activeTab === 'changes'"
+          v-else-if="
+            (!useNewGitView && activeTab === 'changes') ||
+            (useNewGitView && activeGitView === 'changes') ||
+            (useNewGitView && activeLegacyDestination === 'changes')
+          "
           :workspace-id="workspaceId"
           :snapshot="snapshot"
           :git-ui="gitUi"
@@ -302,7 +331,9 @@
 
         <!-- ===== Stashes tab ===== -->
         <GitStashesTab
-          v-else-if="activeTab === 'stashes'"
+          v-else-if="
+            (!useNewGitView && activeTab === 'stashes') || (useNewGitView && activeLegacyDestination === 'stashes')
+          "
           :workspace-id="workspaceId"
           :snapshot="snapshot"
           :active-root-path="activeRootPath"
@@ -310,14 +341,20 @@
 
         <!-- ===== Conflicts tab (only while an operation has conflicts) ===== -->
         <GitConflictsTab
-          v-else-if="activeTab === 'conflicts'"
+          v-else-if="
+            (!useNewGitView && activeTab === 'conflicts') || (useNewGitView && activeLegacyDestination === 'conflicts')
+          "
           :workspace-id="workspaceId"
           :root-path="activeRootPath"
         />
 
         <!-- ===== Pull Request tab ===== -->
         <GitPullRequestTab
-          v-else-if="activeTab === 'pr'"
+          v-else-if="
+            (!useNewGitView && activeTab === 'pr') ||
+            (useNewGitView && activeGitView === 'review' && reviewLink) ||
+            (useNewGitView && activeLegacyDestination === 'pr')
+          "
           :workspace-id="workspaceId"
           :snapshot="snapshot"
           :git-ui="gitUi"
@@ -328,8 +365,25 @@
           :active-connection-label="activeConnectionLabel"
         />
 
+        <section
+          v-else-if="useNewGitView && activeGitView === 'review' && !reviewLink"
+          class="git-new-review-empty"
+          aria-live="polite"
+        >
+          <h2>No pull request is linked to this workspace</h2>
+          <p>
+            Link a pull request to review its provider diff and comments. Choosing Review does not create or publish
+            one.
+          </p>
+          <button type="button" class="button button--ghost" @click="openLegacyPrTool">Open pull request tools</button>
+        </section>
+
         <!-- ===== Worktrees tab ===== -->
-        <template v-else-if="activeTab === 'worktrees'">
+        <template
+          v-else-if="
+            (!useNewGitView && activeTab === 'worktrees') || (useNewGitView && activeLegacyDestination === 'worktrees')
+          "
+        >
           <div class="git-section">
             <article class="git-card">
               <div class="section-head">
@@ -360,7 +414,9 @@
         </template>
 
         <!-- ===== Bulk tab (multi-repo only) ===== -->
-        <template v-else-if="activeTab === 'bulk'">
+        <template
+          v-else-if="(!useNewGitView && activeTab === 'bulk') || (useNewGitView && activeLegacyDestination === 'bulk')"
+        >
           <BulkRepoTable
             :roots-snapshots="allRootsSnapshots"
             :workspace-id="props.workspaceId"
@@ -529,6 +585,35 @@ const activeTab = computed(() => {
   if (t === "conflicts" && !hasConflictsTab.value) return "branch";
   return t;
 });
+
+const useNewGitView = computed(() => appStore.payload?.appState?.settings?.git?.ui?.newView === true);
+const activeGitView = computed(() => {
+  const saved = gitUiStore.getGitView(props.workspaceId, activeRootPath.value, workspace.value?.profileId || "default");
+  if (saved) return saved;
+  const preferred = reviewLink.value ? "review" : snapshot.value?.dirty ? "changes" : "history";
+  gitUiStore.gitSwitchView(props.workspaceId, preferred, activeRootPath.value, workspace.value?.profileId || "default");
+  return preferred;
+});
+const newGitViews = [
+  { id: "history", label: "History" },
+  { id: "changes", label: "Changes" },
+  { id: "review", label: "Review" },
+] as const;
+const activeLegacyDestination = computed(() => gitUiStore.getNewViewLegacyDestination(props.workspaceId));
+const legacyDestinations = computed(() => tabs.value.filter((tab) => tab.id !== "branches" && tab.id !== "changes"));
+function onLegacyDestinationChange(event: Event) {
+  const destination = (event.target as HTMLSelectElement).value;
+  gitUiStore.setNewViewLegacyDestination(props.workspaceId, destination || "");
+}
+
+function selectNewView(view: "history" | "changes" | "review") {
+  gitUiStore.setNewViewLegacyDestination(props.workspaceId, "");
+  gitUiStore.gitSwitchView(props.workspaceId, view, activeRootPath.value, workspace.value?.profileId || "default");
+}
+
+function openLegacyPrTool() {
+  gitUiStore.setNewViewLegacyDestination(props.workspaceId, "pr");
+}
 
 const showAllActions = computed(() => appStore.payload?.appState?.settings?.git?.ui?.showAllActions === true);
 
@@ -1007,6 +1092,30 @@ const switchBranchOptionsList = computed(() => switchBranchOptions.value.map((b)
   color: var(--muted);
   white-space: nowrap;
   opacity: 0.7;
+}
+
+.git-tabs--new {
+  align-items: center;
+}
+
+.git-new-view__more {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  padding: 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.git-new-view__more select {
+  max-width: min(240px, 34vw);
+  min-width: 120px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text);
 }
 
 .git-view__panel--busy {

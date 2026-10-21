@@ -128,6 +128,12 @@ export type WorkspaceUIState = z.infer<typeof workspaceUIStateSchema>;
 
 export const settingsSchema = z
   .object({
+    git: z
+      .object({
+        ui: z.object({ newView: z.boolean().optional() }).passthrough().optional(),
+      })
+      .passthrough()
+      .optional(),
     remoteAccess: z.object({ paused: z.boolean().optional() }).passthrough().optional(),
     ssh: z
       .object({

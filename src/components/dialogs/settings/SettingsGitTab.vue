@@ -1,6 +1,18 @@
 <template>
   <div
     class="settings-check"
+    title="Use the compact History, Changes, and Review Git workspace. You can switch back at any time."
+  >
+    <label class="settings-check__row">
+      <input v-model="form.git.ui.newView" type="checkbox" />
+      <span>Nové Git zobrazení</span>
+    </label>
+    <small class="settings-check__help">
+      Show Git as History, Changes, and Review. Branch management and other tools remain available from More.
+    </small>
+  </div>
+  <div
+    class="settings-check"
     title="When enabled, the Git tab shows all actions regardless of the current repository state (no context-based hiding). Useful for power users who prefer the raw unfiltered view."
   >
     <label class="settings-check__row">

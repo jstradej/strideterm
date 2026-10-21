@@ -606,6 +606,7 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
       },
       git: {
         ui: {
+          newView: false,
           showAllActions: false,
           updateStrategy: "rebase" as const,
         },
@@ -1542,6 +1543,7 @@ export function normalizeState(
     },
     git: {
       ui: {
+        newView: typeof rawGit.ui?.newView === "boolean" ? rawGit.ui.newView : defaults.settings.git.ui.newView,
         showAllActions:
           typeof rawGit.ui?.showAllActions === "boolean"
             ? rawGit.ui.showAllActions
