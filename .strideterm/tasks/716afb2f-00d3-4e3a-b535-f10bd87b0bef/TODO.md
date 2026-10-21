@@ -136,3 +136,4 @@
 - [x] Verify local branch create, checkout, rename, and delete routes emit one resolved-root system Git audit outcome for each successful write and failed delete; focused real-repository regression, repository typecheck, and full lint/Prettier pass.
 - [x] Route conflict resolve and unresolve through the per-worktree lock and system Git audit; real-conflict regression asserts one resolved-root audit outcome for successful and failed resolve/undo requests.
 - [x] Reject conflict paths that escape the repository in detail, resolve and undo routes; real-repository regression verifies an outside file remains unchanged.
+- [x] Re-run all GitManager backend tests after conflict locking/audit/path validation; 181 passed / 2 skipped.
