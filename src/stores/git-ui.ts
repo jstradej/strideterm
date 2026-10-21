@@ -755,24 +755,38 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   async function gitFetch(workspaceId: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "fetch", () =>
-      (_api as Transport & { gitFetch: (p: unknown) => Promise<unknown> }).gitFetch!({
-        workspaceId,
-        rootPath,
-        idempotencyKey: newGitIdempotencyKey(),
-      }),
+    await runGitAction(
+      workspaceId,
+      "fetch",
+      async () => {
+        const { useAppStore } = await import("./app.js");
+        const start = await (_api as Transport & { gitFetch: (p: unknown) => Promise<unknown> }).gitFetch!({
+          workspaceId,
+          rootPath,
+          idempotencyKey: newGitIdempotencyKey(),
+        });
+        return resolveLongGitAction(useAppStore(), start as { operationId?: string; started?: boolean } | null);
+      },
+      GIT_OPERATION_WAIT_OPTS,
     );
   }
 
   async function gitPull(workspaceId: string, { stashDirty = false }: { stashDirty?: boolean } = {}): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "pull", () =>
-      (_api as Transport & { gitPull: (p: unknown) => Promise<unknown> }).gitPull!({
-        workspaceId,
-        rootPath,
-        stashDirty,
-        idempotencyKey: newGitIdempotencyKey(),
-      }),
+    await runGitAction(
+      workspaceId,
+      "pull",
+      async () => {
+        const { useAppStore } = await import("./app.js");
+        const start = await (_api as Transport & { gitPull: (p: unknown) => Promise<unknown> }).gitPull!({
+          workspaceId,
+          rootPath,
+          stashDirty,
+          idempotencyKey: newGitIdempotencyKey(),
+        });
+        return resolveLongGitAction(useAppStore(), start as { operationId?: string; started?: boolean } | null);
+      },
+      GIT_OPERATION_WAIT_OPTS,
     );
   }
 
@@ -782,12 +796,19 @@ export const useGitUiStore = defineStore("git-ui", () => {
       return;
     }
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "push", () =>
-      (_api as Transport & { gitPush: (p: unknown) => Promise<unknown> }).gitPush!({
-        workspaceId,
-        rootPath,
-        idempotencyKey: newGitIdempotencyKey(),
-      }),
+    await runGitAction(
+      workspaceId,
+      "push",
+      async () => {
+        const { useAppStore } = await import("./app.js");
+        const start = await (_api as Transport & { gitPush: (p: unknown) => Promise<unknown> }).gitPush!({
+          workspaceId,
+          rootPath,
+          idempotencyKey: newGitIdempotencyKey(),
+        });
+        return resolveLongGitAction(useAppStore(), start as { operationId?: string; started?: boolean } | null);
+      },
+      GIT_OPERATION_WAIT_OPTS,
     );
   }
 

@@ -250,8 +250,8 @@ Full per-requirement ledger (122 items)
    Evidence: electron/backend/operation-registry.ts:147,343; src/stores/app-workspace-actions.ts:130,142,375,397,434; electron/shared/operation-events.ts:23.
 
 60. **PARTIAL** — Update both UI consumers and remote long-operation path; verify reconnect/dedup and no cross-profile/workspace result leakage.
-   Evidence: src/components/workspace/GitPane.vue:556; src/stores/git-ui.ts:610; src/stores/app-workspace-actions.ts:375; electron/backend/runtime.test.ts:8481.
-   Remaining: Generic delivery reused, but Git integration tests cover gated fetch only, not reconnect/disconnect/profile switch and event+payload dedup across fetch/pull/push.
+   Evidence: `git-ui.ts` resolves accepted fetch, pull, and ordinary push operations from the terminal event or persisted lastResults payload; `git-ui.test.ts` covers all three event outcomes and pull payload recovery. Backend profile isolation is covered by `runtime.test.ts:8746`.
+   Remaining: Renderer-level disconnect/reconnect and profile-switch lifecycle are still not exercised end to end.
 
 61. **PARTIAL** — Stage 1: inventory matrix classic/new × normal/review × local/remote × root plus verified permissions/audit/result variants.
    Evidence: .strideterm/tasks/716afb2f-00d3-4e3a-b535-f10bd87b0bef/IMPLEMENTATION_INVENTORY.md:7,21.
@@ -468,8 +468,8 @@ Full per-requirement ledger (122 items)
    Evidence: src/components/workspace/git/GitChangesTab.vue:270; electron/backend/git-manager.test.ts:3988,4039,4072,4092.
 
 119. **PARTIAL** — TODO Done: fetch/pull/push generic operations, idempotency, correlation, durable results, event/payload dedup, visible running.
-   Evidence: electron/backend/runtime-git-handlers.ts:101; src/components/workspace/GitPane.vue:556; src/stores/app-workspace-actions.ts:375; electron/backend/runtime.test.ts:8481.
-   Remaining: Structured terminal diagnostics and same-action dedupe are implemented. Git-specific reconnect/pull-push profile switching and event/payload delivery tests remain incomplete.
+   Evidence: electron/backend/runtime-git-handlers.ts:101; `src/stores/git-ui.ts` waits for terminal fetch/pull/push outcomes; `git-ui.test.ts` covers event completion and pull lastResults recovery; runtime tests cover same-action dedupe and profile-isolated operation IDs/outcomes.
+   Remaining: Structured terminal diagnostics and same-action dedupe are implemented. End-to-end renderer reconnect and profile-switch lifecycle tests remain incomplete.
 
 120. **PARTIAL** — TODO Done: Review uses provider-owned matching PR workspace for true diff and persisted drafts.
    Evidence: src/components/workspace/GitPane.vue:369,534; src/components/workspace/AzureReviewPane.vue:1274-1276; electron/backend/file-manager.ts:1122-1135; AzureReviewPane.test.ts:833-853; file-manager.test.ts:415-434.
@@ -701,3 +701,9 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 - Audit item 43 is implemented: graph/diff, branch-list, and tag read results use `markRaw` at assignment. `git-ui.test.ts` verifies graph, nested commits, and diff preview are not reactive. Commit: `9512e01d`.
 - Current checks: full UI 214 files / 3,050 tests; backend 224 files / 5,465 passed / 7 skipped (backend unchanged); typecheck passes; focused ESLint has 0 errors (63 warnings); touched-file Prettier and `git diff --check` pass; watch-compatible build passes.
 - Manual `dev.ps1` walkthrough and other outstanding lifecycle/audit items remain; keep WORK_LOCK.
+
+## Worker continuation (Git network operation completion)
+
+- Fetch, pull, and ordinary push now wait for the accepted OperationRegistry result before clearing busy state or showing completion. The store resolves from the live operation event or persisted `operations.lastResults`; `git-ui.test.ts` covers terminal failure events for all three actions and pull recovery after a missed event.
+- Focused Git UI store suite passes 58 tests; full UI passes 214 files / 3,054 tests; typecheck, full lint (0 errors / 4,680 warnings; Prettier clean), and watch-compatible build pass. Backend sources are unchanged; the recorded full backend run is 224 files / 5,465 passed / 7 skipped.
+- Commit this continuation after verification. User visual walkthrough and renderer reconnect/profile-switch acceptance remain open; WORK_LOCK stays.

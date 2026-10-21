@@ -215,6 +215,75 @@ describe("git-ui store", () => {
   });
 
   describe("runGitAction payload adoption", () => {
+    test.each([
+      ["fetch", "gitFetch"],
+      ["pull", "gitPull"],
+      ["push", "gitPush"],
+    ] as const)("keeps %s busy until its accepted operation emits a terminal failure", async (action, method) => {
+      let finish!: (outcome: OperationFinished) => void;
+      const onOperationFinished = vi.fn((handler: (outcome: OperationFinished) => void) => {
+        finish = handler;
+      });
+      const request = vi.fn().mockResolvedValue({ started: true, operationId: `op-${action}` });
+      const store = useGitUiStore();
+      store.init({ [method]: request, onOperationFinished } as unknown as Transport);
+      store.setActiveRoot("ws1", "/repo/a");
+      appStoreMock.payload = { operations: { lastResults: [] } };
+
+      const pending = store[action === "fetch" ? "gitFetch" : action === "pull" ? "gitPull" : "gitPush"]("ws1");
+      await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(store.get("ws1").busyAction).toBe(action));
+      expect(store.get("ws1").lastResult).toBeUndefined();
+
+      finish({
+        operationId: `op-${action}`,
+        kind: `git.${action}`,
+        profileId: "profile-a",
+        workspaceId: "ws1",
+        rootPath: "/repo/a",
+        finishedAt: new Date().toISOString(),
+        result: { ok: false, summary: `${action} failed after acceptance` },
+      });
+      await pending;
+
+      expect(store.get("ws1").busyAction).toBe("");
+      expect(store.get("ws1").lastResult).toMatchObject({
+        ok: false,
+        summary: `${action} failed after acceptance`,
+      });
+    });
+
+    test("recovers a pull outcome from the persisted operation payload after a missed event", async () => {
+      const request = vi.fn().mockResolvedValue({ started: true, operationId: "op-pull-replay" });
+      const store = useGitUiStore();
+      store.init({ gitPull: request } as unknown as Transport);
+      store.setActiveRoot("ws1", "/repo/a");
+      appStoreMock.payload = { operations: { lastResults: [] } };
+
+      const pending = store.gitPull("ws1");
+      await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(store.get("ws1").busyAction).toBe("pull"));
+      appStoreMock.payload = {
+        operations: {
+          lastResults: [
+            {
+              operationId: "op-pull-replay",
+              kind: "git.pull",
+              profileId: "profile-a",
+              workspaceId: "ws1",
+              rootPath: "/repo/a",
+              finishedAt: new Date().toISOString(),
+              result: { ok: true, summary: "Recovered pull result." },
+            },
+          ],
+        },
+      };
+      await pending;
+
+      expect(store.get("ws1").busyAction).toBe("");
+      expect(useNotificationStore().persistentToasts.at(-1)?.body).toBe("Recovered pull result.");
+    });
+
     test("blocks a duplicate action while the first request is still pending", async () => {
       let finishFetch!: (value: unknown) => void;
       const gitFetch = vi.fn(() => new Promise((resolve) => (finishFetch = resolve)));
