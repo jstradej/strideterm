@@ -19,7 +19,8 @@
 - [x] Guard confirmed local tag deletion against duplicate retry after a lost response; require a successful refresh of the same repository root first.
 - [x] Apply the uncertain-write refresh guard to PR-linked push, force-push and rebase, preserving the strict review Git route.
 - [x] Split provider actions into provider-specific inventory rows and assert one audit entry for both GitHub inline review comments and thread replies.
-- [x] Assert one failed provider audit row each when GitHub inline review comments and thread replies receive HTTP 403; `github-manager.test.ts` passes all 32 tests.
+- [x] Assert one failed provider audit row each when GitHub conversation comments, inline comments, thread replies, and submitted reviews receive HTTP 403; `github-manager.test.ts` passes all 32 tests.
+- [x] Assert one failed provider audit row each when Azure DevOps comments, votes, and thread status updates receive HTTP 403; `azure-devops-manager.test.ts` passes all 43 tests.
 
 - [x] Add opt-in setting defaulting off, normalization, explicit boolean schema validation, Settings control, and safe nested merge coverage.
 - [x] Add separate new-view selection and opt-in History / Changes / Review shell with a More path to preserved existing tools.

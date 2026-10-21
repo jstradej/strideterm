@@ -515,7 +515,12 @@ describe("GitHubManager addPullRequestComment", () => {
     const baseFetch = fetchImpl.getMockImplementation()!;
     fetchImpl.mockImplementation(async (url, options) => {
       const href = String(url);
-      if (href.includes("/pulls/42/comments") && (options as RequestInit | undefined)?.method === "POST") {
+      if (
+        (href.includes("/pulls/42/comments") ||
+          href.includes("/issues/42/comments") ||
+          href.includes("/pulls/42/reviews")) &&
+        (options as RequestInit | undefined)?.method === "POST"
+      ) {
         return {
           ok: false,
           status: 403,
@@ -533,6 +538,10 @@ describe("GitHubManager addPullRequestComment", () => {
     await expect(
       manager.addPullRequestComment({ prKey, body: "Thread reply.", threadId: 777, filePath: "src/parser.ts" }),
     ).rejects.toThrow(/403/);
+    await expect(manager.addPullRequestComment({ prKey, body: "Conversation comment." })).rejects.toThrow(/403/);
+    await expect(manager.submitPullRequestReview({ prKey, event: "APPROVE", body: "Approved." })).rejects.toThrow(
+      /403/,
+    );
 
     expect(entries.filter((entry) => entry.category === "write")).toMatchObject([
       {
@@ -549,8 +558,22 @@ describe("GitHubManager addPullRequestComment", () => {
         userInitiated: true,
         statusCode: 403,
       },
+      {
+        operation: "createIssueComment",
+        connectionId: "gh-main",
+        success: false,
+        userInitiated: true,
+        statusCode: 403,
+      },
+      {
+        operation: "submitReview",
+        connectionId: "gh-main",
+        success: false,
+        userInitiated: true,
+        statusCode: 403,
+      },
     ]);
-    expect(entries.filter((entry) => entry.category === "write")).toHaveLength(2);
+    expect(entries.filter((entry) => entry.category === "write")).toHaveLength(4);
   });
 
   test("audits one successful submitted PR review", async () => {

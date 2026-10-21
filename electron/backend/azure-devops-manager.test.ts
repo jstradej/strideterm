@@ -984,6 +984,39 @@ describe("AzureDevOpsManager", () => {
     ]);
   });
 
+  test("records failed comment, vote, and thread-status provider writes exactly once", async () => {
+    const auditEntries: Record<string, unknown>[] = [];
+    const { manager, fetchImpl } = createManager({
+      auditLogStore: { logEntry: (entry) => auditEntries.push(entry) },
+    });
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+    const baseFetch = fetchImpl.getMockImplementation()!;
+    fetchImpl.mockImplementation(async (url, options) => {
+      const method = (options as RequestInit | undefined)?.method || "GET";
+      if (method !== "GET") {
+        return {
+          ok: false,
+          status: 403,
+          json: async () => ({ ok: false }),
+          text: async () => JSON.stringify({ message: "Provider permission denied" }),
+        };
+      }
+      return baseFetch!(url, options);
+    });
+    const prKey = createPullRequestKey("ado-main", "repo-1", 123);
+
+    await expect(manager.addPullRequestComment({ prKey, content: "Comment." })).rejects.toThrow(/403/);
+    await expect(manager.setPullRequestVote({ prKey, vote: 10 })).rejects.toThrow(/403/);
+    await expect(manager.updateThreadStatus({ prKey, threadId: 10, status: "fixed" })).rejects.toThrow(/403/);
+
+    expect(auditEntries.filter((entry) => entry.category === "write")).toMatchObject([
+      { operation: "createThread", connectionId: "ado-main", success: false, userInitiated: true, statusCode: 403 },
+      { operation: "setVote", connectionId: "ado-main", success: false, userInitiated: true, statusCode: 403 },
+      { operation: "updateThread", connectionId: "ado-main", success: false, userInitiated: true, statusCode: 403 },
+    ]);
+    expect(auditEntries.filter((entry) => entry.category === "write")).toHaveLength(3);
+  });
+
   test.each([
     ["src/example.ts", "/src/example.ts"],
     ["/src/example.ts", "/src/example.ts"],
