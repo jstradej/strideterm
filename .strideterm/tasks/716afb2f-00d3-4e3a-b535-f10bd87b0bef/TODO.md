@@ -89,3 +89,4 @@
 - [x] Extend the History read-only picker contract test to assert no local/remote checkout, branch create/rename/delete, remote branch delete, tag create, worktree removal, fetch, or push when selecting a ref. GitBranchesTab suite passes 11 tests; typecheck, Prettier and diff check pass; committed as `273a5909`.
 - [x] Add compact History coverage for a repository with no commits and detached HEAD; verify the HEAD option, working-branch label, and empty graph state. GitBranchesTab suite passes 12 tests; Prettier and diff check pass; committed locally.
 - [x] Commit empty/detached History regression as `276b50f6`.
+- [x] Add compact History coverage for 400 refs and search filtering; GitBranchesTab suite passes 13 tests, repository typecheck passes, touched-file Prettier/ESLint and diff check pass. Committed as `9e62ee37`.

@@ -657,3 +657,7 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 ## Worker continuation (`empty/detached History`)
 
 - Added a compact History regression for a repository with no commits and no current branch. It asserts the explicit detached HEAD picker label, detached working-branch label, and empty-history graph state. Focused `GitBranchesTab.test.ts` passes 12 tests; touched-file Prettier and `git diff --check` pass. This reduces the automated gap in item 69; hundreds-of-refs, root/profile switching, visual keyboard/narrow checks, and other audit findings remain open.
+
+## Worker continuation (`large History ref lists`)
+
+- Added a compact History component test with 400 local refs. It verifies the last ref is rendered and a targeted search sharply reduces visible matching options while retaining the intended ref. `GitBranchesTab.test.ts` passes 13 tests; repository typecheck, touched-file Prettier/ESLint and `git diff --check` pass. This closes the automated large-list portion of audit item 69; keyboard/focus, visual narrow behavior and root/profile switching acceptance remain open.
