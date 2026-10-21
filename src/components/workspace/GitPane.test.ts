@@ -1,9 +1,12 @@
-import { describe, expect, test, beforeEach } from "vitest";
-import { shallowMount, flushPromises } from "@vue/test-utils";
+import { describe, expect, test, beforeEach, vi } from "vitest";
+import { shallowMount, mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
+import { reactive } from "vue";
 import GitPane from "./GitPane.vue";
 import { useAppStore } from "../../stores/app.js";
 import { useGitUiStore } from "../../stores/git-ui.js";
+import DialogOverlay from "../dialogs/DialogOverlay.vue";
+import SettingsGitTab from "../dialogs/settings/SettingsGitTab.vue";
 import type { StatePayload, GitSnapshot } from "../../../electron/shared/types/state.js";
 
 declare const setMatchMediaResult: (query: string, matches: boolean) => void;
@@ -254,6 +257,58 @@ describe("GitPane repo picker", () => {
     await flushPromises();
     expect(gitUiStore.get("ws-toggle-operation").busyAction).toBe("fetch");
     expect(wrapper.findComponent({ name: "GitOperationCard" }).exists()).toBe(true);
+  });
+
+  test("an unsaved Review editor survives toggling the view through the Settings control", async () => {
+    const ws = buildWorkspace({ id: "ws-toggle-review-draft" });
+    const wrapper = mountPane("ws-toggle-review-draft", [ws]);
+    const appStore = useAppStore();
+    appStore.payload = {
+      ...appStore.payload!,
+      appState: { ...appStore.payload!.appState!, settings: { git: { ui: { newView: true } } } },
+    } as StatePayload;
+
+    const dialogOverlay = mount(DialogOverlay, { attachTo: document.body });
+    appStore.openDialog("TextAreaDialog", {
+      title: "Edit review draft",
+      label: "Comment",
+      value: "Saved value",
+      onSubmit: () => undefined,
+      onCancel: () => undefined,
+    });
+    await vi.waitFor(() => expect(document.body.querySelector(".dialog--textarea textarea")).not.toBeNull());
+    const textarea = document.body.querySelector(".dialog--textarea textarea") as HTMLTextAreaElement;
+    textarea.value = "Unsaved editor contents survive the Settings toggle.";
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await flushPromises();
+
+    const form = reactive({ git: { ui: { newView: true, showAllActions: false } } });
+    const settings = mount(SettingsGitTab, { global: { provide: { settingsForm: form } } });
+    const newViewCheckbox = settings.get('input[type="checkbox"]');
+    await newViewCheckbox.setValue(false);
+    appStore.payload = {
+      ...appStore.payload!,
+      appState: { ...appStore.payload!.appState!, settings: form },
+    } as StatePayload;
+    await flushPromises();
+    expect(wrapper.find('[aria-label="Git sections"]').exists()).toBe(true);
+
+    await newViewCheckbox.setValue(true);
+    appStore.payload = {
+      ...appStore.payload!,
+      appState: { ...appStore.payload!.appState!, settings: form },
+    } as StatePayload;
+    await flushPromises();
+
+    expect(wrapper.findAll('[role="tab"]').map((tab) => tab.text())).toEqual(["History", "Changes", "Review"]);
+    expect(document.body.querySelector(".dialog--textarea textarea")).toHaveProperty(
+      "value",
+      "Unsaved editor contents survive the Settings toggle.",
+    );
+
+    settings.unmount();
+    dialogOverlay.unmount();
+    wrapper.unmount();
   });
 
   test("repo picker is shown when workspace has 2+ gitRoots", () => {
