@@ -7,7 +7,8 @@
 
 ## To Do
 
-- [x] User waived the manual visual review requirement; no `dev.ps1` walkthrough is required.
+- [x] Run the `dev.ps1` walkthrough against an isolated Electron profile and record visual findings in `MANUAL_VERIFICATION.md`; the linked-provider PR scenario remains separately open below.
+- [ ] Complete provider-specific visual review with an isolated linked-PR workspace, or record a user-authored waiver for that scenario.
 - [x] Finish inventory-wide permission/audit reconciliation in `JUDGE_TODO.md` (requirements 36, 47, 77, 91 and 94): every route is mapped, generic writes share a single audited wrapper, specialized Git/provider writes have exact audit regressions, and read/file actions explicitly identify their audit behavior.
 - [x] Re-run the full numbered self-audit against the current tree and update each requirement with verifiable evidence.
 - [x] Commit implementation changes locally without pushing.
