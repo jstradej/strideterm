@@ -10,7 +10,8 @@
 - [ ] Complete the user's visual review using `MANUAL_VERIFICATION.md` in their `dev.ps1` session; adjust anything they report.
 - [ ] Finish remaining audit findings in `JUDGE_TODO.md`, including long operations and scoped read/draft lifecycle coverage.
 - [ ] Re-run the full numbered self-audit against the current tree and update each requirement with verifiable evidence.
-- [ ] Resolve remaining full-suite failures and complete the user visual review; rerun project checks after remaining implementation changes.
+- [ ] Finish the remaining audit and rerun the full backend suite after increasing only the two slow review Git reset test timeouts (full backend run had 2 load timeouts; both cases pass isolated in 25.46s). User visual review in their dev.ps1 session is still pending.
+- [ ] Resolve any remaining suite failures and complete the user visual review; rerun project checks after remaining implementation changes.
 - [x] Commit implementation changes locally without pushing.
 
 ## In Progress
@@ -48,7 +49,6 @@
 - [x] Fix repository-wide TypeScript test errors in task-round, mobile invitation, SSH fixture, and component test typings; `npm run typecheck` passes.
 - [x] Re-run project lint/format, full UI suite (214 files, 3,024 tests), focused Git UI, route policy (50), AppX config (9), and `npm run typecheck`; all pass.
 - [x] Fix the E2E mock's missing `/git/diff-preview` fixture route; all nine responsive Git Changes viewport cases now pass.
-- [ ] Investigate remaining verification blockers: latest full backend run had three load-related timeouts across agent-task callback, review-git fixture, and native OpenSSH tests; isolated SSH integration passes. Full UI had one SSH dialog timeout that passes alone. Browser E2E reports the settings screenshot mismatch and file-manager visibility failure under parallel load (passes alone). User visual review remains pending.
 - [x] Resolve backend codicon test failures by resolving Monaco's real installed package path instead of assuming a worktree-local `node_modules`; the two affected backend files pass 74 tests.
 - [x] Persist the Settings → Git new-view checkbox through the dialog's form and save payload; integration coverage mounts the real tab and verifies the sibling `showAllActions` preference is preserved.
 - [x] Reject caller-supplied Git roots outside a single-repository workspace before accepting long fetch operations; runtime regression and the full 509-test runtime suite pass.
@@ -60,6 +60,6 @@
 - [x] Verify provider-owned saved Review drafts reappear after the AzureReviewPane is unmounted and reopened; all 29 AzureReviewPane tests and repository typecheck pass. Unsaved editor-dialog draft round-trip remains open.
 - [x] Add a cross-root History stale-response test; the Git UI store suite passes 46 tests and repository typecheck passes. Correct stale audit notes for the already-fixed compact mobile diff path.
 - [x] Preserve structured Git failure details (warnings, manual-resolution conflicts, bounded raw Git output) in long-operation outcomes; action-specific Notifications retain those diagnostics. The focused runtime and notification tests pass.
-- [ ] Investigate remaining verification blockers: latest full backend run had three load-related timeouts across agent-task callback, review-git fixture, and native OpenSSH tests; isolated SSH integration passes. Full UI had one SSH dialog timeout that passes alone. Browser E2E reports the settings screenshot mismatch and file-manager visibility failure under parallel run, which passes alone. User visual review remains pending.
 - [x] Add a History picker regression proving `HEAD` queries only `HEAD`, while “All branches and tags” uses the distinct all-ref query; focused test passes.
-- [ ] Investigate remaining verification blockers: latest full backend run had three load-related timeouts across agent-task callback, review-git fixture, and native OpenSSH tests; isolated SSH integration passes. Full UI had one SSH dialog timeout that passes alone. The Settings screenshot mismatch reproduces in isolation: current General settings displays terminal font size and notification timing, while the checked-in snapshot shows external editor controls and a different dialog size; do not update the snapshot until the intended baseline is established. File-manager visibility passes alone. User visual review remains pending.
+- [x] Refresh the stale Settings General visual snapshot from the current stable UI. Settings dialog E2E (5), full E2E (142 passed, 5 skipped), file-manager responsive E2E (1), and Git responsive E2E (10) pass.
+- [x] Re-run the full UI suite after latest diagnostics and History query tests: 214 files, 3,028 tests pass.

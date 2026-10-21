@@ -235,6 +235,7 @@ describe("refresh", () => {
       expect(result.recoveryRef).toBeTruthy();
       expect(await git(f.checkout, ["rev-parse", result.recoveryRef!])).toBe(oldHead);
     },
+    60_000,
   );
 
   test("HEAD moved off the baseline: confirmation required, nothing changes until confirmed", async () => {
