@@ -114,3 +114,4 @@
 - [x] Preserve structured long Git failure warnings, conflict paths, and bounded raw output through operation outcomes into the Git UI banner. Focused runtime regression, store suite (59), registry suite (10), typecheck, touched-file Prettier/ESLint, and diff checks pass.
 - [x] Verify an unsaved Review comment editor retains its text while switching between changed files. Focused AzureReviewPane test passes; repository typecheck, touched-file Prettier/ESLint (0 errors), and diff check pass.
 - [x] Verify conflict resolution remains available in the shared toolbar across History, Changes, and Review. GitPane targeted tests pass for all three views; repository typecheck, touched-file Prettier/ESLint (0 errors), and diff check pass.
+- [x] Verify History distinguishes an empty commit-search result from a graph query error. GitBranchesTab suite passes 18 tests; typecheck, touched-file Prettier/ESLint (0 errors), and diff check pass.

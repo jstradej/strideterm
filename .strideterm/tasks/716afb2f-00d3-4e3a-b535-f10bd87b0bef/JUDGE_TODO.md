@@ -118,7 +118,8 @@ Full per-requirement ledger (122 items)
 
 22. **PARTIAL** — History distinguishes loading/error/empty, avoids equating missing ticket search with absent change, and offers file history.
    Evidence: src/components/workspace/git/GitTreeGraph.vue:3,4,5; src/components/workspace/git/GitBranchesTab.vue:67,292,338,427.
-   Remaining: Compact commit search is restored. Verify empty search vs query error and path-filter file history behavior.
+   Evidence: Compact History test verifies a no-match query displays its own status, while a graph read failure hides that status and shows the query error.
+   Remaining: Path-filter file history behavior and human narrow-layout review remain.
 
 23. **IMPLEMENTED** — Review uses the provider's pinned source/target commit IDs for its true diff range; local unstaged work is excluded.
    Evidence: src/components/workspace/AzureReviewPane.vue:1274-1276 requests `source: "range"` with `targetCommitId` and `sourceCommitId`; electron/backend/file-manager.ts:1122-1135 reads both sides via `readFileAtRevision`. AzureReviewPane.test.ts:833-853 checks the exact pinned refs, and file-manager.test.ts:415-434 now asserts a dirty working-tree edit is absent from a base/HEAD range.
@@ -806,3 +807,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Added a mounted `test.each` across the three primary views. With a conflict in the current Git snapshot, the shared “Resolve conflicts” toolbar action remains exposed in History, Changes, and Review. Three focused GitPane cases pass; repository typecheck, touched-file Prettier, ESLint (0 errors; 4 existing warnings), and `git diff --check` pass.
 - Reconciled requirement 10's cross-view conflict evidence and requirement 35's Review file-switch evidence. Manual visual verification and broader audit remain open; WORK_LOCK stays.
+
+## Worker continuation (History empty-search and read-error states)
+
+- Added a compact History regression confirming an unmatched commit search shows a no-match status, then a graph read failure suppresses that empty-result message and shows the query error. `GitBranchesTab.test.ts` passes 18 tests; repository typecheck, touched-file Prettier, ESLint (0 errors; one existing warning), and `git diff --check` pass. This updates requirement 22's error/empty-state evidence.
+- Path-filter file history, keyboard/narrow human review, broader route and reconnect audits, and the user walkthrough remain open; WORK_LOCK stays.
