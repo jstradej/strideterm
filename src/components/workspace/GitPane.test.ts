@@ -5,6 +5,7 @@ import { reactive } from "vue";
 import GitPane from "./GitPane.vue";
 import { useAppStore } from "../../stores/app.js";
 import { useGitUiStore } from "../../stores/git-ui.js";
+import { useRemoteDetailsStore } from "../../stores/remote-details.js";
 import DialogOverlay from "../dialogs/DialogOverlay.vue";
 import SettingsGitTab from "../dialogs/settings/SettingsGitTab.vue";
 import type { StatePayload, GitSnapshot } from "../../../electron/shared/types/state.js";
@@ -320,6 +321,38 @@ describe("GitPane repo picker", () => {
     expect(wrapper.get('[aria-label="Open conflict resolution"]').text()).toContain("Resolve conflicts");
   });
 
+  test("keeps exactly one remote Git detail interest across view-setting toggles", async () => {
+    const workspaceId = "ws-remote-view-interest";
+    const subscriptions: string[][] = [];
+    const appStore = useAppStore();
+    appStore.init({
+      isRemote: true,
+      getState: () => new Promise(() => {}),
+      onStateUpdated: vi.fn(),
+      subscribeResources: (resources: string[]) => subscriptions.push([...resources]),
+      fetchResourceDetail: vi.fn().mockResolvedValue(null),
+    } as unknown as import("../../transport.js").Transport);
+    const wrapper = mountPane(workspaceId, [buildWorkspace({ id: workspaceId })]);
+    await flushPromises();
+    const expected = [`git:${workspaceId}`];
+    expect(subscriptions.at(-1)).toEqual(expected);
+
+    for (const newView of [true, false, true]) {
+      appStore.payload = {
+        ...appStore.payload!,
+        appState: { ...appStore.payload!.appState!, settings: { git: { ui: { newView } } } },
+      } as StatePayload;
+      await flushPromises();
+      expect(useRemoteDetailsStore().isInterested(`git:${workspaceId}`)).toBe(true);
+      expect(subscriptions.at(-1)).toEqual(expected);
+    }
+
+    wrapper.unmount();
+    await flushPromises();
+    expect(useRemoteDetailsStore().isInterested(`git:${workspaceId}`)).toBe(false);
+    expect(subscriptions.at(-1)).toEqual([]);
+    expect(subscriptions).toHaveLength(2);
+  });
   test("a running Git operation survives turning the opt-in view off and back on", async () => {
     const ws = buildWorkspace({ id: "ws-toggle-operation" });
     const wrapper = mountPane("ws-toggle-operation", [ws]);

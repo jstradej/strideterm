@@ -313,7 +313,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
 
 66. **PARTIAL** — Stage 2: new selection independent of legacy migrations, one active data subscription, durable in-progress actions/inputs.
    Evidence: src/components/workspace/GitPane.vue:494,614,623; src/stores/git-ui.ts:1423; src/components/workspace/git/GitChangesTab.vue:772,871.
-   Remaining: Independent selection and one shell subscription exist; required mounted lifecycle/subscription/draft/mutation verification is incomplete.
+   Evidence (2026-10-21): `GitPane.test.ts` mounts the real pane on a remote transport, toggles the persisted new-view setting off/on three times, verifies the same single `git:<workspace>` interest remains without resubscription, and verifies unmount releases it once. Full GitPane suite passes 34 tests.
 
 67. **PARTIAL** — Stage 3: reusable history/range selection with searchable picker and accessible branch management.
    Evidence: src/components/workspace/git/GitBranchesTab.vue:5,210; src/components/workspace/GitPane.vue:649.
@@ -401,7 +401,7 @@ Worker continuation (provider PR creation and thread update audit): GitHub PR cr
 84. **PARTIAL** — Acceptance: layout toggle keeps message/comments/root/running actions and creates no double mutations/subscriptions/notifications.
    Evidence: src/components/workspace/GitPane.test.ts:138,152; src/components/workspace/git/GitChangesTab.vue:772,871; src/stores/git-ui.ts:437.
    Evidence: `GitPane.test.ts` toggles the saved setting off and back on while a fetch is busy and verifies the busy state and operation card survive. Classic message/selection persist by workspace/root; saved Review drafts and an open unsaved TextAreaDialog survive pane unmount.
-   Remaining: Unsaved comment text now has an integration test across the actual Settings Git control's off/on transition. Check for duplicate subscriptions/mutations and cross-view conflict visibility in the manual visual pass.
+   Evidence: Unsaved comment text has an integration test across the actual Settings Git control's off/on transition. The remote Git detail interest lifecycle regression verifies view toggles do not duplicate subscription interest and unmount releases it. Check duplicate mutations and cross-view conflict visibility in the manual visual pass.
 
 85. **PARTIAL** — Acceptance: explicit picker test proves only read query changes, no checkout/fetch/other mutations.
    Evidence: src/components/workspace/git/GitBranchesTab.test.ts:104.

@@ -171,3 +171,4 @@
 - [x] Refresh relevant numbered audit evidence on current tree: view preference scope keys are collision-safe, and fetch/pull/push reconnect/profile isolation is covered. Full UI (215 files / 3,094 tests), backend (224 files / 5,499 passed / 7 skipped), typecheck, full lint/Prettier, safe build and touched checks pass.
 - [x] Define and test the History “All branches and tags” query as local heads, remote-tracking refs, tags, and HEAD, with reachable commits deduplicated by Git. Focused logGraph filter suite passes 3 tests.
 - [x] Cover History range query shapes for all refs, one selected ref, and local-only refs; assert result limits are forwarded. Focused logGraph filter suite passes 5 tests.
+- [x] Verify the real GitPane keeps one remote Git detail interest across new-view setting off/on transitions and releases it on unmount; GitPane suite passes 34/34.
