@@ -688,3 +688,10 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 ## Worker continuation correction (`multi-ref loading guard`)
 
 - The ref readiness guard now also protects multi-selected branch refs. Loading/error-state watcher callbacks no longer prune those selections while source lists are incomplete. GitBranchesTab suite passes 16 tests; touched-file Prettier/ESLint and diff checks pass. Remaining manual narrow/keyboard and broad operation/lifecycle requirements keep WORK_LOCK in place.
+
+## Worker continuation verification refresh (2026-10-21, full suites)
+
+- `npm run test:ui`: PASS, 214 files / 3,049 tests.
+- `npm run test:backend -- --maxWorkers=4`: PASS, 224 files / 5,465 passed, 7 skipped, duration 266.79s.
+- `npm run typecheck`: PASS. `npm run lint`: PASS, 0 errors / 4,678 warnings; repository Prettier check passes. Safe build with `VITE_BUILD_WATCH=1` passed in the preceding verification refresh after the latest implementation changes.
+- No Electron app/dev server was launched. `MANUAL_VERIFICATION.md`, route/audit completeness, reconnect/draft lifecycle, and keyboard/narrow human acceptance are still open; WORK_LOCK remains.
