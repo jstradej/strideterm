@@ -401,6 +401,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const appStore = useAppStore();
 
     const ui = ensure(workspaceId);
+    let actionResponse: unknown = null;
     ui.busyAction = busyAction;
     ui.busyPhase = opts.label || defaultBusyLabel(busyAction);
     // Start each push/force-push with a clean live-output buffer; chunks stream
@@ -410,6 +411,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const response = (await withGitTimeout(runner(), opts.timeoutMs ?? GIT_ACTION_TIMEOUT_MS, busyAction)) as any;
+      actionResponse = response;
       if (response?.payload) {
         // adoptPayload, not `appStore.payload =`: the backend builds
         // payload.workspace from the DESKTOP's active workspace, so a raw
@@ -457,7 +459,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
         if (preview) ui.diffPreview = preview;
       }
 
-      return response?.payload || null;
+      return response;
     } catch (error) {
       // Surface to console as well — the in-app GitOperationCard banner reads
       // ui.lastResult, but DevTools is where we want a stack trace.
@@ -472,7 +474,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
         operationState: null,
         at: new Date().toISOString(),
       };
-      return null;
+      return actionResponse;
     } finally {
       clearBusy(workspaceId);
     }
@@ -1216,6 +1218,66 @@ export const useGitUiStore = defineStore("git-ui", () => {
     );
   }
 
+  async function runIndexAction(workspaceId: string, action: string, runner: () => Promise<unknown>): Promise<boolean> {
+    const response = (await runGitAction(workspaceId, action, runner)) as {
+      result?: { ok?: boolean };
+      payload?: unknown;
+    } | null;
+    const result =
+      response?.result ||
+      (response?.payload as { result?: { ok?: boolean }; ok?: boolean } | undefined)?.result ||
+      (response?.payload as { ok?: boolean } | undefined);
+    return result?.ok === true;
+  }
+
+  async function gitStageFile(workspaceId: string, path: string): Promise<boolean> {
+    const rootPath = getActiveRoot(workspaceId);
+    return runIndexAction(workspaceId, "stage-file", () =>
+      (_api as Transport & { gitStageFile: (p: unknown) => Promise<unknown> }).gitStageFile!({
+        workspaceId,
+        rootPath,
+        path,
+      }),
+    );
+  }
+
+  async function gitUnstageFile(workspaceId: string, path: string): Promise<boolean> {
+    const rootPath = getActiveRoot(workspaceId);
+    return runIndexAction(workspaceId, "unstage-file", () =>
+      (_api as Transport & { gitUnstageFile: (p: unknown) => Promise<unknown> }).gitUnstageFile!({
+        workspaceId,
+        rootPath,
+        path,
+      }),
+    );
+  }
+
+  async function gitStageHunk(
+    workspaceId: string,
+    input: { path: string; scope: "staged" | "unstaged"; diffToken: string; hunk: string },
+  ): Promise<boolean> {
+    const rootPath = getActiveRoot(workspaceId);
+    return runIndexAction(workspaceId, "stage-hunk", () =>
+      (_api as Transport & { gitStageHunk: (p: unknown) => Promise<unknown> }).gitStageHunk!({
+        workspaceId,
+        rootPath,
+        ...input,
+      }),
+    );
+  }
+
+  async function gitCommitStaged(workspaceId: string, message: string): Promise<boolean> {
+    if (!message.trim()) return false;
+    const rootPath = getActiveRoot(workspaceId);
+    return runIndexAction(workspaceId, "commit-staged", () =>
+      (_api as Transport & { gitCommitStaged: (p: unknown) => Promise<unknown> }).gitCommitStaged!({
+        workspaceId,
+        rootPath,
+        message,
+      }),
+    );
+  }
+
   async function gitSelectCommit(workspaceId: string, hash: string): Promise<void> {
     if (!hash) return;
     const ui = ensure(workspaceId);
@@ -1254,8 +1316,13 @@ export const useGitUiStore = defineStore("git-ui", () => {
     ensure(workspaceId).activeTab = tab;
   }
 
-  function gitViewKey(workspaceId: string, rootPath = getActiveRoot(workspaceId), profileId = "default"): string {
-    return `${profileId}::${workspaceId}::${rootPath || "default-root"}`;
+  function gitViewKey(
+    workspaceId: string,
+    rootPath = getActiveRoot(workspaceId),
+    profileId = "default",
+    reviewKey = "",
+  ): string {
+    return `${profileId}::${workspaceId}::${rootPath || "default-root"}::${reviewKey || "no-review"}`;
   }
 
   function gitSwitchView(
@@ -1263,8 +1330,9 @@ export const useGitUiStore = defineStore("git-ui", () => {
     view: "history" | "changes" | "review",
     rootPath?: string,
     profileId = "default",
+    reviewKey = "",
   ): void {
-    const key = gitViewKey(workspaceId, rootPath, profileId);
+    const key = gitViewKey(workspaceId, rootPath, profileId, reviewKey);
     ensure(workspaceId).gitViewsByRoot = {
       ...((ensure(workspaceId).gitViewsByRoot as Record<string, "history" | "changes" | "review"> | undefined) || {}),
       [key]: view,
@@ -1275,9 +1343,10 @@ export const useGitUiStore = defineStore("git-ui", () => {
     workspaceId: string,
     rootPath?: string,
     profileId = "default",
+    reviewKey = "",
   ): "history" | "changes" | "review" | undefined {
     const views = ensure(workspaceId).gitViewsByRoot as Record<string, "history" | "changes" | "review"> | undefined;
-    return views?.[gitViewKey(workspaceId, rootPath, profileId)];
+    return views?.[gitViewKey(workspaceId, rootPath, profileId, reviewKey)];
   }
 
   function setNewViewLegacyDestination(workspaceId: string, destination: string): void {
@@ -1830,6 +1899,10 @@ export const useGitUiStore = defineStore("git-ui", () => {
     confirmRemoveWorktreeDeleteBranch,
     confirmForcePushWithLease,
     gitCommitAll,
+    gitStageFile,
+    gitStageHunk,
+    gitUnstageFile,
+    gitCommitStaged,
     gitSelectCommit,
     gitSelectDiff,
     gitSwitchTab,

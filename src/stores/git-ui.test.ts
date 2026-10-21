@@ -56,6 +56,15 @@ describe("git-ui store", () => {
     store.gitSwitchView("ws1", "review", "/repo/a", "profile-b");
     expect(store.getGitView("ws1", "/repo/a", "profile-b")).toBe("review");
     expect(store.getGitView("ws1", "/repo/a", "default")).toBe("history");
+    store.gitSwitchView("ws1", "changes", "/repo/a", "profile-b", "azure:123");
+    expect(store.getGitView("ws1", "/repo/a", "profile-b", "azure:123")).toBe("changes");
+    expect(store.getGitView("ws1", "/repo/a", "profile-b", "github:123")).toBeUndefined();
+  });
+
+  test("index action results preserve structured success instead of depending on a cleared banner", async () => {
+    const store = useGitUiStore();
+    store.init({ gitStageFile: async () => ({ payload: {}, result: { ok: true } }) } as unknown as Transport);
+    expect(await store.gitStageFile("ws1", "a.txt")).toBe(true);
   });
 
   describe("runGitAction payload adoption", () => {

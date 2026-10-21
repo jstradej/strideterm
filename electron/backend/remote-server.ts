@@ -37,6 +37,9 @@ import {
   gitCheckoutRemoteSchema,
   gitCherryPickSchema,
   gitCommitSchema,
+  gitStageFileSchema,
+  gitStageHunkSchema,
+  gitCommitStagedSchema,
   gitLogGraphSchema,
   gitPayloadSchema,
   gitRemoteBranchDeleteSchema,
@@ -3613,6 +3616,14 @@ export async function startRemoteServer({
     "/api/git/remove-worktree": (body, windowId) => runtime.gitRemoveWorktree(body, windowId),
     "/api/git/commit-all": (body, windowId) =>
       runtime.gitCommitAll(validateIpc(gitCommitSchema, body, "POST /api/git/commit-all"), windowId),
+    "/api/git/stage-file": (body, windowId) =>
+      runtime.gitStageFile(validateIpc(gitStageFileSchema, body, "POST /api/git/stage-file"), windowId),
+    "/api/git/stage-hunk": (body, windowId) =>
+      runtime.gitStageHunk(validateIpc(gitStageHunkSchema, body, "POST /api/git/stage-hunk"), windowId),
+    "/api/git/unstage-file": (body, windowId) =>
+      runtime.gitUnstageFile(validateIpc(gitStageFileSchema, body, "POST /api/git/unstage-file"), windowId),
+    "/api/git/commit-staged": (body, windowId) =>
+      runtime.gitCommitStaged(validateIpc(gitCommitStagedSchema, body, "POST /api/git/commit-staged"), windowId),
     // Validate the same way the Electron IPC handlers do (ipc.ts) and the
     // branch routes below: this slot-aware map is the LIVE remote path for
     // stash ops (it intercepts before handleApiRequest), so without these

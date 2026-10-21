@@ -327,6 +327,7 @@
           :operation="operation"
           :active-root-path="activeRootPath"
           :is-detached-head="isDetachedHead"
+          :new-view="useNewGitView"
         />
 
         <!-- ===== Stashes tab ===== -->
@@ -350,11 +351,7 @@
 
         <!-- ===== Pull Request tab ===== -->
         <GitPullRequestTab
-          v-else-if="
-            (!useNewGitView && activeTab === 'pr') ||
-            (useNewGitView && activeGitView === 'review' && reviewLink) ||
-            (useNewGitView && activeLegacyDestination === 'pr')
-          "
+          v-else-if="(!useNewGitView && activeTab === 'pr') || (useNewGitView && activeLegacyDestination === 'pr')"
           :workspace-id="workspaceId"
           :snapshot="snapshot"
           :git-ui="gitUi"
@@ -376,6 +373,7 @@
             one.
           </p>
           <button type="button" class="button button--ghost" @click="openLegacyPrTool">Open pull request tools</button>
+          <button v-if="reviewLink" type="button" class="button" @click="openProviderReview">Open PR review</button>
         </section>
 
         <!-- ===== Worktrees tab ===== -->
@@ -588,10 +586,22 @@ const activeTab = computed(() => {
 
 const useNewGitView = computed(() => appStore.payload?.appState?.settings?.git?.ui?.newView === true);
 const activeGitView = computed(() => {
-  const saved = gitUiStore.getGitView(props.workspaceId, activeRootPath.value, workspace.value?.profileId || "default");
+  const saved = gitUiStore.getGitView(
+    props.workspaceId,
+    activeRootPath.value,
+    workspace.value?.profileId || "default",
+    String(workspace.value?.review?.prKey || ""),
+  );
   if (saved) return saved;
-  const preferred = reviewLink.value ? "review" : snapshot.value?.dirty ? "changes" : "history";
-  gitUiStore.gitSwitchView(props.workspaceId, preferred, activeRootPath.value, workspace.value?.profileId || "default");
+  const preferred =
+    workspace.value?.kind === "review" || reviewLink.value ? "review" : snapshot.value?.dirty ? "changes" : "history";
+  gitUiStore.gitSwitchView(
+    props.workspaceId,
+    preferred,
+    activeRootPath.value,
+    workspace.value?.profileId || "default",
+    String(workspace.value?.review?.prKey || ""),
+  );
   return preferred;
 });
 const newGitViews = [
@@ -608,7 +618,28 @@ function onLegacyDestinationChange(event: Event) {
 
 function selectNewView(view: "history" | "changes" | "review") {
   gitUiStore.setNewViewLegacyDestination(props.workspaceId, "");
-  gitUiStore.gitSwitchView(props.workspaceId, view, activeRootPath.value, workspace.value?.profileId || "default");
+  gitUiStore.gitSwitchView(
+    props.workspaceId,
+    view,
+    activeRootPath.value,
+    workspace.value?.profileId || "default",
+    String(workspace.value?.review?.prKey || ""),
+  );
+}
+
+function openProviderReview() {
+  const link = reviewLink.value;
+  if (!link) return;
+  const candidate = appStore.filteredWorkspaces.find(
+    (ws) =>
+      ws.review?.prKey === workspace.value?.review?.prKey &&
+      (ws.kind === "review" || ws.kind === "azure" || ws.kind === "github"),
+  );
+  if (candidate) {
+    void appStore.activateWorkspace(candidate.id);
+    return;
+  }
+  openLegacyPrTool();
 }
 
 function openLegacyPrTool() {

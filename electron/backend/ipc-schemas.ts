@@ -317,6 +317,31 @@ export const gitDiffPreviewSchema = z.object({
 });
 export type GitDiffPreview = z.infer<typeof gitDiffPreviewSchema>;
 
+export const gitStageFileSchema = z.object({
+  workspaceId: nonEmptyString,
+  rootPath: z.string().optional(),
+  path: z
+    .string()
+    .min(1)
+    .max(512)
+    .refine((value) => !value.startsWith("-") && !value.startsWith("/")),
+});
+export type GitStageFile = z.infer<typeof gitStageFileSchema>;
+
+export const gitStageHunkSchema = gitStageFileSchema.extend({
+  scope: z.enum(["staged", "unstaged"]).default("unstaged"),
+  diffToken: z.string().regex(/^[a-f0-9]{64}$/),
+  hunk: z.string().min(1).max(2_000_000),
+});
+export type GitStageHunk = z.infer<typeof gitStageHunkSchema>;
+
+export const gitCommitStagedSchema = z.object({
+  workspaceId: nonEmptyString,
+  rootPath: z.string().optional(),
+  message: z.string().trim().min(1).max(10000),
+});
+export type GitCommitStaged = z.infer<typeof gitCommitStagedSchema>;
+
 export const gitCommitSchema = z
   .object({
     workspaceId: nonEmptyString,

@@ -60,6 +60,9 @@ import {
   gitDiffPreviewSchema,
   gitLogPageSchema,
   gitCommitSchema,
+  gitStageFileSchema,
+  gitStageHunkSchema,
+  gitCommitStagedSchema,
   gitTagSchema,
   gitCherryPickSchema,
   gitSquashSchema,
@@ -1779,6 +1782,26 @@ export function registerIpc(
   handle("git:commit-all", async (_event, payload) =>
     withOperationPromise({ opId: "git:commit-all" }, () =>
       runtime.gitCommitAll(validateIpc(gitCommitSchema, payload, "git:commit-all")),
+    ),
+  );
+  handle("git:stage-file", async (_event, payload) =>
+    withOperationPromise({ opId: "git:stage-file" }, () =>
+      runtime.gitStageFile(validateIpc(gitStageFileSchema, payload, "git:stage-file")),
+    ),
+  );
+  handle("git:stage-hunk", async (_event, payload) =>
+    withOperationPromise({ opId: "git:stage-hunk" }, () =>
+      runtime.gitStageHunk(validateIpc(gitStageHunkSchema, payload, "git:stage-hunk")),
+    ),
+  );
+  handle("git:unstage-file", async (_event, payload) =>
+    withOperationPromise({ opId: "git:unstage-file" }, () =>
+      runtime.gitUnstageFile(validateIpc(gitStageFileSchema, payload, "git:unstage-file")),
+    ),
+  );
+  handle("git:commit-staged", async (_event, payload) =>
+    withOperationPromise({ opId: "git:commit-staged" }, () =>
+      runtime.gitCommitStaged(validateIpc(gitCommitStagedSchema, payload, "git:commit-staged")),
     ),
   );
   handle("git:stash", async (_event, payload) => {

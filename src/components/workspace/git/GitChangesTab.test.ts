@@ -181,7 +181,8 @@ describe("GitChangesTab", () => {
   });
 
   test("replaces actual NUL-byte diff content with the binary notice before rendering Monaco", async () => {
-    fakeApi.fileGitDiff = vi.fn(async () => ({
+    fakeApi.gitDiffPreview = vi.fn(async () => ({
+      diff: "",
       ok: true,
       leftContent: "source\0binary-data",
       rightContent: "changed\0binary-data",
@@ -200,11 +201,11 @@ describe("GitChangesTab", () => {
     });
     await flushPromises();
 
-    expect(fakeApi.fileGitDiff).toHaveBeenCalledWith({
+    expect(fakeApi.gitDiffPreview).toHaveBeenCalledWith({
+      workspaceId: "ws1",
       rootPath: "/repo",
-      relativePath: "image.bin",
-      source: "head",
-      revisionRef: "",
+      path: "image.bin",
+      scope: "unstaged",
     });
     expect(
       monacoPayloads.mock.calls.some(

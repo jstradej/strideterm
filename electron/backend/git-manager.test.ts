@@ -3939,4 +3939,63 @@ describe("GitManager", () => {
       await fs.rm(path.join(root, ".git", "index.lock"), { force: true });
     });
   });
+
+  describe.skipIf(!GIT_AVAILABLE)("index operations — real git fixture round-trip", () => {
+    const mgr = new GitManager({});
+    const rg = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" });
+    async function initRepo(): Promise<string> {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-index-"));
+      tempPaths.push(root);
+      rg(root, ["init", "-q"]);
+      rg(root, ["config", "user.email", "t@example.com"]);
+      rg(root, ["config", "user.name", "Test"]);
+      rg(root, ["config", "commit.gpgsign", "false"]);
+      await fs.writeFile(path.join(root, "a.txt"), "base\n", "utf8");
+      await fs.writeFile(path.join(root, "b.txt"), "base-b\n", "utf8");
+      rg(root, ["add", "-A"]);
+      rg(root, ["commit", "-q", "-m", "base"]);
+      return root;
+    }
+
+    test("stage and unstage file, then commit only the real index", async () => {
+      const root = await initRepo();
+      const workspace = { id: "ws-index", cwd: root, kind: "terminal" as const };
+      await fs.writeFile(path.join(root, "a.txt"), "staged version\n", "utf8");
+      expect((await mgr.stageFile(workspace, { path: "a.txt" })).ok).toBe(true);
+      await fs.writeFile(path.join(root, "a.txt"), "later worktree version\n", "utf8");
+      await fs.writeFile(path.join(root, "b.txt"), "unstaged unrelated\n", "utf8");
+      expect((await mgr.commitStaged(workspace, { message: "index only" })).ok).toBe(true);
+      expect(rg(root, ["show", "HEAD:a.txt"]).trim()).toBe("staged version");
+      expect(rg(root, ["show", "HEAD:b.txt"]).trim()).toBe("base-b");
+      expect(rg(root, ["diff", "--", "a.txt"]).trim()).not.toBe("");
+      expect(rg(root, ["diff", "--", "b.txt"]).trim()).not.toBe("");
+      expect((await mgr.unstageFile(workspace, { path: "a.txt" })).ok).toBe(true);
+      expect(rg(root, ["diff", "--cached", "--", "a.txt"]).trim()).toBe("");
+    });
+
+    test("empty index and unsafe paths are reported as failures", async () => {
+      const root = await initRepo();
+      const workspace = { id: "ws-index", cwd: root, kind: "terminal" as const };
+      expect((await mgr.commitStaged(workspace, { message: "empty" })).ok).toBe(false);
+      expect((await mgr.stageFile(workspace, { path: "../outside" })).ok).toBe(false);
+      expect((await mgr.stageFile(workspace, { path: "-A" })).ok).toBe(false);
+    });
+
+    test("stages a fresh verified hunk and refuses a stale token", async () => {
+      const root = await initRepo();
+      const workspace = { id: "ws-hunk", cwd: root, kind: "terminal" as const };
+      await fs.writeFile(path.join(root, "a.txt"), "changed\n", "utf8");
+      const preview = await mgr.diffPreview(workspace, { path: "a.txt" });
+      const diff = String(preview.diff);
+      const header = diff.split(/^(?=@@ )/m)[0] || "";
+      const hunk = diff.split(/(?=^@@ )/m).find((part) => part.startsWith("@@ ")) || "";
+      const token = String(preview.diffToken);
+      expect((await mgr.stageHunk(workspace, { path: "a.txt", diffToken: token, hunk: `${header}${hunk}` })).ok).toBe(
+        true,
+      );
+      const stale = await mgr.stageHunk(workspace, { path: "a.txt", diffToken: token, hunk: `${header}${hunk}` });
+      expect(stale.ok).toBe(false);
+      expect(stale.summary).toContain("diff changed");
+    });
+  });
 });

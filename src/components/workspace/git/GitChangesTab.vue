@@ -111,11 +111,41 @@
                   :selected-set="selectedPaths"
                   :grouped="compactChanges"
                   :scope-filter="mobileMode ? activeFilter : 'all'"
+                  :staging-enabled="newView"
+                  :staging-busy="!!gitUi.busyAction || operation.inProgress"
                   @select="onFileSelect"
                   @toggle-select="toggleSelect"
                   @context-menu="onFileContextMenu"
+                  @stage-file="onStageFile"
                 />
-                <div v-if="!mobileMode && snapshot.dirty" class="git-commit-form" style="margin-top: 12px">
+                <div v-if="newView && snapshot.dirty" class="git-commit-form" style="margin-top: 12px">
+                  <input
+                    v-model="stagedCommitMessage"
+                    name="commit-staged-message"
+                    type="text"
+                    placeholder="Commit staged changes"
+                    :disabled="!!gitUi.busyAction || operation.inProgress"
+                    @keydown.enter="onCommitStaged"
+                  />
+                  <button
+                    type="button"
+                    class="button"
+                    :disabled="
+                      !!gitUi.busyAction ||
+                      !stagedCommitMessage.trim() ||
+                      stagedFiles.size === 0 ||
+                      operation.inProgress
+                    "
+                    @click="onCommitStaged"
+                  >
+                    Commit staged ({{ stagedFiles.size }} {{ stagedFiles.size === 1 ? "file" : "files" }})
+                  </button>
+                </div>
+                <div
+                  v-else-if="!newView && !mobileMode && snapshot.dirty"
+                  class="git-commit-form"
+                  style="margin-top: 12px"
+                >
                   <input
                     v-model="commitMessage"
                     name="commit-message"
@@ -227,6 +257,21 @@
                   </div>
                 </div>
                 <div class="git-monaco-host">
+                  <p v-if="newView && gitUi.selectedDiff?.path" class="git-changes__diff-scope">{{ diffLayerLabel }}</p>
+                  <button
+                    v-if="
+                      newView &&
+                      gitUi.selectedDiff?.scope !== 'untracked' &&
+                      gitUi.selectedDiff?.scope !== 'conflict' &&
+                      monacoDiffPayload?.diffToken
+                    "
+                    type="button"
+                    class="button button--ghost button--small"
+                    :disabled="!!gitUi.busyAction || operation.inProgress || monacoDiffLoading"
+                    @click="onStageHunk"
+                  >
+                    Stage first hunk
+                  </button>
                   <MonacoDiffPanel
                     v-if="gitUi.selectedDiff?.path"
                     :payload="monacoDiffPayload"
@@ -267,9 +312,12 @@
               :selected-set="selectedPaths"
               :grouped="true"
               :scope-filter="activeFilter"
+              :staging-enabled="newView"
+              :staging-busy="!!gitUi.busyAction || operation.inProgress"
               @select="onFileSelect"
               @toggle-select="toggleSelect"
               @context-menu="onFileContextMenu"
+              @stage-file="onStageFile"
             />
             <details
               v-if="compactChanges && mobileMode === 'list' && snapshot.dirty"
@@ -463,8 +511,9 @@ const props = withDefaults(
     operation: Record<string, any>;
     activeRootPath?: string;
     isDetachedHead?: boolean;
+    newView?: boolean;
   }>(),
-  { activeRootPath: "", isDetachedHead: false },
+  { activeRootPath: "", isDetachedHead: false, newView: false },
 );
 
 const appStore = useAppStore();
@@ -478,6 +527,7 @@ const mobileLayout = ref<"single" | "split">("single");
 const activeFilter = ref("all");
 const commitBusy = ref(false);
 const commitMessageId = useId();
+const stagedCommitMessage = ref("");
 const commitMessageInput = ref<HTMLTextAreaElement | null>(null);
 const mobileExpandedDirectories = ref<Set<string>>(new Set());
 let resizeObserver: ResizeObserver | null = null;
@@ -497,6 +547,46 @@ const scopeCounts = computed(() => ({
   unstaged: new Set(allChangedFiles.value.filter((file) => file.scope === "unstaged").map((file) => file.path)).size,
   untracked: new Set(allChangedFiles.value.filter((file) => file.scope === "untracked").map((file) => file.path)).size,
 }));
+const stagedFiles = computed(
+  () => new Set(allChangedFiles.value.filter((file) => file.scope === "staged").map((file) => file.path)),
+);
+const diffLayerLabel = computed(() => {
+  const scope = String(props.gitUi.selectedDiff?.scope || "unstaged");
+  if (scope === "staged") return "HEAD → Index";
+  if (scope === "untracked") return "Untracked file · not in Index";
+  return "Index → Working tree";
+});
+function onStageFile(payload: { path: string; staged: boolean; scope: string }) {
+  if (payload.scope === "conflict" || payload.scope === "untracked") return;
+  if (payload.staged) void gitUiStore.gitUnstageFile(props.workspaceId, payload.path);
+  else void gitUiStore.gitStageFile(props.workspaceId, payload.path);
+}
+async function onStageHunk() {
+  const selection = props.gitUi.selectedDiff;
+  const preview = monacoDiffPayload.value as Record<string, unknown> | null;
+  const diff = String(preview?.diff || "");
+  const token = String(preview?.diffToken || "");
+  if (!selection?.path || !token || !diff) return;
+  const hunk = diff.split(/(?=^@@ )/m).find((part) => part.startsWith("@@ ")) || "";
+  if (!hunk) return;
+  const staged = selection.scope === "staged";
+  const ok = await gitUiStore.gitStageHunk(props.workspaceId, {
+    path: selection.path,
+    scope: staged ? "staged" : "unstaged",
+    diffToken: token,
+    hunk: `${String(preview?.diffHeader || "")}${hunk}`,
+  });
+  if (!ok)
+    notifications.showError(
+      "Could not stage hunk",
+      "The diff changed or the selected hunk could not be staged. Refresh the diff and try again.",
+    );
+  else void diffLoader.load(selection.path, selection.scope);
+}
+async function onCommitStaged() {
+  if (!stagedCommitMessage.value.trim()) return;
+  if (await gitUiStore.gitCommitStaged(props.workspaceId, stagedCommitMessage.value)) stagedCommitMessage.value = "";
+}
 
 function updateMobileLayout() {
   if (typeof window === "undefined") return;
@@ -578,11 +668,11 @@ function diffSourceForScope(scope: string) {
 // useMonacoDiffLoader.ts), also used by GitBranchesTab.vue's commit diff.
 const diffLoader = useMonacoDiffLoader(async (path: string, scope: string) => {
   const api = appStore.getApi() as any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: getApi() returns untyped API object
-  const payload = await api.fileGitDiff({
+  const payload = await api.gitDiffPreview({
+    workspaceId: props.workspaceId,
     rootPath: props.activeRootPath,
-    relativePath: path,
-    source: diffSourceForScope(scope),
-    revisionRef: "",
+    path,
+    scope: scope === "staged" ? "staged" : scope === "untracked" ? "untracked" : "unstaged",
   });
   if (payload?.leftContent?.includes("\0") || payload?.rightContent?.includes("\0")) {
     return {
@@ -594,8 +684,36 @@ const diffLoader = useMonacoDiffLoader(async (path: string, scope: string) => {
       rightError: "",
     };
   }
-  return payload;
+  const diff = String(payload?.diff || "");
+  const hunks = diff.split(/(?=^@@ )/m).filter((part: string) => part.startsWith("@@ "));
+  const language = path.split(".").pop() || "plaintext";
+  const [leftContent = "", rightContent = ""] = hunks.length ? parsePatchHunk(hunks[0]) : ["", ""];
+  return {
+    ...payload,
+    leftContent,
+    rightContent,
+    leftError: payload?.ok === false ? String(payload.summary || "Diff unavailable") : "",
+    rightError: "",
+    language,
+    diff,
+    hunks,
+  };
 }, "Failed to load diff");
+
+function parsePatchHunk(hunk: string): [string, string] {
+  const left: string[] = [];
+  const right: string[] = [];
+  for (const line of hunk.split("\n").slice(1)) {
+    if (line.startsWith("\\ No newline")) continue;
+    if (line.startsWith("+")) right.push(line.slice(1));
+    else if (line.startsWith("-")) left.push(line.slice(1));
+    else if (line.startsWith(" ")) {
+      left.push(line.slice(1));
+      right.push(line.slice(1));
+    }
+  }
+  return [left.join("\n"), right.join("\n")];
+}
 const monacoDiffPayload = diffLoader.payload;
 const monacoDiffLoading = diffLoader.loading;
 

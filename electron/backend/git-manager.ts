@@ -1,7 +1,7 @@
 /// <reference types="node" />
 import path from "node:path";
 import os from "node:os";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { existsSync, lstatSync, readdirSync } from "node:fs";
 import { rm as fsRm, readFile as fsReadFile, writeFile as fsWriteFile } from "node:fs/promises";
@@ -93,6 +93,13 @@ const auditLogFailureGate = createIntervalGate(60_000);
 // Hex-only commit hashes (short or full) — also rules out option injection
 // ("-x") since execGit passes args verbatim.
 const COMMIT_HASH_RE = /^[0-9a-f]{4,40}$/i;
+
+function normalizeStagePath(value: string): string {
+  const candidate = String(value || "").replace(/\\/g, "/");
+  if (!candidate || candidate.startsWith("-") || candidate.startsWith("/") || candidate.includes("\0")) return "";
+  const normalized = path.posix.normalize(candidate);
+  return normalized === ".." || normalized.startsWith("../") || normalized === "." ? "" : normalized;
+}
 
 function normalizeCommitHashes(hashes: unknown): string[] {
   return (Array.isArray(hashes) ? hashes : []).map((hash) => String(hash || "").trim()).filter(Boolean);
@@ -275,12 +282,19 @@ export class GitManager extends EventEmitter {
     this.gitAuditLogStore = gitAuditLogStore ?? null;
   }
 
-  async execGit(cwd: string, args: string[], opts: { extraEnv?: Record<string, string> } = {}): Promise<GitExecResult> {
+  async execGit(
+    cwd: string,
+    args: string[],
+    opts: { extraEnv?: Record<string, string>; stdin?: string } = {},
+  ): Promise<GitExecResult> {
     if (this.execGitImpl) {
+      if (opts.stdin !== undefined) {
+        throw new Error("The configured Git runner does not support standard input.");
+      }
       return this.execGitImpl(cwd, args);
     }
     const env = opts.extraEnv ? { ...sanitizeGitEnvironment(), ...opts.extraEnv } : sanitizeGitEnvironment();
-    return execFileText("git", args, { cwd, env });
+    return execFileText("git", args, { cwd, env, ...(opts.stdin === undefined ? {} : { input: opts.stdin }) });
   }
 
   // Login + token for a connection, or null when there is no usable token and
@@ -2120,6 +2134,7 @@ export class GitManager extends EventEmitter {
         scope: normalizedScope,
         path: targetPath,
         diff: preview.diff,
+        diffToken: createHash("sha256").update(preview.diff).digest("hex"),
         summary: preview.summary || (preview.diff ? "" : "No diff output for the selected file."),
       };
     }
@@ -2139,6 +2154,10 @@ export class GitManager extends EventEmitter {
         scope: normalizedScope,
         path: targetPath,
         diff,
+        diffHeader: (result.stdout || "").split(/^(?=@@ )/m)[0] || "",
+        diffToken: createHash("sha256")
+          .update(result.stdout || "")
+          .digest("hex"),
         summary: diff ? "" : "No diff output for the selected file.",
       };
     } catch (error) {
@@ -2148,9 +2167,124 @@ export class GitManager extends EventEmitter {
         scope: normalizedScope,
         path: targetPath,
         diff: trimDiffPreview(err.stdout || err.stderr || ""),
+        diffToken: createHash("sha256")
+          .update(trimDiffPreview(err.stdout || err.stderr || ""))
+          .digest("hex"),
         summary: extractErrorMessage(error),
       };
     }
+  }
+
+  async stageHunk(
+    workspace: WorkspaceRef,
+    {
+      path: filePath,
+      scope = "unstaged",
+      diffToken,
+      hunk,
+      rootPath = "",
+    }: { path: string; scope?: string; diffToken: string; hunk: string; rootPath?: string },
+  ): Promise<Record<string, unknown>> {
+    const normalized = normalizeStagePath(filePath);
+    if (!normalized || !/^[a-f0-9]{64}$/.test(diffToken) || !hunk || hunk.length > 2_000_000) {
+      return createStructuredResult({ ok: false, summary: "Invalid or incomplete hunk staging request." });
+    }
+    if (scope !== "unstaged" && scope !== "staged") {
+      return createStructuredResult({
+        ok: false,
+        summary: "Only staged or unstaged text diffs can be staged by hunk.",
+      });
+    }
+    return this.runWriteAction(workspace, {
+      type: "stage-hunk",
+      label: `Stage hunk in ${normalized}`,
+      allowDirty: true,
+      rootPath,
+      extraAudit: { path: normalized, scope },
+      run: async (cwd) => {
+        const current = await this.execGit(
+          cwd,
+          scope === "staged" ? ["diff", "--cached", "--", normalized] : ["diff", "--", normalized],
+        );
+        if (
+          createHash("sha256")
+            .update(current.stdout || "")
+            .digest("hex") !== diffToken
+        ) {
+          throw new Error("This diff changed after it was loaded. Refresh it and try again.");
+        }
+        const { stdout } = await this.execGit(cwd, ["apply", "--cached", "-"], { stdin: hunk });
+        return { stdout: stdout || `Staged hunk in ${normalized}.`, stderr: "" };
+      },
+    });
+  }
+
+  async stageFile(
+    workspace: WorkspaceRef,
+    { path: filePath, rootPath = "" }: { path: string; rootPath?: string },
+  ): Promise<Record<string, unknown>> {
+    const normalized = normalizeStagePath(filePath);
+    if (!normalized) return createStructuredResult({ ok: false, summary: "Invalid repository-relative file path." });
+    return this.runWriteAction(workspace, {
+      type: "stage-file",
+      label: `Stage ${normalized}`,
+      allowDirty: true,
+      rootPath,
+      extraAudit: { path: normalized },
+      run: (cwd) => this.execGit(cwd, ["add", "--", normalized]),
+    });
+  }
+
+  async unstageFile(
+    workspace: WorkspaceRef,
+    { path: filePath, rootPath = "" }: { path: string; rootPath?: string },
+  ): Promise<Record<string, unknown>> {
+    const normalized = normalizeStagePath(filePath);
+    if (!normalized) return createStructuredResult({ ok: false, summary: "Invalid repository-relative file path." });
+    return this.runWriteAction(workspace, {
+      type: "unstage-file",
+      label: `Unstage ${normalized}`,
+      allowDirty: true,
+      rootPath,
+      extraAudit: { path: normalized },
+      run: async (cwd) => {
+        try {
+          await this.execGit(cwd, ["restore", "--staged", "--", normalized]);
+        } catch {
+          // Initial commits have no HEAD; reset the path from the empty tree via rm --cached.
+          await this.execGit(cwd, ["rm", "--cached", "--ignore-unmatch", "--", normalized]);
+        }
+        return { stdout: `Unstaged ${normalized}.`, stderr: "" };
+      },
+    });
+  }
+
+  async commitStaged(
+    workspace: WorkspaceRef,
+    { message, rootPath = "" }: { message: string; rootPath?: string },
+  ): Promise<Record<string, unknown>> {
+    const commitMessage = String(message || "").trim();
+    const cwd = rootPath || workspace.cwd || "";
+    if (!commitMessage) return createStructuredResult({ ok: false, summary: "Commit message is required." });
+    if (!cwd) return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
+    return this.runWriteAction(workspace, {
+      type: "commit-staged",
+      label: "Commit staged changes",
+      allowDirty: true,
+      rootPath,
+      extraAudit: { stagedOnly: true },
+      run: async (effectiveCwd) => {
+        try {
+          await this.execGit(effectiveCwd, ["diff", "--cached", "--quiet"]);
+          throw new Error("There are no staged changes to commit.");
+        } catch (error) {
+          if (error instanceof Error && error.message === "There are no staged changes to commit.") throw error;
+          if ((error as { exitCode?: number }).exitCode !== 1) throw error;
+        }
+        const result = await this.execGit(effectiveCwd, ["commit", "-m", commitMessage]);
+        return result;
+      },
+    });
   }
 
   async logPage(
@@ -2532,7 +2666,9 @@ export class GitManager extends EventEmitter {
         ok: false,
         summary: hasConflictState
           ? `${label} stopped because Git reported conflicts or requires manual resolution.`
-          : `${label} failed.`,
+          : type === "stage-hunk"
+            ? `${label} failed: ${extractErrorMessage(error)}`
+            : `${label} failed.`,
         warnings,
         conflicts: opState.conflicts,
         rawOutput: joinRawOutput(stashOutput, err.stdout, err.stderr, restoreOutput),

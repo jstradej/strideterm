@@ -16,6 +16,9 @@ import {
   gitDiffPreviewSchema,
   gitLogPageSchema,
   gitLogGraphSchema,
+  gitStageFileSchema,
+  gitStageHunkSchema,
+  gitCommitStagedSchema,
   settingsSchema,
   gitRemoteBranchDeleteSchema,
   terminalResizeSchema,
@@ -37,6 +40,21 @@ import {
 } from "./ipc-schemas.js";
 
 describe("ipc-schemas", () => {
+  test("validates stage-file paths and non-empty commit-staged messages", () => {
+    expect(validateIpc(gitStageFileSchema, { workspaceId: "ws", path: "src/a.ts" }, "git:stage-file")).toMatchObject({
+      workspaceId: "ws",
+      path: "src/a.ts",
+    });
+    for (const path of ["-A", "/absolute", ""]) {
+      expect(() => validateIpc(gitStageFileSchema, { workspaceId: "ws", path }, "git:stage-file")).toThrow();
+    }
+    expect(() =>
+      validateIpc(gitCommitStagedSchema, { workspaceId: "ws", message: "  " }, "git:commit-staged"),
+    ).toThrow();
+    expect(() =>
+      validateIpc(gitStageHunkSchema, { workspaceId: "ws", path: "a", diffToken: "bad", hunk: "@@" }, "git:stage-hunk"),
+    ).toThrow();
+  });
   test("validates the opt-in new Git view while preserving partial UI settings", () => {
     expect(validateIpc(settingsSchema, { git: { ui: { newView: true } } }, "settings:update")).toMatchObject({
       git: { ui: { newView: true } },

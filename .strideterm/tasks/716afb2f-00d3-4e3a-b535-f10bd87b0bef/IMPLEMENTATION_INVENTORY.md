@@ -11,9 +11,9 @@ This task snapshot is the working contract for the opt-in Git layout. The first 
 | Stashes and worktrees | Stashes and Worktrees tabs; Overview worktree actions | More → Stashes / Worktrees / Overview | Existing handlers remain available. |
 | Conflicts | Conditional Conflicts tab and operation card | More → Conflicts; operation card stays pane level | Conflict visibility continues to depend on current operation state. |
 | Multi-root/bulk | Root picker and Bulk tab | Shared root picker; More → Bulk | Uses current per-root store methods. |
-| PR/provider actions, review comments and drafts | Pull Request tab, provider review panes/stores | Review → existing PR surface only when linked; More retains PR tools. Unlinked Review shows a non-mutating explanatory empty state. | Reuses provider actions and draft stores. No viewed/unreviewed state is invented. |
+| PR/provider actions, review comments and drafts | Pull Request tab, provider review panes/stores | Review shows an explicit handoff to the linked provider review workspace when available; More retains PR tools. Unlinked Review explains the missing link. | Provider review pane owns comment/draft state and must stay keyed to its provider workspace. No viewed/unreviewed state is invented. |
 | External lazygit | Shared toolbar | Shared toolbar | Existing detection and action remain. |
-| Stage/unstage file or hunk; commit staged | No supported ordinary Git pane API found. Existing `gitCommitAll` commits selected paths with its own preservation semantics. | Not added | Must not be represented as commit staged until a backend operation uses the real index and common write lock/audit wrapper. |
+| Stage/unstage file or hunk; commit staged | New `git-ui` methods → validated Electron/remote IPC → runtime mutation wrapper → GitManager write lock/audit. Hunk uses backend diff token checked under lock. | New Changes view offers file stage/unstage, first text hunk, and commit staged. Classic keeps selected-path commit. | `git commit` reads existing index only. Hunk stale changes fail with an explicit error. Untracked/binary/conflict hunk staging is unavailable. |
 
 ## Client/context matrix
 
@@ -27,10 +27,11 @@ The picker currently shares the legacy branch-history component/data path. It do
 
 ## Explicit gaps against the plan
 
-- Review is still the existing Pull Request surface, not a new dominant PR diff layout with a compact file navigator.
-- Changes is still the current changes tab; index-safe stage/unstage and commit-staged APIs do not exist.
+- Review is a handoff to the existing provider review workspace, not yet a dominant PR diff layout within GitPane. Workspace-level PR-link metadata alone does not identify the provider-owned comment/draft session.
+- Changes still uses the existing two-pane changes layout and exposes the first verified text hunk rather than a per-hunk selector. Additional multi-hunk, rename/delete and untracked staging coverage remains.
 - Generic `OperationRegistry` is used for durable task/workspace creation and has no compatible Git action idempotency or running-result consumer contract. Existing fetch/pull/push handlers still await completion on remote routes.
-- Current compact ref selector is a native accessible select plus search. Favorites, recent refs, full commit message/layout refinements and a profile/root-specific history preference store remain unimplemented.
-- Existing view state is workspace-keyed. Profile/root scoping and stale in-flight query cancellation require a broader store-key/data-request change.
+- Current compact ref selector is a native accessible select plus search. Favorites, recent refs, full commit message/layout refinements and persisted profile/root/PR view preferences remain unimplemented.
+- New view state is keyed in the workspace store by profile/workspace/root/PR, but it is not durable across app restarts. Legacy destination and graph data are still workspace-keyed; stale graph query guards remain unimplemented.
+- Broad lint reports four existing repo errors outside this change. Focused ESLint and Prettier checks on changed files pass. Repo-wide typecheck reports unrelated existing test typing failures.
 
 These are not completed acceptance items. They remain visible here for the independent judge and next implementation pass.

@@ -238,6 +238,44 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
       return runGitWorkspaceMutation(workspace, git.commitAll(workspace, { ...payload, rootPath }), windowId);
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitStageFile(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return runGitWorkspaceMutation(workspace, git.stageFile(workspace, { path: payload.path, rootPath }), windowId);
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitStageHunk(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return runGitWorkspaceMutation(
+        workspace,
+        git.stageHunk(workspace, {
+          path: payload.path,
+          scope: payload.scope,
+          diffToken: payload.diffToken,
+          hunk: payload.hunk,
+          rootPath,
+        }),
+        windowId,
+      );
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitUnstageFile(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return runGitWorkspaceMutation(workspace, git.unstageFile(workspace, { path: payload.path, rootPath }), windowId);
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitCommitStaged(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return runGitWorkspaceMutation(
+        workspace,
+        git.commitStaged(workspace, { message: payload.message, rootPath }),
+        windowId,
+      );
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitStash(payload: any = {}, windowId?: string) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
       const rootPath = resolveRootPath(workspace, payload.rootPath);

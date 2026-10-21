@@ -630,6 +630,17 @@ export interface StridetermAPI {
   gitMergeCurrentIntoBase: (payload: GitPayload) => Promise<unknown>;
   gitRemoveWorktree: (payload: RemoveWorktree) => Promise<unknown>;
   gitCommitAll: (payload: GitCommit) => Promise<unknown>;
+  gitStageFile: (payload: { workspaceId: string; rootPath?: string; path: string }) => Promise<unknown>;
+  gitStageHunk: (payload: {
+    workspaceId: string;
+    rootPath?: string;
+    path: string;
+    scope: "staged" | "unstaged";
+    diffToken: string;
+    hunk: string;
+  }) => Promise<unknown>;
+  gitUnstageFile: (payload: { workspaceId: string; rootPath?: string; path: string }) => Promise<unknown>;
+  gitCommitStaged: (payload: { workspaceId: string; rootPath?: string; message: string }) => Promise<unknown>;
   gitStash: (payload: GitPayload) => Promise<unknown>;
   gitStashPop: (payload: GitPayload & { ref?: string }) => Promise<unknown>;
   gitListStashes: (payload: GitStashList) => Promise<unknown>;
