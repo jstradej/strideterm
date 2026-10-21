@@ -677,3 +677,10 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 ## Worker continuation (`empty ref load completion`)
 
 - The stale-ref watcher now observes branch/tag loading and tag-error state as well as ref names. A completed successful fetch that returns the same empty lists now rechecks and prunes a stale selection; pending reads and failed tag reads still preserve it. Added a component regression for the pending → successful empty transition. `GitBranchesTab.test.ts` passes 16 tests; repository typecheck, touched-file Prettier/ESLint and `git diff --check` pass. WORK_LOCK remains because user visual review and other lifecycle/audit items are open.
+
+## Worker continuation verification refresh (2026-10-21, ref loading)
+
+- `npm run test:ui`: PASS, 214 files / 3,049 tests after selected-ref loading/error-state changes.
+- `npm run typecheck`: PASS after those changes. `$env:VITE_BUILD_WATCH='1'; npm run build`: PASS, including renderer, backend, preload, and shell integration copy. Existing chunk-size warnings remain.
+- Backend source has not changed since the last full stable run: 224 files / 5,465 passed / 7 skipped with four workers. No app or dev server was launched.
+- The manual `dev.ps1` walkthrough and broad reconnect/audit/accessibility acceptance remain open; WORK_LOCK remains.
