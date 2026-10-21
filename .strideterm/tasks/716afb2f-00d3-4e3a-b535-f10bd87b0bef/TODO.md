@@ -164,3 +164,4 @@
 - [x] Preserve warnings from a successful fetch-first phase when merge/rebase subsequently fails; focused runtime regression passes.
 - [x] Reuse profile/workspace/action/proposal-scoped idempotency keys for Review Git starts when a start response is lost, preventing an explicit retry from launching a duplicate provider Git write.
 - [x] Re-key History commit-file reads by repository root even when the selected hash is unchanged, and invalidate in-flight commit diffs when the root changes.
+- [x] Re-run the selected History graph query on root changes even when the saved ref string is identical.
