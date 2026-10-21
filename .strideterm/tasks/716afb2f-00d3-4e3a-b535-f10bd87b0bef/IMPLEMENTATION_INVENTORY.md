@@ -27,6 +27,8 @@ The picker currently shares the legacy branch-history component/data path. Favor
 
 The narrow Changes diff also provides the layer label, stage/unstage file and hunk actions, and Commit staged. These controls use the same store APIs as desktop Changes.
 
+The shared Git toolbar includes a keyboard-focusable native Details disclosure for the complete active repository path and working branch. The compact branch chip remains unchanged; long paths wrap inside the disclosure panel.
+
 ## Remaining verification boundaries
 
 - Human visual verification remains with the user: the plan explicitly keeps Electron and the dev server out of agent verification. No app process has been launched.

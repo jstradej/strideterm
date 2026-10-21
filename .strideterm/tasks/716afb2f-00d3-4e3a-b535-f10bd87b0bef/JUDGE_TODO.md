@@ -69,7 +69,8 @@ Full per-requirement ledger (122 items)
 
 9. **PARTIAL** — Compact common header shows root/repository, actual branch/status/actions and makes full long paths/refs keyboard-accessible.
    Evidence: src/components/workspace/GitPane.vue:72,75,114,1112; src/components/workspace/git/GitChangesTab.vue:32.
-   Remaining: Existing header reused; full branch/ref details are not exposed through a focusable detail control, and long-name/narrow behavior lacks the required verification.
+   Evidence: The shared Git header now exposes a native keyboard-focusable Details disclosure with the full active repository path and working branch; a mounted regression verifies a long path is not truncated in the details content.
+   Remaining: User visual verification of long names and narrow layout remains pending.
 
 10. **PARTIAL** — Running operations and conflicts remain visible across views; primary conflict action is outside overflow.
    Evidence: src/components/workspace/GitPane.vue:105,108,245,348,418; src/components/workspace/git/GitBranchesTab.vue:205; src/components/workspace/git/GitOperationCard.vue:36.
@@ -812,3 +813,8 @@ Verification after the Review operation-card fix: `npm run test:ui -- src/compon
 
 - Added a compact History regression confirming an unmatched commit search shows a no-match status, then a graph read failure suppresses that empty-result message and shows the query error. `GitBranchesTab.test.ts` passes 18 tests; repository typecheck, touched-file Prettier, ESLint (0 errors; one existing warning), and `git diff --check` pass. This updates requirement 22's error/empty-state evidence.
 - Path-filter file history, keyboard/narrow human review, broader route and reconnect audits, and the user walkthrough remain open; WORK_LOCK stays.
+
+## Worker continuation (full Git header details)
+
+- Added a native `<details>` control to the shared Git toolbar. Keyboard users can reveal the full active root path and working branch; long paths wrap within the disclosure. The mounted GitPane regression verifies the disclosure content for a long root. Focused GitPane test and repository typecheck pass; touched-file Prettier passes; ESLint reports 0 errors and 4 existing warnings; `git diff --check` passes.
+- Requirement 9 still needs human narrow-layout review. Route/menu inventory, reconnect, and other scoped lifecycle requirements also remain open. WORK_LOCK stays.
