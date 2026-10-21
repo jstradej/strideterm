@@ -71,3 +71,4 @@
 - [x] Route remote tag push, push-all-tags and remote tag deletion through the generic long-operation registry; validate remote payloads and verify operation deduplication.
 - [x] Scope compact History ref/search state by profile/workspace/root, skip its hidden mobile branch-tree step, and prevent post-action diff refreshes from crossing repository roots.
 - [x] Re-run full UI/backend suites, typecheck, lint/Prettier and the safe production build after this continuation; see JUDGE_TODO for results and remaining user/manual acceptance.
+- [x] Reconcile the action inventory with current generic operation paths, guarded remote routes, scoped History state, and current healthy-check results; mobile route-policy suite passes all 50 cases.
