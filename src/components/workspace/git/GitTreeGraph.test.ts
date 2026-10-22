@@ -1,4 +1,5 @@
-import { describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test } from "vitest";
+import { nextTick } from "vue";
 import { mount } from "@vue/test-utils";
 import GitTreeGraph from "./GitTreeGraph.vue";
 import Spinner from "../../common/Spinner.vue";
@@ -365,6 +366,63 @@ describe("GitTreeGraph", () => {
       }
       expect(w.find(".git-tree__ref--filled").exists()).toBe(false);
       expect(w.findAll("svg circle").every((c) => c.attributes("fill") !== "var(--panel)")).toBe(true);
+    });
+  });
+
+  describe("history column resizing", () => {
+    const KEY = "strideterm:git-history:column-widths";
+    beforeEach(() => localStorage.removeItem(KEY));
+    const pointer = (el: Element, type: string, clientX: number) =>
+      el.dispatchEvent(new MouseEvent(type, { clientX, bubbles: true, cancelable: true }));
+    const rowColumns = (w: ReturnType<typeof mountGraph>) =>
+      (w.get(".git-tree__row").element as HTMLElement).style.gridTemplateColumns;
+
+    test("history mode renders the header with three handles; legacy mode has none", () => {
+      const w = mountGraph({ history: true });
+      expect(w.find(".git-tree__history-header").exists()).toBe(true);
+      const handles = w.findAll(".git-tree__col-resizer");
+      expect(handles.map((h) => h.attributes("aria-label"))).toEqual([
+        "Resize Author column",
+        "Resize Date column",
+        "Resize Hash column",
+      ]);
+      expect(handles[0].attributes("role")).toBe("separator");
+      expect(rowColumns(w)).toBe("minmax(0, 1fr) 140px 84px 58px");
+      expect(mountGraph({ history: false }).find(".git-tree__history-header").exists()).toBe(false);
+    });
+
+    test("dragging a handle resizes the column and persists the width", async () => {
+      const w = mountGraph({ history: true });
+      const handle = w.findAll(".git-tree__col-resizer")[0];
+      pointer(handle.element, "pointerdown", 500);
+      pointer(handle.element, "pointermove", 460);
+      await nextTick();
+      expect(rowColumns(w)).toBe("minmax(0, 1fr) 180px 84px 58px");
+      pointer(handle.element, "pointerup", 460);
+      expect(JSON.parse(localStorage.getItem(KEY)!)).toEqual({ author: 180, date: 84, hash: 58 });
+      pointer(handle.element, "pointermove", 0);
+      await nextTick();
+      expect(rowColumns(w)).toBe("minmax(0, 1fr) 180px 84px 58px");
+    });
+
+    test("keyboard resizes by 8px (ArrowLeft widens, the handle sits on the left edge), Home and double-click reset", async () => {
+      const w = mountGraph({ history: true });
+      const handle = w.findAll(".git-tree__col-resizer")[1];
+      await handle.trigger("keydown", { key: "ArrowLeft" });
+      expect(rowColumns(w)).toBe("minmax(0, 1fr) 140px 92px 58px");
+      await handle.trigger("keydown", { key: "ArrowRight" });
+      await handle.trigger("keydown", { key: "ArrowRight" });
+      expect(rowColumns(w)).toBe("minmax(0, 1fr) 140px 76px 58px");
+      await handle.trigger("keydown", { key: "Home" });
+      expect(rowColumns(w)).toBe("minmax(0, 1fr) 140px 84px 58px");
+      await handle.trigger("keydown", { key: "ArrowLeft" });
+      await handle.trigger("dblclick");
+      expect(rowColumns(w)).toBe("minmax(0, 1fr) 140px 84px 58px");
+    });
+
+    test("restores stored widths", () => {
+      localStorage.setItem(KEY, JSON.stringify({ author: 200, date: 1, hash: 70 }));
+      expect(rowColumns(mountGraph({ history: true }))).toBe("minmax(0, 1fr) 200px 40px 70px");
     });
   });
 });

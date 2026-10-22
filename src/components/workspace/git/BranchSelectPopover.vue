@@ -585,10 +585,10 @@ defineExpose({ focus: (): void => buttonRef.value?.focus() });
   z-index: 10050;
   display: flex;
   flex-direction: column;
-  background: var(--panel-elevated, #1d2026);
-  border: 1px solid var(--border);
+  background: var(--menu-bg);
+  border: 1px solid rgba(var(--tint), 0.16);
   border-radius: 4px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--menu-shadow);
   font-size: 12px;
   overflow: hidden;
 }

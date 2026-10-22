@@ -30,6 +30,32 @@
         <!-- The viewport holds the row container; the SVG is absolutely
              positioned over the leftmost column so lines align with each
              row's vertical center. -->
+        <div
+          v-if="showHistoryHeader"
+          class="git-tree__history-header"
+          :style="{ gridTemplateColumns: historyColumns, paddingLeft: `${graphWidth + 4}px` }"
+        >
+          <span class="git-tree__history-hcell">Subject</span>
+          <span v-for="col in RESIZABLE_COLUMNS" :key="col.key" class="git-tree__history-hcell">
+            <span
+              class="git-tree__col-resizer"
+              role="separator"
+              aria-orientation="vertical"
+              :aria-label="`Resize ${col.label} column`"
+              :aria-valuenow="columnWidths[col.key]"
+              :aria-valuemin="COLUMN_MIN"
+              :aria-valuemax="COLUMN_MAX"
+              tabindex="0"
+              @pointerdown="onResizeStart($event, col.key)"
+              @pointermove="onResizeMove($event, col.key)"
+              @pointerup="onResizeEnd($event)"
+              @pointercancel="onResizeEnd($event)"
+              @dblclick.stop="resetColumn(col.key)"
+              @keydown="onResizerKeydown($event, col.key)"
+            ></span>
+            {{ col.label }}
+          </span>
+        </div>
         <div class="git-tree__viewport" :style="{ minHeight: `${nodes.length * ROW_HEIGHT}px` }">
           <!--
             SVG paints lanes + edges + dots; rows on top are normal DOM
@@ -110,6 +136,7 @@
               top: `${node.y}px`,
               height: `${ROW_HEIGHT}px`,
               paddingLeft: `${graphWidth + 4}px`,
+              gridTemplateColumns: showHistoryHeader ? historyColumns : undefined,
               borderLeftColor: node.hash === selectedHash ? laneColor(node.lane) : 'transparent',
             }"
             role="treeitem"
@@ -700,6 +727,100 @@ function isLocalOnly(hash: string): boolean {
 
 const scrollRef = ref<HTMLElement | null>(null);
 
+type ResizableColumn = "author" | "date" | "hash";
+const RESIZABLE_COLUMNS: { key: ResizableColumn; label: string }[] = [
+  { key: "author", label: "Author" },
+  { key: "date", label: "Date" },
+  { key: "hash", label: "Hash" },
+];
+const DEFAULT_COLUMN_WIDTHS: Record<ResizableColumn, number> = { author: 140, date: 84, hash: 58 };
+const COLUMN_MIN = 40;
+const COLUMN_MAX = 400;
+const COLUMN_STEP = 8;
+const COLUMN_WIDTHS_KEY = "strideterm:git-history:column-widths";
+const HISTORY_HEADER_HEIGHT = 20;
+
+function clampWidth(value: number): number {
+  return Math.min(COLUMN_MAX, Math.max(COLUMN_MIN, Math.round(value)));
+}
+
+function loadColumnWidths(): Record<ResizableColumn, number> {
+  const widths = { ...DEFAULT_COLUMN_WIDTHS };
+  try {
+    const stored = JSON.parse(localStorage.getItem(COLUMN_WIDTHS_KEY) ?? "null");
+    for (const { key } of RESIZABLE_COLUMNS) {
+      if (typeof stored?.[key] === "number" && Number.isFinite(stored[key])) widths[key] = clampWidth(stored[key]);
+    }
+  } catch {
+    // unreadable storage: keep the defaults
+  }
+  return widths;
+}
+
+function saveColumnWidths(): void {
+  try {
+    localStorage.setItem(COLUMN_WIDTHS_KEY, JSON.stringify(columnWidths.value));
+  } catch {
+    // storage unavailable: widths last for this session only
+  }
+}
+
+const columnWidths = ref(loadColumnWidths());
+const showHistoryHeader = computed(() => props.history && !props.compact);
+const historyColumns = computed(
+  () => `minmax(0, 1fr) ${columnWidths.value.author}px ${columnWidths.value.date}px ${columnWidths.value.hash}px`,
+);
+
+let resizeDrag: { startX: number; startWidth: number } | null = null;
+
+function onResizeStart(e: PointerEvent, key: ResizableColumn): void {
+  e.preventDefault();
+  resizeDrag = { startX: e.clientX, startWidth: columnWidths.value[key] };
+  try {
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+  } catch {
+    // capture is an optimisation: events still arrive while the pointer is over the handle
+  }
+}
+
+function onResizeMove(e: PointerEvent, key: ResizableColumn): void {
+  if (!resizeDrag) return;
+  columnWidths.value = {
+    ...columnWidths.value,
+    [key]: clampWidth(resizeDrag.startWidth + resizeDrag.startX - e.clientX),
+  };
+}
+
+function onResizeEnd(e: PointerEvent): void {
+  if (!resizeDrag) return;
+  resizeDrag = null;
+  try {
+    (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+  } catch {
+    // already released
+  }
+  saveColumnWidths();
+}
+
+function resetColumn(key: ResizableColumn): void {
+  columnWidths.value = { ...columnWidths.value, [key]: DEFAULT_COLUMN_WIDTHS[key] };
+  saveColumnWidths();
+}
+
+function onResizerKeydown(e: KeyboardEvent, key: ResizableColumn): void {
+  if (e.key === "Home") {
+    e.preventDefault();
+    e.stopPropagation();
+    resetColumn(key);
+  } else if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+    e.preventDefault();
+    e.stopPropagation();
+    const delta = e.key === "ArrowLeft" ? COLUMN_STEP : -COLUMN_STEP;
+    columnWidths.value = { ...columnWidths.value, [key]: clampWidth(columnWidths.value[key] + delta) };
+    saveColumnWidths();
+  }
+}
+
 function rowTooltip(node: GraphNode): string {
   let tip = `${node.shortHash} — ${node.subject}\n${node.author} • ${node.relativeDate}${
     node.refs.length ? `\n${node.refs.map((r) => r.label).join(", ")}` : ""
@@ -773,9 +894,10 @@ watch(
     if (!hash || !scrollRef.value) return;
     const idx = nodes.value.findIndex((n) => n.hash === hash);
     if (idx < 0) return;
-    const top = idx * ROW_HEIGHT;
+    const headerHeight = showHistoryHeader.value ? HISTORY_HEADER_HEIGHT : 0;
+    const top = idx * ROW_HEIGHT + headerHeight;
     const el = scrollRef.value;
-    if (top < el.scrollTop || top + ROW_HEIGHT > el.scrollTop + el.clientHeight) {
+    if (top < el.scrollTop + headerHeight || top + ROW_HEIGHT > el.scrollTop + el.clientHeight) {
       el.scrollTo({ top: Math.max(0, top - ROW_HEIGHT * 3), behavior: "smooth" });
     }
   },
@@ -970,6 +1092,56 @@ watch(
 .git-tree__ref--tag {
   background: rgba(170, 95, 200, 0.22);
   color: #d09fd9;
+}
+
+.git-tree__history-header {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: grid;
+  gap: 10px;
+  align-items: center;
+  height: 20px;
+  padding-right: 10px;
+  border-left: 2px solid transparent;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface, var(--panel));
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.git-tree__history-hcell {
+  position: relative;
+  min-width: 0;
+  overflow: visible;
+}
+
+.git-tree__col-resizer {
+  position: absolute;
+  top: -10px;
+  bottom: -10px;
+  left: -8px;
+  width: 6px;
+  height: 20px;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+
+.git-tree__col-resizer::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 2px;
+  width: 1px;
+  background: var(--border);
+}
+
+.git-tree__col-resizer:hover::after,
+.git-tree__col-resizer:focus-visible::after {
+  background: var(--accent);
 }
 
 .git-tree--history .git-tree__row {

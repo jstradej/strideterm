@@ -115,6 +115,14 @@ const mountedWrappers: VueWrapper<any>[] = [];
 const menuItems = () => Array.from(document.body.querySelectorAll<HTMLElement>('[role="menuitem"]'));
 const optionRows = () => Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]'));
 
+async function addCompactPath(path: string) {
+  const input = document.body.querySelector<HTMLInputElement>('input[aria-label="Add path filter"]')!;
+  input.value = path;
+  input.dispatchEvent(new Event("input"));
+  input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  await flushPromises();
+}
+
 async function chooseHistoryRef(button: { trigger: (event: string) => Promise<void> }, name: string) {
   await button.trigger("click");
   const direct = menuItems().find((item) =>
@@ -225,14 +233,12 @@ describe("GitBranchesTab compact history picker", () => {
     });
     mountedWrappers.push(picker);
     await picker.get(".git-branches__paths-button").trigger("click");
-    const pathInput = picker.get('input[placeholder="+ path…"]');
-    await pathInput.setValue("src/app.ts");
-    await pathInput.trigger("keydown.enter");
+    await addCompactPath("src/app.ts");
     await vi.advanceTimersByTimeAsync(500);
     await flushPromises();
 
     expect(gitLoadGraph).toHaveBeenLastCalledWith("ws1", expect.objectContaining({ paths: ["src/app.ts"] }));
-    expect(picker.text()).toContain("src/app.ts");
+    expect(document.body.textContent).toContain("src/app.ts");
     picker.unmount();
     vi.useRealTimers();
   });
@@ -422,13 +428,19 @@ describe("GitBranchesTab compact history picker", () => {
       },
     ];
     await flushPromises();
-    const filterRow = picker.get(".git-branches__filters");
-    const authorSelect = filterRow
-      .findAllComponents(CustomSelect)
-      .find((select: VueWrapper) => select.classes().includes("git-branches__cselect--user"));
-    expect(authorSelect).toBeTruthy();
-    expect(authorSelect!.props("options")).toContainEqual({ value: "Ada Example", label: "Ada Example" });
-    authorSelect!.vm.$emit("update:modelValue", "Ada Example");
+    await picker.get(".git-branches__user-button").trigger("click");
+    const menuRows = () => Array.from(document.body.querySelectorAll<HTMLElement>(".git-history-menu__row"));
+    menuRows()
+      .find((r) => r.textContent?.includes("Select…"))!
+      .click();
+    await flushPromises();
+    const search = document.body.querySelector<HTMLInputElement>('input[aria-label="Search authors"]')!;
+    search.value = "Ada";
+    search.dispatchEvent(new Event("input"));
+    await flushPromises();
+    menuRows()
+      .find((r) => r.textContent?.includes("Ada Example"))!
+      .click();
     await vi.advanceTimersByTimeAsync(250);
     await flushPromises();
     expect(gitLoadGraph).toHaveBeenLastCalledWith(
@@ -478,9 +490,7 @@ describe("GitBranchesTab compact history picker", () => {
     });
     mountedWrappers.push(picker);
     await picker.get(".git-branches__paths-button").trigger("click");
-    const pathInput = picker.get('input[placeholder="+ path…"]');
-    await pathInput.setValue("src/feature.ts");
-    await pathInput.trigger("keydown.enter");
+    await addCompactPath("src/feature.ts");
     await vi.advanceTimersByTimeAsync(250);
     await flushPromises();
     expect(gitLoadGraph).toHaveBeenLastCalledWith(
@@ -633,15 +643,15 @@ describe("GitBranchesTab compact history picker", () => {
     ]);
     expect(picker.get(".git-branches__paths-button").text()).toContain("Paths: 1");
     await picker.get(".git-branches__paths-button").trigger("click");
-    expect(picker.get(".git-branches__path-chip").text()).toContain("src/a.ts");
+    expect(document.body.querySelector(".git-history-menu__row--static")!.textContent).toContain("src/a.ts");
     expect(picker.text()).toContain("Sort: Topo");
     expect(picker.text()).toContain("View: Flat");
 
     await picker.setProps({ activeRootPath: "/repo/b" } as never);
     expect(select().value).toBe("feature/b");
     expect(picker.findAll('input[type="date"]')).toHaveLength(0);
-    expect(picker.findAll(".git-branches__path-chip")).toHaveLength(0);
-    expect(picker.get(".git-branches__paths-button").text()).toBe("Paths ▾");
+    expect(document.body.querySelector(".git-history-menu__row--static")).toBeNull();
+    expect(picker.get(".git-branches__paths-button").text()).toBe("Paths▾");
     expect(picker.text()).toContain("Sort: Date");
     expect(picker.text()).toContain("View: Graph");
     await picker.setProps({ activeRootPath: "/repo/a", profileId: "profile-b" } as never);
