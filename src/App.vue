@@ -265,6 +265,13 @@
     <NotificationCenter />
   </div>
 
+  <ReviewPrActionApprovals
+    :proposals="store.reviewPrActionProposals"
+    :is-busy="store.isReviewPrActionBusy"
+    :approve="store.approveReviewPrAction"
+    :reject="store.rejectReviewPrAction"
+  />
+
   <!-- Bootstrap error -->
   <BootstrapError v-if="store.bootstrapError" :message="store.bootstrapError" />
 
@@ -344,6 +351,7 @@ import ContextMenu from "./components/layout/ContextMenu.vue";
 import LayoutPicker from "./components/layout/LayoutPicker.vue";
 import TabPickerDropdown from "./components/layout/TabPickerDropdown.vue";
 import NotificationCenter from "./components/layout/NotificationCenter.vue";
+import ReviewPrActionApprovals from "./components/layout/ReviewPrActionApprovals.vue";
 import NotificationToast from "./components/layout/NotificationToast.vue";
 import PersistentToastStack from "./components/layout/PersistentToastStack.vue";
 import ReturnToAppBanner from "./components/layout/ReturnToAppBanner.vue";

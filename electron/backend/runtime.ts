@@ -230,6 +230,7 @@ import {
 } from "../shared/pull-request-review.js";
 import { createReviewGitBroker } from "./review-git/broker.js";
 import { createReviewGitService, isReviewGitGrantLive } from "./review-git/service.js";
+import { createReviewPrActionService, type ReviewPrActionService } from "./review-git/pr-actions.js";
 import { createReviewMetadataStore } from "./review-metadata-store.js";
 import { REVIEW_GIT_CAPABILITY_ENV, REVIEW_GIT_URL_ENV } from "../shared/review-git-env.js";
 import { isVerifiedSshTestExit, SshTestMarkerCapture } from "./ssh/ssh-test-marker.js";
@@ -274,7 +275,7 @@ import { createRuntimeAttentionManager } from "./runtime-attention.js";
 import type { AppState, WorkspaceState } from "../shared/types/state.js";
 import { carryOverSourceBaseline } from "../shared/review-source-identity.js";
 import { reviewAgentPreparationStopSchema } from "./ipc-schemas.js";
-import type { ReviewGitStart, StartReviewAgentPreparation } from "./ipc-schemas.js";
+import type { ReviewGitStart, StartReviewAgentPreparation, ReviewPrActionConfirm } from "./ipc-schemas.js";
 import { formatWorkspaceDisplayName } from "../shared/workspace-display.js";
 import { isCompanionPrimaryHosted } from "../shared/companion-primary.js";
 import { sessionIdFor } from "../shared/task-states.js";
@@ -972,6 +973,7 @@ export async function createRuntime({
   let sshMcpBroker: ReturnType<typeof createSshMcpBroker> | null = null;
   let internalMcpBroker: ReturnType<typeof createInternalMcpBroker> | null = null;
   let reviewGitBroker: ReturnType<typeof createReviewGitBroker> | null = null;
+  let reviewPrActionService: ReviewPrActionService | null = null;
   let sshMcpCommandService: ReturnType<typeof createSshCommandService> | null = null;
 
   function getSessionOwnershipToken(sessionId: string): string {
@@ -4341,6 +4343,7 @@ export async function createRuntime({
   });
   reviewGitBroker = (dependencies.createReviewGitBroker || createReviewGitBroker)({
     service: reviewGitService,
+    prActions: () => reviewPrActionService,
     isGrantLive: (grant) =>
       isReviewGitGrantLive({
         state: getState(),
@@ -4646,8 +4649,17 @@ export async function createRuntime({
         tunnel: tunnel.getSnapshot(),
       },
       taskRunner: taskRunner.getTaskSnapshot(),
-      operations: operations.snapshot(),
+      operations: (() => {
+        const snapshot = operations.snapshot();
+        const privatePrOperation = (kind: string) =>
+          kind === "review-pr-inspect" || kind === "review-pr-action-proposal";
+        return {
+          running: snapshot.running.filter((operation) => !privatePrOperation(operation.kind)),
+          lastResults: snapshot.lastResults.filter((operation) => !privatePrOperation(operation.kind)),
+        };
+      })(),
       reviewGit: reviewGitService.stateFor(),
+      reviewPrActions: reviewPrActionService?.stateFor() || { pending: [] },
       azureClosedPrCleanup: {
         parentWorkspaceIds: [...azureClosedPrCleanupInFlight],
         lastRuns: [...azureClosedPrCleanupLastRuns.values()].filter(
@@ -6167,7 +6179,9 @@ export async function createRuntime({
     dir: path.join(userDataPath, "operations"),
     log,
     emitFinished: (event) => {
-      events.emit(OPERATION_FINISHED_CHANNEL, event);
+      if (event.kind !== "review-pr-inspect" && event.kind !== "review-pr-action-proposal") {
+        events.emit(OPERATION_FINISHED_CHANNEL, event);
+      }
       if (event.kind !== OPERATION_KIND_REVIEW_START) return;
       const record = operations.find(event.operationId);
       const provider =
@@ -6200,6 +6214,16 @@ export async function createRuntime({
       );
     },
     onChange: () => broadcastState(),
+  });
+  reviewPrActionService = createReviewPrActionService({
+    getState,
+    locate: (workspaceId, profileId) => reviewGitService.locate(workspaceId, profileId),
+    operations,
+    auditStores: { azure: auditLogStore, github: githubAuditLogStore },
+    refreshAzure,
+    refreshGitHub,
+    broadcastState,
+    log,
   });
   const azureClosedPrCleanupInFlight = new Set<string>();
   /** parent workspace id → its last finished run. Runtime-only; one entry per Azure parent. */
@@ -7310,25 +7334,36 @@ export async function createRuntime({
     await internalMcpBroker.start();
   }
   await operations.load((record) =>
-    record.kind === OPERATION_KIND_REVIEW_AGENT_PREPARE
+    ["review-pr-action", "review-pr-action-proposal", "review-pr-inspect"].includes(record.kind)
       ? Promise.resolve({
           status: "interrupted" as const,
           error: {
             code: "interrupted",
-            message: "The runtime stopped before the temporary review setup finished. Start setup again.",
+            message:
+              record.kind === "review-pr-action"
+                ? "The runtime stopped while this provider action may have been applied. Inspect the pull request before retrying; it was not replayed."
+                : "The runtime stopped before the pull request inspection finished. Request a fresh inspection.",
           },
         })
-      : record.kind === OPERATION_KIND_REVIEW_START
+      : record.kind === OPERATION_KIND_REVIEW_AGENT_PREPARE
         ? Promise.resolve({
             status: "interrupted" as const,
-            workspaceId: String(record.artifacts.workspaceId || "") || undefined,
             error: {
               code: "interrupted",
-              message:
-                "The runtime stopped before it could confirm that the review agent started. Retry to start a new review.",
+              message: "The runtime stopped before the temporary review setup finished. Start setup again.",
             },
           })
-        : taskService.reconcile(record),
+        : record.kind === OPERATION_KIND_REVIEW_START
+          ? Promise.resolve({
+              status: "interrupted" as const,
+              workspaceId: String(record.artifacts.workspaceId || "") || undefined,
+              error: {
+                code: "interrupted",
+                message:
+                  "The runtime stopped before it could confirm that the review agent started. Retry to start a new review.",
+              },
+            })
+          : taskService.reconcile(record),
   );
   replayRecentReviewStartOutcomes = () => {
     const cutoff = Date.now() - 24 * 60 * 60 * 1000;
@@ -11376,6 +11411,25 @@ export async function createRuntime({
         },
         { profileId: workspace.profileId || "default", requester: { source: "ui" } },
       );
+    },
+
+    async confirmReviewPrAction(input: ReviewPrActionConfirm, windowId?: string) {
+      if (!windowId) throw new Error("Pull request approval requires an authenticated application client.");
+      const viewerProfile = getWindowProfileId(windowId);
+      if (!viewerProfile) throw new Error("The calling profile is no longer available.");
+      const pending = reviewPrActionService?.proposalForConfirmation(input.proposalId);
+      if (!pending) {
+        const existing = reviewPrActionService?.lookupProposalAccess(input.proposalId, viewerProfile);
+        if (existing?.operationId) return { status: "started", operationId: existing.operationId };
+        if (existing?.status === "confirming") return { status: "starting" };
+        if (existing?.status === "expired" || existing?.status === "stale") return { status: "expired" };
+        if (existing?.status === "rejected") return { status: "rejected" };
+        throw new Error("The pull request action proposal is unavailable or expired.");
+      }
+      assertWorkspaceInViewerProfile(pending.workspaceId, windowId);
+      if (pending.profileId !== viewerProfile) throw new Error("Cross-profile refused.");
+      if (getWindowProfileId(windowId) !== pending.profileId) throw new Error("The calling profile changed.");
+      return reviewPrActionService!.confirm(input, viewerProfile, windowId);
     },
 
     async startReviewAgentPreparation(input: StartReviewAgentPreparation, windowId?: string) {

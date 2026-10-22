@@ -5,6 +5,8 @@ import type { AddressInfo } from "node:net";
 import { z } from "zod";
 import { reviewGitConfirmationSchema, reviewGitOperationKindSchema } from "../../shared/review-git-events.js";
 import type { ReviewGitService } from "./service.js";
+import type { ReviewPrActionService } from "./pr-actions.js";
+import { reviewPrActionSchema, reviewPrActionOptionsSchema } from "../../shared/review-pr-actions.js";
 
 const ROUTE = "/review-git";
 const MAX_BODY_BYTES = 64 * 1024;
@@ -41,6 +43,29 @@ export const reviewGitBrokerRequestSchema = z.discriminatedUnion("operation", [
     .strict(),
   z.object({ operation: z.literal("conflicts") }).strict(),
   z.object({ operation: z.literal("checks") }).strict(),
+  z
+    .object({
+      operation: z.literal("pr-inspect"),
+      idempotencyKey: z.string().trim().min(8).max(100),
+      waitMs: z.number().int().min(0).max(MAX_WAIT_MS).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("pr-action-propose"),
+      action: reviewPrActionSchema,
+      options: reviewPrActionOptionsSchema.default({}),
+      idempotencyKey: z.string().trim().min(8).max(100),
+      waitMs: z.number().int().min(0).max(MAX_WAIT_MS).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("pr-action-status"),
+      id: z.string().trim().min(1).max(100),
+      waitMs: z.number().int().min(0).max(MAX_WAIT_MS).optional(),
+    })
+    .strict(),
   z
     .object({
       operation: z.literal("audit-log"),
@@ -89,6 +114,7 @@ export interface ReviewGitGrantContext {
 
 export interface ReviewGitBrokerOptions {
   service: Pick<ReviewGitService, "read" | "start" | "lookup" | "operations">;
+  prActions?: () => ReviewPrActionService | null;
   isGrantLive: (grant: Readonly<ReviewGitGrantContext>) => boolean | Promise<boolean>;
 }
 
@@ -188,7 +214,7 @@ const sleep = (ms: number, signal: AbortSignal) =>
  * lost, the source identity changes) refuses NEW requests; an operation that
  * already started is the runtime's and finishes regardless.
  */
-export function createReviewGitBroker({ service, isGrantLive }: ReviewGitBrokerOptions) {
+export function createReviewGitBroker({ service, prActions, isGrantLive }: ReviewGitBrokerOptions) {
   const grants = new Map<string, GrantRecord>();
   let server: http.Server | null = null;
   let endpoint = "";
@@ -229,9 +255,51 @@ export function createReviewGitBroker({ service, isGrantLive }: ReviewGitBrokerO
       }
       case "operation-status":
         return lookupWithWait(grant, request.operationId, request.waitMs ?? 0, signal, false);
+      case "pr-inspect": {
+        const actions = prActions?.();
+        if (!actions) throw new BrokerError("unavailable", "PR actions are unavailable.", 503);
+        const started = await actions.startInspection(workspaceId, profileId, request.idempotencyKey);
+        return await lookupPrActionWithWait(actions, grant, started.operationId, request.waitMs ?? 0, signal, true);
+      }
+      case "pr-action-propose": {
+        const actions = prActions?.();
+        if (!actions) throw new BrokerError("unavailable", "PR actions are unavailable.", 503);
+        const started = await actions.startProposal(
+          { action: request.action, options: request.options, idempotencyKey: request.idempotencyKey },
+          { profileId, workspaceId, requester: { source: "mcp", agent, panelId } },
+        );
+        return await lookupPrActionWithWait(actions, grant, started.operationId, request.waitMs ?? 0, signal, true);
+      }
+      case "pr-action-status": {
+        const actions = prActions?.();
+        if (!actions) throw new BrokerError("unavailable", "PR actions are unavailable.", 503);
+        return actions.lookupStatus(request.id, profileId, workspaceId);
+      }
       default:
         return service.read(request, workspaceId, profileId);
     }
+  }
+
+  async function lookupPrActionWithWait(
+    actions: ReviewPrActionService,
+    grant: GrantRecord,
+    operationId: string,
+    waitMs: number,
+    signal: AbortSignal,
+    started: boolean,
+  ) {
+    const { profileId, workspaceId } = grant.context;
+    const deadline = Date.now() + waitMs;
+    let current = actions.lookupStatus(operationId, profileId, workspaceId);
+    while (
+      (current.status === "accepted" || current.status === "running") &&
+      Date.now() < deadline &&
+      !signal.aborted
+    ) {
+      await sleep(150, signal);
+      current = actions.lookupStatus(operationId, profileId, workspaceId);
+    }
+    return { operationId, started, ...current };
   }
 
   async function lookupWithWait(

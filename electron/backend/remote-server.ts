@@ -53,6 +53,7 @@ import {
   remoteClientTargetActivateSchema,
   azureClosedPrCleanupSchema,
   reviewGitStartSchema,
+  reviewPrActionConfirmSchema,
   startReviewAgentPreparationSchema,
   reviewAgentPreparationStopSchema,
   mobileAttachmentEnvelopeSchema,
@@ -3392,6 +3393,11 @@ export async function startRemoteServer({
     // the caller's profile before anything starts.
     "/api/review-git/start": (body, windowId) =>
       runtime.startReviewGitOperation(validateIpc(reviewGitStartSchema, body, "POST /api/review-git/start"), windowId),
+    "/api/review-pr-action/confirm": (body, windowId) =>
+      runtime.confirmReviewPrAction(
+        validateIpc(reviewPrActionConfirmSchema, body, "POST /api/review-pr-action/confirm"),
+        windowId,
+      ),
     "/api/review/start": (body, windowId) =>
       runtime.startPullRequestReview(
         validateIpc(startPullRequestReviewSchema, body, `POST ${START_PULL_REQUEST_REVIEW_ROUTE}`),

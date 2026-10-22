@@ -8,7 +8,11 @@ import type {
   GitPushProgressPayload,
 } from "../electron/shared/ipc-bridge.js";
 import type { RemoteStateV2, RecoveryResult } from "../electron/shared/types/state.js";
-import type { AzureClosedPrCleanupStarted, ReviewGitStarted } from "../electron/shared/types/ipc-results.js";
+import type {
+  AzureClosedPrCleanupStarted,
+  ReviewGitStarted,
+  ReviewPrActionConfirmationResult,
+} from "../electron/shared/types/ipc-results.js";
 import {
   REVIEW_GIT_OPERATION_CHANNEL,
   reviewGitOperationEventSchema,
@@ -2332,6 +2336,8 @@ export function createRemoteTransport(): Transport {
       }) as Promise<AzureClosedPrCleanupStarted>,
     startReviewGitOperation: (payload: ReviewGitStart) =>
       fetchJson("/api/review-git/start", payload) as Promise<ReviewGitStarted>,
+    confirmReviewPrAction: (payload: { proposalId: string; approved: boolean }) =>
+      fetchJson("/api/review-pr-action/confirm", payload) as Promise<ReviewPrActionConfirmationResult>,
     startPullRequestReview: (payload: StartPullRequestReviewInput) =>
       fetchJson(
         "/api/review/start",

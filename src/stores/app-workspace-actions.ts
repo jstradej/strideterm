@@ -28,6 +28,7 @@ import {
   operationFinishedSchema,
   type OperationFinished,
 } from "../../electron/shared/operation-events.js";
+import { reviewPrActionOutcomeSchema } from "../../electron/shared/review-pr-actions.js";
 import { useNotificationStore } from "./notifications.js";
 import { fireNotificationAlert } from "../composables/useNotificationSound.js";
 
@@ -194,8 +195,83 @@ function describeOperationFinished(operation: OperationFinished): { title: strin
       failed: false,
     };
   }
+  if (operation.kind === "review-pr-action") {
+    if ("error" in operation) {
+      return {
+        title: "Pull request action outcome is uncertain",
+        body: `${operation.error.message}\nCheck the pull request's current status before retrying; the provider may have applied the action.`,
+        failed: true,
+      };
+    }
+    const parsed = reviewPrActionOutcomeSchema.safeParse(operation.result);
+    if (parsed.success) {
+      const outcome = parsed.data;
+      const provider = outcome.provider === "github" ? "GitHub" : "Azure DevOps";
+      const pr = `${provider} pull request ${outcome.prKey}`;
+      if (outcome.status === "stale") {
+        return {
+          title: "Pull request changed before the action ran",
+          body: `${pr}: ${outcome.message}\nNo action was applied. Review the fresh proposal and approve it separately.`,
+          failed: false,
+        };
+      }
+      const warning = "warning" in outcome && outcome.warning ? `\n\nWarning: ${outcome.warning}` : "";
+      if (outcome.status === "failed") {
+        return {
+          title: `Pull request action failed · ${provider}`,
+          body: `${pr}: ${outcome.message}${warning}`,
+          failed: true,
+        };
+      }
+      if (outcome.status === "queued") {
+        return {
+          title: `Pull request completion queued · ${provider}`,
+          body: `${pr}: ${outcome.message}${warning}\nProvider policies determine when completion can proceed.`,
+          failed: Boolean(warning),
+        };
+      }
+      if (outcome.status === "accepted") {
+        return {
+          title: `Pull request action accepted · ${provider}`,
+          body: `${pr}: ${outcome.message}\nThe resulting state is not confirmed; check the pull request before retrying.${warning}`,
+          failed: Boolean(warning),
+        };
+      }
+      if (outcome.status !== "completed") {
+        return {
+          title: `Pull request action status · ${provider}`,
+          body: `${pr}: ${outcome.message}${warning}`,
+          failed: true,
+        };
+      }
+      return {
+        title: `${operationActionLabel(outcome.action)} · ${provider}`,
+        body: `${pr}: ${outcome.message}${warning}`,
+        failed: Boolean(warning),
+      };
+    }
+  }
   if ("error" in operation) return { title: "Operation failed", body: operation.error.message, failed: true };
   return { title: "Operation finished", body: operation.kind, failed: false };
+}
+
+function operationActionLabel(action: string): string {
+  const labels: Record<string, string> = {
+    approve: "Pull request approved",
+    complete: "Pull request completed",
+    enable_auto_complete: "Auto-complete enabled",
+    disable_auto_complete: "Auto-complete disabled",
+    merge: "Pull request merged",
+    enable_auto_merge: "Auto-merge enabled",
+    disable_auto_merge: "Auto-merge disabled",
+    set_draft: "Pull request marked as draft",
+    set_ready: "Pull request marked ready",
+    abandon: "Pull request abandoned",
+    reactivate: "Pull request reactivated",
+    close: "Pull request closed",
+    reopen: "Pull request reopened",
+  };
+  return labels[action] || "Pull request action finished";
 }
 
 const NOTIFIED_AZURE_CLEANUP_RUNS_KEY = "strideterm-azure-closed-pr-cleanup-notified-runs";
@@ -373,6 +449,12 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
    * requesting window still displays the profile that started it.
    */
   function reportOperationFinished(operation: OperationFinished, { late = false } = {}): void {
+    if (
+      (operation.kind === "review-pr-inspect" || operation.kind === "review-pr-action-proposal") &&
+      !("error" in operation)
+    ) {
+      return;
+    }
     if (operation.kind === "review-agent.prepare") {
       recentReviewAgentPreparationResults.set(operation.operationId, operation);
       while (recentReviewAgentPreparationResults.size > 100) {

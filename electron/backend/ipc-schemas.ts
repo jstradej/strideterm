@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { reviewGitConfirmationSchema, reviewGitOperationKindSchema } from "../shared/review-git-events.js";
 import { EFFORT_LEVELS } from "../shared/agent-provider-catalog.js";
+import { reviewPrActionSchema, reviewPrActionOptionsSchema } from "../shared/review-pr-actions.js";
 export { remoteSessionRevokeSchema } from "../shared/remote-access.js";
 
 import type { AccountUiState } from "./account/account-state.js";
@@ -253,6 +254,17 @@ export const reviewGitStartSchema = z
   })
   .strict();
 export type ReviewGitStart = z.infer<typeof reviewGitStartSchema>;
+
+export const reviewPrActionConfirmSchema = z.object({ proposalId: nonEmptyString, approved: z.boolean() }).strict();
+export type ReviewPrActionConfirm = z.infer<typeof reviewPrActionConfirmSchema>;
+
+export const reviewPrActionProposalRequestSchema = z
+  .object({
+    action: reviewPrActionSchema,
+    options: reviewPrActionOptionsSchema.default({}),
+  })
+  .strict();
+export type ReviewPrActionProposalRequest = z.infer<typeof reviewPrActionProposalRequestSchema>;
 
 export const agentPromptSaveSchema = z.object({}).passthrough();
 export type AgentPromptSave = z.infer<typeof agentPromptSaveSchema>;

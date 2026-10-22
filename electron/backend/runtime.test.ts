@@ -13,6 +13,7 @@ import {
 import { isValidNativeDirectoryName } from "./runtime.js";
 import { AgentTaskRunner } from "./agent-task-runner.js";
 import { AzureDevOpsManager } from "./azure-devops-manager.js";
+import { GitHubManager } from "./github-manager.js";
 import { execFileText } from "./process-utils.js";
 import { createSessionId, normalizeState } from "./default-state.js";
 import { RemoteClientRegistry } from "./remote-client-registry.js";
@@ -23,6 +24,7 @@ import {
   type AzureClosedPrCleanupFinished,
 } from "../shared/azure-closed-pr-cleanup-events.js";
 import type { AzureClosedPrCleanupResult } from "../shared/types/ipc-results.js";
+import { reviewPrActionSnapshotSchema } from "../shared/review-pr-actions.js";
 import { normalizeCwd } from "./notify-url-registry.js";
 import { createStore } from "./store.js";
 import { createCredentialStore } from "./shared/credential-store.js";
@@ -2000,6 +2002,117 @@ describe("runtime integration", () => {
       await expect(
         fixture.runtime.startReviewGitOperation({ kind: "refresh", workspaceId: "workspace-review" }, undefined),
       ).rejects.toThrow("Review workspace not found");
+    });
+
+    test("PR action confirmation requires a registered application viewer bound to the proposal profile", async () => {
+      const fixture = await createFixture({ initialState: { workspaces: [reviewWorkspace()] } });
+      fixtures.push(fixture);
+
+      await expect(
+        fixture.runtime.confirmReviewPrAction({ proposalId: "missing-proposal", approved: true }),
+      ).rejects.toThrow("authenticated application client");
+      await expect(
+        fixture.runtime.confirmReviewPrAction({ proposalId: "missing-proposal", approved: true }, "unknown-window"),
+      ).rejects.toThrow("calling profile is no longer available");
+    });
+
+    test("the authenticated runtime click starts once, replay returns the same operation, and payload is profile scoped", async () => {
+      const workspace = reviewWorkspace({ profileId: "default" });
+      const snapshot = reviewPrActionSnapshotSchema.parse({
+        provider: "github",
+        prKey: "gh-main:repo:7",
+        connectionId: "gh-main",
+        repository: "acme/repo",
+        number: 7,
+        url: "https://github.com/acme/repo/pull/7",
+        title: "Runtime confirmation fixture",
+        state: "open",
+        isDraft: false,
+        autoMerge: false,
+        source: { repository: "acme/repo", branch: "feature", sha: "head-runtime" },
+        target: { repository: "acme/repo", branch: "main", sha: "target-runtime" },
+        checks: { state: "success", total: 1, successful: 1, failed: 0, pending: 0, items: [] },
+        mergeReadiness: { state: "ready" },
+        review: { approvals: 1, changesRequested: 0, requiredApprovals: 1 },
+        supportedActions: ["merge"],
+      });
+      const getSnapshot = vi.spyOn(GitHubManager.prototype, "getPullRequestActionSnapshot").mockResolvedValue(snapshot);
+      const executeAction = vi.spyOn(GitHubManager.prototype, "executePullRequestAction").mockResolvedValue({
+        provider: "github",
+        prKey: "gh-main:repo:7",
+        action: "merge",
+        status: "completed",
+        message: "Merged by test adapter.",
+      });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let actionService: any;
+      let getActionService: (() => unknown) | undefined;
+      const fixture = await createFixture({
+        initialState: {
+          profiles: [
+            { id: "default", name: "Default" },
+            { id: "profile-b", name: "B" },
+          ],
+          workspaces: [workspace],
+          windowSlots: [
+            { id: "win-a", profileId: "default", activeWorkspaceId: workspace.id, activeSessionId: "" },
+            { id: "win-b", profileId: "profile-b", activeWorkspaceId: "", activeSessionId: "" },
+          ],
+        },
+        dependencies: {
+          enableInternalMcp: true,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          createReviewGitBroker: (options: any) => {
+            getActionService = options.prActions;
+            return {
+              start: async () => ({ url: "http://127.0.0.1/review-git" }),
+              close: async () => {},
+              mintGrant: () => ({}),
+              revokeSession() {},
+              revokeInvalid: async () => {},
+            };
+          },
+        },
+      });
+      fixtures.push(fixture);
+      try {
+        actionService = getActionService?.();
+        const started = await actionService.startProposal(
+          { action: "merge", options: { mergeMethod: "squash" }, idempotencyKey: "runtime-confirmation-001" },
+          {
+            profileId: "default",
+            workspaceId: workspace.id,
+            requester: { source: "mcp", agent: "test", panelId: "shell" },
+          },
+        );
+        await vi.waitFor(() => expect(fixture.runtime.getPayload().reviewPrActions.pending).toHaveLength(1));
+        expect(fixture.runtime.getPayload().reviewPrActions.pending[0].snapshot.source.sha).toBe("head-runtime");
+
+        await expect(
+          fixture.runtime.confirmReviewPrAction({ proposalId: "unknown", approved: true }, "win-a"),
+        ).rejects.toThrow("unavailable or expired");
+        const proposalId = fixture.runtime.getPayload().reviewPrActions.pending[0].proposalId;
+        expect(
+          buildRemoteCore(fixture.runtime.getPayload(), { profileId: "default" }).reviewPrActions.pending,
+        ).toHaveLength(1);
+        expect(
+          buildRemoteCore(fixture.runtime.getPayload(), { profileId: "profile-b" }).reviewPrActions.pending,
+        ).toEqual([]);
+        await expect(fixture.runtime.confirmReviewPrAction({ proposalId, approved: true }, "win-b")).rejects.toThrow();
+        await fixture.runtime.activateProfileInWindow("profile-b", "win-a");
+        await expect(fixture.runtime.confirmReviewPrAction({ proposalId, approved: true }, "win-a")).rejects.toThrow();
+        await fixture.runtime.activateProfileInWindow("default", "win-a");
+        const decision = await fixture.runtime.confirmReviewPrAction({ proposalId, approved: true }, "win-a");
+        const replay = await fixture.runtime.confirmReviewPrAction({ proposalId, approved: true }, "win-a");
+        expect(decision.status).toBe("started");
+        expect(replay).toEqual(decision);
+        await vi.waitFor(() => expect(executeAction).toHaveBeenCalledTimes(1));
+        expect(fixture.runtime.getPayload().reviewPrActions.pending).toEqual([]);
+        expect(started.started).toBe(true);
+      } finally {
+        getSnapshot.mockRestore();
+        executeAction.mockRestore();
+      }
     });
 
     test("a persisted source baseline and source repository survive a normalize/save round trip, and the retired writable flag does not", async () => {

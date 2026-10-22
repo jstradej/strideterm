@@ -37,6 +37,7 @@ import {
   reviewBridgeReplyWithChangesSchema,
   reviewBridgeSyncSchema,
   reviewGitStartSchema,
+  reviewPrActionConfirmSchema,
   agentPromptSaveSchema,
   agentPromptDeleteSchema,
   fileListSchema,
@@ -874,6 +875,15 @@ export function registerIpc(
     const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
     return withOperationPromise({ opId: "review-git:start" }, () =>
       runtime.startReviewGitOperation(validateIpc(reviewGitStartSchema, payload, "review-git:start"), windowId),
+    );
+  });
+  handle("review-pr-action:confirm", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "review-pr-action:confirm" }, () =>
+      runtime.confirmReviewPrAction(
+        validateIpc(reviewPrActionConfirmSchema, payload, "review-pr-action:confirm"),
+        windowId,
+      ),
     );
   });
   handle("review:start", async (event, payload) => {

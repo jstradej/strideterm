@@ -355,6 +355,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   onApprovalRecorded: (handler) => ipcRenderer.on("approval:recorded", (_event, payload) => handler(payload)),
   onReviewGitOperation: (handler) => ipcRenderer.on("review-git:operation", (_event, payload) => handler(payload)),
   startReviewGitOperation: (payload) => ipcRenderer.invoke("review-git:start", payload),
+  confirmReviewPrAction: (payload) => ipcRenderer.invoke("review-pr-action:confirm", payload),
   startPullRequestReview: (payload) => ipcRenderer.invoke("review:start", payload),
   startReviewAgentPreparation: (payload) => ipcRenderer.invoke("review:agent-prepare", payload),
   stopReviewAgentPreparation: (payload) => ipcRenderer.invoke("review:agent-prepare:stop", payload),

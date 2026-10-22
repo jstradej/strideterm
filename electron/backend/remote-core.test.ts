@@ -211,6 +211,12 @@ function fullPayload() {
         },
       ],
     },
+    reviewPrActions: {
+      pending: [
+        { proposalId: "proposal-p1", profileId: "p1", workspaceId: "ws1" },
+        { proposalId: "proposal-p2", profileId: "p2", workspaceId: "ws2" },
+      ],
+    },
     remoteClient: { id: "sess", profileId: "p1", activeWorkspaceId: "ws1", activeSessionId: "" },
   };
 }
@@ -320,6 +326,13 @@ describe("buildRemoteCore", () => {
     expect(other.reviewGit.lastRuns.map((run) => run.operationId)).toEqual(["op-done-2"]);
   });
 
+  test("pending PR action approvals reach only the client bound to their profile", () => {
+    const core = buildRemoteCore(fullPayload());
+    expect(core.reviewPrActions.pending.map((proposal) => proposal.proposalId)).toEqual(["proposal-p1"]);
+    const other = buildRemoteCore(fullPayload(), { profileId: "p2" });
+    expect(other.reviewPrActions.pending.map((proposal) => proposal.proposalId)).toEqual(["proposal-p2"]);
+  });
+
   test("an uncomposed payload (no profile) yields an EMPTY scope, never every workspace", () => {
     const p = fullPayload();
     delete (p as { remoteClient?: unknown }).remoteClient;
@@ -333,6 +346,7 @@ describe("buildRemoteCore", () => {
     expect(Object.keys(core.azureDevops.pullRequests)).toEqual([]);
     expect(core.azureDevops.connections).toEqual([]);
     expect(core.reviewGit).toEqual({ running: [], lastRuns: [] });
+    expect(core.reviewPrActions).toEqual({ pending: [] });
     expect(core.remoteClient).toBeUndefined();
   });
 

@@ -35,6 +35,7 @@ import { createDialogActions } from "./app-dialog-actions.js";
 import { createWorkspaceActions } from "./app-workspace-actions.js";
 import { createApiActions } from "./app-api-actions.js";
 import { createReviewGitOperations } from "./review-git-operations.js";
+import { createReviewPrActionApprovals } from "./review-pr-action-approvals.js";
 import { isMobileViewport } from "../composables/useIsNarrow.js";
 import { maybeApplyMockFromUrl } from "./dev-mocks.js";
 import { useGitUiStore } from "./git-ui.js";
@@ -2083,6 +2084,14 @@ export const useAppStore = defineStore("app", () => {
     confirmInApp: workspaceActions.confirmInApp,
   });
 
+  const reviewPrActionApprovals = createReviewPrActionApprovals({ payload, myActiveProfileId, getApi });
+  const {
+    pendingProposals: reviewPrActionProposals,
+    approve: approveReviewPrAction,
+    reject: rejectReviewPrAction,
+    isBusy: isReviewPrActionBusy,
+  } = reviewPrActionApprovals;
+
   // --- Domain API actions (azure, review, docker, remote, profile) ---
   const apiActions = createApiActions({
     payload,
@@ -2485,6 +2494,10 @@ export const useAppStore = defineStore("app", () => {
   }
 
   return {
+    reviewPrActionProposals,
+    approveReviewPrAction,
+    rejectReviewPrAction,
+    isReviewPrActionBusy,
     // State
     payload,
     activeViewId,
