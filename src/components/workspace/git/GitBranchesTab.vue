@@ -32,14 +32,44 @@
           @toggle-favorite="toggleHistoryFavorite"
         />
       </div>
-      <span class="git-history-picker__current"
-        >Working branch: <strong>{{ branchList.current || "Detached HEAD" }}</strong></span
+      <GitHistoryFilters
+        v-model:user-filter="userFilter"
+        v-model:date-filter="dateFilter"
+        v-model:custom-since="customSince"
+        v-model:custom-until="customUntil"
+        v-model:paths-filter="pathsFilter"
+        v-model:topo-order="topoOrder"
+        v-model:view-mode="viewMode"
+        v-model:graph-limit="graphLimit"
+        v-model:compare-base="compareBase"
+        v-model:include-base-updates="includeBaseUpdates"
+        :known-authors="knownAuthors"
+        :base-branch-options="baseBranchOptions"
+        :default-branch="branchList.defaultBranch"
+        :default-remote="branchList.defaultRemote"
+        :remote-names="effectiveRemoteNames"
+        :has-active-filters="hasActiveFilters"
+        compact
+        @clear="resetFilters"
+      />
+      <span class="git-history-picker__spacer"></span>
+      <button
+        v-if="hasActiveFilters || historyCommitSearch || selectedRef || compareBase"
+        type="button"
+        class="button button--ghost button--small"
+        title="Clear the search, branch and all commit filters"
+        @click="clearHistoryFilters"
       >
-      <span class="git-history-picker__fetch" aria-live="polite">
-        Last fetch: <strong>{{ snapshot.lastFetchAt ? formatDateLabel(snapshot.lastFetchAt) : "Unknown" }}</strong>
-      </span>
-      <button v-if="selectedRef" type="button" class="button button--ghost button--small" @click="onSelectRef('')">
-        All branches
+        Clear filters
+      </button>
+      <button
+        type="button"
+        class="button button--small"
+        :disabled="branchesLoading || graphLoading"
+        title="Re-list branches and re-read the commit topology. Local only — no fetch."
+        @click="refreshAll(true)"
+      >
+        {{ branchesLoading || graphLoading ? "Loading…" : "Refresh" }}
       </button>
     </div>
     <span v-if="compactHistory && historyRefNotice" class="git-branches__placeholder" role="status">{{
@@ -52,7 +82,7 @@
     >
       No commits match “{{ historyCommitSearch }}”.
     </span>
-    <div v-else class="git-branches__toolbar">
+    <div v-if="!compactHistory" class="git-branches__toolbar">
       <div class="git-branches__search">
         <input
           v-model="search"
@@ -272,7 +302,7 @@
                 </template>
               </template>
               <span v-if="graphError" class="git-branches__pane-error">— {{ graphError }}</span>
-              <span v-if="selectedRef || compareBase" class="git-branches__pane-spacer"></span>
+              <span v-if="selectedRef || compareBase || compactHistory" class="git-branches__pane-spacer"></span>
               <button
                 v-if="selectedRef && !compareBase"
                 type="button"
@@ -291,121 +321,30 @@
               >
                 Exit compare
               </button>
+              <span v-if="compactHistory" class="git-branches__pane-fetch" aria-live="polite"
+                >Last fetch: {{ snapshot.lastFetchAt ? formatDateLabel(snapshot.lastFetchAt) : "Unknown" }}</span
+              >
             </div>
-            <!-- JetBrains-style filter row: User / Date / Paths / Sort.
-                 Backend filters (Date, Paths, Sort) re-fetch the graph; User
-                 is applied client-side over the already-loaded commits. -->
-            <div class="git-branches__filters">
-              <CustomSelect
-                v-model="userFilter"
-                :options="userSelectOptions"
-                :searchable="availableAuthors.length > 8"
-                search-placeholder="Filter authors…"
-                class="git-branches__cselect git-branches__cselect--user"
-              />
-              <CustomSelect
-                v-model="dateFilter"
-                :options="dateSelectOptions"
-                class="git-branches__cselect git-branches__cselect--date"
-              />
-              <template v-if="dateFilter === 'custom'">
-                <input
-                  v-model="customSince"
-                  type="date"
-                  class="git-branches__filter-date"
-                  title="Show commits on or after this date"
-                />
-                <span class="git-branches__filter-sep">→</span>
-                <input
-                  v-model="customUntil"
-                  type="date"
-                  class="git-branches__filter-date"
-                  title="Show commits on or before this date"
-                />
-              </template>
-              <div class="git-branches__filter-paths">
-                <span v-for="p in pathsFilter" :key="p" class="git-branches__path-chip" :title="`Filtering on ${p}`">
-                  {{ p }}
-                  <button
-                    type="button"
-                    class="git-branches__path-chip-x"
-                    aria-label="Remove path filter"
-                    @click="removePathFilter(p)"
-                  >
-                    ×
-                  </button>
-                </span>
-                <input
-                  v-model="pathsInput"
-                  type="text"
-                  class="git-branches__filter-paths-input"
-                  placeholder="+ path…"
-                  title="Limit to commits touching this path (relative). Press Enter to add."
-                  @keydown.enter.prevent="addPathFilter"
-                />
-              </div>
-              <button
-                type="button"
-                class="button button--ghost button--small"
-                :class="topoOrder && 'git-branches__sort-active'"
-                :title="
-                  topoOrder
-                    ? 'Topological order (--topo-order). Click to switch to date order.'
-                    : 'Date order (--date-order). Click to switch to topological order.'
-                "
-                @click="topoOrder = !topoOrder"
-              >
-                Sort: {{ topoOrder ? "Topo" : "Date" }}
-              </button>
-              <button
-                type="button"
-                class="button button--ghost button--small"
-                :title="
-                  viewMode === 'graph'
-                    ? 'Show commits as a flat list (History-style). Same data, simpler view.'
-                    : 'Show commits as a graph with branch lanes and topology.'
-                "
-                @click="viewMode = viewMode === 'graph' ? 'flat' : 'graph'"
-              >
-                View: {{ viewMode === "graph" ? "Graph" : "Flat" }}
-              </button>
-              <CustomSelect
-                v-model="graphLimit"
-                :options="limitSelectOptions"
-                class="git-branches__cselect git-branches__cselect--limit"
-              />
-              <BranchSelectPopover
-                v-if="(baseBranchOptions || []).length > 0"
-                v-model="compareBase"
-                :options="(baseBranchOptions || []) as string[]"
-                :default-branch="branchList.defaultBranch"
-                :default-remote="branchList.defaultRemote"
-                :remote-names="effectiveRemoteNames"
-                button-label-prefix="Compare: "
-                off-label="Compare: off"
-                off-value=""
-                placeholder="Compare: off"
-                search-placeholder="Filter branches…"
-                class="git-branches__cselect git-branches__cselect--compare"
-              />
-              <label
-                v-if="compareBase"
-                class="git-branches__filter git-branches__filter--inline"
-                title="Switch from base..HEAD (only your work) to base...HEAD (your work + commits on base since fork)."
-              >
-                <input v-model="includeBaseUpdates" type="checkbox" />
-                Include base updates
-              </label>
-              <button
-                type="button"
-                class="button button--ghost button--small"
-                :disabled="!hasActiveFilters"
-                :title="hasActiveFilters ? 'Clear all commit filters' : 'No active filters to clear'"
-                @click="resetFilters"
-              >
-                Clear
-              </button>
-            </div>
+            <GitHistoryFilters
+              v-if="!compactHistory"
+              v-model:user-filter="userFilter"
+              v-model:date-filter="dateFilter"
+              v-model:custom-since="customSince"
+              v-model:custom-until="customUntil"
+              v-model:paths-filter="pathsFilter"
+              v-model:topo-order="topoOrder"
+              v-model:view-mode="viewMode"
+              v-model:graph-limit="graphLimit"
+              v-model:compare-base="compareBase"
+              v-model:include-base-updates="includeBaseUpdates"
+              :known-authors="knownAuthors"
+              :base-branch-options="baseBranchOptions"
+              :default-branch="branchList.defaultBranch"
+              :default-remote="branchList.defaultRemote"
+              :remote-names="effectiveRemoteNames"
+              :has-active-filters="hasActiveFilters"
+              @clear="resetFilters"
+            />
             <div v-if="showCompareEmptyState" class="git-branches__compare-empty" role="status" aria-live="polite">
               <span class="git-branches__compare-empty-icon" aria-hidden="true">✓</span>
               <div class="git-branches__compare-empty-text">
@@ -679,7 +618,7 @@ import GitChangeTree from "./GitChangeTree.vue";
 import BranchTreePane, { type BranchTreeNode } from "./BranchTreePane.vue";
 import CustomSelect from "../../common/CustomSelect.vue";
 import Spinner from "../../common/Spinner.vue";
-import BranchSelectPopover from "./BranchSelectPopover.vue";
+import GitHistoryFilters from "./GitHistoryFilters.vue";
 import HistoryRangePicker from "./HistoryRangePicker.vue";
 import GitCommitContextMenu from "./GitCommitContextMenu.vue";
 import GitDiffStat from "./GitDiffStat.vue";
@@ -1144,10 +1083,8 @@ const dateFilter = historyField("dateFilter");
 const customSince = historyField("customSince"); // YYYY-MM-DD
 const customUntil = historyField("customUntil"); // YYYY-MM-DD
 const pathsFilter = historyField("pathsFilter");
-const pathsInput = ref<string>("");
 const topoOrder = historyField("topoOrder");
 const graphLimit = historyField("graphLimit");
-const limitOptions = [100, 300, 500, 1000, 2000];
 
 // "Compare with base" — ported from the History tab. When set, the graph
 // walks `base..HEAD` (or `base...HEAD` if includeBaseUpdates is on) instead
@@ -1243,21 +1180,6 @@ watch(rawCommits, (commits) => {
   for (const c of commits) if (c.author) set.add(c.author);
   if (set.size) knownAuthors.value = Array.from(set).sort((a, b) => a.localeCompare(b));
 });
-const availableAuthors = computed<string[]>(() => knownAuthors.value);
-
-const userSelectOptions = computed(() => [
-  { value: "", label: "User: All" },
-  ...availableAuthors.value.map((a) => ({ value: a, label: a })),
-]);
-
-const dateSelectOptions = [
-  { value: "all", label: "Date: All" },
-  { value: "today", label: "Today" },
-  { value: "week", label: "This week" },
-  { value: "month", label: "This month" },
-  { value: "custom", label: "Custom…" },
-];
-
 const branchDateSelectOptions = [
   { value: "all", label: "Updated: Any time" },
   { value: "day", label: "Last day" },
@@ -1271,10 +1193,6 @@ const branchSortSelectOptions = [
   { value: "newest", label: "Sort: Newest" },
   { value: "oldest", label: "Sort: Oldest" },
 ];
-
-const limitSelectOptions = computed(() =>
-  limitOptions.map((n) => ({ value: n, label: `Limit: ${n.toLocaleString()}` })),
-);
 
 // Server already filtered by --author, so the rendered commits ARE the raw
 // fetch result. No client-side filtering — that would re-fragment the chain.
@@ -1311,25 +1229,20 @@ function resolveDateRange(): { since: string; until: string } {
   return { since: "", until: "" };
 }
 
-function addPathFilter() {
-  const p = pathsInput.value.trim().replace(/^[\\/]+|[\\/]+$/g, "");
-  if (!p || p.includes("..")) return;
-  if (!pathsFilter.value.includes(p)) pathsFilter.value = [...pathsFilter.value, p];
-  pathsInput.value = "";
-}
-
-function removePathFilter(p: string) {
-  pathsFilter.value = pathsFilter.value.filter((x) => x !== p);
-}
-
 function resetFilters() {
   userFilter.value = "";
   dateFilter.value = "all";
   customSince.value = "";
   customUntil.value = "";
   pathsFilter.value = [];
-  pathsInput.value = "";
   topoOrder.value = false;
+}
+
+function clearHistoryFilters() {
+  resetFilters();
+  compareBase.value = "";
+  historyCommitSearch.value = "";
+  onSelectRef("");
 }
 
 const hasActiveFilters = computed(
@@ -2141,19 +2054,31 @@ watch(
   font-size: 11px;
 }
 
-.git-history-picker__current,
-.git-history-picker__fetch {
-  color: var(--muted);
-  font-size: 12px;
+.git-history-picker__spacer {
+  flex: 1 1 0;
 }
 
-.git-history-picker__current {
+.git-history-picker__sep {
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+  flex: 0 0 auto;
+}
+
+.git-history-picker .button,
+.git-history-picker :deep(.history-range-picker__button),
+.git-history-picker__search input {
+  height: 28px;
+  box-sizing: border-box;
+}
+
+.git-branches__pane-fetch {
   margin-left: auto;
-}
-
-.git-history-picker__current strong,
-.git-history-picker__fetch strong {
-  color: var(--text);
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: nowrap;
 }
 
 .git-branches--mobile .git-branches__toolbar {
@@ -2388,18 +2313,6 @@ watch(
   flex: 1;
 }
 
-/* ----- Commit filter row (JetBrains-style) -------------------------- */
-.git-branches__filters {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--border);
-  background: rgba(var(--tint), 0.02);
-  flex: 0 0 auto;
-}
-
 .git-branches__filter-date {
   font-size: 12px;
   height: 24px;
@@ -2425,87 +2338,11 @@ watch(
   height: 24px;
   line-height: 1;
 }
-.git-branches__cselect--user :deep(.custom-select__button) {
-  min-width: 110px;
-  max-width: 180px;
-}
 .git-branches__cselect--date :deep(.custom-select__button) {
   min-width: 110px;
 }
-.git-branches__cselect--limit :deep(.custom-select__button) {
-  min-width: 110px;
-}
-.git-branches__cselect--compare :deep(.custom-select__button) {
-  min-width: 150px;
-  max-width: 220px;
-}
 .git-branches__cselect--sort :deep(.custom-select__button) {
   min-width: 110px;
-}
-
-.git-branches__filter-sep {
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.git-branches__filter-paths {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex: 1 1 160px;
-  min-width: 140px;
-  flex-wrap: wrap;
-  padding: 2px 4px;
-  border: 1px solid var(--border);
-  background: rgba(0, 0, 0, 0.25);
-  border-radius: 4px;
-  min-height: 24px;
-}
-
-.git-branches__filter-paths-input {
-  flex: 1;
-  min-width: 80px;
-  border: none;
-  background: transparent;
-  color: var(--text);
-  font-size: 12px;
-  outline: none;
-  padding: 2px 4px;
-}
-
-.git-branches__path-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 1px 4px 1px 6px;
-  border-radius: 3px;
-  background: rgba(255, 164, 36, 0.18);
-  color: var(--accent);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  max-width: 200px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.git-branches__path-chip-x {
-  border: none;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  font-size: 13px;
-  line-height: 1;
-  padding: 0 2px;
-}
-
-.git-branches__path-chip-x:hover {
-  color: #fff;
-}
-
-.git-branches__sort-active {
-  background: rgba(255, 164, 36, 0.18) !important;
-  color: var(--accent) !important;
 }
 
 .git-branches__loading {

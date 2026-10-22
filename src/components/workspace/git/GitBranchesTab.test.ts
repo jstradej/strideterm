@@ -107,6 +107,7 @@ import GitBranchesTab from "./GitBranchesTab.vue";
 import GitChangeTree from "./GitChangeTree.vue";
 import CustomSelect from "../../common/CustomSelect.vue";
 import BranchSelectPopover from "./BranchSelectPopover.vue";
+import GitHistoryFilters from "./GitHistoryFilters.vue";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mountedWrappers: VueWrapper<any>[] = [];
@@ -223,6 +224,7 @@ describe("GitBranchesTab compact history picker", () => {
       attachTo: document.body,
     });
     mountedWrappers.push(picker);
+    await picker.get(".git-branches__paths-button").trigger("click");
     const pathInput = picker.get('input[placeholder="+ path…"]');
     await pathInput.setValue("src/app.ts");
     await pathInput.trigger("keydown.enter");
@@ -475,6 +477,7 @@ describe("GitBranchesTab compact history picker", () => {
       },
     });
     mountedWrappers.push(picker);
+    await picker.get(".git-branches__paths-button").trigger("click");
     const pathInput = picker.get('input[placeholder="+ path…"]');
     await pathInput.setValue("src/feature.ts");
     await pathInput.trigger("keydown.enter");
@@ -485,11 +488,11 @@ describe("GitBranchesTab compact history picker", () => {
       expect.objectContaining({ paths: ["src/feature.ts"] }),
     );
 
-    await picker.get('button[title="Clear all commit filters"]').trigger("click");
+    await picker.get('button[title="Clear the search, branch and all commit filters"]').trigger("click");
     await vi.advanceTimersByTimeAsync(250);
     await flushPromises();
     expect(gitLoadGraph).toHaveBeenLastCalledWith("ws-clear-history-filter", expect.objectContaining({ paths: [] }));
-    expect(picker.get('button[title="No active filters to clear"]').attributes("disabled")).toBeDefined();
+    expect(picker.find('button[title="Clear the search, branch and all commit filters"]').exists()).toBe(false);
     picker.unmount();
     vi.useRealTimers();
   });
@@ -628,6 +631,8 @@ describe("GitBranchesTab compact history picker", () => {
       "2026-01-01",
       "2026-02-01",
     ]);
+    expect(picker.get(".git-branches__paths-button").text()).toContain("Paths: 1");
+    await picker.get(".git-branches__paths-button").trigger("click");
     expect(picker.get(".git-branches__path-chip").text()).toContain("src/a.ts");
     expect(picker.text()).toContain("Sort: Topo");
     expect(picker.text()).toContain("View: Flat");
@@ -636,6 +641,7 @@ describe("GitBranchesTab compact history picker", () => {
     expect(select().value).toBe("feature/b");
     expect(picker.findAll('input[type="date"]')).toHaveLength(0);
     expect(picker.findAll(".git-branches__path-chip")).toHaveLength(0);
+    expect(picker.get(".git-branches__paths-button").text()).toBe("Paths ▾");
     expect(picker.text()).toContain("Sort: Date");
     expect(picker.text()).toContain("View: Graph");
     await picker.setProps({ activeRootPath: "/repo/a", profileId: "profile-b" } as never);
@@ -828,7 +834,6 @@ describe("GitBranchesTab compact history picker", () => {
     await flushPromises();
     await picker.get('[aria-label="History reference"]').trigger("click");
     expect(menuItems().map((item) => item.textContent?.trim())).toContain("★HEAD");
-    expect(picker.findAll(".git-history-picker__current")[0].text()).toContain("Working branch: Detached HEAD");
     expect(picker.findAll(".git-tree__placeholder").some((node) => node.text() === "No commits found.")).toBe(true);
     expect(picker.find('[data-testid="operation-card"]').exists()).toBe(true);
   });
@@ -1342,5 +1347,87 @@ describe("GitBranchesTab — create-pr dialog submission (shared submitPullReque
     mountedWrappers.push(picker);
     await flushPromises();
     for (const g of picker.findAllComponents({ name: "GitTreeGraph" })) expect(g.props("rangeBase")).toBe("");
+  });
+});
+
+describe("GitBranchesTab history toolbar", () => {
+  function mountMode(compactHistory: boolean, snapshot: Record<string, unknown> = {}) {
+    const wrapper = mount(GitBranchesTab, {
+      props: {
+        workspaceId: "ws-toolbar",
+        snapshot: { dirty: false, branch: "main", ...snapshot },
+        gitUi: {
+          branchList: { current: "main", local: [{ name: "main", isCurrent: true }], remotes: [] },
+          graph: { commits: [], head: "", refs: {} },
+        },
+        activeRootPath: "/repo",
+        compactHistory,
+      },
+      attachTo: document.body,
+    });
+    mountedWrappers.push(wrapper);
+    return wrapper;
+  }
+
+  test("history mode has no branch-tree toolbar; legacy mode has it", () => {
+    expect(mountMode(true).find(".git-branches__toolbar").exists()).toBe(false);
+    expect(mountMode(false).find(".git-branches__toolbar").exists()).toBe(true);
+  });
+
+  test("filters live in the History toolbar, or in the commits pane in legacy mode", () => {
+    const history = mountMode(true);
+    expect(history.get(".git-history-picker").findComponent(GitHistoryFilters).exists()).toBe(true);
+    expect(history.get(".git-branches__commits-pane").findComponent(GitHistoryFilters).exists()).toBe(false);
+    const legacy = mountMode(false);
+    expect(legacy.find(".git-history-picker").exists()).toBe(false);
+    expect(legacy.get(".git-branches__commits-pane").findComponent(GitHistoryFilters).exists()).toBe(true);
+  });
+
+  test("Clear filters shows only with an active filter, search or ref and resets the search", async () => {
+    const picker = mountMode(true);
+    const clearButton = () => picker.findAll("button").find((b) => b.text() === "Clear filters");
+    expect(clearButton()).toBeUndefined();
+    await picker.get('input[aria-label="Search commits"]').setValue("fix");
+    expect(clearButton()).toBeDefined();
+    await clearButton()!.trigger("click");
+    expect(historySelection.commitSearch).toBe("");
+    expect(clearButton()).toBeUndefined();
+    historySelection.ref = "main";
+    await flushPromises();
+    expect(clearButton()).toBeDefined();
+    await clearButton()!.trigger("click");
+    expect(historySelection.ref).toBe("");
+    historySelection.topoOrder = true;
+    await flushPromises();
+    expect(clearButton()).toBeDefined();
+    await clearButton()!.trigger("click");
+    expect(historySelection.topoOrder).toBe(false);
+  });
+
+  test("Refresh in the History toolbar does what the legacy Refresh does", async () => {
+    vi.useFakeTimers();
+    const refreshCalls = async (compactHistory: boolean) => {
+      const picker = mountMode(compactHistory);
+      await vi.advanceTimersByTimeAsync(500);
+      await flushPromises();
+      gitLoadGraph.mockClear();
+      const button = picker.findAll("button").find((b) => b.text() === "Refresh")!;
+      expect(button.attributes("title")).toContain("Re-list branches");
+      await button.trigger("click");
+      await vi.advanceTimersByTimeAsync(500);
+      return gitLoadGraph.mock.calls.length;
+    };
+    const legacy = await refreshCalls(false);
+    const history = await refreshCalls(true);
+    expect(legacy).toBeGreaterThan(0);
+    expect(history).toBe(legacy);
+    vi.useRealTimers();
+  });
+
+  test("Last fetch sits in the status line, not the toolbar", () => {
+    const picker = mountMode(true, { lastFetchAt: "2026-03-01T10:00:00Z" });
+    expect(picker.get(".git-branches__pane-head").text()).toContain("Last fetch:");
+    expect(picker.get(".git-history-picker").text()).not.toContain("Last fetch");
+    expect(picker.get(".git-history-picker").text()).not.toContain("Working branch");
   });
 });
