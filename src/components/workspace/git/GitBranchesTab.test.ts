@@ -110,14 +110,31 @@ import BranchSelectPopover from "./BranchSelectPopover.vue";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mountedWrappers: VueWrapper<any>[] = [];
 
-async function chooseHistoryRef(button: { trigger: (event: string) => Promise<void> }, optionText: string) {
+const menuItems = () => Array.from(document.body.querySelectorAll<HTMLElement>('[role="menuitem"]'));
+const optionRows = () => Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]'));
+
+async function chooseHistoryRef(button: { trigger: (event: string) => Promise<void> }, name: string) {
   await button.trigger("click");
-  const rows = Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]'));
-  const row = rows.find(
-    (candidate) =>
-      candidate.textContent?.trim() === optionText || candidate.textContent?.trim().endsWith(` ${optionText}`),
+  const direct = menuItems().find((item) =>
+    name === "All branches and tags"
+      ? item.textContent?.trim() === name
+      : item.textContent?.trim().endsWith("HEAD") && name === "HEAD",
   );
-  if (!row) throw new Error(`No History range option "${optionText}"`);
+  if (direct) {
+    direct.click();
+    await flushPromises();
+    return;
+  }
+  menuItems()
+    .find((item) => item.textContent?.trim() === "Select…")!
+    .click();
+  await flushPromises();
+  const input = document.body.querySelector<HTMLInputElement>('[aria-label="Search history references"]')!;
+  input.value = name;
+  input.dispatchEvent(new Event("input"));
+  await flushPromises();
+  const row = optionRows().find((candidate) => candidate.textContent?.trim() === name);
+  if (!row) throw new Error(`No History range option "${name}"`);
   row.click();
   await flushPromises();
 }
@@ -676,6 +693,11 @@ describe("GitBranchesTab compact history picker", () => {
         ?.getAttribute("aria-label"),
     ).toBe("Search commits");
     await picker.get('[aria-label="History reference"]').trigger("click");
+    expect(menuItems().map((item) => item.textContent?.trim())).toContain("Select…");
+    menuItems()
+      .find((item) => item.textContent?.trim() === "Select…")!
+      .click();
+    await flushPromises();
     expect(document.body.querySelector('[aria-label="Search history references"]')).not.toBeNull();
   });
 
@@ -804,9 +826,7 @@ describe("GitBranchesTab compact history picker", () => {
     });
     await flushPromises();
     await picker.get('[aria-label="History reference"]').trigger("click");
-    expect(Array.from(document.body.querySelectorAll('[role="option"]')).map((row) => row.textContent)).toContain(
-      "HEAD · detached",
-    );
+    expect(menuItems().map((item) => item.textContent?.trim())).toContain("★HEAD");
     expect(picker.findAll(".git-history-picker__current")[0].text()).toContain("Working branch: Detached HEAD");
     expect(picker.findAll(".git-tree__placeholder").some((node) => node.text() === "No commits found.")).toBe(true);
     expect(picker.find('[data-testid="operation-card"]').exists()).toBe(true);
@@ -840,12 +860,13 @@ describe("GitBranchesTab compact history picker", () => {
     await flushPromises();
     const select = picker.get('[aria-label="History reference"]');
     await select.trigger("click");
+    menuItems()
+      .find((item) => item.textContent?.trim() === "Select…")!
+      .click();
+    await flushPromises();
     const optionTexts = () =>
       Array.from(document.body.querySelectorAll('[role="option"]')).map((option) => option.textContent || "");
     expect(optionTexts().some((text) => text.includes("feature/topic-399"))).toBe(true);
-    await select.trigger("click");
-
-    await select.trigger("click");
     const refSearch = document.body.querySelector<HTMLInputElement>('[aria-label="Search history references"]')!;
     refSearch.value = "feature/topic-399";
     refSearch.dispatchEvent(new Event("input"));
@@ -989,9 +1010,10 @@ describe("GitBranchesTab compact history picker", () => {
     await flushPromises();
     const select = picker.get('[aria-label="History reference"]');
 
-    await chooseHistoryRef(select, "HEAD · main");
+    await chooseHistoryRef(select, "HEAD");
     await flushPromises();
     expect(historySelection.ref).toBe("HEAD");
+    expect(picker.get('[aria-label="History reference"]').text()).toContain("Branch: HEAD");
     await vi.advanceTimersByTimeAsync(300);
     expect(gitLoadGraph).toHaveBeenLastCalledWith("ws-head-scope", expect.objectContaining({ branch: "HEAD" }));
 

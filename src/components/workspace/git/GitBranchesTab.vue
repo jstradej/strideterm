@@ -18,8 +18,16 @@
       <div class="git-history-picker__select">
         <HistoryRangePicker
           :model-value="selectedRef || '__ALL__'"
-          v-model:search-query="historySearch"
-          :items="historyRangeItems"
+          :current="branchList.current"
+          :favorites="historyPreferences.favorites"
+          :recent="historyPreferences.recent"
+          :local="historyLocalNames"
+          :remotes="historyRemoteNames"
+          :remote-names="effectiveRemoteNames"
+          :tags="historyTagNames"
+          :default-branch="branchList.defaultBranch"
+          :default-remote="branchList.defaultRemote"
+          :loading-ref="historyLoadingRef"
           @change="onHistoryRefChange"
         />
       </div>
@@ -798,20 +806,11 @@ const historyCommitSearch = computed({
       commitSearch,
     }),
 });
-type HistoryRangeItem = { kind: "section"; label: string } | { kind: "option"; value: string; label: string };
-const historySearch = ref("");
 const historyRefNotice = ref("");
 const historyPreferences = computed(() =>
   gitUiStore.getGitHistoryPreferences(props.workspaceId, props.activeRootPath || "", props.profileId || "default"),
 );
 const historyFavoriteRef = computed(() => selectedRef.value || "HEAD");
-function historyRefLabel(ref: string): string {
-  if (ref === "HEAD") return `HEAD · ${branchList.value.current || "detached"}`;
-  if (tags.value.some((tag: { name?: string }) => tag.name === ref)) return `Tag · ${ref}`;
-  if (branchList.value.remotes.some((branch: { name?: string }) => branch.name === ref))
-    return `Remote branch · ${ref}`;
-  return `Branch · ${ref}`;
-}
 function toggleHistoryFavorite() {
   gitUiStore.toggleGitHistoryFavorite(
     props.workspaceId,
@@ -820,56 +819,17 @@ function toggleHistoryFavorite() {
     props.profileId || "default",
   );
 }
-const filteredHistoryBranches = computed(() =>
-  branchList.value.local.filter((branch) => branch.name.toLowerCase().includes(historySearch.value.toLowerCase())),
-);
-const filteredHistoryRemotes = computed(() =>
-  branchList.value.remotes.filter((branch) => branch.name.toLowerCase().includes(historySearch.value.toLowerCase())),
-);
-const filteredHistoryTags = computed(() =>
-  tags.value.filter((tag) => tag.name.toLowerCase().includes(historySearch.value.toLowerCase())),
-);
-const historyRangeItems = computed<HistoryRangeItem[]>(() => {
-  const items: HistoryRangeItem[] = [
-    { kind: "option", value: "__ALL__", label: "All branches and tags" },
-    { kind: "option", value: "HEAD", label: `HEAD · ${branchList.value.current || "detached"}` },
-  ];
+const historyLocalNames = computed(() => branchList.value.local.map((branch) => branch.name));
+const historyRemoteNames = computed(() => branchList.value.remotes.map((branch) => branch.name));
+const historyTagNames = computed(() => tags.value.map((tag) => tag.name));
+const historyLoadingRef = computed(() => {
   const ref = selectedRef.value;
-  if (
-    ref &&
-    (branchesLoading.value || props.gitUi?.tagsLoading) &&
-    !branchList.value.local.some((branch) => branch.name === ref) &&
-    !branchList.value.remotes.some((branch) => branch.name === ref) &&
-    !tags.value.some((tag) => tag.name === ref)
-  ) {
-    items.push({ kind: "option", value: ref, label: `Loading ${ref}…` });
-  }
-  const { favorites, recent } = historyPreferences.value;
-  if (favorites.length) {
-    items.push({ kind: "section", label: "Favorites" });
-    for (const name of favorites) items.push({ kind: "option", value: name, label: historyRefLabel(name) });
-  }
-  if (recent.length) {
-    items.push({ kind: "section", label: "Recent" });
-    for (const name of recent) items.push({ kind: "option", value: name, label: historyRefLabel(name) });
-  }
-  items.push({ kind: "section", label: "Local branches" });
-  for (const branch of filteredHistoryBranches.value) {
-    items.push({
-      kind: "option",
-      value: branch.name,
-      label: `Branch · ${branch.name}${branch.isCurrent ? " (working branch)" : ""}`,
-    });
-  }
-  items.push({ kind: "section", label: "Remote branches" });
-  for (const branch of filteredHistoryRemotes.value) {
-    items.push({ kind: "option", value: branch.name, label: `Remote branch · ${branch.name}` });
-  }
-  items.push({ kind: "section", label: "Tags" });
-  for (const tag of filteredHistoryTags.value) {
-    items.push({ kind: "option", value: tag.name, label: `Tag · ${tag.name}` });
-  }
-  return items;
+  const known =
+    !ref ||
+    historyLocalNames.value.includes(ref) ||
+    historyRemoteNames.value.includes(ref) ||
+    historyTagNames.value.includes(ref);
+  return !known && (branchesLoading.value || props.gitUi?.tagsLoading) ? ref : "";
 });
 function onHistoryRefChange(value: string) {
   const selected = value === "__ALL__" ? "" : value;
