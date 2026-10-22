@@ -5432,7 +5432,12 @@ describe("runtime integration", () => {
         activeProfileId: "profile-b",
         activeProjectId: "shared-b",
         profiles: [
-          { id: "default", name: "Default" },
+          {
+            id: "default",
+            name: "Default",
+            lastActiveWorkspaceId: "duplicate-a",
+            lastActiveSessionId: "duplicate-a:panel-a",
+          },
           { id: "profile-b", name: "Profile B" },
         ],
         projects: [
@@ -7829,6 +7834,177 @@ describe("runtime integration", () => {
     const worktree = workspaces.find((w) => w.cwd === branchDir);
     expect(worktree).toBeDefined();
     expect(worktree?.notes).toBe("Worktree of Parent");
+  });
+
+  test("syncWorktrees removes same-profile duplicate records but keeps one record per profile", async () => {
+    const parentDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-sync-wt-dedupe-"));
+    tempPaths.push(parentDir);
+    const branchDir = path.join(parentDir, ".strideterm", "tree", "feature-x");
+    const fixture = await createFixture({
+      initialState: {
+        profiles: [
+          { id: "default", name: "Default" },
+          { id: "profile-b", name: "Profile B" },
+        ],
+        workspaces: [
+          ...["default", "profile-b"].map((profileId) => ({
+            id: `parent-${profileId}`,
+            name: "Parent",
+            kind: "terminal",
+            profileId,
+            cwd: parentDir,
+            panels: [{ id: `shell-${profileId}`, title: "Shell", command: "", shell: true, startup: "manual" }],
+          })),
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    await fs.mkdir(branchDir, { recursive: true });
+    await fixture.store.mutate((draft: AppState) => {
+      draft.workspaces.push(
+        {
+          id: "duplicate-a",
+          name: "Parent / feature-x",
+          kind: "terminal",
+          profileId: "default",
+          cwd: branchDir,
+          notes: "Worktree of Parent",
+          starred: false,
+          panels: [{ id: "panel-a", title: "Shell", command: "", shell: true, startup: "manual" }],
+        },
+        {
+          id: "duplicate-b",
+          name: "Parent / feature-x",
+          kind: "terminal",
+          profileId: "default",
+          cwd: path.join(parentDir, ".strideterm", "tree", ".", "feature-x"),
+          notes: "Worktree of Parent",
+          starred: true,
+          panels: [{ id: "panel-b", title: "Shell", command: "", shell: true, startup: "manual" }],
+        },
+        {
+          id: "profile-b-worktree",
+          name: "Parent / feature-x",
+          kind: "terminal",
+          profileId: "profile-b",
+          cwd: branchDir,
+          notes: "Worktree of Parent",
+          panels: [{ id: "panel-c", title: "Shell", command: "", shell: true, startup: "manual" }],
+        },
+      );
+      const defaultProfile = draft.profiles.find((profile) => profile.id === "default");
+      if (defaultProfile) {
+        defaultProfile.lastActiveWorkspaceId = "duplicate-a";
+        defaultProfile.lastActiveSessionId = "duplicate-a:panel-a";
+      }
+    });
+    await fixture.runtime.syncWorktrees();
+
+    const worktrees = fixture.runtime
+      .getPayload()
+      .appState.workspaces.filter((workspace) => workspace.cwd === branchDir);
+
+    expect(worktrees.filter((workspace) => workspace.profileId === "default")).toHaveLength(1);
+    expect(worktrees.filter((workspace) => workspace.profileId === "profile-b")).toHaveLength(1);
+    expect(worktrees.find((workspace) => workspace.profileId === "default")?.id).toBe("duplicate-b");
+    expect(worktrees.find((workspace) => workspace.profileId === "default")?.starred).toBe(true);
+    expect(fixture.runtime.getPayload().appState.profiles?.find((profile) => profile.id === "default")).toMatchObject({
+      lastActiveWorkspaceId: "duplicate-b",
+      lastActiveSessionId: "duplicate-b:panel-b",
+    });
+    expect(await fs.stat(branchDir).then((stat) => stat.isDirectory())).toBe(true);
+  });
+
+  test("syncWorktrees defers duplicate removal while a duplicate owns a live terminal", async () => {
+    const parentDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-sync-wt-live-"));
+    tempPaths.push(parentDir);
+    const branchDir = path.join(parentDir, ".strideterm", "tree", "feature-live");
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [
+          {
+            id: "parent",
+            name: "Parent",
+            kind: "terminal",
+            cwd: parentDir,
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "manual" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    await fs.mkdir(branchDir, { recursive: true });
+    await fixture.store.mutate((draft: AppState) => {
+      for (const id of ["duplicate-a", "duplicate-b"]) {
+        draft.workspaces.push({
+          id,
+          name: "Parent / feature-live",
+          kind: "terminal",
+          profileId: "default",
+          cwd: branchDir,
+          notes: "Worktree of Parent",
+          panels: [{ id: `${id}-panel`, title: "Shell", command: "", shell: true, startup: "manual" }],
+        });
+      }
+    });
+    fixture.sessionManager.sessions.set("duplicate-a:duplicate-a-panel", { workspaceId: "duplicate-a" });
+
+    await fixture.runtime.syncWorktrees();
+
+    expect(
+      fixture.runtime.getPayload().appState.workspaces.filter((workspace) => workspace.cwd === branchDir),
+    ).toHaveLength(2);
+    expect(fixture.sessionManager.sessions.has("duplicate-a:duplicate-a-panel")).toBe(true);
+
+    fixture.sessionManager.sessions.clear();
+    await fixture.runtime.syncWorktrees();
+
+    expect(
+      fixture.runtime.getPayload().appState.workspaces.filter((workspace) => workspace.cwd === branchDir),
+    ).toHaveLength(1);
+  });
+
+  test("createWorktree serializes disk discovery until its workspace record is committed", async () => {
+    const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-worktree-race-"));
+    tempPaths.push(projectRoot);
+    const treePath = path.join(projectRoot, ".strideterm", "tree", "feature-race");
+    let signalAddStarted!: () => void;
+    let releaseAdd!: () => void;
+    const addStarted = new Promise<void>((resolve) => (signalAddStarted = resolve));
+    const addGate = new Promise<void>((resolve) => (releaseAdd = resolve));
+    const execFileText = vi.fn(async (_command: string, args: string[]) => {
+      if (args[0] === "worktree" && args[1] === "add") {
+        await fs.mkdir(treePath, { recursive: true });
+        signalAddStarted();
+        await addGate;
+      }
+      return { stdout: "", stderr: "" };
+    });
+    const fixture = await createFixture({
+      execFileTextImpl: execFileText,
+      initialState: {
+        workspaces: [
+          {
+            id: "parent",
+            name: "Parent",
+            kind: "terminal",
+            cwd: projectRoot,
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "manual" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    const creating = fixture.runtime.createWorktree({ projectId: "parent", name: "feature-race" });
+    await addStarted;
+    const syncing = fixture.runtime.syncWorktrees();
+    releaseAdd();
+    const [createdPayload] = await Promise.all([creating, syncing]);
+
+    const matching = fixture.runtime.getPayload().appState.workspaces.filter((workspace) => workspace.cwd === treePath);
+    expect(matching).toHaveLength(1);
+    expect(matching[0].id).toBe(createdPayload.appState.workspaces.find((workspace) => workspace.cwd === treePath)?.id);
   });
 
   test("saveWorkspace triggers syncTreeDirWatchers — git poll detects new tree entries after save (#41)", async () => {

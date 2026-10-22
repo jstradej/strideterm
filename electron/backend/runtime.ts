@@ -6447,15 +6447,26 @@ export async function createRuntime({
       );
     }
   }
-  let syncWorktreesRunning = false;
+  let worktreeMutationQueue = Promise.resolve();
+  function withWorktreeMutationLock<T>(operation: () => Promise<T>): Promise<T> {
+    const current = worktreeMutationQueue.then(operation, operation);
+    worktreeMutationQueue = current.then(
+      () => undefined,
+      () => undefined,
+    );
+    return current;
+  }
+
+  function worktreeIdentity(profileId: string | undefined, cwd: string): string {
+    const normalizedCwd = path.resolve(cwd).replace(/\\/g, "/");
+    return JSON.stringify([
+      profileId || "default",
+      process.platform === "win32" ? normalizedCwd.toLowerCase() : normalizedCwd,
+    ]);
+  }
+
   async function syncWorktrees() {
-    if (syncWorktreesRunning) return false;
-    syncWorktreesRunning = true;
-    try {
-      return await syncWorktreesImpl();
-    } finally {
-      syncWorktreesRunning = false;
-    }
+    return withWorktreeMutationLock(syncWorktreesImpl);
   }
 
   /**
@@ -6627,13 +6638,42 @@ export async function createRuntime({
     const toRepair: Array<{ id: string; profileId: string }> = [];
 
     // 6a: pre-build lookup indexes to avoid O(n²) find/some inside the scan loop.
-    const worktreeByProfileAndCwd = new Map<string, WorkspaceState>();
+    const worktreesByIdentity = new Map<string, WorkspaceState[]>();
     for (const wt of worktrees) {
-      worktreeByProfileAndCwd.set(`${wt.profileId || "default"}|${wt.cwd}`, wt);
+      if (!wt.cwd) continue;
+      const identity = worktreeIdentity(wt.profileId, wt.cwd);
+      const entries = worktreesByIdentity.get(identity) || [];
+      entries.push(wt);
+      worktreesByIdentity.set(identity, entries);
+    }
+    const duplicateToCanonical = new Map<string, string>();
+    const duplicateIdsToRemove = new Set<string>();
+    const activeWorkspaceIds = new Set([
+      state.activeWorkspaceId,
+      ...(state.windowSlots || []).map((slot) => slot.activeWorkspaceId),
+    ]);
+    for (const entries of worktreesByIdentity.values()) {
+      if (entries.length < 2) continue;
+      const hasLiveSession = entries.some((workspace) =>
+        [...sessions.sessions.values()].some((session) => session.workspaceId === workspace.id),
+      );
+      if (hasLiveSession) continue;
+      const ordered = [...entries].sort((a, b) => {
+        const score = (workspace: WorkspaceState) =>
+          (activeWorkspaceIds.has(workspace.id) ? 4 : 0) +
+          (workspace.starred ? 2 : 0) +
+          (Date.parse(workspace.lastWorkedAt || "") || 0) / 1_000_000_000_000;
+        return score(b) - score(a);
+      });
+      const canonical = ordered[0];
+      for (const duplicate of ordered.slice(1)) {
+        duplicateToCanonical.set(duplicate.id, canonical.id);
+        duplicateIdsToRemove.add(duplicate.id);
+      }
     }
     const taskCwdSet = new Set<string>();
     for (const ws of state.workspaces) {
-      if (ws.kind === "task" && ws.cwd) taskCwdSet.add(`${ws.profileId || "default"}|${ws.cwd}`);
+      if (ws.kind === "task" && ws.cwd) taskCwdSet.add(worktreeIdentity(ws.profileId, ws.cwd));
     }
     const toAddKeySet = new Set<string>();
 
@@ -6660,7 +6700,7 @@ export async function createRuntime({
         if (!entry.isDirectory()) continue;
         const treePath = path.join(treeDir, entry.name);
         if (pendingWorktreeDeletions.has(path.resolve(treePath))) continue;
-        const existing = worktreeByProfileAndCwd.get(`${parentProfileId}|${treePath}`);
+        const existing = worktreesByIdentity.get(worktreeIdentity(parentProfileId, treePath))?.[0];
         if (existing) {
           // Repair profileId if it drifted from parent
           if ((existing.profileId || "default") !== parentProfileId) {
@@ -6668,7 +6708,7 @@ export async function createRuntime({
           }
           continue;
         }
-        const toAddKey = `${parentProfileId}|${treePath}`;
+        const toAddKey = worktreeIdentity(parentProfileId, treePath);
         if (toAddKeySet.has(toAddKey)) continue;
         // Skip directories already owned by a task workspace — the task entry takes priority.
         if (taskCwdSet.has(toAddKey)) continue;
@@ -6706,10 +6746,82 @@ export async function createRuntime({
       }
     }
 
-    if (toAdd.length === 0 && toRemove.length === 0 && toRepair.length === 0) return false;
+    if (toAdd.length === 0 && toRemove.length === 0 && toRepair.length === 0 && duplicateIdsToRemove.size === 0)
+      return false;
 
     await store.mutate((draft: AppState) => {
-      removeWorkspacesFromDraft(draft, new Set(toRemove.map((wt) => wt.id)));
+      const duplicateSessionIds = new Map<string, string>();
+      for (const duplicate of worktreesByIdentity.values()) {
+        if (duplicate.length < 2 || !duplicate.some((workspace) => duplicateIdsToRemove.has(workspace.id))) continue;
+        const canonicalId = duplicate.find((workspace) => !duplicateIdsToRemove.has(workspace.id))?.id;
+        if (!canonicalId) continue;
+        const canonical = draft.workspaces.find((workspace) => workspace.id === canonicalId);
+        if (!canonical) continue;
+        for (const workspace of duplicate.filter((candidate) => candidate.id !== canonicalId)) {
+          if (workspace.starred) canonical.starred = true;
+          if ((Date.parse(workspace.lastWorkedAt || "") || 0) > (Date.parse(canonical.lastWorkedAt || "") || 0)) {
+            canonical.lastWorkedAt = workspace.lastWorkedAt;
+          }
+          const panelSignature = (panel: WorkspaceState["panels"][number]) => JSON.stringify({ ...panel, id: "" });
+          const panelIds = new Set(canonical.panels.map((panel) => panel.id));
+          const panelBySignature = new Map(canonical.panels.map((panel) => [panelSignature(panel), panel]));
+          for (const panel of workspace.panels) {
+            const signature = panelSignature(panel);
+            const matchingPanel = panelBySignature.get(signature);
+            if (matchingPanel) {
+              duplicateSessionIds.set(`${workspace.id}:${panel.id}`, `${canonical.id}:${matchingPanel.id}`);
+              continue;
+            }
+            const retainedPanel = panelIds.has(panel.id)
+              ? { ...structuredClone(panel), id: `panel-${randomUUID()}` }
+              : structuredClone(panel);
+            canonical.panels.push(retainedPanel);
+            panelIds.add(retainedPanel.id);
+            panelBySignature.set(signature, retainedPanel);
+            duplicateSessionIds.set(`${workspace.id}:${panel.id}`, `${canonical.id}:${retainedPanel.id}`);
+          }
+        }
+      }
+      for (const workspace of draft.workspaces) {
+        const remap = (parentId: string) => duplicateToCanonical.get(parentId) || parentId;
+        if (workspace.task?.parentWorkspaceId)
+          workspace.task.parentWorkspaceId = remap(workspace.task.parentWorkspaceId);
+        if (workspace.review?.parentWorkspaceId)
+          workspace.review.parentWorkspaceId = remap(workspace.review.parentWorkspaceId);
+        if (workspace.quickfix?.parentWorkspaceId)
+          workspace.quickfix.parentWorkspaceId = remap(workspace.quickfix.parentWorkspaceId);
+      }
+      for (const slot of draft.windowSlots || []) {
+        slot.activeWorkspaceId = duplicateToCanonical.get(slot.activeWorkspaceId) || slot.activeWorkspaceId;
+      }
+      draft.activeWorkspaceId = duplicateToCanonical.get(draft.activeWorkspaceId) || draft.activeWorkspaceId;
+      for (const profile of draft.profiles) {
+        if (profile.lastActiveWorkspaceId) {
+          profile.lastActiveWorkspaceId =
+            duplicateToCanonical.get(profile.lastActiveWorkspaceId) || profile.lastActiveWorkspaceId;
+        }
+        if (profile.lastActiveSessionId) {
+          profile.lastActiveSessionId =
+            duplicateSessionIds.get(profile.lastActiveSessionId) || profile.lastActiveSessionId;
+          for (const [duplicateId, canonicalId] of duplicateToCanonical) {
+            if (profile.lastActiveSessionId.startsWith(`${duplicateId}:`)) {
+              profile.lastActiveSessionId = `${canonicalId}:${profile.lastActiveSessionId.slice(duplicateId.length + 1)}`;
+              break;
+            }
+          }
+        }
+        if (profile.workspaceGrid) {
+          profile.workspaceGrid.cellWorkspaceIds = profile.workspaceGrid.cellWorkspaceIds.map((id) =>
+            id ? duplicateToCanonical.get(id) || id : null,
+          );
+        }
+      }
+      if (draft.workspaceGrid) {
+        draft.workspaceGrid.cellWorkspaceIds = draft.workspaceGrid.cellWorkspaceIds.map((id) =>
+          id ? duplicateToCanonical.get(id) || id : null,
+        );
+      }
+      removeWorkspacesFromDraft(draft, new Set([...toRemove.map((wt) => wt.id), ...duplicateIdsToRemove]));
       for (const repair of toRepair) {
         const ws = draft.workspaces.find((w) => w.id === repair.id);
         if (ws) ws.profileId = repair.profileId;
@@ -6724,6 +6836,9 @@ export async function createRuntime({
     // forget, matching this function's existing non-awaiting behavior.
     for (const workspace of toRemove) {
       void finalizeWorkspaceRemoval(workspace);
+    }
+    for (const workspace of worktrees) {
+      if (duplicateIdsToRemove.has(workspace.id)) void finalizeWorkspaceRemoval(workspace);
     }
 
     return true;
@@ -12639,43 +12754,57 @@ export async function createRuntime({
           repoPath = project.cwd;
         }
 
-        const treePath = await ensureWorktree(repoPath, name);
-        log.info("createWorktree: worktree created", { workspaceId: targetWorkspaceId, branch: name, treePath });
-
-        // Create subproject cloning parent panels
-        const newProject = normalizeWorkspace({
-          id: `workspace-${randomUUID()}`,
-          name: `${project.name} / ${name}`,
-          icon: project.icon,
-          color: project.color,
-          kind: project.kind,
-          source: project.source,
-          pluginId: project.pluginId,
-          profileId: project.profileId,
-          connectionId: project.connectionId || "",
-          cwd: treePath,
-          notes: `Worktree of ${project.name}`,
-          activePanelId: "",
-          panels:
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: project is server state JSON, typed migration pending
-            (project as any).panels?.map((p: any) => ({
-              ...p,
-              id: `panel-${randomUUID()}`,
-              sshMcpEnabled: false,
-            })) || [],
-        });
-
-        await store.mutate((draft: AppState) => {
-          insertWorkspace(draft.workspaces, newProject, getViewerActiveWorkspaceId(windowId));
-          draft.activeWorkspaceId = newProject.id;
-          // Creating a worktree workspace is work (V2 plan allowlist).
-          markWorkspaceWorked(draft, newProject.id);
-          // Entry check (assertWorkspaceInViewerProfile) already refused any
-          // cross-profile request, so the mirror here is always in-profile.
-          if (windowId) {
-            const slot = (draft.windowSlots || []).find((s) => s.id === windowId);
-            if (slot) slot.activeWorkspaceId = newProject.id;
+        const newProject = await withWorktreeMutationLock(async () => {
+          const liveProject = findWorkspace(getState(), targetWorkspaceId);
+          if (!liveProject?.cwd || liveProject.profileId !== project.profileId || liveProject.cwd !== project.cwd) {
+            throw new Error("Workspace changed while worktree creation was waiting.");
           }
+          assertWorkspaceInViewerProfile(targetWorkspaceId, windowId);
+          const liveGitRoots = Array.isArray(liveProject.gitRoots) ? liveProject.gitRoots.filter(Boolean) : [];
+          if (liveGitRoots.length >= 2) {
+            const liveRoots = liveGitRoots.map(normalizePath);
+            if (
+              !liveRoots.includes(normalizePath(repoPath)) &&
+              normalizePath(repoPath) !== normalizePath(liveProject.cwd)
+            ) {
+              throw new Error(`Selected repository ${repoPath} is no longer part of this workspace.`);
+            }
+          }
+          const treePath = await ensureWorktree(repoPath, name);
+          log.info("createWorktree: worktree created", { workspaceId: targetWorkspaceId, branch: name, treePath });
+
+          const newProject = normalizeWorkspace({
+            id: `workspace-${randomUUID()}`,
+            name: `${liveProject.name} / ${name}`,
+            icon: liveProject.icon,
+            color: liveProject.color,
+            kind: liveProject.kind,
+            source: liveProject.source,
+            pluginId: liveProject.pluginId,
+            profileId: liveProject.profileId,
+            connectionId: liveProject.connectionId || "",
+            cwd: treePath,
+            notes: `Worktree of ${liveProject.name}`,
+            activePanelId: "",
+            panels:
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: project is server state JSON, typed migration pending
+              (liveProject as any).panels?.map((p: any) => ({
+                ...p,
+                id: `panel-${randomUUID()}`,
+                sshMcpEnabled: false,
+              })) || [],
+          });
+
+          await store.mutate((draft: AppState) => {
+            insertWorkspace(draft.workspaces, newProject, getViewerActiveWorkspaceId(windowId));
+            draft.activeWorkspaceId = newProject.id;
+            markWorkspaceWorked(draft, newProject.id);
+            if (windowId) {
+              const slot = (draft.windowSlots || []).find((s) => s.id === windowId);
+              if (slot) slot.activeWorkspaceId = newProject.id;
+            }
+          });
+          return newProject;
         });
         // Remote viewer: show the new worktree in the caller's remote context.
         mirrorRemoteViewerWorkspace(windowId, newProject.id);
