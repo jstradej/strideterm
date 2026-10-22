@@ -544,7 +544,12 @@
               View account limits
             </button>
           </p>
-          <MobileDeviceList v-if="!activePairing && !pairingSas" :profiles="profileOptions" :refresh-on-mount="false" />
+          <MobileDeviceList
+            v-if="!activePairing && !pairingSas"
+            :profiles="profileOptions"
+            :refresh-on-mount="false"
+            :highlight-device-id="justPairedDeviceId"
+          />
           <details v-if="!activePairing && !pairingSas" class="mobile-tab__privacy">
             <summary>Privacy and retention</summary>
             <p class="mobile-tab__privacy-copy">
@@ -915,6 +920,8 @@ watch(
 const approvalBusy = ref(false);
 /** A failure from the approval call, shown in place rather than swallowed — see `submitTypedSas`. */
 const approvalError = ref("");
+/** The phone activated in this panel, marked in the device list so the success is not lost among older rows. */
+const justPairedDeviceId = ref<string | null>(null);
 
 function dismissSas() {
   approvalError.value = "";
@@ -976,6 +983,7 @@ async function submitTypedSas() {
   try {
     const result = await appStore.approveMobileDevice(pending.deviceId, typedSas.value);
     if (result.ok) {
+      justPairedDeviceId.value = pending.deviceId;
       addPhoneSetupOpen.value = false;
     } else {
       approvalError.value =
@@ -1402,6 +1410,7 @@ async function startPairing() {
   }
   pairingBusy.value = true;
   pairingError.value = "";
+  justPairedDeviceId.value = null;
   nowTick.value = Date.now();
   try {
     await appStore.createMobilePairingInvitation({

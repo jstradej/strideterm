@@ -1244,6 +1244,34 @@ describe("SettingsMobileTab", () => {
     expect(wrapper.find(".pairing-sas").exists()).toBe(false);
   });
 
+  test("an activated phone is listed first and marked as just paired", async () => {
+    const older = { ...SAMPLE_DEVICE, deviceId: "mobile-0", label: "Older phone", createdAt: 500 };
+    const listMobileDevices = vi.fn(async () => [older]);
+    const { wrapper, transport } = await mountTab({ listMobileDevices });
+    transport._pairingProgress({
+      status: "awaiting-approval",
+      deviceId: "mobile-1",
+      label: "Pixel 8",
+      sasReady: true,
+      pairingId: "pairing-1",
+    });
+    await flushPromises();
+    listMobileDevices.mockResolvedValue([older, SAMPLE_DEVICE]);
+    await wrapper.get('[data-testid="pairing-sas-input"]').setValue("1234 5678");
+
+    await wrapper
+      .findAll("button")
+      .find((b) => b.text() === "Activate")!
+      .trigger("click");
+    await flushPromises();
+
+    const cards = wrapper.findAll(".mobile-device-card");
+    expect(cards.map((card) => card.find("strong").text())).toEqual(["Pixel 8", "Older phone"]);
+    expect(cards[0]!.classes()).toContain("mobile-device-card--just-paired");
+    expect(cards[0]!.text()).toContain("Just paired");
+    expect(cards[1]!.classes()).not.toContain("mobile-device-card--just-paired");
+  });
+
   test("Mismatch revokes the device and names the reason", async () => {
     const { wrapper, transport } = await mountTab();
     transport._pairingProgress({
