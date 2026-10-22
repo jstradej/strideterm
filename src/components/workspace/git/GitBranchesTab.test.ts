@@ -1,6 +1,8 @@
 import { describe, expect, test, beforeEach, afterEach, vi } from "vitest";
 import { reactive, ref } from "vue";
 import { mount, flushPromises, type VueWrapper } from "@vue/test-utils";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { setActivePinia, createPinia } from "pinia";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -107,6 +109,18 @@ import BranchSelectPopover from "./BranchSelectPopover.vue";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mountedWrappers: VueWrapper<any>[] = [];
+
+async function chooseHistoryRef(button: { trigger: (event: string) => Promise<void> }, optionText: string) {
+  await button.trigger("click");
+  const rows = Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]'));
+  const row = rows.find(
+    (candidate) =>
+      candidate.textContent?.trim() === optionText || candidate.textContent?.trim().endsWith(` ${optionText}`),
+  );
+  if (!row) throw new Error(`No History range option "${optionText}"`);
+  row.click();
+  await flushPromises();
+}
 
 function mountTab(gitUiOverrides: Record<string, unknown> = {}) {
   const wrapper = mount(GitBranchesTab, {
@@ -279,6 +293,44 @@ describe("GitBranchesTab compact history picker", () => {
     );
     picker.unmount();
     vi.useRealTimers();
+  });
+
+  test("compact History keeps the commits pane visible", async () => {
+    const picker = mount(GitBranchesTab, {
+      props: {
+        workspaceId: "ws-compact-panes",
+        snapshot: { dirty: false, branch: "main" },
+        gitUi: {
+          branchList: { current: "main", local: [{ name: "main", isCurrent: true }], remotes: [] },
+          graph: {
+            commits: [
+              {
+                hash: "abc123456789",
+                shortHash: "abc1234",
+                parents: [],
+                subject: "A commit",
+                author: "Ada Example",
+                relativeDate: "today",
+                isoDate: "2026-10-21T00:00:00.000Z",
+                refs: [],
+              },
+            ],
+            head: "abc123456789",
+            refs: {},
+          },
+          selectedCommit: "",
+        },
+        activeRootPath: "/repo",
+        compactHistory: true,
+      },
+    });
+    mountedWrappers.push(picker);
+    await flushPromises();
+    const panes = picker.findAll(".git-branches__panes > .splitpanes__pane");
+    expect(panes).toHaveLength(2);
+    expect(panes[0].findComponent({ name: "GitTreeGraph" }).exists()).toBe(true);
+    const source = readFileSync(resolve(process.cwd(), "src/components/workspace/git/GitBranchesTab.vue"), "utf8");
+    expect(source).not.toContain("splitpanes__pane:first-child");
   });
 
   test("sends the selected commit author as a graph filter", async () => {
@@ -454,7 +506,7 @@ describe("GitBranchesTab compact history picker", () => {
       },
       attachTo: document.body,
     });
-    const select = picker.get<HTMLSelectElement>('[aria-label="History reference"]');
+    const select = picker.get<HTMLButtonElement>('[aria-label="History reference"]');
     expect(select.element.tabIndex).toBe(0);
     select.element.focus();
     expect(document.activeElement).toBe(select.element);
@@ -513,7 +565,7 @@ describe("GitBranchesTab compact history picker", () => {
         compactHistory: true,
       },
     });
-    const select = () => picker.get<HTMLSelectElement>('[aria-label="History reference"]').element;
+    const select = () => ({ value: picker.get('[aria-label="History reference"]').attributes("data-value") });
     expect(select().value).toBe("feature/a");
     expect(picker.findAll<HTMLInputElement>('input[type="date"]').map((input) => input.element.value)).toEqual([
       "2026-01-01",
@@ -554,7 +606,7 @@ describe("GitBranchesTab compact history picker", () => {
     });
     await flushPromises();
     expect(historySelection.ref).toBe("origin/topic");
-    expect(picker.get('[aria-label="History reference"]').element).toHaveProperty("value", "origin/topic");
+    expect(picker.get('[aria-label="History reference"]').attributes("data-value")).toBe("origin/topic");
   });
 
   test("prunes a missing ref when successful loading finishes with empty ref lists", async () => {
@@ -660,7 +712,10 @@ describe("GitBranchesTab compact history picker", () => {
       },
     });
     await flushPromises();
-    expect(picker.get('[aria-label="History reference"]').text()).toContain("HEAD · detached");
+    await picker.get('[aria-label="History reference"]').trigger("click");
+    expect(Array.from(document.body.querySelectorAll('[role="option"]')).map((row) => row.textContent)).toContain(
+      "HEAD · detached",
+    );
     expect(picker.findAll(".git-history-picker__current")[0].text()).toContain("Working branch: Detached HEAD");
     expect(picker.findAll(".git-tree__placeholder").some((node) => node.text() === "No commits found.")).toBe(true);
     expect(picker.find('[data-testid="operation-card"]').exists()).toBe(true);
@@ -693,13 +748,16 @@ describe("GitBranchesTab compact history picker", () => {
     });
     await flushPromises();
     const select = picker.get('[aria-label="History reference"]');
-    expect(select.findAll("option").some((option) => option.text().includes("feature/topic-399"))).toBe(true);
+    await select.trigger("click");
+    const optionTexts = () =>
+      Array.from(document.body.querySelectorAll('[role="option"]')).map((option) => option.textContent || "");
+    expect(optionTexts().some((text) => text.includes("feature/topic-399"))).toBe(true);
+    await select.trigger("click");
 
     await picker.get('[aria-label="Search history references"]').setValue("feature/topic-399");
-    expect(select.findAll("option").filter((option) => option.text().includes("feature/topic-")).length).toBeLessThan(
-      5,
-    );
-    expect(select.text()).toContain("feature/topic-399");
+    await select.trigger("click");
+    expect(optionTexts().filter((text) => text.includes("feature/topic-")).length).toBeLessThan(5);
+    expect(optionTexts().some((text) => text.includes("feature/topic-399"))).toBe(true);
   });
 
   test("distinguishes an empty commit search from a history query error", async () => {
@@ -758,7 +816,7 @@ describe("GitBranchesTab compact history picker", () => {
     });
     await flushPromises();
     const select = picker.get('[aria-label="History reference"]');
-    await select.setValue("origin/main");
+    await chooseHistoryRef(select, "origin/main");
     expect(historySelection.ref).toBe("origin/main");
     await flushPromises();
     await vi.advanceTimersByTimeAsync(300);
@@ -802,14 +860,14 @@ describe("GitBranchesTab compact history picker", () => {
     const first = mount(GitBranchesTab, { props });
     mountedWrappers.push(first);
     await flushPromises();
-    await first.get('[aria-label="History reference"]').setValue("origin/release");
+    await chooseHistoryRef(first.get('[aria-label="History reference"]'), "origin/release");
     expect(historySelection.ref).toBe("origin/release");
     first.unmount();
 
     const second = mount(GitBranchesTab, { props });
     mountedWrappers.push(second);
     await flushPromises();
-    expect((second.get('[aria-label="History reference"]').element as HTMLSelectElement).value).toBe("origin/release");
+    expect(second.get('[aria-label="History reference"]').attributes("data-value")).toBe("origin/release");
     second.unmount();
     vi.useRealTimers();
   });
@@ -837,13 +895,13 @@ describe("GitBranchesTab compact history picker", () => {
     await flushPromises();
     const select = picker.get('[aria-label="History reference"]');
 
-    await select.setValue("HEAD");
+    await chooseHistoryRef(select, "HEAD · main");
     await flushPromises();
     expect(historySelection.ref).toBe("HEAD");
     await vi.advanceTimersByTimeAsync(300);
     expect(gitLoadGraph).toHaveBeenLastCalledWith("ws-head-scope", expect.objectContaining({ branch: "HEAD" }));
 
-    await select.setValue("__ALL__");
+    await chooseHistoryRef(select, "All branches and tags");
     await flushPromises();
     expect(historySelection.ref).toBe("");
     await vi.advanceTimersByTimeAsync(300);

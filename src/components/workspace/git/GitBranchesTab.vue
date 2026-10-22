@@ -15,47 +15,11 @@
       </label>
       <label class="git-history-picker__select">
         <span>History range</span>
-        <select :value="selectedRef || '__ALL__'" aria-label="History reference" @change="onHistoryRefChange">
-          <option value="__ALL__">All branches and tags</option>
-          <option value="HEAD">HEAD · {{ branchList.current || "detached" }}</option>
-          <option
-            v-if="
-              selectedRef &&
-              (branchesLoading || gitUi.tagsLoading) &&
-              !branchList.local.some((branch) => branch.name === selectedRef) &&
-              !branchList.remotes.some((branch) => branch.name === selectedRef) &&
-              !tags.some((tag) => tag.name === selectedRef)
-            "
-            :value="selectedRef"
-          >
-            Loading {{ selectedRef }}…
-          </option>
-          <optgroup v-if="historyPreferences.favorites.length" label="Favorites">
-            <option v-for="ref in historyPreferences.favorites" :key="`favorite:${ref}`" :value="ref">
-              {{ historyRefLabel(ref) }}
-            </option>
-          </optgroup>
-          <optgroup v-if="historyPreferences.recent.length" label="Recent">
-            <option v-for="ref in historyPreferences.recent" :key="`recent:${ref}`" :value="ref">
-              {{ historyRefLabel(ref) }}
-            </option>
-          </optgroup>
-          <optgroup label="Local branches">
-            <option v-for="branch in filteredHistoryBranches" :key="`local:${branch.name}`" :value="branch.name">
-              Branch · {{ branch.name }}{{ branch.isCurrent ? " (working branch)" : "" }}
-            </option>
-          </optgroup>
-          <optgroup label="Remote branches">
-            <option v-for="branch in filteredHistoryRemotes" :key="`remote:${branch.name}`" :value="branch.name">
-              Remote branch · {{ branch.name }}
-            </option>
-          </optgroup>
-          <optgroup label="Tags">
-            <option v-for="tag in filteredHistoryTags" :key="`tag:${tag.name}`" :value="tag.name">
-              Tag · {{ tag.name }}
-            </option>
-          </optgroup>
-        </select>
+        <HistoryRangePicker
+          :model-value="selectedRef || '__ALL__'"
+          :items="historyRangeItems"
+          @change="onHistoryRefChange"
+        />
       </label>
       <span v-if="historyRefNotice" class="git-branches__placeholder" role="status">{{ historyRefNotice }}</span>
       <label class="git-history-picker__search git-history-picker__search--commits">
@@ -703,6 +667,7 @@ import GitChangeTree from "./GitChangeTree.vue";
 import BranchTreePane, { type BranchTreeNode } from "./BranchTreePane.vue";
 import CustomSelect from "../../common/CustomSelect.vue";
 import BranchSelectPopover from "./BranchSelectPopover.vue";
+import HistoryRangePicker from "./HistoryRangePicker.vue";
 import GitCommitContextMenu from "./GitCommitContextMenu.vue";
 import GitDiffStat from "./GitDiffStat.vue";
 import { isRemoteRef } from "./base-ref.js";
@@ -815,6 +780,7 @@ const historyCommitSearch = computed({
       commitSearch,
     }),
 });
+type HistoryRangeItem = { kind: "section"; label: string } | { kind: "option"; value: string; label: string };
 const historySearch = ref("");
 const historyRefNotice = ref("");
 const historyPreferences = computed(() =>
@@ -845,8 +811,49 @@ const filteredHistoryRemotes = computed(() =>
 const filteredHistoryTags = computed(() =>
   tags.value.filter((tag) => tag.name.toLowerCase().includes(historySearch.value.toLowerCase())),
 );
-function onHistoryRefChange(event: Event) {
-  const value = (event.target as HTMLSelectElement).value;
+const historyRangeItems = computed<HistoryRangeItem[]>(() => {
+  const items: HistoryRangeItem[] = [
+    { kind: "option", value: "__ALL__", label: "All branches and tags" },
+    { kind: "option", value: "HEAD", label: `HEAD · ${branchList.value.current || "detached"}` },
+  ];
+  const ref = selectedRef.value;
+  if (
+    ref &&
+    (branchesLoading.value || props.gitUi?.tagsLoading) &&
+    !branchList.value.local.some((branch) => branch.name === ref) &&
+    !branchList.value.remotes.some((branch) => branch.name === ref) &&
+    !tags.value.some((tag) => tag.name === ref)
+  ) {
+    items.push({ kind: "option", value: ref, label: `Loading ${ref}…` });
+  }
+  const { favorites, recent } = historyPreferences.value;
+  if (favorites.length) {
+    items.push({ kind: "section", label: "Favorites" });
+    for (const name of favorites) items.push({ kind: "option", value: name, label: historyRefLabel(name) });
+  }
+  if (recent.length) {
+    items.push({ kind: "section", label: "Recent" });
+    for (const name of recent) items.push({ kind: "option", value: name, label: historyRefLabel(name) });
+  }
+  items.push({ kind: "section", label: "Local branches" });
+  for (const branch of filteredHistoryBranches.value) {
+    items.push({
+      kind: "option",
+      value: branch.name,
+      label: `Branch · ${branch.name}${branch.isCurrent ? " (working branch)" : ""}`,
+    });
+  }
+  items.push({ kind: "section", label: "Remote branches" });
+  for (const branch of filteredHistoryRemotes.value) {
+    items.push({ kind: "option", value: branch.name, label: `Remote branch · ${branch.name}` });
+  }
+  items.push({ kind: "section", label: "Tags" });
+  for (const tag of filteredHistoryTags.value) {
+    items.push({ kind: "option", value: tag.name, label: `Tag · ${tag.name}` });
+  }
+  return items;
+});
+function onHistoryRefChange(value: string) {
   const selected = value === "__ALL__" ? "" : value;
   onSelectRef(selected);
   gitUiStore.recordGitHistoryRef(props.workspaceId, value, props.activeRootPath || "", props.profileId || "default");
@@ -2151,7 +2158,6 @@ watch(
   font-size: 11px;
 }
 
-.git-history-picker__select select,
 .git-history-picker__search input {
   min-width: 220px;
   max-width: 34vw;
@@ -2297,10 +2303,6 @@ watch(
   flex: 1;
   min-height: 0;
   overflow: hidden;
-}
-
-.git-branches__body--history :deep(.splitpanes__pane:first-child) {
-  display: none;
 }
 
 .git-branches__panes,

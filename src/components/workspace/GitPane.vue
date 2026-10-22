@@ -266,19 +266,54 @@
           :key="view.id"
           type="button"
           role="tab"
-          :aria-selected="view.id === activeGitView ? 'true' : 'false'"
-          :class="['git-tabs__item', view.id === activeGitView && 'git-tabs__item--active']"
+          :aria-selected="!activeLegacyDestination && view.id === activeGitView ? 'true' : 'false'"
+          :class="['git-tabs__item', !activeLegacyDestination && view.id === activeGitView && 'git-tabs__item--active']"
           @click="selectNewView(view.id)"
         >
           {{ view.label }}
         </button>
-        <label class="git-new-view__more">
-          <span>More</span>
-          <select :value="activeLegacyDestination" aria-label="More Git tools" @change="onLegacyDestinationChange">
-            <option value="">Choose a Git tool…</option>
-            <option v-for="tab in legacyDestinations" :key="tab.id" :value="tab.id">{{ tab.label }}</option>
-          </select>
-        </label>
+        <button
+          ref="moreButtonRef"
+          type="button"
+          role="tab"
+          aria-label="More Git tools"
+          aria-haspopup="menu"
+          :aria-expanded="moreMenuOpen ? 'true' : 'false'"
+          :aria-selected="activeLegacyDestination ? 'true' : 'false'"
+          :class="['git-tabs__item', 'git-tabs__item--more', activeLegacyDestination && 'git-tabs__item--active']"
+          @click="toggleMoreMenu"
+          @keydown="onMoreButtonKeydown"
+        >
+          {{ activeLegacyTab ? activeLegacyTab.label : "More"
+          }}<span v-if="activeLegacyTab?.badge" class="git-tabs__badge">{{ activeLegacyTab.badge }}</span> ▾
+        </button>
+        <Teleport to="body">
+          <div
+            v-if="moreMenuOpen"
+            ref="moreMenuRef"
+            class="git-new-view__menu"
+            role="menu"
+            :style="moreMenuStyle"
+            @keydown="onMoreButtonKeydown"
+          >
+            <button
+              v-for="(tab, idx) in legacyDestinations"
+              :key="tab.id"
+              type="button"
+              role="menuitem"
+              :class="[
+                'git-new-view__menu-item',
+                tab.id === activeLegacyDestination && 'git-new-view__menu-item--selected',
+                idx === moreActiveIndex && 'git-new-view__menu-item--active',
+              ]"
+              @mousedown.prevent
+              @mouseenter="moreActiveIndex = idx"
+              @click="selectLegacyDestination(tab.id)"
+            >
+              {{ tab.label }}<span v-if="tab.badge" class="git-tabs__badge">{{ tab.badge }}</span>
+            </button>
+          </div>
+        </Teleport>
       </nav>
 
       <section
@@ -502,6 +537,7 @@ import BulkRepoTable from "./git/BulkRepoTable.vue";
 import ConfirmDialog from "../dialogs/ConfirmDialog.vue";
 import CustomSelect from "../common/CustomSelect.vue";
 import Spinner from "../common/Spinner.vue";
+import { useDismissable } from "../../composables/useDismissable.js";
 import { useMobileShellMenus } from "../../composables/useMobileShellMenus.js";
 import { useResourceInterest } from "../../composables/useResourceInterest.js";
 import { useNotificationStore } from "../../stores/notifications.js";
@@ -680,9 +716,71 @@ const legacyDestinationLabel = computed(() => {
   return tab?.label || storedLegacyDestination.value.replace(/\b\w/g, (letter) => letter.toUpperCase());
 });
 const activeGitViewLabel = computed(() => newGitViews.find((view) => view.id === activeGitView.value)?.label || "Git");
-function onLegacyDestinationChange(event: Event) {
-  const destination = (event.target as HTMLSelectElement).value;
-  gitUiStore.setNewViewLegacyDestination(props.workspaceId, destination || "");
+const activeLegacyTab = computed(() => legacyDestinations.value.find((tab) => tab.id === activeLegacyDestination.value));
+const moreMenuOpen = ref(false);
+const moreActiveIndex = ref(-1);
+const moreMenuStyle = ref<Record<string, string>>({});
+const moreButtonRef = ref<HTMLButtonElement | null>(null);
+const moreMenuRef = ref<HTMLElement | null>(null);
+
+function openMoreMenu() {
+  if (moreMenuOpen.value || !moreButtonRef.value) return;
+  const rect = moreButtonRef.value.getBoundingClientRect();
+  moreMenuStyle.value = {
+    position: "fixed",
+    top: `${rect.bottom + 3}px`,
+    right: `${Math.max(8, window.innerWidth - rect.right)}px`,
+    minWidth: `${rect.width}px`,
+  };
+  const selected = legacyDestinations.value.findIndex((tab) => tab.id === activeLegacyDestination.value);
+  moreActiveIndex.value = selected >= 0 ? selected : 0;
+  moreMenuOpen.value = true;
+}
+
+function closeMoreMenu(refocus = false) {
+  if (!moreMenuOpen.value) return;
+  moreMenuOpen.value = false;
+  moreActiveIndex.value = -1;
+  if (refocus) moreButtonRef.value?.focus();
+}
+
+function toggleMoreMenu() {
+  if (moreMenuOpen.value) closeMoreMenu();
+  else openMoreMenu();
+}
+
+function moveMoreActive(dir: number) {
+  const n = legacyDestinations.value.length;
+  if (n === 0) return;
+  moreActiveIndex.value = (moreActiveIndex.value + dir + n) % n;
+}
+
+function onMoreButtonKeydown(e: KeyboardEvent) {
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    if (!moreMenuOpen.value) openMoreMenu();
+    else moveMoreActive(e.key === "ArrowDown" ? 1 : -1);
+  } else if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    if (!moreMenuOpen.value) openMoreMenu();
+    else {
+      const tab = legacyDestinations.value[moreActiveIndex.value];
+      if (tab) selectLegacyDestination(tab.id);
+    }
+  } else if (e.key === "Escape" && moreMenuOpen.value) {
+    e.preventDefault();
+    e.stopPropagation();
+    closeMoreMenu(true);
+  } else if (e.key === "Tab") {
+    closeMoreMenu();
+  }
+}
+
+useDismissable(moreMenuOpen, [moreButtonRef, moreMenuRef], { onDismiss: closeMoreMenu, eventName: "mousedown" });
+
+function selectLegacyDestination(id: string) {
+  gitUiStore.setNewViewLegacyDestination(props.workspaceId, id);
+  closeMoreMenu(true);
 }
 
 function selectNewView(view: "history" | "changes" | "review") {
@@ -1197,24 +1295,46 @@ const switchBranchOptionsList = computed(() => switchBranchOptions.value.map((b)
   font-size: 12px;
 }
 
-.git-new-view__more {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
+.git-tabs__item--more {
   margin-left: auto;
-  padding: 0 10px;
-  color: var(--muted);
-  font-size: 12px;
 }
 
-.git-new-view__more select {
-  max-width: min(240px, 34vw);
-  min-width: 120px;
-  padding: 5px 8px;
+.git-new-view__menu {
+  z-index: 10050;
+  max-height: 260px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px 0;
+  background: var(--panel-elevated);
   border: 1px solid var(--border);
-  border-radius: 5px;
-  background: var(--surface);
+  border-radius: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  font-size: 13px;
+  overflow-y: auto;
+}
+
+.git-new-view__menu-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 0;
+  background: transparent;
   color: var(--text);
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.git-new-view__menu-item--active:not(.git-new-view__menu-item--selected) {
+  background: rgba(var(--tint), 0.12);
+}
+
+.git-new-view__menu-item--selected {
+  background: var(--accent);
+  color: #000;
+  font-weight: 600;
 }
 
 .git-view__panel--busy {

@@ -5,7 +5,7 @@
   >
     <label class="settings-check__row">
       <input v-model="form.git.ui.newView" type="checkbox" />
-      <span>Nové Git zobrazení</span>
+      <span>New Git view</span>
     </label>
     <small class="settings-check__help">
       Show Git as History, Changes, and Review. Branch management and other tools remain available from More.
