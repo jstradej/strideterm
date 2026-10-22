@@ -361,7 +361,7 @@ function buildLayout(commits: RawCommit[], head: string, flat: boolean): LayoutR
       y: i * ROW_HEIGHT,
       isHead: head === commit.hash,
       isMerge: (commit.parents || []).length >= 2,
-      refs: classifyRefs(commit.refs || []),
+      refs: classifyRefs(commit.refs || [], head === commit.hash),
     }));
     const edges: GraphEdge[] = [];
     const lane0X = laneX(0);
@@ -514,7 +514,7 @@ function buildLayout(commits: RawCommit[], head: string, flat: boolean): LayoutR
       y,
       isHead: head === commit.hash,
       isMerge: (commit.parents || []).length >= 2,
-      refs: classifyRefs(commit.refs || []),
+      refs: classifyRefs(commit.refs || [], head === commit.hash),
     });
   }
 
@@ -555,18 +555,33 @@ function laneBranchPath(fromLane: number, toLane: number, y: number): string {
   return `M ${x1} ${yMid} C ${x1} ${cY1} ${x2} ${cY2} ${x2} ${yBot}`;
 }
 
-function classifyRefs(refs: string[]): GraphRefBadge[] {
+const REF_KIND_LABEL: Record<GraphRefBadge["kind"], string> = {
+  head: "HEAD",
+  branch: "Branch",
+  remote: "Remote branch",
+  tag: "Tag",
+};
+
+function classifyRefs(refs: string[], isHeadCommit: boolean): GraphRefBadge[] {
   const out: GraphRefBadge[] = [];
+  const headBranch = refs.find((r) => r !== "HEAD" && !r.startsWith("tag:") && !r.includes("/"));
   for (const ref of refs) {
     if (ref === "HEAD") {
-      out.push({ label: "HEAD", kind: "head", icon: "★", title: "Currently checked-out commit." });
+      const lines = ["HEAD — the commit currently checked out"];
+      if (headBranch) lines.push(`On branch ${headBranch}`);
+      out.push({ label: "HEAD", kind: "head", icon: "★", title: lines.join("\n") });
     } else if (ref.startsWith("tag:")) {
       const name = ref.slice(4);
       out.push({ label: name, kind: "tag", icon: "🏷", title: `Tag ${name}` });
     } else if (ref.includes("/")) {
-      out.push({ label: ref, kind: "remote", icon: "☁", title: `Remote-tracking ref ${ref}` });
+      const lines = [`Remote branch ${ref}`];
+      if (matchesRangeBase(ref)) lines.push("Pull request target");
+      out.push({ label: ref, kind: "remote", icon: "☁", title: lines.join("\n") });
     } else {
-      out.push({ label: ref, kind: "branch", icon: "⎇", title: `Local branch ${ref}` });
+      const lines = [`Branch ${ref}`];
+      if (isHeadCommit) lines.push("Working branch (checked out)");
+      if (matchesRangeBase(ref)) lines.push("Pull request target");
+      out.push({ label: ref, kind: "branch", icon: "⎇", title: lines.join("\n") });
     }
   }
   out.sort((a, b) => (a.kind === "head" ? -1 : b.kind === "head" ? 1 : 0));
@@ -588,7 +603,9 @@ function historyBadges(node: GraphNode): GraphRefBadge[] {
     ? badges.find((b) => b.kind === "remote" && b !== defaultRemote && !b.label.endsWith("/HEAD"))
     : undefined;
   if (defaultRemote && siblingRemote) {
-    siblingRemote.title = `${siblingRemote.title} · default`;
+    const lines = siblingRemote.title.split("\n");
+    lines.splice(1, 0, "Default branch of the remote (origin/HEAD)");
+    siblingRemote.title = lines.join("\n");
     siblingRemote.isDefault = true;
     badges.splice(badges.indexOf(defaultRemote), 1);
   }
@@ -629,9 +646,8 @@ function hiddenRefs(node: GraphNode): GraphRefBadge[] {
 }
 
 function hiddenRefsTitle(node: GraphNode): string {
-  return hiddenRefs(node)
-    .map((r) => r.label)
-    .join("\n");
+  const hidden = hiddenRefs(node);
+  return [`${hidden.length} more refs:`, ...hidden.map((r) => `${REF_KIND_LABEL[r.kind]} ${r.label}`)].join("\n");
 }
 
 const layout = computed(() => buildLayout(props.commits || [], props.head || "", !!props.flat));

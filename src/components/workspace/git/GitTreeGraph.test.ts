@@ -222,7 +222,10 @@ describe("GitTreeGraph", () => {
     const chips = wrapper.findAll(".git-tree__cell--subject .git-tree__ref");
     expect(chips).toHaveLength(3);
     expect(chips[2].text()).toBe("+2");
-    expect(chips[2].attributes("title")).toBe("origin/pveselka/MSP-90906\nv1");
+    expect(chips[2].attributes("title")).toBe("2 more refs:\nRemote branch origin/pveselka/MSP-90906\nTag v1");
+    expect(chips[0].attributes("title")).toContain("the commit currently checked out");
+    expect(chips[0].attributes("title")).toContain("On branch main");
+    expect(chips[1].attributes("title")).toContain("Branch main");
     expect(chips[0].find(".git-tree__ref-label").text()).toBe("HEAD");
 
     const full = mountGraph({
@@ -231,7 +234,7 @@ describe("GitTreeGraph", () => {
     });
     const chip = full.find(".git-tree__cell--subject .git-tree__ref");
     expect(chip.find(".git-tree__ref-label").text()).toBe("origin/pveselka/MSP-90906");
-    expect(chip.attributes("title")).toBe("Remote-tracking ref origin/pveselka/MSP-90906");
+    expect(chip.attributes("title")).toBe("Remote branch origin/pveselka/MSP-90906");
   });
 
   describe("history markers", () => {
@@ -315,7 +318,7 @@ describe("GitTreeGraph", () => {
       expect(chips).toHaveLength(1);
       expect(chips[0].find(".git-tree__ref-label").text()).toBe("origin/develop");
       expect(chips[0].find(".git-tree__ref-default").text()).toBe("default");
-      expect(chips[0].attributes("title")).toContain(" · default");
+      expect(chips[0].attributes("title")).toContain("Default branch of the remote");
 
       const alone = mountGraph({ history: true, commits: [mk(1, [], ["origin/HEAD"])], head: "" });
       expect(alone.findAll(".git-tree__history-refs .git-tree__ref")).toHaveLength(1);
@@ -333,6 +336,8 @@ describe("GitTreeGraph", () => {
       expect(chips.map((c) => c.find(".git-tree__ref-label").text() || c.text())).toEqual(["HEAD", "main", "+3"]);
       expect(chips[0].classes()).toContain("git-tree__ref--filled");
       expect(chips[1].classes()).toContain("git-tree__ref--filled");
+      expect(chips[1].attributes("title")).toContain("Branch main");
+      expect(chips[1].attributes("title")).toContain("Working branch (checked out)");
 
       const base = mountGraph({
         history: true,
@@ -343,6 +348,8 @@ describe("GitTreeGraph", () => {
       const baseChips = base.findAll(".git-tree__history-refs .git-tree__ref");
       expect(baseChips[0].find(".git-tree__ref-label").text()).toBe("origin/develop");
       expect(baseChips[0].classes()).toContain("git-tree__ref--outlined");
+      expect(baseChips[0].attributes("title")).toContain("Pull request target");
+      expect(baseChips[1].attributes("title")).not.toContain("Pull request target");
       expect(baseChips[1].classes()).not.toContain("git-tree__ref--outlined");
     });
 
