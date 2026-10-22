@@ -373,6 +373,7 @@
               :flat="graphFlatMode"
               :history="compactHistory"
               :range-base="compactHistory ? baseBranch : ''"
+              :reach-commits="compactHistory ? commits : undefined"
               @select="onSelectCommit"
               @open="onOpenCommitDialog"
               @contextmenu="onCommitContextMenu"
@@ -513,6 +514,7 @@
           :flat="graphFlatMode"
           :history="compactHistory"
           :range-base="compactHistory ? baseBranch : ''"
+          :reach-commits="compactHistory ? commits : undefined"
           @select="onMobileSelectCommit"
           @open="onOpenCommitDialog"
           @contextmenu="onCommitContextMenu"
@@ -1253,7 +1255,9 @@ const hasActiveFilters = computed(
 // the lane builder with parents it can never reach — branches render as
 // orphan verticals. Switch the graph into a flat single-column view in those
 // cases; date / sort / branch filters still keep the topology meaningful.
-const graphFlatMode = computed(() => !!userFilter.value || pathsFilter.value.length > 0);
+const graphFlatMode = computed(
+  () => !!userFilter.value || pathsFilter.value.length > 0 || (props.compactHistory && historyQueryActive.value),
+);
 
 const selectedHash = computed(() => String(props.gitUi?.selectedCommit || ""));
 const selectedCommitInfo = computed<GraphCommit | null>(

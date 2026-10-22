@@ -1339,6 +1339,14 @@ describe("GitBranchesTab — create-pr dialog submission (shared submitPullReque
       "MSP-3 third",
     ]);
     expect(picker.get(".git-branches__pane-count").text()).toBe("2 of 3");
+    for (const g of picker.findAllComponents({ name: "GitTreeGraph" })) {
+      expect(g.props("flat")).toBe(true);
+      expect(g.props("reachCommits")).toHaveLength(3);
+    }
+
+    await picker.get('[aria-label="Search commits"]').setValue("");
+    await flushPromises();
+    for (const g of picker.findAllComponents({ name: "GitTreeGraph" })) expect(g.props("flat")).toBe(false);
   });
 
   test("legacy Branches view passes no range base to the graphs", async () => {

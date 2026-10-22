@@ -250,6 +250,9 @@ const props = withDefaults(
     // History view only: the PR target / base branch. Commits already on it are
     // dimmed so the branch's own work stands out.
     rangeBase?: string;
+    // History view only: the unfiltered loaded list. Reachability needs the
+    // parent chain that a client-side filter removes from `commits`.
+    reachCommits?: RawCommit[];
   }>(),
   {
     commits: () => [],
@@ -697,7 +700,9 @@ function reachableFrom(starts: string[], parentsOf: Map<string, string[]>): Set<
 const historyReach = computed(() => {
   const empty = { remote: null as Set<string> | null, base: new Set<string>(), boundary: new Set<string>() };
   if (!props.history) return empty;
-  const commits = props.commits || [];
+  const rendered = props.commits || [];
+  const commits = props.reachCommits?.length ? props.reachCommits : rendered;
+  const fullIndex = new Map(commits.map((c, i) => [c.hash, i] as const));
   const parentsOf = new Map(commits.map((c) => [c.hash, c.parents || []] as const));
   const remoteTips = commits
     .filter((c) => (c.refs || []).some((r) => r !== "HEAD" && !r.startsWith("tag:") && r.includes("/")))
@@ -710,8 +715,10 @@ const historyReach = computed(() => {
   const base = reachableFrom(baseTips, parentsOf);
   const boundary = new Set<string>();
   if (remote) {
-    for (let i = 1; i < commits.length; i++) {
-      if (remote.has(commits[i].hash) && !remote.has(commits[i - 1].hash)) boundary.add(commits[i].hash);
+    for (let i = 1; i < rendered.length; i++) {
+      const at = fullIndex.get(rendered[i].hash);
+      if (at === undefined || at !== fullIndex.get(rendered[i - 1].hash)! + 1) continue;
+      if (remote.has(rendered[i].hash) && !remote.has(rendered[i - 1].hash)) boundary.add(rendered[i].hash);
     }
   }
   return { remote, base, boundary };

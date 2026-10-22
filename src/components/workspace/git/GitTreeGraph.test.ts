@@ -277,6 +277,34 @@ describe("GitTreeGraph", () => {
       expect(dots[2].attributes("fill")).not.toBe("var(--panel)");
     });
 
+    test("a filtered list keeps reachability from the full list", () => {
+      const full = [
+        mk(0, ["h1"], ["origin/feature"]),
+        mk(1, ["h2"]),
+        mk(2, ["h3"]),
+        mk(3, ["h4"], ["origin/develop"]),
+        mk(4, []),
+      ];
+      const filtered = [mk(1, []), mk(3, [], ["origin/develop"]), mk(4, [])];
+      const w = mountGraph({ history: true, rangeBase: "develop", commits: filtered, reachCommits: full, head: "h0" });
+      const rows = rowsOf(w);
+      expect(w.find(".git-tree__row--local").exists()).toBe(false);
+      expect(rows.map((r) => r.classes().includes("git-tree__row--on-base"))).toEqual([false, true, true]);
+    });
+
+    test("no push boundary between rows that were not adjacent in the full list", () => {
+      const full = [mk(1, ["h2"], ["feature"]), mk(2, ["h3"]), mk(3, ["h4"], ["origin/feature"]), mk(4, [])];
+      const gap = mountGraph({
+        history: true,
+        commits: [full[0], full[2], full[3]],
+        reachCommits: full,
+        head: "h1",
+      });
+      expect(gap.find(".git-tree__row--push-boundary").exists()).toBe(false);
+      const adjacent = mountGraph({ history: true, commits: full.slice(1), reachCommits: full, head: "h1" });
+      expect(adjacent.findAll(".git-tree__row--push-boundary")).toHaveLength(1);
+    });
+
     test("marks nothing local when no remote-tracking ref is loaded", () => {
       const w = mountGraph({
         history: true,
