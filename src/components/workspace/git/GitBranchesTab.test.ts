@@ -329,8 +329,47 @@ describe("GitBranchesTab compact history picker", () => {
     const panes = picker.findAll(".git-branches__panes > .splitpanes__pane");
     expect(panes).toHaveLength(2);
     expect(panes[0].findComponent({ name: "GitTreeGraph" }).exists()).toBe(true);
+    for (const graph of picker.findAllComponents({ name: "GitTreeGraph" })) {
+      expect(graph.props("history")).toBe(true);
+    }
     const source = readFileSync(resolve(process.cwd(), "src/components/workspace/git/GitBranchesTab.vue"), "utf8");
     expect(source).not.toContain("splitpanes__pane:first-child");
+  });
+
+  test("legacy Branches view does not use history rows", async () => {
+    const picker = mount(GitBranchesTab, {
+      props: {
+        workspaceId: "ws-legacy-rows",
+        snapshot: { dirty: false, branch: "main" },
+        gitUi: {
+          branchList: { current: "main", local: [{ name: "main", isCurrent: true }], remotes: [] },
+          graph: {
+            commits: [
+              {
+                hash: "abc123456789",
+                shortHash: "abc1234",
+                parents: [],
+                subject: "A commit",
+                author: "Ada Example",
+                relativeDate: "today",
+                isoDate: "2026-10-21T00:00:00.000Z",
+                refs: [],
+              },
+            ],
+            head: "abc123456789",
+            refs: {},
+          },
+          selectedCommit: "",
+        },
+        activeRootPath: "/repo",
+        compactHistory: false,
+      },
+    });
+    mountedWrappers.push(picker);
+    await flushPromises();
+    const graphs = picker.findAllComponents({ name: "GitTreeGraph" });
+    expect(graphs.length).toBeGreaterThan(0);
+    for (const graph of graphs) expect(graph.props("history")).toBe(false);
   });
 
   test("sends the selected commit author as a graph filter", async () => {

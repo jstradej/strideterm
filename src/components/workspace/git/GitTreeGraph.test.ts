@@ -193,4 +193,36 @@ describe("GitTreeGraph", () => {
     expect(ph.exists()).toBe(true);
     expect(ph.text()).toContain("boom");
   });
+
+  test("legacy rows keep the header and a separate refs cell", () => {
+    const wrapper = mountGraph({ history: false });
+    expect(wrapper.classes()).not.toContain("git-tree--history");
+    expect(wrapper.find(".git-tree__header").exists()).toBe(true);
+    expect(wrapper.find(".git-tree__row .git-tree__cell--refs").exists()).toBe(true);
+    expect(wrapper.find(".git-tree__cell--subject .git-tree__ref").exists()).toBe(false);
+  });
+
+  test("history rows drop the header and put refs inside the subject cell", () => {
+    const refs = ["HEAD", "main", "origin/pveselka/MSP-90906", "tag:v1"];
+    const wrapper = mountGraph({
+      history: true,
+      commits: [{ ...linearCommits[0], refs }],
+    });
+    expect(wrapper.classes()).toContain("git-tree--history");
+    expect(wrapper.find(".git-tree__header").exists()).toBe(false);
+    expect(wrapper.find(".git-tree__cell--refs").exists()).toBe(false);
+    const chips = wrapper.findAll(".git-tree__cell--subject .git-tree__ref");
+    expect(chips).toHaveLength(3);
+    expect(chips[2].text()).toBe("+2");
+    expect(chips[2].attributes("title")).toBe("origin/pveselka/MSP-90906\nv1");
+    expect(chips[0].find(".git-tree__ref-label").text()).toBe("HEAD");
+
+    const full = mountGraph({
+      history: true,
+      commits: [{ ...linearCommits[0], refs: ["origin/pveselka/MSP-90906"] }],
+    });
+    const chip = full.find(".git-tree__cell--subject .git-tree__ref");
+    expect(chip.find(".git-tree__ref-label").text()).toBe("origin/pveselka/MSP-90906");
+    expect(chip.attributes("title")).toBe("Remote-tracking ref origin/pveselka/MSP-90906");
+  });
 });

@@ -1,12 +1,15 @@
 <template>
-  <div class="git-tree" :class="{ 'git-tree--loading': loading, 'git-tree--compact': compact }">
+  <div
+    class="git-tree"
+    :class="{ 'git-tree--loading': loading, 'git-tree--compact': compact, 'git-tree--history': history }"
+  >
     <div v-if="loading && !nodes.length" class="git-tree__placeholder">Loading commit graph…</div>
     <div v-else-if="error" class="git-tree__placeholder git-tree__placeholder--error">{{ error }}</div>
     <div v-else-if="!nodes.length" class="git-tree__placeholder">No commits found.</div>
     <template v-else>
       <!-- Column header. Hidden in compact (mobile) mode where there's only one
            text column anyway. Sticky so it stays visible during long scrolls. -->
-      <div v-if="!compact" class="git-tree__header">
+      <div v-if="!compact && !history" class="git-tree__header">
         <span class="git-tree__hcell git-tree__hcell--graph" :style="{ width: `${graphWidth}px` }"></span>
         <span class="git-tree__hcell git-tree__hcell--refs">Refs</span>
         <span class="git-tree__hcell git-tree__hcell--subject">Subject</span>
@@ -106,7 +109,7 @@
             @dblclick="onDoubleClick(node)"
             @contextmenu="onContextMenu($event, node)"
           >
-            <span class="git-tree__cell git-tree__cell--refs">
+            <span v-if="!history" class="git-tree__cell git-tree__cell--refs">
               <span
                 v-for="ref in node.refs"
                 :key="ref.label"
@@ -121,6 +124,20 @@
               <span class="git-tree__subject" :class="{ 'git-tree__subject--merge': node.isMerge }">{{
                 node.subject
               }}</span>
+              <span v-if="history && node.refs.length" class="git-tree__history-refs">
+                <span
+                  v-for="ref in visibleRefs(node)"
+                  :key="ref.label"
+                  :class="['git-tree__ref', `git-tree__ref--${ref.kind}`]"
+                  :title="ref.title"
+                >
+                  <span class="git-tree__ref-icon" aria-hidden="true">{{ ref.icon }}</span>
+                  <span class="git-tree__ref-label">{{ ref.label }}</span>
+                </span>
+                <span v-if="hiddenRefs(node).length" class="git-tree__ref git-tree__ref--more" :title="hiddenRefsTitle(node)">
+                  <span class="git-tree__ref-label">+{{ hiddenRefs(node).length }}</span>
+                </span>
+              </span>
             </span>
             <span v-if="!compact" class="git-tree__cell git-tree__cell--author">{{ node.author }}</span>
             <span v-if="!compact" class="git-tree__cell git-tree__cell--date" :title="node.isoDate">{{
@@ -179,6 +196,9 @@ const props = withDefaults(
     // by the filter so the topological lane layout would be misleading. This
     // mirrors what JetBrains' Log shows under User filter.
     flat?: boolean;
+    // IDEA-style rows for the new Git History view: no header, refs inside the
+    // subject cell instead of their own column.
+    history?: boolean;
   }>(),
   {
     commits: () => [],
@@ -190,6 +210,7 @@ const props = withDefaults(
     error: "",
     compact: false,
     flat: false,
+    history: false,
   },
 );
 
@@ -525,6 +546,22 @@ function classifyRefs(refs: string[]): GraphRefBadge[] {
   return out;
 }
 
+const HISTORY_VISIBLE_REFS = 2;
+
+function visibleRefs(node: GraphNode): GraphRefBadge[] {
+  return node.refs.slice(0, HISTORY_VISIBLE_REFS);
+}
+
+function hiddenRefs(node: GraphNode): GraphRefBadge[] {
+  return node.refs.slice(HISTORY_VISIBLE_REFS);
+}
+
+function hiddenRefsTitle(node: GraphNode): string {
+  return hiddenRefs(node)
+    .map((r) => r.label)
+    .join("\n");
+}
+
 const layout = computed(() => buildLayout(props.commits || [], props.head || "", !!props.flat));
 const nodes = computed(() => layout.value.nodes);
 const edges = computed(() => layout.value.edges);
@@ -799,6 +836,70 @@ watch(
 .git-tree__ref--tag {
   background: rgba(170, 95, 200, 0.22);
   color: #d09fd9;
+}
+
+.git-tree--history .git-tree__row {
+  grid-template-columns: minmax(0, 1fr) 140px 84px 58px;
+}
+
+.git-tree--history.git-tree--compact .git-tree__row {
+  grid-template-columns: minmax(0, 1fr) minmax(60px, max-content);
+}
+
+.git-tree--history .git-tree__cell--subject {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.git-tree--history .git-tree__cell--hash {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.git-tree__history-refs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 1 auto;
+  max-width: 45%;
+  min-width: 0;
+}
+
+.git-tree--history .git-tree__ref {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0;
+  background: none;
+  border-radius: 0;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.git-tree--history .git-tree__ref-icon {
+  font-size: 11px;
+}
+
+.git-tree--history .git-tree__ref--head,
+.git-tree--history .git-tree__ref--branch {
+  background: none;
+  color: var(--accent);
+}
+
+.git-tree--history .git-tree__ref--remote,
+.git-tree--history .git-tree__ref--tag {
+  background: none;
+  color: var(--muted);
+}
+
+.git-tree--history .git-tree__ref-label {
+  /* rtl + plaintext keeps the END of a long ref name visible; ellipsis lands on the left */
+  direction: rtl;
+  unicode-bidi: plaintext;
 }
 
 .git-tree__placeholder {
