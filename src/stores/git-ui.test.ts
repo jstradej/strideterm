@@ -1515,3 +1515,15 @@ describe("gitLoadGraph progressive paging", () => {
     expect(gitLogGraph).toHaveBeenCalledWith(expect.objectContaining({ limit: 500 }));
   });
 });
+
+describe("git-ui history refresh token", () => {
+  test("bumpHistoryRefresh increments per workspace", () => {
+    const store = useGitUiStore();
+    expect(store.get("wa").historyRefreshToken).toBeUndefined();
+    store.bumpHistoryRefresh("wa");
+    store.bumpHistoryRefresh("wa");
+    store.bumpHistoryRefresh("wb");
+    expect(store.get("wa").historyRefreshToken).toBe(2);
+    expect(store.get("wb").historyRefreshToken).toBe(1);
+  });
+});

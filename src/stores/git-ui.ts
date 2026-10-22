@@ -51,6 +51,7 @@ interface ConflictDialogState {
 
 interface GitUiState {
   busyAction?: string;
+  historyRefreshToken?: number;
   /** Human-readable label for the action currently running (e.g. "Fetching origin/develop…").
    *  Drives the spinner banner; updated mid-run for multi-phase actions like fetch→rebase. */
   busyPhase?: string;
@@ -566,6 +567,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
     // already busy. Keep its key so an explicit retry can replay acceptance.
     if (response !== null) clearLongOperationKey(workspaceId, rootPath, operationKind, variant);
     return response;
+  }
+
+  function bumpHistoryRefresh(workspaceId: string): void {
+    const ui = ensure(workspaceId);
+    ui.historyRefreshToken = (ui.historyRefreshToken ?? 0) + 1;
   }
 
   function get(workspaceId: string): GitUiState {
@@ -2620,6 +2626,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     // Git actions
     runGitAction,
     refreshGit,
+    bumpHistoryRefresh,
     gitFetch,
     gitPull,
     gitPush,

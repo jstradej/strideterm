@@ -726,3 +726,19 @@ describe("GitPane push target", () => {
     expect(button.attributes("title")).not.toContain("source branch");
   });
 });
+
+describe("GitPane header Refresh", () => {
+  test("also asks the History view to reload", async () => {
+    const ws = buildWorkspace({ id: "ws-refresh-token" });
+    const wrapper = mountPane("ws-refresh-token", [ws], { deep: true });
+    const store = useGitUiStore();
+    const bump = vi.spyOn(store, "bumpHistoryRefresh");
+    vi.spyOn(store, "refreshGit").mockResolvedValue(undefined);
+    await flushPromises();
+    const button = wrapper.findAll("button").find((b) => b.text() === "Refresh")!;
+    expect(button.attributes("title")).toContain("reloads the commit history");
+    await button.trigger("click");
+    expect(bump).toHaveBeenCalledWith("ws-refresh-token");
+    wrapper.unmount();
+  });
+});

@@ -1422,24 +1422,83 @@ describe("GitBranchesTab history toolbar", () => {
     expect(historySelection.topoOrder).toBe(false);
   });
 
-  test("Refresh in the History toolbar does what the legacy Refresh does", async () => {
+  test("the History toolbar has no Refresh button; the legacy toolbar keeps its own", () => {
+    expect(
+      mountMode(true)
+        .findAll("button")
+        .some((b) => b.text() === "Refresh"),
+    ).toBe(false);
+    expect(
+      mountMode(false)
+        .findAll("button")
+        .some((b) => b.text() === "Refresh"),
+    ).toBe(true);
+  });
+
+  test("bumping the refresh token force-reloads the graph", async () => {
     vi.useFakeTimers();
-    const refreshCalls = async (compactHistory: boolean) => {
-      const picker = mountMode(compactHistory);
-      await vi.advanceTimersByTimeAsync(500);
-      await flushPromises();
-      gitLoadGraph.mockClear();
-      const button = picker.findAll("button").find((b) => b.text() === "Refresh")!;
-      expect(button.attributes("title")).toContain("Re-list branches");
-      await button.trigger("click");
-      await vi.advanceTimersByTimeAsync(500);
-      return gitLoadGraph.mock.calls.length;
-    };
-    const legacy = await refreshCalls(false);
-    const history = await refreshCalls(true);
-    expect(legacy).toBeGreaterThan(0);
-    expect(history).toBe(legacy);
+    const gitUi = reactive({
+      branchList: { current: "main", local: [{ name: "main", isCurrent: true }], remotes: [] },
+      graph: { commits: [], head: "", refs: {} },
+      historyRefreshToken: 0,
+    });
+    const picker = mount(GitBranchesTab, {
+      props: { workspaceId: "ws-token", snapshot: { dirty: false, branch: "main" }, gitUi, compactHistory: true },
+    });
+    mountedWrappers.push(picker);
+    await vi.advanceTimersByTimeAsync(500);
+    gitLoadGraph.mockClear();
+    gitUi.historyRefreshToken = 1;
+    await vi.advanceTimersByTimeAsync(500);
+    expect(gitLoadGraph).toHaveBeenCalledWith("ws-token", expect.objectContaining({ force: true }));
     vi.useRealTimers();
+  });
+
+  test("HEAD is a valid selection: no notice, selection kept, graph queried with HEAD", async () => {
+    vi.useFakeTimers();
+    Object.assign(historySelection, { ref: "HEAD", commitSearch: "" });
+    const picker = mount(GitBranchesTab, {
+      props: {
+        workspaceId: "ws-head-valid",
+        snapshot: { dirty: false, branch: "main" },
+        gitUi: {
+          branchList: { current: "main", local: [{ name: "main", isCurrent: true }], remotes: [] },
+          graph: { commits: [], head: "", refs: {} },
+          tags: [{ name: "v1" }],
+          branchesLoading: false,
+          tagsLoading: false,
+        },
+        compactHistory: true,
+      },
+    });
+    mountedWrappers.push(picker);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(picker.find(".git-history-picker__notice").exists()).toBe(false);
+    expect(historySelection.ref).toBe("HEAD");
+    expect(gitLoadGraph).toHaveBeenCalledWith("ws-head-valid", expect.objectContaining({ branch: "HEAD" }));
+    vi.useRealTimers();
+  });
+
+  test("a missing-ref notice is a slim status line that can be dismissed", async () => {
+    Object.assign(historySelection, { ref: "gone", commitSearch: "" });
+    const gitUi = reactive({
+      branchList: { current: "main", local: [{ name: "main", isCurrent: true }], remotes: [] },
+      graph: { commits: [], head: "", refs: {} },
+      tags: [] as Array<{ name: string }>,
+      branchesLoading: false,
+      tagsLoading: false,
+    });
+    const picker = mount(GitBranchesTab, {
+      props: { workspaceId: "ws-notice", snapshot: { dirty: false, branch: "main" }, gitUi, compactHistory: true },
+    });
+    mountedWrappers.push(picker);
+    gitUi.tags = [{ name: "t" }];
+    await flushPromises();
+    const notice = picker.get(".git-history-picker__notice");
+    expect(notice.classes()).not.toContain("git-branches__placeholder");
+    expect(notice.text()).toContain("no longer available");
+    await notice.get('[aria-label="Dismiss notice"]').trigger("click");
+    expect(picker.find(".git-history-picker__notice").exists()).toBe(false);
   });
 
   test("Last fetch sits in the status line, not the toolbar", () => {

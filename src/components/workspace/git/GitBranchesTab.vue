@@ -62,26 +62,25 @@
       >
         Clear filters
       </button>
+    </div>
+    <div v-if="compactHistory && historyRefNotice" class="git-history-picker__notice" role="status">
+      <span class="git-history-picker__notice-text">{{ historyRefNotice }}</span>
       <button
         type="button"
-        class="button button--small"
-        :disabled="branchesLoading || graphLoading"
-        title="Re-list branches and re-read the commit topology. Local only — no fetch."
-        @click="refreshAll(true)"
+        class="button button--ghost button--small git-history-picker__notice-dismiss"
+        aria-label="Dismiss notice"
+        @click="historyRefNotice = ''"
       >
-        {{ branchesLoading || graphLoading ? "Loading…" : "Refresh" }}
+        ✕
       </button>
     </div>
-    <span v-if="compactHistory && historyRefNotice" class="git-branches__placeholder" role="status">{{
-      historyRefNotice
-    }}</span>
-    <span
+    <div
       v-if="compactHistory && historyCommitSearch && !filteredHistoryCommits.length && !graphLoading && !graphError"
-      class="git-branches__placeholder"
+      class="git-history-picker__notice"
       role="status"
     >
-      No commits match “{{ historyCommitSearch }}”.
-    </span>
+      <span class="git-history-picker__notice-text">No commits match “{{ historyCommitSearch }}”.</span>
+    </div>
     <div v-if="!compactHistory" class="git-branches__toolbar">
       <div class="git-branches__search">
         <input
@@ -1401,6 +1400,7 @@ watch(
     for (const b of branchList.value.local) validRefs.add(b.name);
     for (const r of branchList.value.remotes) validRefs.add(r.name);
     for (const t of tags.value) validRefs.add(t.name);
+    validRefs.add("HEAD");
     // Empty arrays can mean the initial reads have not arrived or a read failed.
     // Do not discard a persisted selection until both sources are available.
     const refsReady = !branchesLoading.value && !props.gitUi?.tagsLoading && !props.gitUi?.tagsError;
@@ -1418,6 +1418,13 @@ watch(
       }
       if (changed) multiSelectedRefs.value = next;
     }
+  },
+);
+
+watch(
+  () => props.gitUi?.historyRefreshToken,
+  (token, previous) => {
+    if (token !== previous) refreshAll(true);
   },
 );
 
@@ -2505,6 +2512,27 @@ watch(
   font-style: italic;
   padding: 12px;
   text-align: center;
+}
+
+.git-history-picker__notice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.git-history-picker__notice-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-history-picker__notice-dismiss {
+  flex: none;
 }
 
 .git-branches__flat-log {

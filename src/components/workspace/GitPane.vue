@@ -147,8 +147,8 @@
             data-testid="refresh-button"
             :class="['button', 'button--ghost', gitUi.busyAction === 'refresh' && 'button--busy']"
             :disabled="gitUi.busyAction === 'refresh'"
-            title="Re-read this repository's branch, ahead/behind counts, dirty list, worktrees, and tags from disk. Also clears a stuck/in-progress action so a frozen view recovers. No network operations."
-            @click="gitUiStore.refreshGit(workspaceId)"
+            title="Re-read this repository's branch, ahead/behind counts, dirty list, worktrees, and tags from disk. Also clears a stuck/in-progress action so a frozen view recovers. No network operations. Also reloads the commit history."
+            @click="onRefresh"
           >
             {{ gitUi.busyAction === "refresh" ? "Refreshing…" : "Refresh" }}
           </button>
@@ -508,6 +508,11 @@ const isLoadingRemoteSnapshot = computed(
   () => appStore.isRemoteTransport && snapshot.value == null && appStore.getGitSummary(props.workspaceId)?.available,
 );
 const gitUi = computed(() => gitUiStore.get(props.workspaceId));
+
+function onRefresh() {
+  gitUiStore.bumpHistoryRefresh(props.workspaceId);
+  return gitUiStore.refreshGit(props.workspaceId);
+}
 const workspaces = computed(() => appStore.filteredWorkspaces);
 
 const workspace = computed(() => (appStore.filteredWorkspaces || []).find((ws) => ws.id === props.workspaceId));
