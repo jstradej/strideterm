@@ -56,6 +56,13 @@
                 @click="pick(item.value)"
                 @mouseenter="searchActive = idx"
               >
+                <span
+                  :class="starClass(item.value, false, item.value !== 'HEAD', searchActive === idx)"
+                  :title="starTitle(item.value)"
+                  aria-hidden="true"
+                  @click="onStar($event, item.value, item.value !== 'HEAD')"
+                  >{{ starGlyph(item.value, false, item.value !== "HEAD", searchActive === idx) }}</span
+                >
                 <span class="history-range-picker__label" :title="item.label">{{ item.label }}</span>
               </li>
             </template>
@@ -65,7 +72,7 @@
           <div
             v-for="(items, level) in levels"
             :key="level"
-            class="history-range-picker__menu"
+            :class="['history-range-picker__menu', { 'history-range-picker__menu--sub': level > 0 }]"
             role="menu"
             tabindex="-1"
             :data-level="level"
@@ -97,14 +104,22 @@
                 @click="activate(level, i)"
                 @mouseenter="onRowEnter(level, i)"
               >
-                <span v-if="item.kind === 'leaf' && item.star" class="history-range-picker__star" aria-hidden="true"
-                  >★</span
-                >
-                <span class="history-range-picker__label" :title="item.label">{{ item.label }}</span>
-                <span v-if="item.kind === 'leaf' && item.suffix" class="history-range-picker__suffix">{{
-                  item.suffix
-                }}</span>
-                <span v-if="item.kind === 'sub'" class="history-range-picker__caret" aria-hidden="true">▸</span>
+                <template v-if="item.kind === 'leaf'">
+                  <span
+                    :class="starClass(item.value, !!item.pinned, item.toggle !== false, isRowActive(level, i))"
+                    :title="starTitle(item.value)"
+                    aria-hidden="true"
+                    @click="onStar($event, item.value, item.toggle !== false)"
+                    >{{ starGlyph(item.value, !!item.pinned, item.toggle !== false, isRowActive(level, i)) }}</span
+                  >
+                  <span class="history-range-picker__label" :title="item.label">{{ item.label }}</span>
+                  <span v-if="item.suffix" class="history-range-picker__suffix">{{ item.suffix }}</span>
+                </template>
+                <template v-else>
+                  <span class="history-range-picker__star" aria-hidden="true"></span>
+                  <span class="history-range-picker__label" :title="item.label">{{ item.label }}</span>
+                  <span v-if="item.kind === 'sub'" class="history-range-picker__caret" aria-hidden="true">›</span>
+                </template>
               </div>
             </template>
           </div>
@@ -117,22 +132,19 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useDismissable } from "../../../composables/useDismissable.js";
-import { buildBranchForest, type BranchForestNode } from "./branch-forest.js";
 
 type MenuItem =
   | { kind: "section"; label: string }
   | { kind: "sep" }
   | { kind: "note"; label: string }
   | { kind: "action"; label: string }
-  | { kind: "leaf"; label: string; value: string; star?: boolean; suffix?: string }
+  | { kind: "leaf"; label: string; value: string; pinned?: boolean; toggle?: boolean; suffix?: string }
   | { kind: "sub"; label: string; children: () => MenuItem[] };
 
 type SearchRow =
   | { kind: "section"; label: string }
   | { kind: "note"; label: string }
   | { kind: "option"; value: string; label: string };
-
-type LeafInfo = { suffix: string };
 
 const props = withDefaults(
   defineProps<{
@@ -164,10 +176,10 @@ const props = withDefaults(
   },
 );
 
-const emit = defineEmits<{ change: [value: string] }>();
+const emit = defineEmits<{ change: [value: string]; "toggle-favorite": [value: string] }>();
 
 const ALL = "__ALL__";
-const MAX_TAGS = 200;
+const MAX_LIST_ROWS = 300;
 const MAX_SEARCH_ROWS = 500;
 const HOVER_DELAY_MS = 120;
 const HIDDEN_STYLE = { left: "-9999px", top: "0" };
@@ -194,28 +206,24 @@ const buttonText = computed(() => {
   return `Branch: ${props.modelValue}${props.loadingRef === props.modelValue ? "…" : ""}`;
 });
 
-function forestToItems(nodes: BranchForestNode<LeafInfo>[]): MenuItem[] {
-  return nodes.map((node): MenuItem => {
-    if (node.kind === "folder") return { kind: "sub", label: node.label, children: () => forestToItems(node.children) };
-    return { kind: "leaf", label: node.label, value: node.ref, suffix: node.payload.suffix };
-  });
+function capped(names: string[], toItem: (name: string) => MenuItem): MenuItem[] {
+  const items = names.slice(0, MAX_LIST_ROWS).map(toItem);
+  if (names.length > MAX_LIST_ROWS) {
+    items.push({ kind: "note", label: `… ${names.length - MAX_LIST_ROWS} more — use Select…` });
+  }
+  return items;
 }
 
 function localItems(): MenuItem[] {
-  const forest = buildBranchForest<LeafInfo>(
-    props.local.map((name) => ({
-      path: name,
-      ref: name,
-      payload: { suffix: name === props.current ? " (working branch)" : "" },
-    })),
-    "local",
-    (a, b) => {
-      const aCur = a.ref === props.current ? 0 : 1;
-      const bCur = b.ref === props.current ? 0 : 1;
-      return aCur - bCur || a.label.localeCompare(b.label);
-    },
+  const sorted = [...props.local].sort(
+    (a, b) => Number(b === props.current) - Number(a === props.current) || a.localeCompare(b),
   );
-  return forestToItems(forest);
+  return capped(sorted, (name) => ({
+    kind: "leaf",
+    label: name,
+    value: name,
+    suffix: name === props.current ? " (working branch)" : "",
+  }));
 }
 
 function remoteItems(remote: string, refs: string[]): MenuItem[] {
@@ -223,26 +231,18 @@ function remoteItems(remote: string, refs: string[]): MenuItem[] {
   const defaultRemote = !props.defaultRemote || props.defaultRemote === remote;
   const isDefault = (ref: string) =>
     !!props.defaultBranch && defaultRemote && ref.slice(prefix.length) === props.defaultBranch;
-  const forest = buildBranchForest<LeafInfo>(
-    refs.map((ref) => ({ path: ref.slice(prefix.length), ref, payload: { suffix: isDefault(ref) ? "default" : "" } })),
-    `remote:${remote}`,
-    (a, b) => Number(!isDefault(a.ref)) - Number(!isDefault(b.ref)) || a.label.localeCompare(b.label),
-  );
-  return forestToItems(forest);
+  const sorted = [...refs].sort((a, b) => Number(isDefault(b)) - Number(isDefault(a)) || a.localeCompare(b));
+  return capped(sorted, (ref) => ({ kind: "leaf", label: ref, value: ref, suffix: isDefault(ref) ? "default" : "" }));
 }
 
 function tagItems(): MenuItem[] {
   const sorted = [...props.tags].sort((a, b) => a.localeCompare(b));
-  const items: MenuItem[] = sorted.slice(0, MAX_TAGS).map((tag) => ({ kind: "leaf", label: tag, value: tag }));
-  if (sorted.length > MAX_TAGS) {
-    items.push({ kind: "note", label: `… and ${sorted.length - MAX_TAGS} more — use Select…` });
-  }
-  return items;
+  return capped(sorted, (tag) => ({ kind: "leaf", label: tag, value: tag }));
 }
 
 const rootItems = computed<MenuItem[]>(() => {
   const items: MenuItem[] = [];
-  if (filterActive.value) items.push({ kind: "leaf", label: "All branches and tags", value: ALL });
+  if (filterActive.value) items.push({ kind: "leaf", label: "All branches and tags", value: ALL, toggle: false });
   items.push({ kind: "action", label: "Select…" });
   if (props.recent.length) {
     const recent = props.recent;
@@ -253,9 +253,9 @@ const rootItems = computed<MenuItem[]>(() => {
     });
   }
   items.push({ kind: "section", label: "Favorites" });
-  items.push({ kind: "leaf", label: "HEAD", value: "HEAD", star: true });
+  items.push({ kind: "leaf", label: "HEAD", value: "HEAD", pinned: true, toggle: false });
   for (const name of props.favorites) {
-    if (name !== "HEAD") items.push({ kind: "leaf", label: name, value: name, star: true });
+    if (name !== "HEAD") items.push({ kind: "leaf", label: name, value: name });
   }
   items.push({ kind: "sep" });
   if (props.local.length) items.push({ kind: "sub", label: "Local", children: localItems });
@@ -314,6 +314,52 @@ const searchRows = computed<SearchRow[]>(() => {
   if (truncated) rows.push({ kind: "note", label: `… and ${truncated} more — refine the search` });
   return rows;
 });
+
+function isRowActive(level: number, index: number): boolean {
+  return activeLevel.value === level && activeIdx.value[level] === index;
+}
+
+function starGlyph(value: string, pinned: boolean, toggle: boolean, active: boolean): string {
+  if (pinned || (toggle && props.favorites.includes(value))) return "★";
+  return toggle && active ? "☆" : "";
+}
+
+function starClass(value: string, pinned: boolean, toggle: boolean, active: boolean): string[] {
+  const glyph = starGlyph(value, pinned, toggle, active);
+  return [
+    "history-range-picker__star",
+    glyph === "★" ? "history-range-picker__star--on" : glyph ? "history-range-picker__star--hollow" : "",
+  ];
+}
+
+function starTitle(value: string): string {
+  if (value === "HEAD" || value === ALL) return "";
+  return props.favorites.includes(value) ? "Remove from favorites" : "Add to favorites";
+}
+
+let pendingRootSub = "";
+
+function onStar(e: Event, value: string, toggle: boolean): void {
+  if (!toggle) return;
+  e.stopPropagation();
+  const rootSub = rootItems.value[openPath.value[0]];
+  pendingRootSub = rootSub?.kind === "sub" ? rootSub.label : "";
+  emit("toggle-favorite", value);
+}
+
+watch(
+  () => props.favorites,
+  () => {
+    if (!pendingRootSub || !openPath.value.length) return;
+    const label = pendingRootSub;
+    pendingRootSub = "";
+    const index = rootItems.value.findIndex((item) => item.kind === "sub" && item.label === label);
+    if (index < 0 || index === openPath.value[0]) return;
+    openPath.value = [index, ...openPath.value.slice(1)];
+    setActive(0, index);
+    nextTick(positionLevels);
+  },
+);
 
 function selectable(item: MenuItem | undefined): boolean {
   return item?.kind === "leaf" || item?.kind === "sub" || item?.kind === "action";
@@ -407,13 +453,15 @@ function positionLevels(): void {
   const styles: Record<number, Record<string, string>> = {};
   for (let level = 1; level <= openPath.value.length; level++) {
     const el = menuEl(level);
-    const anchor = menuEl(level - 1)?.querySelector<HTMLElement>(`[data-index="${openPath.value[level - 1]}"]`);
-    if (!el || !anchor) continue;
+    const parent = menuEl(level - 1);
+    const anchor = parent?.querySelector<HTMLElement>(`[data-index="${openPath.value[level - 1]}"]`);
+    if (!el || !parent || !anchor) continue;
     const rect = anchor.getBoundingClientRect();
+    const parentRect = parent.getBoundingClientRect();
     const width = el.offsetWidth;
     const height = el.offsetHeight;
-    let left = rect.right - 2;
-    if (left + width > vw - 8) left = Math.max(8, rect.left - width + 2);
+    let left = parentRect.right - 2;
+    if (left + width > vw - 8) left = Math.max(8, parentRect.left - width + 2);
     const top = Math.max(8, Math.min(rect.top - 4, vh - 8 - height));
     styles[level] = { left: `${left}px`, top: `${top}px` };
   }
@@ -647,12 +695,16 @@ onBeforeUnmount(() => {
   max-height: 60vh;
   overflow-y: auto;
   padding: 4px 0;
-  background: var(--panel-elevated);
-  border: 1px solid var(--border);
+  background: var(--menu-bg);
+  border: 1px solid rgba(var(--tint), 0.16);
   border-radius: 4px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--menu-shadow);
   font-size: 13px;
   outline: none;
+}
+.history-range-picker__menu--sub {
+  min-width: 220px;
+  max-width: 440px;
 }
 .history-range-picker__menu--search {
   width: 320px;
@@ -684,19 +736,21 @@ onBeforeUnmount(() => {
 .history-range-picker__row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
+  gap: 8px;
+  height: 26px;
+  flex-shrink: 0;
+  padding: 0 12px 0 8px;
   color: var(--text);
+  font-size: 13px;
   cursor: pointer;
   white-space: nowrap;
 }
 .history-range-picker__row--active,
 .history-range-picker__row--open {
-  background: rgba(var(--tint), 0.12);
+  background: rgba(var(--tint), 0.1);
 }
 .history-range-picker__row--selected {
   color: var(--accent);
-  font-weight: 600;
 }
 .history-range-picker__label {
   flex: 1 1 auto;
@@ -705,8 +759,15 @@ onBeforeUnmount(() => {
   text-overflow: ellipsis;
 }
 .history-range-picker__star {
-  flex-shrink: 0;
+  flex: 0 0 18px;
+  width: 18px;
+  text-align: center;
+}
+.history-range-picker__star--on {
   color: var(--accent);
+}
+.history-range-picker__star--hollow {
+  color: var(--muted);
 }
 .history-range-picker__suffix {
   flex-shrink: 0;
@@ -716,18 +777,15 @@ onBeforeUnmount(() => {
 .history-range-picker__caret {
   flex-shrink: 0;
   color: var(--muted);
-  font-size: 10px;
 }
 .history-range-picker__section {
-  padding: 6px 10px 4px;
+  padding: 6px 12px 2px 34px;
   color: var(--muted);
-  font-size: 10px;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: 400;
 }
 .history-range-picker__note {
-  padding: 6px 10px;
+  padding: 4px 12px 4px 34px;
   color: var(--muted);
   font-size: 12px;
 }

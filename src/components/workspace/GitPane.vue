@@ -716,7 +716,9 @@ const legacyDestinationLabel = computed(() => {
   return tab?.label || storedLegacyDestination.value.replace(/\b\w/g, (letter) => letter.toUpperCase());
 });
 const activeGitViewLabel = computed(() => newGitViews.find((view) => view.id === activeGitView.value)?.label || "Git");
-const activeLegacyTab = computed(() => legacyDestinations.value.find((tab) => tab.id === activeLegacyDestination.value));
+const activeLegacyTab = computed(() =>
+  legacyDestinations.value.find((tab) => tab.id === activeLegacyDestination.value),
+);
 const moreMenuOpen = ref(false);
 const moreActiveIndex = ref(-1);
 const moreMenuStyle = ref<Record<string, string>>({});
@@ -1305,10 +1307,10 @@ const switchBranchOptionsList = computed(() => switchBranchOptions.value.map((b)
   display: flex;
   flex-direction: column;
   padding: 4px 0;
-  background: var(--panel-elevated);
-  border: 1px solid var(--border);
+  background: var(--menu-bg);
+  border: 1px solid rgba(var(--tint), 0.16);
   border-radius: 4px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--menu-shadow);
   font-size: 13px;
   overflow-y: auto;
 }

@@ -29,22 +29,9 @@
           :default-remote="branchList.defaultRemote"
           :loading-ref="historyLoadingRef"
           @change="onHistoryRefChange"
+          @toggle-favorite="toggleHistoryFavorite"
         />
       </div>
-      <button
-        type="button"
-        class="button button--ghost button--small"
-        :disabled="!historyFavoriteRef"
-        :aria-pressed="historyPreferences.favorites.includes(historyFavoriteRef)"
-        :aria-label="
-          historyPreferences.favorites.includes(historyFavoriteRef)
-            ? 'Remove history favorite'
-            : 'Favorite history reference'
-        "
-        @click="toggleHistoryFavorite"
-      >
-        {{ historyPreferences.favorites.includes(historyFavoriteRef) ? "★" : "☆" }}
-      </button>
       <span class="git-history-picker__current"
         >Working branch: <strong>{{ branchList.current || "Detached HEAD" }}</strong></span
       >
@@ -810,14 +797,8 @@ const historyRefNotice = ref("");
 const historyPreferences = computed(() =>
   gitUiStore.getGitHistoryPreferences(props.workspaceId, props.activeRootPath || "", props.profileId || "default"),
 );
-const historyFavoriteRef = computed(() => selectedRef.value || "HEAD");
-function toggleHistoryFavorite() {
-  gitUiStore.toggleGitHistoryFavorite(
-    props.workspaceId,
-    historyFavoriteRef.value,
-    props.activeRootPath || "",
-    props.profileId || "default",
-  );
+function toggleHistoryFavorite(ref: string) {
+  gitUiStore.toggleGitHistoryFavorite(props.workspaceId, ref, props.activeRootPath || "", props.profileId || "default");
 }
 const historyLocalNames = computed(() => branchList.value.local.map((branch) => branch.name));
 const historyRemoteNames = computed(() => branchList.value.remotes.map((branch) => branch.name));

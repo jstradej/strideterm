@@ -11,6 +11,8 @@
   --bg: #141416;
   --panel: #1c1c20;
   --panel-elevated: rgba(28, 28, 32, 0.95);
+  --menu-bg: #26262c;
+  --menu-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
   --text: #dcdce0;
   --muted: #76767e;
   --border: rgba(var(--tint), 0.07);
@@ -42,6 +44,8 @@
   --bg: #ededf0;
   --panel: #f7f7f9;
   --panel-elevated: rgba(255, 255, 255, 0.95);
+  --menu-bg: #ffffff;
+  --menu-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
   --text: #18181b;
   --muted: #6e6e76;
   --border: rgba(0, 0, 0, 0.08);

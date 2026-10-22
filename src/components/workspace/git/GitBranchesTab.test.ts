@@ -14,6 +14,7 @@ const closeDialog = vi.fn();
 const azureCreatePullRequest = vi.fn();
 const gitLoadGraph = vi.fn();
 const gitFetch = vi.fn();
+const toggleGitHistoryFavorite = vi.fn();
 const gitPush = vi.fn();
 const gitCheckoutBranch = vi.fn();
 const gitCheckoutRemoteBranch = vi.fn();
@@ -57,7 +58,7 @@ vi.mock("../../../stores/git-ui.js", () => ({
         historySelections.get(historySelectionKey(workspaceId, rootPath, profileId)) || historySelection;
       Object.assign(selection, patch);
     },
-    toggleGitHistoryFavorite: vi.fn(),
+    toggleGitHistoryFavorite,
     recordGitHistoryRef: vi.fn(),
     gitFetchBaseComparison: vi.fn(),
     gitSelectCommit: vi.fn(),
@@ -133,7 +134,7 @@ async function chooseHistoryRef(button: { trigger: (event: string) => Promise<vo
   input.value = name;
   input.dispatchEvent(new Event("input"));
   await flushPromises();
-  const row = optionRows().find((candidate) => candidate.textContent?.trim() === name);
+  const row = optionRows().find((candidate) => candidate.textContent?.trim().replace(/^[★☆]/, "") === name);
   if (!row) throw new Error(`No History range option "${name}"`);
   row.click();
   await flushPromises();
@@ -830,6 +831,47 @@ describe("GitBranchesTab compact history picker", () => {
     expect(picker.findAll(".git-history-picker__current")[0].text()).toContain("Working branch: Detached HEAD");
     expect(picker.findAll(".git-tree__placeholder").some((node) => node.text() === "No commits found.")).toBe(true);
     expect(picker.find('[data-testid="operation-card"]').exists()).toBe(true);
+  });
+
+  test("toggles a History favourite through the menu star and has no toolbar star button", async () => {
+    mobileViewport.isNarrow.value = false;
+    mobileViewport.isMobile.value = false;
+    toggleGitHistoryFavorite.mockClear();
+    const picker = mount(GitBranchesTab, {
+      props: {
+        workspaceId: "ws-favorite",
+        activeRootPath: "/repo",
+        profileId: "p1",
+        snapshot: { dirty: false, branch: "main" },
+        gitUi: {
+          branchList: {
+            current: "main",
+            local: [{ name: "main", isCurrent: true }],
+            remotes: [],
+            defaultBranch: "",
+            defaultRemote: "",
+          },
+          graph: { commits: [], head: "", refs: {} },
+          tags: [],
+        },
+        compactHistory: true,
+      },
+    });
+    mountedWrappers.push(picker);
+    await flushPromises();
+    expect(picker.find('[aria-label="Favorite history reference"]').exists()).toBe(false);
+    expect(picker.find('[aria-label="Remove history favorite"]').exists()).toBe(false);
+    await picker.get('[aria-label="History reference"]').trigger("click");
+    menuItems()
+      .find((item) => item.textContent?.trim().startsWith("Local"))!
+      .click();
+    await flushPromises();
+    const row = menuItems().find((item) => item.textContent?.trim().replace(/^[★☆]/, "") === "main (working branch)")!;
+    row.dispatchEvent(new MouseEvent("mouseenter"));
+    await flushPromises();
+    row.querySelector<HTMLElement>(".history-range-picker__star")!.click();
+    await flushPromises();
+    expect(toggleGitHistoryFavorite).toHaveBeenCalledWith("ws-favorite", "main", "/repo", "p1");
   });
 
   test("renders and filters a large History ref list", async () => {
