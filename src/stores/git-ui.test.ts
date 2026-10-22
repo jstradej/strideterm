@@ -56,7 +56,7 @@ describe("git-ui store", () => {
     expect(store.getGitView("ws1", "/repo/a")).toBe("history");
     expect(store.getGitView("ws1", "/repo/b")).toBe("changes");
     store.gitSwitchView("ws1", "review", "/repo/a", "profile-b");
-    expect(store.getGitView("ws1", "/repo/a", "profile-b")).toBe("review");
+    expect(store.getGitView("ws1", "/repo/a", "profile-b")).toBe("history");
     expect(store.getGitView("ws1", "/repo/a", "default")).toBe("history");
     store.gitSwitchView("ws1", "changes", "/repo/a", "profile-b", "azure:123");
     expect(store.getGitView("ws1", "/repo/a", "profile-b", "azure:123")).toBe("changes");
@@ -68,7 +68,7 @@ describe("git-ui store", () => {
     store.gitSwitchView("ws::2", "history", "/repo", "profile");
     store.gitSwitchView("ws", "review", "/repo", "profile::2");
     expect(store.getGitView("ws::2", "/repo", "profile")).toBe("history");
-    expect(store.getGitView("ws", "/repo", "profile::2")).toBe("review");
+    expect(store.getGitView("ws", "/repo", "profile::2")).toBe("history");
   });
   test("History query restores and isolates filters per profile, workspace, and root", () => {
     const store = useGitUiStore();

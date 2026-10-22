@@ -134,19 +134,10 @@ function mountPane(
 
 type PaneWrapper = ReturnType<typeof mountPane>;
 
-function menuItemLabel(item: HTMLElement) {
-  return item.firstChild?.textContent?.trim();
-}
-
-function menuItems() {
-  return Array.from(document.body.querySelectorAll<HTMLElement>('[role="menuitem"]'));
-}
-
-async function pickMoreTool(wrapper: PaneWrapper, label: string) {
-  if (menuItems().length === 0) await wrapper.get('[aria-label="More Git tools"]').trigger("click");
-  const item = menuItems().find((el) => menuItemLabel(el) === label);
-  expect(item, `menu item ${label}`).toBeTruthy();
-  item!.click();
+async function pickTab(wrapper: PaneWrapper, label: string) {
+  const tab = wrapper.findAll('[role="tab"]').find((el) => el.text().replace(/\d+$/, "").trim() === label);
+  expect(tab, `tab ${label}`).toBeTruthy();
+  await tab!.trigger("click");
   await flushPromises();
 }
 
@@ -190,40 +181,40 @@ describe("GitPane repo picker", () => {
     expect(wrapper.findAll('[role="tab"]').map((tab) => tab.text())).toEqual([
       "History",
       "Changes",
-      "Review",
-      "More ▾",
+      "Overview",
+      "Branches",
+      "Stashes",
+      "Pull Request",
+      "Worktrees",
     ]);
-    expect(wrapper.find('[aria-label="More Git tools"]').exists()).toBe(true);
-    await pickMoreTool(wrapper, "Stashes");
+    expect(wrapper.find('[aria-label="More Git tools"]').exists()).toBe(false);
+    await pickTab(wrapper, "Stashes");
     expect(wrapper.findComponent({ name: "GitStashesTab" }).exists()).toBe(true);
-    await pickMoreTool(wrapper, "Branches");
+    await pickTab(wrapper, "Branches");
     expect(wrapper.findComponent({ name: "GitBranchesTab" }).exists()).toBe(true);
     wrapper.unmount();
   });
 
-  test("a picked More tool is the only active tab until a main view is chosen again", async () => {
+  test("a picked tool tab is the only active tab until History or Changes is chosen again", async () => {
     const ws = buildWorkspace({ id: "ws-more-active" });
     const wrapper = mountPane("ws-more-active", [ws], { newView: true });
     await flushPromises();
-    const more = () => wrapper.get('[aria-label="More Git tools"]');
-    expect(more().text()).toBe("More ▾");
+    const tab = (label: string) => wrapper.findAll('[role="tab"]').find((el) => el.text() === label)!;
     expect(wrapper.findAll(".git-tabs__item--active")).toHaveLength(1);
+    expect(tab("History").attributes("aria-selected")).toBe("true");
 
-    await pickMoreTool(wrapper, "Stashes");
-    expect(more().text()).toBe("Stashes ▾");
-    expect(more().attributes("aria-selected")).toBe("true");
-    expect(more().classes()).toContain("git-tabs__item--active");
-    const active = wrapper.findAll(".git-tabs__item--active");
-    expect(active).toHaveLength(1);
+    await pickTab(wrapper, "Stashes");
+    expect(tab("Stashes").attributes("aria-selected")).toBe("true");
+    expect(tab("Stashes").classes()).toContain("git-tabs__item--active");
+    expect(wrapper.findAll(".git-tabs__item--active")).toHaveLength(1);
     expect(wrapper.findAll('[role="tab"][aria-selected="true"]')).toHaveLength(1);
+    expect(wrapper.findComponent({ name: "GitStashesTab" }).exists()).toBe(true);
 
-    const history = wrapper.findAll('[role="tab"]').find((tab) => tab.text() === "History")!;
-    await history.trigger("click");
-    await flushPromises();
-    expect(history.attributes("aria-selected")).toBe("true");
-    expect(history.classes()).toContain("git-tabs__item--active");
-    expect(more().text()).toBe("More ▾");
-    expect(more().attributes("aria-selected")).toBe("false");
+    await pickTab(wrapper, "History");
+    expect(tab("History").attributes("aria-selected")).toBe("true");
+    expect(tab("History").classes()).toContain("git-tabs__item--active");
+    expect(tab("Stashes").attributes("aria-selected")).toBe("false");
+    expect(wrapper.findAll(".git-tabs__item--active")).toHaveLength(1);
     wrapper.unmount();
   });
 
@@ -235,7 +226,7 @@ describe("GitPane repo picker", () => {
     ["worktrees", "GitWorktreeList"],
     ["bulk", "BulkRepoTable"],
     ["conflicts", "GitConflictsTab"],
-  ])("More routes %s to its existing tool", async (destination, componentName) => {
+  ])("the %s tab routes to its existing tool", async (destination, componentName) => {
     const workspaceId = `ws-more-${destination}`;
     const ws = buildWorkspace({
       id: workspaceId,
@@ -275,76 +266,53 @@ describe("GitPane repo picker", () => {
       bulk: "Bulk",
       conflicts: "Conflicts",
     }[destination]!;
-    await wrapper.get('[aria-label="More Git tools"]').trigger("click");
-    expect(menuItems().map(menuItemLabel)).toContain(label);
-    await pickMoreTool(wrapper, label);
+    expect(wrapper.findAll('[role="tab"]').map((el) => el.text().replace(/\d+$/, ""))).toContain(label);
+    await pickTab(wrapper, label);
     expect(wrapper.findComponent({ name: componentName }).exists()).toBe(true);
     wrapper.unmount();
   });
 
-  test("falls back with an explanation when a saved More tool is unavailable", async () => {
+  test("a saved tool tab that no longer exists shows the History view", async () => {
     const ws = buildWorkspace({ id: "ws-unavailable-more-tool" });
-    const wrapper = mountPane("ws-unavailable-more-tool", [ws]);
-    const appStore = useAppStore();
-    appStore.payload = {
-      ...appStore.payload!,
-      appState: { ...appStore.payload!.appState!, settings: { git: { ui: { newView: true } } } },
-    } as StatePayload;
-    const gitUiStore = useGitUiStore();
-    gitUiStore.setNewViewLegacyDestination("ws-unavailable-more-tool", "conflicts");
+    const wrapper = mountPane("ws-unavailable-more-tool", [ws], { newView: true });
+    useGitUiStore().setNewViewLegacyDestination("ws-unavailable-more-tool", "conflicts");
     await flushPromises();
 
-    expect(wrapper.find(".git-view__fallback").text()).toContain("Conflicts is unavailable right now");
-    expect(wrapper.find(".git-view__fallback").text()).toContain("Showing History");
-    expect(wrapper.get('[aria-label="More Git tools"]').text()).toBe("More ▾");
-    expect(wrapper.get('[aria-label="More Git tools"]').attributes("aria-selected")).toBe("false");
-    expect(gitUiStore.getNewViewLegacyDestination("ws-unavailable-more-tool")).toBe("conflicts");
-    expect(wrapper.findComponent({ name: "GitBranchesTab" }).exists()).toBe(true);
+    const selected = wrapper.findAll('[role="tab"][aria-selected="true"]');
+    expect(selected.map((tab) => tab.text())).toEqual(["History"]);
+    expect(wrapper.findComponent({ name: "GitConflictsTab" }).exists()).toBe(false);
+    wrapper.unmount();
   });
 
-  test("Review renders the linked provider review workspace using its PR data and drafts", async () => {
-    const linked = buildWorkspace({
-      id: "ws-linked",
-      review: { prKey: "azure:repo:42", provider: "azure-devops", role: "reviewer" },
-    });
-    const providerReview = buildWorkspace({
-      id: "ws-provider-review",
+  test("a persisted Review view renders History and there is no Review tab", async () => {
+    const ws = buildWorkspace({ id: "ws-persisted-review" });
+    const wrapper = mountPane("ws-persisted-review", [ws], { newView: true });
+    const gitUiStore = useGitUiStore();
+    gitUiStore.gitSwitchView("ws-persisted-review", "review", "/ms/api");
+    gitUiStore.setActiveRoot("ws-persisted-review", "/ms/api");
+    await flushPromises();
+
+    const tabs = wrapper.findAll('[role="tab"]');
+    expect(tabs.map((tab) => tab.text())).not.toContain("Review");
+    expect(wrapper.findAll('[role="tab"][aria-selected="true"]').map((tab) => tab.text())).toEqual(["History"]);
+    wrapper.unmount();
+  });
+
+  test("a review workspace with a clean tree opens on History", async () => {
+    const ws = buildWorkspace({
+      id: "ws-review-clean",
       kind: "review",
       review: { prKey: "azure:repo:42", provider: "azure-devops", role: "reviewer" },
     });
-    const wrapper = mountPane("ws-linked", [linked, providerReview]);
-    const appStore = useAppStore();
-    appStore.payload = {
-      ...appStore.payload!,
-      appState: { ...appStore.payload!.appState!, settings: { git: { ui: { newView: true } } } },
-    } as StatePayload;
+    const wrapper = mountPane("ws-review-clean", [ws], { newView: true });
     await flushPromises();
-    const reviewPane = wrapper.findComponent({ name: "AzureReviewPane" });
-    expect(reviewPane.exists()).toBe(true);
-    expect(reviewPane.props("workspaceId")).toBe("ws-provider-review");
+
+    expect(wrapper.findAll('[role="tab"][aria-selected="true"]').map((tab) => tab.text())).toEqual(["History"]);
+    expect(wrapper.findComponent({ name: "AzureReviewPane" }).exists()).toBe(false);
+    wrapper.unmount();
   });
 
-  test("Review keeps the shared Git operation status visible", async () => {
-    const ws = buildWorkspace({ id: "ws-review-operation" });
-    const wrapper = mountPane("ws-review-operation", [ws]);
-    const appStore = useAppStore();
-    appStore.payload = {
-      ...appStore.payload!,
-      appState: { ...appStore.payload!.appState!, settings: { git: { ui: { newView: true } } } },
-    } as StatePayload;
-    const gitUiStore = useGitUiStore();
-    gitUiStore.get("ws-review-operation").busyAction = "fetch";
-    await flushPromises();
-    await wrapper
-      .findAll('[role="tab"]')
-      .find((tab) => tab.text() === "Review")!
-      .trigger("click");
-    await flushPromises();
-
-    expect(wrapper.findComponent({ name: "GitOperationCard" }).exists()).toBe(true);
-  });
-
-  test.each(["History", "Changes", "Review"] as const)("keeps conflict resolution visible in %s", async (view) => {
+  test.each(["History", "Changes", "Overview"] as const)("keeps conflict resolution visible in %s", async (view) => {
     const workspaceId = `ws-conflicts-${view.toLowerCase()}`;
     const ws = buildWorkspace({ id: workspaceId });
     const wrapper = mountPane(workspaceId, [ws]);
@@ -425,7 +393,7 @@ describe("GitPane repo picker", () => {
     await flushPromises();
     await wrapper
       .findAll('[role="tab"]')
-      .find((tab) => tab.text() === "Review")!
+      .find((tab) => tab.text() === "Worktrees")!
       .trigger("click");
     await flushPromises();
     expect(wrapper.findComponent({ name: "GitOperationCard" }).exists()).toBe(true);
@@ -529,8 +497,11 @@ describe("GitPane repo picker", () => {
     expect(wrapper.findAll('[role="tab"]').map((tab) => tab.text())).toEqual([
       "History",
       "Changes",
-      "Review",
-      "More ▾",
+      "Overview",
+      "Branches",
+      "Stashes",
+      "Pull Request",
+      "Worktrees",
     ]);
     expect(document.body.querySelector(".dialog--textarea textarea")).toHaveProperty(
       "value",

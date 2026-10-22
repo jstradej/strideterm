@@ -1860,7 +1860,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     rootPath?: string,
     profileId = "default",
     reviewKey = "",
-  ): "history" | "changes" | "review" | undefined {
+  ): "history" | "changes" | undefined {
     const ui = ensure(workspaceId);
     const workspacePreferences =
       (ui.workspaceGitViewPreferences as Record<string, "history" | "changes" | "review"> | undefined) || {};
@@ -1871,7 +1871,8 @@ export const useGitUiStore = defineStore("git-ui", () => {
       ...payloadPreferences,
       ...((ui.gitViewsByRoot as Record<string, "history" | "changes" | "review"> | undefined) || {}),
     };
-    return views?.[gitViewKey(workspaceId, rootPath, profileId, reviewKey)];
+    const view = views?.[gitViewKey(workspaceId, rootPath, profileId, reviewKey)];
+    return view === "review" ? "history" : view;
   }
 
   function gitHistoryPreferencesKey(workspaceId: string, rootPath: string, profileId: string): string {
