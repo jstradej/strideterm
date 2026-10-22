@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { mount } from "@vue/test-utils";
 import GitTreeGraph from "./GitTreeGraph.vue";
+import Spinner from "../../common/Spinner.vue";
 
 /**
  * Linear commit chain with a single merge:
@@ -76,6 +77,13 @@ function mountGraph(props: Record<string, unknown> = {}) {
 }
 
 describe("GitTreeGraph", () => {
+  test("shows a spinner placeholder while the first graph loads", () => {
+    const wrapper = mountGraph({ commits: [], loading: true });
+    const placeholder = wrapper.get(".git-tree__placeholder");
+    expect(placeholder.findComponent(Spinner).exists()).toBe(true);
+    expect(placeholder.text()).toContain("Loading commit graph…");
+  });
+
   test("renders one row per commit", () => {
     const wrapper = mountGraph();
     const rows = wrapper.findAll(".git-tree__row");

@@ -627,6 +627,50 @@ describe("GitBranchesTab compact history picker", () => {
     expect(picker.get<HTMLInputElement>('input[type="date"]').element.value).toBe("2026-01-01");
   });
 
+  test("History keeps its structure while loading, the legacy view keeps the cold-start block", async () => {
+    mobileViewport.isNarrow.value = false;
+    const mountLoading = (compactHistory: boolean, id: string) => {
+      const wrapper = mount(GitBranchesTab, {
+        props: {
+          workspaceId: id,
+          snapshot: { dirty: false, branch: "main" },
+          gitUi: { graph: { commits: [], head: "", refs: {} }, branchesLoading: true, tagsLoading: true },
+          compactHistory,
+        },
+      });
+      mountedWrappers.push(wrapper);
+      return wrapper;
+    };
+    const history = mountLoading(true, "ws-history-loading");
+    await flushPromises();
+    expect(history.find(".git-branches__loading").exists()).toBe(false);
+    expect(history.find(".git-branches__body").exists()).toBe(true);
+    const legacy = mountLoading(false, "ws-legacy-loading");
+    await flushPromises();
+    expect(legacy.find(".git-branches__loading").exists()).toBe(true);
+  });
+
+  test("History toolbar has no visible captions but keeps accessible names", async () => {
+    mobileViewport.isNarrow.value = false;
+    const picker = mount(GitBranchesTab, {
+      props: {
+        workspaceId: "ws-history-captions",
+        snapshot: { dirty: false, branch: "main" },
+        gitUi: { graph: { commits: [], head: "", refs: {} } },
+        compactHistory: true,
+      },
+    });
+    mountedWrappers.push(picker);
+    await flushPromises();
+    const text = picker.get(".git-history-picker").text();
+    for (const caption of ["Find reference", "History range", "Find commits"]) {
+      expect(text).not.toContain(caption);
+    }
+    expect(picker.find('[aria-label="Search history references"]').exists()).toBe(true);
+    expect(picker.find('[aria-label="History reference"]').exists()).toBe(true);
+    expect(picker.find('[aria-label="Search commits"]').exists()).toBe(true);
+  });
+
   test("keeps a persisted ref selection while branch and tag reads are pending", async () => {
     Object.assign(historySelection, { ref: "origin/topic", commitSearch: "" });
     mobileViewport.isNarrow.value = false;

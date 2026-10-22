@@ -193,7 +193,7 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 8px;
   width: 100%;
-  padding: 6px 10px;
+  padding: 5px 8px;
   background: rgba(var(--tint), 0.04);
   border: 1px solid var(--border);
   border-radius: 3px;

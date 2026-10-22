@@ -3,7 +3,9 @@
     class="git-tree"
     :class="{ 'git-tree--loading': loading, 'git-tree--compact': compact, 'git-tree--history': history }"
   >
-    <div v-if="loading && !nodes.length" class="git-tree__placeholder">Loading commit graph…</div>
+    <div v-if="loading && !nodes.length" class="git-tree__placeholder">
+      <Spinner size="md" label="Loading commit graph…" />
+    </div>
     <div v-else-if="error" class="git-tree__placeholder git-tree__placeholder--error">{{ error }}</div>
     <div v-else-if="!nodes.length" class="git-tree__placeholder">No commits found.</div>
     <template v-else>
@@ -166,6 +168,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import Spinner from "../../common/Spinner.vue";
 
 interface RawCommit {
   hash: string;

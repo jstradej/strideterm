@@ -1,43 +1,24 @@
 <template>
-  <div class="git-section git-branches" :class="{ 'git-branches--mobile': isMobile }">
+  <div class="git-section git-branches" :class="{ 'git-branches--mobile': isMobile, 'git-branches--history': compactHistory }">
     <p v-if="gitUi.tagsError" class="git-branches__pane-error" role="alert">{{ gitUi.tagsError }}</p>
     <!-- Compact toolbar (search + filters + actions).
          Desktop: single row. Mobile: stacked with view-switcher tabs. -->
     <div v-if="compactHistory" class="git-history-picker">
-      <label class="git-history-picker__search">
-        <span>Find reference</span>
+      <div class="git-history-picker__search">
         <input
           v-model="historySearch"
           type="search"
           placeholder="Branches and tags…"
           aria-label="Search history references"
         />
-      </label>
-      <label class="git-history-picker__select">
-        <span>History range</span>
+      </div>
+      <div class="git-history-picker__select">
         <HistoryRangePicker
           :model-value="selectedRef || '__ALL__'"
           :items="historyRangeItems"
           @change="onHistoryRefChange"
         />
-      </label>
-      <span v-if="historyRefNotice" class="git-branches__placeholder" role="status">{{ historyRefNotice }}</span>
-      <label class="git-history-picker__search git-history-picker__search--commits">
-        <span>Find commits</span>
-        <input
-          v-model="historyCommitSearch"
-          type="search"
-          placeholder="Message, author, or hash…"
-          aria-label="Search commits"
-        />
-      </label>
-      <span
-        v-if="historyCommitSearch && !filteredHistoryCommits.length && !graphLoading && !graphError"
-        class="git-branches__placeholder"
-        role="status"
-      >
-        No commits match “{{ historyCommitSearch }}”.
-      </span>
+      </div>
       <button
         type="button"
         class="button button--ghost button--small"
@@ -52,6 +33,14 @@
       >
         {{ historyPreferences.favorites.includes(historyFavoriteRef) ? "★" : "☆" }}
       </button>
+      <div class="git-history-picker__search git-history-picker__search--commits">
+        <input
+          v-model="historyCommitSearch"
+          type="search"
+          placeholder="Message, author, or hash…"
+          aria-label="Search commits"
+        />
+      </div>
       <span class="git-history-picker__current"
         >Working branch: <strong>{{ branchList.current || "Detached HEAD" }}</strong></span
       >
@@ -62,6 +51,16 @@
         All branches
       </button>
     </div>
+    <span v-if="compactHistory && historyRefNotice" class="git-branches__placeholder" role="status">{{
+      historyRefNotice
+    }}</span>
+    <span
+      v-if="compactHistory && historyCommitSearch && !filteredHistoryCommits.length && !graphLoading && !graphError"
+      class="git-branches__placeholder"
+      role="status"
+    >
+      No commits match “{{ historyCommitSearch }}”.
+    </span>
     <div v-else class="git-branches__toolbar">
       <div class="git-branches__search">
         <input
@@ -177,7 +176,7 @@
     <!-- Cold-start spinner: visible while the very first branch + graph fetch
          for this workspace is still pending. Subsequent refreshes are
          surfaced inline by GitTreeGraph's own loading state. -->
-    <div v-if="isInitialLoading" class="git-branches__loading" role="status" aria-live="polite">
+    <div v-if="isInitialLoading && !compactHistory" class="git-branches__loading" role="status" aria-live="polite">
       <span class="git-branches__spinner" aria-hidden="true"></span>
       <span>Loading branches…</span>
     </div>
@@ -436,7 +435,9 @@
               @contextmenu="onCommitContextMenu"
             />
             <div v-else class="git-branches__flat-log">
-              <div v-if="graphLoading && !commits.length" class="git-branches__placeholder">Loading…</div>
+              <div v-if="graphLoading && !commits.length" class="git-branches__placeholder">
+                <Spinner size="sm" label="Loading…" />
+              </div>
               <GitCommitLog
                 v-else
                 :commits="compactHistory ? filteredHistoryCommits : commits"
@@ -485,7 +486,9 @@
               <Pane :size="35" :min-size="18">
                 <div class="git-branches__commit-files">
                   <div v-if="!selectedHash" class="git-branches__placeholder">Select a commit to see its files.</div>
-                  <div v-else-if="commitFilesLoading" class="git-branches__placeholder">Loading…</div>
+                  <div v-else-if="commitFilesLoading" class="git-branches__placeholder">
+                    <Spinner size="sm" label="Loading…" />
+                  </div>
                   <div v-else-if="commitFilesError" class="git-branches__placeholder">{{ commitFilesError }}</div>
                   <GitChangeTree
                     v-else-if="selectedHash"
@@ -588,7 +591,9 @@
           }}</span>
         </div>
         <div class="git-branches__mobile-files">
-          <div v-if="commitFilesLoading" class="git-branches__placeholder">Loading…</div>
+          <div v-if="commitFilesLoading" class="git-branches__placeholder">
+            <Spinner size="sm" label="Loading…" />
+          </div>
           <div v-else-if="commitFilesError" class="git-branches__placeholder">{{ commitFilesError }}</div>
           <GitChangeTree
             v-else
@@ -668,6 +673,7 @@ import GitCommitLog from "./GitCommitLog.vue";
 import GitChangeTree from "./GitChangeTree.vue";
 import BranchTreePane, { type BranchTreeNode } from "./BranchTreePane.vue";
 import CustomSelect from "../../common/CustomSelect.vue";
+import Spinner from "../../common/Spinner.vue";
 import BranchSelectPopover from "./BranchSelectPopover.vue";
 import HistoryRangePicker from "./HistoryRangePicker.vue";
 import GitCommitContextMenu from "./GitCommitContextMenu.vue";
@@ -2141,42 +2147,51 @@ watch(
   flex: 0 0 auto;
 }
 
+.git-branches--history {
+  padding-top: 0;
+}
+
 .git-history-picker {
   display: flex;
-  align-items: end;
-  gap: 10px;
-  padding: 10px 12px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
   flex-wrap: wrap;
+  font-size: 12px;
 }
 
 .git-history-picker__select,
 .git-history-picker__search {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-  color: var(--muted);
-  font-size: 11px;
+  align-items: center;
 }
 
 .git-history-picker__search input {
   min-width: 220px;
   max-width: 34vw;
-  padding: 6px 8px;
+  padding: 5px 8px;
+  font-size: 13px;
+  line-height: 1.2;
   border: 1px solid var(--border);
   border-radius: 5px;
   background: var(--surface);
   color: var(--text);
 }
 
-.git-history-picker__current {
-  padding: 0 4px 7px;
+.git-history-picker__current,
+.git-history-picker__fetch {
   color: var(--muted);
   font-size: 12px;
 }
 
-.git-history-picker__current strong {
+.git-history-picker__current {
+  margin-left: auto;
+}
+
+.git-history-picker__current strong,
+.git-history-picker__fetch strong {
   color: var(--text);
 }
 
@@ -2305,6 +2320,11 @@ watch(
   flex: 1;
   min-height: 0;
   overflow: hidden;
+}
+
+.git-branches__body--history {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .git-branches__panes,
