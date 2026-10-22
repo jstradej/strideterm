@@ -3,7 +3,7 @@
     class="git-tree"
     :class="{ 'git-tree--loading': loading, 'git-tree--compact': compact, 'git-tree--history': history }"
   >
-    <div v-if="loading && !nodes.length" class="git-tree__placeholder">
+    <div v-if="(loading || pending) && !nodes.length" class="git-tree__placeholder">
       <Spinner size="md" label="Loading commit graph…" />
     </div>
     <div v-else-if="error" class="git-tree__placeholder git-tree__placeholder--error">{{ error }}</div>
@@ -81,7 +81,7 @@
             :viewBox="`0 0 ${graphWidth} ${nodes.length * ROW_HEIGHT}`"
             aria-hidden="true"
           >
-            <g v-for="edge in edges" :key="edge.id">
+            <g v-for="edge in visibleEdges" :key="edge.id">
               <path
                 :d="edge.d"
                 :stroke="edge.color"
@@ -92,7 +92,7 @@
                 :opacity="edge.dashed ? 0.55 : 1"
               />
             </g>
-            <g v-for="node in nodes" :key="`dot:${node.hash}`">
+            <g v-for="node in visibleNodes" :key="`dot:${node.hash}`">
               <circle
                 v-if="node.isHead"
                 :cx="laneX(node.lane)"
@@ -121,7 +121,7 @@
           </svg>
 
           <div
-            v-for="node in nodes"
+            v-for="node in visibleNodes"
             :key="`row:${node.hash}`"
             :class="[
               'git-tree__row',
@@ -212,7 +212,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import Spinner from "../../common/Spinner.vue";
 
 interface RawCommit {
@@ -237,6 +237,7 @@ const props = withDefaults(
     // that feeds the diff pane.
     selectedHashes?: string[];
     loading?: boolean;
+    pending?: boolean;
     error?: string;
     compact?: boolean;
     // Render everything in a single column with straight verticals. Used when
@@ -261,6 +262,7 @@ const props = withDefaults(
     selectedHash: "",
     selectedHashes: () => [],
     loading: false,
+    pending: false,
     error: "",
     compact: false,
     flat: false,
@@ -336,6 +338,8 @@ interface GraphEdge {
   id: string;
   d: string;
   color: string;
+  yTop: number;
+  yBottom: number;
   // Dashed signals "this segment crosses commits hidden by the active filter"
   // — used only in flat mode where the parent chain is interrupted.
   dashed?: boolean;
@@ -407,6 +411,8 @@ function buildLayout(commits: RawCommit[], head: string, flat: boolean): LayoutR
           id: `flat-merge:${commits[i].hash}`,
           d: `M ${lane0X} ${yMid} C ${lane0X} ${stubY} ${stubX} ${stubY} ${stubX} ${stubY - 2}`,
           color: laneColor(1),
+          yTop: stubY - 2,
+          yBottom: yMid,
         });
       }
       if (i + 1 >= commits.length) continue;
@@ -416,6 +422,8 @@ function buildLayout(commits: RawCommit[], head: string, flat: boolean): LayoutR
         id: `flat:${commits[i].hash}->${commits[i + 1].hash}`,
         d: `M ${lane0X} ${yMid} L ${lane0X} ${yMidNext}`,
         color: laneColor(0),
+        yTop: yMid,
+        yBottom: yMidNext,
         dashed: !chainIntact,
       });
     }
@@ -453,6 +461,8 @@ function buildLayout(commits: RawCommit[], head: string, flat: boolean): LayoutR
           id: `m:${commit.hash}:${closingLane}->${homeLane}`,
           d: laneMergePath(closingLane, homeLane, y),
           color: laneColor(closingColor),
+          yTop: y - ROW_HEIGHT / 2,
+          yBottom: y + ROW_HEIGHT / 2,
         });
         lanes[closingLane] = null;
       }
@@ -491,6 +501,8 @@ function buildLayout(commits: RawCommit[], head: string, flat: boolean): LayoutR
         id: `b:${commit.hash}->${parentHash}:${newLane}`,
         d: laneBranchPath(homeLane, newLane, y),
         color: laneColor(newColor),
+        yTop: y + ROW_HEIGHT / 2,
+        yBottom: y + ROW_HEIGHT * 1.5,
       });
       newlyOpened.add(newLane);
       maxLane = Math.max(maxLane, newLane);
@@ -528,6 +540,8 @@ function buildLayout(commits: RawCommit[], head: string, flat: boolean): LayoutR
           id: `s:${commit.hash}:${l}`,
           d: `M ${laneX(l)} ${yMid} L ${laneX(l)} ${yMidNext}`,
           color: laneColor(lane.color),
+          yTop: yMid,
+          yBottom: yMidNext,
         });
       }
     }
@@ -733,6 +747,56 @@ function isLocalOnly(hash: string): boolean {
 }
 
 const scrollRef = ref<HTMLElement | null>(null);
+
+const OVERSCAN = 20 * ROW_HEIGHT;
+const DEFAULT_VIEWPORT_HEIGHT = 600;
+const scrollTop = ref(0);
+const clientHeight = ref(DEFAULT_VIEWPORT_HEIGHT);
+
+const windowRange = computed(() => {
+  const lo = scrollTop.value - OVERSCAN;
+  const hi = scrollTop.value + clientHeight.value + OVERSCAN;
+  return { lo, hi };
+});
+const visibleNodes = computed(() => {
+  const { lo, hi } = windowRange.value;
+  const first = Math.max(0, Math.floor(lo / ROW_HEIGHT));
+  const last = Math.min(nodes.value.length, Math.ceil(hi / ROW_HEIGHT));
+  return nodes.value.slice(first, last);
+});
+const visibleEdges = computed(() => {
+  const { lo, hi } = windowRange.value;
+  return edges.value.filter((e) => e.yBottom >= lo && e.yTop <= hi);
+});
+
+function syncViewport(): void {
+  const el = scrollRef.value;
+  if (!el) return;
+  scrollTop.value = el.scrollTop;
+  clientHeight.value = el.clientHeight || DEFAULT_VIEWPORT_HEIGHT;
+}
+
+let resizeObserver: ResizeObserver | null = null;
+watch(
+  scrollRef,
+  (el, prev) => {
+    prev?.removeEventListener("scroll", syncViewport);
+    resizeObserver?.disconnect();
+    resizeObserver = null;
+    if (!el) return;
+    el.addEventListener("scroll", syncViewport, { passive: true });
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(syncViewport);
+      resizeObserver.observe(el);
+    }
+    syncViewport();
+  },
+  { flush: "post" },
+);
+onBeforeUnmount(() => {
+  scrollRef.value?.removeEventListener("scroll", syncViewport);
+  resizeObserver?.disconnect();
+});
 
 type ResizableColumn = "author" | "date" | "hash";
 const RESIZABLE_COLUMNS: { key: ResizableColumn; label: string }[] = [

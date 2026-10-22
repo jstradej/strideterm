@@ -454,3 +454,56 @@ describe("GitTreeGraph", () => {
     });
   });
 });
+
+function syntheticCommits(count: number) {
+  const hash = (i: number) => `h${String(i).padStart(6, "0")}`;
+  return Array.from({ length: count }, (_, i) => ({
+    hash: hash(i),
+    shortHash: hash(i).slice(0, 7),
+    parents: i + 1 >= count ? [] : i % 7 === 3 && i + 2 < count ? [hash(i + 1), hash(i + 2)] : [hash(i + 1)],
+    subject: `commit ${i}`,
+    author: "A",
+    relativeDate: "now",
+    isoDate: "2026-05-20T10:00:00Z",
+    refs: [],
+  }));
+}
+
+describe("GitTreeGraph virtualisation and layout", () => {
+  test("shows the spinner while a request is pending, never 'No commits found.'", () => {
+    const wrapper = mountGraph({ commits: [], pending: true });
+    expect(wrapper.findComponent(Spinner).exists()).toBe(true);
+    expect(wrapper.text()).not.toContain("No commits found.");
+  });
+
+  test("renders only the rows around the viewport and follows scrolling", async () => {
+    const commits = syntheticCommits(1000);
+    const wrapper = mountGraph({ commits, head: commits[0].hash });
+    const rendered = () => wrapper.findAll(".git-tree__row");
+    expect(rendered().length).toBeGreaterThan(0);
+    expect(rendered().length).toBeLessThan(100);
+    expect(rendered()[0].text()).toContain("commit 0");
+
+    const scroll = wrapper.get(".git-tree__scroll");
+    (scroll.element as HTMLElement).scrollTop = 11000;
+    await scroll.trigger("scroll");
+    await nextTick();
+    const rows = rendered();
+    expect(rows.length).toBeLessThan(100);
+    expect(rows[0].text()).not.toContain("commit 0 ");
+    expect(rows.some((row) => row.text().includes("commit 500"))).toBe(true);
+    expect(wrapper.get(".git-tree__viewport").attributes("style")).toContain("min-height: 22000px");
+  });
+
+  test("layout of a prefix equals the prefix of the layout of all commits", () => {
+    const commits = syntheticCommits(40);
+    const dots = (list: typeof commits) =>
+      mountGraph({ commits: list, head: list[0].hash })
+        .findAll(".git-tree__svg circle")
+        .map((c) => `${c.attributes("cx")},${c.attributes("cy")}`);
+    const prefix = dots(commits.slice(0, 25));
+    const all = dots(commits);
+    expect(prefix.length).toBeGreaterThan(0);
+    expect(all.slice(0, prefix.length)).toEqual(prefix);
+  });
+});

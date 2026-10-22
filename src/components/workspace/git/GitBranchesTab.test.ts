@@ -1449,3 +1449,45 @@ describe("GitBranchesTab history toolbar", () => {
     expect(picker.get(".git-history-picker").text()).not.toContain("Working branch");
   });
 });
+
+describe("GitBranchesTab graph start", () => {
+  test("starts the graph once on mount from the snapshot branch, without waiting for branches", async () => {
+    mountTab({ branchList: undefined, graph: undefined, graphLoading: true });
+    await flushPromises();
+    expect(gitLoadGraph).toHaveBeenCalledTimes(1);
+    expect(gitLoadGraph).toHaveBeenCalledWith("ws1", expect.objectContaining({ branch: "main" }));
+    expect(historySelection.ref).toBe("main");
+  });
+
+  test("does not start twice when branches resolve afterwards", async () => {
+    const wrapper = mountTab({ branchList: undefined, graph: undefined, graphLoading: true });
+    await flushPromises();
+    await wrapper.setProps({
+      gitUi: { branchList: { current: "main", locals: [], remotes: [] }, graph: undefined, graphLoading: true },
+    } as never);
+    await flushPromises();
+    expect(gitLoadGraph).toHaveBeenCalledTimes(1);
+  });
+
+  test("shows a spinner, not 'No commits found.', before the first graph request", async () => {
+    const wrapper = mount(GitBranchesTab, {
+      props: {
+        workspaceId: "ws1",
+        snapshot: { dirty: false },
+        gitUi: { branchList: undefined, graph: undefined, selectedCommit: "" },
+        activeRootPath: "/repo",
+      },
+      attachTo: document.body,
+    });
+    mountedWrappers.push(wrapper);
+    expect(gitLoadGraph).not.toHaveBeenCalled();
+    expect(wrapper.text()).not.toContain("No commits found.");
+    expect(wrapper.find(".git-tree__placeholder .spinner").exists()).toBe(true);
+  });
+
+  test("shows the background-load spinner in the commits pane header", async () => {
+    const wrapper = mountTab({ graphLoadingMore: true });
+    await flushPromises();
+    expect(wrapper.find('.git-branches__pane-more[title="Loading more commits…"]').exists()).toBe(true);
+  });
+});

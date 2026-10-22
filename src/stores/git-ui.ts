@@ -105,6 +105,8 @@ interface GitUiState {
     defaultRemote: string;
   };
   graphLoading?: boolean;
+  graphLoadingMore?: boolean;
+  graphInflightKey?: string;
   graphRequestId?: number;
   graphError?: string;
   graph?: {
@@ -1031,6 +1033,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
   // caller didn't explicitly ask for fresh data. Mutations (checkout, merge,
   // etc.) pass force=true so they always re-read.
   const FRESH_TTL_MS = 15_000;
+  const GRAPH_FIRST_PAGE = 100;
 
   async function gitListBranches(workspaceId: string, opts: { force?: boolean } = {}): Promise<void> {
     if (!_api) return;
@@ -1183,6 +1186,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const { workspaceId: _ignored, ...payloadForKey } = payload;
     void _ignored;
     const cacheKey = JSON.stringify(payloadForKey);
+    if (!opts.force && (ui.graphLoading || ui.graphLoadingMore) && ui.graphInflightKey === cacheKey) return;
     const requestId = Number(ui.graphRequestId || 0) + 1;
     ui.graphRequestId = requestId;
     const now = Date.now();
@@ -1198,8 +1202,13 @@ export const useGitUiStore = defineStore("git-ui", () => {
       return;
     }
     ui.graphLoading = true;
+    ui.graphLoadingMore = false;
+    ui.graphInflightKey = cacheKey;
+    const progressive = !payload.topoOrder && payload.limit > GRAPH_FIRST_PAGE;
     try {
-      const result = (await (_api as CallableTransport).gitLogGraph(payload)) as {
+      const result = (await (_api as CallableTransport).gitLogGraph(
+        progressive ? { ...payload, limit: GRAPH_FIRST_PAGE, skip: 0 } : payload,
+      )) as {
         ok?: boolean;
         head?: string;
         commits?: unknown[];
@@ -1208,12 +1217,42 @@ export const useGitUiStore = defineStore("git-ui", () => {
       };
       if (ui.graphRequestId !== requestId || getActiveRoot(workspaceId) !== rootPath) return;
       if (result?.ok) {
+        const firstCommits = result.commits || [];
         ui.graph = markGitReadPayload({
           head: result.head || "",
-          commits: result.commits || [],
+          commits: firstCommits,
           refs: result.refs || {},
         });
         ui.graphError = "";
+        if (progressive && firstCommits.length >= GRAPH_FIRST_PAGE) {
+          ui.graphLoading = false;
+          ui.graphLoadingMore = true;
+          try {
+            const more = (await (_api as CallableTransport).gitLogGraph({
+              ...payload,
+              limit: payload.limit - GRAPH_FIRST_PAGE,
+              skip: GRAPH_FIRST_PAGE,
+            })) as { ok?: boolean; commits?: unknown[]; refs?: Record<string, string>; error?: string };
+            if (ui.graphRequestId !== requestId || getActiveRoot(workspaceId) !== rootPath) return;
+            if (more?.ok) {
+              const seen = new Set(firstCommits.map((c) => (c as { hash?: string }).hash));
+              const extra = (more.commits || []).filter((c) => !seen.has((c as { hash?: string }).hash));
+              ui.graph = markGitReadPayload({
+                head: ui.graph?.head || "",
+                commits: [...firstCommits, ...extra],
+                refs: { ...(more.refs || {}), ...(result.refs || {}) },
+              });
+              ui.graphKey = cacheKey;
+              ui.graphFetchedAt = Date.now();
+            } else {
+              rlog("warn", "[git-ui] gitLoadGraph background page failed", { workspaceId, error: more?.error });
+            }
+          } catch (error) {
+            if (ui.graphRequestId !== requestId) return;
+            rlog("warn", "[git-ui] gitLoadGraph background page threw", { workspaceId, error: String(error) });
+          }
+          return;
+        }
         ui.graphKey = cacheKey;
         ui.graphFetchedAt = Date.now();
       } else {
@@ -1231,7 +1270,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
       ui.graphFetchedAt = undefined;
       console.error(`[git-ui] gitLoadGraph(${workspaceId}) threw:`, error);
     } finally {
-      if (ui.graphRequestId === requestId) ui.graphLoading = false;
+      if (ui.graphRequestId === requestId) {
+        ui.graphLoading = false;
+        ui.graphLoadingMore = false;
+        ui.graphInflightKey = undefined;
+      }
     }
   }
 

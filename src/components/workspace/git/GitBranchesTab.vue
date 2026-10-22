@@ -302,6 +302,12 @@
                 </template>
               </template>
               <span v-if="graphError" class="git-branches__pane-error">— {{ graphError }}</span>
+              <Spinner
+                v-if="graphLoadingMore"
+                size="sm"
+                class="git-branches__pane-more"
+                title="Loading more commits…"
+              />
               <span v-if="selectedRef || compareBase || compactHistory" class="git-branches__pane-spacer"></span>
               <button
                 v-if="selectedRef && !compareBase"
@@ -369,6 +375,7 @@
               :selected-hash="selectedHash"
               :selected-hashes="selectedHashes"
               :loading="graphLoading"
+              :pending="graphPending"
               :error="graphError"
               :flat="graphFlatMode"
               :history="compactHistory"
@@ -509,6 +516,7 @@
           :refs="refs"
           :selected-hash="selectedHash"
           :loading="graphLoading"
+          :pending="graphPending"
           :error="graphError"
           :compact="true"
           :flat="graphFlatMode"
@@ -1068,6 +1076,8 @@ interface GraphCommit {
 }
 
 const graphLoading = computed(() => props.gitUi?.graphLoading === true);
+const graphLoadingMore = computed(() => props.gitUi?.graphLoadingMore === true);
+const graphPending = computed(() => !graphRequested.value && !props.gitUi?.branchList);
 const graphError = computed(() => String(props.gitUi?.graphError || ""));
 const rawCommits = computed<GraphCommit[]>(() => (props.gitUi?.graph?.commits as GraphCommit[]) || []);
 const head = computed(() => String(props.gitUi?.graph?.head || ""));
@@ -1147,6 +1157,7 @@ const compareDiffStat = computed<Record<string, unknown> | null>(() => {
 // watch avoids the previous "fetch graph with empty branchSpec, then set
 // selectedRef = HEAD, then have a stale graph mislabeled" sequence.
 const selectedRefInitFor = ref<string>("");
+const graphRequested = ref(false);
 watch(
   () => [props.workspaceId, branchList.value.current] as const,
   ([workspaceId, current]) => {
@@ -1283,6 +1294,7 @@ function refreshBranches(force = false) {
 }
 
 function refreshGraph(force = false) {
+  graphRequested.value = true;
   const { since, until } = resolveDateRange();
   // Compare-with-base wins over a single-branch selection — both translate to
   // git log walk args, and base..HEAD is more specific (and what the user
@@ -1313,12 +1325,20 @@ function refreshAll(force = false) {
   refreshGraph(force);
 }
 
-// Workspace mount / switch: fetch branches only. The graph is fetched by
-// the watch above once branchList.current is known — that lets us walk
-// `selectedRef = HEAD` from the start instead of "all commits" first.
+// Workspace mount / switch: fetch branches and, when the snapshot already
+// knows the current branch, the graph in parallel. Otherwise the watch above
+// starts the graph once branchList.current is known.
 watch(
   () => [props.workspaceId, props.activeRootPath] as const,
-  () => refreshBranches(),
+  () => {
+    graphRequested.value = false;
+    refreshBranches();
+    const branch = String(props.snapshot?.branch || "");
+    if (!branch || branch === "HEAD") return;
+    selectedRefInitFor.value = String(props.workspaceId);
+    if (!selectedRef.value && !branchList.value.current) selectedRef.value = branch;
+    refreshGraph();
+  },
   { immediate: true },
 );
 
@@ -2275,6 +2295,10 @@ watch(
   border-bottom: 1px solid var(--border);
   background: rgba(var(--tint), 0.05);
   flex: 0 0 auto;
+}
+
+.git-branches__pane-more {
+  opacity: 0.6;
 }
 
 .git-branches__pane-head strong {

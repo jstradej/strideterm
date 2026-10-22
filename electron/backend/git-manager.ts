@@ -4923,6 +4923,7 @@ export class GitManager extends EventEmitter {
     {
       rootPath = "",
       limit = 300,
+      skip = 0,
       includeRemotes = true,
       branch = "",
       sinceDate = "",
@@ -4933,6 +4934,7 @@ export class GitManager extends EventEmitter {
     }: {
       rootPath?: string;
       limit?: number;
+      skip?: number;
       includeRemotes?: boolean;
       branch?: string;
       sinceDate?: string;
@@ -4960,6 +4962,7 @@ export class GitManager extends EventEmitter {
     const cwd = rootPath || workspace?.cwd || "";
     if (!cwd) return { ok: false, head: "", commits: [], refs: {}, error: "Missing rootPath" };
     const safeLimit = Math.max(1, Math.min(2000, Math.floor(limit)));
+    const safeSkip = Math.max(0, Math.floor(Number(skip) || 0));
     const startTime = Date.now();
 
     // Choose what to walk:
@@ -5001,6 +5004,7 @@ export class GitManager extends EventEmitter {
         topoOrder ? "--topo-order" : "--date-order",
         "-n",
         String(safeLimit),
+        ...(safeSkip > 0 ? [`--skip=${safeSkip}`] : []),
         ...filterArgs,
         ...walkArgs,
         ...(pathArgs.length ? ["--", ...pathArgs] : []),

@@ -494,6 +494,7 @@ export const gitLogGraphSchema = z.object({
   workspaceId: nonEmptyString,
   rootPath: z.string().optional(),
   limit: z.number().int().min(1).max(2000).optional(),
+  skip: z.number().int().min(0).optional(),
   includeRemotes: z.boolean().optional(),
   branch: safeGitRef.optional(),
   sinceDate: safeDateExpr.optional(),

@@ -700,6 +700,7 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
       return git.logGraph(workspace, {
         rootPath,
         limit: payload.limit || 300,
+        skip: payload.skip || 0,
         includeRemotes: payload.includeRemotes !== false,
         branch: payload.branch || "",
         sinceDate: payload.sinceDate || "",

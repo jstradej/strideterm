@@ -670,6 +670,7 @@ export interface StridetermAPI {
   gitLogGraph: (
     payload: GitPayload & {
       limit?: number;
+      skip?: number;
       includeRemotes?: boolean;
       branch?: string;
       sinceDate?: string;

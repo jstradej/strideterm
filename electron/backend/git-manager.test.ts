@@ -2462,6 +2462,23 @@ describe("GitManager", () => {
       const dashIdx = logCall!.indexOf("--");
       expect(logCall!.slice(dashIdx + 1)).toEqual(["src/ok.ts"]);
     });
+
+    test.skipIf(!GIT_AVAILABLE)("skip returns the next, disjoint page of a real repo", async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-skip-"));
+      tempPaths.push(root);
+      const rg = (args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8" });
+      rg(["init", "-q"]);
+      rg(["config", "user.email", "t@example.com"]);
+      rg(["config", "user.name", "Test"]);
+      rg(["config", "commit.gpgsign", "false"]);
+      for (let i = 1; i <= 5; i++) rg(["commit", "-q", "--allow-empty", "-m", `c${i}`]);
+      const mgr = new GitManager({});
+      const ws = { id: "ws", cwd: root, kind: "terminal" as const };
+      const first = await mgr.logGraph(ws, { rootPath: root, limit: 2, skip: 0 });
+      const second = await mgr.logGraph(ws, { rootPath: root, limit: 2, skip: 2 });
+      expect(first.commits.map((c) => c.subject)).toEqual(["c5", "c4"]);
+      expect(second.commits.map((c) => c.subject)).toEqual(["c3", "c2"]);
+    });
   });
 
   // ─── createTag at a specific commit ────────────────────────────────

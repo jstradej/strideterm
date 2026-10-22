@@ -1458,3 +1458,60 @@ describe("branch update waits for its accepted long operation", () => {
     expect(gitRebaseOnto).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("gitLoadGraph progressive paging", () => {
+  const commits = (from: number, count: number) =>
+    Array.from({ length: count }, (_, i) => ({ hash: `h${from + i}`, parents: [] }));
+
+  test("loads the first 100 commits, publishes them, then appends the rest", async () => {
+    const requests: Array<(value: unknown) => void> = [];
+    const gitLogGraph = vi.fn(() => new Promise((resolve) => requests.push(resolve)));
+    const store = useGitUiStore();
+    store.init({ gitLogGraph } as unknown as Transport);
+    store.setActiveRoot("wsp", "/repo");
+    const load = store.gitLoadGraph("wsp", { limit: 500, force: true });
+    expect(gitLogGraph).toHaveBeenNthCalledWith(1, expect.objectContaining({ limit: 100, skip: 0 }));
+    requests[0]({ ok: true, head: "h0", commits: commits(0, 100), refs: { a: "h0" } });
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+    expect(gitLogGraph).toHaveBeenNthCalledWith(2, expect.objectContaining({ limit: 400, skip: 100 }));
+    expect(store.get("wsp").graph?.commits).toHaveLength(100);
+    expect(store.get("wsp").graphLoading).toBe(false);
+    expect(store.get("wsp").graphLoadingMore).toBe(true);
+    requests[1]({ ok: true, head: "h0", commits: [...commits(99, 1), ...commits(100, 400)], refs: { b: "h100" } });
+    await load;
+    expect(store.get("wsp").graph?.commits).toHaveLength(500);
+    expect(store.get("wsp").graph?.refs).toEqual({ a: "h0", b: "h100" });
+    expect(store.get("wsp").graphLoadingMore).toBe(false);
+  });
+
+  test("a newer request discards the stale background page", async () => {
+    const requests: Array<(value: unknown) => void> = [];
+    const gitLogGraph = vi.fn(() => new Promise((resolve) => requests.push(resolve)));
+    const store = useGitUiStore();
+    store.init({ gitLogGraph } as unknown as Transport);
+    store.setActiveRoot("wsq", "/repo");
+    const first = store.gitLoadGraph("wsq", { limit: 500, force: true });
+    requests[0]({ ok: true, head: "h0", commits: commits(0, 100), refs: {} });
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+    const second = store.gitLoadGraph("wsq", { limit: 150, branch: "x", force: true });
+    requests[1]({ ok: true, head: "old", commits: commits(100, 400), refs: {} });
+    await first;
+    expect(store.get("wsq").graph?.commits).toHaveLength(100);
+    requests[2]({ ok: true, head: "new", commits: commits(1000, 100), refs: {} });
+    await vi.waitFor(() => expect(requests).toHaveLength(4));
+    requests[3]({ ok: true, head: "new", commits: commits(1100, 50), refs: {} });
+    await second;
+    expect(store.get("wsq").graph?.commits).toHaveLength(150);
+    expect(store.get("wsq").graph?.head).toBe("new");
+  });
+
+  test("topoOrder keeps a single request", async () => {
+    const gitLogGraph = vi.fn().mockResolvedValue({ ok: true, head: "h0", commits: commits(0, 500), refs: {} });
+    const store = useGitUiStore();
+    store.init({ gitLogGraph } as unknown as Transport);
+    store.setActiveRoot("wst", "/repo");
+    await store.gitLoadGraph("wst", { limit: 500, topoOrder: true, force: true });
+    expect(gitLogGraph).toHaveBeenCalledTimes(1);
+    expect(gitLogGraph).toHaveBeenCalledWith(expect.objectContaining({ limit: 500 }));
+  });
+});
