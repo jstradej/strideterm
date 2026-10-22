@@ -86,10 +86,10 @@
               <circle
                 :cx="laneX(node.lane)"
                 :cy="node.y + ROW_HEIGHT / 2"
-                :r="DOT_RADIUS"
-                :fill="laneColor(node.lane)"
+                :r="isLocalOnly(node.hash) ? DOT_RADIUS - 0.5 : DOT_RADIUS"
+                :fill="isLocalOnly(node.hash) ? 'var(--panel)' : laneColor(node.lane)"
                 :stroke="laneColor(node.lane)"
-                stroke-width="1"
+                :stroke-width="isLocalOnly(node.hash) ? 1.5 : 1"
               />
             </g>
           </svg>
@@ -97,7 +97,15 @@
           <div
             v-for="node in nodes"
             :key="`row:${node.hash}`"
-            :class="['git-tree__row', { 'git-tree__row--selected': isSelected(node.hash) }]"
+            :class="[
+              'git-tree__row',
+              {
+                'git-tree__row--selected': isSelected(node.hash),
+                'git-tree__row--local': isLocalOnly(node.hash),
+                'git-tree__row--push-boundary': pushBoundaryHashes.has(node.hash),
+                'git-tree__row--on-base': onBaseHashes.has(node.hash),
+              },
+            ]"
             :style="{
               top: `${node.y}px`,
               height: `${ROW_HEIGHT}px`,
@@ -130,13 +138,23 @@
                 <span
                   v-for="ref in visibleRefs(node)"
                   :key="ref.label"
-                  :class="['git-tree__ref', `git-tree__ref--${ref.kind}`]"
+                  :class="[
+                    'git-tree__ref',
+                    `git-tree__ref--${ref.kind}`,
+                    ref.emphasis === 'filled' && 'git-tree__ref--filled',
+                    ref.emphasis === 'outlined' && 'git-tree__ref--outlined',
+                  ]"
                   :title="ref.title"
                 >
                   <span class="git-tree__ref-icon" aria-hidden="true">{{ ref.icon }}</span>
                   <span class="git-tree__ref-label">{{ ref.label }}</span>
+                  <span v-if="ref.isDefault" class="git-tree__ref-default">default</span>
                 </span>
-                <span v-if="hiddenRefs(node).length" class="git-tree__ref git-tree__ref--more" :title="hiddenRefsTitle(node)">
+                <span
+                  v-if="hiddenRefs(node).length"
+                  class="git-tree__ref git-tree__ref--more"
+                  :title="hiddenRefsTitle(node)"
+                >
                   <span class="git-tree__ref-label">+{{ hiddenRefs(node).length }}</span>
                 </span>
               </span>
@@ -202,6 +220,9 @@ const props = withDefaults(
     // IDEA-style rows for the new Git History view: no header, refs inside the
     // subject cell instead of their own column.
     history?: boolean;
+    // History view only: the PR target / base branch. Commits already on it are
+    // dimmed so the branch's own work stands out.
+    rangeBase?: string;
   }>(),
   {
     commits: () => [],
@@ -214,6 +235,7 @@ const props = withDefaults(
     compact: false,
     flat: false,
     history: false,
+    rangeBase: "",
   },
 );
 
@@ -261,6 +283,8 @@ interface GraphRefBadge {
   kind: "head" | "branch" | "remote" | "tag";
   icon: string;
   title: string;
+  emphasis?: "filled" | "outlined";
+  isDefault?: boolean;
 }
 
 interface GraphNode {
@@ -551,12 +575,57 @@ function classifyRefs(refs: string[]): GraphRefBadge[] {
 
 const HISTORY_VISIBLE_REFS = 2;
 
+function matchesRangeBase(label: string): boolean {
+  const base = props.rangeBase;
+  if (!base) return false;
+  return label === base || label.endsWith(`/${base}`) || base.endsWith(`/${label}`);
+}
+
+function historyBadges(node: GraphNode): GraphRefBadge[] {
+  const badges = node.refs.map((badge) => ({ ...badge }));
+  const defaultRemote = badges.find((b) => b.kind === "remote" && b.label.endsWith("/HEAD"));
+  const siblingRemote = defaultRemote
+    ? badges.find((b) => b.kind === "remote" && b !== defaultRemote && !b.label.endsWith("/HEAD"))
+    : undefined;
+  if (defaultRemote && siblingRemote) {
+    siblingRemote.title = `${siblingRemote.title} · default`;
+    siblingRemote.isDefault = true;
+    badges.splice(badges.indexOf(defaultRemote), 1);
+  }
+  const rank = (badge: GraphRefBadge): number => {
+    if (badge.kind === "head") return 0;
+    if (badge.kind === "branch" && node.isHead) return 1;
+    if (badge.kind !== "tag" && matchesRangeBase(badge.label)) return 2;
+    return 3;
+  };
+  for (const badge of badges) {
+    const r = rank(badge);
+    if (r <= 1) badge.emphasis = "filled";
+    else if (r === 2) badge.emphasis = "outlined";
+  }
+  return badges
+    .map((badge, index) => ({ badge, index }))
+    .sort((a, b) => rank(a.badge) - rank(b.badge) || a.index - b.index)
+    .map((entry) => entry.badge);
+}
+
+const historyBadgeMap = computed(() => {
+  const map = new Map<string, GraphRefBadge[]>();
+  if (!props.history) return map;
+  for (const node of nodes.value) map.set(node.hash, historyBadges(node));
+  return map;
+});
+
+function badgesOf(node: GraphNode): GraphRefBadge[] {
+  return historyBadgeMap.value.get(node.hash) ?? node.refs;
+}
+
 function visibleRefs(node: GraphNode): GraphRefBadge[] {
-  return node.refs.slice(0, HISTORY_VISIBLE_REFS);
+  return badgesOf(node).slice(0, HISTORY_VISIBLE_REFS);
 }
 
 function hiddenRefs(node: GraphNode): GraphRefBadge[] {
-  return node.refs.slice(HISTORY_VISIBLE_REFS);
+  return badgesOf(node).slice(HISTORY_VISIBLE_REFS);
 }
 
 function hiddenRefsTitle(node: GraphNode): string {
@@ -570,12 +639,58 @@ const nodes = computed(() => layout.value.nodes);
 const edges = computed(() => layout.value.edges);
 const graphWidth = computed(() => layout.value.width);
 
+function reachableFrom(starts: string[], parentsOf: Map<string, string[]>): Set<string> {
+  const seen = new Set<string>();
+  const stack = [...starts];
+  while (stack.length) {
+    const hash = stack.pop() as string;
+    if (seen.has(hash) || !parentsOf.has(hash)) continue;
+    seen.add(hash);
+    for (const parent of parentsOf.get(hash) || []) stack.push(parent);
+  }
+  return seen;
+}
+
+const historyReach = computed(() => {
+  const empty = { remote: null as Set<string> | null, base: new Set<string>(), boundary: new Set<string>() };
+  if (!props.history) return empty;
+  const commits = props.commits || [];
+  const parentsOf = new Map(commits.map((c) => [c.hash, c.parents || []] as const));
+  const remoteTips = commits
+    .filter((c) => (c.refs || []).some((r) => r !== "HEAD" && !r.startsWith("tag:") && r.includes("/")))
+    .map((c) => c.hash);
+  // Without any remote-tracking ref loaded there is nothing to compare against.
+  const remote = remoteTips.length ? reachableFrom(remoteTips, parentsOf) : null;
+  const baseTips = props.rangeBase
+    ? commits.filter((c) => (c.refs || []).some((r) => !r.startsWith("tag:") && matchesRangeBase(r))).map((c) => c.hash)
+    : [];
+  const base = reachableFrom(baseTips, parentsOf);
+  const boundary = new Set<string>();
+  if (remote) {
+    for (let i = 1; i < commits.length; i++) {
+      if (remote.has(commits[i].hash) && !remote.has(commits[i - 1].hash)) boundary.add(commits[i].hash);
+    }
+  }
+  return { remote, base, boundary };
+});
+
+const onBaseHashes = computed(() => historyReach.value.base);
+const pushBoundaryHashes = computed(() => historyReach.value.boundary);
+
+function isLocalOnly(hash: string): boolean {
+  const remote = historyReach.value.remote;
+  return !!remote && !remote.has(hash);
+}
+
 const scrollRef = ref<HTMLElement | null>(null);
 
 function rowTooltip(node: GraphNode): string {
-  return `${node.shortHash} — ${node.subject}\n${node.author} • ${node.relativeDate}${
+  let tip = `${node.shortHash} — ${node.subject}\n${node.author} • ${node.relativeDate}${
     node.refs.length ? `\n${node.refs.map((r) => r.label).join(", ")}` : ""
   }`;
+  if (isLocalOnly(node.hash)) tip += "\nNot on any remote yet";
+  if (onBaseHashes.value.has(node.hash)) tip += `\nAlready on ${props.rangeBase}`;
+  return tip;
 }
 
 const selectedSet = computed(() => {
@@ -897,6 +1012,43 @@ watch(
 .git-tree--history .git-tree__ref--tag {
   background: none;
   color: var(--muted);
+}
+
+.git-tree--history .git-tree__ref--filled {
+  background: var(--accent);
+  color: #000;
+  padding: 0 6px;
+  border-radius: 3px;
+}
+
+.git-tree--history .git-tree__ref--outlined {
+  box-shadow: inset 0 0 0 1px var(--accent);
+  color: var(--accent);
+  padding: 0 6px;
+  border-radius: 3px;
+}
+
+.git-tree__ref-default {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 400;
+  flex: 0 0 auto;
+}
+
+.git-tree--history .git-tree__ref--filled .git-tree__ref-default {
+  color: inherit;
+  opacity: 0.7;
+}
+
+.git-tree--history .git-tree__row--push-boundary {
+  box-sizing: border-box;
+  border-top: 1px dashed var(--border);
+}
+
+.git-tree--history .git-tree__row--on-base .git-tree__subject,
+.git-tree--history .git-tree__row--on-base .git-tree__cell--author,
+.git-tree--history .git-tree__row--on-base .git-tree__cell--date {
+  opacity: 0.55;
 }
 
 .git-tree--history .git-tree__ref-label {

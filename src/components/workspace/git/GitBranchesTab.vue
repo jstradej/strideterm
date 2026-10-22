@@ -1,20 +1,24 @@
 <template>
-  <div class="git-section git-branches" :class="{ 'git-branches--mobile': isMobile, 'git-branches--history': compactHistory }">
+  <div
+    class="git-section git-branches"
+    :class="{ 'git-branches--mobile': isMobile, 'git-branches--history': compactHistory }"
+  >
     <p v-if="gitUi.tagsError" class="git-branches__pane-error" role="alert">{{ gitUi.tagsError }}</p>
     <!-- Compact toolbar (search + filters + actions).
          Desktop: single row. Mobile: stacked with view-switcher tabs. -->
     <div v-if="compactHistory" class="git-history-picker">
-      <div class="git-history-picker__search">
+      <div class="git-history-picker__search git-history-picker__search--commits">
         <input
-          v-model="historySearch"
+          v-model="historyCommitSearch"
           type="search"
-          placeholder="Branches and tags…"
-          aria-label="Search history references"
+          placeholder="Message, author, or hash…"
+          aria-label="Search commits"
         />
       </div>
       <div class="git-history-picker__select">
         <HistoryRangePicker
           :model-value="selectedRef || '__ALL__'"
+          v-model:search-query="historySearch"
           :items="historyRangeItems"
           @change="onHistoryRefChange"
         />
@@ -33,14 +37,6 @@
       >
         {{ historyPreferences.favorites.includes(historyFavoriteRef) ? "★" : "☆" }}
       </button>
-      <div class="git-history-picker__search git-history-picker__search--commits">
-        <input
-          v-model="historyCommitSearch"
-          type="search"
-          placeholder="Message, author, or hash…"
-          aria-label="Search commits"
-        />
-      </div>
       <span class="git-history-picker__current"
         >Working branch: <strong>{{ branchList.current || "Detached HEAD" }}</strong></span
       >
@@ -242,8 +238,20 @@
                 <template v-else-if="selectedRef">Commits on {{ selectedRef }}</template>
                 <template v-else>All commits</template>
               </strong>
-              <span v-if="loadedCount" class="git-branches__pane-count" :title="`${loadedCount} commit(s) shown`"
+              <span
+                v-if="compactHistory && loadedCount && historyQueryActive"
+                class="git-branches__pane-count"
+                :title="`${filteredHistoryCommits.length} of ${loadedCount} commit(s) match`"
+                >{{ filteredHistoryCommits.length }} of {{ loadedCount }}</span
+              >
+              <span v-else-if="loadedCount" class="git-branches__pane-count" :title="`${loadedCount} commit(s) shown`"
                 >{{ loadedCount }} {{ loadedCount === 1 ? "commit" : "commits" }}</span
+              >
+              <span
+                v-if="compactHistory && baseBranch"
+                class="git-branches__pane-vs"
+                :title="`New work is measured against ${baseBranch}`"
+                >vs {{ baseBranch }}</span
               >
               <template v-if="compareBase">
                 <GitDiffStat v-if="compareDiffStat" :stat="compareDiffStat" />
@@ -430,6 +438,7 @@
               :error="graphError"
               :flat="graphFlatMode"
               :history="compactHistory"
+              :range-base="compactHistory ? baseBranch : ''"
               @select="onSelectCommit"
               @open="onOpenCommitDialog"
               @contextmenu="onCommitContextMenu"
@@ -569,6 +578,7 @@
           :compact="true"
           :flat="graphFlatMode"
           :history="compactHistory"
+          :range-base="compactHistory ? baseBranch : ''"
           @select="onMobileSelectCommit"
           @open="onOpenCommitDialog"
           @contextmenu="onCommitContextMenu"
@@ -1328,6 +1338,7 @@ const limitSelectOptions = computed(() =>
 // Server already filtered by --author, so the rendered commits ARE the raw
 // fetch result. No client-side filtering — that would re-fragment the chain.
 const commits = computed<GraphCommit[]>(() => rawCommits.value);
+const historyQueryActive = computed(() => !!historyCommitSearch.value.trim());
 const filteredHistoryCommits = computed(() => {
   const query = historyCommitSearch.value.trim().toLocaleLowerCase();
   if (!query) return commits.value;
@@ -2178,6 +2189,15 @@ watch(
   border-radius: 5px;
   background: var(--surface);
   color: var(--text);
+}
+
+.git-history-picker__search--commits input {
+  min-width: 260px;
+}
+
+.git-branches__pane-vs {
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .git-history-picker__current,

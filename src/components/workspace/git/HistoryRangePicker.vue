@@ -17,8 +17,20 @@
     </button>
     <Teleport to="body">
       <div v-if="open" ref="listRef" class="history-range-picker__popover" :style="popoverStyle">
+        <input
+          ref="searchRef"
+          v-model="query"
+          type="search"
+          class="history-range-picker__search"
+          placeholder="Branches and tags…"
+          aria-label="Search history references"
+          @keydown="onSearchKeydown"
+        />
         <ul class="history-range-picker__list" role="listbox" tabindex="-1">
-          <template v-for="(item, idx) in items" :key="`${idx}:${item.kind === 'option' ? item.value : item.label}`">
+          <template
+            v-for="(item, idx) in visibleItems"
+            :key="`${idx}:${item.kind === 'option' ? item.value : item.label}`"
+          >
             <li v-if="item.kind === 'section'" class="history-range-picker__section" role="presentation">
               {{ item.label }}
             </li>
@@ -47,17 +59,19 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useDismissable } from "../../../composables/useDismissable.js";
 
 type HistoryRangeItem = { kind: "section"; label: string } | { kind: "option"; value: string; label: string };
 
-const props = withDefaults(defineProps<{ modelValue: string; items: HistoryRangeItem[]; disabled?: boolean }>(), {
-  disabled: false,
-});
+const props = withDefaults(
+  defineProps<{ modelValue: string; items: HistoryRangeItem[]; disabled?: boolean; searchQuery?: string }>(),
+  { disabled: false, searchQuery: "" },
+);
 
 const emit = defineEmits<{
   "update:modelValue": [value: string];
+  "update:searchQuery": [value: string];
   change: [value: string];
 }>();
 
@@ -66,11 +80,55 @@ const activeIndex = ref(-1);
 const rootRef = ref<HTMLElement | null>(null);
 const buttonRef = ref<HTMLButtonElement | null>(null);
 const listRef = ref<HTMLDivElement | null>(null);
+const searchRef = ref<HTMLInputElement | null>(null);
+const query = ref(props.searchQuery);
 const popoverStyle = ref<Record<string, string>>({});
 
 const buttonText = computed(() => {
   const match = props.items.find((item) => item.kind === "option" && item.value === props.modelValue);
   return match ? match.label : props.modelValue;
+});
+
+const PINNED_VALUES = ["__ALL__", "HEAD"];
+
+const visibleItems = computed<HistoryRangeItem[]>(() => {
+  const needle = query.value.trim().toLowerCase();
+  if (!needle) return props.items;
+  const out: HistoryRangeItem[] = [];
+  let pendingSection: HistoryRangeItem | null = null;
+  for (const item of props.items) {
+    if (item.kind === "section") {
+      pendingSection = item;
+      continue;
+    }
+    const matches =
+      PINNED_VALUES.includes(item.value) ||
+      item.value.toLowerCase().includes(needle) ||
+      item.label.toLowerCase().includes(needle);
+    if (!matches) continue;
+    if (pendingSection) {
+      out.push(pendingSection);
+      pendingSection = null;
+    }
+    out.push(item);
+  }
+  return out;
+});
+
+watch(
+  () => props.searchQuery,
+  (value) => {
+    if (value !== query.value) query.value = value;
+  },
+);
+
+watch(query, (value) => {
+  emit("update:searchQuery", value);
+  const items = visibleItems.value;
+  const first = value.trim()
+    ? items.findIndex((item) => item.kind === "option" && !PINNED_VALUES.includes(item.value))
+    : -1;
+  activeIndex.value = first >= 0 ? first : items.findIndex((item) => item.kind === "option");
 });
 
 function select(value: string): void {
@@ -111,14 +169,18 @@ function openPopover(): void {
   if (props.disabled || open.value) return;
   updatePosition();
   open.value = true;
-  activeIndex.value = props.items.findIndex((item) => item.kind === "option" && item.value === props.modelValue);
-  nextTick(scrollActiveIntoView);
+  activeIndex.value = visibleItems.value.findIndex((item) => item.kind === "option" && item.value === props.modelValue);
+  nextTick(() => {
+    searchRef.value?.focus();
+    scrollActiveIntoView();
+  });
 }
 
 function closePopover(): void {
   if (!open.value) return;
   open.value = false;
   activeIndex.value = -1;
+  query.value = "";
 }
 
 function toggle(): void {
@@ -127,16 +189,17 @@ function toggle(): void {
 }
 
 function moveActive(dir: number): void {
-  const total = props.items.length;
+  const list = visibleItems.value;
+  const total = list.length;
   let next = activeIndex.value + dir;
-  while (next >= 0 && next < total && props.items[next].kind === "section") next += dir;
+  while (next >= 0 && next < total && list[next].kind === "section") next += dir;
   if (next < 0 || next >= total) return;
   activeIndex.value = next;
   nextTick(scrollActiveIntoView);
 }
 
 function commitActive(): void {
-  const item = props.items[activeIndex.value];
+  const item = visibleItems.value[activeIndex.value];
   if (item?.kind === "option") select(item.value);
 }
 
@@ -156,6 +219,23 @@ function onButtonKeydown(e: KeyboardEvent): void {
       closePopover();
       buttonRef.value?.focus();
     }
+  } else if (e.key === "Tab") {
+    closePopover();
+  }
+}
+
+function onSearchKeydown(e: KeyboardEvent): void {
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    moveActive(e.key === "ArrowDown" ? 1 : -1);
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    commitActive();
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    e.stopPropagation();
+    closePopover();
+    buttonRef.value?.focus();
   } else if (e.key === "Tab") {
     closePopover();
   }
@@ -243,6 +323,20 @@ onBeforeUnmount(() => {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
   font-size: 13px;
   overflow: hidden;
+}
+.history-range-picker__search {
+  flex-shrink: 0;
+  padding: 6px 10px;
+  background: rgba(var(--tint), 0.05);
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+.history-range-picker__search:focus {
+  background: rgba(var(--tint), 0.08);
 }
 .history-range-picker__list {
   flex: 1;

@@ -666,9 +666,17 @@ describe("GitBranchesTab compact history picker", () => {
     for (const caption of ["Find reference", "History range", "Find commits"]) {
       expect(text).not.toContain(caption);
     }
-    expect(picker.find('[aria-label="Search history references"]').exists()).toBe(true);
+    expect(picker.find('[aria-label="Search history references"]').exists()).toBe(false);
     expect(picker.find('[aria-label="History reference"]').exists()).toBe(true);
     expect(picker.find('[aria-label="Search commits"]').exists()).toBe(true);
+    expect(
+      picker
+        .get(".git-history-picker")
+        .element.firstElementChild?.querySelector("[aria-label]")
+        ?.getAttribute("aria-label"),
+    ).toBe("Search commits");
+    await picker.get('[aria-label="History reference"]').trigger("click");
+    expect(document.body.querySelector('[aria-label="Search history references"]')).not.toBeNull();
   });
 
   test("keeps a persisted ref selection while branch and tag reads are pending", async () => {
@@ -837,8 +845,11 @@ describe("GitBranchesTab compact history picker", () => {
     expect(optionTexts().some((text) => text.includes("feature/topic-399"))).toBe(true);
     await select.trigger("click");
 
-    await picker.get('[aria-label="Search history references"]').setValue("feature/topic-399");
     await select.trigger("click");
+    const refSearch = document.body.querySelector<HTMLInputElement>('[aria-label="Search history references"]')!;
+    refSearch.value = "feature/topic-399";
+    refSearch.dispatchEvent(new Event("input"));
+    await flushPromises();
     expect(optionTexts().filter((text) => text.includes("feature/topic-")).length).toBeLessThan(5);
     expect(optionTexts().some((text) => text.includes("feature/topic-399"))).toBe(true);
   });
@@ -904,7 +915,7 @@ describe("GitBranchesTab compact history picker", () => {
     await flushPromises();
     await vi.advanceTimersByTimeAsync(300);
     await flushPromises();
-    expect(picker.find('[aria-label="Search history references"]').exists()).toBe(true);
+    expect(picker.find('[aria-label="Search history references"]').exists()).toBe(false);
     expect(picker.find('[aria-label="History reference"]').element).toBe(select.element);
     expect(gitLoadGraph).toHaveBeenCalledWith("ws1", expect.objectContaining({ branch: "origin/main" }));
     expect(gitCheckoutBranch).not.toHaveBeenCalled();
@@ -1198,5 +1209,74 @@ describe("GitBranchesTab — create-pr dialog submission (shared submitPullReque
     ).rejects.toThrow("A pull request already exists for this branch.");
 
     expect(closeDialog).not.toHaveBeenCalled();
+  });
+
+  test("the commit search filters the graph and the header count, and range base reaches the graphs", async () => {
+    const mk = (hash: string, subject: string) => ({
+      hash,
+      shortHash: hash.slice(0, 7),
+      parents: [],
+      subject,
+      author: "Ada Example",
+      relativeDate: "today",
+      isoDate: "2026-10-21T00:00:00.000Z",
+      refs: [],
+    });
+    const gitUi = reactive({
+      branchList: { current: "main", local: [{ name: "main", isCurrent: true }], remotes: [] },
+      graph: {
+        commits: [
+          mk("a1".repeat(10), "MSP-1 first"),
+          mk("b2".repeat(10), "other work"),
+          mk("c3".repeat(10), "MSP-3 third"),
+        ],
+        head: "a1".repeat(10),
+        refs: {},
+      },
+    });
+    const picker = mount(GitBranchesTab, {
+      props: {
+        workspaceId: "ws-commit-search-count",
+        snapshot: { dirty: false, branch: "main" },
+        gitUi,
+        compactHistory: true,
+        baseBranch: "origin/develop",
+      },
+    });
+    mountedWrappers.push(picker);
+    await flushPromises();
+    const graph = () => picker.findComponent({ name: "GitTreeGraph" });
+    expect(graph().props("commits")).toHaveLength(3);
+    expect(picker.get(".git-branches__pane-count").text()).toBe("3 commits");
+    expect(picker.get(".git-branches__pane-vs").text()).toBe("vs origin/develop");
+    for (const g of picker.findAllComponents({ name: "GitTreeGraph" })) {
+      expect(g.props("rangeBase")).toBe("origin/develop");
+    }
+
+    await picker.get('[aria-label="Search commits"]').setValue("MSP");
+    await flushPromises();
+    expect((graph().props("commits") as Array<{ subject: string }>).map((c) => c.subject)).toEqual([
+      "MSP-1 first",
+      "MSP-3 third",
+    ]);
+    expect(picker.get(".git-branches__pane-count").text()).toBe("2 of 3");
+  });
+
+  test("legacy Branches view passes no range base to the graphs", async () => {
+    const picker = mount(GitBranchesTab, {
+      props: {
+        workspaceId: "ws-legacy-range-base",
+        snapshot: { dirty: false, branch: "main" },
+        gitUi: {
+          branchList: { current: "main", local: [{ name: "main", isCurrent: true }], remotes: [] },
+          graph: { commits: [], head: "", refs: {} },
+        },
+        compactHistory: false,
+        baseBranch: "develop",
+      },
+    });
+    mountedWrappers.push(picker);
+    await flushPromises();
+    for (const g of picker.findAllComponents({ name: "GitTreeGraph" })) expect(g.props("rangeBase")).toBe("");
   });
 });

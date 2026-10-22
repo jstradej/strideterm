@@ -77,4 +77,53 @@ describe("HistoryRangePicker", () => {
     await button.trigger("keydown", { key: "Enter" });
     expect(picker.emitted("change")).toEqual([["main"]]);
   });
+
+  test("popover has a focused search that filters options, drops empty sections and keeps pinned entries", async () => {
+    const picker = mountPicker();
+    await picker.get("button").trigger("click");
+    const search = document.body.querySelector<HTMLInputElement>('[aria-label="Search history references"]')!;
+    expect(search).not.toBeNull();
+    expect(search.placeholder).toBe("Branches and tags…");
+    expect(document.activeElement).toBe(search);
+    expect(search.parentElement?.firstElementChild).toBe(search);
+
+    search.value = "v1";
+    search.dispatchEvent(new Event("input"));
+    await picker.vm.$nextTick();
+    expect(picker.emitted("update:searchQuery")).toEqual([["v1"]]);
+    expect(rows().map((row) => row.textContent?.trim())).toEqual(["All branches and tags", "Tag · v1"]);
+    expect(
+      Array.from(document.body.querySelectorAll(".history-range-picker__section")).map((s) => s.textContent?.trim()),
+    ).toEqual(["Tags"]);
+
+    search.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await picker.vm.$nextTick();
+    expect(picker.emitted("change")).toEqual([["v1"]]);
+    expect(rows()).toHaveLength(0);
+  });
+
+  test("keeps HEAD and All pinned for a query that matches nothing, and arrows move the active row", async () => {
+    const picker = mount(HistoryRangePicker, {
+      props: {
+        modelValue: "main",
+        items: [{ kind: "option" as const, value: "HEAD", label: "HEAD · main" }, ...items],
+      },
+      attachTo: document.body,
+    });
+    wrappers.push(picker);
+    await picker.get("button").trigger("click");
+    const search = document.body.querySelector<HTMLInputElement>('[aria-label="Search history references"]')!;
+    search.value = "zzz";
+    search.dispatchEvent(new Event("input"));
+    await picker.vm.$nextTick();
+    expect(rows().map((row) => row.textContent?.trim())).toEqual(["HEAD · main", "All branches and tags"]);
+    expect(document.body.querySelector(".history-range-picker__section")).toBeNull();
+
+    search.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    await picker.vm.$nextTick();
+    expect(rows()[1].classList.contains("history-range-picker__row--active")).toBe(true);
+    search.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await picker.vm.$nextTick();
+    expect(rows()).toHaveLength(0);
+  });
 });

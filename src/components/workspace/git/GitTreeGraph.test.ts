@@ -233,4 +233,131 @@ describe("GitTreeGraph", () => {
     expect(chip.find(".git-tree__ref-label").text()).toBe("origin/pveselka/MSP-90906");
     expect(chip.attributes("title")).toBe("Remote-tracking ref origin/pveselka/MSP-90906");
   });
+
+  describe("history markers", () => {
+    const mk = (n: number, parents: string[], refs: string[] = []) => ({
+      hash: `h${n}`,
+      shortHash: `h${n}`,
+      parents,
+      subject: `commit ${n}`,
+      author: "Alice",
+      relativeDate: "today",
+      isoDate: "2026-05-19T10:00:00Z",
+      refs,
+    });
+    const chain = (refs: Record<number, string[]> = {}) => [
+      mk(1, ["h2"], refs[1]),
+      mk(2, ["h3"], refs[2]),
+      mk(3, ["h4"], refs[3] ?? ["origin/feature"]),
+      mk(4, ["h5"], refs[4]),
+      mk(5, [], refs[5]),
+    ];
+    const rowsOf = (w: ReturnType<typeof mountGraph>) => w.findAll(".git-tree__row");
+
+    test("local-only commits get hollow dots and the first pushed row gets the boundary", () => {
+      const w = mountGraph({ history: true, commits: chain(), head: "h1" });
+      const rows = rowsOf(w);
+      expect(rows.map((r) => r.classes().includes("git-tree__row--local"))).toEqual([true, true, false, false, false]);
+      expect(rows.map((r) => r.classes().includes("git-tree__row--push-boundary"))).toEqual([
+        false,
+        false,
+        true,
+        false,
+        false,
+      ]);
+      expect(rows[0].attributes("title")).toContain("Not on any remote yet");
+      expect(rows[2].attributes("title")).not.toContain("Not on any remote yet");
+      const dots = w.findAll("svg circle").filter((c) => c.attributes("r") !== "8.2");
+      expect(dots[0].attributes("fill")).toBe("var(--panel)");
+      expect(dots[1].attributes("fill")).toBe("var(--panel)");
+      expect(dots[2].attributes("fill")).not.toBe("var(--panel)");
+    });
+
+    test("marks nothing local when no remote-tracking ref is loaded", () => {
+      const w = mountGraph({
+        history: true,
+        commits: chain({ 3: [] }),
+        head: "h1",
+      });
+      expect(w.find(".git-tree__row--local").exists()).toBe(false);
+      expect(w.find(".git-tree__row--push-boundary").exists()).toBe(false);
+    });
+
+    test("dims commits already on the range base and keeps the branch's own work full", () => {
+      const w = mountGraph({
+        history: true,
+        rangeBase: "develop",
+        commits: chain({ 4: ["origin/develop"] }),
+        head: "h1",
+      });
+      const rows = rowsOf(w);
+      expect(rows.map((r) => r.classes().includes("git-tree__row--on-base"))).toEqual([
+        false,
+        false,
+        false,
+        true,
+        true,
+      ]);
+      expect(rows[3].attributes("title")).toContain("Already on develop");
+      expect(rows[0].attributes("title")).not.toContain("Already on");
+
+      const none = mountGraph({ history: true, rangeBase: "develop", commits: chain(), head: "h1" });
+      expect(none.find(".git-tree__row--on-base").exists()).toBe(false);
+    });
+
+    test("origin/HEAD folds into the sibling remote chip as a default suffix", () => {
+      const w = mountGraph({
+        history: true,
+        commits: [mk(1, [], ["origin/HEAD", "origin/develop"])],
+        head: "",
+      });
+      const chips = w.findAll(".git-tree__history-refs .git-tree__ref");
+      expect(chips).toHaveLength(1);
+      expect(chips[0].find(".git-tree__ref-label").text()).toBe("origin/develop");
+      expect(chips[0].find(".git-tree__ref-default").text()).toBe("default");
+      expect(chips[0].attributes("title")).toContain(" · default");
+
+      const alone = mountGraph({ history: true, commits: [mk(1, [], ["origin/HEAD"])], head: "" });
+      expect(alone.findAll(".git-tree__history-refs .git-tree__ref")).toHaveLength(1);
+      expect(alone.find(".git-tree__ref-default").exists()).toBe(false);
+    });
+
+    test("HEAD and the current branch are filled, the base outlined, and they are never the collapsed ones", () => {
+      const w = mountGraph({
+        history: true,
+        rangeBase: "origin/develop",
+        head: "h1",
+        commits: [mk(1, [], ["tag:v1", "origin/x", "origin/develop", "main", "HEAD"])],
+      });
+      const chips = w.findAll(".git-tree__history-refs .git-tree__ref");
+      expect(chips.map((c) => c.find(".git-tree__ref-label").text() || c.text())).toEqual(["HEAD", "main", "+3"]);
+      expect(chips[0].classes()).toContain("git-tree__ref--filled");
+      expect(chips[1].classes()).toContain("git-tree__ref--filled");
+
+      const base = mountGraph({
+        history: true,
+        rangeBase: "origin/develop",
+        head: "",
+        commits: [mk(1, [], ["origin/x", "origin/develop"])],
+      });
+      const baseChips = base.findAll(".git-tree__history-refs .git-tree__ref");
+      expect(baseChips[0].find(".git-tree__ref-label").text()).toBe("origin/develop");
+      expect(baseChips[0].classes()).toContain("git-tree__ref--outlined");
+      expect(baseChips[1].classes()).not.toContain("git-tree__ref--outlined");
+    });
+
+    test("legacy mode renders none of the new classes", () => {
+      const w = mountGraph({
+        history: false,
+        rangeBase: "develop",
+        commits: chain({ 4: ["origin/develop"] }),
+        head: "h1",
+      });
+      for (const cls of ["--local", "--push-boundary", "--on-base"]) {
+        expect(w.find(`.git-tree__row${cls}`).exists()).toBe(false);
+      }
+      expect(w.find(".git-tree__ref--filled").exists()).toBe(false);
+      expect(w.findAll("svg circle").every((c) => c.attributes("fill") !== "var(--panel)")).toBe(true);
+    });
+  });
 });
