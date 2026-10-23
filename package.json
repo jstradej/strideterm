@@ -210,10 +210,10 @@
     "wait-on": "^9.1.0"
   },
   "overrides": {
-    "dompurify": "3.4.16",
+    "dompurify": "3.4.17",
     "uuid": "^14.0.0",
     "fast-uri": "^3.1.5",
-    "hono": "4.13.9",
+    "hono": "4.13.13",
     "ip-address": "^10.4.0",
     "tar": "^7.5.22",
     "undici@6": "^6.28.0",
