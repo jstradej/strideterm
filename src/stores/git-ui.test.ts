@@ -35,6 +35,7 @@ vi.mock("./app.js", () => ({
 }));
 
 beforeEach(() => {
+  window.localStorage.clear();
   setActivePinia(createPinia());
   getGitSnapshot.mockReset();
   getGitSnapshot.mockReturnValue(null);
@@ -1045,9 +1046,9 @@ describe("git-ui store", () => {
       await store.openLazygit("ws1");
 
       const notifications = useNotificationStore();
-      expect(notifications.latestToast?.kind).toBe("error");
-      expect(notifications.latestToast?.title).toBe("Failed to open Lazygit");
-      expect(notifications.latestToast?.body).toBe("Lazygit is not available for this workspace.");
+      expect(notifications.persistentToasts.at(-1)?.kind).toBe("error");
+      expect(notifications.persistentToasts.at(-1)?.title).toBe("Failed to open Lazygit");
+      expect(notifications.persistentToasts.at(-1)?.body).toBe("Lazygit is not available for this workspace.");
     });
   });
 
