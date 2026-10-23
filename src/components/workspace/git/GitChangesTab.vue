@@ -1521,6 +1521,22 @@ useContextMenu({
     min-height: 0;
   }
 
+  /* A landscape phone leaves too little height for the diff under a wrapped
+     staging strip; committing stays reachable from the dock. */
+  .git-changes--mobile[data-layout="split"] .git-changes__mobile-staging {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding: 2px 6px;
+  }
+
+  .git-changes--mobile[data-layout="split"] .git-changes__mobile-staging > strong {
+    flex: 0 0 auto;
+  }
+
+  .git-changes--mobile[data-layout="split"] .git-changes__mobile-staging .git-commit-form {
+    display: none;
+  }
+
   .git-changes--mobile[data-layout="split"] .git-changes__mobile-dock {
     grid-column: 1 / -1;
     grid-row: 3;

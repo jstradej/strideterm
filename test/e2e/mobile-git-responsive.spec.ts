@@ -235,7 +235,7 @@ test.describe("mobile Git Changes responsive renderer", () => {
       if (mobile) await page.getByRole("button", { name: "Commit 1…" }).click();
       const message = mobile
         ? page.getByRole("textbox", { name: "Commit message" })
-        : page.locator("input[name='commit-message']");
+        : page.locator("input[name='commit-staged-message']");
       if (mobile) await expect(root).toHaveAttribute("data-mode", "commit");
       const commitText = mobile ? "Improve mobile Git layout\nPreserve selected files" : "Improve mobile Git layout";
       await message.fill(commitText);
