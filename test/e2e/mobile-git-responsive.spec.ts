@@ -246,8 +246,8 @@ test.describe("mobile Git Changes responsive renderer", () => {
       const ctaLocator = mobile
         ? page.getByRole("button", { name: "Commit selected (1)" })
         : page
-            .locator(".git-section--changes button")
-            .filter({ hasText: /^Commit/ })
+            .locator(".git-section--changes")
+            .getByRole("button", { name: /^Commit staged/ })
             .last();
       const ctaBox = await ctaLocator.boundingBox();
       viewportMetrics.push({

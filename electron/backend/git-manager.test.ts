@@ -4608,7 +4608,10 @@ describe("GitManager", () => {
         ["gitMerge-into-base", "write", false],
       ]);
       expect(entries.every((entry) => entry.connectionId === "system-ws-merge-base-audit")).toBe(true);
-      expect(entries.every((entry) => path.resolve(String(entry.rootPath)) === path.resolve(root))).toBe(true);
+      // Git reports the real path; on macOS the temp dir is a symlink (/var → /private/var).
+      const realRoot = await fs.realpath(root);
+      const entryRoots = await Promise.all(entries.map((entry) => fs.realpath(String(entry.rootPath))));
+      expect(entryRoots.every((entryRoot) => entryRoot === realRoot)).toBe(true);
     });
 
     test("records one success or failure audit row per stash mutation", async () => {
