@@ -152,52 +152,41 @@ if (typeof window !== "undefined") {
   });
 }
 
-// Secondary "diff popout" window: a stripped-down Vue root that renders just
-// MonacoDiffPanel for one payload. Skips appStore / terminalStore / gitUiStore
-// init — the popout doesn't need workspaces, sessions, or git polling.
-const popoutView = new URL(window.location.href).searchParams.get("view");
-if (popoutView === "diff-popout") {
-  import("./DiffPopoutApp.vue").then((mod) => {
-    const popApp = createApp(mod.default);
-    popApp.mount("#app");
+// A mobile WebView open carries a one-time session ticket in the URL fragment (plan §9.2);
+// exchange it for the session cookie before mounting. A ticketed page is never mounted unless
+// the exchange succeeds; failures are handled by the native session recovery bridge. A page
+// with no ticket (the normal browser/Telegram `?token=` path) proceeds immediately.
+void bootstrapMobileSessionFromFragment().then((handled) => {
+  if (handled) return;
+
+  const api = createTransport();
+
+  const app = createApp(App);
+  app.use(createPinia());
+  installVueErrorHandler(app, (title, body) => useNotificationStore().showError(title, body));
+  app.provide(apiKey, api);
+  app.mount("#app");
+
+  // Init stores after Pinia is mounted
+  const appStore = useAppStore();
+  const terminalStore = useTerminalStore();
+  const gitUiStore = useGitUiStore();
+  const azurePipelinesStore = useAzurePipelinesStore();
+
+  terminalStore.init(api, APP_CONFIG, {
+    getActiveSessionId: () => appStore.activeSessionId,
+    getOverlay: () => appStore.overlay,
+    getPayload: () => appStore.payload,
   });
-} else {
-  // A mobile WebView open carries a one-time session ticket in the URL fragment (plan §9.2);
-  // exchange it for the session cookie before mounting. A ticketed page is never mounted unless
-  // the exchange succeeds; failures are handled by the native session recovery bridge. A page
-  // with no ticket (the normal browser/Telegram `?token=` path) proceeds immediately.
-  void bootstrapMobileSessionFromFragment().then((handled) => {
-    if (handled) return;
 
-    const api = createTransport();
-
-    const app = createApp(App);
-    app.use(createPinia());
-    installVueErrorHandler(app, (title, body) => useNotificationStore().showError(title, body));
-    app.provide(apiKey, api);
-    app.mount("#app");
-
-    // Init stores after Pinia is mounted
-    const appStore = useAppStore();
-    const terminalStore = useTerminalStore();
-    const gitUiStore = useGitUiStore();
-    const azurePipelinesStore = useAzurePipelinesStore();
-
-    terminalStore.init(api, APP_CONFIG, {
-      getActiveSessionId: () => appStore.activeSessionId,
-      getOverlay: () => appStore.overlay,
-      getPayload: () => appStore.payload,
-    });
-
-    appStore.init(api);
-    gitUiStore.init(api);
-    azurePipelinesStore.init(api);
-    // The account store subscribes to ONE broadcast and holds the state the main process derived.
-    // On the remote web client the transport has none of these methods, so `attach` finds nothing to
-    // subscribe to, and the Mobile tab (which hosts the account section) is absent — see
-    // SettingsDialog's TABS.
-    const accountStore = useAccountStore();
-    accountStore.attach(api);
-    void accountStore.refreshState().catch(() => {});
-  });
-}
+  appStore.init(api);
+  gitUiStore.init(api);
+  azurePipelinesStore.init(api);
+  // The account store subscribes to ONE broadcast and holds the state the main process derived.
+  // On the remote web client the transport has none of these methods, so `attach` finds nothing to
+  // subscribe to, and the Mobile tab (which hosts the account section) is absent — see
+  // SettingsDialog's TABS.
+  const accountStore = useAccountStore();
+  accountStore.attach(api);
+  void accountStore.refreshState().catch(() => {});
+});

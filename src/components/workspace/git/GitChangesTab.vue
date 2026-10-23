@@ -284,6 +284,7 @@
                     :payload="monacoDiffPayload"
                     :loading="monacoDiffLoading"
                     :initial-inline="compactChanges"
+                    :popout-title="`${gitUi.selectedDiff.path} (${gitUi.selectedDiff.scope})`"
                   />
                   <p v-else class="git-card__hint">Click a file to load a diff preview.</p>
                 </div>
@@ -442,6 +443,7 @@
               :payload="monacoDiffPayload"
               :loading="monacoDiffLoading"
               :initial-inline="true"
+              :popout-title="`${gitUi.selectedDiff.path} (${gitUi.selectedDiff.scope})`"
             />
             <p v-else class="git-card__hint">Select a file to load a diff preview.</p>
           </div>

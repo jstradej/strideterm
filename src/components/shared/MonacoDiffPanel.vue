@@ -251,16 +251,23 @@ const canPopout = computed(() => {
 async function handlePopout() {
   if (!canPopout.value) return;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const bridge = (window as any).strideterm as { openDiffPopout: (p: unknown) => Promise<unknown> };
+  const bridge = (window as any).strideterm as {
+    openDiffPopout: (p: unknown) => Promise<{ error?: string } | undefined>;
+  };
+  let failure: unknown = null;
   try {
-    await bridge.openDiffPopout({
+    const result = await bridge.openDiffPopout({
       title: props.popoutTitle,
       filePath: props.popoutTitle,
       ...(props.payload as Record<string, unknown>),
     });
-  } catch {
-    // Popout is a best-effort UX feature — if the IPC fails the host UI
-    // still has the diff visible.
+    if (result?.error) failure = result.error;
+  } catch (err) {
+    failure = err;
+  }
+  if (failure) {
+    const { useNotificationStore } = await import("../../stores/notifications.js");
+    useNotificationStore().showError("Pop out failed", failure);
   }
 }
 

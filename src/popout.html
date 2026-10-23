@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self';"
+    />
+    <title>Diff</title>
+    <link rel="icon" type="image/svg+xml" href="./icon.svg" />
+    <link rel="stylesheet" href="./styles/main.css" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- Shown from the first paint until Vue mounts (Monaco is the slow part) -->
+      <div
+        style="
+          height: 100vh;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 10px;
+          background: #141416;
+          color: rgba(255, 255, 255, 0.6);
+          font:
+            13px system-ui,
+            -apple-system,
+            &quot;Segoe UI&quot;,
+            sans-serif;
+        "
+      >
+        <span
+          style="
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255, 255, 255, 0.15);
+            border-top-color: #ffa424;
+            border-radius: 50%;
+            animation: popout-spin 0.8s linear infinite;
+          "
+        ></span>
+        Loading diff…
+        <style>
+          @keyframes popout-spin {
+            to {
+              transform: rotate(360deg);
+            }
+          }
+        </style>
+      </div>
+    </div>
+    <script type="module" src="./popout.ts"></script>
+  </body>
+</html>
