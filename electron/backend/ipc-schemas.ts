@@ -131,7 +131,7 @@ export const settingsSchema = z
   .object({
     git: z
       .object({
-        ui: z.object({ newView: z.boolean().optional() }).passthrough().optional(),
+        ui: z.object({}).passthrough().optional(),
       })
       .passthrough()
       .optional(),

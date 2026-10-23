@@ -67,13 +67,10 @@ describe("ipc-schemas", () => {
       validateIpc(gitStageHunkSchema, { workspaceId: "ws", path: "a", diffToken: "bad", hunk: "@@" }, "git:stage-hunk"),
     ).toThrow();
   });
-  test("validates the opt-in new Git view while preserving partial UI settings", () => {
-    expect(validateIpc(settingsSchema, { git: { ui: { newView: true } } }, "settings:update")).toMatchObject({
-      git: { ui: { newView: true } },
-    });
-    expect(() => validateIpc(settingsSchema, { git: { ui: { newView: "yes" } } }, "settings:update")).toThrow(
-      /IPC validation failed/,
-    );
+  test("preserves partial Git UI settings while accepting retired fields from older clients", () => {
+    expect(
+      validateIpc(settingsSchema, { git: { ui: { newView: false, showAllActions: true } } }, "settings:update"),
+    ).toMatchObject({ git: { ui: { newView: false, showAllActions: true } } });
     expect(validateIpc(settingsSchema, { git: { ui: { updateStrategy: "merge" } } }, "settings:update")).toMatchObject({
       git: { ui: { updateStrategy: "merge" } },
     });

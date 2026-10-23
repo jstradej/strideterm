@@ -11996,6 +11996,11 @@ export async function createRuntime({
       ) {
         throw new Error(MOBILE_SECURE_STORAGE_REQUIRED_MESSAGE);
       }
+      const settingsToSave = { ...settings };
+      if (settingsToSave.git?.ui) {
+        settingsToSave.git = { ...settingsToSave.git, ui: { ...settingsToSave.git.ui } };
+        delete settingsToSave.git.ui.newView;
+      }
       const previousConfig = getState().settings.remoteAccess;
       let autoApproveDisarmed = false;
       await store.mutate((draft: AppState) => {
@@ -12004,7 +12009,7 @@ export async function createRuntime({
         }
         draft.settings = {
           ...draft.settings,
-          ...settings,
+          ...settingsToSave,
           remoteAccess: {
             ...draft.settings.remoteAccess,
             ...(settings.remoteAccess || {}),
@@ -12015,10 +12020,10 @@ export async function createRuntime({
           },
           git: {
             ...draft.settings.git,
-            ...(settings.git || {}),
+            ...(settingsToSave.git || {}),
             ui: {
               ...(draft.settings.git?.ui || {}),
-              ...(settings.git?.ui || {}),
+              ...(settingsToSave.git?.ui || {}),
             },
           },
           ssh: {

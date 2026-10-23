@@ -7,6 +7,7 @@
       :disabled="disabled"
       :aria-expanded="open ? 'true' : 'false'"
       aria-haspopup="listbox"
+      :title="buttonTitle || undefined"
       @click="toggle"
       @keydown="onButtonKeydown"
     >
@@ -84,6 +85,7 @@ interface Props {
   offValue?: string;
   offLabel?: string; // shows a pinned "Off" row at the top when set
   searchPlaceholder?: string;
+  buttonTitle?: string;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -99,6 +101,7 @@ const props = withDefaults(defineProps<Props>(), {
   offValue: "",
   offLabel: "",
   searchPlaceholder: "Filter branches…",
+  buttonTitle: "",
 });
 
 const emit = defineEmits<{

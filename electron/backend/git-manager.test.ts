@@ -2479,6 +2479,34 @@ describe("GitManager", () => {
       expect(first.commits.map((c) => c.subject)).toEqual(["c5", "c4"]);
       expect(second.commits.map((c) => c.subject)).toEqual(["c3", "c2"]);
     });
+
+    test.skipIf(!GIT_AVAILABLE)("three-dot history includes commits unique to both diverged branches", async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-compare-range-"));
+      tempPaths.push(root);
+      const git = (args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8", windowsHide: true });
+      git(["init", "-q", "-b", "main"]);
+      git(["config", "user.email", "test@example.com"]);
+      git(["config", "user.name", "Test"]);
+      git(["config", "commit.gpgsign", "false"]);
+      await fs.writeFile(path.join(root, "base.txt"), "base\n", "utf8");
+      git(["add", "base.txt"]);
+      git(["commit", "-q", "-m", "common base"]);
+      git(["checkout", "-q", "-b", "topic"]);
+      await fs.writeFile(path.join(root, "topic.txt"), "topic\n", "utf8");
+      git(["add", "topic.txt"]);
+      git(["commit", "-q", "-m", "topic only"]);
+      git(["checkout", "-q", "main"]);
+      await fs.writeFile(path.join(root, "base-update.txt"), "base update\n", "utf8");
+      git(["add", "base-update.txt"]);
+      git(["commit", "-q", "-m", "base only"]);
+
+      const mgr = new GitManager({});
+      const workspace = { id: "ws", cwd: root, kind: "terminal" as const };
+      const aheadOnly = await mgr.logGraph(workspace, { rootPath: root, branch: "main..topic" });
+      const bothSides = await mgr.logGraph(workspace, { rootPath: root, branch: "main...topic" });
+      expect(aheadOnly.commits.map((commit) => commit.subject)).toEqual(["topic only"]);
+      expect(bothSides.commits.map((commit) => commit.subject).sort()).toEqual(["base only", "topic only"]);
+    });
   });
 
   // ─── createTag at a specific commit ────────────────────────────────

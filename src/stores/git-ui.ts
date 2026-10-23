@@ -2027,14 +2027,6 @@ export const useGitUiStore = defineStore("git-ui", () => {
     }));
   }
 
-  function setNewViewLegacyDestination(workspaceId: string, destination: string): void {
-    ensure(workspaceId).newViewLegacyDestination = destination;
-  }
-
-  function getNewViewLegacyDestination(workspaceId: string): string {
-    return String(ensure(workspaceId).newViewLegacyDestination || "");
-  }
-
   function gitClearResult(workspaceId: string): void {
     ensure(workspaceId).lastResult = null;
   }
@@ -2676,8 +2668,6 @@ export const useGitUiStore = defineStore("git-ui", () => {
     setGitHistorySelection,
     toggleGitHistoryFavorite,
     recordGitHistoryRef,
-    setNewViewLegacyDestination,
-    getNewViewLegacyDestination,
     gitClearResult,
     gitClearSelectedDiff,
     openLazygit,

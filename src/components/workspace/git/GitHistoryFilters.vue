@@ -231,14 +231,19 @@
       off-value=""
       placeholder="Compare: off"
       search-placeholder="Filter branches…"
+      button-title="Choose a base branch to compare with the current checked-out branch (HEAD)."
       class="git-branches__cselect git-branches__cselect--compare"
     />
     <label
       v-if="compareBase"
       class="git-branches__filter git-branches__filter--inline"
-      title="Switch from base..HEAD (only your work) to base...HEAD (your work + commits on base since fork)."
+      title="Adds commits present only on the selected base branch to the commit history for the checked-out branch. It does not change the diff preview."
     >
-      <input v-model="includeBaseUpdates" type="checkbox" />
+      <input
+        v-model="includeBaseUpdates"
+        type="checkbox"
+        title="Adds commits present only on the selected base branch to the commit history for the checked-out branch. It does not change the diff preview."
+      />
       Include base updates
     </label>
     <button

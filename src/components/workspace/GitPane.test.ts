@@ -1,13 +1,10 @@
 import { describe, expect, test, beforeEach, vi } from "vitest";
 import { shallowMount, mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
-import { reactive } from "vue";
 import GitPane from "./GitPane.vue";
 import { useAppStore } from "../../stores/app.js";
 import { useGitUiStore } from "../../stores/git-ui.js";
 import { useRemoteDetailsStore } from "../../stores/remote-details.js";
-import DialogOverlay from "../dialogs/DialogOverlay.vue";
-import SettingsGitTab from "../dialogs/settings/SettingsGitTab.vue";
 import type { StatePayload, GitSnapshot } from "../../../electron/shared/types/state.js";
 
 declare const setMatchMediaResult: (query: string, matches: boolean) => void;
@@ -104,7 +101,7 @@ function makeSnapshot(rootPath: string = "/ms/api"): GitSnapshot {
 function mountPane(
   workspaceId: string,
   workspaces: any[] = [], // eslint-disable-line @typescript-eslint/no-explicit-any
-  options: { connections?: any[]; activeProfileId?: string; deep?: boolean; newView?: boolean } = {}, // eslint-disable-line @typescript-eslint/no-explicit-any
+  options: { connections?: any[]; activeProfileId?: string; deep?: boolean } = {}, // eslint-disable-line @typescript-eslint/no-explicit-any
 ) {
   const appStore = useAppStore();
   const activeProfileId = options.activeProfileId ?? "default";
@@ -119,7 +116,6 @@ function mountPane(
       activeProfileId,
       profiles,
       windowSlots: [{ id: "win-test", profileId: activeProfileId, activeWorkspaceId: workspaceId }],
-      ...(options.newView ? { settings: { git: { ui: { newView: true } } } } : {}),
     },
     git: {
       workspaces: {
@@ -151,11 +147,6 @@ describe("GitPane repo picker", () => {
   test("exposes the full active repository path and working branch in a focusable details control", async () => {
     const workspaceId = "ws-long-repository-details";
     const wrapper = mountPane(workspaceId, [buildWorkspace({ id: workspaceId })]);
-    const appStore = useAppStore();
-    appStore.payload = {
-      ...appStore.payload!,
-      appState: { ...appStore.payload!.appState!, settings: { git: { ui: { newView: true } } } },
-    } as StatePayload;
     const longRoot = "C:/work/customer-projects/very-long/repository/path/services/catalog-api";
     useGitUiStore().setActiveRoot(workspaceId, longRoot);
     await flushPromises();
@@ -167,17 +158,18 @@ describe("GitPane repo picker", () => {
     expect(details.text()).toContain("main");
   });
 
-  test("keeps the classic tabs by default and renders three opt-in views with legacy tools", async () => {
+  test("always renders integrated views and legacy tools, ignoring an old false setting", async () => {
     const ws = buildWorkspace({ id: "ws-new-git-view" });
     const wrapper = mountPane("ws-new-git-view", [ws]);
     expect(wrapper.find('[aria-label="Git sections"]').exists()).toBe(true);
+    expect(wrapper.find('[role="tab"][aria-selected="true"]').text()).toBe("History");
     const appStore = useAppStore();
     appStore.payload = {
       ...appStore.payload!,
-      appState: { ...appStore.payload!.appState!, settings: { git: { ui: { newView: true } } } },
-    } as StatePayload;
+      appState: { ...appStore.payload!.appState!, settings: { git: { ui: { newView: false } } } },
+    } as unknown as StatePayload;
     await flushPromises();
-    expect(wrapper.find('[aria-label="Git sections"]').exists()).toBe(false);
+    expect(wrapper.find('[aria-label="Git sections"]').exists()).toBe(true);
     expect(wrapper.findAll('[role="tab"]').map((tab) => tab.text())).toEqual([
       "History",
       "Changes",
@@ -191,13 +183,15 @@ describe("GitPane repo picker", () => {
     await pickTab(wrapper, "Stashes");
     expect(wrapper.findComponent({ name: "GitStashesTab" }).exists()).toBe(true);
     await pickTab(wrapper, "Branches");
-    expect(wrapper.findComponent({ name: "GitBranchesTab" }).exists()).toBe(true);
+    expect(wrapper.findComponent({ name: "GitBranchesTab" }).props("compactHistory")).toBe(false);
+    await pickTab(wrapper, "History");
+    expect(wrapper.findComponent({ name: "GitBranchesTab" }).props("compactHistory")).toBe(true);
     wrapper.unmount();
   });
 
   test("a picked tool tab is the only active tab until History or Changes is chosen again", async () => {
     const ws = buildWorkspace({ id: "ws-more-active" });
-    const wrapper = mountPane("ws-more-active", [ws], { newView: true });
+    const wrapper = mountPane("ws-more-active", [ws]);
     await flushPromises();
     const tab = (label: string) => wrapper.findAll('[role="tab"]').find((el) => el.text() === label)!;
     expect(wrapper.findAll(".git-tabs__item--active")).toHaveLength(1);
@@ -218,6 +212,126 @@ describe("GitPane repo picker", () => {
     wrapper.unmount();
   });
 
+  test("Overview separates working, upstream, and base status and sends branch management to Branches", async () => {
+    const workspaceId = "ws-overview-status";
+    const wrapper = mountPane(workspaceId, [buildWorkspace({ id: workspaceId })], { deep: true });
+    const appStore = useAppStore();
+    const snapshot = appStore.payload!.git!.workspaces[workspaceId];
+    appStore.payload = {
+      ...appStore.payload!,
+      git: {
+        ...appStore.payload!.git!,
+        workspaces: {
+          ...appStore.payload!.git!.workspaces,
+          [workspaceId]: {
+            ...snapshot,
+            branch: "feature/update-overview",
+            branchNames: ["main", "origin/main", "feature/update-overview"],
+            baseBranch: "main",
+            upstream: "origin/feature/update-overview",
+            aheadCount: 3,
+            behindCount: 2,
+            dirty: true,
+            dirtyCount: 2,
+            stashCount: 0,
+            defaultRemote: "origin",
+            remotes: { origin: "https://example.test/repo.git" },
+          },
+        },
+      },
+    } as StatePayload;
+    await flushPromises();
+    await pickTab(wrapper, "Overview");
+    const gitUiStore = useGitUiStore();
+    const rebaseBase = vi.spyOn(gitUiStore, "gitRebaseBase").mockImplementation(async () => {});
+
+    const status = wrapper.get('[data-testid="branch-status-card"]');
+    expect(status.text()).toContain("feature/update-overview");
+    expect(status.text()).toContain("2 changed");
+    expect(status.text()).toContain("origin/feature/update-overview");
+    expect(status.text()).toContain("3 ahead · 2 behind");
+    expect(status.text()).toContain("Base branch");
+    expect(status.text().match(/Base branch:/g)).toHaveLength(1);
+    expect(status.text()).not.toContain("Switch Branch");
+    expect(status.text()).not.toContain("Checkout:");
+    expect(wrapper.get('[data-testid="stash-card"]').text()).toContain("Stash changes…");
+    expect(wrapper.get('[data-testid="stash-card"]').text()).not.toContain("Unstash");
+
+    await wrapper.get('[data-testid="diverged-banner"] [data-testid="update-from-upstream"]').trigger("click");
+    expect(rebaseBase).toHaveBeenLastCalledWith(workspaceId, "origin/feature/update-overview", { fetchFirst: true });
+    const mergeBase = vi.spyOn(gitUiStore, "gitMergeBase").mockImplementation(async () => {});
+    appStore.payload = {
+      ...appStore.payload!,
+      appState: { ...appStore.payload!.appState!, settings: { git: { ui: { updateStrategy: "merge" } } } },
+    } as StatePayload;
+    await wrapper.get('[data-testid="diverged-banner"] [data-testid="update-from-upstream"]').trigger("click");
+    expect(mergeBase).toHaveBeenLastCalledWith(workspaceId, "origin/feature/update-overview", { fetchFirst: true });
+    appStore.payload = {
+      ...appStore.payload!,
+      appState: { ...appStore.payload!.appState!, settings: { git: { ui: { updateStrategy: "rebase" } } } },
+    } as StatePayload;
+    await status.get('[data-testid="update-from-base"]').trigger("click");
+    expect(rebaseBase).toHaveBeenLastCalledWith(workspaceId, "origin/main", { fetchFirst: true });
+
+    await status.get("button").trigger("click");
+    await flushPromises();
+    expect(wrapper.findAll('[role="tab"][aria-selected="true"]').map((tab) => tab.text())).toEqual(["Branches"]);
+    expect(wrapper.findComponent({ name: "GitBranchesTab" }).props("compactHistory")).toBe(false);
+    wrapper.unmount();
+  });
+
+  test("clean Overview stash summary links to Stashes without offering an empty stash action", async () => {
+    const workspaceId = "ws-overview-saved-stash";
+    const wrapper = mountPane(workspaceId, [buildWorkspace({ id: workspaceId })], { deep: true });
+    const appStore = useAppStore();
+    const snapshot = appStore.payload!.git!.workspaces[workspaceId];
+    appStore.payload = {
+      ...appStore.payload!,
+      git: {
+        ...appStore.payload!.git!,
+        workspaces: { ...appStore.payload!.git!.workspaces, [workspaceId]: { ...snapshot, stashCount: 1 } },
+      },
+    } as StatePayload;
+    await flushPromises();
+    await pickTab(wrapper, "Overview");
+
+    const manageBranches = wrapper.get('[data-testid="branch-status-card"] button');
+    expect(manageBranches.text()).toBe("Manage branches");
+    await manageBranches.trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[role="tab"][aria-selected="true"]').text()).toContain("Branches");
+    await pickTab(wrapper, "Overview");
+
+    const stashCard = wrapper.get('[data-testid="stash-card"]');
+    expect(stashCard.text()).toContain("1 saved stash");
+    expect(stashCard.find("button").text()).toContain("1 saved stash");
+    expect(stashCard.text()).not.toContain("Stash changes");
+    await stashCard.get("button").trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[role="tab"][aria-selected="true"]').text()).toContain("Stashes");
+    wrapper.unmount();
+  });
+
+  test("Go to Changes from Stashes selects the integrated Changes view", async () => {
+    const workspaceId = "ws-stashes-to-changes";
+    const ws = buildWorkspace({ id: workspaceId });
+    const wrapper = mountPane(workspaceId, [ws], { deep: true });
+    await flushPromises();
+
+    await pickTab(wrapper, "Stashes");
+    await wrapper.get(".stash-empty__actions button").trigger("click");
+    await flushPromises();
+
+    expect(
+      wrapper
+        .findAll('[role="tab"]')
+        .find((tab) => tab.text() === "Changes")
+        ?.attributes("aria-selected"),
+    ).toBe("true");
+    expect(wrapper.findComponent({ name: "GitChangesTab" }).exists()).toBe(true);
+    wrapper.unmount();
+  });
+
   test.each([
     ["branch", "GitBranchTab"],
     ["branches", "GitBranchesTab"],
@@ -234,10 +348,6 @@ describe("GitPane repo picker", () => {
     });
     const wrapper = mountPane(workspaceId, [ws]);
     const appStore = useAppStore();
-    appStore.payload = {
-      ...appStore.payload!,
-      appState: { ...appStore.payload!.appState!, settings: { git: { ui: { newView: true } } } },
-    } as StatePayload;
     if (destination === "conflicts") {
       const payload = appStore.payload!;
       const snapshot = payload.git!.workspaces[workspaceId];
@@ -274,8 +384,8 @@ describe("GitPane repo picker", () => {
 
   test("a saved tool tab that no longer exists shows the History view", async () => {
     const ws = buildWorkspace({ id: "ws-unavailable-more-tool" });
-    const wrapper = mountPane("ws-unavailable-more-tool", [ws], { newView: true });
-    useGitUiStore().setNewViewLegacyDestination("ws-unavailable-more-tool", "conflicts");
+    const wrapper = mountPane("ws-unavailable-more-tool", [ws]);
+    useGitUiStore().gitSwitchTab("ws-unavailable-more-tool", "conflicts");
     await flushPromises();
 
     const selected = wrapper.findAll('[role="tab"][aria-selected="true"]');
@@ -286,7 +396,7 @@ describe("GitPane repo picker", () => {
 
   test("a persisted Review view renders History and there is no Review tab", async () => {
     const ws = buildWorkspace({ id: "ws-persisted-review" });
-    const wrapper = mountPane("ws-persisted-review", [ws], { newView: true });
+    const wrapper = mountPane("ws-persisted-review", [ws]);
     const gitUiStore = useGitUiStore();
     gitUiStore.gitSwitchView("ws-persisted-review", "review", "/ms/api");
     gitUiStore.setActiveRoot("ws-persisted-review", "/ms/api");
@@ -304,7 +414,7 @@ describe("GitPane repo picker", () => {
       kind: "review",
       review: { prKey: "azure:repo:42", provider: "azure-devops", role: "reviewer" },
     });
-    const wrapper = mountPane("ws-review-clean", [ws], { newView: true });
+    const wrapper = mountPane("ws-review-clean", [ws]);
     await flushPromises();
 
     expect(wrapper.findAll('[role="tab"][aria-selected="true"]').map((tab) => tab.text())).toEqual(["History"]);
@@ -321,7 +431,7 @@ describe("GitPane repo picker", () => {
     const snapshot = base.git!.workspaces[workspaceId];
     appStore.payload = {
       ...base,
-      appState: { ...base.appState!, settings: { git: { ui: { newView: true } } } },
+      appState: base.appState!,
       git: {
         ...base.git!,
         workspaces: {
@@ -345,7 +455,7 @@ describe("GitPane repo picker", () => {
     expect(wrapper.get('[aria-label="Open conflict resolution"]').text()).toContain("Resolve conflicts");
   });
 
-  test("keeps exactly one remote Git detail interest across view-setting toggles", async () => {
+  test("keeps exactly one remote Git detail interest for the canonical Git pane lifecycle", async () => {
     const workspaceId = "ws-remote-view-interest";
     const subscriptions: string[][] = [];
     const appStore = useAppStore();
@@ -361,15 +471,8 @@ describe("GitPane repo picker", () => {
     const expected = [`git:${workspaceId}`];
     expect(subscriptions.at(-1)).toEqual(expected);
 
-    for (const newView of [true, false, true]) {
-      appStore.payload = {
-        ...appStore.payload!,
-        appState: { ...appStore.payload!.appState!, settings: { git: { ui: { newView } } } },
-      } as StatePayload;
-      await flushPromises();
-      expect(useRemoteDetailsStore().isInterested(`git:${workspaceId}`)).toBe(true);
-      expect(subscriptions.at(-1)).toEqual(expected);
-    }
+    expect(useRemoteDetailsStore().isInterested(`git:${workspaceId}`)).toBe(true);
+    expect(subscriptions.at(-1)).toEqual(expected);
 
     wrapper.unmount();
     await flushPromises();
@@ -377,49 +480,10 @@ describe("GitPane repo picker", () => {
     expect(subscriptions.at(-1)).toEqual([]);
     expect(subscriptions).toHaveLength(2);
   });
-  test("a running Git operation survives turning the opt-in view off and back on", async () => {
-    const ws = buildWorkspace({ id: "ws-toggle-operation" });
-    const wrapper = mountPane("ws-toggle-operation", [ws]);
-    const appStore = useAppStore();
-    const gitUiStore = useGitUiStore();
-    gitUiStore.setActiveRoot("ws-toggle-operation", "/ms/api");
-    gitUiStore.get("ws-toggle-operation").busyAction = "fetch";
-    gitUiStore.get("ws-toggle-operation").busyPhase = "Fetching…";
-
-    appStore.payload = {
-      ...appStore.payload!,
-      appState: { ...appStore.payload!.appState!, settings: { git: { ui: { newView: true } } } },
-    } as StatePayload;
-    await flushPromises();
-    await wrapper
-      .findAll('[role="tab"]')
-      .find((tab) => tab.text() === "Worktrees")!
-      .trigger("click");
-    await flushPromises();
-    expect(wrapper.findComponent({ name: "GitOperationCard" }).exists()).toBe(true);
-
-    appStore.payload = {
-      ...appStore.payload!,
-      appState: { ...appStore.payload!.appState!, settings: { git: { ui: { newView: false } } } },
-    } as StatePayload;
-    await flushPromises();
-    expect(wrapper.find('[aria-label="Git sections"]').exists()).toBe(true);
-    expect(gitUiStore.get("ws-toggle-operation").busyAction).toBe("fetch");
-
-    appStore.payload = {
-      ...appStore.payload!,
-      appState: { ...appStore.payload!.appState!, settings: { git: { ui: { newView: true } } } },
-    } as StatePayload;
-    await flushPromises();
-    expect(gitUiStore.get("ws-toggle-operation").busyAction).toBe("fetch");
-    expect(wrapper.findComponent({ name: "GitOperationCard" }).exists()).toBe(true);
-  });
-
-  test("the selected History reference survives the actual view-setting toggle", async () => {
-    const workspaceId = "ws-toggle-history-reference";
-    const workspace = buildWorkspace({ id: workspaceId, activeRootPath: "/ms/api", gitRoots: ["/ms/api"] });
-    const wrapper = mountPane(workspaceId, [workspace], { deep: true, newView: true });
-    const appStore = useAppStore();
+  test("History and Changes preferences survive switching between integrated tabs", async () => {
+    const workspaceId = "ws-git-view-preferences";
+    const workspace = buildWorkspace({ id: workspaceId, activeRootPath: "/ms/api", gitRoots: ["/ms/api", "/ms/web"] });
+    const wrapper = mountPane(workspaceId, [workspace], { deep: true });
     const gitUiStore = useGitUiStore();
     gitUiStore.setActiveRoot(workspaceId, "/ms/api");
     Object.assign(gitUiStore.get(workspaceId), {
@@ -437,82 +501,21 @@ describe("GitPane repo picker", () => {
     await flushPromises();
     expect(wrapper.get('[aria-label="History reference"]').attributes("data-value")).toBe("origin/release");
 
-    appStore.payload = {
-      ...appStore.payload!,
-      appState: { ...appStore.payload!.appState!, settings: { git: { ui: { newView: false } } } },
-    } as StatePayload;
-    await flushPromises();
-    expect(wrapper.find('[aria-label="Git sections"]').exists()).toBe(true);
-
-    appStore.payload = {
-      ...appStore.payload!,
-      appState: { ...appStore.payload!.appState!, settings: { git: { ui: { newView: true } } } },
-    } as StatePayload;
-    await flushPromises();
+    await pickTab(wrapper, "Changes");
+    await pickTab(wrapper, "History");
     expect(wrapper.get('[aria-label="History reference"]').attributes("data-value")).toBe("origin/release");
+
+    gitUiStore.setActiveRoot(workspaceId, "/ms/web");
+    gitUiStore.gitSwitchTab(workspaceId, "changes");
+    await flushPromises();
+    expect(gitUiStore.getGitView(workspaceId, "/ms/api")).toBe("history");
+    expect(gitUiStore.getGitView(workspaceId, "/ms/web")).toBe("changes");
+
+    gitUiStore.setActiveRoot(workspaceId, "/ms/api");
+    await flushPromises();
+    expect(wrapper.findAll('[role="tab"][aria-selected="true"]').map((tab) => tab.text())).toEqual(["History"]);
     wrapper.unmount();
   });
-
-  test("an unsaved Review editor survives toggling the view through the Settings control", async () => {
-    const ws = buildWorkspace({ id: "ws-toggle-review-draft" });
-    const wrapper = mountPane("ws-toggle-review-draft", [ws]);
-    const appStore = useAppStore();
-    appStore.payload = {
-      ...appStore.payload!,
-      appState: { ...appStore.payload!.appState!, settings: { git: { ui: { newView: true } } } },
-    } as StatePayload;
-
-    const dialogOverlay = mount(DialogOverlay, { attachTo: document.body });
-    appStore.openDialog("TextAreaDialog", {
-      title: "Edit review draft",
-      label: "Comment",
-      value: "Saved value",
-      onSubmit: () => undefined,
-      onCancel: () => undefined,
-    });
-    await vi.waitFor(() => expect(document.body.querySelector(".dialog--textarea textarea")).not.toBeNull());
-    const textarea = document.body.querySelector(".dialog--textarea textarea") as HTMLTextAreaElement;
-    textarea.value = "Unsaved editor contents survive the Settings toggle.";
-    textarea.dispatchEvent(new Event("input", { bubbles: true }));
-    await flushPromises();
-
-    const form = reactive({ git: { ui: { newView: true, showAllActions: false } } });
-    const settings = mount(SettingsGitTab, { global: { provide: { settingsForm: form } } });
-    const newViewCheckbox = settings.get('input[type="checkbox"]');
-    await newViewCheckbox.setValue(false);
-    appStore.payload = {
-      ...appStore.payload!,
-      appState: { ...appStore.payload!.appState!, settings: form },
-    } as StatePayload;
-    await flushPromises();
-    expect(wrapper.find('[aria-label="Git sections"]').exists()).toBe(true);
-
-    await newViewCheckbox.setValue(true);
-    appStore.payload = {
-      ...appStore.payload!,
-      appState: { ...appStore.payload!.appState!, settings: form },
-    } as StatePayload;
-    await flushPromises();
-
-    expect(wrapper.findAll('[role="tab"]').map((tab) => tab.text())).toEqual([
-      "History",
-      "Changes",
-      "Overview",
-      "Branches",
-      "Stashes",
-      "Pull Request",
-      "Worktrees",
-    ]);
-    expect(document.body.querySelector(".dialog--textarea textarea")).toHaveProperty(
-      "value",
-      "Unsaved editor contents survive the Settings toggle.",
-    );
-
-    settings.unmount();
-    dialogOverlay.unmount();
-    wrapper.unmount();
-  });
-
   test("repo picker is shown when workspace has 2+ gitRoots", () => {
     const ws = buildWorkspace({ id: "ws-multi", gitRoots: ["/ms/api", "/ms/web"] });
     const wrapper = mountPane("ws-multi", [ws]);
@@ -617,8 +620,8 @@ describe("GitPane mobile shell menus (useMobileShellMenus wiring)", () => {
 
     expect(wrapper.find(".git-view__tabs-trigger").exists()).toBe(true);
     expect(wrapper.find(".git-view__menu-trigger").exists()).toBe(true);
-    // Default activeTab is "branch" -> Overview (see GitPane.vue's `tabs` computed).
-    expect(wrapper.find(".git-view__tabs-trigger__label").text()).toBe("Overview");
+    // No active tool tab is stored yet, so the repo's History/Changes preference is used.
+    expect(wrapper.find(".git-view__tabs-trigger__label").text()).toBe("History");
   });
 
   test("toggling the tabs trigger flips the git-view--tabs-menu-open class", async () => {

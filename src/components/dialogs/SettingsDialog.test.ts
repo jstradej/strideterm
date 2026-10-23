@@ -125,20 +125,19 @@ describe("SettingsDialog — notifications.agentsOnly", () => {
   });
 });
 
-describe("SettingsDialog — Git new view preference", () => {
-  test("defaults off and saves the real Git tab toggle without dropping sibling Git preferences", async () => {
+describe("SettingsDialog — Git preferences", () => {
+  test("saves Git action preferences without the retired shell toggle", async () => {
     const wrapper = await mountDialog(
       { git: { ui: { newView: false, showAllActions: true } } },
       {},
       { initialTab: "git", mountGitTab: true },
     );
     const checkbox = wrapper.find('input[type="checkbox"]');
-    expect((checkbox.element as HTMLInputElement).checked).toBe(false);
-    await checkbox.setValue(true);
+    expect((checkbox.element as HTMLInputElement).checked).toBe(true);
     await clickSave(wrapper);
 
-    const git = lastSavedPayload(wrapper).git as { ui: { newView: boolean; showAllActions: boolean } };
-    expect(git.ui).toEqual({ newView: true, showAllActions: true });
+    const git = lastSavedPayload(wrapper).git as { ui: { showAllActions: boolean } };
+    expect(git.ui).toEqual({ showAllActions: true });
   });
 });
 

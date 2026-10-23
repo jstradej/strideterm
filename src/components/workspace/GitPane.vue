@@ -247,28 +247,15 @@
       </div>
 
       <!-- Tab nav -->
-      <nav v-if="!useNewGitView" class="git-tabs" role="tablist" aria-label="Git sections">
+      <nav class="git-tabs git-tabs--new" role="tablist" aria-label="Git sections">
         <button
-          v-for="tab in tabs"
+          v-for="tab in integratedTabs"
           :key="tab.id"
           type="button"
           role="tab"
-          :aria-selected="tab.id === activeTab ? 'true' : 'false'"
-          :class="['git-tabs__item', tab.id === activeTab && 'git-tabs__item--active']"
-          @click="onTabClick(tab.id)"
-        >
-          {{ tab.label }}<span v-if="tab.badge" class="git-tabs__badge">{{ tab.badge }}</span>
-        </button>
-      </nav>
-      <nav v-if="useNewGitView" class="git-tabs git-tabs--new" role="tablist" aria-label="Git views">
-        <button
-          v-for="tab in newViewTabs"
-          :key="tab.id"
-          type="button"
-          role="tab"
-          :aria-selected="tab.id === activeNewTabId ? 'true' : 'false'"
-          :class="['git-tabs__item', tab.id === activeNewTabId && 'git-tabs__item--active']"
-          @click="selectNewTab(tab.id)"
+          :aria-selected="tab.id === activeGitTabId ? 'true' : 'false'"
+          :class="['git-tabs__item', tab.id === activeGitTabId && 'git-tabs__item--active']"
+          @click="selectGitTab(tab.id)"
         >
           {{ tab.label }}<span v-if="tab.badge" class="git-tabs__badge">{{ tab.badge }}</span>
         </button>
@@ -284,12 +271,13 @@
         </div>
         <!-- ===== Branch tab ===== -->
         <GitBranchTab
-          v-if="(!useNewGitView && activeTab === 'branch') || (useNewGitView && activeLegacyDestination === 'branch')"
+          v-if="activeGitTabId === 'branch'"
           :workspace-id="workspaceId"
           :snapshot="snapshot"
           :git-ui="gitUi"
           :profile-id="workspace?.profileId || 'default'"
           :operation="operation"
+          :long-git-operation="longGitOperation"
           :workspaces="workspaces"
           :is-empty-repo="isEmptyRepo"
           :has-no-remote="hasNoRemote"
@@ -298,7 +286,6 @@
           :review-link="reviewLink"
           :is-linked-worktree="isLinkedWorktree"
           :push-remote="pushRemote"
-          :show-update-current-branch="showUpdateCurrentBranch"
           :show-stash-card="showStashCard"
           :show-merge-back="showMergeBack"
           :effective-base-branch="effectiveBaseBranch"
@@ -306,16 +293,11 @@
           :default-branch="defaultBranch"
           :default-remote="defaultRemote"
           :remote-names="remoteNames"
-          :switch-branch-options-list="switchBranchOptionsList"
         />
 
         <!-- ===== Branches tab (JetBrains-style branch list) ===== -->
         <GitBranchesTab
-          v-else-if="
-            (!useNewGitView && activeTab === 'branches') ||
-            (useNewGitView && !activeLegacyDestination && activeGitView === 'history') ||
-            (useNewGitView && activeLegacyDestination === 'branches')
-          "
+          v-else-if="activeGitTabId === 'history' || activeGitTabId === 'branches'"
           :workspace-id="workspaceId"
           :snapshot="snapshot"
           :git-ui="gitUi"
@@ -327,30 +309,24 @@
           :compare="compare"
           :base-branch-options="baseBranchOptions"
           :remote-names="remoteNames"
-          :compact-history="useNewGitView && !activeLegacyDestination && activeGitView === 'history'"
+          :compact-history="activeGitTabId === 'history'"
         />
 
         <!-- ===== Changes tab ===== -->
         <GitChangesTab
-          v-else-if="
-            (!useNewGitView && activeTab === 'changes') ||
-            (useNewGitView && !activeLegacyDestination && activeGitView === 'changes') ||
-            (useNewGitView && activeLegacyDestination === 'changes')
-          "
+          v-else-if="activeGitTabId === 'changes'"
           :workspace-id="workspaceId"
           :snapshot="snapshot"
           :git-ui="gitUi"
           :operation="operation"
           :active-root-path="activeRootPath"
           :is-detached-head="isDetachedHead"
-          :new-view="useNewGitView"
+          :new-view="true"
         />
 
         <!-- ===== Stashes tab ===== -->
         <GitStashesTab
-          v-else-if="
-            (!useNewGitView && activeTab === 'stashes') || (useNewGitView && activeLegacyDestination === 'stashes')
-          "
+          v-else-if="activeGitTabId === 'stashes'"
           :workspace-id="workspaceId"
           :snapshot="snapshot"
           :active-root-path="activeRootPath"
@@ -358,16 +334,14 @@
 
         <!-- ===== Conflicts tab (only while an operation has conflicts) ===== -->
         <GitConflictsTab
-          v-else-if="
-            (!useNewGitView && activeTab === 'conflicts') || (useNewGitView && activeLegacyDestination === 'conflicts')
-          "
+          v-else-if="activeGitTabId === 'conflicts'"
           :workspace-id="workspaceId"
           :root-path="activeRootPath"
         />
 
         <!-- ===== Pull Request tab ===== -->
         <GitPullRequestTab
-          v-else-if="(!useNewGitView && activeTab === 'pr') || (useNewGitView && activeLegacyDestination === 'pr')"
+          v-else-if="activeGitTabId === 'pr'"
           :workspace-id="workspaceId"
           :snapshot="snapshot"
           :git-ui="gitUi"
@@ -379,11 +353,7 @@
         />
 
         <!-- ===== Worktrees tab ===== -->
-        <template
-          v-else-if="
-            (!useNewGitView && activeTab === 'worktrees') || (useNewGitView && activeLegacyDestination === 'worktrees')
-          "
-        >
+        <template v-else-if="activeGitTabId === 'worktrees'">
           <div class="git-section">
             <article class="git-card git-card--worktrees">
               <div class="git-worktrees__context">
@@ -408,9 +378,7 @@
         </template>
 
         <!-- ===== Bulk tab (multi-repo only) ===== -->
-        <template
-          v-else-if="(!useNewGitView && activeTab === 'bulk') || (useNewGitView && activeLegacyDestination === 'bulk')"
-        >
+        <template v-else-if="activeGitTabId === 'bulk'">
           <BulkRepoTable
             :roots-snapshots="allRootsSnapshots"
             :workspace-id="props.workspaceId"
@@ -481,7 +449,7 @@ const gitUiStore = useGitUiStore();
 useResourceInterest(() => (props.workspaceId ? `git:${props.workspaceId}` : null));
 const { isMobile, menuOpen, tabsMenuOpen, toggleActionsMenu, toggleTabsMenu, closeAllMenus, onTabClick } =
   useMobileShellMenus({
-    onSelectTab: (id) => gitUiStore.gitSwitchTab(props.workspaceId, id),
+    onSelectTab: (id) => selectGitTab(id),
   });
 
 function onToolbarClick(e: MouseEvent) {
@@ -594,16 +562,6 @@ const hasConflictsTab = computed(
   () => (operation.value.conflicts?.length ?? 0) > 0 || gitUi.value.conflictDialog?.open === true,
 );
 
-const activeTab = computed(() => {
-  const t = gitUi.value.activeTab || "branch";
-  if (t === "graph" || t === "tags" || t === "history") return "branches";
-  // Conflicts tab only exists while conflicts are present — fall back to
-  // Overview if the persisted tab outlived the operation.
-  if (t === "conflicts" && !hasConflictsTab.value) return "branch";
-  return t;
-});
-
-const useNewGitView = computed(() => appStore.payload?.appState?.settings?.git?.ui?.newView === true);
 const activeGitView = computed(() => {
   const saved = gitUiStore.getGitView(
     props.workspaceId,
@@ -622,38 +580,43 @@ const activeGitView = computed(() => {
   );
   return preferred;
 });
-const legacyDestinations = computed(() => tabs.value.filter((tab) => tab.id !== "changes"));
-const storedLegacyDestination = computed(() => gitUiStore.getNewViewLegacyDestination(props.workspaceId));
-const activeLegacyDestination = computed(() =>
-  legacyDestinations.value.some((tab) => tab.id === storedLegacyDestination.value) ? storedLegacyDestination.value : "",
-);
-const newViewTabs = computed(() => [
+const integratedTabs = computed(() => [
   { id: "history", label: "History", badge: "" },
   tabs.value.find((tab) => tab.id === "changes") || { id: "changes", label: "Changes", badge: "" },
-  ...legacyDestinations.value,
+  ...tabs.value.filter((tab) => tab.id !== "changes"),
 ]);
-const activeNewTabId = computed(() => activeLegacyDestination.value || activeGitView.value);
+const activeGitTabId = computed(() => {
+  const selected = String(gitUi.value.activeTab || "");
+  if (selected === "history" || selected === "changes") return selected;
+  if ((selected === "conflicts" || selected === "conflict") && !hasConflictsTab.value) return activeGitView.value;
+  if (selected === "graph" || selected === "tags") return "branches";
+  if (integratedTabs.value.some((tab) => tab.id === selected)) return selected;
+  return activeGitView.value;
+});
 
-function selectNewTab(id: string) {
-  if (id === "history" || id === "changes") selectNewView(id);
-  else gitUiStore.setNewViewLegacyDestination(props.workspaceId, id);
+watch(
+  () => gitUi.value.activeTab,
+  (selected) => {
+    if (selected !== "history" && selected !== "changes") return;
+    gitUiStore.gitSwitchView(
+      props.workspaceId,
+      selected,
+      activeRootPath.value,
+      workspace.value?.profileId || "default",
+      String(workspace.value?.review?.prKey || ""),
+    );
+    gitUiStore.gitSwitchTab(props.workspaceId, "");
+  },
+  { flush: "sync" },
+);
+
+function selectGitTab(id: string) {
+  gitUiStore.gitSwitchTab(props.workspaceId, id);
   closeAllMenus();
 }
 
-function selectNewView(view: "history" | "changes") {
-  gitUiStore.setNewViewLegacyDestination(props.workspaceId, "");
-  gitUiStore.gitSwitchView(
-    props.workspaceId,
-    view,
-    activeRootPath.value,
-    workspace.value?.profileId || "default",
-    String(workspace.value?.review?.prKey || ""),
-  );
-}
-
 function openConflictTool() {
-  if (useNewGitView.value) gitUiStore.setNewViewLegacyDestination(props.workspaceId, "conflicts");
-  else gitUiStore.gitSwitchTab(props.workspaceId, "conflicts");
+  gitUiStore.gitSwitchTab(props.workspaceId, "conflicts");
 }
 
 const showAllActions = computed(() => appStore.payload?.appState?.settings?.git?.ui?.showAllActions === true);
@@ -873,11 +836,6 @@ const pushTooltip = computed(() => {
 const showStashCard = computed(() => {
   return showAllActions.value || snapshot.value?.dirty || (snapshot.value?.stashCount || 0) > 0;
 });
-const showUpdateCurrentBranch = computed(() => {
-  if (!snapshot.value) return false;
-  if (!showAllActions.value && effectiveBaseBranch.value === snapshot.value.branch) return false;
-  return true;
-});
 const showMergeBack = computed(() => {
   if (!showAllActions.value) {
     if (!isLinkedWorktree.value) return false;
@@ -973,14 +931,6 @@ const activeConnectionLabel = computed(() => {
   return found?.label || activeConnectionId.value;
 });
 
-// Branch switcher options (built here so the same data backs both the
-// Branch tab subcomponent and any external consumer).
-const switchBranchOptions = computed(() => {
-  const names: string[] = snapshot.value?.branchNames || [];
-  const current = snapshot.value?.branch || "";
-  return names.filter((n) => n !== current);
-});
-
 // UC-12: auto-dismiss stale pending confirm when snapshot state changes
 watch(snapshot, (newSnapshot) => {
   if (newSnapshot && gitUi.value.pendingAction) {
@@ -1016,8 +966,7 @@ const tabs = computed(() => {
 });
 
 const activeTabInfo = computed(() => {
-  if (useNewGitView.value) return newViewTabs.value.find((t) => t.id === activeNewTabId.value) || newViewTabs.value[0];
-  return tabs.value.find((t) => t.id === activeTab.value) || tabs.value[0];
+  return integratedTabs.value.find((tab) => tab.id === activeGitTabId.value) || integratedTabs.value[0];
 });
 
 const headerTitle = computed(() => `Git: ${snapshot.value?.branch || props.workspaceId}`);
@@ -1110,7 +1059,6 @@ const connectionOptions = computed(() => [
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ...availableConnections.value.map((c: any) => ({ value: c.id, label: c.label || c.id })),
 ]);
-const switchBranchOptionsList = computed(() => switchBranchOptions.value.map((b) => ({ value: b, label: b })));
 </script>
 
 <style scoped>

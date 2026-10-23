@@ -297,7 +297,7 @@ describe("GitBranchesTab compact history picker", () => {
         },
         activeRootPath: "/repo",
         compactHistory: true,
-        baseBranchOptions: ["main"],
+        baseBranchOptions: ["main", "develop"],
       },
     });
     mountedWrappers.push(picker);
@@ -326,6 +326,34 @@ describe("GitBranchesTab compact history picker", () => {
       "ws-compare-filter",
       expect.objectContaining({ branch: "main...topic" }),
     );
+
+    await picker.get(".git-branches__cselect--compare .branch-picker__button").trigger("click");
+    await flushPromises();
+    const options = Array.from(document.body.querySelectorAll('[role="option"]'));
+    options
+      .find((row) => row.textContent?.includes("develop"))
+      ?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    await flushPromises();
+    expect(picker.find('input[type="checkbox"]').exists()).toBe(true);
+    expect((picker.get('input[type="checkbox"]').element as HTMLInputElement).checked).toBe(false);
+    await vi.advanceTimersByTimeAsync(250);
+    await flushPromises();
+    expect(gitLoadGraph).toHaveBeenLastCalledWith(
+      "ws-compare-filter",
+      expect.objectContaining({ branch: "develop..topic" }),
+    );
+
+    await picker.get(".git-branches__cselect--compare .branch-picker__button").trigger("click");
+    await flushPromises();
+    const offOption = Array.from(document.body.querySelectorAll(".branch-picker__row")).find((row) =>
+      row.textContent?.includes("Compare: off"),
+    );
+    offOption?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    await flushPromises();
+    expect(picker.find('input[type="checkbox"]').exists()).toBe(false);
+    await vi.advanceTimersByTimeAsync(250);
+    await flushPromises();
+    expect(gitLoadGraph).toHaveBeenLastCalledWith("ws-compare-filter", expect.objectContaining({ branch: "" }));
     picker.unmount();
     vi.useRealTimers();
   });

@@ -2098,15 +2098,12 @@ describe("settings.git.ui.updateStrategy", () => {
   });
 });
 
-describe("settings.git.ui.newView", () => {
-  test("defaults off and safely normalizes older or malformed values", () => {
-    expect(createDefaultState().settings.git.ui.newView).toBe(false);
-    expect(normalizeState({ settings: { git: { ui: { showAllActions: true } } } }).settings.git.ui).toMatchObject({
-      newView: false,
-      showAllActions: true,
-    });
-    expect(normalizeState({ settings: { git: { ui: { newView: true } } } }).settings.git.ui.newView).toBe(true);
-    expect(normalizeState({ settings: { git: { ui: { newView: "enabled" } } } }).settings.git.ui.newView).toBe(false);
+describe("settings.git.ui", () => {
+  test("drops the retired Git shell setting and preserves other Git preferences", () => {
+    expect(createDefaultState().settings.git.ui).not.toHaveProperty("newView");
+    expect(
+      normalizeState({ settings: { git: { ui: { newView: false, showAllActions: true } } } }).settings.git.ui,
+    ).toEqual({ showAllActions: true, updateStrategy: "rebase" });
   });
 });
 
