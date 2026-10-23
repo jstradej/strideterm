@@ -385,18 +385,12 @@
           "
         >
           <div class="git-section">
-            <article class="git-card">
-              <div class="section-head">
-                <div>
-                  <p class="eyebrow">Worktree Context</p>
-                  <h3>{{ snapshot.repository || snapshot.root }}</h3>
-                </div>
-              </div>
-              <p class="git-card__path">{{ snapshot.root }}</p>
-              <div class="git-detail-list">
-                <span><strong>Current branch:</strong> {{ snapshot.branch }}</span>
-                <span><strong>Main worktree:</strong> {{ snapshot.mainWorktreePath || snapshot.root }}</span>
-                <span><strong>Current path:</strong> {{ snapshot.worktreePath || snapshot.root }}</span>
+            <article class="git-card git-card--worktrees">
+              <div class="git-worktrees__context">
+                <strong>{{ snapshot.isMainWorktree ? "Main worktree" : "Linked worktree" }}</strong>
+                <span :title="snapshot.worktreePath || snapshot.root">{{
+                  snapshot.worktreePath || snapshot.root
+                }}</span>
               </div>
               <GitWorktreeList
                 :snapshot="snapshot"
