@@ -493,11 +493,39 @@ describe("createWorkspaceActions.deleteWorkspace (optimistic)", () => {
 
     expect(notifs.persistentToasts).toHaveLength(1);
     const toast = notifs.persistentToasts[0];
-    expect(toast.title).toContain("Worktree B");
-    expect(toast.body).toContain("EBUSY");
+    expect(toast.title).toBe("Couldn't remove workspace");
+    expect(toast.body).toBe("Workspace folder could not be removed. Another process may be using this folder.");
+    expect(toast.details).toEqual({
+      rawError: "EBUSY: resource busy or locked",
+      workspaceTitle: "Worktree B",
+      path: expect.stringContaining("branch-b"),
+    });
     // The user needs the path to finish cleanup manually — make sure it's
     // attached so the "Copy path" button has something to copy.
     expect(toast.copyPath).toContain("branch-b");
+  });
+
+  it("does not suggest another process is using the folder for unrelated disk errors", async () => {
+    const initial = { appState: { workspaces: makeWorkspaces(), activeWorkspaceId: "ws-A" } };
+    const { ctx } = makeCtx(initial, {
+      deleteWorkspace: vi.fn(async () => ({
+        ...initial,
+        appState: { ...initial.appState, workspaces: initial.appState.workspaces.filter((w) => w.id !== "ws-B") },
+        deleteWorkspaceError: "EACCES: permission denied",
+      })),
+    });
+    const actions = createWorkspaceActions(ctx);
+    const notifs = useNotificationStore();
+
+    const finished = actions.deleteWorkspace("ws-B");
+    await answerConfirm(ctx, true);
+    await answerConfirm(ctx, true);
+    await finished;
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(notifs.persistentToasts[0].body).toBe("Workspace folder could not be removed.");
+    expect(notifs.persistentToasts[0].body).not.toContain("Another process");
+    expect(notifs.persistentToasts[0].details?.rawError).toContain("EACCES");
   });
 
   it("shows a persistent toast and rolls back the suppression set when the IPC throws", async () => {
@@ -519,7 +547,8 @@ describe("createWorkspaceActions.deleteWorkspace (optimistic)", () => {
     await new Promise((r) => setTimeout(r, 10));
 
     expect(notifs.persistentToasts).toHaveLength(1);
-    expect(notifs.persistentToasts[0].body).toContain("ECONNREFUSED");
+    expect(notifs.persistentToasts[0].body).toBe("Workspace could not be removed.");
+    expect(notifs.persistentToasts[0].details?.rawError).toContain("ECONNREFUSED");
     // IPC failure means the backend probably still has the workspace; we
     // must let the next broadcast restore it instead of silently swallowing.
     expect(optimisticallyDeletedIds.value.has("ws-B")).toBe(false);
@@ -626,8 +655,9 @@ describe("createWorkspaceActions.deleteWorkspace (optimistic)", () => {
 
     expect(notifs.persistentToasts).toHaveLength(1);
     const toast = notifs.persistentToasts[0];
-    expect(toast.title).toContain("Failed to remove");
-    expect(toast.body).toContain("ECONNREFUSED");
+    expect(toast.title).toBe("Couldn't remove workspace");
+    expect(toast.body).toBe("Workspace could not be removed.");
+    expect(toast.details?.rawError).toContain("ECONNREFUSED");
     expect(toast.copyPath).toBe("");
     expect(optimisticallyDeletedIds.value.has("ws-B")).toBe(false);
   });

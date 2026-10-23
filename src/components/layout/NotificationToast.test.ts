@@ -8,7 +8,7 @@
  * `waiting` — a toast watching the thread would then show a dead question
  * indefinitely (follow-up review, P2-6).
  */
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 import { setActivePinia, createPinia } from "pinia";
 import { nextTick } from "vue";
@@ -105,5 +105,23 @@ describe("NotificationToast — sticky question lifecycle", () => {
     await nextTick();
 
     expect(wrapper.emitted("dismissed")).toHaveLength(1);
+  });
+
+  it("keeps action errors visible while transient info toasts still expire", async () => {
+    vi.useFakeTimers();
+    try {
+      const errorWrapper = await mountWithToast(questionToast({ kind: "error", sourceAlertId: undefined }));
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(errorWrapper.find(".notification-toast").exists()).toBe(true);
+      expect(errorWrapper.emitted("dismissed")).toBeUndefined();
+      errorWrapper.unmount();
+
+      const infoWrapper = await mountWithToast(questionToast({ kind: "info", sourceAlertId: undefined }));
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(infoWrapper.find(".notification-toast").exists()).toBe(false);
+      expect(infoWrapper.emitted("dismissed")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -199,12 +199,12 @@ describe("notification store (session-grouped)", () => {
         body: "Access is denied",
         copyPath: "/tmp/foo",
       });
-      // Mirrored event lives in the dock and should include the path so the
-      // user can still find it after dismissing the floating toast.
+      // Path stays in structured details so the history remains compact.
       expect(store.sessions).toHaveLength(1);
       const ev = store.sessions[0].events[0];
       expect(ev.title).toBe("Disk delete failed");
-      expect(ev.body).toContain("/tmp/foo");
+      expect(ev.body).toBe("Access is denied");
+      expect(ev.details?.path).toBe("/tmp/foo");
       expect(ev.kind).toBe("error");
     });
 
@@ -230,11 +230,34 @@ describe("notification store (session-grouped)", () => {
       expect(store.sessions[0].meta?.profileId).toBe("p2");
     });
 
-    it("showError without profileId leaves meta.profileId unset (legacy / unknown-owner path)", () => {
+    it("showError without profileId uses the active center profile or default fallback", () => {
       const store = useNotificationStore();
       store.showError("Old caller", "no scope");
       expect(store.sessions).toHaveLength(1);
-      expect(store.sessions[0].meta?.profileId).toBeUndefined();
+      expect(store.sessions[0].meta?.profileId).toBe("default");
+    });
+
+    it("showError scopes an unspecified profile to the active Notification Center profile", () => {
+      const store = useNotificationStore();
+      store.setNotificationCenterView({ visible: false, alertsActive: false, profileId: "p2", sessionIds: [] });
+      store.showError("Save failed", "disk full");
+
+      expect(store.sessions[0].meta?.profileId).toBe("p2");
+      expect(store.persistentToasts[0].profileId).toBe("p2");
+    });
+
+    it("deduplicates repeated errors by profile, workspace, and title while refreshing details", () => {
+      const store = useNotificationStore();
+      store.showError("Stop failed", "EBUSY", { workspaceId: "ws-1", profileId: "p1" });
+      store.showError("Start failed", "EACCES: denied", { workspaceId: "ws-1", profileId: "p1" });
+      store.showError("Stop failed", "EBUSY: resource busy", { workspaceId: "ws-1", profileId: "p1" });
+
+      expect(store.persistentToasts).toHaveLength(2);
+      expect(store.sessions).toHaveLength(1);
+      expect(store.sessions[0].events).toHaveLength(2);
+      expect(store.sessions[0].events[0].title).toBe("Stop failed");
+      expect(store.sessions[0].events[0].body).toBe("EBUSY: resource busy");
+      expect(store.sessions[0].events[0].details?.rawError).toBe("EBUSY: resource busy");
     });
   });
 
@@ -364,6 +387,7 @@ describe("notification store (session-grouped)", () => {
         ]);
         // What the user reads has no IPC prefix, whichever helper showed it.
         expect(store.persistentToasts.map((t) => t.body)).toEqual([
+          "Task is not running",
           "Task is not running",
           "Task is not running",
           "path",

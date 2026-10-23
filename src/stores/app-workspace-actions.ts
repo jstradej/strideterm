@@ -691,14 +691,23 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
           // Lazy import keeps this file out of the notifications store's
           // dependency cycle.
           const { useNotificationStore } = await import("./notifications.js");
+          const rawError = String(result.deleteWorkspaceError);
+          const lowerError = rawError.toLowerCase();
+          const isLocked = lowerError.includes("ebusy") || lowerError.includes("busy") || lowerError.includes("locked");
+          const profileId = (ws as AnyApi).profileId || "default";
           useNotificationStore().pushPersistentToast({
-            title: `Couldn't remove "${wsName}" from disk`,
-            body: result.deleteWorkspaceError,
+            title: "Couldn't remove workspace",
+            body: isLocked
+              ? "Workspace folder could not be removed. Another process may be using this folder."
+              : "Workspace folder could not be removed.",
             kind: "error",
             copyPath: diskPath,
+            details: { rawError, workspaceTitle: wsName, path: diskPath },
+            dedupeKey: `${profileId}:workspace-delete:${workspaceId}`,
+            workspaceId,
             // Scope to the deleted workspace's own profile — other profiles
             // never saw this workspace and shouldn't see its failure.
-            profileId: (ws as AnyApi).profileId || "default",
+            profileId,
           });
         }
         // Success path: ignore. The next broadcast will reconcile the payload
@@ -715,12 +724,20 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
         next.delete(workspaceId);
         ctx.optimisticallyDeletedIds.value = next;
         const { useNotificationStore } = await import("./notifications.js");
+        const profileId = (ws as AnyApi).profileId || "default";
         useNotificationStore().pushPersistentToast({
-          title: variant === "delete" ? `Failed to delete "${wsName}"` : `Failed to remove "${wsName}"`,
-          body: message,
+          title: "Couldn't remove workspace",
+          body: "Workspace could not be removed.",
           kind: "error",
           ...(variant === "delete" ? { copyPath: diskPath } : {}),
-          profileId: (ws as AnyApi).profileId || "default",
+          details: {
+            rawError: message,
+            workspaceTitle: wsName,
+            ...(variant === "delete" ? { path: diskPath } : {}),
+          },
+          dedupeKey: `${profileId}:workspace-remove:${workspaceId}`,
+          workspaceId,
+          profileId,
         });
       }
     })();

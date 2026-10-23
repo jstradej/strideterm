@@ -287,9 +287,6 @@
   <!-- Tab picker dropdown -->
   <TabPickerDropdown :anchor-rect="tabPickerAnchor" @close="tabPickerAnchor = null" />
 
-  <!-- Return-to-app banner (shows when focus returns after >30s with waiting sessions) -->
-  <ReturnToAppBanner />
-
   <!-- Notification toast — suppressed when the dock is pinned (the dock
        itself plays that role). Sound alert still fires via useNotificationCapture. -->
   <NotificationToast v-if="!notifStore.pinned" :toast="latestToast" @dismissed="notifStore.dismissToast()" />
@@ -354,7 +351,6 @@ import NotificationCenter from "./components/layout/NotificationCenter.vue";
 import ReviewPrActionApprovals from "./components/layout/ReviewPrActionApprovals.vue";
 import NotificationToast from "./components/layout/NotificationToast.vue";
 import PersistentToastStack from "./components/layout/PersistentToastStack.vue";
-import ReturnToAppBanner from "./components/layout/ReturnToAppBanner.vue";
 import SshAuthPrompt from "./components/ssh/SshAuthPrompt.vue";
 import SshHostKeyWarning from "./components/ssh/SshHostKeyWarning.vue";
 import { useNotificationCapture } from "./composables/useNotificationCapture.js";
