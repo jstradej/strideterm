@@ -1249,6 +1249,12 @@
   overflow-wrap: anywhere;
 }
 
+.review-toolbar-error__message {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--danger, #e53935);
+}
+
 .review-comment__body code {
   padding: 1px 5px;
   background: rgba(var(--tint), 0.08);
@@ -1895,6 +1901,7 @@ details[open] > .review-tree-dir__label .review-tree-dir__icon::before {
   /* ── Review pane ── */
   .review-shell {
     position: relative;
+    padding-top: 41px;
   }
   .review-shell .git-view__toolbar {
     /* The review pane reuses .git-view__toolbar — collapse it under a
@@ -1906,11 +1913,8 @@ details[open] > .review-tree-dir__label .review-tree-dir__icon::before {
     flex-direction: column;
     align-items: stretch;
     gap: 6px;
-    position: absolute;
-    top: 36px;
-    left: 5px;
-    right: 5px;
-    z-index: 50;
+    position: relative;
+    flex: 0 0 auto;
     padding: 8px;
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -2029,7 +2033,6 @@ details[open] > .review-tree-dir__label .review-tree-dir__icon::before {
   }
 
   .review-shell .review-content {
-    margin-top: 36px;
     padding: 8px;
   }
 

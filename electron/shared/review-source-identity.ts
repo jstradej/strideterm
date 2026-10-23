@@ -41,6 +41,16 @@ export function managedReviewBranchAlias(prId: string | number, sourceRefName: s
   return `pr-${prId}-${sanitizePathSegment(sourceBranchName(sourceRefName))}`;
 }
 
+const ISOLATED_REVIEW_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+
+/** The managed alias, or the isolated one-shot review checkout's `<alias>-review-<uuid>` (lowercase `randomUUID()`). */
+export function isManagedReviewBranch(branch: string, prId: string | number, sourceRefName: string): boolean {
+  const alias = managedReviewBranchAlias(prId, sourceRefName);
+  if (branch === alias) return true;
+  const prefix = `${alias}-review-`;
+  return branch.startsWith(prefix) && ISOLATED_REVIEW_UUID.test(branch.slice(prefix.length));
+}
+
 function trimSlashes(value: string): string {
   let start = 0;
   let end = value.length;

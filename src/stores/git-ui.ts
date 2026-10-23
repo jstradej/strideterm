@@ -4,7 +4,7 @@ import type { Transport, CallableTransport } from "../transport.js";
 import type { StatePayload } from "../../electron/shared/types/state.js";
 import { operationFinishedSchema, type OperationFinished } from "../../electron/shared/operation-events.js";
 import { rlog } from "../lib/renderer-log.js";
-import { managedReviewBranchAlias, sourceBranchName } from "../../electron/shared/review-source-identity.js";
+import { isManagedReviewBranch, sourceBranchName } from "../../electron/shared/review-source-identity.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type GitSnapshot = Record<string, any>;
@@ -840,7 +840,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const branch = String(snapshot?.branch || "");
     const prId = review.pullRequest?.id ?? review.pullRequest?.number ?? "";
     const onPullRequestBranch =
-      !!branch && (branch === managedReviewBranchAlias(prId, sourceRef) || branch === sourceBranchName(sourceRef));
+      !!branch && (isManagedReviewBranch(branch, prId, sourceRef) || branch === sourceBranchName(sourceRef));
     return {
       onPullRequestBranch,
       targetBranch: String(review.pullRequest?.targetRefName || "").replace(/^refs\/heads\//, ""),

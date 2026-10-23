@@ -281,8 +281,33 @@ describe("AzureReviewPane responsive chrome", () => {
 
     await wrapper.find(".review-shell__menu-trigger").trigger("click");
     expect(wrapper.find(".review-shell--menu-open").exists()).toBe(true);
-    await wrapper.find(".review-shell__menu-backdrop").trigger("click");
+    expect(wrapper.find(".review-shell__menu-backdrop").exists()).toBe(false);
+    expect(wrapper.find(".git-view__toolbar").exists()).toBe(true);
+    await wrapper.find(".review-shell__menu-trigger").trigger("click");
     expect(wrapper.find(".review-shell--menu-open").exists()).toBe(false);
+  });
+
+  test("reports a failed mobile action without a blocking backdrop", async () => {
+    setMatchMediaResult("(max-width: 768px)", true);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", true);
+    const wrapper = mountPane();
+    await flushPromises();
+    const appStore = useAppStore();
+    const payload = buildPayload();
+    const bridge = payload.reviewBridge as unknown as { pullRequests: Record<string, unknown> };
+    bridge.pullRequests["ado:1"] = { syncQueue: [{ status: "pending" }] };
+    appStore.payload = payload;
+    vi.spyOn(appStore, "syncReviewBridgePullRequest").mockRejectedValue(
+      new Error("C:\\repo\\feature\\long-branch-name: publish failed"),
+    );
+
+    await wrapper.find(".review-shell__menu-trigger").trigger("click");
+    const publishButton = wrapper.findAll("button").find((button) => button.text().includes("Publish only"))!;
+    await publishButton.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.find(".review-toolbar-error__message").text()).toContain("publish failed");
+    expect(wrapper.find(".review-shell__menu-backdrop").exists()).toBe(false);
   });
 
   test("toggling the tabs trigger flips the --tabs-menu-open modifier", async () => {
@@ -540,6 +565,34 @@ describe("AzureReviewPane — manual Refresh drives the full sync, not just meta
     await flushPromises();
 
     expect(wrapper.text()).toContain("Pushed abc to feature/x. Warning: Baseline not saved.");
+  });
+
+  test("a blocked Push & publish points queued comments at Publish only", async () => {
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+    const wrapper = mountPane();
+    await flushPromises();
+    const appStore = useAppStore();
+    const payload = buildPayload();
+    const bridge = payload.reviewBridge as unknown as { pullRequests: Record<string, unknown> };
+    bridge.pullRequests["ado:1"] = { syncQueue: [{ status: "pending" }, { status: "pending" }] };
+    appStore.payload = payload;
+    vi.spyOn(appStore, "pushAndPublishReview").mockResolvedValue({
+      push: {
+        status: "blocked",
+        message: 'This checkout is on "develop", not on the pull request\'s branch.',
+        guidance: "Switch back to pr-1-feature-x or feature/x, or detach the review link.",
+      },
+      publish: { attempted: false, published: [], failed: [] },
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (wrapper.vm as any).handlePushAndPublish();
+    await flushPromises();
+
+    expect(wrapper.find(".review-toolbar-error__message").text()).toBe(
+      'This checkout is on "develop", not on the pull request\'s branch. Switch back to pr-1-feature-x or feature/x, or detach the review link. No comments were published. To publish the 2 queued comments without pushing, use Publish only.',
+    );
   });
 
   test("a blocked ('dirty') sync result renders a distinct, non-success outcome banner", async () => {

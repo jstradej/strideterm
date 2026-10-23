@@ -21,7 +21,7 @@ import { GitCommandError, GitAuthError } from "./effect/errors/git-errors.js";
 import { errorMessage } from "../shared/error-message.js";
 import { httpRetry } from "./effect/schedules.js";
 import { commonDirOf, sharedReviewGitLocks } from "./review-git/locks.js";
-import { managedReviewBranchAlias } from "../shared/review-source-identity.js";
+import { isManagedReviewBranch } from "../shared/review-source-identity.js";
 import {
   DEFAULT_DIFF_STAT,
   DEFAULT_OPERATION_STATE,
@@ -232,14 +232,14 @@ function omitHeavySnapshotFields(snapshot: Record<string, unknown>): Record<stri
   return out;
 }
 
-/** The PR source branch a push from `branch` must target: only the managed pr-<id>-<source> alias is remapped. */
+/** The PR source branch a push from `branch` must target: only the managed pr-<id>-<source> alias (or its isolated `-review-<uuid>` variant) is remapped. */
 function managedReviewSourceBranch(workspace: WorkspaceRef, branch: string): string {
   const pullRequest = workspace.review?.pullRequest;
   const source = String(pullRequest?.sourceRefName || "")
     .replace(/^refs\/heads\//, "")
     .trim();
   if (!source || source === branch) return "";
-  return branch === managedReviewBranchAlias(pullRequest?.id ?? "", source) ? source : "";
+  return isManagedReviewBranch(branch, pullRequest?.id ?? "", source) ? source : "";
 }
 
 export class GitManager extends EventEmitter {

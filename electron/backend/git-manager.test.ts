@@ -3121,6 +3121,28 @@ describe("GitManager", () => {
         expect(calls.some((args) => args[0] === "push" && args[1] === "--force-with-lease")).toBe(false);
       });
 
+      test("forcePushWithLease maps the isolated pr-N-<source>-review-<uuid> branch to the PR source branch too", async () => {
+        const { mgr, calls } = makeReviewMgr({
+          branch: "pr-12-feature-foo-review-825dc26b-c0d3-4879-b180-99a41ba01cb1",
+          upstream: "",
+        });
+        const result = await mgr.forcePushWithLease(reviewWorkspace);
+        expect(result.ok).toBe(true);
+        expect(calls).toContainEqual([
+          "push",
+          `--force-with-lease=refs/heads/feature/foo:${LIVE_SHA}`,
+          "origin",
+          "HEAD:refs/heads/feature/foo",
+        ]);
+      });
+
+      test("push does not remap a pr-N review branch whose suffix is not a uuid", async () => {
+        const { mgr, calls } = makeReviewMgr({ branch: "pr-12-feature-foo-review-notauuid", upstream: "" });
+        const result = await mgr.push(reviewWorkspace);
+        expect(result.ok).toBe(true);
+        expect(calls.some((args) => args.some((arg) => arg.includes("HEAD:refs/heads/feature/foo")))).toBe(false);
+      });
+
       test("forcePushWithLease refuses a PR source branch that no longer exists on the server", async () => {
         const { mgr, calls } = makeReviewMgr({
           branch: "pr-12-feature-foo",
