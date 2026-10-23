@@ -14,7 +14,7 @@ import {
   sanitizeGitEnvironment,
 } from "./shared/git-auth-utils.js";
 import { APP_CONFIG } from "../../config/app-config.js";
-import { getLogger } from "./logger.js";
+import { getLogger, redactSecrets } from "./logger.js";
 import { createIntervalGate } from "./runtime-utils.js";
 import { runEffect } from "./effect/runtime.js";
 import { GitCommandError, GitAuthError } from "./effect/errors/git-errors.js";
@@ -751,7 +751,7 @@ export class GitManager extends EventEmitter {
         })),
         this.execGit(rootPath, ["remote", "-v"]).catch(() => ({ stdout: "", stderr: "" })),
         this.execGit(rootPath, ["rev-list", "--count", "HEAD"]).catch(() => ({ stdout: "0", stderr: "" })),
-        this.execGit(rootPath, ["status", "--porcelain=v2", "--branch"]).catch(() => ({ stdout: "", stderr: "" })),
+        this.execGit(rootPath, ["status", "--porcelain=v2", "--branch"]),
         this.execGit(rootPath, ["status", "--short"]).catch(() => ({ stdout: "", stderr: "" })),
         this.execGit(rootPath, [
           "log",
@@ -975,7 +975,9 @@ export class GitManager extends EventEmitter {
         ),
       };
     } catch (error) {
-      return createUnavailableSnapshot(workspace, extractErrorMessage(error));
+      const message = extractErrorMessage(error);
+      log.warn("git inspect failed", { workspaceId: workspace.id, rootPath, err: redactSecrets(message) });
+      return createUnavailableSnapshot(workspace, message);
     }
   }
 
@@ -2736,6 +2738,8 @@ export class GitManager extends EventEmitter {
     remoteUrl,
     extra = {},
   }: LogGitAuditOptions): void {
+    const safeRemoteUrl = redactSecrets(remoteUrl);
+    const safeErrorMessage = errorMessage ? redactSecrets(errorMessage) : undefined;
     const REMOTE_OPS = new Set([
       "push",
       "pull",
@@ -2799,7 +2803,7 @@ export class GitManager extends EventEmitter {
           url: "",
           statusCode: null,
           success,
-          errorMessage: errorMessage || null,
+          errorMessage: safeErrorMessage || null,
           durationMs: durationMs ?? null,
           resourceType: "git",
           resourceId: workspaceId || "",
@@ -2811,17 +2815,17 @@ export class GitManager extends EventEmitter {
         this.gitAuditLogStore.logEntry({
           timestamp: new Date().toISOString(),
           connectionId: `system-${workspaceId || "unknown"}`,
-          remoteUrl: remoteUrl || "",
+          remoteUrl: safeRemoteUrl || "",
           operation: `git${type.charAt(0).toUpperCase()}${type.slice(1)}`,
           category: writeOps.has(type) ? "write" : "read",
           method: "GIT",
           url: "",
           statusCode: null,
           success,
-          errorMessage: errorMessage || null,
+          errorMessage: safeErrorMessage || null,
           durationMs: durationMs ?? null,
           resourceType: "git",
-          resourceId: `${type}@${remoteUrl || "unknown"}`,
+          resourceId: `${type}@${safeRemoteUrl || "unknown"}`,
           summary: `git ${type} (${isRemoteOp ? "system credentials" : "local repository"})`,
           userInitiated: true,
           ...extra,

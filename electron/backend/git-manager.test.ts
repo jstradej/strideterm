@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { GitManager } from "./git-manager.js";
+import { createGitAuditLogStore } from "./git-audit-log-store.js";
 import { runEffect } from "./effect/runtime.js";
 import { reconfigureLogger } from "./logger.js";
 
@@ -154,6 +155,46 @@ describe("GitManager", () => {
       dirty: true,
     });
     expect(snapshot.lastFetchAt).toBeTruthy();
+  });
+
+  test("inspectWorkspace marks the snapshot unavailable when Git status fails", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = vi.fn(async (cwd: string, args: string[]) => {
+      if (args.join(" ") === "rev-parse --show-toplevel") return { stdout: `${cwd}\n`, stderr: "" };
+      if (args.join(" ") === "status --porcelain=v2 --branch") throw new Error("fatal: index file corrupt");
+      return { stdout: "", stderr: "" };
+    });
+    const manager = new GitManager({ execGitImpl });
+    manager.detectLazygit = async () => ({ available: false, backend: null, error: "missing", launch: null });
+    const winstonLogger = reconfigureLogger();
+    const warnSpy = vi.spyOn(winstonLogger, "warn").mockImplementation(() => winstonLogger);
+
+    try {
+      const snapshot = await manager.inspectWorkspace({ id: "workspace-status-error", cwd: root, kind: "terminal" });
+
+      expect(snapshot.available).toBe(false);
+      expect(snapshot.error).toContain("index file corrupt");
+      expect(warnSpy).toHaveBeenCalledWith(
+        "git inspect failed",
+        expect.objectContaining({ workspaceId: "workspace-status-error", label: "git" }),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test.skipIf(!GIT_AVAILABLE)("inspectWorkspace keeps a normal unborn branch available", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-unborn-inspect-"));
+    tempPaths.push(root);
+    execFileSync("git", ["init", "--quiet", root], { stdio: "ignore", windowsHide: true });
+    const manager = new GitManager();
+    manager.detectLazygit = async () => ({ available: false, backend: null, error: "missing", launch: null });
+
+    const snapshot = await manager.inspectWorkspace({ id: "workspace-unborn", cwd: root, kind: "terminal" });
+
+    expect(snapshot.available).toBe(true);
+    expect(snapshot.branch).toBeTruthy();
+    expect(snapshot.dirty).toBe(false);
   });
 
   test("inspectWorkspace marks per-sibling branchMerged via git branch --merged", async () => {
@@ -1587,6 +1628,59 @@ describe("GitManager", () => {
         category: "write",
       }),
     );
+  });
+
+  test("system Git audit records redact credentials from remote URL, resource id, and error", async () => {
+    const auditDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-git-audit-"));
+    tempPaths.push(auditDir);
+    const store = createGitAuditLogStore(path.join(auditDir, "git-audit.db"));
+    const manager = new GitManager({ gitAuditLogStore: store });
+    const cases = [
+      {
+        type: "push",
+        remoteUrl: "https://user:pa(ss),word!$&'()*+;=@host.example/repo.git",
+        expected: "https://[REDACTED]@host.example/repo.git",
+        secret: "pa(ss),word!$&'()*+;=",
+      },
+      {
+        type: "fetch",
+        remoteUrl: "https://review-test-username@host.example/repo.git",
+        expected: "https://[REDACTED]@host.example/repo.git",
+        secret: "review-test-username",
+      },
+      {
+        type: "pull",
+        remoteUrl: "https://host.example/repo.git?access_token=review-test-query-token",
+        expected: "https://host.example/repo.git?access_token=[REDACTED]",
+        secret: "review-test-query-token",
+      },
+      {
+        type: "push-tag",
+        remoteUrl: "git@github.com:owner/repo.git",
+        expected: "git@github.com:owner/repo.git",
+        secret: "review-test-absent",
+      },
+    ];
+
+    try {
+      cases.forEach(({ type, remoteUrl, secret, expected }, index) => {
+        manager._logGitAudit({
+          type,
+          connection: null,
+          success: false,
+          workspaceId: `workspace-audit-redaction-${index}`,
+          remoteUrl,
+          errorMessage: `push failed for ${remoteUrl}`,
+        });
+        const { entries } = store.query();
+        const entry = entries.find((candidate) => candidate.resourceId === `${type}@${expected}`);
+        expect(entry).toBeDefined();
+        expect(entry?.remoteUrl).toBe(expected);
+        expect(entry?.errorMessage).not.toContain(secret);
+      });
+    } finally {
+      store.close();
+    }
   });
 
   test("fetch with connection=null writes to gitAuditLogStore", async () => {

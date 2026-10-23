@@ -50,27 +50,32 @@
         title="Remote access is reachable on the local network only. Use a Cloudflare tunnel or VPS URL to expose it publicly."
         >LAN only</span
       >
-      <button
-        v-if="mobileWarning"
-        type="button"
-        class="remote-pill remote-pill--mobile-warning"
-        :class="{
-          'remote-pill--mobile-warning-expired': mobileWarning === 'trial-expired',
-          'remote-pill--mobile-warning-expiring': mobileWarning === 'trial-expiring',
-        }"
-        :title="mobileWarningTitle"
-        @click="openMobileSettings"
-      >
-        {{ mobileWarningLabel }}
-      </button>
-      <button
-        type="button"
-        class="button button--ghost remote-summary__configure"
-        title="Open Remote Access to connect strIDEterm Mobile, manage paired phones, or configure browser sharing."
-        @click="store.openRemoteAccessDialog()"
-      >
-        Configure
-      </button>
+      <div class="remote-compact__actions">
+        <button
+          v-if="mobileWarning"
+          type="button"
+          class="remote-pill remote-pill--mobile-warning"
+          :class="{
+            'remote-pill--mobile-warning-expired': isExpiredWarning,
+            'remote-pill--mobile-warning-expiring': isUpcomingExpiry,
+            'remote-pill--mobile-warning-critical': isCriticalExpiry,
+            'remote-pill--mobile-warning-pulse': mobileWarningPulse,
+          }"
+          :title="mobileWarningTitle"
+          :aria-label="mobileWarningTitle"
+          @click="openMobileSettings"
+        >
+          {{ mobileWarningLabel }}
+        </button>
+        <button
+          type="button"
+          class="button button--ghost remote-summary__configure"
+          title="Open Remote Access to connect strIDEterm Mobile, manage paired phones, or configure browser sharing."
+          @click="store.openRemoteAccessDialog()"
+        >
+          Configure
+        </button>
+      </div>
     </div>
     <div v-if="qrOpen && qrDataUrl" :id="qrPanelId" class="remote-compact__qr-panel">
       <button
@@ -86,27 +91,32 @@
   <div v-else class="remote-card remote-card--compact remote-card--minimal">
     <div class="remote-compact__icon" aria-hidden="true">&#9678;</div>
     <span class="remote-summary__label">Remote Access</span>
-    <button
-      v-if="mobileWarning"
-      type="button"
-      class="remote-pill remote-pill--mobile-warning"
-      :class="{
-        'remote-pill--mobile-warning-expired': mobileWarning === 'trial-expired',
-        'remote-pill--mobile-warning-expiring': mobileWarning === 'trial-expiring',
-      }"
-      :title="mobileWarningTitle"
-      @click="openMobileSettings"
-    >
-      {{ mobileWarningLabel }}
-    </button>
-    <button
-      type="button"
-      class="button button--ghost remote-summary__configure"
-      title="Open Remote Access to connect strIDEterm Mobile or set up LAN, Cloudflare, or VPS browser sharing."
-      @click="store.openRemoteAccessDialog()"
-    >
-      Configure
-    </button>
+    <div class="remote-compact__actions">
+      <button
+        v-if="mobileWarning"
+        type="button"
+        class="remote-pill remote-pill--mobile-warning"
+        :class="{
+          'remote-pill--mobile-warning-expired': isExpiredWarning,
+          'remote-pill--mobile-warning-expiring': isUpcomingExpiry,
+          'remote-pill--mobile-warning-critical': isCriticalExpiry,
+          'remote-pill--mobile-warning-pulse': mobileWarningPulse,
+        }"
+        :title="mobileWarningTitle"
+        :aria-label="mobileWarningTitle"
+        @click="openMobileSettings"
+      >
+        {{ mobileWarningLabel }}
+      </button>
+      <button
+        type="button"
+        class="button button--ghost remote-summary__configure"
+        title="Open Remote Access to connect strIDEterm Mobile or set up LAN, Cloudflare, or VPS browser sharing."
+        @click="store.openRemoteAccessDialog()"
+      >
+        Configure
+      </button>
+    </div>
   </div>
 </template>
 
@@ -116,7 +126,14 @@ import { useAppStore } from "../../stores/app.js";
 import { useAccountStore } from "../../stores/account.js";
 import { useRemoteConnection } from "../../composables/useRemoteConnection.js";
 import { useQrCode } from "../../composables/useQrCode.js";
-import { getMobileAccessWarning, MOBILE_TRIAL_WARNING_WINDOW_MS } from "../../lib/mobile-access-warning.js";
+import {
+  formatMobileAccessRemaining,
+  getMobileAccessDeadline,
+  getMobileAccessWarning,
+  getMobileWarningPulseInterval,
+  MOBILE_ACCESS_CRITICAL_WINDOW_MS,
+  MOBILE_TRIAL_WARNING_WINDOW_MS,
+} from "../../lib/mobile-access-warning.js";
 
 const store = useAppStore();
 const accountStore = useAccountStore();
@@ -127,6 +144,10 @@ const { remoteConfig, runtimeRemote, tunnel, activeShareUrl, hasPublicUrl, hasAn
 const { qrDataUrl } = useQrCode(activeShareUrl);
 const mobileWarningNow = ref(Date.now());
 let mobileWarningExpiryTimer: ReturnType<typeof setTimeout> | null = null;
+let mobileWarningClockTimer: ReturnType<typeof setInterval> | null = null;
+let mobileWarningPulseTimer: ReturnType<typeof setTimeout> | null = null;
+let mobileWarningPulseOffTimer: ReturnType<typeof setTimeout> | null = null;
+const mobileWarningPulse = ref(false);
 const mobileEntitlement = computed(() => accountStore.entitlement ?? accountStore.overview?.entitlement);
 
 function scheduleMobileWarningExpiry(notAfter: number | undefined): void {
@@ -135,7 +156,8 @@ function scheduleMobileWarningExpiry(notAfter: number | undefined): void {
   mobileWarningNow.value = Date.now();
   if (typeof notAfter !== "number" || !Number.isFinite(notAfter) || notAfter <= mobileWarningNow.value) return;
   const warningAt = notAfter - MOBILE_TRIAL_WARNING_WINDOW_MS;
-  const nextBoundary = warningAt > mobileWarningNow.value ? warningAt : notAfter;
+  const criticalAt = notAfter - MOBILE_ACCESS_CRITICAL_WINDOW_MS;
+  const nextBoundary = [warningAt, criticalAt, notAfter].find((boundary) => boundary > mobileWarningNow.value)!;
   mobileWarningExpiryTimer = setTimeout(
     () => {
       mobileWarningExpiryTimer = null;
@@ -149,17 +171,17 @@ function scheduleMobileWarningExpiry(notAfter: number | undefined): void {
 watch(
   () => {
     const entitlement = mobileEntitlement.value;
-    return entitlement?.state === "trial" || (entitlement?.state === "lapsed" && entitlement.source === "trial")
-      ? entitlement.notAfter
-      : undefined;
+    return entitlement?.state === "lapsed" ? undefined : (getMobileAccessDeadline(entitlement) ?? undefined);
   },
   scheduleMobileWarningExpiry,
   { immediate: true },
 );
 onBeforeUnmount(() => {
   if (mobileWarningExpiryTimer !== null) clearTimeout(mobileWarningExpiryTimer);
+  if (mobileWarningClockTimer !== null) clearInterval(mobileWarningClockTimer);
+  if (mobileWarningPulseTimer !== null) clearTimeout(mobileWarningPulseTimer);
+  if (mobileWarningPulseOffTimer !== null) clearTimeout(mobileWarningPulseOffTimer);
 });
-
 const mobileWarning = computed(() =>
   getMobileAccessWarning({
     mobileEnabled: store.mobileEnabled,
@@ -169,34 +191,106 @@ const mobileWarning = computed(() =>
     now: mobileWarningNow.value,
   }),
 );
-const mobileTrialEndDate = computed(() => {
-  const notAfter = mobileEntitlement.value?.notAfter;
+const mobileAccessDeadline = computed(() => getMobileAccessDeadline(mobileEntitlement.value));
+const mobileRemainingMs = computed(() => (mobileAccessDeadline.value ?? 0) - mobileWarningNow.value);
+const mobileTimeRemaining = computed(() => formatMobileAccessRemaining(mobileRemainingMs.value));
+const isUpcomingExpiry = computed(
+  () => mobileWarning.value === "trial-expiring" || mobileWarning.value === "access-expiring",
+);
+const isExpiredWarning = computed(
+  () => mobileWarning.value === "trial-expired" || mobileWarning.value === "access-expired",
+);
+const isCriticalExpiry = computed(
+  () =>
+    mobileWarning.value !== null &&
+    mobileRemainingMs.value > 0 &&
+    mobileRemainingMs.value <= MOBILE_ACCESS_CRITICAL_WINDOW_MS,
+);
+const mobileAccessEndDateTime = computed(() => {
+  const notAfter = mobileAccessDeadline.value;
   if (typeof notAfter !== "number" || !Number.isFinite(notAfter) || notAfter <= 0) return "";
   const date = new Date(notAfter);
-  const options: Intl.DateTimeFormatOptions = { month: "short", day: "numeric" };
-  if (date.getFullYear() !== new Date(mobileWarningNow.value).getFullYear()) options.year = "numeric";
-  return new Intl.DateTimeFormat("en", options).format(date);
+  return date.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
 });
 const mobileWarningLabel = computed(() => {
-  if (mobileWarning.value === "trial-expired") return "Mobile trial ended";
-  if (mobileWarning.value === "trial-expiring") return "Mobile trial ends soon";
-  return "Mobile access needs attention";
+  if (isExpiredWarning.value) return "Mobile · Ended";
+  if (mobileRemainingMs.value > 0 && mobileWarning.value !== null) return `${mobileTimeRemaining.value} left`;
+  return "Mobile · Attention";
 });
 const mobileWarningTitle = computed(() => {
-  if (mobileWarning.value === "trial-expired") {
-    return `The free mobile trial ended ${mobileTrialEndDate.value}. Open Mobile settings to review account access.`;
+  if (mobileWarning.value === "trial-expired" || mobileWarning.value === "access-expired") {
+    const subject = mobileWarning.value === "trial-expired" ? "The free mobile trial" : "Mobile access";
+    return `${subject} ended ${mobileAccessEndDateTime.value}. Open Mobile settings to review account access.`;
   }
-  if (mobileWarning.value === "trial-expiring") {
-    return `The free mobile trial ends ${mobileTrialEndDate.value}. Open Mobile settings to review account access.`;
+  if (isUpcomingExpiry.value) {
+    const subject = mobileWarning.value === "trial-expiring" ? "The free mobile trial" : "Mobile access";
+    return `${subject} ends in ${mobileTimeRemaining.value} (${mobileAccessEndDateTime.value}). Open Mobile settings to review account access.`;
   }
-  return "The desktop's mobile access was not authorized. Open Mobile settings to review account and phone access.";
+  const authorizationMessage =
+    "The desktop's mobile access was not authorized. Open Mobile settings to review account and phone access.";
+  if (mobileWarning.value === "authorization-denied" && mobileRemainingMs.value > 0) {
+    return `${authorizationMessage} Mobile access ends in ${mobileTimeRemaining.value} (${mobileAccessEndDateTime.value}).`;
+  }
+  return authorizationMessage;
 });
+
+const mobileWarningPulseInterval = computed(() =>
+  mobileWarning.value !== null && !isExpiredWarning.value
+    ? getMobileWarningPulseInterval(mobileRemainingMs.value)
+    : null,
+);
+const mobileWarningCountdownActive = computed(
+  () => mobileWarning.value !== null && !isExpiredWarning.value && mobileRemainingMs.value > 0,
+);
+watch(
+  () => mobileWarningCountdownActive.value,
+  (active) => {
+    if (active && mobileWarningClockTimer === null) {
+      mobileWarningClockTimer = setInterval(() => (mobileWarningNow.value = Date.now()), 60_000);
+    } else if (!active && mobileWarningClockTimer !== null) {
+      clearInterval(mobileWarningClockTimer);
+      mobileWarningClockTimer = null;
+    }
+  },
+  { immediate: true },
+);
+function clearMobileWarningPulseTimers(): void {
+  if (mobileWarningPulseTimer !== null) clearTimeout(mobileWarningPulseTimer);
+  if (mobileWarningPulseOffTimer !== null) clearTimeout(mobileWarningPulseOffTimer);
+  mobileWarningPulseTimer = null;
+  mobileWarningPulseOffTimer = null;
+  mobileWarningPulse.value = false;
+}
+function pulseMobileWarning(): void {
+  mobileWarningPulse.value = true;
+  mobileWarningPulseOffTimer = setTimeout(() => {
+    mobileWarningPulse.value = false;
+    mobileWarningPulseOffTimer = null;
+  }, 1200);
+}
+function scheduleMobileWarningPulse(interval: number | null): void {
+  clearMobileWarningPulseTimers();
+  if (interval === null) return;
+  pulseMobileWarning();
+  mobileWarningPulseTimer = setTimeout(() => {
+    mobileWarningPulseTimer = null;
+    mobileWarningNow.value = Date.now();
+    scheduleMobileWarningPulse(mobileWarningPulseInterval.value);
+  }, interval);
+}
+watch(mobileWarningPulseInterval, scheduleMobileWarningPulse, { immediate: true });
 
 function openMobileSettings(): void {
   store.openSettingsDialog({
     initialTab: "mobile",
-    initialMobileView:
-      mobileWarning.value === "trial-expired" || mobileWarning.value === "trial-expiring" ? "account" : "overview",
+    initialMobileView: isExpiredWarning.value || isUpcomingExpiry.value ? "account" : "overview",
   });
 }
 
