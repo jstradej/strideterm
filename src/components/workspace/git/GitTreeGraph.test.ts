@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { nextTick } from "vue";
 import { mount } from "@vue/test-utils";
 import GitTreeGraph from "./GitTreeGraph.vue";
@@ -446,6 +446,81 @@ describe("GitTreeGraph", () => {
       await handle.trigger("keydown", { key: "ArrowLeft" });
       await handle.trigger("dblclick");
       expect(rowColumns(w)).toBe("minmax(0, 1fr) 140px 84px 58px");
+    });
+
+    describe("narrow panes", () => {
+      let width = 0;
+      const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
+      beforeEach(() => {
+        Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, get: () => width });
+      });
+      afterEach(() => {
+        if (original) Object.defineProperty(HTMLElement.prototype, "clientWidth", original);
+        else delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientWidth;
+      });
+      const cells = (w: ReturnType<typeof mountGraph>) =>
+        ["author", "date", "hash"].filter((key) => w.find(`.git-tree__cell--${key}`).exists());
+
+      test("keeps every column in a wide pane", async () => {
+        width = 1000;
+        const w = mountGraph({ history: true });
+        await nextTick();
+        expect(cells(w)).toEqual(["author", "date", "hash"]);
+      });
+
+      test("drops author, then hash, then date, so the subject keeps its room", async () => {
+        width = 400;
+        const medium = mountGraph({ history: true });
+        await nextTick();
+        expect(cells(medium)).toEqual(["date", "hash"]);
+        expect(medium.findAll(".git-tree__col-resizer")).toHaveLength(2);
+        expect(rowColumns(medium)).toBe("minmax(0, 1fr) 84px 58px");
+        width = 330;
+        const narrow = mountGraph({ history: true });
+        await nextTick();
+        expect(cells(narrow)).toEqual(["date"]);
+      });
+
+      test("the Branches commit list drops refs, author and date when tight, and hash before the subject", async () => {
+        width = 500;
+        const w = mountGraph({
+          history: false,
+          commits: linearCommits.map((c, i) => (i === 0 ? { ...c, refs: ["origin/topic"] } : c)),
+        });
+        await nextTick();
+        expect(w.classes()).toContain("git-tree--tight");
+        expect(cells(w)).toEqual(["hash"]);
+        expect(w.find(".git-tree__cell--refs").exists()).toBe(false);
+        expect(w.find(".git-tree__cell--subject .git-tree__history-refs").exists()).toBe(true);
+        expect((w.get(".git-tree__row").element as HTMLElement).style.gridTemplateColumns).toBe(
+          "minmax(0, 1fr) max-content",
+        );
+        width = 250;
+        const narrow = mountGraph({ history: false });
+        await nextTick();
+        expect(cells(narrow)).toEqual([]);
+        expect((narrow.get(".git-tree__row").element as HTMLElement).style.gridTemplateColumns).toBe("minmax(0, 1fr)");
+      });
+
+      test("a compact graph sizes its gutter to the lanes in view", async () => {
+        const hash = (i: number) => `w${i}`;
+        const wide = Array.from({ length: 80 }, (_, i) => ({
+          hash: hash(i),
+          shortHash: hash(i),
+          parents: i === 79 ? [] : i === 60 ? [hash(61), hash(70)] : [hash(i + 1)],
+          subject: `c${i}`,
+          author: "A",
+          relativeDate: "now",
+          isoDate: "2026-05-20T10:00:00Z",
+          refs: [],
+        }));
+        const svgWidth = (w: ReturnType<typeof mountGraph>) => Number(w.get("svg").attributes("width"));
+        const full = mountGraph({ commits: wide, head: hash(0) });
+        const compact = mountGraph({ commits: wide, head: hash(0), compact: true, history: true });
+        await nextTick();
+        expect(svgWidth(compact)).toBeLessThan(svgWidth(full));
+        expect(svgWidth(compact)).toBe(32);
+      });
     });
 
     test("restores stored widths", () => {

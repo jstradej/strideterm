@@ -15,53 +15,72 @@
           aria-label="Search commits"
         />
       </div>
-      <div class="git-history-picker__select">
-        <HistoryRangePicker
-          :model-value="selectedRef || '__ALL__'"
-          :current="branchList.current"
-          :favorites="historyPreferences.favorites"
-          :recent="historyPreferences.recent"
-          :local="historyLocalNames"
-          :remotes="historyRemoteNames"
-          :remote-names="effectiveRemoteNames"
-          :tags="historyTagNames"
+      <button
+        v-if="isMobile"
+        type="button"
+        class="button button--ghost button--small git-history-picker__toggle"
+        :class="{ 'git-history-picker__toggle--active': activeFilterCount > 0 }"
+        :aria-expanded="filtersOpen ? 'true' : 'false'"
+        aria-controls="git-history-filters"
+        @click="filtersOpen = !filtersOpen"
+      >
+        Filters<span v-if="activeFilterCount" class="git-history-picker__toggle-count">{{ activeFilterCount }}</span>
+        <span aria-hidden="true">{{ filtersOpen ? "▴" : "▾" }}</span>
+      </button>
+      <div
+        v-if="!isMobile || filtersOpen"
+        id="git-history-filters"
+        class="git-history-picker__filters"
+        :class="{ 'git-history-picker__filters--mobile': isMobile }"
+      >
+        <div class="git-history-picker__select">
+          <HistoryRangePicker
+            :model-value="selectedRef || '__ALL__'"
+            :current="branchList.current"
+            :favorites="historyPreferences.favorites"
+            :recent="historyPreferences.recent"
+            :local="historyLocalNames"
+            :remotes="historyRemoteNames"
+            :remote-names="effectiveRemoteNames"
+            :tags="historyTagNames"
+            :default-branch="branchList.defaultBranch"
+            :default-remote="branchList.defaultRemote"
+            :loading-ref="historyLoadingRef"
+            @change="onHistoryRefChange"
+            @toggle-favorite="toggleHistoryFavorite"
+          />
+        </div>
+        <GitHistoryFilters
+          v-model:user-filter="userFilter"
+          v-model:date-filter="dateFilter"
+          v-model:custom-since="customSince"
+          v-model:custom-until="customUntil"
+          v-model:paths-filter="pathsFilter"
+          v-model:topo-order="topoOrder"
+          v-model:view-mode="viewMode"
+          v-model:graph-limit="graphLimit"
+          v-model:compare-base="compareBase"
+          v-model:include-base-updates="includeBaseUpdates"
+          :known-authors="knownAuthors"
+          :base-branch-options="baseBranchOptions"
           :default-branch="branchList.defaultBranch"
           :default-remote="branchList.defaultRemote"
-          :loading-ref="historyLoadingRef"
-          @change="onHistoryRefChange"
-          @toggle-favorite="toggleHistoryFavorite"
+          :remote-names="effectiveRemoteNames"
+          :has-active-filters="hasActiveFilters"
+          compact
+          @clear="resetFilters"
         />
+        <span class="git-history-picker__spacer"></span>
+        <button
+          v-if="hasActiveFilters || historyCommitSearch || selectedRef || compareBase"
+          type="button"
+          class="button button--ghost button--small"
+          title="Clear the search, branch and all commit filters"
+          @click="clearHistoryFilters"
+        >
+          Clear filters
+        </button>
       </div>
-      <GitHistoryFilters
-        v-model:user-filter="userFilter"
-        v-model:date-filter="dateFilter"
-        v-model:custom-since="customSince"
-        v-model:custom-until="customUntil"
-        v-model:paths-filter="pathsFilter"
-        v-model:topo-order="topoOrder"
-        v-model:view-mode="viewMode"
-        v-model:graph-limit="graphLimit"
-        v-model:compare-base="compareBase"
-        v-model:include-base-updates="includeBaseUpdates"
-        :known-authors="knownAuthors"
-        :base-branch-options="baseBranchOptions"
-        :default-branch="branchList.defaultBranch"
-        :default-remote="branchList.defaultRemote"
-        :remote-names="effectiveRemoteNames"
-        :has-active-filters="hasActiveFilters"
-        compact
-        @clear="resetFilters"
-      />
-      <span class="git-history-picker__spacer"></span>
-      <button
-        v-if="hasActiveFilters || historyCommitSearch || selectedRef || compareBase"
-        type="button"
-        class="button button--ghost button--small"
-        title="Clear the search, branch and all commit filters"
-        @click="clearHistoryFilters"
-      >
-        Clear filters
-      </button>
     </div>
     <div v-if="compactHistory && historyRefNotice" class="git-history-picker__notice" role="status">
       <span class="git-history-picker__notice-text">{{ historyRefNotice }}</span>
@@ -157,23 +176,23 @@
 
     <!-- Mobile view switcher (Tree → Commits → Diff). Hidden on desktop. -->
     <nav
-      v-if="isMobile"
+      v-if="isMobile && !historySplit"
       class="git-branches__mobile-tabs"
       role="tablist"
       :aria-label="compactHistory ? 'History view' : 'Branches view'"
     >
       <button
+        v-if="!compactHistory"
         type="button"
         :class="['git-branches__mobile-tab', mobileView === 'tree' && 'git-branches__mobile-tab--active']"
-        :disabled="compactHistory"
         @click="mobileView = 'tree'"
       >
-        {{ compactHistory ? "History" : "Tree" }}
+        Tree
       </button>
       <button
         type="button"
         :class="['git-branches__mobile-tab', mobileView === 'commits' && 'git-branches__mobile-tab--active']"
-        :disabled="!selectedRef"
+        :disabled="!compactHistory && !selectedRef"
         @click="mobileView = 'commits'"
       >
         Commits<span v-if="selectedRef" class="git-branches__mobile-chip">{{ selectedRef }}</span>
@@ -230,7 +249,7 @@
     <!-- ===== Desktop: 3-pane (tree | commits | diff) ===== -->
     <div v-if="!isMobile" class="git-branches__body" :class="{ 'git-branches__body--history': compactHistory }">
       <Splitpanes class="default-theme git-branches__panes">
-        <Pane v-if="!compactHistory" :size="22" :min-size="14">
+        <Pane v-if="!compactHistory" :size="24" :min-size="18">
           <BranchTreePane
             :tree="branchTree"
             :loading="branchesLoading"
@@ -254,7 +273,7 @@
             @create-pr="onCreatePrForBranch"
           />
         </Pane>
-        <Pane :size="40" :min-size="20">
+        <Pane :size="compactHistory ? 55 : 44" :min-size="compactHistory ? 30 : 28">
           <div class="git-branches__commits-pane">
             <div class="git-branches__pane-head">
               <strong>
@@ -399,7 +418,7 @@
             </div>
           </div>
         </Pane>
-        <Pane :size="38" :min-size="20">
+        <Pane :size="compactHistory ? 45 : 32" :min-size="20">
           <div class="git-branches__diff-pane">
             <!-- Commit info header (always visible when a commit is picked) -->
             <div v-if="selectedHash" class="git-branches__commit-summary">
@@ -470,7 +489,12 @@
     </div>
 
     <!-- ===== Mobile: stacked single-pane wizard ===== -->
-    <div v-else class="git-branches__mobile-body">
+    <div
+      v-else
+      ref="mobileBody"
+      class="git-branches__mobile-body"
+      :class="{ 'git-branches__mobile-body--split': historySplit }"
+    >
       <BranchTreePane
         v-if="mobileView === 'tree' && !compactHistory"
         :tree="branchTree"
@@ -494,11 +518,14 @@
       />
 
       <div
-        v-else-if="mobileView === 'commits' || (compactHistory && mobileView !== 'diff')"
+        v-else-if="
+          historySplit ? !selectedCommitFile : mobileView === 'commits' || (compactHistory && mobileView !== 'diff')
+        "
         class="git-branches__commits-pane"
       >
         <div class="git-branches__pane-head">
           <button
+            v-if="!compactHistory"
             type="button"
             class="git-branches__mobile-back"
             title="Back to branch tree"
@@ -528,13 +555,17 @@
         />
       </div>
 
-      <div v-else-if="mobileView === 'diff'" class="git-branches__diff-pane git-branches__diff-pane--mobile">
-        <div class="git-branches__pane-head">
+      <div v-if="historySplit || mobileView === 'diff'" class="git-branches__diff-pane git-branches__diff-pane--mobile">
+        <div v-if="historySplit && !selectedHash" class="git-branches__placeholder">
+          Select a commit to see its files.
+        </div>
+        <div v-if="!historySplit || selectedHash" class="git-branches__pane-head">
           <button
+            v-if="!historySplit || selectedCommitFile"
             type="button"
             class="git-branches__mobile-back"
             title="Back to commits"
-            @click="mobileView = 'commits'"
+            @click="onMobileBackToCommits"
           >
             ‹
           </button>
@@ -543,7 +574,11 @@
             selectedCommitInfo?.subject || ""
           }}</span>
         </div>
-        <div class="git-branches__mobile-files">
+        <div
+          v-if="!historySplit || selectedHash"
+          class="git-branches__mobile-files"
+          :class="{ 'git-branches__mobile-files--only': !selectedCommitFile }"
+        >
           <div v-if="commitFilesLoading" class="git-branches__placeholder">
             <Spinner size="sm" label="Loading…" />
           </div>
@@ -557,14 +592,13 @@
             @context-menu="onCommitFileContextMenu"
           />
         </div>
-        <div class="git-branches__commit-diff git-branches__commit-diff--mobile">
+        <div v-if="selectedCommitFile" class="git-branches__commit-diff git-branches__commit-diff--mobile">
           <MonacoDiffPanel
-            v-if="selectedCommitFile"
             :payload="commitDiffPayload"
             :loading="commitDiffLoading"
+            :initial-inline="mobileDiffInline"
             :popout-title="`${selectedCommitFile} @ ${shortHashOf(selectedHash)}`"
           />
-          <div v-else class="git-branches__placeholder">Tap a file to view its diff.</div>
         </div>
       </div>
     </div>
@@ -611,7 +645,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, ref, watch } from "vue";
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Splitpanes, Pane } from "splitpanes";
 import "splitpanes/dist/splitpanes.css";
 import { useAppStore } from "../../../stores/app.js";
@@ -721,6 +755,22 @@ const startFrom = ref("");
 
 // Mobile-only "wizard" step (tree → commits → diff)
 const mobileView = ref<"tree" | "commits" | "diff">("tree");
+const filtersOpen = ref(false);
+
+const SHORT_WIDE_QUERY = "(max-height: 500px) and (min-width: 640px)";
+const shortWide = ref(false);
+let shortWideMql: MediaQueryList | null = null;
+function syncShortWide() {
+  shortWide.value = !!shortWideMql?.matches;
+}
+onMounted(() => {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+  shortWideMql = window.matchMedia(SHORT_WIDE_QUERY);
+  syncShortWide();
+  shortWideMql.addEventListener("change", syncShortWide);
+});
+onBeforeUnmount(() => shortWideMql?.removeEventListener("change", syncShortWide));
+const historySplit = computed(() => isMobile.value && props.compactHistory && shortWide.value);
 
 // Which ref is selected in the branch tree (acts as a graph filter).
 // Empty string = no filter (shows the full Log).
@@ -1256,6 +1306,18 @@ function clearHistoryFilters() {
   historyCommitSearch.value = "";
   onSelectRef("");
 }
+
+const activeFilterCount = computed(
+  () =>
+    [
+      userFilter.value,
+      dateFilter.value !== "all",
+      pathsFilter.value.length > 0,
+      topoOrder.value,
+      selectedRef.value && selectedRef.value !== branchList.value.current,
+      compareBase.value,
+    ].filter(Boolean).length,
+);
 
 const hasActiveFilters = computed(
   () => !!userFilter.value || dateFilter.value !== "all" || pathsFilter.value.length > 0 || topoOrder.value,
@@ -1816,7 +1878,20 @@ watch(
   { immediate: true },
 );
 
+const INLINE_DIFF_BELOW_PX = 600;
+const mobileBody = ref<HTMLElement | null>(null);
+const mobileDiffInline = ref(false);
+
+function onMobileBackToCommits() {
+  if (historySplit.value) selectedCommitFile.value = "";
+  else mobileView.value = "commits";
+}
+
 function onSelectCommitFile(path: string) {
+  if (isMobile.value && !selectedCommitFile.value) {
+    const width = mobileBody.value?.clientWidth || window.innerWidth;
+    mobileDiffInline.value = width * (historySplit.value ? 0.65 : 1) < INLINE_DIFF_BELOW_PX;
+  }
   selectedCommitFile.value = path;
   if (selectedHash.value) loadCommitFileDiff(selectedHash.value, path);
 }
@@ -2085,6 +2160,55 @@ watch(
   font-size: 11px;
 }
 
+.git-history-picker__filters {
+  display: contents;
+}
+
+.git-history-picker__filters--mobile {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: 1 0 100%;
+}
+
+.git-history-picker__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.git-history-picker__toggle--active {
+  color: var(--accent);
+}
+
+.git-history-picker__toggle-count {
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: rgba(255, 164, 36, 0.15);
+  font-size: 10px;
+  text-align: center;
+}
+
+.git-branches--mobile .git-history-picker {
+  padding: 4px 6px;
+  gap: 6px;
+}
+
+.git-branches--mobile .git-history-picker__search {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.git-branches--mobile .git-history-picker__search input,
+.git-branches--mobile .git-history-picker__search--commits input {
+  min-width: 0;
+  max-width: none;
+  width: 100%;
+}
+
 .git-history-picker__spacer {
   flex: 1 1 0;
 }
@@ -2308,11 +2432,33 @@ watch(
   opacity: 0.6;
 }
 
+.git-branches__pane-head > * {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .git-branches__pane-head strong {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 12px;
   color: var(--text);
   text-transform: none;
   letter-spacing: 0;
+}
+
+.git-branches__pane-head .git-branches__commit-subject {
+  flex: 1 1 0;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.git-branches__pane-head .git-branches__pane-fetch {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .git-branches__pane-count {
@@ -2633,6 +2779,17 @@ watch(
   overflow: hidden;
 }
 
+.git-branches__mobile-body--split {
+  flex-direction: row;
+  gap: 6px;
+}
+
+.git-branches__mobile-body--split > .git-branches__commits-pane,
+.git-branches__mobile-body--split > .git-branches__diff-pane {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
 .git-branches__mobile-back {
   background: transparent;
   border: none;
@@ -2648,12 +2805,39 @@ watch(
 }
 
 .git-branches__mobile-files {
-  flex: 0 0 35%;
-  min-height: 0;
+  flex: 0 0 30%;
+  min-height: 96px;
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: 4px;
   background: rgba(var(--tint), 0.03);
+}
+
+.git-branches__mobile-files--only {
+  flex: 1 1 auto;
+}
+
+.git-branches__mobile-body--split > .git-branches__diff-pane--mobile {
+  display: grid;
+  grid-template-columns: minmax(160px, 33%) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.git-branches__mobile-body--split > .git-branches__diff-pane--mobile > .git-branches__pane-head {
+  grid-column: 1 / -1;
+}
+
+.git-branches__mobile-body--split > .git-branches__diff-pane--mobile > .git-branches__placeholder {
+  grid-column: 1 / -1;
+  grid-row: 1 / -1;
+}
+
+.git-branches__mobile-body--split > .git-branches__diff-pane--mobile > .git-branches__mobile-files {
+  min-height: 0;
+}
+
+.git-branches__mobile-body--split > .git-branches__diff-pane--mobile > .git-branches__mobile-files--only {
+  grid-column: 1 / -1;
 }
 
 .git-branches__commit-diff--mobile {

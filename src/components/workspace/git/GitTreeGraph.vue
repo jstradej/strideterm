@@ -1,7 +1,12 @@
 <template>
   <div
     class="git-tree"
-    :class="{ 'git-tree--loading': loading, 'git-tree--compact': compact, 'git-tree--history': history }"
+    :class="{
+      'git-tree--loading': loading,
+      'git-tree--compact': compact,
+      'git-tree--history': history,
+      'git-tree--tight': tight,
+    }"
   >
     <div v-if="(loading || pending) && !nodes.length" class="git-tree__placeholder">
       <Spinner size="md" label="Loading commit graph…" />
@@ -11,13 +16,19 @@
     <template v-else>
       <!-- Column header. Hidden in compact (mobile) mode where there's only one
            text column anyway. Sticky so it stays visible during long scrolls. -->
-      <div v-if="!compact && !history" class="git-tree__header">
+      <div
+        v-if="!compact && !history"
+        class="git-tree__header"
+        :style="tight ? { gridTemplateColumns: tightHeaderColumns } : undefined"
+      >
         <span class="git-tree__hcell git-tree__hcell--graph" :style="{ width: `${graphWidth}px` }"></span>
-        <span class="git-tree__hcell git-tree__hcell--refs">Refs</span>
+        <span v-if="!tight" class="git-tree__hcell git-tree__hcell--refs">Refs</span>
         <span class="git-tree__hcell git-tree__hcell--subject">Subject</span>
-        <span class="git-tree__hcell git-tree__hcell--author">Author</span>
-        <span class="git-tree__hcell git-tree__hcell--date">Date</span>
-        <span class="git-tree__hcell git-tree__hcell--hash">Hash</span>
+        <template v-if="!tight">
+          <span class="git-tree__hcell git-tree__hcell--author">Author</span>
+          <span class="git-tree__hcell git-tree__hcell--date">Date</span>
+        </template>
+        <span v-if="columnShown('hash')" class="git-tree__hcell git-tree__hcell--hash">Hash</span>
       </div>
       <div
         ref="scrollRef"
@@ -36,7 +47,7 @@
           :style="{ gridTemplateColumns: historyColumns, paddingLeft: `${graphWidth + 4}px` }"
         >
           <span class="git-tree__history-hcell">Subject</span>
-          <span v-for="col in RESIZABLE_COLUMNS" :key="col.key" class="git-tree__history-hcell">
+          <span v-for="col in visibleColumns" :key="col.key" class="git-tree__history-hcell">
             <span
               class="git-tree__col-resizer"
               role="separator"
@@ -136,7 +147,7 @@
               top: `${node.y}px`,
               height: `${ROW_HEIGHT}px`,
               paddingLeft: `${graphWidth + 4}px`,
-              gridTemplateColumns: showHistoryHeader ? historyColumns : undefined,
+              gridTemplateColumns: showHistoryHeader ? historyColumns : tight ? tightColumns : undefined,
               borderLeftColor: node.hash === selectedHash ? laneColor(node.lane) : 'transparent',
             }"
             role="treeitem"
@@ -146,7 +157,7 @@
             @dblclick="onDoubleClick(node)"
             @contextmenu="onContextMenu($event, node)"
           >
-            <span v-if="!history" class="git-tree__cell git-tree__cell--refs">
+            <span v-if="!history && !tight" class="git-tree__cell git-tree__cell--refs">
               <span
                 v-for="ref in node.refs"
                 :key="ref.label"
@@ -161,7 +172,7 @@
               <span class="git-tree__subject" :class="{ 'git-tree__subject--merge': node.isMerge }">{{
                 node.subject
               }}</span>
-              <span v-if="history && node.refs.length" class="git-tree__history-refs">
+              <span v-if="(history || tight) && node.refs.length" class="git-tree__history-refs">
                 <span
                   v-for="ref in visibleRefs(node)"
                   :key="ref.label"
@@ -186,12 +197,12 @@
                 </span>
               </span>
             </span>
-            <span v-if="!compact" class="git-tree__cell git-tree__cell--author">{{ node.author }}</span>
-            <span v-if="!compact" class="git-tree__cell git-tree__cell--date" :title="node.isoDate">{{
+            <span v-if="columnShown('author')" class="git-tree__cell git-tree__cell--author">{{ node.author }}</span>
+            <span v-if="columnShown('date')" class="git-tree__cell git-tree__cell--date" :title="node.isoDate">{{
               node.relativeDate
             }}</span>
             <span
-              v-if="!compact"
+              v-if="columnShown('hash')"
               class="git-tree__cell git-tree__cell--hash"
               :title="`Click to copy ${node.hash}`"
               @click.stop="copyHash(node.hash)"
@@ -697,7 +708,18 @@ function hiddenRefsTitle(node: GraphNode): string {
 const layout = computed(() => buildLayout(props.commits || [], props.head || "", !!props.flat));
 const nodes = computed(() => layout.value.nodes);
 const edges = computed(() => layout.value.edges);
-const graphWidth = computed(() => layout.value.width);
+// On a phone the gutter follows the lanes actually in view, so a graph that is one lane wide
+// where you are looking does not keep the width of its widest merge further down.
+const graphWidth = computed(() => {
+  if (!props.compact) return layout.value.width;
+  let maxX = laneX(0);
+  for (const node of visibleNodes.value) maxX = Math.max(maxX, laneX(node.lane));
+  for (const edge of visibleEdges.value) {
+    const numbers = edge.d.match(/[d.-]+/g) || [];
+    for (let i = 0; i < numbers.length; i += 2) maxX = Math.max(maxX, Number(numbers[i]));
+  }
+  return Math.min(layout.value.width, maxX + LANE_GAP + 6);
+});
 
 function reachableFrom(starts: string[], parentsOf: Map<string, string[]>): Set<string> {
   const seen = new Set<string>();
@@ -774,6 +796,7 @@ function syncViewport(): void {
   if (!el) return;
   scrollTop.value = el.scrollTop;
   clientHeight.value = el.clientHeight || DEFAULT_VIEWPORT_HEIGHT;
+  viewportWidth.value = el.clientWidth;
 }
 
 let resizeObserver: ResizeObserver | null = null;
@@ -838,8 +861,44 @@ function saveColumnWidths(): void {
 
 const columnWidths = ref(loadColumnWidths());
 const showHistoryHeader = computed(() => props.history && !props.compact);
-const historyColumns = computed(
-  () => `minmax(0, 1fr) ${columnWidths.value.author}px ${columnWidths.value.date}px ${columnWidths.value.hash}px`,
+const viewportWidth = ref(0);
+const HISTORY_SUBJECT_MIN = 160;
+const HISTORY_COLUMN_GAP = 10;
+const TIGHT_WIDTH = 640;
+const TIGHT_HASH_WIDTH = 60;
+const HIDE_ORDER: ResizableColumn[] = ["author", "hash", "date"];
+// A zero width means "not measured yet": keep every column rather than hiding them.
+const tight = computed(
+  () => !props.history && !props.compact && viewportWidth.value > 0 && viewportWidth.value < TIGHT_WIDTH,
+);
+const visibleColumns = computed(() => {
+  const hidden = new Set<ResizableColumn>();
+  if (props.history && viewportWidth.value > 0) {
+    const room = viewportWidth.value - graphWidth.value - 4 - 10 - HISTORY_SUBJECT_MIN;
+    const used = () =>
+      RESIZABLE_COLUMNS.filter((c) => !hidden.has(c.key)).reduce(
+        (sum, c) => sum + columnWidths.value[c.key] + HISTORY_COLUMN_GAP,
+        0,
+      );
+    for (const key of HIDE_ORDER) {
+      if (used() <= room) break;
+      hidden.add(key);
+    }
+  }
+  return RESIZABLE_COLUMNS.filter((c) => !hidden.has(c.key));
+});
+const tightHashShown = computed(
+  () => viewportWidth.value - graphWidth.value - 4 - 10 - HISTORY_SUBJECT_MIN - HISTORY_COLUMN_GAP >= TIGHT_HASH_WIDTH,
+);
+const tightColumns = computed(() => (tightHashShown.value ? "minmax(0, 1fr) max-content" : "minmax(0, 1fr)"));
+const tightHeaderColumns = computed(() => `${graphWidth.value - 10}px ${tightColumns.value}`);
+function columnShown(key: ResizableColumn): boolean {
+  if (props.compact) return false;
+  if (tight.value) return key === "hash" && tightHashShown.value;
+  return !props.history || visibleColumns.value.some((c) => c.key === key);
+}
+const historyColumns = computed(() =>
+  `minmax(0, 1fr) ${visibleColumns.value.map((c) => `${columnWidths.value[c.key]}px`).join(" ")}`.trim(),
 );
 
 let resizeDrag: { startX: number; startWidth: number } | null = null;
@@ -991,7 +1050,7 @@ watch(
 .git-tree__header {
   display: grid;
   grid-template-columns:
-    var(--graph-col, 60px) 180px minmax(160px, 1fr) minmax(80px, max-content)
+    var(--graph-col, 60px) minmax(80px, 180px) minmax(120px, 1fr) minmax(80px, max-content)
     minmax(60px, max-content) minmax(50px, max-content);
   gap: 10px;
   padding: 4px 10px 4px 4px;
@@ -1007,6 +1066,12 @@ watch(
 
 .git-tree--compact .git-tree__header {
   display: none;
+}
+
+.git-tree--tight .git-tree__cell--subject {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .git-tree__hcell--graph {
@@ -1045,10 +1110,9 @@ watch(
   left: 0;
   right: 0;
   display: grid;
-  grid-template-columns: 180px minmax(200px, 1fr) minmax(80px, max-content) minmax(60px, max-content) minmax(
-      50px,
-      max-content
-    );
+  grid-template-columns:
+    minmax(80px, 180px) minmax(120px, 1fr) minmax(80px, max-content) minmax(60px, max-content)
+    minmax(50px, max-content);
   gap: 10px;
   align-items: center;
   padding-right: 10px;

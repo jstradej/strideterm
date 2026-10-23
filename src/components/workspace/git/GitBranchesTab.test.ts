@@ -1,9 +1,18 @@
 import { describe, expect, test, beforeEach, afterEach, vi } from "vitest";
-import { reactive, ref } from "vue";
+import { h, reactive, ref } from "vue";
 import { mount, flushPromises, type VueWrapper } from "@vue/test-utils";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { setActivePinia, createPinia } from "pinia";
+
+vi.mock("../../shared/MonacoDiffPanel.vue", () => ({
+  __esModule: true,
+  default: {
+    name: "MonacoDiffPanel",
+    props: ["payload", "loading", "initialInline", "popoutTitle"],
+    render: () => h("div", { class: "mdp-stub" }),
+  },
+}));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const fakeApi: Record<string, any> = {};
@@ -816,13 +825,100 @@ describe("GitBranchesTab compact history picker", () => {
     });
     await flushPromises();
     expect(picker.get('[role="tablist"]').attributes("aria-label")).toBe("History view");
-    expect(picker.get('[role="tablist"] button').text()).toBe("History");
+    const tabs = picker.findAll('[role="tablist"] button').map((b) => b.text());
+    expect(tabs).toEqual(["Commits", "Diff"]);
+    expect(picker.get('[role="tablist"] button').attributes("disabled")).toBeUndefined();
     expect(picker.find(".git-branches__commits-pane").exists()).toBe(true);
+    expect(picker.find(".git-branches__mobile-back").exists()).toBe(false);
     expect(picker.find(".git-branches__diff-pane--mobile").exists()).toBe(false);
+    expect(picker.findComponent(GitHistoryFilters).exists()).toBe(false);
+    expect(picker.find(".git-history-picker__search input").exists()).toBe(true);
+    await picker.get(".git-history-picker__toggle").trigger("click");
+    expect(picker.findComponent(GitHistoryFilters).exists()).toBe(true);
+    await picker.get(".git-history-picker__toggle").trigger("click");
+    expect(picker.findComponent(GitHistoryFilters).exists()).toBe(false);
     expect(historySelection.ref).toBe("");
+    expect(picker.find(".git-history-picker__toggle-count").exists()).toBe(false);
+    historySelection.ref = "main";
+    await flushPromises();
+    expect(picker.find(".git-history-picker__toggle-count").exists()).toBe(false);
+    historySelection.ref = "topic";
+    await flushPromises();
+    expect(picker.get(".git-history-picker__toggle-count").text()).toBe("1");
+    historySelection.ref = "";
     picker.unmount();
     mobileViewport.isNarrow.value = false;
     mobileViewport.isMobile.value = false;
+  });
+
+  describe("History diff on a phone", () => {
+    const innerWidth = window.innerWidth;
+    const mountHistory = async (shortWide: boolean) => {
+      Object.defineProperty(window, "innerWidth", { value: shortWide ? 667 : 360, configurable: true });
+      window.matchMedia = ((query: string) => ({
+        matches: shortWide && query.includes("max-height"),
+        media: query,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      })) as unknown as typeof window.matchMedia;
+      mobileViewport.isNarrow.value = true;
+      mobileViewport.isMobile.value = true;
+      fakeApi.fileCommitFiles = vi.fn().mockResolvedValue({ files: [{ path: "src/foo.ts", code: "M" }] });
+      fakeApi.fileCommitDiff = vi.fn().mockResolvedValue({ original: "a", modified: "b" });
+      const picker = mount(GitBranchesTab, {
+        props: {
+          workspaceId: "ws-phone-diff",
+          activeRootPath: "/repo",
+          snapshot: { dirty: false, branch: "main" },
+          gitUi: {
+            branchList: { current: "main", local: [{ name: "main", isCurrent: true }], remotes: [] },
+            graph: {
+              commits: [{ hash: "abc1234abc1234", shortHash: "abc1234", message: "History entry" }],
+              head: "abc1234abc1234",
+              refs: {},
+            },
+            selectedCommit: "abc1234abc1234",
+          },
+          compactHistory: true,
+        },
+        attachTo: document.body,
+      });
+      mountedWrappers.push(picker);
+      await flushPromises();
+      return picker;
+    };
+    const restoreViewport = () => {
+      Object.defineProperty(window, "innerWidth", { value: innerWidth, configurable: true });
+      mobileViewport.isNarrow.value = false;
+      mobileViewport.isMobile.value = false;
+      // @ts-expect-error test cleanup
+      delete window.matchMedia;
+    };
+
+    test("opens a narrow diff inline, and an open file in landscape hides the commit list until the back button", async () => {
+      const picker = await mountHistory(true);
+      expect(picker.find(".git-branches__commits-pane").exists()).toBe(true);
+      expect(picker.find(".git-branches__diff-pane--mobile").exists()).toBe(true);
+      expect(picker.find(".mdp-stub").exists()).toBe(false);
+      picker.findComponent(GitChangeTree).vm.$emit("select", "src/foo.ts");
+      await flushPromises();
+      expect(picker.find(".git-branches__commits-pane").exists()).toBe(false);
+      expect(picker.get(".mdp-stub").exists()).toBe(true);
+      expect(picker.findComponent({ name: "MonacoDiffPanel" }).props("initialInline")).toBe(true);
+      await picker.get(".git-branches__mobile-back").trigger("click");
+      expect(picker.find(".git-branches__commits-pane").exists()).toBe(true);
+      expect(picker.find(".mdp-stub").exists()).toBe(false);
+      restoreViewport();
+    });
+
+    test("portrait stacks the file and the diff and also starts inline", async () => {
+      const picker = await mountHistory(false);
+      await picker.findAll('[role="tablist"] button')[1].trigger("click");
+      picker.findComponent(GitChangeTree).vm.$emit("select", "src/foo.ts");
+      await flushPromises();
+      expect(picker.findComponent({ name: "MonacoDiffPanel" }).props("initialInline")).toBe(true);
+      restoreViewport();
+    });
   });
 
   test("shows detached HEAD and an empty-history state in a repository without commits", async () => {
