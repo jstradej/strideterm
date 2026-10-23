@@ -238,6 +238,24 @@ describe("GitTreeGraph", () => {
     expect(chip.attributes("title")).toBe("Remote branch origin/pveselka/MSP-90906");
   });
 
+  test("full Git views can reuse History columns without enabling History reachability styling", () => {
+    const wrapper = mountGraph({
+      history: false,
+      historyLayout: true,
+      rangeBase: "main",
+      commits: [{ ...linearCommits[0], refs: ["HEAD", "main", "origin/main"] }],
+    });
+    expect(wrapper.classes()).toContain("git-tree--history");
+    expect(wrapper.find(".git-tree__history-header").exists()).toBe(true);
+    expect(wrapper.find(".git-tree__header").exists()).toBe(false);
+    expect(wrapper.find(".git-tree__cell--refs").exists()).toBe(false);
+    expect(wrapper.findAll(".git-tree__cell--subject .git-tree__ref").length).toBeGreaterThan(0);
+    expect(wrapper.find(".git-tree__cell--author").exists()).toBe(true);
+    expect(wrapper.find(".git-tree__cell--date").exists()).toBe(true);
+    expect(wrapper.find(".git-tree__cell--hash").exists()).toBe(true);
+    expect(wrapper.find(".git-tree__row--on-base").exists()).toBe(false);
+  });
+
   describe("history markers", () => {
     const mk = (n: number, parents: string[], refs: string[] = []) => ({
       hash: `h${n}`,

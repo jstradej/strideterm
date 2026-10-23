@@ -4,7 +4,7 @@
     :class="{
       'git-tree--loading': loading,
       'git-tree--compact': compact,
-      'git-tree--history': history,
+      'git-tree--history': historyLayout,
       'git-tree--tight': tight,
     }"
   >
@@ -17,7 +17,7 @@
       <!-- Column header. Hidden in compact (mobile) mode where there's only one
            text column anyway. Sticky so it stays visible during long scrolls. -->
       <div
-        v-if="!compact && !history"
+        v-if="!compact && !historyLayout"
         class="git-tree__header"
         :style="tight ? { gridTemplateColumns: tightHeaderColumns } : undefined"
       >
@@ -157,7 +157,7 @@
             @dblclick="onDoubleClick(node)"
             @contextmenu="onContextMenu($event, node)"
           >
-            <span v-if="!history && !tight" class="git-tree__cell git-tree__cell--refs">
+            <span v-if="!historyLayout && !tight" class="git-tree__cell git-tree__cell--refs">
               <span
                 v-for="ref in node.refs"
                 :key="ref.label"
@@ -172,7 +172,7 @@
               <span class="git-tree__subject" :class="{ 'git-tree__subject--merge': node.isMerge }">{{
                 node.subject
               }}</span>
-              <span v-if="(history || tight) && node.refs.length" class="git-tree__history-refs">
+              <span v-if="(historyLayout || tight) && node.refs.length" class="git-tree__history-refs">
                 <span
                   v-for="ref in visibleRefs(node)"
                   :key="ref.label"
@@ -259,6 +259,9 @@ const props = withDefaults(
     // IDEA-style rows for the new Git History view: no header, refs inside the
     // subject cell instead of their own column.
     history?: boolean;
+    // Reuse the History row layout in another Git view without enabling its
+    // History-only reachability shading.
+    historyLayout?: boolean;
     // History view only: the PR target / base branch. Commits already on it are
     // dimmed so the branch's own work stands out.
     rangeBase?: string;
@@ -278,6 +281,7 @@ const props = withDefaults(
     compact: false,
     flat: false,
     history: false,
+    historyLayout: false,
     rangeBase: "",
   },
 );
@@ -681,9 +685,10 @@ function historyBadges(node: GraphNode): GraphRefBadge[] {
     .map((entry) => entry.badge);
 }
 
+const historyLayout = computed(() => props.history || props.historyLayout);
 const historyBadgeMap = computed(() => {
   const map = new Map<string, GraphRefBadge[]>();
-  if (!props.history) return map;
+  if (!historyLayout.value) return map;
   for (const node of nodes.value) map.set(node.hash, historyBadges(node));
   return map;
 });
@@ -860,7 +865,7 @@ function saveColumnWidths(): void {
 }
 
 const columnWidths = ref(loadColumnWidths());
-const showHistoryHeader = computed(() => props.history && !props.compact);
+const showHistoryHeader = computed(() => historyLayout.value && !props.compact);
 const viewportWidth = ref(0);
 const HISTORY_SUBJECT_MIN = 160;
 const HISTORY_COLUMN_GAP = 10;
@@ -869,11 +874,11 @@ const TIGHT_HASH_WIDTH = 60;
 const HIDE_ORDER: ResizableColumn[] = ["author", "hash", "date"];
 // A zero width means "not measured yet": keep every column rather than hiding them.
 const tight = computed(
-  () => !props.history && !props.compact && viewportWidth.value > 0 && viewportWidth.value < TIGHT_WIDTH,
+  () => !historyLayout.value && !props.compact && viewportWidth.value > 0 && viewportWidth.value < TIGHT_WIDTH,
 );
 const visibleColumns = computed(() => {
   const hidden = new Set<ResizableColumn>();
-  if (props.history && viewportWidth.value > 0) {
+  if (historyLayout.value && viewportWidth.value > 0) {
     const room = viewportWidth.value - graphWidth.value - 4 - 10 - HISTORY_SUBJECT_MIN;
     const used = () =>
       RESIZABLE_COLUMNS.filter((c) => !hidden.has(c.key)).reduce(
@@ -895,7 +900,7 @@ const tightHeaderColumns = computed(() => `${graphWidth.value - 10}px ${tightCol
 function columnShown(key: ResizableColumn): boolean {
   if (props.compact) return false;
   if (tight.value) return key === "hash" && tightHashShown.value;
-  return !props.history || visibleColumns.value.some((c) => c.key === key);
+  return !historyLayout.value || visibleColumns.value.some((c) => c.key === key);
 }
 const historyColumns = computed(() =>
   `minmax(0, 1fr) ${visibleColumns.value.map((c) => `${columnWidths.value[c.key]}px`).join(" ")}`.trim(),

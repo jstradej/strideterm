@@ -40,6 +40,7 @@ const getHistorySelection = vi.fn(
   (workspaceId: string, rootPath: string, profileId: string) =>
     historySelections.get(historySelectionKey(workspaceId, rootPath, profileId)) || historySelection,
 );
+let historyPreferences = { favorites: [] as string[], recent: [] as string[] };
 
 vi.mock("../../../stores/app.js", () => ({
   useAppStore: () => ({
@@ -55,7 +56,7 @@ vi.mock("../../../stores/git-ui.js", () => ({
     gitLoadGraph,
     gitFetch,
     gitPush,
-    getGitHistoryPreferences: () => ({ favorites: [], recent: [] }),
+    getGitHistoryPreferences: () => historyPreferences,
     getGitHistorySelection: getHistorySelection,
     setGitHistorySelection: (
       workspaceId: string,
@@ -178,6 +179,7 @@ function mountTab(gitUiOverrides: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
+  historyPreferences = { favorites: [], recent: [] };
   setActivePinia(createPinia());
   for (const k of Object.keys(fakeApi)) delete fakeApi[k];
   showError.mockClear();
@@ -1246,6 +1248,215 @@ describe("GitBranchesTab compact history picker", () => {
     expect(gitLoadGraph).toHaveBeenCalledWith("ws-root-history", expect.objectContaining({ branch: "topic-b" }));
     picker.unmount();
     vi.useRealTimers();
+  });
+});
+
+describe("GitBranchesTab branch tree grouping", () => {
+  test("full Branches reuses History rows while branch selection still filters its commit query", async () => {
+    vi.useFakeTimers();
+    const picker = mountTab({
+      branchList: {
+        current: "main",
+        upstream: "origin/main",
+        local: [
+          { name: "main", isCurrent: true },
+          { name: "topic", isCurrent: false },
+        ],
+        remotes: [],
+        defaultBranch: "main",
+        defaultRemote: "",
+      },
+      graph: { commits: [], head: "", refs: {} },
+    });
+    await flushPromises();
+    const commitGraph = picker.findComponent({ name: "GitTreeGraph" });
+    expect(commitGraph.props("historyLayout")).toBe(true);
+    expect(commitGraph.props("history")).toBe(false);
+    gitLoadGraph.mockClear();
+
+    const localSection = picker
+      .findAll(".branch-node--section > .branch-node__row")
+      .find((row) => row.text().includes("Local"))!;
+    await localSection.trigger("click");
+    await picker
+      .findAll(".branch-node--branch-local > .branch-node__row")
+      .find((row) => row.text().includes("topic"))!
+      .trigger("click");
+    await vi.advanceTimersByTimeAsync(400);
+    await flushPromises();
+
+    expect(historySelection.ref).toBe("topic");
+    expect(gitLoadGraph).toHaveBeenLastCalledWith("ws1", expect.objectContaining({ branch: "topic" }));
+    picker.unmount();
+    vi.useRealTimers();
+  });
+
+  test("pins default, configured base, and exact favorite refs without merging local and remote identities", async () => {
+    historyPreferences = {
+      favorites: ["people/alice/topic", "origin/people/alice/topic", "refs/tags/v1.0", "missing/ref"],
+      recent: [],
+    };
+    const picker = mount(GitBranchesTab, {
+      props: {
+        workspaceId: "ws-important-refs",
+        profileId: "profile-a",
+        snapshot: { dirty: false, branch: "feature/work" },
+        baseBranch: "origin/people/alice/topic",
+        remoteNames: ["origin", "upstream"],
+        gitUi: {
+          branchList: {
+            current: "feature/work",
+            upstream: "origin/feature/work",
+            local: [
+              { name: "feature/work", isCurrent: true },
+              { name: "main", isCurrent: false },
+              { name: "people/alice/topic", isCurrent: false },
+              { name: "release/base", isCurrent: false },
+            ],
+            remotes: [
+              { name: "origin/main", remote: "origin", shortName: "main", isDefault: true },
+              {
+                name: "origin/people/alice/topic",
+                remote: "origin",
+                shortName: "people/alice/topic",
+                isDefault: false,
+              },
+              { name: "upstream/main", remote: "upstream", shortName: "main", isDefault: true },
+            ],
+            defaultBranch: "main",
+            defaultRemote: "origin",
+          },
+          graph: { commits: [], head: "", refs: {} },
+          selectedCommit: "",
+        },
+        activeRootPath: "/repo/a",
+      },
+      attachTo: document.body,
+    });
+    mountedWrappers.push(picker);
+    await flushPromises();
+
+    const importantSection = picker
+      .findAll(".branch-node--section")
+      .find((section) => section.text().includes("Important"));
+    expect(importantSection).toBeTruthy();
+    const importantRows = Array.from(importantSection!.element.querySelectorAll(":scope > ul [role=treeitem]"));
+    const rowLabels = importantRows.map((row) => row.querySelector(".branch-node__label")?.textContent?.trim());
+    expect(rowLabels).toEqual(["origin/main", "origin/people/alice/topic", "people/alice/topic"]);
+    expect(importantRows[0].textContent).toContain("default");
+    expect(importantRows[1].textContent).toContain("base");
+    expect(
+      importantRows.filter((row) => row.querySelector(".branch-node__label")?.textContent?.trim() === "origin/main"),
+    ).toHaveLength(1);
+    const importantRemote = picker
+      .findAll(".branch-node--branch-remote > .branch-node__row")
+      .find((row) => row.text().includes("origin/people/alice/topic"));
+    expect(importantRemote).toBeTruthy();
+    await importantRemote!.trigger("dblclick");
+    await flushPromises();
+    expect(gitCheckoutRemoteBranch).toHaveBeenCalledWith(
+      "ws-important-refs",
+      "origin/people/alice/topic",
+      "origin-people/alice/topic",
+    );
+    expect(
+      picker
+        .findAll(".branch-node--section > .branch-node__row")
+        .find((row) => row.text().includes("Remote · origin"))
+        ?.attributes("aria-expanded"),
+    ).toBe("false");
+
+    await picker.setProps({ baseBranch: "release/base" });
+    await flushPromises();
+    const dynamicBaseRow = picker.findAll(".branch-node__label").find((label) => label.text() === "release/base");
+    expect(dynamicBaseRow).toBeTruthy();
+    expect(dynamicBaseRow!.element.parentElement?.textContent).toContain("base");
+    await picker.setProps({ baseBranch: "not/a-real-branch" });
+    await flushPromises();
+    expect(picker.findAll(".branch-node__label").map((label) => label.text())).not.toContain("not/a-real-branch");
+
+    const remoteChip = picker.findAll(".git-branches__chips button").find((button) => button.text() === "Remote")!;
+    await remoteChip.trigger("click");
+    await flushPromises();
+    const visibleImportantRows = picker
+      .findAll(".branch-node--section")
+      .find((section) => section.text().includes("Important"))!
+      .findAll(":scope > ul [role=treeitem]");
+    expect(visibleImportantRows.map((row) => row.find(".branch-node__label").text())).toEqual(["people/alice/topic"]);
+    await picker
+      .findAll(".git-branches__chips button")
+      .find((button) => button.text() === "Remote")!
+      .trigger("click");
+    await flushPromises();
+
+    await picker.get('input[aria-label="Filter branches and commits"]').setValue("alice");
+    await flushPromises();
+    expect(picker.findAll(".branch-node__label").map((label) => label.text())).toContain("origin/people/alice/topic");
+    expect(
+      picker
+        .findAll(".branch-node--section > .branch-node__row")
+        .find((row) => row.text().includes("Remote · origin"))
+        ?.attributes("aria-expanded"),
+    ).toBe("true");
+    expect(
+      picker
+        .findAll(".branch-node--folder > .branch-node__row")
+        .find((row) => row.text().includes("people"))
+        ?.attributes("aria-expanded"),
+    ).toBe("true");
+    await picker.get('input[aria-label="Filter branches and commits"]').setValue("");
+    await flushPromises();
+    expect(
+      picker
+        .findAll(".branch-node--section > .branch-node__row")
+        .find((row) => row.text().includes("Remote · origin"))
+        ?.attributes("aria-expanded"),
+    ).toBe("false");
+  });
+
+  test("scopes saved expansion across root and profile changes", async () => {
+    const wrapper = mount(GitBranchesTab, {
+      props: {
+        workspaceId: "same-workspace",
+        profileId: "profile-one",
+        snapshot: { dirty: false, branch: "main" },
+        activeRootPath: "/repo/one",
+        gitUi: {
+          branchList: { current: "main", local: [{ name: "main", isCurrent: true }], remotes: [] },
+          graph: { commits: [], head: "", refs: {} },
+        },
+      },
+    });
+    mountedWrappers.push(wrapper);
+    const branchTree = () => wrapper.findComponent({ name: "BranchTreePane" });
+    const localRow = () =>
+      branchTree()
+        .findAll(".branch-node--section > .branch-node__row")
+        .find((row) => row.text().includes("Local"))!;
+    const keyOne = branchTree().props("stateKey") as string;
+    const keyRootTwo = keyOne.replace("%2Frepo%2Fone", "%2Frepo%2Ftwo");
+    const keyProfileTwo = keyOne.replace("profile-one", "profile-two");
+    localStorage.removeItem(keyOne);
+    localStorage.removeItem(keyRootTwo);
+    localStorage.removeItem(keyProfileTwo);
+    await localRow().trigger("click");
+    expect(localRow().attributes("aria-expanded")).toBe("true");
+
+    await wrapper.setProps({ activeRootPath: "/repo/two" });
+    expect(branchTree().props("stateKey")).toContain("%2Frepo%2Ftwo");
+    expect(localRow().attributes("aria-expanded")).toBe("false");
+    await localRow().trigger("click");
+
+    await wrapper.setProps({ activeRootPath: "/repo/one" });
+    expect(localRow().attributes("aria-expanded")).toBe("true");
+    await wrapper.setProps({ profileId: "profile-two" });
+    expect(branchTree().props("stateKey")).toContain("profile-two");
+    expect(localRow().attributes("aria-expanded")).toBe("false");
+    await wrapper.setProps({ profileId: "profile-one" });
+    expect(localRow().attributes("aria-expanded")).toBe("true");
+    localStorage.removeItem(keyOne);
+    localStorage.removeItem(keyRootTwo);
+    localStorage.removeItem(keyProfileTwo);
   });
 });
 

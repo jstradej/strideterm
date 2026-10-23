@@ -12,7 +12,7 @@
         :head="head"
         :busy="busy"
         :is-dirty="isDirty"
-        :expanded="expanded"
+        :expanded="effectiveExpanded"
         :compact="compact"
         :can-create-pr="canCreatePr"
         :multi-selected-refs="multiSelectedRefs"
@@ -35,7 +35,7 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, watch } from "vue";
+import { computed, reactive, watch } from "vue";
 import BranchTreeNode from "./BranchTreeNode.vue";
 import type { BranchTreeNode as BranchTreeNodeData } from "./branch-tree-types";
 
@@ -49,6 +49,8 @@ export type { BranchTreeNode, BranchTreeNodeKind, BranchTreeNodeMeta } from "./b
 const props = withDefaults(
   defineProps<{
     tree: BranchTreeNodeData[];
+    stateKey?: string;
+    searching?: boolean;
     loading?: boolean;
     selectedRef?: string;
     head?: string;
@@ -58,7 +60,17 @@ const props = withDefaults(
     canCreatePr?: boolean;
     multiSelectedRefs?: Set<string>;
   }>(),
-  { loading: false, selectedRef: "", head: "", busy: false, isDirty: false, compact: false, canCreatePr: false },
+  {
+    stateKey: "",
+    searching: false,
+    loading: false,
+    selectedRef: "",
+    head: "",
+    busy: false,
+    isDirty: false,
+    compact: false,
+    canCreatePr: false,
+  },
 );
 
 const emit = defineEmits<{
@@ -76,18 +88,53 @@ const emit = defineEmits<{
   (e: "create-pr", ref: string): void;
 }>();
 
-// Persistent collapse state, keyed by node.key. Sections and the first
-// folder level start expanded so users see their branches immediately —
-// the JetBrains tree does the same. Subsequent folders default to expanded
-// as well, but the user can collapse them and the choice sticks.
-const expanded = reactive<Record<string, boolean>>({});
+const expanded = reactive<Record<string, boolean>>(loadExpansion(props.stateKey));
+const searchExpansion = reactive<Record<string, boolean>>({});
+
+function loadExpansion(key: string): Record<string, boolean> {
+  if (!key) return {};
+  try {
+    const parsed = JSON.parse(globalThis.localStorage?.getItem(key) || "null");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter((entry): entry is [string, boolean] => typeof entry[1] === "boolean"),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function persistExpansion() {
+  if (!props.stateKey) return;
+  try {
+    globalThis.localStorage?.setItem(props.stateKey, JSON.stringify(expanded));
+  } catch {
+    // Expansion remains usable in memory when storage is unavailable.
+  }
+}
 
 function ensureDefault(nodes: BranchTreeNodeData[]) {
   for (const node of nodes) {
-    if (!(node.key in expanded)) expanded[node.key] = true;
+    if (!(node.key in expanded))
+      expanded[node.key] = node.kind === "section" && (node.key === "head" || node.key === "important");
     if (node.children?.length) ensureDefault(node.children);
   }
 }
+
+const effectiveExpanded = computed(() => {
+  if (!props.searching) return expanded;
+  const result = { ...expanded };
+  function expand(nodes: BranchTreeNodeData[]) {
+    for (const node of nodes) {
+      if (node.children?.length) {
+        result[node.key] = searchExpansion[node.key] ?? true;
+        expand(node.children);
+      }
+    }
+  }
+  expand(props.tree);
+  return result;
+});
 
 watch(
   () => props.tree,
@@ -95,8 +142,21 @@ watch(
   { immediate: true, deep: false },
 );
 
+watch(
+  () => props.searching,
+  (searching) => {
+    if (searching) return;
+    for (const key of Object.keys(searchExpansion)) delete searchExpansion[key];
+  },
+);
+
 function onToggle(key: string) {
+  if (props.searching) {
+    searchExpansion[key] = !effectiveExpanded.value[key];
+    return;
+  }
   expanded[key] = !expanded[key];
+  persistExpansion();
 }
 </script>
 

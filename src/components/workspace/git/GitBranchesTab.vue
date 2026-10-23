@@ -251,7 +251,10 @@
       <Splitpanes class="default-theme git-branches__panes">
         <Pane v-if="!compactHistory" :size="24" :min-size="18">
           <BranchTreePane
+            :key="branchTreeStateKey"
             :tree="branchTree"
+            :state-key="branchTreeStateKey"
+            :searching="!!search.trim()"
             :loading="branchesLoading"
             :selected-ref="selectedRef"
             :head="branchList.current"
@@ -397,6 +400,7 @@
               :error="graphError"
               :flat="graphFlatMode"
               :history="compactHistory"
+              :history-layout="true"
               :range-base="compactHistory ? baseBranch : ''"
               :reach-commits="compactHistory ? commits : undefined"
               @select="onSelectCommit"
@@ -497,7 +501,10 @@
     >
       <BranchTreePane
         v-if="mobileView === 'tree' && !compactHistory"
+        :key="branchTreeStateKey"
         :tree="branchTree"
+        :state-key="branchTreeStateKey"
+        :searching="!!search.trim()"
         :loading="branchesLoading"
         :selected-ref="selectedRef"
         :head="branchList.current"
@@ -547,6 +554,7 @@
           :compact="true"
           :flat="graphFlatMode"
           :history="compactHistory"
+          :history-layout="true"
           :range-base="compactHistory ? baseBranch : ''"
           :reach-commits="compactHistory ? commits : undefined"
           @select="onMobileSelectCommit"
@@ -665,7 +673,7 @@ import GitHistoryFilters from "./GitHistoryFilters.vue";
 import HistoryRangePicker from "./HistoryRangePicker.vue";
 import GitCommitContextMenu from "./GitCommitContextMenu.vue";
 import GitDiffStat from "./GitDiffStat.vue";
-import { isRemoteRef } from "./base-ref.js";
+import { isRemoteRef, resolveBaseRef } from "./base-ref.js";
 import { buildBranchForest, type BranchForestNode } from "./branch-forest.js";
 import { submitPullRequest } from "./pull-request-submit.js";
 
@@ -879,8 +887,8 @@ const branchList = computed<{
     upstream: bl.upstream || "",
     local: (bl.local as LocalBranch[]) || [],
     remotes: (bl.remotes as RemoteBranch[]) || [],
-    defaultBranch: bl.defaultBranch || "",
-    defaultRemote: bl.defaultRemote || "",
+    defaultBranch: bl.defaultBranch || String(props.snapshot?.defaultBranch || ""),
+    defaultRemote: bl.defaultRemote || String(props.snapshot?.defaultRemote || ""),
   };
 });
 
@@ -900,6 +908,10 @@ const effectiveRemoteNames = computed<string[]>(() => {
   const fromBranchList = branchList.value.remotes.map((r) => r.remote);
   return Array.from(new Set([...fromProps, ...fromBranchList].filter(Boolean)));
 });
+const branchTreeStateKey = computed(
+  () =>
+    `git-branches-expanded:${encodeURIComponent(props.profileId || "default")}:${encodeURIComponent(props.workspaceId)}:${encodeURIComponent(props.activeRootPath || "")}`,
+);
 
 // --- Build the hierarchical branch tree ----------------------------------
 //
@@ -967,6 +979,40 @@ const branchTree = computed<BranchTreeNode[]>(() => {
   // helper in ./branch-forest.ts (also used by BranchSelectPopover.vue).
   type ForestEntry = { shortName: string; ref: string; meta: BranchTreeNode["meta"]; kind: BranchTreeNode["kind"] };
 
+  const localEntries: ForestEntry[] = branchList.value.local.map((branch) => ({
+    shortName: branch.name,
+    ref: branch.name,
+    kind: "branch-local",
+    meta: {
+      ahead: branch.ahead,
+      behind: branch.behind,
+      upstream: branch.upstream,
+      merged: branch.merged,
+      lastCommit: branch.lastCommit,
+      lastSubject: branch.lastSubject,
+      lastAuthor: branch.lastAuthor,
+      lastRelativeDate: branch.lastRelativeDate,
+      lastCommitTimestamp: branch.lastCommitTimestamp,
+      isCurrent: branch.isCurrent,
+      ...(branch.worktreePath ? { worktreePath: branch.worktreePath } : {}),
+    },
+  }));
+  const remoteEntries: ForestEntry[] = branchList.value.remotes.map((branch) => ({
+    shortName: branch.shortName,
+    ref: branch.name,
+    kind: "branch-remote",
+    meta: {
+      remote: branch.remote,
+      lastCommit: branch.lastCommit,
+      lastSubject: branch.lastSubject,
+      lastAuthor: branch.lastAuthor,
+      lastRelativeDate: branch.lastRelativeDate,
+      lastCommitTimestamp: branch.lastCommitTimestamp,
+      hasLocal: localShortNames.value.has(branch.shortName),
+      isDefault: branch.isDefault,
+    },
+  }));
+
   function toBranchTreeNodes(nodes: BranchForestNode<ForestEntry>[]): BranchTreeNode[] {
     return nodes.map((n) => {
       if (n.kind === "folder") {
@@ -1007,33 +1053,102 @@ const branchTree = computed<BranchTreeNode[]>(() => {
     return toBranchTreeNodes(forest);
   }
 
+  const important = new Map<string, { entry: ForestEntry; isDefault: boolean; isBase: boolean; isFavorite: boolean }>();
+  function passesImportantFilters(entry: ForestEntry): boolean {
+    if (entry.kind === "branch-local") {
+      if (!showLocal.value || (showMerged.value && !entry.meta?.merged && !entry.meta?.isCurrent)) return false;
+      return cutoff === 0 || !!entry.meta?.isCurrent || (entry.meta?.lastCommitTimestamp || 0) >= cutoff;
+    }
+    if (entry.kind === "branch-remote") {
+      return (
+        showRemotes.value &&
+        (cutoff === 0 ||
+          ((entry.meta?.lastCommitTimestamp || 0) > 0 && (entry.meta?.lastCommitTimestamp || 0) >= cutoff))
+      );
+    }
+    return false;
+  }
+  function addImportant(entry: ForestEntry | undefined, reason: "base" | "favorite" | "default") {
+    if (!entry || !passesImportantFilters(entry)) return;
+    const identity = `${entry.kind}:${entry.ref}`;
+    const current = important.get(identity) || { entry, isDefault: false, isBase: false, isFavorite: false };
+    if (reason === "default") current.isDefault = true;
+    if (reason === "base") current.isBase = true;
+    if (reason === "favorite") current.isFavorite = true;
+    important.set(identity, current);
+  }
+
+  const defaultRemoteRef =
+    branchList.value.defaultRemote && branchList.value.defaultBranch
+      ? `${branchList.value.defaultRemote}/${branchList.value.defaultBranch}`
+      : "";
+  const defaultRemote =
+    remoteEntries.find((entry) => entry.ref === defaultRemoteRef) ||
+    remoteEntries.find((entry) => entry.meta?.remote === branchList.value.defaultRemote && entry.meta?.isDefault) ||
+    remoteEntries.find((entry) => entry.meta?.isDefault);
+  if (defaultRemote) addImportant(defaultRemote, "default");
+  else
+    addImportant(
+      localEntries.find((entry) => entry.ref === branchList.value.defaultBranch),
+      "default",
+    );
+
+  const baseResolution = resolveBaseRef(
+    props.baseBranch,
+    [...localEntries.map((entry) => entry.ref), ...remoteEntries.map((entry) => entry.ref)],
+    effectiveRemoteNames.value,
+    branchList.value.defaultRemote,
+  );
+  const baseEntry = isRemoteRef(baseResolution.opRef, effectiveRemoteNames.value)
+    ? remoteEntries.find((entry) => entry.ref === baseResolution.opRef)
+    : localEntries.find((entry) => entry.ref === baseResolution.opRef);
+  addImportant(baseEntry, "base");
+
+  for (const favorite of historyPreferences.value.favorites) {
+    addImportant(
+      localEntries.find((entry) => entry.ref === favorite),
+      "favorite",
+    );
+    addImportant(
+      remoteEntries.find((entry) => entry.ref === favorite),
+      "favorite",
+    );
+  }
+
+  const importantNodes = Array.from(important.values())
+    .filter(({ entry }) => !q || entry.ref.toLowerCase().includes(q))
+    .map(
+      ({ entry, isDefault, isBase, isFavorite }) =>
+        ({
+          key: `important:${entry.kind}:${entry.ref}`,
+          kind: entry.kind,
+          label: entry.ref,
+          ref: entry.ref,
+          isCurrent: entry.kind === "branch-local" && entry.ref === head,
+          meta: { ...entry.meta, isDefault: isDefault || entry.meta?.isDefault, isBase, isFavorite },
+          children: [],
+        }) satisfies BranchTreeNode,
+    );
+  if (importantNodes.length) {
+    out.push({
+      key: "important",
+      kind: "section",
+      label: "Important",
+      icon: "★",
+      children: importantNodes,
+      meta: { count: importantNodes.length },
+    });
+  }
+
   // ---- Local ----
   if (showLocal.value) {
-    const locals = branchList.value.local
-      .filter((b) => !showMerged.value || b.merged || b.isCurrent)
+    const locals = localEntries
+      .filter((entry) => !showMerged.value || entry.meta?.merged || entry.meta?.isCurrent)
       // Date cutoff: drop branches older than the cutoff EXCEPT the current
       // branch — hiding HEAD while it's still checked out is jarring. A
       // timestamp of 0 means "unknown" (old git output); we drop those when
       // the user has actively asked for a recent-activity filter.
-      .filter((b) => cutoff === 0 || b.isCurrent || (b.lastCommitTimestamp > 0 && b.lastCommitTimestamp >= cutoff))
-      .map((b) => ({
-        shortName: b.name,
-        ref: b.name,
-        kind: "branch-local" as const,
-        meta: {
-          ahead: b.ahead,
-          behind: b.behind,
-          upstream: b.upstream,
-          merged: b.merged,
-          lastCommit: b.lastCommit,
-          lastSubject: b.lastSubject,
-          lastAuthor: b.lastAuthor,
-          lastRelativeDate: b.lastRelativeDate,
-          lastCommitTimestamp: b.lastCommitTimestamp,
-          isCurrent: b.isCurrent,
-          ...(b.worktreePath ? { worktreePath: b.worktreePath } : {}),
-        },
-      }));
+      .filter((entry) => cutoff === 0 || entry.meta?.isCurrent || (entry.meta?.lastCommitTimestamp || 0) >= cutoff);
     const localTree = buildForest(locals, "local");
     if (localTree.length) {
       out.push({
@@ -1049,34 +1164,21 @@ const branchTree = computed<BranchTreeNode[]>(() => {
 
   // ---- Remotes ----
   if (showRemotes.value) {
-    const byRemote = new Map<string, RemoteBranch[]>();
-    for (const r of branchList.value.remotes) {
+    const byRemote = new Map<string, ForestEntry[]>();
+    for (const r of remoteEntries) {
       // Same cutoff as locals. Remote tips don't have an "isCurrent"
       // escape hatch, so they're filtered strictly.
-      if (cutoff !== 0 && !(r.lastCommitTimestamp > 0 && r.lastCommitTimestamp >= cutoff)) continue;
-      const list = byRemote.get(r.remote) || [];
+      if (cutoff !== 0 && !((r.meta?.lastCommitTimestamp || 0) > 0 && (r.meta?.lastCommitTimestamp || 0) >= cutoff))
+        continue;
+      const remote = String(r.meta?.remote || "");
+      const list = byRemote.get(remote) || [];
       list.push(r);
-      byRemote.set(r.remote, list);
+      byRemote.set(remote, list);
     }
     const remoteNames = Array.from(byRemote.keys()).sort();
     for (const remoteName of remoteNames) {
       const entries = byRemote.get(remoteName) || [];
-      const mapped = entries.map((r) => ({
-        shortName: r.shortName,
-        ref: r.name,
-        kind: "branch-remote" as const,
-        meta: {
-          remote: r.remote,
-          lastCommit: r.lastCommit,
-          lastSubject: r.lastSubject,
-          lastAuthor: r.lastAuthor,
-          lastRelativeDate: r.lastRelativeDate,
-          lastCommitTimestamp: r.lastCommitTimestamp,
-          hasLocal: localShortNames.value.has(r.shortName),
-          isDefault: r.isDefault,
-        },
-      }));
-      const subTree = buildForest(mapped, `remote:${remoteName}`);
+      const subTree = buildForest(entries, `remote:${remoteName}`);
       if (!subTree.length) continue;
       out.push({
         key: `remote:${remoteName}`,
