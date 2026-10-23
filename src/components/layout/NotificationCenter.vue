@@ -199,7 +199,7 @@
             :class="{ 'notification-center__pin--active': notifStore.pinned }"
             :title="
               notifStore.pinned
-                ? 'Unpin the notification panel — it will collapse back into the side rail when you click outside it.'
+                ? 'Unpin and close the notification panel.'
                 : 'Pin the notification panel to the right of the workspace so it stays open while you work; clicking outside no longer dismisses it.'
             "
             @click="notifStore.togglePin()"

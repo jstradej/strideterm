@@ -7,6 +7,7 @@ describe("notification store (session-grouped)", () => {
     setActivePinia(createPinia());
     window.localStorage.removeItem("strideterm-notifications");
     window.localStorage.removeItem("strideterm-notifications-v2");
+    window.localStorage.removeItem("strideterm-notifications-pinned");
   });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -119,6 +120,21 @@ describe("notification store (session-grouped)", () => {
     expect(store.panelOpen).toBe(true);
     store.togglePanel();
     expect(store.panelOpen).toBe(false);
+  });
+
+  it("keeps a pinned panel visible and closes it when unpinned", () => {
+    const store = useNotificationStore();
+    store.panelOpen = true;
+
+    store.togglePin();
+    expect(store.pinned).toBe(true);
+    expect(store.panelOpen).toBe(false);
+    expect(store.pinned || store.panelOpen).toBe(true);
+
+    store.togglePin();
+    expect(store.pinned).toBe(false);
+    expect(store.panelOpen).toBe(false);
+    expect(store.pinned || store.panelOpen).toBe(false);
   });
 
   it("persists to localStorage v2", () => {

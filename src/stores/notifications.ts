@@ -936,16 +936,9 @@ export const useNotificationStore = defineStore("notifications", () => {
   function togglePin(): void {
     pinned.value = !pinned.value;
     savePinned(pinned.value);
-    if (pinned.value) {
-      // Pinning makes the panel permanently visible — clear the transient
-      // overlay flag so unpinning later doesn't leave it stuck open.
-      panelOpen.value = false;
-    } else {
-      // Unpinning: keep the panel visible as an overlay so the user can see
-      // what's there and close it deliberately with × or Esc. Without this
-      // the panel would vanish immediately, feeling abrupt.
-      panelOpen.value = true;
-    }
+    // The panel stays visible through `pinned` when pinned, and closes when
+    // unpinned.
+    panelOpen.value = false;
   }
 
   function requestFocus(): void {
