@@ -21,6 +21,7 @@ const addEvent = vi.fn();
 const openDialog = vi.fn();
 const closeDialog = vi.fn();
 const azureCreatePullRequest = vi.fn();
+const gitListBranches = vi.fn();
 const gitLoadGraph = vi.fn();
 const gitFetch = vi.fn();
 const toggleGitHistoryFavorite = vi.fn();
@@ -51,7 +52,7 @@ vi.mock("../../../stores/app.js", () => ({
 }));
 vi.mock("../../../stores/git-ui.js", () => ({
   useGitUiStore: () => ({
-    gitListBranches: vi.fn(),
+    gitListBranches,
     gitListTags: vi.fn(),
     gitLoadGraph,
     gitFetch,
@@ -187,6 +188,7 @@ beforeEach(() => {
   openDialog.mockClear();
   closeDialog.mockClear();
   azureCreatePullRequest.mockReset();
+  gitListBranches.mockClear();
   gitLoadGraph.mockClear();
   gitFetch.mockClear();
   gitPush.mockClear();
@@ -1757,7 +1759,7 @@ describe("GitBranchesTab history toolbar", () => {
     expect(historySelection.topoOrder).toBe(false);
   });
 
-  test("the History toolbar has no Refresh button; the legacy toolbar keeps its own", () => {
+  test("neither History nor Branches adds a duplicate Refresh button to its toolbar", () => {
     expect(
       mountMode(true)
         .findAll("button")
@@ -1767,10 +1769,10 @@ describe("GitBranchesTab history toolbar", () => {
       mountMode(false)
         .findAll("button")
         .some((b) => b.text() === "Refresh"),
-    ).toBe(true);
+    ).toBe(false);
   });
 
-  test("bumping the refresh token force-reloads the graph", async () => {
+  test("bumping the refresh token force-reloads branches and the graph", async () => {
     vi.useFakeTimers();
     const gitUi = reactive({
       branchList: { current: "main", local: [{ name: "main", isCurrent: true }], remotes: [] },
@@ -1785,6 +1787,7 @@ describe("GitBranchesTab history toolbar", () => {
     gitLoadGraph.mockClear();
     gitUi.historyRefreshToken = 1;
     await vi.advanceTimersByTimeAsync(500);
+    expect(gitListBranches).toHaveBeenCalledWith("ws-token", { force: true });
     expect(gitLoadGraph).toHaveBeenCalledWith("ws-token", expect.objectContaining({ force: true }));
     vi.useRealTimers();
   });

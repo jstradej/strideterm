@@ -163,15 +163,6 @@
         :options="branchSortSelectOptions"
         class="git-branches__cselect git-branches__cselect--sort"
       />
-      <button
-        type="button"
-        class="button button--small"
-        :disabled="branchesLoading || graphLoading"
-        title="Re-list branches and re-read the commit topology. Local only — no fetch."
-        @click="refreshAll(true)"
-      >
-        {{ branchesLoading || graphLoading ? "Loading…" : "Refresh" }}
-      </button>
     </div>
 
     <!-- Mobile view switcher (Tree → Commits → Diff). Hidden on desktop. -->

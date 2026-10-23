@@ -326,6 +326,8 @@ const errorMessage = computed(() => {
 });
 
 let diffEditor: monaco.editor.IStandaloneDiffEditor | null = null;
+let firstRevealModels: { original: monaco.editor.ITextModel; modified: monaco.editor.ITextModel } | null = null;
+let diffComparisonIdentity = "";
 let resizeObserver: ResizeObserver | null = null;
 let updateDiffDisposable: monaco.IDisposable | null = null;
 const inlineCommentDisposables: monaco.IDisposable[] = [];
@@ -548,6 +550,8 @@ function applyDiffModels() {
   clearReviewZones();
   const payload = props.payload;
   if (!payload || (payload.ok === false && !payload.leftContent && !payload.rightContent)) {
+    firstRevealModels = null;
+    diffComparisonIdentity = "";
     const previous = diffEditor.getModel();
     diffEditor.setModel(null);
     if (previous?.original) previous.original.dispose();
@@ -558,9 +562,35 @@ function applyDiffModels() {
     updateInlineCommentActionAvailability();
     return;
   }
-  const oldModel = monaco.editor.createModel(payload.leftContent || "", payload.language || "plaintext");
-  const newModel = monaco.editor.createModel(payload.rightContent || "", payload.language || "plaintext");
   const previous = diffEditor.getModel();
+  const leftContent = payload.leftContent || "";
+  const rightContent = payload.rightContent || "";
+  const language = payload.language || "plaintext";
+  const comparisonIdentity = JSON.stringify([
+    payload.leftLabel || "",
+    payload.rightLabel || "",
+    !!payload.leftMissing,
+    !!payload.rightMissing,
+    props.popoutTitle,
+  ]);
+  const sameModels =
+    previous &&
+    previous.original.getValue() === leftContent &&
+    previous.modified.getValue() === rightContent &&
+    previous.original.getLanguageId() === language &&
+    previous.modified.getLanguageId() === language;
+  if (sameModels && previous) {
+    const identityChanged = diffComparisonIdentity !== comparisonIdentity;
+    diffComparisonIdentity = comparisonIdentity;
+    if (identityChanged && !firstRevealModels && props.targetLine < 0) diffEditor.revealFirstDiff();
+    renderReviewZones();
+    updateInlineCommentActionAvailability();
+    return;
+  }
+  const oldModel = monaco.editor.createModel(leftContent, language);
+  const newModel = monaco.editor.createModel(rightContent, language);
+  diffComparisonIdentity = comparisonIdentity;
+  firstRevealModels = props.targetLine < 0 ? { original: oldModel, modified: newModel } : null;
   diffEditor.setModel({ original: oldModel, modified: newModel });
   if (previous?.original) previous.original.dispose();
   if (previous?.modified) previous.modified.dispose();
@@ -578,6 +608,12 @@ function refreshChangeList() {
   const list = diffEditor.getLineChanges() || [];
   changes.value = list;
   currentChangeIndex.value = list.length ? 0 : -1;
+  const pending = firstRevealModels;
+  const current = diffEditor.getModel();
+  if (pending && current?.original === pending.original && current.modified === pending.modified) {
+    firstRevealModels = null;
+    if (props.targetLine < 0) diffEditor.revealFirstDiff();
+  }
 }
 
 function goToChange(direction: number) {
@@ -601,7 +637,7 @@ watch(sideBySide, (value) => {
 });
 
 watch(
-  () => props.payload,
+  () => [props.payload, props.popoutTitle] as const,
   () => {
     nextTick(() => {
       ensureEditor();
@@ -660,6 +696,7 @@ onBeforeUnmount(() => {
     updateDiffDisposable = null;
   }
   if (diffEditor) {
+    firstRevealModels = null;
     clearReviewZones();
     const model = diffEditor.getModel();
     diffEditor.setModel(null);
