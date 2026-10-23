@@ -257,11 +257,10 @@
                     <h3>{{ gitUi.selectedDiff?.path || "Select a file" }}</h3>
                   </div>
                 </div>
-                <div class="git-monaco-host">
-                  <p v-if="newView && gitUi.selectedDiff?.path" class="git-changes__diff-scope">{{ diffLayerLabel }}</p>
+                <div v-if="newView && gitUi.selectedDiff?.path" class="git-changes__diff-controls">
+                  <p class="git-changes__diff-scope">{{ diffLayerLabel }}</p>
                   <div
                     v-if="
-                      newView &&
                       gitUi.selectedDiff?.scope !== 'untracked' &&
                       gitUi.selectedDiff?.scope !== 'conflict' &&
                       monacoDiffPayload?.diffToken
@@ -279,6 +278,8 @@
                       {{ gitUi.selectedDiff?.scope === "staged" ? "Unstage" : "Stage" }} hunk {{ index + 1 }}
                     </button>
                   </div>
+                </div>
+                <div class="git-monaco-host">
                   <MonacoDiffPanel
                     v-if="gitUi.selectedDiff?.path"
                     :payload="monacoDiffPayload"
@@ -1550,28 +1551,6 @@ useContextMenu({
   }
 }
 
-/* Splitpanes default-theme has higher specificity (.default-theme.splitpanes
-   .splitpanes__pane = 3 classes) than our override, and its bg #f2f2f2 leaks
-   through unless we use !important. */
-:deep(.git-changes__splitpanes.splitpanes) {
-  background: transparent !important;
-}
-
-:deep(.git-changes__splitpanes.splitpanes > .splitpanes__pane) {
-  background: transparent !important;
-  overflow: hidden;
-}
-
-:deep(.git-changes__splitpanes.splitpanes > .splitpanes__splitter) {
-  background: var(--border) !important;
-  min-width: 3px;
-  min-height: 3px;
-}
-
-:deep(.git-changes__splitpanes.splitpanes > .splitpanes__splitter:hover) {
-  background: var(--accent) !important;
-}
-
 .git-section__files--split {
   height: 100%;
   min-height: 0;
@@ -1604,10 +1583,32 @@ useContextMenu({
   overflow: hidden;
 }
 
+.git-changes__diff-controls {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 8px;
+}
+
+.git-changes__diff-scope {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.git-changes__hunk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .git-monaco-host {
   flex: 1;
   min-height: 0;
   display: flex;
+  min-width: 0;
   position: relative;
 }
 

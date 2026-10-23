@@ -2221,7 +2221,7 @@ watch(
   gap: 8px;
   padding: 6px 10px;
   border-bottom: 1px solid var(--border);
-  background: var(--surface);
+  background: var(--panel);
   flex-wrap: wrap;
   font-size: 12px;
 }
@@ -2240,7 +2240,7 @@ watch(
   line-height: 1.2;
   border: 1px solid var(--border);
   border-radius: 5px;
-  background: var(--surface);
+  background: var(--panel);
   color: var(--text);
 }
 
@@ -2349,7 +2349,7 @@ watch(
   width: 100%;
   padding: 4px 26px 4px 8px;
   font-size: 12px;
-  background: var(--surface);
+  background: var(--panel);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 3px;
@@ -2467,24 +2467,6 @@ watch(
   background: transparent !important;
 }
 
-:deep(.git-branches__panes.splitpanes > .splitpanes__pane),
-:deep(.git-branches__inner-panes.splitpanes > .splitpanes__pane) {
-  background: transparent !important;
-  overflow: hidden;
-}
-
-:deep(.git-branches__panes.splitpanes > .splitpanes__splitter),
-:deep(.git-branches__inner-panes.splitpanes > .splitpanes__splitter) {
-  background: var(--border) !important;
-  min-width: 3px;
-  min-height: 3px;
-}
-
-:deep(.git-branches__panes.splitpanes > .splitpanes__splitter:hover),
-:deep(.git-branches__inner-panes.splitpanes > .splitpanes__splitter:hover) {
-  background: var(--accent) !important;
-}
-
 .git-branches__commits-pane,
 .git-branches__diff-pane {
   display: flex;
@@ -2499,12 +2481,12 @@ watch(
 
 .git-branches__diff-pane {
   border: none;
-  background: transparent;
+  background: var(--panel);
 }
 
 .git-branches__commits-pane {
   border: none;
-  background: transparent;
+  background: var(--panel);
 }
 
 .git-branches__pane-head {
@@ -2661,7 +2643,7 @@ watch(
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 4px;
-  background: rgba(var(--tint), 0.03);
+  background: var(--panel);
 }
 
 .git-branches__commit-diff {
@@ -2903,7 +2885,7 @@ watch(
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: 4px;
-  background: rgba(var(--tint), 0.03);
+  background: var(--panel);
 }
 
 .git-branches__mobile-files--only {

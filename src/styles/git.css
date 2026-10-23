@@ -56,6 +56,75 @@
   overflow: hidden;
 }
 
+.default-theme.splitpanes.git-changes__splitpanes > .splitpanes__pane,
+.default-theme.splitpanes.git-branches__panes > .splitpanes__pane,
+.default-theme.splitpanes.git-branches__inner-panes > .splitpanes__pane,
+.default-theme.splitpanes.stash-splitpanes > .splitpanes__pane {
+  background: var(--panel) !important;
+  overflow: hidden;
+}
+
+.default-theme.splitpanes.git-changes__splitpanes > .splitpanes__splitter,
+.default-theme.splitpanes.git-branches__panes > .splitpanes__splitter,
+.default-theme.splitpanes.git-branches__inner-panes > .splitpanes__splitter,
+.default-theme.splitpanes.stash-splitpanes > .splitpanes__splitter {
+  background: var(--border) !important;
+  border-color: var(--border) !important;
+}
+
+.default-theme.splitpanes.git-changes__splitpanes > .splitpanes__splitter::before,
+.default-theme.splitpanes.git-changes__splitpanes > .splitpanes__splitter::after,
+.default-theme.splitpanes.git-branches__panes > .splitpanes__splitter::before,
+.default-theme.splitpanes.git-branches__panes > .splitpanes__splitter::after,
+.default-theme.splitpanes.git-branches__inner-panes > .splitpanes__splitter::before,
+.default-theme.splitpanes.git-branches__inner-panes > .splitpanes__splitter::after,
+.default-theme.splitpanes.stash-splitpanes > .splitpanes__splitter::before,
+.default-theme.splitpanes.stash-splitpanes > .splitpanes__splitter::after {
+  background-color: var(--muted);
+}
+
+.default-theme.splitpanes.git-changes__splitpanes > .splitpanes__splitter:hover,
+.default-theme.splitpanes.git-branches__panes > .splitpanes__splitter:hover,
+.default-theme.splitpanes.git-branches__inner-panes > .splitpanes__splitter:hover,
+.default-theme.splitpanes.stash-splitpanes > .splitpanes__splitter:hover {
+  background: var(--accent) !important;
+}
+
+.default-theme.splitpanes.git-changes__splitpanes > .splitpanes__splitter:hover::before,
+.default-theme.splitpanes.git-changes__splitpanes > .splitpanes__splitter:hover::after,
+.default-theme.splitpanes.git-branches__panes > .splitpanes__splitter:hover::before,
+.default-theme.splitpanes.git-branches__panes > .splitpanes__splitter:hover::after,
+.default-theme.splitpanes.git-branches__inner-panes > .splitpanes__splitter:hover::before,
+.default-theme.splitpanes.git-branches__inner-panes > .splitpanes__splitter:hover::after,
+.default-theme.splitpanes.stash-splitpanes > .splitpanes__splitter:hover::before,
+.default-theme.splitpanes.stash-splitpanes > .splitpanes__splitter:hover::after {
+  background-color: var(--accent);
+}
+
+.git-tree__scroll {
+  scrollbar-color: color-mix(in srgb, var(--muted) 45%, var(--panel)) var(--panel);
+  scrollbar-width: thin;
+}
+
+.git-tree__scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.git-tree__scroll::-webkit-scrollbar-track {
+  background: var(--panel);
+}
+
+.git-tree__scroll::-webkit-scrollbar-thumb {
+  border: 2px solid var(--panel);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--muted) 45%, var(--panel));
+}
+
+.git-tree__scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
+}
+
 .git-view__toolbar,
 .git-view__summary,
 .git-view__actions,
@@ -259,7 +328,7 @@
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 12px;
-  background: rgba(var(--tint), 0.03);
+  background: var(--panel);
   display: grid;
   /* One column, clamped to the card. The implicit `auto` column is sized to
      the widest child's min-content, so a single unbreakable string (a wiki

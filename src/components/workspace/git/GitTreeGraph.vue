@@ -1046,7 +1046,7 @@ watch(
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: var(--surface, rgba(0, 0, 0, 0.15));
+  background: var(--surface, var(--panel));
   border: 1px solid var(--border);
   border-radius: 4px;
   overflow: hidden;

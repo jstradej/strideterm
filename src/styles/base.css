@@ -162,6 +162,7 @@ body {
   min-height: 0;
   background: var(--bg);
   color: var(--text);
+  isolation: isolate;
 }
 
 body::after {
@@ -169,7 +170,7 @@ body::after {
   position: fixed;
   inset: 0;
   pointer-events: none;
-  z-index: 10000;
+  z-index: -1;
   opacity: 0.028;
   background-image: var(--noise-texture);
   background-repeat: repeat;

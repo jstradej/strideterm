@@ -1,6 +1,11 @@
 <template>
   <div class="mdp">
-    <div v-if="!hideLabels" class="mdp__labels">
+    <div
+      v-if="!hideLabels"
+      class="mdp__labels"
+      :class="{ 'mdp__labels--inline': !hasSideBySidePanes }"
+      :style="labelStyle"
+    >
       <div class="mdp__label-pane mdp__label-pane--left">
         <span class="mdp__label-tag">old</span>
         {{ payload?.leftLabel || "" }}
@@ -296,6 +301,15 @@ function revealTargetLine() {
 const containerRef = ref<HTMLDivElement | null>(null);
 const bodyRef = ref<HTMLDivElement | null>(null);
 const sideBySide = ref(!props.initialInline);
+const hasSideBySidePanes = ref(!props.initialInline);
+const paneWidths = ref({ original: 0, modified: 0, gap: 0 });
+const labelStyle = computed(() => {
+  if (!hasSideBySidePanes.value) return undefined;
+  return {
+    gridTemplateColumns: `${paneWidths.value.original}px ${paneWidths.value.modified}px`,
+    columnGap: `${paneWidths.value.gap}px`,
+  };
+});
 const visibleFileAnnotations = computed(() => [
   ...props.fileAnnotations,
   ...(!sideBySide.value
@@ -330,6 +344,8 @@ let firstRevealModels: { original: monaco.editor.ITextModel; modified: monaco.ed
 let diffComparisonIdentity = "";
 let resizeObserver: ResizeObserver | null = null;
 let updateDiffDisposable: monaco.IDisposable | null = null;
+const paneLayoutDisposables: monaco.IDisposable[] = [];
+let paneLayoutFrame: number | null = null;
 const inlineCommentDisposables: monaco.IDisposable[] = [];
 const inlineCommentContextKeys: monaco.editor.IContextKey<boolean>[] = [];
 const contextMenuLines: Record<"old" | "new", number> = { old: 0, new: 0 };
@@ -492,11 +508,55 @@ function ensureEditor() {
     ignoreTrimWhitespace: false,
     diffAlgorithm: "advanced",
   });
+  const originalEditor = diffEditor.getOriginalEditor();
+  const modifiedEditor = diffEditor.getModifiedEditor();
+  paneLayoutDisposables.push(
+    originalEditor.onDidLayoutChange(schedulePaneWidthSync),
+    modifiedEditor.onDidLayoutChange(schedulePaneWidthSync),
+  );
   resizeObserver = new ResizeObserver(() => layoutEditor());
   if (bodyRef.value) resizeObserver.observe(bodyRef.value);
   layoutEditor();
+  syncPaneWidths();
   updateDiffDisposable = diffEditor.onDidUpdateDiff(() => refreshChangeList());
   installInlineCommentActions();
+}
+
+function syncPaneWidths() {
+  if (!diffEditor) return;
+  if (!sideBySide.value) {
+    hasSideBySidePanes.value = false;
+    return;
+  }
+  const originalLayout = diffEditor.getOriginalEditor().getLayoutInfo();
+  const modifiedLayout = diffEditor.getModifiedEditor().getLayoutInfo();
+  if (originalLayout.contentWidth <= 0 || modifiedLayout.contentWidth <= 0) {
+    hasSideBySidePanes.value = false;
+    return;
+  }
+  const originalWidth = originalLayout.width;
+  const modifiedWidth = modifiedLayout.width;
+  if (originalWidth <= 0 || modifiedWidth <= 0) return;
+  const originalNode = diffEditor.getOriginalEditor().getDomNode();
+  const modifiedNode = diffEditor.getModifiedEditor().getDomNode();
+  const gap =
+    originalNode && modifiedNode
+      ? Math.max(0, Math.round(modifiedNode.getBoundingClientRect().left - originalNode.getBoundingClientRect().right))
+      : 0;
+  hasSideBySidePanes.value = true;
+  paneWidths.value = {
+    original: originalWidth,
+    modified: modifiedWidth,
+    gap,
+  };
+}
+
+function schedulePaneWidthSync() {
+  if (paneLayoutFrame != null) return;
+  paneLayoutFrame = requestAnimationFrame(() => {
+    paneLayoutFrame = null;
+    syncPaneWidths();
+  });
 }
 
 function installInlineCommentActions() {
@@ -632,6 +692,7 @@ function goToChange(direction: number) {
 watch(sideBySide, (value) => {
   if (diffEditor) diffEditor.updateOptions({ renderSideBySide: value });
   layoutEditor();
+  syncPaneWidths();
   renderReviewZones();
   if (value) nextTick(revealTargetLine);
 });
@@ -695,6 +756,11 @@ onBeforeUnmount(() => {
     updateDiffDisposable.dispose();
     updateDiffDisposable = null;
   }
+  for (const disposable of paneLayoutDisposables.splice(0)) disposable.dispose();
+  if (paneLayoutFrame != null) {
+    cancelAnimationFrame(paneLayoutFrame);
+    paneLayoutFrame = null;
+  }
   if (diffEditor) {
     firstRevealModels = null;
     clearReviewZones();
@@ -722,7 +788,7 @@ defineExpose({ goToChange });
   display: grid;
   grid-template-columns: 1fr 1fr;
   font-size: 11px;
-  background: var(--bg);
+  background: var(--panel);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
@@ -730,9 +796,19 @@ defineExpose({ goToChange });
 .mdp__label-pane {
   padding: 4px 12px;
   display: flex;
+  min-width: 0;
   align-items: center;
   gap: 6px;
   color: var(--muted);
+}
+
+.mdp__labels--inline {
+  display: flex;
+  gap: 12px;
+}
+
+.mdp__labels--inline .mdp__label-pane {
+  flex: 0 1 auto;
 }
 
 .mdp__label-pane--left {
@@ -740,8 +816,9 @@ defineExpose({ goToChange });
 }
 
 .mdp__label-tag {
-  background: var(--border);
-  color: var(--text);
+  background: color-mix(in srgb, var(--muted) 10%, var(--panel));
+  border: 1px solid var(--border);
+  color: var(--muted);
   padding: 0 6px;
   border-radius: 3px;
   font-size: 10px;

@@ -167,7 +167,7 @@ function onToggle(key: string) {
   height: 100%;
   min-height: 0;
   overflow: auto;
-  background: var(--surface, rgba(0, 0, 0, 0.15));
+  background: var(--surface, var(--panel));
   border: 1px solid var(--border);
   border-radius: 4px;
   font-size: 12px;

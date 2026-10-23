@@ -218,7 +218,7 @@ function onContextMenu(e: MouseEvent) {
   border-radius: 4px;
   padding: 2px 5px;
   color: var(--muted);
-  background: var(--surface);
+  background: var(--surface, var(--panel));
   font-size: 10px;
   cursor: pointer;
 }

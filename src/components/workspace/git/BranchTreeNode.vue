@@ -672,7 +672,7 @@ function runAction(id: string) {
   left: 24px;
   top: 100%;
   min-width: 200px;
-  background: var(--surface, #1d2026);
+  background: var(--surface, var(--panel));
   border: 1px solid var(--border);
   border-radius: 4px;
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
