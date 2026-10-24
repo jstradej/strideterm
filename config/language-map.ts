@@ -44,8 +44,10 @@ export const LANG_BY_EXT: Record<string, string> = {
 
 export const SPECIAL_FILENAMES: Record<string, string> = {
   dockerfile: "dockerfile",
-  makefile: "makefile",
+  // Monaco does not ship a Makefile grammar; shell tokens still highlight recipe commands.
+  makefile: "shell",
   cmakelists: "cmake",
+  ".env": "ini",
 };
 
 export function guessMonacoLanguage(extension: string | null | undefined): string {

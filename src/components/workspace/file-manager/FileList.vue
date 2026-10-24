@@ -217,4 +217,28 @@ function onContextMenu(event: MouseEvent, entry: any) {
   border-radius: 6px;
   font-size: 11px;
 }
+
+@container file-list (max-width: 520px) {
+  .file-list__header {
+    grid-template-columns: minmax(0, 1fr) 60px;
+  }
+
+  .file-list__header .file-list__col--modified,
+  .file-list__header .file-list__col--type {
+    display: none;
+  }
+
+  .file-list__row--parent {
+    grid-template-columns: minmax(0, 1fr) 60px;
+  }
+
+  :deep(.fli--list) {
+    --fm-file-columns: minmax(0, 1fr) 60px;
+  }
+
+  :deep(.fli__col--modified),
+  :deep(.fli__col--type) {
+    display: none;
+  }
+}
 </style>

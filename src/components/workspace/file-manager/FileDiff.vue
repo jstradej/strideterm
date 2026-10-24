@@ -1,116 +1,128 @@
 <template>
-  <Teleport to="body">
-    <div v-if="store.diffOpen" class="fm-diff-backdrop" @mousedown.self="store.closeDiff()">
-      <div class="fm-diff-modal" role="dialog" aria-modal="true">
-        <header class="fm-diff__header">
-          <div class="fm-diff__title">
-            <span class="fm-diff__filename">{{ store.diffEntry?.name || "" }}</span>
-            <span class="fm-diff__path">{{ store.diffEntry?.relativePath || "" }}</span>
-          </div>
-          <button
-            type="button"
-            class="fm-diff__close"
-            title="Close the diff overlay and return to the file manager. Keyboard shortcut: Esc."
-            @click="store.closeDiff()"
-          >
-            ×
-          </button>
-        </header>
-
-        <div class="fm-diff__controls">
-          <div class="fm-diff__source">
-            <label class="fm-diff__label">Compare against:</label>
-            <div class="fm-diff__select-wrap">
-              <CustomSelect
-                :model-value="store.diffSource"
-                :options="sourceOptions"
-                placeholder="Source…"
-                @update:model-value="onSourceChange"
-              />
-            </div>
-          </div>
-
-          <div v-if="store.diffSource === 'branch'" class="fm-diff__source">
-            <label class="fm-diff__label">Branch:</label>
-            <div class="fm-diff__select-wrap">
-              <CustomSelect
-                :model-value="store.diffRevisionRef"
-                :options="branchOptions"
-                placeholder="— select —"
-                @update:model-value="(v) => store.setDiffSource('branch', String(v))"
-              />
-            </div>
-          </div>
-
-          <div v-if="store.diffSource === 'tag'" class="fm-diff__source">
-            <label class="fm-diff__label">Tag:</label>
-            <div class="fm-diff__select-wrap">
-              <CustomSelect
-                :model-value="store.diffRevisionRef"
-                :options="tagOptions"
-                placeholder="— select —"
-                @update:model-value="(v) => store.setDiffSource('tag', String(v))"
-              />
-            </div>
-          </div>
-
-          <div v-if="store.diffSource === 'commit'" class="fm-diff__source fm-diff__source--commit">
-            <label class="fm-diff__label">Commit:</label>
-            <div class="fm-diff__select-wrap fm-diff__select-wrap--wide">
-              <CustomSelect
-                :model-value="store.diffRevisionRef"
-                :options="commitOptions"
-                placeholder="— pick from log —"
-                @update:model-value="(v) => store.setDiffSource('commit', String(v))"
-              />
-            </div>
-            <input
-              type="text"
-              class="fm-diff__input"
-              placeholder="…or paste commit hash"
-              :value="manualCommit"
-              @input="manualCommit = ($event.target as HTMLInputElement).value"
-              @keydown.enter="applyManualCommit"
-            />
-          </div>
-
-          <div class="fm-diff__spacer"></div>
-
-          <button
-            type="button"
-            class="fm-diff__btn"
-            title="Re-run git diff for this file against the selected source — picks up new commits or working-tree edits made since the diff was opened."
-            @click="store.runDiff()"
-          >
-            ↻
-          </button>
-        </div>
-
-        <MonacoDiffPanel
-          :payload="store.diffPayload"
-          :loading="store.diffLoading"
-          :popout-title="store.diffEntry?.relativePath || store.diffEntry?.name || ''"
-          class="fm-diff__panel"
-        />
-
-        <footer class="fm-diff__footer">
-          <span class="fm-diff__hint">
-            <kbd>Esc</kbd> close · <kbd>F7</kbd> next change · <kbd>Shift+F7</kbd> previous change
-          </span>
-        </footer>
+  <div
+    v-if="store.diffOpen"
+    ref="diffRoot"
+    class="fm-diff-inline"
+    tabindex="-1"
+    @keydown.esc.stop.prevent="store.closeDiff()"
+  >
+    <header class="fm-diff__header">
+      <div class="fm-diff__title">
+        <span class="fm-diff__filename">{{ store.diffEntry?.name || "" }}</span>
+        <span class="fm-diff__path">{{ store.diffEntry?.relativePath || "" }}</span>
       </div>
+      <button
+        type="button"
+        class="fm-diff__close"
+        title="Return to the file editor. Keyboard shortcut: Esc."
+        @click="store.closeDiff()"
+      >
+        ← Back to file
+      </button>
+    </header>
+
+    <div class="fm-diff__controls">
+      <div class="fm-diff__source">
+        <label class="fm-diff__label">Compare against:</label>
+        <div class="fm-diff__select-wrap">
+          <CustomSelect
+            :model-value="store.diffSource"
+            :options="sourceOptions"
+            placeholder="Source…"
+            @update:model-value="onSourceChange"
+          />
+        </div>
+      </div>
+
+      <div v-if="store.diffSource === 'branch'" class="fm-diff__source">
+        <label class="fm-diff__label">Branch:</label>
+        <div class="fm-diff__select-wrap">
+          <CustomSelect
+            :model-value="store.diffRevisionRef"
+            :options="branchOptions"
+            placeholder="— select —"
+            @update:model-value="(v) => store.setDiffSource('branch', String(v))"
+          />
+        </div>
+      </div>
+
+      <div v-if="store.diffSource === 'tag'" class="fm-diff__source">
+        <label class="fm-diff__label">Tag:</label>
+        <div class="fm-diff__select-wrap">
+          <CustomSelect
+            :model-value="store.diffRevisionRef"
+            :options="tagOptions"
+            placeholder="— select —"
+            @update:model-value="(v) => store.setDiffSource('tag', String(v))"
+          />
+        </div>
+      </div>
+
+      <div v-if="store.diffSource === 'commit'" class="fm-diff__source fm-diff__source--commit">
+        <label class="fm-diff__label">Commit:</label>
+        <div class="fm-diff__select-wrap fm-diff__select-wrap--wide">
+          <CustomSelect
+            :model-value="store.diffRevisionRef"
+            :options="commitOptions"
+            placeholder="— pick from log —"
+            @update:model-value="(v) => store.setDiffSource('commit', String(v))"
+          />
+        </div>
+        <input
+          type="text"
+          class="fm-diff__input"
+          placeholder="…or paste commit hash"
+          :value="manualCommit"
+          @input="manualCommit = ($event.target as HTMLInputElement).value"
+          @keydown.enter="applyManualCommit"
+        />
+      </div>
+
+      <div class="fm-diff__spacer"></div>
+
+      <button
+        type="button"
+        class="fm-diff__btn"
+        title="Re-run git diff for this file against the selected source — picks up new commits or working-tree edits made since the diff was opened."
+        @click="store.runDiff()"
+      >
+        ↻
+      </button>
     </div>
-  </Teleport>
+
+    <MonacoDiffPanel
+      :payload="store.diffPayload"
+      :loading="store.diffLoading"
+      :popout-title="store.diffEntry?.relativePath || store.diffEntry?.name || ''"
+      class="fm-diff__panel"
+    />
+
+    <footer class="fm-diff__footer">
+      <span class="fm-diff__hint">
+        <kbd>Esc</kbd> close · <kbd>F7</kbd> next change · <kbd>Shift+F7</kbd> previous change
+      </span>
+    </footer>
+  </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useFileManagerStore } from "../../../stores/file-manager.js";
 import CustomSelect from "../../common/CustomSelect.vue";
 import MonacoDiffPanel from "../../shared/MonacoDiffPanel.vue";
 
 const store = useFileManagerStore();
+const diffRoot = ref<HTMLElement | null>(null);
 const manualCommit = ref<string>("");
+
+onMounted(() => diffRoot.value?.focus({ preventScroll: true }));
+
+watch(
+  () => store.diffEntry?.relativePath,
+  () => {
+    manualCommit.value = "";
+  },
+);
 
 const sourceOptions = [
   { value: "head", label: "HEAD (current commit)" },
@@ -154,51 +166,26 @@ function formatDate(iso: string) {
     return iso;
   }
 }
-
-let escListener: ((event: KeyboardEvent) => void) | null = null;
-onMounted(() => {
-  escListener = (event: KeyboardEvent) => {
-    if (event.key === "Escape" && store.diffOpen) store.closeDiff();
-  };
-  document.addEventListener("keydown", escListener);
-});
-
-onBeforeUnmount(() => {
-  if (escListener) document.removeEventListener("keydown", escListener);
-  escListener = null;
-});
 </script>
 
 <style scoped>
-.fm-diff-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.55);
-  z-index: 9000;
-  display: flex;
-  align-items: stretch;
-  justify-content: stretch;
-  padding: 24px;
-}
-
-.fm-diff-modal {
-  flex: 1;
+.fm-diff-inline {
+  container: fm-diff / inline-size;
   display: flex;
   flex-direction: column;
-  background: var(--panel, #1e1e1e);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: var(--shadow, 0 12px 36px rgba(0, 0, 0, 0.5));
-  overflow: hidden;
-  min-height: 0;
+  width: 100%;
+  height: 100%;
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--panel);
 }
 
 .fm-diff__header {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 14px;
+  padding: 7px 10px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -227,12 +214,11 @@ onBeforeUnmount(() => {
 }
 
 .fm-diff__close {
-  background: none;
-  border: 1px solid transparent;
+  background: transparent;
+  border: 1px solid var(--border);
   color: var(--muted);
-  font-size: 22px;
-  width: 28px;
-  height: 28px;
+  font-size: 11px;
+  padding: 4px 8px;
   cursor: pointer;
   border-radius: 4px;
   line-height: 1;
@@ -247,7 +233,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 6px 14px;
+  padding: 6px 10px;
   border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
 }
@@ -316,7 +302,7 @@ onBeforeUnmount(() => {
 }
 
 .fm-diff__footer {
-  padding: 4px 14px;
+  padding: 4px 10px;
   border-top: 1px solid var(--border);
   font-size: 11px;
   color: var(--muted);
@@ -331,5 +317,89 @@ onBeforeUnmount(() => {
   border-radius: 3px;
   font-size: 10px;
   font-family: inherit;
+}
+
+@container fm-diff (max-width: 560px) {
+  .fm-diff__header {
+    align-items: flex-start;
+    padding: 7px 8px;
+  }
+
+  .fm-diff__title {
+    overflow: hidden;
+  }
+
+  .fm-diff__path {
+    display: none;
+  }
+
+  .fm-diff__close {
+    flex: 0 0 auto;
+    min-height: 36px;
+    white-space: nowrap;
+  }
+
+  .fm-diff__controls {
+    align-items: stretch;
+    gap: 8px;
+    padding: 8px;
+  }
+
+  .fm-diff__source {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  .fm-diff__source:not(.fm-diff__source--commit) .fm-diff__select-wrap {
+    flex: 1 1 120px;
+    width: auto;
+    min-width: 0;
+  }
+
+  .fm-diff__source--commit .fm-diff__select-wrap--wide {
+    flex: 1 1 130px;
+    width: auto;
+    max-width: none;
+    min-width: 0;
+  }
+
+  .fm-diff__source--commit .fm-diff__input {
+    flex: 1 1 150px;
+    width: auto;
+    min-width: 0;
+  }
+
+  .fm-diff__spacer {
+    display: none;
+  }
+
+  .fm-diff__btn {
+    min-width: 36px;
+    min-height: 36px;
+    margin-left: auto;
+  }
+
+  .fm-diff__footer {
+    padding: 6px 8px;
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-height: 500px) {
+  .fm-diff__path,
+  .fm-diff__footer {
+    display: none;
+  }
+
+  .fm-diff__header {
+    padding-top: 4px;
+    padding-bottom: 4px;
+  }
+
+  .fm-diff__controls {
+    gap: 6px;
+    padding-top: 4px;
+    padding-bottom: 4px;
+  }
 }
 </style>

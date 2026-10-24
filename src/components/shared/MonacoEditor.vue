@@ -11,17 +11,22 @@ interface Props {
   modelValue?: string;
   language?: string;
   readOnly?: boolean;
+  columnSelection?: boolean;
+  autoFocus?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   modelValue: "",
   language: "markdown",
   readOnly: false,
+  columnSelection: false,
+  autoFocus: false,
 });
 
 const emit = defineEmits<{
   "update:modelValue": [value: string];
   save: [];
+  ready: [];
 }>();
 
 const container = ref<HTMLDivElement | null>(null);
@@ -36,6 +41,7 @@ onMounted(() => {
     language: props.language,
     theme: "vs-dark",
     readOnly: props.readOnly,
+    columnSelection: props.columnSelection,
     minimap: { enabled: false },
     lineNumbers: "on",
     scrollBeyondLastLine: false,
@@ -54,6 +60,8 @@ onMounted(() => {
       horizontalScrollbarSize: 8,
     },
   });
+  if (props.autoFocus) editor.focus();
+  emit("ready");
 
   // Observe the *parent* of the container (.td__editor-wrap or similar) and
   // force the container + Monaco to that size. Monaco's built-in
@@ -117,6 +125,13 @@ watch(
     if (editor) {
       editor.updateOptions({ readOnly: val });
     }
+  },
+);
+
+watch(
+  () => props.columnSelection,
+  (val) => {
+    editor?.updateOptions({ columnSelection: val });
   },
 );
 

@@ -10,7 +10,7 @@
         >
           {{ statusBadge(gitStatus) }} {{ statusLabel(gitStatus) }}
         </span>
-        {{ entry.name }}
+        <span class="file-preview__filename">{{ entry.name }}</span>
       </span>
       <span class="file-preview__meta">{{ formatSize(entry.size) }} · {{ formatDate(entry.modifiedAt) }}</span>
       <div class="file-preview__actions">
@@ -18,7 +18,7 @@
           v-if="gitStatus && entry?.kind === 'file'"
           type="button"
           class="button button--ghost file-preview__btn"
-          title="Open the file's git diff against HEAD (or the configured comparison ref) in a Monaco side-by-side viewer — read-only, lets you inspect the staged and unstaged changes for this file."
+          title="Compare the saved working-tree version against HEAD or another Git source in the inline Monaco diff. Unsaved editor drafts are not included."
           @click="store.openDiff(entry as any)"
         >
           Diff
@@ -27,7 +27,7 @@
           v-if="isEditable && !store.editMode"
           type="button"
           class="button button--ghost file-preview__btn"
-          title="Switch this file into the inline editor — type changes, then Save to persist or Cancel to discard. The file stays in the preview pane the whole time."
+          title="Switch this file into the inline editor — type changes, then Save or Discard changes. The file stays in the preview pane the whole time."
           @click="store.startEdit()"
         >
           Edit
@@ -35,22 +35,33 @@
         <template v-if="store.editMode">
           <button
             type="button"
+            class="button button--ghost file-preview__btn"
+            :aria-pressed="store.columnSelection"
+            :class="{ 'file-preview__btn--active': store.columnSelection }"
+            title="Toggle rectangular selection. With this on, drag across lines to select a block."
+            @click="store.columnSelection = !store.columnSelection"
+          >
+            Column selection
+          </button>
+          <button
+            type="button"
             class="button file-preview__btn"
             :disabled="!store.editDirty"
-            title="Write the editor's contents back to disk and leave edit mode. Disabled when there are no unsaved changes."
+            title="Write the editor's contents back to disk. Disabled when there are no unsaved changes."
             @click="store.saveEdit()"
           >
             Save
           </button>
-          <button
-            type="button"
-            class="button button--ghost file-preview__btn"
-            title="Discard pending edits and return to the read-only preview. Asks for confirmation if unsaved changes exist."
-            @click="store.cancelEdit()"
-          >
-            Cancel
-          </button>
         </template>
+        <button
+          v-if="store.editMode && store.editDirty"
+          type="button"
+          class="button button--ghost file-preview__btn"
+          title="Discard unsaved changes and restore the last saved file contents in the editor."
+          @click="store.discardEdit()"
+        >
+          Discard changes
+        </button>
         <button
           type="button"
           class="button button--ghost file-preview__btn"
@@ -63,10 +74,11 @@
     </div>
 
     <div class="file-preview__body" :class="gitStatus ? `file-preview__body--git-${gitStatus}` : ''">
-      <!-- Text preview / editor -->
-      <template v-if="preview?.kind === 'text'">
-        <FileEditor v-if="store.editMode" />
-        <pre v-else class="file-preview__text">{{ preview.content }}</pre>
+      <FileEditor v-if="store.editMode" :key="entry.relativePath" />
+
+      <!-- Text preview -->
+      <template v-else-if="preview?.kind === 'text'">
+        <pre class="file-preview__text">{{ preview.content }}</pre>
       </template>
 
       <!-- Image preview -->
@@ -92,8 +104,7 @@
 
       <!-- Empty file -->
       <template v-else-if="preview?.kind === 'empty'">
-        <FileEditor v-if="store.editMode" />
-        <div v-else class="file-preview__binary">
+        <div class="file-preview__binary">
           <p>Empty file</p>
           <button
             v-if="isEditable"
@@ -157,6 +168,7 @@ function formatDate(iso: string) {
 
 <style scoped>
 .file-preview {
+  container: file-preview / inline-size;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -172,9 +184,12 @@ function formatDate(iso: string) {
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   font-size: 12px;
+  flex-wrap: wrap;
 }
 
 .file-preview__name {
+  flex: 1 1 160px;
+  min-width: 0;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -184,7 +199,15 @@ function formatDate(iso: string) {
   gap: 6px;
 }
 
+.file-preview__filename {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .file-preview__status {
+  flex: 0 0 auto;
   font-size: 10px;
   font-weight: 700;
   padding: 1px 6px;
@@ -202,12 +225,42 @@ function formatDate(iso: string) {
   margin-left: auto;
   display: flex;
   gap: 4px;
-  flex-shrink: 0;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: thin;
 }
 
 .file-preview__btn {
   font-size: 11px !important;
   padding: 2px 8px !important;
+  min-height: 32px;
+  white-space: nowrap;
+}
+
+.file-preview__btn--active {
+  color: var(--accent, #8ab4f8) !important;
+  background: color-mix(in srgb, var(--accent, #8ab4f8) 14%, transparent) !important;
+}
+
+@container file-preview (max-width: 480px) {
+  .file-preview__header {
+    gap: 4px 8px;
+    padding: 6px 8px;
+  }
+
+  .file-preview__meta {
+    display: none;
+  }
+
+  .file-preview__actions {
+    flex: 1 0 100%;
+    margin-left: 0;
+  }
+
+  .file-preview__btn {
+    min-height: 36px;
+  }
 }
 
 .file-preview__body {

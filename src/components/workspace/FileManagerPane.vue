@@ -1,5 +1,5 @@
 <template>
-  <div class="workspace-pane__body workspace-pane__body--files" tabindex="0" @keydown="onKeydownPane">
+  <div ref="paneRoot" class="workspace-pane__body workspace-pane__body--files" tabindex="0" @keydown="onKeydownPane">
     <PaneShell
       v-if="showHeader"
       :title="'Files'"
@@ -13,16 +13,141 @@
       :filter-text="store.filterText"
       :git-is-repo="store.gitIsRepo"
       :dirty-count="store.dirtyCount"
+      :layout-mode="store.layoutMode"
       @create-file="onCreateFile"
       @create-dir="onCreateDir"
       @refresh="store.refresh()"
-      @toggle-hidden="store.showHidden = !store.showHidden"
+      @toggle-hidden="toggleHidden"
       @toggle-view="store.viewMode = store.viewMode === 'list' ? 'grid' : 'list'"
+      @toggle-layout="toggleLayout"
       @filter="store.setFilter($event)"
     />
     <FileBreadcrumb :items="store.breadcrumbs" @navigate="store.navigate" />
     <div class="file-manager__body">
-      <Splitpanes class="default-theme fm-splitpanes">
+      <nav v-if="isNarrow" class="file-manager__mobile-views" aria-label="Files views">
+        <button
+          v-if="store.layoutMode === 'editor'"
+          type="button"
+          :aria-pressed="mobilePane === 'tree'"
+          :class="{ 'file-manager__mobile-view--active': mobilePane === 'tree' }"
+          @click="mobilePane = 'tree'"
+        >
+          Explorer
+        </button>
+        <button
+          v-if="store.layoutMode === 'editor'"
+          type="button"
+          :disabled="!store.activeTabPath"
+          :aria-pressed="mobilePane === 'editor'"
+          :class="{ 'file-manager__mobile-view--active': mobilePane === 'editor' }"
+          @click="mobilePane = 'editor'"
+        >
+          Editor
+        </button>
+        <template v-else>
+          <button
+            type="button"
+            :aria-pressed="mobilePane === 'tree'"
+            :class="{ 'file-manager__mobile-view--active': mobilePane === 'tree' }"
+            @click="mobilePane = 'tree'"
+          >
+            Folders
+          </button>
+          <button
+            type="button"
+            :aria-pressed="mobilePane === 'list'"
+            :class="{ 'file-manager__mobile-view--active': mobilePane === 'list' }"
+            @click="mobilePane = 'list'"
+          >
+            Files
+          </button>
+          <button
+            v-if="store.selectedEntry"
+            type="button"
+            :aria-pressed="mobilePane === 'preview'"
+            :class="{ 'file-manager__mobile-view--active': mobilePane === 'preview' }"
+            @click="mobilePane = 'preview'"
+          >
+            Preview
+          </button>
+        </template>
+      </nav>
+      <Splitpanes v-if="store.layoutMode === 'editor'" class="default-theme fm-splitpanes">
+        <Pane
+          v-if="!isNarrow || mobilePane === 'tree'"
+          :size="isNarrow ? 100 : 24"
+          :min-size="isNarrow ? 100 : 12"
+          :max-size="isNarrow ? 100 : 50"
+        >
+          <aside
+            class="file-manager__tree file-manager__tree--editor"
+            @dragover.prevent="onTreeRootDragOver"
+            @drop.prevent="onTreeRootDrop"
+          >
+            <FileTree :editor-layout="true" @select-file="onEditorTreeFileSelect" />
+          </aside>
+        </Pane>
+        <Pane v-if="!isNarrow || mobilePane === 'editor'" :size="isNarrow ? 100 : 76">
+          <div class="file-manager__editor-area">
+            <div v-if="store.editorTabs.length" class="file-manager__editor-tabs">
+              <div class="file-manager__editor-tabs-scroll" role="tablist" aria-label="Open files">
+                <div
+                  v-for="tab in store.editorTabs"
+                  :key="tab.entry.relativePath"
+                  role="tab"
+                  tabindex="0"
+                  class="file-manager__editor-tab"
+                  :class="{ 'file-manager__editor-tab--active': store.activeTabPath === tab.entry.relativePath }"
+                  :aria-selected="store.activeTabPath === tab.entry.relativePath"
+                  :title="tab.entry.relativePath"
+                  @click="store.activateTab(tab.entry.relativePath)"
+                  @keydown.enter.prevent="store.activateTab(tab.entry.relativePath)"
+                  @keydown.space.prevent="store.activateTab(tab.entry.relativePath)"
+                  @keydown.delete.prevent="store.closeTab(tab.entry.relativePath)"
+                >
+                  <span class="file-manager__editor-tab-name">{{ tab.entry.name }}</span>
+                  <span v-if="tab.editDirty" class="file-manager__editor-tab-dirty" aria-label="Unsaved changes"
+                    >●</span
+                  >
+                  <button
+                    type="button"
+                    class="file-manager__editor-tab-close"
+                    :aria-label="`Close ${tab.entry.name}`"
+                    @click.stop="store.closeTab(tab.entry.relativePath)"
+                    @keydown.stop
+                  >
+                    ×
+                  </button>
+                </div>
+              </div>
+              <div class="file-manager__editor-tab-actions" aria-label="Tab actions">
+                <button
+                  type="button"
+                  title="Close tabs without unsaved editor changes"
+                  @click="store.closeUnmodifiedTabs()"
+                >
+                  Close unmodified
+                </button>
+                <button type="button" title="Close all file tabs in this workspace" @click="store.closeAllTabs()">
+                  Close all
+                </button>
+              </div>
+            </div>
+            <FileDiff v-if="store.diffOpen" :key="store.activeTabPath || 'active-file'" />
+            <FilePreview
+              v-else-if="store.selectedEntry?.kind === 'file'"
+              @open-in-explorer="store.openInExplorer(store.selectedEntry)"
+            />
+            <div v-else-if="!store.diffOpen" class="file-manager__no-preview">
+              <div class="file-manager__welcome">
+                <strong>{{ store.rootPath.split(/[\\/]/).pop() || "Files" }}</strong>
+                <span>Select a file from the explorer to preview or edit it.</span>
+              </div>
+            </div>
+          </div>
+        </Pane>
+      </Splitpanes>
+      <Splitpanes v-else-if="!isNarrow" class="default-theme fm-splitpanes">
         <Pane :size="20" :min-size="10" :max-size="50">
           <aside class="file-manager__tree" @dragover.prevent="onTreeRootDragOver" @drop.prevent="onTreeRootDrop">
             <FileTree />
@@ -34,12 +159,35 @@
               <FileList @navigate="store.navigate" @select="store.selectEntry" @open-edit="onOpenEdit" />
             </Pane>
             <Pane :size="50" :min-size="15">
-              <FilePreview v-if="store.selectedEntry" @open-in-explorer="store.openInExplorer(store.selectedEntry)" />
+              <FileDiff v-if="store.diffOpen" :key="store.activeTabPath || 'active-file'" />
+              <FilePreview
+                v-else-if="store.selectedEntry"
+                @open-in-explorer="store.openInExplorer(store.selectedEntry)"
+              />
               <div v-else class="file-manager__no-preview">Select a file to preview</div>
             </Pane>
           </Splitpanes>
         </Pane>
       </Splitpanes>
+      <div v-else class="file-manager__mobile-browser">
+        <aside
+          v-if="mobilePane === 'tree'"
+          class="file-manager__tree"
+          @dragover.prevent="onTreeRootDragOver"
+          @drop.prevent="onTreeRootDrop"
+        >
+          <FileTree @navigate-directory="onMobileBrowserDirectory" />
+        </aside>
+        <FileList
+          v-else-if="mobilePane === 'list'"
+          @navigate="onMobileBrowserNavigate"
+          @select="onMobileBrowserSelect"
+          @open-edit="onMobileBrowserOpenEdit"
+        />
+        <FileDiff v-else-if="store.diffOpen" :key="store.activeTabPath || 'active-file'" />
+        <FilePreview v-else-if="store.selectedEntry" @open-in-explorer="store.openInExplorer(store.selectedEntry)" />
+        <div v-else class="file-manager__no-preview">Select a file to preview</div>
+      </div>
     </div>
 
     <!-- File context menu -->
@@ -103,9 +251,6 @@
         </button>
       </div>
     </Teleport>
-
-    <!-- Diff modal -->
-    <FileDiff />
 
     <!-- Toast for ephemeral feedback (copy path success, etc.) -->
     <Teleport to="body">
@@ -193,9 +338,66 @@ const props = withDefaults(defineProps<{ workspaceId: string; showHeader?: boole
 
 const appStore = useAppStore();
 const store = useFileManagerStore();
+const paneRoot = ref<HTMLElement | null>(null);
+const paneWidth = ref(typeof window === "undefined" ? 1024 : window.innerWidth);
+const isNarrow = computed(() => paneWidth.value <= 680);
+const mobilePane = ref<"tree" | "editor" | "list" | "preview">("tree");
+let paneResizeObserver: ResizeObserver | null = null;
+
+function updatePaneWidth() {
+  paneWidth.value = paneRoot.value?.clientWidth || (typeof window === "undefined" ? 1024 : window.innerWidth);
+}
+
+onMounted(() => {
+  updatePaneWidth();
+  if (typeof ResizeObserver !== "undefined" && paneRoot.value) {
+    paneResizeObserver = new ResizeObserver(updatePaneWidth);
+    paneResizeObserver.observe(paneRoot.value);
+  }
+});
+
+watch(
+  isNarrow,
+  (narrow) => {
+    if (!narrow) return;
+    mobilePane.value =
+      store.layoutMode === "editor"
+        ? store.activeTabPath
+          ? "editor"
+          : "tree"
+        : store.selectedEntry
+          ? "preview"
+          : "list";
+  },
+  { immediate: true },
+);
+watch(
+  () => store.layoutMode,
+  (layout) => {
+    if (isNarrow.value) mobilePane.value = layout === "editor" ? (store.activeTabPath ? "editor" : "tree") : "list";
+  },
+);
+watch(
+  () => store.activeTabPath,
+  (path) => {
+    if (isNarrow.value && store.layoutMode === "editor" && path) mobilePane.value = "editor";
+  },
+);
+watch(
+  () => store.selectedEntry?.relativePath,
+  (path) => {
+    if (isNarrow.value && store.layoutMode === "browser" && path) mobilePane.value = "preview";
+  },
+);
+watch(
+  () => store.currentPath,
+  (path, previous) => {
+    if (isNarrow.value && store.layoutMode === "browser" && path !== previous) mobilePane.value = "list";
+  },
+);
 
 // Dialogs
-const createDialog = ref<{ type: string; name: string } | null>(null);
+const createDialog = ref<{ type: string; name: string; targetPath: string } | null>(null);
 const createInput = ref<HTMLInputElement | null>(null);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const renameDialog = ref<{ entry: Record<string, any>; newName: string } | null>(null);
@@ -362,7 +564,7 @@ function onCtxEdit() {
     store
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .selectEntry(entry as any)
-      .then(() => store.startEdit())
+      .then((selected) => (selected ? store.startEdit() : undefined))
       .catch((err: unknown) => {
         rlog("warn", "file-manager: selectEntry before edit failed", { err: (err as Error)?.message || String(err) });
       });
@@ -371,8 +573,7 @@ function onCtxEdit() {
 function onCtxDiff() {
   const entry = fileContextMenu.value?.entry;
   dismissMenu();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  if (entry?.kind === "file") store.openDiff(entry as any);
+  if (entry?.kind === "file") store.openDiff(entry as Parameters<typeof store.openDiff>[0]);
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -430,7 +631,11 @@ function onCtxCut() {
 function onCtxPaste() {
   const entry = fileContextMenu.value?.entry;
   dismissMenu();
-  const targetDir = entry?.kind === "directory" ? (entry.relativePath as string) : store.currentPath;
+  const targetDir = entry
+    ? entry.kind === "directory"
+      ? (entry.relativePath as string)
+      : parentPath(entry.relativePath as string)
+    : store.currentPath;
   store.pasteEntry(targetDir);
 }
 
@@ -457,36 +662,100 @@ function onCtxReveal() {
 }
 
 function onCtxNewFile() {
+  const entry = fileContextMenu.value?.entry;
   dismissMenu();
-  onCreateFile();
+  onCreateFile(
+    entry ? (entry.kind === "directory" ? entry.relativePath : parentPath(entry.relativePath)) : store.currentPath,
+  );
 }
 
 function onCtxNewFolder() {
+  const entry = fileContextMenu.value?.entry;
   dismissMenu();
-  onCreateDir();
+  onCreateDir(
+    entry ? (entry.kind === "directory" ? entry.relativePath : parentPath(entry.relativePath)) : store.currentPath,
+  );
+}
+
+function parentPath(path: string) {
+  return path.split("/").filter(Boolean).slice(0, -1).join("/");
 }
 
 function onHeaderAction(action: { action: string }) {
   if (action.action === "refresh") store.refresh();
 }
 
-function onCreateFile() {
-  createDialog.value = { type: "file", name: "" };
+function toggleLayout() {
+  store.layoutMode = store.layoutMode === "editor" ? "browser" : "editor";
+  if (store.layoutMode === "editor" && store.activeTabPath) store.activateTab(store.activeTabPath);
+  if (store.layoutMode === "browser") void store.navigate(store.currentPath);
+  try {
+    localStorage.setItem("files.layoutMode", store.layoutMode);
+  } catch {
+    // Layout remains available for this session when storage is disabled.
+  }
+}
+
+function onEditorTreeFileSelect() {
+  if (isNarrow.value) mobilePane.value = "editor";
+}
+
+function onMobileBrowserDirectory() {
+  if (isNarrow.value && store.layoutMode === "browser") mobilePane.value = "list";
+}
+
+async function onMobileBrowserNavigate(path: string) {
+  await store.navigate(path);
+  if (isNarrow.value && store.layoutMode === "browser") mobilePane.value = "list";
+}
+
+async function onMobileBrowserSelect(entry: Parameters<typeof store.selectEntry>[0]) {
+  await store.selectEntry(entry);
+  if (isNarrow.value && store.layoutMode === "browser" && entry.kind === "file") mobilePane.value = "preview";
+}
+
+function onMobileBrowserOpenEdit(entry: Parameters<typeof onOpenEdit>[0]) {
+  onOpenEdit(entry);
+  if (isNarrow.value && store.layoutMode === "browser") mobilePane.value = "preview";
+}
+
+async function toggleHidden() {
+  store.showHidden = !store.showHidden;
+  for (const [path, node] of store.treeNodes) {
+    if (node.expanded) await store.expandTreeNode(path);
+  }
+}
+
+function onCreateFile(targetPath = store.currentPath) {
+  createDialog.value = { type: "file", name: "", targetPath };
   nextTick(() => createInput.value?.focus());
 }
 
-function onCreateDir() {
-  createDialog.value = { type: "dir", name: "" };
+function onCreateDir(targetPath = store.currentPath) {
+  createDialog.value = { type: "dir", name: "", targetPath };
   nextTick(() => createInput.value?.focus());
 }
 
 async function confirmCreate() {
   if (!createDialog.value?.name.trim()) return;
+  const requestDialog = createDialog.value;
+  const requestRoot = store.rootPath;
   store.error = null;
-  if (createDialog.value.type === "file") {
-    await store.createFile(createDialog.value.name.trim());
+  if (requestDialog.type === "file") {
+    const created = await store.createFile(requestDialog.name.trim(), requestDialog.targetPath);
+    if (store.rootPath !== requestRoot) {
+      if (createDialog.value === requestDialog) createDialog.value = null;
+      return;
+    }
+    if (!created) return;
+    if (createDialog.value === requestDialog) createDialog.value = null;
+    return;
   } else {
-    await store.createDirectory(createDialog.value.name.trim());
+    await store.createDirectory(requestDialog.name.trim(), requestDialog.targetPath);
+    if (store.rootPath !== requestRoot) {
+      if (createDialog.value === requestDialog) createDialog.value = null;
+      return;
+    }
   }
   if (store.error) return;
   createDialog.value = null;
@@ -515,7 +784,7 @@ function onOpenEdit(entry: Record<string, any>) {
   store
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     .selectEntry(entry as any)
-    .then(() => store.startEdit())
+    .then((selected) => (selected ? store.startEdit() : undefined))
     .catch((err: unknown) => {
       rlog("warn", "file-manager: selectEntry before edit failed", { err: (err as Error)?.message || String(err) });
     });
@@ -546,12 +815,13 @@ function onKeydownPane(event: KeyboardEvent) {
     (target.tagName === "INPUT" ||
       target.tagName === "TEXTAREA" ||
       target.isContentEditable ||
+      target.closest?.("button, a, [role='tab'], [role='button']") ||
       target.closest?.(".monaco-editor"))
   ) {
     return;
   }
-  // Don't fight with the diff modal.
-  if (store.diffOpen) return;
+  // Let the diff viewer own keyboard navigation while focus is inside it.
+  if (target?.closest?.(".fm-diff-inline")) return;
 
   if (event.key === "F5") {
     event.preventDefault();
@@ -677,12 +947,15 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  paneResizeObserver?.disconnect();
+  paneResizeObserver = null;
   if (toastTimer) clearTimeout(toastTimer);
 });
 </script>
 
 <style scoped>
 .workspace-pane__body--files {
+  container: files-pane / inline-size;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -691,9 +964,70 @@ onBeforeUnmount(() => {
 }
 
 .file-manager__body {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
   overflow: hidden;
+}
+
+.file-manager__body > :deep(.fm-splitpanes) {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.file-manager__mobile-views {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  padding: 5px 8px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.file-manager__mobile-views button {
+  flex: 1 0 auto;
+  min-height: 36px;
+  padding: 5px 12px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.file-manager__mobile-views button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.file-manager__mobile-views .file-manager__mobile-view--active {
+  border-color: color-mix(in srgb, var(--accent), transparent 60%);
+  background: color-mix(in srgb, var(--accent), transparent 88%);
+  color: var(--text);
+}
+
+.file-manager__mobile-browser {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.file-manager__mobile-browser > .file-manager__tree {
+  height: 100%;
+}
+
+.file-manager__mobile-browser > :deep(.file-list),
+.file-manager__mobile-browser > :deep(.file-preview),
+.file-manager__mobile-browser > :deep(.fm-diff-inline) {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .file-manager__tree {
@@ -703,6 +1037,182 @@ onBeforeUnmount(() => {
   height: 100%;
 }
 
+.file-manager__tree--editor {
+  background: color-mix(in srgb, var(--panel), var(--text) 3%);
+  border-right: 1px solid color-mix(in srgb, var(--border), transparent 18%);
+}
+
+.file-manager__editor-tabs {
+  container: file-tabs / inline-size;
+  display: flex;
+  align-items: stretch;
+  height: auto;
+  min-height: 32px;
+  flex: 0 0 auto;
+  min-width: 0;
+  overflow: hidden;
+  overflow-y: hidden;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.file-manager__editor-tabs-scroll {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.file-manager__editor-tab-actions {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 3px;
+  padding: 0 6px;
+  border-left: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.file-manager__editor-tab-actions button {
+  flex: 0 0 auto;
+  padding: 3px 5px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 10px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.file-manager__editor-tab-actions button:hover {
+  background: color-mix(in srgb, var(--text), transparent 90%);
+  color: var(--text);
+}
+
+.file-manager__editor-tab-actions button:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+@container file-tabs (max-width: 560px) {
+  .file-manager__editor-tab {
+    min-height: 40px;
+  }
+
+  .file-manager__editor-tab-actions {
+    gap: 1px;
+    padding: 0 4px;
+  }
+
+  .file-manager__editor-tab-actions button {
+    min-height: 36px;
+    padding: 3px 4px;
+    font-size: 10px;
+  }
+}
+
+@container files-pane (max-width: 680px) {
+  .file-manager__editor-tabs {
+    min-height: 40px;
+  }
+
+  .file-manager__editor-tab {
+    min-height: 40px;
+  }
+
+  .file-manager__editor-tabs .file-manager__editor-tab-close {
+    width: 30px;
+    height: 30px;
+    font-size: 17px;
+  }
+}
+
+.file-manager__editor-area {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.file-manager__editor-area > :deep(.file-preview),
+.file-manager__editor-area > .file-manager__no-preview,
+.file-manager__editor-area > :deep(.fm-diff-inline) {
+  flex: 1;
+  min-height: 0;
+}
+
+.file-manager__editor-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 auto;
+  min-width: 100px;
+  max-width: 220px;
+  padding: 0 8px 0 11px;
+  border: 0;
+  border-right: 1px solid color-mix(in srgb, var(--border), transparent 30%);
+  border-top: 2px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.file-manager__editor-tab--active {
+  border-top-color: var(--accent);
+  background: color-mix(in srgb, var(--panel), var(--text) 4%);
+  color: var(--text);
+}
+
+.file-manager__editor-tab-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-manager__editor-tab-dirty {
+  color: var(--accent);
+  font-size: 8px;
+}
+
+.file-manager__editor-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  margin-left: auto;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  appearance: none;
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  text-align: center;
+  cursor: pointer;
+}
+
+.file-manager__editor-tab-close:hover {
+  background: color-mix(in srgb, var(--text), transparent 90%);
+  color: var(--text);
+}
+
+.file-manager__editor-tab-close:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .file-manager__no-preview {
   display: flex;
   align-items: center;
@@ -710,6 +1220,20 @@ onBeforeUnmount(() => {
   height: 100%;
   color: var(--muted);
   font-size: 12px;
+}
+
+.file-manager__welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.file-manager__welcome strong {
+  color: var(--text);
+  font-size: 15px;
 }
 
 /* Splitpanes theme overrides */
@@ -740,6 +1264,10 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow-y: auto;
+  padding: max(10px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right))
+    max(10px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+  box-sizing: border-box;
   z-index: 100;
 }
 
@@ -748,8 +1276,17 @@ onBeforeUnmount(() => {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 16px 20px;
-  min-width: 320px;
+  width: min(420px, 100%);
+  min-width: 0;
+  max-height: 100%;
+  overflow-y: auto;
   box-shadow: var(--shadow);
+}
+
+@media (max-height: 560px) {
+  .fm-dialog-backdrop {
+    align-items: flex-start;
+  }
 }
 
 .fm-dialog h3 {

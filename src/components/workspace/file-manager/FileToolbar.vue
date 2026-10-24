@@ -30,7 +30,7 @@
         type="search"
         :value="filterText"
         placeholder="Filter…"
-        title="Filter the file list to entries whose name contains this text (case-insensitive). Press Escape to clear the filter."
+        title="Filter file names in the current list or expanded explorer folders. Folders stay visible while filtering. Press Escape to clear."
         class="file-toolbar__search-input"
         @input="$emit('filter', ($event.target as HTMLInputElement).value)"
         @keydown.escape="$emit('filter', '')"
@@ -53,7 +53,7 @@
 
     <button
       type="button"
-      class="file-toolbar__btn"
+      class="file-toolbar__btn file-toolbar__btn--utility"
       :class="{ 'file-toolbar__btn--active': showHidden }"
       :title="
         showHidden
@@ -65,8 +65,9 @@
       .*
     </button>
     <button
+      v-if="layoutMode === 'browser'"
       type="button"
-      class="file-toolbar__btn"
+      class="file-toolbar__btn file-toolbar__btn--utility"
       :title="
         viewMode === 'list'
           ? 'Switch the file list to grid view — large icons in a wrap layout, easier for quick visual scanning of media folders.'
@@ -75,6 +76,20 @@
       @click="$emit('toggle-view')"
     >
       {{ viewMode === "list" ? "▦" : "≡" }}
+    </button>
+    <button
+      type="button"
+      class="file-toolbar__btn file-toolbar__btn--utility"
+      :class="{ 'file-toolbar__btn--active': layoutMode === 'editor' }"
+      :title="
+        layoutMode === 'editor'
+          ? 'Switch to the file browser layout with a separate list and preview.'
+          : 'Switch to the explorer and editor layout.'
+      "
+      aria-label="Toggle file manager layout"
+      @click="$emit('toggle-layout')"
+    >
+      {{ layoutMode === "editor" ? "▤" : "▥" }}
     </button>
   </div>
 </template>
@@ -87,6 +102,7 @@ withDefaults(
     filterText?: string;
     gitIsRepo?: boolean;
     dirtyCount?: number;
+    layoutMode?: "editor" | "browser";
   }>(),
   { showHidden: false, viewMode: "list", filterText: "", gitIsRepo: false, dirtyCount: 0 },
 );
@@ -96,16 +112,19 @@ defineEmits<{
   (e: "refresh"): void;
   (e: "toggle-hidden"): void;
   (e: "toggle-view"): void;
+  (e: "toggle-layout"): void;
   (e: "filter", value: string): void;
 }>();
 </script>
 
 <style scoped>
 .file-toolbar {
+  container: file-toolbar / inline-size;
   display: flex;
   align-items: center;
   gap: 4px;
   padding: 4px 8px;
+  flex-wrap: wrap;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
@@ -119,6 +138,7 @@ defineEmits<{
   border-radius: 4px;
   cursor: pointer;
   white-space: nowrap;
+  touch-action: manipulation;
 }
 
 .file-toolbar__btn:hover {
@@ -175,5 +195,39 @@ defineEmits<{
 
 .file-toolbar__spacer {
   flex: 1;
+}
+
+@container file-toolbar (max-width: 560px) {
+  .file-toolbar__btn {
+    min-width: 36px;
+    min-height: 36px;
+    padding: 5px 9px;
+  }
+
+  .file-toolbar__search {
+    order: 1;
+    flex: 1 0 100%;
+    margin: 0;
+  }
+
+  .file-toolbar__search-input {
+    width: 100%;
+    min-height: 36px;
+  }
+
+  .file-toolbar__legend {
+    order: 2;
+    flex: 1 1 auto;
+    min-width: 100px;
+    margin-left: 0;
+  }
+
+  .file-toolbar__spacer {
+    display: none;
+  }
+
+  .file-toolbar__btn--utility {
+    order: 2;
+  }
 }
 </style>

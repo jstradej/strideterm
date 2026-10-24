@@ -5,6 +5,7 @@
         'gct-node__row',
         grouped && 'gct-node__row--grouped',
         isDir && 'gct-node__row--folder',
+        stagingEnabled && node.kind === 'file' && 'gct-node__row--staging',
         node.kind === 'file' && isSelected && 'gct-node__row--selected',
         node.kind === 'file' && `gct-node__row--git-${node.status}`,
         node.kind === 'file' && node.scope === 'review' && node.code === 'D' && 'gct-node__row--review-deleted',
@@ -49,7 +50,40 @@
         </button>
       </span>
       <span
-        v-if="node.kind === 'file' && node.code"
+        v-if="node.kind === 'file' && stagingEnabled"
+        class="gct-node__actions"
+        :class="{ 'gct-node__actions--grouped': grouped }"
+      >
+        <span
+          v-if="node.code"
+          class="gct-node__code"
+          :style="{ color: node.codeColor || statusColor(node.status) }"
+          :title="node.statusTitle || statusTitle(node.status)"
+        >
+          {{ node.code }}
+        </span>
+        <template
+          v-for="entry in visibleScopes.filter((item: ScopeEntry) => item.scope !== 'conflict')"
+          :key="entry.scope"
+        >
+          <button
+            type="button"
+            class="gct-node__stage"
+            :disabled="stagingBusy"
+            :aria-label="`${entry.scope === 'staged' ? 'Unstage' : 'Stage'} ${node.path} ${entry.scope}`"
+            @click.stop="$emit('stage-file', { path: node.path, staged: entry.scope === 'staged', scope: entry.scope })"
+          >
+            {{ entry.scope === "staged" ? "Unstage" : "Stage" }}
+          </button>
+        </template>
+        <span
+          v-if="!visibleScopes.some((item: ScopeEntry) => item.scope !== 'conflict')"
+          class="gct-node__stage-spacer"
+          aria-hidden="true"
+        ></span>
+      </span>
+      <span
+        v-else-if="node.kind === 'file' && node.code"
         class="gct-node__code"
         :style="{ color: node.codeColor || statusColor(node.status) }"
         :title="node.statusTitle || statusTitle(node.status)"
@@ -57,19 +91,6 @@
         {{ node.code }}
       </span>
       <span v-if="grouped && isDir" class="gct-node__count">{{ node.fileCount }}</span>
-      <template v-if="node.kind === 'file' && stagingEnabled">
-        <button
-          v-for="entry in visibleScopes.filter((item: ScopeEntry) => item.scope !== 'conflict')"
-          :key="entry.scope"
-          type="button"
-          class="gct-node__stage"
-          :disabled="stagingBusy"
-          :aria-label="`${entry.scope === 'staged' ? 'Unstage' : 'Stage'} ${node.path} ${entry.scope}`"
-          @click.stop="$emit('stage-file', { path: node.path, staged: entry.scope === 'staged', scope: entry.scope })"
-        >
-          {{ entry.scope === "staged" ? "Unstage" : "Stage" }}
-        </button>
-      </template>
     </div>
     <ul v-if="isDir && expanded && node.children.length" class="gct-node__children">
       <GitChangeTreeNode
@@ -212,8 +233,10 @@ function onContextMenu(e: MouseEvent) {
 }
 
 .gct-node__stage {
-  margin-left: auto;
-  flex: 0 0 auto;
+  flex: 0 0 50px;
+  width: 50px;
+  box-sizing: border-box;
+  text-align: center;
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 2px 5px;
@@ -221,6 +244,24 @@ function onContextMenu(e: MouseEvent) {
   background: var(--surface, var(--panel));
   font-size: 10px;
   cursor: pointer;
+}
+
+.gct-node__actions {
+  display: flex;
+  flex: 0 0 76px;
+  width: 76px;
+  align-items: center;
+  gap: 0;
+  margin-left: auto;
+}
+
+.gct-node__actions--grouped {
+  flex-basis: 126px;
+  width: 126px;
+}
+
+.gct-node__stage-spacer {
+  flex: 0 0 50px;
 }
 
 .gct-node__row--selected {
@@ -280,6 +321,15 @@ function onContextMenu(e: MouseEvent) {
 .gct-node__name {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.gct-node__row--staging .gct-node__name {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.gct-node__row--staging .gct-node__scopes {
+  margin-left: 0;
 }
 
 .gct-node__prefix {
@@ -390,6 +440,14 @@ function onContextMenu(e: MouseEvent) {
   border-radius: 3px;
   background: rgba(255, 255, 255, 0.06);
   font-variant-numeric: tabular-nums;
+}
+
+.gct-node__actions .gct-node__code {
+  margin-left: 0;
+  flex: 0 0 26px;
+  width: 26px;
+  box-sizing: border-box;
+  text-align: center;
 }
 
 .gct-node__children {
