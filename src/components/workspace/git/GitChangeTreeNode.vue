@@ -248,16 +248,16 @@ function onContextMenu(e: MouseEvent) {
 
 .gct-node__actions {
   display: flex;
-  flex: 0 0 76px;
-  width: 76px;
+  flex: 0 0 84px;
+  width: 84px;
   align-items: center;
-  gap: 0;
+  gap: 8px;
   margin-left: auto;
 }
 
 .gct-node__actions--grouped {
-  flex-basis: 126px;
-  width: 126px;
+  flex-basis: 142px;
+  width: 142px;
 }
 
 .gct-node__stage-spacer {
