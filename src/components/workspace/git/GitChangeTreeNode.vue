@@ -70,6 +70,11 @@
             type="button"
             class="gct-node__stage"
             :disabled="stagingBusy"
+            :title="
+              entry.scope === 'staged'
+                ? 'Remove this file\'s changes from staging. Keep the changes in the file.'
+                : 'Prepare this file\'s changes for the next commit.'
+            "
             :aria-label="`${entry.scope === 'staged' ? 'Unstage' : 'Stage'} ${node.path} ${entry.scope}`"
             @click.stop="$emit('stage-file', { path: node.path, staged: entry.scope === 'staged', scope: entry.scope })"
           >
