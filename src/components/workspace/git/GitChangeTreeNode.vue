@@ -18,18 +18,17 @@
       @keydown.space="onRowKeydown"
       @contextmenu="contextMenuEnabled && onContextMenu($event)"
     >
-      <span v-if="isDir" class="gct-node__chevron">{{ expanded ? "▾" : "▸" }}</span>
-      <span v-else class="gct-node__chevron gct-node__chevron--leaf"></span>
-      <label v-if="selectable && node.kind === 'file'" class="gct-node__check-target" @click.stop>
-        <input
-          type="checkbox"
-          class="gct-node__check"
-          :checked="isChecked"
-          :aria-label="`Select ${node.path} for commit and stash`"
-          @change="$emit('toggle-select', node.path)"
-        />
-      </label>
-      <span class="gct-node__icon" aria-hidden="true">{{ isDir ? "📁" : "📄" }}</span>
+      <TreeEntryIcon :kind="isDir ? 'directory' : 'file'" :expanded="expanded" :extension="fileExtension">
+        <label v-if="selectable && node.kind === 'file'" class="gct-node__check-target" @click.stop>
+          <input
+            type="checkbox"
+            class="gct-node__check"
+            :checked="isChecked"
+            :aria-label="`Select ${node.path} for commit and stash`"
+            @change="$emit('toggle-select', node.path)"
+          />
+        </label>
+      </TreeEntryIcon>
       <span v-if="node.previousPath" class="gct-node__rename" :title="`${node.previousPath} → ${node.path}`"
         >{{ node.previousPath }} →</span
       >
@@ -125,6 +124,7 @@
 
 <script setup lang="ts">
 import { computed } from "vue";
+import TreeEntryIcon from "../../shared/TreeEntryIcon.vue";
 import { statusColor, statusTitle } from "../file-manager/git-status-helpers.js";
 
 const props = withDefaults(
@@ -172,6 +172,11 @@ interface ScopeEntry {
 
 const isDir = computed(() => props.node.kind === "dir");
 const expanded = computed(() => props.expandedSet.has(props.node.path as string));
+const fileExtension = computed(() => {
+  const name = String(props.node.name || "");
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot) : "";
+});
 const isSelected = computed(
   () =>
     props.node.kind === "file" &&
@@ -298,29 +303,11 @@ function onContextMenu(e: MouseEvent) {
   padding-left: 3px;
 }
 
-.gct-node__chevron {
-  flex-shrink: 0;
-  width: 10px;
-  font-size: 10px;
-  color: var(--muted);
-  text-align: center;
-}
-
-.gct-node__chevron--leaf {
-  visibility: hidden;
-}
-
 .gct-node__check {
   flex-shrink: 0;
   width: auto;
   margin: 0 2px 0 0;
   cursor: pointer;
-}
-
-.gct-node__icon {
-  flex-shrink: 0;
-  font-size: 11px;
-  opacity: 0.85;
 }
 
 .gct-node__name {
@@ -431,8 +418,8 @@ function onContextMenu(e: MouseEvent) {
   height: 40px;
 }
 
-.gct-node__row--grouped .gct-node__chevron--leaf,
-.gct-node__row--grouped:not(.gct-node__row--folder) .gct-node__icon {
+.gct-node__row--grouped :deep(.tree-entry-icon__chevron--leaf),
+.gct-node__row--grouped:not(.gct-node__row--folder) :deep(.tree-entry-icon__glyph) {
   display: none;
 }
 

@@ -23,18 +23,7 @@
       @dragleave="onDragLeave"
       @drop.stop.prevent="onDrop"
     >
-      <span class="tree-node__chevron" :class="{ 'tree-node__chevron--expanded': isExpanded }">
-        <svg v-if="node.entry.kind === 'directory'" viewBox="0 0 12 12" aria-hidden="true">
-          <path d="m4 2.5 3.5 3.5L4 9.5" />
-        </svg>
-      </span>
-      <span class="tree-node__icon" :class="iconClass">
-        <svg v-if="node.entry.kind === 'directory'" viewBox="0 0 18 16" aria-hidden="true">
-          <path d="M1.5 3.25h5l1.5 1.5h8.5v8.75H1.5z" />
-          <path d="M1.5 4.75V2.5h5l1.5 1.5" />
-        </svg>
-        <template v-else>{{ fileGlyph }}</template>
-      </span>
+      <TreeEntryIcon :kind="node.entry.kind" :expanded="isExpanded" :extension="node.entry.extension" />
       <span class="tree-node__name">{{ node.entry.name }}</span>
       <span
         v-if="gitStatus"
@@ -61,6 +50,7 @@
 
 <script setup lang="ts">
 import { computed, inject, ref } from "vue";
+import TreeEntryIcon from "../../shared/TreeEntryIcon.vue";
 import { useFileManagerStore } from "../../../stores/file-manager.js";
 import { statusBadge, statusColor, statusLabel, statusTitle } from "./git-status-helpers.js";
 
@@ -89,13 +79,6 @@ const isDropTarget = ref<boolean>(false);
 const isExpanded = computed(() => store.treeNodes.get(props.node.entry.relativePath)?.expanded || false);
 const isActive = computed(() => store.currentPath === props.node.entry.relativePath);
 const isSelected = computed(() => store.selectedEntry?.relativePath === props.node.entry.relativePath);
-const iconClass = computed(() => {
-  const ext = String(props.node.entry.extension || "")
-    .toLowerCase()
-    .replace(".", "");
-  return props.node.entry.kind === "directory" ? "tree-node__icon--folder" : `tree-node__icon--${ext || "plain"}`;
-});
-
 const children = computed(() => {
   const path = props.node.entry.relativePath;
   const treeNode = store.treeNodes.get(path);
@@ -109,14 +92,6 @@ const gitStatus = computed(() => {
   return props.node.entry.kind === "directory"
     ? store.getDirectoryStatusFor(path) || null
     : store.getStatusFor(path)?.status || null;
-});
-
-const fileGlyph = computed(() => {
-  const extension = String(props.node.entry.extension || "").toLowerCase();
-  if ([".ts", ".tsx", ".js", ".jsx", ".vue"].includes(extension)) return "◈";
-  if ([".json", ".yml", ".yaml", ".toml"].includes(extension)) return "{}";
-  if ([".md", ".txt"].includes(extension)) return "≡";
-  return "·";
 });
 
 const visibleChildren = computed(() => {
@@ -257,84 +232,6 @@ async function onDrop() {
 
 .tree-node__label--git-ignored {
   opacity: 0.55;
-}
-
-.tree-node__chevron {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 12px;
-  height: 14px;
-  color: var(--muted);
-}
-
-.tree-node__chevron svg {
-  width: 11px;
-  height: 11px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.4;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  transition: transform 120ms ease;
-}
-
-.tree-node__chevron--expanded svg {
-  transform: rotate(90deg);
-}
-
-.tree-node__icon {
-  display: inline-flex;
-  justify-content: center;
-  align-items: center;
-  width: 14px;
-  height: 16px;
-  flex: 0 0 14px;
-  font-size: 12px;
-  line-height: 1;
-  color: var(--muted);
-}
-
-.tree-node__icon--folder svg {
-  width: 15px;
-  height: 14px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.25;
-  stroke-linejoin: round;
-  stroke-linecap: round;
-}
-
-.tree-node__icon--folder {
-  color: #d3a95f;
-  font-size: 17px;
-}
-
-.tree-node__icon--ts,
-.tree-node__icon--tsx,
-.tree-node__icon--js,
-.tree-node__icon--jsx,
-.tree-node__icon--vue {
-  color: #69a7dd;
-}
-
-.tree-node__icon--json,
-.tree-node__icon--yml,
-.tree-node__icon--yaml,
-.tree-node__icon--toml {
-  color: #d8a14b;
-}
-
-.tree-node__icon--md,
-.tree-node__icon--txt {
-  color: #8da4bd;
-}
-
-.tree-node__icon--css,
-.tree-node__icon--scss,
-.tree-node__icon--html {
-  color: #c87ac2;
 }
 
 .tree-node__name {
