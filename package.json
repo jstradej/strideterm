@@ -177,7 +177,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@effect/language-service": "0.87.4",
+    "@effect/language-service": "0.87.5",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.64.0",
     "@types/node": "26.6.5",
