@@ -102,11 +102,16 @@
 
 <script setup lang="ts">
 import { computed, defineAsyncComponent, ref, watch } from "vue";
+import DiffLoadingIndicator from "../../shared/DiffLoadingIndicator.vue";
 import { useGitStashStore } from "../../../stores/git-stash.js";
 import type { StashEntry, StashFile } from "../../../stores/git-stash.js";
 import { STASH_TOOLTIPS, stashRefTooltip } from "./stash-tooltips.js";
 
-const MonacoDiffPanel = defineAsyncComponent(() => import("../../shared/MonacoDiffPanel.vue"));
+const MonacoDiffPanel = defineAsyncComponent({
+  loader: () => import("../../shared/MonacoDiffPanel.vue"),
+  loadingComponent: DiffLoadingIndicator,
+  delay: 0,
+});
 
 const props = defineProps<{
   workspaceId: string;

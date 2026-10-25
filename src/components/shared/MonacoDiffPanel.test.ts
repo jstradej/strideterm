@@ -459,3 +459,24 @@ describe("MonacoDiffPanel first change reveal", () => {
     wrapper.unmount();
   });
 });
+
+describe("MonacoDiffPanel loading state", () => {
+  it("shows an accessible spinner while a selected diff is loading", () => {
+    const wrapper = mount(MonacoDiffPanel, { props: { loading: true } });
+
+    expect(wrapper.findAll('[role="status"]')).toHaveLength(1);
+    expect(wrapper.find('[role="status"]').attributes("aria-label")).toBe("Loading diff…");
+    expect(wrapper.text()).not.toContain("No diff selected");
+
+    wrapper.unmount();
+  });
+
+  it("keeps the no-selection state when no diff is loading", () => {
+    const wrapper = mount(MonacoDiffPanel);
+
+    expect(wrapper.findComponent({ name: "Spinner" }).exists()).toBe(false);
+    expect(wrapper.text()).toContain("No diff selected");
+
+    wrapper.unmount();
+  });
+});

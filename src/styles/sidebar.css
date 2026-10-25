@@ -794,17 +794,28 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
 }
 
 .remote-summary__configure-icon {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
 }
 
 @container (max-width: 340px) {
   .remote-summary__configure {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     width: 28px;
     min-width: 28px;
     height: 28px;
+    flex: 0 0 28px;
     padding: 0;
-    justify-content: center;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: rgba(var(--tint), 0.04);
+  }
+
+  .remote-summary__configure:hover {
+    border-color: color-mix(in srgb, var(--accent), transparent 50%);
+    background: rgba(var(--tint), 0.08);
   }
 
   .remote-summary__configure-label {
@@ -813,6 +824,8 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
 
   .remote-summary__configure-icon {
     display: block;
+    flex: 0 0 16px;
+    margin: 0;
   }
 }
 

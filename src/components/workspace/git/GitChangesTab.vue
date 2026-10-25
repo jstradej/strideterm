@@ -540,6 +540,7 @@
 
 <script setup lang="ts">
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from "vue";
+import DiffLoadingIndicator from "../../shared/DiffLoadingIndicator.vue";
 import { Splitpanes, Pane } from "splitpanes";
 import "splitpanes/dist/splitpanes.css";
 import { useAppStore } from "../../../stores/app.js";
@@ -555,7 +556,11 @@ import { useIsNarrow } from "../../../composables/useIsNarrow.js";
 import { useMonacoDiffLoader } from "../../../composables/useMonacoDiffLoader.js";
 import { buildCommitSelection } from "./commit-selection.js";
 
-const MonacoDiffPanel = defineAsyncComponent(() => import("../../shared/MonacoDiffPanel.vue"));
+const MonacoDiffPanel = defineAsyncComponent({
+  loader: () => import("../../shared/MonacoDiffPanel.vue"),
+  loadingComponent: DiffLoadingIndicator,
+  delay: 0,
+});
 
 const props = withDefaults(
   defineProps<{

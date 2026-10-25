@@ -239,248 +239,250 @@
 
     <!-- ===== Desktop: 3-pane (tree | commits | diff) ===== -->
     <div v-if="!isMobile" class="git-branches__body" :class="{ 'git-branches__body--history': compactHistory }">
-      <Splitpanes class="default-theme git-branches__panes">
-        <Pane v-if="!compactHistory" :size="24" :min-size="18">
-          <BranchTreePane
-            :key="branchTreeStateKey"
-            :tree="branchTree"
-            :state-key="branchTreeStateKey"
-            :searching="!!search.trim()"
-            :loading="branchesLoading"
-            :selected-ref="selectedRef"
-            :head="branchList.current"
-            :busy="!!gitUi.busyAction"
-            :is-dirty="isDirty"
-            :can-create-pr="hasAzureConnection"
-            :multi-selected-refs="multiSelectedRefs"
-            @select="onSelectRef"
-            @multi-toggle="onMultiToggleRef"
-            @range-select="onRangeSelectRef"
-            @checkout="onCheckout"
-            @checkout-remote="onCheckoutRemote"
-            @new-from="onNewBranchFrom"
-            @rename="onRename"
-            @delete="onDeleteLocal"
-            @delete-remote="onDeleteRemote"
-            @merge="onMergeInto"
-            @rebase="onRebaseOnto"
-            @create-pr="onCreatePrForBranch"
-          />
-        </Pane>
-        <Pane :size="compactHistory ? 55 : 44" :min-size="compactHistory ? 30 : 28">
-          <div class="git-branches__commits-pane">
-            <div class="git-branches__pane-head">
-              <strong>
-                <template v-if="compareBase">{{ compareBase }} … HEAD</template>
-                <template v-else-if="selectedRef">Commits on {{ selectedRef }}</template>
-                <template v-else>All commits</template>
-              </strong>
-              <span
-                v-if="compactHistory && loadedCount && historyQueryActive"
-                class="git-branches__pane-count"
-                :title="`${filteredHistoryCommits.length} of ${loadedCount} commit(s) match`"
-                >{{ filteredHistoryCommits.length }} of {{ loadedCount }}</span
-              >
-              <span v-else-if="loadedCount" class="git-branches__pane-count" :title="`${loadedCount} commit(s) shown`"
-                >{{ loadedCount }} {{ loadedCount === 1 ? "commit" : "commits" }}</span
-              >
-              <span
-                v-if="compactHistory && baseBranch"
-                class="git-branches__pane-vs"
-                :title="`New work is measured against ${baseBranch}`"
-                >vs {{ baseBranch }}</span
-              >
-              <template v-if="compareBase">
-                <GitDiffStat v-if="compareDiffStat" :stat="compareDiffStat" />
+      <div ref="gitPanesRoot" class="git-branches__panes-root">
+        <Splitpanes class="default-theme git-branches__panes" @resize="onGitPaneResize">
+          <Pane v-if="!compactHistory" :size="paneSizes[0]" :min-size="paneMinSizes[0]">
+            <BranchTreePane
+              :key="branchTreeStateKey"
+              :tree="branchTree"
+              :state-key="branchTreeStateKey"
+              :searching="!!search.trim()"
+              :loading="branchesLoading"
+              :selected-ref="selectedRef"
+              :head="branchList.current"
+              :busy="!!gitUi.busyAction"
+              :is-dirty="isDirty"
+              :can-create-pr="hasAzureConnection"
+              :multi-selected-refs="multiSelectedRefs"
+              @select="onSelectRef"
+              @multi-toggle="onMultiToggleRef"
+              @range-select="onRangeSelectRef"
+              @checkout="onCheckout"
+              @checkout-remote="onCheckoutRemote"
+              @new-from="onNewBranchFrom"
+              @rename="onRename"
+              @delete="onDeleteLocal"
+              @delete-remote="onDeleteRemote"
+              @merge="onMergeInto"
+              @rebase="onRebaseOnto"
+              @create-pr="onCreatePrForBranch"
+            />
+          </Pane>
+          <Pane :size="paneSizes[compactHistory ? 0 : 1]" :min-size="paneMinSizes[compactHistory ? 0 : 1]">
+            <div class="git-branches__commits-pane">
+              <div class="git-branches__pane-head">
+                <strong>
+                  <template v-if="compareBase">{{ compareBase }} … HEAD</template>
+                  <template v-else-if="selectedRef">Commits on {{ selectedRef }}</template>
+                  <template v-else>All commits</template>
+                </strong>
                 <span
-                  v-if="compareCountsLoading"
-                  class="git-branches__pane-count git-branches__pane-count--muted"
-                  title="Computing ahead/behind counts…"
-                  >ahead/behind …</span
+                  v-if="compactHistory && loadedCount && historyQueryActive"
+                  class="git-branches__pane-count"
+                  :title="`${filteredHistoryCommits.length} of ${loadedCount} commit(s) match`"
+                  >{{ filteredHistoryCommits.length }} of {{ loadedCount }}</span
                 >
-                <template v-else>
+                <span v-else-if="loadedCount" class="git-branches__pane-count" :title="`${loadedCount} commit(s) shown`"
+                  >{{ loadedCount }} {{ loadedCount === 1 ? "commit" : "commits" }}</span
+                >
+                <span
+                  v-if="compactHistory && baseBranch"
+                  class="git-branches__pane-vs"
+                  :title="`New work is measured against ${baseBranch}`"
+                  >vs {{ baseBranch }}</span
+                >
+                <template v-if="compareBase">
+                  <GitDiffStat v-if="compareDiffStat" :stat="compareDiffStat" />
                   <span
-                    v-if="compareAhead > 0"
-                    class="git-branches__pane-count git-branches__pane-count--ahead"
-                    :title="`Your branch has ${compareAhead} commit(s) that ${compareBase} doesn't.`"
-                    >{{ compareAhead }} ahead</span
+                    v-if="compareCountsLoading"
+                    class="git-branches__pane-count git-branches__pane-count--muted"
+                    title="Computing ahead/behind counts…"
+                    >ahead/behind …</span
                   >
-                  <span
-                    v-if="compareBehind > 0"
-                    class="git-branches__pane-count git-branches__pane-count--behind"
-                    :title="behindTooltip"
-                    >{{ compareBehind }} behind</span
-                  >
+                  <template v-else>
+                    <span
+                      v-if="compareAhead > 0"
+                      class="git-branches__pane-count git-branches__pane-count--ahead"
+                      :title="`Your branch has ${compareAhead} commit(s) that ${compareBase} doesn't.`"
+                      >{{ compareAhead }} ahead</span
+                    >
+                    <span
+                      v-if="compareBehind > 0"
+                      class="git-branches__pane-count git-branches__pane-count--behind"
+                      :title="behindTooltip"
+                      >{{ compareBehind }} behind</span
+                    >
+                  </template>
                 </template>
-              </template>
-              <span v-if="graphError" class="git-branches__pane-error">— {{ graphError }}</span>
-              <Spinner
-                v-if="graphLoadingMore"
-                size="sm"
-                class="git-branches__pane-more"
-                title="Loading more commits…"
-              />
-              <span v-if="selectedRef || compareBase || compactHistory" class="git-branches__pane-spacer"></span>
-              <button
-                v-if="selectedRef && !compareBase"
-                type="button"
-                class="button button--ghost button--small"
-                title="Clear branch filter — show commits from all refs."
-                @click="onSelectRef('')"
-              >
-                Show all
-              </button>
-              <button
-                v-if="compareBase"
-                type="button"
-                class="button button--ghost button--small"
-                title="Exit compare-with-base mode."
-                @click="compareBase = ''"
-              >
-                Exit compare
-              </button>
-              <span v-if="compactHistory" class="git-branches__pane-fetch" aria-live="polite"
-                >Last fetch: {{ snapshot.lastFetchAt ? formatDateLabel(snapshot.lastFetchAt) : "Unknown" }}</span
-              >
-            </div>
-            <GitHistoryFilters
-              v-if="!compactHistory"
-              v-model:user-filter="userFilter"
-              v-model:date-filter="dateFilter"
-              v-model:custom-since="customSince"
-              v-model:custom-until="customUntil"
-              v-model:paths-filter="pathsFilter"
-              v-model:topo-order="topoOrder"
-              v-model:view-mode="viewMode"
-              v-model:graph-limit="graphLimit"
-              v-model:compare-base="compareBase"
-              v-model:include-base-updates="includeBaseUpdates"
-              :known-authors="knownAuthors"
-              :base-branch-options="baseBranchOptions"
-              :default-branch="branchList.defaultBranch"
-              :default-remote="branchList.defaultRemote"
-              :remote-names="effectiveRemoteNames"
-              :has-active-filters="hasActiveFilters"
-              @clear="resetFilters"
-            />
-            <div v-if="showCompareEmptyState" class="git-branches__compare-empty" role="status" aria-live="polite">
-              <span class="git-branches__compare-empty-icon" aria-hidden="true">✓</span>
-              <div class="git-branches__compare-empty-text">
-                <strong>No commits ahead of {{ compareBase }}.</strong>
-                <span>Your branch has nothing this base doesn't already have.</span>
-              </div>
-              <button
-                v-if="!includeBaseUpdates"
-                type="button"
-                class="button button--ghost button--small"
-                title="Switch to walking base...HEAD so you also see commits on the base since fork."
-                @click="includeBaseUpdates = true"
-              >
-                Include base updates
-              </button>
-            </div>
-            <GitTreeGraph
-              v-else-if="viewMode === 'graph'"
-              :commits="compactHistory ? filteredHistoryCommits : commits"
-              :head="head"
-              :refs="refs"
-              :selected-hash="selectedHash"
-              :selected-hashes="selectedHashes"
-              :loading="graphLoading"
-              :pending="graphPending"
-              :error="graphError"
-              :flat="graphFlatMode"
-              :history="compactHistory"
-              :history-layout="true"
-              :range-base="compactHistory ? baseBranch : ''"
-              :reach-commits="compactHistory ? commits : undefined"
-              @select="onSelectCommit"
-              @open="onOpenCommitDialog"
-              @contextmenu="onCommitContextMenu"
-            />
-            <div v-else class="git-branches__flat-log">
-              <div v-if="graphLoading && !commits.length" class="git-branches__placeholder">
-                <Spinner size="sm" label="Loading…" />
-              </div>
-              <GitCommitLog
-                v-else
-                :commits="compactHistory ? filteredHistoryCommits : commits"
-                :selected-commit="selectedShortHash"
-                :ahead-count="0"
-                @select="onSelectCommitShort"
-                @show-info="onShowCommitInfoFlat"
-              />
-            </div>
-          </div>
-        </Pane>
-        <Pane :size="compactHistory ? 45 : 32" :min-size="20">
-          <div class="git-branches__diff-pane">
-            <!-- Commit info header (always visible when a commit is picked) -->
-            <div v-if="selectedHash" class="git-branches__commit-summary">
-              <div class="git-branches__commit-summary-row">
-                <span class="git-branches__commit-hash">{{ shortHashOf(selectedHash) }}</span>
-                <span class="git-branches__commit-subject" :title="selectedCommitInfo?.subject || ''">{{
-                  selectedCommitInfo?.subject || ""
-                }}</span>
+                <span v-if="graphError" class="git-branches__pane-error">— {{ graphError }}</span>
+                <Spinner
+                  v-if="graphLoadingMore"
+                  size="sm"
+                  class="git-branches__pane-more"
+                  title="Loading more commits…"
+                />
+                <span v-if="selectedRef || compareBase || compactHistory" class="git-branches__pane-spacer"></span>
                 <button
+                  v-if="selectedRef && !compareBase"
                   type="button"
                   class="button button--ghost button--small"
-                  title="Open full commit dialog"
-                  @click="onOpenCommitDialog(selectedHash)"
+                  title="Clear branch filter — show commits from all refs."
+                  @click="onSelectRef('')"
                 >
-                  Details
+                  Show all
+                </button>
+                <button
+                  v-if="compareBase"
+                  type="button"
+                  class="button button--ghost button--small"
+                  title="Exit compare-with-base mode."
+                  @click="compareBase = ''"
+                >
+                  Exit compare
+                </button>
+                <span v-if="compactHistory" class="git-branches__pane-fetch" aria-live="polite"
+                  >Last fetch: {{ snapshot.lastFetchAt ? formatDateLabel(snapshot.lastFetchAt) : "Unknown" }}</span
+                >
+              </div>
+              <GitHistoryFilters
+                v-if="!compactHistory"
+                v-model:user-filter="userFilter"
+                v-model:date-filter="dateFilter"
+                v-model:custom-since="customSince"
+                v-model:custom-until="customUntil"
+                v-model:paths-filter="pathsFilter"
+                v-model:topo-order="topoOrder"
+                v-model:view-mode="viewMode"
+                v-model:graph-limit="graphLimit"
+                v-model:compare-base="compareBase"
+                v-model:include-base-updates="includeBaseUpdates"
+                :known-authors="knownAuthors"
+                :base-branch-options="baseBranchOptions"
+                :default-branch="branchList.defaultBranch"
+                :default-remote="branchList.defaultRemote"
+                :remote-names="effectiveRemoteNames"
+                :has-active-filters="hasActiveFilters"
+                @clear="resetFilters"
+              />
+              <div v-if="showCompareEmptyState" class="git-branches__compare-empty" role="status" aria-live="polite">
+                <span class="git-branches__compare-empty-icon" aria-hidden="true">✓</span>
+                <div class="git-branches__compare-empty-text">
+                  <strong>No commits ahead of {{ compareBase }}.</strong>
+                  <span>Your branch has nothing this base doesn't already have.</span>
+                </div>
+                <button
+                  v-if="!includeBaseUpdates"
+                  type="button"
+                  class="button button--ghost button--small"
+                  title="Switch to walking base...HEAD so you also see commits on the base since fork."
+                  @click="includeBaseUpdates = true"
+                >
+                  Include base updates
                 </button>
               </div>
-              <div class="git-branches__commit-summary-meta">
-                <span v-if="selectedCommitInfo?.author"
-                  ><strong>{{ selectedCommitInfo.author }}</strong></span
-                >
-                <span v-if="selectedCommitInfo?.relativeDate" :title="selectedCommitInfo.isoDate">{{
-                  selectedCommitInfo.relativeDate
-                }}</span>
-                <span
-                  v-for="refName in selectedCommitInfo?.refs || []"
-                  :key="refName"
-                  class="git-branches__commit-ref"
-                  >{{ refName }}</span
-                >
+              <GitTreeGraph
+                v-else-if="viewMode === 'graph'"
+                :commits="compactHistory ? filteredHistoryCommits : commits"
+                :head="head"
+                :refs="refs"
+                :selected-hash="selectedHash"
+                :selected-hashes="selectedHashes"
+                :loading="graphLoading"
+                :pending="graphPending"
+                :error="graphError"
+                :flat="graphFlatMode"
+                :history="compactHistory"
+                :history-layout="true"
+                :range-base="compactHistory ? baseBranch : ''"
+                :reach-commits="compactHistory ? commits : undefined"
+                @select="onSelectCommit"
+                @open="onOpenCommitDialog"
+                @contextmenu="onCommitContextMenu"
+              />
+              <div v-else class="git-branches__flat-log">
+                <div v-if="graphLoading && !commits.length" class="git-branches__placeholder">
+                  <Spinner size="sm" label="Loading…" />
+                </div>
+                <GitCommitLog
+                  v-else
+                  :commits="compactHistory ? filteredHistoryCommits : commits"
+                  :selected-commit="selectedShortHash"
+                  :ahead-count="0"
+                  @select="onSelectCommitShort"
+                  @show-info="onShowCommitInfoFlat"
+                />
               </div>
             </div>
-            <Splitpanes horizontal class="default-theme git-branches__inner-panes">
-              <Pane :size="35" :min-size="18">
-                <div class="git-branches__commit-files">
-                  <div v-if="!selectedHash" class="git-branches__placeholder">Select a commit to see its files.</div>
-                  <div v-else-if="commitFilesLoading" class="git-branches__placeholder">
-                    <Spinner size="sm" label="Loading…" />
-                  </div>
-                  <div v-else-if="commitFilesError" class="git-branches__placeholder">{{ commitFilesError }}</div>
-                  <GitChangeTree
-                    v-else-if="selectedHash"
-                    :files="commitFiles"
-                    :selected-path="selectedCommitFile"
-                    selected-scope="commit"
-                    @select="onSelectCommitFile"
-                    @context-menu="onCommitFileContextMenu"
-                  />
+          </Pane>
+          <Pane :size="paneSizes[compactHistory ? 1 : 2]" :min-size="paneMinSizes[compactHistory ? 1 : 2]">
+            <div class="git-branches__diff-pane">
+              <!-- Commit info header (always visible when a commit is picked) -->
+              <div v-if="selectedHash" class="git-branches__commit-summary">
+                <div class="git-branches__commit-summary-row">
+                  <span class="git-branches__commit-hash">{{ shortHashOf(selectedHash) }}</span>
+                  <span class="git-branches__commit-subject" :title="selectedCommitInfo?.subject || ''">{{
+                    selectedCommitInfo?.subject || ""
+                  }}</span>
+                  <button
+                    type="button"
+                    class="button button--ghost button--small"
+                    title="Open full commit dialog"
+                    @click="onOpenCommitDialog(selectedHash)"
+                  >
+                    Details
+                  </button>
                 </div>
-              </Pane>
-              <Pane :size="65" :min-size="20">
-                <div class="git-branches__commit-diff">
-                  <MonacoDiffPanel
-                    v-if="selectedCommitFile"
-                    :payload="commitDiffPayload"
-                    :loading="commitDiffLoading"
-                    :popout-title="`${selectedCommitFile} @ ${shortHashOf(selectedHash)}`"
-                  />
-                  <div v-else class="git-branches__placeholder">
-                    {{ selectedHash ? "Pick a file to view its diff." : "" }}
-                  </div>
+                <div class="git-branches__commit-summary-meta">
+                  <span v-if="selectedCommitInfo?.author"
+                    ><strong>{{ selectedCommitInfo.author }}</strong></span
+                  >
+                  <span v-if="selectedCommitInfo?.relativeDate" :title="selectedCommitInfo.isoDate">{{
+                    selectedCommitInfo.relativeDate
+                  }}</span>
+                  <span
+                    v-for="refName in selectedCommitInfo?.refs || []"
+                    :key="refName"
+                    class="git-branches__commit-ref"
+                    >{{ refName }}</span
+                  >
                 </div>
-              </Pane>
-            </Splitpanes>
-          </div>
-        </Pane>
-      </Splitpanes>
+              </div>
+              <Splitpanes horizontal class="default-theme git-branches__inner-panes">
+                <Pane :size="35" :min-size="18">
+                  <div class="git-branches__commit-files">
+                    <div v-if="!selectedHash" class="git-branches__placeholder">Select a commit to see its files.</div>
+                    <div v-else-if="commitFilesLoading" class="git-branches__placeholder">
+                      <Spinner size="sm" label="Loading…" />
+                    </div>
+                    <div v-else-if="commitFilesError" class="git-branches__placeholder">{{ commitFilesError }}</div>
+                    <GitChangeTree
+                      v-else-if="selectedHash"
+                      :files="commitFiles"
+                      :selected-path="selectedCommitFile"
+                      selected-scope="commit"
+                      @select="onSelectCommitFile"
+                      @context-menu="onCommitFileContextMenu"
+                    />
+                  </div>
+                </Pane>
+                <Pane :size="65" :min-size="20">
+                  <div class="git-branches__commit-diff">
+                    <MonacoDiffPanel
+                      v-if="selectedCommitFile"
+                      :payload="commitDiffPayload"
+                      :loading="commitDiffLoading"
+                      :popout-title="`${selectedCommitFile} @ ${shortHashOf(selectedHash)}`"
+                    />
+                    <div v-else class="git-branches__placeholder">
+                      {{ selectedHash ? "Pick a file to view its diff." : "" }}
+                    </div>
+                  </div>
+                </Pane>
+              </Splitpanes>
+            </div>
+          </Pane>
+        </Splitpanes>
+      </div>
     </div>
 
     <!-- ===== Mobile: stacked single-pane wizard ===== -->
@@ -644,7 +646,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import DiffLoadingIndicator from "../../shared/DiffLoadingIndicator.vue";
 import { Splitpanes, Pane } from "splitpanes";
 import "splitpanes/dist/splitpanes.css";
 import { useAppStore } from "../../../stores/app.js";
@@ -667,8 +670,13 @@ import GitDiffStat from "./GitDiffStat.vue";
 import { isRemoteRef, resolveBaseRef } from "./base-ref.js";
 import { buildBranchForest, type BranchForestNode } from "./branch-forest.js";
 import { submitPullRequest } from "./pull-request-submit.js";
+import { clampGitPaneSizes, getGitPaneSizes } from "./git-pane-sizing.js";
 
-const MonacoDiffPanel = defineAsyncComponent(() => import("../../shared/MonacoDiffPanel.vue"));
+const MonacoDiffPanel = defineAsyncComponent({
+  loader: () => import("../../shared/MonacoDiffPanel.vue"),
+  loadingComponent: DiffLoadingIndicator,
+  delay: 0,
+});
 
 const props = withDefaults(
   defineProps<{
@@ -704,6 +712,121 @@ const props = withDefaults(
 const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
 const { isMobile } = useIsNarrow();
+const gitPanesRoot = ref<HTMLElement | null>(null);
+const paneSizes = ref<number[]>([24, 44, 32]);
+const paneMinSizes = ref<number[]>([18, 28, 20]);
+const paneWidth = ref(0);
+const treeIntrinsicWidth = ref(280);
+const treeIntrinsicWidths = new Map<string, number>();
+const manualPaneSizes = new Map<string, number[]>();
+let paneResizeObserver: ResizeObserver | null = null;
+let currentPaneKey = "";
+const paneMode = computed(() => (props.compactHistory ? "history" : "branches"));
+const paneStateKey = computed(
+  () =>
+    `${encodeURIComponent(props.profileId || "default")}:${encodeURIComponent(props.workspaceId)}:${encodeURIComponent(props.activeRootPath || "")}:${paneMode.value}`,
+);
+function applyDefaultPaneSizes() {
+  if (!paneWidth.value) {
+    paneSizes.value = paneMode.value === "branches" ? [24, 44, 32] : [55, 45];
+    paneMinSizes.value = paneMode.value === "branches" ? [18, 28, 20] : [30, 20];
+    return;
+  }
+  const layout = getGitPaneSizes(paneWidth.value, paneMode.value, treeIntrinsicWidth.value);
+  paneSizes.value = layout.sizes;
+  paneMinSizes.value = layout.minSizes;
+}
+function updatePaneConstraints(width: number) {
+  paneWidth.value = width;
+  if (!width) return;
+  const layout = getGitPaneSizes(width, paneMode.value, treeIntrinsicWidth.value);
+  paneMinSizes.value = layout.minSizes;
+  if (!manualPaneSizes.has(paneStateKey.value)) {
+    paneSizes.value = layout.sizes;
+    return;
+  }
+  const current = manualPaneSizes.get(paneStateKey.value) || paneSizes.value;
+  const clamped = clampGitPaneSizes(current, layout.minSizes);
+  paneSizes.value = clamped;
+  manualPaneSizes.set(paneStateKey.value, clamped);
+}
+function onGitPaneResize(event: { panes?: Array<{ size: number }> }) {
+  const sizes = event.panes?.map((pane) => pane.size);
+  if (!sizes?.length) return;
+  paneSizes.value = sizes;
+  manualPaneSizes.set(paneStateKey.value, sizes);
+}
+function measureTreeIntrinsicWidth(): number {
+  const rows = gitPanesRoot.value?.querySelectorAll(".branch-node__row");
+  if (!rows?.length) return 0;
+  let widest = 0;
+  for (const row of rows) {
+    const style = getComputedStyle(row);
+    let contentWidth = 2 + parseFloat(style.paddingLeft || "0") + parseFloat(style.paddingRight || "0");
+    const children = Array.from(row.children) as HTMLElement[];
+    for (const child of children) {
+      if (child.classList.contains("branch-node__spacer")) continue;
+      if (child.classList.contains("branch-node__label")) {
+        const range = document.createRange();
+        range.selectNodeContents(child);
+        if (typeof range.getBoundingClientRect !== "function") return 0;
+        contentWidth += range.getBoundingClientRect().width;
+      } else {
+        contentWidth += child.getBoundingClientRect().width;
+      }
+    }
+    contentWidth += Math.max(0, children.length - 1) * (parseFloat(style.columnGap || style.gap || "0") || 0);
+    widest = Math.max(widest, contentWidth);
+  }
+  return widest ? Math.min(340, Math.max(220, widest)) : 0;
+}
+async function measureInitialTreeWidth() {
+  const key = paneStateKey.value;
+  if (paneMode.value !== "branches" || treeIntrinsicWidths.has(key) || manualPaneSizes.has(key)) return;
+  await nextTick();
+  const width = measureTreeIntrinsicWidth();
+  if (!width || paneStateKey.value !== key || manualPaneSizes.has(key)) return;
+  treeIntrinsicWidths.set(key, width);
+  treeIntrinsicWidth.value = width;
+  applyDefaultPaneSizes();
+}
+watch(
+  paneStateKey,
+  (key) => {
+    if (key === currentPaneKey) return;
+    currentPaneKey = key;
+    treeIntrinsicWidth.value = treeIntrinsicWidths.get(key) || 280;
+    const saved = manualPaneSizes.get(key);
+    if (saved) {
+      paneSizes.value = [...saved];
+      if (paneWidth.value) {
+        const layout = getGitPaneSizes(paneWidth.value, paneMode.value, treeIntrinsicWidth.value);
+        paneMinSizes.value = layout.minSizes;
+        paneSizes.value = clampGitPaneSizes(saved, layout.minSizes);
+      }
+    } else {
+      applyDefaultPaneSizes();
+    }
+    void measureInitialTreeWidth();
+  },
+  { immediate: true },
+);
+watch(
+  gitPanesRoot,
+  (root) => {
+    paneResizeObserver?.disconnect();
+    paneResizeObserver = null;
+    if (typeof ResizeObserver === "undefined" || !root) return;
+    paneResizeObserver = new ResizeObserver((entries) => {
+      updatePaneConstraints(entries[0]?.contentRect.width || root.clientWidth || 0);
+    });
+    paneResizeObserver.observe(root);
+    updatePaneConstraints(root.clientWidth);
+    void measureInitialTreeWidth();
+  },
+  { flush: "post" },
+);
+onBeforeUnmount(() => paneResizeObserver?.disconnect());
 type GitHistorySelection = ReturnType<typeof gitUiStore.getGitHistorySelection>;
 const defaultHistorySelection: GitHistorySelection = {
   ref: "",
@@ -1203,6 +1326,13 @@ const branchTree = computed<BranchTreeNode[]>(() => {
 
   return out;
 });
+
+watch(
+  () => (paneMode.value === "branches" ? branchTree.value : []),
+  () => {
+    if (props.gitUi?.branchList && !branchesLoading.value) void measureInitialTreeWidth();
+  },
+);
 
 // --- Commit graph state (per-branch filter applied via gitLoadGraph) ----
 
@@ -2458,6 +2588,13 @@ watch(
 
 .git-branches__body--history {
   flex: 1 1 auto;
+  min-height: 0;
+}
+
+.git-branches__panes-root {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
   min-height: 0;
 }
 

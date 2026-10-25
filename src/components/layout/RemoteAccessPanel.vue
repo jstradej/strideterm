@@ -75,15 +75,16 @@
           title="Open Remote Access to connect strIDEterm Mobile, manage paired phones, or configure browser sharing."
           @click="store.openRemoteAccessDialog()"
         >
-          <svg class="remote-summary__configure-icon" viewBox="0 0 16 16" aria-hidden="true">
+          <svg class="remote-summary__configure-icon" viewBox="0 0 24 24" aria-hidden="true">
             <path
-              d="M6.7 1.5h2.6l.4 1.6c.4.1.8.3 1.1.5l1.5-.7 1.3 2.2-1.2 1.1a5 5 0 0 1 0 1.3l1.2 1.1-1.3 2.2-1.5-.7c-.3.2-.7.4-1.1.5l-.4 1.6H6.7l-.4-1.6a4 4 0 0 1-1.1-.5l-1.5.7-1.3-2.2 1.2-1.1a5 5 0 0 1 0-1.3L2.4 5.1l1.3-2.2 1.5.7c.3-.2.7-.4 1.1-.5l.4-1.6Z"
+              d="m9.5 2.5-.8 2.2a8 8 0 0 0-1.6.9l-2.2-.6-2.4 4.2 1.6 1.6a8 8 0 0 0 0 1.8l-1.6 1.6 2.4 4.2 2.2-.6c.5.4 1 .7 1.6.9l.8 2.2h5l.8-2.2a8 8 0 0 0 1.6-.9l2.2.6 2.4-4.2-1.6-1.6a8 8 0 0 0 0-1.8l1.6-1.6-2.4-4.2-2.2.6a8 8 0 0 0-1.6-.9l-.8-2.2h-5Z"
               fill="none"
               stroke="currentColor"
-              stroke-width="1.2"
+              stroke-width="1.7"
+              stroke-linecap="round"
               stroke-linejoin="round"
             />
-            <circle cx="8" cy="7.4" r="2" fill="none" stroke="currentColor" stroke-width="1.2" />
+            <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.7" />
           </svg>
           <span class="remote-summary__configure-label">Configure</span>
         </button>
@@ -128,15 +129,16 @@
         title="Open Remote Access to connect strIDEterm Mobile or set up LAN, Cloudflare, or VPS browser sharing."
         @click="store.openRemoteAccessDialog()"
       >
-        <svg class="remote-summary__configure-icon" viewBox="0 0 16 16" aria-hidden="true">
+        <svg class="remote-summary__configure-icon" viewBox="0 0 24 24" aria-hidden="true">
           <path
-            d="M6.7 1.5h2.6l.4 1.6c.4.1.8.3 1.1.5l1.5-.7 1.3 2.2-1.2 1.1a5 5 0 0 1 0 1.3l1.2 1.1-1.3 2.2-1.5-.7c-.3.2-.7.4-1.1.5l-.4 1.6H6.7l-.4-1.6a4 4 0 0 1-1.1-.5l-1.5.7-1.3-2.2 1.2-1.1a5 5 0 0 1 0-1.3L2.4 5.1l1.3-2.2 1.5.7c.3-.2.7-.4 1.1-.5l.4-1.6Z"
+            d="m9.5 2.5-.8 2.2a8 8 0 0 0-1.6.9l-2.2-.6-2.4 4.2 1.6 1.6a8 8 0 0 0 0 1.8l-1.6 1.6 2.4 4.2 2.2-.6c.5.4 1 .7 1.6.9l.8 2.2h5l.8-2.2a8 8 0 0 0 1.6-.9l2.2.6 2.4-4.2-1.6-1.6a8 8 0 0 0 0-1.8l1.6-1.6-2.4-4.2-2.2.6a8 8 0 0 0-1.6-.9l-.8-2.2h-5Z"
             fill="none"
             stroke="currentColor"
-            stroke-width="1.2"
+            stroke-width="1.7"
+            stroke-linecap="round"
             stroke-linejoin="round"
           />
-          <circle cx="8" cy="7.4" r="2" fill="none" stroke="currentColor" stroke-width="1.2" />
+          <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.7" />
         </svg>
         <span class="remote-summary__configure-label">Configure</span>
       </button>

@@ -39,9 +39,14 @@
 
 <script setup lang="ts">
 import { defineAsyncComponent } from "vue";
+import DiffLoadingIndicator from "../../shared/DiffLoadingIndicator.vue";
 import DiffViewer from "../DiffViewer.vue";
 
-const MonacoDiffPanel = defineAsyncComponent(() => import("../../shared/MonacoDiffPanel.vue"));
+const MonacoDiffPanel = defineAsyncComponent({
+  loader: () => import("../../shared/MonacoDiffPanel.vue"),
+  loadingComponent: DiffLoadingIndicator,
+  delay: 0,
+});
 const emit = defineEmits<{ "request-comment": [location: { line: number; side: "old" | "new" }] }>();
 
 interface ReviewInlineAnnotation {

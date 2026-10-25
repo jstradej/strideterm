@@ -4,6 +4,7 @@ import { mount, flushPromises, type VueWrapper } from "@vue/test-utils";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { setActivePinia, createPinia } from "pinia";
+import { Pane, Splitpanes } from "splitpanes";
 
 vi.mock("../../shared/MonacoDiffPanel.vue", () => ({
   __esModule: true,
@@ -228,6 +229,91 @@ afterEach(async () => {
 });
 
 describe("GitBranchesTab compact history picker", () => {
+  test("measures branch labels when the desktop panes mount after a mobile layout", async () => {
+    const originalRangeMethod = Object.getOwnPropertyDescriptor(Range.prototype, "getBoundingClientRect");
+    let measuredLabels = 0;
+    Object.defineProperty(Range.prototype, "getBoundingClientRect", {
+      configurable: true,
+      value: () => {
+        measuredLabels++;
+        return { width: 300 };
+      },
+    });
+    let observed = false;
+    class ResizeObserverMock {
+      constructor(private callback: ResizeObserverCallback) {}
+      observe() {
+        observed = true;
+        this.callback([{ contentRect: { width: 1200 } } as ResizeObserverEntry], this as unknown as ResizeObserver);
+      }
+      disconnect() {}
+    }
+    vi.stubGlobal("ResizeObserver", ResizeObserverMock);
+    try {
+      mobileViewport.isNarrow.value = true;
+      mobileViewport.isMobile.value = true;
+      const picker = mount(GitBranchesTab, {
+        props: {
+          workspaceId: "ws-mobile-to-desktop",
+          activeRootPath: "/repo",
+          snapshot: { dirty: false, branch: "main" },
+          gitUi: {
+            branchList: { current: "main", local: [{ name: "feature/example" }], remotes: [] },
+            graph: { commits: [], head: "", refs: {} },
+          },
+        },
+      });
+      mountedWrappers.push(picker);
+      await flushPromises();
+      expect(picker.find(".git-branches__panes").exists()).toBe(false);
+
+      mobileViewport.isNarrow.value = false;
+      mobileViewport.isMobile.value = false;
+      await flushPromises();
+      expect(observed).toBe(true);
+      expect(measuredLabels).toBeGreaterThan(0);
+    } finally {
+      vi.unstubAllGlobals();
+      if (originalRangeMethod) Object.defineProperty(Range.prototype, "getBoundingClientRect", originalRangeMethod);
+      else Reflect.deleteProperty(Range.prototype, "getBoundingClientRect");
+    }
+  });
+
+  test("keeps manual pane sizes across branch updates and view switches", async () => {
+    const picker = mountTab();
+    const splitpanes = picker.getComponent(Splitpanes);
+    const outerPaneSizes = () =>
+      picker
+        .findAllComponents(Pane)
+        .filter((pane) => pane.element.parentElement === splitpanes.element)
+        .map((pane) => pane.props("size"));
+    splitpanes.vm.$emit("resize", { panes: [{ size: 22 }, { size: 48 }, { size: 30 }] });
+    await flushPromises();
+
+    await picker.setProps({
+      gitUi: {
+        ...picker.props("gitUi"),
+        branchList: {
+          current: "main",
+          local: [{ name: "feature/a-branch-name-longer-than-before" }],
+          remotes: [],
+          defaultBranch: "main",
+          defaultRemote: "origin",
+        },
+      },
+    });
+    await flushPromises();
+    expect(outerPaneSizes()).toEqual([22, 48, 30]);
+
+    await picker.setProps({ compactHistory: true });
+    await flushPromises();
+    const historySplitpanes = picker.getComponent(Splitpanes);
+    historySplitpanes.vm.$emit("resize", { panes: [{ size: 35 }, { size: 65 }] });
+    await picker.setProps({ compactHistory: false });
+    await flushPromises();
+    expect(outerPaneSizes()).toEqual([22, 48, 30]);
+  });
+
   test("keeps the diff pane full while pointer dragging across the combined minimum boundary", async () => {
     const picker = mountTab();
     await flushPromises();

@@ -161,7 +161,9 @@
       </div>
 
       <div ref="bodyRef" class="mdp__body">
-        <div v-if="loading" class="mdp__overlay">Loading diff…</div>
+        <div v-if="loading" class="mdp__overlay">
+          <DiffLoadingIndicator />
+        </div>
         <div v-else-if="errorMessage" class="mdp__overlay mdp__overlay--error">{{ errorMessage }}</div>
         <div v-else-if="!payload" class="mdp__overlay mdp__overlay--muted">No diff selected</div>
         <div
@@ -181,6 +183,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch, nextTick } from "vue";
 import { useIsNarrow } from "../../composables/useIsNarrow.js";
+import DiffLoadingIndicator from "./DiffLoadingIndicator.vue";
 import "../../app/monaco-setup.js";
 import * as monaco from "monaco-editor";
 
