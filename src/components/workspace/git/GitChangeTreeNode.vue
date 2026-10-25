@@ -7,10 +7,9 @@
         isDir && 'gct-node__row--folder',
         stagingEnabled && node.kind === 'file' && 'gct-node__row--staging',
         node.kind === 'file' && isSelected && 'gct-node__row--selected',
-        node.kind === 'file' && `gct-node__row--git-${node.status}`,
-        node.kind === 'file' && node.scope === 'review' && node.code === 'D' && 'gct-node__row--review-deleted',
+        node.kind === 'file' && node.status === 'ignored' && 'gct-node__row--git-ignored',
       ]"
-      :style="{ paddingLeft: depth * (grouped ? 10 : 14) + 6 + 'px' }"
+      :style="{ paddingLeft: depth * 10 + 6 + 'px' }"
       :title="node.kind === 'file' ? `${node.statusTitle || statusTitle(node.status)}: ${node.path}` : node.path"
       :tabindex="isKeyboardTarget ? 0 : undefined"
       @click="onClick"
@@ -279,28 +278,12 @@ function onContextMenu(e: MouseEvent) {
   color: var(--accent);
 }
 
-.gct-node__row--git-modified {
-  border-left: 3px solid var(--fm-status-modified, #d8a14b);
-  padding-left: 3px;
-}
-.gct-node__row--git-staged {
-  border-left: 3px solid var(--fm-status-staged, #6cb478);
-  padding-left: 3px;
-}
-.gct-node__row--git-untracked {
-  border-left: 3px solid var(--fm-status-untracked, #5e9bd6);
-  padding-left: 3px;
-}
-.gct-node__row--git-conflict {
-  border-left: 3px solid var(--fm-status-conflict, #e26b6b);
-  padding-left: 3px;
-}
 .gct-node__row--git-ignored {
   opacity: 0.55;
 }
-.gct-node__row--review-deleted {
-  border-left: 3px solid var(--danger, #e26b6b);
-  padding-left: 3px;
+
+.gct-node__row:not(.gct-node__row--folder) :deep(.tree-entry-icon__chevron--leaf) {
+  display: none;
 }
 
 .gct-node__check {

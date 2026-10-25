@@ -17,6 +17,13 @@
       <path d="M1.5 3.25h5l1.5 1.5h8.5v8.75H1.5z" />
       <path d="M1.5 4.75V2.5h5l1.5 1.5" />
     </svg>
+    <svg v-else-if="extension === 'html'" viewBox="0 0 16 16">
+      <path d="m5.5 4-3 4 3 4M10.5 4l3 4-3 4" />
+    </svg>
+    <svg v-else-if="['css', 'scss'].includes(extension)" viewBox="0 0 16 16">
+      <path d="M8 2.25 13 5v6l-5 2.75L3 11V5z" />
+      <path d="M6 6.25h4M6 8h4M6 9.75h2.5" />
+    </svg>
     <template v-else>{{ fileGlyph }}</template>
   </span>
 </template>
@@ -79,6 +86,16 @@ const fileGlyph = computed(() => {
   font-size: 12px;
   line-height: 1;
   color: var(--muted);
+}
+
+.tree-entry-icon__glyph > svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.35;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .tree-entry-icon__glyph--folder svg {
