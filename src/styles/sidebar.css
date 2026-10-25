@@ -605,14 +605,14 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
 }
 
 .remote-card--compact {
+  container-type: inline-size;
   padding: 8px;
   display: grid;
   gap: 8px;
   justify-items: stretch;
 }
 
-/* Single-row summary: caret + tiny QR thumb + status pill + Configure.
-   Wraps to two lines on the narrowest sidebar widths so nothing clips. */
+/* Single-row summary: caret + tiny QR thumb + status pill + Configure. */
 .remote-compact__row {
   display: flex;
   align-items: center;
@@ -624,11 +624,12 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 6px;
   margin-inline-start: auto;
   min-width: 0;
   max-width: 100%;
+  flex-shrink: 0;
 }
 
 .remote-compact__caret {
@@ -770,6 +771,7 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   border: 1px solid color-mix(in srgb, var(--accent), transparent 72%);
   color: var(--muted);
   font-size: 10px;
+  white-space: nowrap;
 }
 
 .remote-pill--error {
@@ -784,6 +786,44 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   font: inherit;
   font-size: 10px;
   cursor: pointer;
+}
+
+.remote-pill__label-compact,
+.remote-summary__configure-icon {
+  display: none;
+}
+
+.remote-summary__configure-icon {
+  width: 14px;
+  height: 14px;
+}
+
+@container (max-width: 340px) {
+  .remote-summary__configure {
+    width: 28px;
+    min-width: 28px;
+    height: 28px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .remote-summary__configure-label {
+    display: none;
+  }
+
+  .remote-summary__configure-icon {
+    display: block;
+  }
+}
+
+@container (max-width: 290px) {
+  .remote-pill__label-full {
+    display: none;
+  }
+
+  .remote-pill__label-compact {
+    display: inline;
+  }
 }
 
 .remote-pill--mobile-warning:hover {

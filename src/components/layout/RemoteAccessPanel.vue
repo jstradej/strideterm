@@ -65,15 +65,27 @@
           :aria-label="mobileWarningTitle"
           @click="openMobileSettings"
         >
-          {{ mobileWarningLabel }}
+          <span class="remote-pill__label-full">{{ mobileWarningLabel }}</span>
+          <span class="remote-pill__label-compact">{{ mobileWarningCompactLabel }}</span>
         </button>
         <button
           type="button"
           class="button button--ghost remote-summary__configure"
+          aria-label="Configure Remote Access"
           title="Open Remote Access to connect strIDEterm Mobile, manage paired phones, or configure browser sharing."
           @click="store.openRemoteAccessDialog()"
         >
-          Configure
+          <svg class="remote-summary__configure-icon" viewBox="0 0 16 16" aria-hidden="true">
+            <path
+              d="M6.7 1.5h2.6l.4 1.6c.4.1.8.3 1.1.5l1.5-.7 1.3 2.2-1.2 1.1a5 5 0 0 1 0 1.3l1.2 1.1-1.3 2.2-1.5-.7c-.3.2-.7.4-1.1.5l-.4 1.6H6.7l-.4-1.6a4 4 0 0 1-1.1-.5l-1.5.7-1.3-2.2 1.2-1.1a5 5 0 0 1 0-1.3L2.4 5.1l1.3-2.2 1.5.7c.3-.2.7-.4 1.1-.5l.4-1.6Z"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.2"
+              stroke-linejoin="round"
+            />
+            <circle cx="8" cy="7.4" r="2" fill="none" stroke="currentColor" stroke-width="1.2" />
+          </svg>
+          <span class="remote-summary__configure-label">Configure</span>
         </button>
       </div>
     </div>
@@ -106,15 +118,27 @@
         :aria-label="mobileWarningTitle"
         @click="openMobileSettings"
       >
-        {{ mobileWarningLabel }}
+        <span class="remote-pill__label-full">{{ mobileWarningLabel }}</span>
+        <span class="remote-pill__label-compact">{{ mobileWarningCompactLabel }}</span>
       </button>
       <button
         type="button"
         class="button button--ghost remote-summary__configure"
+        aria-label="Configure Remote Access"
         title="Open Remote Access to connect strIDEterm Mobile or set up LAN, Cloudflare, or VPS browser sharing."
         @click="store.openRemoteAccessDialog()"
       >
-        Configure
+        <svg class="remote-summary__configure-icon" viewBox="0 0 16 16" aria-hidden="true">
+          <path
+            d="M6.7 1.5h2.6l.4 1.6c.4.1.8.3 1.1.5l1.5-.7 1.3 2.2-1.2 1.1a5 5 0 0 1 0 1.3l1.2 1.1-1.3 2.2-1.5-.7c-.3.2-.7.4-1.1.5l-.4 1.6H6.7l-.4-1.6a4 4 0 0 1-1.1-.5l-1.5.7-1.3-2.2 1.2-1.1a5 5 0 0 1 0-1.3L2.4 5.1l1.3-2.2 1.5.7c.3-.2.7-.4 1.1-.5l.4-1.6Z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.2"
+            stroke-linejoin="round"
+          />
+          <circle cx="8" cy="7.4" r="2" fill="none" stroke="currentColor" stroke-width="1.2" />
+        </svg>
+        <span class="remote-summary__configure-label">Configure</span>
       </button>
     </div>
   </div>
@@ -221,7 +245,22 @@ const mobileAccessEndDateTime = computed(() => {
 });
 const mobileWarningLabel = computed(() => {
   if (isExpiredWarning.value) return "Mobile · Ended";
-  if (mobileRemainingMs.value > 0 && mobileWarning.value !== null) return `${mobileTimeRemaining.value} left`;
+  if (mobileRemainingMs.value > 0 && mobileWarning.value !== null) {
+    if (mobileRemainingMs.value < 60 * 60_000) {
+      return `${Math.ceil(mobileRemainingMs.value / 60_000)}m left`;
+    }
+    return `${mobileTimeRemaining.value} left`;
+  }
+  return "Mobile · Attention";
+});
+const mobileWarningCompactLabel = computed(() => {
+  if (isExpiredWarning.value) return "Mobile · Ended";
+  if (mobileRemainingMs.value > 0 && mobileWarning.value !== null) {
+    if (mobileRemainingMs.value >= 60 * 60_000) {
+      return `${Math.floor(mobileRemainingMs.value / (60 * 60_000))}h left`;
+    }
+    return `${Math.ceil(mobileRemainingMs.value / 60_000)}m left`;
+  }
   return "Mobile · Attention";
 });
 const mobileWarningTitle = computed(() => {

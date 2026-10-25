@@ -103,12 +103,21 @@ describe("RemoteAccessPanel", () => {
     mocks.overviewEntitlement = null;
   });
 
+  test("keeps Configure accessible when its label collapses to an icon", () => {
+    const wrapper = mount(RemoteAccessPanel);
+    const configure = wrapper.find(".remote-summary__configure");
+
+    expect(configure.attributes("aria-label")).toBe("Configure Remote Access");
+    expect(configure.attributes("title")).toContain("Open Remote Access");
+    expect(configure.find("svg").exists()).toBe(true);
+  });
+
   test("keeps browser sharing status while offering an actionable mobile warning", async () => {
     const wrapper = mount(RemoteAccessPanel);
     const warning = wrapper.find(".remote-pill--mobile-warning");
 
     expect(wrapper.find(".remote-pill--ok").text()).toBe("public");
-    expect(warning.text()).toBe("Mobile · Attention");
+    expect(warning.find(".remote-pill__label-full").text()).toBe("Mobile · Attention");
     await warning.trigger("click");
     expect(mocks.openSettingsDialog).toHaveBeenCalledWith({ initialTab: "mobile", initialMobileView: "overview" });
   });
@@ -118,7 +127,7 @@ describe("RemoteAccessPanel", () => {
     const wrapper = mount(RemoteAccessPanel);
     const warning = wrapper.find(".remote-pill--mobile-warning");
 
-    expect(warning.text()).toBe("Mobile · Ended");
+    expect(warning.find(".remote-pill__label-full").text()).toBe("Mobile · Ended");
     expect(warning.classes()).toContain("remote-pill--mobile-warning-expired");
     expect(warning.attributes("aria-label")).toContain("The free mobile trial ended");
     await warning.trigger("click");
@@ -137,7 +146,7 @@ describe("RemoteAccessPanel", () => {
     try {
       expect(wrapper.find(".remote-pill--mobile-warning").exists()).toBe(false);
       await vi.advanceTimersByTimeAsync(1_001);
-      expect(wrapper.find(".remote-pill--mobile-warning").text()).toMatch(/\d+h \d+m left/);
+      expect(wrapper.find(".remote-pill--mobile-warning .remote-pill__label-full").text()).toMatch(/\d+h \d+m left/);
     } finally {
       wrapper.unmount();
       vi.useRealTimers();
@@ -157,9 +166,9 @@ describe("RemoteAccessPanel", () => {
     try {
       expect(wrapper.find(".remote-pill--mobile-warning").exists()).toBe(false);
       await vi.advanceTimersByTimeAsync(1_001);
-      expect(wrapper.find(".remote-pill--mobile-warning").text()).toMatch(/\d+h \d+m left/);
+      expect(wrapper.find(".remote-pill--mobile-warning .remote-pill__label-full").text()).toMatch(/\d+h \d+m left/);
       await vi.advanceTimersByTimeAsync(MOBILE_TRIAL_WARNING_WINDOW_MS);
-      expect(wrapper.find(".remote-pill--mobile-warning").text()).toBe("Mobile · Ended");
+      expect(wrapper.find(".remote-pill--mobile-warning .remote-pill__label-full").text()).toBe("Mobile · Ended");
     } finally {
       wrapper.unmount();
       vi.useRealTimers();
@@ -171,7 +180,7 @@ describe("RemoteAccessPanel", () => {
     mocks.overviewEntitlement = { state: "active", source: "subscription" };
     const wrapper = mount(RemoteAccessPanel);
 
-    expect(wrapper.find(".remote-pill--mobile-warning-expired").text()).toBe("Mobile · Ended");
+    expect(wrapper.find(".remote-pill--mobile-warning-expired .remote-pill__label-full").text()).toBe("Mobile · Ended");
   });
 
   test("upcoming trial expiration is orange and opens Account settings", async () => {
@@ -185,7 +194,8 @@ describe("RemoteAccessPanel", () => {
     const wrapper = mount(RemoteAccessPanel);
     try {
       const warning = wrapper.find(".remote-pill--mobile-warning");
-      expect(warning.text()).toMatch(/\d+h \d+m left/);
+      expect(warning.find(".remote-pill__label-full").text()).toMatch(/\d+h \d+m left/);
+      expect(warning.find(".remote-pill__label-compact").text()).toMatch(/\d+h left/);
       expect(warning.classes()).toContain("remote-pill--mobile-warning-expiring");
       expect(warning.attributes("title")).toContain("The free mobile trial ends in");
       expect(warning.attributes("aria-label")).toBe(warning.attributes("title"));
@@ -206,7 +216,8 @@ describe("RemoteAccessPanel", () => {
 
     try {
       const warning = wrapper.find(".remote-pill--mobile-warning");
-      expect(warning.text()).toBe("23h 40m left");
+      expect(warning.find(".remote-pill__label-full").text()).toBe("23h 40m left");
+      expect(warning.find(".remote-pill__label-compact").text()).toBe("23h left");
       expect(warning.classes()).toContain("remote-pill--mobile-warning-critical");
       expect(warning.attributes("title")).toContain(
         new Date(notAfter).toLocaleString(undefined, {
@@ -229,7 +240,7 @@ describe("RemoteAccessPanel", () => {
     const wrapper = mount(RemoteAccessPanel);
     const warning = wrapper.find(".remote-pill--mobile-warning");
 
-    expect(warning.text()).toBe("Mobile · Ended");
+    expect(warning.find(".remote-pill__label-full").text()).toBe("Mobile · Ended");
     expect(warning.classes()).toContain("remote-pill--mobile-warning-expired");
     expect(warning.classes()).not.toContain("remote-pill--mobile-warning-pulse");
     expect(warning.attributes("title")).toContain("Mobile access ended");
@@ -279,7 +290,7 @@ describe("RemoteAccessPanel", () => {
     mocks.entitlement = { state: "active", source: "incident", notAfter };
     const wrapper = mount(RemoteAccessPanel);
     const warning = wrapper.find(".remote-pill--mobile-warning");
-    expect(warning.text()).toBe("23h 0m left");
+    expect(warning.find(".remote-pill__label-full").text()).toBe("23h 0m left");
     expect(warning.classes()).toContain("remote-pill--mobile-warning-critical");
     expect(warning.classes()).toContain("remote-pill--mobile-warning-pulse");
     expect(warning.attributes("title")).toContain("Mobile access ends in 23h 0m");
@@ -295,11 +306,11 @@ describe("RemoteAccessPanel", () => {
 
     try {
       const warning = wrapper.find(".remote-pill--mobile-warning");
-      expect(warning.text()).toBe("120h 0m left");
+      expect(warning.find(".remote-pill__label-full").text()).toBe("120h 0m left");
       expect(warning.classes()).not.toContain("remote-pill--mobile-warning-pulse");
       await vi.advanceTimersByTimeAsync(60_000);
       await nextTick();
-      expect(warning.text()).toBe("119h 59m left");
+      expect(warning.find(".remote-pill__label-full").text()).toBe("119h 59m left");
       expect(warning.classes()).not.toContain("remote-pill--mobile-warning-pulse");
     } finally {
       wrapper.unmount();
@@ -313,7 +324,7 @@ describe("RemoteAccessPanel", () => {
     const wrapper = mount(RemoteAccessPanel);
     const warning = wrapper.find(".remote-pill--mobile-warning");
 
-    expect(warning.text()).toBe("Mobile · Attention");
+    expect(warning.find(".remote-pill__label-full").text()).toBe("Mobile · Attention");
     const cancellationAt = Date.now() + 15 * 60 * 60_000 + 20 * 60_000;
     mocks.updateAccountState!(
       {
@@ -327,7 +338,7 @@ describe("RemoteAccessPanel", () => {
     );
     await nextTick();
 
-    expect(warning.text()).toBe("15h 20m left");
+    expect(warning.find(".remote-pill__label-full").text()).toBe("15h 20m left");
     expect(warning.attributes("title")).toContain("Mobile access ends in 15h 20m");
     expect(mocks.openSettingsDialog).not.toHaveBeenCalled();
   });
@@ -346,10 +357,11 @@ describe("RemoteAccessPanel", () => {
 
     try {
       const warning = wrapper.find(".remote-pill--mobile-warning");
-      expect(warning.text()).toBe("0h 1m left");
+      expect(warning.find(".remote-pill__label-full").text()).toBe("1m left");
+      expect(warning.find(".remote-pill__label-compact").text()).toBe("1m left");
       await vi.advanceTimersByTimeAsync(1_001);
       await nextTick();
-      expect(warning.text()).toBe("Mobile · Attention");
+      expect(warning.find(".remote-pill__label-full").text()).toBe("Mobile · Attention");
     } finally {
       wrapper.unmount();
       vi.useRealTimers();
@@ -368,9 +380,9 @@ describe("RemoteAccessPanel", () => {
     try {
       expect(wrapper.find(".remote-pill--mobile-warning").exists()).toBe(false);
       await vi.advanceTimersByTimeAsync(1_001);
-      expect(wrapper.find(".remote-pill--mobile-warning").text()).toMatch(/\d+h \d+m left/);
+      expect(wrapper.find(".remote-pill--mobile-warning .remote-pill__label-full").text()).toMatch(/\d+h \d+m left/);
       await vi.advanceTimersByTimeAsync(MOBILE_TRIAL_WARNING_WINDOW_MS);
-      expect(wrapper.find(".remote-pill--mobile-warning").text()).toBe("Mobile · Ended");
+      expect(wrapper.find(".remote-pill--mobile-warning .remote-pill__label-full").text()).toBe("Mobile · Ended");
     } finally {
       wrapper.unmount();
       vi.useRealTimers();
@@ -391,9 +403,9 @@ describe("RemoteAccessPanel", () => {
       await vi.advanceTimersByTimeAsync(2_147_483_647);
       expect(wrapper.find(".remote-pill--mobile-warning").exists()).toBe(false);
       await vi.advanceTimersByTimeAsync(5_001);
-      expect(wrapper.find(".remote-pill--mobile-warning").text()).toMatch(/\d+h \d+m left/);
+      expect(wrapper.find(".remote-pill--mobile-warning .remote-pill__label-full").text()).toMatch(/\d+h \d+m left/);
       await vi.advanceTimersByTimeAsync(MOBILE_TRIAL_WARNING_WINDOW_MS);
-      expect(wrapper.find(".remote-pill--mobile-warning").text()).toBe("Mobile · Ended");
+      expect(wrapper.find(".remote-pill--mobile-warning .remote-pill__label-full").text()).toBe("Mobile · Ended");
     } finally {
       wrapper.unmount();
       vi.useRealTimers();
