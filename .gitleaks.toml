@@ -100,6 +100,13 @@ paths = ['^electron/backend/(?:review-git/(?:broker|operations|service)|internal
 regexes = ['^key-12345678$']
 
 [[allowlists]]
+description = "audited deterministic fixtures: internal MCP companion tests (fixed idempotency keys, not credentials)"
+condition = "AND"
+regexTarget = "secret"
+paths = ['^electron/backend/(?:internal-mcp\.integration|internal-mcp/task-service)\.test\.ts$']
+regexes = ['^companion-(?:123456|key-123|key-456)$']
+
+[[allowlists]]
 description = "audited deterministic fixtures: electron/backend/review-pr-actions\\.integration\\.test\\.ts (fixed idempotency keys, not credentials)"
 condition = "AND"
 regexTarget = "secret"
