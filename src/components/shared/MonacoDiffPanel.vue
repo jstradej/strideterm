@@ -1,6 +1,7 @@
 <template>
   <Teleport to="body" :disabled="!isFullscreen">
     <div
+      v-bind="$attrs"
       class="mdp"
       :class="{ 'mdp--fullscreen': isFullscreen, overlay: isFullscreen }"
       :role="isFullscreen ? 'dialog' : undefined"
@@ -186,6 +187,8 @@ import { useIsNarrow } from "../../composables/useIsNarrow.js";
 import DiffLoadingIndicator from "./DiffLoadingIndicator.vue";
 import "../../app/monaco-setup.js";
 import * as monaco from "monaco-editor";
+
+defineOptions({ inheritAttrs: false });
 
 const emit = defineEmits<{
   "request-comment": [location: { line: number; side: "old" | "new" }];
