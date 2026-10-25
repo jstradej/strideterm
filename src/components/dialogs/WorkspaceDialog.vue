@@ -209,8 +209,8 @@
           class="internal-mcp-option"
           :title="
             isAzure
-              ? 'Sets the default for newly created New Branch and manual PR workspaces. Existing workspaces keep their own setting.'
-              : 'Controls whether agents in this workspace can access strIDEterm task tools.'
+              ? 'Sets the default for newly created New Branch and manual PR workspaces. Existing workspaces keep their own setting. Restart open agent sessions after changing it.'
+              : 'Controls whether agents in this workspace can access strIDEterm task tools. Restart open agent sessions after changing it.'
           "
         >
           <input
@@ -221,13 +221,16 @@
           />
           Allow internal MCP for agents
           <span class="internal-mcp-hint">
-            Lets Claude Code, Codex, GitHub Copilot or OpenCode agents create and monitor tasks in strIDEterm.
+            Lets directly launched local Claude Code, Codex, GitHub Copilot or OpenCode agents create and monitor tasks
+            or companion reviews in strIDEterm.
             <template v-if="internalMcpLocked"> Desktop only — change it in the desktop app.</template>
             <template v-if="isAzure">
               Applies to new workspaces created with New Branch or opened manually for a PR. Existing workspaces keep
               their own setting.
             </template>
-            <template v-else>Applies to agent sessions started after saving.</template>
+            <template v-else
+              >Applies to agent sessions started after saving. Restart open agent sessions to apply changes.</template
+            >
           </span>
         </label>
         <PanelEditor

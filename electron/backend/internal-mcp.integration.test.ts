@@ -33,6 +33,10 @@ function createService() {
     operationGet: vi.fn(async () => ({ status: "running" })),
     taskList: vi.fn(() => ({ tasks: [], nextCursor: null })),
     taskGet: vi.fn(async () => ({ state: "idle" })),
+    companionCreate: vi.fn(async (_scope: unknown, _session: string, input: unknown) => ({ created: input })),
+    companionStart: vi.fn(async () => ({ ok: true })),
+    companionPause: vi.fn(async () => ({ ok: true })),
+    companionAnswer: vi.fn(async () => ({ ok: true })),
   };
 }
 
@@ -62,7 +66,7 @@ async function connect(env: Record<string, string>) {
 }
 
 describe("internal MCP stdio end-to-end", () => {
-  test("exposes exactly the five task tools and carries calls to the broker", async () => {
+  test("exposes task and companion tools and carries calls to the broker", async () => {
     const { service, grant } = await startBroker();
     const client = await connect({
       [INTERNAL_MCP_URL_ENV]: grant.url,
@@ -71,6 +75,10 @@ describe("internal MCP stdio end-to-end", () => {
 
     const listed = await client.listTools();
     expect(listed.tools.map((tool) => tool.name).sort()).toEqual([
+      "companion_answer",
+      "companion_create",
+      "companion_pause",
+      "companion_start",
       "operation_get",
       "task_get",
       "task_list",
@@ -85,6 +93,41 @@ describe("internal MCP stdio end-to-end", () => {
       { assignment: "Do it" },
     );
     expect(toolText(await client.callTool({ name: "task_list", arguments: {} })).isError).toBe(false);
+    await client.callTool({
+      name: "companion_create",
+      arguments: {
+        companionRole: "reviewer",
+        providerId: "codex",
+        model: "gpt-5.5",
+        idempotencyKey: "companion-123456",
+      },
+    });
+    expect(service.companionCreate).toHaveBeenCalledWith(
+      { profileId: "profile-a", workspaceId: "parent" },
+      "parent:agent",
+      expect.objectContaining({ companionRole: "reviewer" }),
+    );
+    await client.callTool({ name: "companion_start", arguments: { workspaceId: "companion-1" } });
+    await client.callTool({ name: "companion_pause", arguments: { workspaceId: "companion-1" } });
+    await client.callTool({
+      name: "companion_answer",
+      arguments: { workspaceId: "companion-1", questionIds: ["Q-1"], answer: "Proceed" },
+    });
+    expect(service.companionStart).toHaveBeenCalledWith(
+      { profileId: "profile-a", workspaceId: "parent" },
+      "parent:agent",
+      "companion-1",
+    );
+    expect(service.companionPause).toHaveBeenCalledWith(
+      { profileId: "profile-a", workspaceId: "parent" },
+      "parent:agent",
+      "companion-1",
+    );
+    expect(service.companionAnswer).toHaveBeenCalledWith(
+      { profileId: "profile-a", workspaceId: "parent" },
+      "parent:agent",
+      expect.objectContaining({ workspaceId: "companion-1" }),
+    );
   });
 
   test("a broker refusal reaches the agent as a stable error code, not a crash", async () => {
@@ -141,6 +184,19 @@ describe("internal MCP stdio end-to-end", () => {
     expect(start?.description).toContain("operation_get");
     expect(start?.description).toContain("awaitingUserInTerminal");
     expect(start?.description).not.toMatch(/Afterwards tell the user the pair is started/u);
+  });
+
+  test("companion tool descriptions cover capture, review, pause, and answering", async () => {
+    const { grant } = await startBroker();
+    const client = await connect({
+      [INTERNAL_MCP_URL_ENV]: grant.url,
+      [INTERNAL_MCP_CAPABILITY_ENV]: grant.capability,
+    });
+    const listed = (await client.listTools()).tools;
+    expect(listed.find((tool) => tool.name === "companion_create")?.description).toContain("Primary remains");
+    expect(listed.find((tool) => tool.name === "companion_start")?.description).toContain("capture");
+    expect(listed.find((tool) => tool.name === "companion_answer")?.description).toContain("user");
+    expect(listed.find((tool) => tool.name === "task_get")?.description).toContain("pendingQuestions");
   });
 
   test("a revoked grant stops later calls", async () => {

@@ -510,6 +510,10 @@ class FakeSessionManager extends EventEmitter {
     return session;
   }
 
+  hasSession(sessionId: string): boolean {
+    return this.sessions.has(sessionId);
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async restartSession(state: any, sessionId: any) {
     this.sessions.delete(sessionId);
@@ -5237,6 +5241,7 @@ describe("runtime integration", () => {
             icon: "FE",
             color: "#ffa424",
             kind: "terminal",
+            internalMcpEnabled: true,
             cwd: projectRoot,
             activePanelId: "dev",
             panels: [
@@ -5265,6 +5270,7 @@ describe("runtime integration", () => {
     expect(projectWorkspaces).toHaveLength(2);
     expect(payload.appState.activeProjectId).toBe(projectWorkspaces[1].id);
     expect(projectWorkspaces[1].cwd).toBe(path.join(projectRoot, ".strideterm", "tree", "feature-x"));
+    expect(projectWorkspaces[1].internalMcpEnabled).toBe(true);
     expect(fixture.git.auditEntries).toHaveLength(1);
     expect(fixture.git.auditEntries[0]).toMatchObject({
       type: "create-worktree",
@@ -18106,6 +18112,106 @@ describe("internal MCP: creating and watching task agents", () => {
     });
     return { prepared: prepared.result, started };
   }
+
+  test("internal MCP creates and controls a companion attached to its granted source panel", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({
+      workspaces: [
+        parentWorkspace(repo, {
+          panels: [
+            { id: "agent", title: "Codex", command: '"C:\\Program Files\\Codex\\codex.exe" --model gpt-5-codex' },
+            { id: "other", title: "Other Codex", command: "codex" },
+          ],
+        }),
+        parentWorkspace(repo, { id: "other-parent", name: "Other Parent", profileId: "default" }),
+      ],
+    });
+    const { launch, sessionId } = launchAgent(fixture);
+    const call = brokerClient(launch);
+
+    const created = await call("companion_create", {
+      companionRole: "reviewer",
+      providerId: "claude",
+      model: "sonnet",
+      focus: "Review the current changes",
+      autoStartAfterCapture: false,
+      idempotencyKey: "companion-create-01",
+    });
+    expect(created.status, JSON.stringify(created)).toBe(200);
+    expect(created.result.state).toBe("idle");
+    const companionId = created.result.workspaceId as string;
+    const companion = fixture.store.getState().workspaces.find((item: any) => item.id === companionId);
+    expect(companion).toMatchObject({
+      kind: "task",
+      profileId: "default",
+      task: {
+        mode: "attached",
+        workerWorkspaceId: "parent",
+        workerPanelId: "agent",
+        companionRole: "reviewer",
+        state: "idle",
+        workerProviderConfig: { providerId: "codex" },
+      },
+    });
+
+    const replay = await call("companion_create", {
+      companionRole: "reviewer",
+      providerId: "claude",
+      model: "sonnet",
+      focus: "Review the current changes",
+      autoStartAfterCapture: false,
+      idempotencyKey: "companion-create-01",
+    });
+    expect(replay.result).toMatchObject({ workspaceId: companionId, replayed: true });
+
+    // Real workspaces and panels still cannot borrow the source grant.
+    const { launch: otherWorkspaceLaunch } = launchAgent(fixture, "other-parent", "agent");
+    const crossWorkspace = await brokerClient(otherWorkspaceLaunch)("companion_pause", { workspaceId: companionId });
+    expect(crossWorkspace.status).toBe(403);
+    const { launch: otherPanelLaunch } = launchAgent(fixture, "parent", "other");
+    const crossPanel = await brokerClient(otherPanelLaunch)("companion_pause", { workspaceId: companionId });
+    expect(crossPanel.status).toBe(403);
+
+    const started = await call("companion_start", { workspaceId: companionId });
+    expect(started.status).toBe(200);
+    expect(started.result).toMatchObject({ ok: true });
+    expect(fixture.store.getState().workspaces.find((item: any) => item.id === companionId)!.task!.state).toBe(
+      "capturing-context",
+    );
+    expect(fixture.sessionManager.writeCalls).toContainEqual(
+      expect.objectContaining({ sessionId, data: expect.stringContaining("PROMPT.worker.md") }),
+    );
+
+    fixture.store.mutate((state: any) => {
+      const task = state.workspaces.find((item: any) => item.id === companionId).task;
+      task.state = "awaiting-user";
+      task.pendingQuestions = [
+        {
+          id: "question-1",
+          question: "Which API should the reviewer check?",
+          whyNeeded: "The brief refers to an unnamed API.",
+          options: ["Public API", "Internal API"],
+        },
+      ];
+    });
+    const detail = await call("task_get", { workspaceId: companionId });
+    expect(detail.status).toBe(200);
+    expect(detail.result.pendingQuestions).toEqual([
+      expect.objectContaining({
+        id: "question-1",
+        whyNeeded: "The brief refers to an unnamed API.",
+        options: ["Public API", "Internal API"],
+      }),
+    ]);
+    const refusedResume = await call("companion_start", { workspaceId: companionId });
+    expect(refusedResume.status).toBe(200);
+    expect(refusedResume.result).toMatchObject({ ok: false });
+    expect(fixture.store.getState().workspaces.find((item: any) => item.id === companionId)!.task).toMatchObject({
+      state: "awaiting-user",
+      pendingQuestions: [expect.objectContaining({ id: "question-1" })],
+    });
+    expect(sessionId).toBe("parent:agent");
+  });
 
   /** State keeps paths with forward slashes on every platform. */
   const fwd = (value: string) => value.split("\\").join("/");

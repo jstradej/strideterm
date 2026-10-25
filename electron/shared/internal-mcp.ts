@@ -14,6 +14,7 @@ export const INTERNAL_MCP_MAX_ASSIGNMENT_CHARS = 16_000;
 export const INTERNAL_MCP_PREPARATION_TTL_MS = 30 * 60 * 1000;
 export const INTERNAL_MCP_TASK_LIST_MAX = 50;
 export const INTERNAL_MCP_LOG_MAX_ENTRIES = 50;
+export const INTERNAL_MCP_COMPANION_ROLES = ["reviewer", "planner", "consultant", "critic"] as const;
 
 export const INTERNAL_MCP_ERROR_CODES = [
   "invalid_request",
@@ -126,6 +127,41 @@ export const internalMcpTaskGetInputSchema = z
   })
   .strict();
 
+export const internalMcpCompanionCreateInputSchema = z
+  .object({
+    companionRole: z.enum(INTERNAL_MCP_COMPANION_ROLES),
+    providerId: providerIdSchema,
+    model: modelIdSchema,
+    effort: z.enum(EFFORT_LEVELS).optional(),
+    skipPermissions: z.boolean().optional(),
+    focus: z.string().trim().max(5000).optional(),
+    autoStartAfterCapture: z.boolean().optional(),
+    maxRounds: z.number().int().min(1).max(100).optional(),
+    idempotencyKey: z
+      .string()
+      .trim()
+      .min(8)
+      .max(128)
+      .regex(/^[A-Za-z0-9._:-]+$/u),
+  })
+  .strict();
+export type InternalMcpCompanionCreateInput = z.infer<typeof internalMcpCompanionCreateInputSchema>;
+export const internalMcpCompanionControlInputSchema = z
+  .object({
+    workspaceId: z.string().trim().min(1).max(200),
+  })
+  .strict();
+export const internalMcpCompanionAnswerInputSchema = z
+  .object({
+    workspaceId: z.string().trim().min(1).max(200),
+    questionIds: z
+      .array(z.string().regex(/^Q-[0-9]+$/u))
+      .min(1)
+      .max(5),
+    answer: z.string().trim().min(1).max(5000),
+  })
+  .strict();
+
 /** The one request envelope the stdio bridge sends to the broker. */
 export const internalMcpRequestSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("prepare"), input: internalMcpPrepareInputSchema }).strict(),
@@ -133,6 +169,10 @@ export const internalMcpRequestSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("operation_get"), input: internalMcpOperationGetInputSchema }).strict(),
   z.object({ operation: z.literal("task_list"), input: internalMcpTaskListInputSchema }).strict(),
   z.object({ operation: z.literal("task_get"), input: internalMcpTaskGetInputSchema }).strict(),
+  z.object({ operation: z.literal("companion_create"), input: internalMcpCompanionCreateInputSchema }).strict(),
+  z.object({ operation: z.literal("companion_start"), input: internalMcpCompanionControlInputSchema }).strict(),
+  z.object({ operation: z.literal("companion_pause"), input: internalMcpCompanionControlInputSchema }).strict(),
+  z.object({ operation: z.literal("companion_answer"), input: internalMcpCompanionAnswerInputSchema }).strict(),
 ]);
 export type InternalMcpRequest = z.infer<typeof internalMcpRequestSchema>;
 

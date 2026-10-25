@@ -7316,6 +7316,38 @@ export async function createRuntime({
       (_rt as any).createTaskWorkspace(config, windowId, internal),
     startTask: (workspaceId) => startTaskWithAgents(workspaceId),
     getAwaitingUserRoles: (workspaceId) => taskRunner.getAwaitingUserRoles(workspaceId),
+    createCompanion: async (config) => {
+      // Internal MCP grants are minted for a live panel; the source session is
+      // resolved by the task handler and never accepted from tool arguments.
+      const sessionParts = config.sourceSessionId.split(":");
+      const sourceWorkspaceId = sessionParts.slice(0, -1).join(":");
+      const sourcePanelId = sessionParts.at(-1) || "";
+      const sourcePanel = getState()
+        .workspaces.find((workspace) => workspace.id === sourceWorkspaceId)
+        ?.panels.find((panel) => panel.id === sourcePanelId);
+      const parsedPrimary = parseAgentCommand(sourcePanel?.command);
+      const primaryProvider = parsedPrimary ? { providerId: parsedPrimary.provider, model: "" } : null;
+      // Runtime handler methods are assembled onto the public runtime object below.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (_rt as any).createCompanionTask({ ...config, primaryProvider, activate: false }, undefined);
+    },
+    startCompanion: async (workspaceId) => {
+      const task = findWorkspace(getState(), workspaceId)?.task;
+      const result =
+        task?.state === "paused"
+          ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            await (_rt as any).resumeTask(workspaceId)
+          : // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            await (_rt as any).startTask(workspaceId);
+      return result?.ok === true;
+    },
+    pauseCompanion: async (workspaceId) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (await (_rt as any).pauseTask(workspaceId))?.ok === true;
+    },
+    answerCompanion: async (workspaceId, questionIds, answer) =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (await (_rt as any).answerCompanionTask(workspaceId, questionIds, answer))?.ok === true,
   });
   if (dependencies.enableInternalMcp === true) {
     internalMcpBroker = createInternalMcpBroker({
@@ -12897,6 +12929,7 @@ export async function createRuntime({
             kind: liveProject.kind,
             source: liveProject.source,
             pluginId: liveProject.pluginId,
+            internalMcpEnabled: liveProject.internalMcpEnabled === true,
             profileId: liveProject.profileId,
             connectionId: liveProject.connectionId || "",
             cwd: treePath,

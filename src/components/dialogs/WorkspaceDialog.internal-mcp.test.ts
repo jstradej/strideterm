@@ -104,5 +104,6 @@ describe("WorkspaceDialog internal MCP option", () => {
   test("offered for a quickfix workspace", async () => {
     const { wrapper } = mountDialog({ workspace: { ...existing, quickfix: { prId: 1 } } });
     expect(wrapper.find('[data-testid="internal-mcp-checkbox"]').exists()).toBe(true);
+    expect(wrapper.get(".internal-mcp-hint").text()).toContain("Restart open agent sessions to apply changes");
   });
 });

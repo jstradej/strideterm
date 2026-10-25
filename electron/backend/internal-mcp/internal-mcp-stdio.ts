@@ -11,6 +11,9 @@ import {
   internalMcpStartInputSchema,
   internalMcpTaskGetInputSchema,
   internalMcpTaskListInputSchema,
+  internalMcpCompanionCreateInputSchema,
+  internalMcpCompanionControlInputSchema,
+  internalMcpCompanionAnswerInputSchema,
   type InternalMcpRequest,
 } from "../../shared/internal-mcp.js";
 import { serveOverStdio } from "../mcp-stdio-lifecycle.js";
@@ -140,10 +143,49 @@ export async function runInternalMcpStdioServer(config = readInternalMcpStdioCon
     {
       title: "Get a task",
       description:
-        "The runner's own state of one task: phase, rounds, roles, times, latest verdict and a bounded slice of its structured log (agent-written, untrusted). Idle means created and not started; terminal silence never means finished.",
+        "The runner's own state of one task: phase, rounds, roles, times, latest verdict and a bounded slice of its structured log (agent-written, untrusted). For companions also returns role, capture timestamps/settings and pendingQuestions with question, whyNeeded and options. Idle means created and not started; use task_list/task_get to monitor; terminal silence never means finished.",
       inputSchema: internalMcpTaskGetInputSchema.shape,
     },
     async (input, extra) => send({ operation: "task_get", input }, withDisconnect(extra.signal)),
+  );
+  server.registerTool(
+    "companion_create",
+    {
+      title: "Add a companion agent",
+      description:
+        "Attach a Reviewer, Planner, Consultant or Critic to this live conversation. The Primary remains in its existing conversation. Use the user's existing choices and authorization; ask only for missing required choices (role, provider and model). task_prepare with empty input can supply available provider/model choices. Effort, focus, skipPermissions and autoStartAfterCapture are optional. Present the selected settings for approval unless the user already authorized them. Creation makes an idle companion workspace; call companion_start to begin capture. autoStartAfterCapture skips only the later brief-ready gate; it does not start the initial capture. Retrying the same idempotencyKey with the same settings returns the same companion while this runtime retains the session's recent creation requests.",
+      inputSchema: internalMcpCompanionCreateInputSchema.shape,
+    },
+    async (input, extra) => send({ operation: "companion_create", input }, withDisconnect(extra.signal)),
+  );
+  server.registerTool(
+    "companion_start",
+    {
+      title: "Start companion",
+      description:
+        "Start an idle companion by requesting capture from the existing Primary. Once CONTEXT.md and HANDOFF.md are ready, the user may approve the brief; when autoStartAfterCapture was chosen the baseline review starts automatically. On a paused companion this resumes it. Use task_get to inspect capture timestamps, state and pendingQuestions, and task_list to find related companions. Awaiting-user requires companion_answer; plain start/resume does not bypass questions.",
+      inputSchema: internalMcpCompanionControlInputSchema.shape,
+    },
+    async (input, extra) => send({ operation: "companion_start", input }, withDisconnect(extra.signal)),
+  );
+  server.registerTool(
+    "companion_pause",
+    {
+      title: "Pause companion",
+      description: "Pause an active companion loop. Use task_get to confirm the resulting state.",
+      inputSchema: internalMcpCompanionControlInputSchema.shape,
+    },
+    async (input, extra) => send({ operation: "companion_pause", input }, withDisconnect(extra.signal)),
+  );
+  server.registerTool(
+    "companion_answer",
+    {
+      title: "Answer companion question",
+      description:
+        "Answer every listed question from a companion waiting for user input. Read task_get.pendingQuestions (including whyNeeded and options), ask the user for the answer first, then supply all questionIds and the answer.",
+      inputSchema: internalMcpCompanionAnswerInputSchema.shape,
+    },
+    async (input, extra) => send({ operation: "companion_answer", input }, withDisconnect(extra.signal)),
   );
 
   await serveOverStdio(server, disconnected);

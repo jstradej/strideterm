@@ -5,7 +5,8 @@ import path from "node:path";
 import type { AppState, WorkspaceState } from "../../shared/types/state.js";
 import type { Logger } from "../logger.js";
 import { createOperationRegistry } from "../operation-registry.js";
-import { describe, expect, test } from "vitest";
+import type { InternalMcpCompanionCreateInput } from "../../shared/internal-mcp.js";
+import { describe, expect, test, vi } from "vitest";
 import { createTaskService, remapAssignment } from "./task-service.js";
 
 describe("remapAssignment", () => {
@@ -62,7 +63,24 @@ describe("remapAssignment", () => {
   });
 });
 
-async function createManagedReviewFixture() {
+async function createManagedReviewFixture(
+  options: {
+    providerAvailable?: boolean;
+    createCompanion?: (args: {
+      sourceSessionId: string;
+      companionRole: string;
+      companionProvider: { providerId: string; model: string; effort?: string; skipPermissions?: boolean };
+      focus?: string;
+      autoStartAfterCapture?: boolean;
+      maxRounds?: number;
+    }) => Promise<{ workspaceId: string }>;
+    companionLifecycle?: {
+      start?: () => Promise<boolean>;
+      pause?: () => Promise<boolean>;
+      answer?: () => Promise<boolean>;
+    };
+  } = {},
+) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-managed-task-")));
   const cache = path.join(root, "cache", "repo");
   const source = path.join(root, "reviews", "pr-1");
@@ -93,6 +111,7 @@ async function createManagedReviewFixture() {
       checkout: { mode: "managed-worktree", rootPath: source, cacheRepoPath: cache },
     },
     quickfix: null,
+    panels: [{ id: "panel-source", title: "Primary", command: "codex -m gpt-5.5", shell: true, startup: "default" }],
   } as unknown as WorkspaceState;
   const state = { workspaces: [parent], settings: {}, profiles: [] } as unknown as AppState;
   const log = { debug() {}, info() {}, warn() {}, error() {}, trace() {} } as Logger;
@@ -126,10 +145,96 @@ async function createManagedReviewFixture() {
     createTaskWorkspace: async () => ({ workspaceId: "", taskId: "" }),
     startTask: async () => ({ ok: true }),
     getAwaitingUserRoles: () => [],
-    checkProviderAvailable: async () => ({ available: true }),
+    checkProviderAvailable: async () => ({ available: options.providerAvailable !== false }),
+    createCompanion: options.createCompanion,
+    startCompanion: options.companionLifecycle?.start,
+    pauseCompanion: options.companionLifecycle?.pause,
+    answerCompanion: options.companionLifecycle?.answer,
   });
-  return { cache, operations, parent, root, service, source, sourceHead, worktreeCalls };
+  return { cache, operations, parent, root, service, source, sourceHead, worktreeCalls, state };
 }
+
+describe("MCP companion service", () => {
+  test("deduplicates concurrent requests and rejects changed payload under the same key", async () => {
+    let release!: (value: { workspaceId: string }) => void;
+    const createCompanion = vi.fn(() => new Promise<{ workspaceId: string }>((resolve) => (release = resolve)));
+    const fixture = await createManagedReviewFixture({ createCompanion });
+    try {
+      const scope = { profileId: "profile-a", workspaceId: "review-child" };
+      const input: InternalMcpCompanionCreateInput = {
+        companionRole: "reviewer",
+        providerId: "codex",
+        model: "gpt-5.5",
+        idempotencyKey: "companion-key-123",
+      };
+      const first = fixture.service.companionCreate(scope, "review-child:panel-source", input);
+      const second = fixture.service.companionCreate(scope, "review-child:panel-source", input);
+      await expect(
+        fixture.service.companionCreate(scope, "review-child:panel-source", { ...input, model: "different" }),
+      ).rejects.toMatchObject({ code: "idempotency_conflict" });
+      for (let attempt = 0; attempt < 100 && createCompanion.mock.calls.length === 0; attempt += 1)
+        await new Promise((resolve) => setTimeout(resolve, 2));
+      expect(createCompanion).toHaveBeenCalledTimes(1);
+      release({ workspaceId: "companion-1" });
+      expect(await first).toMatchObject({ workspaceId: "companion-1", replayed: false });
+      expect(await second).toMatchObject({ workspaceId: "companion-1", replayed: true });
+    } finally {
+      await fs.rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  test("unavailable providers and wrong source scope fail before creation", async () => {
+    const createCompanion = vi.fn(async () => ({ workspaceId: "never" }));
+    const fixture = await createManagedReviewFixture({ providerAvailable: false, createCompanion });
+    try {
+      const scope = { profileId: "profile-a", workspaceId: "review-child" };
+      const input: InternalMcpCompanionCreateInput = {
+        companionRole: "critic",
+        providerId: "codex",
+        model: "gpt-5.5",
+        idempotencyKey: "companion-key-456",
+      };
+      await expect(fixture.service.companionCreate(scope, "review-child:panel-source", input)).rejects.toMatchObject({
+        code: "provider_unavailable",
+      });
+      await expect(fixture.service.companionCreate(scope, "other:panel-source", input)).rejects.toMatchObject({
+        code: "scope_denied",
+      });
+      expect(createCompanion).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  test("lifecycle controls stay on the granted conversation and preserve a false result", async () => {
+    const fixture = await createManagedReviewFixture({ companionLifecycle: { pause: async () => false } });
+    try {
+      fixture.state.workspaces.push({
+        id: "companion-1",
+        kind: "task",
+        profileId: "profile-a",
+        cwd: fixture.source,
+        task: {
+          taskId: "task-1",
+          mode: "attached",
+          workerWorkspaceId: "review-child",
+          workerPanelId: "panel-source",
+          state: "running",
+          rounds: [],
+        },
+      } as unknown as WorkspaceState);
+      const scope = { profileId: "profile-a", workspaceId: "review-child" };
+      expect(await fixture.service.companionPause(scope, "review-child:panel-source", "companion-1")).toEqual({
+        ok: false,
+      });
+      await expect(
+        fixture.service.companionPause(scope, "review-child:other-panel", "companion-1"),
+      ).rejects.toMatchObject({ code: "scope_denied" });
+    } finally {
+      await fs.rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("managed review task checkouts", () => {
   test("forces a task worktree in the cache repo while preserving the review checkout revision", async () => {

@@ -18,7 +18,18 @@ export interface InternalMcpGrantContext extends InternalMcpScope {
 }
 
 export interface InternalMcpBrokerOptions {
-  service: Pick<TaskService, "prepare" | "start" | "operationGet" | "taskList" | "taskGet">;
+  service: Pick<
+    TaskService,
+    | "prepare"
+    | "start"
+    | "operationGet"
+    | "taskList"
+    | "taskGet"
+    | "companionCreate"
+    | "companionStart"
+    | "companionPause"
+    | "companionAnswer"
+  >;
   isGrantLive: (_grant: Readonly<InternalMcpGrantContext>) => boolean | Promise<boolean>;
   onError?: (message: string, details: Record<string, unknown>) => void;
 }
@@ -103,6 +114,14 @@ export function createInternalMcpBroker({ service, isGrantLive, onError }: Inter
         return service.taskList(scope, request.input);
       case "task_get":
         return service.taskGet(scope, request.input);
+      case "companion_create":
+        return service.companionCreate(scope, grant.context.sessionId, request.input);
+      case "companion_start":
+        return service.companionStart(scope, grant.context.sessionId, request.input.workspaceId);
+      case "companion_pause":
+        return service.companionPause(scope, grant.context.sessionId, request.input.workspaceId);
+      case "companion_answer":
+        return service.companionAnswer(scope, grant.context.sessionId, request.input);
     }
   }
 
