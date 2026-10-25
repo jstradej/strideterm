@@ -3,6 +3,8 @@ import { setActivePinia, createPinia } from "pinia";
 import { ref, shallowRef, computed } from "vue";
 import { createWorkspaceActions } from "./app-workspace-actions.js";
 import { useNotificationStore } from "./notifications.js";
+import { reviewPrActionOutcomeSchema } from "../../electron/shared/review-pr-actions.js";
+import type { OperationFinished } from "../../electron/shared/operation-events.js";
 
 // Minimal harness for testing the workspace-actions factory in isolation.
 // We don't spin up the full app store — just provide the refs the factory
@@ -133,6 +135,177 @@ describe("review agent preparation operation delivery", () => {
 
     expect(ctx.activateWorkspaceInGrid).not.toHaveBeenCalled();
     expect(listener).not.toHaveBeenCalled();
+  });
+});
+
+describe("operation notifications", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    window.localStorage.clear();
+  });
+
+  function report(operation: OperationFinished): AnyApi {
+    const { ctx } = makeCtx({ appState: { workspaces: [] }, operations: { lastResults: [] } });
+    const actions = createWorkspaceActions(ctx);
+    actions.reportOperationFinished(operation);
+    return useNotificationStore().sessions.flatMap((session: AnyApi) => session.events)[0];
+  }
+
+  it("explains a stale provider recheck and says no action was applied", () => {
+    const entry = report({
+      operationId: "op-pr-stale",
+      kind: "review-pr-action",
+      profileId: "profile-a",
+      workspaceId: "ws-a",
+      finishedAt: new Date().toISOString(),
+      result: reviewPrActionOutcomeSchema.parse({
+        provider: "github",
+        prKey: "owner/repo#42",
+        action: "merge",
+        status: "stale",
+        message: "The source SHA changed while waiting for approval.",
+      }),
+    });
+    expect(entry.title).toBe("Pull request changed before the action ran");
+    expect(entry.body).toContain("No action was applied");
+    expect(entry.body).toContain("fresh proposal");
+    expect(entry.kind).toBe("completed");
+  });
+
+  it("names the completed action and surfaces a warning without suggesting a blind retry", () => {
+    const entry = report({
+      operationId: "op-pr-warning",
+      kind: "review-pr-action",
+      profileId: "profile-a",
+      workspaceId: "ws-a",
+      finishedAt: new Date().toISOString(),
+      result: reviewPrActionOutcomeSchema.parse({
+        provider: "azure-devops",
+        prKey: "project/repo/17",
+        action: "complete",
+        status: "completed",
+        message: "The pull request was completed.",
+        warning: "The final audit record could not be refreshed.",
+      }),
+    });
+    expect(entry.title).toBe("Pull request completed · Azure DevOps");
+    expect(entry.body).toContain("The pull request was completed.");
+    expect(entry.body).toContain("Warning: The final audit record could not be refreshed.");
+    expect(entry.kind).toBe("error");
+  });
+
+  it("reports queued completion as pending provider work", () => {
+    const entry = report({
+      operationId: "op-pr-queued",
+      kind: "review-pr-action",
+      profileId: "profile-a",
+      workspaceId: "ws-a",
+      finishedAt: new Date().toISOString(),
+      result: reviewPrActionOutcomeSchema.parse({
+        provider: "azure-devops",
+        prKey: "project/repo/17",
+        action: "complete",
+        status: "queued",
+        message: "Azure DevOps queued the pull request for completion.",
+      }),
+    });
+    expect(entry.title).toBe("Pull request completion queued · Azure DevOps");
+    expect(entry.body).toContain("Provider policies determine when completion can proceed.");
+    expect(entry.kind).toBe("completed");
+  });
+
+  it("does not claim an accepted action has completed", () => {
+    const entry = report({
+      operationId: "op-pr-accepted",
+      kind: "review-pr-action",
+      profileId: "profile-a",
+      workspaceId: "ws-a",
+      finishedAt: new Date().toISOString(),
+      result: reviewPrActionOutcomeSchema.parse({
+        provider: "github",
+        prKey: "owner/repo#42",
+        action: "approve",
+        status: "accepted",
+        message: "GitHub accepted the pull request action.",
+      }),
+    });
+    expect(entry.title).toBe("Pull request action accepted · GitHub");
+    expect(entry.body).toContain("resulting state is not confirmed");
+    expect(entry.body).toContain("check the pull request before retrying");
+    expect(entry.title).not.toContain("approved");
+  });
+
+  it("reports an explicit provider failure as an action failure", () => {
+    const entry = report({
+      operationId: "op-pr-failed",
+      kind: "review-pr-action",
+      profileId: "profile-a",
+      workspaceId: "ws-a",
+      finishedAt: new Date().toISOString(),
+      result: reviewPrActionOutcomeSchema.parse({
+        provider: "azure-devops",
+        prKey: "project/repo/17",
+        action: "complete",
+        status: "failed",
+        message: "Azure DevOps rejected completion due to conflicts.",
+      }),
+    });
+    expect(entry.title).toBe("Pull request action failed · Azure DevOps");
+    expect(entry.body).toContain("rejected completion due to conflicts");
+    expect(entry.kind).toBe("error");
+  });
+
+  it("warns that a failed action may have reached the provider", () => {
+    const entry = report({
+      operationId: "op-pr-error",
+      kind: "review-pr-action",
+      profileId: "profile-a",
+      workspaceId: "ws-a",
+      finishedAt: new Date().toISOString(),
+      error: { code: "provider-error", message: "Connection closed after sending the request." },
+    });
+    expect(entry.title).toBe("Pull request action outcome is uncertain");
+    expect(entry.body).toContain("provider may have applied the action");
+    expect(entry.body).toContain("Check the pull request's current status before retrying");
+    expect(entry.kind).toBe("error");
+  });
+
+  it.each(["review-pr-inspect", "review-pr-action-proposal"])(
+    "does not notify for routine successful %s operations",
+    (kind) => {
+      report({
+        operationId: `op-${kind}`,
+        kind,
+        profileId: "profile-a",
+        workspaceId: "ws-a",
+        finishedAt: new Date().toISOString(),
+        result: { snapshot: {}, status: "pending" },
+      });
+      expect(useNotificationStore().sessions).toHaveLength(0);
+    },
+  );
+  it("shows action-specific failures with retained Git diagnostics", () => {
+    const { ctx } = makeCtx({
+      appState: { workspaces: [{ id: "ws-A", name: "Project A" }] },
+      operations: { lastResults: [] },
+    });
+    const actions = createWorkspaceActions(ctx);
+
+    actions.reportOperationFinished({
+      operationId: "op-git-pull",
+      kind: "git.pull",
+      profileId: "profile-a",
+      workspaceId: "ws-A",
+      rootPath: "C:\\work\\a",
+      finishedAt: new Date().toISOString(),
+      error: { code: "internal_error", message: "Pull stopped.\n\nGit output:\nhook failed" },
+    });
+
+    const event = useNotificationStore().sessions[0]?.events[0];
+    expect(event?.title).toBe("Git Pull failed");
+    expect(event?.kind).toBe("error");
+    expect(event?.body).toContain("Git output:");
+    expect(event?.body).toContain("hook failed");
   });
 });
 
@@ -320,11 +493,39 @@ describe("createWorkspaceActions.deleteWorkspace (optimistic)", () => {
 
     expect(notifs.persistentToasts).toHaveLength(1);
     const toast = notifs.persistentToasts[0];
-    expect(toast.title).toContain("Worktree B");
-    expect(toast.body).toContain("EBUSY");
+    expect(toast.title).toBe("Couldn't remove workspace");
+    expect(toast.body).toBe("Workspace folder could not be removed. Another process may be using this folder.");
+    expect(toast.details).toEqual({
+      rawError: "EBUSY: resource busy or locked",
+      workspaceTitle: "Worktree B",
+      path: expect.stringContaining("branch-b"),
+    });
     // The user needs the path to finish cleanup manually — make sure it's
     // attached so the "Copy path" button has something to copy.
     expect(toast.copyPath).toContain("branch-b");
+  });
+
+  it("does not suggest another process is using the folder for unrelated disk errors", async () => {
+    const initial = { appState: { workspaces: makeWorkspaces(), activeWorkspaceId: "ws-A" } };
+    const { ctx } = makeCtx(initial, {
+      deleteWorkspace: vi.fn(async () => ({
+        ...initial,
+        appState: { ...initial.appState, workspaces: initial.appState.workspaces.filter((w) => w.id !== "ws-B") },
+        deleteWorkspaceError: "EACCES: permission denied",
+      })),
+    });
+    const actions = createWorkspaceActions(ctx);
+    const notifs = useNotificationStore();
+
+    const finished = actions.deleteWorkspace("ws-B");
+    await answerConfirm(ctx, true);
+    await answerConfirm(ctx, true);
+    await finished;
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(notifs.persistentToasts[0].body).toBe("Workspace folder could not be removed.");
+    expect(notifs.persistentToasts[0].body).not.toContain("Another process");
+    expect(notifs.persistentToasts[0].details?.rawError).toContain("EACCES");
   });
 
   it("shows a persistent toast and rolls back the suppression set when the IPC throws", async () => {
@@ -346,7 +547,8 @@ describe("createWorkspaceActions.deleteWorkspace (optimistic)", () => {
     await new Promise((r) => setTimeout(r, 10));
 
     expect(notifs.persistentToasts).toHaveLength(1);
-    expect(notifs.persistentToasts[0].body).toContain("ECONNREFUSED");
+    expect(notifs.persistentToasts[0].body).toBe("Workspace could not be removed.");
+    expect(notifs.persistentToasts[0].details?.rawError).toContain("ECONNREFUSED");
     // IPC failure means the backend probably still has the workspace; we
     // must let the next broadcast restore it instead of silently swallowing.
     expect(optimisticallyDeletedIds.value.has("ws-B")).toBe(false);
@@ -453,8 +655,9 @@ describe("createWorkspaceActions.deleteWorkspace (optimistic)", () => {
 
     expect(notifs.persistentToasts).toHaveLength(1);
     const toast = notifs.persistentToasts[0];
-    expect(toast.title).toContain("Failed to remove");
-    expect(toast.body).toContain("ECONNREFUSED");
+    expect(toast.title).toBe("Couldn't remove workspace");
+    expect(toast.body).toBe("Workspace could not be removed.");
+    expect(toast.details?.rawError).toContain("ECONNREFUSED");
     expect(toast.copyPath).toBe("");
     expect(optimisticallyDeletedIds.value.has("ws-B")).toBe(false);
   });

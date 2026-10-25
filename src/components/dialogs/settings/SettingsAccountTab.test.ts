@@ -683,7 +683,7 @@ describe("the account page", () => {
     expect(wrapper.find(".trial-indicator").text()).toContain("Ends");
     expect(wrapper.find(".trial-indicator__track").attributes("aria-label")).toContain("3 days left");
     expect(wrapper.findAll(".trial-indicator__segment--filled")).toHaveLength(3);
-    expect(wrapper.find(".trial-indicator__track").classes()).toContain("trial-indicator__track--red");
+    expect(wrapper.find(".trial-indicator__track").classes()).toContain("trial-indicator__track--orange");
     await wrapper
       .findAll("button")
       .find((button) => button.text() === "Connect first phone")!
@@ -756,7 +756,14 @@ describe("the account page", () => {
     );
 
     expect(wrapper.find(".trial-indicator--expired").text()).toContain(
-      `Ended ${new Intl.DateTimeFormat(undefined, { year: "numeric", month: "long", day: "numeric" }).format(new Date(deadline))}`,
+      `Ended ${new Date(deadline).toLocaleString(undefined, {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+        timeZoneName: "short",
+      })}`,
     );
   });
 
@@ -810,7 +817,7 @@ describe("the account page", () => {
     expect(wrapper.find(".trial-indicator").text()).toContain("3days left");
     expect(wrapper.find(".trial-indicator").text()).toContain("Access until");
     expect(wrapper.findAll(".trial-indicator__segment--filled")).toHaveLength(3);
-    expect(wrapper.find(".trial-indicator__track").classes()).toContain("trial-indicator__track--red");
+    expect(wrapper.find(".trial-indicator__track").classes()).toContain("trial-indicator__track--orange");
 
     const extended = overview({
       entitlement: { state: "active", source: "operator", notAfter: Date.now() + 22 * 86_400_000 - 5_000 },
@@ -832,13 +839,40 @@ describe("the account page", () => {
     expect(wrapper.find(".trial-indicator__track").classes()).toContain("trial-indicator__track--orange");
   });
 
+  test("finite access uses a 24-hour chart and positive hour/minute countdown in its final day", async () => {
+    const deadline = Date.now() + 59 * 60_000;
+    const access = overview({
+      entitlement: { state: "active", source: "incident", notAfter: deadline },
+    });
+    const { wrapper } = await render(
+      stateFor({ overview: access, entitlement: access.entitlement }),
+      {},
+      { view: "overview" },
+    );
+
+    expect(wrapper.find(".trial-indicator").text()).toContain("59mleft");
+    expect(wrapper.find(".trial-indicator").text()).not.toContain("0hours left");
+    expect(wrapper.findAll(".trial-indicator__segment")).toHaveLength(24);
+    expect(wrapper.findAll(".trial-indicator__segment--filled")).toHaveLength(1);
+    expect(wrapper.find(".trial-indicator__track").attributes("aria-label")).toContain("24 hour segments");
+    expect(wrapper.find(".trial-indicator").text()).toContain(
+      new Date(deadline).toLocaleString(undefined, {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+        timeZoneName: "short",
+      }),
+    );
+  });
+
   test.each([
     [14, "green"],
     [8, "green"],
     [7, "orange"],
     [4, "orange"],
-    [3, "red"],
-    [1, "red"],
+    [3, "orange"],
   ])("trial countdown uses %s days and the %s band", async (days, tone) => {
     const trial = overview({
       entitlement: { state: "trial", source: "trial", notAfter: Date.now() + days * 86_400_000 },
@@ -851,6 +885,20 @@ describe("the account page", () => {
     expect(wrapper.findAll(".trial-indicator__segment")).toHaveLength(14);
     expect(wrapper.findAll(".trial-indicator__segment--filled")).toHaveLength(days);
     expect(wrapper.find(".trial-indicator__track").classes()).toContain(`trial-indicator__track--${tone}`);
+  });
+
+  test("a trial within its final day uses hourly segments", async () => {
+    const trial = overview({
+      entitlement: { state: "trial", source: "trial", notAfter: Date.now() + 23 * 60 * 60_000 },
+    });
+    const { wrapper } = await render(
+      stateFor({ overview: trial, entitlement: trial.entitlement }),
+      {},
+      { view: "overview" },
+    );
+    expect(wrapper.findAll(".trial-indicator__segment")).toHaveLength(24);
+    expect(wrapper.find(".trial-indicator").text()).toContain("23h 0mleft");
+    expect(wrapper.find(".trial-indicator__track").classes()).toContain("trial-indicator__track--red");
   });
 
   test("Manage phones keeps the existing Phones navigation", async () => {
@@ -870,7 +918,7 @@ describe("the account page", () => {
       {},
       { view: "overview" },
     );
-    expect(active.wrapper.find(".trial-indicator").text()).toContain("1day left");
+    expect(active.wrapper.find(".trial-indicator").text()).toContain("1mleft");
 
     const ended = overview({ entitlement: { state: "lapsed", source: "trial" } });
     const lapsed = await render(

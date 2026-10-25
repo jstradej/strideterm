@@ -1,6 +1,8 @@
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { nextTick } from "vue";
 import { mount } from "@vue/test-utils";
 import GitTreeGraph from "./GitTreeGraph.vue";
+import Spinner from "../../common/Spinner.vue";
 
 /**
  * Linear commit chain with a single merge:
@@ -76,17 +78,41 @@ function mountGraph(props: Record<string, unknown> = {}) {
 }
 
 describe("GitTreeGraph", () => {
+  test("shows a spinner placeholder while the first graph loads", () => {
+    const wrapper = mountGraph({ commits: [], loading: true });
+    const placeholder = wrapper.get(".git-tree__placeholder");
+    expect(placeholder.findComponent(Spinner).exists()).toBe(true);
+    expect(placeholder.text()).toContain("Loading commit graph…");
+  });
+
   test("renders one row per commit", () => {
     const wrapper = mountGraph();
     const rows = wrapper.findAll(".git-tree__row");
     expect(rows.length).toBe(linearCommits.length);
   });
 
-  test("first row carries HEAD / main badges in the subject cell", () => {
+  test("first row carries HEAD / main badges in the refs column", () => {
     const wrapper = mountGraph();
     const firstRow = wrapper.find(".git-tree__row");
     expect(firstRow.html()).toContain("HEAD");
     expect(firstRow.html()).toContain("main");
+  });
+
+  test("renders refs in a separate column before the aligned subject column", () => {
+    const wrapper = mountGraph();
+    const headers = wrapper.findAll(".git-tree__header .git-tree__hcell");
+    expect(headers.map((header) => header.text())).toEqual(["", "Refs", "Subject", "Author", "Date", "Hash"]);
+
+    const firstRow = wrapper.find(".git-tree__row");
+    expect(firstRow.find(".git-tree__cell--refs").text()).toContain("HEAD");
+    expect(firstRow.find(".git-tree__cell--subject").text()).toContain("tip on main");
+    expect(firstRow.findAll(".git-tree__cell").map((cell) => cell.classes())).toEqual([
+      ["git-tree__cell", "git-tree__cell--refs"],
+      ["git-tree__cell", "git-tree__cell--subject"],
+      ["git-tree__cell", "git-tree__cell--author"],
+      ["git-tree__cell", "git-tree__cell--date"],
+      ["git-tree__cell", "git-tree__cell--hash"],
+    ]);
   });
 
   test("merge commit row gets the --merge subject styling", () => {
@@ -175,5 +201,402 @@ describe("GitTreeGraph", () => {
     const ph = wrapper.find(".git-tree__placeholder--error");
     expect(ph.exists()).toBe(true);
     expect(ph.text()).toContain("boom");
+  });
+
+  test("legacy rows keep the header and a separate refs cell", () => {
+    const wrapper = mountGraph({ history: false });
+    expect(wrapper.classes()).not.toContain("git-tree--history");
+    expect(wrapper.find(".git-tree__header").exists()).toBe(true);
+    expect(wrapper.find(".git-tree__row .git-tree__cell--refs").exists()).toBe(true);
+    expect(wrapper.find(".git-tree__cell--subject .git-tree__ref").exists()).toBe(false);
+  });
+
+  test("history rows drop the header and put refs inside the subject cell", () => {
+    const refs = ["HEAD", "main", "origin/pveselka/MSP-90906", "tag:v1"];
+    const wrapper = mountGraph({
+      history: true,
+      commits: [{ ...linearCommits[0], refs }],
+    });
+    expect(wrapper.classes()).toContain("git-tree--history");
+    expect(wrapper.find(".git-tree__header").exists()).toBe(false);
+    expect(wrapper.find(".git-tree__cell--refs").exists()).toBe(false);
+    const chips = wrapper.findAll(".git-tree__cell--subject .git-tree__ref");
+    expect(chips).toHaveLength(3);
+    expect(chips[2].text()).toBe("+2");
+    expect(chips[2].attributes("title")).toBe("2 more refs:\nRemote branch origin/pveselka/MSP-90906\nTag v1");
+    expect(chips[0].attributes("title")).toContain("the commit currently checked out");
+    expect(chips[0].attributes("title")).toContain("On branch main");
+    expect(chips[1].attributes("title")).toContain("Branch main");
+    expect(chips[0].find(".git-tree__ref-label").text()).toBe("HEAD");
+
+    const full = mountGraph({
+      history: true,
+      commits: [{ ...linearCommits[0], refs: ["origin/pveselka/MSP-90906"] }],
+    });
+    const chip = full.find(".git-tree__cell--subject .git-tree__ref");
+    expect(chip.find(".git-tree__ref-label").text()).toBe("origin/pveselka/MSP-90906");
+    expect(chip.attributes("title")).toBe("Remote branch origin/pveselka/MSP-90906");
+  });
+
+  test("full Git views can reuse History columns without enabling History reachability styling", () => {
+    const wrapper = mountGraph({
+      history: false,
+      historyLayout: true,
+      rangeBase: "main",
+      commits: [{ ...linearCommits[0], refs: ["HEAD", "main", "origin/main"] }],
+    });
+    expect(wrapper.classes()).toContain("git-tree--history");
+    expect(wrapper.find(".git-tree__history-header").exists()).toBe(true);
+    expect(wrapper.find(".git-tree__header").exists()).toBe(false);
+    expect(wrapper.find(".git-tree__cell--refs").exists()).toBe(false);
+    expect(wrapper.findAll(".git-tree__cell--subject .git-tree__ref").length).toBeGreaterThan(0);
+    expect(wrapper.find(".git-tree__cell--author").exists()).toBe(true);
+    expect(wrapper.find(".git-tree__cell--date").exists()).toBe(true);
+    expect(wrapper.find(".git-tree__cell--hash").exists()).toBe(true);
+    expect(wrapper.find(".git-tree__row--on-base").exists()).toBe(false);
+  });
+
+  describe("history markers", () => {
+    const mk = (n: number, parents: string[], refs: string[] = []) => ({
+      hash: `h${n}`,
+      shortHash: `h${n}`,
+      parents,
+      subject: `commit ${n}`,
+      author: "Alice",
+      relativeDate: "today",
+      isoDate: "2026-05-19T10:00:00Z",
+      refs,
+    });
+    const chain = (refs: Record<number, string[]> = {}) => [
+      mk(1, ["h2"], refs[1]),
+      mk(2, ["h3"], refs[2]),
+      mk(3, ["h4"], refs[3] ?? ["origin/feature"]),
+      mk(4, ["h5"], refs[4]),
+      mk(5, [], refs[5]),
+    ];
+    const rowsOf = (w: ReturnType<typeof mountGraph>) => w.findAll(".git-tree__row");
+
+    test("local-only commits get hollow dots and the first pushed row gets the boundary", () => {
+      const w = mountGraph({ history: true, commits: chain(), head: "h1" });
+      const rows = rowsOf(w);
+      expect(rows.map((r) => r.classes().includes("git-tree__row--local"))).toEqual([true, true, false, false, false]);
+      expect(rows.map((r) => r.classes().includes("git-tree__row--push-boundary"))).toEqual([
+        false,
+        false,
+        true,
+        false,
+        false,
+      ]);
+      expect(rows[0].attributes("title")).toContain("Not on any remote yet");
+      expect(rows[2].attributes("title")).not.toContain("Not on any remote yet");
+      const dots = w.findAll("svg circle").filter((c) => c.attributes("r") !== "8.2");
+      expect(dots[0].attributes("fill")).toBe("var(--panel)");
+      expect(dots[1].attributes("fill")).toBe("var(--panel)");
+      expect(dots[2].attributes("fill")).not.toBe("var(--panel)");
+    });
+
+    test("a filtered list keeps reachability from the full list", () => {
+      const full = [
+        mk(0, ["h1"], ["origin/feature"]),
+        mk(1, ["h2"]),
+        mk(2, ["h3"]),
+        mk(3, ["h4"], ["origin/develop"]),
+        mk(4, []),
+      ];
+      const filtered = [mk(1, []), mk(3, [], ["origin/develop"]), mk(4, [])];
+      const w = mountGraph({ history: true, rangeBase: "develop", commits: filtered, reachCommits: full, head: "h0" });
+      const rows = rowsOf(w);
+      expect(w.find(".git-tree__row--local").exists()).toBe(false);
+      expect(rows.map((r) => r.classes().includes("git-tree__row--on-base"))).toEqual([false, true, true]);
+    });
+
+    test("no push boundary between rows that were not adjacent in the full list", () => {
+      const full = [mk(1, ["h2"], ["feature"]), mk(2, ["h3"]), mk(3, ["h4"], ["origin/feature"]), mk(4, [])];
+      const gap = mountGraph({
+        history: true,
+        commits: [full[0], full[2], full[3]],
+        reachCommits: full,
+        head: "h1",
+      });
+      expect(gap.find(".git-tree__row--push-boundary").exists()).toBe(false);
+      const adjacent = mountGraph({ history: true, commits: full.slice(1), reachCommits: full, head: "h1" });
+      expect(adjacent.findAll(".git-tree__row--push-boundary")).toHaveLength(1);
+    });
+
+    test("marks nothing local when no remote-tracking ref is loaded", () => {
+      const w = mountGraph({
+        history: true,
+        commits: chain({ 3: [] }),
+        head: "h1",
+      });
+      expect(w.find(".git-tree__row--local").exists()).toBe(false);
+      expect(w.find(".git-tree__row--push-boundary").exists()).toBe(false);
+    });
+
+    test("dims commits already on the range base and keeps the branch's own work full", () => {
+      const w = mountGraph({
+        history: true,
+        rangeBase: "develop",
+        commits: chain({ 4: ["origin/develop"] }),
+        head: "h1",
+      });
+      const rows = rowsOf(w);
+      expect(rows.map((r) => r.classes().includes("git-tree__row--on-base"))).toEqual([
+        false,
+        false,
+        false,
+        true,
+        true,
+      ]);
+      expect(rows[3].attributes("title")).toContain("Already on develop");
+      expect(rows[0].attributes("title")).not.toContain("Already on");
+
+      const none = mountGraph({ history: true, rangeBase: "develop", commits: chain(), head: "h1" });
+      expect(none.find(".git-tree__row--on-base").exists()).toBe(false);
+    });
+
+    test("origin/HEAD folds into the sibling remote chip as a default suffix", () => {
+      const w = mountGraph({
+        history: true,
+        commits: [mk(1, [], ["origin/HEAD", "origin/develop"])],
+        head: "",
+      });
+      const chips = w.findAll(".git-tree__history-refs .git-tree__ref");
+      expect(chips).toHaveLength(1);
+      expect(chips[0].find(".git-tree__ref-label").text()).toBe("origin/develop");
+      expect(chips[0].find(".git-tree__ref-default").text()).toBe("default");
+      expect(chips[0].attributes("title")).toContain("Default branch of the remote");
+
+      const alone = mountGraph({ history: true, commits: [mk(1, [], ["origin/HEAD"])], head: "" });
+      expect(alone.findAll(".git-tree__history-refs .git-tree__ref")).toHaveLength(1);
+      expect(alone.find(".git-tree__ref-default").exists()).toBe(false);
+    });
+
+    test("HEAD and the current branch are filled, the base outlined, and they are never the collapsed ones", () => {
+      const w = mountGraph({
+        history: true,
+        rangeBase: "origin/develop",
+        head: "h1",
+        commits: [mk(1, [], ["tag:v1", "origin/x", "origin/develop", "main", "HEAD"])],
+      });
+      const chips = w.findAll(".git-tree__history-refs .git-tree__ref");
+      expect(chips.map((c) => c.find(".git-tree__ref-label").text() || c.text())).toEqual(["HEAD", "main", "+3"]);
+      expect(chips[0].classes()).toContain("git-tree__ref--filled");
+      expect(chips[1].classes()).toContain("git-tree__ref--filled");
+      expect(chips[1].attributes("title")).toContain("Branch main");
+      expect(chips[1].attributes("title")).toContain("Working branch (checked out)");
+
+      const base = mountGraph({
+        history: true,
+        rangeBase: "origin/develop",
+        head: "",
+        commits: [mk(1, [], ["origin/x", "origin/develop"])],
+      });
+      const baseChips = base.findAll(".git-tree__history-refs .git-tree__ref");
+      expect(baseChips[0].find(".git-tree__ref-label").text()).toBe("origin/develop");
+      expect(baseChips[0].classes()).toContain("git-tree__ref--outlined");
+      expect(baseChips[0].attributes("title")).toContain("Pull request target");
+      expect(baseChips[1].attributes("title")).not.toContain("Pull request target");
+      expect(baseChips[1].classes()).not.toContain("git-tree__ref--outlined");
+    });
+
+    test("legacy mode renders none of the new classes", () => {
+      const w = mountGraph({
+        history: false,
+        rangeBase: "develop",
+        commits: chain({ 4: ["origin/develop"] }),
+        head: "h1",
+      });
+      for (const cls of ["--local", "--push-boundary", "--on-base"]) {
+        expect(w.find(`.git-tree__row${cls}`).exists()).toBe(false);
+      }
+      expect(w.find(".git-tree__ref--filled").exists()).toBe(false);
+      expect(w.findAll("svg circle").every((c) => c.attributes("fill") !== "var(--panel)")).toBe(true);
+    });
+  });
+
+  describe("history column resizing", () => {
+    const KEY = "strideterm:git-history:column-widths";
+    beforeEach(() => localStorage.removeItem(KEY));
+    const pointer = (el: Element, type: string, clientX: number) =>
+      el.dispatchEvent(new MouseEvent(type, { clientX, bubbles: true, cancelable: true }));
+    const rowColumns = (w: ReturnType<typeof mountGraph>) =>
+      (w.get(".git-tree__row").element as HTMLElement).style.gridTemplateColumns;
+
+    test("history mode renders the header with three handles; legacy mode has none", () => {
+      const w = mountGraph({ history: true });
+      expect(w.find(".git-tree__history-header").exists()).toBe(true);
+      const handles = w.findAll(".git-tree__col-resizer");
+      expect(handles.map((h) => h.attributes("aria-label"))).toEqual([
+        "Resize Author column",
+        "Resize Date column",
+        "Resize Hash column",
+      ]);
+      expect(handles[0].attributes("role")).toBe("separator");
+      expect(rowColumns(w)).toBe("minmax(0, 1fr) 140px 84px 58px");
+      expect(mountGraph({ history: false }).find(".git-tree__history-header").exists()).toBe(false);
+    });
+
+    test("dragging a handle resizes the column and persists the width", async () => {
+      const w = mountGraph({ history: true });
+      const handle = w.findAll(".git-tree__col-resizer")[0];
+      pointer(handle.element, "pointerdown", 500);
+      pointer(handle.element, "pointermove", 460);
+      await nextTick();
+      expect(rowColumns(w)).toBe("minmax(0, 1fr) 180px 84px 58px");
+      pointer(handle.element, "pointerup", 460);
+      expect(JSON.parse(localStorage.getItem(KEY)!)).toEqual({ author: 180, date: 84, hash: 58 });
+      pointer(handle.element, "pointermove", 0);
+      await nextTick();
+      expect(rowColumns(w)).toBe("minmax(0, 1fr) 180px 84px 58px");
+    });
+
+    test("keyboard resizes by 8px (ArrowLeft widens, the handle sits on the left edge), Home and double-click reset", async () => {
+      const w = mountGraph({ history: true });
+      const handle = w.findAll(".git-tree__col-resizer")[1];
+      await handle.trigger("keydown", { key: "ArrowLeft" });
+      expect(rowColumns(w)).toBe("minmax(0, 1fr) 140px 92px 58px");
+      await handle.trigger("keydown", { key: "ArrowRight" });
+      await handle.trigger("keydown", { key: "ArrowRight" });
+      expect(rowColumns(w)).toBe("minmax(0, 1fr) 140px 76px 58px");
+      await handle.trigger("keydown", { key: "Home" });
+      expect(rowColumns(w)).toBe("minmax(0, 1fr) 140px 84px 58px");
+      await handle.trigger("keydown", { key: "ArrowLeft" });
+      await handle.trigger("dblclick");
+      expect(rowColumns(w)).toBe("minmax(0, 1fr) 140px 84px 58px");
+    });
+
+    describe("narrow panes", () => {
+      let width = 0;
+      const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
+      beforeEach(() => {
+        Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, get: () => width });
+      });
+      afterEach(() => {
+        if (original) Object.defineProperty(HTMLElement.prototype, "clientWidth", original);
+        else delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientWidth;
+      });
+      const cells = (w: ReturnType<typeof mountGraph>) =>
+        ["author", "date", "hash"].filter((key) => w.find(`.git-tree__cell--${key}`).exists());
+
+      test("keeps every column in a wide pane", async () => {
+        width = 1000;
+        const w = mountGraph({ history: true });
+        await nextTick();
+        expect(cells(w)).toEqual(["author", "date", "hash"]);
+      });
+
+      test("drops author, then hash, then date, so the subject keeps its room", async () => {
+        width = 400;
+        const medium = mountGraph({ history: true });
+        await nextTick();
+        expect(cells(medium)).toEqual(["date", "hash"]);
+        expect(medium.findAll(".git-tree__col-resizer")).toHaveLength(2);
+        expect(rowColumns(medium)).toBe("minmax(0, 1fr) 84px 58px");
+        width = 330;
+        const narrow = mountGraph({ history: true });
+        await nextTick();
+        expect(cells(narrow)).toEqual(["date"]);
+      });
+
+      test("the Branches commit list drops refs, author and date when tight, and hash before the subject", async () => {
+        width = 500;
+        const w = mountGraph({
+          history: false,
+          commits: linearCommits.map((c, i) => (i === 0 ? { ...c, refs: ["origin/topic"] } : c)),
+        });
+        await nextTick();
+        expect(w.classes()).toContain("git-tree--tight");
+        expect(cells(w)).toEqual(["hash"]);
+        expect(w.find(".git-tree__cell--refs").exists()).toBe(false);
+        expect(w.find(".git-tree__cell--subject .git-tree__history-refs").exists()).toBe(true);
+        expect((w.get(".git-tree__row").element as HTMLElement).style.gridTemplateColumns).toBe(
+          "minmax(0, 1fr) max-content",
+        );
+        width = 250;
+        const narrow = mountGraph({ history: false });
+        await nextTick();
+        expect(cells(narrow)).toEqual([]);
+        expect((narrow.get(".git-tree__row").element as HTMLElement).style.gridTemplateColumns).toBe("minmax(0, 1fr)");
+      });
+
+      test("a compact graph sizes its gutter to the lanes in view", async () => {
+        const hash = (i: number) => `w${i}`;
+        const wide = Array.from({ length: 80 }, (_, i) => ({
+          hash: hash(i),
+          shortHash: hash(i),
+          parents: i === 79 ? [] : i === 60 ? [hash(61), hash(70)] : [hash(i + 1)],
+          subject: `c${i}`,
+          author: "A",
+          relativeDate: "now",
+          isoDate: "2026-05-20T10:00:00Z",
+          refs: [],
+        }));
+        const svgWidth = (w: ReturnType<typeof mountGraph>) => Number(w.get("svg").attributes("width"));
+        const full = mountGraph({ commits: wide, head: hash(0) });
+        const compact = mountGraph({ commits: wide, head: hash(0), compact: true, history: true });
+        await nextTick();
+        expect(svgWidth(compact)).toBeLessThan(svgWidth(full));
+        expect(svgWidth(compact)).toBe(32);
+      });
+    });
+
+    test("restores stored widths", () => {
+      localStorage.setItem(KEY, JSON.stringify({ author: 200, date: 1, hash: 70 }));
+      expect(rowColumns(mountGraph({ history: true }))).toBe("minmax(0, 1fr) 200px 40px 70px");
+    });
+  });
+});
+
+function syntheticCommits(count: number) {
+  const hash = (i: number) => `h${String(i).padStart(6, "0")}`;
+  return Array.from({ length: count }, (_, i) => ({
+    hash: hash(i),
+    shortHash: hash(i).slice(0, 7),
+    parents: i + 1 >= count ? [] : i % 7 === 3 && i + 2 < count ? [hash(i + 1), hash(i + 2)] : [hash(i + 1)],
+    subject: `commit ${i}`,
+    author: "A",
+    relativeDate: "now",
+    isoDate: "2026-05-20T10:00:00Z",
+    refs: [],
+  }));
+}
+
+describe("GitTreeGraph virtualisation and layout", () => {
+  test("shows the spinner while a request is pending, never 'No commits found.'", () => {
+    const wrapper = mountGraph({ commits: [], pending: true });
+    expect(wrapper.findComponent(Spinner).exists()).toBe(true);
+    expect(wrapper.text()).not.toContain("No commits found.");
+  });
+
+  test("renders only the rows around the viewport and follows scrolling", async () => {
+    const commits = syntheticCommits(1000);
+    const wrapper = mountGraph({ commits, head: commits[0].hash });
+    const rendered = () => wrapper.findAll(".git-tree__row");
+    expect(rendered().length).toBeGreaterThan(0);
+    expect(rendered().length).toBeLessThan(100);
+    expect(rendered()[0].text()).toContain("commit 0");
+
+    const scroll = wrapper.get(".git-tree__scroll");
+    (scroll.element as HTMLElement).scrollTop = 11000;
+    await scroll.trigger("scroll");
+    await nextTick();
+    const rows = rendered();
+    expect(rows.length).toBeLessThan(100);
+    expect(rows[0].text()).not.toContain("commit 0 ");
+    expect(rows.some((row) => row.text().includes("commit 500"))).toBe(true);
+    expect(wrapper.get(".git-tree__viewport").attributes("style")).toContain("min-height: 22000px");
+  });
+
+  test("layout of a prefix equals the prefix of the layout of all commits", () => {
+    const commits = syntheticCommits(40);
+    const dots = (list: typeof commits) =>
+      mountGraph({ commits: list, head: list[0].hash })
+        .findAll(".git-tree__svg circle")
+        .map((c) => `${c.attributes("cx")},${c.attributes("cy")}`);
+    const prefix = dots(commits.slice(0, 25));
+    const all = dots(commits);
+    expect(prefix.length).toBeGreaterThan(0);
+    expect(all.slice(0, prefix.length)).toEqual(prefix);
   });
 });

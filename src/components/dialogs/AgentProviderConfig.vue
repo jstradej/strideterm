@@ -10,7 +10,7 @@
       <div class="grid" :class="effortOptions.length ? 'grid--3col' : 'grid--2col'">
         <label>
           <span>Provider</span>
-          <CustomSelect v-model="providerId" :options="providerOptions" @change="onProviderChange" />
+          <CustomSelect v-model="providerId" :options="providerOptions" />
         </label>
         <label
           title="Leave empty for the CLI's own default, pick from the suggestion list, or type any model ID your CLI version supports — Codex and Gemini change their model catalog often and we don't want a rebuild every time."
@@ -96,9 +96,23 @@ const effortOptions = computed(() => {
 // Per-field writable computeds so CustomSelect/input v-model bindings can
 // stay simple, without mutating the `provider` prop object directly
 // (vue/no-mutating-props) — each emits a merged copy via update:provider.
+// Switching provider auto-selects the suggested model (and its effort) for this
+// role and resets skipPermissions to the provider default — all in ONE emit.
+// A separate @change handler can't do it: the prop still holds the old
+// providerId until the parent re-renders, so its emit reverted the switch.
 const providerId = computed({
   get: () => props.provider.providerId,
-  set: (v: string) => emit("update:provider", { ...props.provider, providerId: v }),
+  set: (v: string) => {
+    const p = PROVIDER_CHOICES.find((c) => c.id === v);
+    const suggested = p?.models?.find((m) => m.suggestedRole === props.role) || p?.models?.[0];
+    emit("update:provider", {
+      ...props.provider,
+      providerId: v,
+      model: suggested ? suggested.id : props.provider.model,
+      effort: suggested?.suggestedEffort ?? "",
+      skipPermissions: p ? (p.defaultSkipPermissions ?? false) : props.provider.skipPermissions,
+    });
+  },
 });
 const model = computed({
   get: () => props.provider.model,
@@ -116,18 +130,6 @@ const panelCommandModel = computed({
   get: () => props.panelCommand,
   set: (v: string) => emit("update:panelCommand", v),
 });
-
-function onProviderChange() {
-  // Auto-select suggested model (and its effort) for this role + reset skipPermissions to provider default
-  const p = PROVIDER_CHOICES.find((c) => c.id === props.provider.providerId);
-  const suggested = p?.models?.find((m) => m.suggestedRole === props.role) || p?.models?.[0];
-  emit("update:provider", {
-    ...props.provider,
-    model: suggested ? suggested.id : props.provider.model,
-    effort: suggested?.suggestedEffort ?? "",
-    skipPermissions: p ? (p.defaultSkipPermissions ?? false) : props.provider.skipPermissions,
-  });
-}
 
 function toggleOverride() {
   // When enabling advanced custom command, prefill with current picker state

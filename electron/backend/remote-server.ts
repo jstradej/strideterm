@@ -37,6 +37,9 @@ import {
   gitCheckoutRemoteSchema,
   gitCherryPickSchema,
   gitCommitSchema,
+  gitStageFileSchema,
+  gitStageHunkSchema,
+  gitCommitStagedSchema,
   gitLogGraphSchema,
   gitPayloadSchema,
   gitRemoteBranchDeleteSchema,
@@ -53,6 +56,7 @@ import {
   remoteClientTargetActivateSchema,
   azureClosedPrCleanupSchema,
   reviewGitStartSchema,
+  reviewPrActionConfirmSchema,
   startReviewAgentPreparationSchema,
   reviewAgentPreparationStopSchema,
   mobileAttachmentEnvelopeSchema,
@@ -3392,6 +3396,11 @@ export async function startRemoteServer({
     // the caller's profile before anything starts.
     "/api/review-git/start": (body, windowId) =>
       runtime.startReviewGitOperation(validateIpc(reviewGitStartSchema, body, "POST /api/review-git/start"), windowId),
+    "/api/review-pr-action/confirm": (body, windowId) =>
+      runtime.confirmReviewPrAction(
+        validateIpc(reviewPrActionConfirmSchema, body, "POST /api/review-pr-action/confirm"),
+        windowId,
+      ),
     "/api/review/start": (body, windowId) =>
       runtime.startPullRequestReview(
         validateIpc(startPullRequestReviewSchema, body, `POST ${START_PULL_REQUEST_REVIEW_ROUTE}`),
@@ -3461,6 +3470,8 @@ export async function startRemoteServer({
       fm.computeFileDiff(body.rootPath as string, body.relativePath as string, {
         source: (body.source as string) || "head",
         revisionRef: (body.revisionRef as string) || "",
+        baseRef: (body.baseRef as string) || "",
+        targetRef: (body.targetRef as string) || "",
       }),
     ),
     "/api/file/commit-files": fileRoute("commit-files", (body) =>
@@ -3591,8 +3602,10 @@ export async function startRemoteServer({
     "/api/git/push": (body, windowId) => runtime.gitPush(body, windowId),
     "/api/git/checkout-branch": (body, windowId) => runtime.gitCheckoutBranch(body, windowId),
     "/api/git/create-branch": (body, windowId) => runtime.gitCreateBranch(body, windowId),
-    "/api/git/merge-into-current": (body, windowId) => runtime.gitMergeIntoCurrent(body, windowId),
-    "/api/git/rebase-onto": (body, windowId) => runtime.gitRebaseOnto(body, windowId),
+    "/api/git/merge-into-current": (body, windowId) =>
+      runtime.gitMergeIntoCurrent(validateIpc(gitPayloadSchema, body, "POST /api/git/merge-into-current"), windowId),
+    "/api/git/rebase-onto": (body, windowId) =>
+      runtime.gitRebaseOnto(validateIpc(gitPayloadSchema, body, "POST /api/git/rebase-onto"), windowId),
     // Cherry-pick / squash rewrite history in the workspace's cwd —
     // validate like the IPC path (hash regex blocks option injection).
     "/api/git/cherry-pick": (body, windowId) =>
@@ -3607,6 +3620,14 @@ export async function startRemoteServer({
     "/api/git/remove-worktree": (body, windowId) => runtime.gitRemoveWorktree(body, windowId),
     "/api/git/commit-all": (body, windowId) =>
       runtime.gitCommitAll(validateIpc(gitCommitSchema, body, "POST /api/git/commit-all"), windowId),
+    "/api/git/stage-file": (body, windowId) =>
+      runtime.gitStageFile(validateIpc(gitStageFileSchema, body, "POST /api/git/stage-file"), windowId),
+    "/api/git/stage-hunk": (body, windowId) =>
+      runtime.gitStageHunk(validateIpc(gitStageHunkSchema, body, "POST /api/git/stage-hunk"), windowId),
+    "/api/git/unstage-file": (body, windowId) =>
+      runtime.gitUnstageFile(validateIpc(gitStageFileSchema, body, "POST /api/git/unstage-file"), windowId),
+    "/api/git/commit-staged": (body, windowId) =>
+      runtime.gitCommitStaged(validateIpc(gitCommitStagedSchema, body, "POST /api/git/commit-staged"), windowId),
     // Validate the same way the Electron IPC handlers do (ipc.ts) and the
     // branch routes below: this slot-aware map is the LIVE remote path for
     // stash ops (it intercepts before handleApiRequest), so without these
@@ -3641,9 +3662,12 @@ export async function startRemoteServer({
     "/api/git/list-tags": (body, windowId) => runtime.gitListTags(body, windowId),
     "/api/git/create-tag": (body, windowId) => runtime.gitCreateTag(body, windowId),
     "/api/git/delete-tag": (body, windowId) => runtime.gitDeleteTag(body, windowId),
-    "/api/git/push-tag": (body, windowId) => runtime.gitPushTag(body, windowId),
-    "/api/git/push-all-tags": (body, windowId) => runtime.gitPushAllTags(body, windowId),
-    "/api/git/delete-remote-tag": (body, windowId) => runtime.gitDeleteRemoteTag(body, windowId),
+    "/api/git/push-tag": (body, windowId) =>
+      runtime.gitPushTag(validateIpc(gitPayloadSchema, body, "POST /api/git/push-tag"), windowId),
+    "/api/git/push-all-tags": (body, windowId) =>
+      runtime.gitPushAllTags(validateIpc(gitPayloadSchema, body, "POST /api/git/push-all-tags"), windowId),
+    "/api/git/delete-remote-tag": (body, windowId) =>
+      runtime.gitDeleteRemoteTag(validateIpc(gitPayloadSchema, body, "POST /api/git/delete-remote-tag"), windowId),
     "/api/git/force-push-with-lease": (body, windowId) => runtime.gitForcePushWithLease(body, windowId),
     "/api/git/list-branches": (body, windowId) =>
       runtime.gitListBranches(validateIpc(gitBranchListSchema, body, "POST /api/git/list-branches"), windowId),

@@ -282,6 +282,52 @@ describe("NotificationCenter — sessionProfileLabel render", () => {
     expect(wrapper.find(".notification-item__quick-actions").exists()).toBe(false);
   });
 
+  it("shows compact error history details and suppresses only errors represented in the active Alerts timeline", async () => {
+    const appStore = useAppStore();
+    const notifStore = useNotificationStore();
+    appStore.payload = makePayload() as AnyApi;
+    notifStore.panelOpen = true;
+    const wrapper = mount(NotificationCenter);
+    await nextTick();
+
+    notifStore.pushPersistentToast({
+      title: "Couldn't remove workspace",
+      body: "Workspace folder could not be removed. Another process may be using this folder.",
+      kind: "error",
+      profileId: "p1",
+      workspaceId: "ws-a",
+      copyPath: "C:\\work\\project",
+      dedupeKey: "p1:workspace-delete:ws-a",
+      details: {
+        rawError: "EBUSY: resource busy or locked",
+        workspaceTitle: "Project A",
+        path: "C:\\work\\project",
+      },
+    });
+    await nextTick();
+
+    expect(wrapper.text()).toContain("Workspace: Project A");
+    expect(wrapper.text()).toContain("EBUSY: resource busy or locked");
+    expect(wrapper.text()).toContain("Copy path");
+    expect(notifStore.persistentToasts).toHaveLength(0);
+    notifStore.openPanelOnSession("ws-a:");
+    await nextTick();
+    await nextTick();
+    expect((wrapper.get(".notification-item__details").element as HTMLDetailsElement).open).toBe(true);
+
+    notifStore.pushPersistentToast({
+      title: "Couldn't remove workspace",
+      body: "Workspace could not be removed.",
+      kind: "error",
+      profileId: "p2",
+      workspaceId: "ws-a",
+      dedupeKey: "p2:workspace-delete:ws-a",
+      details: { rawError: "EACCES", workspaceTitle: "Project A" },
+    });
+    await nextTick();
+    expect(notifStore.persistentToasts).toHaveLength(1);
+  });
+
   it("does not render profile label when profileId references a deleted/unknown profile", async () => {
     const appStore = useAppStore();
     const notifStore = useNotificationStore();

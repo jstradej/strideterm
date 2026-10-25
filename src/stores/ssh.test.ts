@@ -154,7 +154,7 @@ describe("ssh store", () => {
         name: "new host",
         host: "mini.local",
         username: "dev",
-        auth: { methods: ["publickey"], keyRef: "key-1" },
+        auth: { methods: ["publickey" as const], keyRef: "key-1" },
       },
     };
 
@@ -382,9 +382,9 @@ describe("ssh store", () => {
       expect(store.error).toBe("ECONNREFUSED");
       expect(store.hosts).toEqual([]);
       const notifications = useNotificationStore();
-      expect(notifications.latestToast?.category).toBe("error");
-      expect(notifications.latestToast?.title).toBe("Load SSH data failed");
-      expect(notifications.latestToast?.body).toBe("ECONNREFUSED");
+      expect(notifications.persistentToasts.at(-1)?.kind).toBe("error");
+      expect(notifications.persistentToasts.at(-1)?.title).toBe("Load SSH data failed");
+      expect(notifications.persistentToasts.at(-1)?.body).toBe("ECONNREFUSED");
     });
 
     it("deleteHost failure sets store.error and surfaces a notification toast", async () => {
@@ -399,7 +399,7 @@ describe("ssh store", () => {
       await store.deleteHost("h1");
       expect(store.error).toBe("host not found");
       const notifications = useNotificationStore();
-      expect(notifications.latestToast?.title).toBe("Delete SSH host failed");
+      expect(notifications.persistentToasts.at(-1)?.title).toBe("Delete SSH host failed");
     });
 
     it("deleteCertificate failure sets store.error and surfaces a notification toast", async () => {
@@ -414,7 +414,7 @@ describe("ssh store", () => {
       await store.deleteCertificate("c1");
       expect(store.error).toBe("cert not found");
       const notifications = useNotificationStore();
-      expect(notifications.latestToast?.title).toBe("Delete SSH certificate failed");
+      expect(notifications.persistentToasts.at(-1)?.title).toBe("Delete SSH certificate failed");
     });
 
     it("answerAuthPrompt failure sets store.error, toasts, and retains the prompt for retry", async () => {
@@ -431,7 +431,7 @@ describe("ssh store", () => {
       expect(store.error).toBe("session closed");
       expect(store.authPrompt?.promptId).toBe("p1");
       const notifications = useNotificationStore();
-      expect(notifications.latestToast?.title).toBe("SSH authentication failed");
+      expect(notifications.persistentToasts.at(-1)?.title).toBe("SSH authentication failed");
     });
 
     it("cancelAuthPrompt failure sets store.error, toasts, and retains the prompt for retry", async () => {
@@ -448,7 +448,7 @@ describe("ssh store", () => {
       expect(store.error).toBe("session closed");
       expect(store.authPrompt?.promptId).toBe("p1");
       const notifications = useNotificationStore();
-      expect(notifications.latestToast?.title).toBe("Cancel SSH authentication failed");
+      expect(notifications.persistentToasts.at(-1)?.title).toBe("Cancel SSH authentication failed");
     });
 
     it("acceptHostKey failure sets store.error, toasts, and retains the warning for retry", async () => {
@@ -471,7 +471,7 @@ describe("ssh store", () => {
       expect(store.error).toBe("write failed");
       expect(store.hostKeyWarning?.promptId).toBe("p1");
       const notifications = useNotificationStore();
-      expect(notifications.latestToast?.title).toBe("Accept SSH host key failed");
+      expect(notifications.persistentToasts.at(-1)?.title).toBe("Accept SSH host key failed");
     });
 
     it("rejectHostKey failure sets store.error, toasts, and retains the warning for retry", async () => {
@@ -494,7 +494,7 @@ describe("ssh store", () => {
       expect(store.error).toBe("session closed");
       expect(store.hostKeyWarning?.promptId).toBe("p1");
       const notifications = useNotificationStore();
-      expect(notifications.latestToast?.title).toBe("Reject SSH host key failed");
+      expect(notifications.persistentToasts.at(-1)?.title).toBe("Reject SSH host key failed");
     });
   });
 });

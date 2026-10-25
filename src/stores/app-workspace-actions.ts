@@ -28,6 +28,7 @@ import {
   operationFinishedSchema,
   type OperationFinished,
 } from "../../electron/shared/operation-events.js";
+import { reviewPrActionOutcomeSchema } from "../../electron/shared/review-pr-actions.js";
 import { useNotificationStore } from "./notifications.js";
 import { fireNotificationAlert } from "../composables/useNotificationSound.js";
 
@@ -194,8 +195,99 @@ function describeOperationFinished(operation: OperationFinished): { title: strin
       failed: false,
     };
   }
+  if (operation.kind === "review-pr-action") {
+    if ("error" in operation) {
+      return {
+        title: "Pull request action outcome is uncertain",
+        body: `${operation.error.message}\nCheck the pull request's current status before retrying; the provider may have applied the action.`,
+        failed: true,
+      };
+    }
+    const parsed = reviewPrActionOutcomeSchema.safeParse(operation.result);
+    if (parsed.success) {
+      const outcome = parsed.data;
+      const provider = outcome.provider === "github" ? "GitHub" : "Azure DevOps";
+      const pr = `${provider} pull request ${outcome.prKey}`;
+      if (outcome.status === "stale") {
+        return {
+          title: "Pull request changed before the action ran",
+          body: `${pr}: ${outcome.message}\nNo action was applied. Review the fresh proposal and approve it separately.`,
+          failed: false,
+        };
+      }
+      const warning = "warning" in outcome && outcome.warning ? `\n\nWarning: ${outcome.warning}` : "";
+      if (outcome.status === "failed") {
+        return {
+          title: `Pull request action failed · ${provider}`,
+          body: `${pr}: ${outcome.message}${warning}`,
+          failed: true,
+        };
+      }
+      if (outcome.status === "queued") {
+        return {
+          title: `Pull request completion queued · ${provider}`,
+          body: `${pr}: ${outcome.message}${warning}\nProvider policies determine when completion can proceed.`,
+          failed: Boolean(warning),
+        };
+      }
+      if (outcome.status === "accepted") {
+        return {
+          title: `Pull request action accepted · ${provider}`,
+          body: `${pr}: ${outcome.message}\nThe resulting state is not confirmed; check the pull request before retrying.${warning}`,
+          failed: Boolean(warning),
+        };
+      }
+      if (outcome.status !== "completed") {
+        return {
+          title: `Pull request action status · ${provider}`,
+          body: `${pr}: ${outcome.message}${warning}`,
+          failed: true,
+        };
+      }
+      return {
+        title: `${operationActionLabel(outcome.action)} · ${provider}`,
+        body: `${pr}: ${outcome.message}${warning}`,
+        failed: Boolean(warning),
+      };
+    }
+  }
+  if (operation.kind.startsWith("git.")) {
+    const action = operation.kind.slice("git.".length).replace(/-/g, " ");
+    const label = action.charAt(0).toUpperCase() + action.slice(1);
+    if ("error" in operation) {
+      return { title: `Git ${label} failed`, body: operation.error.message, failed: true };
+    }
+    const summary = String(operation.result.summary || `Git ${action} completed.`);
+    const warnings = Array.isArray(operation.result.warnings)
+      ? operation.result.warnings.map((warning) => String(warning)).filter(Boolean)
+      : [];
+    return {
+      title: `Git ${label} completed`,
+      body: [summary, ...(warnings.length ? [`Warnings:\n${warnings.join("\n")}`] : [])].join("\n\n"),
+      failed: operation.result.ok === false,
+    };
+  }
   if ("error" in operation) return { title: "Operation failed", body: operation.error.message, failed: true };
   return { title: "Operation finished", body: operation.kind, failed: false };
+}
+
+function operationActionLabel(action: string): string {
+  const labels: Record<string, string> = {
+    approve: "Pull request approved",
+    complete: "Pull request completed",
+    enable_auto_complete: "Auto-complete enabled",
+    disable_auto_complete: "Auto-complete disabled",
+    merge: "Pull request merged",
+    enable_auto_merge: "Auto-merge enabled",
+    disable_auto_merge: "Auto-merge disabled",
+    set_draft: "Pull request marked as draft",
+    set_ready: "Pull request marked ready",
+    abandon: "Pull request abandoned",
+    reactivate: "Pull request reactivated",
+    close: "Pull request closed",
+    reopen: "Pull request reopened",
+  };
+  return labels[action] || "Pull request action finished";
 }
 
 const NOTIFIED_AZURE_CLEANUP_RUNS_KEY = "strideterm-azure-closed-pr-cleanup-notified-runs";
@@ -373,6 +465,12 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
    * requesting window still displays the profile that started it.
    */
   function reportOperationFinished(operation: OperationFinished, { late = false } = {}): void {
+    if (
+      (operation.kind === "review-pr-inspect" || operation.kind === "review-pr-action-proposal") &&
+      !("error" in operation)
+    ) {
+      return;
+    }
     if (operation.kind === "review-agent.prepare") {
       recentReviewAgentPreparationResults.set(operation.operationId, operation);
       while (recentReviewAgentPreparationResults.size > 100) {
@@ -593,14 +691,23 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
           // Lazy import keeps this file out of the notifications store's
           // dependency cycle.
           const { useNotificationStore } = await import("./notifications.js");
+          const rawError = String(result.deleteWorkspaceError);
+          const lowerError = rawError.toLowerCase();
+          const isLocked = lowerError.includes("ebusy") || lowerError.includes("busy") || lowerError.includes("locked");
+          const profileId = (ws as AnyApi).profileId || "default";
           useNotificationStore().pushPersistentToast({
-            title: `Couldn't remove "${wsName}" from disk`,
-            body: result.deleteWorkspaceError,
+            title: "Couldn't remove workspace",
+            body: isLocked
+              ? "Workspace folder could not be removed. Another process may be using this folder."
+              : "Workspace folder could not be removed.",
             kind: "error",
             copyPath: diskPath,
+            details: { rawError, workspaceTitle: wsName, path: diskPath },
+            dedupeKey: `${profileId}:workspace-delete:${workspaceId}`,
+            workspaceId,
             // Scope to the deleted workspace's own profile — other profiles
             // never saw this workspace and shouldn't see its failure.
-            profileId: (ws as AnyApi).profileId || "default",
+            profileId,
           });
         }
         // Success path: ignore. The next broadcast will reconcile the payload
@@ -617,12 +724,20 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
         next.delete(workspaceId);
         ctx.optimisticallyDeletedIds.value = next;
         const { useNotificationStore } = await import("./notifications.js");
+        const profileId = (ws as AnyApi).profileId || "default";
         useNotificationStore().pushPersistentToast({
-          title: variant === "delete" ? `Failed to delete "${wsName}"` : `Failed to remove "${wsName}"`,
-          body: message,
+          title: "Couldn't remove workspace",
+          body: "Workspace could not be removed.",
           kind: "error",
           ...(variant === "delete" ? { copyPath: diskPath } : {}),
-          profileId: (ws as AnyApi).profileId || "default",
+          details: {
+            rawError: message,
+            workspaceTitle: wsName,
+            ...(variant === "delete" ? { path: diskPath } : {}),
+          },
+          dedupeKey: `${profileId}:workspace-remove:${workspaceId}`,
+          workspaceId,
+          profileId,
         });
       }
     })();

@@ -80,6 +80,9 @@ const TOKEN_PATTERNS: Array<[RegExp, string]> = [
   // Authorization: Bearer <token>  /  authorization: bearer <token>
   [/(authorization\s*[:=]\s*"?\s*bearer\s+)[^\s",}\]]+/gi, `$1${REDACTED}`],
   [/(\bbearer\s+)[A-Za-z0-9._\-+/=]{16,}/gi, `$1${REDACTED}`],
+  // Embedded URL credentials, including username-only auth. Git command errors and audit rows can
+  // contain the remote URL verbatim.
+  [/([a-z][a-z\d+.-]*:\/\/)[^/\s?#"<>]+@/gi, `$1${REDACTED}@`],
   // Azure PAT / generic ?token=... or &pat=... query strings.
   //
   // `auth` and `key` are here because of the mobile Firebase REST client: the RTDB REST API takes

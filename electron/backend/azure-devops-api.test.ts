@@ -23,6 +23,54 @@ function createMockFetch(responses: MockResponse[] = []) {
   });
 }
 
+describe("Azure DevOps pull request actions", () => {
+  test("posts the current user's approval vote to the reviewer endpoint", async () => {
+    const fetchImpl = createMockFetch([{ status: 200, body: { vote: 10 } }]);
+    const api = createAzureApi(fetchImpl as unknown as typeof fetch);
+
+    await api.approvePullRequest(
+      { orgUrl: "https://dev.azure.com/acme", login: "user" },
+      "pat",
+      "Project One",
+      "repo-id",
+      42,
+      "reviewer-id",
+    );
+
+    const [url, options] = fetchImpl.mock.calls[0] as unknown as [string, { method: string; body: string }];
+    expect(url).toBe(
+      "https://dev.azure.com/acme/Project%20One/_apis/git/repositories/repo-id/pullRequests/42/reviewers/reviewer-id?api-version=7.1",
+    );
+    expect(options.method).toBe("PUT");
+    expect(JSON.parse(options.body)).toEqual({ id: "reviewer-id", vote: 10 });
+  });
+
+  test("updates PR status and draft fields without completion options", async () => {
+    const fetchImpl = createMockFetch([{ status: 200, body: { status: "completed" } }]);
+    const api = createAzureApi(fetchImpl as unknown as typeof fetch);
+
+    await api.updatePullRequest(
+      { orgUrl: "https://dev.azure.com/acme", login: "user" },
+      "pat",
+      "Project One",
+      "repo-id",
+      42,
+      { status: "completed", isDraft: false, lastMergeSourceCommit: { commitId: "expected-head" } },
+    );
+
+    const [url, options] = fetchImpl.mock.calls[0] as unknown as [string, { method: string; body: string }];
+    expect(url).toBe(
+      "https://dev.azure.com/acme/Project%20One/_apis/git/repositories/repo-id/pullRequests/42?api-version=7.1",
+    );
+    expect(options.method).toBe("PATCH");
+    expect(JSON.parse(options.body)).toEqual({
+      status: "completed",
+      isDraft: false,
+      lastMergeSourceCommit: { commitId: "expected-head" },
+    });
+  });
+});
+
 describe("Azure DevOps API - ETag caching", () => {
   test("gets the authenticated identity from the collection root with PAT Basic auth", async () => {
     const fetchImpl = createMockFetch([{ status: 200, body: { authenticatedUser: { id: "vsid-1" } } }]);

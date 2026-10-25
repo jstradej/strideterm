@@ -1,6 +1,6 @@
 {
   "name": "strideterm",
-  "version": "3.1.1",
+  "version": "3.1.2",
   "description": "Multi-workspace terminal app for developers with Docker, Git, remote access, and plugin support",
   "author": "strIDEterm Contributors <support@strideterm.com>",
   "license": "MIT",
@@ -177,7 +177,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@effect/language-service": "0.87.4",
+    "@effect/language-service": "0.87.5",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.64.0",
     "@types/node": "26.6.5",
@@ -210,10 +210,10 @@
     "wait-on": "^9.1.0"
   },
   "overrides": {
-    "dompurify": "3.4.16",
+    "dompurify": "3.4.17",
     "uuid": "^14.0.0",
     "fast-uri": "^3.1.5",
-    "hono": "4.13.9",
+    "hono": "4.13.13",
     "ip-address": "^10.4.0",
     "tar": "^7.5.22",
     "undici@6": "^6.28.0",

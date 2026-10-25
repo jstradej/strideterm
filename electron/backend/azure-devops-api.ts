@@ -252,6 +252,38 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
     });
   }
 
+  async function updatePullRequest(
+    connection: AzureConnection,
+    token: string,
+    projectName: string,
+    repositoryId: string,
+    pullRequestId: string | number,
+    patch: Record<string, unknown>,
+  ) {
+    return requestJson(buildPullRequestUrl(connection, projectName, repositoryId, pullRequestId), {
+      login: connection.login,
+      token,
+      method: "PATCH",
+      body: patch,
+    });
+  }
+
+  async function approvePullRequest(
+    connection: AzureConnection,
+    token: string,
+    projectName: string,
+    repositoryId: string,
+    pullRequestId: string | number,
+    reviewerId: string,
+  ) {
+    return requestJson(buildReviewerUrl(connection, projectName, repositoryId, pullRequestId, reviewerId), {
+      login: connection.login,
+      token,
+      method: "PUT",
+      body: { id: reviewerId, vote: 10 },
+    });
+  }
+
   async function listThreads(
     connection: AzureConnection,
     token: string,
@@ -724,6 +756,8 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
     getAuthenticatedUser,
     listPullRequestsByProject,
     getPullRequestById,
+    updatePullRequest,
+    approvePullRequest,
     listThreads,
     listPullRequestStatuses,
     listPolicyEvaluations,

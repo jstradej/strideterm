@@ -107,9 +107,11 @@ describe("SshKeyTransferDialog", () => {
     expect(wrapper.text()).toContain("Target: Personal host (js@mini.local)");
     expect(wrapper.findComponent(CustomSelect).exists()).toBe(false);
     expect(wrapper.text()).not.toContain("Add a saved host");
-    await wrapper.setProps({ draft: { ...draft, name: "js@mini.local" } });
+    await (wrapper as unknown as { setProps: (props: unknown) => Promise<void> }).setProps({
+      draft: { ...draft, name: "js@mini.local" },
+    });
     expect(wrapper.text()).toContain("Target: js@mini.local");
-    await wrapper.setProps({ draft });
+    await (wrapper as unknown as { setProps: (props: unknown) => Promise<void> }).setProps({ draft });
     await wrapper.get(".ssh-key-transfer-dialog__footer button.button:not(.button--ghost)").trigger("click");
     expect(ssh.startKeyTransfer).toHaveBeenCalledWith({ profileId: "profile-1", keyId: "key-1", draft });
     expect(ssh.hosts).toHaveLength(3);

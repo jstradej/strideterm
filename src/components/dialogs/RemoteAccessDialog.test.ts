@@ -178,3 +178,39 @@ describe("RemoteAccessDialog — quick tunnel note", () => {
     expect(create).toHaveBeenCalled();
   });
 });
+
+describe("RemoteAccessDialog — secure storage warning", () => {
+  async function mountLan(secureStorage?: { available: boolean }) {
+    const store = useAppStore();
+    store.payload = {
+      appState: { settings: { remoteAccess: { enabled: true, host: "0.0.0.0", port: 43123 } } },
+      remoteAccess: { enabled: true, host: "0.0.0.0", port: 43123, urls: [] },
+      ...(secureStorage ? { secureStorage } : {}),
+    } as unknown as NonNullable<typeof store.payload>;
+    const wrapper = mount(RemoteAccessDialog, { global: { stubs: { MobileConnectionPanel: true } } });
+    await wrapper
+      .findAll(".remote-mode-tab")
+      .find((b) => b.text() === "LAN")!
+      .trigger("click");
+    return wrapper;
+  }
+
+  test("is shown above the access token when the OS has no secure storage", async () => {
+    const wrapper = await mountLan({ available: false });
+    const warning = wrapper.find(".remote-access__footer .remote-access__secure-warning");
+    expect(warning.exists()).toBe(true);
+    expect(warning.attributes("role")).toBe("alert");
+    expect(warning.text()).toContain("Credentials are stored without OS encryption.");
+    wrapper.unmount();
+  });
+
+  test.each([
+    ["available", { available: true }],
+    ["absent", undefined],
+  ])("is hidden when secure storage is %s", async (_label, secureStorage) => {
+    const wrapper = await mountLan(secureStorage);
+    expect(wrapper.find(".remote-access__footer").exists()).toBe(true);
+    expect(wrapper.find(".remote-access__secure-warning").exists()).toBe(false);
+    wrapper.unmount();
+  });
+});

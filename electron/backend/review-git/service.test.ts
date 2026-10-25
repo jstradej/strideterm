@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any -- test fixtures poke loosely-typed state and results */
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -350,6 +351,14 @@ describe("read tools", () => {
     git(f.checkout, ["checkout", "-q", "-b", "develop", "origin/main"]);
     const moved = (await f.service.read({ operation: "status" }, "ws-1", "default")) as Record<string, unknown>;
     expect(moved.onPullRequestBranch).toBe(false);
+  });
+
+  test("status counts the isolated one-shot review branch as the pull request's branch", async () => {
+    const f = await createFixture();
+    const isolated = `pr-7-feature-review-${randomUUID()}`;
+    git(f.checkout, ["branch", "-m", isolated]);
+    const status = (await f.service.read({ operation: "status" }, "ws-1", "default")) as Record<string, unknown>;
+    expect(status).toMatchObject({ branch: isolated, onPullRequestBranch: true });
   });
 
   test("refs distinguishes the cached tracking refs from the live remote tips", async () => {

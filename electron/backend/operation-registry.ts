@@ -2,7 +2,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import type { Logger } from "./logger.js";
+import { redactSecrets, type Logger } from "./logger.js";
 import { writeFileAtomic } from "./shared/fs-durable.js";
 import { INTERNAL_MCP_ERROR_CODES } from "../shared/internal-mcp.js";
 import {
@@ -10,6 +10,7 @@ import {
   type OperationFinished,
   type OperationRunning,
   type OperationStatus,
+  type OperationFailureClassification,
   type OperationsState,
 } from "../shared/operation-events.js";
 
@@ -47,7 +48,7 @@ export interface OperationRecord {
   /** The workspace this operation created; deleting it deletes this record. */
   workspaceId?: string;
   result?: Record<string, unknown>;
-  error?: { code: string; message: string };
+  error?: OperationError;
   createdAt: string;
   updatedAt: string;
   finishedAt?: string;
@@ -66,9 +67,18 @@ export interface OperationHandle {
 
 export type OperationRunner = (handle: OperationHandle) => Promise<Record<string, unknown>>;
 
+export interface OperationError {
+  code: string;
+  message: string;
+  classification?: OperationFailureClassification;
+  warnings?: string[];
+  conflicts?: string[];
+  rawOutput?: string;
+}
+
 export type OperationOutcome =
   | { status: "succeeded"; result: Record<string, unknown>; workspaceId?: string }
-  | { status: "failed" | "interrupted"; error: { code: string; message: string }; workspaceId?: string };
+  | { status: "failed" | "interrupted"; error: OperationError; workspaceId?: string };
 
 export class OperationIdempotencyConflictError extends Error {
   readonly code = "idempotency_conflict";
@@ -111,10 +121,52 @@ function keyOf(profileId: string, originWorkspaceId: string, idempotencyKey: str
 const STABLE_ERROR_CODES: ReadonlySet<string> = new Set(INTERNAL_MCP_ERROR_CODES);
 
 // Raw errno codes (EPERM, ENOENT, ...) are not part of the contract an agent can act on.
-function errorOf(err: unknown): { code: string; message: string } {
-  const code = typeof (err as { code?: unknown })?.code === "string" ? (err as { code: string }).code : "";
-  const message = err instanceof Error ? err.message : String(err);
-  return { code: STABLE_ERROR_CODES.has(code) ? code : "internal_error", message };
+function errorOf(err: unknown): OperationError {
+  const details = err as {
+    code?: unknown;
+    name?: unknown;
+    classification?: unknown;
+    warnings?: unknown;
+    conflicts?: unknown;
+    rawOutput?: unknown;
+  };
+  const code = typeof details?.code === "string" ? details.code : "";
+  const candidate = details?.classification;
+  const classification: OperationFailureClassification =
+    candidate === "blocked" ||
+    candidate === "cancelled" ||
+    candidate === "partial" ||
+    candidate === "failed" ||
+    candidate === "interrupted"
+      ? candidate
+      : code === "cancelled" || code === "canceled" || details?.name === "AbortError"
+        ? "cancelled"
+        : "failed";
+  // Operation errors are persisted and replayed to a different client after
+  // reconnect. Apply the same credential redaction used by the log formatter
+  // before any of these strings enter that durable record.
+  const message = redactSecrets(err instanceof Error ? err.message : String(err));
+  const warnings = Array.isArray(details?.warnings)
+    ? details.warnings
+        .map(String)
+        .map((value) => redactSecrets(value).slice(0, 1000))
+        .slice(0, 20)
+    : undefined;
+  const conflicts = Array.isArray(details?.conflicts)
+    ? details.conflicts
+        .map(String)
+        .map((value) => redactSecrets(value).slice(0, 1000))
+        .slice(0, 100)
+    : undefined;
+  const rawOutput = typeof details?.rawOutput === "string" ? redactSecrets(details.rawOutput).slice(-6000) : undefined;
+  return {
+    code: STABLE_ERROR_CODES.has(code) ? code : code === "git_operation_failed" ? code : "internal_error",
+    message: message.slice(0, 6000),
+    classification,
+    ...(warnings?.length ? { warnings } : {}),
+    ...(conflicts?.length ? { conflicts } : {}),
+    ...(rawOutput ? { rawOutput } : {}),
+  };
 }
 
 function isTerminal(status: OperationStatus): boolean {
@@ -148,6 +200,7 @@ export function createOperationRegistry(options: OperationRegistryOptions) {
       kind: record.kind,
       profileId: record.profileId,
       ...(record.workspaceId ? { workspaceId: record.workspaceId } : {}),
+      ...(typeof record.intent.rootPath === "string" ? { rootPath: record.intent.rootPath } : {}),
       finishedAt: record.finishedAt,
     };
     if (record.status === "succeeded") return { ...base, result: record.result ?? {} };
@@ -212,7 +265,16 @@ export function createOperationRegistry(options: OperationRegistryOptions) {
       await finish(record, { status: "succeeded", result });
     } catch (err) {
       const error = errorOf(err);
-      log.warn("operation failed", { operationId: record.operationId, kind: record.kind, step: record.step, ...error });
+      log.warn("operation failed", {
+        operationId: record.operationId,
+        kind: record.kind,
+        profileId: record.profileId,
+        originWorkspaceId: record.originWorkspaceId,
+        ...(typeof record.intent.rootPath === "string" ? { rootPath: record.intent.rootPath } : {}),
+        step: record.step,
+        durationMs: Math.max(0, now() - Date.parse(record.createdAt)),
+        ...error,
+      });
       await finish(record, {
         status: "failed",
         error,
@@ -266,7 +328,8 @@ export function createOperationRegistry(options: OperationRegistryOptions) {
         try {
           outcome = await reconcile(record);
         } catch (err) {
-          outcome = { status: "interrupted", error: { code: "interrupted", message: errorOf(err).message } };
+          const error = errorOf(err);
+          outcome = { status: "interrupted", error: { ...error, code: "interrupted" } };
         }
         await finish(record, outcome);
       }
@@ -350,6 +413,7 @@ export function createOperationRegistry(options: OperationRegistryOptions) {
             profileId: record.profileId,
             step: record.step,
             ...(record.workspaceId ? { workspaceId: record.workspaceId } : {}),
+            ...(typeof record.intent.rootPath === "string" ? { rootPath: record.intent.rootPath } : {}),
             startedAt: record.createdAt,
           });
           continue;

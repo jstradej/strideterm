@@ -47,5 +47,13 @@ export function useMonacoDiffLoader<TArgs extends unknown[]>(
     }
   }
 
-  return { payload, loading, load };
+  function clear(): void {
+    // Invalidate any in-flight request when its owning identity changes (for
+    // example, a repository root switch) before clearing its visible payload.
+    seq += 1;
+    payload.value = null;
+    loading.value = false;
+  }
+
+  return { payload, loading, load, clear };
 }

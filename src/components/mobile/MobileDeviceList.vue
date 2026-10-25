@@ -1,5 +1,5 @@
 <template>
-  <div class="mobile-device-list" data-role="mobile-device-list">
+  <div ref="listRoot" class="mobile-device-list" data-role="mobile-device-list">
     <p v-if="app.isRemoteTransport" class="mobile-device-list__empty">
       Phone management is available in Settings on the desktop app.
     </p>
@@ -10,7 +10,10 @@
         v-for="device in devices"
         :key="device.deviceId"
         class="device-item mobile-device-card"
-        :class="{ 'mobile-device-card--revoked': device.revoked }"
+        :class="{
+          'mobile-device-card--revoked': device.revoked,
+          'mobile-device-card--just-paired': device.deviceId === highlightDeviceId,
+        }"
       >
         <header class="mobile-device-card__header">
           <div class="mobile-device-card__title-group">
@@ -21,6 +24,7 @@
             >
               {{ device.revoked ? "Revoked" : device.state === "active" ? "Paired" : pendingLabel(device.state) }}
             </span>
+            <span v-if="device.deviceId === highlightDeviceId" class="mobile-device-card__new">Just paired</span>
             <span
               v-if="device.revoked && pendingAction(device, 'revoke')"
               class="mobile-device-card__pending-status"
@@ -217,7 +221,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { mobileErrorCopy, mobileResultReasonCopy } from "../dialogs/settings/mobile-error-copy.js";
 import { MOBILE_FOREGROUND_PRESENCE_FRESH_MS } from "../../../electron/shared/mobile-session-events.js";
@@ -236,18 +240,38 @@ interface Device {
   state: string;
   revoked: boolean;
   remoteUiPaused: boolean;
+  createdAt?: number;
   lastSeenAt: number;
   capabilities: MobileCapability[];
   profileAllowlist: string[];
   excludedProfileIds?: string[];
 }
-const props = withDefaults(defineProps<{ profiles?: Profile[]; refreshOnMount?: boolean }>(), {
-  profiles: () => [],
-  refreshOnMount: true,
-});
+const props = withDefaults(
+  defineProps<{ profiles?: Profile[]; refreshOnMount?: boolean; highlightDeviceId?: string | null }>(),
+  {
+    profiles: () => [],
+    refreshOnMount: true,
+    highlightDeviceId: null,
+  },
+);
 const app = useAppStore();
+// Newest first, so a phone that has just been paired lands at the top instead of below every older one.
 const devices = computed(() =>
-  [...(app.mobileDevices as unknown as Device[])].sort((a, b) => Number(a.revoked) - Number(b.revoked)),
+  [...(app.mobileDevices as unknown as Device[])].sort(
+    (a, b) => Number(a.revoked) - Number(b.revoked) || (b.createdAt ?? 0) - (a.createdAt ?? 0),
+  ),
+);
+const listRoot = ref<HTMLElement | null>(null);
+watch(
+  () => props.highlightDeviceId,
+  async (deviceId) => {
+    if (!deviceId) return;
+    await nextTick();
+    listRoot.value
+      ?.querySelector<HTMLElement>(".mobile-device-card--just-paired")
+      ?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+  },
+  { immediate: true },
 );
 const paused = computed(() => app.payload?.appState?.settings?.remoteAccess?.paused === true);
 const profiles = computed(() =>
@@ -618,6 +642,30 @@ async function revoke(device: Device): Promise<void> {
 .mobile-device-card--revoked {
   padding-block: 6px;
   opacity: 1;
+}
+.mobile-device-card--just-paired {
+  border-color: var(--accent);
+  animation: mobile-device-card-just-paired 0.9s ease-in-out 3;
+}
+@keyframes mobile-device-card-just-paired {
+  50% {
+    background: color-mix(in srgb, var(--accent) 16%, var(--bg));
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mobile-device-card--just-paired {
+    animation: none;
+  }
+}
+.mobile-device-card__new {
+  flex: 0 0 auto;
+  border-radius: 10px;
+  padding: 2px 7px;
+  background: var(--accent);
+  color: #1a1a1a;
+  font-size: 11px;
+  font-weight: 700;
 }
 .mobile-device-card__access {
   display: grid;

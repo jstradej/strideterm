@@ -49,7 +49,7 @@ describe("SshHostsDialog", () => {
     const wrapper = mount(SshHostsDialog, { props: { embedded: true } });
 
     expect(wrapper.get(".ssh-hosts-dialog__toolbar-title h3").text()).toBe("Saved hosts");
-    expect(wrapper.get('[aria-label="Saved host book help"]').exists()).toBe(true);
+    expect(wrapper.find('[aria-label="Saved host book help"]').exists()).toBe(true);
     expect(wrapper.get('[aria-label="Search saved hosts"]').attributes("placeholder")).toBe("Search hosts…");
     expect(wrapper.get(".ssh-hosts-dialog__toolbar-actions .button").classes()).toContain("button--small");
     await wrapper.get('[aria-label="Search saved hosts"]').setValue("prod");

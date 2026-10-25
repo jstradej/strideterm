@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { reviewGitConfirmationSchema, reviewGitOperationKindSchema } from "../shared/review-git-events.js";
 import { EFFORT_LEVELS } from "../shared/agent-provider-catalog.js";
+import { reviewPrActionSchema, reviewPrActionOptionsSchema } from "../shared/review-pr-actions.js";
 export { remoteSessionRevokeSchema } from "../shared/remote-access.js";
 
 import type { AccountUiState } from "./account/account-state.js";
@@ -121,12 +122,19 @@ export const workspaceUIStateSchema = z.object({
     splitLayout: z.enum(["cols", "rows", "top-split", "left-split", "grid"]).nullable().optional(),
     splitViewIds: z.array(z.string()).optional(),
     activeRootPath: z.string().optional(),
+    gitViewPreferences: z.record(z.string(), z.enum(["history", "changes", "review"])).optional(),
   }),
 });
 export type WorkspaceUIState = z.infer<typeof workspaceUIStateSchema>;
 
 export const settingsSchema = z
   .object({
+    git: z
+      .object({
+        ui: z.object({}).passthrough().optional(),
+      })
+      .passthrough()
+      .optional(),
     remoteAccess: z.object({ paused: z.boolean().optional() }).passthrough().optional(),
     ssh: z
       .object({
@@ -249,10 +257,22 @@ export const reviewGitStartSchema = z
   .object({
     kind: reviewGitOperationKindSchema,
     workspaceId: nonEmptyString,
+    idempotencyKey: z.string().trim().min(8).max(100).optional(),
     confirmation: reviewGitConfirmationSchema.optional(),
   })
   .strict();
 export type ReviewGitStart = z.infer<typeof reviewGitStartSchema>;
+
+export const reviewPrActionConfirmSchema = z.object({ proposalId: nonEmptyString, approved: z.boolean() }).strict();
+export type ReviewPrActionConfirm = z.infer<typeof reviewPrActionConfirmSchema>;
+
+export const reviewPrActionProposalRequestSchema = z
+  .object({
+    action: reviewPrActionSchema,
+    options: reviewPrActionOptionsSchema.default({}),
+  })
+  .strict();
+export type ReviewPrActionProposalRequest = z.infer<typeof reviewPrActionProposalRequestSchema>;
 
 export const agentPromptSaveSchema = z.object({}).passthrough();
 export type AgentPromptSave = z.infer<typeof agentPromptSaveSchema>;
@@ -267,6 +287,7 @@ export const gitPayloadSchema = z
     workspaceId: nonEmptyString,
     baseBranch: safeGitRef.optional(),
     rootPath: z.string().optional(),
+    idempotencyKey: z.string().min(1).max(200).optional(),
   })
   .passthrough();
 export type GitPayload = z.infer<typeof gitPayloadSchema>;
@@ -298,6 +319,32 @@ export const gitDiffPreviewSchema = z.object({
   rootPath: z.string().optional(),
 });
 export type GitDiffPreview = z.infer<typeof gitDiffPreviewSchema>;
+
+export const gitStageFileSchema = z.object({
+  workspaceId: nonEmptyString,
+  rootPath: z.string().optional(),
+  path: z
+    .string()
+    .min(1)
+    .max(512)
+    .refine((value) => !value.startsWith("-") && !value.startsWith("/")),
+});
+export type GitStageFile = z.infer<typeof gitStageFileSchema>;
+
+export const gitStageHunkSchema = gitStageFileSchema.extend({
+  action: z.enum(["stage", "unstage"]).default("stage"),
+  scope: z.enum(["staged", "unstaged"]).default("unstaged"),
+  diffToken: z.string().regex(/^[a-f0-9]{64}$/),
+  hunk: z.string().min(1).max(2_000_000),
+});
+export type GitStageHunk = z.infer<typeof gitStageHunkSchema>;
+
+export const gitCommitStagedSchema = z.object({
+  workspaceId: nonEmptyString,
+  rootPath: z.string().optional(),
+  message: z.string().trim().min(1).max(10000),
+});
+export type GitCommitStaged = z.infer<typeof gitCommitStagedSchema>;
 
 export const gitCommitSchema = z
   .object({
@@ -447,6 +494,7 @@ export const gitLogGraphSchema = z.object({
   workspaceId: nonEmptyString,
   rootPath: z.string().optional(),
   limit: z.number().int().min(1).max(2000).optional(),
+  skip: z.number().int().min(0).optional(),
   includeRemotes: z.boolean().optional(),
   branch: safeGitRef.optional(),
   sinceDate: safeDateExpr.optional(),
@@ -1193,8 +1241,10 @@ export type FileGitRefs = z.infer<typeof fileGitRefsSchema>;
 export const fileGitDiffSchema = z.object({
   rootPath: z.string().min(1),
   relativePath: z.string().min(1),
-  source: z.enum(["head", "staged", "commit", "branch", "tag"]).default("head"),
+  source: z.enum(["head", "staged", "commit", "branch", "tag", "range"]).default("head"),
   revisionRef: z.string().optional(),
+  baseRef: z.string().optional(),
+  targetRef: z.string().optional(),
 });
 export type FileGitDiff = z.infer<typeof fileGitDiffSchema>;
 

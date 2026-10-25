@@ -281,14 +281,14 @@ describe("Settings → About — update status by distribution", () => {
     const ipcFailure = new Error(
       "Error invoking remote method 'app:check-for-updates': Error: EACCES: permission denied, open 'version-check.json'",
     );
-    const { checkButton, toast, logRenderer } = await mountAbout(
+    const { checkButton, logRenderer } = await mountAbout(
       payloadMeta("windows-installer", checker.getCachedResult()),
       () => Promise.reject(ipcFailure),
     );
 
     await checkButton()!.trigger("click");
     await flushPromises();
-    expect(toast()).toMatchObject({
+    expect(useNotificationStore().persistentToasts.at(-1)).toMatchObject({
       title: "Update check failed",
       body: "EACCES: permission denied, open 'version-check.json'",
       kind: "error",
@@ -300,7 +300,7 @@ describe("Settings → About — update status by distribution", () => {
     const { checker, githubRequests } = await realUpdateChecker("portable", { offline: true });
     // The real checker reads its cache file, which flushPromises() cannot wait for.
     let check: Promise<unknown> | undefined;
-    const { banner, checkButton, toast, logRenderer } = await mountAbout(
+    const { banner, checkButton, logRenderer } = await mountAbout(
       payloadMeta("portable", checker.getCachedResult()),
       () => (check = checker.checkForUpdates(true)),
     );
@@ -310,7 +310,7 @@ describe("Settings → About — update status by distribution", () => {
     await check;
     await flushPromises();
     expect(githubRequests).toHaveLength(2);
-    expect(toast()).toMatchObject({
+    expect(useNotificationStore().persistentToasts.at(-1)).toMatchObject({
       title: "Update check failed",
       body: "GitHub did not return the release list, and there is no earlier result. Check the network connection and try again.",
       kind: "error",

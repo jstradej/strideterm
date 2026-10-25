@@ -418,6 +418,20 @@ describe("file-manager git integration", () => {
     expect(vsCommit.leftContent).toBe("# Initial\n");
     expect(vsCommit.leftLabel).toMatch(/commit/);
 
+    const range = await computeFileDiff(repo, "README.md", {
+      source: "range",
+      baseRef: initialCommit,
+      targetRef: "HEAD",
+    });
+    expect(range.ok).toBe(true);
+    expect(range.leftContent).toBe("# Initial\n");
+    expect(range.rightContent).toBe("# Initial\n");
+    // The working tree has an unstaged "Changed" line, but a revision range
+    // must remain pinned to its base/target commits and exclude that local edit.
+    expect(range.rightContent).not.toContain("Changed");
+    expect(range.leftLabel).toContain("base");
+    expect(range.rightLabel).toContain("target");
+
     const noRef = await computeFileDiff(repo, "README.md", { source: "branch" });
     expect(noRef.ok).toBe(false);
     expect(noRef.leftError).toMatch(/Branch name is required/);

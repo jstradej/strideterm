@@ -378,12 +378,34 @@ const countdownDaysLeft = computed(() => {
   if (accessEnded.value) return 0;
   return Math.max(0, Math.ceil((countdownDeadline.value - nowMs.value) / 86_400_000));
 });
-const countdownSegmentsFilled = computed(() => (accessEnded.value ? 0 : Math.min(14, countdownDaysLeft.value ?? 0)));
+const countdownRemainingMs = computed(() =>
+  countdownDeadline.value === null ? null : Math.max(0, countdownDeadline.value - nowMs.value),
+);
+const countdownUsesHours = computed(
+  () => !accessEnded.value && countdownRemainingMs.value !== null && countdownRemainingMs.value <= 86_400_000,
+);
+const countdownAmount = computed(() => {
+  if (!countdownUsesHours.value) return String(countdownDaysLeft.value ?? 0);
+  const minutes = Math.max(1, Math.ceil((countdownRemainingMs.value || 0) / 60_000));
+  const hours = Math.floor(minutes / 60);
+  const leftoverMinutes = minutes % 60;
+  return hours > 0 ? `${hours}h ${leftoverMinutes}m` : `${leftoverMinutes}m`;
+});
+const countdownUnit = computed(() => {
+  if (countdownUsesHours.value) return "left";
+  return countdownDaysLeft.value === 1 ? "day left" : "days left";
+});
+const countdownSegmentsTotal = computed(() => (countdownUsesHours.value ? 24 : 14));
+const countdownSegmentsFilled = computed(() => {
+  if (accessEnded.value) return 0;
+  if (countdownUsesHours.value)
+    return Math.min(24, Math.max(1, Math.ceil((countdownRemainingMs.value || 0) / 3_600_000)));
+  return Math.min(14, countdownDaysLeft.value ?? 0);
+});
 const trialCountdown = computed(() => trialDeadline.value !== null || endedTrial.value);
 const countdownTone = computed(() => {
   const days = countdownDaysLeft.value;
-  if (accessEnded.value || days === 0 || trialEnded.value) return "red";
-  if (days !== null && days <= 3) return "red";
+  if (accessEnded.value || days === 0 || trialEnded.value || countdownUsesHours.value) return "red";
   if (days !== null && days <= 7) return "orange";
   return "green";
 });
@@ -1189,7 +1211,7 @@ function focusAuthPanel(): void {
           <span v-if="entitlement?.planLabel">{{ entitlement.planLabel }}</span>
         </div>
         <div
-          v-if="countdownDaysLeft !== null || trialEnded || endedFiniteAccess"
+          v-if="countdownDeadline !== null || trialEnded || endedFiniteAccess"
           :class="[
             'trial-indicator',
             {
@@ -1203,29 +1225,29 @@ function focusAuthPanel(): void {
         >
           <div class="trial-indicator__heading">
             <span v-if="!accessEnded"
-              ><strong>{{ countdownDaysLeft }}</strong
-              ><small>{{ countdownDaysLeft === 1 ? "day left" : "days left" }}</small></span
+              ><strong>{{ countdownAmount }}</strong
+              ><small>{{ countdownUnit }}</small></span
             >
             <span v-else class="trial-indicator__ended">
               {{ trialEnded ? "Mobile access has ended" : "Access has ended" }}
             </span>
             <small
               >{{ accessEnded ? "Ended" : trialCountdown ? "Ends" : "Access until" }}
-              {{ formatDate(countdownDeadline ?? endedTrialDeadline ?? undefined) }}</small
+              {{ formatDateTime(countdownDeadline ?? endedTrialDeadline ?? undefined) }}</small
             >
           </div>
           <div
             class="trial-indicator__track"
-            :class="`trial-indicator__track--${countdownTone}`"
+            :class="[`trial-indicator__track--${countdownTone}`, countdownUsesHours && 'trial-indicator__track--hours']"
             role="img"
             :aria-label="
               accessEnded
-                ? `${trialCountdown ? 'Trial' : 'Mobile access'} ended; 0 of 14 days remain.`
-                : `${countdownDaysLeft} ${countdownDaysLeft === 1 ? 'day' : 'days'} left; ${countdownSegmentsFilled} of 14 segments filled.`
+                ? `${trialCountdown ? 'Trial' : 'Mobile access'} ended; 0 of ${countdownSegmentsTotal} ${countdownUsesHours ? 'hours' : 'days'} remain.`
+                : `${countdownAmount} ${countdownUnit}; ${countdownSegmentsFilled} of ${countdownSegmentsTotal} ${countdownUsesHours ? 'hour' : 'day'} segments filled.`
             "
           >
             <span
-              v-for="segment in 14"
+              v-for="segment in countdownSegmentsTotal"
               :key="segment"
               class="trial-indicator__segment"
               :class="{ 'trial-indicator__segment--filled': segment <= countdownSegmentsFilled }"
@@ -2277,6 +2299,10 @@ function focusAuthPanel(): void {
   grid-template-columns: repeat(14, minmax(0, 1fr));
   gap: 3px;
   height: 9px;
+}
+.trial-indicator__track--hours {
+  grid-template-columns: repeat(24, minmax(0, 1fr));
+  gap: 2px;
 }
 .trial-indicator__segment {
   height: 100%;

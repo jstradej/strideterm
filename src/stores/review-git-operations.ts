@@ -133,6 +133,8 @@ export function createReviewGitOperations(ctx: ReviewGitOperationsCtx) {
   const waiters = new Map<string, Array<(event: ReviewGitOperationEvent) => void>>();
   /** Operations this renderer started and is awaiting; their outcome belongs to the caller, not a notification. */
   const owned = new Set<string>();
+  /** Keep a start key when its response is lost so a user retry replays the accepted write. */
+  const startKeys = new Map<string, string>();
   const notifiedInMemory = new Set<string>();
   /**
    * While a start call is awaiting its response, an operation id this renderer
@@ -276,12 +278,25 @@ export function createReviewGitOperations(ctx: ReviewGitOperationsCtx) {
     confirmation?: { proposalId: string; facts?: ReviewGitProposalView["facts"] },
   ): Promise<ReviewGitOutcome> {
     const api = ctx.getApi() as CallableTransport;
+    const startKeyScope = JSON.stringify([
+      ctx.myActiveProfileId.value || "default",
+      workspaceId,
+      kind,
+      confirmation?.proposalId || null,
+      confirmation?.facts || null,
+    ]);
+    let idempotencyKey = startKeys.get(startKeyScope);
+    if (!idempotencyKey) {
+      idempotencyKey = crypto.randomUUID();
+      startKeys.set(startKeyScope, idempotencyKey);
+    }
     startsInFlight += 1;
     let started: { operationId: string };
     try {
       started = await api.startReviewGitOperation({
         kind,
         workspaceId,
+        idempotencyKey,
         ...(confirmation ? { confirmation } : {}),
       });
       owned.add(started.operationId);
@@ -293,6 +308,7 @@ export function createReviewGitOperations(ctx: ReviewGitOperationsCtx) {
     try {
       const event = await waitFor(started.operationId);
       received = true;
+      startKeys.delete(startKeyScope);
       if (event.state === "failed") throw new Error(event.error || "The Git operation failed.");
       return event.result;
     } finally {

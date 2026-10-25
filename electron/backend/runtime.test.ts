@@ -13,6 +13,7 @@ import {
 import { isValidNativeDirectoryName } from "./runtime.js";
 import { AgentTaskRunner } from "./agent-task-runner.js";
 import { AzureDevOpsManager } from "./azure-devops-manager.js";
+import { GitHubManager } from "./github-manager.js";
 import { execFileText } from "./process-utils.js";
 import { createSessionId, normalizeState } from "./default-state.js";
 import { RemoteClientRegistry } from "./remote-client-registry.js";
@@ -23,11 +24,13 @@ import {
   type AzureClosedPrCleanupFinished,
 } from "../shared/azure-closed-pr-cleanup-events.js";
 import type { AzureClosedPrCleanupResult } from "../shared/types/ipc-results.js";
+import { reviewPrActionSnapshotSchema } from "../shared/review-pr-actions.js";
 import { normalizeCwd } from "./notify-url-registry.js";
 import { createStore } from "./store.js";
 import { createCredentialStore } from "./shared/credential-store.js";
 import { shortPathKey } from "./azure-devops-utils.js";
 import { REMOTE_ACCESS_TOKEN_REF } from "./shared/connection-secret.js";
+import { OPERATION_FINISHED_CHANNEL, type OperationFinished } from "../shared/operation-events.js";
 import type { AppState, TabTemplate, WorkspaceState } from "../shared/types/state.js";
 import { APP_CONFIG } from "../../config/app-config.js";
 import { readFileContent, withCallerProfile } from "./file-manager.js";
@@ -640,6 +643,8 @@ class FakeGitManager extends EventEmitter {
   declare actions: any[];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   declare invalidateCalls: any[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  declare auditEntries: any[];
 
   constructor() {
     super();
@@ -647,6 +652,11 @@ class FakeGitManager extends EventEmitter {
     this.refreshArgs = [];
     this.actions = [];
     this.invalidateCalls = [];
+    this.auditEntries = [];
+  }
+
+  _logGitAudit(entry: Record<string, unknown>) {
+    this.auditEntries.push(entry);
   }
 
   invalidateSnapshotCache(workspaceId: string | null = null, rootPath: string | null = null) {
@@ -1062,6 +1072,21 @@ const tempPaths: string[] = [];
 // after `runtime.stop()` often hits ENOTEMPTY / EBUSY. Node's `maxRetries`
 // + `retryDelay` is the canonical workaround.
 const RM_OPTS = { recursive: true, force: true, maxRetries: 5, retryDelay: 100 };
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- runtime test fixture is shared across manager variants
+function watchOperation(fixture: { runtime: any }): (operationId: string) => Promise<OperationFinished> {
+  const outcomes = new Map<string, OperationFinished>();
+  const waiters = new Map<string, (event: OperationFinished) => void>();
+  fixture.runtime.on(OPERATION_FINISHED_CHANNEL, (event: OperationFinished) => {
+    outcomes.set(event.operationId, event);
+    waiters.get(event.operationId)?.(event);
+  });
+  return (operationId) => {
+    const outcome = outcomes.get(operationId);
+    if (outcome) return Promise.resolve(outcome);
+    return new Promise((resolve) => waiters.set(operationId, resolve));
+  };
+}
 
 /**
  * An OS keychain that works. Mobile's keys are never stored as plaintext, so a runtime whose store has
@@ -1492,6 +1517,7 @@ describe("runtime integration", () => {
     const sessionId = createSessionId(workspace.id, "agent");
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const savedWorkspace = fixture.store.getState().workspaces.find((item: any) => item.id === workspace.id);
+    if (!savedWorkspace) throw new Error("Saved workspace fixture was not found.");
     const disabledPanel = savedWorkspace.panels.find((item: { id: string }) => item.id === "agent-off");
     expect(
       fixture.sessionManager.getSessionLaunch({
@@ -2000,6 +2026,117 @@ describe("runtime integration", () => {
       await expect(
         fixture.runtime.startReviewGitOperation({ kind: "refresh", workspaceId: "workspace-review" }, undefined),
       ).rejects.toThrow("Review workspace not found");
+    });
+
+    test("PR action confirmation requires a registered application viewer bound to the proposal profile", async () => {
+      const fixture = await createFixture({ initialState: { workspaces: [reviewWorkspace()] } });
+      fixtures.push(fixture);
+
+      await expect(
+        fixture.runtime.confirmReviewPrAction({ proposalId: "missing-proposal", approved: true }),
+      ).rejects.toThrow("authenticated application client");
+      await expect(
+        fixture.runtime.confirmReviewPrAction({ proposalId: "missing-proposal", approved: true }, "unknown-window"),
+      ).rejects.toThrow("calling profile is no longer available");
+    });
+
+    test("the authenticated runtime click starts once, replay returns the same operation, and payload is profile scoped", async () => {
+      const workspace = reviewWorkspace({ profileId: "default" });
+      const snapshot = reviewPrActionSnapshotSchema.parse({
+        provider: "github",
+        prKey: "gh-main:repo:7",
+        connectionId: "gh-main",
+        repository: "acme/repo",
+        number: 7,
+        url: "https://github.com/acme/repo/pull/7",
+        title: "Runtime confirmation fixture",
+        state: "open",
+        isDraft: false,
+        autoMerge: false,
+        source: { repository: "acme/repo", branch: "feature", sha: "head-runtime" },
+        target: { repository: "acme/repo", branch: "main", sha: "target-runtime" },
+        checks: { state: "success", total: 1, successful: 1, failed: 0, pending: 0, items: [] },
+        mergeReadiness: { state: "ready" },
+        review: { approvals: 1, changesRequested: 0, requiredApprovals: 1 },
+        supportedActions: ["merge"],
+      });
+      const getSnapshot = vi.spyOn(GitHubManager.prototype, "getPullRequestActionSnapshot").mockResolvedValue(snapshot);
+      const executeAction = vi.spyOn(GitHubManager.prototype, "executePullRequestAction").mockResolvedValue({
+        provider: "github",
+        prKey: "gh-main:repo:7",
+        action: "merge",
+        status: "completed",
+        message: "Merged by test adapter.",
+      });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let actionService: any;
+      let getActionService: (() => unknown) | undefined;
+      const fixture = await createFixture({
+        initialState: {
+          profiles: [
+            { id: "default", name: "Default" },
+            { id: "profile-b", name: "B" },
+          ],
+          workspaces: [workspace],
+          windowSlots: [
+            { id: "win-a", profileId: "default", activeWorkspaceId: workspace.id, activeSessionId: "" },
+            { id: "win-b", profileId: "profile-b", activeWorkspaceId: "", activeSessionId: "" },
+          ],
+        },
+        dependencies: {
+          enableInternalMcp: true,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          createReviewGitBroker: (options: any) => {
+            getActionService = options.prActions;
+            return {
+              start: async () => ({ url: "http://127.0.0.1/review-git" }),
+              close: async () => {},
+              mintGrant: () => ({}),
+              revokeSession() {},
+              revokeInvalid: async () => {},
+            };
+          },
+        },
+      });
+      fixtures.push(fixture);
+      try {
+        actionService = getActionService?.();
+        const started = await actionService.startProposal(
+          { action: "merge", options: { mergeMethod: "squash" }, idempotencyKey: "runtime-confirmation-001" },
+          {
+            profileId: "default",
+            workspaceId: workspace.id,
+            requester: { source: "mcp", agent: "test", panelId: "shell" },
+          },
+        );
+        await vi.waitFor(() => expect(fixture.runtime.getPayload().reviewPrActions.pending).toHaveLength(1));
+        expect(fixture.runtime.getPayload().reviewPrActions.pending[0].snapshot.source.sha).toBe("head-runtime");
+
+        await expect(
+          fixture.runtime.confirmReviewPrAction({ proposalId: "unknown", approved: true }, "win-a"),
+        ).rejects.toThrow("unavailable or expired");
+        const proposalId = fixture.runtime.getPayload().reviewPrActions.pending[0].proposalId;
+        expect(
+          buildRemoteCore(fixture.runtime.getPayload(), { profileId: "default" }).reviewPrActions.pending,
+        ).toHaveLength(1);
+        expect(
+          buildRemoteCore(fixture.runtime.getPayload(), { profileId: "profile-b" }).reviewPrActions.pending,
+        ).toEqual([]);
+        await expect(fixture.runtime.confirmReviewPrAction({ proposalId, approved: true }, "win-b")).rejects.toThrow();
+        await fixture.runtime.activateProfileInWindow("profile-b", "win-a");
+        await expect(fixture.runtime.confirmReviewPrAction({ proposalId, approved: true }, "win-a")).rejects.toThrow();
+        await fixture.runtime.activateProfileInWindow("default", "win-a");
+        const decision = await fixture.runtime.confirmReviewPrAction({ proposalId, approved: true }, "win-a");
+        const replay = await fixture.runtime.confirmReviewPrAction({ proposalId, approved: true }, "win-a");
+        expect(decision.status).toBe("started");
+        expect(replay).toEqual(decision);
+        await vi.waitFor(() => expect(executeAction).toHaveBeenCalledTimes(1));
+        expect(fixture.runtime.getPayload().reviewPrActions.pending).toEqual([]);
+        expect(started.started).toBe(true);
+      } finally {
+        getSnapshot.mockRestore();
+        executeAction.mockRestore();
+      }
     });
 
     test("a persisted source baseline and source repository survive a normalize/save round trip, and the retired writable flag does not", async () => {
@@ -4833,6 +4970,16 @@ describe("runtime integration", () => {
     expect(fixture.runtime.getNotifyServerInfo().port).toBeGreaterThan(0);
   });
 
+  test("updateSettings ignores the retired Git shell setting while preserving other Git UI settings", async () => {
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+    await fixture.runtime.updateSettings({ git: { ui: { showAllActions: true, updateStrategy: "merge" } } });
+    const before = fixture.runtime.getPayload().appState.settings.git.ui;
+    await fixture.runtime.updateSettings({ git: { ui: { newView: false } } });
+    expect(fixture.runtime.getPayload().appState.settings.git.ui).toEqual(before);
+    expect(fixture.runtime.getPayload().appState.settings.git.ui).not.toHaveProperty("newView");
+  });
+
   test("STRIDETERM_NOTIFY_URL is injected into session env when notify server is running", async () => {
     const fixture = await createFixture({
       initialState: {
@@ -5118,6 +5265,18 @@ describe("runtime integration", () => {
     expect(projectWorkspaces).toHaveLength(2);
     expect(payload.appState.activeProjectId).toBe(projectWorkspaces[1].id);
     expect(projectWorkspaces[1].cwd).toBe(path.join(projectRoot, ".strideterm", "tree", "feature-x"));
+    expect(fixture.git.auditEntries).toHaveLength(1);
+    expect(fixture.git.auditEntries[0]).toMatchObject({
+      type: "create-worktree",
+      success: true,
+      durationMs: expect.any(Number),
+      workspaceId: "frontend",
+      extra: {
+        rootPath: projectRoot,
+        branch: "feature-x",
+        worktreePath: path.join(projectRoot, ".strideterm", "tree", "feature-x"),
+      },
+    });
   });
 
   async function createWorktreeFixture(execFileTextImpl?: ReturnType<typeof vi.fn>) {
@@ -5225,6 +5384,14 @@ describe("runtime integration", () => {
       const worktreeAdds = execFileText.mock.calls.filter((c) => c[1][0] === "worktree" && c[1][1] === "add");
       expect(worktreeAdds).toHaveLength(1);
       expect(fixture.store.getState().workspaces).toHaveLength(workspacesBefore);
+      expect(fixture.git.auditEntries).toHaveLength(1);
+      expect(fixture.git.auditEntries[0]).toMatchObject({
+        type: "create-worktree",
+        success: false,
+        durationMs: expect.any(Number),
+        workspaceId: "frontend",
+        extra: { rootPath: expect.any(String), branch: "feature-x" },
+      });
       expect(calls).toContainEqual(
         expect.objectContaining({
           level: "warn",
@@ -5432,7 +5599,12 @@ describe("runtime integration", () => {
         activeProfileId: "profile-b",
         activeProjectId: "shared-b",
         profiles: [
-          { id: "default", name: "Default" },
+          {
+            id: "default",
+            name: "Default",
+            lastActiveWorkspaceId: "duplicate-a",
+            lastActiveSessionId: "duplicate-a:panel-a",
+          },
           { id: "profile-b", name: "Profile B" },
         ],
         projects: [
@@ -5661,6 +5833,7 @@ describe("runtime integration", () => {
     fixture.git.actions.length = 0;
 
     await fixture.runtime.gitFetch({ workspaceId: "ws-b" });
+    await vi.waitFor(() => expect(fixture.git.actions.some((a: { kind: string }) => a.kind === "fetch")).toBe(true));
 
     const action = fixture.git.actions.find((a: { kind: string }) => a.kind === "fetch");
     expect(action).toBeDefined();
@@ -7831,6 +8004,177 @@ describe("runtime integration", () => {
     expect(worktree?.notes).toBe("Worktree of Parent");
   });
 
+  test("syncWorktrees removes same-profile duplicate records but keeps one record per profile", async () => {
+    const parentDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-sync-wt-dedupe-"));
+    tempPaths.push(parentDir);
+    const branchDir = path.join(parentDir, ".strideterm", "tree", "feature-x");
+    const fixture = await createFixture({
+      initialState: {
+        profiles: [
+          { id: "default", name: "Default" },
+          { id: "profile-b", name: "Profile B" },
+        ],
+        workspaces: [
+          ...["default", "profile-b"].map((profileId) => ({
+            id: `parent-${profileId}`,
+            name: "Parent",
+            kind: "terminal",
+            profileId,
+            cwd: parentDir,
+            panels: [{ id: `shell-${profileId}`, title: "Shell", command: "", shell: true, startup: "manual" }],
+          })),
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    await fs.mkdir(branchDir, { recursive: true });
+    await fixture.store.mutate((draft: AppState) => {
+      draft.workspaces.push(
+        {
+          id: "duplicate-a",
+          name: "Parent / feature-x",
+          kind: "terminal",
+          profileId: "default",
+          cwd: branchDir,
+          notes: "Worktree of Parent",
+          starred: false,
+          panels: [{ id: "panel-a", title: "Shell", command: "", shell: true, startup: "manual" }],
+        },
+        {
+          id: "duplicate-b",
+          name: "Parent / feature-x",
+          kind: "terminal",
+          profileId: "default",
+          cwd: path.join(parentDir, ".strideterm", "tree", ".", "feature-x"),
+          notes: "Worktree of Parent",
+          starred: true,
+          panels: [{ id: "panel-b", title: "Shell", command: "", shell: true, startup: "manual" }],
+        },
+        {
+          id: "profile-b-worktree",
+          name: "Parent / feature-x",
+          kind: "terminal",
+          profileId: "profile-b",
+          cwd: branchDir,
+          notes: "Worktree of Parent",
+          panels: [{ id: "panel-c", title: "Shell", command: "", shell: true, startup: "manual" }],
+        },
+      );
+      const defaultProfile = draft.profiles.find((profile) => profile.id === "default");
+      if (defaultProfile) {
+        defaultProfile.lastActiveWorkspaceId = "duplicate-a";
+        defaultProfile.lastActiveSessionId = "duplicate-a:panel-a";
+      }
+    });
+    await fixture.runtime.syncWorktrees();
+
+    const worktrees = fixture.runtime
+      .getPayload()
+      .appState.workspaces.filter((workspace) => workspace.cwd === branchDir);
+
+    expect(worktrees.filter((workspace) => workspace.profileId === "default")).toHaveLength(1);
+    expect(worktrees.filter((workspace) => workspace.profileId === "profile-b")).toHaveLength(1);
+    expect(worktrees.find((workspace) => workspace.profileId === "default")?.id).toBe("duplicate-b");
+    expect(worktrees.find((workspace) => workspace.profileId === "default")?.starred).toBe(true);
+    expect(fixture.runtime.getPayload().appState.profiles?.find((profile) => profile.id === "default")).toMatchObject({
+      lastActiveWorkspaceId: "duplicate-b",
+      lastActiveSessionId: "duplicate-b:panel-b",
+    });
+    expect(await fs.stat(branchDir).then((stat) => stat.isDirectory())).toBe(true);
+  });
+
+  test("syncWorktrees defers duplicate removal while a duplicate owns a live terminal", async () => {
+    const parentDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-sync-wt-live-"));
+    tempPaths.push(parentDir);
+    const branchDir = path.join(parentDir, ".strideterm", "tree", "feature-live");
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [
+          {
+            id: "parent",
+            name: "Parent",
+            kind: "terminal",
+            cwd: parentDir,
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "manual" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    await fs.mkdir(branchDir, { recursive: true });
+    await fixture.store.mutate((draft: AppState) => {
+      for (const id of ["duplicate-a", "duplicate-b"]) {
+        draft.workspaces.push({
+          id,
+          name: "Parent / feature-live",
+          kind: "terminal",
+          profileId: "default",
+          cwd: branchDir,
+          notes: "Worktree of Parent",
+          panels: [{ id: `${id}-panel`, title: "Shell", command: "", shell: true, startup: "manual" }],
+        });
+      }
+    });
+    fixture.sessionManager.sessions.set("duplicate-a:duplicate-a-panel", { workspaceId: "duplicate-a" });
+
+    await fixture.runtime.syncWorktrees();
+
+    expect(
+      fixture.runtime.getPayload().appState.workspaces.filter((workspace) => workspace.cwd === branchDir),
+    ).toHaveLength(2);
+    expect(fixture.sessionManager.sessions.has("duplicate-a:duplicate-a-panel")).toBe(true);
+
+    fixture.sessionManager.sessions.clear();
+    await fixture.runtime.syncWorktrees();
+
+    expect(
+      fixture.runtime.getPayload().appState.workspaces.filter((workspace) => workspace.cwd === branchDir),
+    ).toHaveLength(1);
+  });
+
+  test("createWorktree serializes disk discovery until its workspace record is committed", async () => {
+    const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-worktree-race-"));
+    tempPaths.push(projectRoot);
+    const treePath = path.join(projectRoot, ".strideterm", "tree", "feature-race");
+    let signalAddStarted!: () => void;
+    let releaseAdd!: () => void;
+    const addStarted = new Promise<void>((resolve) => (signalAddStarted = resolve));
+    const addGate = new Promise<void>((resolve) => (releaseAdd = resolve));
+    const execFileText = vi.fn(async (_command: string, args: string[]) => {
+      if (args[0] === "worktree" && args[1] === "add") {
+        await fs.mkdir(treePath, { recursive: true });
+        signalAddStarted();
+        await addGate;
+      }
+      return { stdout: "", stderr: "" };
+    });
+    const fixture = await createFixture({
+      execFileTextImpl: execFileText,
+      initialState: {
+        workspaces: [
+          {
+            id: "parent",
+            name: "Parent",
+            kind: "terminal",
+            cwd: projectRoot,
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "manual" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    const creating = fixture.runtime.createWorktree({ projectId: "parent", name: "feature-race" });
+    await addStarted;
+    const syncing = fixture.runtime.syncWorktrees();
+    releaseAdd();
+    const [createdPayload] = await Promise.all([creating, syncing]);
+
+    const matching = fixture.runtime.getPayload().appState.workspaces.filter((workspace) => workspace.cwd === treePath);
+    expect(matching).toHaveLength(1);
+    expect(matching[0].id).toBe(createdPayload.appState.workspaces.find((workspace) => workspace.cwd === treePath)?.id);
+  });
+
   test("saveWorkspace triggers syncTreeDirWatchers — git poll detects new tree entries after save (#41)", async () => {
     // syncTreeDirWatchers is called after saveWorkspace (runtime.ts:4834).
     // This test verifies that after saving a new parent workspace, the gitPoll
@@ -8428,18 +8772,16 @@ describe("runtime integration", () => {
     fixtures.push(fixture);
 
     await fixture.runtime.refreshGitState("backend");
+    const waitForGitOperation = watchOperation(fixture);
     const fetchResult = await fixture.runtime.gitFetch({ projectId: "backend" });
+    await waitForGitOperation(fetchResult.operationId);
     const diffResult = await fixture.runtime.gitDiffPreview({
       projectId: "backend",
       path: "src/app.js",
       scope: "unstaged",
     });
 
-    expect(fetchResult.result).toMatchObject({
-      ok: true,
-      summary: "Fetch completed.",
-    });
-    expect(fetchResult.payload.git.activeWorkspace).toBeTruthy();
+    expect(fetchResult).toMatchObject({ started: true, operationId: expect.any(String), replayed: false });
     expect(fixture.git.actions[0]).toMatchObject({
       kind: "fetch",
       workspaceId: "backend",
@@ -8453,6 +8795,532 @@ describe("runtime integration", () => {
       kind: "diff",
       workspaceId: "backend",
     });
+  });
+
+  test("index and local-tag routes dispatch one manager write with the resolved root", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    const stageFile = vi.fn(async () => ({ ok: true, summary: "Staged." }));
+    const unstageFile = vi.fn(async () => ({ ok: true, summary: "Unstaged." }));
+    const commitStaged = vi.fn(async () => ({ ok: true, summary: "Committed index." }));
+    const createTag = vi.fn(async () => ({ ok: true, summary: "Tag created." }));
+    const deleteTag = vi.fn(async () => ({ ok: true, summary: "Tag deleted." }));
+    Object.assign(fixture.git, { stageFile, unstageFile, commitStaged, createTag, deleteTag });
+
+    await fixture.runtime.gitStageFile({ workspaceId: "ws-a1", rootPath: "/tmp/a1", path: "src/a.ts" });
+    await fixture.runtime.gitUnstageFile({ workspaceId: "ws-a1", rootPath: "/tmp/a1", path: "src/a.ts" });
+    await fixture.runtime.gitCommitStaged({ workspaceId: "ws-a1", rootPath: "/tmp/a1", message: "index only" });
+    await fixture.runtime.gitCreateTag({ workspaceId: "ws-a1", rootPath: "/tmp/a1", tagName: "v1.0.0" });
+    await fixture.runtime.gitDeleteTag({ workspaceId: "ws-a1", rootPath: "/tmp/a1", tagName: "v1.0.0" });
+
+    const workspace = expect.objectContaining({ id: "ws-a1", profileId: "profile-a" });
+    expect(stageFile).toHaveBeenCalledTimes(1);
+    expect(stageFile).toHaveBeenCalledWith(workspace, { path: "src/a.ts", rootPath: "/tmp/a1" });
+    expect(unstageFile).toHaveBeenCalledTimes(1);
+    expect(unstageFile).toHaveBeenCalledWith(workspace, { path: "src/a.ts", rootPath: "/tmp/a1" });
+    expect(commitStaged).toHaveBeenCalledTimes(1);
+    expect(commitStaged).toHaveBeenCalledWith(workspace, { message: "index only", rootPath: "/tmp/a1" });
+    expect(createTag).toHaveBeenCalledTimes(1);
+    expect(createTag).toHaveBeenCalledWith(workspace, { workspaceId: "ws-a1", rootPath: "/tmp/a1", tagName: "v1.0.0" });
+    expect(deleteTag).toHaveBeenCalledTimes(1);
+    expect(deleteTag).toHaveBeenCalledWith(workspace, { workspaceId: "ws-a1", rootPath: "/tmp/a1", tagName: "v1.0.0" });
+  });
+
+  test("local Git mutation routes dispatch one manager write with the resolved root", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    const routes = [
+      ["gitCheckoutBranch", "checkoutBranch", { branch: "feature/a" }],
+      ["gitCreateBranch", "createBranch", { branch: "feature/b", startPoint: "main" }],
+      ["gitDeleteBranch", "deleteBranch", { branch: "feature/old", force: false }],
+      ["gitRenameBranch", "renameBranch", { branch: "feature/a", newName: "feature/b" }],
+      ["gitCherryPick", "cherryPick", { hashes: ["abc123"] }],
+      ["gitSquashCommits", "squashCommits", { hashes: ["abc123", "def456"], message: "Squash" }],
+      ["gitMergeCurrentIntoBase", "mergeCurrentIntoBase", { baseBranch: "main" }],
+      ["gitContinueOperation", "continueOperation", {}],
+      ["gitAbortOperation", "abortOperation", {}],
+      ["gitSkipCommit", "skipCommit", {}],
+      ["gitResolveConflict", "resolveConflict", { filePath: "src/a.ts", mode: "ours" }],
+      ["gitUnresolveConflict", "unresolveConflict", { filePath: "src/a.ts" }],
+      ["gitRemoveWorktree", "removeWorktree", { worktreePath: "/tmp/a1/.strideterm/tree/old", deleteBranch: false }],
+      ["gitStash", "stash", { message: "save work", paths: ["src/a.ts"] }],
+      ["gitStashPop", "stashPop", { ref: "stash@{0}" }],
+      ["gitStashApply", "stashApply", { ref: "stash@{0}" }],
+      ["gitStashDrop", "stashDrop", { ref: "stash@{0}" }],
+      ["gitStashBranch", "stashBranch", { ref: "stash@{0}", branchName: "from-stash", switchImmediately: true }],
+      ["gitStashImport", "stashImportPatch", { patch: "diff --git a/a b/a", message: "import" }],
+      ["gitCommitAll", "commitAll", { message: "Commit all", paths: ["src/a.ts"] }],
+    ] as const;
+    const managerWrites = new Map<string, ReturnType<typeof vi.fn>>();
+    for (const [, managerMethod] of routes) {
+      if (managerWrites.has(managerMethod)) continue;
+      const write = vi.fn(async () => ({ ok: true, summary: "Done." }));
+      managerWrites.set(managerMethod, write);
+      Object.assign(fixture.git, { [managerMethod]: write });
+    }
+
+    const workspace = expect.objectContaining({ id: "ws-a1", profileId: "profile-a" });
+    for (const [route, managerMethod, operationPayload] of routes) {
+      await fixture.runtime[route]({ workspaceId: "ws-a1", rootPath: "/tmp/a1", ...operationPayload });
+      const write = managerWrites.get(managerMethod)!;
+      expect(write, route).toHaveBeenCalledTimes(1);
+      expect(write, route).toHaveBeenCalledWith(workspace, expect.objectContaining({ rootPath: "/tmp/a1" }));
+      write.mockClear();
+    }
+  });
+
+  test.each([
+    ["gitMergeIntoCurrent", "mergeIntoCurrent"],
+    ["gitRebaseOnto", "rebaseOnto"],
+  ] as const)(
+    "long route %s dispatches one merge/rebase write with the resolved root",
+    async (route, managerMethod) => {
+      const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+      fixtures.push(fixture);
+      const write = vi.fn(async () => ({ ok: true, summary: "Integrated." }));
+      Object.assign(fixture.git, { [managerMethod]: write });
+      const waitForGitOperation = watchOperation(fixture);
+
+      const started = await fixture.runtime[route]({ workspaceId: "ws-a1", rootPath: "/tmp/a1", baseBranch: "main" });
+      expect(started).toMatchObject({ started: true, operationId: expect.any(String) });
+      await expect(waitForGitOperation(started.operationId)).resolves.toMatchObject({
+        kind: route === "gitMergeIntoCurrent" ? "git.merge" : "git.rebase",
+        workspaceId: "ws-a1",
+        profileId: "profile-a",
+        rootPath: "/tmp/a1",
+      });
+
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(write).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "ws-a1", profileId: "profile-a" }),
+        expect.objectContaining({ baseBranch: "main", rootPath: "/tmp/a1" }),
+      );
+    },
+  );
+
+  test("rejects a caller-supplied Git root outside a single-repository workspace before accepting fetch", async () => {
+    const fixture = await createFixture({
+      initialState: {
+        activeProjectId: "backend",
+        projects: [
+          {
+            id: "backend",
+            name: "Backend",
+            kind: "terminal",
+            cwd: "/tmp/backend",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", startup: "default" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    await expect(fixture.runtime.gitFetch({ projectId: "backend", rootPath: "/tmp/other-repository" })).rejects.toThrow(
+      /Root path not found in workspace gitRoots/,
+    );
+    expect(fixture.git.actions).toEqual([]);
+  });
+
+  test("long Git fetch accepts promptly and deduplicates an idempotent retry", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    let releaseFetch!: () => void;
+    const gate = new Promise<void>((resolve) => (releaseFetch = resolve));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fetch = vi.fn(async () => {
+      await gate;
+      return { ok: true, summary: "Fetch completed." };
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).fetch = fetch;
+    const waitForGitOperation = watchOperation(fixture);
+    const first = await fixture.runtime.gitFetch({ workspaceId: "ws-a1", idempotencyKey: "fetch-once" });
+    expect(first).toMatchObject({ started: true, replayed: false });
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    const replay = await fixture.runtime.gitFetch({ workspaceId: "ws-a1", idempotencyKey: "fetch-once" });
+    expect(replay).toMatchObject({ operationId: first.operationId, replayed: true });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    releaseFetch();
+    await expect(waitForGitOperation(first.operationId)).resolves.toMatchObject({
+      kind: "git.fetch",
+      profileId: "profile-a",
+      workspaceId: "ws-a1",
+      rootPath: "",
+    });
+  });
+
+  test("long Git fetch deduplicates concurrent requests with different idempotency keys", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    let releaseFetch!: () => void;
+    const gate = new Promise<void>((resolve) => (releaseFetch = resolve));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fetch = vi.fn(async () => {
+      await gate;
+      return { ok: true, summary: "Fetch completed." };
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).fetch = fetch;
+    const waitForGitOperation = watchOperation(fixture);
+
+    const first = await fixture.runtime.gitFetch({ workspaceId: "ws-a1", idempotencyKey: "click-one" });
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    const second = await fixture.runtime.gitFetch({ workspaceId: "ws-a1", idempotencyKey: "click-two" });
+
+    expect(second).toEqual({ started: true, operationId: first.operationId, replayed: true });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    releaseFetch();
+    await waitForGitOperation(first.operationId);
+  });
+
+  test("long Git rebase accepts promptly and reports its outcome after the rebase settles", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    let releaseRebase!: () => void;
+    const gate = new Promise<void>((resolve) => (releaseRebase = resolve));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rebase = vi.fn(async () => {
+      await gate;
+      return { ok: true, summary: "Rebase completed.", warnings: [] };
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).rebaseOnto = rebase;
+    const waitForGitOperation = watchOperation(fixture);
+
+    const started = await fixture.runtime.gitRebaseOnto({ workspaceId: "ws-a1", baseBranch: "origin/main" });
+    expect(started).toMatchObject({ started: true, replayed: false, operationId: expect.any(String) });
+    await vi.waitFor(() => expect(rebase).toHaveBeenCalledTimes(1));
+    const replay = await fixture.runtime.gitRebaseOnto({ workspaceId: "ws-a1", baseBranch: "origin/main" });
+    expect(replay).toEqual({ started: true, operationId: started.operationId, replayed: true });
+    releaseRebase();
+
+    await expect(waitForGitOperation(started.operationId)).resolves.toMatchObject({
+      kind: "git.rebase",
+      profileId: "profile-a",
+      workspaceId: "ws-a1",
+      result: { ok: true, summary: "Rebase completed." },
+    });
+  });
+
+  test("remote tag push runs as a deduplicated long Git operation", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    let releasePush!: () => void;
+    const gate = new Promise<void>((resolve) => (releasePush = resolve));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pushTag = vi.fn(async () => {
+      await gate;
+      return { ok: true, summary: "Tag pushed.", warnings: [] };
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).pushTag = pushTag;
+    const waitForGitOperation = watchOperation(fixture);
+
+    const started = await fixture.runtime.gitPushTag({ workspaceId: "ws-a1", tagName: "v1.2.3" });
+    await vi.waitFor(() => expect(pushTag).toHaveBeenCalledTimes(1));
+    const replay = await fixture.runtime.gitPushTag({ workspaceId: "ws-a1", tagName: "v1.2.3" });
+    expect(replay).toEqual({ started: true, operationId: started.operationId, replayed: true });
+    releasePush();
+    await expect(waitForGitOperation(started.operationId)).resolves.toMatchObject({
+      kind: "git.push-tag",
+      profileId: "profile-a",
+      workspaceId: "ws-a1",
+      result: { ok: true, summary: "Tag pushed." },
+    });
+  });
+
+  test("push-all-tags and remote-tag deletion dispatch once with the resolved repository root", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    const pushAllTags = vi.fn(async () => ({ ok: true, summary: "Tags pushed.", warnings: [] }));
+    const deleteRemoteTag = vi.fn(async () => ({ ok: true, summary: "Remote tag deleted.", warnings: [] }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    Object.assign(fixture.git as any, { pushAllTags, deleteRemoteTag });
+    const waitForGitOperation = watchOperation(fixture);
+
+    const pushed = await fixture.runtime.gitPushAllTags({ workspaceId: "ws-a1", rootPath: "/tmp/a1" });
+    expect(pushed).toMatchObject({ started: true, operationId: expect.any(String) });
+    await expect(waitForGitOperation(pushed.operationId)).resolves.toMatchObject({
+      kind: "git.push-all-tags",
+      workspaceId: "ws-a1",
+      rootPath: "/tmp/a1",
+      result: { ok: true, summary: "Tags pushed." },
+    });
+    expect(pushAllTags).toHaveBeenCalledTimes(1);
+    expect(pushAllTags).toHaveBeenCalledWith(expect.objectContaining({ id: "ws-a1" }), {
+      connection: null,
+      rootPath: "/tmp/a1",
+    });
+
+    const deleted = await fixture.runtime.gitDeleteRemoteTag({
+      workspaceId: "ws-a1",
+      rootPath: "/tmp/a1",
+      tagName: "v1.2.3",
+      remote: "upstream",
+    });
+    expect(deleted).toMatchObject({ started: true, operationId: expect.any(String) });
+    await expect(waitForGitOperation(deleted.operationId)).resolves.toMatchObject({
+      kind: "git.delete-remote-tag",
+      workspaceId: "ws-a1",
+      rootPath: "/tmp/a1",
+      result: { ok: true, summary: "Remote tag deleted." },
+    });
+    expect(deleteRemoteTag).toHaveBeenCalledTimes(1);
+    expect(deleteRemoteTag).toHaveBeenCalledWith(expect.objectContaining({ id: "ws-a1" }), {
+      workspaceId: "ws-a1",
+      tagName: "v1.2.3",
+      remote: "upstream",
+      connection: null,
+      rootPath: "/tmp/a1",
+    });
+  });
+
+  test("force push and remote branch deletion run as deduplicated long Git operations", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const forcePush = vi.fn(async () => {
+      await gate;
+      return { ok: true, summary: "Force push completed.", warnings: [] };
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).forcePushWithLease = forcePush;
+    const waitForGitOperation = watchOperation(fixture);
+
+    const started = await fixture.runtime.gitForcePushWithLease({ workspaceId: "ws-a1" });
+    await vi.waitFor(() => expect(forcePush).toHaveBeenCalledTimes(1));
+    const replay = await fixture.runtime.gitForcePushWithLease({ workspaceId: "ws-a1" });
+    expect(replay).toEqual({ started: true, operationId: started.operationId, replayed: true });
+    release();
+    await expect(waitForGitOperation(started.operationId)).resolves.toMatchObject({
+      kind: "git.force-push",
+      profileId: "profile-a",
+      workspaceId: "ws-a1",
+      result: { ok: true, summary: "Force push completed." },
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const deleteRemoteBranch = vi.fn(async () => ({ ok: true, summary: "Remote branch deleted.", warnings: [] }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).deleteRemoteBranch = deleteRemoteBranch;
+    const deleted = await fixture.runtime.gitDeleteRemoteBranch({
+      workspaceId: "ws-a1",
+      branch: "feature/topic",
+      remote: "upstream",
+    });
+    await vi.waitFor(() => expect(deleteRemoteBranch).toHaveBeenCalledTimes(1));
+    expect(deleted).toMatchObject({ started: true, operationId: expect.any(String) });
+    await expect(waitForGitOperation(deleted.operationId)).resolves.toMatchObject({
+      kind: "git.delete-remote-branch",
+      profileId: "profile-a",
+      workspaceId: "ws-a1",
+      result: { ok: true, summary: "Remote branch deleted." },
+    });
+    expect(deleteRemoteBranch).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ branch: "feature/topic", remote: "upstream" }),
+    );
+  });
+
+  test("fetch-first Git rebase runs fetch and rebase inside one accepted operation", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    let releaseFetch!: () => void;
+    let releaseRebase!: () => void;
+    const fetchGate = new Promise<void>((resolve) => (releaseFetch = resolve));
+    const rebaseGate = new Promise<void>((resolve) => (releaseRebase = resolve));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fetch = vi.fn(async () => {
+      await fetchGate;
+      return { ok: true, summary: "Fetch completed.", warnings: [] };
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rebase = vi.fn(async () => {
+      await rebaseGate;
+      return { ok: true, summary: "Rebase completed.", warnings: [] };
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).fetch = fetch;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).rebaseOnto = rebase;
+    const waitForGitOperation = watchOperation(fixture);
+
+    const started = await fixture.runtime.gitRebaseOnto({
+      workspaceId: "ws-a1",
+      baseBranch: "origin/main",
+      fetchFirst: true,
+    });
+    expect(started).toMatchObject({ started: true, replayed: false, operationId: expect.any(String) });
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    expect(rebase).not.toHaveBeenCalled();
+    releaseFetch();
+    await vi.waitFor(() => expect(rebase).toHaveBeenCalledTimes(1));
+    releaseRebase();
+
+    await expect(waitForGitOperation(started.operationId)).resolves.toMatchObject({
+      kind: "git.rebase",
+      profileId: "profile-a",
+      workspaceId: "ws-a1",
+      result: { ok: true, summary: "Rebase completed." },
+    });
+  });
+
+  test("fetch-first Git rebase reports fetch failure without starting the rebase", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fetch = vi.fn(async () => ({ ok: false, summary: "Fetch failed.", warnings: ["Authentication failed."] }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rebase = vi.fn();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).fetch = fetch;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).rebaseOnto = rebase;
+    const waitForGitOperation = watchOperation(fixture);
+
+    const started = await fixture.runtime.gitRebaseOnto({
+      workspaceId: "ws-a1",
+      baseBranch: "origin/main",
+      fetchFirst: true,
+    });
+    const outcome = await waitForGitOperation(started.operationId);
+
+    expect(outcome).toMatchObject({ kind: "git.rebase", profileId: "profile-a" });
+    expect("error" in outcome && outcome.error.message).toContain("Fetch failed.");
+    expect("error" in outcome && outcome.error.message).toContain("Authentication failed.");
+    expect(rebase).not.toHaveBeenCalled();
+  });
+
+  test("fetch-first Git rebase retains fetch warnings when the rebase is blocked", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fetch = vi.fn(async () => ({
+      ok: true,
+      summary: "Fetch completed.",
+      warnings: ["Fetch used a fallback ref."],
+    }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rebase = vi.fn(async () => ({
+      ok: false,
+      summary: "Rebase blocked by local changes.",
+      warnings: ["Commit or stash the local changes first."],
+    }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).fetch = fetch;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).rebaseOnto = rebase;
+    const waitForGitOperation = watchOperation(fixture);
+
+    const started = await fixture.runtime.gitRebaseOnto({
+      workspaceId: "ws-a1",
+      baseBranch: "origin/main",
+      fetchFirst: true,
+    });
+    const outcome = await waitForGitOperation(started.operationId);
+
+    expect(outcome).toMatchObject({ kind: "git.rebase", profileId: "profile-a" });
+    expect("error" in outcome && outcome.error).toMatchObject({
+      code: "git_operation_failed",
+      classification: "partial",
+      message: expect.stringContaining("Rebase blocked by local changes."),
+      warnings: ["Fetch used a fallback ref.", "Commit or stash the local changes first."],
+    });
+  });
+
+  test("classifies a rejected Git merge as blocked instead of failed", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).mergeIntoCurrent = vi.fn(async () => ({
+      ok: false,
+      summary: "Merge blocked by local changes.",
+    }));
+    const waitForGitOperation = watchOperation(fixture);
+
+    const started = await fixture.runtime.gitMergeIntoCurrent({
+      workspaceId: "ws-a1",
+      baseBranch: "feature",
+    });
+    const outcome = await waitForGitOperation(started.operationId);
+
+    expect("error" in outcome && outcome.error).toMatchObject({
+      code: "git_operation_failed",
+      classification: "blocked",
+      message: expect.stringContaining("Merge blocked by local changes."),
+    });
+  });
+
+  test("long Git fetches in separate profiles have isolated operations and outcomes", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    let releaseFetch!: () => void;
+    const gate = new Promise<void>((resolve) => (releaseFetch = resolve));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fetch = vi.fn(async () => {
+      await gate;
+      return { ok: true, summary: "Fetch completed." };
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).fetch = fetch;
+    const waitForGitOperation = watchOperation(fixture);
+
+    const profileA = await fixture.runtime.gitFetch({ workspaceId: "ws-a1", idempotencyKey: "same-key" });
+    const profileB = await fixture.runtime.gitFetch({ workspaceId: "ws-b1", idempotencyKey: "same-key" });
+
+    expect(profileA.operationId).not.toBe(profileB.operationId);
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    releaseFetch();
+    await expect(
+      Promise.all([waitForGitOperation(profileA.operationId), waitForGitOperation(profileB.operationId)]),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "git.fetch", profileId: "profile-a", workspaceId: "ws-a1" }),
+        expect.objectContaining({ kind: "git.fetch", profileId: "profile-b", workspaceId: "ws-b1" }),
+      ]),
+    );
+  });
+
+  test.each(["pull", "push"] as const)("long Git %s operations isolate profile outcomes", async (action) => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    let releaseA!: () => void;
+    let releaseB!: () => void;
+    const gateA = new Promise<void>((resolve) => (releaseA = resolve));
+    const gateB = new Promise<void>((resolve) => (releaseB = resolve));
+    const gitAction = vi
+      .fn()
+      .mockImplementationOnce(async () => {
+        await gateA;
+        return { result: { ok: true, summary: `${action} profile A completed.` } };
+      })
+      .mockImplementationOnce(async () => {
+        await gateB;
+        return { result: { ok: true, summary: `${action} profile B completed.` } };
+      });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any)[action] = gitAction;
+    const waitForGitOperation = watchOperation(fixture);
+    const start = action === "pull" ? fixture.runtime.gitPull : fixture.runtime.gitPush;
+
+    const profileA = await start({ workspaceId: "ws-a1", idempotencyKey: "same-key" });
+    const profileB = await start({ workspaceId: "ws-b1", idempotencyKey: "same-key" });
+
+    expect(profileA.operationId).not.toBe(profileB.operationId);
+    await vi.waitFor(() => expect(gitAction).toHaveBeenCalledTimes(2));
+    releaseA();
+    releaseB();
+    await expect(
+      Promise.all([waitForGitOperation(profileA.operationId), waitForGitOperation(profileB.operationId)]),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: `git.${action}`, profileId: "profile-a", workspaceId: "ws-a1" }),
+        expect.objectContaining({ kind: `git.${action}`, profileId: "profile-b", workspaceId: "ws-b1" }),
+      ]),
+    );
   });
 
   test("saves and deletes profiles while preserving a fallback default profile", async () => {
@@ -9147,10 +10015,10 @@ describe("runtime integration", () => {
         const manager = fixture.runtime._mobileManagerForTest() as any;
         const ownDeviceId = manager.ownDeviceId as string;
 
-        const qr = await fixture.runtime.createMobilePairingInvitation({
+        const qr = (await fixture.runtime.createMobilePairingInvitation({
           profileAllowlist: ["default"],
           capabilities: ["task.control"],
-        });
+        })) as import("./mobile/mobile-pairing.js").QrPairingPayload;
         const deviceKeyPair = generateX25519KeyPair();
         const devicePublicKeyBase64 = exportRawPublicKey(deviceKeyPair.publicKey).toString("base64");
         const deviceSessionKey = deriveSessionKey(
@@ -9585,10 +10453,10 @@ describe("runtime integration", () => {
       fixtures.push(fixture);
       await fixture.runtime.setMobileEnabled(true);
 
-      const invitation = await fixture.runtime.createMobilePairingInvitation({
+      const invitation = (await fixture.runtime.createMobilePairingInvitation({
         profileAllowlist: ["default"],
         capabilities: ["task.control"],
-      });
+      })) as import("./mobile/mobile-pairing.js").QrPairingPayload;
       expect(invitation).toMatchObject({
         protocolVersion: PROTOCOL_VERSION,
         pairingId: expect.any(String),
@@ -9616,10 +10484,10 @@ describe("runtime integration", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test-only reach into a private field, mirrors this file's existing (telegramManager as any).forwardAlert pattern
       const ownDeviceId = (manager as any).ownDeviceId as string;
 
-      const qr = await fixture.runtime.createMobilePairingInvitation({
+      const qr = (await fixture.runtime.createMobilePairingInvitation({
         profileAllowlist: ["default"],
         capabilities: ["task.control"],
-      });
+      })) as import("./mobile/mobile-pairing.js").QrPairingPayload;
       // A claim built exactly as a phone builds one (review 3 §P0.1): the pairingId it consumed, the
       // server-computed grant commitment over the ticked grants, and a real key proof derived from the
       // QR public key and the QR challenge. A stub proof would be refused here — which is the point.
@@ -13012,7 +13880,7 @@ describe("headless pull request review start", () => {
       entry.launch?.args?.join(" ").includes("Perform a basic code review"),
     );
     expect(reviewLaunches).toHaveLength(1);
-    expect(reviewLaunches[0].launch.args.join(" ")).toContain("--review-draft-only");
+    expect(reviewLaunches[0].launch?.args?.join(" ")).toContain("--review-draft-only");
     expect(fixture.store.getState().workspaces.find((item) => item.id === "isolated-review")?.profileId).toBe(
       "profile-a",
     );
@@ -14342,15 +15210,102 @@ describe("workspace lastWorkedAt — the work allowlist", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (fixture.git as any).checkoutBranch = vi.fn(async () => ({ ok: false, summary: "Invalid branch name." }));
 
+    const waitForGitOperation = watchOperation(fixture);
     const pushed = await fixture.runtime.gitPush({ workspaceId: "ws-a1" });
+    await waitForGitOperation(pushed.operationId);
     const checked = await fixture.runtime.gitCheckoutBranch({ workspaceId: "ws-a1", branch: "-oops" });
     await fixture.store.flush();
 
-    // The refusal still reaches the caller verbatim.
-    expect(pushed.result.ok).toBe(false);
+    // The long action is accepted immediately; its structured refusal remains
+    // available through the generic operation outcome.
+    expect(pushed).toMatchObject({ started: true, operationId: expect.any(String) });
     expect(checked.result.ok).toBe(false);
     expect(workedAt(fixture, "ws-a1")).toBeUndefined();
   });
+
+  test("long Git failures retain warnings, hook diagnostics, and conflict context", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).pull = vi.fn(async () => ({
+      ok: false,
+      summary: "Pull stopped because Git reported conflicts or requires manual resolution.",
+      warnings: ["Saved local changes were restored."],
+      conflicts: ["src/conflicted.ts"],
+      operationState: { kind: "merge", inProgress: true, conflicts: ["src/conflicted.ts"] },
+      rawOutput: "pre-pull check: generated client is out of date",
+    }));
+    const waitForGitOperation = watchOperation(fixture);
+
+    const started = await fixture.runtime.gitPull({ workspaceId: "ws-a1" });
+    const outcome = await waitForGitOperation(started.operationId);
+
+    expect(outcome).toMatchObject({
+      kind: "git.pull",
+      profileId: "profile-a",
+      workspaceId: "ws-a1",
+      rootPath: "",
+    });
+    expect("error" in outcome).toBe(true);
+    if ("error" in outcome) {
+      expect(outcome.error).toMatchObject({
+        code: "git_operation_failed",
+        warnings: ["Saved local changes were restored."],
+        conflicts: ["src/conflicted.ts"],
+        rawOutput: "pre-pull check: generated client is out of date",
+      });
+      expect(outcome.error.message).toContain("pre-pull check: generated client is out of date");
+      expect(outcome.error.message).toContain("Saved local changes were restored.");
+      expect(outcome.error.message).toContain("src/conflicted.ts");
+      expect(outcome.error.message).toContain("manual resolution");
+    }
+  });
+
+  test.each([
+    ["fetch", "gitFetch", "fetch", {}],
+    ["push", "gitPush", "push", {}],
+    ["force push", "gitForcePushWithLease", "forcePushWithLease", {}],
+    ["remote branch deletion", "gitDeleteRemoteBranch", "deleteRemoteBranch", { branch: "feature/topic" }],
+    ["tag push", "gitPushTag", "pushTag", { tagName: "v1.2.3" }],
+    ["push all tags", "gitPushAllTags", "pushAllTags", {}],
+    ["remote tag deletion", "gitDeleteRemoteTag", "deleteRemoteTag", { tagName: "v1.2.3" }],
+    ["merge", "gitMergeIntoCurrent", "mergeIntoCurrent", { baseBranch: "origin/main" }],
+    ["rebase", "gitRebaseOnto", "rebaseOnto", { baseBranch: "origin/main" }],
+  ] as const)(
+    "preserves structured diagnostics for long Git %s failures",
+    async (_label, runtimeMethod, gitMethod, input) => {
+      const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+      fixtures.push(fixture);
+      const failedAction = vi.fn(async () => ({
+        ok: false,
+        summary: "Remote operation was rejected.",
+        warnings: ["The pre-operation check failed."],
+        conflicts: ["src/conflicted.ts"],
+        operationState: { kind: "merge", inProgress: true, conflicts: ["src/conflicted.ts"] },
+        rawOutput: "hook: generated code is stale",
+      }));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (fixture.git as any)[gitMethod] = failedAction;
+      const waitForGitOperation = watchOperation(fixture);
+
+      const started = await fixture.runtime[runtimeMethod]({ workspaceId: "ws-a1", ...input });
+      const outcome = await waitForGitOperation(started.operationId);
+
+      expect(failedAction).toHaveBeenCalledTimes(1);
+      expect("error" in outcome).toBe(true);
+      if ("error" in outcome) {
+        expect(outcome.error).toMatchObject({
+          code: "git_operation_failed",
+          warnings: ["The pre-operation check failed."],
+          conflicts: ["src/conflicted.ts"],
+          rawOutput: "hook: generated code is stale",
+        });
+        expect(outcome.error.message).toContain("Remote operation was rejected.");
+        expect(outcome.error.message).toContain("src/conflicted.ts");
+        expect(outcome.error.message).toContain("generated code is stale");
+      }
+    },
+  );
 
   test("a successful git mutation stamps the persisted state AND the returned payload", async () => {
     // V3 review, §4 P2. `runGitWorkspaceAction` built the response payload
@@ -14428,7 +15383,11 @@ describe("workspace lastWorkedAt — the work allowlist", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (fixture.git as any).push = vi.fn(() => Promise.reject(new Error("remote rejected")));
 
-    await expect(fixture.runtime.gitPush({ workspaceId: "ws-a1" })).rejects.toThrow();
+    const waitForGitOperation = watchOperation(fixture);
+    const push = await fixture.runtime.gitPush({ workspaceId: "ws-a1" });
+    expect(push).toMatchObject({ started: true, operationId: expect.any(String) });
+    const outcome = await waitForGitOperation(push.operationId);
+    expect(outcome).toHaveProperty("error");
     await fixture.store.flush();
 
     expect(workedAt(fixture, "ws-a1")).toBeUndefined();

@@ -74,6 +74,26 @@ describe("logger secret redaction", () => {
     expect(redact("http://api/?access_token=abc")).not.toContain("=abc");
   });
 
+  test("URL userinfo is redacted while credential-free SSH remotes remain intact", () => {
+    const password = "pa(ss),word!$&'()*+;=";
+    const passwordUrl = redact(`push failed for https://user:${password}@host.example/repo.git`);
+    expect(passwordUrl).not.toContain(password);
+    expect(passwordUrl).toContain("https://[REDACTED]@host.example/repo.git");
+
+    const jsonError = redact(
+      JSON.stringify({ error: `request failed for https://user:${password}@host.example/repo.git` }),
+    );
+    expect(jsonError).not.toContain(password);
+    expect(jsonError).toContain("https://[REDACTED]@host.example/repo.git");
+
+    const usernameUrl = redact("push failed for https://username-secret@host.example/repo.git");
+    expect(usernameUrl).not.toContain("username-secret");
+    expect(usernameUrl).toContain("https://[REDACTED]@host.example/repo.git");
+
+    const sshRemote = "git@github.com:owner/repo.git";
+    expect(redact(sshRemote)).toBe(sshRemote);
+  });
+
   test("JSON-style secret fields are redacted", () => {
     const cases = [
       '{"token":"xyz123abc"}',

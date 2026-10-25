@@ -134,6 +134,8 @@ function callableReason(functionName: string, message: unknown): string | null {
   }
   if (!message.startsWith(prefix)) return null;
   const reason = message.slice(prefix.length);
+  // `unknown-capability` and `unknown-field` mean the deployed callable is older than this desktop.
+  // Without them that refusal reached the user as a bare INVALID_ARGUMENT and "Please try again".
   switch (reason) {
     case "entitlement-required":
     case "daily-limit-reached":
@@ -141,6 +143,8 @@ function callableReason(functionName: string, message: unknown): string | null {
     case "too-many-active":
     case "fingerprint-mismatch":
     case "malformed":
+    case "unknown-capability":
+    case "unknown-field":
       return reason;
     default:
       return null;

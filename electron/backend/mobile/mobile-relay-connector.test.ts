@@ -12,6 +12,7 @@ import http from "node:http";
 import net from "node:net";
 import zlib from "node:zlib";
 import { createPublicKey, generateKeyPairSync, randomBytes, sign, verify } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 
 import {
@@ -2119,7 +2120,10 @@ describe("relay end-to-end encryption", () => {
       const os = await import("node:os");
       const staticRoot = await fsp.mkdtemp(nodePath.join(os.tmpdir(), "strideterm-relay-dist-"));
       const ttf = await fsp.readFile(
-        nodePath.join(process.cwd(), "node_modules/monaco-editor/esm/vs/base/browser/ui/codicons/codicon/codicon.ttf"),
+        nodePath.resolve(
+          nodePath.dirname(fileURLToPath(import.meta.resolve("monaco-editor"))),
+          "../../esm/vs/base/browser/ui/codicons/codicon/codicon.ttf",
+        ),
       );
       // WOFF2 is Brotli inside: incompressible bytes stand in for it faithfully.
       const woff2 = Buffer.concat([Buffer.from("wOF2"), randomBytes(16 * 1024)]);

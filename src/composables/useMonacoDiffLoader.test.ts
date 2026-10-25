@@ -86,6 +86,20 @@ describe("useMonacoDiffLoader", () => {
     expect(loading.value).toBe(false);
   });
 
+  test("clear invalidates an in-flight result when its repository identity changes", async () => {
+    const pending = deferred<{ marker: string }>();
+    const { payload, loading, load, clear } = useMonacoDiffLoader((_hash: string, _path: string) => pending.promise);
+    const request = load("same-commit", "same-file");
+    expect(loading.value).toBe(true);
+
+    clear();
+    pending.resolve({ marker: "old-root" });
+    await request;
+
+    expect(payload.value).toBeNull();
+    expect(loading.value).toBe(false);
+  });
+
   test("seq-guard: a stale rejection after a newer call does not overwrite the newer payload", async () => {
     const first = deferred<never>();
     const second = deferred<{ marker: string }>();

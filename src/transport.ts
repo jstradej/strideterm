@@ -8,7 +8,11 @@ import type {
   GitPushProgressPayload,
 } from "../electron/shared/ipc-bridge.js";
 import type { RemoteStateV2, RecoveryResult } from "../electron/shared/types/state.js";
-import type { AzureClosedPrCleanupStarted, ReviewGitStarted } from "../electron/shared/types/ipc-results.js";
+import type {
+  AzureClosedPrCleanupStarted,
+  ReviewGitStarted,
+  ReviewPrActionConfirmationResult,
+} from "../electron/shared/types/ipc-results.js";
 import {
   REVIEW_GIT_OPERATION_CHANNEL,
   reviewGitOperationEventSchema,
@@ -2332,6 +2336,8 @@ export function createRemoteTransport(): Transport {
       }) as Promise<AzureClosedPrCleanupStarted>,
     startReviewGitOperation: (payload: ReviewGitStart) =>
       fetchJson("/api/review-git/start", payload) as Promise<ReviewGitStarted>,
+    confirmReviewPrAction: (payload: { proposalId: string; approved: boolean }) =>
+      fetchJson("/api/review-pr-action/confirm", payload) as Promise<ReviewPrActionConfirmationResult>,
     startPullRequestReview: (payload: StartPullRequestReviewInput) =>
       fetchJson(
         "/api/review/start",
@@ -2423,6 +2429,10 @@ export function createRemoteTransport(): Transport {
     gitMergeCurrentIntoBase: (payload) => fetchJson("/api/git/merge-into-base", payload),
     gitRemoveWorktree: (payload) => fetchJson("/api/git/remove-worktree", payload),
     gitCommitAll: (payload) => fetchJson("/api/git/commit-all", payload),
+    gitStageFile: (payload) => fetchJson("/api/git/stage-file", payload),
+    gitStageHunk: (payload) => fetchJson("/api/git/stage-hunk", payload),
+    gitUnstageFile: (payload) => fetchJson("/api/git/unstage-file", payload),
+    gitCommitStaged: (payload) => fetchJson("/api/git/commit-staged", payload),
     gitStash: (payload) => fetchJson("/api/git/stash", payload),
     gitStashPop: (payload) => fetchJson("/api/git/stash-pop", payload),
     gitListStashes: (payload) => fetchJson("/api/git/stash-list", payload),

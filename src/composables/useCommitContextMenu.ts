@@ -10,6 +10,8 @@ export interface CommitContextMenuCommit {
   shortHash: string;
   subject: string;
   parents: string[];
+  author?: string;
+  relativeDate?: string;
 }
 
 export interface CtxMenuItem {
@@ -347,14 +349,22 @@ export function useCommitContextMenu<TCommit extends CommitContextMenuCommit>(
           },
         });
         return;
-      case "newBranch":
+      case "newBranch": {
+        const shortHash = entry.shortHash || shortHashOf(entry.hash);
+        const subject = String(entry.subject || "").trim();
+        const author = String(entry.author || "").trim();
+        const relativeDate = String(entry.relativeDate || "").trim();
         appStore.openDialog("TextInputDialog", {
           eyebrow: "Git",
-          title: `New branch at ${entry.shortHash || shortHashOf(entry.hash)}`,
+          title: "Create branch",
           label: "Branch name",
           value: "",
           placeholder: "feature/my-branch",
           submitLabel: "Create",
+          context: {
+            summary: subject || `Commit ${shortHash}`,
+            detail: [subject ? `Commit ${shortHash}` : "", author, relativeDate].filter(Boolean).join(" · "),
+          },
           onCancel: () => appStore.closeDialog(),
           onSubmit: async (name: string) => {
             appStore.closeDialog();
@@ -365,6 +375,7 @@ export function useCommitContextMenu<TCommit extends CommitContextMenuCommit>(
           },
         });
         return;
+      }
       case "newTag":
         appStore.openDialog("TextInputDialog", {
           eyebrow: "Git",

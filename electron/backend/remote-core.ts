@@ -705,6 +705,11 @@ export function buildRemoteCore(
         matchesProfile(run, scope),
       ) as RemoteStateV2["reviewGit"]["lastRuns"],
     },
+    reviewPrActions: {
+      pending: ((composed.reviewPrActions?.pending || []) as AnyRecord[]).filter((proposal) =>
+        matchesProfile(proposal, scope),
+      ) as RemoteStateV2["reviewPrActions"]["pending"],
+    },
     plugins: composed.plugins || [],
     environment: composed.environment || {},
     remoteAccess: reduceRemoteAccess(composed.remoteAccess),
@@ -764,6 +769,7 @@ export const STATE_PAYLOAD_KEYS: ReadonlySet<string> = new Set([
   "azureClosedPrCleanup",
   "operations",
   "reviewGit",
+  "reviewPrActions",
   "secureStorage",
   "remoteClient",
 ]);

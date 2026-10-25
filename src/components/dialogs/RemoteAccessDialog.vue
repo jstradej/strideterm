@@ -318,6 +318,11 @@
 
       <!-- Footer: access token -->
       <div class="remote-access__footer">
+        <div v-if="secureStorageMissing" class="remote-access__secure-warning" role="alert">
+          <strong>Credentials are stored without OS encryption.</strong> This computer has no encrypted credential
+          storage, so the remote access token and saved provider tokens are kept base64-encoded in the credentials file.
+          Anyone able to read that file can use them.
+        </div>
         <label class="remote-access__field">
           <span>Access token</span>
           <span class="remote-field">
@@ -356,6 +361,10 @@ const emit = defineEmits<{ close: [] }>();
 
 const api = inject<Transport>(apiKey);
 const store = useAppStore();
+const secureStorageMissing = computed(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  () => (store.payload as any)?.secureStorage?.available === false,
+);
 const accountStore = useAccountStore();
 const isRemote = api?.isRemote || false;
 
@@ -460,6 +469,16 @@ function saveCustomUrl(): void {
 </script>
 
 <style scoped>
+.remote-access__secure-warning {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid #d97706;
+  border-radius: 6px;
+  background: rgba(217, 119, 6, 0.12);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
 .button-spinner {
   display: inline-block;
   width: 12px;

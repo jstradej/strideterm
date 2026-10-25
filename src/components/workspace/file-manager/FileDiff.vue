@@ -86,7 +86,12 @@
           </button>
         </div>
 
-        <MonacoDiffPanel :payload="store.diffPayload" :loading="store.diffLoading" class="fm-diff__panel" />
+        <MonacoDiffPanel
+          :payload="store.diffPayload"
+          :loading="store.diffLoading"
+          :popout-title="store.diffEntry?.relativePath || store.diffEntry?.name || ''"
+          class="fm-diff__panel"
+        />
 
         <footer class="fm-diff__footer">
           <span class="fm-diff__hint">

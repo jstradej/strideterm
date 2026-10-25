@@ -1343,6 +1343,20 @@ describe("default state", () => {
     expect(workspace.activeRootPath).toBe("C:/work/ms/api");
   });
 
+  test("Git view preferences are normalized to supported view ids", () => {
+    const workspace = normalizeWorkspace({
+      id: "ws-git-views",
+      name: "Git views",
+      cwd: "C:/work/repo",
+      panels: [{ id: "shell", title: "Shell", command: "" }],
+      gitViewPreferences: {
+        "default::ws-git-views::root::no-review": "history",
+        invalid: "checkout",
+      },
+    });
+    expect(workspace.gitViewPreferences).toEqual({ "default::ws-git-views::root::no-review": "history" });
+  });
+
   test("normalizeState indexes gitRoots in byCwd so worktree children find multi-repo parent", () => {
     const state = normalizeState({
       workspaces: [
@@ -2081,6 +2095,15 @@ describe("settings.git.ui.updateStrategy", () => {
       const state = normalizeState({ settings: { git: { ui: { updateStrategy: bogus } } } });
       expect(state.settings.git.ui.updateStrategy).toBe("rebase");
     }
+  });
+});
+
+describe("settings.git.ui", () => {
+  test("drops the retired Git shell setting and preserves other Git preferences", () => {
+    expect(createDefaultState().settings.git.ui).not.toHaveProperty("newView");
+    expect(
+      normalizeState({ settings: { git: { ui: { newView: false, showAllActions: true } } } }).settings.git.ui,
+    ).toEqual({ showAllActions: true, updateStrategy: "rebase" });
   });
 });
 

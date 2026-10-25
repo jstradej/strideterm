@@ -15,6 +15,8 @@ export interface TaskRound {
   startedAt: string | null;
   finishedAt: string | null;
   verdict: TaskVerdict | null;
+  /** Worker/evaluator verdict already consumed for this round, if any. */
+  judgeVerdict?: string | null;
 }
 
 export type TaskExecutionState =

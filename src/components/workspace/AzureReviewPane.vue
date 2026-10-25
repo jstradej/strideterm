@@ -54,7 +54,7 @@
         <span>{{ menuOpen ? "Close" : "Actions" }}</span>
       </button>
       <div
-        v-if="isMobile && (menuOpen || tabsMenuOpen)"
+        v-if="isMobile && tabsMenuOpen"
         class="review-shell__menu-backdrop"
         aria-hidden="true"
         @click="closeAllMenus"
@@ -188,7 +188,7 @@
           gap: 8px;
         "
       >
-        <span style="color: var(--danger, #e53935)">{{ toolbarError }}</span>
+        <span class="review-toolbar-error__message">{{ toolbarError }}</span>
         <button
           type="button"
           class="button button--ghost"
@@ -1216,7 +1216,12 @@ async function handlePushAndPublish() {
     const push = outcome?.push;
     if (!push || push.status === "blocked" || push.status === "confirm-required") {
       // Nothing was pushed and nothing was published: say why, with the way out.
-      toolbarError.value = [push?.message, push?.guidance].filter(Boolean).join(" ") || "Push was not performed.";
+      const publishHint =
+        pendingSyncCount.value > 0
+          ? `No comments were published. To publish the ${pendingSyncCount.value} queued comment${pendingSyncCount.value !== 1 ? "s" : ""} without pushing, use Publish only.`
+          : "";
+      toolbarError.value =
+        [push?.message, push?.guidance, publishHint].filter(Boolean).join(" ") || "Push was not performed.";
       return;
     }
     const publish = outcome.publish || { attempted: false, published: [], failed: [] };
@@ -1271,9 +1276,9 @@ const diffLoader = useMonacoDiffLoader((filePath: string) => {
   if (reviewDiffMode.value === "commit") {
     return api.fileCommitDiff({ rootPath, relativePath: filePath, hash: reviewCommitFilter.value });
   }
-  const targetBranch = stripRef(pullRequest.value.targetRefName || "");
-  const ref = targetBranch ? `origin/${targetBranch}` : "HEAD";
-  return api.fileGitDiff({ rootPath, relativePath: filePath, source: "branch", revisionRef: ref });
+  const baseRef = String(pullRequest.value.targetCommitId || "");
+  const targetRef = String(pullRequest.value.sourceCommitId || "");
+  return api.fileGitDiff({ rootPath, relativePath: filePath, source: "range", baseRef, targetRef });
 });
 const monacoDiffPayload = diffLoader.payload;
 const monacoDiffLoading = diffLoader.loading;

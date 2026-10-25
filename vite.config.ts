@@ -59,6 +59,11 @@ export default defineConfig({
     // surfaces as "Failed to load module script" in the client.
     emptyOutDir: process.env.VITE_BUILD_WATCH !== "1",
     rollupOptions: {
+      // The diff popout window has its own entry so it skips the full app.
+      input: {
+        index: resolve(__dirname, "src/index.html"),
+        popout: resolve(__dirname, "src/popout.html"),
+      },
       output: {
         // In watch mode, drop content hashes from chunk names so a rebuild
         // overwrites files in place instead of producing new-hash files

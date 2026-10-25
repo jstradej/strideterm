@@ -19,15 +19,23 @@
           <div class="persistent-toast__content">
             <strong class="persistent-toast__title">{{ t.title }}</strong>
             <p class="persistent-toast__body">{{ t.body }}</p>
-            <p v-if="t.copyPath" class="persistent-toast__path" :title="t.copyPath">{{ t.copyPath }}</p>
-            <div v-if="t.copyPath" class="persistent-toast__actions">
+            <div v-if="t.copyPath || canOpenDetails(t)" class="persistent-toast__actions">
               <button
+                v-if="t.copyPath"
                 type="button"
                 class="persistent-toast__copy"
                 :data-copied="copiedId === t.id"
                 @click="copyPath(t)"
               >
                 {{ copiedId === t.id ? "Copied" : "Copy path" }}
+              </button>
+              <button
+                v-if="canOpenDetails(t)"
+                type="button"
+                class="persistent-toast__copy"
+                @click="notifStore.openPanelOnSession(t.sessionId || '')"
+              >
+                Show details
               </button>
             </div>
           </div>
@@ -66,6 +74,10 @@ function openAction(t: PersistentToast): void {
   if (t.action === "open-mobile-account") {
     appStore.openSettingsDialog({ initialTab: "mobile", initialMobileView: "account" });
   }
+}
+
+function canOpenDetails(t: PersistentToast): boolean {
+  return Boolean(t.sessionId && (!t.profileId || t.profileId === (appStore.myActiveProfileId || "default")));
 }
 
 async function copyPath(t: PersistentToast): Promise<void> {
@@ -188,24 +200,20 @@ async function copyPath(t: PersistentToast): Promise<void> {
   display: block;
   font-weight: 600;
   margin-bottom: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .persistent-toast__body {
   margin: 0;
-  white-space: pre-wrap;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
   line-height: 1.4;
   color: var(--text-muted, #c2c2c2);
-}
-
-.persistent-toast__path {
-  margin: 6px 0 0;
-  padding: 4px 6px;
-  font-family: var(--font-mono, ui-monospace, "Cascadia Code", Consolas, monospace);
-  font-size: 11.5px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 4px;
-  word-break: break-all;
 }
 
 .persistent-toast__actions {
