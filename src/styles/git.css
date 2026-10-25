@@ -56,6 +56,75 @@
   overflow: hidden;
 }
 
+.default-theme.splitpanes.git-changes__splitpanes > .splitpanes__pane,
+.default-theme.splitpanes.git-branches__panes > .splitpanes__pane,
+.default-theme.splitpanes.git-branches__inner-panes > .splitpanes__pane,
+.default-theme.splitpanes.stash-splitpanes > .splitpanes__pane {
+  background: var(--panel) !important;
+  overflow: hidden;
+}
+
+.default-theme.splitpanes.git-changes__splitpanes > .splitpanes__splitter,
+.default-theme.splitpanes.git-branches__panes > .splitpanes__splitter,
+.default-theme.splitpanes.git-branches__inner-panes > .splitpanes__splitter,
+.default-theme.splitpanes.stash-splitpanes > .splitpanes__splitter {
+  background: var(--border) !important;
+  border-color: var(--border) !important;
+}
+
+.default-theme.splitpanes.git-changes__splitpanes > .splitpanes__splitter::before,
+.default-theme.splitpanes.git-changes__splitpanes > .splitpanes__splitter::after,
+.default-theme.splitpanes.git-branches__panes > .splitpanes__splitter::before,
+.default-theme.splitpanes.git-branches__panes > .splitpanes__splitter::after,
+.default-theme.splitpanes.git-branches__inner-panes > .splitpanes__splitter::before,
+.default-theme.splitpanes.git-branches__inner-panes > .splitpanes__splitter::after,
+.default-theme.splitpanes.stash-splitpanes > .splitpanes__splitter::before,
+.default-theme.splitpanes.stash-splitpanes > .splitpanes__splitter::after {
+  background-color: var(--muted);
+}
+
+.default-theme.splitpanes.git-changes__splitpanes > .splitpanes__splitter:hover,
+.default-theme.splitpanes.git-branches__panes > .splitpanes__splitter:hover,
+.default-theme.splitpanes.git-branches__inner-panes > .splitpanes__splitter:hover,
+.default-theme.splitpanes.stash-splitpanes > .splitpanes__splitter:hover {
+  background: var(--accent) !important;
+}
+
+.default-theme.splitpanes.git-changes__splitpanes > .splitpanes__splitter:hover::before,
+.default-theme.splitpanes.git-changes__splitpanes > .splitpanes__splitter:hover::after,
+.default-theme.splitpanes.git-branches__panes > .splitpanes__splitter:hover::before,
+.default-theme.splitpanes.git-branches__panes > .splitpanes__splitter:hover::after,
+.default-theme.splitpanes.git-branches__inner-panes > .splitpanes__splitter:hover::before,
+.default-theme.splitpanes.git-branches__inner-panes > .splitpanes__splitter:hover::after,
+.default-theme.splitpanes.stash-splitpanes > .splitpanes__splitter:hover::before,
+.default-theme.splitpanes.stash-splitpanes > .splitpanes__splitter:hover::after {
+  background-color: var(--accent);
+}
+
+.git-tree__scroll {
+  scrollbar-color: color-mix(in srgb, var(--muted) 45%, var(--panel)) var(--panel);
+  scrollbar-width: thin;
+}
+
+.git-tree__scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.git-tree__scroll::-webkit-scrollbar-track {
+  background: var(--panel);
+}
+
+.git-tree__scroll::-webkit-scrollbar-thumb {
+  border: 2px solid var(--panel);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--muted) 45%, var(--panel));
+}
+
+.git-tree__scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
+}
+
 .git-view__toolbar,
 .git-view__summary,
 .git-view__actions,
@@ -64,6 +133,49 @@
   gap: 8px;
   flex-wrap: wrap;
   align-items: center;
+}
+
+.git-view__repo-details {
+  position: relative;
+}
+
+.git-view__repo-details > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 11px;
+  list-style-position: inside;
+  padding: 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.git-view__repo-details-panel {
+  position: absolute;
+  z-index: 70;
+  top: calc(100% + 4px);
+  left: 0;
+  width: min(360px, calc(100vw - 32px));
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-elevated);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  font-size: 11px;
+}
+
+.git-view__repo-details-panel dt {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.git-view__repo-details-panel dd {
+  margin: 2px 0 8px;
+  overflow-wrap: anywhere;
+}
+
+.git-view__repo-details-panel dd:last-child {
+  margin-bottom: 0;
 }
 
 /* Push the action button cluster to the right edge of the toolbar so the
@@ -101,6 +213,7 @@
 
 .git-tabs__badge {
   display: inline-block;
+  margin-left: 6px;
   min-width: 16px;
   padding: 0 4px;
   border-radius: 8px;
@@ -215,7 +328,7 @@
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 12px;
-  background: rgba(var(--tint), 0.03);
+  background: var(--panel);
   display: grid;
   /* One column, clamped to the card. The implicit `auto` column is sized to
      the widest child's min-content, so a single unbreakable string (a wiki
@@ -228,6 +341,164 @@
 
 .git-card--wide {
   grid-column: 1 / -1;
+}
+
+.git-card--overview {
+  gap: 8px;
+  font-size: 12px;
+}
+
+.git-overview__header,
+.git-overview__stash-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.git-overview__branch {
+  min-width: 0;
+}
+
+.git-overview__branch h3 {
+  overflow: hidden;
+  font-size: 15px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-overview__status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 6px;
+}
+
+.git-overview__status {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(var(--tint), 0.025);
+  font-size: 12px;
+}
+
+.git-overview__status strong {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.git-overview__status code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-overview__status--muted {
+  color: var(--muted);
+}
+
+.git-overview__status-value--warn {
+  color: #ffb86c;
+}
+
+.git-overview__update {
+  display: grid;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.git-overview__base {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.git-overview__base > strong {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.git-overview__base > code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-overview__base .git-branch-select {
+  width: 220px !important;
+}
+
+.git-overview__compare,
+.git-overview__target-note {
+  font-size: 11px;
+}
+
+.git-overview__advanced {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.git-overview__advanced summary {
+  width: fit-content;
+  cursor: pointer;
+}
+
+.git-overview__advanced .git-base-local-toggle {
+  margin-top: 6px;
+}
+
+.git-card--overview-stash {
+  padding: 8px 10px;
+  gap: 0;
+  font-size: 12px;
+}
+
+.git-overview__stash-summary > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.git-overview__stash-summary .eyebrow {
+  margin: 0;
+}
+
+.git-card--worktrees {
+  gap: 6px;
+}
+
+.git-worktrees__context {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.git-worktrees__context strong {
+  flex: 0 0 auto;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.git-worktrees__context span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .git-detail-list,
@@ -434,7 +705,10 @@
   justify-content: space-between;
   gap: 10px;
   align-items: center;
-  padding: 8px;
+  flex-wrap: wrap;
+  padding: 6px 8px;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .git-sibling--current {
@@ -445,14 +719,27 @@
   display: grid;
   gap: 2px;
   min-width: 0;
+  overflow: hidden;
+}
+
+.git-sibling__meta strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: inherit;
+  font-weight: 600;
 }
 
 .git-sibling__meta small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--muted);
+  font-size: 11px;
 }
 
 .git-sibling__meta {
-  flex: 1 1 auto;
+  flex: 1 1 180px;
 }
 
 /* Worktree row actions: right-aligned cluster (1.2 — buttons right). */
@@ -462,6 +749,11 @@
   gap: 6px;
   flex: 0 0 auto;
   margin-left: auto;
+}
+
+.git-sibling__badges {
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .workspace-chip--muted {
@@ -793,8 +1085,8 @@
     padding: 8px;
     border: 1px solid var(--border);
     border-radius: 6px;
-    background: var(--panel-elevated);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    background: var(--menu-bg);
+    box-shadow: var(--menu-shadow);
     max-height: calc(100% - 50px);
     overflow-y: auto;
   }
@@ -877,8 +1169,8 @@
     padding: 4px 0;
     border: 1px solid var(--border);
     border-radius: 6px;
-    background: var(--panel-elevated);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    background: var(--menu-bg);
+    box-shadow: var(--menu-shadow);
     max-height: calc(100% - 50px);
     overflow-y: auto;
   }

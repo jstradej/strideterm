@@ -98,3 +98,17 @@ condition = "AND"
 regexTarget = "secret"
 paths = ['^electron/backend/(?:review-git/(?:broker|operations|service)|internal-mcp\.integration)\.test\.ts$']
 regexes = ['^key-12345678$']
+
+[[allowlists]]
+description = "audited deterministic fixtures: electron/backend/review-pr-actions\\.integration\\.test\\.ts (fixed idempotency keys, not credentials)"
+condition = "AND"
+regexTarget = "secret"
+paths = ['^electron/backend/review-pr-actions\.integration\.test\.ts$']
+regexes = ['^(?:proposal-key|forged-key|mutation-key|scope-smuggle)-123$']
+
+[[allowlists]]
+description = "audited deterministic fixtures: electron/backend/operation-registry\\.test\\.ts (synthetic JWT the redaction test expects to strip)"
+condition = "AND"
+regexTarget = "secret"
+paths = ['^electron/backend/operation-registry\.test\.ts$']
+regexes = ['^eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiJ4In0\.signature$']

@@ -1,6 +1,11 @@
 <template>
   <div class="mdp">
-    <div v-if="!hideLabels" class="mdp__labels">
+    <div
+      v-if="!hideLabels"
+      class="mdp__labels"
+      :class="{ 'mdp__labels--inline': !hasSideBySidePanes }"
+      :style="labelStyle"
+    >
       <div class="mdp__label-pane mdp__label-pane--left">
         <span class="mdp__label-tag">old</span>
         {{ payload?.leftLabel || "" }}
@@ -251,16 +256,23 @@ const canPopout = computed(() => {
 async function handlePopout() {
   if (!canPopout.value) return;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const bridge = (window as any).strideterm as { openDiffPopout: (p: unknown) => Promise<unknown> };
+  const bridge = (window as any).strideterm as {
+    openDiffPopout: (p: unknown) => Promise<{ error?: string } | undefined>;
+  };
+  let failure: unknown = null;
   try {
-    await bridge.openDiffPopout({
+    const result = await bridge.openDiffPopout({
       title: props.popoutTitle,
       filePath: props.popoutTitle,
       ...(props.payload as Record<string, unknown>),
     });
-  } catch {
-    // Popout is a best-effort UX feature — if the IPC fails the host UI
-    // still has the diff visible.
+    if (result?.error) failure = result.error;
+  } catch (err) {
+    failure = err;
+  }
+  if (failure) {
+    const { useNotificationStore } = await import("../../stores/notifications.js");
+    useNotificationStore().showError("Pop out failed", failure);
   }
 }
 
@@ -289,6 +301,15 @@ function revealTargetLine() {
 const containerRef = ref<HTMLDivElement | null>(null);
 const bodyRef = ref<HTMLDivElement | null>(null);
 const sideBySide = ref(!props.initialInline);
+const hasSideBySidePanes = ref(!props.initialInline);
+const paneWidths = ref({ original: 0, modified: 0, gap: 0 });
+const labelStyle = computed(() => {
+  if (!hasSideBySidePanes.value) return undefined;
+  return {
+    gridTemplateColumns: `${paneWidths.value.original}px ${paneWidths.value.modified}px`,
+    columnGap: `${paneWidths.value.gap}px`,
+  };
+});
 const visibleFileAnnotations = computed(() => [
   ...props.fileAnnotations,
   ...(!sideBySide.value
@@ -319,8 +340,12 @@ const errorMessage = computed(() => {
 });
 
 let diffEditor: monaco.editor.IStandaloneDiffEditor | null = null;
+let firstRevealModels: { original: monaco.editor.ITextModel; modified: monaco.editor.ITextModel } | null = null;
+let diffComparisonIdentity = "";
 let resizeObserver: ResizeObserver | null = null;
 let updateDiffDisposable: monaco.IDisposable | null = null;
+const paneLayoutDisposables: monaco.IDisposable[] = [];
+let paneLayoutFrame: number | null = null;
 const inlineCommentDisposables: monaco.IDisposable[] = [];
 const inlineCommentContextKeys: monaco.editor.IContextKey<boolean>[] = [];
 const contextMenuLines: Record<"old" | "new", number> = { old: 0, new: 0 };
@@ -483,11 +508,55 @@ function ensureEditor() {
     ignoreTrimWhitespace: false,
     diffAlgorithm: "advanced",
   });
+  const originalEditor = diffEditor.getOriginalEditor();
+  const modifiedEditor = diffEditor.getModifiedEditor();
+  paneLayoutDisposables.push(
+    originalEditor.onDidLayoutChange(schedulePaneWidthSync),
+    modifiedEditor.onDidLayoutChange(schedulePaneWidthSync),
+  );
   resizeObserver = new ResizeObserver(() => layoutEditor());
   if (bodyRef.value) resizeObserver.observe(bodyRef.value);
   layoutEditor();
+  syncPaneWidths();
   updateDiffDisposable = diffEditor.onDidUpdateDiff(() => refreshChangeList());
   installInlineCommentActions();
+}
+
+function syncPaneWidths() {
+  if (!diffEditor) return;
+  if (!sideBySide.value) {
+    hasSideBySidePanes.value = false;
+    return;
+  }
+  const originalLayout = diffEditor.getOriginalEditor().getLayoutInfo();
+  const modifiedLayout = diffEditor.getModifiedEditor().getLayoutInfo();
+  if (originalLayout.contentWidth <= 0 || modifiedLayout.contentWidth <= 0) {
+    hasSideBySidePanes.value = false;
+    return;
+  }
+  const originalWidth = originalLayout.width;
+  const modifiedWidth = modifiedLayout.width;
+  if (originalWidth <= 0 || modifiedWidth <= 0) return;
+  const originalNode = diffEditor.getOriginalEditor().getDomNode();
+  const modifiedNode = diffEditor.getModifiedEditor().getDomNode();
+  const gap =
+    originalNode && modifiedNode
+      ? Math.max(0, Math.round(modifiedNode.getBoundingClientRect().left - originalNode.getBoundingClientRect().right))
+      : 0;
+  hasSideBySidePanes.value = true;
+  paneWidths.value = {
+    original: originalWidth,
+    modified: modifiedWidth,
+    gap,
+  };
+}
+
+function schedulePaneWidthSync() {
+  if (paneLayoutFrame != null) return;
+  paneLayoutFrame = requestAnimationFrame(() => {
+    paneLayoutFrame = null;
+    syncPaneWidths();
+  });
 }
 
 function installInlineCommentActions() {
@@ -541,6 +610,8 @@ function applyDiffModels() {
   clearReviewZones();
   const payload = props.payload;
   if (!payload || (payload.ok === false && !payload.leftContent && !payload.rightContent)) {
+    firstRevealModels = null;
+    diffComparisonIdentity = "";
     const previous = diffEditor.getModel();
     diffEditor.setModel(null);
     if (previous?.original) previous.original.dispose();
@@ -551,9 +622,35 @@ function applyDiffModels() {
     updateInlineCommentActionAvailability();
     return;
   }
-  const oldModel = monaco.editor.createModel(payload.leftContent || "", payload.language || "plaintext");
-  const newModel = monaco.editor.createModel(payload.rightContent || "", payload.language || "plaintext");
   const previous = diffEditor.getModel();
+  const leftContent = payload.leftContent || "";
+  const rightContent = payload.rightContent || "";
+  const language = payload.language || "plaintext";
+  const comparisonIdentity = JSON.stringify([
+    payload.leftLabel || "",
+    payload.rightLabel || "",
+    !!payload.leftMissing,
+    !!payload.rightMissing,
+    props.popoutTitle,
+  ]);
+  const sameModels =
+    previous &&
+    previous.original.getValue() === leftContent &&
+    previous.modified.getValue() === rightContent &&
+    previous.original.getLanguageId() === language &&
+    previous.modified.getLanguageId() === language;
+  if (sameModels && previous) {
+    const identityChanged = diffComparisonIdentity !== comparisonIdentity;
+    diffComparisonIdentity = comparisonIdentity;
+    if (identityChanged && !firstRevealModels && props.targetLine < 0) diffEditor.revealFirstDiff();
+    renderReviewZones();
+    updateInlineCommentActionAvailability();
+    return;
+  }
+  const oldModel = monaco.editor.createModel(leftContent, language);
+  const newModel = monaco.editor.createModel(rightContent, language);
+  diffComparisonIdentity = comparisonIdentity;
+  firstRevealModels = props.targetLine < 0 ? { original: oldModel, modified: newModel } : null;
   diffEditor.setModel({ original: oldModel, modified: newModel });
   if (previous?.original) previous.original.dispose();
   if (previous?.modified) previous.modified.dispose();
@@ -571,6 +668,12 @@ function refreshChangeList() {
   const list = diffEditor.getLineChanges() || [];
   changes.value = list;
   currentChangeIndex.value = list.length ? 0 : -1;
+  const pending = firstRevealModels;
+  const current = diffEditor.getModel();
+  if (pending && current?.original === pending.original && current.modified === pending.modified) {
+    firstRevealModels = null;
+    if (props.targetLine < 0) diffEditor.revealFirstDiff();
+  }
 }
 
 function goToChange(direction: number) {
@@ -589,12 +692,13 @@ function goToChange(direction: number) {
 watch(sideBySide, (value) => {
   if (diffEditor) diffEditor.updateOptions({ renderSideBySide: value });
   layoutEditor();
+  syncPaneWidths();
   renderReviewZones();
   if (value) nextTick(revealTargetLine);
 });
 
 watch(
-  () => props.payload,
+  () => [props.payload, props.popoutTitle] as const,
   () => {
     nextTick(() => {
       ensureEditor();
@@ -652,7 +756,13 @@ onBeforeUnmount(() => {
     updateDiffDisposable.dispose();
     updateDiffDisposable = null;
   }
+  for (const disposable of paneLayoutDisposables.splice(0)) disposable.dispose();
+  if (paneLayoutFrame != null) {
+    cancelAnimationFrame(paneLayoutFrame);
+    paneLayoutFrame = null;
+  }
   if (diffEditor) {
+    firstRevealModels = null;
     clearReviewZones();
     const model = diffEditor.getModel();
     diffEditor.setModel(null);
@@ -678,7 +788,7 @@ defineExpose({ goToChange });
   display: grid;
   grid-template-columns: 1fr 1fr;
   font-size: 11px;
-  background: var(--bg);
+  background: var(--panel);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
@@ -686,9 +796,19 @@ defineExpose({ goToChange });
 .mdp__label-pane {
   padding: 4px 12px;
   display: flex;
+  min-width: 0;
   align-items: center;
   gap: 6px;
   color: var(--muted);
+}
+
+.mdp__labels--inline {
+  display: flex;
+  gap: 12px;
+}
+
+.mdp__labels--inline .mdp__label-pane {
+  flex: 0 1 auto;
 }
 
 .mdp__label-pane--left {
@@ -696,8 +816,9 @@ defineExpose({ goToChange });
 }
 
 .mdp__label-tag {
-  background: var(--border);
-  color: var(--text);
+  background: color-mix(in srgb, var(--muted) 10%, var(--panel));
+  border: 1px solid var(--border);
+  color: var(--muted);
   padding: 0 6px;
   border-radius: 3px;
   font-size: 10px;

@@ -20,9 +20,20 @@ const operationOutcomeBase = {
   profileId: z.string().min(1),
   /** The workspace the operation produced or acts on, when it has one. */
   workspaceId: z.string().optional(),
+  /** Repository root for multi-root Git operations. */
+  rootPath: z.string().optional(),
   /** ISO timestamp of the end of the run. */
   finishedAt: z.string().min(1),
 };
+
+export const operationFailureClassificationSchema = z.enum([
+  "blocked",
+  "cancelled",
+  "partial",
+  "failed",
+  "interrupted",
+]);
+export type OperationFailureClassification = z.infer<typeof operationFailureClassificationSchema>;
 
 export const operationFinishedSchema = z
   .union([
@@ -30,7 +41,16 @@ export const operationFinishedSchema = z
     z
       .object({
         ...operationOutcomeBase,
-        error: z.object({ code: z.string().min(1), message: z.string() }).strict(),
+        error: z
+          .object({
+            code: z.string().min(1),
+            message: z.string(),
+            classification: operationFailureClassificationSchema.optional(),
+            warnings: z.array(z.string()).optional(),
+            conflicts: z.array(z.string()).optional(),
+            rawOutput: z.string().optional(),
+          })
+          .strict(),
       })
       .strict(),
   ])
@@ -52,6 +72,7 @@ export interface OperationRunning {
   profileId: string;
   step: string;
   workspaceId?: string;
+  rootPath?: string;
   startedAt: string;
 }
 

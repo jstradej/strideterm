@@ -38,31 +38,40 @@ export function quotePosixArg(value: unknown): string {
 export function execFileText(
   file: string,
   args: string[],
-  options: ExecFileOptions = {},
+  options: ExecFileOptions & { input?: string } = {},
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    execFile(file, args, { windowsHide: true, maxBuffer: 10 * 1024 * 1024, ...options }, (error, stdout, stderr) => {
-      if (error) {
-        const stdoutText = stdout?.toString?.() || "";
-        const stderrText = stderr?.toString?.() || "";
-        reject(
-          new ProcessCommandError(
-            error.message,
-            stdoutText,
-            stderrText,
-            processExitCode(error),
-            processCode(error),
-            error,
-          ),
-        );
-        return;
-      }
+    const { input, ...execOptions } = options;
+    const child = execFile(
+      file,
+      args,
+      { windowsHide: true, maxBuffer: 10 * 1024 * 1024, ...execOptions },
+      (error, stdout, stderr) => {
+        if (error) {
+          const stdoutText = stdout?.toString?.() || "";
+          const stderrText = stderr?.toString?.() || "";
+          reject(
+            new ProcessCommandError(
+              error.message,
+              stdoutText,
+              stderrText,
+              processExitCode(error),
+              processCode(error),
+              error,
+            ),
+          );
+          return;
+        }
 
-      resolve({
-        stdout: stdout?.toString?.() || "",
-        stderr: stderr?.toString?.() || "",
-      });
-    });
+        resolve({
+          stdout: stdout?.toString?.() || "",
+          stderr: stderr?.toString?.() || "",
+        });
+      },
+    );
+    if (input !== undefined) {
+      child.stdin?.end(input, "utf8");
+    }
   });
 }
 

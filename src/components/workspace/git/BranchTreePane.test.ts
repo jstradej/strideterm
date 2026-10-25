@@ -28,6 +28,15 @@ function makeTree(): BranchTreeNode[] {
       ],
     },
     {
+      key: "important",
+      kind: "section",
+      label: "Important",
+      icon: "★",
+      children: [
+        { key: "important:origin/main", kind: "branch-remote", label: "origin/main", ref: "origin/main", children: [] },
+      ],
+    },
+    {
       key: "local",
       kind: "section",
       label: "Local",
@@ -113,22 +122,40 @@ describe("BranchTreePane", () => {
   test("renders all four sections", () => {
     const wrapper = mountPane();
     const sectionLabels = wrapper.findAll(".branch-node--section > .branch-node__row").map((el) => el.text());
-    expect(sectionLabels.length).toBe(4);
+    expect(sectionLabels.length).toBe(5);
     expect(sectionLabels[0]).toContain("HEAD");
-    expect(sectionLabels[1]).toContain("Local");
-    expect(sectionLabels[2]).toContain("Remote");
-    expect(sectionLabels[3]).toContain("Tags");
+    expect(sectionLabels[1]).toContain("Important");
+    expect(sectionLabels[2]).toContain("Local");
+    expect(sectionLabels[3]).toContain("Remote");
+    expect(sectionLabels[4]).toContain("Tags");
   });
 
-  test("renders folder + leaf hierarchy from `/` split", () => {
+  test("renders folder + leaf hierarchy from `/` split", async () => {
     const wrapper = mountPane();
+    const localRow = wrapper
+      .findAll(".branch-node--section > .branch-node__row")
+      .find((row) => row.text().includes("Local"));
+    await localRow!.trigger("click");
+    const featureRow = wrapper
+      .findAll(".branch-node--folder > .branch-node__row")
+      .find((row) => row.text().includes("feature"));
+    expect(featureRow).toBeTruthy();
+    await featureRow!.trigger("click");
     const labels = wrapper.findAll(".branch-node__label").map((el) => el.text());
-    // Both folder ("feature") and leaf inside ("foo") must appear.
+    // Both folder ("feature") and leaf inside ("foo") must appear once opened.
     expect(labels).toContain("feature");
     expect(labels).toContain("foo");
     expect(labels).toContain("hotfix");
-    expect(labels).toContain("dev");
-    expect(labels).toContain("v1.0");
+    const remoteRow = wrapper
+      .findAll(".branch-node--section > .branch-node__row")
+      .find((row) => row.text().includes("Remote"))!;
+    await remoteRow.trigger("click");
+    expect(wrapper.findAll(".branch-node__label").map((el) => el.text())).toContain("dev");
+    const tagsRow = wrapper
+      .findAll(".branch-node--section > .branch-node__row")
+      .find((row) => row.text().includes("Tags"))!;
+    await tagsRow.trigger("click");
+    expect(wrapper.findAll(".branch-node__label").map((el) => el.text())).toContain("v1.0");
   });
 
   test("current branch row receives the --current marker", () => {
@@ -139,16 +166,111 @@ describe("BranchTreePane", () => {
     expect(currentRows[0].text()).toContain("main");
   });
 
-  test("ahead/behind badge appears for local branches with divergence", () => {
+  test("opens only HEAD and Important by default", () => {
     const wrapper = mountPane();
+    const sections = wrapper.findAll(".branch-node--section > .branch-node__row");
+    expect(sections.map((row) => [row.text(), row.attributes("aria-expanded")])).toEqual([
+      [expect.stringContaining("HEAD"), "true"],
+      [expect.stringContaining("Important"), "true"],
+      [expect.stringContaining("Local"), "false"],
+      [expect.stringContaining("Remote"), "false"],
+      [expect.stringContaining("Tags"), "false"],
+    ]);
+  });
+
+  test("persists explicit expansion by repository and temporarily expands search results", async () => {
+    const stateKey = "branch-tree-test:repo-a";
+    localStorage.removeItem(stateKey);
+    const wrapper = mountPane({ stateKey });
+    const localRow = wrapper
+      .findAll(".branch-node--section > .branch-node__row")
+      .find((row) => row.text().includes("Local"))!;
+    await localRow.trigger("click");
+    const savedBeforeSearch = localStorage.getItem(stateKey);
+    const featureRow = wrapper
+      .findAll(".branch-node--folder > .branch-node__row")
+      .find((row) => row.text().includes("feature"))!;
+    expect(featureRow.attributes("aria-expanded")).toBe("false");
+
+    await wrapper.setProps({ searching: true });
+    expect(featureRow.attributes("aria-expanded")).toBe("true");
+    await featureRow.trigger("click");
+    expect(featureRow.attributes("aria-expanded")).toBe("false");
+    expect(localStorage.getItem(stateKey)).toBe(savedBeforeSearch);
+    await wrapper.setProps({ searching: false });
+    expect(featureRow.attributes("aria-expanded")).toBe("false");
+    expect(JSON.parse(localStorage.getItem(stateKey) || "{}").local).toBe(true);
+    const refreshedTree = makeTree();
+    refreshedTree
+      .find((node) => node.key === "local")!
+      .children!.push({
+        key: "local:dir:new-prefix",
+        kind: "folder",
+        label: "new-prefix",
+        ref: "",
+        children: [
+          {
+            key: "local:new-prefix/topic",
+            kind: "branch-local",
+            label: "topic",
+            ref: "new-prefix/topic",
+            children: [],
+          },
+        ],
+      });
+    await wrapper.setProps({ tree: refreshedTree });
+    const refreshedLocal = wrapper
+      .findAll(".branch-node--section > .branch-node__row")
+      .find((row) => row.text().includes("Local"))!;
+    expect(refreshedLocal.attributes("aria-expanded")).toBe("true");
+    expect(
+      wrapper
+        .findAll(".branch-node--folder > .branch-node__row")
+        .find((row) => row.text().includes("new-prefix"))
+        ?.attributes("aria-expanded"),
+    ).toBe("false");
+    wrapper.unmount();
+
+    const restored = mountPane({ stateKey });
+    const restoredLocal = restored
+      .findAll(".branch-node--section > .branch-node__row")
+      .find((row) => row.text().includes("Local"))!;
+    expect(restoredLocal.attributes("aria-expanded")).toBe("true");
+    const otherKey = "branch-tree-test:repo-b";
+    localStorage.removeItem(otherKey);
+    const otherRepo = mountPane({ stateKey: otherKey });
+    const otherLocal = otherRepo
+      .findAll(".branch-node--section > .branch-node__row")
+      .find((row) => row.text().includes("Local"))!;
+    expect(otherLocal.attributes("aria-expanded")).toBe("false");
+    expect(localStorage.getItem(otherKey)).toBeNull();
+    restored.unmount();
+    otherRepo.unmount();
+    localStorage.removeItem(stateKey);
+  });
+
+  test("ahead/behind badge appears for local branches with divergence", async () => {
+    const wrapper = mountPane();
+    const localRow = wrapper
+      .findAll(".branch-node--section > .branch-node__row")
+      .find((row) => row.text().includes("Local"))!;
+    await localRow.trigger("click");
+    await wrapper
+      .findAll(".branch-node--folder > .branch-node__row")
+      .find((row) => row.text().includes("feature"))!
+      .trigger("click");
     const badges = wrapper.findAll(".branch-node__badge--diverged");
     expect(badges.length).toBe(1);
     expect(badges[0].text()).toContain("↑2");
     expect(badges[0].text()).toContain("↓1");
   });
 
-  test("merged pill renders for merged local branches", () => {
+  test("merged pill renders for merged local branches", async () => {
     const wrapper = mountPane();
+    await wrapper
+      .findAll(".branch-node--section > .branch-node__row")
+      .find((row) => row.text().includes("Local"))!
+      .trigger("click");
     const merged = wrapper.findAll(".branch-node__pill--merged");
     expect(merged.length).toBe(1);
     expect(merged[0].text()).toBe("merged");
@@ -156,6 +278,10 @@ describe("BranchTreePane", () => {
 
   test("clicking a branch leaf emits select with its ref", async () => {
     const wrapper = mountPane();
+    await wrapper
+      .findAll(".branch-node--section > .branch-node__row")
+      .find((row) => row.text().includes("Local"))!
+      .trigger("click");
     const leaves = wrapper.findAll(".branch-node--branch-local > .branch-node__row");
     // First branch-local leaf is "main" under HEAD; click "hotfix" instead so
     // we exercise a non-current leaf.

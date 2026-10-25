@@ -369,10 +369,10 @@ defineExpose({ focus: () => buttonRef.value?.focus() });
   display: flex;
   flex-direction: column;
   margin: 0;
-  background: var(--panel-elevated);
-  border: 1px solid var(--border);
+  background: var(--menu-bg);
+  border: 1px solid rgba(var(--tint), 0.16);
   border-radius: 4px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--menu-shadow);
   font-size: 13px;
   overflow: hidden;
 }

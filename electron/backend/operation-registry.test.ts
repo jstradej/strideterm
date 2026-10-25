@@ -9,7 +9,7 @@ import {
 } from "./operation-registry.js";
 import { operationFinishedSchema, type OperationFinished } from "../shared/operation-events.js";
 
-const log = { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn(), trace: vi.fn() } as never;
+const log = { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn(), trace: vi.fn() };
 
 describe("operation registry", () => {
   let dir: string;
@@ -30,7 +30,7 @@ describe("operation registry", () => {
   const create = () =>
     createOperationRegistry({
       dir,
-      log,
+      log: log as never,
       now: () => clock,
       emitFinished: (event) => events.push(event),
       onChange: () => {
@@ -99,8 +99,10 @@ describe("operation registry", () => {
   });
 
   test("a throwing run becomes a failed outcome with the error's own code", async () => {
+    log.warn.mockClear();
     const registry = create();
-    const { record } = await registry.accept(input(), async () => {
+    const { record } = await registry.accept(input({ intent: { rootPath: "C:/repo" } }), async () => {
+      clock += 1250;
       throw Object.assign(new Error("branch exists"), { code: "checkout_conflict" });
     });
     await settle(registry, record.operationId);
@@ -111,6 +113,60 @@ describe("operation registry", () => {
     });
     expect(events[0]).toMatchObject({ error: { code: "checkout_conflict", message: "branch exists" } });
     expect("result" in events[0]).toBe(false);
+    expect(log.warn).toHaveBeenCalledWith(
+      "operation failed",
+      expect.objectContaining({
+        operationId: record.operationId,
+        kind: "task.provision",
+        profileId: "default",
+        originWorkspaceId: "parent",
+        rootPath: "C:/repo",
+        durationMs: 1250,
+        code: "checkout_conflict",
+      }),
+    );
+  });
+
+  test("preserves blocked, cancelled, partial, and failed classifications in outcomes", async () => {
+    const registry = create();
+    const cases = [
+      { idempotencyKey: "blocked-001", classification: "blocked", code: "git_operation_failed", expected: "blocked" },
+      { idempotencyKey: "partial-001", classification: "partial", code: "git_operation_failed", expected: "partial" },
+      { idempotencyKey: "failed-001", classification: "failed", code: "git_operation_failed", expected: "failed" },
+      { idempotencyKey: "cancelled-1", code: "cancelled", classification: undefined, expected: "cancelled" },
+    ] as const;
+
+    for (const item of cases) {
+      const { record } = await registry.accept(input({ idempotencyKey: item.idempotencyKey }), async () => {
+        throw Object.assign(new Error(`${item.idempotencyKey} outcome`), {
+          code: item.code,
+          ...(item.classification ? { classification: item.classification } : {}),
+        });
+      });
+      await settle(registry, record.operationId);
+      expect(registry.get(record.operationId, "default")?.error?.classification).toBe(item.expected);
+      expect(events.at(-1)).toMatchObject({ error: { classification: item.expected } });
+    }
+  });
+
+  test("redacts credentials from persisted rejected-operation diagnostics", async () => {
+    const registry = create();
+    const { record } = await registry.accept(input(), async () => {
+      throw Object.assign(new Error("request failed at https://example.test/?access_token=super-secret-token"), {
+        code: "git_operation_failed",
+        warnings: ["Authorization: Bearer abcdefghijklmnopqrstuvwxyz-secret"],
+        rawOutput: "remote returned https://example.test/?auth=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.signature",
+      });
+    });
+    await settle(registry, record.operationId);
+
+    const outcome = registry.get(record.operationId, "default")!;
+    expect(outcome.error?.message).toContain("access_token=[REDACTED]");
+    expect(outcome.error?.message).not.toContain("super-secret-token");
+    expect(outcome.error?.warnings?.[0]).toContain("Bearer [REDACTED]");
+    expect(outcome.error?.rawOutput).toContain("auth=[REDACTED]");
+    expect(JSON.stringify(outcome)).not.toContain("abcdefghijklmnopqrstuvwxyz-secret");
+    expect(JSON.stringify(events)).not.toContain("super-secret-token");
   });
 
   test("the same key and input is one operation, even when the requests race; another input conflicts", async () => {

@@ -620,6 +620,17 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   flex-wrap: wrap;
 }
 
+.remote-compact__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-inline-start: auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
 .remote-compact__caret {
   display: inline-flex;
   align-items: center;
@@ -787,6 +798,36 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
 
 .remote-pill--mobile-warning-expired:hover {
   background: color-mix(in srgb, var(--danger), transparent 82%);
+}
+
+.remote-pill--mobile-warning-critical {
+  border-color: color-mix(in srgb, var(--danger), transparent 35%);
+  background: color-mix(in srgb, var(--danger), transparent 90%);
+  color: var(--danger);
+}
+
+.remote-pill--mobile-warning-critical:hover {
+  background: color-mix(in srgb, var(--danger), transparent 82%);
+}
+
+.remote-pill--mobile-warning-pulse {
+  animation: mobile-access-warning-pulse 1.2s ease-in-out 1;
+}
+
+@keyframes mobile-access-warning-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+  45% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 25%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .remote-pill--mobile-warning-pulse {
+    animation: none;
+  }
 }
 
 .remote-copy,
@@ -2523,6 +2564,11 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
 
 .frame--sidebar-collapsed .remote-access:not(.remote-access--expanded) .remote-compact__row {
   display: block;
+}
+
+.frame--sidebar-collapsed .remote-access:not(.remote-access--expanded) .remote-compact__actions {
+  width: 100%;
+  margin-inline-start: 0;
 }
 
 .frame--sidebar-collapsed .remote-access:not(.remote-access--expanded) .remote-summary__configure {

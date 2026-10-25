@@ -441,21 +441,6 @@ async function toast(body: string, kind: "info" | "error" = "info") {
   overflow: hidden;
 }
 
-:deep(.stash-splitpanes.splitpanes) {
-  background: transparent !important;
-}
-
-:deep(.stash-splitpanes.splitpanes > .splitpanes__pane) {
-  background: transparent !important;
-  overflow: hidden;
-}
-
-:deep(.stash-splitpanes.splitpanes > .splitpanes__splitter) {
-  background: var(--border) !important;
-  min-width: 3px;
-  min-height: 3px;
-}
-
 .stash-list {
   height: 100%;
   min-height: 0;

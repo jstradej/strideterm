@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   fullSourceRef,
+  isManagedReviewBranch,
   managedReviewBranchAlias,
   normalizeRemoteIdentity,
   sameRemote,
@@ -310,7 +311,7 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
     }
     if (!facts.detached) {
       const alias = managedReviewBranchAlias(subject.prId, subject.sourceRefName);
-      if (facts.branch !== alias && facts.branch !== sourceBranch) {
+      if (!isManagedReviewBranch(facts.branch, subject.prId, subject.sourceRefName) && facts.branch !== sourceBranch) {
         return {
           block: blocked(
             facts,

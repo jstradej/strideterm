@@ -95,12 +95,17 @@ describe("notification store — toast queue", () => {
     expect(store.toastQueue.at(-1)?.id).toBe("completed-19");
   });
 
-  it("showError goes through the same protected slot", () => {
+  it("showError uses persistent error feedback without displacing a blocked question", () => {
     const store = useNotificationStore();
     store.pushToast(toast("question-a", "question"));
     store.showError("Delete failed", "boom", { workspaceId: "ws-a" });
 
     expect(store.latestToast?.id).toBe("question-a");
-    expect(store.toastQueue).toHaveLength(1);
+    expect(store.toastQueue).toHaveLength(0);
+    expect(store.persistentToasts).toHaveLength(1);
+    expect(store.persistentToasts[0].title).toBe("Delete failed");
+    expect(store.sessions.flatMap((session) => session.events).some((event) => event.title === "Delete failed")).toBe(
+      true,
+    );
   });
 });

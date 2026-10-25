@@ -7,7 +7,10 @@
       </div>
     </header>
     <main class="diff-popout__body">
-      <div v-if="loading" class="diff-popout__placeholder">Loading diff…</div>
+      <div v-if="loading" class="diff-popout__placeholder">
+        <span class="diff-popout__spinner" aria-hidden="true"></span>
+        Loading diff…
+      </div>
       <div v-else-if="error" class="diff-popout__placeholder diff-popout__placeholder--error">{{ error }}</div>
       <MonacoDiffPanel v-else-if="payload" :payload="payload" />
       <div v-else class="diff-popout__placeholder">No diff payload available.</div>
@@ -145,8 +148,24 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 10px;
   color: var(--muted, rgba(255, 255, 255, 0.55));
   font-style: italic;
+}
+
+.diff-popout__spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  border-top-color: var(--accent, #ffa424);
+  border-radius: 50%;
+  animation: diff-popout-spin 0.8s linear infinite;
+}
+
+@keyframes diff-popout-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .diff-popout__placeholder--error {

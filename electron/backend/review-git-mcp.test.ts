@@ -334,6 +334,9 @@ describe("the MCP tools, end to end through the broker", () => {
         "review_git_stage",
         "review_git_status",
         "review_git_unstage",
+        "review_pr_action",
+        "review_pr_action_status",
+        "review_pr_inspect",
       ].sort(),
     );
     expect(names.some((name) => /shell|exec|run_git|stash|merge|revert|reset|publish/u.test(name))).toBe(false);

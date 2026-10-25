@@ -7,6 +7,8 @@ interface Commit extends CommitContextMenuCommit {
   shortHash: string;
   subject: string;
   parents: string[];
+  author?: string;
+  relativeDate?: string;
 }
 
 function commit(overrides: Partial<Commit>): Commit {
@@ -239,15 +241,42 @@ describe("useCommitContextMenu — onMenuPick actions", () => {
     expect(refreshAll).toHaveBeenCalledWith(true);
   });
 
-  test("newBranch opens a TextInputDialog whose onSubmit creates the branch at this commit", async () => {
-    const { api, appStore, gitUiStore, refreshAll } = ctx;
-    api.onCommitContextMenu({ hash: "c2", x: 0, y: 0 });
+  test("newBranch shows commit context and creates the branch at the captured full hash", async () => {
+    const { api, appStore, gitUiStore, refreshAll, commits } = ctx;
+    const startHash = "caf13caf4fbc123456789012345678901234abcd";
+    commits.value[1] = commit({
+      hash: startHash,
+      shortHash: "caf13caf4",
+      subject: "Improve branch comparison flow",
+      parents: ["c1"],
+      author: "Alex Rivera",
+      relativeDate: "2 hours ago",
+    });
+    api.onCommitContextMenu({ hash: startHash, x: 0, y: 0 });
     await api.onMenuPick("newBranch");
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const dialogArgs = appStore.openDialog.mock.calls[0][1] as any;
+    expect(dialogArgs.title).toBe("Create branch");
+    expect(dialogArgs.context).toEqual({
+      summary: "Improve branch comparison flow",
+      detail: "Commit caf13caf4 · Alex Rivera · 2 hours ago",
+    });
+    commits.value = [
+      commit({ hash: "another-commit", shortHash: "another", subject: "Changed selection", parents: [] }),
+    ];
     await dialogArgs.onSubmit("feature/x");
-    expect(gitUiStore.gitCreateBranch).toHaveBeenCalledWith("ws1", "feature/x", "c2");
+    expect(gitUiStore.gitCreateBranch).toHaveBeenCalledWith("ws1", "feature/x", startHash);
     expect(refreshAll).toHaveBeenCalledWith(true);
+  });
+
+  test("newBranch falls back to a short-hash context when graph metadata is missing", async () => {
+    const { api, appStore, commits } = ctx;
+    commits.value[1] = commit({ hash: "caf13caf4fbc123", shortHash: "caf13caf4", subject: "", parents: [] });
+    api.onCommitContextMenu({ hash: "caf13caf4fbc123", x: 0, y: 0 });
+    await api.onMenuPick("newBranch");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const dialogArgs = appStore.openDialog.mock.calls[0][1] as any;
+    expect(dialogArgs.context).toEqual({ summary: "Commit caf13caf4", detail: "" });
   });
 
   test("newTag opens a TextInputDialog whose onSubmit creates the tag at this commit", async () => {

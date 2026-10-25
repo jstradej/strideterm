@@ -171,6 +171,33 @@ describe("BranchSelectPopover — real buildBranchForest wiring", () => {
     expect(rows.every((r) => !r.isFolder && !r.isSection)).toBe(true);
   });
 
+  test("keyboard search selects a ref and Escape returns focus to the picker button", async () => {
+    wrapper = mount(BranchSelectPopover, {
+      props: { options: OPTIONS, remoteNames: ["origin"], defaultBranch: "main" },
+      attachTo: document.body,
+    });
+    const button = wrapper.get(".branch-picker__button");
+    await button.trigger("keydown", { key: "ArrowDown" });
+    await flushPromises();
+    const search = popoverEl().querySelector(".branch-picker__search") as HTMLInputElement;
+    expect(document.activeElement).toBe(search);
+    search.value = "feature/ui";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await flushPromises();
+    search.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await flushPromises();
+    expect(wrapper.emitted("update:modelValue")?.at(-1)).toEqual(["feature/ui"]);
+    expect(document.body.querySelector(".branch-picker__popover")).toBeNull();
+
+    await button.trigger("keydown", { key: "ArrowDown" });
+    await flushPromises();
+    const reopenedSearch = popoverEl().querySelector(".branch-picker__search") as HTMLInputElement;
+    reopenedSearch.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await flushPromises();
+    expect(document.body.querySelector(".branch-picker__popover")).toBeNull();
+    expect(document.activeElement).toBe(button.element);
+  });
+
   test("selecting a nested leaf emits the full ref and closes the popover", async () => {
     wrapper = mount(BranchSelectPopover, {
       props: { options: OPTIONS, remoteNames: ["origin"], defaultBranch: "main" },

@@ -11,6 +11,7 @@ import {
 import { hasCommit, inspectCheckout, listCommits, lsRemoteRef, type GitRun } from "./inspect.js";
 import {
   fullSourceRef,
+  isManagedReviewBranch,
   managedReviewBranchAlias,
   reviewSourceIdentityKey,
   sameRemote,
@@ -564,15 +565,15 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
       case "status": {
         const facts = await inspectCheckout(run, cwd);
         const conflicts = facts.operation ? await manager.getReviewGitEngine().conflictedPaths(cwd) : [];
-        const aliases = [
-          managedReviewBranchAlias(review.pullRequest?.id ?? "", review.pullRequest?.sourceRefName || ""),
-          sourceBranch,
-        ];
+        const onPullRequestBranch =
+          !facts.detached &&
+          (isManagedReviewBranch(facts.branch, review.pullRequest?.id ?? "", review.pullRequest?.sourceRefName || "") ||
+            facts.branch === sourceBranch);
         return {
           headSha: facts.headSha,
           branch: facts.branch || null,
           detached: facts.detached,
-          onPullRequestBranch: !facts.detached && aliases.includes(facts.branch),
+          onPullRequestBranch,
           operationInProgress: facts.operation,
           conflictedPaths: conflicts,
           staged: facts.dirty.staged,

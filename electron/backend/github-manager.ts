@@ -5,6 +5,13 @@ import { createGitHubApi } from "./github-api.js";
 import { BaseProviderManager } from "./shared/base-manager.js";
 import { carryOverSourceBaseline } from "../shared/review-source-identity.js";
 import type { ReviewInfo } from "../shared/types/state.js";
+import type {
+  ReviewPrAction,
+  ReviewPrActionOptions,
+  ReviewPrActionOutcome,
+  ReviewPrActionSnapshot,
+  ReviewPrCheck,
+} from "../shared/review-pr-actions.js";
 import { classifyGitHubRequest, parseGitHubUrl } from "./github-audit-log-store.js";
 import { buildCheckSummary, buildPullRequestSummary, findWorkspaceForPullRequest } from "./github-pr-summary.js";
 import {
@@ -31,6 +38,7 @@ import {
   createConnectionSnapshot,
   buildRepositoryRemoteUrl,
 } from "./github-utils.js";
+import { reviewPrActionSnapshotFingerprint } from "./shared/review-pr-action-fingerprint.js";
 
 interface SyncConnection {
   id: string;
@@ -261,6 +269,19 @@ export class GitHubManager extends BaseProviderManager {
     });
     currentEntry.pending = pending;
     return pending;
+  }
+
+  private findActionSummary(prKey: string): Record<string, unknown> | null {
+    const current = this.snapshot.pullRequests[prKey] || this.findSummary(prKey);
+    if (current) return current as Record<string, unknown>;
+    const tracked = this.reviewStore.getTrackedPullRequest(prKey);
+    if (!tracked?.connectionId || !tracked.owner || !tracked.repo || !tracked.pullRequestNumber) return null;
+    return {
+      prKey,
+      connectionId: tracked.connectionId,
+      repository: { owner: tracked.owner, name: tracked.repo },
+      pullRequest: { number: tracked.pullRequestNumber },
+    };
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -822,7 +843,7 @@ export class GitHubManager extends BaseProviderManager {
     prKey: string,
     { workspaces = [], force = false }: { workspaces?: SyncWorkspace[]; force?: boolean } = {},
   ): Promise<Record<string, unknown>> {
-    const current = this.snapshot.pullRequests[prKey] || this.findSummary(prKey);
+    const current = this.findActionSummary(prKey);
     if (!current) throw new Error("Pull request is not available in the current GitHub snapshot.");
     const currentRec = current as Record<string, unknown>;
     if (
@@ -1102,7 +1123,7 @@ export class GitHubManager extends BaseProviderManager {
     filePath?: string;
     lineNumber?: number | null;
     lineSide?: "old" | "new";
-  }): Promise<void> {
+  }): Promise<unknown> {
     const summary = await this.ensurePullRequestDetail(prKey);
     this.setAuditContext({ connectionId: (summary.connectionId as string) || "", userInitiated: true });
     const connection = this.findConnection(summary.connectionId as string);
@@ -1144,11 +1165,13 @@ export class GitHubManager extends BaseProviderManager {
     prKey,
     event,
     body = "",
+    commitId,
   }: {
     prKey: string;
     event: string;
     body?: string;
-  }): Promise<void> {
+    commitId?: string;
+  }): Promise<unknown> {
     const summary = await this.ensurePullRequestDetail(prKey);
     this.setAuditContext({ connectionId: (summary.connectionId as string) || "", userInitiated: true });
     const connection = this.findConnection(summary.connectionId as string);
@@ -1161,7 +1184,321 @@ export class GitHubManager extends BaseProviderManager {
     const repository = summary.repository as Record<string, unknown>;
     const pullRequest = summary.pullRequest as Record<string, unknown>;
     // event: APPROVE, REQUEST_CHANGES, COMMENT
-    await api.submitReview(connection, token, repository.owner, repository.name, pullRequest.number, { event, body });
+    return api.submitReview(connection, token, repository.owner, repository.name, pullRequest.number, {
+      event,
+      body,
+      commitId,
+    });
+  }
+
+  async getPullRequestActionSnapshot(prKey: string, _options: { fresh: true }): Promise<ReviewPrActionSnapshot> {
+    const current = this.findActionSummary(prKey);
+    if (!current) throw new Error("Pull request is not available in the current GitHub snapshot.");
+    const summary = current;
+    const connectionId = String(summary.connectionId || "");
+    const connection = this.findConnection(connectionId);
+    if (!connection) throw new Error("GitHub connection was not found.");
+    const token = this.credentialStore.getSecret(connection.tokenRef || "");
+    if (!token) throw new Error("PAT is missing.");
+    const repository = summary.repository as Record<string, unknown>;
+    const priorPullRequest = summary.pullRequest as Record<string, unknown>;
+    const owner = String(repository.owner || "");
+    const repo = String(repository.name || "");
+    const number = priorPullRequest.number as number | string;
+    if (!owner || !repo || !number) throw new Error("Pull request identity is incomplete.");
+    this.setAuditContext({ connectionId, userInitiated: true });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const api = this.api as any;
+    const pr = await api.getPullRequest(connection, token, owner, repo, number);
+    const headSha = String(pr?.head?.sha || "");
+    const baseSha = String(pr?.base?.sha || "");
+    const nodeId = String(pr?.node_id || "");
+    const [checkRuns, combinedStatus, reviews, details] = await Promise.all([
+      headSha ? api.listCheckRuns(connection, token, owner, repo, headSha) : Promise.resolve([]),
+      headSha ? api.getCombinedStatus(connection, token, owner, repo, headSha) : Promise.resolve(null),
+      api.listReviews(connection, token, owner, repo, number),
+      nodeId ? api.getPullRequestActionDetails(connection, token, nodeId) : Promise.resolve(null),
+    ]);
+    const checks: ReviewPrCheck[] = [];
+    for (const run of checkRuns as Array<Record<string, unknown>>) {
+      const conclusion = String(run.conclusion || "").toLowerCase();
+      const status = String(run.status || "").toLowerCase();
+      const state = ["success", "neutral", "skipped"].includes(conclusion)
+        ? "success"
+        : ["failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale"].includes(conclusion)
+          ? "failure"
+          : status === "completed"
+            ? "unknown"
+            : "pending";
+      checks.push({
+        name: String(run.name || "Check"),
+        state,
+        kind: "check_run",
+        ...(run.html_url ? { url: String(run.html_url) } : {}),
+        ...(run.output && typeof run.output === "object" && (run.output as Record<string, unknown>).title
+          ? { details: String((run.output as Record<string, unknown>).title) }
+          : {}),
+      });
+    }
+    for (const status of (combinedStatus?.statuses || []) as Array<Record<string, unknown>>) {
+      const rawState = String(status.state || "").toLowerCase();
+      checks.push({
+        name: String(status.context || "Commit status"),
+        state:
+          rawState === "success"
+            ? "success"
+            : rawState === "failure" || rawState === "error"
+              ? "failure"
+              : rawState === "pending"
+                ? "pending"
+                : "unknown",
+        kind: "commit_status",
+        ...(status.target_url ? { url: String(status.target_url) } : {}),
+        ...(status.description ? { details: String(status.description) } : {}),
+      });
+    }
+    const failed = checks.filter((check) => check.state === "failure").length;
+    const pending = checks.filter((check) => check.state === "pending").length;
+    const successful = checks.filter((check) => check.state === "success").length;
+    const hasUnknown = checks.some((check) => check.state === "unknown");
+    const checkState = !checks.length
+      ? "unknown"
+      : failed
+        ? "failure"
+        : pending
+          ? "pending"
+          : hasUnknown
+            ? "unknown"
+            : "success";
+    const latestReviews = new Map<string, string>();
+    for (const review of reviews as Array<Record<string, unknown>>) {
+      const login = String((review.user as Record<string, unknown> | undefined)?.login || "");
+      const state = String(review.state || "").toUpperCase();
+      if (login && state !== "COMMENTED" && state !== "PENDING") latestReviews.set(login, state);
+    }
+    const reviewStates = [...latestReviews.values()];
+    const pullRequestState = pr.merged_at ? "merged" : String(pr.state || "").toLowerCase();
+    if (!["open", "closed", "merged"].includes(pullRequestState)) {
+      throw new Error(`GitHub returned an unsupported pull request state: ${pullRequestState || "missing"}.`);
+    }
+    const isDraft = pr.draft === true;
+    const autoMerge = details ? Boolean(details.autoMergeRequest) : null;
+    const mergeStateStatus = String(details?.mergeStateStatus || "").toUpperCase();
+    const reviewDecision = String(details?.reviewDecision || "").toUpperCase();
+    let mergeReadiness: ReviewPrActionSnapshot["mergeReadiness"];
+    if (pullRequestState !== "open" || isDraft || mergeStateStatus === "DRAFT" || mergeStateStatus === "DIRTY") {
+      mergeReadiness = {
+        state: "blocked",
+        reason:
+          pullRequestState !== "open"
+            ? "Pull request is not open."
+            : isDraft || mergeStateStatus === "DRAFT"
+              ? "Draft pull requests cannot be merged."
+              : "Pull request has merge conflicts.",
+      };
+    } else if (reviewDecision === "CHANGES_REQUESTED" || mergeStateStatus === "BLOCKED") {
+      mergeReadiness = {
+        state: "blocked",
+        reason:
+          reviewDecision === "CHANGES_REQUESTED"
+            ? "Reviewers requested changes."
+            : "GitHub reports that merge requirements are blocked.",
+      };
+    } else if (reviewDecision === "REVIEW_REQUIRED" || ["BEHIND", "UNSTABLE"].includes(mergeStateStatus)) {
+      mergeReadiness = {
+        state: "pending",
+        reason:
+          reviewDecision === "REVIEW_REQUIRED"
+            ? "Required reviews are still pending."
+            : `GitHub reports merge state ${mergeStateStatus}.`,
+      };
+    } else if (mergeStateStatus === "CLEAN" && ["APPROVED", "REVIEW_REQUIRED", ""].includes(reviewDecision)) {
+      mergeReadiness = { state: "ready" };
+    } else {
+      mergeReadiness = { state: "unknown", reason: "GitHub did not provide a known merge readiness state." };
+    }
+    const supportedActions: ReviewPrAction[] =
+      pullRequestState === "open"
+        ? [
+            "approve",
+            ...(mergeReadiness.state === "ready" ? (["merge"] as ReviewPrAction[]) : []),
+            ...(autoMerge === false ? (["enable_auto_merge"] as ReviewPrAction[]) : []),
+            ...(autoMerge === true ? (["disable_auto_merge"] as ReviewPrAction[]) : []),
+            ...(isDraft ? (["set_ready"] as ReviewPrAction[]) : (["set_draft"] as ReviewPrAction[])),
+            "close",
+          ]
+        : pullRequestState === "closed"
+          ? ["reopen"]
+          : [];
+    return {
+      provider: "github",
+      prKey,
+      connectionId,
+      repository: `${owner}/${repo}`,
+      number,
+      ...(pr.html_url ? { url: String(pr.html_url) } : {}),
+      title: String(pr.title || ""),
+      state: pullRequestState as ReviewPrActionSnapshot["state"],
+      isDraft,
+      autoMerge,
+      source: {
+        repository: String(pr.head?.repo?.full_name || ""),
+        branch: String(pr.head?.ref || ""),
+        sha: headSha,
+      },
+      target: {
+        repository: String(pr.base?.repo?.full_name || `${owner}/${repo}`),
+        branch: String(pr.base?.ref || ""),
+        sha: baseSha,
+      },
+      checks: { state: checkState, total: checks.length, successful, failed, pending, items: checks },
+      mergeReadiness,
+      review: {
+        approvals: reviewStates.filter((state) => state === "APPROVED").length,
+        changesRequested: reviewStates.filter((state) => state === "CHANGES_REQUESTED").length,
+        requiredApprovals: null,
+      },
+      supportedActions,
+    };
+  }
+
+  async executePullRequestAction({
+    prKey,
+    action,
+    options = {},
+    expectedSnapshot,
+  }: {
+    prKey: string;
+    action: ReviewPrAction;
+    options?: ReviewPrActionOptions;
+    expectedSnapshot: ReviewPrActionSnapshot;
+  }): Promise<ReviewPrActionOutcome> {
+    const snapshot = await this.getPullRequestActionSnapshot(prKey, { fresh: true });
+    if (reviewPrActionSnapshotFingerprint(snapshot) !== reviewPrActionSnapshotFingerprint(expectedSnapshot)) {
+      throw new Error("Pull request changed since the action was proposed. Refresh and propose it again.");
+    }
+    if (
+      !snapshot.source.sha ||
+      !snapshot.target.sha ||
+      !snapshot.source.repository ||
+      !snapshot.source.branch ||
+      !snapshot.target.repository ||
+      !snapshot.target.branch
+    ) {
+      throw new Error("Cannot act on a pull request without complete source and target identity and commit SHAs.");
+    }
+    if (!snapshot.supportedActions.includes(action)) throw new Error(`GitHub does not support the ${action} action.`);
+    if (action === "merge" && snapshot.mergeReadiness.state !== "ready") {
+      throw new Error(
+        snapshot.mergeReadiness.reason || "GitHub has not confirmed that this pull request is ready to merge.",
+      );
+    }
+    const current = this.findActionSummary(prKey);
+    if (!current) throw new Error("Pull request identity is no longer available.");
+    const connectionId = String(current.connectionId || "");
+    const connection = this.findConnection(connectionId);
+    if (!connection) throw new Error("GitHub connection was not found.");
+    const token = this.credentialStore.getSecret(connection.tokenRef || "");
+    if (!token) throw new Error("PAT is missing.");
+    const repository = current.repository as Record<string, unknown>;
+    const owner = String(repository.owner || "");
+    const repo = String(repository.name || "");
+    const number = snapshot.number;
+    this.setAuditContext({ connectionId, userInitiated: true });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const api = this.api as any;
+    let message = "GitHub accepted the pull request action.";
+    let confirmed = false;
+    if (action === "approve") {
+      const result = await this.submitPullRequestReview({
+        prKey,
+        event: "APPROVE",
+        commitId: expectedSnapshot.source.sha,
+      });
+      confirmed =
+        String((result as unknown as Record<string, unknown> | null)?.state || "").toUpperCase() === "APPROVED";
+    } else if (action === "merge") {
+      const result = await api.mergePullRequest(
+        connection,
+        token,
+        owner,
+        repo,
+        number,
+        expectedSnapshot.source.sha,
+        options.mergeMethod || "merge",
+      );
+      if (result?.merged !== true) throw new Error(String(result?.message || "GitHub did not merge the pull request."));
+      confirmed = true;
+      message = String(result.message || "GitHub merged the pull request.");
+    } else if (action === "close" || action === "reopen") {
+      const result = await api.updatePullRequestState(
+        connection,
+        token,
+        owner,
+        repo,
+        number,
+        action === "close" ? "closed" : "open",
+      );
+      confirmed = result?.state === (action === "close" ? "closed" : "open");
+    } else if (
+      action === "set_draft" ||
+      action === "set_ready" ||
+      action === "enable_auto_merge" ||
+      action === "disable_auto_merge"
+    ) {
+      // A fresh GET supplies the GraphQL node ID needed for these mutations.
+      const pr = await api.getPullRequest(connection, token, owner, repo, number);
+      if (!pr?.node_id) throw new Error("GitHub did not provide a pull request node ID.");
+      if (action === "set_draft" || action === "set_ready") {
+        const result = await api.setPullRequestDraft(connection, token, pr.node_id, action === "set_draft");
+        const mutation = action === "set_draft" ? "convertPullRequestToDraft" : "markPullRequestReadyForReview";
+        confirmed = result?.[mutation]?.pullRequest?.isDraft === (action === "set_draft");
+      } else {
+        const result = await api.setPullRequestAutoMerge(
+          connection,
+          token,
+          pr.node_id,
+          action === "enable_auto_merge",
+          options.mergeMethod || "merge",
+          expectedSnapshot.source.sha,
+        );
+        const mutation = action === "enable_auto_merge" ? "enablePullRequestAutoMerge" : "disablePullRequestAutoMerge";
+        const autoMergeRequest = result?.[mutation]?.pullRequest?.autoMergeRequest;
+        confirmed = action === "enable_auto_merge" ? Boolean(autoMergeRequest?.enabledAt) : autoMergeRequest === null;
+      }
+    }
+    let refreshed: ReviewPrActionSnapshot | undefined;
+    let refreshWarning = "";
+    try {
+      refreshed = await this.getPullRequestActionSnapshot(prKey, { fresh: true });
+    } catch (error) {
+      refreshWarning = "GitHub accepted the action, but the follow-up refresh failed.";
+      this.log.warn("GitHub PR action succeeded but follow-up refresh failed", {
+        prKey,
+        action,
+        err: (error as Error).message || String(error),
+      });
+    }
+    if (!confirmed && refreshed) {
+      confirmed =
+        (action === "set_draft" && refreshed.isDraft) ||
+        (action === "set_ready" && !refreshed.isDraft) ||
+        (action === "enable_auto_merge" && refreshed.autoMerge === true) ||
+        (action === "disable_auto_merge" && refreshed.autoMerge === false) ||
+        (action === "close" && refreshed.state === "closed") ||
+        (action === "reopen" && refreshed.state === "open") ||
+        (action === "merge" && refreshed.state === "merged");
+    }
+    if (!confirmed) message = "GitHub accepted the action, but the resulting state is not confirmed.";
+    return {
+      provider: "github",
+      prKey,
+      action,
+      status: confirmed ? "completed" : "accepted",
+      message: refreshWarning ? `${message} ${refreshWarning}` : message,
+      ...(refreshWarning ? { warning: refreshWarning } : {}),
+      ...(refreshed ? { snapshot: refreshed } : {}),
+    };
   }
 
   // ---------------------------------------------------------------------------

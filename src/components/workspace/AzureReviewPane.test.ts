@@ -11,6 +11,7 @@ import { describe, expect, test, beforeEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import AzureReviewPane from "./AzureReviewPane.vue";
+import DialogOverlay from "../dialogs/DialogOverlay.vue";
 import { apiKey } from "../../types/keys.js";
 import ReviewPipelinesTab from "./shared/ReviewPipelinesTab.vue";
 import { useAppStore } from "../../stores/app.js";
@@ -30,6 +31,8 @@ function buildPayload(provider: "azure-devops" | "github" = "azure-devops"): Sta
       isDraft: false,
       sourceRefName: provider === "github" ? "feature/x" : "refs/heads/feature/x",
       targetRefName: provider === "github" ? "main" : "refs/heads/main",
+      sourceCommitId: "source-commit-sha",
+      targetCommitId: "target-commit-sha",
       url: "",
       webUrl: "",
       mergeStatus: "succeeded",
@@ -82,9 +85,12 @@ function buildPayload(provider: "azure-devops" | "github" = "azure-devops"): Sta
   } as unknown as StatePayload;
 }
 
-function mountPane(provider: "azure-devops" | "github" = "azure-devops") {
+function mountPane(
+  provider: "azure-devops" | "github" = "azure-devops",
+  options: { includeComments?: boolean; payload?: StatePayload } = {},
+) {
   const appStore = useAppStore();
-  appStore.payload = buildPayload(provider);
+  appStore.payload = options.payload || buildPayload(provider);
   // Stub the network-bound store actions the component fires from
   // mounted/watch hooks so they don't blow up against the null _api.
   const noop = () => Promise.resolve();
@@ -111,7 +117,7 @@ function mountPane(provider: "azure-devops" | "github" = "azure-devops") {
         GitCommitLog: true,
         MonacoDiffPanel: true,
         ReviewSummaryTab: true,
-        ReviewCommentsTab: true,
+        ReviewCommentsTab: options.includeComments ? false : true,
         ReviewAgentTab: true,
         ReviewPipelinesTab: true,
         CustomSelect: true,
@@ -125,6 +131,95 @@ function mountPane(provider: "azure-devops" | "github" = "azure-devops") {
     },
   });
 }
+
+describe("AzureReviewPane — persisted drafts survive view unmounts", () => {
+  test("a saved PR draft is restored when Review is reopened after switching views", async () => {
+    const appStore = useAppStore();
+    const payload = buildPayload();
+    // Model the provider-owned result returned by the persisted review bridge
+    // store. The component itself is discarded as GitPane switches views.
+    (payload as unknown as { reviewBridge: { pullRequests: Record<string, unknown> } }).reviewBridge.pullRequests[
+      "ado:1"
+    ] = {
+      comments: [
+        {
+          commentKey: "local-draft-key",
+          commentKind: "draft",
+          displayIndex: 1,
+          status: "draft-ready",
+          payload: {},
+        },
+      ],
+      drafts: [
+        {
+          draftId: "persisted-draft-id",
+          commentKey: "local-draft-key",
+          body: "Draft survives switching away from Review.",
+          authorAgent: "human",
+          status: "draft",
+        },
+      ],
+      syncQueue: [],
+    };
+    appStore.payload = payload;
+    const gitUi = useGitUiStore();
+    gitUi.reviewSwitchTab("ws-review", "comments");
+
+    const first = mountPane("azure-devops", { includeComments: true, payload });
+    await flushPromises();
+    expect(first.text()).toContain("Draft survives switching away from Review.");
+    first.unmount();
+
+    gitUi.reviewSwitchTab("ws-review", "summary");
+    gitUi.reviewSwitchTab("ws-review", "comments");
+    const reopened = mountPane("azure-devops", { includeComments: true, payload });
+    await flushPromises();
+    expect(reopened.text()).toContain("Draft survives switching away from Review.");
+    expect(reopened.findAll(".review-comment--draft")).toHaveLength(1);
+    reopened.unmount();
+  });
+
+  test("an unsaved comment editor stays mounted while Review changes views", async () => {
+    const appStore = useAppStore();
+    const payload = buildPayload();
+    const reviewDetails = (payload as unknown as { azureDevops: { pullRequests: Record<string, unknown> } }).azureDevops
+      .pullRequests["ado:1"] as { changedFiles: Array<Record<string, unknown>> };
+    reviewDetails.changedFiles = [
+      { path: "src/first.ts", changeType: "edit" },
+      { path: "src/second.ts", changeType: "edit" },
+    ];
+    const dialog = mount(DialogOverlay, { attachTo: document.body });
+    appStore.openDialog("TextAreaDialog", {
+      title: "Edit review draft",
+      label: "Comment",
+      value: "Saved value",
+      onSubmit: vi.fn(),
+      onCancel: vi.fn(),
+    });
+    await vi.waitFor(() => expect(document.body.querySelector(".dialog--textarea textarea")).not.toBeNull(), {
+      timeout: 10_000,
+    });
+    const textarea = document.body.querySelector("textarea");
+    expect(textarea).not.toBeNull();
+    textarea!.value = "Unsaved edit that should remain open.";
+    textarea!.dispatchEvent(new Event("input", { bubbles: true }));
+    await flushPromises();
+
+    useGitUiStore().reviewSwitchTab("ws-review", "files");
+    const pane = mountPane("azure-devops", { includeComments: true, payload });
+    await flushPromises();
+    await pane.get('.gct-node__row[title="Modified in pull request: src/second.ts"]').trigger("click");
+    await vi.waitFor(() => expect(useGitUiStore().get("ws-review").reviewSelectedFile).toBe("src/second.ts"));
+    expect(useGitUiStore().get("ws-review").reviewSelectedFile).toBe("src/second.ts");
+    expect(document.body.querySelector("textarea")).toHaveProperty("value", "Unsaved edit that should remain open.");
+    pane.unmount();
+    await flushPromises();
+
+    expect(document.body.querySelector("textarea")).toHaveProperty("value", "Unsaved edit that should remain open.");
+    dialog.unmount();
+    appStore.closeDialog();
+  });
+});
 
 beforeEach(() => {
   setActivePinia(createPinia());
@@ -186,8 +281,33 @@ describe("AzureReviewPane responsive chrome", () => {
 
     await wrapper.find(".review-shell__menu-trigger").trigger("click");
     expect(wrapper.find(".review-shell--menu-open").exists()).toBe(true);
-    await wrapper.find(".review-shell__menu-backdrop").trigger("click");
+    expect(wrapper.find(".review-shell__menu-backdrop").exists()).toBe(false);
+    expect(wrapper.find(".git-view__toolbar").exists()).toBe(true);
+    await wrapper.find(".review-shell__menu-trigger").trigger("click");
     expect(wrapper.find(".review-shell--menu-open").exists()).toBe(false);
+  });
+
+  test("reports a failed mobile action without a blocking backdrop", async () => {
+    setMatchMediaResult("(max-width: 768px)", true);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", true);
+    const wrapper = mountPane();
+    await flushPromises();
+    const appStore = useAppStore();
+    const payload = buildPayload();
+    const bridge = payload.reviewBridge as unknown as { pullRequests: Record<string, unknown> };
+    bridge.pullRequests["ado:1"] = { syncQueue: [{ status: "pending" }] };
+    appStore.payload = payload;
+    vi.spyOn(appStore, "syncReviewBridgePullRequest").mockRejectedValue(
+      new Error("C:\\repo\\feature\\long-branch-name: publish failed"),
+    );
+
+    await wrapper.find(".review-shell__menu-trigger").trigger("click");
+    const publishButton = wrapper.findAll("button").find((button) => button.text().includes("Publish only"))!;
+    await publishButton.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.find(".review-toolbar-error__message").text()).toContain("publish failed");
+    expect(wrapper.find(".review-shell__menu-backdrop").exists()).toBe(false);
   });
 
   test("toggling the tabs trigger flips the --tabs-menu-open modifier", async () => {
@@ -445,6 +565,34 @@ describe("AzureReviewPane — manual Refresh drives the full sync, not just meta
     await flushPromises();
 
     expect(wrapper.text()).toContain("Pushed abc to feature/x. Warning: Baseline not saved.");
+  });
+
+  test("a blocked Push & publish points queued comments at Publish only", async () => {
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+    const wrapper = mountPane();
+    await flushPromises();
+    const appStore = useAppStore();
+    const payload = buildPayload();
+    const bridge = payload.reviewBridge as unknown as { pullRequests: Record<string, unknown> };
+    bridge.pullRequests["ado:1"] = { syncQueue: [{ status: "pending" }, { status: "pending" }] };
+    appStore.payload = payload;
+    vi.spyOn(appStore, "pushAndPublishReview").mockResolvedValue({
+      push: {
+        status: "blocked",
+        message: 'This checkout is on "develop", not on the pull request\'s branch.',
+        guidance: "Switch back to pr-1-feature-x or feature/x, or detach the review link.",
+      },
+      publish: { attempted: false, published: [], failed: [] },
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (wrapper.vm as any).handlePushAndPublish();
+    await flushPromises();
+
+    expect(wrapper.find(".review-toolbar-error__message").text()).toBe(
+      'This checkout is on "develop", not on the pull request\'s branch. Switch back to pr-1-feature-x or feature/x, or detach the review link. No comments were published. To publish the 2 queued comments without pushing, use Publish only.',
+    );
   });
 
   test("a blocked ('dirty') sync result renders a distinct, non-success outcome banner", async () => {
@@ -733,6 +881,8 @@ describe("AzureReviewPane — Monaco diff loading via the shared useMonacoDiffLo
         isDraft: false,
         sourceRefName: "refs/heads/feature/x",
         targetRefName: "refs/heads/main",
+        sourceCommitId: "source-commit-sha",
+        targetCommitId: "target-commit-sha",
         url: "",
         webUrl: "",
         mergeStatus: "succeeded",
@@ -841,8 +991,9 @@ describe("AzureReviewPane — Monaco diff loading via the shared useMonacoDiffLo
     expect(fileGitDiff).toHaveBeenCalledWith({
       rootPath: "/repo",
       relativePath: "src/foo.ts",
-      source: "branch",
-      revisionRef: "origin/main",
+      source: "range",
+      baseRef: "target-commit-sha",
+      targetRef: "source-commit-sha",
     });
 
     // MonacoDiffPanel is auto-stubbed as a defineAsyncComponent in this test

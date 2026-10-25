@@ -148,7 +148,7 @@ function run(action: "apply" | "pop" | "drop" | "branch" | "export" | "copy") {
   border: 1px solid var(--border);
   border-radius: 8px;
   margin-bottom: 8px;
-  background: var(--surface, transparent);
+  background: var(--surface, var(--panel));
 }
 
 .stash-item--selected {
@@ -219,7 +219,7 @@ function run(action: "apply" | "pop" | "drop" | "branch" | "export" | "copy") {
   z-index: 20;
   display: flex;
   flex-direction: column;
-  background: var(--surface, #1e1e1e);
+  background: var(--surface, var(--panel-elevated));
   border: 1px solid var(--border);
   border-radius: 6px;
   min-width: 140px;

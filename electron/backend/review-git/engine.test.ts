@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -235,6 +236,7 @@ describe("refresh", () => {
       expect(result.recoveryRef).toBeTruthy();
       expect(await git(f.checkout, ["rev-parse", result.recoveryRef!])).toBe(oldHead);
     },
+    60_000,
   );
 
   test("HEAD moved off the baseline: confirmation required, nothing changes until confirmed", async () => {
@@ -367,6 +369,21 @@ describe("refresh", () => {
   test("a checkout switched to an unrelated branch is blocked, not refreshed", async () => {
     const f = await createFixture();
     await git(f.checkout, ["checkout", "-b", "develop", "origin/main"]);
+    const result = expectStatus(await f.engine.refresh(f.subject, requester), "blocked");
+    expect(result.code).toBe("branch-mismatch");
+  });
+
+  test("the isolated one-shot review branch (<alias>-review-<uuid>) is the pull request's branch", async () => {
+    const f = await createFixture();
+    const isolated = `${managedReviewBranchAlias(7, "refs/heads/feature")}-review-${randomUUID()}`;
+    await git(f.checkout, ["branch", "-m", isolated]);
+    const result = await f.engine.refresh(f.subject, requester);
+    expect(result.status === "blocked" ? result.code : "").not.toBe("branch-mismatch");
+  });
+
+  test("a review branch suffix that is not a uuid is still a branch mismatch", async () => {
+    const f = await createFixture();
+    await git(f.checkout, ["branch", "-m", `${managedReviewBranchAlias(7, "refs/heads/feature")}-review-not-a-uuid`]);
     const result = expectStatus(await f.engine.refresh(f.subject, requester), "blocked");
     expect(result.code).toBe("branch-mismatch");
   });

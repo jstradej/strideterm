@@ -3,6 +3,7 @@ import {
   validateIpc,
   workspaceSchema,
   reviewBridgeQueueSchema,
+  reviewGitStartSchema,
   workspaceIdSchema,
   workspaceDeleteOptionsSchema,
   azureCommentSchema,
@@ -16,6 +17,11 @@ import {
   gitDiffPreviewSchema,
   gitLogPageSchema,
   gitLogGraphSchema,
+  gitStageFileSchema,
+  gitStageHunkSchema,
+  gitCommitStagedSchema,
+  workspaceUIStateSchema,
+  settingsSchema,
   gitRemoteBranchDeleteSchema,
   terminalResizeSchema,
   profileSchema,
@@ -36,6 +42,55 @@ import {
 } from "./ipc-schemas.js";
 
 describe("ipc-schemas", () => {
+  test("review Git operation starts accept an optional bounded idempotency key", () => {
+    expect(reviewGitStartSchema.safeParse({ kind: "push", workspaceId: "ws-1" }).success).toBe(true);
+    expect(
+      reviewGitStartSchema.safeParse({ kind: "push", workspaceId: "ws-1", idempotencyKey: "retry-key-123" }).success,
+    ).toBe(true);
+    expect(reviewGitStartSchema.safeParse({ kind: "push", workspaceId: "ws-1", idempotencyKey: "short" }).success).toBe(
+      false,
+    );
+  });
+
+  test("validates stage-file paths and non-empty commit-staged messages", () => {
+    expect(validateIpc(gitStageFileSchema, { workspaceId: "ws", path: "src/a.ts" }, "git:stage-file")).toMatchObject({
+      workspaceId: "ws",
+      path: "src/a.ts",
+    });
+    for (const path of ["-A", "/absolute", ""]) {
+      expect(() => validateIpc(gitStageFileSchema, { workspaceId: "ws", path }, "git:stage-file")).toThrow();
+    }
+    expect(() =>
+      validateIpc(gitCommitStagedSchema, { workspaceId: "ws", message: "  " }, "git:commit-staged"),
+    ).toThrow();
+    expect(() =>
+      validateIpc(gitStageHunkSchema, { workspaceId: "ws", path: "a", diffToken: "bad", hunk: "@@" }, "git:stage-hunk"),
+    ).toThrow();
+  });
+  test("preserves partial Git UI settings while accepting retired fields from older clients", () => {
+    expect(
+      validateIpc(settingsSchema, { git: { ui: { newView: false, showAllActions: true } } }, "settings:update"),
+    ).toMatchObject({ git: { ui: { newView: false, showAllActions: true } } });
+    expect(validateIpc(settingsSchema, { git: { ui: { updateStrategy: "merge" } } }, "settings:update")).toMatchObject({
+      git: { ui: { updateStrategy: "merge" } },
+    });
+  });
+  test("validates persisted Git view preference ids", () => {
+    expect(
+      validateIpc(
+        workspaceUIStateSchema,
+        { workspaceId: "ws", uiState: { gitViewPreferences: { "profile::ws::root::pr": "review" } } },
+        "workspace:set-ui-state",
+      ).uiState.gitViewPreferences,
+    ).toEqual({ "profile::ws::root::pr": "review" });
+    expect(() =>
+      validateIpc(
+        workspaceUIStateSchema,
+        { workspaceId: "ws", uiState: { gitViewPreferences: { "profile::ws::root::pr": "checkout" } } },
+        "workspace:set-ui-state",
+      ),
+    ).toThrow();
+  });
   describe("sshKeyTransferStartSchema", () => {
     const base = { profileId: "default", keyId: "key-1" };
     const draft = {
@@ -108,6 +163,12 @@ describe("ipc-schemas", () => {
 
     test("throws on null payload", () => {
       expect(() => validateIpc(gitPayloadSchema, null, "test")).toThrow();
+    });
+
+    test("validates optional long Git idempotency keys", () => {
+      expect(gitPayloadSchema.safeParse({ workspaceId: "ws-1", idempotencyKey: "client-op-1" }).success).toBe(true);
+      expect(gitPayloadSchema.safeParse({ workspaceId: "ws-1", idempotencyKey: "" }).success).toBe(false);
+      expect(gitPayloadSchema.safeParse({ workspaceId: "ws-1", idempotencyKey: "x".repeat(201) }).success).toBe(false);
     });
   });
 

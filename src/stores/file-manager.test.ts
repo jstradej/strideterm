@@ -292,9 +292,9 @@ describe("file-manager store", () => {
     await store.createFile("newfile.txt");
     expect(store.error).toBe("EPERM: locked");
     const notifications = useNotificationStore();
-    expect(notifications.latestToast?.category).toBe("error");
-    expect(notifications.latestToast?.title).toBe("Create file failed");
-    expect(notifications.latestToast?.body).toBe("EPERM: locked");
+    expect(notifications.persistentToasts.at(-1)?.kind).toBe("error");
+    expect(notifications.persistentToasts.at(-1)?.title).toBe("Create file failed");
+    expect(notifications.persistentToasts.at(-1)?.body).toBe("EPERM: locked");
   });
 
   it("createDirectory failure sets store.error AND surfaces a notification toast", async () => {
@@ -310,7 +310,7 @@ describe("file-manager store", () => {
     await store.createDirectory("newdir");
     expect(store.error).toBe("EACCES");
     const notifications = useNotificationStore();
-    expect(notifications.latestToast?.title).toBe("Create folder failed");
+    expect(notifications.persistentToasts.at(-1)?.title).toBe("Create folder failed");
   });
 
   it("renameEntry failure sets store.error AND surfaces a notification toast", async () => {
@@ -327,7 +327,7 @@ describe("file-manager store", () => {
     await store.renameEntry(entry, "b.txt");
     expect(store.error).toBe("Destination already exists");
     const notifications = useNotificationStore();
-    expect(notifications.latestToast?.title).toBe("Rename failed");
+    expect(notifications.persistentToasts.at(-1)?.title).toBe("Rename failed");
   });
 
   it("deleteEntry failure sets store.error AND surfaces a notification toast", async () => {
@@ -344,7 +344,7 @@ describe("file-manager store", () => {
     await store.deleteEntry(entry);
     expect(store.error).toBe("EBUSY: file in use");
     const notifications = useNotificationStore();
-    expect(notifications.latestToast?.title).toBe("Delete failed");
+    expect(notifications.persistentToasts.at(-1)?.title).toBe("Delete failed");
   });
 
   it("moveEntryTo failure sets store.error AND surfaces a notification toast", async () => {
@@ -361,7 +361,7 @@ describe("file-manager store", () => {
     await store.moveEntryTo(entry, "dest");
     expect(store.error).toBe("Source and destination are the same");
     const notifications = useNotificationStore();
-    expect(notifications.latestToast?.title).toBe("Move failed");
+    expect(notifications.persistentToasts.at(-1)?.title).toBe("Move failed");
   });
 
   it("saveEdit failure sets store.error AND surfaces a notification toast", async () => {
@@ -380,7 +380,7 @@ describe("file-manager store", () => {
     await store.saveEdit();
     expect(store.error).toBe("EACCES: read-only");
     const notifications = useNotificationStore();
-    expect(notifications.latestToast?.title).toBe("Save failed");
+    expect(notifications.persistentToasts.at(-1)?.title).toBe("Save failed");
   });
 
   it("copyToClipboard tolerates a missing or rejecting fileClipboardCopy", async () => {

@@ -48,6 +48,7 @@ interface AzurePR {
     committer?: unknown;
     author?: unknown;
   };
+  lastMergeTargetCommit?: { commitId?: string };
   _links?: { web?: { href?: string } };
 }
 
@@ -221,6 +222,7 @@ export function buildPullRequestSummary({
       sourceRefName: p.sourceRefName || "",
       targetRefName: p.targetRefName || "",
       sourceCommitId: lastMergeSourceCommit.commitId || "",
+      targetCommitId: p.lastMergeTargetCommit?.commitId || "",
       lastSourceCommitAt: toIsoOrNull(latestCommitAt),
       creationDate: toIsoOrNull(latestPrAt),
       closedDate: toIsoOrNull(parseDate(p.closedDate)) || null,

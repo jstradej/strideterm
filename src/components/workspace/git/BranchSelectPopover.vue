@@ -7,6 +7,7 @@
       :disabled="disabled"
       :aria-expanded="open ? 'true' : 'false'"
       aria-haspopup="listbox"
+      :title="buttonTitle || undefined"
       @click="toggle"
       @keydown="onButtonKeydown"
     >
@@ -84,6 +85,7 @@ interface Props {
   offValue?: string;
   offLabel?: string; // shows a pinned "Off" row at the top when set
   searchPlaceholder?: string;
+  buttonTitle?: string;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -99,6 +101,7 @@ const props = withDefaults(defineProps<Props>(), {
   offValue: "",
   offLabel: "",
   searchPlaceholder: "Filter branches…",
+  buttonTitle: "",
 });
 
 const emit = defineEmits<{
@@ -480,6 +483,7 @@ function onButtonKeydown(e: KeyboardEvent): void {
       e.preventDefault();
       e.stopPropagation();
       closePopover();
+      buttonRef.value?.focus();
     }
   } else if (e.key === "Tab") {
     closePopover();
@@ -584,10 +588,10 @@ defineExpose({ focus: (): void => buttonRef.value?.focus() });
   z-index: 10050;
   display: flex;
   flex-direction: column;
-  background: var(--panel-elevated, #1d2026);
-  border: 1px solid var(--border);
+  background: var(--menu-bg);
+  border: 1px solid rgba(var(--tint), 0.16);
   border-radius: 4px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--menu-shadow);
   font-size: 12px;
   overflow: hidden;
 }

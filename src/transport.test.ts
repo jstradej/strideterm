@@ -3,9 +3,13 @@
  * activations to the correct /api/remote-client/* endpoints.
  */
 import { describe, it, expect, vi, beforeEach, afterEach, test } from "vitest";
+import { createPinia, setActivePinia } from "pinia";
+import { nextTick } from "vue";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createRemoteTransport, createTransport } from "./transport.js";
+import { useAppStore } from "./stores/app.js";
+import { useGitUiStore } from "./stores/git-ui.js";
 
 interface MockWebSocketEvent {
   code?: number;
@@ -63,6 +67,22 @@ class MockWebSocket {
   }
 }
 
+const createdRemoteBridges: Array<{ suspend?: () => void }> = [];
+
+function makeRemoteTransport() {
+  const transport = createRemoteTransport();
+  const bridge = (window as unknown as { __stridetermRemote?: { suspend?: () => void } }).__stridetermRemote;
+  if (bridge) createdRemoteBridges.push(bridge);
+  return transport;
+}
+
+afterEach(() => {
+  // Every transport test shares this module's jsdom window. Keep transports created in every
+  // describe from reacting to later tests' mocked visibility/focus events or fake timers.
+  for (const bridge of createdRemoteBridges) bridge.suspend?.();
+  createdRemoteBridges.length = 0;
+});
+
 function redirectedResponse(body: BodyInit, url: string, init: ResponseInit = {}): Response {
   const response = new Response(body, init);
   Object.defineProperties(response, {
@@ -106,7 +126,8 @@ describe("remote transport endpoint routing", () => {
     // one test's 401 became another test's second `session-lost` report, and it made the file's
     // outcome depend on which tests happened to leave a socket open. Suspending is the closest thing
     // to disposal the bridge offers, and it is enough: a suspended transport ignores all three events.
-    (window as unknown as Record<string, { suspend?: () => void } | undefined>).__stridetermRemote?.suspend?.();
+    for (const bridge of createdRemoteBridges) bridge.suspend?.();
+    createdRemoteBridges.length = 0;
     delete (window as unknown as Record<string, unknown>).StridetermHost;
     globalThis.fetch = originalFetch;
     globalThis.WebSocket = originalWebSocket;
@@ -117,7 +138,7 @@ describe("remote transport endpoint routing", () => {
     const postMessage = vi.fn();
     (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
 
-    createRemoteTransport();
+    makeRemoteTransport();
 
     expect(
       typeof (window as unknown as { __stridetermRemote?: { selectTarget?: unknown } }).__stridetermRemote
@@ -132,7 +153,7 @@ describe("remote transport endpoint routing", () => {
   it("sets host visibility only for a native host and dispatches the visibility event", () => {
     const postMessage = vi.fn();
     (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
-    createRemoteTransport();
+    makeRemoteTransport();
     const received: Array<{ visible: unknown; handled: boolean }> = [];
     const handler = (event: Event) => {
       const detail = (event as CustomEvent).detail;
@@ -152,21 +173,21 @@ describe("remote transport endpoint routing", () => {
   });
 
   it("does not expose host visibility control in a plain browser", () => {
-    createRemoteTransport();
+    makeRemoteTransport();
     const bridge = (window as unknown as { __stridetermRemote: { setHostVisible(value: unknown): boolean } })
       .__stridetermRemote;
     expect(bridge.setHostVisible(false)).toBe(false);
   });
 
   it("activateProfile calls /api/remote-client/profile/activate with profileId", async () => {
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     await transport.activateProfile!("p1").catch(() => {});
     expect(capturedUrls.some((u) => u.includes("/api/remote-client/profile/activate"))).toBe(true);
     expect(capturedBodies.some((b) => (b as { profileId?: string }).profileId === "p1")).toBe(true);
   });
 
   it("startPullRequestReview uses the profile-bound review endpoint with an idempotency key", async () => {
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     const payload = { provider: "github" as const, prKey: "repo:17", idempotencyKey: "retry-key" };
     await transport.startPullRequestReview!(payload);
     expect(capturedUrls.some((url) => url.endsWith("/api/review/start"))).toBe(true);
@@ -178,7 +199,7 @@ describe("remote transport endpoint routing", () => {
     (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
     const payload = { remoteClient: { profileId: "other", activeWorkspaceId: "workspace-other" } };
     globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => payload }) as Response);
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     const updated = vi.fn();
     transport.onStateUpdated(updated);
     const socketCount = MockWebSocket.instances.length;
@@ -230,7 +251,7 @@ describe("remote transport endpoint routing", () => {
       }
       return { ok: true, json: async () => payloadB } as Response;
     });
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     await transport.getState();
     const panelActivations: string[] = [];
     window.addEventListener(
@@ -284,7 +305,7 @@ describe("remote transport endpoint routing", () => {
       await new Promise<void>((resolve) => (finishA = resolve));
       return { ok: true, json: async () => payloadA } as Response;
     });
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     await transport.getState();
     const panelActivations: string[] = [];
     const onPanelActivation = ((event: CustomEvent<{ panelId: string; handled: boolean }>) => {
@@ -327,7 +348,7 @@ describe("remote transport endpoint routing", () => {
     globalThis.fetch = vi.fn(async (url: RequestInfo | URL) => {
       return { ok: true, json: async () => (String(url) === "/api/state" ? baseline : target) } as Response;
     });
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     await transport.getState();
     const bridge = (
       window as unknown as {
@@ -353,7 +374,7 @@ describe("remote transport endpoint routing", () => {
       calls.push(String(url));
       return { ok: true, json: async () => payload } as Response;
     });
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onStateUpdated(vi.fn());
     const socket = MockWebSocket.instances.at(-1)!;
     socket.open();
@@ -381,7 +402,7 @@ describe("remote transport endpoint routing", () => {
       calls.push(String(url));
       return { ok: true, json: async () => payload } as Response;
     });
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onStateUpdated(vi.fn());
     const socket = MockWebSocket.instances.at(-1)!;
     socket.open();
@@ -419,7 +440,7 @@ describe("remote transport endpoint routing", () => {
       return { ok: false, status: 403, json: async () => ({}) } as Response;
     });
     const bridge =
-      (createRemoteTransport(),
+      (makeRemoteTransport(),
       (
         window as unknown as {
           __stridetermRemote: { selectTarget: (...args: unknown[]) => Promise<void> };
@@ -451,7 +472,7 @@ describe("remote transport endpoint routing", () => {
       }
       return { ok: true, json: async () => payload } as Response;
     });
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     const updated = vi.fn();
     transport.onStateUpdated(updated);
     const bridge = (
@@ -508,7 +529,7 @@ describe("remote transport endpoint routing", () => {
       },
     ];
     globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => payloads.shift() }) as Response);
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onStateUpdated(vi.fn());
     const bridge = (
       window as unknown as { __stridetermRemote: { selectTarget: (...args: unknown[]) => Promise<void> } }
@@ -540,7 +561,7 @@ describe("remote transport endpoint routing", () => {
     const selectPanel = vi.fn();
     (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
     globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => ({}) }) as Response);
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onStateUpdated(vi.fn());
     window.addEventListener(
       "strideterm:remote-select-panel",
@@ -577,7 +598,7 @@ describe("remote transport endpoint routing", () => {
   it("selects an exact panel in the already active target without reactivating its workspace", async () => {
     const postMessage = vi.fn();
     (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     const updated = vi.fn();
     transport.onStateUpdated(updated);
     const socket = MockWebSocket.instances.at(-1)!;
@@ -667,7 +688,7 @@ describe("remote transport endpoint routing", () => {
   it("does not report success when a warmed-target panel selection is rejected", async () => {
     const postMessage = vi.fn();
     (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onStateUpdated(vi.fn());
     const socket = MockWebSocket.instances.at(-1)!;
     socket.open();
@@ -717,7 +738,7 @@ describe("remote transport endpoint routing", () => {
       capturedUrls.push(String(url));
       return { ok: true, json: async () => payload } as Response;
     });
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onStateUpdated(vi.fn());
     const socket = MockWebSocket.instances.at(-1)!;
     socket.open();
@@ -762,7 +783,7 @@ describe("remote transport endpoint routing", () => {
     const postMessage = vi.fn();
     (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
     globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => ({}) }) as Response);
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onStateUpdated(vi.fn());
     window.addEventListener(
       "strideterm:remote-select-panel",
@@ -796,7 +817,7 @@ describe("remote transport endpoint routing", () => {
     (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
     const payload = { remoteClient: { profileId: "other", activeWorkspaceId: "workspace-other" } };
     globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => payload }) as Response);
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     const firstAttempt = new Promise<void>((resolve) => {
       window.addEventListener("strideterm:remote-select-panel", () => resolve(), { once: true });
     });
@@ -841,7 +862,7 @@ describe("remote transport endpoint routing", () => {
     (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
     const payload = { remoteClient: { profileId: "profile-1", activeWorkspaceId: "workspace-1" } };
     globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => payload }) as Response);
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     await transport.getState();
 
     const pending = transport.browseDirectory!("C:/start");
@@ -894,14 +915,14 @@ describe("remote transport endpoint routing", () => {
   });
 
   it("resolves mobile browsing cancellation and leaves ordinary browser transport without a picker", async () => {
-    const plain = createRemoteTransport();
+    const plain = makeRemoteTransport();
     expect(plain.browseDirectory).toBeUndefined();
 
     const postMessage = vi.fn();
     (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
     const payload = { remoteClient: { profileId: "profile-1", activeWorkspaceId: null } };
     globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => payload }) as Response);
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     await transport.getState();
     const pending = transport.browseDirectory!("C:/start");
     const request = JSON.parse(postMessage.mock.calls.at(-1)?.[0] as string);
@@ -922,7 +943,7 @@ describe("remote transport endpoint routing", () => {
     (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
     let payload: unknown = { remoteClient: { profileId: "profile-1", activeWorkspaceId: "workspace-1" } };
     globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => payload }) as Response);
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     await transport.getState();
     const pending = transport.browseDirectory!("C:/start");
     const request = JSON.parse(postMessage.mock.calls.at(-1)?.[0] as string);
@@ -949,7 +970,7 @@ describe("remote transport endpoint routing", () => {
         ? ({ ok: true, json: async () => payload } as Response)
         : ({ ok: false, status: 401, text: async () => "Unauthorized" } as Response);
     });
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     await transport.getState();
     const pending = transport.browseDirectory!("C:/start");
     const request = JSON.parse(postMessage.mock.calls.at(-1)?.[0] as string);
@@ -965,7 +986,7 @@ describe("remote transport endpoint routing", () => {
   });
 
   it("activateWorkspace calls /api/remote-client/workspace/activate with workspaceId", async () => {
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     await transport.activateWorkspace!("ws1").catch(() => {});
     expect(capturedUrls.some((u) => u.includes("/api/remote-client/workspace/activate"))).toBe(true);
     expect(capturedBodies.some((b) => (b as { workspaceId?: string }).workspaceId === "ws1")).toBe(true);
@@ -983,7 +1004,7 @@ describe("remote transport endpoint routing", () => {
       .fn()
       .mockResolvedValueOnce({ ok: true, json: async () => ({ attachments: [record] }) } as Response)
       .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) } as Response);
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
 
     await expect(transport.attachmentList?.({ workspaceId: "ws1" })).resolves.toEqual([record]);
     await expect(
@@ -1008,7 +1029,7 @@ describe("remote transport endpoint routing", () => {
     globalThis.fetch = vi.fn(
       async () => ({ ok: true, json: async () => ({ attachments: [{ bad: true }] }) }) as Response,
     );
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     await expect(transport.attachmentList?.({ workspaceId: "ws1" })).rejects.toThrow(
       "Invalid attachment list response",
     );
@@ -1016,7 +1037,7 @@ describe("remote transport endpoint routing", () => {
 
   it("sshCapabilitiesGet sends Settings → SSH's refresh to /api/ssh/capabilities, and only then", async () => {
     // remote-api-refusals.test.ts holds the real server to forwarding exactly this body.
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     await transport.sshCapabilitiesGet!({ refresh: true });
     await transport.sshCapabilitiesGet!();
     const sent = capturedUrls
@@ -1026,7 +1047,7 @@ describe("remote transport endpoint routing", () => {
   });
 
   it("activateSession calls /api/remote-client/session/activate, derives workspaceId from sessionId", async () => {
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     await transport.activateSession!("ws1:panel1").catch(() => {});
     expect(capturedUrls.some((u) => u.includes("/api/remote-client/session/activate"))).toBe(true);
     const body = capturedBodies.find((b) => (b as { sessionId?: string }).sessionId === "ws1:panel1") as {
@@ -1044,7 +1065,7 @@ describe("remote transport endpoint routing", () => {
     // background and how long ago — closes the transport, and the transport must then STAY closed.
     vi.useFakeTimers();
     const connections: { connected: boolean; reconnecting?: boolean; message?: string }[] = [];
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onConnectionState((payload) => connections.push(payload));
 
     const first = MockWebSocket.instances[0];
@@ -1098,7 +1119,7 @@ describe("remote transport endpoint routing", () => {
     (window as unknown as Record<string, unknown>).StridetermHost = {
       postMessage: (message: string) => posted.push(message),
     };
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onConnectionState(() => {});
     MockWebSocket.instances[0].open();
 
@@ -1135,7 +1156,7 @@ describe("remote transport endpoint routing", () => {
     // to the ordinary state listeners.
     vi.useFakeTimers();
     const states: unknown[] = [];
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onStateUpdated((payload) => states.push(payload));
     MockWebSocket.instances[0].open();
 
@@ -1164,7 +1185,7 @@ describe("remote transport endpoint routing", () => {
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ coreRevision: 43 }) } as Response);
     const connections: Array<{ connected: boolean; message?: string }> = [];
     const states: unknown[] = [];
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onConnectionState((state) => connections.push(state));
     transport.onStateUpdated((state) => states.push(state));
     MockWebSocket.instances[0].open();
@@ -1188,7 +1209,7 @@ describe("remote transport endpoint routing", () => {
     vi.useFakeTimers();
     globalThis.fetch = vi.fn(async () => ({ ok: false, status, text: async () => body }) as unknown as Response);
     const connections: Array<{ connected: boolean; code?: number }> = [];
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onConnectionState((state) => connections.push(state));
     MockWebSocket.instances[0].open();
     const bridge = (window as unknown as Record<string, { suspend(): void; resume(): void }>).__stridetermRemote;
@@ -1208,7 +1229,7 @@ describe("remote transport endpoint routing", () => {
     vi.useFakeTimers();
     globalThis.fetch = vi.fn(async () => ({ ok: false, status: 503, text: async () => "" }) as unknown as Response);
     const connections: Array<{ connected: boolean; code?: number }> = [];
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onConnectionState((state) => connections.push(state));
     MockWebSocket.instances[0].open();
     const bridge = (window as unknown as Record<string, { suspend(): void; resume(): void }>).__stridetermRemote;
@@ -1237,7 +1258,7 @@ describe("remote transport endpoint routing", () => {
         return Promise.resolve({ ok: false, status: 503, text: () => aborts } as unknown as Response);
       });
       const connections: Array<{ connected: boolean; code?: number }> = [];
-      const transport = createRemoteTransport();
+      const transport = makeRemoteTransport();
       transport.onConnectionState((state) => connections.push(state));
       MockWebSocket.instances[0].open();
       const bridge = (window as unknown as Record<string, { suspend(): void; resume(): void }>).__stridetermRemote;
@@ -1266,7 +1287,7 @@ describe("remote transport endpoint routing", () => {
       .mockResolvedValueOnce({ ok: true, status: 200, json: () => oldJson } as Response)
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ coreRevision: 45 }) } as Response);
     const states: unknown[] = [];
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onStateUpdated((state) => states.push(state));
     MockWebSocket.instances[0].open();
     const bridge = (window as unknown as Record<string, { suspend(): void; resume(): void }>).__stridetermRemote;
@@ -1298,7 +1319,7 @@ describe("remote transport endpoint routing", () => {
       .mockResolvedValueOnce({ ok: false, status: 401, text: () => oldBody } as Response)
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ coreRevision: 46 }) } as Response);
     const states: unknown[] = [];
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onStateUpdated((state) => states.push(state));
     MockWebSocket.instances[0].open();
     const bridge = (
@@ -1330,7 +1351,7 @@ describe("remote transport endpoint routing", () => {
     globalThis.fetch = vi.fn(async () => ({ ok: false, status: 503, text: async () => "" }) as unknown as Response);
     const connections: Array<{ connected: boolean; message?: string }> = [];
     const states: unknown[] = [];
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onConnectionState((state) => connections.push(state));
     transport.onStateUpdated((state) => states.push(state));
     const first = MockWebSocket.instances[0];
@@ -1370,7 +1391,7 @@ describe("remote transport endpoint routing", () => {
     // that window, or every return from the background costs two identical requests on a phone's
     // mobile data.
     vi.useFakeTimers();
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onStateUpdated(() => {});
     MockWebSocket.instances[0].open();
 
@@ -1404,7 +1425,7 @@ describe("remote transport endpoint routing", () => {
     globalThis.fetch = vi.fn(async () => ({ ok: false, status: 401, text: async () => "" }) as Response);
 
     const connections: { connected: boolean; reconnecting?: boolean; message?: string }[] = [];
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onConnectionState((payload) => connections.push(payload));
     MockWebSocket.instances[0].open();
 
@@ -1465,7 +1486,7 @@ describe("remote transport endpoint routing", () => {
         },
       ),
     );
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onConnectionState(() => {});
     MockWebSocket.instances[0].open();
     const bridge = (
@@ -1497,7 +1518,7 @@ describe("remote transport endpoint routing", () => {
         headers: { "Content-Type": "text/html" },
       }),
     );
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
 
     await Promise.allSettled([transport.getState(), transport.getState(), transport.getState()]);
 
@@ -1518,7 +1539,7 @@ describe("remote transport endpoint routing", () => {
       }),
     );
     const connections: Array<{ connected: boolean }> = [];
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onConnectionState((state) => connections.push(state));
     const before = connections.length;
 
@@ -1540,7 +1561,7 @@ describe("remote transport endpoint routing", () => {
     globalThis.fetch = vi.fn(async () => ({ ok: false, status: 401, text: async () => "" }) as Response);
 
     const connections: { connected: boolean; message?: string }[] = [];
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onConnectionState((payload) => connections.push(payload));
     MockWebSocket.instances[0].open();
 
@@ -1563,7 +1584,7 @@ describe("remote transport endpoint routing", () => {
     // and the close event lands afterwards. Before the suspend flag existed, that close scheduled a
     // reconnect and the transport came back up behind a screen nobody was looking at.
     vi.useFakeTimers();
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onConnectionState(() => undefined);
     const first = MockWebSocket.instances[0];
     first.open();
@@ -1582,7 +1603,7 @@ describe("remote transport endpoint routing", () => {
     vi.useFakeTimers();
     const states: unknown[] = [];
     const connections: unknown[] = [];
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onStateUpdated((payload) => states.push(payload));
     transport.onConnectionState((payload) => connections.push(payload));
 
@@ -1618,10 +1639,127 @@ describe("remote transport endpoint routing", () => {
     expect(states).toHaveLength(2);
   });
 
+  it.each([
+    ["fetch", "/api/git/fetch", "gitFetch", "git.fetch"],
+    ["pull", "/api/git/pull", "gitPull", "git.pull"],
+    ["push", "/api/git/push", "gitPush", "git.push"],
+  ] as const)(
+    "resolves a pending Git %s from its scoped result after reconnect and profile switching",
+    async (action, endpoint, storeMethod, operationKind) => {
+      vi.useFakeTimers();
+      setActivePinia(createPinia());
+      const workspace = (id: string, profileId: string) => ({
+        id,
+        name: id,
+        profileId,
+        kind: "terminal",
+        cwd: "/repo",
+        gitRoots: ["/repo"],
+        activePanelId: `${id}:panel`,
+        panels: [{ id: `${id}:panel`, title: "Terminal", command: "" }],
+      });
+      const payload = (profileId: string, workspaceId: string, coreRevision: number, lastResults: unknown[] = []) => {
+        const activeWorkspace = workspace(workspaceId, profileId);
+        return {
+          coreRevision,
+          meta: { appVersion: "test", platform: "test", repositoryUrl: "", versionCheck: {}, recoveryCandidates: [] },
+          appState: {
+            activeWorkspaceId: workspaceId,
+            profiles: [
+              { id: "p1", name: "Profile 1", color: "#fff", workspaceIds: ["ws1"] },
+              { id: "p2", name: "Profile 2", color: "#fff", workspaceIds: ["ws2"] },
+            ],
+            workspaces: [workspace("ws1", "p1"), workspace("ws2", "p2")],
+            windowSlots: [],
+            settings: {},
+            tabTemplates: [],
+            ssh: { hosts: [], keys: [], certificates: [], knownHosts: {}, settings: {} },
+          },
+          remoteClient: { id: "remote-test", profileId, activeWorkspaceId: workspaceId, activeSessionId: "" },
+          workspace: { workspace: activeWorkspace, project: activeWorkspace, sessions: [] },
+          git: { workspaces: {}, activeWorkspace: null, connections: [] },
+          attention: { sessions: {}, alerts: [] },
+          operations: { running: [], lastResults },
+        };
+      };
+      const initial = payload("p1", "ws1", 9);
+      const outcome = {
+        operationId: `op-${action}-profile-switch`,
+        kind: operationKind,
+        profileId: "p1",
+        workspaceId: "ws1",
+        rootPath: "/repo",
+        finishedAt: new Date().toISOString(),
+        error: { code: "git_operation_failed", message: `${action} failed while disconnected.` },
+      };
+      const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+      globalThis.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+        const pathname = String(url);
+        const body = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+        requests.push({ url: pathname, body });
+        const responseBody =
+          pathname === endpoint
+            ? { started: true, operationId: `op-${action}-profile-switch` }
+            : pathname === "/api/remote-client/profile/activate" && body.profileId === "p2"
+              ? payload("p2", "ws2", 10)
+              : pathname === "/api/remote-client/profile/activate"
+                ? payload("p1", "ws1", 11, [outcome])
+                : pathname === "/api/state"
+                  ? initial
+                  : {};
+        return { ok: true, json: async () => responseBody } as Response;
+      });
+
+      const transport = makeRemoteTransport();
+      const appStore = useAppStore();
+      const gitUi = useGitUiStore();
+      appStore.init(transport);
+      gitUi.init(transport);
+      const first = MockWebSocket.instances[0];
+      first.open();
+      first.message({ type: "state:updated", payload: initial });
+      await vi.waitFor(() => expect(appStore.myActiveProfileId).toBe("p1"));
+      gitUi.setActiveRoot("ws1", "/repo");
+      gitUi.setStagedCommitMessage("ws1", "/repo", "Keep the staged commit draft after reconnect.");
+
+      let settled = false;
+      const pending = gitUi[storeMethod]("ws1").finally(() => {
+        settled = true;
+      });
+      await vi.waitFor(() => expect(requests.map((request) => request.url)).toContain(endpoint));
+      await vi.waitFor(() => expect(gitUi.get("ws1").busyAction).toBe(action));
+
+      first.close(1006);
+      await vi.advanceTimersByTimeAsync(500);
+      const second = MockWebSocket.instances[1];
+      second.open();
+      await appStore.activateProfile("p2");
+      await nextTick();
+
+      expect(appStore.myActiveProfileId).toBe("p2");
+      expect(settled).toBe(false);
+      expect(gitUi.get("ws1").busyAction).toBe(action);
+
+      await appStore.activateProfile("p1");
+      await pending;
+      expect(appStore.myActiveProfileId).toBe("p1");
+      expect(gitUi.get("ws1").busyAction).toBe("");
+      expect(gitUi.get("ws1").lastResult).toMatchObject({
+        ok: false,
+        summary: `${action} failed while disconnected.`,
+      });
+      expect(gitUi.getStagedCommitMessage("ws1", "/repo")).toBe("Keep the staged commit draft after reconnect.");
+      expect(requests.filter((request) => request.url === endpoint)).toHaveLength(1);
+      expect(requests.find((request) => request.url === endpoint)?.body).toEqual(
+        expect.objectContaining({ workspaceId: "ws1", rootPath: "/repo", idempotencyKey: expect.any(String) }),
+      );
+    },
+  );
+
   it("stops a WebSocket handshake that stays CONNECTING instead of leaving the reconnect banner forever", async () => {
     vi.useFakeTimers();
     const connections: Array<{ connected: boolean; reconnecting?: boolean; attempt?: number }> = [];
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onConnectionState((state) => connections.push(state));
     const first = MockWebSocket.instances[0];
     first.open();
@@ -1645,7 +1783,7 @@ describe("remote transport endpoint routing", () => {
   it("puts a deadline on the initial WebSocket handshake too", async () => {
     vi.useFakeTimers();
     const connections: Array<{ connected: boolean; reconnecting?: boolean; attempt?: number }> = [];
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onConnectionState((state) => connections.push(state));
 
     await vi.advanceTimersByTimeAsync(10_000);
@@ -1657,7 +1795,7 @@ describe("remote transport endpoint routing", () => {
   it("counts handshake timeouts separately from ordinary close retries", async () => {
     vi.useFakeTimers();
     const connections: Array<{ connected: boolean; reconnecting?: boolean; attempt?: number }> = [];
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onConnectionState((state) => connections.push(state));
     MockWebSocket.instances[0].open();
 
@@ -1679,7 +1817,7 @@ describe("remote transport endpoint routing", () => {
         postMessage: (message: string) => posted.push(message),
       };
       const connections: Array<{ connected: boolean; reconnecting?: boolean; attempt?: number; message?: string }> = [];
-      const transport = createRemoteTransport();
+      const transport = makeRemoteTransport();
       transport.onConnectionState((state) => connections.push(state));
       const sessionLost = () =>
         posted.map((message) => JSON.parse(message)).filter((message) => message.type === "session-lost");
@@ -1792,7 +1930,7 @@ describe("remote transport endpoint routing", () => {
     (window as unknown as Record<string, unknown>).StridetermHost = {
       postMessage: (message: string) => posted.push(message),
     };
-    createRemoteTransport();
+    makeRemoteTransport();
     const socket = MockWebSocket.instances[0];
 
     socket.open();
@@ -1819,7 +1957,7 @@ describe("remote transport endpoint routing", () => {
     (window as unknown as Record<string, unknown>).StridetermHost = {
       postMessage: (message: string) => posted.push(JSON.parse(message)),
     };
-    createRemoteTransport();
+    makeRemoteTransport();
     MockWebSocket.instances[0].open();
     MockWebSocket.instances[0].close(1006);
     await vi.advanceTimersByTimeAsync(500);
@@ -1837,7 +1975,7 @@ describe("remote transport endpoint routing", () => {
     (window as unknown as Record<string, unknown>).StridetermHost = {
       postMessage: (message: string) => posted.push(JSON.parse(message)),
     };
-    createRemoteTransport();
+    makeRemoteTransport();
     const socket = MockWebSocket.instances[0];
     socket.open();
     socket.message({
@@ -1904,7 +2042,7 @@ describe("remote transport endpoint routing", () => {
       postMessage: (message: string) => posted.push(JSON.parse(message)),
     };
     (window as unknown as Record<string, unknown>).strideterm = { logRenderer };
-    createRemoteTransport();
+    makeRemoteTransport();
     const socket = MockWebSocket.instances[0];
     socket.open();
     socket.message({
@@ -1950,7 +2088,7 @@ describe("remote transport endpoint routing", () => {
     (window as unknown as Record<string, unknown>).StridetermHost = {
       postMessage: (message: string) => posted.push(JSON.parse(message)),
     };
-    createRemoteTransport();
+    makeRemoteTransport();
     const socket = MockWebSocket.instances[0];
     socket.open();
     socket.message({
@@ -2008,7 +2146,7 @@ describe("remote transport endpoint routing", () => {
     (window as unknown as Record<string, unknown>).StridetermHost = {
       postMessage: (message: string) => posted.push(JSON.parse(message)),
     };
-    createRemoteTransport();
+    makeRemoteTransport();
     const socket = MockWebSocket.instances[0];
     socket.open();
     socket.message({
@@ -2070,7 +2208,7 @@ describe("remote transport endpoint routing", () => {
     (window as unknown as Record<string, unknown>).StridetermHost = {
       postMessage: (message: string) => posted.push(JSON.parse(message)),
     };
-    createRemoteTransport();
+    makeRemoteTransport();
     const socket = MockWebSocket.instances[0];
     socket.open();
     socket.message({ type: "state:updated", payload: serverState(activeSessionId, ["panel1", "panel2"]) });
@@ -2090,7 +2228,7 @@ describe("remote transport endpoint routing", () => {
     globalThis.fetch = vi.fn(
       async () => ({ ok: true, json: async () => serverState("ws1:panel1", ["panel1"]) }) as Response,
     );
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     const socket = MockWebSocket.instances[0];
     const connectedReports = () =>
       posted.filter((message) => message.type === "connection-state" && message.connected === true);
@@ -2137,7 +2275,7 @@ describe("remote transport endpoint routing", () => {
         }) as unknown as Response,
     ) as unknown as typeof fetch;
 
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     const first = MockWebSocket.instances[0];
     // First socket URL was frozen before the revision existed → no ?rev=.
     expect(first.url).not.toContain("rev=");
@@ -2175,7 +2313,7 @@ describe("remote transport endpoint routing", () => {
       } as unknown as Response;
     }) as unknown as typeof fetch;
 
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     const first = await transport.getState();
     const second = await transport.getState();
 
@@ -2186,7 +2324,7 @@ describe("remote transport endpoint routing", () => {
 
   it("queues terminal messages while reconnecting and flushes them on open", () => {
     vi.useFakeTimers();
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     const first = MockWebSocket.instances[0];
     first.close(1006);
 
@@ -2200,7 +2338,7 @@ describe("remote transport endpoint routing", () => {
   });
 
   it("subscribeTerminals sends the complete set over the socket when open", () => {
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     const first = MockWebSocket.instances[0];
     first.open();
     transport.subscribeTerminals(["ws1:a", "ws1:b"]);
@@ -2209,7 +2347,7 @@ describe("remote transport endpoint routing", () => {
   });
 
   it("defers a subscription sent before open, then delivers it once on open", () => {
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     const first = MockWebSocket.instances[0];
     // Socket is still CONNECTING here.
     transport.subscribeTerminals(["ws1:a"]);
@@ -2221,7 +2359,7 @@ describe("remote transport endpoint routing", () => {
 
   it("re-sends the terminal subscription verbatim after a reconnect", () => {
     vi.useFakeTimers();
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     const first = MockWebSocket.instances[0];
     first.open();
     transport.subscribeTerminals(["ws1:a"]);
@@ -2235,7 +2373,7 @@ describe("remote transport endpoint routing", () => {
 
   it("re-sends the resource-interest set verbatim after a reconnect (server drops per-socket interests)", () => {
     vi.useFakeTimers();
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     const first = MockWebSocket.instances[0];
     first.open();
     transport.subscribeResources!(["git:ws1", "docker"]);
@@ -2254,7 +2392,7 @@ describe("remote transport endpoint routing", () => {
   });
 
   it("sends no resource-interest on connect until a pane declares one", () => {
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     void transport;
     const first = MockWebSocket.instances[0];
     first.open();
@@ -2262,7 +2400,7 @@ describe("remote transport endpoint routing", () => {
   });
 
   it("does not send any subscription on connect until the client subscribes (legacy mode)", () => {
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     void transport;
     const first = MockWebSocket.instances[0];
     first.open();
@@ -2270,7 +2408,7 @@ describe("remote transport endpoint routing", () => {
   });
 
   it("skips re-sending an identical subscription (review F10 — attention-sync noise)", () => {
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     const first = MockWebSocket.instances[0];
     first.open();
     transport.subscribeTerminals(["ws1:a", "ws1:b"]);
@@ -2286,7 +2424,7 @@ describe("remote transport endpoint routing", () => {
   });
 
   it("terminal:removed forgets the id so an otherwise-identical re-subscribe is re-sent (finding 4)", () => {
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     const first = MockWebSocket.instances[0];
     first.open();
     transport.subscribeTerminals(["ws1:a", "ws1:b"]);
@@ -2311,7 +2449,7 @@ describe("remote transport endpoint routing", () => {
   });
 
   it("dispatches terminal:replay messages to onTerminalReplay listeners", () => {
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     const first = MockWebSocket.instances[0];
     first.open();
     const replays: unknown[] = [];
@@ -2325,7 +2463,7 @@ describe("remote transport endpoint routing", () => {
   // a non-JSON frame (an HTML error body) crashed the message handler and
   // silently dropped that frame's state/terminal update with no log.
   it("a malformed (non-JSON) WS frame is dropped without throwing, and does not affect later valid frames", () => {
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     const first = MockWebSocket.instances[0];
     first.open();
     const states: unknown[] = [];
@@ -2343,7 +2481,7 @@ describe("remote transport endpoint routing", () => {
   // moment one listener threw. A throwing listener must not silence its
   // siblings registered for the same event.
   it("one throwing terminal:data listener does not prevent sibling listeners from firing", () => {
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     const first = MockWebSocket.instances[0];
     first.open();
     const seenBySecond: unknown[] = [];
@@ -2360,7 +2498,7 @@ describe("remote transport endpoint routing", () => {
   // POST like the log-stream methods; write/resize are per-keystroke frequent
   // so they ride the WS socket exactly like writeTerminal/resizeTerminal do.
   it("dockerShellOpen calls /api/docker/shell/open with the session/container payload", async () => {
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     await transport.dockerShellOpen!({
       sessionId: "shell-1",
       containerId: "cnt-1",
@@ -2381,14 +2519,14 @@ describe("remote transport endpoint routing", () => {
   });
 
   it("dockerShellClose calls /api/docker/shell/close with the sessionId", async () => {
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     await transport.dockerShellClose!({ sessionId: "shell-2" }).catch(() => {});
     expect(capturedUrls.some((u) => u.includes("/api/docker/shell/close"))).toBe(true);
     expect(capturedBodies).toContainEqual({ sessionId: "shell-2" });
   });
 
   it("dockerShellWrite sends docker:shell:write over the WS socket instead of an HTTP POST", async () => {
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     const first = MockWebSocket.instances[0];
     first.open();
     await transport.dockerShellWrite!({ sessionId: "shell-3", data: "ls\n" });
@@ -2401,7 +2539,7 @@ describe("remote transport endpoint routing", () => {
   });
 
   it("dockerShellResize sends docker:shell:resize over the WS socket", async () => {
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     const first = MockWebSocket.instances[0];
     first.open();
     await transport.dockerShellResize!({ sessionId: "shell-4", cols: 100, rows: 30 });
@@ -2414,7 +2552,7 @@ describe("remote transport endpoint routing", () => {
   });
 
   it("dispatches docker:shell:data and docker:shell:close messages to their listeners", () => {
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     const first = MockWebSocket.instances[0];
     first.open();
     const dataEvents: unknown[] = [];
@@ -2601,7 +2739,7 @@ describe("remote transport API parity — no method silently missing its remote 
     const desktopKeys = extractDesktopApiKeys();
     expect(desktopKeys.length).toBeGreaterThan(50); // sanity check the regex actually matched something
 
-    const transport = createRemoteTransport() as unknown as Record<string, unknown>;
+    const transport = makeRemoteTransport() as unknown as Record<string, unknown>;
     const remoteKeys = new Set(Object.keys(transport));
 
     const unmapped = desktopKeys.filter((key) => !remoteKeys.has(key) && !KNOWN_DESKTOP_ONLY_METHODS.has(key));
@@ -2609,7 +2747,7 @@ describe("remote transport API parity — no method silently missing its remote 
   });
 
   it("KNOWN_DESKTOP_ONLY_METHODS doesn't accumulate stale entries that are now mapped", () => {
-    const transport = createRemoteTransport() as unknown as Record<string, unknown>;
+    const transport = makeRemoteTransport() as unknown as Record<string, unknown>;
     const remoteKeys = new Set(Object.keys(transport));
     const stale = [...KNOWN_DESKTOP_ONLY_METHODS].filter((key) => remoteKeys.has(key));
     expect(stale).toEqual([]);
@@ -2682,7 +2820,7 @@ describe("notification:target-removed — transport boundary validation", () => 
     });
 
     function connected(): { transport: ReturnType<typeof createRemoteTransport>; socket: MockWebSocket } {
-      const transport = createRemoteTransport();
+      const transport = makeRemoteTransport();
       const socket = MockWebSocket.instances[MockWebSocket.instances.length - 1];
       socket.open();
       return { transport, socket };
@@ -2805,7 +2943,7 @@ describe("azure:closed-pr-cleanup:finished — transport boundary validation", (
     globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
     globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => ({}) }) as Response);
     try {
-      const transport = createRemoteTransport();
+      const transport = makeRemoteTransport();
       const socket = MockWebSocket.instances[MockWebSocket.instances.length - 1];
       socket.open();
       const seen: unknown[] = [];
@@ -2878,7 +3016,7 @@ describe("remote transport failure messages", () => {
   /** The error one request threw, with the fields the UI reads. */
   async function failureOf(status: number, body: string) {
     respondWith(status, body);
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     try {
       await transport.getState();
       throw new Error("expected the request to fail");
@@ -2938,7 +3076,7 @@ describe("remote transport failure messages", () => {
 
   it("carries the hint to the request-issue listeners the banner reads, without reporting a disconnect", async () => {
     respondWith(403, '{"error":"Mobile sessions cannot switch profiles"}');
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     const states: Array<{ connected: boolean; message?: string; hint?: string }> = [];
     const issues: Array<{ message: string; hint: string; code: number }> = [];
     transport.onConnectionState((state) => states.push(state));
@@ -3001,7 +3139,7 @@ describe("host connection-state dedupe and session-lost reason", () => {
           release = resolve;
         }),
     );
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onConnectionState(() => {});
     const pending = transport.getState();
     bridge().suspend();
@@ -3016,7 +3154,7 @@ describe("host connection-state dedupe and session-lost reason", () => {
   it("sends foreground presence immediately and while visible, and none once suspended", async () => {
     vi.useFakeTimers();
     (window as unknown as Record<string, unknown>).StridetermHost = { postMessage: () => {} };
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onConnectionState(() => {});
     const socket = MockWebSocket.instances[0];
     socket.open();
@@ -3032,7 +3170,7 @@ describe("host connection-state dedupe and session-lost reason", () => {
     vi.useFakeTimers();
     (window as unknown as Record<string, unknown>).StridetermHost = { postMessage: () => {} };
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
-    createRemoteTransport();
+    makeRemoteTransport();
     const socket = MockWebSocket.instances[0];
     socket.open();
     expect(socket.sent.filter((m) => JSON.parse(m).type === "client:presence")).toHaveLength(0);
@@ -3040,7 +3178,7 @@ describe("host connection-state dedupe and session-lost reason", () => {
 
   it("does not send foreground presence for a browser client without the native host", () => {
     vi.useFakeTimers();
-    createRemoteTransport();
+    makeRemoteTransport();
     const socket = MockWebSocket.instances[0];
     socket.open();
     expect(socket.sent.filter((m) => JSON.parse(m).type === "client:presence")).toHaveLength(0);
@@ -3048,7 +3186,7 @@ describe("host connection-state dedupe and session-lost reason", () => {
 
   it("sends an immediate presence after resuming a suspended native-host socket", () => {
     (window as unknown as Record<string, unknown>).StridetermHost = { postMessage: () => {} };
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onConnectionState(() => {});
     const first = MockWebSocket.instances[0];
     first.open();
@@ -3079,7 +3217,7 @@ describe("host connection-state dedupe and session-lost reason", () => {
     (window as unknown as Record<string, unknown>).StridetermHost = {
       postMessage: (message: string) => posted.push(message),
     };
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onConnectionState(() => {});
     MockWebSocket.instances[0].open();
     MockWebSocket.instances[0].close(1008, closeReason);
@@ -3088,7 +3226,7 @@ describe("host connection-state dedupe and session-lost reason", () => {
 
   it("shows a temporary pause message to the remote renderer", () => {
     const states: Array<{ connected: boolean; message?: string }> = [];
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onConnectionState((state) => states.push(state));
     MockWebSocket.instances[0].open();
     MockWebSocket.instances[0].close(1008, "temporarily-paused");
@@ -3113,7 +3251,7 @@ describe("host connection-state dedupe and session-lost reason", () => {
           text: async () => "Remote UI access is temporarily paused on the desktop.",
         }) as Response,
     );
-    const transport = createRemoteTransport();
+    const transport = makeRemoteTransport();
     transport.onConnectionState((state) => states.push(state));
     MockWebSocket.instances[0].open();
 
@@ -3165,7 +3303,7 @@ describe("operation:finished — transport boundary validation", () => {
     globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
     globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => ({}) }) as Response);
     try {
-      const transport = createRemoteTransport();
+      const transport = makeRemoteTransport();
       const socket = MockWebSocket.instances[MockWebSocket.instances.length - 1];
       socket.open();
       const seen: unknown[] = [];

@@ -741,7 +741,9 @@ export const CapExhaustedErrorDetailsSchema = z.object({
 export type CapExhaustedErrorDetails = z.infer<typeof CapExhaustedErrorDetailsSchema>;
 
 export const ControlPlaneErrorDetailsSchema = z.object({
-  reason: z.enum(["account-mismatch", "already-paired", "billing-unconfigured", "no-subscription"]),
+  reason: z.enum(["account-mismatch", "already-paired", "billing-unconfigured", "no-subscription", "clock-skew"]),
+  /** Only with `clock-skew`: server clock minus the phone's, in ms. */
+  skewMs: z.number().int().optional(),
 });
 export type ControlPlaneErrorDetails = z.infer<typeof ControlPlaneErrorDetailsSchema>;
 
@@ -1019,6 +1021,8 @@ export const PairingClaimRequestSchema = z.object({
    * it; this desktop recomputes it before it will move the record past `claimed`.
    */
   keyProof: z.string().min(1),
+  /** The phone's clock; `claimPairing` refuses `clock-skew` past MAX_CLIENT_CLOCK_SKEW_MS. Older apps omit it. */
+  clientTimeMs: z.number().int().min(0).optional(),
   /** The wire version the claiming app speaks; a stale APK fails at pairing rather than later. */
   protocolVersion: z.number().int().min(1),
 });
@@ -1194,6 +1198,8 @@ export const RESERVED_HIGH_PRIORITY_DAILY_PUSH_SLOTS = 10 as const;
 // Account page's opt-in "send diagnostics" — so these are the bounds `account-diagnostics.ts`
 // trims to before sending, not merely a mirrored set the drift check compares.
 export const MAX_DIAGNOSTIC_REPORTS_PER_PRINCIPAL_PER_UTC_DAY = 100 as const;
+export const MAX_UNBOUND_DIAGNOSTIC_REPORTS_PER_UID_PER_UTC_DAY = 3 as const;
+export const MAX_UNBOUND_DIAGNOSTIC_REPORTS_PER_UTC_DAY = 200 as const;
 export const MAX_DIAGNOSTIC_REPORT_BYTES = 65536 as const;
 export const MAX_DIAGNOSTIC_REPORT_ENTRIES = 400 as const;
 export const DIAGNOSTIC_REPORT_RETENTION_MS = 1209600000 as const;

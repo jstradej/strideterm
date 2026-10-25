@@ -7,8 +7,8 @@
     <ul v-else-if="siblings.length" class="git-sibling-list">
       <li v-for="entry in siblings" :key="entry.path" :class="{ 'git-sibling--current': entry.isCurrent }">
         <div class="git-sibling__meta">
-          <strong>{{ entry.branch || "detached" }}</strong>
-          <small>{{ entry.path }}</small>
+          <strong :title="entry.branch || 'detached'">{{ entry.branch || "detached" }}</strong>
+          <small :title="entry.path">{{ entry.path }}</small>
         </div>
         <div class="git-sibling__badges">
           <span class="workspace-chip">

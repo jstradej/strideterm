@@ -37,6 +37,7 @@ import {
   reviewBridgeReplyWithChangesSchema,
   reviewBridgeSyncSchema,
   reviewGitStartSchema,
+  reviewPrActionConfirmSchema,
   agentPromptSaveSchema,
   agentPromptDeleteSchema,
   fileListSchema,
@@ -59,6 +60,9 @@ import {
   gitDiffPreviewSchema,
   gitLogPageSchema,
   gitCommitSchema,
+  gitStageFileSchema,
+  gitStageHunkSchema,
+  gitCommitStagedSchema,
   gitTagSchema,
   gitCherryPickSchema,
   gitSquashSchema,
@@ -874,6 +878,15 @@ export function registerIpc(
     const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
     return withOperationPromise({ opId: "review-git:start" }, () =>
       runtime.startReviewGitOperation(validateIpc(reviewGitStartSchema, payload, "review-git:start"), windowId),
+    );
+  });
+  handle("review-pr-action:confirm", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "review-pr-action:confirm" }, () =>
+      runtime.confirmReviewPrAction(
+        validateIpc(reviewPrActionConfirmSchema, payload, "review-pr-action:confirm"),
+        windowId,
+      ),
     );
   });
   handle("review:start", async (event, payload) => {
@@ -1771,6 +1784,26 @@ export function registerIpc(
       runtime.gitCommitAll(validateIpc(gitCommitSchema, payload, "git:commit-all")),
     ),
   );
+  handle("git:stage-file", async (_event, payload) =>
+    withOperationPromise({ opId: "git:stage-file" }, () =>
+      runtime.gitStageFile(validateIpc(gitStageFileSchema, payload, "git:stage-file")),
+    ),
+  );
+  handle("git:stage-hunk", async (_event, payload) =>
+    withOperationPromise({ opId: "git:stage-hunk" }, () =>
+      runtime.gitStageHunk(validateIpc(gitStageHunkSchema, payload, "git:stage-hunk")),
+    ),
+  );
+  handle("git:unstage-file", async (_event, payload) =>
+    withOperationPromise({ opId: "git:unstage-file" }, () =>
+      runtime.gitUnstageFile(validateIpc(gitStageFileSchema, payload, "git:unstage-file")),
+    ),
+  );
+  handle("git:commit-staged", async (_event, payload) =>
+    withOperationPromise({ opId: "git:commit-staged" }, () =>
+      runtime.gitCommitStaged(validateIpc(gitCommitStagedSchema, payload, "git:commit-staged")),
+    ),
+  );
   handle("git:stash", async (_event, payload) => {
     const p = validateIpc(gitPayloadSchema, payload, "git:stash");
     return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:stash" }, () => runtime.gitStash(p));
@@ -2596,6 +2629,8 @@ export function registerIpc(
       return fm.computeFileDiff(p.rootPath, p.relativePath, {
         source: p.source,
         revisionRef: p.revisionRef || "",
+        baseRef: p.baseRef || "",
+        targetRef: p.targetRef || "",
       });
     }),
   );

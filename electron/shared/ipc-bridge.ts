@@ -1,5 +1,9 @@
 import type { StatePayload, RecoveryResult } from "./types/state.js";
-import type { AzureClosedPrCleanupStarted, ReviewGitStarted } from "./types/ipc-results.js";
+import type {
+  AzureClosedPrCleanupStarted,
+  ReviewGitStarted,
+  ReviewPrActionConfirmationResult,
+} from "./types/ipc-results.js";
 import type { StartPullRequestReviewInput, StartPullRequestReviewResult } from "./pull-request-review.js";
 import type { StartReviewAgentPreparation } from "../backend/ipc-schemas.js";
 import type { MobileConnectedDevice } from "./mobile-session-events.js";
@@ -234,6 +238,10 @@ export interface StridetermAPI {
   cleanupAzureClosedPullRequests: (parentWorkspaceId: string) => Promise<AzureClosedPrCleanupStarted>;
   /** Starts a review Git operation and resolves at once; the outcome arrives via `onReviewGitOperation`. */
   startReviewGitOperation: (payload: ReviewGitStart) => Promise<ReviewGitStarted>;
+  confirmReviewPrAction: (payload: {
+    proposalId: string;
+    approved: boolean;
+  }) => Promise<ReviewPrActionConfirmationResult>;
   startPullRequestReview: (payload: StartPullRequestReviewInput) => Promise<StartPullRequestReviewResult>;
   startReviewAgentPreparation: (payload: StartReviewAgentPreparation) => Promise<{ operationId: string }>;
   stopReviewAgentPreparation: (payload: { operationId?: string; sessionId?: string }) => Promise<{ ok: boolean }>;
@@ -622,6 +630,18 @@ export interface StridetermAPI {
   gitMergeCurrentIntoBase: (payload: GitPayload) => Promise<unknown>;
   gitRemoveWorktree: (payload: RemoveWorktree) => Promise<unknown>;
   gitCommitAll: (payload: GitCommit) => Promise<unknown>;
+  gitStageFile: (payload: { workspaceId: string; rootPath?: string; path: string }) => Promise<unknown>;
+  gitStageHunk: (payload: {
+    workspaceId: string;
+    rootPath?: string;
+    path: string;
+    action: "stage" | "unstage";
+    scope: "staged" | "unstaged";
+    diffToken: string;
+    hunk: string;
+  }) => Promise<unknown>;
+  gitUnstageFile: (payload: { workspaceId: string; rootPath?: string; path: string }) => Promise<unknown>;
+  gitCommitStaged: (payload: { workspaceId: string; rootPath?: string; message: string }) => Promise<unknown>;
   gitStash: (payload: GitPayload) => Promise<unknown>;
   gitStashPop: (payload: GitPayload & { ref?: string }) => Promise<unknown>;
   gitListStashes: (payload: GitStashList) => Promise<unknown>;
@@ -650,6 +670,7 @@ export interface StridetermAPI {
   gitLogGraph: (
     payload: GitPayload & {
       limit?: number;
+      skip?: number;
       includeRemotes?: boolean;
       branch?: string;
       sinceDate?: string;

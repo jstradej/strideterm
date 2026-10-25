@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { GitManager } from "./git-manager.js";
+import { createGitAuditLogStore } from "./git-audit-log-store.js";
 import { runEffect } from "./effect/runtime.js";
 import { reconfigureLogger } from "./logger.js";
 
@@ -154,6 +155,46 @@ describe("GitManager", () => {
       dirty: true,
     });
     expect(snapshot.lastFetchAt).toBeTruthy();
+  });
+
+  test("inspectWorkspace marks the snapshot unavailable when Git status fails", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = vi.fn(async (cwd: string, args: string[]) => {
+      if (args.join(" ") === "rev-parse --show-toplevel") return { stdout: `${cwd}\n`, stderr: "" };
+      if (args.join(" ") === "status --porcelain=v2 --branch") throw new Error("fatal: index file corrupt");
+      return { stdout: "", stderr: "" };
+    });
+    const manager = new GitManager({ execGitImpl });
+    manager.detectLazygit = async () => ({ available: false, backend: null, error: "missing", launch: null });
+    const winstonLogger = reconfigureLogger();
+    const warnSpy = vi.spyOn(winstonLogger, "warn").mockImplementation(() => winstonLogger);
+
+    try {
+      const snapshot = await manager.inspectWorkspace({ id: "workspace-status-error", cwd: root, kind: "terminal" });
+
+      expect(snapshot.available).toBe(false);
+      expect(snapshot.error).toContain("index file corrupt");
+      expect(warnSpy).toHaveBeenCalledWith(
+        "git inspect failed",
+        expect.objectContaining({ workspaceId: "workspace-status-error", label: "git" }),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test.skipIf(!GIT_AVAILABLE)("inspectWorkspace keeps a normal unborn branch available", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-unborn-inspect-"));
+    tempPaths.push(root);
+    execFileSync("git", ["init", "--quiet", root], { stdio: "ignore", windowsHide: true });
+    const manager = new GitManager();
+    manager.detectLazygit = async () => ({ available: false, backend: null, error: "missing", launch: null });
+
+    const snapshot = await manager.inspectWorkspace({ id: "workspace-unborn", cwd: root, kind: "terminal" });
+
+    expect(snapshot.available).toBe(true);
+    expect(snapshot.branch).toBeTruthy();
+    expect(snapshot.dirty).toBe(false);
   });
 
   test("inspectWorkspace marks per-sibling branchMerged via git branch --merged", async () => {
@@ -1068,7 +1109,7 @@ describe("GitManager", () => {
     const result = await manager.deleteTag({ id: "ws-1", cwd: root }, { tagName: "v1.0.0" });
 
     expect(result.ok).toBe(false);
-    expect(result.summary).toContain("Failed");
+    expect(result.summary).toContain("tag 'v1.0.0' not found");
   });
 
   // ─── cherry-pick / squash ────────────────────────────────────────
@@ -1589,6 +1630,59 @@ describe("GitManager", () => {
     );
   });
 
+  test("system Git audit records redact credentials from remote URL, resource id, and error", async () => {
+    const auditDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-git-audit-"));
+    tempPaths.push(auditDir);
+    const store = createGitAuditLogStore(path.join(auditDir, "git-audit.db"));
+    const manager = new GitManager({ gitAuditLogStore: store });
+    const cases = [
+      {
+        type: "push",
+        remoteUrl: "https://user:pa(ss),word!$&'()*+;=@host.example/repo.git",
+        expected: "https://[REDACTED]@host.example/repo.git",
+        secret: "pa(ss),word!$&'()*+;=",
+      },
+      {
+        type: "fetch",
+        remoteUrl: "https://review-test-username@host.example/repo.git",
+        expected: "https://[REDACTED]@host.example/repo.git",
+        secret: "review-test-username",
+      },
+      {
+        type: "pull",
+        remoteUrl: "https://host.example/repo.git?access_token=review-test-query-token",
+        expected: "https://host.example/repo.git?access_token=[REDACTED]",
+        secret: "review-test-query-token",
+      },
+      {
+        type: "push-tag",
+        remoteUrl: "git@github.com:owner/repo.git",
+        expected: "git@github.com:owner/repo.git",
+        secret: "review-test-absent",
+      },
+    ];
+
+    try {
+      cases.forEach(({ type, remoteUrl, secret, expected }, index) => {
+        manager._logGitAudit({
+          type,
+          connection: null,
+          success: false,
+          workspaceId: `workspace-audit-redaction-${index}`,
+          remoteUrl,
+          errorMessage: `push failed for ${remoteUrl}`,
+        });
+        const { entries } = store.query();
+        const entry = entries.find((candidate) => candidate.resourceId === `${type}@${expected}`);
+        expect(entry).toBeDefined();
+        expect(entry?.remoteUrl).toBe(expected);
+        expect(entry?.errorMessage).not.toContain(secret);
+      });
+    } finally {
+      store.close();
+    }
+  });
+
   test("fetch with connection=null writes to gitAuditLogStore", async () => {
     const { root } = await createGitFixture();
     const execGitImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
@@ -1887,6 +1981,52 @@ describe("GitManager", () => {
       const successEntry = auditEntries.find((e) => e.success === true);
       expect(successEntry).toBeTruthy();
       expect((successEntry!.extra as Record<string, unknown>)?.rootPath).toBe(subPath);
+    });
+
+    test.each([
+      { outcome: "success", shouldReject: false },
+      { outcome: "failure", shouldReject: true },
+    ])("runWriteAction emits exactly one audit outcome for a $outcome mutation", async ({ shouldReject }) => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-audit-count-"));
+      tempPaths.push(root);
+      const gitAuditLogStore = { logEntry: vi.fn() };
+      const mgr = new GitManager({ gitAuditLogStore });
+      const operationState = { kind: "", inProgress: false, conflicts: [] };
+      const snapshot = {
+        available: true,
+        rootPath: root,
+        operationState,
+        remotes: {},
+        dirty: false,
+      };
+      mgr._inspectRoot = vi.fn().mockResolvedValue(snapshot);
+      const actionError = new Error("rejected by git");
+
+      const result = await mgr.runWriteAction(
+        { id: "ws-audit-count", cwd: root },
+        {
+          type: "create-branch",
+          label: "Create branch",
+          rootPath: root,
+          skipPreflight: true,
+          run: async () => {
+            if (shouldReject) throw actionError;
+            return { stdout: "created", stderr: "" };
+          },
+        },
+      );
+
+      expect(result.ok).toBe(!shouldReject);
+      expect(gitAuditLogStore.logEntry).toHaveBeenCalledTimes(1);
+      expect(gitAuditLogStore.logEntry).toHaveBeenCalledWith(
+        expect.objectContaining({
+          operation: "gitCreate-branch",
+          category: "write",
+          success: !shouldReject,
+          durationMs: expect.any(Number),
+          rootPath: root,
+        }),
+      );
     });
   });
 
@@ -2279,11 +2419,12 @@ describe("GitManager", () => {
       tempPaths.push(root);
 
       const calls: string[][] = [];
+      const auditEntries: Record<string, unknown>[] = [];
       const execGitImpl = vi.fn().mockImplementation(async (_cwd: string, args: string[]) => {
         calls.push(args);
         return { stdout: "", stderr: "" };
       });
-      const mgr = new GitManager({ execGitImpl });
+      const mgr = new GitManager({ execGitImpl, gitAuditLogStore: { logEntry: (entry) => auditEntries.push(entry) } });
       const result = await mgr.removeWorktree({ id: "ws1", cwd: root }, { worktreePath: wtPath, rootPath: root });
       // The worktree directory itself was removed by fs.rm before git ran.
       let dirGone = false;
@@ -2300,6 +2441,14 @@ describe("GitManager", () => {
       expect(ranPrune).toBe(true);
       expect(ranForceRemove).toBe(false);
       expect(result.ok).toBe(true);
+      expect(auditEntries).toHaveLength(1);
+      expect(auditEntries[0]).toMatchObject({
+        operation: "gitRemove-worktree",
+        category: "write",
+        success: true,
+        connectionId: "system-ws1",
+        rootPath: root,
+      });
     });
 
     test("falls back to git worktree remove --force when fs.rm fails / dir still exists", async () => {
@@ -2367,6 +2516,10 @@ describe("GitManager", () => {
       await mgr.logGraph({ id: "ws1", cwd: "/repo" }, { rootPath: "/repo" });
       const logCall = calls.find((c) => c[0] === "log");
       expect(logCall).toBeTruthy();
+      expect(logCall).toContain("--branches");
+      expect(logCall).toContain("--remotes");
+      expect(logCall).toContain("--tags");
+      expect(logCall).toContain("HEAD");
       expect(logCall!.some((a) => a.startsWith("--since="))).toBe(false);
       expect(logCall!.some((a) => a.startsWith("--until="))).toBe(false);
       expect(logCall!.some((a) => a.startsWith("--author="))).toBe(false);
@@ -2374,6 +2527,27 @@ describe("GitManager", () => {
       expect(logCall).not.toContain("--topo-order");
     });
 
+    test("limits graph results to the requested bound and walks an explicit branch only", async () => {
+      const { mgr, calls } = captureLogArgs();
+      await mgr.logGraph({ id: "ws1", cwd: "/repo" }, { rootPath: "/repo", limit: 37, branch: "release/2.0" });
+      const logCall = calls.find((c) => c[0] === "log");
+      expect(logCall).toContain("-n");
+      expect(logCall?.[logCall.indexOf("-n") + 1]).toBe("37");
+      expect(logCall).toContain("release/2.0");
+      expect(logCall).not.toContain("--branches");
+      expect(logCall).not.toContain("--remotes");
+      expect(logCall).not.toContain("--tags");
+    });
+
+    test("local-only graph range excludes remote tracking refs and tags", async () => {
+      const { mgr, calls } = captureLogArgs();
+      await mgr.logGraph({ id: "ws1", cwd: "/repo" }, { rootPath: "/repo", includeRemotes: false });
+      const logCall = calls.find((c) => c[0] === "log");
+      expect(logCall).toContain("--branches");
+      expect(logCall).toContain("HEAD");
+      expect(logCall).not.toContain("--remotes");
+      expect(logCall).not.toContain("--tags");
+    });
     test("drops paths starting with '-' (defense in depth even after schema validation)", async () => {
       const { mgr, calls } = captureLogArgs();
       // Bypassing the schema directly here to exercise the inner guard.
@@ -2381,6 +2555,51 @@ describe("GitManager", () => {
       const logCall = calls.find((c) => c[0] === "log");
       const dashIdx = logCall!.indexOf("--");
       expect(logCall!.slice(dashIdx + 1)).toEqual(["src/ok.ts"]);
+    });
+
+    test.skipIf(!GIT_AVAILABLE)("skip returns the next, disjoint page of a real repo", async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-skip-"));
+      tempPaths.push(root);
+      const rg = (args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8" });
+      rg(["init", "-q"]);
+      rg(["config", "user.email", "t@example.com"]);
+      rg(["config", "user.name", "Test"]);
+      rg(["config", "commit.gpgsign", "false"]);
+      for (let i = 1; i <= 5; i++) rg(["commit", "-q", "--allow-empty", "-m", `c${i}`]);
+      const mgr = new GitManager({});
+      const ws = { id: "ws", cwd: root, kind: "terminal" as const };
+      const first = await mgr.logGraph(ws, { rootPath: root, limit: 2, skip: 0 });
+      const second = await mgr.logGraph(ws, { rootPath: root, limit: 2, skip: 2 });
+      expect(first.commits.map((c) => c.subject)).toEqual(["c5", "c4"]);
+      expect(second.commits.map((c) => c.subject)).toEqual(["c3", "c2"]);
+    });
+
+    test.skipIf(!GIT_AVAILABLE)("three-dot history includes commits unique to both diverged branches", async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-compare-range-"));
+      tempPaths.push(root);
+      const git = (args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8", windowsHide: true });
+      git(["init", "-q", "-b", "main"]);
+      git(["config", "user.email", "test@example.com"]);
+      git(["config", "user.name", "Test"]);
+      git(["config", "commit.gpgsign", "false"]);
+      await fs.writeFile(path.join(root, "base.txt"), "base\n", "utf8");
+      git(["add", "base.txt"]);
+      git(["commit", "-q", "-m", "common base"]);
+      git(["checkout", "-q", "-b", "topic"]);
+      await fs.writeFile(path.join(root, "topic.txt"), "topic\n", "utf8");
+      git(["add", "topic.txt"]);
+      git(["commit", "-q", "-m", "topic only"]);
+      git(["checkout", "-q", "main"]);
+      await fs.writeFile(path.join(root, "base-update.txt"), "base update\n", "utf8");
+      git(["add", "base-update.txt"]);
+      git(["commit", "-q", "-m", "base only"]);
+
+      const mgr = new GitManager({});
+      const workspace = { id: "ws", cwd: root, kind: "terminal" as const };
+      const aheadOnly = await mgr.logGraph(workspace, { rootPath: root, branch: "main..topic" });
+      const bothSides = await mgr.logGraph(workspace, { rootPath: root, branch: "main...topic" });
+      expect(aheadOnly.commits.map((commit) => commit.subject)).toEqual(["topic only"]);
+      expect(bothSides.commits.map((commit) => commit.subject).sort()).toEqual(["base only", "topic only"]);
     });
   });
 
@@ -2394,7 +2613,7 @@ describe("GitManager", () => {
       });
       const mgr = new GitManager({ execGitImpl });
       await mgr.createTag({ id: "ws1", cwd: "/repo" }, { tagName: "v1.0.0", message: "release" });
-      expect(args[0]).toEqual(["tag", "-a", "v1.0.0", "-m", "release"]);
+      expect(args).toContainEqual(["tag", "-a", "v1.0.0", "-m", "release"]);
     });
 
     test("lightweight tag pinned to a commit hash when commit provided", async () => {
@@ -2405,7 +2624,7 @@ describe("GitManager", () => {
       });
       const mgr = new GitManager({ execGitImpl });
       await mgr.createTag({ id: "ws1", cwd: "/repo" }, { tagName: "v1.0.0", commit: "abc1234" });
-      expect(args[0]).toEqual(["tag", "v1.0.0", "abc1234"]);
+      expect(args).toContainEqual(["tag", "v1.0.0", "abc1234"]);
     });
   });
 
@@ -2902,6 +3121,28 @@ describe("GitManager", () => {
         expect(calls.some((args) => args[0] === "push" && args[1] === "--force-with-lease")).toBe(false);
       });
 
+      test("forcePushWithLease maps the isolated pr-N-<source>-review-<uuid> branch to the PR source branch too", async () => {
+        const { mgr, calls } = makeReviewMgr({
+          branch: "pr-12-feature-foo-review-825dc26b-c0d3-4879-b180-99a41ba01cb1",
+          upstream: "",
+        });
+        const result = await mgr.forcePushWithLease(reviewWorkspace);
+        expect(result.ok).toBe(true);
+        expect(calls).toContainEqual([
+          "push",
+          `--force-with-lease=refs/heads/feature/foo:${LIVE_SHA}`,
+          "origin",
+          "HEAD:refs/heads/feature/foo",
+        ]);
+      });
+
+      test("push does not remap a pr-N review branch whose suffix is not a uuid", async () => {
+        const { mgr, calls } = makeReviewMgr({ branch: "pr-12-feature-foo-review-notauuid", upstream: "" });
+        const result = await mgr.push(reviewWorkspace);
+        expect(result.ok).toBe(true);
+        expect(calls.some((args) => args.some((arg) => arg.includes("HEAD:refs/heads/feature/foo")))).toBe(false);
+      });
+
       test("forcePushWithLease refuses a PR source branch that no longer exists on the server", async () => {
         const { mgr, calls } = makeReviewMgr({
           branch: "pr-12-feature-foo",
@@ -3394,6 +3635,59 @@ describe("GitManager", () => {
       }
       return root;
     }
+
+    test("locks and audits conflict resolution and undo success or failure once per request", async () => {
+      const entries: Record<string, unknown>[] = [];
+      const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
+      const root = await makeBothModifiedRepo();
+      const workspace = ws(root);
+
+      expect((await auditMgr.resolveConflict(workspace, { filePath: "app.txt", mode: "ours" })).ok).toBe(true);
+      expect((await auditMgr.unresolveConflict(workspace, { filePath: "app.txt" })).ok).toBe(true);
+      expect((await auditMgr.resolveConflict(workspace, { filePath: "missing.txt", mode: "ours" })).ok).toBe(false);
+      expect((await auditMgr.unresolveConflict(workspace, { filePath: "missing.txt" })).ok).toBe(false);
+
+      expect(entries.map((entry) => [entry.operation, entry.category, entry.success])).toEqual([
+        ["gitResolve-conflict", "write", true],
+        ["gitUnresolve-conflict", "write", true],
+        ["gitResolve-conflict", "write", false],
+        ["gitUnresolve-conflict", "write", false],
+      ]);
+      expect(entries.every((entry) => entry.connectionId === "system-ws")).toBe(true);
+      expect(entries.every((entry) => entry.rootPath === root)).toBe(true);
+    });
+
+    test("rejects traversal paths in conflict reads and writes", async () => {
+      const entries: Record<string, unknown>[] = [];
+      const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
+      const root = await makeBothModifiedRepo();
+      const workspace = ws(root);
+      const outsidePath = path.join(root, "..", `${path.basename(root)}-outside.txt`);
+      await fs.writeFile(outsidePath, "keep this file outside the repository\n", "utf8");
+
+      try {
+        const outsideRelativePath = `../${path.basename(outsidePath)}`;
+        expect((await auditMgr.conflictDetail(workspace, { filePath: outsideRelativePath })).ok).toBe(false);
+        expect(
+          (
+            await auditMgr.resolveConflict(workspace, {
+              filePath: outsideRelativePath,
+              mode: "manual",
+              content: "must not escape the repository\n",
+            })
+          ).ok,
+        ).toBe(false);
+        expect((await auditMgr.unresolveConflict(workspace, { filePath: outsideRelativePath })).ok).toBe(false);
+        expect(await fs.readFile(outsidePath, "utf8")).toBe("keep this file outside the repository\n");
+        expect(entries.map((entry) => [entry.operation, entry.success])).toEqual([
+          ["gitResolve-conflict", false],
+          ["gitUnresolve-conflict", false],
+        ]);
+        expect(entries.every((entry) => entry.rootPath === root)).toBe(true);
+      } finally {
+        await fs.rm(outsidePath, { force: true });
+      }
+    });
 
     test("lists a both-modified conflict and reads its three stages", async () => {
       const root = await makeBothModifiedRepo();
@@ -3937,6 +4231,566 @@ describe("GitManager", () => {
       expect((res.warnings as string[]).length).toBeGreaterThan(0); // caller is warned about the stale index
 
       await fs.rm(path.join(root, ".git", "index.lock"), { force: true });
+    });
+  });
+
+  describe.skipIf(!GIT_AVAILABLE)("index operations — real git fixture round-trip", () => {
+    const mgr = new GitManager({});
+    const rg = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" });
+    async function initRepo(): Promise<string> {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-index-"));
+      tempPaths.push(root);
+      rg(root, ["init", "-q"]);
+      rg(root, ["config", "user.email", "t@example.com"]);
+      rg(root, ["config", "user.name", "Test"]);
+      rg(root, ["config", "commit.gpgsign", "false"]);
+      await fs.writeFile(path.join(root, "a.txt"), "base\n", "utf8");
+      await fs.writeFile(path.join(root, "b.txt"), "base-b\n", "utf8");
+      rg(root, ["add", "-A"]);
+      rg(root, ["commit", "-q", "-m", "base"]);
+      return root;
+    }
+
+    test("stage and unstage file, then commit only the real index", async () => {
+      const root = await initRepo();
+      const workspace = { id: "ws-index", cwd: root, kind: "terminal" as const };
+      await fs.writeFile(path.join(root, "a.txt"), "staged version\n", "utf8");
+      expect((await mgr.stageFile(workspace, { path: "a.txt" })).ok).toBe(true);
+      await fs.writeFile(path.join(root, "a.txt"), "later worktree version\n", "utf8");
+      await fs.writeFile(path.join(root, "b.txt"), "unstaged unrelated\n", "utf8");
+      expect((await mgr.commitStaged(workspace, { message: "index only" })).ok).toBe(true);
+      expect(rg(root, ["show", "HEAD:a.txt"]).trim()).toBe("staged version");
+      expect(rg(root, ["show", "HEAD:b.txt"]).trim()).toBe("base-b");
+      expect(rg(root, ["diff", "--", "a.txt"]).trim()).not.toBe("");
+      expect(rg(root, ["diff", "--", "b.txt"]).trim()).not.toBe("");
+      expect((await mgr.unstageFile(workspace, { path: "a.txt" })).ok).toBe(true);
+      expect(rg(root, ["diff", "--cached", "--", "a.txt"]).trim()).toBe("");
+    });
+
+    test("empty index and unsafe paths are reported as failures", async () => {
+      const root = await initRepo();
+      const workspace = { id: "ws-index", cwd: root, kind: "terminal" as const };
+      expect((await mgr.commitStaged(workspace, { message: "empty" })).ok).toBe(false);
+      expect((await mgr.stageFile(workspace, { path: "../outside" })).ok).toBe(false);
+      expect((await mgr.stageFile(workspace, { path: "-A" })).ok).toBe(false);
+      await fs.writeFile(path.join(root, "new.txt"), "new\n", "utf8");
+      expect((await mgr.stageFile(workspace, { path: "new.txt" })).ok).toBe(true);
+      expect((await mgr.commitStaged(workspace, { message: "add untracked file" })).ok).toBe(true);
+      expect(rg(root, ["show", "HEAD:new.txt"]).trim()).toBe("new");
+    });
+
+    test("records successful and failed index and local-tag writes in the system Git audit log", async () => {
+      const entries: Record<string, unknown>[] = [];
+      const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
+      const root = await initRepo();
+      const workspace = { id: "ws-index-audit", cwd: root, kind: "terminal" as const };
+      await fs.writeFile(path.join(root, "a.txt"), "staged for audit\n", "utf8");
+
+      expect((await auditMgr.stageFile(workspace, { path: "a.txt" })).ok).toBe(true);
+      expect((await auditMgr.unstageFile(workspace, { path: "a.txt" })).ok).toBe(true);
+      expect((await auditMgr.stageFile(workspace, { path: "a.txt" })).ok).toBe(true);
+      expect((await auditMgr.commitStaged(workspace, { message: "audited index commit" })).ok).toBe(true);
+      expect((await auditMgr.commitStaged(workspace, { message: "empty index" })).ok).toBe(false);
+      expect((await auditMgr.createTag(workspace, { tagName: "v1.0.0" })).ok).toBe(true);
+      expect((await auditMgr.createTag(workspace, { tagName: "v1.0.0" })).ok).toBe(false);
+      expect((await auditMgr.deleteTag(workspace, { tagName: "v1.0.0" })).ok).toBe(true);
+      expect((await auditMgr.deleteTag(workspace, { tagName: "v-missing" })).ok).toBe(false);
+
+      expect(entries.map((entry) => [entry.operation, entry.category, entry.success])).toEqual([
+        ["gitStage-file", "write", true],
+        ["gitUnstage-file", "write", true],
+        ["gitStage-file", "write", true],
+        ["gitCommit-staged", "write", true],
+        ["gitCommit-staged", "write", false],
+        ["gitCreate-tag", "write", true],
+        ["gitCreate-tag", "write", false],
+        ["gitDelete-tag", "write", true],
+        ["gitDelete-tag", "write", false],
+      ]);
+      expect(entries.every((entry) => entry.connectionId === "system-ws-index-audit")).toBe(true);
+      expect(entries.every((entry) => entry.rootPath === root)).toBe(true);
+    });
+
+    test("classifies bisect continuation and abort audit outcomes as writes", () => {
+      const entries: Record<string, unknown>[] = [];
+      const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
+
+      for (const success of [true, false]) {
+        auditMgr._logGitAudit({
+          type: "bisect",
+          connection: null,
+          success,
+          workspaceId: "ws-bisect-audit",
+          remoteUrl: "",
+          extra: { rootPath: "/repo" },
+        });
+      }
+
+      expect(entries.map((entry) => [entry.operation, entry.category, entry.success])).toEqual([
+        ["gitBisect", "write", true],
+        ["gitBisect", "write", false],
+      ]);
+      expect(entries.every((entry) => entry.rootPath === "/repo")).toBe(true);
+    });
+
+    test("records one resolved-root audit outcome for successful and failed merge/rebase writes", async () => {
+      const entries: Record<string, unknown>[] = [];
+      const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
+      const makeDivergedRepo = async (name: string) => {
+        const root = await initRepo();
+        const base = rg(root, ["branch", "--show-current"]).trim();
+        rg(root, ["checkout", "-q", "-b", `${name}-feature`]);
+        await fs.writeFile(path.join(root, `${name}-feature.txt`), "feature\n", "utf8");
+        rg(root, ["add", "-A"]);
+        rg(root, ["commit", "-q", "-m", `${name} feature`]);
+        rg(root, ["checkout", "-q", base]);
+        await fs.writeFile(path.join(root, `${name}-base.txt`), "base update\n", "utf8");
+        rg(root, ["add", "-A"]);
+        rg(root, ["commit", "-q", "-m", `${name} base update`]);
+        rg(root, ["checkout", "-q", `${name}-feature`]);
+        return { root, base, workspace: { id: `ws-${name}-audit`, cwd: root, kind: "terminal" as const } };
+      };
+
+      const mergeRepo = await makeDivergedRepo("merge");
+      expect((await auditMgr.mergeIntoCurrent(mergeRepo.workspace, { baseBranch: mergeRepo.base })).ok).toBe(true);
+      expect((await auditMgr.mergeIntoCurrent(mergeRepo.workspace, { baseBranch: "missing-merge-base" })).ok).toBe(
+        false,
+      );
+
+      const rebaseRepo = await makeDivergedRepo("rebase");
+      expect((await auditMgr.rebaseOnto(rebaseRepo.workspace, { baseBranch: rebaseRepo.base })).ok).toBe(true);
+      expect((await auditMgr.rebaseOnto(rebaseRepo.workspace, { baseBranch: "missing-rebase-base" })).ok).toBe(false);
+
+      expect(entries.map((entry) => [entry.operation, entry.category, entry.success])).toEqual([
+        ["gitMerge", "write", true],
+        ["gitMerge", "write", false],
+        ["gitRebase", "write", true],
+        ["gitRebase", "write", false],
+      ]);
+      expect(entries[0]).toMatchObject({ connectionId: "system-ws-merge-audit", rootPath: mergeRepo.root });
+      expect(entries[1]).toMatchObject({ connectionId: "system-ws-merge-audit", rootPath: mergeRepo.root });
+      expect(entries[2]).toMatchObject({ connectionId: "system-ws-rebase-audit", rootPath: rebaseRepo.root });
+      expect(entries[3]).toMatchObject({ connectionId: "system-ws-rebase-audit", rootPath: rebaseRepo.root });
+      expect(entries.every((entry) => typeof entry.durationMs === "number" && entry.durationMs >= 0)).toBe(true);
+    });
+
+    test("records a resolved-root write audit for aborting a real bisect operation", async () => {
+      const entries: Record<string, unknown>[] = [];
+      const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
+      const root = await initRepo();
+      const workspace = { id: "ws-bisect-audit", cwd: root, kind: "terminal" as const };
+
+      await fs.writeFile(path.join(root, "a.txt"), "middle\n", "utf8");
+      rg(root, ["add", "-A"]);
+      rg(root, ["commit", "-q", "-m", "middle"]);
+      await fs.writeFile(path.join(root, "a.txt"), "tip\n", "utf8");
+      rg(root, ["add", "-A"]);
+      rg(root, ["commit", "-q", "-m", "tip"]);
+      rg(root, ["bisect", "start"]);
+      rg(root, ["bisect", "bad", "HEAD"]);
+      rg(root, ["bisect", "good", "HEAD^^"]);
+      expect((await auditMgr.inspectWorkspace(workspace)).operationState).toMatchObject({
+        kind: "bisect",
+        inProgress: true,
+      });
+
+      const result = await auditMgr.abortOperation(workspace, { rootPath: root });
+
+      expect(result.ok).toBe(true);
+      expect((await auditMgr.inspectWorkspace(workspace)).operationState).not.toMatchObject({
+        kind: "bisect",
+        inProgress: true,
+      });
+      expect(rg(root, ["status", "--porcelain"]).trim()).toBe("");
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        operation: "gitBisect",
+        category: "write",
+        success: true,
+        rootPath: root,
+        durationMs: expect.any(Number),
+      });
+    });
+
+    test("records one resolved-root audit outcome for each local and remote branch mutation", async () => {
+      const entries: Record<string, unknown>[] = [];
+      const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
+      const root = await initRepo();
+      const workspace = { id: "ws-branch-audit", cwd: root, kind: "terminal" as const };
+
+      expect((await auditMgr.createBranch(workspace, { branch: "audit-feature" })).ok).toBe(true);
+      expect((await auditMgr.checkoutBranch(workspace, { branch: "master" })).ok).toBe(true);
+      expect((await auditMgr.renameBranch(workspace, { branch: "audit-feature", newName: "renamed-feature" })).ok).toBe(
+        true,
+      );
+      expect((await auditMgr.deleteBranch(workspace, { branch: "renamed-feature" })).ok).toBe(true);
+      expect((await auditMgr.deleteBranch(workspace, { branch: "missing-feature" })).ok).toBe(false);
+      rg(root, ["remote", "add", "origin", root]);
+      rg(root, ["update-ref", "refs/remotes/origin/remote-feature", "HEAD"]);
+      expect((await auditMgr.checkoutRemoteBranch(workspace, { remoteBranch: "origin/remote-feature" })).ok).toBe(true);
+      expect((await auditMgr.checkoutRemoteBranch(workspace, { remoteBranch: "origin/missing-feature" })).ok).toBe(
+        false,
+      );
+
+      expect(entries.map((entry) => [entry.operation, entry.category, entry.success])).toEqual([
+        ["gitCreate-branch", "write", true],
+        ["gitCheckout", "write", true],
+        ["gitRename-branch", "write", true],
+        ["gitDelete-branch", "write", true],
+        ["gitDelete-branch", "write", false],
+        ["gitCheckout-remote", "write", true],
+        ["gitCheckout-remote", "write", false],
+      ]);
+      expect(entries.every((entry) => entry.connectionId === "system-ws-branch-audit")).toBe(true);
+      expect(entries.every((entry) => entry.rootPath === root)).toBe(true);
+    });
+
+    test("records one resolved-root audit outcome for successful and failed cherry-picks", async () => {
+      const entries: Record<string, unknown>[] = [];
+      const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
+      const root = await initRepo();
+      const baseBranch = rg(root, ["branch", "--show-current"]).trim();
+      rg(root, ["checkout", "-b", "cherry-source"]);
+      await fs.writeFile(path.join(root, "cherry.txt"), "picked commit\n", "utf8");
+      rg(root, ["add", "cherry.txt"]);
+      rg(root, ["commit", "-q", "-m", "source commit"]);
+      const sourceCommit = rg(root, ["rev-parse", "HEAD"]).trim();
+      rg(root, ["checkout", baseBranch]);
+
+      expect(
+        (await auditMgr.cherryPick({ id: "ws-cherry-audit", cwd: root, kind: "terminal" }, { hashes: [sourceCommit] }))
+          .ok,
+      ).toBe(true);
+      expect(
+        (
+          await auditMgr.cherryPick(
+            { id: "ws-cherry-audit", cwd: root, kind: "terminal" },
+            { hashes: ["0000000000000000000000000000000000000000"] },
+          )
+        ).ok,
+      ).toBe(false);
+
+      expect(entries.map((entry) => [entry.operation, entry.category, entry.success])).toEqual([
+        ["gitCherry-pick", "write", true],
+        ["gitCherry-pick", "write", false],
+      ]);
+      expect(entries.every((entry) => entry.connectionId === "system-ws-cherry-audit")).toBe(true);
+      expect(entries.every((entry) => entry.rootPath === root)).toBe(true);
+      expect(entries.every((entry) => typeof entry.durationMs === "number" && entry.durationMs >= 0)).toBe(true);
+    });
+
+    test("records a single resolved-root write audit outcome for History squash", async () => {
+      const entries: Record<string, unknown>[] = [];
+      const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
+      const root = await initRepo();
+      await fs.writeFile(path.join(root, "a.txt"), "second commit\n", "utf8");
+      rg(root, ["commit", "-q", "-am", "second commit"]);
+      await fs.writeFile(path.join(root, "b.txt"), "third commit\n", "utf8");
+      rg(root, ["commit", "-q", "-am", "third commit"]);
+      const selected = rg(root, ["log", "-2", "--format=%H"]).trim().split(/\r?\n/u);
+
+      expect(
+        (
+          await auditMgr.squashCommits(
+            { id: "ws-squash-audit", cwd: root, kind: "terminal" },
+            { hashes: selected, message: "squashed history" },
+          )
+        ).ok,
+      ).toBe(true);
+      expect(rg(root, ["log", "-1", "--format=%s"]).trim()).toBe("squashed history");
+      expect(entries.map((entry) => [entry.operation, entry.category, entry.success])).toEqual([
+        ["gitSquash", "write", true],
+      ]);
+      expect(entries[0].connectionId).toBe("system-ws-squash-audit");
+      expect(entries[0].rootPath).toBe(root);
+    });
+
+    test("records successful and failed remote branch deletion audit outcomes", async () => {
+      const entries: Record<string, unknown>[] = [];
+      const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
+      const root = await initRepo();
+      const remoteRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-git-remote-audit-"));
+      tempPaths.push(remoteRoot);
+      execFileSync("git", ["init", "--bare", "-q", remoteRoot]);
+      const workspace = { id: "ws-remote-branch-audit", cwd: root, kind: "terminal" as const };
+      rg(root, ["branch", "remote-audit"]);
+      rg(root, ["remote", "add", "origin", remoteRoot]);
+      rg(root, ["push", "--quiet", "origin", "remote-audit"]);
+
+      expect((await auditMgr.deleteRemoteBranch(workspace, { branch: "remote-audit", remote: "origin" })).ok).toBe(
+        true,
+      );
+      rg(root, ["remote", "set-url", "origin", `${remoteRoot}-missing`]);
+      expect((await auditMgr.deleteRemoteBranch(workspace, { branch: "remote-audit", remote: "origin" })).ok).toBe(
+        false,
+      );
+
+      expect(entries.map((entry) => [entry.operation, entry.category, entry.success])).toEqual([
+        ["gitDelete-remote-branch", "write", true],
+        ["gitDelete-remote-branch", "write", false],
+      ]);
+      expect(entries.every((entry) => entry.connectionId === "system-ws-remote-branch-audit")).toBe(true);
+      expect(entries.every((entry) => entry.rootPath === root)).toBe(true);
+    });
+
+    test("records successful and failed remote tag write audit outcomes", async () => {
+      const entries: Record<string, unknown>[] = [];
+      const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
+      const root = await initRepo();
+      const remoteRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-git-tag-remote-audit-"));
+      tempPaths.push(remoteRoot);
+      execFileSync("git", ["init", "--bare", "-q", remoteRoot]);
+      const workspace = { id: "ws-remote-tag-audit", cwd: root, kind: "terminal" as const };
+      rg(root, ["tag", "v-audit"]);
+      rg(root, ["remote", "add", "origin", remoteRoot]);
+
+      expect((await auditMgr.pushTag(workspace, { tagName: "v-audit" })).ok).toBe(true);
+      expect((await auditMgr.pushAllTags(workspace)).ok).toBe(true);
+      expect((await auditMgr.deleteRemoteTag(workspace, { tagName: "v-audit" })).ok).toBe(true);
+      rg(root, ["remote", "set-url", "origin", `${remoteRoot}-missing`]);
+      expect((await auditMgr.pushTag(workspace, { tagName: "v-audit" })).ok).toBe(false);
+      expect((await auditMgr.pushAllTags(workspace)).ok).toBe(false);
+      expect((await auditMgr.deleteRemoteTag(workspace, { tagName: "v-audit" })).ok).toBe(false);
+
+      expect(entries.map((entry) => [entry.operation, entry.category, entry.success])).toEqual([
+        ["gitPush-tag", "write", true],
+        ["gitPush-all-tags", "write", true],
+        ["gitDelete-remote-tag", "write", true],
+        ["gitPush-tag", "write", false],
+        ["gitPush-all-tags", "write", false],
+        ["gitDelete-remote-tag", "write", false],
+      ]);
+      expect(entries.every((entry) => entry.connectionId === "system-ws-remote-tag-audit")).toBe(true);
+      expect(entries.every((entry) => entry.rootPath === root)).toBe(true);
+    });
+
+    test("records scoped commit success and rejection in the system Git audit log", async () => {
+      const entries: Record<string, unknown>[] = [];
+      const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
+      const root = await initRepo();
+      const workspace = { id: "ws-commit-all-audit", cwd: root, kind: "terminal" as const };
+      await fs.writeFile(path.join(root, "a.txt"), "committed change\n", "utf8");
+
+      expect(
+        (await auditMgr.commitAll(workspace, { message: "scoped commit", rootPath: root, paths: ["a.txt"] })).ok,
+      ).toBe(true);
+      expect((await auditMgr.commitAll(workspace, { message: "empty selection", rootPath: root, paths: [] })).ok).toBe(
+        false,
+      );
+
+      expect(entries.map((entry) => [entry.operation, entry.category, entry.success])).toEqual([
+        ["gitCommit-all", "write", true],
+        ["gitCommit-all", "write", false],
+      ]);
+      expect(entries.every((entry) => entry.connectionId === "system-ws-commit-all-audit")).toBe(true);
+      expect(entries.every((entry) => entry.rootPath === root)).toBe(true);
+    });
+
+    test("locks and audits merge-into-base against the target worktree", async () => {
+      const entries: Record<string, unknown>[] = [];
+      const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
+      const root = await initRepo();
+      const baseBranch = rg(root, ["branch", "--show-current"]).trim();
+      const featurePath = `${root}-feature-audit`;
+      tempPaths.push(featurePath);
+      rg(root, ["worktree", "add", "-b", "feature-audit", featurePath]);
+      await fs.writeFile(path.join(featurePath, "feature.txt"), "feature change\n", "utf8");
+      rg(featurePath, ["add", "feature.txt"]);
+      rg(featurePath, ["commit", "-q", "-m", "feature change"]);
+      const workspace = { id: "ws-merge-base-audit", cwd: featurePath, kind: "terminal" as const };
+
+      expect((await auditMgr.mergeCurrentIntoBase(workspace, { baseBranch, rootPath: featurePath })).ok).toBe(true);
+      await fs.writeFile(path.join(root, "dirty-base.txt"), "block the next merge\n", "utf8");
+      expect((await auditMgr.mergeCurrentIntoBase(workspace, { baseBranch, rootPath: featurePath })).ok).toBe(false);
+
+      expect(entries.map((entry) => [entry.operation, entry.category, entry.success])).toEqual([
+        ["gitMerge-into-base", "write", true],
+        ["gitMerge-into-base", "write", false],
+      ]);
+      expect(entries.every((entry) => entry.connectionId === "system-ws-merge-base-audit")).toBe(true);
+      // Git reports the real path; on macOS the temp dir is a symlink (/var → /private/var).
+      const realRoot = await fs.realpath(root);
+      const entryRoots = await Promise.all(entries.map((entry) => fs.realpath(String(entry.rootPath))));
+      expect(entryRoots.every((entryRoot) => entryRoot === realRoot)).toBe(true);
+    });
+
+    test("records one success or failure audit row per stash mutation", async () => {
+      const entries: Record<string, unknown>[] = [];
+      const auditMgr = new GitManager({ gitAuditLogStore: { logEntry: (entry) => entries.push(entry) } });
+      const root = await initRepo();
+      const workspace = { id: "ws-stash-audit", cwd: root, kind: "terminal" as const };
+
+      await fs.writeFile(path.join(root, "a.txt"), "stash one\n", "utf8");
+      expect((await auditMgr.stash(workspace, { message: "one" })).ok).toBe(true);
+      expect((await auditMgr.stashApply(workspace, { ref: "stash@{0}" })).ok).toBe(true);
+      await fs.writeFile(path.join(root, "a.txt"), "base\n", "utf8");
+      expect((await auditMgr.stashDrop(workspace, { ref: "stash@{0}" })).ok).toBe(true);
+
+      await fs.writeFile(path.join(root, "a.txt"), "stash two\n", "utf8");
+      expect((await auditMgr.stash(workspace, { message: "two" })).ok).toBe(true);
+      expect(
+        (
+          await auditMgr.stashBranch(workspace, {
+            ref: "stash@{0}",
+            branchName: "from-stash",
+            switchImmediately: false,
+          })
+        ).ok,
+      ).toBe(true);
+      expect((await auditMgr.stashPop(workspace, { ref: "stash@{0}" })).ok).toBe(true);
+      expect((await auditMgr.stashDrop(workspace, { ref: "stash@{0}" })).ok).toBe(false);
+
+      expect(entries.map((entry) => [entry.operation, entry.category, entry.success])).toEqual([
+        ["gitStash", "write", true],
+        ["gitStash-apply", "write", true],
+        ["gitStash-drop", "write", true],
+        ["gitStash", "write", true],
+        ["gitStash-branch", "write", true],
+        ["gitStash-pop", "write", true],
+        ["gitStash-drop", "write", false],
+      ]);
+      expect(entries.every((entry) => entry.connectionId === "system-ws-stash-audit")).toBe(true);
+      expect(entries.every((entry) => entry.rootPath === root)).toBe(true);
+    });
+
+    test("stages a fresh verified hunk and refuses a stale token", async () => {
+      const root = await initRepo();
+      const workspace = { id: "ws-hunk", cwd: root, kind: "terminal" as const };
+      await fs.writeFile(path.join(root, "a.txt"), "changed\n", "utf8");
+      const preview = await mgr.diffPreview(workspace, { path: "a.txt" });
+      const diff = String(preview.diff);
+      const header = diff.split(/^(?=@@ )/m)[0] || "";
+      const hunk = diff.split(/(?=^@@ )/m).find((part) => part.startsWith("@@ ")) || "";
+      const token = String(preview.diffToken);
+      await fs.writeFile(path.join(root, "b.txt"), "forged target\n", "utf8");
+      const otherPreview = await mgr.diffPreview(workspace, { path: "b.txt" });
+      const forgedPatch = `${String(otherPreview.diffHeader || "")}${String(otherPreview.diff || "")}`;
+      const forged = await mgr.stageHunk(workspace, { path: "a.txt", diffToken: token, hunk: forgedPatch });
+      expect(forged.ok).toBe(false);
+      expect(rg(root, ["diff", "--cached", "--name-only"]).trim()).toBe("");
+      expect((await mgr.stageHunk(workspace, { path: "a.txt", diffToken: token, hunk: `${header}${hunk}` })).ok).toBe(
+        true,
+      );
+      const stagedPreview = await mgr.diffPreview(workspace, { path: "a.txt", scope: "staged" });
+      const stagedDiff = String(stagedPreview.diff);
+      const stagedHeader = stagedDiff.split(/^(?=@@ )/m)[0] || "";
+      const stagedHunk = stagedDiff.split(/(?=^@@ )/m).find((part) => part.startsWith("@@ ")) || "";
+      expect(
+        (
+          await mgr.stageHunk(workspace, {
+            path: "a.txt",
+            action: "unstage",
+            scope: "staged",
+            diffToken: String(stagedPreview.diffToken),
+            hunk: `${stagedHeader}${stagedHunk}`,
+          })
+        ).ok,
+      ).toBe(true);
+      expect(rg(root, ["diff", "--cached", "--", "a.txt"]).trim()).toBe("");
+      await fs.writeFile(path.join(root, "a.txt"), "changed again\n", "utf8");
+      const nextPreview = await mgr.diffPreview(workspace, { path: "a.txt" });
+      const nextDiff = String(nextPreview.diff);
+      const nextHeader = nextDiff.split(/^(?=@@ )/m)[0] || "";
+      const nextHunk = nextDiff.split(/(?=^@@ )/m).find((part) => part.startsWith("@@ ")) || "";
+      expect(
+        (
+          await mgr.stageHunk(workspace, {
+            path: "a.txt",
+            diffToken: String(nextPreview.diffToken),
+            hunk: `${nextHeader}${nextHunk}`,
+          })
+        ).ok,
+      ).toBe(true);
+      const stale = await mgr.stageHunk(workspace, {
+        path: "a.txt",
+        diffToken: String(nextPreview.diffToken),
+        hunk: `${nextHeader}${nextHunk}`,
+      });
+      expect(stale.ok).toBe(false);
+      expect(stale.summary).toContain("diff changed");
+    });
+
+    test("stages a selected later hunk while leaving the other hunk unstaged", async () => {
+      const root = await initRepo();
+      const workspace = { id: "ws-multi-hunk", cwd: root, kind: "terminal" as const };
+      const baseLines = Array.from({ length: 40 }, (_, index) => `line ${index + 1}`);
+      await fs.writeFile(path.join(root, "a.txt"), `${baseLines.join("\n")}\n`, "utf8");
+      rg(root, ["add", "a.txt"]);
+      rg(root, ["commit", "-q", "-m", "long base"]);
+      const changedLines = [...baseLines];
+      changedLines[1] = "line two changed";
+      changedLines[34] = "line thirty-five changed";
+      await fs.writeFile(path.join(root, "a.txt"), `${changedLines.join("\n")}\n`, "utf8");
+
+      const preview = await mgr.diffPreview(workspace, { path: "a.txt" });
+      const header = String(preview.diff).split(/^(?=@@ )/m)[0] || "";
+      const hunks = String(preview.diff)
+        .split(/(?=^@@ )/m)
+        .filter((part) => part.startsWith("@@ "));
+      expect(hunks).toHaveLength(2);
+      expect(
+        (
+          await mgr.stageHunk(workspace, {
+            path: "a.txt",
+            diffToken: String(preview.diffToken),
+            hunk: `${header}${hunks[1]}`,
+          })
+        ).ok,
+      ).toBe(true);
+      expect(rg(root, ["diff", "--cached", "--", "a.txt"])).toContain("line thirty-five changed");
+      expect(rg(root, ["diff", "--cached", "--", "a.txt"])).not.toContain("line two changed");
+      expect(rg(root, ["diff", "--", "a.txt"])).toContain("line two changed");
+      expect(rg(root, ["diff", "--", "a.txt"])).not.toContain("line thirty-five changed");
+    });
+
+    test("stage and unstage file operations handle a deletion and a renamed path", async () => {
+      const root = await initRepo();
+      const workspace = { id: "ws-file-kinds", cwd: root, kind: "terminal" as const };
+      await fs.rm(path.join(root, "a.txt"));
+      expect((await mgr.stageFile(workspace, { path: "a.txt" })).ok).toBe(true);
+      expect(rg(root, ["diff", "--cached", "--name-status"])).toContain("D\ta.txt");
+      expect((await mgr.unstageFile(workspace, { path: "a.txt" })).ok).toBe(true);
+      expect(rg(root, ["diff", "--cached", "--name-status"]).trim()).toBe("");
+
+      await fs.rename(path.join(root, "b.txt"), path.join(root, "renamed.txt"));
+      expect((await mgr.stageFile(workspace, { path: "renamed.txt" })).ok).toBe(true);
+      expect((await mgr.stageFile(workspace, { path: "b.txt" })).ok).toBe(true);
+      expect(rg(root, ["diff", "--cached", "--name-status"])).toMatch(
+        /(?:R\d+\tb\.txt\trenamed\.txt|D\tb\.txt|A\trenamed\.txt)/,
+      );
+      expect((await mgr.unstageFile(workspace, { path: "renamed.txt" })).ok).toBe(true);
+      expect((await mgr.unstageFile(workspace, { path: "b.txt" })).ok).toBe(true);
+      expect(rg(root, ["diff", "--cached", "--name-status"]).trim()).toBe("");
+    });
+
+    test("hunk staging refuses binary content and unresolved conflict paths", async () => {
+      const root = await initRepo();
+      const workspace = { id: "ws-unsupported-hunks", cwd: root, kind: "terminal" as const };
+      await fs.writeFile(path.join(root, "a.txt"), Buffer.from([0, 1, 2, 3, 0, 255]));
+      const binaryPreview = await mgr.diffPreview(workspace, { path: "a.txt" });
+      const binaryResult = await mgr.stageHunk(workspace, {
+        path: "a.txt",
+        diffToken: String(binaryPreview.diffToken),
+        hunk: String(binaryPreview.diffHeader || "") + "@@ -1 +1 @@\n+binary\n",
+      });
+      expect(binaryResult.ok).toBe(false);
+
+      const baseBranch = rg(root, ["branch", "--show-current"]).trim();
+      rg(root, ["checkout", "-q", "-b", "side"]);
+      await fs.writeFile(path.join(root, "b.txt"), "side version\n", "utf8");
+      rg(root, ["add", "b.txt"]);
+      rg(root, ["commit", "-q", "-m", "side change"]);
+      rg(root, ["checkout", "-q", baseBranch]);
+      await fs.writeFile(path.join(root, "b.txt"), "main version\n", "utf8");
+      rg(root, ["add", "b.txt"]);
+      rg(root, ["commit", "-q", "-m", "base change"]);
+      expect(() => rg(root, ["merge", "side"])).toThrow();
+      const conflictResult = await mgr.stageHunk(workspace, {
+        path: "b.txt",
+        diffToken: "a".repeat(64),
+        hunk: "@@ -1 +1 @@\n+resolved\n",
+      });
+      expect(conflictResult.ok).toBe(false);
     });
   });
 });

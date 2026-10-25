@@ -328,4 +328,25 @@ describe("MobileDeviceList", () => {
     expect(revokedCard.find(".device-item__forget").exists()).toBe(true);
     expect(revokedCard.find(".mobile-device-card__label--revoked").exists()).toBe(true);
   });
+
+  it("lists the newest phone first and marks the one just paired", async () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    const app = useAppStore();
+    app.mobileDevices = [
+      { ...phone, deviceId: "phone-old", label: "Old phone", createdAt: 1 },
+      { ...phone, deviceId: "phone-revoked", label: "Revoked phone", revoked: true, state: "revoked", createdAt: 3 },
+      { ...phone, deviceId: "phone-new", label: "New phone", createdAt: 2 },
+    ];
+    const wrapper = mount(MobileDeviceList, { props: { refreshOnMount: false, highlightDeviceId: "phone-new" } });
+    await flushPromises();
+
+    const cards = wrapper.findAll(".mobile-device-card");
+    expect(cards.map((card) => card.find("strong").text())).toEqual(["New phone", "Old phone", "Revoked phone"]);
+    expect(cards[0]!.classes()).toContain("mobile-device-card--just-paired");
+    expect(cards[0]!.text()).toContain("Just paired");
+    expect(wrapper.findAll(".mobile-device-card--just-paired")).toHaveLength(1);
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(scrollIntoView.mock.contexts[0]).toBe(cards[0]!.element);
+  });
 });
