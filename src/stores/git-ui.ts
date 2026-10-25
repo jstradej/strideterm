@@ -1,12 +1,15 @@
 import { defineStore } from "pinia";
-import { ref } from "vue";
+import { markRaw, ref, watch } from "vue";
 import type { Transport, CallableTransport } from "../transport.js";
 import type { StatePayload } from "../../electron/shared/types/state.js";
+import { operationFinishedSchema, type OperationFinished } from "../../electron/shared/operation-events.js";
 import { rlog } from "../lib/renderer-log.js";
-import { managedReviewBranchAlias, sourceBranchName } from "../../electron/shared/review-source-identity.js";
+import { isManagedReviewBranch, sourceBranchName } from "../../electron/shared/review-source-identity.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type GitSnapshot = Record<string, any>;
+
+const newGitIdempotencyKey = (): string => crypto.randomUUID();
 
 interface PendingGitAction {
   type: string;
@@ -48,6 +51,7 @@ interface ConflictDialogState {
 
 interface GitUiState {
   busyAction?: string;
+  historyRefreshToken?: number;
   /** Human-readable label for the action currently running (e.g. "Fetching origin/develop…").
    *  Drives the spinner banner; updated mid-run for multi-phase actions like fetch→rebase. */
   busyPhase?: string;
@@ -62,8 +66,11 @@ interface GitUiState {
     conflicts: unknown[];
     rawOutput: string;
     operationState: unknown;
+    classification?: "blocked" | "cancelled" | "partial" | "failed" | "interrupted";
     at: string;
   } | null;
+  /** A synchronous index/commit request lost its response; refresh this root before retrying it. */
+  uncertainWrites?: Record<string, { rootPath: string; action: string }>;
   conflictDialog?: ConflictDialogState | null;
   selectedDiff?: { path: string; scope: string } | null;
   diffPreview?: unknown;
@@ -73,6 +80,13 @@ interface GitUiState {
   selectedCommit?: string;
   commitDiffPreview?: unknown;
   activeTab?: string;
+  /** New Git layout selection, deliberately separate from legacy tab ids. */
+  activeGitView?: "history" | "changes" | "review";
+  /** Reuse an accepted-operation key if its start response was lost; keyed by action inputs and root. */
+  pendingLongOperationKeys?: Record<string, string>;
+  stagedCommitMessages?: Record<string, string>;
+  classicCommitMessages?: Record<string, string>;
+  classicSelectedPaths?: Record<string, string[]>;
   tags?: unknown[];
   tagsLoading?: boolean;
   tagsError?: string;
@@ -92,6 +106,9 @@ interface GitUiState {
     defaultRemote: string;
   };
   graphLoading?: boolean;
+  graphLoadingMore?: boolean;
+  graphInflightKey?: string;
+  graphRequestId?: number;
   graphError?: string;
   graph?: {
     head: string;
@@ -202,7 +219,10 @@ const PUSH_PROGRESS_MAX = 100_000;
 // A review Git step includes the user's decision in the proposal dialog and a
 // push that may run for minutes; the runtime's operation and the operation wait
 // own their own limits, so the generic backstop must not cut either short.
-const REVIEW_GIT_STEP_OPTS = { timeoutMs: 0 };
+const REVIEW_GIT_STEP_OPTS = { timeoutMs: 0, requireRefreshBeforeRetry: true };
+// Fetch-first merge/rebase waits for the generic operation to finish, so the
+// short renderer IPC backstop must not discard that accepted operation.
+const GIT_OPERATION_WAIT_OPTS = { timeoutMs: 0 };
 
 function withGitTimeout<T>(promise: Promise<T>, ms: number, action: string): Promise<T> {
   if (!ms || ms <= 0) return promise;
@@ -274,20 +294,35 @@ function computeSnapshotHash(snapshot: GitSnapshot | null): string {
 // sensible while (or if) the fetch fails.
 async function loadDiffPreview(
   ui: GitUiState,
+  requestId: number,
   field: "diffPreview" | "commitDiffPreview" | "reviewFileDiffPreview",
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   identity: Record<string, any>,
   loadingSummary: string,
   errorFallback: string,
+  isCurrent: () => boolean,
   fetch: () => Promise<unknown>,
 ): Promise<void> {
-  ui[field] = { ok: true, ...identity, diff: "", summary: loadingSummary };
+  ui[field] = markGitReadPayload({ ok: true, ...identity, diff: "", summary: loadingSummary });
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ui[field] = (await fetch()) as any;
+    const result = (await fetch()) as any;
+    if (isCurrent()) ui[field] = markGitReadPayload(result);
   } catch (error) {
-    ui[field] = { ok: false, ...identity, diff: "", summary: (error as Error)?.message || errorFallback };
+    if (isCurrent())
+      ui[field] = markGitReadPayload({
+        ok: false,
+        ...identity,
+        diff: "",
+        summary: (error as Error)?.message || errorFallback,
+      });
   }
+}
+
+// Large Git read payloads are immutable and replaced as a whole, so keep them
+// out of Vue's deep proxy conversion while the containing UI state stays reactive.
+function markGitReadPayload<T>(value: T): T {
+  return value && typeof value === "object" ? (markRaw(value as object) as T) : value;
 }
 
 function buildDestructiveConfirm({
@@ -322,11 +357,54 @@ export const useGitUiStore = defineStore("git-ui", () => {
   // flip the other's view. Durable git data (snapshots, branches, repo
   // state) stays workspace-owned in the backend payload.
   const state = ref<Record<string, GitUiState>>({});
+  const gitHistoryPreferences = ref<Record<string, { favorites: string[]; recent: string[] }>>({});
+  type GitHistorySelection = {
+    ref: string;
+    commitSearch: string;
+    showRemotes: boolean;
+    userFilter: string;
+    dateFilter: "all" | "today" | "week" | "month" | "custom";
+    customSince: string;
+    customUntil: string;
+    pathsFilter: string[];
+    topoOrder: boolean;
+    graphLimit: number;
+    compareBase: string;
+    includeBaseUpdates: boolean;
+    viewMode: "graph" | "flat";
+  };
+  const defaultGitHistorySelection = (): GitHistorySelection => ({
+    ref: "",
+    commitSearch: "",
+    showRemotes: true,
+    userFilter: "",
+    dateFilter: "all",
+    customSince: "",
+    customUntil: "",
+    pathsFilter: [],
+    topoOrder: false,
+    graphLimit: 500,
+    compareBase: "",
+    includeBaseUpdates: false,
+    viewMode: "graph",
+  });
+  const gitHistorySelections = ref<Record<string, GitHistorySelection>>({});
+  const readGeneration = new Map<string, number>();
+  const recentGitOperationOutcomes = new Map<string, OperationFinished>();
+  const gitOperationWaiters = new Map<string, Set<(outcome: OperationFinished) => void>>();
+  function nextReadGeneration(key: string): number {
+    const next = (readGeneration.get(key) || 0) + 1;
+    readGeneration.set(key, next);
+    return next;
+  }
 
   let _api: Transport | null = null;
 
   function init(api: Transport): void {
     _api = api;
+    api.onOperationFinished?.((outcome) => {
+      rememberGitOperationOutcome(outcome);
+    });
     // Live push output (streamed git stdout/stderr, incl. pre-push hook). Keyed
     // by workspaceId — the busy banner is per-workspace, like busyAction. Kept
     // bounded to the tail (where a hook's error summary lives) so a chatty hook
@@ -339,6 +417,97 @@ export const useGitUiStore = defineStore("git-ui", () => {
     });
   }
 
+  function rememberGitOperationOutcome(outcome: OperationFinished): void {
+    recentGitOperationOutcomes.set(outcome.operationId, outcome);
+    while (recentGitOperationOutcomes.size > 100) {
+      const oldest = recentGitOperationOutcomes.keys().next().value;
+      if (!oldest) break;
+      recentGitOperationOutcomes.delete(oldest);
+    }
+    const waiters = gitOperationWaiters.get(outcome.operationId);
+    if (!waiters) return;
+    gitOperationWaiters.delete(outcome.operationId);
+    for (const resolve of waiters) resolve(outcome);
+  }
+
+  function findGitOperationOutcome(appStore: { payload?: unknown }, operationId: string): OperationFinished | null {
+    const payload = appStore.payload as { operations?: { lastResults?: unknown[] } } | null | undefined;
+    const value =
+      recentGitOperationOutcomes.get(operationId) ??
+      payload?.operations?.lastResults?.find(
+        (item) => (item as { operationId?: unknown })?.operationId === operationId,
+      );
+    const parsed = operationFinishedSchema.safeParse(value);
+    if (!parsed.success) return null;
+    rememberGitOperationOutcome(parsed.data);
+    return parsed.data;
+  }
+
+  async function waitForGitOperation(appStore: { payload?: unknown }, operationId: string): Promise<OperationFinished> {
+    const existing = findGitOperationOutcome(appStore, operationId);
+    if (existing) return existing;
+    return new Promise((resolve) => {
+      const waiters = gitOperationWaiters.get(operationId) || new Set<(outcome: OperationFinished) => void>();
+      let stopWatching = () => {};
+      const settle = (outcome: OperationFinished) => {
+        waiters.delete(settle);
+        if (!waiters.size) gitOperationWaiters.delete(operationId);
+        stopWatching();
+        resolve(outcome);
+      };
+      waiters.add(settle);
+      gitOperationWaiters.set(operationId, waiters);
+      stopWatching = watch(
+        () =>
+          (appStore.payload as { operations?: { lastResults?: unknown[] } } | null | undefined)?.operations
+            ?.lastResults,
+        () => {
+          const outcome = findGitOperationOutcome(appStore, operationId);
+          if (outcome) settle(outcome);
+        },
+      );
+      // The outcome may have landed between the first lookup and waiter registration.
+      const arrived = findGitOperationOutcome(appStore, operationId);
+      if (arrived) {
+        settle(arrived);
+      }
+    });
+  }
+
+  async function resolveLongGitAction(
+    appStore: { payload?: unknown },
+    start: { operationId?: string; started?: boolean; result?: { ok?: boolean } } | null,
+  ): Promise<{ result?: { ok?: boolean; summary?: string; warnings?: unknown[]; classification?: string } } | null> {
+    if (!start?.started) return start;
+    if (!start.operationId) {
+      return {
+        result: {
+          ok: false,
+          summary: "The Git action was accepted without an operation ID, so its result could not be verified.",
+        },
+      };
+    }
+    const outcome = await waitForGitOperation(appStore, start.operationId);
+    if ("result" in outcome) {
+      return {
+        result: {
+          ...(outcome.result as { summary?: string; warnings?: unknown[] }),
+          ok: outcome.result.ok !== false,
+        },
+      };
+    }
+    return {
+      result: {
+        ok: false,
+        summary: outcome.error.message,
+        classification: outcome.error.classification,
+        ...(outcome.error.warnings?.length ? { warnings: outcome.error.warnings } : {}),
+        ...(outcome.error.conflicts?.length ? { conflicts: outcome.error.conflicts } : {}),
+        ...(outcome.error.rawOutput ? { rawOutput: outcome.error.rawOutput } : {}),
+      },
+    };
+  }
+
   function ensure(workspaceId: string): GitUiState {
     if (!workspaceId) return {};
     if (!state.value[workspaceId]) {
@@ -348,8 +517,95 @@ export const useGitUiStore = defineStore("git-ui", () => {
     return state.value[workspaceId];
   }
 
+  function longOperationKey(workspaceId: string, rootPath: string, action: string, variant = ""): string {
+    const ui = ensure(workspaceId);
+    const scope = JSON.stringify([rootPath, action, variant]);
+    const existing = ui.pendingLongOperationKeys?.[scope];
+    if (existing) return existing;
+    const key = newGitIdempotencyKey();
+    ui.pendingLongOperationKeys = { ...(ui.pendingLongOperationKeys || {}), [scope]: key };
+    return key;
+  }
+
+  function clearLongOperationKey(workspaceId: string, rootPath: string, action: string, variant = ""): void {
+    const ui = ensure(workspaceId);
+    const scope = JSON.stringify([rootPath, action, variant]);
+    if (!ui.pendingLongOperationKeys?.[scope]) return;
+    const { [scope]: _cleared, ...remaining } = ui.pendingLongOperationKeys;
+    void _cleared;
+    ui.pendingLongOperationKeys = remaining;
+  }
+
+  async function runLongGitAction(
+    workspaceId: string,
+    busyAction: string,
+    operationKind: string,
+    variant: string,
+    start: (input: { workspaceId: string; rootPath: string; idempotencyKey: string }) => Promise<unknown>,
+    rootPathOverride?: string,
+  ): Promise<unknown> {
+    const rootPath = rootPathOverride ?? getActiveRoot(workspaceId);
+    const idempotencyKey = longOperationKey(workspaceId, rootPath, operationKind, variant);
+    const response = await runGitAction(
+      workspaceId,
+      busyAction,
+      async () => {
+        const startResult = await start({ workspaceId, rootPath, idempotencyKey });
+        const { useAppStore } = await import("./app.js");
+        return resolveLongGitAction(
+          useAppStore(),
+          startResult as {
+            operationId?: string;
+            started?: boolean;
+            result?: { ok?: boolean };
+          } | null,
+        );
+      },
+      { timeoutMs: 0 },
+    );
+    // A null result means the start response was lost or this action was
+    // already busy. Keep its key so an explicit retry can replay acceptance.
+    if (response !== null) clearLongOperationKey(workspaceId, rootPath, operationKind, variant);
+    return response;
+  }
+
+  function bumpHistoryRefresh(workspaceId: string): void {
+    const ui = ensure(workspaceId);
+    ui.historyRefreshToken = (ui.historyRefreshToken ?? 0) + 1;
+  }
+
   function get(workspaceId: string): GitUiState {
     return state.value[workspaceId] || {};
+  }
+
+  function getStagedCommitMessage(workspaceId: string, rootPath: string): string {
+    return ensure(workspaceId).stagedCommitMessages?.[rootPath || "default-root"] || "";
+  }
+
+  function setStagedCommitMessage(workspaceId: string, rootPath: string, message: string): void {
+    const ui = ensure(workspaceId);
+    const key = rootPath || "default-root";
+    ui.stagedCommitMessages = { ...(ui.stagedCommitMessages || {}), [key]: message };
+  }
+
+  function getClassicCommitMessage(workspaceId: string, rootPath: string): string {
+    return ensure(workspaceId).classicCommitMessages?.[rootPath || "default-root"] || "";
+  }
+
+  function setClassicCommitMessage(workspaceId: string, rootPath: string, message: string): void {
+    const ui = ensure(workspaceId);
+    const key = rootPath || "default-root";
+    ui.classicCommitMessages = { ...(ui.classicCommitMessages || {}), [key]: message };
+  }
+
+  function getClassicSelectedPaths(workspaceId: string, rootPath: string): string[] {
+    return [...(ensure(workspaceId).classicSelectedPaths?.[rootPath || "default-root"] || [])];
+  }
+
+  function setClassicSelectedPaths(workspaceId: string, rootPath: string, paths: string[]): void {
+    const ui = ensure(workspaceId);
+    const key = rootPath || "default-root";
+    ui.classicSelectedPaths = { ...(ui.classicSelectedPaths || {}), [key]: [...new Set(paths)] };
   }
 
   function clearBusy(workspaceId: string): void {
@@ -372,15 +628,34 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   function setActiveRoot(workspaceId: string, rootPath: string): void {
     const ui = ensure(workspaceId);
+    const nextRoot = rootPath || "";
+    if ((ui.activeRootPath || "") !== nextRoot) {
+      ui.selectedDiff = null;
+      ui.diffPreview = null;
+      ui.selectedCommit = "";
+      ui.commitDiffPreview = null;
+      ui.branchList = undefined;
+      ui.branchListKey = undefined;
+      ui.branchListFetchedAt = undefined;
+      ui.tags = [];
+      ui.tagsError = "";
+      ui.graph = undefined;
+      ui.graphKey = undefined;
+      ui.graphFetchedAt = undefined;
+      ui.baseComparison = null;
+      ui.baseComparisonKey = undefined;
+      ui.reviewSelectedFile = "";
+      ui.reviewFileDiffPreview = undefined;
+    }
     // The LIVE active root is viewer-local (this renderer only). The
     // persisted workspace.activeRootPath below is just the durable DEFAULT
     // used to seed a fresh viewer on reload/first open — sibling windows
     // showing this workspace keep their own in-memory root and are never
     // flipped by this write (see getActiveGitSnapshot in app.ts).
-    ui.activeRootPath = rootPath || "";
+    ui.activeRootPath = nextRoot;
     if (_api?.setWorkspaceUIState) {
       (_api.setWorkspaceUIState as (id: string, patch: Record<string, unknown>) => Promise<unknown>)(workspaceId, {
-        activeRootPath: rootPath || "",
+        activeRootPath: nextRoot,
       }).catch(() => {});
     }
   }
@@ -393,12 +668,29 @@ export const useGitUiStore = defineStore("git-ui", () => {
     workspaceId: string,
     busyAction: string,
     runner: () => Promise<unknown>,
-    opts: { label?: string; timeoutMs?: number } = {},
+    opts: { label?: string; timeoutMs?: number; rootPath?: string; requireRefreshBeforeRetry?: boolean } = {},
   ): Promise<unknown> {
-    const { useAppStore } = await import("./app.js");
-    const appStore = useAppStore();
-
     const ui = ensure(workspaceId);
+    if (ui.busyAction === busyAction) return null;
+    const actionRootPath = opts.rootPath ?? getActiveRoot(workspaceId);
+    const uncertainWriteKey = JSON.stringify([actionRootPath, busyAction]);
+    if (opts.requireRefreshBeforeRetry && ui.uncertainWrites?.[uncertainWriteKey]) {
+      const summary = `The previous ${busyAction} response was lost. Refresh this repository and verify its state before retrying.`;
+      ui.lastResult = {
+        ok: false,
+        summary,
+        warnings: [],
+        conflicts: [],
+        rawOutput: "",
+        operationState: null,
+        at: new Date().toISOString(),
+      };
+      const { useNotificationStore } = await import("./notifications.js");
+      useNotificationStore().showError("Git action needs verification", summary, { workspaceId });
+      return null;
+    }
+    let actionResponse: unknown = null;
+    const selectedDiffAtStart = ui.selectedDiff ? { ...ui.selectedDiff } : null;
     ui.busyAction = busyAction;
     ui.busyPhase = opts.label || defaultBusyLabel(busyAction);
     // Start each push/force-push with a clean live-output buffer; chunks stream
@@ -406,14 +698,25 @@ export const useGitUiStore = defineStore("git-ui", () => {
     if (busyAction === "push" || busyAction === "force-push") ui.pushProgress = "";
 
     try {
+      const { useAppStore } = await import("./app.js");
+      const appStore = useAppStore();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const response = (await withGitTimeout(runner(), opts.timeoutMs ?? GIT_ACTION_TIMEOUT_MS, busyAction)) as any;
+      actionResponse = response;
       if (response?.payload) {
         // adoptPayload, not `appStore.payload =`: the backend builds
         // payload.workspace from the DESKTOP's active workspace, so a raw
         // assignment jumps a remote/mobile viewer to whatever the desktop
         // has open (see store.adoptPayload).
         appStore.adoptPayload(response.payload as StatePayload);
+        if (busyAction === "refresh" || busyAction.startsWith("refresh:")) {
+          const refreshedSnapshot = appStore.getGitSnapshot(workspaceId, actionRootPath) as GitSnapshot | null;
+          if (refreshedSnapshot?.available === true) {
+            ui.uncertainWrites = Object.fromEntries(
+              Object.entries(ui.uncertainWrites || {}).filter(([, uncertain]) => uncertain.rootPath !== actionRootPath),
+            );
+          }
+        }
       }
       const result = response?.result;
       // Success path: surface a transient toast and drop any prior banner.
@@ -432,6 +735,13 @@ export const useGitUiStore = defineStore("git-ui", () => {
         ui.lastResult = null;
       } else {
         ui.lastResult = result ? { ...result, at: new Date().toISOString() } : null;
+        if (result && result.ok === false) {
+          const { useNotificationStore } = await import("./notifications.js");
+          useNotificationStore().showError(
+            "Git action failed",
+            String(result.summary || "The Git action did not complete."),
+          );
+        }
       }
 
       // Auto-switch to the Conflicts tab when a git action produces conflicts
@@ -441,36 +751,66 @@ export const useGitUiStore = defineStore("git-ui", () => {
         gitSwitchTab(workspaceId, "conflicts");
       }
 
-      if (ui.selectedDiff?.path) {
-        const rootPath = getActiveRoot(workspaceId);
-        const snapshot = appStore.getGitSnapshot(workspaceId, rootPath) as GitSnapshot | null;
+      if (
+        selectedDiffAtStart?.path &&
+        getActiveRoot(workspaceId) === actionRootPath &&
+        ui.selectedDiff?.path === selectedDiffAtStart.path &&
+        ui.selectedDiff.scope === selectedDiffAtStart.scope
+      ) {
+        const snapshot = appStore.getGitSnapshot(workspaceId, actionRootPath) as GitSnapshot | null;
         const preview = await (_api as Transport & { gitDiffPreview: (p: unknown) => Promise<unknown> })
           .gitDiffPreview!({
           workspaceId,
-          path: ui.selectedDiff.path,
-          scope: ui.selectedDiff.scope,
+          path: selectedDiffAtStart.path,
+          scope: selectedDiffAtStart.scope,
           baseBranch: snapshot?.baseBranch || snapshot?.compareWithBase?.baseBranch || "",
-          rootPath,
-        }).catch(() => null);
-        if (preview) ui.diffPreview = preview;
+          rootPath: actionRootPath,
+        }).catch((error) => ({
+          ok: false,
+          path: selectedDiffAtStart.path,
+          scope: selectedDiffAtStart.scope,
+          diff: "",
+          summary: (error as Error)?.message || "Diff preview failed to refresh after the Git action.",
+        }));
+        if (
+          preview &&
+          getActiveRoot(workspaceId) === actionRootPath &&
+          ui.selectedDiff?.path === selectedDiffAtStart.path &&
+          ui.selectedDiff.scope === selectedDiffAtStart.scope
+        ) {
+          ui.diffPreview = preview;
+        }
       }
 
-      return response?.payload || null;
+      return response;
     } catch (error) {
       // Surface to console as well — the in-app GitOperationCard banner reads
       // ui.lastResult, but DevTools is where we want a stack trace.
       console.error(`[git-ui] action "${busyAction}" failed for workspace ${workspaceId}:`, error);
+      const errorSummary = error instanceof Error ? error.message : String(error || "Git action failed.");
       ui.lastResult = {
         ok: false,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        summary: (error as any)?.message || "Git action failed.",
-        warnings: [],
+        summary: opts.requireRefreshBeforeRetry
+          ? `${errorSummary} The write outcome is uncertain; refresh this repository and verify its state before retrying.`
+          : errorSummary,
+        warnings: opts.requireRefreshBeforeRetry
+          ? ["The write response was lost. Refresh and inspect repository state before retrying this action."]
+          : [],
         conflicts: [],
         rawOutput: "",
         operationState: null,
         at: new Date().toISOString(),
       };
-      return null;
+      if (opts.requireRefreshBeforeRetry) {
+        const key = JSON.stringify([actionRootPath, busyAction]);
+        ui.uncertainWrites = {
+          ...(ui.uncertainWrites || {}),
+          [key]: { rootPath: actionRootPath, action: busyAction },
+        };
+      }
+      const { useNotificationStore } = await import("./notifications.js");
+      useNotificationStore().showError("Git action failed", ui.lastResult.summary, { workspaceId });
+      return actionResponse;
     } finally {
       clearBusy(workspaceId);
     }
@@ -500,7 +840,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const branch = String(snapshot?.branch || "");
     const prId = review.pullRequest?.id ?? review.pullRequest?.number ?? "";
     const onPullRequestBranch =
-      !!branch && (branch === managedReviewBranchAlias(prId, sourceRef) || branch === sourceBranchName(sourceRef));
+      !!branch && (isManagedReviewBranch(branch, prId, sourceRef) || branch === sourceBranchName(sourceRef));
     return {
       onPullRequestBranch,
       targetBranch: String(review.pullRequest?.targetRefName || "").replace(/^refs\/heads\//, ""),
@@ -562,20 +902,44 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   async function gitFetch(workspaceId: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "fetch", () =>
-      (_api as Transport & { gitFetch: (p: unknown) => Promise<unknown> }).gitFetch!({ workspaceId, rootPath }),
+    const idempotencyKey = longOperationKey(workspaceId, rootPath, "fetch");
+    const response = await runGitAction(
+      workspaceId,
+      "fetch",
+      async () => {
+        const { useAppStore } = await import("./app.js");
+        const start = await (_api as Transport & { gitFetch: (p: unknown) => Promise<unknown> }).gitFetch!({
+          workspaceId,
+          rootPath,
+          idempotencyKey,
+        });
+        return resolveLongGitAction(useAppStore(), start as { operationId?: string; started?: boolean } | null);
+      },
+      GIT_OPERATION_WAIT_OPTS,
     );
+    if (response !== null) clearLongOperationKey(workspaceId, rootPath, "fetch");
   }
 
   async function gitPull(workspaceId: string, { stashDirty = false }: { stashDirty?: boolean } = {}): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "pull", () =>
-      (_api as Transport & { gitPull: (p: unknown) => Promise<unknown> }).gitPull!({
-        workspaceId,
-        rootPath,
-        stashDirty,
-      }),
+    const variant = stashDirty ? "stash-dirty" : "keep-dirty";
+    const idempotencyKey = longOperationKey(workspaceId, rootPath, "pull", variant);
+    const response = await runGitAction(
+      workspaceId,
+      "pull",
+      async () => {
+        const { useAppStore } = await import("./app.js");
+        const start = await (_api as Transport & { gitPull: (p: unknown) => Promise<unknown> }).gitPull!({
+          workspaceId,
+          rootPath,
+          stashDirty,
+          idempotencyKey,
+        });
+        return resolveLongGitAction(useAppStore(), start as { operationId?: string; started?: boolean } | null);
+      },
+      GIT_OPERATION_WAIT_OPTS,
     );
+    if (response !== null) clearLongOperationKey(workspaceId, rootPath, "pull", variant);
   }
 
   async function gitPush(workspaceId: string): Promise<void> {
@@ -584,31 +948,52 @@ export const useGitUiStore = defineStore("git-ui", () => {
       return;
     }
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "push", () =>
-      (_api as Transport & { gitPush: (p: unknown) => Promise<unknown> }).gitPush!({ workspaceId, rootPath }),
+    const idempotencyKey = longOperationKey(workspaceId, rootPath, "push");
+    const response = await runGitAction(
+      workspaceId,
+      "push",
+      async () => {
+        const { useAppStore } = await import("./app.js");
+        const start = await (_api as Transport & { gitPush: (p: unknown) => Promise<unknown> }).gitPush!({
+          workspaceId,
+          rootPath,
+          idempotencyKey,
+        });
+        return resolveLongGitAction(useAppStore(), start as { operationId?: string; started?: boolean } | null);
+      },
+      GIT_OPERATION_WAIT_OPTS,
     );
+    if (response !== null) clearLongOperationKey(workspaceId, rootPath, "push");
   }
 
   async function gitCheckoutBranch(workspaceId: string, branch: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "checkout", () =>
-      (_api as Transport & { gitCheckoutBranch: (p: unknown) => Promise<unknown> }).gitCheckoutBranch!({
-        workspaceId,
-        branch,
-        rootPath,
-      }),
+    await runGitAction(
+      workspaceId,
+      "checkout",
+      () =>
+        (_api as Transport & { gitCheckoutBranch: (p: unknown) => Promise<unknown> }).gitCheckoutBranch!({
+          workspaceId,
+          branch,
+          rootPath,
+        }),
+      { requireRefreshBeforeRetry: true },
     );
   }
 
   async function gitCreateBranch(workspaceId: string, branch: string, startPoint: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "create-branch", () =>
-      (_api as Transport & { gitCreateBranch: (p: unknown) => Promise<unknown> }).gitCreateBranch!({
-        workspaceId,
-        branch,
-        startPoint,
-        rootPath,
-      }),
+    await runGitAction(
+      workspaceId,
+      "create-branch",
+      () =>
+        (_api as Transport & { gitCreateBranch: (p: unknown) => Promise<unknown> }).gitCreateBranch!({
+          workspaceId,
+          branch,
+          startPoint,
+          rootPath,
+        }),
+      { requireRefreshBeforeRetry: true },
     );
   }
 
@@ -619,24 +1004,32 @@ export const useGitUiStore = defineStore("git-ui", () => {
   // "An object could not be cloned" error before the action ever runs.
   async function gitCherryPick(workspaceId: string, hashes: string[]): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "cherry-pick", () =>
-      (_api as Transport & { gitCherryPick: (p: unknown) => Promise<unknown> }).gitCherryPick!({
-        workspaceId,
-        hashes: [...hashes],
-        rootPath,
-      }),
+    await runGitAction(
+      workspaceId,
+      "cherry-pick",
+      () =>
+        (_api as Transport & { gitCherryPick: (p: unknown) => Promise<unknown> }).gitCherryPick!({
+          workspaceId,
+          hashes: [...hashes],
+          rootPath,
+        }),
+      { requireRefreshBeforeRetry: true },
     );
   }
 
   async function gitSquashCommits(workspaceId: string, hashes: string[], message: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "squash", () =>
-      (_api as Transport & { gitSquashCommits: (p: unknown) => Promise<unknown> }).gitSquashCommits!({
-        workspaceId,
-        hashes: [...hashes],
-        message,
-        rootPath,
-      }),
+    await runGitAction(
+      workspaceId,
+      "squash",
+      () =>
+        (_api as Transport & { gitSquashCommits: (p: unknown) => Promise<unknown> }).gitSquashCommits!({
+          workspaceId,
+          hashes: [...hashes],
+          message,
+          rootPath,
+        }),
+      { requireRefreshBeforeRetry: true },
     );
   }
 
@@ -646,6 +1039,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
   // caller didn't explicitly ask for fresh data. Mutations (checkout, merge,
   // etc.) pass force=true so they always re-read.
   const FRESH_TTL_MS = 15_000;
+  const GRAPH_FIRST_PAGE = 100;
 
   async function gitListBranches(workspaceId: string, opts: { force?: boolean } = {}): Promise<void> {
     if (!_api) return;
@@ -662,19 +1056,22 @@ export const useGitUiStore = defineStore("git-ui", () => {
     ) {
       return;
     }
+    const requestId = nextReadGeneration(`${workspaceId}:branches`);
     ui.branchesLoading = true;
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const result = (await (_api as CallableTransport).gitListBranches({ workspaceId, rootPath })) as any;
+      if (requestId !== readGeneration.get(`${workspaceId}:branches`) || getActiveRoot(workspaceId) !== rootPath)
+        return;
       if (result?.ok) {
-        ui.branchList = {
+        ui.branchList = markGitReadPayload({
           current: result.current || "",
           upstream: result.upstream || "",
           local: result.local || [],
           remotes: result.remotes || [],
           defaultBranch: result.defaultBranch || "",
           defaultRemote: result.defaultRemote || "",
-        };
+        });
         ui.branchesError = "";
         ui.branchListKey = rootPath;
         ui.branchListFetchedAt = Date.now();
@@ -685,19 +1082,24 @@ export const useGitUiStore = defineStore("git-ui", () => {
         ui.branchListFetchedAt = undefined;
       }
     } catch (error) {
+      if (requestId !== readGeneration.get(`${workspaceId}:branches`) || getActiveRoot(workspaceId) !== rootPath)
+        return;
       ui.branchList = { current: "", upstream: "", local: [], remotes: [], defaultBranch: "", defaultRemote: "" };
       ui.branchesError = (error as Error)?.message || "Failed to load branches.";
       ui.branchListKey = undefined;
       ui.branchListFetchedAt = undefined;
     } finally {
-      ui.branchesLoading = false;
+      if (requestId === readGeneration.get(`${workspaceId}:branches`)) ui.branchesLoading = false;
     }
   }
 
   async function gitDeleteBranch(workspaceId: string, branch: string, force: boolean): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "delete-branch", () =>
-      (_api as CallableTransport).gitDeleteBranch({ workspaceId, branch, force, rootPath }),
+    await runGitAction(
+      workspaceId,
+      "delete-branch",
+      () => (_api as CallableTransport).gitDeleteBranch({ workspaceId, branch, force, rootPath }),
+      { requireRefreshBeforeRetry: true },
     );
     // Race-net: branchList may have been stale (worktree created since the
     // last refresh). When the backend rejects with the structured code, fall
@@ -718,17 +1120,24 @@ export const useGitUiStore = defineStore("git-ui", () => {
   }
 
   async function gitDeleteRemoteBranch(workspaceId: string, branch: string, remote: string): Promise<void> {
-    const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "delete-remote-branch", () =>
-      (_api as CallableTransport).gitDeleteRemoteBranch({ workspaceId, branch, remote, rootPath }),
+    await runLongGitAction(
+      workspaceId,
+      "delete-remote-branch",
+      "delete-remote-branch",
+      `${remote}/${branch}`,
+      ({ workspaceId, rootPath, idempotencyKey }) =>
+        (_api as CallableTransport).gitDeleteRemoteBranch({ workspaceId, branch, remote, rootPath, idempotencyKey }),
     );
     await gitListBranches(workspaceId);
   }
 
   async function gitRenameBranch(workspaceId: string, branch: string, newName: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "rename-branch", () =>
-      (_api as CallableTransport).gitRenameBranch({ workspaceId, branch, newName, rootPath }),
+    await runGitAction(
+      workspaceId,
+      "rename-branch",
+      () => (_api as CallableTransport).gitRenameBranch({ workspaceId, branch, newName, rootPath }),
+      { requireRefreshBeforeRetry: true },
     );
     await gitListBranches(workspaceId);
   }
@@ -739,8 +1148,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
     localBranch: string,
   ): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "checkout-remote", () =>
-      (_api as CallableTransport).gitCheckoutRemoteBranch({ workspaceId, remoteBranch, localBranch, rootPath }),
+    await runGitAction(
+      workspaceId,
+      "checkout-remote",
+      () => (_api as CallableTransport).gitCheckoutRemoteBranch({ workspaceId, remoteBranch, localBranch, rootPath }),
+      { requireRefreshBeforeRetry: true },
     );
     await gitListBranches(workspaceId);
   }
@@ -780,6 +1192,9 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const { workspaceId: _ignored, ...payloadForKey } = payload;
     void _ignored;
     const cacheKey = JSON.stringify(payloadForKey);
+    if (!opts.force && (ui.graphLoading || ui.graphLoadingMore) && ui.graphInflightKey === cacheKey) return;
+    const requestId = Number(ui.graphRequestId || 0) + 1;
+    ui.graphRequestId = requestId;
     const now = Date.now();
     if (
       !opts.force &&
@@ -793,21 +1208,57 @@ export const useGitUiStore = defineStore("git-ui", () => {
       return;
     }
     ui.graphLoading = true;
+    ui.graphLoadingMore = false;
+    ui.graphInflightKey = cacheKey;
+    const progressive = !payload.topoOrder && payload.limit > GRAPH_FIRST_PAGE;
     try {
-      const result = (await (_api as CallableTransport).gitLogGraph(payload)) as {
+      const result = (await (_api as CallableTransport).gitLogGraph(
+        progressive ? { ...payload, limit: GRAPH_FIRST_PAGE, skip: 0 } : payload,
+      )) as {
         ok?: boolean;
         head?: string;
         commits?: unknown[];
         refs?: Record<string, string>;
         error?: string;
       };
+      if (ui.graphRequestId !== requestId || getActiveRoot(workspaceId) !== rootPath) return;
       if (result?.ok) {
-        ui.graph = {
+        const firstCommits = result.commits || [];
+        ui.graph = markGitReadPayload({
           head: result.head || "",
-          commits: result.commits || [],
+          commits: firstCommits,
           refs: result.refs || {},
-        };
+        });
         ui.graphError = "";
+        if (progressive && firstCommits.length >= GRAPH_FIRST_PAGE) {
+          ui.graphLoading = false;
+          ui.graphLoadingMore = true;
+          try {
+            const more = (await (_api as CallableTransport).gitLogGraph({
+              ...payload,
+              limit: payload.limit - GRAPH_FIRST_PAGE,
+              skip: GRAPH_FIRST_PAGE,
+            })) as { ok?: boolean; commits?: unknown[]; refs?: Record<string, string>; error?: string };
+            if (ui.graphRequestId !== requestId || getActiveRoot(workspaceId) !== rootPath) return;
+            if (more?.ok) {
+              const seen = new Set(firstCommits.map((c) => (c as { hash?: string }).hash));
+              const extra = (more.commits || []).filter((c) => !seen.has((c as { hash?: string }).hash));
+              ui.graph = markGitReadPayload({
+                head: ui.graph?.head || "",
+                commits: [...firstCommits, ...extra],
+                refs: { ...(more.refs || {}), ...(result.refs || {}) },
+              });
+              ui.graphKey = cacheKey;
+              ui.graphFetchedAt = Date.now();
+            } else {
+              rlog("warn", "[git-ui] gitLoadGraph background page failed", { workspaceId, error: more?.error });
+            }
+          } catch (error) {
+            if (ui.graphRequestId !== requestId) return;
+            rlog("warn", "[git-ui] gitLoadGraph background page threw", { workspaceId, error: String(error) });
+          }
+          return;
+        }
         ui.graphKey = cacheKey;
         ui.graphFetchedAt = Date.now();
       } else {
@@ -818,13 +1269,18 @@ export const useGitUiStore = defineStore("git-ui", () => {
         if (ui.graphError) console.warn(`[git-ui] gitLoadGraph(${workspaceId}) reported error:`, ui.graphError);
       }
     } catch (error) {
+      if (ui.graphRequestId !== requestId || getActiveRoot(workspaceId) !== rootPath) return;
       ui.graph = { head: "", commits: [], refs: {} };
       ui.graphError = (error as Error)?.message || "Failed to load graph.";
       ui.graphKey = undefined;
       ui.graphFetchedAt = undefined;
       console.error(`[git-ui] gitLoadGraph(${workspaceId}) threw:`, error);
     } finally {
-      ui.graphLoading = false;
+      if (ui.graphRequestId === requestId) {
+        ui.graphLoading = false;
+        ui.graphLoadingMore = false;
+        ui.graphInflightKey = undefined;
+      }
     }
   }
 
@@ -836,8 +1292,18 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const ws = workspace as any;
     const roots: string[] = ws?.gitRoots?.length ? ws.gitRoots : [ws?.cwd].filter(Boolean);
     for (const rootPath of roots) {
-      await runGitAction(workspaceId, `bulk-fetch:${rootPath}`, () =>
-        (_api as Transport & { gitFetch: (p: unknown) => Promise<unknown> }).gitFetch!({ workspaceId, rootPath }),
+      await runLongGitAction(
+        workspaceId,
+        `bulk-fetch:${rootPath}`,
+        "fetch",
+        "bulk",
+        ({ workspaceId, rootPath, idempotencyKey }) =>
+          (_api as Transport & { gitFetch: (p: unknown) => Promise<unknown> }).gitFetch!({
+            workspaceId,
+            rootPath,
+            idempotencyKey,
+          }),
+        rootPath,
       );
     }
   }
@@ -855,8 +1321,18 @@ export const useGitUiStore = defineStore("git-ui", () => {
       // Skip dirty repos
       const snap = entry?.roots?.[rootPath] || (entry?.rootPath === rootPath ? entry : null);
       if (snap?.dirty) continue;
-      await runGitAction(workspaceId, `bulk-pull:${rootPath}`, () =>
-        (_api as Transport & { gitPull: (p: unknown) => Promise<unknown> }).gitPull!({ workspaceId, rootPath }),
+      await runLongGitAction(
+        workspaceId,
+        `bulk-pull:${rootPath}`,
+        "pull",
+        "bulk",
+        ({ workspaceId, rootPath, idempotencyKey }) =>
+          (_api as Transport & { gitPull: (p: unknown) => Promise<unknown> }).gitPull!({
+            workspaceId,
+            rootPath,
+            idempotencyKey,
+          }),
+        rootPath,
       );
     }
   }
@@ -936,22 +1412,36 @@ export const useGitUiStore = defineStore("git-ui", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const api = _api as any;
       if (action === "deleteLocalTag") {
-        await runGitAction(workspaceId, "delete-tag", () =>
-          api.gitDeleteTag({ workspaceId, tagName: p!.tagName, rootPath }),
+        await runGitAction(
+          workspaceId,
+          "delete-tag",
+          () => api.gitDeleteTag({ workspaceId, tagName: p!.tagName, rootPath }),
+          { rootPath, requireRefreshBeforeRetry: true },
         );
         await gitListTags(workspaceId);
       } else if (action === "deleteRemoteTag") {
-        await runGitAction(workspaceId, "delete-remote-tag", () =>
-          api.gitDeleteRemoteTag({ workspaceId, tagName: p!.tagName, rootPath }),
+        await runLongGitAction(
+          workspaceId,
+          "delete-remote-tag",
+          "delete-remote-tag",
+          String(p!.tagName || ""),
+          ({ workspaceId, rootPath, idempotencyKey }) =>
+            api.gitDeleteRemoteTag({ workspaceId, tagName: p!.tagName, rootPath, idempotencyKey }),
         );
         await gitListTags(workspaceId);
       } else if (action === "removeWorktree") {
-        await runGitAction(workspaceId, "remove-worktree", () =>
-          api.gitRemoveWorktree({ workspaceId, worktreePath: p!.worktreePath, deleteBranch: false }),
+        await runGitAction(
+          workspaceId,
+          "remove-worktree",
+          () => api.gitRemoveWorktree({ workspaceId, worktreePath: p!.worktreePath, deleteBranch: false }),
+          { requireRefreshBeforeRetry: true },
         );
       } else if (action === "removeWorktreeDeleteBranch") {
-        await runGitAction(workspaceId, "remove-worktree", () =>
-          api.gitRemoveWorktree({ workspaceId, worktreePath: p!.worktreePath, deleteBranch: true }),
+        await runGitAction(
+          workspaceId,
+          "remove-worktree",
+          () => api.gitRemoveWorktree({ workspaceId, worktreePath: p!.worktreePath, deleteBranch: true }),
+          { requireRefreshBeforeRetry: true },
         );
       } else if (action === "forcePushWithLease") {
         if ((await pullRequestContext(workspaceId)).onPullRequestBranch) {
@@ -962,7 +1452,14 @@ export const useGitUiStore = defineStore("git-ui", () => {
             REVIEW_GIT_STEP_OPTS,
           );
         } else {
-          await runGitAction(workspaceId, "force-push", () => api.gitForcePushWithLease({ workspaceId, rootPath }));
+          await runLongGitAction(
+            workspaceId,
+            "force-push",
+            "force-push",
+            "",
+            ({ workspaceId, rootPath, idempotencyKey }) =>
+              api.gitForcePushWithLease({ workspaceId, rootPath, idempotencyKey }),
+          );
         }
       }
       return;
@@ -971,30 +1468,53 @@ export const useGitUiStore = defineStore("git-ui", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const api = _api as any;
     if (pending.type === "abort") {
-      await runGitAction(workspaceId, "abort", () => api.gitAbortOperation({ workspaceId, rootPath }));
+      await runGitAction(workspaceId, "abort", () => api.gitAbortOperation({ workspaceId, rootPath }), {
+        requireRefreshBeforeRetry: true,
+      });
       return;
     }
     if (pending.type === "merge-into-base") {
-      await runGitAction(workspaceId, "merge-into-base", () =>
-        api.gitMergeCurrentIntoBase({ workspaceId, baseBranch: pending.baseBranch, rootPath }),
+      await runGitAction(
+        workspaceId,
+        "merge-into-base",
+        () => api.gitMergeCurrentIntoBase({ workspaceId, baseBranch: pending.baseBranch, rootPath }),
+        { requireRefreshBeforeRetry: true },
       );
       return;
     }
-    const payload = { workspaceId, baseBranch: pending.baseBranch, stashDirty: pending.stashDirty, rootPath };
+    const payload = {
+      workspaceId,
+      baseBranch: pending.baseBranch,
+      stashDirty: pending.stashDirty,
+      fetchFirst: pending.fetchFirst === true,
+      rootPath,
+    };
     const fetchFirst = !!pending.fetchFirst;
     const baseLabel = pending.baseBranch || "base";
-    await runGitAction(workspaceId, pending.type, async () => {
-      if (fetchFirst) {
-        // Pull the latest remote refs first so the base is current. If the
-        // fetch fails (offline / auth), surface that and don't rebase/merge
-        // onto a stale base.
-        setBusyPhase(workspaceId, `Fetching ${baseLabel}…`);
-        const fetchResp = (await api.gitFetch({ workspaceId, rootPath })) as { result?: { ok?: boolean } } | null;
-        if (fetchResp?.result && fetchResp.result.ok === false) return fetchResp;
-      }
-      setBusyPhase(workspaceId, pending.type === "merge" ? `Merging ${baseLabel} in…` : `Rebasing onto ${baseLabel}…`);
-      return pending.type === "merge" ? api.gitMergeIntoCurrent(payload) : api.gitRebaseOnto(payload);
-    });
+    const actionVariant = JSON.stringify([
+      pending.baseBranch,
+      pending.fetchFirst === true,
+      pending.stashDirty === true,
+    ]);
+    await runLongGitAction(
+      workspaceId,
+      pending.type,
+      pending.type,
+      actionVariant,
+      async ({ workspaceId, rootPath, idempotencyKey }) => {
+        setBusyPhase(
+          workspaceId,
+          fetchFirst
+            ? `Fetching and ${pending.type === "merge" ? "merging into" : "rebasing onto"} ${baseLabel}…`
+            : pending.type === "merge"
+              ? `Merging ${baseLabel} in…`
+              : `Rebasing onto ${baseLabel}…`,
+        );
+        return pending.type === "merge"
+          ? api.gitMergeIntoCurrent({ ...payload, rootPath, idempotencyKey })
+          : api.gitRebaseOnto({ ...payload, rootPath, idempotencyKey });
+      },
+    );
   }
 
   function confirmDeleteLocalTag(workspaceId: string, tagName: string): void {
@@ -1094,11 +1614,15 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   async function gitContinue(workspaceId: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "continue", () =>
-      (_api as Transport & { gitContinueOperation: (p: unknown) => Promise<unknown> }).gitContinueOperation!({
-        workspaceId,
-        rootPath,
-      }),
+    await runGitAction(
+      workspaceId,
+      "continue",
+      () =>
+        (_api as Transport & { gitContinueOperation: (p: unknown) => Promise<unknown> }).gitContinueOperation!({
+          workspaceId,
+          rootPath,
+        }),
+      { requireRefreshBeforeRetry: true },
     );
   }
 
@@ -1183,12 +1707,16 @@ export const useGitUiStore = defineStore("git-ui", () => {
   }
 
   async function gitRemoveWorktree(workspaceId: string, worktreePath: string, deleteBranch: boolean): Promise<void> {
-    await runGitAction(workspaceId, "remove-worktree", () =>
-      (_api as Transport & { gitRemoveWorktree: (p: unknown) => Promise<unknown> }).gitRemoveWorktree!({
-        workspaceId,
-        worktreePath,
-        deleteBranch,
-      }),
+    await runGitAction(
+      workspaceId,
+      "remove-worktree",
+      () =>
+        (_api as Transport & { gitRemoveWorktree: (p: unknown) => Promise<unknown> }).gitRemoveWorktree!({
+          workspaceId,
+          worktreePath,
+          deleteBranch,
+        }),
+      { requireRefreshBeforeRetry: true },
     );
   }
 
@@ -1197,19 +1725,84 @@ export const useGitUiStore = defineStore("git-ui", () => {
     message: string,
     paths?: string[],
     previousPaths?: string[],
-  ): Promise<void> {
-    if (!message) return;
+  ): Promise<boolean> {
+    if (!message) return false;
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "commit", () =>
-      (_api as Transport & { gitCommitAll: (p: unknown) => Promise<unknown> }).gitCommitAll!({
+    const response = await runGitAction(
+      workspaceId,
+      "commit",
+      () =>
+        (_api as Transport & { gitCommitAll: (p: unknown) => Promise<unknown> }).gitCommitAll!({
+          workspaceId,
+          message,
+          rootPath,
+          // Omit entirely when nothing is selected so the backend commits the
+          // whole tree (matches the historical "Commit all" behaviour).
+          ...(paths && paths.length ? { paths } : {}),
+          // Rename old-names, sent separately so the backend never stages them.
+          ...(previousPaths && previousPaths.length ? { previousPaths } : {}),
+        }),
+      { requireRefreshBeforeRetry: true },
+    );
+    return (response as { result?: { ok?: boolean } } | null)?.result?.ok === true;
+  }
+
+  async function runIndexAction(workspaceId: string, action: string, runner: () => Promise<unknown>): Promise<boolean> {
+    const response = (await runGitAction(workspaceId, action, runner, { requireRefreshBeforeRetry: true })) as {
+      result?: { ok?: boolean };
+      payload?: unknown;
+    } | null;
+    const result =
+      response?.result ||
+      (response?.payload as { result?: { ok?: boolean }; ok?: boolean } | undefined)?.result ||
+      (response?.payload as { ok?: boolean } | undefined);
+    return result?.ok === true;
+  }
+
+  async function gitStageFile(workspaceId: string, path: string): Promise<boolean> {
+    const rootPath = getActiveRoot(workspaceId);
+    return runIndexAction(workspaceId, "stage-file", () =>
+      (_api as Transport & { gitStageFile: (p: unknown) => Promise<unknown> }).gitStageFile!({
         workspaceId,
-        message,
         rootPath,
-        // Omit entirely when nothing is selected so the backend commits the
-        // whole tree (matches the historical "Commit all" behaviour).
-        ...(paths && paths.length ? { paths } : {}),
-        // Rename old-names, sent separately so the backend never stages them.
-        ...(previousPaths && previousPaths.length ? { previousPaths } : {}),
+        path,
+      }),
+    );
+  }
+
+  async function gitUnstageFile(workspaceId: string, path: string): Promise<boolean> {
+    const rootPath = getActiveRoot(workspaceId);
+    return runIndexAction(workspaceId, "unstage-file", () =>
+      (_api as Transport & { gitUnstageFile: (p: unknown) => Promise<unknown> }).gitUnstageFile!({
+        workspaceId,
+        rootPath,
+        path,
+      }),
+    );
+  }
+
+  async function gitStageHunk(
+    workspaceId: string,
+    input: { path: string; action: "stage" | "unstage"; scope: "staged" | "unstaged"; diffToken: string; hunk: string },
+  ): Promise<boolean> {
+    const rootPath = getActiveRoot(workspaceId);
+    return runIndexAction(workspaceId, "stage-hunk", () =>
+      (_api as Transport & { gitStageHunk: (p: unknown) => Promise<unknown> }).gitStageHunk!({
+        workspaceId,
+        rootPath,
+        ...input,
+      }),
+    );
+  }
+
+  async function gitCommitStaged(workspaceId: string, message: string): Promise<boolean> {
+    if (!message.trim()) return false;
+    const rootPath = getActiveRoot(workspaceId);
+    return runIndexAction(workspaceId, "commit-staged", () =>
+      (_api as Transport & { gitCommitStaged: (p: unknown) => Promise<unknown> }).gitCommitStaged!({
+        workspaceId,
+        rootPath,
+        message,
       }),
     );
   }
@@ -1218,8 +1811,26 @@ export const useGitUiStore = defineStore("git-ui", () => {
     if (!hash) return;
     const ui = ensure(workspaceId);
     ui.selectedCommit = hash;
-    await loadDiffPreview(ui, "commitDiffPreview", { hash }, "Loading...", "Failed to load commit diff.", () =>
-      (_api as Transport & { gitCommitDiff: (p: unknown) => Promise<unknown> }).gitCommitDiff!({ workspaceId, hash }),
+    const rootPath = getActiveRoot(workspaceId);
+    const requestKey = `${workspaceId}:commit-diff`;
+    const requestId = nextReadGeneration(requestKey);
+    await loadDiffPreview(
+      ui,
+      requestId,
+      "commitDiffPreview",
+      { hash },
+      "Loading...",
+      "Failed to load commit diff.",
+      () =>
+        requestId === readGeneration.get(requestKey) &&
+        getActiveRoot(workspaceId) === rootPath &&
+        ui.selectedCommit === hash,
+      () =>
+        (_api as Transport & { gitCommitDiff: (p: unknown) => Promise<unknown> }).gitCommitDiff!({
+          workspaceId,
+          hash,
+          rootPath,
+        }),
     );
   }
 
@@ -1231,12 +1842,20 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const snapshot = appStore.getGitSnapshot(workspaceId, rootPath) as GitSnapshot | null;
     const ui = ensure(workspaceId);
     ui.selectedDiff = { path, scope };
+    const requestKey = `${workspaceId}:working-diff`;
+    const requestId = nextReadGeneration(requestKey);
     await loadDiffPreview(
       ui,
+      requestId,
       "diffPreview",
       { path, scope },
       "Loading diff preview...",
       "Diff preview failed to load.",
+      () =>
+        requestId === readGeneration.get(requestKey) &&
+        getActiveRoot(workspaceId) === rootPath &&
+        ui.selectedDiff?.path === path &&
+        ui.selectedDiff?.scope === scope,
       () =>
         (_api as Transport & { gitDiffPreview: (p: unknown) => Promise<unknown> }).gitDiffPreview!({
           workspaceId,
@@ -1252,6 +1871,162 @@ export const useGitUiStore = defineStore("git-ui", () => {
     ensure(workspaceId).activeTab = tab;
   }
 
+  function gitViewKey(
+    workspaceId: string,
+    rootPath = getActiveRoot(workspaceId),
+    profileId = "default",
+    reviewKey = "",
+  ): string {
+    return [profileId, workspaceId, rootPath || "default-root", reviewKey || "no-review"]
+      .map((part) => encodeURIComponent(part))
+      .join("::");
+  }
+
+  function gitSwitchView(
+    workspaceId: string,
+    view: "history" | "changes" | "review",
+    rootPath?: string,
+    profileId = "default",
+    reviewKey = "",
+  ): void {
+    const key = gitViewKey(workspaceId, rootPath, profileId, reviewKey);
+    const ui = ensure(workspaceId);
+    ui.gitViewsByRoot = {
+      ...((ui.gitViewsByRoot as Record<string, "history" | "changes" | "review"> | undefined) || {}),
+      [key]: view,
+    };
+    if (_api?.setWorkspaceUIState) {
+      (_api.setWorkspaceUIState as (id: string, patch: Record<string, unknown>) => Promise<unknown>)(workspaceId, {
+        gitViewPreferences: { [key]: view },
+      }).catch((error) =>
+        rlog("warn", "[git-ui] failed to persist Git view preference", { workspaceId, error: String(error) }),
+      );
+    }
+  }
+
+  function getGitView(
+    workspaceId: string,
+    rootPath?: string,
+    profileId = "default",
+    reviewKey = "",
+  ): "history" | "changes" | undefined {
+    const ui = ensure(workspaceId);
+    const workspacePreferences =
+      (ui.workspaceGitViewPreferences as Record<string, "history" | "changes" | "review"> | undefined) || {};
+    const payloadPreferences =
+      (ui.gitViewPreferences as Record<string, "history" | "changes" | "review"> | undefined) || {};
+    const views = {
+      ...workspacePreferences,
+      ...payloadPreferences,
+      ...((ui.gitViewsByRoot as Record<string, "history" | "changes" | "review"> | undefined) || {}),
+    };
+    const view = views?.[gitViewKey(workspaceId, rootPath, profileId, reviewKey)];
+    return view === "review" ? "history" : view;
+  }
+
+  function gitHistoryPreferencesKey(workspaceId: string, rootPath: string, profileId: string): string {
+    return `strideterm:git-history:${encodeURIComponent(profileId)}:${encodeURIComponent(workspaceId)}:${encodeURIComponent(rootPath || "default-root")}`;
+  }
+
+  function gitHistorySelectionKey(workspaceId: string, rootPath: string, profileId: string): string {
+    return `${encodeURIComponent(profileId)}::${encodeURIComponent(workspaceId)}::${encodeURIComponent(rootPath || "default-root")}`;
+  }
+
+  function getGitHistorySelection(workspaceId: string, rootPath = getActiveRoot(workspaceId), profileId = "default") {
+    return {
+      ...defaultGitHistorySelection(),
+      ...(gitHistorySelections.value[gitHistorySelectionKey(workspaceId, rootPath, profileId)] || {}),
+      pathsFilter: [
+        ...(gitHistorySelections.value[gitHistorySelectionKey(workspaceId, rootPath, profileId)]?.pathsFilter || []),
+      ],
+    };
+  }
+
+  function setGitHistorySelection(
+    workspaceId: string,
+    rootPath: string,
+    profileId: string,
+    selection: Partial<GitHistorySelection>,
+  ): void {
+    const key = gitHistorySelectionKey(workspaceId, rootPath, profileId);
+    const current = getGitHistorySelection(workspaceId, rootPath, profileId);
+    gitHistorySelections.value = {
+      ...gitHistorySelections.value,
+      [key]: {
+        ...current,
+        ...selection,
+        pathsFilter: selection.pathsFilter ? [...selection.pathsFilter] : current.pathsFilter,
+      },
+    };
+  }
+
+  function getGitHistoryPreferences(workspaceId: string, rootPath = getActiveRoot(workspaceId), profileId = "default") {
+    const key = gitHistoryPreferencesKey(workspaceId, rootPath, profileId);
+    const cached = gitHistoryPreferences.value[key];
+    if (cached) return { favorites: [...cached.favorites], recent: [...cached.recent] };
+    try {
+      const stored = JSON.parse(globalThis.localStorage?.getItem(key) || "null");
+      if (stored && Array.isArray(stored.favorites) && Array.isArray(stored.recent)) {
+        const preferences = {
+          favorites: stored.favorites.filter((ref: unknown) => typeof ref === "string").slice(0, 100),
+          recent: stored.recent.filter((ref: unknown) => typeof ref === "string").slice(0, 20),
+        };
+        gitHistoryPreferences.value = { ...gitHistoryPreferences.value, [key]: preferences };
+        return { favorites: [...preferences.favorites], recent: [...preferences.recent] };
+      }
+    } catch {
+      // Storage is optional; refs remain usable if the browser blocks it.
+    }
+    const empty = { favorites: [] as string[], recent: [] as string[] };
+    gitHistoryPreferences.value = { ...gitHistoryPreferences.value, [key]: empty };
+    return { favorites: [], recent: [] };
+  }
+
+  function updateGitHistoryPreferences(
+    workspaceId: string,
+    rootPath: string,
+    profileId: string,
+    update: (preferences: { favorites: string[]; recent: string[] }) => { favorites: string[]; recent: string[] },
+  ): void {
+    const key = gitHistoryPreferencesKey(workspaceId, rootPath, profileId);
+    const next = update(getGitHistoryPreferences(workspaceId, rootPath, profileId));
+    const preferences = { favorites: next.favorites.slice(0, 100), recent: next.recent.slice(0, 20) };
+    gitHistoryPreferences.value = { ...gitHistoryPreferences.value, [key]: preferences };
+    try {
+      globalThis.localStorage?.setItem(key, JSON.stringify(preferences));
+    } catch {
+      rlog("warn", "[git-ui] failed to persist history references", { workspaceId, profileId });
+    }
+  }
+
+  function toggleGitHistoryFavorite(
+    workspaceId: string,
+    ref: string,
+    rootPath = getActiveRoot(workspaceId),
+    profileId = "default",
+  ): void {
+    if (!ref) return;
+    updateGitHistoryPreferences(workspaceId, rootPath, profileId, (preferences) => ({
+      ...preferences,
+      favorites: preferences.favorites.includes(ref)
+        ? preferences.favorites.filter((item) => item !== ref)
+        : [ref, ...preferences.favorites],
+    }));
+  }
+
+  function recordGitHistoryRef(
+    workspaceId: string,
+    ref: string,
+    rootPath = getActiveRoot(workspaceId),
+    profileId = "default",
+  ): void {
+    if (!ref) return;
+    updateGitHistoryPreferences(workspaceId, rootPath, profileId, (preferences) => ({
+      ...preferences,
+      recent: [ref, ...preferences.recent.filter((item) => item !== ref)],
+    }));
+  }
+
   function gitClearResult(workspaceId: string): void {
     ensure(workspaceId).lastResult = null;
   }
@@ -1264,8 +2039,12 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   async function gitStashPop(workspaceId: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "stash-pop", () =>
-      (_api as Transport & { gitStashPop: (p: unknown) => Promise<unknown> }).gitStashPop!({ workspaceId, rootPath }),
+    await runGitAction(
+      workspaceId,
+      "stash-pop",
+      () =>
+        (_api as Transport & { gitStashPop: (p: unknown) => Promise<unknown> }).gitStashPop!({ workspaceId, rootPath }),
+      { requireRefreshBeforeRetry: true },
     );
   }
 
@@ -1274,77 +2053,98 @@ export const useGitUiStore = defineStore("git-ui", () => {
   async function gitListTags(workspaceId: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
     const ui = ensure(workspaceId);
+    const requestId = nextReadGeneration(`${workspaceId}:tags`);
     ui.tagsLoading = true;
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const result = (await (_api as CallableTransport).gitListTags({ workspaceId, rootPath })) as any;
-      ui.tags = result?.tags || [];
+      if (requestId !== readGeneration.get(`${workspaceId}:tags`) || getActiveRoot(workspaceId) !== rootPath) return;
+      ui.tags = markGitReadPayload(result?.tags || []);
       ui.tagsError = result?.ok === false ? result.summary : "";
     } catch (error) {
+      if (requestId !== readGeneration.get(`${workspaceId}:tags`) || getActiveRoot(workspaceId) !== rootPath) return;
       ui.tags = [];
       ui.tagsError = (error as Error)?.message || "Failed to load tags.";
     } finally {
-      ui.tagsLoading = false;
+      if (requestId === readGeneration.get(`${workspaceId}:tags`)) ui.tagsLoading = false;
     }
   }
 
   async function gitCreateTag(workspaceId: string, tagName: string, message: string, commit = ""): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "create-tag", () =>
-      (_api as Transport & { gitCreateTag: (p: unknown) => Promise<unknown> }).gitCreateTag!({
-        workspaceId,
-        tagName,
-        message: message || "",
-        commit: commit || "",
-        rootPath,
-      }),
+    await runGitAction(
+      workspaceId,
+      "create-tag",
+      () =>
+        (_api as Transport & { gitCreateTag: (p: unknown) => Promise<unknown> }).gitCreateTag!({
+          workspaceId,
+          tagName,
+          message: message || "",
+          commit: commit || "",
+          rootPath,
+        }),
+      { requireRefreshBeforeRetry: true },
     );
     await gitListTags(workspaceId);
   }
 
   async function gitDeleteTag(workspaceId: string, tagName: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "delete-tag", () =>
-      (_api as Transport & { gitDeleteTag: (p: unknown) => Promise<unknown> }).gitDeleteTag!({
-        workspaceId,
-        tagName,
-        rootPath,
-      }),
+    await runGitAction(
+      workspaceId,
+      "delete-tag",
+      () =>
+        (_api as Transport & { gitDeleteTag: (p: unknown) => Promise<unknown> }).gitDeleteTag!({
+          workspaceId,
+          tagName,
+          rootPath,
+        }),
+      { requireRefreshBeforeRetry: true },
     );
     await gitListTags(workspaceId);
   }
 
   async function gitPushTag(workspaceId: string, tagName: string): Promise<void> {
-    const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "push-tag", () =>
+    await runLongGitAction(workspaceId, "push-tag", "push-tag", tagName, ({ workspaceId, rootPath, idempotencyKey }) =>
       (_api as Transport & { gitPushTag: (p: unknown) => Promise<unknown> }).gitPushTag!({
         workspaceId,
         tagName,
         rootPath,
+        idempotencyKey,
       }),
     );
     await gitListTags(workspaceId);
   }
 
   async function gitPushAllTags(workspaceId: string): Promise<void> {
-    const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "push-all-tags", () =>
-      (_api as Transport & { gitPushAllTags: (p: unknown) => Promise<unknown> }).gitPushAllTags!({
-        workspaceId,
-        rootPath,
-      }),
+    await runLongGitAction(
+      workspaceId,
+      "push-all-tags",
+      "push-all-tags",
+      "",
+      ({ workspaceId, rootPath, idempotencyKey }) =>
+        (_api as Transport & { gitPushAllTags: (p: unknown) => Promise<unknown> }).gitPushAllTags!({
+          workspaceId,
+          rootPath,
+          idempotencyKey,
+        }),
     );
     await gitListTags(workspaceId);
   }
 
   async function gitDeleteRemoteTag(workspaceId: string, tagName: string): Promise<void> {
-    const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "delete-remote-tag", () =>
-      (_api as Transport & { gitDeleteRemoteTag: (p: unknown) => Promise<unknown> }).gitDeleteRemoteTag!({
-        workspaceId,
-        tagName,
-        rootPath,
-      }),
+    await runLongGitAction(
+      workspaceId,
+      "delete-remote-tag",
+      "delete-remote-tag",
+      tagName,
+      ({ workspaceId, rootPath, idempotencyKey }) =>
+        (_api as Transport & { gitDeleteRemoteTag: (p: unknown) => Promise<unknown> }).gitDeleteRemoteTag!({
+          workspaceId,
+          tagName,
+          rootPath,
+          idempotencyKey,
+        }),
     );
     await gitListTags(workspaceId);
   }
@@ -1379,6 +2179,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     ) {
       return;
     }
+    const requestId = nextReadGeneration(`${workspaceId}:base-comparison`);
     ui.baseComparisonKey = cacheKey;
     ui.baseComparisonLoading = true;
     try {
@@ -1390,6 +2191,12 @@ export const useGitUiStore = defineStore("git-ui", () => {
         behindCount?: number;
         error?: string;
       } | null;
+      if (
+        requestId !== readGeneration.get(`${workspaceId}:base-comparison`) ||
+        getActiveRoot(workspaceId) !== rootPath ||
+        ui.baseComparisonKey !== cacheKey
+      )
+        return;
       if (!result || !result.ok) {
         ui.baseComparison = {
           baseBranch,
@@ -1407,6 +2214,12 @@ export const useGitUiStore = defineStore("git-ui", () => {
         };
       }
     } catch (error) {
+      if (
+        requestId !== readGeneration.get(`${workspaceId}:base-comparison`) ||
+        getActiveRoot(workspaceId) !== rootPath ||
+        ui.baseComparisonKey !== cacheKey
+      )
+        return;
       ui.baseComparison = {
         baseBranch,
         aheadCount: 0,
@@ -1415,8 +2228,10 @@ export const useGitUiStore = defineStore("git-ui", () => {
         error: (error as Error)?.message || "Failed to compare",
       };
     } finally {
-      ui.baseComparisonLoading = false;
-      ui.baseComparisonFetchedAt = Date.now();
+      if (requestId === readGeneration.get(`${workspaceId}:base-comparison`)) {
+        ui.baseComparisonLoading = false;
+        ui.baseComparisonFetchedAt = Date.now();
+      }
     }
   }
 
@@ -1530,12 +2345,19 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const resolvedBase = baseBranch || snapshot?.baseBranch || snapshot?.compareWithBase?.baseBranch || "";
     const ui = ensure(workspaceId);
     ui.reviewSelectedFile = filePath;
+    const requestKey = `${workspaceId}:review-file-diff`;
+    const requestId = nextReadGeneration(requestKey);
     await loadDiffPreview(
       ui,
+      requestId,
       "reviewFileDiffPreview",
       { path: filePath },
       "Loading diff preview...",
       "Diff preview failed to load.",
+      () =>
+        requestId === readGeneration.get(requestKey) &&
+        getActiveRoot(workspaceId) === rootPath &&
+        ui.reviewSelectedFile === filePath,
       () =>
         (_api as Transport & { gitDiffPreview: (p: unknown) => Promise<unknown> }).gitDiffPreview!({
           workspaceId,
@@ -1625,8 +2447,18 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const ui = ensure(workspaceId);
     const dlg = ui.conflictDialog;
     if (!dlg) return;
-    await runGitAction(workspaceId, `resolve:${filePath}`, () =>
-      (_api as CallableTransport).gitResolveConflict({ workspaceId, rootPath: dlg.rootPath, filePath, mode, content }),
+    await runGitAction(
+      workspaceId,
+      `resolve:${filePath}`,
+      () =>
+        (_api as CallableTransport).gitResolveConflict({
+          workspaceId,
+          rootPath: dlg.rootPath,
+          filePath,
+          mode,
+          content,
+        }),
+      { rootPath: dlg.rootPath, requireRefreshBeforeRetry: true },
     );
     await loadConflicts(workspaceId);
   }
@@ -1635,8 +2467,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const ui = ensure(workspaceId);
     const dlg = ui.conflictDialog;
     if (!dlg) return;
-    await runGitAction(workspaceId, `unresolve:${filePath}`, () =>
-      (_api as CallableTransport).gitUnresolveConflict({ workspaceId, rootPath: dlg.rootPath, filePath }),
+    await runGitAction(
+      workspaceId,
+      `unresolve:${filePath}`,
+      () => (_api as CallableTransport).gitUnresolveConflict({ workspaceId, rootPath: dlg.rootPath, filePath }),
+      { rootPath: dlg.rootPath, requireRefreshBeforeRetry: true },
     );
     await loadConflicts(workspaceId);
   }
@@ -1646,8 +2481,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const dlg = ui.conflictDialog;
     if (!dlg) return;
     const kind = await currentOperationKind(workspaceId, dlg.rootPath);
-    await runGitAction(workspaceId, "skip", () =>
-      (_api as CallableTransport).gitSkipCommit({ workspaceId, rootPath: dlg.rootPath }),
+    await runGitAction(
+      workspaceId,
+      "skip",
+      () => (_api as CallableTransport).gitSkipCommit({ workspaceId, rootPath: dlg.rootPath }),
+      { rootPath: dlg.rootPath, requireRefreshBeforeRetry: true },
     );
     // After skip, check if there are more conflicts (rebase may pause again)
     await refreshGit(workspaceId);
@@ -1664,8 +2502,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const dlg = ui.conflictDialog;
     if (!dlg) return;
     const kind = await currentOperationKind(workspaceId, dlg.rootPath);
-    await runGitAction(workspaceId, "continue", () =>
-      (_api as CallableTransport).gitContinueOperation({ workspaceId, rootPath: dlg.rootPath }),
+    await runGitAction(
+      workspaceId,
+      "continue",
+      () => (_api as CallableTransport).gitContinueOperation({ workspaceId, rootPath: dlg.rootPath }),
+      { rootPath: dlg.rootPath, requireRefreshBeforeRetry: true },
     );
     // After continue, operation may stop again (next conflicting commit in rebase)
     await refreshGit(workspaceId);
@@ -1720,24 +2561,36 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const ui = ensure(workspaceId);
     const dlg = ui.conflictDialog;
     if (!dlg) return;
-    await runGitAction(workspaceId, "abort", () =>
-      (_api as CallableTransport).gitAbortOperation({ workspaceId, rootPath: dlg.rootPath }),
+    await runGitAction(
+      workspaceId,
+      "abort",
+      () => (_api as CallableTransport).gitAbortOperation({ workspaceId, rootPath: dlg.rootPath }),
+      { rootPath: dlg.rootPath, requireRefreshBeforeRetry: true },
     );
     closeConflictDialog(workspaceId);
   }
 
   async function refreshRoot(workspaceId: string, rootPath: string): Promise<void> {
-    await runGitAction(workspaceId, `refresh:${rootPath}`, async () => {
-      const payload = await (_api as Transport & { refreshGit: (id: string) => Promise<unknown> }).refreshGit!(
-        workspaceId,
-      );
-      return { payload };
-    });
+    await runGitAction(
+      workspaceId,
+      `refresh:${rootPath}`,
+      async () => {
+        const payload = await (_api as Transport & { refreshGit: (id: string) => Promise<unknown> }).refreshGit!(
+          workspaceId,
+        );
+        return { payload };
+      },
+      { rootPath },
+    );
   }
 
   async function pullRoot(workspaceId: string, rootPath: string): Promise<void> {
     await runGitAction(workspaceId, `pull:${rootPath}`, () =>
-      (_api as Transport & { gitPull: (p: unknown) => Promise<unknown> }).gitPull!({ workspaceId, rootPath }),
+      (_api as Transport & { gitPull: (p: unknown) => Promise<unknown> }).gitPull!({
+        workspaceId,
+        rootPath,
+        idempotencyKey: newGitIdempotencyKey(),
+      }),
     );
   }
 
@@ -1751,6 +2604,12 @@ export const useGitUiStore = defineStore("git-ui", () => {
   return {
     // Read accessor
     get,
+    getStagedCommitMessage,
+    setStagedCommitMessage,
+    getClassicCommitMessage,
+    setClassicCommitMessage,
+    getClassicSelectedPaths,
+    setClassicSelectedPaths,
     cleanup,
     init,
     // Active root management
@@ -1759,6 +2618,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     // Git actions
     runGitAction,
     refreshGit,
+    bumpHistoryRefresh,
     gitFetch,
     gitPull,
     gitPush,
@@ -1794,9 +2654,20 @@ export const useGitUiStore = defineStore("git-ui", () => {
     confirmRemoveWorktreeDeleteBranch,
     confirmForcePushWithLease,
     gitCommitAll,
+    gitStageFile,
+    gitStageHunk,
+    gitUnstageFile,
+    gitCommitStaged,
     gitSelectCommit,
     gitSelectDiff,
     gitSwitchTab,
+    gitSwitchView,
+    getGitView,
+    getGitHistoryPreferences,
+    getGitHistorySelection,
+    setGitHistorySelection,
+    toggleGitHistoryFavorite,
+    recordGitHistoryRef,
     gitClearResult,
     gitClearSelectedDiff,
     openLazygit,

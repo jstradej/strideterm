@@ -265,6 +265,13 @@
     <NotificationCenter />
   </div>
 
+  <ReviewPrActionApprovals
+    :proposals="store.reviewPrActionProposals"
+    :is-busy="store.isReviewPrActionBusy"
+    :approve="store.approveReviewPrAction"
+    :reject="store.rejectReviewPrAction"
+  />
+
   <!-- Bootstrap error -->
   <BootstrapError v-if="store.bootstrapError" :message="store.bootstrapError" />
 
@@ -279,9 +286,6 @@
 
   <!-- Tab picker dropdown -->
   <TabPickerDropdown :anchor-rect="tabPickerAnchor" @close="tabPickerAnchor = null" />
-
-  <!-- Return-to-app banner (shows when focus returns after >30s with waiting sessions) -->
-  <ReturnToAppBanner />
 
   <!-- Notification toast — suppressed when the dock is pinned (the dock
        itself plays that role). Sound alert still fires via useNotificationCapture. -->
@@ -344,9 +348,9 @@ import ContextMenu from "./components/layout/ContextMenu.vue";
 import LayoutPicker from "./components/layout/LayoutPicker.vue";
 import TabPickerDropdown from "./components/layout/TabPickerDropdown.vue";
 import NotificationCenter from "./components/layout/NotificationCenter.vue";
+import ReviewPrActionApprovals from "./components/layout/ReviewPrActionApprovals.vue";
 import NotificationToast from "./components/layout/NotificationToast.vue";
 import PersistentToastStack from "./components/layout/PersistentToastStack.vue";
-import ReturnToAppBanner from "./components/layout/ReturnToAppBanner.vue";
 import SshAuthPrompt from "./components/ssh/SshAuthPrompt.vue";
 import SshHostKeyWarning from "./components/ssh/SshHostKeyWarning.vue";
 import { useNotificationCapture } from "./composables/useNotificationCapture.js";

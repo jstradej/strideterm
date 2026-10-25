@@ -52,8 +52,32 @@ function createReviewStore(initial: any = {}) {
 }
 
 function createFetchStub() {
-  return vi.fn(async (url, _options = {}) => {
+  return vi.fn(async (url, options = {}) => {
     const href = String(url);
+    if (href.endsWith("/_apis/git/repositories?api-version=7.1")) {
+      return {
+        ok: true,
+        json: async () => ({
+          value: [
+            {
+              id: "repo-1",
+              name: "web-app",
+              remoteUrl: "https://dev.azure.com/acme/Platform/_git/web-app",
+            },
+          ],
+        }),
+      };
+    }
+    if (href.includes("/_apis/git/repositories/repo-1/pullrequests") && options.method === "POST") {
+      return {
+        ok: true,
+        json: async () => ({
+          pullRequestId: 124,
+          title: "Create PR",
+          _links: { web: { href: "https://dev.azure.com/acme/Platform/_git/web-app/pullrequest/124" } },
+        }),
+      };
+    }
     if (href.includes("/_apis/projects")) {
       return {
         ok: true,
@@ -211,7 +235,7 @@ function createFetchStub() {
         json: async () => ({ ok: true }),
       };
     }
-    if (href.includes("/comments?") || href.endsWith("/threads?api-version=7.1")) {
+    if (href.includes("/comments?") || href.endsWith("/threads?api-version=7.1") || href.includes("/threads/10?")) {
       return {
         ok: true,
         json: async () => ({ ok: true }),
@@ -225,6 +249,7 @@ function createFetchStub() {
 function createManager({
   trackedPullRequests = {},
   secrets = { "cred:ado-main": "pat-123" },
+  auditLogStore = null as { logEntry(entry: Record<string, unknown>): void } | null,
   execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" }),
   reviewBridgeStore = {
     syncPullRequest: vi.fn(),
@@ -242,6 +267,7 @@ function createManager({
     reviewBridgeStore: reviewBridgeStore as any,
     fetchImpl: fetchImpl as unknown as typeof fetch,
     execFileTextImpl,
+    auditLogStore,
     now: () => new Date("2026-03-17T10:00:00.000Z").getTime(),
   });
   manager.supportsGitConfigEnv = async () => true;
@@ -902,7 +928,8 @@ describe("AzureDevOpsManager", () => {
   });
 
   test("sends comment and vote requests", async () => {
-    const { manager, fetchImpl } = createManager();
+    const auditEntries: Record<string, unknown>[] = [];
+    const { manager, fetchImpl } = createManager({ auditLogStore: { logEntry: (entry) => auditEntries.push(entry) } });
     await manager.sync({
       connections: [connection],
       workspaces: [],
@@ -941,6 +968,53 @@ describe("AzureDevOpsManager", () => {
         ([url, options]) => String(url).includes("/reviewers/reviewer-1") && options.method === "PUT",
       ),
     ).toBe(true);
+    expect(auditEntries.filter((entry) => entry.category === "write")).toMatchObject([
+      {
+        operation: "createThread",
+        connectionId: "ado-main",
+        success: true,
+        userInitiated: true,
+      },
+      {
+        operation: "setVote",
+        connectionId: "ado-main",
+        success: true,
+        userInitiated: true,
+      },
+    ]);
+  });
+
+  test("records failed comment, vote, and thread-status provider writes exactly once", async () => {
+    const auditEntries: Record<string, unknown>[] = [];
+    const { manager, fetchImpl } = createManager({
+      auditLogStore: { logEntry: (entry) => auditEntries.push(entry) },
+    });
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+    const baseFetch = fetchImpl.getMockImplementation()!;
+    fetchImpl.mockImplementation(async (url, options) => {
+      const method = (options as RequestInit | undefined)?.method || "GET";
+      if (method !== "GET") {
+        return {
+          ok: false,
+          status: 403,
+          json: async () => ({ ok: false }),
+          text: async () => JSON.stringify({ message: "Provider permission denied" }),
+        };
+      }
+      return baseFetch!(url, options);
+    });
+    const prKey = createPullRequestKey("ado-main", "repo-1", 123);
+
+    await expect(manager.addPullRequestComment({ prKey, content: "Comment." })).rejects.toThrow(/403/);
+    await expect(manager.setPullRequestVote({ prKey, vote: 10 })).rejects.toThrow(/403/);
+    await expect(manager.updateThreadStatus({ prKey, threadId: 10, status: "fixed" })).rejects.toThrow(/403/);
+
+    expect(auditEntries.filter((entry) => entry.category === "write")).toMatchObject([
+      { operation: "createThread", connectionId: "ado-main", success: false, userInitiated: true, statusCode: 403 },
+      { operation: "setVote", connectionId: "ado-main", success: false, userInitiated: true, statusCode: 403 },
+      { operation: "updateThread", connectionId: "ado-main", success: false, userInitiated: true, statusCode: 403 },
+    ]);
+    expect(auditEntries.filter((entry) => entry.category === "write")).toHaveLength(3);
   });
 
   test.each([
@@ -1283,6 +1357,104 @@ describe("createPullRequestForWorkspace — cross-profile connection guard", () 
         workspaceProfileId: "profile-b",
       }),
     ).rejects.toThrow(/Cross-profile refused.*profile-a.*profile-b/s);
+  });
+
+  test("audits one successful user-initiated PR creation", async () => {
+    const entries: Record<string, unknown>[] = [];
+    const { manager } = createManager({ auditLogStore: { logEntry: (entry) => entries.push(entry) } });
+    manager.setSnapshot({ connections: [{ ...connection, profileId: "default" }] } as never);
+
+    await expect(
+      manager.createPullRequestForWorkspace({
+        remoteUrl: "https://dev.azure.com/acme/Platform/_git/web-app",
+        sourceBranch: "feature/audit",
+        targetBranch: "main",
+        title: "Create PR",
+        description: "Audited creation",
+        connectionId: "ado-main",
+        workspaceProfileId: "default",
+      }),
+    ).resolves.toEqual({
+      pullRequestId: 124,
+      url: "https://dev.azure.com/acme/Platform/_git/web-app/pullrequest/124",
+      title: "Create PR",
+    });
+
+    expect(entries.filter((entry) => entry.category === "write")).toMatchObject([
+      { operation: "createPullRequest", connectionId: "ado-main", success: true, userInitiated: true },
+    ]);
+  });
+
+  test("audits one failed user-initiated PR creation", async () => {
+    const entries: Record<string, unknown>[] = [];
+    const { manager, fetchImpl } = createManager({ auditLogStore: { logEntry: (entry) => entries.push(entry) } });
+    manager.setSnapshot({ connections: [{ ...connection, profileId: "default" }] } as never);
+    const baseFetch = fetchImpl.getMockImplementation()!;
+    fetchImpl.mockImplementation(async (url, options) => {
+      if ((options as RequestInit | undefined)?.method === "POST") {
+        return {
+          ok: false,
+          status: 403,
+          json: async () => ({ ok: false }),
+          text: async () => JSON.stringify({ message: "Write permission denied" }),
+        };
+      }
+      return baseFetch!(url, options);
+    });
+
+    await expect(
+      manager.createPullRequestForWorkspace({
+        remoteUrl: "https://dev.azure.com/acme/Platform/_git/web-app",
+        sourceBranch: "feature/audit",
+        targetBranch: "main",
+        title: "Create PR",
+        description: "Denied creation",
+        connectionId: "ado-main",
+        workspaceProfileId: "default",
+      }),
+    ).rejects.toThrow(/403/);
+
+    expect(entries.filter((entry) => entry.category === "write")).toMatchObject([
+      {
+        operation: "createPullRequest",
+        connectionId: "ado-main",
+        success: false,
+        userInitiated: true,
+        statusCode: 403,
+      },
+    ]);
+    expect(entries.filter((entry) => entry.category === "write")).toHaveLength(1);
+  });
+});
+
+describe("AzureDevOpsManager updateThreadStatus audit", () => {
+  test("audits one successful user-initiated thread update", async () => {
+    const entries: Record<string, unknown>[] = [];
+    const prKey = createPullRequestKey("ado-main", "repo-1", 123);
+    const { manager } = createManager({
+      auditLogStore: { logEntry: (entry) => entries.push(entry) },
+    });
+    manager.setSnapshot({
+      connections: [{ ...connection, profileId: "default" }],
+      pullRequests: {
+        [prKey]: {
+          prKey,
+          connectionId: "ado-main",
+          orgUrl: connection.orgUrl,
+          project: { id: "project-1", name: "Platform" },
+          repository: { id: "repo-1", name: "web-app" },
+          pullRequest: { id: 123 },
+          threads: [],
+        },
+      },
+      inbox: { needsMyReview: [], myPullRequests: [], recentlyUpdated: [], needsAttention: [] },
+    } as never);
+
+    await manager.updateThreadStatus({ prKey, threadId: 10, status: "fixed" });
+
+    expect(entries.filter((entry) => entry.category === "write")).toMatchObject([
+      { operation: "updateThread", connectionId: "ado-main", success: true, userInitiated: true },
+    ]);
   });
 });
 

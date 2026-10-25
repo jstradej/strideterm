@@ -463,7 +463,7 @@ describe("MobileInputBar", () => {
     document.body.appendChild(workspace);
     const observerDisconnect = vi.spyOn(MutationObserver.prototype, "disconnect");
     const { wrapper } = mountBar({ attachTo: workspace });
-    const componentRoot = wrapper.get(".mobile-input-bar").element;
+    const componentRoot = wrapper.get(".mobile-input-bar").element as HTMLElement;
     const workspaceMain = componentRoot.parentElement!;
     workspaceMain.className = "workspace-main";
     workspaceMain.append(terminal);
@@ -489,7 +489,7 @@ describe("MobileInputBar", () => {
         ? rect(0, 390 - inset, inset ? 320 : 400)
         : rect(342, 390, inset ? 320 : 400),
     );
-    setRect(wrapper.get(".mobile-input-bar__row").element, () => rect(342, 390, 400));
+    setRect(wrapper.get(".mobile-input-bar__row").element as HTMLElement, () => rect(342, 390, 400));
     try {
       await flushPromises();
       window.dispatchEvent(new CustomEvent("strideterm:toggle-system-keyboard", { detail: { show: true } }));

@@ -56,8 +56,8 @@ test.describe("Azure DevOps Review pane — mocked", () => {
     await page.locator(".review-shell__menu-trigger").click();
     await expect(page.getByRole("button", { name: /^Refresh/ })).toBeVisible();
     await expect(page.getByRole("button", { name: /Browser/ })).toBeVisible();
-    // Backdrop dismisses
-    await page.locator(".review-shell__menu-backdrop").click();
+    // The trigger (now "Close") dismisses; the actions menu has no blocking backdrop
+    await page.locator(".review-shell__menu-trigger").click();
     await expect(page.getByRole("button", { name: /^Refresh/ })).toBeHidden();
     assertNoErrors(page);
   });

@@ -1,7 +1,7 @@
 /// <reference types="node" />
 import path from "node:path";
 import os from "node:os";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { existsSync, lstatSync, readdirSync } from "node:fs";
 import { rm as fsRm, readFile as fsReadFile, writeFile as fsWriteFile } from "node:fs/promises";
@@ -14,14 +14,14 @@ import {
   sanitizeGitEnvironment,
 } from "./shared/git-auth-utils.js";
 import { APP_CONFIG } from "../../config/app-config.js";
-import { getLogger } from "./logger.js";
+import { getLogger, redactSecrets } from "./logger.js";
 import { createIntervalGate } from "./runtime-utils.js";
 import { runEffect } from "./effect/runtime.js";
 import { GitCommandError, GitAuthError } from "./effect/errors/git-errors.js";
 import { errorMessage } from "../shared/error-message.js";
 import { httpRetry } from "./effect/schedules.js";
 import { commonDirOf, sharedReviewGitLocks } from "./review-git/locks.js";
-import { managedReviewBranchAlias } from "../shared/review-source-identity.js";
+import { isManagedReviewBranch } from "../shared/review-source-identity.js";
 import {
   DEFAULT_DIFF_STAT,
   DEFAULT_OPERATION_STATE,
@@ -93,6 +93,13 @@ const auditLogFailureGate = createIntervalGate(60_000);
 // Hex-only commit hashes (short or full) — also rules out option injection
 // ("-x") since execGit passes args verbatim.
 const COMMIT_HASH_RE = /^[0-9a-f]{4,40}$/i;
+
+function normalizeStagePath(value: string): string {
+  const candidate = String(value || "").replace(/\\/g, "/");
+  if (!candidate || candidate.startsWith("-") || candidate.startsWith("/") || candidate.includes("\0")) return "";
+  const normalized = path.posix.normalize(candidate);
+  return normalized === ".." || normalized.startsWith("../") || normalized === "." ? "" : normalized;
+}
 
 function normalizeCommitHashes(hashes: unknown): string[] {
   return (Array.isArray(hashes) ? hashes : []).map((hash) => String(hash || "").trim()).filter(Boolean);
@@ -225,14 +232,14 @@ function omitHeavySnapshotFields(snapshot: Record<string, unknown>): Record<stri
   return out;
 }
 
-/** The PR source branch a push from `branch` must target: only the managed pr-<id>-<source> alias is remapped. */
+/** The PR source branch a push from `branch` must target: only the managed pr-<id>-<source> alias (or its isolated `-review-<uuid>` variant) is remapped. */
 function managedReviewSourceBranch(workspace: WorkspaceRef, branch: string): string {
   const pullRequest = workspace.review?.pullRequest;
   const source = String(pullRequest?.sourceRefName || "")
     .replace(/^refs\/heads\//, "")
     .trim();
   if (!source || source === branch) return "";
-  return branch === managedReviewBranchAlias(pullRequest?.id ?? "", source) ? source : "";
+  return isManagedReviewBranch(branch, pullRequest?.id ?? "", source) ? source : "";
 }
 
 export class GitManager extends EventEmitter {
@@ -275,12 +282,19 @@ export class GitManager extends EventEmitter {
     this.gitAuditLogStore = gitAuditLogStore ?? null;
   }
 
-  async execGit(cwd: string, args: string[], opts: { extraEnv?: Record<string, string> } = {}): Promise<GitExecResult> {
+  async execGit(
+    cwd: string,
+    args: string[],
+    opts: { extraEnv?: Record<string, string>; stdin?: string } = {},
+  ): Promise<GitExecResult> {
     if (this.execGitImpl) {
+      if (opts.stdin !== undefined) {
+        throw new Error("The configured Git runner does not support standard input.");
+      }
       return this.execGitImpl(cwd, args);
     }
     const env = opts.extraEnv ? { ...sanitizeGitEnvironment(), ...opts.extraEnv } : sanitizeGitEnvironment();
-    return execFileText("git", args, { cwd, env });
+    return execFileText("git", args, { cwd, env, ...(opts.stdin === undefined ? {} : { input: opts.stdin }) });
   }
 
   // Login + token for a connection, or null when there is no usable token and
@@ -737,7 +751,7 @@ export class GitManager extends EventEmitter {
         })),
         this.execGit(rootPath, ["remote", "-v"]).catch(() => ({ stdout: "", stderr: "" })),
         this.execGit(rootPath, ["rev-list", "--count", "HEAD"]).catch(() => ({ stdout: "0", stderr: "" })),
-        this.execGit(rootPath, ["status", "--porcelain=v2", "--branch"]).catch(() => ({ stdout: "", stderr: "" })),
+        this.execGit(rootPath, ["status", "--porcelain=v2", "--branch"]),
         this.execGit(rootPath, ["status", "--short"]).catch(() => ({ stdout: "", stderr: "" })),
         this.execGit(rootPath, [
           "log",
@@ -961,7 +975,9 @@ export class GitManager extends EventEmitter {
         ),
       };
     } catch (error) {
-      return createUnavailableSnapshot(workspace, extractErrorMessage(error));
+      const message = extractErrorMessage(error);
+      log.warn("git inspect failed", { workspaceId: workspace.id, rootPath, err: redactSecrets(message) });
+      return createUnavailableSnapshot(workspace, message);
     }
   }
 
@@ -1974,8 +1990,8 @@ export class GitManager extends EventEmitter {
     if (!effectiveCwd || !filePath) {
       return { ok: false, summary: "File path and workspace directory are required." };
     }
-    // Sanitize path
-    const normalized = filePath.replace(/\\/g, "/").replace(/^\/+/, "");
+    const normalized = normalizeStagePath(filePath);
+    if (!normalized) return createStructuredResult({ ok: false, summary: "Invalid conflict file path." });
 
     const readStage = async (stage: number): Promise<string> => {
       try {
@@ -2026,6 +2042,19 @@ export class GitManager extends EventEmitter {
 
   async resolveConflict(
     workspace: WorkspaceRef,
+    input: { filePath: string; mode: "ours" | "theirs" | "manual" | "delete"; content?: string; rootPath?: string },
+  ): Promise<Record<string, unknown>> {
+    const effectiveCwd = input.rootPath || workspace?.cwd || "";
+    if (!effectiveCwd || !input.filePath) {
+      return createStructuredResult({ ok: false, summary: "File path and workspace directory are required." });
+    }
+    return this.runAuditedGitMutation(workspace, effectiveCwd, "resolve-conflict", (cwd) =>
+      this.resolveConflictUnlocked(workspace, { ...input, rootPath: cwd }),
+    );
+  }
+
+  private async resolveConflictUnlocked(
+    workspace: WorkspaceRef,
     {
       filePath,
       mode,
@@ -2037,7 +2066,8 @@ export class GitManager extends EventEmitter {
     if (!effectiveCwd || !filePath) {
       return createStructuredResult({ ok: false, summary: "File path and workspace directory are required." });
     }
-    const normalized = filePath.replace(/\\/g, "/").replace(/^\/+/, "");
+    const normalized = normalizeStagePath(filePath);
+    if (!normalized) return createStructuredResult({ ok: false, summary: "Invalid conflict file path." });
     try {
       if (mode === "delete") {
         await this.execGit(effectiveCwd, ["rm", "-f", "--", normalized]);
@@ -2072,13 +2102,27 @@ export class GitManager extends EventEmitter {
 
   async unresolveConflict(
     workspace: WorkspaceRef,
+    input: { filePath: string; rootPath?: string },
+  ): Promise<Record<string, unknown>> {
+    const effectiveCwd = input.rootPath || workspace?.cwd || "";
+    if (!effectiveCwd || !input.filePath) {
+      return createStructuredResult({ ok: false, summary: "File path and workspace directory are required." });
+    }
+    return this.runAuditedGitMutation(workspace, effectiveCwd, "unresolve-conflict", (cwd) =>
+      this.unresolveConflictUnlocked(workspace, { ...input, rootPath: cwd }),
+    );
+  }
+
+  private async unresolveConflictUnlocked(
+    workspace: WorkspaceRef,
     { filePath, rootPath = "" }: { filePath: string; rootPath?: string },
   ): Promise<Record<string, unknown>> {
     const effectiveCwd = rootPath || workspace?.cwd || "";
     if (!effectiveCwd || !filePath) {
       return createStructuredResult({ ok: false, summary: "File path and workspace directory are required." });
     }
-    const normalized = filePath.replace(/\\/g, "/").replace(/^\/+/, "");
+    const normalized = normalizeStagePath(filePath);
+    if (!normalized) return createStructuredResult({ ok: false, summary: "Invalid conflict file path." });
     try {
       await this.execGit(effectiveCwd, ["checkout", "-m", "--", normalized]);
       return createStructuredResult({ ok: true, summary: `Restored conflict markers in ${normalized}.` });
@@ -2120,6 +2164,7 @@ export class GitManager extends EventEmitter {
         scope: normalizedScope,
         path: targetPath,
         diff: preview.diff,
+        diffToken: createHash("sha256").update(preview.diff).digest("hex"),
         summary: preview.summary || (preview.diff ? "" : "No diff output for the selected file."),
       };
     }
@@ -2139,6 +2184,10 @@ export class GitManager extends EventEmitter {
         scope: normalizedScope,
         path: targetPath,
         diff,
+        diffHeader: (result.stdout || "").split(/^(?=@@ )/m)[0] || "",
+        diffToken: createHash("sha256")
+          .update(result.stdout || "")
+          .digest("hex"),
         summary: diff ? "" : "No diff output for the selected file.",
       };
     } catch (error) {
@@ -2148,9 +2197,144 @@ export class GitManager extends EventEmitter {
         scope: normalizedScope,
         path: targetPath,
         diff: trimDiffPreview(err.stdout || err.stderr || ""),
+        diffToken: createHash("sha256")
+          .update(trimDiffPreview(err.stdout || err.stderr || ""))
+          .digest("hex"),
         summary: extractErrorMessage(error),
       };
     }
+  }
+
+  async stageHunk(
+    workspace: WorkspaceRef,
+    {
+      path: filePath,
+      action = "stage",
+      scope = "unstaged",
+      diffToken,
+      hunk,
+      rootPath = "",
+    }: { path: string; action?: string; scope?: string; diffToken: string; hunk: string; rootPath?: string },
+  ): Promise<Record<string, unknown>> {
+    const normalized = normalizeStagePath(filePath);
+    if (!normalized || !/^[a-f0-9]{64}$/.test(diffToken) || !hunk || hunk.length > 2_000_000) {
+      return createStructuredResult({ ok: false, summary: "Invalid or incomplete hunk staging request." });
+    }
+    if (
+      (action !== "stage" && action !== "unstage") ||
+      (action === "stage" && scope !== "unstaged") ||
+      (action === "unstage" && scope !== "staged")
+    ) {
+      return createStructuredResult({
+        ok: false,
+        summary: "Hunk stage/unstage must target the matching index or working-tree diff.",
+      });
+    }
+    return this.runWriteAction(workspace, {
+      type: action === "stage" ? "stage-hunk" : "unstage-hunk",
+      label: `${action === "stage" ? "Stage" : "Unstage"} hunk in ${normalized}`,
+      allowDirty: true,
+      rootPath,
+      extraAudit: { path: normalized, scope },
+      run: async (cwd) => {
+        const current = await this.execGit(
+          cwd,
+          scope === "staged" ? ["diff", "--cached", "--", normalized] : ["diff", "--", normalized],
+        );
+        if (
+          createHash("sha256")
+            .update(current.stdout || "")
+            .digest("hex") !== diffToken
+        ) {
+          throw new Error("This diff changed after it was loaded. Refresh it and try again.");
+        }
+        // The token proves which server diff was reviewed, but it must not
+        // authorize arbitrary patch text supplied alongside that token.
+        const currentDiff = current.stdout || "";
+        const suppliedHunks = hunk.split(/(?=^@@ )/m).filter((part) => part.startsWith("@@ "));
+        const currentHunks = currentDiff.split(/(?=^@@ )/m).filter((part) => part.startsWith("@@ "));
+        const currentHeader = currentDiff.split(/^(?=@@ )/m)[0] || "";
+        const suppliedHeader = hunk.split(/^(?=@@ )/m)[0] || "";
+        if (
+          suppliedHunks.length !== 1 ||
+          currentHeader !== suppliedHeader ||
+          suppliedHunks.some((selected) => !currentHunks.includes(selected))
+        ) {
+          throw new Error("The selected hunk does not match the current diff. Refresh it and try again.");
+        }
+        const applyArgs = action === "unstage" ? ["apply", "--cached", "--reverse", "-"] : ["apply", "--cached", "-"];
+        const { stdout } = await this.execGit(cwd, applyArgs, { stdin: hunk });
+        return { stdout: stdout || `${action === "stage" ? "Staged" : "Unstaged"} hunk in ${normalized}.`, stderr: "" };
+      },
+    });
+  }
+
+  async stageFile(
+    workspace: WorkspaceRef,
+    { path: filePath, rootPath = "" }: { path: string; rootPath?: string },
+  ): Promise<Record<string, unknown>> {
+    const normalized = normalizeStagePath(filePath);
+    if (!normalized) return createStructuredResult({ ok: false, summary: "Invalid repository-relative file path." });
+    return this.runWriteAction(workspace, {
+      type: "stage-file",
+      label: `Stage ${normalized}`,
+      allowDirty: true,
+      rootPath,
+      extraAudit: { path: normalized },
+      run: (cwd) => this.execGit(cwd, ["add", "--", normalized]),
+    });
+  }
+
+  async unstageFile(
+    workspace: WorkspaceRef,
+    { path: filePath, rootPath = "" }: { path: string; rootPath?: string },
+  ): Promise<Record<string, unknown>> {
+    const normalized = normalizeStagePath(filePath);
+    if (!normalized) return createStructuredResult({ ok: false, summary: "Invalid repository-relative file path." });
+    return this.runWriteAction(workspace, {
+      type: "unstage-file",
+      label: `Unstage ${normalized}`,
+      allowDirty: true,
+      rootPath,
+      extraAudit: { path: normalized },
+      run: async (cwd) => {
+        try {
+          await this.execGit(cwd, ["restore", "--staged", "--", normalized]);
+        } catch {
+          // Initial commits have no HEAD; reset the path from the empty tree via rm --cached.
+          await this.execGit(cwd, ["rm", "--cached", "--ignore-unmatch", "--", normalized]);
+        }
+        return { stdout: `Unstaged ${normalized}.`, stderr: "" };
+      },
+    });
+  }
+
+  async commitStaged(
+    workspace: WorkspaceRef,
+    { message, rootPath = "" }: { message: string; rootPath?: string },
+  ): Promise<Record<string, unknown>> {
+    const commitMessage = String(message || "").trim();
+    const cwd = rootPath || workspace.cwd || "";
+    if (!commitMessage) return createStructuredResult({ ok: false, summary: "Commit message is required." });
+    if (!cwd) return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
+    return this.runWriteAction(workspace, {
+      type: "commit-staged",
+      label: "Commit staged changes",
+      allowDirty: true,
+      rootPath,
+      extraAudit: { stagedOnly: true },
+      run: async (effectiveCwd) => {
+        try {
+          await this.execGit(effectiveCwd, ["diff", "--cached", "--quiet"]);
+          throw new Error("There are no staged changes to commit.");
+        } catch (error) {
+          if (error instanceof Error && error.message === "There are no staged changes to commit.") throw error;
+          if ((error as { exitCode?: number }).exitCode !== 1) throw error;
+        }
+        const result = await this.execGit(effectiveCwd, ["commit", "-m", commitMessage]);
+        return result;
+      },
+    });
   }
 
   async logPage(
@@ -2467,9 +2651,9 @@ export class GitManager extends EventEmitter {
       }
     }
 
+    const startTime = Date.now();
     try {
       log.debug("git action starting", { type, label, cwd: effectiveCwd, baseBranch: resolvedBaseBranch });
-      const startTime = Date.now();
       const actionResult = await run(effectiveCwd, resolvedBaseBranch);
       let restoreOutput = "";
       if (stashLabel) {
@@ -2480,7 +2664,7 @@ export class GitManager extends EventEmitter {
       const durationMs = Date.now() - startTime;
       log.info("git action completed", { type, label, durationMs });
       const remoteUrl = String(Object.values((snapshot.remotes as Record<string, unknown>) || {})[0] || "");
-      const auditExtra = rootPath ? { ...extraAudit, rootPath } : extraAudit;
+      const auditExtra = { ...extraAudit, rootPath: effectiveCwd };
       this._logGitAudit({
         type,
         connection,
@@ -2502,11 +2686,12 @@ export class GitManager extends EventEmitter {
       const err = error as { stdout?: string; stderr?: string };
       log.warn("git action failed", { type, label, err: extractErrorMessage(error) });
       const remoteUrlOnError = String(Object.values((snapshot.remotes as Record<string, unknown>) || {})[0] || "");
-      const auditExtraOnError = rootPath ? { ...extraAudit, rootPath } : extraAudit;
+      const auditExtraOnError = { ...extraAudit, rootPath: effectiveCwd };
       this._logGitAudit({
         type,
         connection,
         success: false,
+        durationMs: Date.now() - startTime,
         errorMessage: extractErrorMessage(error),
         workspaceId: workspace.id,
         remoteUrl: remoteUrlOnError,
@@ -2532,7 +2717,9 @@ export class GitManager extends EventEmitter {
         ok: false,
         summary: hasConflictState
           ? `${label} stopped because Git reported conflicts or requires manual resolution.`
-          : `${label} failed.`,
+          : type.endsWith("-hunk")
+            ? `${label} failed: ${extractErrorMessage(error)}`
+            : `${label} failed.`,
         warnings,
         conflicts: opState.conflicts,
         rawOutput: joinRawOutput(stashOutput, err.stdout, err.stderr, restoreOutput),
@@ -2551,6 +2738,8 @@ export class GitManager extends EventEmitter {
     remoteUrl,
     extra = {},
   }: LogGitAuditOptions): void {
+    const safeRemoteUrl = redactSecrets(remoteUrl);
+    const safeErrorMessage = errorMessage ? redactSecrets(errorMessage) : undefined;
     const REMOTE_OPS = new Set([
       "push",
       "pull",
@@ -2561,7 +2750,44 @@ export class GitManager extends EventEmitter {
       "delete-remote-tag",
     ]);
     const isRemoteOp = REMOTE_OPS.has(type);
-    const writeOps = new Set(["push", "push-tag", "push-all-tags", "delete-remote-tag", "force-push"]);
+    const writeOps = new Set([
+      "force-push",
+      "push",
+      "push-tag",
+      "push-all-tags",
+      "delete-remote-tag",
+      "pull",
+      "checkout",
+      "checkout-remote",
+      "create-branch",
+      "rename-branch",
+      "delete-branch",
+      "delete-remote-branch",
+      "create-tag",
+      "delete-tag",
+      "cherry-pick",
+      "squash",
+      "merge",
+      "rebase",
+      "stage-file",
+      "unstage-file",
+      "stage-hunk",
+      "unstage-hunk",
+      "commit-staged",
+      "commit-all",
+      "merge-into-base",
+      "stash",
+      "stash-pop",
+      "stash-apply",
+      "stash-drop",
+      "stash-branch",
+      "stash-import",
+      "resolve-conflict",
+      "unresolve-conflict",
+      "bisect",
+      "remove-worktree",
+      "create-worktree",
+    ]);
 
     try {
       if (connection?.id && this.auditLogStore) {
@@ -2577,7 +2803,7 @@ export class GitManager extends EventEmitter {
           url: "",
           statusCode: null,
           success,
-          errorMessage: errorMessage || null,
+          errorMessage: safeErrorMessage || null,
           durationMs: durationMs ?? null,
           resourceType: "git",
           resourceId: workspaceId || "",
@@ -2585,22 +2811,22 @@ export class GitManager extends EventEmitter {
           userInitiated: true,
           ...extra,
         });
-      } else if (!connection?.id && isRemoteOp && this.gitAuditLogStore) {
+      } else if (!connection?.id && this.gitAuditLogStore && (isRemoteOp || writeOps.has(type))) {
         this.gitAuditLogStore.logEntry({
           timestamp: new Date().toISOString(),
           connectionId: `system-${workspaceId || "unknown"}`,
-          remoteUrl: remoteUrl || "",
+          remoteUrl: safeRemoteUrl || "",
           operation: `git${type.charAt(0).toUpperCase()}${type.slice(1)}`,
           category: writeOps.has(type) ? "write" : "read",
           method: "GIT",
           url: "",
           statusCode: null,
           success,
-          errorMessage: errorMessage || null,
+          errorMessage: safeErrorMessage || null,
           durationMs: durationMs ?? null,
           resourceType: "git",
-          resourceId: `${type}@${remoteUrl || "unknown"}`,
-          summary: `git ${type} (system credentials)`,
+          resourceId: `${type}@${safeRemoteUrl || "unknown"}`,
+          summary: `git ${type} (${isRemoteOp ? "system credentials" : "local repository"})`,
           userInitiated: true,
           ...extra,
         });
@@ -2677,37 +2903,40 @@ export class GitManager extends EventEmitter {
       });
     }
 
-    const dirtyState = await inspectWorktreeDirtyState(this.execGit.bind(this), targetCwd);
-    if (dirtyState.dirty) {
-      return createStructuredResult({
-        ok: false,
-        summary: `The ${resolvedBase} worktree has uncommitted changes. Commit or stash them first.`,
-      });
-    }
+    const sourceBranch = String(snapshot.branch || "");
+    return this.runAuditedGitMutation(workspace, targetCwd, "merge-into-base", async (cwd) => {
+      const dirtyState = await inspectWorktreeDirtyState(this.execGit.bind(this), cwd);
+      if (dirtyState.dirty) {
+        return createStructuredResult({
+          ok: false,
+          summary: `The ${resolvedBase} worktree has uncommitted changes. Commit or stash them first.`,
+        });
+      }
 
-    try {
-      const result = await this.execGit(targetCwd, ["merge", "--no-edit", String(snapshot.branch || "")]);
-      return createStructuredResult({
-        ok: true,
-        summary: `Merged ${snapshot.branch} into ${resolvedBase}.`,
-        rawOutput: joinRawOutput(result.stdout, result.stderr),
-      });
-    } catch (error) {
-      const err = error as { stdout?: string; stderr?: string };
-      const postSnapshot = await this.inspectOperationState(targetCwd, {
-        gitDir: path.join(targetCwd, ".git"),
-        gitCommonDir: String(snapshot.gitCommonDir || path.join(targetCwd, ".git")),
-      });
-      return createStructuredResult({
-        ok: false,
-        summary: postSnapshot.inProgress
-          ? `Merge stopped due to conflicts in the ${resolvedBase} worktree. Resolve them there.`
-          : `Merge of ${snapshot.branch} into ${resolvedBase} failed.`,
-        conflicts: postSnapshot.conflicts,
-        rawOutput: joinRawOutput(err.stdout, err.stderr),
-        operationState: postSnapshot.inProgress ? buildOperationState(postSnapshot) : undefined,
-      });
-    }
+      try {
+        const result = await this.execGit(cwd, ["merge", "--no-edit", sourceBranch]);
+        return createStructuredResult({
+          ok: true,
+          summary: `Merged ${sourceBranch} into ${resolvedBase}.`,
+          rawOutput: joinRawOutput(result.stdout, result.stderr),
+        });
+      } catch (error) {
+        const err = error as { stdout?: string; stderr?: string };
+        const postSnapshot = await this.inspectOperationState(cwd, {
+          gitDir: path.join(cwd, ".git"),
+          gitCommonDir: String(snapshot.gitCommonDir || path.join(cwd, ".git")),
+        });
+        return createStructuredResult({
+          ok: false,
+          summary: postSnapshot.inProgress
+            ? `Merge stopped due to conflicts in the ${resolvedBase} worktree. Resolve them there.`
+            : `Merge of ${sourceBranch} into ${resolvedBase} failed.`,
+          conflicts: postSnapshot.conflicts,
+          rawOutput: joinRawOutput(err.stdout, err.stderr),
+          operationState: postSnapshot.inProgress ? buildOperationState(postSnapshot) : undefined,
+        });
+      }
+    });
   }
 
   /**
@@ -2757,33 +2986,47 @@ export class GitManager extends EventEmitter {
     const safePaths = clean(paths);
     const safePrev = clean(previousPaths);
 
-    return this.serializeCommit(effectiveCwd, async () => {
-      try {
-        if (scoped) {
-          if (!safePaths.length) {
-            return createStructuredResult({
-              ok: false,
-              summary: "No valid files were selected to commit.",
-            });
+    const startedAt = Date.now();
+    const result = await sharedReviewGitLocks.withWorktree(effectiveCwd, () =>
+      this.serializeCommit(effectiveCwd, async () => {
+        try {
+          if (scoped) {
+            if (!safePaths.length) {
+              return createStructuredResult({
+                ok: false,
+                summary: "No valid files were selected to commit.",
+              });
+            }
+            return await this.commitScopedPaths(effectiveCwd, commitMessage, safePaths, safePrev);
           }
-          return await this.commitScopedPaths(effectiveCwd, commitMessage, safePaths, safePrev);
+          await this.execGit(effectiveCwd, ["add", "-A"]);
+          const result = await this.execGit(effectiveCwd, ["commit", "-m", commitMessage]);
+          return createStructuredResult({
+            ok: true,
+            summary: "Changes committed successfully.",
+            rawOutput: joinRawOutput(result.stdout, result.stderr),
+          });
+        } catch (error) {
+          const err = error as { stdout?: string; stderr?: string };
+          return createStructuredResult({
+            ok: false,
+            summary: "Commit failed.",
+            rawOutput: joinRawOutput(err.stdout, err.stderr),
+          });
         }
-        await this.execGit(effectiveCwd, ["add", "-A"]);
-        const result = await this.execGit(effectiveCwd, ["commit", "-m", commitMessage]);
-        return createStructuredResult({
-          ok: true,
-          summary: "Changes committed successfully.",
-          rawOutput: joinRawOutput(result.stdout, result.stderr),
-        });
-      } catch (error) {
-        const err = error as { stdout?: string; stderr?: string };
-        return createStructuredResult({
-          ok: false,
-          summary: "Commit failed.",
-          rawOutput: joinRawOutput(err.stdout, err.stderr),
-        });
-      }
+      }),
+    );
+    this._logGitAudit({
+      type: "commit-all",
+      connection: null,
+      success: result.ok === true,
+      durationMs: Date.now() - startedAt,
+      errorMessage: result.ok === true ? undefined : String(result.summary || "Commit failed."),
+      workspaceId: workspace?.id || "",
+      remoteUrl: "",
+      extra: { rootPath: effectiveCwd, ...(scoped ? { paths: safePaths } : {}) },
     });
+    return result;
   }
 
   /**
@@ -3136,83 +3379,85 @@ export class GitManager extends EventEmitter {
       return createStructuredResult({ ok: false, summary: "Cannot remove the main worktree." });
     }
 
-    let branchName = "";
-    if (deleteBranch) {
-      try {
-        const worktrees = parseWorktreeList(
-          (await this.execGit(effectiveCwd, ["worktree", "list", "--porcelain"])).stdout,
-        );
-        branchName = worktrees.find((entry) => path.resolve(entry.path) === resolvedPath)?.branch || "";
-      } catch {
-        // branch detection failed, skip branch deletion
-      }
-    }
-
-    // Fast path: delete the worktree directory ourselves, then ask git to
-    // prune the metadata. `git worktree remove --force` walks the tree with
-    // per-file stat calls and is markedly slower than the platform-native
-    // recursive remove. On Windows we shell out to `rd /s /q` (filesystem
-    // driver level — one or two orders of magnitude faster than fs.rm on NTFS
-    // with deep node_modules trees). Other platforms use fs.rm directly,
-    // which is already a thin syscall wrapper there. fs.rm fallback with
-    // retries handles antivirus / lock interference on Windows when rd fails.
-    let rawOutput: string;
-    let removalError: { stdout?: string; stderr?: string; message?: string } | null = null;
-    if (existsSync(resolvedPath)) {
-      let removed = false;
-      if (process.platform === "win32") {
+    return this.runAuditedGitMutation(workspace, effectiveCwd, "remove-worktree", async (effectiveCwd) => {
+      let branchName = "";
+      if (deleteBranch) {
         try {
-          await execFileText("cmd.exe", ["/c", "rd", "/s", "/q", resolvedPath], { timeout: 30_000 });
-          removed = true;
+          const worktrees = parseWorktreeList(
+            (await this.execGit(effectiveCwd, ["worktree", "list", "--porcelain"])).stdout,
+          );
+          branchName = worktrees.find((entry) => path.resolve(entry.path) === resolvedPath)?.branch || "";
         } catch {
-          // fall through to fs.rm with retries — gives proper EBUSY/EPERM
-          // error codes that the maxRetries loop can back off on.
+          // branch detection failed, skip branch deletion
         }
       }
-      if (!removed) {
-        try {
-          await fsRm(resolvedPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-        } catch (error) {
-          removalError = error as { stdout?: string; stderr?: string; message?: string };
+
+      // Fast path: delete the worktree directory ourselves, then ask git to
+      // prune the metadata. `git worktree remove --force` walks the tree with
+      // per-file stat calls and is markedly slower than the platform-native
+      // recursive remove. On Windows we shell out to `rd /s /q` (filesystem
+      // driver level — one or two orders of magnitude faster than fs.rm on NTFS
+      // with deep node_modules trees). Other platforms use fs.rm directly,
+      // which is already a thin syscall wrapper there. fs.rm fallback with
+      // retries handles antivirus / lock interference on Windows when rd fails.
+      let rawOutput: string;
+      let removalError: { stdout?: string; stderr?: string; message?: string } | null = null;
+      if (existsSync(resolvedPath)) {
+        let removed = false;
+        if (process.platform === "win32") {
+          try {
+            await execFileText("cmd.exe", ["/c", "rd", "/s", "/q", resolvedPath], { timeout: 30_000 });
+            removed = true;
+          } catch {
+            // fall through to fs.rm with retries — gives proper EBUSY/EPERM
+            // error codes that the maxRetries loop can back off on.
+          }
+        }
+        if (!removed) {
+          try {
+            await fsRm(resolvedPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+          } catch (error) {
+            removalError = error as { stdout?: string; stderr?: string; message?: string };
+          }
         }
       }
-    }
 
-    // Tell git to drop the worktree entry. `prune` cleans stale entries when
-    // we already removed the directory; if the directory still exists (e.g.
-    // fs.rm hit a locked file), fall back to `git worktree remove --force`.
-    try {
-      if (removalError || existsSync(resolvedPath)) {
-        const result = await this.execGit(effectiveCwd, ["worktree", "remove", "--force", resolvedPath]);
-        rawOutput = joinRawOutput(result.stdout, result.stderr);
-      } else {
-        const pruneResult = await this.execGit(effectiveCwd, ["worktree", "prune"]);
-        rawOutput = joinRawOutput(pruneResult.stdout, pruneResult.stderr);
-      }
-    } catch (error) {
-      const err = error as { stdout?: string; stderr?: string; message?: string };
-      return createStructuredResult({
-        ok: false,
-        summary: `Failed to remove worktree at ${resolvedPath}.`,
-        rawOutput: joinRawOutput(err.stdout || (removalError?.message ?? ""), err.stderr),
-      });
-    }
-
-    let branchOutput = "";
-    if (deleteBranch && branchName) {
+      // Tell git to drop the worktree entry. `prune` cleans stale entries when
+      // we already removed the directory; if the directory still exists (e.g.
+      // fs.rm hit a locked file), fall back to `git worktree remove --force`.
       try {
-        const result = await this.execGit(effectiveCwd, ["branch", "-d", branchName]);
-        branchOutput = joinRawOutput(result.stdout, result.stderr);
+        if (removalError || existsSync(resolvedPath)) {
+          const result = await this.execGit(effectiveCwd, ["worktree", "remove", "--force", resolvedPath]);
+          rawOutput = joinRawOutput(result.stdout, result.stderr);
+        } else {
+          const pruneResult = await this.execGit(effectiveCwd, ["worktree", "prune"]);
+          rawOutput = joinRawOutput(pruneResult.stdout, pruneResult.stderr);
+        }
       } catch (error) {
-        const err = error as { stdout?: string; stderr?: string };
-        branchOutput = `Branch ${branchName} could not be deleted (may not be fully merged): ${joinRawOutput(err.stdout, err.stderr)}`;
+        const err = error as { stdout?: string; stderr?: string; message?: string };
+        return createStructuredResult({
+          ok: false,
+          summary: `Failed to remove worktree at ${resolvedPath}.`,
+          rawOutput: joinRawOutput(err.stdout || (removalError?.message ?? ""), err.stderr),
+        });
       }
-    }
 
-    return createStructuredResult({
-      ok: true,
-      summary: `Worktree removed.${branchName && deleteBranch ? ` Branch ${branchName} deleted.` : ""}`,
-      rawOutput: joinRawOutput(rawOutput, branchOutput),
+      let branchOutput = "";
+      if (deleteBranch && branchName) {
+        try {
+          const result = await this.execGit(effectiveCwd, ["branch", "-d", branchName]);
+          branchOutput = joinRawOutput(result.stdout, result.stderr);
+        } catch (error) {
+          const err = error as { stdout?: string; stderr?: string };
+          branchOutput = `Branch ${branchName} could not be deleted (may not be fully merged): ${joinRawOutput(err.stdout, err.stderr)}`;
+        }
+      }
+
+      return createStructuredResult({
+        ok: true,
+        summary: `Worktree removed.${branchName && deleteBranch ? ` Branch ${branchName} deleted.` : ""}`,
+        rawOutput: joinRawOutput(rawOutput, branchOutput),
+      });
     });
   }
 
@@ -3410,67 +3655,69 @@ export class GitManager extends EventEmitter {
     if (!effectiveCwd) {
       return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
     }
-    try {
-      // git stash needs a base commit to stash against. On an unborn HEAD (a
-      // freshly `git init`'d repo with no commits yet) every variant fails with
-      // the cryptic "You do not have the initial commit yet". Either signal the
-      // caller to offer a one-click fix (needsInitialCommit), or — when the user
-      // accepted it — create an empty root commit so the stash has a base.
-      const head = await this.execGit(effectiveCwd, ["rev-parse", "--verify", "--quiet", "HEAD"]).catch(() => ({
-        stdout: "",
-        stderr: "",
-      }));
-      if (!String(head.stdout || "").trim()) {
-        if (!allowEmptyInitialCommit) {
-          return {
-            ...createStructuredResult({
-              ok: false,
-              summary: "Cannot stash: the repository has no commits yet. Create an initial commit first.",
-            }),
-            needsInitialCommit: true,
-          };
+    return this.runAuditedGitMutation(workspace, effectiveCwd, "stash", async (effectiveCwd) => {
+      try {
+        // git stash needs a base commit to stash against. On an unborn HEAD (a
+        // freshly `git init`'d repo with no commits yet) every variant fails with
+        // the cryptic "You do not have the initial commit yet". Either signal the
+        // caller to offer a one-click fix (needsInitialCommit), or — when the user
+        // accepted it — create an empty root commit so the stash has a base.
+        const head = await this.execGit(effectiveCwd, ["rev-parse", "--verify", "--quiet", "HEAD"]).catch(() => ({
+          stdout: "",
+          stderr: "",
+        }));
+        if (!String(head.stdout || "").trim()) {
+          if (!allowEmptyInitialCommit) {
+            return {
+              ...createStructuredResult({
+                ok: false,
+                summary: "Cannot stash: the repository has no commits yet. Create an initial commit first.",
+              }),
+              needsInitialCommit: true,
+            };
+          }
+          await this.execGit(effectiveCwd, ["commit", "--allow-empty", "-m", "Initial commit"]);
         }
-        await this.execGit(effectiveCwd, ["commit", "--allow-empty", "-m", "Initial commit"]);
-      }
-      const args = ["stash", "push"];
-      // Default ON to match the previous behaviour; callers may opt out.
-      if (includeUntracked !== false) args.push("--include-untracked");
-      if (keepIndex) args.push("--keep-index");
-      if (message) args.push("-m", message);
-      // Path-scoped stash: only the listed files are stashed, the rest stay in
-      // the working tree. Everything after `--` is treated by git as a pathspec
-      // (no option injection possible), and execGit passes args as an array so
-      // there is no shell to escape. Drop empties/non-strings defensively.
-      const safePaths = (Array.isArray(paths) ? paths : []).filter(
-        (p): p is string => typeof p === "string" && p.length > 0,
-      );
-      if (safePaths.length) args.push("--", ...safePaths);
-      const result = await this.execGit(effectiveCwd, args);
-      const combined = joinRawOutput(result.stdout, result.stderr);
-      if (/no local changes to save/i.test(combined)) {
+        const args = ["stash", "push"];
+        // Default ON to match the previous behaviour; callers may opt out.
+        if (includeUntracked !== false) args.push("--include-untracked");
+        if (keepIndex) args.push("--keep-index");
+        if (message) args.push("-m", message);
+        // Path-scoped stash: only the listed files are stashed, the rest stay in
+        // the working tree. Everything after `--` is treated by git as a pathspec
+        // (no option injection possible), and execGit passes args as an array so
+        // there is no shell to escape. Drop empties/non-strings defensively.
+        const safePaths = (Array.isArray(paths) ? paths : []).filter(
+          (p): p is string => typeof p === "string" && p.length > 0,
+        );
+        if (safePaths.length) args.push("--", ...safePaths);
+        const result = await this.execGit(effectiveCwd, args);
+        const combined = joinRawOutput(result.stdout, result.stderr);
+        if (/no local changes to save/i.test(combined)) {
+          return createStructuredResult({
+            ok: false,
+            summary: "No local changes to stash.",
+            rawOutput: combined,
+          });
+        }
         return createStructuredResult({
-          ok: false,
-          summary: "No local changes to stash.",
+          ok: true,
+          summary: "Changes stashed successfully.",
           rawOutput: combined,
         });
+      } catch (error) {
+        const err = error as { stdout?: string; stderr?: string };
+        const raw = joinRawOutput(err.stdout, err.stderr);
+        return createStructuredResult({
+          ok: false,
+          // Surface the actual git error (e.g. "pathspec '…' did not match",
+          // "You do not have the initial commit yet") instead of a generic label,
+          // matching the sibling stash methods. Falls back when git wrote nothing.
+          summary: raw || "Stash failed.",
+          rawOutput: raw,
+        });
       }
-      return createStructuredResult({
-        ok: true,
-        summary: "Changes stashed successfully.",
-        rawOutput: combined,
-      });
-    } catch (error) {
-      const err = error as { stdout?: string; stderr?: string };
-      const raw = joinRawOutput(err.stdout, err.stderr);
-      return createStructuredResult({
-        ok: false,
-        // Surface the actual git error (e.g. "pathspec '…' did not match",
-        // "You do not have the initial commit yet") instead of a generic label,
-        // matching the sibling stash methods. Falls back when git wrote nothing.
-        summary: raw || "Stash failed.",
-        rawOutput: raw,
-      });
-    }
+    });
   }
 
   /**
@@ -3505,6 +3752,51 @@ export class GitManager extends EventEmitter {
     }
   }
 
+  private async runAuditedGitMutation(
+    workspace: WorkspaceRef | null,
+    rootPath: string,
+    type:
+      | "stash"
+      | "stash-pop"
+      | "stash-apply"
+      | "stash-drop"
+      | "stash-branch"
+      | "stash-import"
+      | "resolve-conflict"
+      | "unresolve-conflict"
+      | "remove-worktree"
+      | "merge-into-base",
+    run: (cwd: string) => Promise<Record<string, unknown>>,
+  ): Promise<Record<string, unknown>> {
+    const cwd = rootPath || String(workspace?.cwd || "");
+    if (!cwd) return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
+    const targetWorkspace = workspace || { id: "unknown", cwd };
+    return sharedReviewGitLocks.withWorktree(cwd, async () => {
+      const startedAt = Date.now();
+      const snapshot = await this._inspectRoot(targetWorkspace, cwd).catch((): Record<string, unknown> => ({}));
+      let result: Record<string, unknown>;
+      let errorMessage = "";
+      try {
+        result = await run(cwd);
+      } catch (error) {
+        errorMessage = extractErrorMessage(error);
+        result = createStructuredResult({ ok: false, summary: errorMessage || `Git ${type} operation failed.` });
+      }
+      this.invalidateSnapshotCache(targetWorkspace.id, cwd);
+      this._logGitAudit({
+        type,
+        connection: null,
+        success: result.ok === true,
+        durationMs: Date.now() - startedAt,
+        errorMessage: errorMessage || (result.ok === false ? String(result.summary || "") : ""),
+        workspaceId: targetWorkspace.id,
+        remoteUrl: String(Object.values((snapshot.remotes as Record<string, unknown>) || {})[0] || ""),
+        extra: { rootPath: cwd },
+      });
+      return result;
+    });
+  }
+
   async stashPop(
     workspace: WorkspaceRef | null,
     { rootPath = "", ref = "" }: { rootPath?: string; ref?: string } = {},
@@ -3515,16 +3807,18 @@ export class GitManager extends EventEmitter {
     }
     const args = ["stash", "pop"];
     if (ref) args.push(ref);
-    return this.execToResult(effectiveCwd, args, "Stash applied and removed.", "Stash pop failed.", (combined) => {
-      // Modern git refuses to drop the entry on conflict — it stays in place.
-      if (!/CONFLICT|conflict/i.test(combined)) return null;
-      return createStructuredResult({
-        ok: false,
-        summary: "Pop produced conflicts. Stash entry kept — resolve in the Changes tab and drop it manually.",
-        conflicts: parseConflictPaths(combined),
-        rawOutput: combined,
-      });
-    });
+    return this.runAuditedGitMutation(workspace, effectiveCwd, "stash-pop", (cwd) =>
+      this.execToResult(cwd, args, "Stash applied and removed.", "Stash pop failed.", (combined) => {
+        // Modern git refuses to drop the entry on conflict — it stays in place.
+        if (!/CONFLICT|conflict/i.test(combined)) return null;
+        return createStructuredResult({
+          ok: false,
+          summary: "Pop produced conflicts. Stash entry kept — resolve in the Changes tab and drop it manually.",
+          conflicts: parseConflictPaths(combined),
+          rawOutput: combined,
+        });
+      }),
+    );
   }
 
   // ─── Stash detail / lifecycle operations ──────────────────────────
@@ -3760,12 +4054,8 @@ export class GitManager extends EventEmitter {
     }
     const args = ["stash", "apply"];
     if (ref) args.push(ref);
-    return this.execToResult(
-      effectiveCwd,
-      args,
-      "Stash applied. The stash entry was kept.",
-      "Stash apply failed.",
-      (combined) => {
+    return this.runAuditedGitMutation(workspace, effectiveCwd, "stash-apply", (cwd) =>
+      this.execToResult(cwd, args, "Stash applied. The stash entry was kept.", "Stash apply failed.", (combined) => {
         // `git stash apply` exits non-zero on conflicts but still writes the
         // changes (with conflict markers) into the working tree.
         if (!/CONFLICT|conflict/i.test(combined)) return null;
@@ -3776,7 +4066,7 @@ export class GitManager extends EventEmitter {
           conflicts: parseConflictPaths(combined),
           rawOutput: combined,
         });
-      },
+      }),
     );
   }
 
@@ -3790,7 +4080,9 @@ export class GitManager extends EventEmitter {
     }
     const args = ["stash", "drop"];
     if (ref) args.push(ref);
-    return this.execToResult(effectiveCwd, args, "Stash dropped.", "Stash drop failed.");
+    return this.runAuditedGitMutation(workspace, effectiveCwd, "stash-drop", (cwd) =>
+      this.execToResult(cwd, args, "Stash dropped.", "Stash drop failed."),
+    );
   }
 
   async stashBranch(
@@ -3810,44 +4102,46 @@ export class GitManager extends EventEmitter {
     if (!name || !/^[A-Za-z0-9._/-]+$/.test(name)) {
       return createStructuredResult({ ok: false, summary: "Invalid branch name." });
     }
-    try {
-      if (switchImmediately) {
-        // Native path: create branch from the stash base, check it out, apply
-        // the stash, and drop the entry. Requires a clean working tree.
-        const status = await this.execGit(effectiveCwd, ["status", "--porcelain"]).catch(() => ({
-          stdout: "",
-          stderr: "",
-        }));
-        if (String(status.stdout || "").trim()) {
+    return this.runAuditedGitMutation(workspace, effectiveCwd, "stash-branch", async (effectiveCwd) => {
+      try {
+        if (switchImmediately) {
+          // Native path: create branch from the stash base, check it out, apply
+          // the stash, and drop the entry. Requires a clean working tree.
+          const status = await this.execGit(effectiveCwd, ["status", "--porcelain"]).catch(() => ({
+            stdout: "",
+            stderr: "",
+          }));
+          if (String(status.stdout || "").trim()) {
+            return createStructuredResult({
+              ok: false,
+              summary:
+                "Working tree has uncommitted changes. Commit or stash them first, or uncheck 'Switch immediately'.",
+            });
+          }
+          const result = await this.execGit(effectiveCwd, ["stash", "branch", name, ref]);
           return createStructuredResult({
-            ok: false,
-            summary:
-              "Working tree has uncommitted changes. Commit or stash them first, or uncheck 'Switch immediately'.",
+            ok: true,
+            summary: `Created and switched to '${name}' from the stash.`,
+            rawOutput: joinRawOutput(result.stdout, result.stderr),
           });
         }
-        const result = await this.execGit(effectiveCwd, ["stash", "branch", name, ref]);
+        // Non-switching path: just create the branch ref at the stash base. The
+        // stash is kept intact and the current branch/working tree are untouched.
+        const result = await this.execGit(effectiveCwd, ["branch", name, `${ref}^1`]);
         return createStructuredResult({
           ok: true,
-          summary: `Created and switched to '${name}' from the stash.`,
+          summary: `Created branch '${name}' from the stash base. The stash was kept.`,
           rawOutput: joinRawOutput(result.stdout, result.stderr),
         });
+      } catch (error) {
+        const err = error as { stdout?: string; stderr?: string };
+        return createStructuredResult({
+          ok: false,
+          summary: "Branch from stash failed.",
+          rawOutput: joinRawOutput(err.stdout, err.stderr),
+        });
       }
-      // Non-switching path: just create the branch ref at the stash base. The
-      // stash is kept intact and the current branch/working tree are untouched.
-      const result = await this.execGit(effectiveCwd, ["branch", name, `${ref}^1`]);
-      return createStructuredResult({
-        ok: true,
-        summary: `Created branch '${name}' from the stash base. The stash was kept.`,
-        rawOutput: joinRawOutput(result.stdout, result.stderr),
-      });
-    } catch (error) {
-      const err = error as { stdout?: string; stderr?: string };
-      return createStructuredResult({
-        ok: false,
-        summary: "Branch from stash failed.",
-        rawOutput: joinRawOutput(err.stdout, err.stderr),
-      });
-    }
+    });
   }
 
   async stashFileDiff(
@@ -3923,6 +4217,19 @@ export class GitManager extends EventEmitter {
   async stashImportPatch(
     workspace: WorkspaceRef | null,
     { rootPath = "", patch = "", message = "" }: { rootPath?: string; patch?: string; message?: string } = {},
+  ): Promise<Record<string, unknown>> {
+    const effectiveCwd = rootPath || workspace?.cwd;
+    if (!effectiveCwd) {
+      return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
+    }
+    return this.runAuditedGitMutation(workspace, effectiveCwd, "stash-import", (cwd) =>
+      this.stashImportPatchUnlocked(workspace, { rootPath: cwd, patch, message }),
+    );
+  }
+
+  private async stashImportPatchUnlocked(
+    workspace: WorkspaceRef | null,
+    { rootPath = "", patch = "", message = "" }: { rootPath?: string; patch?: string; message?: string },
   ): Promise<Record<string, unknown>> {
     const effectiveCwd = rootPath || workspace?.cwd;
     if (!effectiveCwd) {
@@ -4127,13 +4434,19 @@ export class GitManager extends EventEmitter {
     if (!name) {
       return createStructuredResult({ ok: false, summary: "Tag name is required." });
     }
-    const effectiveCwd = rootPath || workspace?.cwd;
-    if (!effectiveCwd) {
+    if (!workspace || !(rootPath || workspace.cwd)) {
       return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
     }
     const args = message ? ["tag", "-a", name, "-m", message] : ["tag", name];
     if (commit) args.push(commit);
-    return this.execToResult(effectiveCwd, args, `Tag '${name}' created.`, `Failed to create tag '${name}'.`);
+    return this.runWriteAction(workspace, {
+      type: "create-tag",
+      label: `Create tag ${name}`,
+      allowDirty: true,
+      rootPath,
+      extraAudit: { tagName: name, commit: commit || "HEAD" },
+      run: (cwd) => this.execGit(cwd, args),
+    });
   }
 
   async deleteTag(
@@ -4144,16 +4457,17 @@ export class GitManager extends EventEmitter {
     if (!name) {
       return createStructuredResult({ ok: false, summary: "Tag name is required." });
     }
-    const effectiveCwd = rootPath || workspace?.cwd;
-    if (!effectiveCwd) {
+    if (!workspace || !(rootPath || workspace.cwd)) {
       return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
     }
-    return this.execToResult(
-      effectiveCwd,
-      ["tag", "-d", name],
-      `Tag '${name}' deleted.`,
-      `Failed to delete tag '${name}'.`,
-    );
+    return this.runWriteAction(workspace, {
+      type: "delete-tag",
+      label: `Delete tag ${name}`,
+      allowDirty: true,
+      rootPath,
+      extraAudit: { tagName: name },
+      run: (cwd) => this.execGit(cwd, ["tag", "-d", name]),
+    });
   }
 
   async pushTag(
@@ -4613,6 +4927,7 @@ export class GitManager extends EventEmitter {
     {
       rootPath = "",
       limit = 300,
+      skip = 0,
       includeRemotes = true,
       branch = "",
       sinceDate = "",
@@ -4623,6 +4938,7 @@ export class GitManager extends EventEmitter {
     }: {
       rootPath?: string;
       limit?: number;
+      skip?: number;
       includeRemotes?: boolean;
       branch?: string;
       sinceDate?: string;
@@ -4650,12 +4966,13 @@ export class GitManager extends EventEmitter {
     const cwd = rootPath || workspace?.cwd || "";
     if (!cwd) return { ok: false, head: "", commits: [], refs: {}, error: "Missing rootPath" };
     const safeLimit = Math.max(1, Math.min(2000, Math.floor(limit)));
+    const safeSkip = Math.max(0, Math.floor(Number(skip) || 0));
     const startTime = Date.now();
 
     // Choose what to walk:
     //   - branch (string)            → just that ref
     //   - includeRemotes=false       → only local heads + HEAD
-    //   - default                    → all heads + remotes + HEAD (IDEA "Log")
+    //   - default                    → local heads + remote-tracking refs + tags + HEAD; git log revision-walk deduplicates reachable commits (History "All branches and tags") (IDEA "Log")
     let walkArgs: string[];
     if (branch && !branch.startsWith("-")) {
       walkArgs = [branch];
@@ -4691,6 +5008,7 @@ export class GitManager extends EventEmitter {
         topoOrder ? "--topo-order" : "--date-order",
         "-n",
         String(safeLimit),
+        ...(safeSkip > 0 ? [`--skip=${safeSkip}`] : []),
         ...filterArgs,
         ...walkArgs,
         ...(pathArgs.length ? ["--", ...pathArgs] : []),

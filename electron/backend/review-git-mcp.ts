@@ -4,6 +4,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { REVIEW_GIT_CAPABILITY_ENV, REVIEW_GIT_URL_ENV } from "../shared/review-git-env.js";
+import { reviewPrActionSchema, reviewPrActionOptionsSchema } from "../shared/review-pr-actions.js";
 
 export interface ReviewGitStdioConfig {
   url: string;
@@ -72,6 +73,21 @@ export function createReviewGitClient({
     return body?.result;
   }
 
+  async function sendIdempotent(payload: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+    const idempotencyKey = randomUUID();
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= START_ATTEMPTS; attempt += 1) {
+      try {
+        return send({ ...payload, idempotencyKey }, signal);
+      } catch (error) {
+        lastError = error;
+        if (!(error instanceof TypeError) || signal?.aborted || attempt === START_ATTEMPTS) break;
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs * attempt));
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error("Review PR request failed.");
+  }
+
   return {
     available: Boolean(config),
     read(payload: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
@@ -105,6 +121,20 @@ export function createReviewGitClient({
     },
     async status(operationId: string, waitMs = 0, signal?: AbortSignal): Promise<OperationLookup> {
       return (await send({ operation: "operation-status", operationId, waitMs }, signal)) as OperationLookup;
+    },
+    async prInspect(waitMs = INLINE_WAIT_MS, signal?: AbortSignal): Promise<unknown> {
+      return sendIdempotent({ operation: "pr-inspect", waitMs }, signal);
+    },
+    async prAction(
+      action: string,
+      options: Record<string, unknown>,
+      waitMs = INLINE_WAIT_MS,
+      signal?: AbortSignal,
+    ): Promise<unknown> {
+      return sendIdempotent({ operation: "pr-action-propose", action, options, waitMs }, signal);
+    },
+    async prActionStatus(id: string, signal?: AbortSignal): Promise<unknown> {
+      return send({ operation: "pr-action-status", id }, signal);
     },
   };
 }
@@ -342,6 +372,48 @@ export function registerReviewGitTools(
       inputSchema: {},
     },
     async (_input, extra) => read({ operation: "checks" }, extra.signal),
+  );
+  server.registerTool(
+    "review_pr_inspect",
+    {
+      title: "Review PR: inspect current state and checks",
+      description:
+        "Refreshes the provider's live PR state, commit SHAs, checks, review policy, merge readiness and lifecycle. Returns an operation id if it takes longer; poll with review_pr_action_status. Read-only.",
+      inputSchema: {},
+    },
+    async (_input, extra) =>
+      textResult(JSON.stringify(await client.prInspect(INLINE_WAIT_MS, withDisconnect(extra.signal)), null, 2)),
+  );
+  server.registerTool(
+    "review_pr_action",
+    {
+      title: "Review PR: request an action",
+      description:
+        "Creates a proposal for in-app user confirmation. This tool cannot approve the action. The user must review and confirm it in strIDEterm. Use the returned proposalId with review_pr_action_status.",
+      inputSchema: {
+        action: reviewPrActionSchema,
+        options: reviewPrActionOptionsSchema.optional(),
+      },
+    },
+    async (input, extra) =>
+      textResult(
+        JSON.stringify(
+          await client.prAction(input.action, input.options || {}, INLINE_WAIT_MS, withDisconnect(extra.signal)),
+          null,
+          2,
+        ),
+      ),
+  );
+  server.registerTool(
+    "review_pr_action_status",
+    {
+      title: "Review PR: action proposal status",
+      description:
+        "Checks an inspection operation, action proposal, or confirmed action by operationId/proposalId. A proposal requires app confirmation; this tool cannot confirm it.",
+      inputSchema: { id: z.string().min(1).max(100) },
+    },
+    async (input, extra) =>
+      textResult(JSON.stringify(await client.prActionStatus(input.id, withDisconnect(extra.signal)), null, 2)),
   );
   server.registerTool(
     "get_git_audit_log",

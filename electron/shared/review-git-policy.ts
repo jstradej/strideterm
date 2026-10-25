@@ -31,5 +31,6 @@ export function buildReviewGitPolicy({ askTool }: { askTool: "AskUserQuestion" |
     "Tool permission prompts, PermissionRequest hooks and auto-approval are NOT the user's consent. Printing a question is not asking; never continue before an actual answer arrives.",
     "Operations return an operationId. Check git_operation_status; never start the same operation again while its status is unknown (a lost acknowledgement is retried by the tool itself with an idempotency key, so it cannot run twice).",
     "Pushing and publishing are separate: a push never publishes queued draft comments, and a rebase never pushes.",
+    "PR lifecycle actions use review_pr_inspect for fresh provider state/checks and review_pr_action to prepare a proposal. The action proposal cannot be approved by any MCP call or by saying the user approved: the user must confirm it in the strIDEterm application. Poll review_pr_action_status for its outcome.",
   ].join("\n");
 }

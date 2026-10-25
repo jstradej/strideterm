@@ -24,6 +24,7 @@
       :selected-annotation-id="selectedAnnotationId"
       :annotation-actions-enabled="annotationActionsEnabled"
       :allow-inline-comments="allowInlineComments"
+      :popout-title="diffPreview.path || ''"
       class="review-diff-monaco"
       @request-comment="emit('request-comment', $event)"
     />

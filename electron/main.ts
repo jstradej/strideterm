@@ -658,15 +658,16 @@ function syncTitleBarTheme(): void {
   }
 }
 
-const distIndexUrl = new URL(`file://${path.join(app.getAppPath(), "dist", "index.html").replace(/\\/g, "/")}`).href;
+const distFileUrl = (file: string) =>
+  new URL(`file://${path.join(app.getAppPath(), "dist", file).replace(/\\/g, "/")}`).href;
+const distIndexUrl = distFileUrl("index.html");
+const distPopoutUrl = distFileUrl("popout.html");
 
 function isRendererOrigin(target: string): boolean {
   if (!target) return false;
   if (target.startsWith("file://")) {
-    // Drop any query string / hash so the popout window (which appends
-    // ?view=diff-popout) still passes the navigation guard on reload.
     const bare = target.split("?")[0].split("#")[0];
-    return bare === distIndexUrl;
+    return bare === distIndexUrl || bare === distPopoutUrl;
   }
   try {
     const url = new URL(target);
@@ -1109,10 +1110,10 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
 
 /**
  * Lightweight secondary window that renders just the Monaco diff for a
- * single payload — same renderer bundle, but `?view=diff-popout` query
- * makes src/main.ts mount `DiffPopoutApp` instead of the full app. Useful
- * for parking a diff on a second monitor while you keep navigating in the
- * main window.
+ * single payload. It loads its own `popout.html` entry (Vue + Monaco only),
+ * not the full app, so it opens without the splash screen. Useful for
+ * parking a diff on a second monitor while you keep navigating in the main
+ * window.
  */
 function createDiffPopoutWindow(payload: DiffPopoutPayload): BrowserWindow {
   const windowIconPath =
@@ -1169,24 +1170,23 @@ function createDiffPopoutWindow(payload: DiffPopoutPayload): BrowserWindow {
     return { action: "deny" };
   });
 
-  const distIndexPath = path.join(app.getAppPath(), "dist", "index.html");
-  const popoutDevUrl = `${rendererUrl}?view=diff-popout`;
+  const distPopoutPath = path.join(app.getAppPath(), "dist", "popout.html");
+  const popoutDevUrl = new URL("popout.html", rendererUrl).href;
   if (isDev) {
     // Same fallback as createWindow: if the Vite dev URL refuses to load
     // (process not running yet, port conflict, …) the popout window would
     // sit on a blank page forever. Catch did-fail-load and recover with
-    // the prod dist build, keeping the ?view=diff-popout query so the
-    // renderer still mounts DiffPopoutApp instead of the full app.
+    // the prod dist build.
     let fellBackToDist = false;
     win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
       if (!isMainFrame || fellBackToDist || validatedUrl !== popoutDevUrl) return;
       fellBackToDist = true;
       log.warn("diff-popout: dev renderer failed, falling back to dist", { errorCode, errorDescription });
-      win.loadFile(distIndexPath, { query: { view: "diff-popout" } });
+      win.loadFile(distPopoutPath);
     });
     win.loadURL(popoutDevUrl);
   } else {
-    win.loadFile(distIndexPath, { query: { view: "diff-popout" } });
+    win.loadFile(distPopoutPath);
   }
   log.info("diff-popout window created", {
     webContentsId: win.webContents.id,

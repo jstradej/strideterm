@@ -5,6 +5,7 @@ import { hasMeaningfulUserInput } from "../../electron/shared/terminal-input.js"
 import { rlog } from "../lib/renderer-log.js";
 import { userFacingMessage } from "../lib/error-message.js";
 import { errorMessage } from "../../electron/shared/error-message.js";
+import { useAppStore } from "./app.js";
 
 /**
  * Notification center state — session-grouped (Plan § 3.3.1).
@@ -48,6 +49,10 @@ export interface PersistentToast {
   body: string;
   kind: NotificationKind;
   copyPath?: string;
+  dedupeKey?: string;
+  details?: { rawError?: string; workspaceTitle?: string; path?: string };
+  profileId?: string;
+  sessionId?: string;
   action?: "open-mobile-account";
   at: string;
 }
@@ -56,6 +61,8 @@ interface NotificationEvent {
   id: string;
   title: string;
   body: string;
+  details?: { rawError?: string; workspaceTitle?: string; path?: string };
+  dedupeKey?: string;
   kind: NotificationKind;
   tier: number;
   urgency: NotificationUrgency;
@@ -104,6 +111,8 @@ interface NotificationSession {
 interface AddEventPayload {
   title: string;
   body?: string;
+  details?: { rawError?: string; workspaceTitle?: string; path?: string };
+  dedupeKey?: string;
   kind?: NotificationKind;
   tier?: number;
   urgency?: NotificationUrgency;
@@ -325,6 +334,8 @@ export const useNotificationStore = defineStore("notifications", () => {
   // and no thread state or badge is touched.
   const requestedPanelTab = ref("");
   const panelTabRequestSignal = ref(0);
+  const requestedPanelSessionId = ref("");
+  const panelSessionRequestSignal = ref(0);
   // Transient toast payload. Lives in the store (not in a composable) so any
   // part of the app can trigger a toast via showError/showToast without
   // threading a ref through prop drilling or custom event buses.
@@ -417,6 +428,16 @@ export const useNotificationStore = defineStore("notifications", () => {
   // closes it. Rendered as a stack in App.vue so multiple background
   // failures don't clobber each other.
   const persistentToasts = ref<PersistentToast[]>([]);
+  const notificationCenterView = ref({
+    visible: false,
+    alertsActive: false,
+    profileId: "",
+    sessionIds: [] as string[],
+  });
+
+  function setNotificationCenterView(view: typeof notificationCenterView.value): void {
+    notificationCenterView.value = view;
+  }
 
   // Back-compat computed: a flat `items` list still exposed so older
   // consumers (and tests) can iterate per-event.  New UI reads `sessions`.
@@ -511,6 +532,8 @@ export const useNotificationStore = defineStore("notifications", () => {
   function insertEvent({
     title,
     body = "",
+    details,
+    dedupeKey,
     kind = "info",
     tier = 1,
     urgency = "normal",
@@ -530,6 +553,8 @@ export const useNotificationStore = defineStore("notifications", () => {
       id: crypto.randomUUID(),
       title,
       body,
+      ...(details ? { details } : {}),
+      ...(dedupeKey ? { dedupeKey } : {}),
       kind,
       tier,
       urgency,
@@ -936,16 +961,9 @@ export const useNotificationStore = defineStore("notifications", () => {
   function togglePin(): void {
     pinned.value = !pinned.value;
     savePinned(pinned.value);
-    if (pinned.value) {
-      // Pinning makes the panel permanently visible — clear the transient
-      // overlay flag so unpinning later doesn't leave it stuck open.
-      panelOpen.value = false;
-    } else {
-      // Unpinning: keep the panel visible as an overlay so the user can see
-      // what's there and close it deliberately with × or Esc. Without this
-      // the panel would vanish immediately, feeling abrupt.
-      panelOpen.value = true;
-    }
+    // The panel stays visible through `pinned` when pinned, and closes when
+    // unpinned.
+    panelOpen.value = false;
   }
 
   function requestFocus(): void {
@@ -959,6 +977,12 @@ export const useNotificationStore = defineStore("notifications", () => {
     if (!pinned.value) panelOpen.value = true;
   }
 
+  function openPanelOnSession(sessionId: string): void {
+    requestedPanelSessionId.value = sessionId;
+    panelSessionRequestSignal.value += 1;
+    if (!pinned.value) panelOpen.value = true;
+  }
+
   // Every error toast — showError, pushPersistentToast, pushEphemeralToast —
   // also lands in strideterm.log, so a failure the user was shown can be
   // traced afterwards. The raw text is kept (IPC channel included); the toast
@@ -967,16 +991,14 @@ export const useNotificationStore = defineStore("notifications", () => {
     rlog("warn", `[toast] ${title}`, workspaceId ? { message: body, workspaceId } : { message: body });
   }
 
-  // Surface an app-level error to the user: persistent entry in the dock
-  // (so it survives scroll-away) plus a transient toast (so it grabs
-  // attention even when the dock is closed behind a dialog). Callers should
+  // Surface an app-level error in history and keep its toast until the user
+  // dismisses it. Callers should
   // use this instead of `console.error` for anything the user needs to act
   // on or recover from — failed IPC, backend validation errors, etc.
   //
   // `profileId` scopes the entry to a single profile so a window viewing
-  // profile B doesn't show errors raised in profile A. Defaults to the
-  // current window's active profile; callers acting on a specific workspace
-  // should pass that workspace's `profileId` instead.
+  // profile B doesn't show errors raised in profile A. Callers acting on a
+  // specific workspace should pass that workspace's `profileId`.
   function showError(
     title: string,
     error: unknown,
@@ -988,21 +1010,33 @@ export const useNotificationStore = defineStore("notifications", () => {
   ): NotificationEvent {
     const rawMessage = errorMessage(error, "Action failed");
     const body = userFacingMessage(rawMessage, "Action failed");
-    recordFailure(title, rawMessage, workspaceId);
-    const entry = addEvent({
+    const effectiveProfileId =
+      profileId || useAppStore().myActiveProfileId || notificationCenterView.value.profileId || "default";
+    const dedupeKey = [effectiveProfileId, workspaceId, title].join("|");
+    const entry =
+      sessions.value.flatMap((session) => session.events).find((event) => event.dedupeKey === dedupeKey) ||
+      addEvent({
+        title,
+        body,
+        details: { rawError: rawMessage, ...(workspaceName ? { workspaceTitle: workspaceName } : {}) },
+        dedupeKey,
+        kind: "error",
+        tier: 1,
+        urgency: "normal",
+        workspaceId,
+        workspaceName,
+        category: "error",
+        meta: { profileId: effectiveProfileId },
+      });
+    pushPersistentToast({
       title,
       body,
       kind: "error",
-      tier: 1,
-      urgency: "normal",
+      profileId: effectiveProfileId,
       workspaceId,
-      workspaceName,
-      category: "error",
-      meta: profileId ? { profileId } : null,
+      details: { rawError: rawMessage, ...(workspaceName ? { workspaceTitle: workspaceName } : {}) },
+      dedupeKey,
     });
-    if (!pinned.value) {
-      pushToast({ ...entry, category: "error" });
-    }
     return entry;
   }
 
@@ -1023,6 +1057,9 @@ export const useNotificationStore = defineStore("notifications", () => {
     kind = "error",
     copyPath = "",
     profileId = "",
+    details,
+    dedupeKey = "",
+    workspaceId = "",
     action,
   }: {
     title: string;
@@ -1030,28 +1067,83 @@ export const useNotificationStore = defineStore("notifications", () => {
     kind?: NotificationKind;
     copyPath?: string;
     profileId?: string;
+    details?: { rawError?: string; workspaceTitle?: string; path?: string };
+    dedupeKey?: string;
+    workspaceId?: string;
     action?: PersistentToast["action"];
   }): string {
+    const eventDetails = details || (copyPath ? { path: copyPath } : undefined);
     if (kind === "error") {
-      recordFailure(title, body);
+      recordFailure(title, eventDetails?.rawError || body, workspaceId);
       body = userFacingMessage(body) || body;
     }
-    const id = crypto.randomUUID();
-    persistentToasts.value = [
-      ...persistentToasts.value,
-      { id, title, body, kind, copyPath, action, at: new Date().toISOString() },
-    ];
+    const current = dedupeKey ? persistentToasts.value.find((toast) => toast.dedupeKey === dedupeKey) : undefined;
+    const id = current?.id || crypto.randomUUID();
+    const toastProfileId = profileId || useAppStore().myActiveProfileId || notificationCenterView.value.profileId;
+    const at = new Date().toISOString();
+    const existingEvent = dedupeKey
+      ? sessions.value.flatMap((session) => session.events).find((event) => event.dedupeKey === dedupeKey)
+      : undefined;
+    const existingSession = existingEvent
+      ? sessions.value.find((session) => session.events.includes(existingEvent))
+      : undefined;
+    if (existingEvent && existingSession) {
+      existingEvent.title = title;
+      existingEvent.body = body;
+      existingEvent.details = eventDetails;
+      existingEvent.at = at;
+      existingSession.events = [existingEvent, ...existingSession.events.filter((event) => event !== existingEvent)];
+      existingSession.latestAt = at;
+      existingSession.workspaceName = eventDetails?.workspaceTitle || existingSession.workspaceName;
+      existingSession.meta = {
+        ...(existingSession.meta || {}),
+        ...(toastProfileId ? { profileId: toastProfileId } : {}),
+      };
+      sessions.value = [...sessions.value].sort((a, b) => b.latestAt.localeCompare(a.latestAt));
+      saveToStorage(sessions.value);
+    }
     // Mirror to the dock so a quick "X" on the toast doesn't lose the error
     // entirely — the user can still find it later in the notification panel.
-    addEvent({
+    if (!existingSession) {
+      addEvent({
+        title,
+        body,
+        details: eventDetails,
+        dedupeKey,
+        kind,
+        tier: 1,
+        urgency: "normal",
+        workspaceId,
+        category: "error",
+        meta: toastProfileId ? { profileId: toastProfileId } : null,
+      });
+    }
+    const toastSessionId =
+      existingSession?.id ||
+      (dedupeKey
+        ? sessions.value.find((session) => session.events.some((event) => event.dedupeKey === dedupeKey))?.id
+        : "");
+    const toast = {
+      id,
       title,
-      body: copyPath ? `${body}\n${copyPath}` : body,
+      body,
       kind,
-      tier: 1,
-      urgency: "normal",
-      category: "error",
-      meta: profileId ? { profileId } : null,
-    });
+      copyPath,
+      action,
+      dedupeKey,
+      details: eventDetails,
+      profileId: toastProfileId,
+      sessionId: toastSessionId,
+      at,
+    };
+    persistentToasts.value = current
+      ? persistentToasts.value.map((item) => (item.id === id ? toast : item))
+      : [...persistentToasts.value, toast];
+    const view = notificationCenterView.value;
+    const sameProfile = Boolean(toastProfileId) && toastProfileId === view.profileId;
+    const sessionId = threadId(workspaceId, "");
+    const visible = view.visible && view.alertsActive && sameProfile && view.sessionIds.includes(sessionId);
+    if (visible) dismissPersistentToast(id);
     return id;
   }
 
@@ -1117,12 +1209,15 @@ export const useNotificationStore = defineStore("notifications", () => {
     focusRequestSignal,
     requestedPanelTab,
     panelTabRequestSignal,
+    requestedPanelSessionId,
+    panelSessionRequestSignal,
     latestToast,
     toastQueue,
     pushToast,
     dismissToast,
     liveAlertIds,
     setLiveAlertIds,
+    setNotificationCenterView,
     persistentToasts,
     // Computed
     unreadCount,
@@ -1151,6 +1246,7 @@ export const useNotificationStore = defineStore("notifications", () => {
     togglePin,
     requestFocus,
     openPanelOnTab,
+    openPanelOnSession,
     showError,
     runWithToast,
     pushPersistentToast,

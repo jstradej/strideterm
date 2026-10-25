@@ -147,3 +147,81 @@ describe("GitHub API - 304 with evicted cache entry", () => {
     expect((fetchImpl.mock.calls[1][1] as any).headers["If-None-Match"]).toBeUndefined();
   });
 });
+
+describe("GitHub pull request actions", () => {
+  test("reads all check runs from the paginated check-runs response envelope", async () => {
+    const fetchImpl = createMockFetch([
+      { status: 200, body: { total_count: 101, check_runs: Array.from({ length: 100 }, (_, id) => ({ id })) } },
+      { status: 200, body: { total_count: 101, check_runs: [{ id: 100 }] } },
+    ]);
+    const api = createGitHubApi(fetchImpl as unknown as typeof fetch);
+
+    const checks = await api.listCheckRuns({}, "pat", "acme", "widgets", "head-sha");
+
+    expect(checks).toHaveLength(101);
+    expect(checks.at(-1)).toEqual({ id: 100 });
+    expect(fetchImpl.mock.calls[0][0] as string).toContain("/commits/head-sha/check-runs?per_page=100&page=1");
+    expect(fetchImpl.mock.calls[1][0] as string).toContain("/commits/head-sha/check-runs?per_page=100&page=2");
+  });
+
+  test("binds an approval review to the expected commit", async () => {
+    const fetchImpl = createMockFetch([{ status: 200, body: { state: "APPROVED" } }]);
+    const api = createGitHubApi(fetchImpl as unknown as typeof fetch);
+
+    await api.submitReview({}, "pat", "acme", "widgets", 42, {
+      event: "APPROVE",
+      commitId: "expected-head",
+    });
+
+    const [, options] = fetchImpl.mock.calls[0] as unknown as [string, { body: string }];
+    expect(JSON.parse(options.body)).toEqual({ event: "APPROVE", commit_id: "expected-head" });
+  });
+
+  test("merges only when the expected head SHA matches", async () => {
+    const fetchImpl = createMockFetch([{ status: 200, body: { merged: true } }]);
+    const api = createGitHubApi(fetchImpl as unknown as typeof fetch);
+
+    await api.mergePullRequest({}, "pat", "acme", "widgets", 42, "head-sha");
+
+    const [url, options] = fetchImpl.mock.calls[0] as unknown as [string, { method: string; body: string }];
+    expect(url).toBe("https://api.github.com/repos/acme/widgets/pulls/42/merge");
+    expect(options.method).toBe("PUT");
+    expect(JSON.parse(options.body)).toEqual({ sha: "head-sha", merge_method: "merge" });
+  });
+
+  test("uses GraphQL for draft and auto-merge mutations on GitHub Enterprise", async () => {
+    const fetchImpl = createMockFetch([
+      { status: 200, body: { data: { convertPullRequestToDraft: { pullRequest: { isDraft: true } } } } },
+      {
+        status: 200,
+        body: { data: { enablePullRequestAutoMerge: { pullRequest: { autoMergeRequest: { enabledAt: "now" } } } } },
+      },
+    ]);
+    const api = createGitHubApi(fetchImpl as unknown as typeof fetch);
+    const connection = { apiBaseUrl: "https://github.example/api/v3" };
+
+    await api.setPullRequestDraft(connection, "pat", "node-id", true);
+    await api.setPullRequestAutoMerge(connection, "pat", "node-id", true, "squash", "expected-head");
+
+    const [draftUrl, draftOptions] = fetchImpl.mock.calls[0] as unknown as [string, { method: string; body: string }];
+    const [autoMergeUrl, autoMergeOptions] = fetchImpl.mock.calls[1] as unknown as [
+      string,
+      { method: string; body: string },
+    ];
+    expect(draftUrl).toBe("https://github.example/api/graphql");
+    expect(autoMergeUrl).toBe(draftUrl);
+    expect(draftOptions.method).toBe("POST");
+    expect(JSON.parse(draftOptions.body).variables).toEqual({ input: { pullRequestId: "node-id" } });
+    expect(JSON.parse(autoMergeOptions.body).query).toContain("enablePullRequestAutoMerge");
+    expect(JSON.parse(autoMergeOptions.body).variables).toEqual({
+      input: { pullRequestId: "node-id", mergeMethod: "SQUASH", expectedHeadOid: "expected-head" },
+    });
+  });
+
+  test("surfaces GraphQL mutation errors returned with HTTP 200", async () => {
+    const fetchImpl = createMockFetch([{ status: 200, body: { errors: [{ message: "Auto-merge is unavailable" }] } }]);
+    const api = createGitHubApi(fetchImpl as unknown as typeof fetch);
+
+    await expect(api.setPullRequestAutoMerge({}, "pat", "node-id", true)).rejects.toThrow("Auto-merge is unavailable");
+  });
+});

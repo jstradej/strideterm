@@ -1,8 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { describe, expect, test } from "vitest";
 import {
   carryOverSourceBaseline,
   fullSourceRef,
   isFullSha,
+  isManagedReviewBranch,
   managedReviewBranchAlias,
   normalizeRemoteIdentity,
   reviewSourceIdentityKey,
@@ -50,6 +52,34 @@ describe("refs and shas", () => {
     expect(managedReviewBranchAlias(7, "refs/heads/feature/login")).toBe("pr-7-feature-login");
     expect(managedReviewBranchAlias("123", "refs/heads/a b:c")).toBe("pr-123-a-b-c");
     expect(sanitizePathSegment("  ")).toBe("unknown");
+  });
+
+  test("the managed alias and the isolated <alias>-review-<uuid> checkout are the PR's branch", () => {
+    const ref = "refs/heads/feature";
+    const alias = managedReviewBranchAlias(7, ref);
+    expect(isManagedReviewBranch(alias, 7, ref)).toBe(true);
+    expect(isManagedReviewBranch(`${alias}-review-${randomUUID()}`, 7, ref)).toBe(true);
+  });
+
+  test("anything else is not the PR's managed branch", () => {
+    const ref = "refs/heads/feature";
+    const alias = managedReviewBranchAlias(7, ref);
+    const uuid = randomUUID();
+    for (const branch of [
+      `${alias}-review-foo`,
+      `${alias}-review-${uuid.toUpperCase()}`,
+      `${alias}-review-${uuid}-x`,
+      `${alias}-review-`,
+      `${managedReviewBranchAlias(8, ref)}-review-${uuid}`,
+      `${managedReviewBranchAlias(7, "refs/heads/other")}-review-${uuid}`,
+      "develop",
+      "",
+    ]) {
+      expect(isManagedReviewBranch(branch, 7, ref), branch).toBe(false);
+    }
+    expect(isManagedReviewBranch("pr-77-feature", 7, ref)).toBe(false);
+    expect(isManagedReviewBranch("pr-7-feature", 77, ref)).toBe(false);
+    expect(isManagedReviewBranch(`pr-77-feature-review-${uuid}`, 7, ref)).toBe(false);
   });
 });
 

@@ -5,6 +5,7 @@ import type { Alert } from "./notifications.js";
 import type { AzureClosedPrCleanupFinished } from "../azure-closed-pr-cleanup-events.js";
 import type { OperationsState } from "../operation-events.js";
 import type { ReviewGitState } from "../review-git-events.js";
+import type { ReviewPrActionsState } from "../review-pr-actions.js";
 import type { AppDistribution, MicrosoftStoreUpdateStatus } from "../app-distribution.js";
 
 // Re-export for convenience
@@ -494,6 +495,8 @@ export interface ReviewPrInfo {
   webUrl: string;
   sourceRefName: string;
   targetRefName: string;
+  sourceCommitId?: string;
+  targetCommitId?: string;
 }
 
 export interface ReviewCheckout {
@@ -569,6 +572,7 @@ export interface WorkspaceState {
   cwd: string;
   gitRoots: string[];
   activeRootPath: string;
+  gitViewPreferences?: Record<string, "history" | "changes" | "review">;
   notes: string;
   profileId: string;
   connectionId: string;
@@ -1170,6 +1174,8 @@ export interface StatePayload {
   operations: OperationsState;
   /** Review Git operations running now and finished within 24 h (runtime-only, never persisted). */
   reviewGit: ReviewGitState;
+  /** Pending MCP PR actions awaiting an explicit application decision. */
+  reviewPrActions: ReviewPrActionsState;
   /** Per-remote-client context — only set when the payload is composed for a specific remote session. */
   remoteClient?: RemoteClientContext;
 }
@@ -1263,6 +1269,8 @@ export interface RemoteStateV2 {
   operations: OperationsState;
   /** Only the client's profile's operations. */
   reviewGit: ReviewGitState;
+  /** Pending MCP PR actions in the remote client's active profile only. */
+  reviewPrActions: ReviewPrActionsState;
   plugins: unknown[];
   environment: Record<string, unknown>;
   /** Share-URL surface only (token blanked). */

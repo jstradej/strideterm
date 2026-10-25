@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { REVIEW_GIT_GRANT_IDLE_TTL_MS, createReviewGitBroker, type ReviewGitGrantContext } from "./broker.js";
+import { createReviewGitBroker, type ReviewGitGrantContext } from "./broker.js";
 import { createReviewGitOperationRegistry } from "./operations.js";
 
 const baseGrant: ReviewGitGrantContext = {
@@ -297,35 +297,32 @@ describe("review Git broker", () => {
     await Promise.all(waits);
   });
 
-  test("a capability is a lease: it lapses after long idleness, and every request renews it", async () => {
-    let clock = 1_000_000;
-    const leased = createReviewGitBroker({
+  test("a capability stays valid after long idleness while its runtime grant remains live", async () => {
+    let grantLive = true;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    const idleBroker = createReviewGitBroker({
       service: fake.service as never,
-      isGrantLive: () => true,
-      now: () => clock,
+      isGrantLive: () => grantLive,
     });
-    const { url: leasedUrl } = await leased.start();
+    const { url: idleUrl } = await idleBroker.start();
     const post = async (capability: string) =>
       (
-        await fetch(leasedUrl, {
+        await fetch(idleUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${capability}` },
           body: JSON.stringify({ operation: "status" }),
         })
       ).status;
     try {
-      const { capability } = leased.mintGrant(baseGrant);
-      clock += REVIEW_GIT_GRANT_IDLE_TTL_MS - 1_000;
+      const { capability } = idleBroker.mintGrant(baseGrant);
+      clock.mockReturnValue(1_000_000 + 13 * 60 * 60 * 1000);
       expect(await post(capability)).toBe(200);
-      // Used just now: another nearly-TTL of silence is still fine.
-      clock += REVIEW_GIT_GRANT_IDLE_TTL_MS - 1_000;
-      expect(await post(capability)).toBe(200);
-
-      clock += REVIEW_GIT_GRANT_IDLE_TTL_MS + 1_000;
+      grantLive = false;
       expect(await post(capability)).toBe(403);
       expect(await post(capability)).toBe(401);
     } finally {
-      await leased.close();
+      clock.mockRestore();
+      await idleBroker.close();
     }
   });
 

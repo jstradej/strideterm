@@ -88,7 +88,12 @@
       <div class="git-monaco-host stash-detail__diff">
         <p v-if="!selectedFile" class="git-card__hint">Select a file to preview its diff.</p>
         <p v-else-if="selectedIsBinary" class="git-card__hint">Binary file — no preview.</p>
-        <MonacoDiffPanel v-else :payload="diffPayload" :loading="diffLoading" />
+        <MonacoDiffPanel
+          v-else
+          :payload="diffPayload"
+          :loading="diffLoading"
+          :popout-title="`${selectedFile} @ ${entry.ref}`"
+        />
       </div>
     </template>
     <p v-else class="git-card__hint stash-detail__placeholder">Select a stash to see its details.</p>

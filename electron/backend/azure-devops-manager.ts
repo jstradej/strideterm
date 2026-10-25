@@ -17,6 +17,13 @@ import { BaseProviderManager } from "./shared/base-manager.js";
 import type { CredentialStore } from "./shared/credential-store.js";
 import { carryOverSourceBaseline } from "../shared/review-source-identity.js";
 import type { ReviewInfo, ReviewSourceRepository } from "../shared/types/state.js";
+import type {
+  ReviewPrAction,
+  ReviewPrActionOptions,
+  ReviewPrActionOutcome,
+  ReviewPrActionSnapshot,
+  ReviewPrCheck,
+} from "../shared/review-pr-actions.js";
 import { classifyAzureRequest, parseAzureUrl } from "./azure-audit-log-store.js";
 import { buildPullRequestSummary, findWorkspaceForPullRequest } from "./azure-devops-pr-summary.js";
 import { isAzureCommentByCurrentUser } from "./azure-comment-identity.js";
@@ -49,6 +56,7 @@ import {
   createConnectionSnapshot,
   normalizeConnectionInput,
 } from "./azure-devops-utils.js";
+import { reviewPrActionSnapshotFingerprint } from "./shared/review-pr-action-fingerprint.js";
 
 // ─── Local type aliases ──────────────────────────────────────────────────────
 
@@ -301,6 +309,20 @@ export class AzureDevOpsManager extends BaseProviderManager {
     return { connection: result.connection as AzureConnection, token: result.token };
   }
 
+  private findActionSummary(prKey: string): AzurePrSummary | null {
+    const current = this.snapshot.pullRequests[prKey] || this.findSummary(prKey);
+    if (current) return current as AzurePrSummary;
+    const tracked = this.reviewStore.getTrackedPullRequest(prKey);
+    if (!tracked?.connectionId || !tracked.projectName || !tracked.repositoryId || !tracked.pullRequestId) return null;
+    return {
+      prKey,
+      connectionId: tracked.connectionId,
+      project: { id: "", name: tracked.projectName },
+      repository: { id: tracked.repositoryId, name: tracked.repositoryName || tracked.repositoryId },
+      pullRequest: { id: tracked.pullRequestId },
+    };
+  }
+
   async getPullRequestStatus(
     connectionId: string,
     projectName: string,
@@ -329,6 +351,360 @@ export class AzureDevOpsManager extends BaseProviderManager {
     return {
       status: String(pullRequest?.status || "").toLowerCase(),
       lastMergeSourceCommitId: String(pullRequest?.lastMergeSourceCommit?.commitId || ""),
+    };
+  }
+
+  async getPullRequestActionSnapshot(prKey: string, _options: { fresh: true }): Promise<ReviewPrActionSnapshot> {
+    const current = this.findActionSummary(prKey);
+    if (!current) throw new Error("Pull request is not available in the current Azure DevOps snapshot.");
+    const connectionId = String(current.connectionId || "");
+    const { connection, token } = this.resolveAzureConnectionAndToken(connectionId);
+    const project = current.project;
+    const repository = current.repository;
+    const pullRequestId = current.pullRequest?.id;
+    if (!project?.name || !repository?.id || !pullRequestId) throw new Error("Pull request identity is incomplete.");
+    this.setAuditContext({ connectionId, userInitiated: true });
+    const pr = (await this.azureApi.getPullRequestById(
+      connection,
+      token,
+      project.name,
+      repository.id,
+      pullRequestId,
+    )) as Record<string, unknown>;
+    const prRepository = pr.repository as Record<string, unknown> | undefined;
+    const prProject = prRepository?.project as Record<string, unknown> | undefined;
+    const projectId = String(project.id || prProject?.id || "");
+    const [statuses, policies] = (await Promise.all([
+      this.azureApi.listPullRequestStatuses(connection, token, project.name, repository.id, pullRequestId),
+      this.azureApi.listPolicyEvaluations(connection, token, project.name, projectId, pullRequestId),
+    ])) as [unknown[], unknown[]];
+    const sourceBranch = String(pr.sourceRefName || current.pullRequest?.sourceRefName || "");
+    const targetBranch = String(pr.targetRefName || current.pullRequest?.targetRefName || "");
+    const sourceSha = String((pr.lastMergeSourceCommit as Record<string, unknown> | undefined)?.commitId || "");
+    const targetRef = targetBranch.startsWith("refs/heads/") ? targetBranch.slice("refs/heads/".length) : targetBranch;
+    const targetRefs = (
+      targetRef
+        ? await this.azureApi.listRepositoryRefs(connection, token, project.name, repository.id, `heads/${targetRef}`)
+        : []
+    ) as Array<Record<string, unknown>>;
+    const targetSha = String(
+      targetRefs.find(
+        (ref: Record<string, unknown>) => ref.name === targetBranch || ref.name === `refs/heads/${targetRef}`,
+      )?.objectId || "",
+    );
+    const checks: ReviewPrCheck[] = [];
+    for (const status of statuses as Array<Record<string, unknown>>) {
+      const rawState = String(status.state || "").toLowerCase();
+      checks.push({
+        name: String(
+          status.context && typeof status.context === "object"
+            ? (status.context as Record<string, unknown>).name || "Status"
+            : "Status",
+        ),
+        state:
+          rawState === "succeeded"
+            ? "success"
+            : rawState === "failed" || rawState === "error"
+              ? "failure"
+              : rawState === "pending"
+                ? "pending"
+                : "unknown",
+        kind: "status",
+        ...(status.targetUrl ? { url: String(status.targetUrl) } : {}),
+        ...(status.description ? { details: String(status.description) } : {}),
+      });
+    }
+    let requiredApprovals: number | null = null;
+    for (const policy of policies as Array<Record<string, unknown>>) {
+      const configuration = (policy.configuration || {}) as Record<string, unknown>;
+      const settings = (configuration.settings || {}) as Record<string, unknown>;
+      const policyName = String(
+        (configuration.type as Record<string, unknown> | undefined)?.displayName || "",
+      ).toLowerCase();
+      if (policyName.includes("review") || policyName.includes("approver")) {
+        const count = Number(settings.minimumApproverCount ?? settings.minimumNumberOfReviewers);
+        if (Number.isInteger(count) && count >= 0) requiredApprovals = Math.max(requiredApprovals || 0, count);
+      }
+      const rawState = String(policy.status || "").toLowerCase();
+      checks.push({
+        name: String(settings.displayName || policyName || "Policy"),
+        state: ["approved", "succeeded", "notapplicable"].includes(rawState)
+          ? "success"
+          : ["rejected", "broken", "failed"].includes(rawState)
+            ? "failure"
+            : ["queued", "running", "pending"].includes(rawState)
+              ? "pending"
+              : "unknown",
+        kind: "policy",
+        ...(policy._links &&
+        typeof policy._links === "object" &&
+        ((policy._links as Record<string, unknown>).web as Record<string, unknown> | undefined)?.href
+          ? { url: String(((policy._links as Record<string, unknown>).web as Record<string, unknown>).href) }
+          : {}),
+      });
+    }
+    const failed = checks.filter((check) => check.state === "failure").length;
+    const pending = checks.filter((check) => check.state === "pending").length;
+    const successful = checks.filter((check) => check.state === "success").length;
+    const hasUnknown = checks.some((check) => check.state === "unknown");
+    const checkState = !checks.length
+      ? "unknown"
+      : failed
+        ? "failure"
+        : pending
+          ? "pending"
+          : hasUnknown
+            ? "unknown"
+            : "success";
+    const reviewers = Array.isArray(pr.reviewers) ? (pr.reviewers as Array<Record<string, unknown>>) : [];
+    const status = String(pr.status || "").toLowerCase();
+    if (!["active", "completed", "abandoned"].includes(status)) {
+      throw new Error(`Azure DevOps returned an unsupported pull request status: ${status || "missing"}.`);
+    }
+    const forkRepository = (pr.forkSource as Record<string, unknown> | undefined)?.repository as
+      Record<string, unknown> | undefined;
+    const forkProject = forkRepository?.project as Record<string, unknown> | undefined;
+    const sourceRepository = forkRepository?.id
+      ? `${String(forkProject?.name || project.name)}/${String(forkRepository.name || forkRepository.id)}`
+      : `${project.name}/${repository.name || repository.id}`;
+    const isDraft = pr.isDraft === true;
+    const autoCompleteIdentity = (pr.autoCompleteSetBy || {}) as Record<string, unknown>;
+    const autoCompleteIdentityId = String(autoCompleteIdentity.id || "").toLowerCase();
+    const autoMerge = Boolean(
+      autoCompleteIdentityId && autoCompleteIdentityId !== "00000000-0000-0000-0000-000000000000",
+    );
+    const mergeStatus = String(pr.mergeStatus || "").toLowerCase();
+    const insufficientApprovals =
+      requiredApprovals !== null &&
+      reviewers.filter((reviewer) => Number(reviewer.vote || 0) > 0).length < requiredApprovals;
+    let mergeReadiness: ReviewPrActionSnapshot["mergeReadiness"];
+    if (
+      status !== "active" ||
+      isDraft ||
+      ["conflicts", "failure", "rejectedbypolicy"].includes(mergeStatus) ||
+      failed > 0
+    ) {
+      mergeReadiness = {
+        state: "blocked",
+        reason:
+          status !== "active"
+            ? "Pull request is not active."
+            : isDraft
+              ? "Draft pull requests cannot be completed."
+              : failed > 0
+                ? "A required check or policy failed."
+                : `Azure DevOps reports merge status ${mergeStatus}.`,
+      };
+    } else if (mergeStatus === "queued" || pending > 0 || insufficientApprovals) {
+      mergeReadiness = {
+        state: "pending",
+        reason: insufficientApprovals
+          ? "Required approvals are still pending."
+          : pending > 0
+            ? "A required check or policy is still running."
+            : "Azure DevOps queued the merge.",
+      };
+    } else if (mergeStatus === "succeeded" && !hasUnknown) {
+      mergeReadiness = { state: "ready" };
+    } else {
+      mergeReadiness = { state: "unknown", reason: "Azure DevOps did not provide a known merge readiness state." };
+    }
+    const supportedActions: ReviewPrAction[] =
+      status === "active"
+        ? [
+            "approve",
+            ...(mergeReadiness.state === "ready" ? (["complete"] as ReviewPrAction[]) : []),
+            ...(autoMerge
+              ? (["disable_auto_complete"] as ReviewPrAction[])
+              : (["enable_auto_complete"] as ReviewPrAction[])),
+            ...(isDraft ? (["set_ready"] as ReviewPrAction[]) : (["set_draft"] as ReviewPrAction[])),
+            "abandon",
+          ]
+        : status === "abandoned"
+          ? ["reactivate"]
+          : [];
+    return {
+      provider: "azure-devops",
+      prKey,
+      connectionId,
+      repository: `${project.name}/${repository.name || repository.id}`,
+      number: pullRequestId,
+      ...(((pr._links as Record<string, unknown> | undefined)?.web as Record<string, unknown> | undefined)?.href
+        ? { url: String(((pr._links as Record<string, unknown>).web as Record<string, unknown>).href) }
+        : current.pullRequest?.webUrl
+          ? { url: current.pullRequest.webUrl }
+          : {}),
+      title: String(pr.title || current.pullRequest?.title || ""),
+      state: status as ReviewPrActionSnapshot["state"],
+      isDraft,
+      autoMerge,
+      source: { repository: sourceRepository, branch: sourceBranch, sha: sourceSha },
+      target: {
+        repository: `${project.name}/${repository.name || repository.id}`,
+        branch: targetBranch,
+        sha: targetSha,
+      },
+      checks: { state: checkState, total: checks.length, successful, failed, pending, items: checks },
+      mergeReadiness,
+      review: {
+        approvals: reviewers.filter((reviewer) => Number(reviewer.vote || 0) > 0).length,
+        changesRequested: reviewers.filter((reviewer) => Number(reviewer.vote || 0) < 0).length,
+        requiredApprovals,
+      },
+      supportedActions,
+    };
+  }
+
+  async executePullRequestAction({
+    prKey,
+    action,
+    options = {},
+    expectedSnapshot,
+  }: {
+    prKey: string;
+    action: ReviewPrAction;
+    options?: ReviewPrActionOptions;
+    expectedSnapshot: ReviewPrActionSnapshot;
+  }): Promise<ReviewPrActionOutcome> {
+    const snapshot = await this.getPullRequestActionSnapshot(prKey, { fresh: true });
+    if (reviewPrActionSnapshotFingerprint(snapshot) !== reviewPrActionSnapshotFingerprint(expectedSnapshot)) {
+      throw new Error("Pull request changed since the action was proposed. Refresh and propose it again.");
+    }
+    if (
+      !snapshot.source.sha ||
+      !snapshot.target.sha ||
+      !snapshot.source.repository ||
+      !snapshot.source.branch ||
+      !snapshot.target.repository ||
+      !snapshot.target.branch
+    ) {
+      throw new Error("Cannot act on a pull request without complete source and target identity and commit SHAs.");
+    }
+    if (action === "complete" && snapshot.mergeReadiness.state !== "ready") {
+      throw new Error(
+        snapshot.mergeReadiness.reason || "Azure DevOps has not confirmed that this pull request is ready to complete.",
+      );
+    }
+    if (!snapshot.supportedActions.includes(action))
+      throw new Error(`Azure DevOps does not support the ${action} action.`);
+    const current = this.findActionSummary(prKey);
+    if (!current) throw new Error("Pull request identity is no longer available.");
+    const { connection, token } = this.resolveAzureConnectionAndToken(current.connectionId || "");
+    const project = current.project!;
+    const repository = current.repository!;
+    const pullRequestId = current.pullRequest!.id;
+    this.setAuditContext({ connectionId: connection.id, userInitiated: true });
+    let message = "Azure DevOps accepted the pull request action.";
+    let status: ReviewPrActionOutcome["status"] = "accepted";
+    if (action === "approve") {
+      const reviewerId = await this.getAuthenticatedUserId(connection, token);
+      if (!reviewerId) throw new Error("Could not resolve the current Azure DevOps user identity.");
+      const result = (await this.azureApi.approvePullRequest(
+        connection,
+        token,
+        project.name,
+        repository.id,
+        pullRequestId,
+        reviewerId,
+      )) as Record<string, unknown>;
+      if (Number(result.vote) === 10) {
+        status = "completed";
+        message = "Azure DevOps recorded your approval.";
+      }
+    } else {
+      const patch: Record<string, unknown> = {};
+      if (action === "complete") {
+        patch.status = "completed";
+        patch.lastMergeSourceCommit = { commitId: expectedSnapshot.source.sha };
+        patch.completionOptions = {
+          bypassPolicy: false,
+          deleteSourceBranch: false,
+          mergeStrategy:
+            options.mergeMethod === "squash" ? "squash" : options.mergeMethod === "rebase" ? "rebase" : "noFastForward",
+        };
+      } else if (action === "enable_auto_complete") {
+        const userId = await this.getAuthenticatedUserId(connection, token);
+        if (!userId) throw new Error("Could not resolve the current Azure DevOps user identity.");
+        patch.autoCompleteSetBy = { id: userId };
+        patch.lastMergeSourceCommit = { commitId: expectedSnapshot.source.sha };
+        patch.completionOptions = {
+          bypassPolicy: false,
+          deleteSourceBranch: false,
+          mergeStrategy:
+            options.mergeMethod === "squash" ? "squash" : options.mergeMethod === "rebase" ? "rebase" : "noFastForward",
+        };
+      } else if (action === "disable_auto_complete") {
+        patch.autoCompleteSetBy = { id: "00000000-0000-0000-0000-000000000000" };
+      } else if (action === "set_draft" || action === "set_ready") {
+        patch.isDraft = action === "set_draft";
+      } else if (action === "abandon") {
+        patch.status = "abandoned";
+      } else if (action === "reactivate") {
+        patch.status = "active";
+      }
+      const result = (await this.azureApi.updatePullRequest(
+        connection,
+        token,
+        project.name,
+        repository.id,
+        pullRequestId,
+        patch,
+      )) as Record<string, unknown>;
+      if (action === "complete") {
+        const mergeStatus = String(result.mergeStatus || "").toLowerCase();
+        if (
+          result.status === "completed" &&
+          (mergeStatus === "succeeded" || (result.lastMergeCommit as Record<string, unknown> | undefined)?.commitId)
+        ) {
+          status = "completed";
+          message = "Azure DevOps completed the pull request.";
+        } else if (mergeStatus === "queued") {
+          status = "queued";
+          message = "Azure DevOps queued the pull request for completion.";
+        } else if (["failure", "conflicts", "rejectedbypolicy"].includes(mergeStatus)) {
+          status = "failed";
+          message = String(
+            result.mergeFailureMessage || `Azure DevOps did not complete the pull request (${mergeStatus}).`,
+          );
+        } else {
+          message = "Azure DevOps accepted the completion request; the pull request is not yet confirmed completed.";
+        }
+      }
+    }
+    let refreshed: ReviewPrActionSnapshot | undefined;
+    let refreshWarning = "";
+    try {
+      refreshed = await this.getPullRequestActionSnapshot(prKey, { fresh: true });
+    } catch (error) {
+      refreshWarning = "Azure DevOps accepted the action, but the follow-up refresh failed.";
+      this.log.warn("Azure DevOps PR action succeeded but follow-up refresh failed", {
+        prKey,
+        action,
+        err: (error as Error).message || String(error),
+      });
+    }
+    if (refreshed && status === "accepted") {
+      const reflected =
+        (action === "complete" && refreshed.state === "completed") ||
+        (action === "enable_auto_complete" && refreshed.autoMerge === true) ||
+        (action === "disable_auto_complete" && refreshed.autoMerge === false) ||
+        (action === "set_draft" && refreshed.isDraft) ||
+        (action === "set_ready" && !refreshed.isDraft) ||
+        (action === "abandon" && refreshed.state === "abandoned") ||
+        (action === "reactivate" && refreshed.state === "active");
+      if (reflected) {
+        status = "completed";
+        message = "Azure DevOps confirmed the pull request action.";
+      }
+    }
+    return {
+      provider: "azure-devops",
+      prKey,
+      action,
+      status,
+      message: refreshWarning ? `${message} ${refreshWarning}` : message,
+      ...(refreshWarning ? { warning: refreshWarning } : {}),
+      ...(refreshed ? { snapshot: refreshed } : {}),
     };
   }
 

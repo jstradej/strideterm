@@ -79,6 +79,15 @@
           <span :class="['workspace-chip', isLinkedWorktree && 'workspace-chip--alert']">
             <strong>{{ snapshot.isMainWorktree ? "main" : "linked" }}</strong> worktree
           </span>
+          <details class="git-view__repo-details">
+            <summary aria-label="Show full repository path and working branch">Details</summary>
+            <dl class="git-view__repo-details-panel">
+              <dt>Repository path</dt>
+              <dd>{{ activeRootPath || snapshot.root }}</dd>
+              <dt>Working branch</dt>
+              <dd>{{ snapshot.branch || "Detached HEAD" }}</dd>
+            </dl>
+          </details>
           <!-- ahead/behind only when upstream exists -->
           <template v-if="snapshot.upstream">
             <span v-if="snapshot.aheadCount > 0" class="workspace-chip">
@@ -105,6 +114,18 @@
           <span v-if="operation.inProgress" class="workspace-chip workspace-chip--alert">
             <strong>{{ operation.kind }}</strong> in progress
           </span>
+          <span v-if="longGitOperation" class="workspace-chip workspace-chip--alert" role="status">
+            <strong>{{ longGitOperation.kind.replace("git.", "") }}</strong> in progress
+          </span>
+          <button
+            v-if="hasConflictsTab"
+            type="button"
+            class="workspace-chip workspace-chip--alert"
+            aria-label="Open conflict resolution"
+            @click="openConflictTool"
+          >
+            Resolve conflicts <strong>{{ operation.conflicts?.length || "" }}</strong>
+          </button>
         </div>
         <div class="git-view__actions">
           <!-- Repo picker (multi-root workspaces only) — inline with actions, compact -->
@@ -126,8 +147,8 @@
             data-testid="refresh-button"
             :class="['button', 'button--ghost', gitUi.busyAction === 'refresh' && 'button--busy']"
             :disabled="gitUi.busyAction === 'refresh'"
-            title="Re-read this repository's branch, ahead/behind counts, dirty list, worktrees, and tags from disk. Also clears a stuck/in-progress action so a frozen view recovers. No network operations."
-            @click="gitUiStore.refreshGit(workspaceId)"
+            title="Re-read this repository's branch, ahead/behind counts, dirty list, worktrees, and tags from disk. Also clears a stuck/in-progress action so a frozen view recovers. No network operations. Also reloads the commit history."
+            @click="onRefresh"
           >
             {{ gitUi.busyAction === "refresh" ? "Refreshing…" : "Refresh" }}
           </button>
@@ -138,7 +159,7 @@
             type="button"
             data-testid="fetch-button"
             :class="['button', 'button--ghost', gitUi.busyAction === 'fetch' && 'button--busy']"
-            :disabled="!!gitUi.busyAction || !!gitUi.pendingAction || operation.inProgress"
+            :disabled="!!gitUi.busyAction || !!gitUi.pendingAction || operation.inProgress || !!longGitOperation"
             title="git fetch — download remote refs and tags from origin so the ahead/behind counts update. Working tree, current branch, and uncommitted changes are not touched."
             @click="gitUiStore.gitFetch(workspaceId)"
           >
@@ -226,15 +247,15 @@
       </div>
 
       <!-- Tab nav -->
-      <nav class="git-tabs" role="tablist" aria-label="Git sections">
+      <nav class="git-tabs git-tabs--new" role="tablist" aria-label="Git sections">
         <button
-          v-for="tab in tabs"
+          v-for="tab in integratedTabs"
           :key="tab.id"
           type="button"
           role="tab"
-          :aria-selected="tab.id === activeTab ? 'true' : 'false'"
-          :class="['git-tabs__item', tab.id === activeTab && 'git-tabs__item--active']"
-          @click="onTabClick(tab.id)"
+          :aria-selected="tab.id === activeGitTabId ? 'true' : 'false'"
+          :class="['git-tabs__item', tab.id === activeGitTabId && 'git-tabs__item--active']"
+          @click="selectGitTab(tab.id)"
         >
           {{ tab.label }}<span v-if="tab.badge" class="git-tabs__badge">{{ tab.badge }}</span>
         </button>
@@ -250,11 +271,13 @@
         </div>
         <!-- ===== Branch tab ===== -->
         <GitBranchTab
-          v-if="activeTab === 'branch'"
+          v-if="activeGitTabId === 'branch'"
           :workspace-id="workspaceId"
           :snapshot="snapshot"
           :git-ui="gitUi"
+          :profile-id="workspace?.profileId || 'default'"
           :operation="operation"
+          :long-git-operation="longGitOperation"
           :workspaces="workspaces"
           :is-empty-repo="isEmptyRepo"
           :has-no-remote="hasNoRemote"
@@ -263,7 +286,6 @@
           :review-link="reviewLink"
           :is-linked-worktree="isLinkedWorktree"
           :push-remote="pushRemote"
-          :show-update-current-branch="showUpdateCurrentBranch"
           :show-stash-card="showStashCard"
           :show-merge-back="showMergeBack"
           :effective-base-branch="effectiveBaseBranch"
@@ -271,38 +293,40 @@
           :default-branch="defaultBranch"
           :default-remote="defaultRemote"
           :remote-names="remoteNames"
-          :switch-branch-options-list="switchBranchOptionsList"
         />
 
         <!-- ===== Branches tab (JetBrains-style branch list) ===== -->
         <GitBranchesTab
-          v-else-if="activeTab === 'branches'"
+          v-else-if="activeGitTabId === 'history' || activeGitTabId === 'branches'"
           :workspace-id="workspaceId"
           :snapshot="snapshot"
           :git-ui="gitUi"
           :active-root-path="activeRootPath"
+          :profile-id="workspace?.profileId || 'default'"
           :has-azure-connection="hasAzureConnection"
           :active-connection-id="activeConnectionId"
           :base-branch="effectiveBaseBranch"
           :compare="compare"
           :base-branch-options="baseBranchOptions"
           :remote-names="remoteNames"
+          :compact-history="activeGitTabId === 'history'"
         />
 
         <!-- ===== Changes tab ===== -->
         <GitChangesTab
-          v-else-if="activeTab === 'changes'"
+          v-else-if="activeGitTabId === 'changes'"
           :workspace-id="workspaceId"
           :snapshot="snapshot"
           :git-ui="gitUi"
           :operation="operation"
           :active-root-path="activeRootPath"
           :is-detached-head="isDetachedHead"
+          :new-view="true"
         />
 
         <!-- ===== Stashes tab ===== -->
         <GitStashesTab
-          v-else-if="activeTab === 'stashes'"
+          v-else-if="activeGitTabId === 'stashes'"
           :workspace-id="workspaceId"
           :snapshot="snapshot"
           :active-root-path="activeRootPath"
@@ -310,14 +334,14 @@
 
         <!-- ===== Conflicts tab (only while an operation has conflicts) ===== -->
         <GitConflictsTab
-          v-else-if="activeTab === 'conflicts'"
+          v-else-if="activeGitTabId === 'conflicts'"
           :workspace-id="workspaceId"
           :root-path="activeRootPath"
         />
 
         <!-- ===== Pull Request tab ===== -->
         <GitPullRequestTab
-          v-else-if="activeTab === 'pr'"
+          v-else-if="activeGitTabId === 'pr'"
           :workspace-id="workspaceId"
           :snapshot="snapshot"
           :git-ui="gitUi"
@@ -329,20 +353,14 @@
         />
 
         <!-- ===== Worktrees tab ===== -->
-        <template v-else-if="activeTab === 'worktrees'">
+        <template v-else-if="activeGitTabId === 'worktrees'">
           <div class="git-section">
-            <article class="git-card">
-              <div class="section-head">
-                <div>
-                  <p class="eyebrow">Worktree Context</p>
-                  <h3>{{ snapshot.repository || snapshot.root }}</h3>
-                </div>
-              </div>
-              <p class="git-card__path">{{ snapshot.root }}</p>
-              <div class="git-detail-list">
-                <span><strong>Current branch:</strong> {{ snapshot.branch }}</span>
-                <span><strong>Main worktree:</strong> {{ snapshot.mainWorktreePath || snapshot.root }}</span>
-                <span><strong>Current path:</strong> {{ snapshot.worktreePath || snapshot.root }}</span>
+            <article class="git-card git-card--worktrees">
+              <div class="git-worktrees__context">
+                <strong>{{ snapshot.isMainWorktree ? "Main worktree" : "Linked worktree" }}</strong>
+                <span :title="snapshot.worktreePath || snapshot.root">{{
+                  snapshot.worktreePath || snapshot.root
+                }}</span>
               </div>
               <GitWorktreeList
                 :snapshot="snapshot"
@@ -360,7 +378,7 @@
         </template>
 
         <!-- ===== Bulk tab (multi-repo only) ===== -->
-        <template v-else-if="activeTab === 'bulk'">
+        <template v-else-if="activeGitTabId === 'bulk'">
           <BulkRepoTable
             :roots-snapshots="allRootsSnapshots"
             :workspace-id="props.workspaceId"
@@ -431,7 +449,7 @@ const gitUiStore = useGitUiStore();
 useResourceInterest(() => (props.workspaceId ? `git:${props.workspaceId}` : null));
 const { isMobile, menuOpen, tabsMenuOpen, toggleActionsMenu, toggleTabsMenu, closeAllMenus, onTabClick } =
   useMobileShellMenus({
-    onSelectTab: (id) => gitUiStore.gitSwitchTab(props.workspaceId, id),
+    onSelectTab: (id) => selectGitTab(id),
   });
 
 function onToolbarClick(e: MouseEvent) {
@@ -452,9 +470,15 @@ const isLoadingRemoteSnapshot = computed(
   () => appStore.isRemoteTransport && snapshot.value == null && appStore.getGitSummary(props.workspaceId)?.available,
 );
 const gitUi = computed(() => gitUiStore.get(props.workspaceId));
+
+function onRefresh() {
+  gitUiStore.bumpHistoryRefresh(props.workspaceId);
+  return gitUiStore.refreshGit(props.workspaceId);
+}
 const workspaces = computed(() => appStore.filteredWorkspaces);
 
 const workspace = computed(() => (appStore.filteredWorkspaces || []).find((ws) => ws.id === props.workspaceId));
+type RunningGitOperation = { profileId: string; workspaceId?: string; rootPath?: string; kind: string };
 // A PR link is context, not a capability gate: every Git action is available,
 // and the runtime inspects the real checkout state for each one. What the link
 // does change is where the PR-targeted actions go (Push → the PR's source
@@ -483,7 +507,24 @@ const allRootsSnapshots = computed(() => {
   return Object.entries(entry.roots).map(([rootPath, snap]: [string, any]) => ({ rootPath, ...snap }));
 });
 const isLinkedWorktree = computed(() => snapshot.value?.isWorktree && !snapshot.value?.isMainWorktree);
-const operation = computed(() => snapshot.value?.operationState || {});
+const longGitOperation = computed(() => {
+  const profileId = String(workspace.value?.profileId || "default");
+  const payload = appStore.payload as { operations?: { running?: RunningGitOperation[] } } | null;
+  return (
+    payload?.operations?.running?.find(
+      (item) =>
+        item.profileId === profileId &&
+        item.workspaceId === props.workspaceId &&
+        (!item.rootPath || item.rootPath === activeRootPath.value) &&
+        ["git.fetch", "git.pull", "git.push"].includes(item.kind),
+    ) || null
+  );
+});
+const operation = computed(() =>
+  longGitOperation.value
+    ? { ...(snapshot.value?.operationState || {}), kind: longGitOperation.value.kind, inProgress: true }
+    : snapshot.value?.operationState || {},
+);
 
 // Pending confirm (rebase/merge/force-push/delete…) rendered as a modal below
 const pendingAction = computed(() => gitUi.value.pendingAction || null);
@@ -521,14 +562,62 @@ const hasConflictsTab = computed(
   () => (operation.value.conflicts?.length ?? 0) > 0 || gitUi.value.conflictDialog?.open === true,
 );
 
-const activeTab = computed(() => {
-  const t = gitUi.value.activeTab || "branch";
-  if (t === "graph" || t === "tags" || t === "history") return "branches";
-  // Conflicts tab only exists while conflicts are present — fall back to
-  // Overview if the persisted tab outlived the operation.
-  if (t === "conflicts" && !hasConflictsTab.value) return "branch";
-  return t;
+const activeGitView = computed(() => {
+  const saved = gitUiStore.getGitView(
+    props.workspaceId,
+    activeRootPath.value,
+    workspace.value?.profileId || "default",
+    String(workspace.value?.review?.prKey || ""),
+  );
+  if (saved) return saved;
+  const preferred = snapshot.value?.dirty ? "changes" : "history";
+  gitUiStore.gitSwitchView(
+    props.workspaceId,
+    preferred,
+    activeRootPath.value,
+    workspace.value?.profileId || "default",
+    String(workspace.value?.review?.prKey || ""),
+  );
+  return preferred;
 });
+const integratedTabs = computed(() => [
+  { id: "history", label: "History", badge: "" },
+  tabs.value.find((tab) => tab.id === "changes") || { id: "changes", label: "Changes", badge: "" },
+  ...tabs.value.filter((tab) => tab.id !== "changes"),
+]);
+const activeGitTabId = computed(() => {
+  const selected = String(gitUi.value.activeTab || "");
+  if (selected === "history" || selected === "changes") return selected;
+  if ((selected === "conflicts" || selected === "conflict") && !hasConflictsTab.value) return activeGitView.value;
+  if (selected === "graph" || selected === "tags") return "branches";
+  if (integratedTabs.value.some((tab) => tab.id === selected)) return selected;
+  return activeGitView.value;
+});
+
+watch(
+  () => gitUi.value.activeTab,
+  (selected) => {
+    if (selected !== "history" && selected !== "changes") return;
+    gitUiStore.gitSwitchView(
+      props.workspaceId,
+      selected,
+      activeRootPath.value,
+      workspace.value?.profileId || "default",
+      String(workspace.value?.review?.prKey || ""),
+    );
+    gitUiStore.gitSwitchTab(props.workspaceId, "");
+  },
+  { flush: "sync" },
+);
+
+function selectGitTab(id: string) {
+  gitUiStore.gitSwitchTab(props.workspaceId, id);
+  closeAllMenus();
+}
+
+function openConflictTool() {
+  gitUiStore.gitSwitchTab(props.workspaceId, "conflicts");
+}
 
 const showAllActions = computed(() => appStore.payload?.appState?.settings?.git?.ui?.showAllActions === true);
 
@@ -628,7 +717,8 @@ const showNewWorktree = computed(() => {
 // Pull state
 const pullIsPrimary = computed(() => primaryAction.value === "pull");
 const pullDisabled = computed(() => {
-  if (!!gitUi.value.busyAction || operation.value.inProgress || !!gitUi.value.pendingAction) return true;
+  if (!!gitUi.value.busyAction || operation.value.inProgress || !!gitUi.value.pendingAction || !!longGitOperation.value)
+    return true;
   if (!snapshot.value?.upstream) return true;
   if (isDetachedHead.value) return true;
   if ((snapshot.value?.behindCount || 0) === 0 && !isDiverged.value) return true;
@@ -718,7 +808,8 @@ const pushLabel = computed(() => {
 });
 const pushIsPrimary = computed(() => primaryAction.value === "push");
 const pushDisabled = computed(() => {
-  if (!!gitUi.value.busyAction || operation.value.inProgress || !!gitUi.value.pendingAction) return true;
+  if (!!gitUi.value.busyAction || operation.value.inProgress || !!gitUi.value.pendingAction || !!longGitOperation.value)
+    return true;
   if (appStore.isReviewGitBusy?.(props.workspaceId)) return true;
   if (isDiverged.value && !showAllActions.value) return true;
   if (!canPush.value) return true;
@@ -744,11 +835,6 @@ const pushTooltip = computed(() => {
 // Card visibility
 const showStashCard = computed(() => {
   return showAllActions.value || snapshot.value?.dirty || (snapshot.value?.stashCount || 0) > 0;
-});
-const showUpdateCurrentBranch = computed(() => {
-  if (!snapshot.value) return false;
-  if (!showAllActions.value && effectiveBaseBranch.value === snapshot.value.branch) return false;
-  return true;
 });
 const showMergeBack = computed(() => {
   if (!showAllActions.value) {
@@ -845,14 +931,6 @@ const activeConnectionLabel = computed(() => {
   return found?.label || activeConnectionId.value;
 });
 
-// Branch switcher options (built here so the same data backs both the
-// Branch tab subcomponent and any external consumer).
-const switchBranchOptions = computed(() => {
-  const names: string[] = snapshot.value?.branchNames || [];
-  const current = snapshot.value?.branch || "";
-  return names.filter((n) => n !== current);
-});
-
 // UC-12: auto-dismiss stale pending confirm when snapshot state changes
 watch(snapshot, (newSnapshot) => {
   if (newSnapshot && gitUi.value.pendingAction) {
@@ -887,7 +965,9 @@ const tabs = computed(() => {
   return list;
 });
 
-const activeTabInfo = computed(() => tabs.value.find((t) => t.id === activeTab.value) || tabs.value[0]);
+const activeTabInfo = computed(() => {
+  return integratedTabs.value.find((tab) => tab.id === activeGitTabId.value) || integratedTabs.value[0];
+});
 
 const headerTitle = computed(() => `Git: ${snapshot.value?.branch || props.workspaceId}`);
 const headerStatus = computed(() => (snapshot.value?.dirty ? `${snapshot.value.dirtyCount} dirty` : ""));
@@ -979,7 +1059,6 @@ const connectionOptions = computed(() => [
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ...availableConnections.value.map((c: any) => ({ value: c.id, label: c.label || c.id })),
 ]);
-const switchBranchOptionsList = computed(() => switchBranchOptions.value.map((b) => ({ value: b, label: b })));
 </script>
 
 <style scoped>
@@ -1007,6 +1086,11 @@ const switchBranchOptionsList = computed(() => switchBranchOptions.value.map((b)
   color: var(--muted);
   white-space: nowrap;
   opacity: 0.7;
+}
+
+.git-tabs--new {
+  align-items: center;
+  flex-wrap: wrap;
 }
 
 .git-view__panel--busy {

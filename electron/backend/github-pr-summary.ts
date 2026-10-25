@@ -32,6 +32,7 @@ interface GithubPR {
   base?: {
     repo?: { id?: number | string; owner?: { login?: string }; name?: string; clone_url?: string; html_url?: string };
     ref?: string;
+    sha?: string;
   };
   head?: {
     sha?: string;
@@ -512,6 +513,8 @@ export function buildPullRequestSummary({
       sourceRefName: p.head?.ref || "",
       targetRefName: p.base?.ref || "",
       headSha: headSha,
+      sourceCommitId: headSha,
+      targetCommitId: p.base?.sha || "",
       createdAt: p.created_at || null,
       updatedAt: p.updated_at || null,
       mergedAt: p.merged_at || null,

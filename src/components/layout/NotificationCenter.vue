@@ -199,7 +199,7 @@
             :class="{ 'notification-center__pin--active': notifStore.pinned }"
             :title="
               notifStore.pinned
-                ? 'Unpin the notification panel — it will collapse back into the side rail when you click outside it.'
+                ? 'Unpin and close the notification panel.'
                 : 'Pin the notification panel to the right of the workspace so it stays open while you work; clicking outside no longer dismisses it.'
             "
             @click="notifStore.togglePin()"
@@ -367,6 +367,7 @@
             <div
               v-else
               class="notification-item"
+              :data-notification-session="row.session.id"
               :class="itemClass(row.session)"
               @click="onClickSession(row.session)"
               @pointermove="clearFlash(row.session.id)"
@@ -420,6 +421,31 @@
                   </span>
                 </div>
                 <p class="notification-item__body" :title="sessionBody(row.session)">{{ sessionBody(row.session) }}</p>
+                <details
+                  v-if="sessionDetails(row.session)"
+                  class="notification-item__details"
+                  @click.stop
+                  @keydown.stop
+                >
+                  <summary>Details</summary>
+                  <p v-if="sessionDetails(row.session)?.workspaceTitle">
+                    Workspace: {{ sessionDetails(row.session)?.workspaceTitle }}
+                  </p>
+                  <p v-if="sessionDetails(row.session)?.rawError" class="notification-item__raw-error">
+                    {{ sessionDetails(row.session)?.rawError }}
+                  </p>
+                  <p v-if="sessionDetails(row.session)?.path" class="notification-item__path">
+                    {{ sessionDetails(row.session)?.path }}
+                  </p>
+                  <button
+                    v-if="sessionDetails(row.session)?.path"
+                    type="button"
+                    class="quick-action"
+                    @click="copyNotificationPath(sessionDetails(row.session)?.path || '', row.session.id)"
+                  >
+                    {{ copiedPathId === row.session.id ? "Copied" : "Copy path" }}
+                  </button>
+                </details>
                 <div v-if="row.session.state === 'waiting'" class="notification-item__quick-actions">
                   <button
                     class="quick-action"
@@ -581,13 +607,19 @@ interface NotificationSession {
   meta: Record<string, any> | null;
   firstAt: string;
   latestAt: string;
-  events: Array<{ title?: string; body?: string; kind?: string }>;
+  events: Array<{
+    title?: string;
+    body?: string;
+    kind?: string;
+    details?: { rawError?: string; workspaceTitle?: string; path?: string };
+  }>;
   snoozedUntil: number;
 }
 
 const notifStore = useNotificationStore();
 const appStore = useAppStore();
 const { sessionInActiveProfile, activeProfileId } = useNotificationProfileScope();
+const copiedPathId = ref("");
 const profileUnreadCount = computed(() => notifStore.unreadCountFor(sessionInActiveProfile));
 const hasFinishedInProfile = computed(() => notifStore.finishedSessions.some((s) => sessionInActiveProfile(s)));
 const hasSessionsInProfile = computed(() => notifStore.sessions.some((s) => sessionInActiveProfile(s)));
@@ -919,6 +951,17 @@ const timeline = computed((): TimelineRow[] => {
   return rows;
 });
 
+watch(
+  () => ({
+    visible: notifStore.pinned || notifStore.panelOpen,
+    alertsActive: activeTab.value === "alerts",
+    profileId: activeProfileId.value,
+    sessionIds: visibleSessions.value.map((session) => session.id),
+  }),
+  (view) => notifStore.setNotificationCenterView(view),
+  { immediate: true, deep: true, flush: "sync" },
+);
+
 // Flat list of sessions for keyboard nav.
 const allVisible = computed(() => visibleSessions.value);
 
@@ -981,6 +1024,23 @@ watch(
       return;
     }
     if (menuTabs.value.some((t) => t.id === requested)) activeTab.value = requested;
+  },
+);
+
+watch(
+  () => notifStore.panelSessionRequestSignal,
+  async () => {
+    const sessionId = notifStore.requestedPanelSessionId;
+    if (!sessionId) return;
+    activeTab.value = "alerts";
+    await nextTick();
+    const row = [...(bodyRef.value?.querySelectorAll<HTMLElement>("[data-notification-session]") || [])].find(
+      (item) => item.dataset.notificationSession === sessionId,
+    );
+    if (!row) return;
+    row.scrollIntoView?.({ behavior: "smooth", block: "center" });
+    const details = row.querySelector("details");
+    if (details) details.open = true;
   },
 );
 
@@ -1209,6 +1269,22 @@ function sessionBody(s: NotificationSession): string {
   const latest = s.events?.[0];
   if (!latest) return "";
   return latest.body || latest.title || "";
+}
+
+function sessionDetails(s: NotificationSession): NotificationSession["events"][number]["details"] {
+  return s.events?.[0]?.details;
+}
+
+async function copyNotificationPath(path: string, sessionId: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(path);
+    copiedPathId.value = sessionId;
+    setTimeout(() => {
+      if (copiedPathId.value === sessionId) copiedPathId.value = "";
+    }, 1500);
+  } catch {
+    copiedPathId.value = "";
+  }
 }
 
 function itemClass(s: NotificationSession): Record<string, boolean> {

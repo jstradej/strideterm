@@ -1,17 +1,34 @@
 <template>
-  <div class="git-tree" :class="{ 'git-tree--loading': loading, 'git-tree--compact': compact }">
-    <div v-if="loading && !nodes.length" class="git-tree__placeholder">Loading commit graph…</div>
+  <div
+    class="git-tree"
+    :class="{
+      'git-tree--loading': loading,
+      'git-tree--compact': compact,
+      'git-tree--history': historyLayout,
+      'git-tree--tight': tight,
+    }"
+  >
+    <div v-if="(loading || pending) && !nodes.length" class="git-tree__placeholder">
+      <Spinner size="md" label="Loading commit graph…" />
+    </div>
     <div v-else-if="error" class="git-tree__placeholder git-tree__placeholder--error">{{ error }}</div>
     <div v-else-if="!nodes.length" class="git-tree__placeholder">No commits found.</div>
     <template v-else>
       <!-- Column header. Hidden in compact (mobile) mode where there's only one
            text column anyway. Sticky so it stays visible during long scrolls. -->
-      <div v-if="!compact" class="git-tree__header">
+      <div
+        v-if="!compact && !historyLayout"
+        class="git-tree__header"
+        :style="tight ? { gridTemplateColumns: tightHeaderColumns } : undefined"
+      >
         <span class="git-tree__hcell git-tree__hcell--graph" :style="{ width: `${graphWidth}px` }"></span>
+        <span v-if="!tight" class="git-tree__hcell git-tree__hcell--refs">Refs</span>
         <span class="git-tree__hcell git-tree__hcell--subject">Subject</span>
-        <span class="git-tree__hcell git-tree__hcell--author">Author</span>
-        <span class="git-tree__hcell git-tree__hcell--date">Date</span>
-        <span class="git-tree__hcell git-tree__hcell--hash">Hash</span>
+        <template v-if="!tight">
+          <span class="git-tree__hcell git-tree__hcell--author">Author</span>
+          <span class="git-tree__hcell git-tree__hcell--date">Date</span>
+        </template>
+        <span v-if="columnShown('hash')" class="git-tree__hcell git-tree__hcell--hash">Hash</span>
       </div>
       <div
         ref="scrollRef"
@@ -24,6 +41,32 @@
         <!-- The viewport holds the row container; the SVG is absolutely
              positioned over the leftmost column so lines align with each
              row's vertical center. -->
+        <div
+          v-if="showHistoryHeader"
+          class="git-tree__history-header"
+          :style="{ gridTemplateColumns: historyColumns, paddingLeft: `${graphWidth + 4}px` }"
+        >
+          <span class="git-tree__history-hcell">Subject</span>
+          <span v-for="col in visibleColumns" :key="col.key" class="git-tree__history-hcell">
+            <span
+              class="git-tree__col-resizer"
+              role="separator"
+              aria-orientation="vertical"
+              :aria-label="`Resize ${col.label} column`"
+              :aria-valuenow="columnWidths[col.key]"
+              :aria-valuemin="COLUMN_MIN"
+              :aria-valuemax="COLUMN_MAX"
+              tabindex="0"
+              @pointerdown="onResizeStart($event, col.key)"
+              @pointermove="onResizeMove($event, col.key)"
+              @pointerup="onResizeEnd($event)"
+              @pointercancel="onResizeEnd($event)"
+              @dblclick.stop="resetColumn(col.key)"
+              @keydown="onResizerKeydown($event, col.key)"
+            ></span>
+            {{ col.label }}
+          </span>
+        </div>
         <div class="git-tree__viewport" :style="{ minHeight: `${nodes.length * ROW_HEIGHT}px` }">
           <!--
             SVG paints lanes + edges + dots; rows on top are normal DOM
@@ -49,7 +92,7 @@
             :viewBox="`0 0 ${graphWidth} ${nodes.length * ROW_HEIGHT}`"
             aria-hidden="true"
           >
-            <g v-for="edge in edges" :key="edge.id">
+            <g v-for="edge in visibleEdges" :key="edge.id">
               <path
                 :d="edge.d"
                 :stroke="edge.color"
@@ -60,7 +103,7 @@
                 :opacity="edge.dashed ? 0.55 : 1"
               />
             </g>
-            <g v-for="node in nodes" :key="`dot:${node.hash}`">
+            <g v-for="node in visibleNodes" :key="`dot:${node.hash}`">
               <circle
                 v-if="node.isHead"
                 :cx="laneX(node.lane)"
@@ -80,22 +123,31 @@
               <circle
                 :cx="laneX(node.lane)"
                 :cy="node.y + ROW_HEIGHT / 2"
-                :r="DOT_RADIUS"
-                :fill="laneColor(node.lane)"
+                :r="isLocalOnly(node.hash) ? DOT_RADIUS - 0.5 : DOT_RADIUS"
+                :fill="isLocalOnly(node.hash) ? 'var(--panel)' : laneColor(node.lane)"
                 :stroke="laneColor(node.lane)"
-                stroke-width="1"
+                :stroke-width="isLocalOnly(node.hash) ? 1.5 : 1"
               />
             </g>
           </svg>
 
           <div
-            v-for="node in nodes"
+            v-for="node in visibleNodes"
             :key="`row:${node.hash}`"
-            :class="['git-tree__row', { 'git-tree__row--selected': isSelected(node.hash) }]"
+            :class="[
+              'git-tree__row',
+              {
+                'git-tree__row--selected': isSelected(node.hash),
+                'git-tree__row--local': isLocalOnly(node.hash),
+                'git-tree__row--push-boundary': pushBoundaryHashes.has(node.hash),
+                'git-tree__row--on-base': onBaseHashes.has(node.hash),
+              },
+            ]"
             :style="{
               top: `${node.y}px`,
               height: `${ROW_HEIGHT}px`,
               paddingLeft: `${graphWidth + 4}px`,
+              gridTemplateColumns: showHistoryHeader ? historyColumns : tight ? tightColumns : undefined,
               borderLeftColor: node.hash === selectedHash ? laneColor(node.lane) : 'transparent',
             }"
             role="treeitem"
@@ -105,7 +157,7 @@
             @dblclick="onDoubleClick(node)"
             @contextmenu="onContextMenu($event, node)"
           >
-            <span class="git-tree__cell git-tree__cell--subject">
+            <span v-if="!historyLayout && !tight" class="git-tree__cell git-tree__cell--refs">
               <span
                 v-for="ref in node.refs"
                 :key="ref.label"
@@ -115,16 +167,42 @@
                 <span class="git-tree__ref-icon" aria-hidden="true">{{ ref.icon }}</span>
                 <span class="git-tree__ref-label">{{ ref.label }}</span>
               </span>
+            </span>
+            <span class="git-tree__cell git-tree__cell--subject">
               <span class="git-tree__subject" :class="{ 'git-tree__subject--merge': node.isMerge }">{{
                 node.subject
               }}</span>
+              <span v-if="(historyLayout || tight) && node.refs.length" class="git-tree__history-refs">
+                <span
+                  v-for="ref in visibleRefs(node)"
+                  :key="ref.label"
+                  :class="[
+                    'git-tree__ref',
+                    `git-tree__ref--${ref.kind}`,
+                    ref.emphasis === 'filled' && 'git-tree__ref--filled',
+                    ref.emphasis === 'outlined' && 'git-tree__ref--outlined',
+                  ]"
+                  :title="ref.title"
+                >
+                  <span class="git-tree__ref-icon" aria-hidden="true">{{ ref.icon }}</span>
+                  <span class="git-tree__ref-label">{{ ref.label }}</span>
+                  <span v-if="ref.isDefault" class="git-tree__ref-default">default</span>
+                </span>
+                <span
+                  v-if="hiddenRefs(node).length"
+                  class="git-tree__ref git-tree__ref--more"
+                  :title="hiddenRefsTitle(node)"
+                >
+                  <span class="git-tree__ref-label">+{{ hiddenRefs(node).length }}</span>
+                </span>
+              </span>
             </span>
-            <span v-if="!compact" class="git-tree__cell git-tree__cell--author">{{ node.author }}</span>
-            <span v-if="!compact" class="git-tree__cell git-tree__cell--date" :title="node.isoDate">{{
+            <span v-if="columnShown('author')" class="git-tree__cell git-tree__cell--author">{{ node.author }}</span>
+            <span v-if="columnShown('date')" class="git-tree__cell git-tree__cell--date" :title="node.isoDate">{{
               node.relativeDate
             }}</span>
             <span
-              v-if="!compact"
+              v-if="columnShown('hash')"
               class="git-tree__cell git-tree__cell--hash"
               :title="`Click to copy ${node.hash}`"
               @click.stop="copyHash(node.hash)"
@@ -145,7 +223,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
+import Spinner from "../../common/Spinner.vue";
 
 interface RawCommit {
   hash: string;
@@ -169,6 +248,7 @@ const props = withDefaults(
     // that feeds the diff pane.
     selectedHashes?: string[];
     loading?: boolean;
+    pending?: boolean;
     error?: string;
     compact?: boolean;
     // Render everything in a single column with straight verticals. Used when
@@ -176,6 +256,18 @@ const props = withDefaults(
     // by the filter so the topological lane layout would be misleading. This
     // mirrors what JetBrains' Log shows under User filter.
     flat?: boolean;
+    // IDEA-style rows for the new Git History view: no header, refs inside the
+    // subject cell instead of their own column.
+    history?: boolean;
+    // Reuse the History row layout in another Git view without enabling its
+    // History-only reachability shading.
+    historyLayout?: boolean;
+    // History view only: the PR target / base branch. Commits already on it are
+    // dimmed so the branch's own work stands out.
+    rangeBase?: string;
+    // History view only: the unfiltered loaded list. Reachability needs the
+    // parent chain that a client-side filter removes from `commits`.
+    reachCommits?: RawCommit[];
   }>(),
   {
     commits: () => [],
@@ -184,9 +276,13 @@ const props = withDefaults(
     selectedHash: "",
     selectedHashes: () => [],
     loading: false,
+    pending: false,
     error: "",
     compact: false,
     flat: false,
+    history: false,
+    historyLayout: false,
+    rangeBase: "",
   },
 );
 
@@ -234,6 +330,8 @@ interface GraphRefBadge {
   kind: "head" | "branch" | "remote" | "tag";
   icon: string;
   title: string;
+  emphasis?: "filled" | "outlined";
+  isDefault?: boolean;
 }
 
 interface GraphNode {
@@ -255,6 +353,8 @@ interface GraphEdge {
   id: string;
   d: string;
   color: string;
+  yTop: number;
+  yBottom: number;
   // Dashed signals "this segment crosses commits hidden by the active filter"
   // — used only in flat mode where the parent chain is interrupted.
   dashed?: boolean;
@@ -310,7 +410,7 @@ function buildLayout(commits: RawCommit[], head: string, flat: boolean): LayoutR
       y: i * ROW_HEIGHT,
       isHead: head === commit.hash,
       isMerge: (commit.parents || []).length >= 2,
-      refs: classifyRefs(commit.refs || []),
+      refs: classifyRefs(commit.refs || [], head === commit.hash),
     }));
     const edges: GraphEdge[] = [];
     const lane0X = laneX(0);
@@ -326,6 +426,8 @@ function buildLayout(commits: RawCommit[], head: string, flat: boolean): LayoutR
           id: `flat-merge:${commits[i].hash}`,
           d: `M ${lane0X} ${yMid} C ${lane0X} ${stubY} ${stubX} ${stubY} ${stubX} ${stubY - 2}`,
           color: laneColor(1),
+          yTop: stubY - 2,
+          yBottom: yMid,
         });
       }
       if (i + 1 >= commits.length) continue;
@@ -335,6 +437,8 @@ function buildLayout(commits: RawCommit[], head: string, flat: boolean): LayoutR
         id: `flat:${commits[i].hash}->${commits[i + 1].hash}`,
         d: `M ${lane0X} ${yMid} L ${lane0X} ${yMidNext}`,
         color: laneColor(0),
+        yTop: yMid,
+        yBottom: yMidNext,
         dashed: !chainIntact,
       });
     }
@@ -372,6 +476,8 @@ function buildLayout(commits: RawCommit[], head: string, flat: boolean): LayoutR
           id: `m:${commit.hash}:${closingLane}->${homeLane}`,
           d: laneMergePath(closingLane, homeLane, y),
           color: laneColor(closingColor),
+          yTop: y - ROW_HEIGHT / 2,
+          yBottom: y + ROW_HEIGHT / 2,
         });
         lanes[closingLane] = null;
       }
@@ -410,6 +516,8 @@ function buildLayout(commits: RawCommit[], head: string, flat: boolean): LayoutR
         id: `b:${commit.hash}->${parentHash}:${newLane}`,
         d: laneBranchPath(homeLane, newLane, y),
         color: laneColor(newColor),
+        yTop: y + ROW_HEIGHT / 2,
+        yBottom: y + ROW_HEIGHT * 1.5,
       });
       newlyOpened.add(newLane);
       maxLane = Math.max(maxLane, newLane);
@@ -447,6 +555,8 @@ function buildLayout(commits: RawCommit[], head: string, flat: boolean): LayoutR
           id: `s:${commit.hash}:${l}`,
           d: `M ${laneX(l)} ${yMid} L ${laneX(l)} ${yMidNext}`,
           color: laneColor(lane.color),
+          yTop: yMid,
+          yBottom: yMidNext,
         });
       }
     }
@@ -463,7 +573,7 @@ function buildLayout(commits: RawCommit[], head: string, flat: boolean): LayoutR
       y,
       isHead: head === commit.hash,
       isMerge: (commit.parents || []).length >= 2,
-      refs: classifyRefs(commit.refs || []),
+      refs: classifyRefs(commit.refs || [], head === commit.hash),
     });
   }
 
@@ -504,35 +614,355 @@ function laneBranchPath(fromLane: number, toLane: number, y: number): string {
   return `M ${x1} ${yMid} C ${x1} ${cY1} ${x2} ${cY2} ${x2} ${yBot}`;
 }
 
-function classifyRefs(refs: string[]): GraphRefBadge[] {
+const REF_KIND_LABEL: Record<GraphRefBadge["kind"], string> = {
+  head: "HEAD",
+  branch: "Branch",
+  remote: "Remote branch",
+  tag: "Tag",
+};
+
+function classifyRefs(refs: string[], isHeadCommit: boolean): GraphRefBadge[] {
   const out: GraphRefBadge[] = [];
+  const headBranch = refs.find((r) => r !== "HEAD" && !r.startsWith("tag:") && !r.includes("/"));
   for (const ref of refs) {
     if (ref === "HEAD") {
-      out.push({ label: "HEAD", kind: "head", icon: "★", title: "Currently checked-out commit." });
+      const lines = ["HEAD — the commit currently checked out"];
+      if (headBranch) lines.push(`On branch ${headBranch}`);
+      out.push({ label: "HEAD", kind: "head", icon: "★", title: lines.join("\n") });
     } else if (ref.startsWith("tag:")) {
       const name = ref.slice(4);
       out.push({ label: name, kind: "tag", icon: "🏷", title: `Tag ${name}` });
     } else if (ref.includes("/")) {
-      out.push({ label: ref, kind: "remote", icon: "☁", title: `Remote-tracking ref ${ref}` });
+      const lines = [`Remote branch ${ref}`];
+      if (matchesRangeBase(ref)) lines.push("Pull request target");
+      out.push({ label: ref, kind: "remote", icon: "☁", title: lines.join("\n") });
     } else {
-      out.push({ label: ref, kind: "branch", icon: "⎇", title: `Local branch ${ref}` });
+      const lines = [`Branch ${ref}`];
+      if (isHeadCommit) lines.push("Working branch (checked out)");
+      if (matchesRangeBase(ref)) lines.push("Pull request target");
+      out.push({ label: ref, kind: "branch", icon: "⎇", title: lines.join("\n") });
     }
   }
   out.sort((a, b) => (a.kind === "head" ? -1 : b.kind === "head" ? 1 : 0));
   return out;
 }
 
+const HISTORY_VISIBLE_REFS = 2;
+
+function matchesRangeBase(label: string): boolean {
+  const base = props.rangeBase;
+  if (!base) return false;
+  return label === base || label.endsWith(`/${base}`) || base.endsWith(`/${label}`);
+}
+
+function historyBadges(node: GraphNode): GraphRefBadge[] {
+  const badges = node.refs.map((badge) => ({ ...badge }));
+  const defaultRemote = badges.find((b) => b.kind === "remote" && b.label.endsWith("/HEAD"));
+  const siblingRemote = defaultRemote
+    ? badges.find((b) => b.kind === "remote" && b !== defaultRemote && !b.label.endsWith("/HEAD"))
+    : undefined;
+  if (defaultRemote && siblingRemote) {
+    const lines = siblingRemote.title.split("\n");
+    lines.splice(1, 0, "Default branch of the remote (origin/HEAD)");
+    siblingRemote.title = lines.join("\n");
+    siblingRemote.isDefault = true;
+    badges.splice(badges.indexOf(defaultRemote), 1);
+  }
+  const rank = (badge: GraphRefBadge): number => {
+    if (badge.kind === "head") return 0;
+    if (badge.kind === "branch" && node.isHead) return 1;
+    if (badge.kind !== "tag" && matchesRangeBase(badge.label)) return 2;
+    return 3;
+  };
+  for (const badge of badges) {
+    const r = rank(badge);
+    if (r <= 1) badge.emphasis = "filled";
+    else if (r === 2) badge.emphasis = "outlined";
+  }
+  return badges
+    .map((badge, index) => ({ badge, index }))
+    .sort((a, b) => rank(a.badge) - rank(b.badge) || a.index - b.index)
+    .map((entry) => entry.badge);
+}
+
+const historyLayout = computed(() => props.history || props.historyLayout);
+const historyBadgeMap = computed(() => {
+  const map = new Map<string, GraphRefBadge[]>();
+  if (!historyLayout.value) return map;
+  for (const node of nodes.value) map.set(node.hash, historyBadges(node));
+  return map;
+});
+
+function badgesOf(node: GraphNode): GraphRefBadge[] {
+  return historyBadgeMap.value.get(node.hash) ?? node.refs;
+}
+
+function visibleRefs(node: GraphNode): GraphRefBadge[] {
+  return badgesOf(node).slice(0, HISTORY_VISIBLE_REFS);
+}
+
+function hiddenRefs(node: GraphNode): GraphRefBadge[] {
+  return badgesOf(node).slice(HISTORY_VISIBLE_REFS);
+}
+
+function hiddenRefsTitle(node: GraphNode): string {
+  const hidden = hiddenRefs(node);
+  return [`${hidden.length} more refs:`, ...hidden.map((r) => `${REF_KIND_LABEL[r.kind]} ${r.label}`)].join("\n");
+}
+
 const layout = computed(() => buildLayout(props.commits || [], props.head || "", !!props.flat));
 const nodes = computed(() => layout.value.nodes);
 const edges = computed(() => layout.value.edges);
-const graphWidth = computed(() => layout.value.width);
+// On a phone the gutter follows the lanes actually in view, so a graph that is one lane wide
+// where you are looking does not keep the width of its widest merge further down.
+const graphWidth = computed(() => {
+  if (!props.compact) return layout.value.width;
+  let maxX = laneX(0);
+  for (const node of visibleNodes.value) maxX = Math.max(maxX, laneX(node.lane));
+  for (const edge of visibleEdges.value) {
+    const numbers = edge.d.match(/[d.-]+/g) || [];
+    for (let i = 0; i < numbers.length; i += 2) maxX = Math.max(maxX, Number(numbers[i]));
+  }
+  return Math.min(layout.value.width, maxX + LANE_GAP + 6);
+});
+
+function reachableFrom(starts: string[], parentsOf: Map<string, string[]>): Set<string> {
+  const seen = new Set<string>();
+  const stack = [...starts];
+  while (stack.length) {
+    const hash = stack.pop() as string;
+    if (seen.has(hash) || !parentsOf.has(hash)) continue;
+    seen.add(hash);
+    for (const parent of parentsOf.get(hash) || []) stack.push(parent);
+  }
+  return seen;
+}
+
+const historyReach = computed(() => {
+  const empty = { remote: null as Set<string> | null, base: new Set<string>(), boundary: new Set<string>() };
+  if (!props.history) return empty;
+  const rendered = props.commits || [];
+  const commits = props.reachCommits?.length ? props.reachCommits : rendered;
+  const fullIndex = new Map(commits.map((c, i) => [c.hash, i] as const));
+  const parentsOf = new Map(commits.map((c) => [c.hash, c.parents || []] as const));
+  const remoteTips = commits
+    .filter((c) => (c.refs || []).some((r) => r !== "HEAD" && !r.startsWith("tag:") && r.includes("/")))
+    .map((c) => c.hash);
+  // Without any remote-tracking ref loaded there is nothing to compare against.
+  const remote = remoteTips.length ? reachableFrom(remoteTips, parentsOf) : null;
+  const baseTips = props.rangeBase
+    ? commits.filter((c) => (c.refs || []).some((r) => !r.startsWith("tag:") && matchesRangeBase(r))).map((c) => c.hash)
+    : [];
+  const base = reachableFrom(baseTips, parentsOf);
+  const boundary = new Set<string>();
+  if (remote) {
+    for (let i = 1; i < rendered.length; i++) {
+      const at = fullIndex.get(rendered[i].hash);
+      if (at === undefined || at !== fullIndex.get(rendered[i - 1].hash)! + 1) continue;
+      if (remote.has(rendered[i].hash) && !remote.has(rendered[i - 1].hash)) boundary.add(rendered[i].hash);
+    }
+  }
+  return { remote, base, boundary };
+});
+
+const onBaseHashes = computed(() => historyReach.value.base);
+const pushBoundaryHashes = computed(() => historyReach.value.boundary);
+
+function isLocalOnly(hash: string): boolean {
+  const remote = historyReach.value.remote;
+  return !!remote && !remote.has(hash);
+}
 
 const scrollRef = ref<HTMLElement | null>(null);
 
+const OVERSCAN = 20 * ROW_HEIGHT;
+const DEFAULT_VIEWPORT_HEIGHT = 600;
+const scrollTop = ref(0);
+const clientHeight = ref(DEFAULT_VIEWPORT_HEIGHT);
+
+const windowRange = computed(() => {
+  const lo = scrollTop.value - OVERSCAN;
+  const hi = scrollTop.value + clientHeight.value + OVERSCAN;
+  return { lo, hi };
+});
+const visibleNodes = computed(() => {
+  const { lo, hi } = windowRange.value;
+  const first = Math.max(0, Math.floor(lo / ROW_HEIGHT));
+  const last = Math.min(nodes.value.length, Math.ceil(hi / ROW_HEIGHT));
+  return nodes.value.slice(first, last);
+});
+const visibleEdges = computed(() => {
+  const { lo, hi } = windowRange.value;
+  return edges.value.filter((e) => e.yBottom >= lo && e.yTop <= hi);
+});
+
+function syncViewport(): void {
+  const el = scrollRef.value;
+  if (!el) return;
+  scrollTop.value = el.scrollTop;
+  clientHeight.value = el.clientHeight || DEFAULT_VIEWPORT_HEIGHT;
+  viewportWidth.value = el.clientWidth;
+}
+
+let resizeObserver: ResizeObserver | null = null;
+watch(
+  scrollRef,
+  (el, prev) => {
+    prev?.removeEventListener("scroll", syncViewport);
+    resizeObserver?.disconnect();
+    resizeObserver = null;
+    if (!el) return;
+    el.addEventListener("scroll", syncViewport, { passive: true });
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(syncViewport);
+      resizeObserver.observe(el);
+    }
+    syncViewport();
+  },
+  { flush: "post" },
+);
+onBeforeUnmount(() => {
+  scrollRef.value?.removeEventListener("scroll", syncViewport);
+  resizeObserver?.disconnect();
+});
+
+type ResizableColumn = "author" | "date" | "hash";
+const RESIZABLE_COLUMNS: { key: ResizableColumn; label: string }[] = [
+  { key: "author", label: "Author" },
+  { key: "date", label: "Date" },
+  { key: "hash", label: "Hash" },
+];
+const DEFAULT_COLUMN_WIDTHS: Record<ResizableColumn, number> = { author: 140, date: 84, hash: 58 };
+const COLUMN_MIN = 40;
+const COLUMN_MAX = 400;
+const COLUMN_STEP = 8;
+const COLUMN_WIDTHS_KEY = "strideterm:git-history:column-widths";
+const HISTORY_HEADER_HEIGHT = 20;
+
+function clampWidth(value: number): number {
+  return Math.min(COLUMN_MAX, Math.max(COLUMN_MIN, Math.round(value)));
+}
+
+function loadColumnWidths(): Record<ResizableColumn, number> {
+  const widths = { ...DEFAULT_COLUMN_WIDTHS };
+  try {
+    const stored = JSON.parse(localStorage.getItem(COLUMN_WIDTHS_KEY) ?? "null");
+    for (const { key } of RESIZABLE_COLUMNS) {
+      if (typeof stored?.[key] === "number" && Number.isFinite(stored[key])) widths[key] = clampWidth(stored[key]);
+    }
+  } catch {
+    // unreadable storage: keep the defaults
+  }
+  return widths;
+}
+
+function saveColumnWidths(): void {
+  try {
+    localStorage.setItem(COLUMN_WIDTHS_KEY, JSON.stringify(columnWidths.value));
+  } catch {
+    // storage unavailable: widths last for this session only
+  }
+}
+
+const columnWidths = ref(loadColumnWidths());
+const showHistoryHeader = computed(() => historyLayout.value && !props.compact);
+const viewportWidth = ref(0);
+const HISTORY_SUBJECT_MIN = 160;
+const HISTORY_COLUMN_GAP = 10;
+const TIGHT_WIDTH = 640;
+const TIGHT_HASH_WIDTH = 60;
+const HIDE_ORDER: ResizableColumn[] = ["author", "hash", "date"];
+// A zero width means "not measured yet": keep every column rather than hiding them.
+const tight = computed(
+  () => !historyLayout.value && !props.compact && viewportWidth.value > 0 && viewportWidth.value < TIGHT_WIDTH,
+);
+const visibleColumns = computed(() => {
+  const hidden = new Set<ResizableColumn>();
+  if (historyLayout.value && viewportWidth.value > 0) {
+    const room = viewportWidth.value - graphWidth.value - 4 - 10 - HISTORY_SUBJECT_MIN;
+    const used = () =>
+      RESIZABLE_COLUMNS.filter((c) => !hidden.has(c.key)).reduce(
+        (sum, c) => sum + columnWidths.value[c.key] + HISTORY_COLUMN_GAP,
+        0,
+      );
+    for (const key of HIDE_ORDER) {
+      if (used() <= room) break;
+      hidden.add(key);
+    }
+  }
+  return RESIZABLE_COLUMNS.filter((c) => !hidden.has(c.key));
+});
+const tightHashShown = computed(
+  () => viewportWidth.value - graphWidth.value - 4 - 10 - HISTORY_SUBJECT_MIN - HISTORY_COLUMN_GAP >= TIGHT_HASH_WIDTH,
+);
+const tightColumns = computed(() => (tightHashShown.value ? "minmax(0, 1fr) max-content" : "minmax(0, 1fr)"));
+const tightHeaderColumns = computed(() => `${graphWidth.value - 10}px ${tightColumns.value}`);
+function columnShown(key: ResizableColumn): boolean {
+  if (props.compact) return false;
+  if (tight.value) return key === "hash" && tightHashShown.value;
+  return !historyLayout.value || visibleColumns.value.some((c) => c.key === key);
+}
+const historyColumns = computed(() =>
+  `minmax(0, 1fr) ${visibleColumns.value.map((c) => `${columnWidths.value[c.key]}px`).join(" ")}`.trim(),
+);
+
+let resizeDrag: { startX: number; startWidth: number } | null = null;
+
+function onResizeStart(e: PointerEvent, key: ResizableColumn): void {
+  e.preventDefault();
+  resizeDrag = { startX: e.clientX, startWidth: columnWidths.value[key] };
+  try {
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+  } catch {
+    // capture is an optimisation: events still arrive while the pointer is over the handle
+  }
+}
+
+function onResizeMove(e: PointerEvent, key: ResizableColumn): void {
+  if (!resizeDrag) return;
+  columnWidths.value = {
+    ...columnWidths.value,
+    [key]: clampWidth(resizeDrag.startWidth + resizeDrag.startX - e.clientX),
+  };
+}
+
+function onResizeEnd(e: PointerEvent): void {
+  if (!resizeDrag) return;
+  resizeDrag = null;
+  try {
+    (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+  } catch {
+    // already released
+  }
+  saveColumnWidths();
+}
+
+function resetColumn(key: ResizableColumn): void {
+  columnWidths.value = { ...columnWidths.value, [key]: DEFAULT_COLUMN_WIDTHS[key] };
+  saveColumnWidths();
+}
+
+function onResizerKeydown(e: KeyboardEvent, key: ResizableColumn): void {
+  if (e.key === "Home") {
+    e.preventDefault();
+    e.stopPropagation();
+    resetColumn(key);
+  } else if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+    e.preventDefault();
+    e.stopPropagation();
+    const delta = e.key === "ArrowLeft" ? COLUMN_STEP : -COLUMN_STEP;
+    columnWidths.value = { ...columnWidths.value, [key]: clampWidth(columnWidths.value[key] + delta) };
+    saveColumnWidths();
+  }
+}
+
 function rowTooltip(node: GraphNode): string {
-  return `${node.shortHash} — ${node.subject}\n${node.author} • ${node.relativeDate}${
+  let tip = `${node.shortHash} — ${node.subject}\n${node.author} • ${node.relativeDate}${
     node.refs.length ? `\n${node.refs.map((r) => r.label).join(", ")}` : ""
   }`;
+  if (isLocalOnly(node.hash)) tip += "\nNot on any remote yet";
+  if (onBaseHashes.value.has(node.hash)) tip += `\nAlready on ${props.rangeBase}`;
+  return tip;
 }
 
 const selectedSet = computed(() => {
@@ -599,9 +1029,10 @@ watch(
     if (!hash || !scrollRef.value) return;
     const idx = nodes.value.findIndex((n) => n.hash === hash);
     if (idx < 0) return;
-    const top = idx * ROW_HEIGHT;
+    const headerHeight = showHistoryHeader.value ? HISTORY_HEADER_HEIGHT : 0;
+    const top = idx * ROW_HEIGHT + headerHeight;
     const el = scrollRef.value;
-    if (top < el.scrollTop || top + ROW_HEIGHT > el.scrollTop + el.clientHeight) {
+    if (top < el.scrollTop + headerHeight || top + ROW_HEIGHT > el.scrollTop + el.clientHeight) {
       el.scrollTo({ top: Math.max(0, top - ROW_HEIGHT * 3), behavior: "smooth" });
     }
   },
@@ -615,7 +1046,7 @@ watch(
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: var(--surface, rgba(0, 0, 0, 0.15));
+  background: var(--surface, var(--panel));
   border: 1px solid var(--border);
   border-radius: 4px;
   overflow: hidden;
@@ -624,8 +1055,8 @@ watch(
 .git-tree__header {
   display: grid;
   grid-template-columns:
-    var(--graph-col, 60px) minmax(160px, 1fr) minmax(80px, max-content) minmax(60px, max-content)
-    minmax(50px, max-content);
+    var(--graph-col, 60px) minmax(80px, 180px) minmax(120px, 1fr) minmax(80px, max-content)
+    minmax(60px, max-content) minmax(50px, max-content);
   gap: 10px;
   padding: 4px 10px 4px 4px;
   background: rgba(255, 255, 255, 0.03);
@@ -640,6 +1071,12 @@ watch(
 
 .git-tree--compact .git-tree__header {
   display: none;
+}
+
+.git-tree--tight .git-tree__cell--subject {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .git-tree__hcell--graph {
@@ -678,10 +1115,9 @@ watch(
   left: 0;
   right: 0;
   display: grid;
-  grid-template-columns: minmax(200px, 1fr) minmax(80px, max-content) minmax(60px, max-content) minmax(
-      50px,
-      max-content
-    );
+  grid-template-columns:
+    minmax(80px, 180px) minmax(120px, 1fr) minmax(80px, max-content) minmax(60px, max-content)
+    minmax(50px, max-content);
   gap: 10px;
   align-items: center;
   padding-right: 10px;
@@ -693,7 +1129,7 @@ watch(
 }
 
 .git-tree--compact .git-tree__row {
-  grid-template-columns: 1fr minmax(60px, max-content);
+  grid-template-columns: minmax(72px, 24vw) minmax(0, 1fr) minmax(60px, max-content);
 }
 
 .git-tree__row:hover {
@@ -712,10 +1148,14 @@ watch(
 
 .git-tree__cell--subject {
   color: var(--text);
+}
+
+.git-tree__cell--refs {
   display: flex;
   align-items: center;
   gap: 4px;
-  flex-wrap: nowrap;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
 .git-tree__subject {
@@ -792,6 +1232,157 @@ watch(
 .git-tree__ref--tag {
   background: rgba(170, 95, 200, 0.22);
   color: #d09fd9;
+}
+
+.git-tree__history-header {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: grid;
+  gap: 10px;
+  align-items: center;
+  height: 20px;
+  padding-right: 10px;
+  border-left: 2px solid transparent;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface, var(--panel));
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.git-tree__history-hcell {
+  position: relative;
+  min-width: 0;
+  overflow: visible;
+}
+
+.git-tree__col-resizer {
+  position: absolute;
+  top: -10px;
+  bottom: -10px;
+  left: -8px;
+  width: 6px;
+  height: 20px;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+
+.git-tree__col-resizer::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 2px;
+  width: 1px;
+  background: var(--border);
+}
+
+.git-tree__col-resizer:hover::after,
+.git-tree__col-resizer:focus-visible::after {
+  background: var(--accent);
+}
+
+.git-tree--history .git-tree__row {
+  grid-template-columns: minmax(0, 1fr) 140px 84px 58px;
+}
+
+.git-tree--history.git-tree--compact .git-tree__row {
+  grid-template-columns: minmax(0, 1fr) minmax(60px, max-content);
+}
+
+.git-tree--history .git-tree__cell--subject {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.git-tree--history .git-tree__cell--hash {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.git-tree__history-refs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 1 auto;
+  max-width: 45%;
+  min-width: 0;
+}
+
+.git-tree--history .git-tree__ref {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0;
+  background: none;
+  border-radius: 0;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.git-tree--history .git-tree__ref-icon {
+  font-size: 11px;
+}
+
+.git-tree--history .git-tree__ref--head,
+.git-tree--history .git-tree__ref--branch {
+  background: none;
+  color: var(--accent);
+}
+
+.git-tree--history .git-tree__ref--remote,
+.git-tree--history .git-tree__ref--tag {
+  background: none;
+  color: var(--muted);
+}
+
+.git-tree--history .git-tree__ref--filled {
+  background: var(--accent);
+  color: #000;
+  padding: 0 6px;
+  border-radius: 3px;
+}
+
+.git-tree--history .git-tree__ref--outlined {
+  box-shadow: inset 0 0 0 1px var(--accent);
+  color: var(--accent);
+  padding: 0 6px;
+  border-radius: 3px;
+}
+
+.git-tree__ref-default {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 400;
+  flex: 0 0 auto;
+}
+
+.git-tree--history .git-tree__ref--filled .git-tree__ref-default {
+  color: inherit;
+  opacity: 0.7;
+}
+
+.git-tree--history .git-tree__row--push-boundary {
+  box-sizing: border-box;
+  border-top: 1px dashed var(--border);
+}
+
+.git-tree--history .git-tree__row--on-base .git-tree__subject,
+.git-tree--history .git-tree__row--on-base .git-tree__cell--author,
+.git-tree--history .git-tree__row--on-base .git-tree__cell--date {
+  opacity: 0.55;
+}
+
+.git-tree--history .git-tree__ref-label {
+  /* rtl + plaintext keeps the END of a long ref name visible; ellipsis lands on the left */
+  direction: rtl;
+  unicode-bidi: plaintext;
 }
 
 .git-tree__placeholder {

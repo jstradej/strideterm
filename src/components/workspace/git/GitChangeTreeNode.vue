@@ -57,6 +57,19 @@
         {{ node.code }}
       </span>
       <span v-if="grouped && isDir" class="gct-node__count">{{ node.fileCount }}</span>
+      <template v-if="node.kind === 'file' && stagingEnabled">
+        <button
+          v-for="entry in visibleScopes.filter((item: ScopeEntry) => item.scope !== 'conflict')"
+          :key="entry.scope"
+          type="button"
+          class="gct-node__stage"
+          :disabled="stagingBusy"
+          :aria-label="`${entry.scope === 'staged' ? 'Unstage' : 'Stage'} ${node.path} ${entry.scope}`"
+          @click.stop="$emit('stage-file', { path: node.path, staged: entry.scope === 'staged', scope: entry.scope })"
+        >
+          {{ entry.scope === "staged" ? "Unstage" : "Stage" }}
+        </button>
+      </template>
     </div>
     <ul v-if="isDir && expanded && node.children.length" class="gct-node__children">
       <GitChangeTreeNode
@@ -72,10 +85,13 @@
         :selected-set="selectedSet"
         :grouped="grouped"
         :scope-filter="scopeFilter"
+        :staging-enabled="stagingEnabled"
+        :staging-busy="stagingBusy"
         @toggle="(p) => $emit('toggle', p)"
         @select="(file) => $emit('select', file)"
         @toggle-select="(p) => $emit('toggle-select', p)"
         @context-menu="(p) => $emit('context-menu', p)"
+        @stage-file="(p) => $emit('stage-file', p)"
       />
     </ul>
   </li>
@@ -98,6 +114,8 @@ const props = withDefaults(
     selectedSet?: Set<string>;
     grouped?: boolean;
     scopeFilter?: string;
+    stagingEnabled?: boolean;
+    stagingBusy?: boolean;
   }>(),
   {
     depth: 0,
@@ -108,6 +126,8 @@ const props = withDefaults(
     selectedSet: () => new Set<string>(),
     grouped: false,
     scopeFilter: "all",
+    stagingEnabled: false,
+    stagingBusy: false,
   },
 );
 
@@ -117,7 +137,12 @@ const emit = defineEmits<{
   (e: "select", node: Record<string, any>): void;
   (e: "toggle-select", path: string): void;
   (e: "context-menu", payload: { path: string; name: string; kind: "file" | "dir"; x: number; y: number }): void;
+  (e: "stage-file", payload: { path: string; staged: boolean; scope: string }): void;
 }>();
+
+interface ScopeEntry {
+  scope: string;
+}
 
 const isDir = computed(() => props.node.kind === "dir");
 const expanded = computed(() => props.expandedSet.has(props.node.path as string));
@@ -184,6 +209,18 @@ function onContextMenu(e: MouseEvent) {
 
 .gct-node__row:hover {
   background: var(--border);
+}
+
+.gct-node__stage {
+  margin-left: auto;
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 5px;
+  color: var(--muted);
+  background: var(--surface, var(--panel));
+  font-size: 10px;
+  cursor: pointer;
 }
 
 .gct-node__row--selected {

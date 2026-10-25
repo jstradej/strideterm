@@ -1,8 +1,10 @@
 import { describe, expect, test, beforeEach, vi } from "vitest";
+import { computed, isReactive, nextTick, reactive } from "vue";
 import { setActivePinia, createPinia } from "pinia";
 import { useGitUiStore } from "./git-ui.js";
 import { useNotificationStore } from "./notifications.js";
 import type { Transport } from "../transport.js";
+import type { OperationFinished } from "../../electron/shared/operation-events.js";
 
 // gitSelectDiff is the only one of the three diff-preview loaders that reads
 // the app store's git snapshot (to resolve rootPath/baseBranch), so it needs
@@ -21,18 +23,19 @@ const pushReviewCheckout = vi.fn(
   async (_workspaceId: string, _options?: { force?: boolean }): Promise<unknown> => null,
 );
 const rebaseReviewCheckout = vi.fn(async (_workspaceId: string): Promise<unknown> => null);
-const appStoreMock = {
+const appStoreMock = reactive({
   getGitSnapshot,
   adoptPayload,
   payload: null as unknown,
   pushReviewCheckout,
   rebaseReviewCheckout,
-};
+});
 vi.mock("./app.js", () => ({
   useAppStore: () => appStoreMock,
 }));
 
 beforeEach(() => {
+  window.localStorage.clear();
   setActivePinia(createPinia());
   getGitSnapshot.mockReset();
   getGitSnapshot.mockReturnValue(null);
@@ -43,7 +46,667 @@ beforeEach(() => {
 });
 
 describe("git-ui store", () => {
+  test("new Git view selection is independent for each repository root", () => {
+    const store = useGitUiStore();
+    store.setActiveRoot("ws1", "/repo/a");
+    store.gitSwitchView("ws1", "history", "/repo/a");
+    store.setActiveRoot("ws1", "/repo/b");
+    expect(store.getGitView("ws1", "/repo/a")).toBe("history");
+    expect(store.getGitView("ws1", "/repo/b")).toBeUndefined();
+    store.gitSwitchView("ws1", "changes", "/repo/b");
+    expect(store.getGitView("ws1", "/repo/a")).toBe("history");
+    expect(store.getGitView("ws1", "/repo/b")).toBe("changes");
+    store.gitSwitchView("ws1", "review", "/repo/a", "profile-b");
+    expect(store.getGitView("ws1", "/repo/a", "profile-b")).toBe("history");
+    expect(store.getGitView("ws1", "/repo/a", "default")).toBe("history");
+    store.gitSwitchView("ws1", "changes", "/repo/a", "profile-b", "azure:123");
+    expect(store.getGitView("ws1", "/repo/a", "profile-b", "azure:123")).toBe("changes");
+    expect(store.getGitView("ws1", "/repo/a", "profile-b", "github:123")).toBeUndefined();
+  });
+
+  test("new Git view keys cannot collide when identifiers contain separators", () => {
+    const store = useGitUiStore();
+    store.gitSwitchView("ws::2", "history", "/repo", "profile");
+    store.gitSwitchView("ws", "review", "/repo", "profile::2");
+    expect(store.getGitView("ws::2", "/repo", "profile")).toBe("history");
+    expect(store.getGitView("ws", "/repo", "profile::2")).toBe("history");
+  });
+  test("History query restores and isolates filters per profile, workspace, and root", () => {
+    const store = useGitUiStore();
+    store.setGitHistorySelection("ws1", "/repo/a", "profile-a", {
+      ref: "feature/a",
+      commitSearch: "fix",
+      userFilter: "Ada",
+      pathsFilter: ["src/main.ts"],
+      compareBase: "origin/main",
+      dateFilter: "custom",
+      customSince: "2026-01-01",
+      customUntil: "2026-02-01",
+      topoOrder: true,
+      graphLimit: 1000,
+      viewMode: "flat",
+    });
+    expect(store.getGitHistorySelection("ws1", "/repo/a", "profile-a")).toEqual({
+      ref: "feature/a",
+      commitSearch: "fix",
+      showRemotes: true,
+      userFilter: "Ada",
+      dateFilter: "custom",
+      customSince: "2026-01-01",
+      customUntil: "2026-02-01",
+      pathsFilter: ["src/main.ts"],
+      topoOrder: true,
+      graphLimit: 1000,
+      compareBase: "origin/main",
+      includeBaseUpdates: false,
+      viewMode: "flat",
+    });
+    expect(store.getGitHistorySelection("ws1", "/repo/b", "profile-a").userFilter).toBe("");
+    expect(store.getGitHistorySelection("ws1", "/repo/b", "profile-a").pathsFilter).toEqual([]);
+    expect(store.getGitHistorySelection("ws1", "/repo/a", "profile-b").compareBase).toBe("");
+  });
+
+  test("persists new-view selection and ignores out-of-order history responses", async () => {
+    const requests: Array<(value: unknown) => void> = [];
+    const api = {
+      setWorkspaceUIState: vi.fn().mockResolvedValue(null),
+      gitLogGraph: vi.fn(() => new Promise((resolve) => requests.push(resolve))),
+    } as unknown as Transport;
+    const store = useGitUiStore();
+    store.init(api);
+    store.gitSwitchView("ws1", "review", "/repo/a", "profile-a", "pr-1");
+    expect(api.setWorkspaceUIState).toHaveBeenCalledWith("ws1", {
+      gitViewPreferences: { "profile-a::ws1::%2Frepo%2Fa::pr-1": "review" },
+    });
+
+    store.setActiveRoot("ws1", "/repo/a");
+    const first = store.gitLoadGraph("ws1", { branch: "main", force: true });
+    const second = store.gitLoadGraph("ws1", { branch: "feature", force: true });
+    requests[1]({ ok: true, head: "new", commits: [{ hash: "new" }], refs: {} });
+    await second;
+    requests[0]({ ok: true, head: "old", commits: [{ hash: "old" }], refs: {} });
+    await first;
+    expect(store.get("ws1").graph?.head).toBe("new");
+  });
+
+  test("keeps large graph and diff read payloads outside deep reactivity", async () => {
+    const graph = { head: "abc", commits: [{ hash: "abc", message: "commit" }], refs: { main: "abc" } };
+    const diff = { ok: true, path: "large.txt", scope: "unstaged", diff: "+content", summary: "loaded" };
+    const store = useGitUiStore();
+    store.init({
+      gitLogGraph: vi.fn().mockResolvedValue({ ok: true, ...graph }),
+      gitDiffPreview: vi.fn().mockResolvedValue(diff),
+    } as unknown as Transport);
+    store.setActiveRoot("ws-shallow-git", "/repo");
+
+    await store.gitLoadGraph("ws-shallow-git", { branch: "main", force: true });
+    await store.gitSelectDiff("ws-shallow-git", "large.txt", "unstaged");
+
+    expect(isReactive(store.get("ws-shallow-git").graph)).toBe(false);
+    expect(isReactive(store.get("ws-shallow-git").graph?.commits)).toBe(false);
+    expect(isReactive(store.get("ws-shallow-git").diffPreview)).toBe(false);
+    expect(store.get("ws-shallow-git").graph?.head).toBe("abc");
+    expect(store.get("ws-shallow-git").diffPreview).toMatchObject({ diff: "+content" });
+  });
+
+  test("ignores an old History graph response after switching repository roots", async () => {
+    const requests: Array<(value: unknown) => void> = [];
+    const api = {
+      gitLogGraph: vi.fn(() => new Promise((resolve) => requests.push(resolve))),
+    } as unknown as Transport;
+    const store = useGitUiStore();
+    store.init(api);
+    store.setActiveRoot("ws1", "/repo/a");
+    const oldRootRequest = store.gitLoadGraph("ws1", { branch: "release-a", force: true });
+
+    store.setActiveRoot("ws1", "/repo/b");
+    const newRootRequest = store.gitLoadGraph("ws1", { branch: "release-b", force: true });
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+
+    requests[1]({ ok: true, head: "root-b", commits: [{ hash: "from-b" }], refs: {} });
+    await newRootRequest;
+    requests[0]({ ok: true, head: "root-a", commits: [{ hash: "from-a" }], refs: {} });
+    await oldRootRequest;
+
+    expect(store.get("ws1").graph).toMatchObject({ head: "root-b", commits: [{ hash: "from-b" }] });
+  });
+
+  test("updates favorites and recent refs reactively without rereading storage", async () => {
+    const store = useGitUiStore();
+    const preferences = computed(() => store.getGitHistoryPreferences("ws-history", "/repo", "profile-a"));
+
+    expect(preferences.value).toEqual({ favorites: [], recent: [] });
+    store.toggleGitHistoryFavorite("ws-history", "feature/topic", "/repo", "profile-a");
+    store.recordGitHistoryRef("ws-history", "feature/topic", "/repo", "profile-a");
+    await nextTick();
+
+    expect(preferences.value).toEqual({ favorites: ["feature/topic"], recent: ["feature/topic"] });
+    store.toggleGitHistoryFavorite("ws-history", "feature/topic", "/repo", "profile-a");
+    await nextTick();
+    expect(preferences.value.favorites).toEqual([]);
+  });
+
+  test("ignores stale branch and tag reads after the repository root changes", async () => {
+    const branchRequests: Array<(value: unknown) => void> = [];
+    const tagRequests: Array<(value: unknown) => void> = [];
+    const api = {
+      gitListBranches: vi.fn(() => new Promise((resolve) => branchRequests.push(resolve))),
+      gitListTags: vi.fn(() => new Promise((resolve) => tagRequests.push(resolve))),
+    } as unknown as Transport;
+    const store = useGitUiStore();
+    store.init(api);
+    store.setActiveRoot("ws1", "/repo/a");
+    const branchesA = store.gitListBranches("ws1", { force: true });
+    const tagsA = store.gitListTags("ws1");
+    store.setActiveRoot("ws1", "/repo/b");
+    const branchesB = store.gitListBranches("ws1", { force: true });
+    const tagsB = store.gitListTags("ws1");
+    branchRequests[1]({ ok: true, current: "feature", local: [{ name: "feature" }] });
+    tagRequests[1]({ ok: true, tags: [{ name: "release-b" }] });
+    await Promise.all([branchesB, tagsB]);
+    branchRequests[0]({ ok: true, current: "main", local: [{ name: "main" }] });
+    tagRequests[0]({ ok: true, tags: [{ name: "release-a" }] });
+    await Promise.all([branchesA, tagsA]);
+    expect(store.get("ws1").branchList?.current).toBe("feature");
+    expect(store.get("ws1").tags).toEqual([{ name: "release-b" }]);
+  });
+
+  test("does not let an old file diff replace the currently selected file", async () => {
+    const requests: Array<(value: unknown) => void> = [];
+    const store = useGitUiStore();
+    store.setActiveRoot("ws1", "/repo/a");
+    store.init({
+      gitDiffPreview: vi.fn(() => new Promise((resolve) => requests.push(resolve))),
+    } as unknown as Transport);
+    const first = store.gitSelectDiff("ws1", "first.txt", "unstaged");
+    const second = store.gitSelectDiff("ws1", "second.txt", "unstaged");
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+    requests[1]({ ok: true, path: "second.txt", diff: "new selection" });
+    await second;
+    requests[0]({ ok: true, path: "first.txt", diff: "stale selection" });
+    await first;
+    expect(store.get("ws1").diffPreview).toMatchObject({ path: "second.txt", diff: "new selection" });
+  });
+
+  test("history favorites and recent refs stay scoped to profile, workspace, and root", () => {
+    const store = useGitUiStore();
+    store.toggleGitHistoryFavorite("ws1", "main", "/repo/a", "profile-a");
+    store.recordGitHistoryRef("ws1", "main", "/repo/a", "profile-a");
+    expect(store.getGitHistoryPreferences("ws1", "/repo/a", "profile-a")).toEqual({
+      favorites: ["main"],
+      recent: ["main"],
+    });
+    expect(store.getGitHistoryPreferences("ws1", "/repo/b", "profile-a")).toEqual({ favorites: [], recent: [] });
+    expect(store.getGitHistoryPreferences("ws1", "/repo/a", "profile-b")).toEqual({ favorites: [], recent: [] });
+  });
+
+  test("index action results preserve structured success instead of depending on a cleared banner", async () => {
+    const store = useGitUiStore();
+    store.init({ gitStageFile: async () => ({ payload: {}, result: { ok: true } }) } as unknown as Transport);
+    expect(await store.gitStageFile("ws1", "a.txt")).toBe(true);
+  });
+
   describe("runGitAction payload adoption", () => {
+    test("surfaces a failed post-mutation diff refresh instead of retaining the stale preview", async () => {
+      const diffPreview = vi
+        .fn()
+        .mockResolvedValueOnce({ ok: true, path: "a.txt", scope: "unstaged", diff: "old preview" })
+        .mockRejectedValueOnce(new Error("Diff service disconnected."));
+      const store = useGitUiStore();
+      store.init({
+        gitDiffPreview: diffPreview,
+        gitStageFile: vi.fn().mockResolvedValue({ result: { ok: true } }),
+      } as unknown as Transport);
+      store.setActiveRoot("ws-diff-refresh", "/repo/a");
+
+      await store.gitSelectDiff("ws-diff-refresh", "a.txt", "unstaged");
+      expect(store.get("ws-diff-refresh").diffPreview).toMatchObject({ diff: "old preview" });
+
+      await store.gitStageFile("ws-diff-refresh", "a.txt");
+
+      expect(store.get("ws-diff-refresh").diffPreview).toMatchObject({
+        ok: false,
+        path: "a.txt",
+        scope: "unstaged",
+        diff: "",
+        summary: "Diff service disconnected.",
+      });
+      expect(diffPreview).toHaveBeenCalledTimes(2);
+    });
+
+    test("ignores a post-mutation diff response after switching to another root", async () => {
+      let finishOldPreview!: (value: unknown) => void;
+      const diffPreview = vi
+        .fn()
+        .mockResolvedValueOnce({ ok: true, path: "a.txt", scope: "unstaged", diff: "root A before" })
+        .mockImplementationOnce(() => new Promise((resolve) => (finishOldPreview = resolve)))
+        .mockResolvedValueOnce({ ok: true, path: "b.txt", scope: "unstaged", diff: "root B current" });
+      const store = useGitUiStore();
+      store.init({
+        gitDiffPreview: diffPreview,
+        gitStageFile: vi.fn().mockResolvedValue({ result: { ok: true } }),
+      } as unknown as Transport);
+      store.setActiveRoot("ws-preview-root-switch", "/repo/a");
+      await store.gitSelectDiff("ws-preview-root-switch", "a.txt", "unstaged");
+
+      const mutation = store.gitStageFile("ws-preview-root-switch", "a.txt");
+      await vi.waitFor(() => expect(diffPreview).toHaveBeenCalledTimes(2));
+      store.setActiveRoot("ws-preview-root-switch", "/repo/b");
+      await store.gitSelectDiff("ws-preview-root-switch", "b.txt", "unstaged");
+      finishOldPreview({ ok: true, path: "a.txt", scope: "unstaged", diff: "root A stale" });
+      await mutation;
+
+      expect(store.get("ws-preview-root-switch").selectedDiff).toEqual({ path: "b.txt", scope: "unstaged" });
+      expect(store.get("ws-preview-root-switch").diffPreview).toMatchObject({ diff: "root B current", path: "b.txt" });
+    });
+
+    test("requires a successful root refresh before retrying an index write with a lost response", async () => {
+      const stageFile = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("Remote transport disconnected."))
+        .mockResolvedValueOnce({ result: { ok: true } });
+      const refreshGit = vi.fn().mockResolvedValue({ fresh: true });
+      getGitSnapshot.mockReturnValue({ available: true });
+      const store = useGitUiStore();
+      store.init({ gitStageFile: stageFile, refreshGit } as unknown as Transport);
+      store.setActiveRoot("ws-uncertain-index", "/repo/a");
+
+      expect(await store.gitStageFile("ws-uncertain-index", "a.txt")).toBe(false);
+      expect(store.get("ws-uncertain-index").lastResult).toMatchObject({
+        ok: false,
+        summary: expect.stringContaining("verify its state before retrying"),
+      });
+      expect(Object.keys(store.get("ws-uncertain-index").uncertainWrites || {})).toHaveLength(1);
+
+      store.setActiveRoot("ws-uncertain-index", "/repo/b");
+      await store.refreshGit("ws-uncertain-index");
+      expect(Object.keys(store.get("ws-uncertain-index").uncertainWrites || {})).toHaveLength(1);
+
+      store.setActiveRoot("ws-uncertain-index", "/repo/a");
+      expect(await store.gitStageFile("ws-uncertain-index", "a.txt")).toBe(false);
+      expect(stageFile).toHaveBeenCalledTimes(1);
+      expect(store.get("ws-uncertain-index").lastResult?.summary).toContain("Refresh this repository");
+
+      await store.refreshGit("ws-uncertain-index");
+      expect(store.get("ws-uncertain-index").uncertainWrites).toEqual({});
+      expect(await store.gitStageFile("ws-uncertain-index", "a.txt")).toBe(true);
+      expect(stageFile).toHaveBeenCalledTimes(2);
+      expect(refreshGit).toHaveBeenCalledTimes(2);
+    });
+
+    test("requires repository refresh before retrying confirmed local-tag deletion after a lost response", async () => {
+      const deleteTag = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("Remote transport disconnected."))
+        .mockResolvedValue({ result: { ok: true, summary: "Deleted tag v1.2.3." } });
+      getGitSnapshot.mockReturnValue({ available: true });
+      const store = useGitUiStore();
+      store.init({
+        gitDeleteTag: deleteTag,
+        gitListTags: vi.fn().mockResolvedValue({ ok: true, tags: [] }),
+        refreshGit: vi.fn().mockResolvedValue({ fresh: true }),
+      } as unknown as Transport);
+      store.setActiveRoot("ws-uncertain-tag", "/repo/a");
+
+      store.confirmDeleteLocalTag("ws-uncertain-tag", "v1.2.3");
+      await store.gitConfirmAction("ws-uncertain-tag");
+      expect(store.get("ws-uncertain-tag").lastResult?.summary).toContain("outcome is uncertain");
+      expect(deleteTag).toHaveBeenCalledTimes(1);
+
+      store.confirmDeleteLocalTag("ws-uncertain-tag", "v1.2.3");
+      await store.gitConfirmAction("ws-uncertain-tag");
+      expect(deleteTag).toHaveBeenCalledTimes(1);
+      expect(store.get("ws-uncertain-tag").lastResult?.summary).toContain("Refresh this repository");
+
+      await store.refreshGit("ws-uncertain-tag");
+      store.confirmDeleteLocalTag("ws-uncertain-tag", "v1.2.3");
+      await store.gitConfirmAction("ws-uncertain-tag");
+      expect(deleteTag).toHaveBeenCalledTimes(2);
+      expect(store.get("ws-uncertain-tag").lastResult).toBeNull();
+    });
+
+    test("requires repository verification before retrying a branch mutation with a lost response", async () => {
+      const checkout = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("Remote transport disconnected."))
+        .mockResolvedValueOnce({ result: { ok: true } });
+      const store = useGitUiStore();
+      store.init({ gitCheckoutBranch: checkout } as unknown as Transport);
+      store.setActiveRoot("ws-uncertain-branch", "/repo/a");
+
+      await store.gitCheckoutBranch("ws-uncertain-branch", "feature/example");
+      expect(store.get("ws-uncertain-branch").lastResult?.summary).toContain("outcome is uncertain");
+      expect(Object.keys(store.get("ws-uncertain-branch").uncertainWrites || {})).toHaveLength(1);
+
+      await store.gitCheckoutBranch("ws-uncertain-branch", "feature/example");
+      expect(checkout).toHaveBeenCalledTimes(1);
+
+      getGitSnapshot.mockReturnValue({ available: true });
+      store.init({
+        gitCheckoutBranch: checkout,
+        refreshGit: vi.fn().mockResolvedValue({ fresh: true }),
+      } as unknown as Transport);
+      await store.refreshGit("ws-uncertain-branch");
+      expect(store.get("ws-uncertain-branch").uncertainWrites).toEqual({});
+      await store.gitCheckoutBranch("ws-uncertain-branch", "feature/example");
+      expect(checkout).toHaveBeenCalledTimes(2);
+    });
+
+    test("scopes conflict-action uncertainty to the dialog root after switching active roots", async () => {
+      const resolveConflict = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("Remote transport disconnected."))
+        .mockResolvedValueOnce({ result: { ok: true } });
+      getGitSnapshot.mockReturnValue({ available: true });
+      const store = useGitUiStore();
+      store.init({
+        gitListConflicts: vi.fn().mockResolvedValue({ entries: [] }),
+        gitResolveConflict: resolveConflict,
+        refreshGit: vi.fn().mockResolvedValue({ fresh: true }),
+      } as unknown as Transport);
+      store.setActiveRoot("ws-conflict-root", "/repo/a");
+      store.openConflictDialog("ws-conflict-root", "/repo/a");
+      await vi.waitFor(() => expect(store.get("ws-conflict-root").conflictDialog?.loading).toBe(false));
+
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        await store.resolveConflictFile("ws-conflict-root", "conflict.txt", "ours");
+      } finally {
+        consoleError.mockRestore();
+      }
+      expect(Object.values(store.get("ws-conflict-root").uncertainWrites || {})).toEqual([
+        expect.objectContaining({ rootPath: "/repo/a", action: "resolve:conflict.txt" }),
+      ]);
+
+      store.setActiveRoot("ws-conflict-root", "/repo/b");
+      await store.refreshGit("ws-conflict-root");
+      expect(Object.values(store.get("ws-conflict-root").uncertainWrites || {})).toEqual([
+        expect.objectContaining({ rootPath: "/repo/a", action: "resolve:conflict.txt" }),
+      ]);
+
+      await store.refreshRoot("ws-conflict-root", "/repo/a");
+      expect(store.get("ws-conflict-root").uncertainWrites).toEqual({});
+      expect(store.getActiveRoot("ws-conflict-root")).toBe("/repo/b");
+      await store.resolveConflictFile("ws-conflict-root", "conflict.txt", "ours");
+      expect(resolveConflict).toHaveBeenCalledTimes(2);
+    });
+
+    test("surfaces and records a rejected long-operation start", async () => {
+      const request = vi.fn().mockRejectedValue(new Error("Remote transport disconnected."));
+      const store = useGitUiStore();
+      store.init({ gitFetch: request } as unknown as Transport);
+      store.setActiveRoot("ws1", "/repo/a");
+      const priorFailureCount = useNotificationStore().items.filter(
+        (toast) => toast.title === "Git action failed",
+      ).length;
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      try {
+        await store.gitFetch("ws1");
+      } finally {
+        consoleError.mockRestore();
+      }
+
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(store.get("ws1").busyAction).toBe("");
+      expect(store.get("ws1").lastResult).toMatchObject({
+        ok: false,
+        summary: "Remote transport disconnected.",
+      });
+      expect(useNotificationStore().items.filter((toast) => toast.title === "Git action failed")).toHaveLength(
+        priorFailureCount + 1,
+      );
+    });
+
+    test.each([
+      ["fetch", "gitFetch"],
+      ["pull", "gitPull"],
+      ["push", "gitPush"],
+    ] as const)("handles %s failure delivered by event and payload exactly once", async (action, method) => {
+      let finish!: (outcome: OperationFinished) => void;
+      const onOperationFinished = vi.fn((handler: (outcome: OperationFinished) => void) => {
+        finish = handler;
+      });
+      const request = vi.fn().mockResolvedValue({ started: true, operationId: `op-${action}` });
+      const store = useGitUiStore();
+      store.init({ [method]: request, onOperationFinished } as unknown as Transport);
+      store.setActiveRoot("ws1", "/repo/a");
+      store.setStagedCommitMessage("ws1", "/repo/a", "Keep this commit draft after network failure");
+      appStoreMock.payload = { operations: { lastResults: [] } };
+      const priorFailureCount = useNotificationStore().items.filter(
+        (toast) => toast.title === "Git action failed",
+      ).length;
+
+      const pending = store[action === "fetch" ? "gitFetch" : action === "pull" ? "gitPull" : "gitPush"]("ws1");
+      await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(store.get("ws1").busyAction).toBe(action));
+      expect(store.get("ws1").lastResult).toBeUndefined();
+
+      const outcome: OperationFinished = {
+        operationId: `op-${action}`,
+        kind: `git.${action}`,
+        profileId: "profile-a",
+        workspaceId: "ws1",
+        rootPath: "/repo/a",
+        finishedAt: new Date().toISOString(),
+        result: {
+          ok: false,
+          summary: `${action} failed after acceptance`,
+          warnings: ["Pre-push hook rejected the update."],
+          rawOutput: "pre-push hook: typecheck failed",
+        },
+      };
+      appStoreMock.payload = { operations: { lastResults: [outcome] } };
+      finish(outcome);
+      await pending;
+
+      expect(store.get("ws1").busyAction).toBe("");
+      expect(store.get("ws1").lastResult).toMatchObject({
+        ok: false,
+        summary: `${action} failed after acceptance`,
+        warnings: ["Pre-push hook rejected the update."],
+        rawOutput: "pre-push hook: typecheck failed",
+      });
+      expect(store.getStagedCommitMessage("ws1", "/repo/a")).toBe("Keep this commit draft after network failure");
+      expect(useNotificationStore().items.filter((toast) => toast.title === "Git action failed")).toHaveLength(
+        priorFailureCount + 1,
+      );
+    });
+
+    test("retains diagnostics from a failed long-operation error", async () => {
+      let finish!: (outcome: OperationFinished) => void;
+      const onOperationFinished = vi.fn((handler: (outcome: OperationFinished) => void) => {
+        finish = handler;
+      });
+      const store = useGitUiStore();
+      store.init({
+        gitPull: vi.fn().mockResolvedValue({ started: true, operationId: "op-pull-diagnostics" }),
+        onOperationFinished,
+      } as unknown as Transport);
+      store.setActiveRoot("ws1", "/repo/a");
+      appStoreMock.payload = { operations: { lastResults: [] } };
+      const pending = store.gitPull("ws1");
+      await vi.waitFor(() => expect(store.get("ws1").busyAction).toBe("pull"));
+      finish({
+        operationId: "op-pull-diagnostics",
+        kind: "git.pull",
+        profileId: "profile-a",
+        workspaceId: "ws1",
+        rootPath: "/repo/a",
+        finishedAt: new Date().toISOString(),
+        error: {
+          code: "git_operation_failed",
+          classification: "partial",
+          message: "Pull failed.",
+          warnings: ["Local changes were restored."],
+          conflicts: ["src/conflicted.ts"],
+          rawOutput: "hook: validation failed",
+        },
+      } as OperationFinished);
+      await pending;
+      expect(store.get("ws1").lastResult).toMatchObject({
+        ok: false,
+        summary: "Pull failed.",
+        warnings: ["Local changes were restored."],
+        conflicts: ["src/conflicted.ts"],
+        rawOutput: "hook: validation failed",
+        classification: "partial",
+      });
+    });
+
+    test("recovers a pull outcome from the persisted operation payload after a missed event", async () => {
+      const request = vi.fn().mockResolvedValue({ started: true, operationId: "op-pull-replay" });
+      const store = useGitUiStore();
+      store.init({ gitPull: request } as unknown as Transport);
+      store.setActiveRoot("ws1", "/repo/a");
+      appStoreMock.payload = { operations: { lastResults: [] } };
+
+      const pending = store.gitPull("ws1");
+      await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(store.get("ws1").busyAction).toBe("pull"));
+      appStoreMock.payload = {
+        operations: {
+          lastResults: [
+            {
+              operationId: "op-pull-replay",
+              kind: "git.pull",
+              profileId: "profile-a",
+              workspaceId: "ws1",
+              rootPath: "/repo/a",
+              finishedAt: new Date().toISOString(),
+              result: { ok: true, summary: "Recovered pull result." },
+            },
+          ],
+        },
+      };
+      await pending;
+
+      expect(store.get("ws1").busyAction).toBe("");
+      expect(useNotificationStore().persistentToasts.at(-1)?.body).toBe("Recovered pull result.");
+    });
+
+    test("blocks a duplicate action while the first request is still pending", async () => {
+      let finishFetch!: (value: unknown) => void;
+      const gitFetch = vi.fn(() => new Promise((resolve) => (finishFetch = resolve)));
+      const store = useGitUiStore();
+      store.init({ gitFetch } as unknown as Transport);
+
+      const first = store.gitFetch("ws1");
+      const duplicate = await store.gitFetch("ws1");
+      expect(duplicate).toBeUndefined();
+      await vi.waitFor(() => expect(gitFetch).toHaveBeenCalledTimes(1));
+      expect(store.get("ws1").busyAction).toBe("fetch");
+      finishFetch({ result: { ok: true, summary: "Fetch complete." } });
+      await first;
+      expect(store.get("ws1").busyAction).toBe("");
+    });
+
+    test("reuses the long-operation idempotency key after a lost start response", async () => {
+      const request = vi
+        .fn()
+        .mockRejectedValueOnce({ message: "Connection lost before the operation ID arrived." })
+        .mockResolvedValueOnce({ result: { ok: true, summary: "Fetch recovered." } });
+      const store = useGitUiStore();
+      store.init({ gitFetch: request } as unknown as Transport);
+      store.setActiveRoot("ws1", "/repo/a");
+
+      await store.gitFetch("ws1");
+      expect(store.get("ws1").lastResult).toMatchObject({ ok: false });
+      await store.gitFetch("ws1");
+
+      expect(request).toHaveBeenCalledTimes(2);
+      expect(request.mock.calls[0][0]).toMatchObject({
+        rootPath: "/repo/a",
+        idempotencyKey: expect.any(String),
+      });
+      expect(request.mock.calls[1][0]).toMatchObject({
+        rootPath: "/repo/a",
+        idempotencyKey: request.mock.calls[0][0].idempotencyKey,
+      });
+      expect(store.get("ws1").busyAction).toBe("");
+    });
+
+    test.each([
+      ["pull", "gitPull", (store: ReturnType<typeof useGitUiStore>) => store.gitPull("ws1")],
+      ["push", "gitPush", (store: ReturnType<typeof useGitUiStore>) => store.gitPush("ws1")],
+    ] as const)(
+      "reuses the %s key after a lost start response without automatically retrying",
+      async (_action, method, run) => {
+        const request = vi
+          .fn()
+          .mockRejectedValueOnce(new Error("Connection lost before the operation ID arrived."))
+          .mockResolvedValueOnce({ result: { ok: true, summary: "Recovered." } });
+        const store = useGitUiStore();
+        store.init({ [method]: request } as unknown as Transport);
+        store.setActiveRoot("ws1", "/repo/a");
+
+        await run(store);
+        expect(request).toHaveBeenCalledTimes(1);
+        expect(store.get("ws1").busyAction).toBe("");
+        expect(store.get("ws1").pendingLongOperationKeys).toBeTruthy();
+        await run(store);
+
+        expect(request).toHaveBeenCalledTimes(2);
+        expect(request.mock.calls[1]![0]).toMatchObject({
+          rootPath: "/repo/a",
+          idempotencyKey: request.mock.calls[0]![0].idempotencyKey,
+        });
+        expect(store.get("ws1").pendingLongOperationKeys).toEqual({});
+      },
+    );
+
+    test("reuses a tag-push idempotency key after its start response is lost", async () => {
+      const pushTag = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("Connection lost before the operation ID arrived."))
+        .mockResolvedValueOnce({ result: { ok: true, summary: "Tag pushed." } });
+      const store = useGitUiStore();
+      store.init({ gitPushTag: pushTag, gitListTags: vi.fn().mockResolvedValue({ tags: [] }) } as unknown as Transport);
+      store.setActiveRoot("ws1", "/repo/a");
+
+      await store.gitPushTag("ws1", "v1.2.3");
+      await store.gitPushTag("ws1", "v1.2.3");
+
+      expect(pushTag).toHaveBeenCalledTimes(2);
+      expect(pushTag.mock.calls[0]![0]).toMatchObject({
+        rootPath: "/repo/a",
+        tagName: "v1.2.3",
+        idempotencyKey: expect.any(String),
+      });
+      expect(pushTag.mock.calls[1]![0]).toMatchObject({
+        idempotencyKey: pushTag.mock.calls[0]![0].idempotencyKey,
+      });
+      expect(store.get("ws1").pendingLongOperationKeys).toEqual({});
+    });
+
+    test("reuses a remote branch deletion key after its start response is lost", async () => {
+      const deleteRemoteBranch = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("Connection lost before the operation ID arrived."))
+        .mockResolvedValueOnce({ result: { ok: true, summary: "Remote branch deleted." } });
+      const store = useGitUiStore();
+      store.init({
+        gitDeleteRemoteBranch: deleteRemoteBranch,
+        gitListBranches: vi.fn().mockResolvedValue({ ok: true, local: [], remotes: [] }),
+      } as unknown as Transport);
+      store.setActiveRoot("ws1", "/repo/a");
+
+      await store.gitDeleteRemoteBranch("ws1", "feature/old", "origin");
+      await store.gitDeleteRemoteBranch("ws1", "feature/old", "origin");
+
+      expect(deleteRemoteBranch).toHaveBeenCalledTimes(2);
+      expect(deleteRemoteBranch.mock.calls[0]![0]).toMatchObject({
+        rootPath: "/repo/a",
+        branch: "feature/old",
+        remote: "origin",
+        idempotencyKey: expect.any(String),
+      });
+      expect(deleteRemoteBranch.mock.calls[1]![0]).toMatchObject({
+        idempotencyKey: deleteRemoteBranch.mock.calls[0]![0].idempotencyKey,
+      });
+      expect(store.get("ws1").pendingLongOperationKeys).toEqual({});
+    });
+
     test("adopts the action payload through adoptPayload, not a raw store write", async () => {
       const store = useGitUiStore();
       const responsePayload = { appState: { workspaces: [] } };
@@ -54,6 +717,29 @@ describe("git-ui store", () => {
       await store.gitFetch("ws1");
 
       expect(adoptPayload).toHaveBeenCalledWith(responsePayload);
+    });
+
+    test("post-action diff refresh stays on the originating root and ignores a changed selection", async () => {
+      let finishAction!: (value: unknown) => void;
+      let finishPreview!: (value: unknown) => void;
+      const gitFetch = vi.fn(() => new Promise((resolve) => (finishAction = resolve)));
+      const gitDiffPreview = vi.fn(() => new Promise((resolve) => (finishPreview = resolve)));
+      const store = useGitUiStore();
+      store.init({ gitFetch, gitDiffPreview } as unknown as Transport);
+      store.setActiveRoot("ws1", "/repo/a");
+      store.get("ws1").selectedDiff = { path: "a.txt", scope: "unstaged" };
+      const pending = store.gitFetch("ws1");
+      await vi.waitFor(() => expect(gitFetch).toHaveBeenCalledTimes(1));
+      finishAction({ result: { ok: true } });
+      await vi.waitFor(() => expect(gitDiffPreview).toHaveBeenCalledTimes(1));
+      store.setActiveRoot("ws1", "/repo/b");
+      store.get("ws1").selectedDiff = { path: "b.txt", scope: "staged" };
+      finishPreview({ ok: true, path: "a.txt", diff: "old root" });
+      await pending;
+      expect(gitDiffPreview).toHaveBeenCalledWith(
+        expect.objectContaining({ workspaceId: "ws1", rootPath: "/repo/a", path: "a.txt" }),
+      );
+      expect(store.get("ws1").diffPreview).not.toMatchObject({ path: "a.txt", diff: "old root" });
     });
   });
 });
@@ -136,7 +822,7 @@ describe("git-ui store", () => {
       });
 
       await pending;
-      expect(gitCommitDiff).toHaveBeenCalledWith({ workspaceId: "ws1", hash: "abc123" });
+      expect(gitCommitDiff).toHaveBeenCalledWith({ workspaceId: "ws1", hash: "abc123", rootPath: "" });
       expect(store.get("ws1").commitDiffPreview).toEqual({
         ok: true,
         hash: "abc123",
@@ -360,9 +1046,9 @@ describe("git-ui store", () => {
       await store.openLazygit("ws1");
 
       const notifications = useNotificationStore();
-      expect(notifications.latestToast?.kind).toBe("error");
-      expect(notifications.latestToast?.title).toBe("Failed to open Lazygit");
-      expect(notifications.latestToast?.body).toBe("Lazygit is not available for this workspace.");
+      expect(notifications.persistentToasts.at(-1)?.kind).toBe("error");
+      expect(notifications.persistentToasts.at(-1)?.title).toBe("Failed to open Lazygit");
+      expect(notifications.persistentToasts.at(-1)?.body).toBe("Lazygit is not available for this workspace.");
     });
   });
 
@@ -565,6 +1251,29 @@ describe("PR-linked checkouts", () => {
     });
   });
 
+  test("requires a repository refresh before retrying a review push after a lost response", async () => {
+    linked("pr-7-feature-login");
+    pushReviewCheckout
+      .mockRejectedValueOnce(new Error("Remote transport disconnected."))
+      .mockResolvedValue({ status: "pushed", message: "Pushed abc to feature/login." });
+    const transport = api();
+    const store = useGitUiStore();
+    store.init({ ...transport, refreshGit: vi.fn().mockResolvedValue({ fresh: true }) } as unknown as Transport);
+    store.setActiveRoot("ws1", "/repo/review");
+
+    await store.gitPush("ws1");
+    expect(pushReviewCheckout).toHaveBeenCalledTimes(1);
+    expect(store.get("ws1").lastResult?.summary).toContain("outcome is uncertain");
+
+    await store.gitPush("ws1");
+    expect(pushReviewCheckout).toHaveBeenCalledTimes(1);
+    expect(store.get("ws1").lastResult?.summary).toContain("Refresh this repository");
+
+    await store.refreshGit("ws1");
+    await store.gitPush("ws1");
+    expect(pushReviewCheckout).toHaveBeenCalledTimes(2);
+  });
+
   test("on any other branch the ordinary push acts on that branch, even in a PR-linked workspace", async () => {
     linked("develop");
     const transport = api();
@@ -662,5 +1371,160 @@ describe("PR-linked checkouts", () => {
 
     expect(rebaseReviewCheckout).not.toHaveBeenCalled();
     expect(store.get("ws1").pendingAction).toMatchObject({ type: "rebase", baseBranch: "origin/release/1.0" });
+  });
+});
+
+describe("branch update waits for its accepted long operation", () => {
+  function setupFetchFirst(type: "merge" | "rebase") {
+    let finishOperation: ((event: OperationFinished) => void) | undefined;
+    const gitMergeIntoCurrent = vi.fn().mockResolvedValue({ started: true, operationId: "op-update" });
+    const gitRebaseOnto = vi.fn().mockResolvedValue({ started: true, operationId: "op-update" });
+    const api = {
+      onOperationFinished: (handler: (event: OperationFinished) => void) => {
+        finishOperation = handler;
+      },
+      gitMergeIntoCurrent,
+      gitRebaseOnto,
+    } as unknown as Transport;
+    const store = useGitUiStore();
+    store.init(api);
+    store.setPendingGitAction("ws1", {
+      type,
+      baseBranch: "origin/main",
+      fetchFirst: true,
+      snapshot: { available: true, branch: "feature", operationState: { inProgress: false } },
+    });
+    return {
+      store,
+      finish: (event: OperationFinished) => finishOperation?.(event),
+      gitMergeIntoCurrent,
+      gitRebaseOnto,
+    };
+  }
+
+  const updateOutcome = (type: "merge" | "rebase"): OperationFinished => ({
+    operationId: "op-update",
+    kind: `git.${type}`,
+    profileId: "default",
+    rootPath: "/repo",
+    finishedAt: new Date().toISOString(),
+    result: { ok: true, summary: `${type} completed.` },
+  });
+
+  test.each(["merge", "rebase"] as const)("keeps %s busy until its long operation completes", async (type) => {
+    const { store, finish, gitMergeIntoCurrent, gitRebaseOnto } = setupFetchFirst(type);
+    const pending = store.gitConfirmAction("ws1");
+    await vi.waitFor(() => expect(store.get("ws1").busyAction).toBe(type));
+    await vi.waitFor(() => expect(type === "merge" ? gitMergeIntoCurrent : gitRebaseOnto).toHaveBeenCalled());
+
+    expect(type === "merge" ? gitMergeIntoCurrent : gitRebaseOnto).toHaveBeenCalledWith(
+      expect.objectContaining({ fetchFirst: true, idempotencyKey: expect.any(String) }),
+    );
+    finish(updateOutcome(type));
+    await pending;
+
+    expect(type === "merge" ? gitMergeIntoCurrent : gitRebaseOnto).toHaveBeenCalledTimes(1);
+    expect(store.get("ws1").busyAction).toBe("");
+  });
+
+  test("shows an error from the fetch-first operation and does not issue a second mutation", async () => {
+    const { store, finish, gitMergeIntoCurrent, gitRebaseOnto } = setupFetchFirst("rebase");
+    const pending = store.gitConfirmAction("ws1");
+    await vi.waitFor(() => expect(store.get("ws1").busyAction).toBe("rebase"));
+    finish({
+      operationId: "op-update",
+      kind: "git.rebase",
+      profileId: "default",
+      rootPath: "/repo",
+      finishedAt: new Date().toISOString(),
+      error: { code: "internal_error", message: "Remote authentication failed." },
+    });
+    await pending;
+
+    expect(gitMergeIntoCurrent).not.toHaveBeenCalled();
+    expect(gitRebaseOnto).toHaveBeenCalledTimes(1);
+    expect(store.get("ws1").lastResult).toMatchObject({ ok: false, summary: "Remote authentication failed." });
+  });
+
+  test("recovers the update result from the operations payload when its event was missed", async () => {
+    const { store, gitRebaseOnto } = setupFetchFirst("rebase");
+    const pending = store.gitConfirmAction("ws1");
+    await vi.waitFor(() => expect(store.get("ws1").busyAction).toBe("rebase"));
+    appStoreMock.payload = { operations: { lastResults: [] } };
+    await nextTick();
+    appStoreMock.payload = { operations: { lastResults: [updateOutcome("rebase")] } };
+
+    await pending;
+
+    expect(gitRebaseOnto).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("gitLoadGraph progressive paging", () => {
+  const commits = (from: number, count: number) =>
+    Array.from({ length: count }, (_, i) => ({ hash: `h${from + i}`, parents: [] }));
+
+  test("loads the first 100 commits, publishes them, then appends the rest", async () => {
+    const requests: Array<(value: unknown) => void> = [];
+    const gitLogGraph = vi.fn(() => new Promise((resolve) => requests.push(resolve)));
+    const store = useGitUiStore();
+    store.init({ gitLogGraph } as unknown as Transport);
+    store.setActiveRoot("wsp", "/repo");
+    const load = store.gitLoadGraph("wsp", { limit: 500, force: true });
+    expect(gitLogGraph).toHaveBeenNthCalledWith(1, expect.objectContaining({ limit: 100, skip: 0 }));
+    requests[0]({ ok: true, head: "h0", commits: commits(0, 100), refs: { a: "h0" } });
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+    expect(gitLogGraph).toHaveBeenNthCalledWith(2, expect.objectContaining({ limit: 400, skip: 100 }));
+    expect(store.get("wsp").graph?.commits).toHaveLength(100);
+    expect(store.get("wsp").graphLoading).toBe(false);
+    expect(store.get("wsp").graphLoadingMore).toBe(true);
+    requests[1]({ ok: true, head: "h0", commits: [...commits(99, 1), ...commits(100, 400)], refs: { b: "h100" } });
+    await load;
+    expect(store.get("wsp").graph?.commits).toHaveLength(500);
+    expect(store.get("wsp").graph?.refs).toEqual({ a: "h0", b: "h100" });
+    expect(store.get("wsp").graphLoadingMore).toBe(false);
+  });
+
+  test("a newer request discards the stale background page", async () => {
+    const requests: Array<(value: unknown) => void> = [];
+    const gitLogGraph = vi.fn(() => new Promise((resolve) => requests.push(resolve)));
+    const store = useGitUiStore();
+    store.init({ gitLogGraph } as unknown as Transport);
+    store.setActiveRoot("wsq", "/repo");
+    const first = store.gitLoadGraph("wsq", { limit: 500, force: true });
+    requests[0]({ ok: true, head: "h0", commits: commits(0, 100), refs: {} });
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+    const second = store.gitLoadGraph("wsq", { limit: 150, branch: "x", force: true });
+    requests[1]({ ok: true, head: "old", commits: commits(100, 400), refs: {} });
+    await first;
+    expect(store.get("wsq").graph?.commits).toHaveLength(100);
+    requests[2]({ ok: true, head: "new", commits: commits(1000, 100), refs: {} });
+    await vi.waitFor(() => expect(requests).toHaveLength(4));
+    requests[3]({ ok: true, head: "new", commits: commits(1100, 50), refs: {} });
+    await second;
+    expect(store.get("wsq").graph?.commits).toHaveLength(150);
+    expect(store.get("wsq").graph?.head).toBe("new");
+  });
+
+  test("topoOrder keeps a single request", async () => {
+    const gitLogGraph = vi.fn().mockResolvedValue({ ok: true, head: "h0", commits: commits(0, 500), refs: {} });
+    const store = useGitUiStore();
+    store.init({ gitLogGraph } as unknown as Transport);
+    store.setActiveRoot("wst", "/repo");
+    await store.gitLoadGraph("wst", { limit: 500, topoOrder: true, force: true });
+    expect(gitLogGraph).toHaveBeenCalledTimes(1);
+    expect(gitLogGraph).toHaveBeenCalledWith(expect.objectContaining({ limit: 500 }));
+  });
+});
+
+describe("git-ui history refresh token", () => {
+  test("bumpHistoryRefresh increments per workspace", () => {
+    const store = useGitUiStore();
+    expect(store.get("wa").historyRefreshToken).toBeUndefined();
+    store.bumpHistoryRefresh("wa");
+    store.bumpHistoryRefresh("wa");
+    store.bumpHistoryRefresh("wb");
+    expect(store.get("wa").historyRefreshToken).toBe(2);
+    expect(store.get("wb").historyRefreshToken).toBe(1);
   });
 });

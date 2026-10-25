@@ -15,10 +15,13 @@
         :selected-set="selectedSet"
         :grouped="grouped"
         :scope-filter="scopeFilter"
+        :staging-enabled="stagingEnabled"
+        :staging-busy="stagingBusy"
         @toggle="toggle"
         @select="(file) => $emit('select', file.path, file.scope)"
         @toggle-select="(p) => $emit('toggle-select', p)"
         @context-menu="(p) => $emit('context-menu', p)"
+        @stage-file="(p) => $emit('stage-file', p)"
       />
     </ul>
   </div>
@@ -78,6 +81,8 @@ const props = withDefaults(
     scopeFilter?: string;
     expandedSet?: Set<string>;
     selectedSet?: Set<string>;
+    stagingEnabled?: boolean;
+    stagingBusy?: boolean;
   }>(),
   {
     files: () => [],
@@ -88,6 +93,8 @@ const props = withDefaults(
     grouped: false,
     scopeFilter: "all",
     selectedSet: () => new Set<string>(),
+    stagingEnabled: false,
+    stagingBusy: false,
   },
 );
 
@@ -96,6 +103,7 @@ const emit = defineEmits<{
   (e: "select", path: string, scope: string): void;
   (e: "toggle-select", path: string): void;
   (e: "context-menu", payload: { path: string; name: string; kind: "file" | "dir"; x: number; y: number }): void;
+  (e: "stage-file", payload: { path: string; staged: boolean; scope: string }): void;
 }>();
 
 const localExpandedSet = ref(new Set<string>());
@@ -169,6 +177,10 @@ function buildTree(files: Array<Record<string, unknown>>): TreeDirectory {
     };
     if (existing) {
       if (!existing.scopes.some((entry) => entry.scope === scope)) existing.scopes.push(scopeEntry);
+      if (scope === "conflict") {
+        existing.scopes = existing.scopes.filter((entry) => entry.scope !== "staged" && entry.scope !== "unstaged");
+        existing.scope = "conflict";
+      }
       if (previousPath) existing.previousPath = previousPath;
       if (stagedStatus) existing.stagedStatus = stagedStatus;
       if (unstagedStatus) existing.unstagedStatus = unstagedStatus;

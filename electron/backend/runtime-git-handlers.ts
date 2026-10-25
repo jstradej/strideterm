@@ -1,5 +1,7 @@
 import { resolveRootPath as resolveRootPathShared } from "./shared/runtime-provider-guards.js";
 import type { WorkspaceState } from "../shared/types/state.js";
+import type { OperationRegistry } from "./operation-registry.js";
+import { randomUUID } from "node:crypto";
 
 /**
  * Runtime context subset consumed by git handlers.
@@ -25,6 +27,7 @@ interface GitHandlerCtx {
   syncWorktrees: () => Promise<void>;
   /** Emit a live push-progress frame (streamed git output, incl. pre-push hook) to connected clients. */
   emitGitProgress: (payload: { workspaceId: string; rootPath: string; chunk: string }) => void;
+  operations: Pick<OperationRegistry, "accept" | "list">;
 }
 
 /**
@@ -42,6 +45,7 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
     runGitWorkspaceAction,
     recordWorkspaceWork,
     syncWorktrees,
+    operations,
   } = ctx;
 
   function resolveRootPath(workspace: WorkspaceState, rawRootPath: string): string {
@@ -68,6 +72,64 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
     return true;
   }
 
+  function gitFailureMessage(kind: string, result: Record<string, unknown>): string {
+    const summary = String(result.summary || `Git ${kind} failed.`).trim();
+    const warnings = Array.isArray(result.warnings)
+      ? result.warnings.map((warning) => String(warning).trim()).filter(Boolean)
+      : [];
+    const rawOutput = String(result.rawOutput || "")
+      .trim()
+      .slice(-6000);
+    const operationState = result.operationState as
+      { kind?: unknown; inProgress?: unknown; conflicts?: unknown } | undefined;
+    const conflicts = Array.isArray(operationState?.conflicts)
+      ? operationState.conflicts.map((conflict) => String(conflict)).filter(Boolean)
+      : [];
+    const authenticationFailed = /authentication failed|\bunauthorized\b|\bforbidden\b|\b401\b|\b403\b/i.test(
+      `${summary}\n${rawOutput}`,
+    );
+    const lines = [authenticationFailed ? `Git ${kind} authentication failed.` : summary];
+    if (warnings.length) lines.push(`Warnings:\n${warnings.join("\n")}`);
+    if (operationState?.inProgress === true) {
+      const operationKind = String(operationState.kind || "Git operation");
+      lines.push(`Repository state: ${operationKind} requires manual resolution.`);
+    }
+    if (conflicts.length) lines.push(`Conflicts:\n${conflicts.join("\n")}`);
+    if (rawOutput) lines.push(`Git output:\n${rawOutput}`);
+    return lines.join("\n\n");
+  }
+
+  function gitFailure(
+    kind: string,
+    result: Record<string, unknown>,
+    classification?: "blocked" | "cancelled" | "partial" | "failed" | "interrupted",
+  ): Error & { warnings: string[]; classification: "blocked" | "cancelled" | "partial" | "failed" | "interrupted" } {
+    const operationState = result.operationState as { inProgress?: unknown; conflicts?: unknown } | undefined;
+    const conflicts = Array.isArray(operationState?.conflicts)
+      ? operationState.conflicts.map(String).filter(Boolean)
+      : Array.isArray(result.conflicts)
+        ? result.conflicts.map(String).filter(Boolean)
+        : [];
+    const warnings = Array.isArray(result.warnings) ? result.warnings.map(String).filter(Boolean) : [];
+    const summary = String(result.summary || "");
+    const outcomeClass =
+      classification ||
+      (conflicts.length > 0 || operationState?.inProgress === true
+        ? "partial"
+        : /\bblocked\b|requires manual resolution/i.test(summary)
+          ? "blocked"
+          : "failed");
+    return Object.assign(new Error(gitFailureMessage(kind, result)), {
+      code: "git_operation_failed",
+      classification: outcomeClass,
+      warnings,
+      conflicts,
+      rawOutput: String(result.rawOutput || "")
+        .trim()
+        .slice(-6000),
+    });
+  }
+
   /**
    * `runGitWorkspaceAction` for the operations the V2 plan counts as user
    * work: commit, push/pull, checkout/branch, merge/rebase/stash and their
@@ -82,9 +144,9 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
    * fresh broadcast with a pre-stamp state (V3 review, §4 P2).
    *
    * Read-only operations (log, diff, compare, list, stash inspection) keep
-   * using the plain `runGitWorkspaceAction`: looking is not working. There is
-   * no separate stage/unstage call to cover — the built-in Git tab commits
-   * the paths the user selected, so staging happens inside `gitCommitAll`.
+   * using the plain `runGitWorkspaceAction`: looking is not working. Stage,
+   * unstage and commit-staged APIs use the manager's audited write actions;
+   * the legacy selected-path commit retains its existing semantics.
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async function runGitWorkspaceMutation(workspace: WorkspaceState, action: Promise<any>, windowId?: string) {
@@ -92,6 +154,181 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
     if (!isGitSuccess(response?.result)) return response;
     await recordWorkspaceWork(workspace.id, windowId);
     return { ...response, payload: getPayload() };
+  }
+
+  async function startLongGitAction(
+    kind:
+      | "fetch"
+      | "pull"
+      | "push"
+      | "force-push"
+      | "delete-remote-branch"
+      | "merge"
+      | "rebase"
+      | "push-tag"
+      | "push-all-tags"
+      | "delete-remote-tag",
+    workspace: WorkspaceState,
+    rootPath: string,
+    input: Record<string, unknown>,
+    windowId?: string,
+  ) {
+    const profileId = String(workspace.profileId || "default");
+    const idempotencyKey = String(input.idempotencyKey || randomUUID());
+    const operationInput = {
+      kind,
+      workspaceId: workspace.id,
+      rootPath,
+      ...(kind === "pull" ? { stashDirty: input.stashDirty === true } : {}),
+      ...(kind === "merge" || kind === "rebase"
+        ? { baseBranch: String(input.baseBranch || ""), fetchFirst: input.fetchFirst === true }
+        : {}),
+      ...(kind === "delete-remote-branch"
+        ? { branch: String(input.branch || ""), remote: String(input.remote || "origin") }
+        : {}),
+      ...(kind === "push-tag" || kind === "delete-remote-tag" ? { tagName: String(input.tagName || "") } : {}),
+    };
+    const inputHash = JSON.stringify(operationInput);
+    const existing = operations
+      .list(profileId)
+      .find(
+        (record) =>
+          record.kind === `git.${kind}` &&
+          record.originWorkspaceId === workspace.id &&
+          record.intent.rootPath === rootPath &&
+          (record.status === "accepted" || record.status === "running"),
+      );
+    if (existing) {
+      if (existing.inputHash !== inputHash) {
+        throw new Error(`A Git ${kind} operation is already running for this repository.`);
+      }
+      return { started: true, operationId: existing.operationId, replayed: true };
+    }
+    const connection = resolveGitConnection(workspace);
+    const accepted = await operations.accept(
+      {
+        kind: `git.${kind}`,
+        profileId,
+        originWorkspaceId: workspace.id,
+        idempotencyKey,
+        inputHash,
+        initialStep: input.fetchFirst === true && (kind === "merge" || kind === "rebase") ? "fetch" : kind,
+        intent: {
+          workspaceId: workspace.id,
+          rootPath,
+          kind,
+          ...(input.fetchFirst === true ? { fetchFirst: true } : {}),
+        },
+      },
+      async (handle) => {
+        await handle.update({
+          workspaceId: workspace.id,
+          step: input.fetchFirst === true && (kind === "merge" || kind === "rebase") ? "fetch" : kind,
+        });
+        let result;
+        let priorWarnings: string[] = [];
+        if (kind === "fetch") {
+          result = await runGitWorkspaceAction(workspace, git.fetch(workspace, { connection, rootPath }));
+        } else if (kind === "pull") {
+          result = await runGitWorkspaceMutation(
+            workspace,
+            git.pull(workspace, { connection, rootPath, stashDirty: input.stashDirty === true }),
+            windowId,
+          );
+        } else if (kind === "push") {
+          result = await runGitWorkspaceMutation(
+            workspace,
+            git.push(workspace, {
+              connection,
+              rootPath,
+              onProgress: (chunk: string) => ctx.emitGitProgress({ workspaceId: workspace.id, rootPath, chunk }),
+            }),
+            windowId,
+          );
+        } else if (kind === "force-push") {
+          result = await runGitWorkspaceMutation(
+            workspace,
+            git.forcePushWithLease(workspace, {
+              connection,
+              rootPath,
+              onProgress: (chunk: string) => ctx.emitGitProgress({ workspaceId: workspace.id, rootPath, chunk }),
+            }),
+            windowId,
+          );
+        } else if (kind === "delete-remote-branch") {
+          result = await runGitWorkspaceMutation(
+            workspace,
+            git.deleteRemoteBranch(workspace, {
+              branch: String(input.branch || ""),
+              remote: String(input.remote || "origin"),
+              connection,
+              rootPath,
+            }),
+            windowId,
+          );
+        } else if (kind === "push-tag") {
+          result = await runGitWorkspaceMutation(
+            workspace,
+            git.pushTag(workspace, { ...input, connection, rootPath }),
+            windowId,
+          );
+        } else if (kind === "push-all-tags") {
+          result = await runGitWorkspaceMutation(
+            workspace,
+            git.pushAllTags(workspace, { connection, rootPath }),
+            windowId,
+          );
+        } else if (kind === "delete-remote-tag") {
+          result = await runGitWorkspaceMutation(
+            workspace,
+            git.deleteRemoteTag(workspace, { ...input, connection, rootPath }),
+            windowId,
+          );
+        } else {
+          if (input.fetchFirst === true) {
+            const fetchResponse = await runGitWorkspaceAction(
+              workspace,
+              git.fetch(workspace, { connection, rootPath }),
+            );
+            if (fetchResponse?.result?.ok === false) {
+              throw gitFailure("fetch", fetchResponse.result);
+            }
+            priorWarnings = Array.isArray(fetchResponse?.result?.warnings)
+              ? fetchResponse.result.warnings.map(String)
+              : [];
+          }
+          await handle.update({ step: kind });
+          result =
+            kind === "merge"
+              ? await runGitWorkspaceMutation(
+                  workspace,
+                  git.mergeIntoCurrent(workspace, { ...input, connection, rootPath }),
+                  windowId,
+                )
+              : await runGitWorkspaceMutation(
+                  workspace,
+                  git.rebaseOnto(workspace, { ...input, connection, rootPath }),
+                  windowId,
+                );
+        }
+        if (result?.result?.ok === false) {
+          const failure = gitFailure(kind, result.result, input.fetchFirst === true ? "partial" : undefined);
+          if (priorWarnings.length) {
+            failure.warnings = [...priorWarnings, ...failure.warnings];
+          }
+          throw failure;
+        }
+        return {
+          ok: true,
+          summary: String(result?.result?.summary || `${kind} completed.`),
+          warnings: [
+            ...priorWarnings,
+            ...(Array.isArray(result?.result?.warnings) ? result.result.warnings.map(String) : []),
+          ],
+        };
+      },
+    );
+    return { started: true, operationId: accepted.record.operationId, replayed: accepted.replayed };
   }
 
   return {
@@ -103,25 +340,56 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitFetch(payload: any = {}, windowId?: string) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
-      const connection = resolveGitConnection(workspace);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
-      return runGitWorkspaceAction(workspace, git.fetch(workspace, { connection, rootPath }));
+      return startLongGitAction("fetch", workspace, rootPath, payload, windowId);
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitPull(payload: any = {}, windowId?: string) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
-      const connection = resolveGitConnection(workspace);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
-      const stashDirty = Boolean(payload.stashDirty);
-      return runGitWorkspaceMutation(workspace, git.pull(workspace, { connection, rootPath, stashDirty }), windowId);
+      return startLongGitAction("pull", workspace, rootPath, payload, windowId);
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitPush(payload: any = {}, windowId?: string) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
-      const connection = resolveGitConnection(workspace);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
-      const onProgress = (chunk: string) => ctx.emitGitProgress({ workspaceId: workspace.id, rootPath, chunk });
-      return runGitWorkspaceMutation(workspace, git.push(workspace, { connection, rootPath, onProgress }), windowId);
+      return startLongGitAction("push", workspace, rootPath, payload, windowId);
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitForcePushWithLease(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return startLongGitAction("force-push", workspace, rootPath, payload, windowId);
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitDeleteRemoteBranch(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return startLongGitAction(
+        "delete-remote-branch",
+        workspace,
+        rootPath,
+        { ...payload, branch: String(payload.branch || ""), remote: String(payload.remote || "origin") },
+        windowId,
+      );
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitPushTag(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return startLongGitAction("push-tag", workspace, rootPath, payload, windowId);
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitPushAllTags(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return startLongGitAction("push-all-tags", workspace, rootPath, payload, windowId);
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitDeleteRemoteTag(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return startLongGitAction("delete-remote-tag", workspace, rootPath, payload, windowId);
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitCheckoutBranch(payload: any = {}, windowId?: string) {
@@ -138,24 +406,14 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitMergeIntoCurrent(payload: any = {}, windowId?: string) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
-      const connection = resolveGitConnection(workspace);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
-      return runGitWorkspaceMutation(
-        workspace,
-        git.mergeIntoCurrent(workspace, { ...payload, connection, rootPath }),
-        windowId,
-      );
+      return startLongGitAction("merge", workspace, rootPath, payload, windowId);
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitRebaseOnto(payload: any = {}, windowId?: string) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
-      const connection = resolveGitConnection(workspace);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
-      return runGitWorkspaceMutation(
-        workspace,
-        git.rebaseOnto(workspace, { ...payload, connection, rootPath }),
-        windowId,
-      );
+      return startLongGitAction("rebase", workspace, rootPath, payload, windowId);
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitCherryPick(payload: any = {}, windowId?: string) {
@@ -236,6 +494,45 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
       return runGitWorkspaceMutation(workspace, git.commitAll(workspace, { ...payload, rootPath }), windowId);
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitStageFile(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return runGitWorkspaceMutation(workspace, git.stageFile(workspace, { path: payload.path, rootPath }), windowId);
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitStageHunk(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return runGitWorkspaceMutation(
+        workspace,
+        git.stageHunk(workspace, {
+          path: payload.path,
+          action: payload.action,
+          scope: payload.scope,
+          diffToken: payload.diffToken,
+          hunk: payload.hunk,
+          rootPath,
+        }),
+        windowId,
+      );
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitUnstageFile(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return runGitWorkspaceMutation(workspace, git.unstageFile(workspace, { path: payload.path, rootPath }), windowId);
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitCommitStaged(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return runGitWorkspaceMutation(
+        workspace,
+        git.commitStaged(workspace, { message: payload.message, rootPath }),
+        windowId,
+      );
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitStash(payload: any = {}, windowId?: string) {
@@ -354,42 +651,7 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
       return runGitWorkspaceMutation(workspace, git.deleteTag(workspace, { ...payload, rootPath }), windowId);
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async gitPushTag(payload: any = {}, windowId?: string) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
-      const connection = resolveGitConnection(workspace);
-      const rootPath = resolveRootPath(workspace, payload.rootPath);
-      return runGitWorkspaceMutation(workspace, git.pushTag(workspace, { ...payload, connection, rootPath }), windowId);
-    },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async gitPushAllTags(payload: any = {}, windowId?: string) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
-      const connection = resolveGitConnection(workspace);
-      const rootPath = resolveRootPath(workspace, payload.rootPath);
-      return runGitWorkspaceMutation(workspace, git.pushAllTags(workspace, { connection, rootPath }), windowId);
-    },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async gitDeleteRemoteTag(payload: any = {}, windowId?: string) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
-      const connection = resolveGitConnection(workspace);
-      const rootPath = resolveRootPath(workspace, payload.rootPath);
-      return runGitWorkspaceMutation(
-        workspace,
-        git.deleteRemoteTag(workspace, { ...payload, connection, rootPath }),
-        windowId,
-      );
-    },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async gitForcePushWithLease(payload: any = {}, windowId?: string) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
-      const connection = resolveGitConnection(workspace);
-      const rootPath = resolveRootPath(workspace, payload.rootPath);
-      const onProgress = (chunk: string) => ctx.emitGitProgress({ workspaceId: workspace.id, rootPath, chunk });
-      return runGitWorkspaceMutation(
-        workspace,
-        git.forcePushWithLease(workspace, { connection, rootPath, onProgress }),
-        windowId,
-      );
-    },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitListBranches(payload: any = {}, windowId?: string) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
@@ -407,21 +669,6 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
       );
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async gitDeleteRemoteBranch(payload: any = {}, windowId?: string) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
-      const connection = resolveGitConnection(workspace);
-      const rootPath = resolveRootPath(workspace, payload.rootPath);
-      return runGitWorkspaceMutation(
-        workspace,
-        git.deleteRemoteBranch(workspace, {
-          branch: payload.branch,
-          remote: payload.remote || "origin",
-          connection,
-          rootPath,
-        }),
-        windowId,
-      );
-    },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitRenameBranch(payload: any = {}, windowId?: string) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
@@ -453,6 +700,7 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
       return git.logGraph(workspace, {
         rootPath,
         limit: payload.limit || 300,
+        skip: payload.skip || 0,
         includeRemotes: payload.includeRemotes !== false,
         branch: payload.branch || "",
         sinceDate: payload.sinceDate || "",

@@ -198,7 +198,7 @@ watch(
     // A question blocks the agent until it is answered, so its toast must not
     // time out from under the user — it goes away on click, on the close
     // button, or when the backend alert clears (see the watch below).
-    if (next.kind === "question") return;
+    if (next.kind === "question" || next.kind === "error") return;
     hideTimer = setTimeout(() => {
       visible.value = false;
       emit("dismissed");

@@ -5,6 +5,8 @@ import type { AddressInfo } from "node:net";
 import { z } from "zod";
 import { reviewGitConfirmationSchema, reviewGitOperationKindSchema } from "../../shared/review-git-events.js";
 import type { ReviewGitService } from "./service.js";
+import type { ReviewPrActionService } from "./pr-actions.js";
+import { reviewPrActionSchema, reviewPrActionOptionsSchema } from "../../shared/review-pr-actions.js";
 
 const ROUTE = "/review-git";
 const MAX_BODY_BYTES = 64 * 1024;
@@ -12,14 +14,6 @@ const BODY_TIMEOUT_MS = 5_000;
 const MAX_GLOBAL_REQUESTS = 12;
 const MAX_REQUESTS_PER_GRANT = 4;
 const MAX_WAIT_MS = 20_000;
-/**
- * A capability is a lease on one tab, not a standing credential: it lapses after
- * this long without a single request (each live request renews it) and the tab
- * has to be restarted from its review workspace to get a new one. Long enough
- * for an agent session that idles over lunch, short enough that a forgotten
- * capability does not outlive the work it was minted for.
- */
-export const REVIEW_GIT_GRANT_IDLE_TTL_MS = 12 * 60 * 60 * 1000;
 
 const pathSchema = z.string().trim().min(1).max(4096);
 
@@ -49,6 +43,29 @@ export const reviewGitBrokerRequestSchema = z.discriminatedUnion("operation", [
     .strict(),
   z.object({ operation: z.literal("conflicts") }).strict(),
   z.object({ operation: z.literal("checks") }).strict(),
+  z
+    .object({
+      operation: z.literal("pr-inspect"),
+      idempotencyKey: z.string().trim().min(8).max(100),
+      waitMs: z.number().int().min(0).max(MAX_WAIT_MS).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("pr-action-propose"),
+      action: reviewPrActionSchema,
+      options: reviewPrActionOptionsSchema.default({}),
+      idempotencyKey: z.string().trim().min(8).max(100),
+      waitMs: z.number().int().min(0).max(MAX_WAIT_MS).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("pr-action-status"),
+      id: z.string().trim().min(1).max(100),
+      waitMs: z.number().int().min(0).max(MAX_WAIT_MS).optional(),
+    })
+    .strict(),
   z
     .object({
       operation: z.literal("audit-log"),
@@ -97,14 +114,13 @@ export interface ReviewGitGrantContext {
 
 export interface ReviewGitBrokerOptions {
   service: Pick<ReviewGitService, "read" | "start" | "lookup" | "operations">;
+  prActions?: () => ReviewPrActionService | null;
   isGrantLive: (grant: Readonly<ReviewGitGrantContext>) => boolean | Promise<boolean>;
-  now?: () => number;
 }
 
 interface GrantRecord {
   context: ReviewGitGrantContext;
   controllers: Set<AbortController>;
-  lastUsedAt: number;
 }
 
 class BrokerError extends Error {
@@ -190,7 +206,7 @@ const sleep = (ms: number, signal: AbortSignal) =>
 /**
  * Loopback broker for the review MCP server's Git tools.
  *
- * The MCP child holds only a short-lived, least-privilege capability: it names
+ * The MCP child holds a session-scoped, least-privilege capability: it names
  * one profile, workspace, PR, source identity and agent tab, and the runtime
  * re-proves all of that against live state on every request. The master
  * remote token and provider PATs never reach the child — the runtime does the
@@ -198,14 +214,13 @@ const sleep = (ms: number, signal: AbortSignal) =>
  * lost, the source identity changes) refuses NEW requests; an operation that
  * already started is the runtime's and finishes regardless.
  */
-export function createReviewGitBroker({ service, isGrantLive, now = () => Date.now() }: ReviewGitBrokerOptions) {
+export function createReviewGitBroker({ service, prActions, isGrantLive }: ReviewGitBrokerOptions) {
   const grants = new Map<string, GrantRecord>();
   let server: http.Server | null = null;
   let endpoint = "";
   let activeRequests = 0;
 
   async function isLive(grant: GrantRecord): Promise<boolean> {
-    if (now() - grant.lastUsedAt > REVIEW_GIT_GRANT_IDLE_TTL_MS) return false;
     try {
       return await isGrantLive(grant.context);
     } catch {
@@ -240,9 +255,51 @@ export function createReviewGitBroker({ service, isGrantLive, now = () => Date.n
       }
       case "operation-status":
         return lookupWithWait(grant, request.operationId, request.waitMs ?? 0, signal, false);
+      case "pr-inspect": {
+        const actions = prActions?.();
+        if (!actions) throw new BrokerError("unavailable", "PR actions are unavailable.", 503);
+        const started = await actions.startInspection(workspaceId, profileId, request.idempotencyKey);
+        return await lookupPrActionWithWait(actions, grant, started.operationId, request.waitMs ?? 0, signal, true);
+      }
+      case "pr-action-propose": {
+        const actions = prActions?.();
+        if (!actions) throw new BrokerError("unavailable", "PR actions are unavailable.", 503);
+        const started = await actions.startProposal(
+          { action: request.action, options: request.options, idempotencyKey: request.idempotencyKey },
+          { profileId, workspaceId, requester: { source: "mcp", agent, panelId } },
+        );
+        return await lookupPrActionWithWait(actions, grant, started.operationId, request.waitMs ?? 0, signal, true);
+      }
+      case "pr-action-status": {
+        const actions = prActions?.();
+        if (!actions) throw new BrokerError("unavailable", "PR actions are unavailable.", 503);
+        return actions.lookupStatus(request.id, profileId, workspaceId);
+      }
       default:
         return service.read(request, workspaceId, profileId);
     }
+  }
+
+  async function lookupPrActionWithWait(
+    actions: ReviewPrActionService,
+    grant: GrantRecord,
+    operationId: string,
+    waitMs: number,
+    signal: AbortSignal,
+    started: boolean,
+  ) {
+    const { profileId, workspaceId } = grant.context;
+    const deadline = Date.now() + waitMs;
+    let current = actions.lookupStatus(operationId, profileId, workspaceId);
+    while (
+      (current.status === "accepted" || current.status === "running") &&
+      Date.now() < deadline &&
+      !signal.aborted
+    ) {
+      await sleep(150, signal);
+      current = actions.lookupStatus(operationId, profileId, workspaceId);
+    }
+    return { operationId, started, ...current };
   }
 
   async function lookupWithWait(
@@ -324,7 +381,6 @@ export function createReviewGitBroker({ service, isGrantLive, now = () => Date.n
         revokeGrant(capability);
         return expired();
       }
-      grant.lastUsedAt = now();
       const result = await dispatch(grant, parsed.data, controller.signal);
       if (!controller.signal.aborted) sendJson(response, 200, { result });
       else if (grants.get(capability) !== grant && !response.destroyed) {
@@ -372,7 +428,7 @@ export function createReviewGitBroker({ service, isGrantLive, now = () => Date.n
     mintGrant(context: ReviewGitGrantContext): { url: string; capability: string } {
       if (!server || !endpoint) throw new Error("Review Git broker has not started.");
       const capability = randomBytes(32).toString("base64url");
-      grants.set(capability, { context: { ...context }, controllers: new Set(), lastUsedAt: now() });
+      grants.set(capability, { context: { ...context }, controllers: new Set() });
       return { url: endpoint, capability };
     },
 

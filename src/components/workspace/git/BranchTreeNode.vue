@@ -55,10 +55,19 @@
       >
 
       <span
-        v-if="!compact && node.meta?.isDefault && node.kind === 'branch-remote'"
+        v-if="!compact && node.meta?.isDefault"
         class="branch-node__pill branch-node__pill--default"
-        title="This is the default branch for the remote (origin/HEAD points here)."
+        :title="
+          node.kind === 'branch-remote'
+            ? 'This is the remote default branch.'
+            : 'This is the repository default branch.'
+        "
         >default</span
+      >
+
+      <span v-if="!compact && node.meta?.isBase" class="branch-node__pill branch-node__pill--base">base</span>
+      <span v-if="!compact && node.meta?.isFavorite" class="branch-node__pill branch-node__pill--favorite"
+        >favorite</span
       >
 
       <span
@@ -618,6 +627,16 @@ function runAction(id: string) {
   letter-spacing: 0.3px;
 }
 
+.branch-node__pill--base {
+  background: rgba(255, 164, 36, 0.14);
+  color: var(--accent);
+}
+
+.branch-node__pill--favorite {
+  background: rgba(255, 204, 64, 0.14);
+  color: #e3bd4e;
+}
+
 .branch-node__count {
   flex: 0 0 auto;
   font-size: 10px;
@@ -653,7 +672,7 @@ function runAction(id: string) {
   left: 24px;
   top: 100%;
   min-width: 200px;
-  background: var(--surface, #1d2026);
+  background: var(--surface, var(--panel));
   border: 1px solid var(--border);
   border-radius: 4px;
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);

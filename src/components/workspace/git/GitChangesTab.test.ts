@@ -31,7 +31,14 @@ const gitClearSelectedDiff = vi.fn();
 const gitSelectDiff = vi.fn();
 const openConflictDialog = vi.fn();
 const gitSwitchTab = vi.fn();
-const gitCommitAll = vi.fn(async () => {});
+const gitCommitAll = vi.fn(async () => true);
+const gitCommitStaged = vi.fn(async () => true);
+const gitStageFile = vi.fn(async () => true);
+const gitUnstageFile = vi.fn(async () => true);
+const classicMessages = new Map<string, string>();
+const classicPaths = new Map<string, string[]>();
+const stagedMessages = new Map<string, string>();
+const classicStateRevision = ref(0);
 const showError = vi.fn();
 let observedWidth = 390;
 
@@ -59,6 +66,33 @@ vi.mock("../../../stores/git-ui.js", () => ({
     gitSwitchTab,
     gitCreateBranch: vi.fn(),
     gitCommitAll,
+    gitCommitStaged,
+    gitStageFile,
+    gitUnstageFile,
+    getClassicCommitMessage: (workspaceId: string, rootPath: string) => {
+      classicStateRevision.value;
+      return classicMessages.get(`${workspaceId}:${rootPath}`) || "";
+    },
+    setClassicCommitMessage: (workspaceId: string, rootPath: string, message: string) => (
+      classicMessages.set(`${workspaceId}:${rootPath}`, message),
+      classicStateRevision.value++
+    ),
+    getClassicSelectedPaths: (workspaceId: string, rootPath: string) => {
+      classicStateRevision.value;
+      return classicPaths.get(`${workspaceId}:${rootPath}`) || [];
+    },
+    setClassicSelectedPaths: (workspaceId: string, rootPath: string, paths: string[]) => (
+      classicPaths.set(`${workspaceId}:${rootPath}`, paths),
+      classicStateRevision.value++
+    ),
+    getStagedCommitMessage: (workspaceId: string, rootPath: string) => {
+      classicStateRevision.value;
+      return stagedMessages.get(`${workspaceId}:${rootPath}`) || "";
+    },
+    setStagedCommitMessage: (workspaceId: string, rootPath: string, message: string) => (
+      stagedMessages.set(`${workspaceId}:${rootPath}`, message),
+      classicStateRevision.value++
+    ),
   }),
 }));
 vi.mock("../../../stores/git-stash.js", () => ({
@@ -130,8 +164,16 @@ beforeEach(() => {
   openConflictDialog.mockReset();
   gitSwitchTab.mockReset();
   gitCommitAll.mockReset();
-  gitCommitAll.mockResolvedValue(undefined);
+  gitCommitAll.mockResolvedValue(true);
+  gitCommitStaged.mockReset();
+  gitCommitStaged.mockResolvedValue(true);
+  gitStageFile.mockReset();
+  gitUnstageFile.mockReset();
   showError.mockClear();
+  classicMessages.clear();
+  classicPaths.clear();
+  stagedMessages.clear();
+  classicStateRevision.value++;
   monacoPayloads.mockReset();
   document.body.innerHTML = "";
 });
@@ -147,6 +189,103 @@ afterEach(async () => {
 });
 
 describe("GitChangesTab", () => {
+  test("retains the staged commit message when the backend rejects the commit", async () => {
+    observedWidth = 900;
+    gitCommitStaged.mockResolvedValue(false);
+    const wrapper = mountTab({
+      newView: true,
+      snapshot: {
+        dirty: true,
+        staged: [{ path: "ready.txt", code: "M", scope: "staged" }],
+        unstaged: [],
+        untracked: [],
+      },
+    });
+    await flushPromises();
+
+    const message = wrapper.get('input[name="commit-staged-message"]');
+    await message.setValue("keep this staged draft");
+    await wrapper.get(".git-commit-form button").trigger("click");
+    await flushPromises();
+
+    expect(gitCommitStaged).toHaveBeenCalledWith("ws1", "keep this staged draft");
+    expect((message.element as HTMLInputElement).value).toBe("keep this staged draft");
+    expect(stagedMessages.get("ws1:/repo")).toBe("keep this staged draft");
+  });
+
+  test("keeps the shared operation status visible while Changes is active", async () => {
+    const pane = mountTab({ gitUi: { busyAction: "fetch", busyPhase: "Fetching…" } });
+    await flushPromises();
+    expect(pane.get('[data-testid="operation-card"]').text()).toContain("Fetching…");
+  });
+
+  test("keeps the classic commit draft when the Changes view remounts", async () => {
+    observedWidth = 800;
+    const first = mountTab({ snapshot: { dirty: true, unstaged: [{ path: "a.txt", code: "M", scope: "unstaged" }] } });
+    await flushPromises();
+    const message = first.find('input[name="commit-message"]');
+    await message.setValue("keep this draft");
+    first.findComponent(GitChangeTree).vm.$emit("toggle-select", "a.txt");
+    expect(classicMessages.get("ws1:/repo")).toBe("keep this draft");
+    expect(classicPaths.get("ws1:/repo")).toEqual(["a.txt"]);
+    first.unmount();
+
+    const second = mountTab({ snapshot: { dirty: true, unstaged: [{ path: "a.txt", code: "M", scope: "unstaged" }] } });
+    await flushPromises();
+    expect((second.find('input[name="commit-message"]').element as HTMLInputElement).value).toBe("keep this draft");
+    expect((second.findComponent(GitChangeTree).props() as Record<string, unknown>).selectedSet).toEqual(
+      new Set(["a.txt"]),
+    );
+  });
+
+  test("scopes classic commit text and selected paths by repository root", async () => {
+    observedWidth = 800;
+    const files = [{ path: "a.txt", code: "M", scope: "unstaged" }];
+    const first = mountTab({ activeRootPath: "/repo/a", snapshot: { dirty: true, unstaged: files } });
+    await flushPromises();
+    await first.get('input[name="commit-message"]').setValue("repo A draft");
+    first.findComponent(GitChangeTree).vm.$emit("toggle-select", "a.txt");
+    first.unmount();
+
+    const otherRoot = mountTab({ activeRootPath: "/repo/b", snapshot: { dirty: true, unstaged: files } });
+    await flushPromises();
+    expect((otherRoot.get('input[name="commit-message"]').element as HTMLInputElement).value).toBe("");
+    expect((otherRoot.findComponent(GitChangeTree).props() as Record<string, unknown>).selectedSet).toEqual(new Set());
+    otherRoot.unmount();
+
+    const restored = mountTab({ activeRootPath: "/repo/a", snapshot: { dirty: true, unstaged: files } });
+    await flushPromises();
+    expect((restored.get('input[name="commit-message"]').element as HTMLInputElement).value).toBe("repo A draft");
+    expect((restored.findComponent(GitChangeTree).props() as Record<string, unknown>).selectedSet).toEqual(
+      new Set(["a.txt"]),
+    );
+  });
+
+  test("shows staging controls and layer label in the narrow new-view diff", async () => {
+    fakeApi.gitDiffPreview = vi.fn(async () => ({
+      ok: true,
+      diffHeader: "diff --git a/a.txt b/a.txt\n",
+      diff: "@@ -1 +1 @@\n-old\n+new\n",
+      diffToken: "a".repeat(64),
+    }));
+    const wrapper = mountTab({
+      newView: true,
+      gitUi: { selectedDiff: { path: "a.txt", scope: "unstaged" } },
+      snapshot: {
+        dirty: true,
+        staged: [],
+        unstaged: [{ path: "a.txt", code: "M", scope: "unstaged" }],
+        untracked: [],
+        diffStat: null,
+      },
+    });
+    await flushPromises();
+    expect(wrapper.find(".git-changes__mobile-staging").text()).toContain("Index → Working tree");
+    expect(wrapper.find(".git-changes__mobile-staging").text()).toContain("Stage file");
+    expect(wrapper.find(".git-changes__mobile-staging").text()).toContain("Stage hunk 1");
+    expect(wrapper.find(".git-changes__mobile-staging").text()).toContain("Commit staged");
+  });
+
   test("opens a file diff from the mobile list and returns to the list", async () => {
     const wrapper = mountTab({
       snapshot: {
@@ -180,8 +319,36 @@ describe("GitChangesTab", () => {
     expect(gitCommitAll).not.toHaveBeenCalled();
   });
 
+  test("preserves backend diff contents when no unified patch is returned", async () => {
+    fakeApi.gitDiffPreview = vi.fn(async () => ({
+      ok: true,
+      leftContent: "// before: file.ts\nexport const value = 'old';\n",
+      rightContent: "// after: file.ts\nexport const value = 'new';\n",
+      leftLabel: "HEAD",
+      rightLabel: "Working tree",
+    }));
+    mountTab({
+      gitUi: { selectedDiff: { path: "file.ts", scope: "unstaged" } },
+      snapshot: {
+        dirty: true,
+        staged: [],
+        unstaged: [{ path: "file.ts", code: "M", scope: "unstaged" }],
+        untracked: [],
+        diffStat: null,
+      },
+    });
+    await flushPromises();
+
+    expect(
+      monacoPayloads.mock.calls.some(
+        ([payload]) => payload?.leftContent.includes("before:") && payload?.rightContent.includes("after:"),
+      ),
+    ).toBe(true);
+  });
+
   test("replaces actual NUL-byte diff content with the binary notice before rendering Monaco", async () => {
-    fakeApi.fileGitDiff = vi.fn(async () => ({
+    fakeApi.gitDiffPreview = vi.fn(async () => ({
+      diff: "",
       ok: true,
       leftContent: "source\0binary-data",
       rightContent: "changed\0binary-data",
@@ -200,11 +367,11 @@ describe("GitChangesTab", () => {
     });
     await flushPromises();
 
-    expect(fakeApi.fileGitDiff).toHaveBeenCalledWith({
+    expect(fakeApi.gitDiffPreview).toHaveBeenCalledWith({
+      workspaceId: "ws1",
       rootPath: "/repo",
-      relativePath: "image.bin",
-      source: "head",
-      revisionRef: "",
+      path: "image.bin",
+      scope: "unstaged",
     });
     expect(
       monacoPayloads.mock.calls.some(
@@ -306,8 +473,8 @@ describe("GitChangesTab", () => {
     let resolveCommit: (() => void) | undefined;
     gitCommitAll.mockImplementationOnce(
       () =>
-        new Promise<void>((resolve) => {
-          resolveCommit = resolve;
+        new Promise<boolean>((resolve) => {
+          resolveCommit = () => resolve(false);
         }),
     );
     const wrapper = mountTab({
@@ -333,7 +500,7 @@ describe("GitChangesTab", () => {
     );
 
     await wrapper.setProps({ gitUi: { lastResult: { ok: true } } });
-    gitCommitAll.mockResolvedValueOnce(undefined);
+    gitCommitAll.mockResolvedValueOnce(true);
     await wrapper.findAll(".git-changes__mobile-dock .button").at(-1)!.trigger("click");
     await flushPromises();
     expect(wrapper.attributes("data-mode")).toBe("list");

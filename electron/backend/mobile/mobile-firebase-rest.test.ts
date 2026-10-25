@@ -911,6 +911,21 @@ describe("callable functions", () => {
     });
   });
 
+  test("classifies a refusal from a callable older than this desktop", async () => {
+    for (const reason of ["unknown-capability", "unknown-field"]) {
+      const { client } = callableClient(() =>
+        json(
+          { error: { status: "INVALID_ARGUMENT", message: `createPairingInvitation rejected: ${reason}` } },
+          { status: 400 },
+        ),
+      );
+      await expect(client.callFunction("createPairingInvitation", {})).rejects.toMatchObject({
+        message: `createPairingInvitation failed (INVALID_ARGUMENT: ${reason})`,
+        reason,
+      });
+    }
+  });
+
   test("does not echo an unrecognized callable message", async () => {
     const secret = "secret-that-must-not-reach-the-error";
     const { client } = callableClient(() =>

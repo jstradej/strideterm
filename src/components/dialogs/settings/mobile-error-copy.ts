@@ -33,6 +33,14 @@ const KNOWN_REASONS = new Map<string, string>([
   ["device-paused", "This device is paused. Resume it before sending notifications."],
   ["temporarily-paused", "Remote access is paused. Resume it before sending notifications."],
   ["malformed", "The pairing invitation is invalid. Create a new invitation and scan it again."],
+  [
+    "unknown-capability",
+    "The mobile service does not support one of the permissions selected for this phone yet. Untick the newest ones under “Limit what this phone may use” and try again, or try again after the service is updated.",
+  ],
+  [
+    "unknown-field",
+    "The mobile service is older than this version of strIDEterm and refused the request. Try again after the service is updated.",
+  ],
   ["device-not-found", "This phone is no longer available. Refresh the phone list and try again."],
   ["device-revoked", "This phone has been revoked. Pair it again to restore access."],
   ["device-revoked-remotely", "This phone has been revoked. Pair it again to restore access."],

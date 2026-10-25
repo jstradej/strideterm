@@ -6,6 +6,11 @@
         <h2>{{ title }}</h2>
       </div>
     </div>
+    <div v-if="context" class="text-input-dialog__context">
+      <p class="text-input-dialog__context-label">Starting point</p>
+      <p class="text-input-dialog__context-summary">{{ context.summary }}</p>
+      <p v-if="context.detail" class="text-input-dialog__context-detail">{{ context.detail }}</p>
+    </div>
     <form class="form" @submit.prevent="handleSubmit">
       <label>
         <span>{{ label }}</span>
@@ -36,6 +41,7 @@ interface Props {
   value?: string;
   placeholder?: string;
   submitLabel?: string;
+  context?: { summary: string; detail?: string };
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -66,3 +72,33 @@ function handleSubmit() {
   emit("submit", val);
 }
 </script>
+
+<style scoped>
+.text-input-dialog__context {
+  margin-top: 12px;
+}
+
+.text-input-dialog__context-label {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.text-input-dialog__context-summary {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.text-input-dialog__context-detail {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+</style>

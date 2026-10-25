@@ -46,6 +46,7 @@ interface ListBranchesOptions {
 interface SubmitReviewOptions {
   event: string;
   body?: string;
+  commitId?: string;
 }
 
 interface CreateReviewCommentOptions {
@@ -99,7 +100,7 @@ export function createGitHubApi(
     perPage: number,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON array
   ): Promise<any[]> {
-    const results: any[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: accumulator for open-ended API JSON
+    const results: unknown[] = [];
     let page = 1;
     while (true) {
       const batch = await requestJson(buildPageUrl(page), { token });
@@ -228,6 +229,13 @@ export function createGitHubApi(
     return `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${ref}/status`;
   }
 
+  function buildGraphqlUrl(connection: Connection): string {
+    const apiBase = buildApiBase(connection).replace(/\/$/, "");
+    return apiBase.endsWith("/api/v3")
+      ? `${apiBase.slice(0, -"/api/v3".length)}/api/graphql`
+      : `${apiBase.replace(/\/api$/, "")}/graphql`;
+  }
+
   // Review requests
   function buildRequestedReviewersUrl(
     connection: Connection,
@@ -259,8 +267,7 @@ export function createGitHubApi(
     owner: string,
     repo: string,
     pullNumber: number | string,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON
-  ): Promise<any> {
+  ): Promise<Record<string, unknown> | null> {
     return requestJson(buildPullRequestUrl(connection, owner, repo, pullNumber), { token });
   }
 
@@ -287,8 +294,11 @@ export function createGitHubApi(
     pullNumber: number | string,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON array
   ): Promise<any[]> {
-    const result = await requestJson(buildPullRequestReviewsUrl(connection, owner, repo, pullNumber), { token });
-    return Array.isArray(result) ? result : [];
+    return paginate(
+      (page) => `${buildPullRequestReviewsUrl(connection, owner, repo, pullNumber)}?per_page=100&page=${page}`,
+      token,
+      100,
+    );
   }
 
   async function listReviewComments(
@@ -325,8 +335,15 @@ export function createGitHubApi(
     ref: string,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON array
   ): Promise<any[]> {
-    const result = await requestJson(buildCheckRunsUrl(connection, owner, repo, ref), { token });
-    return result?.check_runs || [];
+    const results: unknown[] = [];
+    let page = 1;
+    while (true) {
+      const result = await requestJson(`${buildCheckRunsUrl(connection, owner, repo, ref)}&page=${page++}`, { token });
+      const batch = Array.isArray(result?.check_runs) ? result.check_runs : [];
+      results.push(...batch);
+      if (batch.length < 100) break;
+    }
+    return results;
   }
 
   async function getCombinedStatus(
@@ -335,9 +352,24 @@ export function createGitHubApi(
     owner: string,
     repo: string,
     ref: string,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON
-  ): Promise<any> {
-    return requestJson(buildCombinedStatusUrl(connection, owner, repo, ref), { token });
+  ): Promise<Record<string, unknown> | null> {
+    const first = await requestJson(`${buildCombinedStatusUrl(connection, owner, repo, ref)}?per_page=100&page=1`, {
+      token,
+    });
+    const statuses = Array.isArray(first?.statuses) ? [...first.statuses] : [];
+    let page = 2;
+    while (statuses.length >= 100) {
+      const next = await requestJson(
+        `${buildCombinedStatusUrl(connection, owner, repo, ref)}?per_page=100&page=${page++}`,
+        {
+          token,
+        },
+      );
+      const batch = Array.isArray(next?.statuses) ? next.statuses : [];
+      statuses.push(...batch);
+      if (batch.length < 100) break;
+    }
+    return { ...first, statuses };
   }
 
   async function rerunCheckSuite(
@@ -447,13 +479,115 @@ export function createGitHubApi(
     owner: string,
     repo: string,
     pullNumber: number | string,
-    { event, body = "" }: SubmitReviewOptions,
+    { event, body = "", commitId }: SubmitReviewOptions,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON
   ): Promise<any> {
     return requestJson(buildSubmitReviewUrl(connection, owner, repo, pullNumber), {
       token,
       method: "POST",
-      body: { event, body: body || undefined },
+      body: { event, body: body || undefined, commit_id: commitId || undefined },
+    });
+  }
+
+  async function runPullRequestMutation(
+    connection: Connection,
+    token: string,
+    query: string,
+    variables: Record<string, unknown>,
+  ): Promise<Record<string, unknown> | null> {
+    const result = await requestJson(buildGraphqlUrl(connection), {
+      token,
+      method: "POST",
+      body: { query, variables },
+    });
+    if (Array.isArray(result?.errors) && result.errors.length) {
+      throw new Error(
+        result.errors.map((error: { message?: string }) => error?.message || "GraphQL request failed").join("; "),
+      );
+    }
+    return (result?.data as Record<string, unknown> | null) || null;
+  }
+
+  async function getPullRequestActionDetails(
+    connection: Connection,
+    token: string,
+    nodeId: string,
+  ): Promise<Record<string, unknown> | null> {
+    const result = await requestJson(buildGraphqlUrl(connection), {
+      token,
+      method: "POST",
+      body: {
+        query:
+          "query($id: ID!) { node(id: $id) { ... on PullRequest { autoMergeRequest { enabledAt } reviewDecision mergeStateStatus } } }",
+        variables: { id: nodeId },
+      },
+    });
+    if (Array.isArray(result?.errors) && result.errors.length) {
+      throw new Error(
+        result.errors.map((error: { message?: string }) => error?.message || "GraphQL request failed").join("; "),
+      );
+    }
+    return (result?.data?.node as Record<string, unknown> | null) || null;
+  }
+
+  async function updatePullRequestState(
+    connection: Connection,
+    token: string,
+    owner: string,
+    repo: string,
+    pullNumber: number | string,
+    state: "open" | "closed",
+  ): Promise<Record<string, unknown>> {
+    return requestJson(buildPullRequestUrl(connection, owner, repo, pullNumber), {
+      token,
+      method: "PATCH",
+      body: { state },
+    });
+  }
+
+  async function mergePullRequest(
+    connection: Connection,
+    token: string,
+    owner: string,
+    repo: string,
+    pullNumber: number | string,
+    sha: string,
+    mergeMethod: "merge" | "squash" | "rebase" = "merge",
+  ): Promise<Record<string, unknown>> {
+    return requestJson(`${buildPullRequestUrl(connection, owner, repo, pullNumber)}/merge`, {
+      token,
+      method: "PUT",
+      body: { sha, merge_method: mergeMethod },
+    });
+  }
+
+  async function setPullRequestDraft(
+    connection: Connection,
+    token: string,
+    nodeId: string,
+    draft: boolean,
+  ): Promise<Record<string, unknown> | null> {
+    const mutation = draft
+      ? "mutation($input: ConvertPullRequestToDraftInput!) { convertPullRequestToDraft(input: $input) { pullRequest { isDraft } } }"
+      : "mutation($input: MarkPullRequestReadyForReviewInput!) { markPullRequestReadyForReview(input: $input) { pullRequest { isDraft } } }";
+    return runPullRequestMutation(connection, token, mutation, { input: { pullRequestId: nodeId } });
+  }
+
+  async function setPullRequestAutoMerge(
+    connection: Connection,
+    token: string,
+    nodeId: string,
+    enabled: boolean,
+    mergeMethod: "merge" | "squash" | "rebase" = "merge",
+    expectedHeadOid?: string,
+  ): Promise<Record<string, unknown> | null> {
+    const mutation = enabled
+      ? "mutation($input: EnablePullRequestAutoMergeInput!) { enablePullRequestAutoMerge(input: $input) { pullRequest { autoMergeRequest { enabledAt } } } }"
+      : "mutation($input: DisablePullRequestAutoMergeInput!) { disablePullRequestAutoMerge(input: $input) { pullRequest { autoMergeRequest { enabledAt } } } }";
+    return runPullRequestMutation(connection, token, mutation, {
+      input: enabled
+        ? { pullRequestId: nodeId, mergeMethod: mergeMethod.toUpperCase(), expectedHeadOid }
+        : { pullRequestId: nodeId },
     });
   }
 
@@ -478,6 +612,11 @@ export function createGitHubApi(
     createReviewComment,
     createReviewCommentReply,
     submitReview,
+    updatePullRequestState,
+    mergePullRequest,
+    setPullRequestDraft,
+    setPullRequestAutoMerge,
+    getPullRequestActionDetails,
     listUserRepos,
     listBranches,
     createPullRequest: async (

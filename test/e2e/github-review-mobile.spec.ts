@@ -56,7 +56,7 @@ test.describe("GitHub Review pane — mocked", () => {
     await page.locator(".review-shell__menu-trigger").click();
     await expect(page.getByRole("button", { name: /^Refresh/ })).toBeVisible();
     await expect(page.getByRole("button", { name: /Browser/ })).toBeVisible();
-    await page.locator(".review-shell__menu-backdrop").click();
+    await page.locator(".review-shell__menu-trigger").click();
     await expect(page.getByRole("button", { name: /^Refresh/ })).toBeHidden();
     assertNoErrors(page);
   });

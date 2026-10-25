@@ -37,3 +37,8 @@ export interface ReviewGitStarted {
   started: true;
   operationId: string;
 }
+
+export interface ReviewPrActionConfirmationResult {
+  status: "started" | "starting" | "rejected" | "expired";
+  operationId?: string;
+}

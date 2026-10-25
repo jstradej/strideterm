@@ -234,22 +234,34 @@
             <h3 id="mobile-tab-phone-pairing" class="mobile-tab__section-title">
               {{ mobileDevices.length ? "Your phones" : "Connect your first phone" }}
             </h3>
-            <!-- The empty page's main action is the one to see; with phones listed it steps back. -->
             <button
               v-if="mobileDevices.length > 0 && !addPhoneSetupOpen"
               type="button"
-              class="button"
-              :class="activePhoneCount === 0 ? 'button--primary' : 'button--ghost'"
-              :disabled="paused || !canStartPairing"
-              :title="pairingUnavailableReason || undefined"
-              @click="openAddPhoneSetup"
+              class="button button--primary mobile-tab__add-phone"
+              :disabled="paused || !canStartPairing || pairingBusy || enableBusy"
+              :title="
+                pairingUnavailableReason ||
+                'Show a single-use pairing QR code right away. Scan it with strIDEterm Mobile\'s Pair device screen within 2 minutes.'
+              "
+              @click="addPhone"
             >
+              <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                <path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+              </svg>
               Add phone
             </button>
           </div>
           <p v-if="mobileDevices.length === 0" class="mobile-tab__intro">
             Pair strIDEterm Mobile to open your profiles and terminals, receive notifications, and respond from your
             phone.
+          </p>
+          <p v-else class="mobile-tab__intro">
+            <strong>Add phone</strong> shows a single-use QR code straight away. Scan it in strIDEterm Mobile under
+            <strong>Pair device</strong> and type the code the phone then shows. The new phone gets
+            {{ pairingGrantSummary }}; change that per device afterwards with <em>Edit access</em>.
+          </p>
+          <p v-if="enableError && !mobileEnabled && mobileDevices.length > 0" class="mobile-tab__error" role="alert">
+            {{ enableError }}
           </p>
           <p
             v-if="pairingUnavailableReason && installationRegistered && !paused"
@@ -532,7 +544,12 @@
               View account limits
             </button>
           </p>
-          <MobileDeviceList v-if="!activePairing && !pairingSas" :profiles="profileOptions" :refresh-on-mount="false" />
+          <MobileDeviceList
+            v-if="!activePairing && !pairingSas"
+            :profiles="profileOptions"
+            :refresh-on-mount="false"
+            :highlight-device-id="justPairedDeviceId"
+          />
           <details v-if="!activePairing && !pairingSas" class="mobile-tab__privacy">
             <summary>Privacy and retention</summary>
             <p class="mobile-tab__privacy-copy">
@@ -903,6 +920,8 @@ watch(
 const approvalBusy = ref(false);
 /** A failure from the approval call, shown in place rather than swallowed — see `submitTypedSas`. */
 const approvalError = ref("");
+/** The phone activated in this panel, marked in the device list so the success is not lost among older rows. */
+const justPairedDeviceId = ref<string | null>(null);
 
 function dismissSas() {
   approvalError.value = "";
@@ -963,7 +982,10 @@ async function submitTypedSas() {
   approvalError.value = "";
   try {
     const result = await appStore.approveMobileDevice(pending.deviceId, typedSas.value);
-    if (!result.ok) {
+    if (result.ok) {
+      justPairedDeviceId.value = pending.deviceId;
+      addPhoneSetupOpen.value = false;
+    } else {
       approvalError.value =
         result.reason === "sas-mismatch" ? SAS_MISMATCH_COPY : mobileResultReasonCopy(result.reason, "approve");
     }
@@ -1388,6 +1410,7 @@ async function startPairing() {
   }
   pairingBusy.value = true;
   pairingError.value = "";
+  justPairedDeviceId.value = null;
   nowTick.value = Date.now();
   try {
     await appStore.createMobilePairingInvitation({
@@ -1402,9 +1425,13 @@ async function startPairing() {
   }
 }
 
-function openAddPhoneSetup(): void {
-  if (!canStartPairing.value || paused.value) return;
-  addPhoneSetupOpen.value = true;
+/**
+ * Straight to the QR. The setup is opened only after the attempt, so it is where a failed or expired
+ * code offers its retry — opening it first put a second "Pair a phone" click between this and the QR.
+ */
+async function addPhone(): Promise<void> {
+  await connectFirstPhone();
+  if (mobileEnabled.value) addPhoneSetupOpen.value = true;
 }
 
 async function connectFirstPhone(): Promise<void> {
@@ -1426,6 +1453,7 @@ async function connectFirstPhone(): Promise<void> {
   pairingQr.value?.scrollIntoView?.({ block: "center", behavior: "smooth" });
 }
 async function cancelPairing() {
+  addPhoneSetupOpen.value = false;
   await appStore.cancelMobilePairingInvitation();
 }
 
@@ -1812,6 +1840,15 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+.mobile-tab__add-phone {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.mobile-tab__add-phone svg {
+  width: 14px;
+  height: 14px;
 }
 
 .mobile-tab__intro {

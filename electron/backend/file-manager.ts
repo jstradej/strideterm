@@ -1108,9 +1108,38 @@ export async function getGitRefs(rootPath: string, relativePath?: string): Promi
 export async function computeFileDiff(
   rootPath: string,
   relativePath: string,
-  { source = "head", revisionRef = "" }: { source?: string; revisionRef?: string } = {},
+  {
+    source = "head",
+    revisionRef = "",
+    baseRef = "",
+    targetRef = "",
+  }: { source?: string; revisionRef?: string; baseRef?: string; targetRef?: string } = {},
 ): Promise<DiffResult> {
   const language = guessLanguageFromPath(relativePath);
+
+  if (source === "range") {
+    if (!baseRef || !targetRef || baseRef.startsWith("-") || targetRef.startsWith("-")) {
+      return errorDiff("Both safe base and target revisions are required", source);
+    }
+    const [left, right] = await Promise.all([
+      readFileAtRevision(rootPath, relativePath, baseRef),
+      readFileAtRevision(rootPath, relativePath, targetRef),
+    ]);
+    return {
+      ok: left.ok && right.ok,
+      leftContent: left.content || "",
+      rightContent: right.content || "",
+      leftLabel: `base ${baseRef}`,
+      rightLabel: `target ${targetRef}`,
+      leftMissing: !!left.missing,
+      rightMissing: !!right.missing,
+      leftError: left.error || "",
+      rightError: right.error || "",
+      language,
+      revision: targetRef,
+      source,
+    };
+  }
 
   // Right side is always the on-disk working copy (or staged file for "staged" source).
   let right: { ok: boolean; content: string; missing: boolean; error?: string; revision?: string | null };

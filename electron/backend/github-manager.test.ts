@@ -100,8 +100,11 @@ function createFetchStub({
   combinedStatusByRef = {} as Record<string, unknown>,
   branches = [] as Array<{ name: string }>,
 } = {}) {
-  return vi.fn(async (url: unknown, _options?: unknown) => {
+  return vi.fn(async (url: unknown, options?: unknown) => {
     const href = String(url);
+    if (href.endsWith("/pulls") && (options as { method?: string } | undefined)?.method === "POST") {
+      return jsonOk({ number: 43, html_url: "https://github.com/acme/web/pull/43", title: "Create PR" });
+    }
     if (href.includes("/search/issues")) {
       return jsonOk({ items: searchItems });
     }
@@ -146,11 +149,13 @@ function createManager({
   secrets = { "cred:gh-main": "ghp-token" },
   trackedPullRequests = {},
   fetchOverrides = {},
+  auditLogStore,
   now = () => new Date("2026-03-17T10:00:00.000Z").getTime(),
 }: {
   secrets?: Record<string, string>;
   trackedPullRequests?: Record<string, unknown>;
   fetchOverrides?: Parameters<typeof createFetchStub>[0];
+  auditLogStore?: { logEntry(entry: Record<string, unknown>): void };
   now?: () => number;
 } = {}) {
   const reviewStore = createReviewStore({ trackedPullRequests });
@@ -162,6 +167,7 @@ function createManager({
     reviewStore: reviewStore as any,
     fetchImpl: fetchImpl as unknown as typeof fetch,
     execFileTextImpl: vi.fn().mockResolvedValue({ stdout: "", stderr: "" }),
+    auditLogStore,
     now,
   });
   manager.supportsGitConfigEnv = async () => true;
@@ -176,6 +182,76 @@ const connection = {
   tokenRef: "cred:gh-main",
   enabled: true,
 };
+
+describe("GitHubManager createPullRequestForWorkspace audit", () => {
+  test("records one successful user-initiated PR creation", async () => {
+    const entries: Record<string, unknown>[] = [];
+    const { manager } = createManager({ auditLogStore: { logEntry: (entry) => entries.push(entry) } });
+    manager.setSnapshot({
+      connections: [{ ...connection, profileId: "default", tokenRef: "cred:gh-main" }],
+      pullRequests: {},
+      inbox: { needsMyReview: [], myPullRequests: [], recentlyUpdated: [], needsAttention: [] },
+    } as never);
+
+    await expect(
+      manager.createPullRequestForWorkspace({
+        connectionId: "gh-main",
+        owner: "acme",
+        repo: "web",
+        sourceBranch: "feature/audit",
+        targetBranch: "main",
+        title: "Create PR",
+        description: "Audited creation",
+        workspaceProfileId: "default",
+      }),
+    ).resolves.toEqual({ pullRequestNumber: 43, url: "https://github.com/acme/web/pull/43", title: "Create PR" });
+
+    expect(entries.filter((entry) => entry.category === "write")).toMatchObject([
+      { operation: "createPullRequest", connectionId: "gh-main", success: true, userInitiated: true },
+    ]);
+  });
+
+  test("records one failed user-initiated PR creation", async () => {
+    const entries: Record<string, unknown>[] = [];
+    const { manager, fetchImpl } = createManager({ auditLogStore: { logEntry: (entry) => entries.push(entry) } });
+    manager.setSnapshot({
+      connections: [{ ...connection, profileId: "default", tokenRef: "cred:gh-main" }],
+      pullRequests: {},
+      inbox: { needsMyReview: [], myPullRequests: [], recentlyUpdated: [], needsAttention: [] },
+    } as never);
+    const baseFetch = fetchImpl.getMockImplementation()!;
+    fetchImpl.mockImplementation(async (url, options) => {
+      if (String(url).endsWith("/pulls") && (options as RequestInit | undefined)?.method === "POST") {
+        return {
+          ok: false,
+          status: 403,
+          headers: { get: () => null },
+          json: async () => ({ message: "Write permission denied" }),
+          text: async () => JSON.stringify({ message: "Write permission denied" }),
+        };
+      }
+      return baseFetch!(url, options);
+    });
+
+    await expect(
+      manager.createPullRequestForWorkspace({
+        connectionId: "gh-main",
+        owner: "acme",
+        repo: "web",
+        sourceBranch: "feature/audit",
+        targetBranch: "main",
+        title: "Create PR",
+        description: "Denied creation",
+        workspaceProfileId: "default",
+      }),
+    ).rejects.toThrow(/403/);
+
+    expect(entries.filter((entry) => entry.category === "write")).toMatchObject([
+      { operation: "createPullRequest", connectionId: "gh-main", success: false, userInitiated: true, statusCode: 403 },
+    ]);
+    expect(entries.filter((entry) => entry.category === "write")).toHaveLength(1);
+  });
+});
 
 describe("GitHubManager authenticated identity cache", () => {
   test("coalesces identity requests and invalidates by profile, host, and token fingerprint", async () => {
@@ -408,6 +484,158 @@ describe("GitHubManager addPullRequestComment", () => {
     await manager.addPullRequestComment({ prKey, body: "Fixed.", threadId: 777, filePath: "src/parser.ts" });
     expect(posts()).toEqual([
       { url: "https://api.github.com/repos/acme/web/pulls/42/comments/777/replies", body: { body: "Fixed." } },
+    ]);
+  });
+
+  test("audits one successful provider write for a PR conversation comment", async () => {
+    const entries: Record<string, unknown>[] = [];
+    const prKey = createPullRequestKey("gh-main", "acme", "web", 42);
+    const pr = defaultPr("acme", "web", 42);
+    const { manager } = createManager({
+      auditLogStore: { logEntry: (entry) => entries.push(entry) },
+      fetchOverrides: { searchItems: [searchItem("acme", "web", 42)], prsByNumber: { 42: pr } },
+    });
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+
+    await manager.addPullRequestComment({ prKey, body: "One audited comment." });
+
+    expect(entries.filter((entry) => entry.category === "write")).toMatchObject([
+      {
+        operation: "createIssueComment",
+        connectionId: "gh-main",
+        success: true,
+        userInitiated: true,
+      },
+    ]);
+  });
+
+  test("audits inline review comments and thread replies as separate provider writes", async () => {
+    const entries: Record<string, unknown>[] = [];
+    const prKey = createPullRequestKey("gh-main", "acme", "web", 42);
+    const pr = defaultPr("acme", "web", 42, { head: { sha: "sha-42", ref: "feature" } });
+    const { manager } = createManager({
+      auditLogStore: { logEntry: (entry) => entries.push(entry) },
+      fetchOverrides: { searchItems: [searchItem("acme", "web", 42)], prsByNumber: { 42: pr } },
+    });
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+
+    await manager.addPullRequestComment({ prKey, body: "Inline note.", filePath: "src/parser.ts", lineNumber: 12 });
+    await manager.addPullRequestComment({
+      prKey,
+      body: "Reply to thread.",
+      threadId: 777,
+      filePath: "src/parser.ts",
+    });
+
+    expect(entries.filter((entry) => entry.category === "write")).toMatchObject([
+      {
+        operation: "createReviewComment",
+        connectionId: "gh-main",
+        success: true,
+        userInitiated: true,
+      },
+      {
+        operation: "createReviewComment",
+        connectionId: "gh-main",
+        success: true,
+        userInitiated: true,
+      },
+    ]);
+    expect(entries.filter((entry) => entry.category === "write")).toHaveLength(2);
+  });
+
+  test("records failed inline review comments and thread replies as provider writes", async () => {
+    const entries: Record<string, unknown>[] = [];
+    const prKey = createPullRequestKey("gh-main", "acme", "web", 42);
+    const pr = defaultPr("acme", "web", 42, { head: { sha: "sha-42", ref: "feature" } });
+    const { manager, fetchImpl } = createManager({
+      auditLogStore: { logEntry: (entry) => entries.push(entry) },
+      fetchOverrides: { searchItems: [searchItem("acme", "web", 42)], prsByNumber: { 42: pr } },
+    });
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+    const baseFetch = fetchImpl.getMockImplementation()!;
+    fetchImpl.mockImplementation(async (url, options) => {
+      const href = String(url);
+      if (
+        (href.includes("/pulls/42/comments") ||
+          href.includes("/issues/42/comments") ||
+          href.includes("/pulls/42/reviews")) &&
+        (options as RequestInit | undefined)?.method === "POST"
+      ) {
+        return {
+          ok: false,
+          status: 403,
+          headers: { get: () => null },
+          json: async () => ({ message: "Review permission denied" }),
+          text: async () => JSON.stringify({ message: "Review permission denied" }),
+        };
+      }
+      return baseFetch!(url, options);
+    });
+
+    await expect(
+      manager.addPullRequestComment({ prKey, body: "Inline note.", filePath: "src/parser.ts", lineNumber: 12 }),
+    ).rejects.toThrow(/403/);
+    await expect(
+      manager.addPullRequestComment({ prKey, body: "Thread reply.", threadId: 777, filePath: "src/parser.ts" }),
+    ).rejects.toThrow(/403/);
+    await expect(manager.addPullRequestComment({ prKey, body: "Conversation comment." })).rejects.toThrow(/403/);
+    await expect(manager.submitPullRequestReview({ prKey, event: "APPROVE", body: "Approved." })).rejects.toThrow(
+      /403/,
+    );
+
+    expect(entries.filter((entry) => entry.category === "write")).toMatchObject([
+      {
+        operation: "createReviewComment",
+        connectionId: "gh-main",
+        success: false,
+        userInitiated: true,
+        statusCode: 403,
+      },
+      {
+        operation: "createReviewComment",
+        connectionId: "gh-main",
+        success: false,
+        userInitiated: true,
+        statusCode: 403,
+      },
+      {
+        operation: "createIssueComment",
+        connectionId: "gh-main",
+        success: false,
+        userInitiated: true,
+        statusCode: 403,
+      },
+      {
+        operation: "submitReview",
+        connectionId: "gh-main",
+        success: false,
+        userInitiated: true,
+        statusCode: 403,
+      },
+    ]);
+    expect(entries.filter((entry) => entry.category === "write")).toHaveLength(4);
+  });
+
+  test("audits one successful submitted PR review", async () => {
+    const entries: Record<string, unknown>[] = [];
+    const prKey = createPullRequestKey("gh-main", "acme", "web", 42);
+    const pr = defaultPr("acme", "web", 42);
+    const { manager } = createManager({
+      auditLogStore: { logEntry: (entry) => entries.push(entry) },
+      fetchOverrides: { searchItems: [searchItem("acme", "web", 42)], prsByNumber: { 42: pr } },
+    });
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+
+    await manager.submitPullRequestReview({ prKey, event: "APPROVE", body: "Looks good." });
+
+    expect(entries.filter((entry) => entry.category === "write")).toMatchObject([
+      {
+        operation: "submitReview",
+        connectionId: "gh-main",
+        success: true,
+        userInitiated: true,
+      },
     ]);
   });
 

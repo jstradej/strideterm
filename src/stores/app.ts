@@ -35,6 +35,7 @@ import { createDialogActions } from "./app-dialog-actions.js";
 import { createWorkspaceActions } from "./app-workspace-actions.js";
 import { createApiActions } from "./app-api-actions.js";
 import { createReviewGitOperations } from "./review-git-operations.js";
+import { createReviewPrActionApprovals } from "./review-pr-action-approvals.js";
 import { isMobileViewport } from "../composables/useIsNarrow.js";
 import { maybeApplyMockFromUrl } from "./dev-mocks.js";
 import { useGitUiStore } from "./git-ui.js";
@@ -1081,6 +1082,11 @@ export const useAppStore = defineStore("app", () => {
 
   function applyWorkspaceUIStateFromEntry(wsEntry: AnyApi, workspaceId: string, { optimisticOnly = false } = {}): void {
     if (!workspaceId) return;
+    const gitUiState = useGitUiStore().get(workspaceId);
+    gitUiState.workspaceGitViewPreferences = {
+      ...((gitUiState.workspaceGitViewPreferences as Record<string, unknown> | undefined) || {}),
+      ...((wsEntry?.gitViewPreferences as Record<string, unknown> | undefined) || {}),
+    };
     const nextSplit = resolveSplitForWorkspace(wsEntry, workspaceId);
     splitGroup.value = nextSplit;
     if (nextSplit) _splitGroupCache.set(workspaceId, nextSplit);
@@ -2083,6 +2089,14 @@ export const useAppStore = defineStore("app", () => {
     confirmInApp: workspaceActions.confirmInApp,
   });
 
+  const reviewPrActionApprovals = createReviewPrActionApprovals({ payload, myActiveProfileId, getApi });
+  const {
+    pendingProposals: reviewPrActionProposals,
+    approve: approveReviewPrAction,
+    reject: rejectReviewPrAction,
+    isBusy: isReviewPrActionBusy,
+  } = reviewPrActionApprovals;
+
   // --- Domain API actions (azure, review, docker, remote, profile) ---
   const apiActions = createApiActions({
     payload,
@@ -2485,6 +2499,10 @@ export const useAppStore = defineStore("app", () => {
   }
 
   return {
+    reviewPrActionProposals,
+    approveReviewPrAction,
+    rejectReviewPrAction,
+    isReviewPrActionBusy,
     // State
     payload,
     activeViewId,

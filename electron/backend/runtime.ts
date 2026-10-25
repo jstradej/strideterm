@@ -53,6 +53,7 @@ import { DockerManager } from "./docker-manager.js";
 import { DockerLogManager } from "./docker-log-streamer.js";
 import { DockerShellManager } from "./docker-shell-streamer.js";
 import { GitManager } from "./git-manager.js";
+import { sharedReviewGitLocks } from "./review-git/locks.js";
 import { CloudflareTunnelManager, canReconnectTunnel } from "./tunnel-manager.js";
 import { createPluginManager } from "./plugin-loader.js";
 import { createCredentialStore } from "./credential-store.js";
@@ -230,6 +231,7 @@ import {
 } from "../shared/pull-request-review.js";
 import { createReviewGitBroker } from "./review-git/broker.js";
 import { createReviewGitService, isReviewGitGrantLive } from "./review-git/service.js";
+import { createReviewPrActionService, type ReviewPrActionService } from "./review-git/pr-actions.js";
 import { createReviewMetadataStore } from "./review-metadata-store.js";
 import { REVIEW_GIT_CAPABILITY_ENV, REVIEW_GIT_URL_ENV } from "../shared/review-git-env.js";
 import { isVerifiedSshTestExit, SshTestMarkerCapture } from "./ssh/ssh-test-marker.js";
@@ -274,7 +276,7 @@ import { createRuntimeAttentionManager } from "./runtime-attention.js";
 import type { AppState, WorkspaceState } from "../shared/types/state.js";
 import { carryOverSourceBaseline } from "../shared/review-source-identity.js";
 import { reviewAgentPreparationStopSchema } from "./ipc-schemas.js";
-import type { ReviewGitStart, StartReviewAgentPreparation } from "./ipc-schemas.js";
+import type { ReviewGitStart, StartReviewAgentPreparation, ReviewPrActionConfirm } from "./ipc-schemas.js";
 import { formatWorkspaceDisplayName } from "../shared/workspace-display.js";
 import { isCompanionPrimaryHosted } from "../shared/companion-primary.js";
 import { sessionIdFor } from "../shared/task-states.js";
@@ -972,6 +974,7 @@ export async function createRuntime({
   let sshMcpBroker: ReturnType<typeof createSshMcpBroker> | null = null;
   let internalMcpBroker: ReturnType<typeof createInternalMcpBroker> | null = null;
   let reviewGitBroker: ReturnType<typeof createReviewGitBroker> | null = null;
+  let reviewPrActionService: ReviewPrActionService | null = null;
   let sshMcpCommandService: ReturnType<typeof createSshCommandService> | null = null;
 
   function getSessionOwnershipToken(sessionId: string): string {
@@ -4341,6 +4344,7 @@ export async function createRuntime({
   });
   reviewGitBroker = (dependencies.createReviewGitBroker || createReviewGitBroker)({
     service: reviewGitService,
+    prActions: () => reviewPrActionService,
     isGrantLive: (grant) =>
       isReviewGitGrantLive({
         state: getState(),
@@ -4646,8 +4650,17 @@ export async function createRuntime({
         tunnel: tunnel.getSnapshot(),
       },
       taskRunner: taskRunner.getTaskSnapshot(),
-      operations: operations.snapshot(),
+      operations: (() => {
+        const snapshot = operations.snapshot();
+        const privatePrOperation = (kind: string) =>
+          kind === "review-pr-inspect" || kind === "review-pr-action-proposal";
+        return {
+          running: snapshot.running.filter((operation) => !privatePrOperation(operation.kind)),
+          lastResults: snapshot.lastResults.filter((operation) => !privatePrOperation(operation.kind)),
+        };
+      })(),
       reviewGit: reviewGitService.stateFor(),
+      reviewPrActions: reviewPrActionService?.stateFor() || { pending: [] },
       azureClosedPrCleanup: {
         parentWorkspaceIds: [...azureClosedPrCleanupInFlight],
         lastRuns: [...azureClosedPrCleanupLastRuns.values()].filter(
@@ -6142,7 +6155,17 @@ export async function createRuntime({
     if (!rootPath) {
       return roots[0] || "";
     }
-    if (!roots.length) return rootPath; // single-repo, accept any rootPath
+    if (!roots.length) {
+      const singleRoot = workspace.cwd || "";
+      if (!singleRoot) return null;
+      const normalizedRequested = path.resolve(rootPath).replace(/[\\/]+$/, "");
+      const normalizedSingle = path.resolve(singleRoot).replace(/[\\/]+$/, "");
+      const sameRoot =
+        process.platform === "win32"
+          ? normalizedRequested.toLowerCase() === normalizedSingle.toLowerCase()
+          : normalizedRequested === normalizedSingle;
+      return sameRoot ? singleRoot : null;
+    }
     if (roots.includes(rootPath)) return rootPath;
     // normalize comparison
     const normalized = rootPath.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -6167,7 +6190,9 @@ export async function createRuntime({
     dir: path.join(userDataPath, "operations"),
     log,
     emitFinished: (event) => {
-      events.emit(OPERATION_FINISHED_CHANNEL, event);
+      if (event.kind !== "review-pr-inspect" && event.kind !== "review-pr-action-proposal") {
+        events.emit(OPERATION_FINISHED_CHANNEL, event);
+      }
       if (event.kind !== OPERATION_KIND_REVIEW_START) return;
       const record = operations.find(event.operationId);
       const provider =
@@ -6200,6 +6225,16 @@ export async function createRuntime({
       );
     },
     onChange: () => broadcastState(),
+  });
+  reviewPrActionService = createReviewPrActionService({
+    getState,
+    locate: (workspaceId, profileId) => reviewGitService.locate(workspaceId, profileId),
+    operations,
+    auditStores: { azure: auditLogStore, github: githubAuditLogStore },
+    refreshAzure,
+    refreshGitHub,
+    broadcastState,
+    log,
   });
   const azureClosedPrCleanupInFlight = new Set<string>();
   /** parent workspace id → its last finished run. Runtime-only; one entry per Azure parent. */
@@ -6447,15 +6482,26 @@ export async function createRuntime({
       );
     }
   }
-  let syncWorktreesRunning = false;
+  let worktreeMutationQueue = Promise.resolve();
+  function withWorktreeMutationLock<T>(operation: () => Promise<T>): Promise<T> {
+    const current = worktreeMutationQueue.then(operation, operation);
+    worktreeMutationQueue = current.then(
+      () => undefined,
+      () => undefined,
+    );
+    return current;
+  }
+
+  function worktreeIdentity(profileId: string | undefined, cwd: string): string {
+    const normalizedCwd = path.resolve(cwd).replace(/\\/g, "/");
+    return JSON.stringify([
+      profileId || "default",
+      process.platform === "win32" ? normalizedCwd.toLowerCase() : normalizedCwd,
+    ]);
+  }
+
   async function syncWorktrees() {
-    if (syncWorktreesRunning) return false;
-    syncWorktreesRunning = true;
-    try {
-      return await syncWorktreesImpl();
-    } finally {
-      syncWorktreesRunning = false;
-    }
+    return withWorktreeMutationLock(syncWorktreesImpl);
   }
 
   /**
@@ -6627,13 +6673,42 @@ export async function createRuntime({
     const toRepair: Array<{ id: string; profileId: string }> = [];
 
     // 6a: pre-build lookup indexes to avoid O(n²) find/some inside the scan loop.
-    const worktreeByProfileAndCwd = new Map<string, WorkspaceState>();
+    const worktreesByIdentity = new Map<string, WorkspaceState[]>();
     for (const wt of worktrees) {
-      worktreeByProfileAndCwd.set(`${wt.profileId || "default"}|${wt.cwd}`, wt);
+      if (!wt.cwd) continue;
+      const identity = worktreeIdentity(wt.profileId, wt.cwd);
+      const entries = worktreesByIdentity.get(identity) || [];
+      entries.push(wt);
+      worktreesByIdentity.set(identity, entries);
+    }
+    const duplicateToCanonical = new Map<string, string>();
+    const duplicateIdsToRemove = new Set<string>();
+    const activeWorkspaceIds = new Set([
+      state.activeWorkspaceId,
+      ...(state.windowSlots || []).map((slot) => slot.activeWorkspaceId),
+    ]);
+    for (const entries of worktreesByIdentity.values()) {
+      if (entries.length < 2) continue;
+      const hasLiveSession = entries.some((workspace) =>
+        [...sessions.sessions.values()].some((session) => session.workspaceId === workspace.id),
+      );
+      if (hasLiveSession) continue;
+      const ordered = [...entries].sort((a, b) => {
+        const score = (workspace: WorkspaceState) =>
+          (activeWorkspaceIds.has(workspace.id) ? 4 : 0) +
+          (workspace.starred ? 2 : 0) +
+          (Date.parse(workspace.lastWorkedAt || "") || 0) / 1_000_000_000_000;
+        return score(b) - score(a);
+      });
+      const canonical = ordered[0];
+      for (const duplicate of ordered.slice(1)) {
+        duplicateToCanonical.set(duplicate.id, canonical.id);
+        duplicateIdsToRemove.add(duplicate.id);
+      }
     }
     const taskCwdSet = new Set<string>();
     for (const ws of state.workspaces) {
-      if (ws.kind === "task" && ws.cwd) taskCwdSet.add(`${ws.profileId || "default"}|${ws.cwd}`);
+      if (ws.kind === "task" && ws.cwd) taskCwdSet.add(worktreeIdentity(ws.profileId, ws.cwd));
     }
     const toAddKeySet = new Set<string>();
 
@@ -6660,7 +6735,7 @@ export async function createRuntime({
         if (!entry.isDirectory()) continue;
         const treePath = path.join(treeDir, entry.name);
         if (pendingWorktreeDeletions.has(path.resolve(treePath))) continue;
-        const existing = worktreeByProfileAndCwd.get(`${parentProfileId}|${treePath}`);
+        const existing = worktreesByIdentity.get(worktreeIdentity(parentProfileId, treePath))?.[0];
         if (existing) {
           // Repair profileId if it drifted from parent
           if ((existing.profileId || "default") !== parentProfileId) {
@@ -6668,7 +6743,7 @@ export async function createRuntime({
           }
           continue;
         }
-        const toAddKey = `${parentProfileId}|${treePath}`;
+        const toAddKey = worktreeIdentity(parentProfileId, treePath);
         if (toAddKeySet.has(toAddKey)) continue;
         // Skip directories already owned by a task workspace — the task entry takes priority.
         if (taskCwdSet.has(toAddKey)) continue;
@@ -6706,10 +6781,82 @@ export async function createRuntime({
       }
     }
 
-    if (toAdd.length === 0 && toRemove.length === 0 && toRepair.length === 0) return false;
+    if (toAdd.length === 0 && toRemove.length === 0 && toRepair.length === 0 && duplicateIdsToRemove.size === 0)
+      return false;
 
     await store.mutate((draft: AppState) => {
-      removeWorkspacesFromDraft(draft, new Set(toRemove.map((wt) => wt.id)));
+      const duplicateSessionIds = new Map<string, string>();
+      for (const duplicate of worktreesByIdentity.values()) {
+        if (duplicate.length < 2 || !duplicate.some((workspace) => duplicateIdsToRemove.has(workspace.id))) continue;
+        const canonicalId = duplicate.find((workspace) => !duplicateIdsToRemove.has(workspace.id))?.id;
+        if (!canonicalId) continue;
+        const canonical = draft.workspaces.find((workspace) => workspace.id === canonicalId);
+        if (!canonical) continue;
+        for (const workspace of duplicate.filter((candidate) => candidate.id !== canonicalId)) {
+          if (workspace.starred) canonical.starred = true;
+          if ((Date.parse(workspace.lastWorkedAt || "") || 0) > (Date.parse(canonical.lastWorkedAt || "") || 0)) {
+            canonical.lastWorkedAt = workspace.lastWorkedAt;
+          }
+          const panelSignature = (panel: WorkspaceState["panels"][number]) => JSON.stringify({ ...panel, id: "" });
+          const panelIds = new Set(canonical.panels.map((panel) => panel.id));
+          const panelBySignature = new Map(canonical.panels.map((panel) => [panelSignature(panel), panel]));
+          for (const panel of workspace.panels) {
+            const signature = panelSignature(panel);
+            const matchingPanel = panelBySignature.get(signature);
+            if (matchingPanel) {
+              duplicateSessionIds.set(`${workspace.id}:${panel.id}`, `${canonical.id}:${matchingPanel.id}`);
+              continue;
+            }
+            const retainedPanel = panelIds.has(panel.id)
+              ? { ...structuredClone(panel), id: `panel-${randomUUID()}` }
+              : structuredClone(panel);
+            canonical.panels.push(retainedPanel);
+            panelIds.add(retainedPanel.id);
+            panelBySignature.set(signature, retainedPanel);
+            duplicateSessionIds.set(`${workspace.id}:${panel.id}`, `${canonical.id}:${retainedPanel.id}`);
+          }
+        }
+      }
+      for (const workspace of draft.workspaces) {
+        const remap = (parentId: string) => duplicateToCanonical.get(parentId) || parentId;
+        if (workspace.task?.parentWorkspaceId)
+          workspace.task.parentWorkspaceId = remap(workspace.task.parentWorkspaceId);
+        if (workspace.review?.parentWorkspaceId)
+          workspace.review.parentWorkspaceId = remap(workspace.review.parentWorkspaceId);
+        if (workspace.quickfix?.parentWorkspaceId)
+          workspace.quickfix.parentWorkspaceId = remap(workspace.quickfix.parentWorkspaceId);
+      }
+      for (const slot of draft.windowSlots || []) {
+        slot.activeWorkspaceId = duplicateToCanonical.get(slot.activeWorkspaceId) || slot.activeWorkspaceId;
+      }
+      draft.activeWorkspaceId = duplicateToCanonical.get(draft.activeWorkspaceId) || draft.activeWorkspaceId;
+      for (const profile of draft.profiles) {
+        if (profile.lastActiveWorkspaceId) {
+          profile.lastActiveWorkspaceId =
+            duplicateToCanonical.get(profile.lastActiveWorkspaceId) || profile.lastActiveWorkspaceId;
+        }
+        if (profile.lastActiveSessionId) {
+          profile.lastActiveSessionId =
+            duplicateSessionIds.get(profile.lastActiveSessionId) || profile.lastActiveSessionId;
+          for (const [duplicateId, canonicalId] of duplicateToCanonical) {
+            if (profile.lastActiveSessionId.startsWith(`${duplicateId}:`)) {
+              profile.lastActiveSessionId = `${canonicalId}:${profile.lastActiveSessionId.slice(duplicateId.length + 1)}`;
+              break;
+            }
+          }
+        }
+        if (profile.workspaceGrid) {
+          profile.workspaceGrid.cellWorkspaceIds = profile.workspaceGrid.cellWorkspaceIds.map((id) =>
+            id ? duplicateToCanonical.get(id) || id : null,
+          );
+        }
+      }
+      if (draft.workspaceGrid) {
+        draft.workspaceGrid.cellWorkspaceIds = draft.workspaceGrid.cellWorkspaceIds.map((id) =>
+          id ? duplicateToCanonical.get(id) || id : null,
+        );
+      }
+      removeWorkspacesFromDraft(draft, new Set([...toRemove.map((wt) => wt.id), ...duplicateIdsToRemove]));
       for (const repair of toRepair) {
         const ws = draft.workspaces.find((w) => w.id === repair.id);
         if (ws) ws.profileId = repair.profileId;
@@ -6724,6 +6871,9 @@ export async function createRuntime({
     // forget, matching this function's existing non-awaiting behavior.
     for (const workspace of toRemove) {
       void finalizeWorkspaceRemoval(workspace);
+    }
+    for (const workspace of worktrees) {
+      if (duplicateIdsToRemove.has(workspace.id)) void finalizeWorkspaceRemoval(workspace);
     }
 
     return true;
@@ -7031,6 +7181,7 @@ export async function createRuntime({
     resolveGitRootPath,
     runGitWorkspaceAction,
     recordWorkspaceWork,
+    operations,
     emitGitProgress: (payload) => events.emit("git:push-progress", payload),
     syncWorktrees: async () => {
       await syncWorktrees();
@@ -7195,25 +7346,44 @@ export async function createRuntime({
     await internalMcpBroker.start();
   }
   await operations.load((record) =>
-    record.kind === OPERATION_KIND_REVIEW_AGENT_PREPARE
+    record.kind.startsWith("git.") ||
+    ["review-pr-action", "review-pr-action-proposal", "review-pr-inspect"].includes(record.kind)
       ? Promise.resolve({
           status: "interrupted" as const,
+          ...(record.kind.startsWith("git.")
+            ? { workspaceId: String(record.intent.workspaceId || "") || undefined }
+            : {}),
           error: {
             code: "interrupted",
-            message: "The runtime stopped before the temporary review setup finished. Start setup again.",
+            ...(record.kind.startsWith("git.") ? { classification: "interrupted" as const } : {}),
+            message: record.kind.startsWith("git.")
+              ? "The runtime stopped during this Git operation. Check the repository state before retrying."
+              : record.kind === "review-pr-action"
+                ? "The runtime stopped while this provider action may have been applied. Inspect the pull request before retrying; it was not replayed."
+                : "The runtime stopped before the pull request inspection finished. Request a fresh inspection.",
           },
         })
-      : record.kind === OPERATION_KIND_REVIEW_START
+      : record.kind === OPERATION_KIND_REVIEW_AGENT_PREPARE
         ? Promise.resolve({
             status: "interrupted" as const,
-            workspaceId: String(record.artifacts.workspaceId || "") || undefined,
             error: {
               code: "interrupted",
-              message:
-                "The runtime stopped before it could confirm that the review agent started. Retry to start a new review.",
+              classification: "interrupted",
+              message: "The runtime stopped before the temporary review setup finished. Start setup again.",
             },
           })
-        : taskService.reconcile(record),
+        : record.kind === OPERATION_KIND_REVIEW_START
+          ? Promise.resolve({
+              status: "interrupted" as const,
+              workspaceId: String(record.artifacts.workspaceId || "") || undefined,
+              error: {
+                code: "interrupted",
+                classification: "interrupted",
+                message:
+                  "The runtime stopped before it could confirm that the review agent started. Retry to start a new review.",
+              },
+            })
+          : taskService.reconcile(record),
   );
   replayRecentReviewStartOutcomes = () => {
     const cutoff = Date.now() - 24 * 60 * 60 * 1000;
@@ -10315,7 +10485,7 @@ export async function createRuntime({
       // Cross-profile guard: UI state mutations target a specific workspace
       // and must not be honoured from a window bound to another profile.
       assertWorkspaceInViewerProfile(String(workspaceId), windowId);
-      const { activeViewId, splitLayout, splitViewIds, activeRootPath } = uiState;
+      const { activeViewId, splitLayout, splitViewIds, activeRootPath, gitViewPreferences } = uiState;
       let changed = false;
       await store.mutate((draft: AppState) => {
         const workspace = findWorkspace(draft, workspaceId);
@@ -10339,6 +10509,18 @@ export async function createRuntime({
         }
         if (typeof activeRootPath === "string") {
           workspace.activeRootPath = activeRootPath;
+          changed = true;
+        }
+        if (gitViewPreferences && typeof gitViewPreferences === "object" && !Array.isArray(gitViewPreferences)) {
+          const safePreferences = Object.fromEntries(
+            Object.entries(gitViewPreferences).filter(
+              ([key, view]) => key.length <= 2048 && ["history", "changes", "review"].includes(String(view)),
+            ),
+          );
+          workspace.gitViewPreferences = {
+            ...((workspace.gitViewPreferences as Record<string, string> | undefined) || {}),
+            ...safePreferences,
+          };
           changed = true;
         }
       });
@@ -11263,6 +11445,25 @@ export async function createRuntime({
       );
     },
 
+    async confirmReviewPrAction(input: ReviewPrActionConfirm, windowId?: string) {
+      if (!windowId) throw new Error("Pull request approval requires an authenticated application client.");
+      const viewerProfile = getWindowProfileId(windowId);
+      if (!viewerProfile) throw new Error("The calling profile is no longer available.");
+      const pending = reviewPrActionService?.proposalForConfirmation(input.proposalId);
+      if (!pending) {
+        const existing = reviewPrActionService?.lookupProposalAccess(input.proposalId, viewerProfile);
+        if (existing?.operationId) return { status: "started", operationId: existing.operationId };
+        if (existing?.status === "confirming") return { status: "starting" };
+        if (existing?.status === "expired" || existing?.status === "stale") return { status: "expired" };
+        if (existing?.status === "rejected") return { status: "rejected" };
+        throw new Error("The pull request action proposal is unavailable or expired.");
+      }
+      assertWorkspaceInViewerProfile(pending.workspaceId, windowId);
+      if (pending.profileId !== viewerProfile) throw new Error("Cross-profile refused.");
+      if (getWindowProfileId(windowId) !== pending.profileId) throw new Error("The calling profile changed.");
+      return reviewPrActionService!.confirm(input, viewerProfile, windowId);
+    },
+
     async startReviewAgentPreparation(input: StartReviewAgentPreparation, windowId?: string) {
       if (!windowId) throw new Error("Review setup requires an authenticated client.");
       const state = getState();
@@ -11795,6 +11996,11 @@ export async function createRuntime({
       ) {
         throw new Error(MOBILE_SECURE_STORAGE_REQUIRED_MESSAGE);
       }
+      const settingsToSave = { ...settings };
+      if (settingsToSave.git?.ui) {
+        settingsToSave.git = { ...settingsToSave.git, ui: { ...settingsToSave.git.ui } };
+        delete settingsToSave.git.ui.newView;
+      }
       const previousConfig = getState().settings.remoteAccess;
       let autoApproveDisarmed = false;
       await store.mutate((draft: AppState) => {
@@ -11803,7 +12009,7 @@ export async function createRuntime({
         }
         draft.settings = {
           ...draft.settings,
-          ...settings,
+          ...settingsToSave,
           remoteAccess: {
             ...draft.settings.remoteAccess,
             ...(settings.remoteAccess || {}),
@@ -11814,10 +12020,10 @@ export async function createRuntime({
           },
           git: {
             ...draft.settings.git,
-            ...(settings.git || {}),
+            ...(settingsToSave.git || {}),
             ui: {
               ...(draft.settings.git?.ui || {}),
-              ...(settings.git?.ui || {}),
+              ...(settingsToSave.git?.ui || {}),
             },
           },
           ssh: {
@@ -12639,43 +12845,82 @@ export async function createRuntime({
           repoPath = project.cwd;
         }
 
-        const treePath = await ensureWorktree(repoPath, name);
-        log.info("createWorktree: worktree created", { workspaceId: targetWorkspaceId, branch: name, treePath });
-
-        // Create subproject cloning parent panels
-        const newProject = normalizeWorkspace({
-          id: `workspace-${randomUUID()}`,
-          name: `${project.name} / ${name}`,
-          icon: project.icon,
-          color: project.color,
-          kind: project.kind,
-          source: project.source,
-          pluginId: project.pluginId,
-          profileId: project.profileId,
-          connectionId: project.connectionId || "",
-          cwd: treePath,
-          notes: `Worktree of ${project.name}`,
-          activePanelId: "",
-          panels:
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: project is server state JSON, typed migration pending
-            (project as any).panels?.map((p: any) => ({
-              ...p,
-              id: `panel-${randomUUID()}`,
-              sshMcpEnabled: false,
-            })) || [],
-        });
-
-        await store.mutate((draft: AppState) => {
-          insertWorkspace(draft.workspaces, newProject, getViewerActiveWorkspaceId(windowId));
-          draft.activeWorkspaceId = newProject.id;
-          // Creating a worktree workspace is work (V2 plan allowlist).
-          markWorkspaceWorked(draft, newProject.id);
-          // Entry check (assertWorkspaceInViewerProfile) already refused any
-          // cross-profile request, so the mirror here is always in-profile.
-          if (windowId) {
-            const slot = (draft.windowSlots || []).find((s) => s.id === windowId);
-            if (slot) slot.activeWorkspaceId = newProject.id;
+        const newProject = await withWorktreeMutationLock(async () => {
+          const liveProject = findWorkspace(getState(), targetWorkspaceId);
+          if (!liveProject?.cwd || liveProject.profileId !== project.profileId || liveProject.cwd !== project.cwd) {
+            throw new Error("Workspace changed while worktree creation was waiting.");
           }
+          assertWorkspaceInViewerProfile(targetWorkspaceId, windowId);
+          const liveGitRoots = Array.isArray(liveProject.gitRoots) ? liveProject.gitRoots.filter(Boolean) : [];
+          if (liveGitRoots.length >= 2) {
+            const liveRoots = liveGitRoots.map(normalizePath);
+            if (
+              !liveRoots.includes(normalizePath(repoPath)) &&
+              normalizePath(repoPath) !== normalizePath(liveProject.cwd)
+            ) {
+              throw new Error(`Selected repository ${repoPath} is no longer part of this workspace.`);
+            }
+          }
+          const auditStartedAt = Date.now();
+          let treePath: string;
+          try {
+            treePath = await sharedReviewGitLocks.withWorktree(repoPath, () => ensureWorktree(repoPath, name));
+            git._logGitAudit({
+              type: "create-worktree",
+              connection: null,
+              success: true,
+              durationMs: Date.now() - auditStartedAt,
+              workspaceId: targetWorkspaceId,
+              remoteUrl: "",
+              extra: { rootPath: repoPath, branch: name, worktreePath: treePath },
+            });
+          } catch (error) {
+            git._logGitAudit({
+              type: "create-worktree",
+              connection: null,
+              success: false,
+              durationMs: Date.now() - auditStartedAt,
+              errorMessage: errorMessage(error, "Failed to create git worktree."),
+              workspaceId: targetWorkspaceId,
+              remoteUrl: "",
+              extra: { rootPath: repoPath, branch: name },
+            });
+            throw error;
+          }
+          log.info("createWorktree: worktree created", { workspaceId: targetWorkspaceId, branch: name, treePath });
+
+          const newProject = normalizeWorkspace({
+            id: `workspace-${randomUUID()}`,
+            name: `${liveProject.name} / ${name}`,
+            icon: liveProject.icon,
+            color: liveProject.color,
+            kind: liveProject.kind,
+            source: liveProject.source,
+            pluginId: liveProject.pluginId,
+            profileId: liveProject.profileId,
+            connectionId: liveProject.connectionId || "",
+            cwd: treePath,
+            notes: `Worktree of ${liveProject.name}`,
+            activePanelId: "",
+            panels:
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: project is server state JSON, typed migration pending
+              (liveProject as any).panels?.map((p: any) => ({
+                ...p,
+                id: `panel-${randomUUID()}`,
+                sshMcpEnabled: false,
+              })) || [],
+          });
+
+          await store.mutate((draft: AppState) => {
+            insertWorkspace(draft.workspaces, newProject, getViewerActiveWorkspaceId(windowId));
+            draft.activeWorkspaceId = newProject.id;
+            markWorkspaceWorked(draft, newProject.id);
+            if (windowId) {
+              const slot = (draft.windowSlots || []).find((s) => s.id === windowId);
+              if (slot) slot.activeWorkspaceId = newProject.id;
+            }
+          });
+          return newProject;
         });
         // Remote viewer: show the new worktree in the caller's remote context.
         mirrorRemoteViewerWorkspace(windowId, newProject.id);
