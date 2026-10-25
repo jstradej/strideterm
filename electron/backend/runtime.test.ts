@@ -5337,6 +5337,16 @@ describe("runtime integration", () => {
     }
   });
 
+  test("previewWorktreePath matches the created worktree path and folds branch slashes", async () => {
+    const { fixture, projectRoot } = await createWorktreeFixture();
+    expect(fixture.runtime.previewWorktreePath({ projectId: "frontend", name: "feature/my-branch" })).toBe(
+      path.join(projectRoot, ".strideterm", "tree", "feature-my-branch"),
+    );
+    expect(fixture.runtime.previewWorktreePath({ projectId: "frontend", name: "" })).toBe(
+      path.join(projectRoot, ".strideterm", "tree"),
+    );
+  });
+
   test("createWorktree refuses characters outside the branch-name set and logs the refusal", async () => {
     const { fixture } = await createWorktreeFixture();
     const calls = captureLogCalls();
@@ -6242,6 +6252,9 @@ describe("runtime integration", () => {
     fixtures.push(fixture);
 
     await expect(fixture.runtime.createWorktree({ projectId: "ws-a", name: "feat-noop" }, "win-b")).rejects.toThrow(
+      /Cross-profile refused/i,
+    );
+    expect(() => fixture.runtime.previewWorktreePath({ projectId: "ws-a", name: "feat-noop" }, "win-b")).toThrow(
       /Cross-profile refused/i,
     );
 
@@ -8735,10 +8748,19 @@ describe("runtime integration", () => {
     await expect(fixture.runtime.createWorktree({ projectId: "stack", name: "feature-x" })).rejects.toThrow(
       /Multi-repo workspace requires a repository/i,
     );
+    expect(() => fixture.runtime.previewWorktreePath({ projectId: "stack", name: "feature-x" })).toThrow(
+      /Multi-repo workspace requires a repository/i,
+    );
 
     await expect(
       fixture.runtime.createWorktree({ projectId: "stack", name: "feature-x", rootPath: "/bogus/path" }),
     ).rejects.toThrow(/not part of this workspace/i);
+    expect(() =>
+      fixture.runtime.previewWorktreePath({ projectId: "stack", name: "feature-x", rootPath: "/bogus/path" }),
+    ).toThrow(/not part of this workspace/i);
+    expect(fixture.runtime.previewWorktreePath({ projectId: "stack", name: "feature/x", rootPath: repoB })).toBe(
+      path.join(repoB, ".strideterm", "tree", "feature-x"),
+    );
 
     const payload = await fixture.runtime.createWorktree({
       projectId: "stack",
@@ -8933,7 +8955,7 @@ describe("runtime integration", () => {
     fixtures.push(fixture);
     let releaseFetch!: () => void;
     const gate = new Promise<void>((resolve) => (releaseFetch = resolve));
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     const fetch = vi.fn(async () => {
       await gate;
       return { ok: true, summary: "Fetch completed." };
@@ -8961,7 +8983,7 @@ describe("runtime integration", () => {
     fixtures.push(fixture);
     let releaseFetch!: () => void;
     const gate = new Promise<void>((resolve) => (releaseFetch = resolve));
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     const fetch = vi.fn(async () => {
       await gate;
       return { ok: true, summary: "Fetch completed." };
@@ -8985,7 +9007,7 @@ describe("runtime integration", () => {
     fixtures.push(fixture);
     let releaseRebase!: () => void;
     const gate = new Promise<void>((resolve) => (releaseRebase = resolve));
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     const rebase = vi.fn(async () => {
       await gate;
       return { ok: true, summary: "Rebase completed.", warnings: [] };
@@ -9014,7 +9036,7 @@ describe("runtime integration", () => {
     fixtures.push(fixture);
     let releasePush!: () => void;
     const gate = new Promise<void>((resolve) => (releasePush = resolve));
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     const pushTag = vi.fn(async () => {
       await gate;
       return { ok: true, summary: "Tag pushed.", warnings: [] };
@@ -9087,7 +9109,7 @@ describe("runtime integration", () => {
     fixtures.push(fixture);
     let release!: () => void;
     const gate = new Promise<void>((resolve) => (release = resolve));
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     const forcePush = vi.fn(async () => {
       await gate;
       return { ok: true, summary: "Force push completed.", warnings: [] };
@@ -9108,7 +9130,6 @@ describe("runtime integration", () => {
       result: { ok: true, summary: "Force push completed." },
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const deleteRemoteBranch = vi.fn(async () => ({ ok: true, summary: "Remote branch deleted.", warnings: [] }));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (fixture.git as any).deleteRemoteBranch = deleteRemoteBranch;
@@ -9138,12 +9159,12 @@ describe("runtime integration", () => {
     let releaseRebase!: () => void;
     const fetchGate = new Promise<void>((resolve) => (releaseFetch = resolve));
     const rebaseGate = new Promise<void>((resolve) => (releaseRebase = resolve));
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     const fetch = vi.fn(async () => {
       await fetchGate;
       return { ok: true, summary: "Fetch completed.", warnings: [] };
     });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     const rebase = vi.fn(async () => {
       await rebaseGate;
       return { ok: true, summary: "Rebase completed.", warnings: [] };
@@ -9177,9 +9198,9 @@ describe("runtime integration", () => {
   test("fetch-first Git rebase reports fetch failure without starting the rebase", async () => {
     const fixture = await createFixture({ initialState: makeProfileSwitchState() });
     fixtures.push(fixture);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     const fetch = vi.fn(async () => ({ ok: false, summary: "Fetch failed.", warnings: ["Authentication failed."] }));
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     const rebase = vi.fn();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (fixture.git as any).fetch = fetch;
@@ -9203,13 +9224,13 @@ describe("runtime integration", () => {
   test("fetch-first Git rebase retains fetch warnings when the rebase is blocked", async () => {
     const fixture = await createFixture({ initialState: makeProfileSwitchState() });
     fixtures.push(fixture);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     const fetch = vi.fn(async () => ({
       ok: true,
       summary: "Fetch completed.",
       warnings: ["Fetch used a fallback ref."],
     }));
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     const rebase = vi.fn(async () => ({
       ok: false,
       summary: "Rebase blocked by local changes.",
@@ -9265,7 +9286,7 @@ describe("runtime integration", () => {
     fixtures.push(fixture);
     let releaseFetch!: () => void;
     const gate = new Promise<void>((resolve) => (releaseFetch = resolve));
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     const fetch = vi.fn(async () => {
       await gate;
       return { ok: true, summary: "Fetch completed." };

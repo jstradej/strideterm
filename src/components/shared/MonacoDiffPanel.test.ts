@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
+import { isMobileViewport } from "../../composables/useIsNarrow.js";
 
 vi.unmock("./MonacoDiffPanel.vue");
 
@@ -146,6 +147,7 @@ class ResizeObserverMock {
 
 let nextFrameId = 0;
 const pendingFrames = new Map<number, FrameRequestCallback>();
+let originalBodyOverflow = "";
 
 function flushLayoutFrames() {
   const frames = [...pendingFrames.values()];
@@ -155,6 +157,7 @@ function flushLayoutFrames() {
 
 describe("MonacoDiffPanel first change reveal", () => {
   beforeEach(() => {
+    originalBodyOverflow = document.body.style.overflow;
     monacoHarness.reset();
     ResizeObserverMock.instances.length = 0;
     pendingFrames.clear();
@@ -169,6 +172,10 @@ describe("MonacoDiffPanel first change reveal", () => {
   });
 
   afterEach(() => {
+    document.body.style.overflow = originalBodyOverflow;
+    isMobileViewport.value = false;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    delete (window as any).strideterm;
     vi.unstubAllGlobals();
   });
 
@@ -185,6 +192,38 @@ describe("MonacoDiffPanel first change reveal", () => {
     wrapper.unmount();
   });
 
+  it("highlights the rendered layout while preserving side-by-side preference across narrow and wide sizes", async () => {
+    const wrapper = mount(MonacoDiffPanel, {
+      props: { payload: { leftContent: "old", rightContent: "new" } },
+    });
+    await flushPromises();
+
+    const layoutButtons = wrapper.findAll(".mdp__layout-toggle > button");
+    const sideBySideButton = layoutButtons[0];
+    const inlineButton = layoutButtons[1];
+    const expectLayout = (renderedSideBySide: boolean) => {
+      expect(sideBySideButton.classes()).toContain(renderedSideBySide ? "mdp__btn--active" : "mdp__btn");
+      expect(sideBySideButton.classes().includes("mdp__btn--active")).toBe(renderedSideBySide);
+      expect(inlineButton.classes().includes("mdp__btn--active")).toBe(!renderedSideBySide);
+    };
+
+    expectLayout(true);
+
+    monacoHarness.setPaneWidths(120, 120, 0, 0);
+    monacoHarness.emitPaneLayout("original");
+    flushLayoutFrames();
+    await flushPromises();
+    expectLayout(false);
+
+    monacoHarness.setPaneWidths(320, 480);
+    monacoHarness.emitPaneLayout("original");
+    flushLayoutFrames();
+    await flushPromises();
+    expectLayout(true);
+
+    wrapper.unmount();
+  });
+
   it("preserves an explicit target line instead of applying the default first-diff reveal", async () => {
     const wrapper = mount(MonacoDiffPanel, {
       props: { targetLine: 4, payload: { leftContent: "old", rightContent: "new" } },
@@ -193,6 +232,79 @@ describe("MonacoDiffPanel first change reveal", () => {
     monacoHarness.getDiffUpdated()?.();
 
     expect(monacoHarness.revealFirstDiff).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("opens and closes the renderer full-screen view for remote clients", async () => {
+    const wrapper = mount(MonacoDiffPanel, {
+      props: { payload: { leftContent: "old", rightContent: "new" }, popoutTitle: "src/a.ts" },
+      attachTo: document.body,
+    });
+    await flushPromises();
+
+    expect(wrapper.find(".mdp__btn--popout").text()).toContain("Full screen");
+    await wrapper.find(".mdp__btn--popout").trigger("click");
+    await flushPromises();
+
+    const dialog = document.body.querySelector<HTMLElement>(".mdp--fullscreen");
+    expect(dialog?.getAttribute("role")).toBe("dialog");
+    expect(document.activeElement).toBe(dialog?.querySelector(".mdp__close"));
+    expect(document.body.style.overflow).toBe("hidden");
+    expect(monacoHarness.createDiffEditor).toHaveBeenCalledOnce();
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await flushPromises();
+    expect(document.body.querySelector(".mdp--fullscreen")).toBeNull();
+    expect(document.body.style.overflow).toBe(originalBodyOverflow);
+    expect(document.activeElement).toBe(wrapper.get(".mdp__btn--popout").element);
+
+    await wrapper.get(".mdp__btn--popout").trigger("click");
+    await flushPromises();
+    document.body.querySelector<HTMLButtonElement>(".mdp__close")?.click();
+    await flushPromises();
+    await flushPromises();
+    expect(document.body.style.overflow).toBe(originalBodyOverflow);
+
+    await wrapper.get(".mdp__btn--popout").trigger("click");
+    await flushPromises();
+    wrapper.unmount();
+    expect(document.body.style.overflow).toBe(originalBodyOverflow);
+  });
+
+  it("keeps the Electron native popout action", async () => {
+    const openDiffPopout = vi.fn().mockResolvedValue(undefined);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).strideterm = { openDiffPopout };
+    const wrapper = mount(MonacoDiffPanel, {
+      props: { payload: { leftContent: "old", rightContent: "new" }, popoutTitle: "src/a.ts" },
+    });
+    await flushPromises();
+
+    expect(wrapper.find(".mdp__btn--popout").text()).toContain("Pop out");
+    await wrapper.find(".mdp__btn--popout").trigger("click");
+    expect(openDiffPopout).toHaveBeenCalledWith({
+      title: "src/a.ts",
+      filePath: "src/a.ts",
+      leftContent: "old",
+      rightContent: "new",
+    });
+    expect(document.body.querySelector(".mdp--fullscreen")).toBeNull();
+    wrapper.unmount();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    delete (window as any).strideterm;
+  });
+
+  it("uses renderer fullscreen on a narrow Electron viewport", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).strideterm = { openDiffPopout: vi.fn() };
+    const wrapper = mount(MonacoDiffPanel, {
+      props: { payload: { leftContent: "old", rightContent: "new" }, popoutTitle: "src/a.ts" },
+    });
+    await flushPromises();
+    isMobileViewport.value = true;
+    await flushPromises();
+
+    expect(wrapper.find(".mdp__btn--popout").text()).toContain("Full screen");
     wrapper.unmount();
   });
 

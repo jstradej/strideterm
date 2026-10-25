@@ -198,6 +198,7 @@ const MOBILE_ROUTE_CLASSIFICATION: Record<string, MobileRouteClass> = {
   "/api/git/create-branch": "guarded",
   "/api/git/create-tag": "guarded",
   "/api/git/create-worktree": "guarded",
+  "/api/git/preview-worktree-path": "guarded",
   "/api/git/delete-branch": "guarded",
   "/api/git/delete-remote-branch": "guarded",
   "/api/git/delete-remote-tag": "guarded",

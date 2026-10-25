@@ -35,6 +35,10 @@ export default defineConfig({
   root: resolve(__dirname, "src"),
   base: "./",
   clearScreen: false,
+  optimizeDeps: {
+    // Serve the patched package directly so Vite cannot reuse an unpatched prebundle.
+    exclude: ["splitpanes"],
+  },
   server: {
     port: APP_CONFIG.renderer.devPort,
     strictPort: true,

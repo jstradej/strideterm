@@ -41,6 +41,7 @@ import type {
   DockerAction,
   DockerSession,
   WorktreePayload,
+  WorktreePathPreviewPayload,
   RemoveWorktree,
   QuickFixListProjects,
   QuickFixListRepositories,
@@ -687,6 +688,7 @@ export interface StridetermAPI {
   gitUnresolveConflict: (payload: GitPayload & { filePath: string }) => Promise<unknown>;
   openLazygitSession: (payload: GitPayload) => Promise<unknown>;
   createWorktree: (payload: WorktreePayload) => Promise<unknown>;
+  previewWorktreePath: (payload: WorktreePathPreviewPayload) => Promise<string>;
 
   // Plugins & profiles
   listPlugins: () => Promise<unknown>;

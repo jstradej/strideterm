@@ -27,6 +27,37 @@ describe("WorktreeDialog", () => {
     expect(wrapper.text()).not.toContain("Repository");
   });
 
+  test("shows the backend destination preview for the current branch", async () => {
+    const onPreview = vi.fn().mockResolvedValue("/repo/.strideterm/tree/feature-my-branch");
+    const wrapper = mountDialog({ onPreview, preselectedRootPath: "/repo" });
+
+    await wrapper.find('input[name="name"]').setValue("feature/my-branch");
+    await flushPromises();
+
+    expect(onPreview).toHaveBeenCalledWith({ name: "feature/my-branch", rootPath: "/repo" });
+    expect(wrapper.find(".worktree-destination code").text()).toBe("/repo/.strideterm/tree/feature-my-branch");
+  });
+
+  test("keeps the latest preview when an earlier request resolves late", async () => {
+    let resolveOld!: (value: string) => void;
+    const onPreview = vi.fn(({ name }: { name: string }) => {
+      if (!name) return Promise.resolve("/repo/.strideterm/tree");
+      if (name === "feature/old") return new Promise<string>((resolve) => (resolveOld = resolve));
+      return Promise.resolve("/repo/.strideterm/tree/feature-new");
+    });
+    const wrapper = mountDialog({ onPreview, preselectedRootPath: "/repo" });
+
+    await flushPromises();
+    expect(wrapper.find(".worktree-destination code").text()).toBe("/repo/.strideterm/tree");
+    await wrapper.find('input[name="name"]').setValue("feature/old");
+    await wrapper.find('input[name="name"]').setValue("feature/new");
+    await flushPromises();
+    resolveOld("/repo/.strideterm/tree/feature-old");
+    await flushPromises();
+
+    expect(wrapper.find(".worktree-destination code").text()).toBe("/repo/.strideterm/tree/feature-new");
+  });
+
   // Regression: a failed create used to close the dialog with no feedback
   // and no log line — the user saw "nothing happens".
   test("a rejection stays open and shows the error without Electron's IPC prefix", async () => {

@@ -2529,6 +2529,7 @@ export function createRemoteTransport(): Transport {
       listeners.dockerShellClose.add(handler),
     openLazygitSession: (payload) => fetchJson("/api/git/open-lazygit", payload),
     createWorktree: (payload) => fetchJson("/api/git/create-worktree", payload),
+    previewWorktreePath: (payload) => fetchJson("/api/git/preview-worktree-path", payload) as Promise<string>,
     saveProfile: (profile) => fetchJson("/api/profile/save", { profile }),
     deleteProfile: (profileId, options) => fetchJson("/api/profile/delete", { profileId, ...(options || {}) }),
     activateProfile: (profileId) => fetchJson("/api/remote-client/profile/activate", { profileId }),

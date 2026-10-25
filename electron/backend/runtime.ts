@@ -8437,6 +8437,26 @@ export async function createRuntime({
     return path.join(repoPath, ".strideterm", "tree", branchOrName.replace(/\//g, "-"));
   }
 
+  function resolveWorktreeRepoPath(project: { cwd?: string; gitRoots?: string[] }, rootPath?: string): string {
+    const normalizePath = (value: string) =>
+      String(value || "")
+        .replace(/\\/g, "/")
+        .replace(/\/+$/, "");
+    const gitRoots = Array.isArray(project.gitRoots) ? project.gitRoots.filter(Boolean) : [];
+    let repoPath = rootPath || "";
+    if (gitRoots.length >= 2) {
+      if (!repoPath) throw new Error("Multi-repo workspace requires a repository to be selected for the worktree.");
+      const normalizedRepo = normalizePath(repoPath);
+      const normalizedRoots = gitRoots.map(normalizePath);
+      if (!normalizedRoots.includes(normalizedRepo) && normalizedRepo !== normalizePath(project.cwd || "")) {
+        throw new Error(`Selected repository ${repoPath} is not part of this workspace.`);
+      }
+    } else if (!repoPath) {
+      repoPath = project.cwd || "";
+    }
+    return repoPath;
+  }
+
   /**
    * Create a git worktree for `branchOrName` under `repoPath`'s
    * `.strideterm/tree/` directory: ensure `.strideterm/` is gitignored,
@@ -12857,25 +12877,11 @@ export async function createRuntime({
         // a worktree on disk in another profile just by passing its ID.
         assertWorkspaceInViewerProfile(targetWorkspaceId, windowId);
 
-        // Multi-repo: a rootPath must be chosen. Single-repo: fall back to workspace cwd.
         const normalizePath = (p: string) =>
           String(p || "")
             .replace(/\\/g, "/")
             .replace(/\/+$/, "");
-        const gitRoots = Array.isArray(project.gitRoots) ? project.gitRoots.filter(Boolean) : [];
-        let repoPath = rootPath || "";
-        if (gitRoots.length >= 2) {
-          if (!repoPath) {
-            throw new Error("Multi-repo workspace requires a repository to be selected for the worktree.");
-          }
-          const normRepo = normalizePath(repoPath);
-          const normRoots = gitRoots.map(normalizePath);
-          if (!normRoots.includes(normRepo) && normRepo !== normalizePath(project.cwd)) {
-            throw new Error(`Selected repository ${repoPath} is not part of this workspace.`);
-          }
-        } else if (!repoPath) {
-          repoPath = project.cwd;
-        }
+        const repoPath = resolveWorktreeRepoPath(project, rootPath);
 
         const newProject = await withWorktreeMutationLock(async () => {
           const liveProject = findWorkspace(getState(), targetWorkspaceId);
@@ -12973,6 +12979,28 @@ export async function createRuntime({
         log.warn("createWorktree: failed", { workspaceId: targetWorkspaceId, name, rootPath, err: message });
         throw err;
       }
+    },
+    previewWorktreePath(
+      {
+        workspaceId,
+        projectId,
+        name,
+        rootPath,
+      }: { workspaceId?: string; projectId?: string; name: string; rootPath?: string },
+      windowId?: string,
+    ) {
+      if (name && !/^[a-zA-Z0-9._/-]+$/.test(name)) {
+        throw new Error(
+          "Worktree name must contain only alphanumeric characters, dots, hyphens, slashes, or underscores.",
+        );
+      }
+      const targetWorkspaceId = workspaceId || projectId;
+      if (!targetWorkspaceId) throw new Error("Workspace not found");
+      const project = findWorkspace(getState(), targetWorkspaceId);
+      if (!project?.cwd) throw new Error("Workspace has no working directory");
+      assertWorkspaceInViewerProfile(targetWorkspaceId, windowId);
+      const repoPath = resolveWorktreeRepoPath(project, rootPath);
+      return worktreeTreePath(repoPath, name);
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async saveProfile(profile: any) {

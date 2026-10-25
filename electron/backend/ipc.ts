@@ -106,6 +106,7 @@ import {
   attentionSyncSchema,
   notificationShowSchema,
   worktreeSchema,
+  worktreePathPreviewSchema,
   removeWorktreeSchema,
   quickFixListProjectsSchema,
   quickFixListRepositoriesSchema,
@@ -2185,6 +2186,15 @@ export function registerIpc(
     return withOperationPromise({ opId: "git:create-worktree" }, () =>
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       runtime.createWorktree(validateIpc(worktreeSchema, payload, "git:create-worktree") as any, windowId),
+    );
+  });
+  handle("git:preview-worktree-path", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "git:preview-worktree-path" }, () =>
+      runtime.previewWorktreePath(
+        validateIpc(worktreePathPreviewSchema, payload, "git:preview-worktree-path"),
+        windowId,
+      ),
     );
   });
   handle("plugins:list", async () => withOperationPromise({ opId: "plugins:list" }, () => runtime.getPlugins()));

@@ -288,6 +288,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   openLazydockerSession: (payload) => ipcRenderer.invoke("docker:open-lazydocker", payload),
   openLazygitSession: (payload) => ipcRenderer.invoke("git:open-lazygit", payload),
   createWorktree: (payload) => ipcRenderer.invoke("git:create-worktree", payload),
+  previewWorktreePath: (payload) => ipcRenderer.invoke("git:preview-worktree-path", payload),
   listPlugins: () => ipcRenderer.invoke("plugins:list"),
   getPluginWorkspaceTemplate: (pluginId) => ipcRenderer.invoke("plugins:workspace-template", pluginId),
   saveProfile: (profile) => ipcRenderer.invoke("profile:save", profile),

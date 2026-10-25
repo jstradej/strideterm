@@ -74,6 +74,7 @@ import {
   workspaceGridSetCellSchema,
   workspaceGridSetLayoutSchema,
   workspaceGridSwapCellsSchema,
+  worktreePathPreviewSchema,
   nativeWorkspaceDirectoryListSchema,
   nativeWorkspaceDirectoryCreateSchema,
   nativeWorkspaceCreateSchema,
@@ -3491,6 +3492,11 @@ export async function startRemoteServer({
     "/api/task/create": (body, windowId) =>
       runtime.createTaskWorkspace(validateIpc(taskWorkspaceCreateSchema, body, "POST /api/task/create"), windowId),
     "/api/git/create-worktree": (body, windowId) => runtime.createWorktree(body, windowId),
+    "/api/git/preview-worktree-path": (body, windowId) =>
+      runtime.previewWorktreePath(
+        validateIpc(worktreePathPreviewSchema, body, "POST /api/git/preview-worktree-path"),
+        windowId,
+      ),
     // saveWorkspace can change profileId or overwrite an existing
     // workspace; without slot-aware routing a remote on profile B
     // could create entries in profile A or hijack profile-A workspaces.

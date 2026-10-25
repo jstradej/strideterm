@@ -1343,17 +1343,17 @@ watch(
 }
 
 .git-tree--history .git-tree__ref--filled {
-  background: var(--accent);
-  color: #000;
+  background: rgba(255, 164, 36, 0.16);
+  color: var(--accent);
   padding: 0 6px;
-  border-radius: 3px;
+  border-radius: 999px;
 }
 
 .git-tree--history .git-tree__ref--outlined {
-  box-shadow: inset 0 0 0 1px var(--accent);
+  box-shadow: inset 0 0 0 1px rgba(255, 164, 36, 0.45);
   color: var(--accent);
   padding: 0 6px;
-  border-radius: 3px;
+  border-radius: 999px;
 }
 
 .git-tree__ref-default {

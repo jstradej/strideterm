@@ -1,155 +1,186 @@
 <template>
-  <div class="mdp">
+  <Teleport to="body" :disabled="!isFullscreen">
     <div
-      v-if="!hideLabels"
-      class="mdp__labels"
-      :class="{ 'mdp__labels--inline': !hasSideBySidePanes }"
-      :style="labelStyle"
+      class="mdp"
+      :class="{ 'mdp--fullscreen': isFullscreen, overlay: isFullscreen }"
+      :role="isFullscreen ? 'dialog' : undefined"
+      :aria-modal="isFullscreen ? 'true' : undefined"
+      :aria-label="isFullscreen ? `Diff: ${popoutTitle}` : undefined"
     >
-      <div class="mdp__label-pane mdp__label-pane--left">
-        <span class="mdp__label-tag">old</span>
-        {{ payload?.leftLabel || "" }}
-        <span v-if="payload?.leftMissing" class="mdp__label-missing">(does not exist)</span>
-      </div>
-      <div class="mdp__label-pane mdp__label-pane--right">
-        <span class="mdp__label-tag">new</span>
-        {{ payload?.rightLabel || "" }}
-        <span v-if="payload?.rightMissing" class="mdp__label-missing">(does not exist)</span>
-      </div>
-    </div>
-
-    <div v-if="!hideToolbar" class="mdp__toolbar">
-      <div class="mdp__nav">
+      <div v-if="isFullscreen" class="mdp__fullscreen-header">
+        <strong class="mdp__fullscreen-title">{{ popoutTitle }}</strong>
         <button
+          ref="closeButtonRef"
           type="button"
-          class="mdp__btn"
-          :disabled="!changeCount"
-          title="Jump the diff cursor to the previous changed hunk and scroll it into view. Keyboard shortcut: Shift+F7."
-          @click="goToChange(-1)"
+          class="mdp__btn mdp__close"
+          aria-label="Close full-screen diff"
+          @click="closeFullscreen"
         >
-          ◀
-        </button>
-        <span class="mdp__nav-counter" :class="{ 'mdp__nav-counter--empty': !changeCount }">
-          <template v-if="changeCount">{{ currentChangeIndex + 1 }} / {{ changeCount }}</template>
-          <template v-else>no changes</template>
-        </span>
-        <button
-          type="button"
-          class="mdp__btn"
-          :disabled="!changeCount"
-          title="Jump the diff cursor to the next changed hunk and scroll it into view. Keyboard shortcut: F7."
-          @click="goToChange(1)"
-        >
-          ▶
+          ✕
         </button>
       </div>
-      <div class="mdp__layout-toggle">
-        <button
-          type="button"
-          :class="['mdp__btn', sideBySide && 'mdp__btn--active']"
-          title="Show the diff in two side-by-side panes — old on the left, new on the right. Best for wide screens."
-          @click="sideBySide = true"
-        >
-          Side-by-side
-        </button>
-        <button
-          type="button"
-          :class="['mdp__btn', !sideBySide && 'mdp__btn--active']"
-          title="Show the diff inline in a single column with red / green markers — better for narrow viewports and easier to read line-by-line."
-          @click="sideBySide = false"
-        >
-          Inline
-        </button>
-        <button
-          v-if="canPopout"
-          type="button"
-          class="mdp__btn mdp__btn--popout"
-          :title="`Pop this diff out into its own window (great for parking on a second monitor): ${popoutTitle}`"
-          @click="handlePopout"
-        >
-          ↗ Pop out
-        </button>
-      </div>
-    </div>
-
-    <div
-      v-if="visibleFileAnnotations.length"
-      class="mdp__file-annotations"
-      aria-label="Comments without a visible line anchor"
-    >
-      <article
-        v-for="annotation in visibleFileAnnotations"
-        :key="annotation.id"
-        :class="[
-          'mdp__review-card',
-          'mdp__review-card--file',
-          annotation.id === selectedAnnotationId && 'mdp__review-card--selected',
-        ]"
-      >
-        <div class="mdp__review-card-head">
-          <strong>{{ annotation.title }}</strong>
-          <span class="mdp__review-status">{{
-            annotation.fallbackLabel || (annotation.stale ? "Older context" : "No line anchor")
-          }}</span>
-          <div v-if="annotationActionsEnabled && headerActions(annotation).length" class="mdp__review-actions">
-            <button
-              v-for="action in headerActions(annotation)"
-              :key="action.label"
-              type="button"
-              :class="['button', 'button--ghost', action.destructive && 'button--danger']"
-              :disabled="action.disabled"
-              :title="action.title"
-              @click="action.run()"
-            >
-              {{ action.label }}
-            </button>
-          </div>
-        </div>
-        <div v-for="(entry, index) in annotation.entries" :key="index" class="mdp__review-entry">
-          <div class="mdp__review-entry-head">
-            <strong>{{ entry.author || "Unknown author" }}</strong>
-            <span v-if="entry.draft" class="mdp__review-status">{{ entry.status || "Draft" }}</span>
-          </div>
-          <div class="mdp__review-body">{{ entry.body }}</div>
-          <div
-            v-if="annotationActionsEnabled && entryActions(annotation, entry, index).length"
-            class="mdp__review-actions"
-          >
-            <button
-              v-for="action in entryActions(annotation, entry, index)"
-              :key="action.label"
-              type="button"
-              :class="['button', 'button--ghost', action.destructive && 'button--danger']"
-              :disabled="action.disabled"
-              :title="action.title"
-              @click="action.run()"
-            >
-              {{ action.label }}
-            </button>
-          </div>
-        </div>
-      </article>
-    </div>
-
-    <div ref="bodyRef" class="mdp__body">
-      <div v-if="loading" class="mdp__overlay">Loading diff…</div>
-      <div v-else-if="errorMessage" class="mdp__overlay mdp__overlay--error">{{ errorMessage }}</div>
-      <div v-else-if="!payload" class="mdp__overlay mdp__overlay--muted">No diff selected</div>
       <div
-        ref="containerRef"
-        class="mdp__monaco"
-        :class="{
-          'mdp__monaco--hidden': loading,
-          'mdp__monaco--review-interactive': hasInteractiveReviewAnnotations,
-          'mdp__monaco--allow-inline-comments': allowInlineComments,
-        }"
-      ></div>
+        v-if="!hideLabels"
+        class="mdp__labels"
+        :class="{ 'mdp__labels--inline': !hasSideBySidePanes }"
+        :style="labelStyle"
+      >
+        <div class="mdp__label-pane mdp__label-pane--left">
+          <span class="mdp__label-tag">old</span>
+          {{ payload?.leftLabel || "" }}
+          <span v-if="payload?.leftMissing" class="mdp__label-missing">(does not exist)</span>
+        </div>
+        <div class="mdp__label-pane mdp__label-pane--right">
+          <span class="mdp__label-tag">new</span>
+          {{ payload?.rightLabel || "" }}
+          <span v-if="payload?.rightMissing" class="mdp__label-missing">(does not exist)</span>
+        </div>
+      </div>
+
+      <div v-if="!hideToolbar" class="mdp__toolbar">
+        <div class="mdp__nav">
+          <button
+            type="button"
+            class="mdp__btn"
+            :disabled="!changeCount"
+            title="Jump the diff cursor to the previous changed hunk and scroll it into view. Keyboard shortcut: Shift+F7."
+            @click="goToChange(-1)"
+          >
+            ◀
+          </button>
+          <span class="mdp__nav-counter" :class="{ 'mdp__nav-counter--empty': !changeCount }">
+            <template v-if="changeCount">{{ currentChangeIndex + 1 }} / {{ changeCount }}</template>
+            <template v-else>no changes</template>
+          </span>
+          <button
+            type="button"
+            class="mdp__btn"
+            :disabled="!changeCount"
+            title="Jump the diff cursor to the next changed hunk and scroll it into view. Keyboard shortcut: F7."
+            @click="goToChange(1)"
+          >
+            ▶
+          </button>
+        </div>
+        <div class="mdp__layout-toggle">
+          <button
+            type="button"
+            :class="['mdp__btn', hasSideBySidePanes && 'mdp__btn--active']"
+            title="Show the diff in two side-by-side panes — old on the left, new on the right. Best for wide screens."
+            @click="sideBySide = true"
+          >
+            Side-by-side
+          </button>
+          <button
+            type="button"
+            :class="['mdp__btn', !hasSideBySidePanes && 'mdp__btn--active']"
+            title="Show the diff inline in a single column with red / green markers — better for narrow viewports and easier to read line-by-line."
+            @click="sideBySide = false"
+          >
+            Inline
+          </button>
+          <button
+            v-if="canPopout && !isFullscreen"
+            type="button"
+            class="mdp__btn mdp__btn--popout"
+            :title="`Pop this diff out into its own window (great for parking on a second monitor): ${popoutTitle}`"
+            @click="handlePopout"
+          >
+            ↗ Pop out
+          </button>
+          <button
+            v-else-if="canFullscreen && !isFullscreen"
+            ref="fullscreenButtonRef"
+            type="button"
+            class="mdp__btn mdp__btn--popout"
+            :title="`Show this diff full screen: ${popoutTitle}`"
+            @click="openFullscreen"
+          >
+            ⛶ Full screen
+          </button>
+        </div>
+      </div>
+
+      <div
+        v-if="visibleFileAnnotations.length"
+        class="mdp__file-annotations"
+        aria-label="Comments without a visible line anchor"
+      >
+        <article
+          v-for="annotation in visibleFileAnnotations"
+          :key="annotation.id"
+          :class="[
+            'mdp__review-card',
+            'mdp__review-card--file',
+            annotation.id === selectedAnnotationId && 'mdp__review-card--selected',
+          ]"
+        >
+          <div class="mdp__review-card-head">
+            <strong>{{ annotation.title }}</strong>
+            <span class="mdp__review-status">{{
+              annotation.fallbackLabel || (annotation.stale ? "Older context" : "No line anchor")
+            }}</span>
+            <div v-if="annotationActionsEnabled && headerActions(annotation).length" class="mdp__review-actions">
+              <button
+                v-for="action in headerActions(annotation)"
+                :key="action.label"
+                type="button"
+                :class="['button', 'button--ghost', action.destructive && 'button--danger']"
+                :disabled="action.disabled"
+                :title="action.title"
+                @click="action.run()"
+              >
+                {{ action.label }}
+              </button>
+            </div>
+          </div>
+          <div v-for="(entry, index) in annotation.entries" :key="index" class="mdp__review-entry">
+            <div class="mdp__review-entry-head">
+              <strong>{{ entry.author || "Unknown author" }}</strong>
+              <span v-if="entry.draft" class="mdp__review-status">{{ entry.status || "Draft" }}</span>
+            </div>
+            <div class="mdp__review-body">{{ entry.body }}</div>
+            <div
+              v-if="annotationActionsEnabled && entryActions(annotation, entry, index).length"
+              class="mdp__review-actions"
+            >
+              <button
+                v-for="action in entryActions(annotation, entry, index)"
+                :key="action.label"
+                type="button"
+                :class="['button', 'button--ghost', action.destructive && 'button--danger']"
+                :disabled="action.disabled"
+                :title="action.title"
+                @click="action.run()"
+              >
+                {{ action.label }}
+              </button>
+            </div>
+          </div>
+        </article>
+      </div>
+
+      <div ref="bodyRef" class="mdp__body">
+        <div v-if="loading" class="mdp__overlay">Loading diff…</div>
+        <div v-else-if="errorMessage" class="mdp__overlay mdp__overlay--error">{{ errorMessage }}</div>
+        <div v-else-if="!payload" class="mdp__overlay mdp__overlay--muted">No diff selected</div>
+        <div
+          ref="containerRef"
+          class="mdp__monaco"
+          :class="{
+            'mdp__monaco--hidden': loading,
+            'mdp__monaco--review-interactive': hasInteractiveReviewAnnotations,
+            'mdp__monaco--allow-inline-comments': allowInlineComments,
+          }"
+        ></div>
+      </div>
     </div>
-  </div>
+  </Teleport>
 </template>
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch, nextTick } from "vue";
+import { useIsNarrow } from "../../composables/useIsNarrow.js";
 import "../../app/monaco-setup.js";
 import * as monaco from "monaco-editor";
 
@@ -242,15 +273,84 @@ const props = withDefaults(defineProps<Props>(), {
 });
 
 // Electron exposes `window.strideterm.openDiffPopout` via preload. In remote
-// web clients the bridge is undefined and the button stays hidden.
-const canPopout = computed(() => {
-  if (!props.popoutTitle) return false;
-  if (!props.payload) return false;
+// web clients the bridge is undefined. Narrow Electron viewports use the
+// renderer fullscreen view because a separate window is not useful there.
+const { isMobile } = useIsNarrow();
+const hasNativePopout = computed(() => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const bridge = (typeof window !== "undefined" ? (window as any).strideterm : null) as {
     openDiffPopout?: (p: unknown) => Promise<unknown>;
   } | null;
   return typeof bridge?.openDiffPopout === "function";
+});
+const canPopout = computed(() => {
+  return !!props.popoutTitle && !!props.payload && hasNativePopout.value && !isMobile.value;
+});
+
+const canFullscreen = computed(
+  () => !!props.popoutTitle && !!props.payload && (!hasNativePopout.value || isMobile.value),
+);
+const isFullscreen = ref(false);
+const fullscreenButtonRef = ref<HTMLButtonElement | null>(null);
+const closeButtonRef = ref<HTMLButtonElement | null>(null);
+let previousBodyOverflow = "";
+let appFrame: HTMLElement | null = null;
+let previousFrameInert = false;
+
+function closeFullscreen() {
+  isFullscreen.value = false;
+}
+
+async function openFullscreen() {
+  if (isFullscreen.value) return;
+  fullscreenButtonRef.value?.blur();
+  previousBodyOverflow = document.body.style.overflow;
+  document.body.style.overflow = "hidden";
+  appFrame = document.querySelector<HTMLElement>(".frame");
+  previousFrameInert = appFrame?.inert ?? false;
+  if (appFrame) appFrame.inert = true;
+  isFullscreen.value = true;
+  window.addEventListener("keydown", onFullscreenKeydown, true);
+  await nextTick();
+  closeButtonRef.value?.focus();
+}
+
+function onFullscreenKeydown(event: KeyboardEvent) {
+  if (document.querySelector(".overlay:not(.mdp--fullscreen):not(.overlay--inactive)")) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    closeFullscreen();
+    return;
+  }
+  if (event.key === "Tab") {
+    const dialog = closeButtonRef.value?.closest<HTMLElement>(".mdp--fullscreen");
+    if (!dialog) return;
+    const focusable = [
+      ...dialog.querySelectorAll<HTMLElement>("button, input, textarea, select, a[href], [tabindex]"),
+    ].filter((element) => element.tabIndex >= 0 && !element.matches(":disabled") && !element.hidden);
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (!first || !last) {
+      event.preventDefault();
+      closeButtonRef.value?.focus();
+    } else if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+}
+
+watch(isFullscreen, (fullscreen) => {
+  if (fullscreen) return;
+  window.removeEventListener("keydown", onFullscreenKeydown, true);
+  document.body.style.overflow = previousBodyOverflow;
+  if (appFrame) appFrame.inert = previousFrameInert;
+  appFrame = null;
+  nextTick(() => fullscreenButtonRef.value?.focus());
 });
 
 async function handlePopout() {
@@ -744,6 +844,11 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener("keydown", onFullscreenKeydown, true);
+  if (isFullscreen.value) {
+    document.body.style.overflow = previousBodyOverflow;
+    if (appFrame) appFrame.inert = previousFrameInert;
+  }
   if (keyListener) document.removeEventListener("keydown", keyListener);
   keyListener = null;
   for (const disposable of inlineCommentDisposables.splice(0)) disposable.dispose();
@@ -782,6 +887,48 @@ defineExpose({ goToChange });
   flex-direction: column;
   min-height: 0;
   flex: 1;
+}
+
+.mdp--fullscreen {
+  align-items: stretch;
+  justify-content: flex-start;
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  box-sizing: border-box;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  background: var(--panel, #1c1c20);
+  overflow: hidden;
+}
+
+.mdp__fullscreen-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.mdp__fullscreen-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.mdp__close {
+  min-width: 36px;
+  min-height: 36px;
+  margin-left: auto;
+  color: var(--text);
+  font-size: 16px;
 }
 
 .mdp__labels {
@@ -840,6 +987,12 @@ defineExpose({ goToChange });
   border-bottom: 1px solid var(--border);
   font-size: 11px;
   flex-shrink: 0;
+}
+
+.mdp--fullscreen .mdp__toolbar {
+  flex-wrap: wrap;
+  padding-top: 8px;
+  padding-bottom: 8px;
 }
 
 .mdp__nav,
@@ -910,6 +1063,11 @@ defineExpose({ goToChange });
   position: relative;
   min-height: 0;
   overflow: hidden;
+}
+
+.mdp--fullscreen .mdp__body {
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .mdp__monaco {

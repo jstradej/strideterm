@@ -228,6 +228,64 @@ afterEach(async () => {
 });
 
 describe("GitBranchesTab compact history picker", () => {
+  test("keeps the diff pane full while pointer dragging across the combined minimum boundary", async () => {
+    const picker = mountTab();
+    await flushPromises();
+    const panes = picker.get(".git-branches__panes");
+    Object.defineProperty(panes.element, "clientWidth", { value: 1000 });
+    const splitter = picker.findAll(".git-branches__panes > .splitpanes__splitter")[1];
+    const frames: FrameRequestCallback[] = [];
+    const requestFrame = vi.spyOn(globalThis, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+
+    try {
+      await splitter.trigger("mousedown", { clientX: 0 });
+      for (const clientX of [460, 459, 450, 300, 459, 460]) {
+        document.dispatchEvent(new MouseEvent("mousemove", { clientX, bubbles: true }));
+        frames.splice(0).forEach((callback) => callback(0));
+        await flushPromises();
+
+        const sizes = picker
+          .findAll(".git-branches__panes > .splitpanes__pane")
+          .map((pane) => parseFloat((pane.element as HTMLElement).style.width));
+        expect(sizes).toEqual([18, 28, 54]);
+      }
+    } finally {
+      document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+      requestFrame.mockRestore();
+      await new Promise((resolve) => setTimeout(resolve, 110));
+    }
+  });
+
+  test("keeps the diff pane filling the remaining width when commits and branches reach their minimum", async () => {
+    const picker = mountTab();
+    await flushPromises();
+    const splitter = picker.findAll(".git-branches__panes > .splitpanes__splitter")[1];
+
+    for (let step = 0; step < 8; step++) {
+      await splitter.trigger("keydown", { key: "ArrowLeft" });
+      await flushPromises();
+    }
+
+    const sizes = () =>
+      picker
+        .findAll(".git-branches__panes > .splitpanes__pane")
+        .map((pane) => parseFloat((pane.element as HTMLElement).style.width));
+    expect(sizes()).toEqual([18, 28, 54]);
+
+    for (let step = 0; step < 4; step++) {
+      await splitter.trigger("keydown", { key: "ArrowRight" });
+    }
+    expect(sizes()).toEqual([18, 48, 34]);
+
+    for (let step = 0; step < 8; step++) {
+      await splitter.trigger("keydown", { key: "ArrowLeft" });
+    }
+    expect(sizes()).toEqual([18, 28, 54]);
+  });
+
   test("applies a relative path filter to the History graph query", async () => {
     vi.useFakeTimers();
     const picker = mount(GitBranchesTab, {

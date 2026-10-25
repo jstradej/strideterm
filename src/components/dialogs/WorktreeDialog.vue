@@ -25,6 +25,10 @@
           data-validation-required="Enter a name for the new branch."
         />
       </label>
+      <p v-if="destinationPath" class="worktree-destination" aria-live="polite">
+        <span>{{ branchName.trim() ? "Creates in" : "Worktrees directory" }}</span>
+        <code>{{ destinationPath }}</code>
+      </p>
       <div v-if="errorMessage" class="dialog__error" role="alert">
         <span class="dialog__error-icon" aria-hidden="true">⚠</span>
         <span class="dialog__error-text">{{ errorMessage }}</span>
@@ -42,7 +46,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, useAttrs } from "vue";
+import { ref, computed, onMounted, useAttrs, watch } from "vue";
 import CustomSelect from "../common/CustomSelect.vue";
 
 interface RepoChoice {
@@ -76,6 +80,8 @@ const branchName = ref("");
 const selectedRoot = ref(props.preselectedRootPath || props.repoChoices[0]?.value || "");
 const submitting = ref(false);
 const errorMessage = ref("");
+const destinationPath = ref("");
+let previewRequestId = 0;
 
 const repoOptions = computed(() => props.repoChoices.map((r) => ({ value: r.value, label: r.label })));
 
@@ -89,6 +95,23 @@ onMounted(() =>
   requestAnimationFrame(() => {
     inputRef.value?.focus();
   }),
+);
+
+watch(
+  [branchName, selectedRoot],
+  async ([branch, root]) => {
+    const requestId = ++previewRequestId;
+    const name = branch.trim();
+    destinationPath.value = "";
+    try {
+      const preview = attrs.onPreview as ((payload: { name: string; rootPath: string }) => Promise<string>) | undefined;
+      const path = await preview?.({ name, rootPath: root || "" });
+      if (requestId === previewRequestId) destinationPath.value = path || "";
+    } catch {
+      if (requestId === previewRequestId) destinationPath.value = "";
+    }
+  },
+  { immediate: true },
 );
 
 async function handleSubmit() {
@@ -121,5 +144,23 @@ function extractErrorMessage(err: unknown): string {
   color: var(--muted);
   font-size: 11px;
   margin-top: 4px;
+}
+
+.worktree-destination {
+  margin: -8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.worktree-destination span {
+  display: block;
+  margin-bottom: 3px;
+}
+
+.worktree-destination code {
+  display: block;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-family: var(--font-mono, monospace);
 }
 </style>

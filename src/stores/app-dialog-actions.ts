@@ -843,6 +843,8 @@ export function createDialogActions(ctx: DialogActionsCtx) {
         : [],
       preselectedRootPath: preselectedRootPath || (isMultiRepo ? gitRoots[0] : ""),
       onCancel: closeDialog,
+      onPreview: async ({ name, rootPath }: { name: string; rootPath: string }) =>
+        (await (ctx.getApi() as CallableTransport).previewWorktreePath({ workspaceId, name, rootPath })) as string,
       onSubmit: async ({ name, rootPath }: { name: string; rootPath: string }) => {
         await ctx.createWorktree(workspaceId, name, rootPath);
         closeDialog();

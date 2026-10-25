@@ -702,6 +702,13 @@ export const worktreeSchema = z.object({
 });
 export type WorktreePayload = z.infer<typeof worktreeSchema>;
 
+export const worktreePathPreviewSchema = z.object({
+  workspaceId: nonEmptyString,
+  name: z.string(),
+  rootPath: z.string().optional(),
+});
+export type WorktreePathPreviewPayload = z.infer<typeof worktreePathPreviewSchema>;
+
 export const removeWorktreeSchema = z.object({
   workspaceId: nonEmptyString,
   worktreePath: nonEmptyString,
