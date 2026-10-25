@@ -78,6 +78,7 @@ const STASH_NOT_OURS_WARNING =
 
 const WORKTREE_DIRTY_CACHE_TTL_MS = 1500;
 const SNAPSHOT_CACHE_TTL_MS = 8000;
+const BASE_BRANCH_CHECK_CONCURRENCY = 4;
 
 // stderr patterns that indicate a transient/network failure worth retrying
 // (used by execAuthGitEffect's retry policy). Deterministic failures — merge/
@@ -256,6 +257,8 @@ export class GitManager extends EventEmitter {
   gitAuditLogStore: AuditLogStore | null;
   // Per-repo commit serialization (keyed by working dir) — see serializeCommit.
   private commitChains: Map<string, Promise<unknown>> = new Map();
+  private activeBaseBranchChecks = 0;
+  private baseBranchCheckWaiters: Array<() => void> = [];
 
   constructor({
     execGitImpl = null,
@@ -3528,19 +3531,29 @@ export class GitManager extends EventEmitter {
       return symbolicDefault || preferBaseBranch(currentBranch, upstream, branchNames);
     }
 
-    const distances = await Promise.all(
-      candidates.map(async (candidate) => {
+    const distances: Array<{ candidate: string; distance: number }> = new Array(candidates.length);
+    let nextCandidateIndex = 0;
+    const checkCandidate = async (): Promise<void> => {
+      while (nextCandidateIndex < candidates.length) {
+        const index = nextCandidateIndex++;
+        const candidate = candidates[index];
         try {
-          const result = await this.execGit(cwd, ["merge-base", "HEAD", candidate]);
-          const mergeBase = result.stdout.trim();
-          if (!mergeBase) return { candidate, distance: Infinity };
-          const countResult = await this.execGit(cwd, ["rev-list", "--count", `${mergeBase}..HEAD`]);
-          const parsed = parseInt(countResult.stdout.trim(), 10);
-          return { candidate, distance: Number.isFinite(parsed) ? parsed : Infinity };
+          const distance = await this.withBaseBranchCheck(async () => {
+            const result = await this.execGit(cwd, ["merge-base", "HEAD", candidate]);
+            const mergeBase = result.stdout.trim();
+            if (!mergeBase) return Infinity;
+            const countResult = await this.execGit(cwd, ["rev-list", "--count", `${mergeBase}..HEAD`]);
+            const parsed = parseInt(countResult.stdout.trim(), 10);
+            return Number.isFinite(parsed) ? parsed : Infinity;
+          });
+          distances[index] = { candidate, distance };
         } catch {
-          return { candidate, distance: Infinity };
+          distances[index] = { candidate, distance: Infinity };
         }
-      }),
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(BASE_BRANCH_CHECK_CONCURRENCY, candidates.length) }, () => checkCandidate()),
     );
 
     const reachable = distances.filter((d) => d.distance < Infinity);
@@ -3566,6 +3579,21 @@ export class GitManager extends EventEmitter {
     });
 
     return reachable[0].candidate;
+  }
+
+  private async withBaseBranchCheck<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.activeBaseBranchChecks >= BASE_BRANCH_CHECK_CONCURRENCY) {
+      await new Promise<void>((resolve) => this.baseBranchCheckWaiters.push(resolve));
+    } else {
+      this.activeBaseBranchChecks += 1;
+    }
+    try {
+      return await operation();
+    } finally {
+      const next = this.baseBranchCheckWaiters.shift();
+      if (next) next();
+      else this.activeBaseBranchChecks -= 1;
+    }
   }
 
   /**

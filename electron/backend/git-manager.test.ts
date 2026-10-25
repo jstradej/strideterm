@@ -2890,6 +2890,56 @@ describe("GitManager", () => {
       });
       expect(result).toBe("origin/master");
     });
+
+    test("bounds concurrent candidate checks and still evaluates every candidate", async () => {
+      const candidates = ["feature/error", "master", "develop", "feature/other", "release", "feature/last"];
+      const pending: Array<() => void> = [];
+      const checked = new Map<string, string[]>();
+      let inFlight = 0;
+      let maxInFlight = 0;
+      const execGitImpl = vi.fn((cwd: string, args: string[]) => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+          pending.push(() => {
+            inFlight -= 1;
+            if (args[0] === "merge-base") {
+              const candidate = args[2];
+              checked.set(cwd, [...(checked.get(cwd) || []), candidate]);
+              if (candidate === "feature/error") {
+                reject(new Error("candidate inspection failed"));
+                return;
+              }
+              resolve({ stdout: "shared-base\n", stderr: "" });
+              return;
+            }
+            resolve({ stdout: "0\n", stderr: "" });
+          });
+        });
+      });
+      const manager = new GitManager({ execGitImpl });
+      const settled = [false, false];
+      const resultPromises = ["/repo-a", "/repo-b"].map((cwd, index) =>
+        manager.detectBestBaseBranch(cwd, "feature/current", "", candidates, {}, "release").then((result) => {
+          settled[index] = true;
+          return result;
+        }),
+      );
+
+      for (let batchCount = 0; settled.some((done) => !done) && batchCount < candidates.length * 4; batchCount += 1) {
+        const batch = pending.splice(0);
+        batch.forEach((resolve) => resolve());
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+
+      expect(settled).toEqual([true, true]);
+      expect(await Promise.all(resultPromises)).toEqual(["release", "release"]);
+      expect(maxInFlight).toBe(4);
+      expect(checked.get("/repo-a")).toEqual(expect.arrayContaining(candidates));
+      expect(checked.get("/repo-a")).toHaveLength(candidates.length);
+      expect(checked.get("/repo-b")).toEqual(expect.arrayContaining(candidates));
+      expect(checked.get("/repo-b")).toHaveLength(candidates.length);
+    });
   });
 
   // ─── deleteBranch / deleteRemoteBranch / renameBranch / checkoutRemoteBranch ─
