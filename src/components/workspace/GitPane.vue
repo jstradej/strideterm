@@ -213,29 +213,6 @@
             New worktree
           </button>
 
-          <!-- Open Lazygit: never primary -->
-          <button
-            v-if="snapshot.lazygit?.available"
-            type="button"
-            data-testid="lazygit-button"
-            class="button button--ghost"
-            style="white-space: nowrap"
-            title="Open lazygit in a new terminal tab pointed at this repository — full keyboard-driven git TUI for staging, committing, branching, rebasing, and history exploration."
-            @click="gitUiStore.openLazygit(workspaceId)"
-          >
-            Open Lazygit
-          </button>
-          <button
-            v-else
-            type="button"
-            class="button button--ghost"
-            disabled
-            style="white-space: nowrap; border: 1px dashed var(--accent); color: var(--accent); opacity: 0.9"
-            title="Disabled — lazygit was not detected on PATH. Install it (https://github.com/jesseduffield/lazygit) and restart strIDEterm to enable this button."
-          >
-            Install Lazygit
-          </button>
-
           <CustomSelect
             v-if="availableConnections.length"
             class="git-branch-select"

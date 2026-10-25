@@ -30,10 +30,6 @@ vi.mock("../../../stores/app.js", () => ({
     getApi: () => ({ gitCompareBranch }),
   }),
 }));
-vi.mock("../../../stores/git-ui.js", () => ({
-  useGitUiStore: () => ({ openLazygit: vi.fn() }),
-}));
-
 import ReviewSummaryTab from "./ReviewSummaryTab.vue";
 import { useNotificationStore } from "../../../stores/notifications.js";
 import { azureVoteSchema } from "../../../../electron/backend/ipc-schemas.js";

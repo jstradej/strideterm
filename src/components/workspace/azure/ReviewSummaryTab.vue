@@ -160,7 +160,7 @@
               type="button"
               class="button button--ghost"
               :aria-expanded="advancedMenuOpen"
-              title="More git actions: rebase onto target, force push, open Lazygit"
+              title="More git actions: rebase onto target or force push"
               @click="advancedMenuOpen = !advancedMenuOpen"
             >
               More git actions ⋯
@@ -208,18 +208,6 @@
                 @click="handleForcePush(workspaceId)"
               >
                 {{ busyAction === "force-push" ? "Force pushing…" : "Force push" }}
-              </button>
-              <button
-                type="button"
-                class="button button--ghost"
-                :disabled="!!busyAction"
-                title="Open Lazygit in a terminal pointed at this review worktree for ad-hoc git operations."
-                @click="
-                  gitUiStore.openLazygit(workspaceId);
-                  advancedMenuOpen = false;
-                "
-              >
-                Open Lazygit
               </button>
             </div>
           </div>
@@ -278,7 +266,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
 import { useAppStore } from "../../../stores/app.js";
-import { useGitUiStore } from "../../../stores/git-ui.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
 import { useDismissable } from "../../../composables/useDismissable.js";
 
@@ -300,7 +287,6 @@ const props = defineProps<{
 defineEmits<{ (e: "new-comment"): void }>();
 
 const appStore = useAppStore();
-const gitUiStore = useGitUiStore();
 const notifications = useNotificationStore();
 
 const busyAction = ref<string>("");

@@ -9,7 +9,7 @@
         node.kind === 'file' && isSelected && 'gct-node__row--selected',
         node.kind === 'file' && node.status === 'ignored' && 'gct-node__row--git-ignored',
       ]"
-      :style="{ paddingLeft: depth * 10 + 6 + 'px' }"
+      :style="{ paddingLeft: depth * 12 + 6 + 'px' }"
       :title="node.kind === 'file' ? `${node.statusTitle || statusTitle(node.status)}: ${node.path}` : node.path"
       :tabindex="isKeyboardTarget ? 0 : undefined"
       @click="onClick"
@@ -17,7 +17,12 @@
       @keydown.space="onRowKeydown"
       @contextmenu="contextMenuEnabled && onContextMenu($event)"
     >
-      <TreeEntryIcon :kind="isDir ? 'directory' : 'file'" :expanded="expanded" :extension="fileExtension">
+      <TreeEntryIcon
+        :kind="isDir ? 'directory' : 'file'"
+        :expanded="expanded"
+        :extension="fileExtension"
+        :show-directory-icon="false"
+      >
         <label v-if="selectable && node.kind === 'file'" class="gct-node__check-target" @click.stop>
           <input
             type="checkbox"

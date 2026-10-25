@@ -12,7 +12,12 @@
     </svg>
   </span>
   <slot />
-  <span class="tree-entry-icon__glyph" :class="`tree-entry-icon__glyph--${glyphKind}`" aria-hidden="true">
+  <span
+    v-if="kind === 'file' || showDirectoryIcon"
+    class="tree-entry-icon__glyph"
+    :class="`tree-entry-icon__glyph--${glyphKind}`"
+    aria-hidden="true"
+  >
     <svg v-if="kind === 'directory'" viewBox="0 0 18 16">
       <path d="M1.5 3.25h5l1.5 1.5h8.5v8.75H1.5z" />
       <path d="M1.5 4.75V2.5h5l1.5 1.5" />
@@ -23,6 +28,10 @@
     <svg v-else-if="['css', 'scss'].includes(extension)" viewBox="0 0 16 16">
       <path d="M8 2.25 13 5v6l-5 2.75L3 11V5z" />
       <path d="M6 6.25h4M6 8h4M6 9.75h2.5" />
+    </svg>
+    <svg v-else-if="fileGlyph === 'file'" viewBox="0 0 16 16">
+      <path d="M4 1.75h5l3 3v9.5H4z" />
+      <path d="M9 1.75v3h3" />
     </svg>
     <template v-else>{{ fileGlyph }}</template>
   </span>
@@ -36,17 +45,18 @@ const props = withDefaults(
     kind: "directory" | "file";
     expanded?: boolean;
     extension?: string;
+    showDirectoryIcon?: boolean;
   }>(),
-  { expanded: false, extension: "" },
+  { expanded: false, extension: "", showDirectoryIcon: true },
 );
 
 const extension = computed(() => props.extension.toLowerCase().replace(/^\./, ""));
 const glyphKind = computed(() => (props.kind === "directory" ? "folder" : extension.value || "plain"));
 const fileGlyph = computed(() => {
-  if (["ts", "tsx", "js", "jsx", "vue"].includes(extension.value)) return "◈";
+  if (["ts", "tsx", "js", "jsx", "mjs", "cjs", "vue"].includes(extension.value)) return "◈";
   if (["json", "yml", "yaml", "toml"].includes(extension.value)) return "{}";
   if (["md", "txt"].includes(extension.value)) return "≡";
-  return "·";
+  return "file";
 });
 </script>
 
@@ -116,6 +126,8 @@ const fileGlyph = computed(() => {
 .tree-entry-icon__glyph--ts,
 .tree-entry-icon__glyph--tsx,
 .tree-entry-icon__glyph--js,
+.tree-entry-icon__glyph--mjs,
+.tree-entry-icon__glyph--cjs,
 .tree-entry-icon__glyph--jsx,
 .tree-entry-icon__glyph--vue {
   color: #69a7dd;

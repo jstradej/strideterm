@@ -50,9 +50,6 @@
           >
             Abort
           </button>
-          <button type="button" class="button button--ghost" @click="gitUiStore.openLazygit(workspaceId)">
-            Open Lazygit
-          </button>
         </div>
       </div>
     </template>
