@@ -41,6 +41,9 @@
         >{{ tab.taskBadge }}</small
       >
       <small v-else-if="tab.taskBadge" class="tab__task-badge" :title="tab.taskTooltip">{{ tab.taskBadge }}</small>
+      <small v-else-if="tab.refreshing" title="Refreshing…"
+        ><span class="tab__spinner" aria-label="Refreshing" />{{ tab.status }}</small
+      >
       <small v-else>{{ tab.status }}</small>
       <span v-if="tab.attention" class="tab__attention" :title="tab.attentionTooltip">🔔</span>
       <span v-if="tab.notes" class="tab__notes" :title="tab.notes">📝</span>
@@ -108,8 +111,9 @@ import { computed, ref, nextTick, watch } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useTerminalStore } from "../../stores/terminal.js";
 import { useNotificationStore } from "../../stores/notifications.js";
+import { useGitUiStore } from "../../stores/git-ui.js";
 import { useTabDragDrop } from "../../composables/useDragDrop.js";
-import { isFreshAlert, tabAttentionTitle } from "../../app/helpers.js";
+import { isFreshAlert, isGitViewId, tabAttentionTitle } from "../../app/helpers.js";
 import { tabSessionId } from "../../app/selectors.js";
 import {
   companionPrimaryHostedPanelIds,
@@ -158,6 +162,14 @@ const props = withDefaults(
 const store = useAppStore();
 const termStore = useTerminalStore();
 const notifications = useNotificationStore();
+const gitUiStore = useGitUiStore();
+
+function isGitTabRefreshing(viewId: string): boolean {
+  if (!isGitViewId(viewId)) return false;
+  const workspaceId = viewId.slice("git:".length);
+  const busyAction = String(gitUiStore.get(workspaceId).busyAction || "");
+  return store.isGitActivationRefreshing(workspaceId) || busyAction === "refresh" || busyAction.startsWith("refresh:");
+}
 const stripRef = ref<HTMLElement | null>(null);
 const compactPickerBtnRef = ref<HTMLButtonElement | null>(null);
 const compactPickerOpen = ref(false);
@@ -206,6 +218,7 @@ const compactTabModels = computed(() => {
         title: p.title || p.id,
         status: "",
         tone: "idle",
+        refreshing: false,
         active: viewId === activeViewId,
         grouped: false,
         persistent: true,
@@ -231,6 +244,7 @@ const compactTabModels = computed(() => {
       title: "Primary",
       status: "",
       tone: "idle",
+      refreshing: false,
       active: binding.viewId === activeViewId,
       grouped: false,
       persistent: false,
@@ -336,6 +350,7 @@ const tabModels = computed(() => {
       title: tab.title,
       status: suppressStatus ? "" : tab.status,
       tone: suppressStatus ? "idle" : tab.tone,
+      refreshing: isGitTabRefreshing(tab.id),
       active: tab.id === activeViewId,
       grouped: splitVisible && tab.id !== activeViewId && (splitGroup?.viewIds.includes(tab.id) || false),
       persistent: !!tab.persistent,

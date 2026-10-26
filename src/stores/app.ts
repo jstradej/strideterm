@@ -277,6 +277,19 @@ export const useAppStore = defineStore("app", () => {
   // --- Race condition prevention ---
   const pendingWorkspaceActivationId = ref("");
   const pendingViewActivationId = ref("");
+  // Workspaces whose Git-tab activation refresh is still in flight — shown on the tab.
+  // Counted, so an overlapping second activation keeps the marker until both settle.
+  const gitActivationRefreshCounts = ref<Record<string, number>>({});
+  function adjustGitActivationRefresh(workspaceId: string, delta: number) {
+    const next = { ...gitActivationRefreshCounts.value };
+    const count = (next[workspaceId] || 0) + delta;
+    if (count > 0) next[workspaceId] = count;
+    else delete next[workspaceId];
+    gitActivationRefreshCounts.value = next;
+  }
+  function isGitActivationRefreshing(workspaceId: string): boolean {
+    return (gitActivationRefreshCounts.value[workspaceId] || 0) > 0;
+  }
   const suppressBroadcast = ref(false);
   // Workspaces the UI removed optimistically, awaiting backend confirmation.
   // Until the backend completes the delete, unrelated broadcasts (git poll,
@@ -1500,6 +1513,7 @@ export const useAppStore = defineStore("app", () => {
       // Refresh git data on-demand when the Git tab is activated
       if (isGitViewId(viewId) && _api) {
         if (wsId) {
+          adjustGitActivationRefresh(wsId, 1);
           (_api as CallableTransport)
             .refreshGit(wsId)
             .then((nextPayload) => {
@@ -1512,7 +1526,8 @@ export const useAppStore = defineStore("app", () => {
                 workspaceId: wsId,
                 err: (err as Error)?.message || String(err),
               });
-            });
+            })
+            .finally(() => adjustGitActivationRefresh(wsId, -1));
         }
       }
       return;
@@ -2621,6 +2636,7 @@ export const useAppStore = defineStore("app", () => {
     getActiveGitSnapshot,
     getGitWorkspaceEntry,
     getGitSummary,
+    isGitActivationRefreshing,
     dockerCounts,
     dockerState,
     providerState,

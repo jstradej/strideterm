@@ -91,6 +91,24 @@ describe("TabStrip", () => {
     expect(wrapper.find(".tab").classes()).toContain("tab--error");
   });
 
+  test("shows a spinner on the Git tab while its refresh is in flight", async () => {
+    const store = useAppStore();
+    store.payload = {
+      ...makePayload([]),
+      git: { workspaces: { ws1: { available: true, branch: "main", dirty: true, dirtyCount: 6 } } },
+    } as unknown as StatePayload;
+    const refreshing = vi.spyOn(store, "isGitActivationRefreshing").mockReturnValue(true);
+    const wrapper = mount(TabStrip);
+    const gitTab = () => wrapper.get('[data-view-id="git:ws1"]');
+    expect(gitTab().find(".tab__spinner").exists()).toBe(true);
+    expect(gitTab().find("small").text()).toBe("6 dirty");
+
+    refreshing.mockReturnValue(false);
+    store.payload = { ...store.payload } as StatePayload;
+    await flushPromises();
+    expect(gitTab().find(".tab__spinner").exists()).toBe(false);
+  });
+
   test("marks active tab with tab--active class", () => {
     const store = useAppStore();
     store.payload = makePayload([

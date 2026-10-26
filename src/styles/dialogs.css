@@ -399,6 +399,25 @@
   font-size: 11px;
 }
 
+/* Git tab: a refresh is in flight (tab activation or the Refresh button). */
+.tab__spinner {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 5px;
+  border: 1.5px solid rgba(var(--tint), 0.2);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  vertical-align: -1px;
+  animation: ws-activate-spin 0.7s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tab__spinner {
+    animation-duration: 2s;
+  }
+}
+
 .tab__menu {
   grid-row: 1;
   grid-column: 2;

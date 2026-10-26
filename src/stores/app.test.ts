@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
 import { nextTick } from "vue";
+import { flushPromises } from "@vue/test-utils";
 import { useAppStore, resolveViewerProfileId } from "./app.js";
 import { useNotificationStore } from "./notifications.js";
 
@@ -1030,6 +1031,51 @@ describe("useAppStore — Git tab activation surfaces a failed refreshGit", () =
     expect((transport as AnyApi).refreshGit).toHaveBeenCalledWith("ws1");
     const warnCalls = logRenderer.mock.calls.filter((c) => c[0] === "warn");
     expect(warnCalls.some((c) => String(c[1]).includes("refreshGit failed"))).toBe(true);
+  });
+
+  it("marks the workspace as refreshing until every activation refresh settles", async () => {
+    const payload = makeBasePayload({
+      appState: {
+        activeWorkspaceId: "ws1",
+        profiles: [{ id: "p1", name: "P1", color: "#fff", workspaceIds: [] }],
+        workspaces: [{ id: "ws1", name: "Workspace 1", profileId: "p1", panels: [], kind: "terminal", cwd: "/tmp" }],
+        windowSlots: [],
+        settings: {},
+        tabTemplates: [],
+        ssh: {
+          hosts: [],
+          keys: [],
+          certificates: [],
+          knownHosts: {},
+          settings: { defaultAgentMode: "inherit", importedSshConfig: false },
+        },
+      },
+    });
+    const transport = makeElectronTransport(payload);
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "" }, logRenderer: vi.fn() };
+    const pending: Array<{ resolve: (value: unknown) => void; reject: (err: Error) => void }> = [];
+    (transport as AnyApi).refreshGit = vi.fn(() => new Promise((resolve, reject) => pending.push({ resolve, reject })));
+    (transport as AnyApi).setWorkspaceUIState = vi.fn(() => Promise.resolve());
+    const store = useAppStore();
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(store.isGitActivationRefreshing("ws1")).toBe(false);
+    // Leave and come back while the first refresh is still running.
+    await store.activateView("git:ws1");
+    await store.activateView("files:ws1");
+    await store.activateView("git:ws1");
+    expect(pending).toHaveLength(2);
+    expect(store.isGitActivationRefreshing("ws1")).toBe(true);
+
+    pending[0].resolve(null);
+    await flushPromises();
+    expect(store.isGitActivationRefreshing("ws1")).toBe(true);
+
+    pending[1].reject(new Error("git backend unavailable"));
+    await flushPromises();
+    expect(store.isGitActivationRefreshing("ws1")).toBe(false);
   });
 });
 
