@@ -754,7 +754,9 @@ export class GitManager extends EventEmitter {
         })),
         this.execGit(rootPath, ["remote", "-v"]).catch(() => ({ stdout: "", stderr: "" })),
         this.execGit(rootPath, ["rev-list", "--count", "HEAD"]).catch(() => ({ stdout: "0", stderr: "" })),
-        this.execGit(rootPath, ["status", "--porcelain=v2", "--branch"]),
+        // -uall: without it a new directory is one `?? dir/` entry that the
+        // Changes tree renders as an empty file instead of listing its files.
+        this.execGit(rootPath, ["status", "--porcelain=v2", "--branch", "--untracked-files=all"]),
         this.execGit(rootPath, ["status", "--short"]).catch(() => ({ stdout: "", stderr: "" })),
         this.execGit(rootPath, [
           "log",

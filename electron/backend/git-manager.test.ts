@@ -67,7 +67,7 @@ describe("GitManager", () => {
         stderr: "",
       },
       [`${root}::rev-list --count HEAD`]: { stdout: "42\n", stderr: "" },
-      [`${root}::status --porcelain=v2 --branch`]: {
+      [`${root}::status --porcelain=v2 --branch --untracked-files=all`]: {
         stdout: [
           "# branch.oid abcdef",
           "# branch.head feature-x",
@@ -161,7 +161,8 @@ describe("GitManager", () => {
     const { root } = await createGitFixture();
     const execGitImpl = vi.fn(async (cwd: string, args: string[]) => {
       if (args.join(" ") === "rev-parse --show-toplevel") return { stdout: `${cwd}\n`, stderr: "" };
-      if (args.join(" ") === "status --porcelain=v2 --branch") throw new Error("fatal: index file corrupt");
+      if (args.join(" ") === "status --porcelain=v2 --branch --untracked-files=all")
+        throw new Error("fatal: index file corrupt");
       return { stdout: "", stderr: "" };
     });
     const manager = new GitManager({ execGitImpl });
@@ -197,6 +198,23 @@ describe("GitManager", () => {
     expect(snapshot.dirty).toBe(false);
   });
 
+  test.skipIf(!GIT_AVAILABLE)("inspectWorkspace lists the files of a new untracked directory", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-untracked-dir-"));
+    tempPaths.push(root);
+    execFileSync("git", ["init", "--quiet", root], { stdio: "ignore", windowsHide: true });
+    await fs.mkdir(path.join(root, "kafka", "auth"), { recursive: true });
+    await fs.writeFile(path.join(root, "kafka", "auth", "A.java"), "a\n", "utf8");
+    await fs.writeFile(path.join(root, "kafka", "auth", "B.java"), "b\n", "utf8");
+    const manager = new GitManager();
+    manager.detectLazygit = async () => ({ available: false, backend: null, error: "missing", launch: null });
+
+    const snapshot = await manager.inspectWorkspace({ id: "workspace-untracked-dir", cwd: root, kind: "terminal" });
+
+    const untracked = (snapshot.untracked as Array<{ path: string }>).map((entry) => entry.path).sort();
+    expect(untracked).toEqual(["kafka/auth/A.java", "kafka/auth/B.java"]);
+    expect(snapshot.dirtyCount).toBe(2);
+  });
+
   test("inspectWorkspace marks per-sibling branchMerged via git branch --merged", async () => {
     const { root } = await createGitFixture();
     const siblingMain = path.join(root, ".strideterm", "tree", "main-wt");
@@ -211,7 +229,10 @@ describe("GitManager", () => {
       [`${root}::rev-parse --abbrev-ref HEAD`]: { stdout: "feature-x\n", stderr: "" },
       [`${root}::remote -v`]: { stdout: "", stderr: "" },
       [`${root}::rev-list --count HEAD`]: { stdout: "10\n", stderr: "" },
-      [`${root}::status --porcelain=v2 --branch`]: { stdout: "# branch.head feature-x\n", stderr: "" },
+      [`${root}::status --porcelain=v2 --branch --untracked-files=all`]: {
+        stdout: "# branch.head feature-x\n",
+        stderr: "",
+      },
       [`${root}::status --short`]: { stdout: "", stderr: "" },
       [`${root}::log --date=relative --pretty=format:%h%x09%ad%x09%an%x09%d%x09%s -n 18`]: { stdout: "", stderr: "" },
       [`${root}::rev-parse --git-dir`]: { stdout: ".git\n", stderr: "" },
@@ -285,7 +306,10 @@ describe("GitManager", () => {
       [`${root}::rev-parse --abbrev-ref HEAD`]: { stdout: "feature-x\n", stderr: "" },
       [`${root}::remote -v`]: { stdout: "", stderr: "" },
       [`${root}::rev-list --count HEAD`]: { stdout: "1\n", stderr: "" },
-      [`${root}::status --porcelain=v2 --branch`]: { stdout: "# branch.head feature-x\n", stderr: "" },
+      [`${root}::status --porcelain=v2 --branch --untracked-files=all`]: {
+        stdout: "# branch.head feature-x\n",
+        stderr: "",
+      },
       [`${root}::status --short`]: { stdout: "UU src/app.js\n", stderr: "" },
       [`${root}::log --date=relative --pretty=format:%h%x09%ad%x09%an%x09%d%x09%s -n 18`]: { stdout: "", stderr: "" },
       [`${root}::rev-parse --git-dir`]: { stdout: ".git\n", stderr: "" },
@@ -323,7 +347,7 @@ describe("GitManager", () => {
       [`${root}::rev-parse --abbrev-ref HEAD`]: { stdout: "feature-x\n", stderr: "" },
       [`${root}::remote -v`]: { stdout: "", stderr: "" },
       [`${root}::rev-list --count HEAD`]: { stdout: "1\n", stderr: "" },
-      [`${root}::status --porcelain=v2 --branch`]: {
+      [`${root}::status --porcelain=v2 --branch --untracked-files=all`]: {
         stdout: "# branch.head feature-x\n# branch.upstream origin/feature-x\n",
         stderr: "",
       },
@@ -371,7 +395,7 @@ describe("GitManager", () => {
       [`${root}::rev-parse --abbrev-ref HEAD`]: { stdout: `${branch}\n`, stderr: "" },
       [`${root}::remote -v`]: { stdout: "", stderr: "" },
       [`${root}::rev-list --count HEAD`]: { stdout: "5\n", stderr: "" },
-      [`${root}::status --porcelain=v2 --branch`]: {
+      [`${root}::status --porcelain=v2 --branch --untracked-files=all`]: {
         stdout: `# branch.head ${branch}\n# branch.upstream origin/jstradej/MSP-756000-email-watcher\n`,
         stderr: "",
       },
@@ -433,7 +457,7 @@ describe("GitManager", () => {
       [`${root}::rev-parse --abbrev-ref HEAD`]: { stdout: `${branch}\n`, stderr: "" },
       [`${root}::remote -v`]: { stdout: "", stderr: "" },
       [`${root}::rev-list --count HEAD`]: { stdout: "5\n", stderr: "" },
-      [`${root}::status --porcelain=v2 --branch`]: {
+      [`${root}::status --porcelain=v2 --branch --untracked-files=all`]: {
         stdout: `# branch.head ${branch}\n# branch.upstream origin/${src}\n`,
         stderr: "",
       },
@@ -743,7 +767,10 @@ describe("GitManager", () => {
       [`${root}::rev-parse --abbrev-ref HEAD`]: { stdout: "feature-x\n", stderr: "" },
       [`${root}::remote -v`]: { stdout: "", stderr: "" },
       [`${root}::rev-list --count HEAD`]: { stdout: "42\n", stderr: "" },
-      [`${root}::status --porcelain=v2 --branch`]: { stdout: "# branch.head feature-x\n", stderr: "" },
+      [`${root}::status --porcelain=v2 --branch --untracked-files=all`]: {
+        stdout: "# branch.head feature-x\n",
+        stderr: "",
+      },
       [`${root}::status --short`]: { stdout: "", stderr: "" },
       [`${root}::log --date=relative --pretty=format:%h%x09%ad%x09%an%x09%d%x09%s -n 18`]: { stdout: "", stderr: "" },
       [`${root}::rev-parse --git-dir`]: { stdout: ".git\n", stderr: "" },
@@ -1546,7 +1573,7 @@ describe("GitManager", () => {
         stderr: "",
       },
       [`${root}::rev-list --count HEAD`]: { stdout: "5\n", stderr: "" },
-      [`${root}::status --porcelain=v2 --branch`]: {
+      [`${root}::status --porcelain=v2 --branch --untracked-files=all`]: {
         stdout: "# branch.head feature-x\n# branch.upstream origin/feature-x\n# branch.ab +2 -3\n",
         stderr: "",
       },
@@ -1719,7 +1746,7 @@ describe("GitManager", () => {
       [`${root}::rev-parse --abbrev-ref HEAD`]: { stdout: "main\n", stderr: "" },
       [`${root}::remote -v`]: { stdout: "", stderr: "" },
       [`${root}::rev-list --count HEAD`]: { stdout: "5\n", stderr: "" },
-      [`${root}::status --porcelain=v2 --branch`]: {
+      [`${root}::status --porcelain=v2 --branch --untracked-files=all`]: {
         stdout: [
           "# branch.head main",
           "1 M. N... 100644 100644 100644 aaa bbb src/a.js",
@@ -1759,7 +1786,7 @@ describe("GitManager", () => {
       [`${root}::rev-parse --abbrev-ref HEAD`]: { stdout: "main\n", stderr: "" },
       [`${root}::remote -v`]: { stdout: "", stderr: "" },
       [`${root}::rev-list --count HEAD`]: { stdout: "5\n", stderr: "" },
-      [`${root}::status --porcelain=v2 --branch`]: {
+      [`${root}::status --porcelain=v2 --branch --untracked-files=all`]: {
         stdout: ["# branch.head main", "? new-file.txt", "? another.txt"].join("\n"),
         stderr: "",
       },
@@ -1795,7 +1822,7 @@ describe("GitManager", () => {
       [`${root}::rev-parse --abbrev-ref HEAD`]: { stdout: "main\n", stderr: "" },
       [`${root}::remote -v`]: { stdout: "", stderr: "" },
       [`${root}::rev-list --count HEAD`]: { stdout: "5\n", stderr: "" },
-      [`${root}::status --porcelain=v2 --branch`]: {
+      [`${root}::status --porcelain=v2 --branch --untracked-files=all`]: {
         stdout: [
           "# branch.head main",
           "1 MM N... 100644 100644 100644 aaa bbb src/a.js",
