@@ -359,18 +359,36 @@ watch(isFullscreen, (fullscreen) => {
   nextTick(() => fullscreenButtonRef.value?.focus());
 });
 
+const POPOUT_PAYLOAD_KEYS = [
+  "ok",
+  "language",
+  "leftLabel",
+  "rightLabel",
+  "leftContent",
+  "rightContent",
+  "leftMissing",
+  "rightMissing",
+  "leftError",
+] as const;
+
 async function handlePopout() {
   if (!canPopout.value) return;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const bridge = (window as any).strideterm as {
     openDiffPopout: (p: unknown) => Promise<{ error?: string } | undefined>;
   };
+  // Only the fields this panel renders. Spreading the whole payload handed IPC
+  // nested reactive proxies (the Git tab's `hunks` array), which structured
+  // clone refuses: "An object could not be cloned".
+  const source = props.payload as Record<string, unknown>;
+  const fields: Record<string, unknown> = {};
+  for (const key of POPOUT_PAYLOAD_KEYS) if (source[key] !== undefined) fields[key] = source[key];
   let failure: unknown = null;
   try {
     const result = await bridge.openDiffPopout({
       title: props.popoutTitle,
       filePath: props.popoutTitle,
-      ...(props.payload as Record<string, unknown>),
+      ...fields,
     });
     if (result?.error) failure = result.error;
   } catch (err) {

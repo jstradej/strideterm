@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
+import { reactive } from "vue";
 import { isMobileViewport } from "../../composables/useIsNarrow.js";
 
 vi.unmock("./MonacoDiffPanel.vue");
@@ -289,6 +290,40 @@ describe("MonacoDiffPanel first change reveal", () => {
       rightContent: "new",
     });
     expect(document.body.querySelector(".mdp--fullscreen")).toBeNull();
+    wrapper.unmount();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    delete (window as any).strideterm;
+  });
+
+  it("pops out a reactive Git payload as a cloneable object", async () => {
+    // ipcRenderer.invoke structured-clones its argument; a Vue proxy fails it.
+    const openDiffPopout = vi.fn(async (payload: unknown) => {
+      structuredClone(payload);
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).strideterm = { openDiffPopout };
+    const payload = reactive({
+      ok: true,
+      leftContent: "old",
+      rightContent: "new",
+      diff: "@@ -1 +1 @@\n-old\n+new\n",
+      hunks: ["@@ -1 +1 @@\n-old\n+new\n"],
+      diffToken: "a".repeat(64),
+    });
+    const wrapper = mount(MonacoDiffPanel, { props: { payload, popoutTitle: "a.txt (unstaged)" } });
+    await flushPromises();
+
+    await wrapper.find(".mdp__btn--popout").trigger("click");
+    await flushPromises();
+
+    expect(openDiffPopout).toHaveBeenCalledWith({
+      title: "a.txt (unstaged)",
+      filePath: "a.txt (unstaged)",
+      ok: true,
+      leftContent: "old",
+      rightContent: "new",
+    });
+    await expect(openDiffPopout.mock.results[0].value).resolves.toBeUndefined();
     wrapper.unmount();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     delete (window as any).strideterm;
