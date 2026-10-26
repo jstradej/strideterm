@@ -2194,6 +2194,7 @@ export class GitManager extends EventEmitter {
           .update(result.stdout || "")
           .digest("hex"),
         summary: diff ? "" : "No diff output for the selected file.",
+        ...(normalizedScope === "branch" ? {} : await this.readDiffPreviewSides(effectiveCwd, args)),
       };
     } catch (error) {
       const err = error as { stdout?: string; stderr?: string };
@@ -2207,6 +2208,41 @@ export class GitManager extends EventEmitter {
           .digest("hex"),
         summary: extractErrorMessage(error),
       };
+    }
+  }
+
+  /**
+   * Both whole sides of a Changes diff preview, so the renderer shows the full
+   * file instead of only the patch's first hunk. Rebuilt from one unlimited-
+   * context diff, so git — not a disk read — decides what each side is. No
+   * single text hunk (binary, mode-only, failure) returns nothing and the
+   * renderer falls back to the patch.
+   */
+  private async readDiffPreviewSides(
+    cwd: string,
+    diffArgs: string[],
+  ): Promise<{ leftContent?: string; rightContent?: string }> {
+    const separator = diffArgs.indexOf("--");
+    const args = [...diffArgs.slice(0, separator), "--unified=100000000", ...diffArgs.slice(separator)];
+    try {
+      const { stdout } = await this.execGit(cwd, args);
+      const hunks = String(stdout || "")
+        .split(/(?=^@@ )/m)
+        .filter((part) => part.startsWith("@@ "));
+      if (hunks.length !== 1) return {};
+      const left: string[] = [];
+      const right: string[] = [];
+      for (const line of hunks[0].split("\n").slice(1)) {
+        if (line.startsWith("+")) right.push(line.slice(1));
+        else if (line.startsWith("-")) left.push(line.slice(1));
+        else if (line.startsWith(" ")) {
+          left.push(line.slice(1));
+          right.push(line.slice(1));
+        }
+      }
+      return { leftContent: left.join("\n"), rightContent: right.join("\n") };
+    } catch {
+      return {};
     }
   }
 

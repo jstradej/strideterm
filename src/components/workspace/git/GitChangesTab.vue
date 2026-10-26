@@ -762,10 +762,6 @@ function onFileSelect(path: string, scope: string) {
   gitUiStore.gitSelectDiff(props.workspaceId, path, scope);
 }
 
-function diffSourceForScope(scope: string) {
-  return scope === "staged" ? "staged" : "head";
-}
-
 // Working-tree file diff — shared seq-guarded loader (see
 // useMonacoDiffLoader.ts), also used by GitBranchesTab.vue's commit diff.
 const diffLoader = useMonacoDiffLoader(async (path: string, scope: string) => {
@@ -789,8 +785,12 @@ const diffLoader = useMonacoDiffLoader(async (path: string, scope: string) => {
   const diff = String(payload?.diff || "");
   const hunks = diff.split(/(?=^@@ )/m).filter((part: string) => part.startsWith("@@ "));
   const language = path.split(".").pop() || "plaintext";
-  const [leftContent = String(payload?.leftContent || ""), rightContent = String(payload?.rightContent || "")] =
-    hunks.length ? parsePatchHunk(hunks[0]) : [];
+  const hasWholeSides = typeof payload?.leftContent === "string" && typeof payload?.rightContent === "string";
+  const [leftContent, rightContent] = hasWholeSides
+    ? [payload.leftContent as string, payload.rightContent as string]
+    : hunks.length
+      ? parsePatchHunk(hunks[0])
+      : ["", ""];
   return {
     ...payload,
     leftContent,
@@ -841,6 +841,25 @@ watch(
     loadMonacoDiff(sel.path, sel.scope);
   },
   { deep: true, immediate: true },
+);
+
+// A file edited on disk keeps the same selection, so the watch above never
+// fires: reload when the Refresh button runs or the working tree's line counts
+// move. Compared as JSON so a poll that rebuilds identical stats is a no-op.
+watch(
+  () => {
+    const changes = props.snapshot?.changes;
+    return JSON.stringify([
+      props.gitUi.historyRefreshToken ?? 0,
+      changes?.staged?.diffStat,
+      changes?.unstaged?.diffStat,
+      changes?.untracked?.diffStat,
+    ]);
+  },
+  () => {
+    const selection = props.gitUi.selectedDiff;
+    if (selection?.path && props.activeRootPath) void diffLoader.load(selection.path, selection.scope);
+  },
 );
 
 watch(

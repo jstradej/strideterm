@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach, vi } from "vitest";
-import { ref, type ComponentPublicInstance } from "vue";
+import { reactive, ref, type ComponentPublicInstance } from "vue";
 import { mount, flushPromises, type VueWrapper } from "@vue/test-utils";
 import { setActivePinia, createPinia } from "pinia";
 
@@ -405,6 +405,45 @@ describe("GitChangesTab", () => {
 
     await wrapper.get('[aria-label="Next file"]').trigger("click");
     expect(gitSelectDiff).toHaveBeenLastCalledWith("ws1", "next.ts", "unstaged");
+  });
+
+  test("shows the whole file when the preview carries both sides, not only the first hunk", async () => {
+    observedWidth = 900;
+    fakeApi.gitDiffPreview = vi.fn(async () => ({
+      ok: true,
+      diff: "@@ -1 +1 @@\n-a\n+A\n@@ -40 +40,2 @@\n z\n+appended\n",
+      leftContent: "a\n…\nz\n",
+      rightContent: "A\n…\nz\nappended\n",
+    }));
+    mountTab({
+      snapshot: {
+        dirty: true,
+        staged: [],
+        unstaged: [{ path: "long.txt", code: "M" }],
+        untracked: [],
+        diffStat: null,
+      },
+      gitUi: { selectedDiff: { path: "long.txt", scope: "unstaged" } },
+    });
+    await flushPromises();
+
+    expect(monacoPayloads).toHaveBeenLastCalledWith(
+      expect.objectContaining({ leftContent: "a\n…\nz\n", rightContent: "A\n…\nz\nappended\n" }),
+    );
+  });
+
+  test("reloads the selected diff on Refresh even though the selection did not change", async () => {
+    observedWidth = 900;
+    fakeApi.gitDiffPreview = vi.fn(async () => ({ ok: true, diff: "", leftContent: "", rightContent: "" }));
+    // The store hands the tab one long-lived reactive gitUi object.
+    const gitUi = reactive<Record<string, unknown>>({ selectedDiff: { path: "a.txt", scope: "unstaged" } });
+    mountTab({ gitUi });
+    await flushPromises();
+    expect(fakeApi.gitDiffPreview).toHaveBeenCalledTimes(1);
+
+    gitUi.historyRefreshToken = 1;
+    await flushPromises();
+    expect(fakeApi.gitDiffPreview).toHaveBeenCalledTimes(2);
   });
 
   test("desktop previous/next steps through files in tree order and wraps", async () => {

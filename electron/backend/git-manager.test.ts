@@ -4328,6 +4328,33 @@ describe("GitManager", () => {
       return root;
     }
 
+    test("diffPreview carries whole sides for each scope, not only the first hunk", async () => {
+      const root = await initRepo();
+      const workspace = { id: "ws-sides", cwd: root, kind: "terminal" as const };
+      const lines = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`);
+      await fs.writeFile(path.join(root, "long.txt"), `${lines.join("\n")}\n`, "utf8");
+      rg(root, ["add", "-A"]);
+      rg(root, ["commit", "-q", "-m", "long"]);
+      const head = `${lines.join("\n")}\n`;
+      const staged = head.replace("line 1\n", "line 1 staged\n");
+      const worktree = staged
+        .replace("line 5\n", "line 5 edited\n")
+        .replace("line 40\n", "line 40\nappended far below\n");
+      await fs.writeFile(path.join(root, "long.txt"), staged, "utf8");
+      rg(root, ["add", "long.txt"]);
+      await fs.writeFile(path.join(root, "long.txt"), worktree, "utf8");
+      const lf = (text: string) => text.replace(/\r\n/g, "\n").replace(/\n$/, "");
+
+      const unstaged = await mgr.diffPreview(workspace, { path: "long.txt" });
+      expect(String(unstaged.diff).match(/^@@ /gm)).toHaveLength(2);
+      expect(lf(String(unstaged.leftContent))).toBe(lf(staged));
+      expect(lf(String(unstaged.rightContent))).toBe(lf(worktree));
+
+      const stagedPreview = await mgr.diffPreview(workspace, { path: "long.txt", scope: "staged" });
+      expect(lf(String(stagedPreview.leftContent))).toBe(lf(head));
+      expect(lf(String(stagedPreview.rightContent))).toBe(lf(staged));
+    });
+
     test("stage and unstage file, then commit only the real index", async () => {
       const root = await initRepo();
       const workspace = { id: "ws-index", cwd: root, kind: "terminal" as const };
