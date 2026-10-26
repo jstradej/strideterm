@@ -114,6 +114,21 @@ const totalCount = computed(() => tree.value.children.length);
 
 const tree = computed(() => buildTree(props.files));
 
+// File rows in the order they are rendered, for previous/next navigation.
+const orderedFiles = computed(() => {
+  const out: Array<{ path: string; scope: string }> = [];
+  const walk = (node: TreeDirectory) => {
+    for (const child of node.children) {
+      if (isDirectory(child)) walk(child);
+      else out.push({ path: child.path, scope: child.scope });
+    }
+  };
+  walk(tree.value);
+  return out;
+});
+
+defineExpose({ orderedFiles });
+
 watch(
   tree,
   (next) => {

@@ -1,6 +1,7 @@
 <template>
   <li class="gct-node" role="treeitem" :aria-expanded="isDir ? (expanded ? 'true' : 'false') : undefined">
     <div
+      ref="rowEl"
       :class="[
         'gct-node__row',
         grouped && 'gct-node__row--grouped',
@@ -127,7 +128,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import TreeEntryIcon from "../../shared/TreeEntryIcon.vue";
 import { statusColor, statusTitle } from "../file-manager/git-status-helpers.js";
 
@@ -189,6 +190,10 @@ const isSelected = computed(
       (entry: Record<string, unknown>) => entry.scope === props.selectedScope,
     ),
 );
+const rowEl = ref<HTMLElement | null>(null);
+watch(isSelected, (selected) => {
+  if (selected) rowEl.value?.scrollIntoView?.({ block: "nearest" });
+});
 const isChecked = computed(() => props.node.kind === "file" && !!props.selectedSet?.has(props.node.path as string));
 const visibleScopes = computed(() => {
   const scopes = props.node.scopes || [{ scope: props.node.scope }];

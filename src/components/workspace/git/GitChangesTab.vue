@@ -87,6 +87,26 @@
                     <p class="eyebrow">Changes</p>
                     <h3>{{ snapshot.dirty ? "Working tree overview" : "No local changes" }}</h3>
                   </div>
+                  <div v-if="snapshot.dirty" class="git-changes__file-nav">
+                    <button
+                      type="button"
+                      class="button button--ghost button--small"
+                      aria-label="Previous file"
+                      title="Previous changed file"
+                      @click="moveDiff(-1)"
+                    >
+                      ◀
+                    </button>
+                    <button
+                      type="button"
+                      class="button button--ghost button--small"
+                      aria-label="Next file"
+                      title="Next changed file"
+                      @click="moveDiff(1)"
+                    >
+                      ▶
+                    </button>
+                  </div>
                 </div>
                 <div
                   v-if="isDetachedHead && !compactChanges"
@@ -105,6 +125,7 @@
                 </div>
                 <GitDiffStat v-if="!compactChanges" :stat="snapshot.diffStat" />
                 <GitChangeTree
+                  ref="desktopTree"
                   :files="allChangedFiles"
                   :selected-path="gitUi.selectedDiff?.path || ''"
                   :selected-scope="gitUi.selectedDiff?.scope || ''"
@@ -584,6 +605,7 @@ const stashStore = useGitStashStore();
 const notifications = useNotificationStore();
 const { isNarrow } = useIsNarrow();
 const changesRoot = ref<HTMLElement | null>(null);
+const desktopTree = ref<InstanceType<typeof GitChangeTree> | null>(null);
 const mobileMode = ref<"list" | "diff" | "commit" | "">("");
 const mobileLayout = ref<"single" | "split">("single");
 const activeFilter = ref("all");
@@ -919,6 +941,10 @@ async function submitMobileCommit() {
 }
 
 function moveDiff(direction: number) {
+  if (!compactChanges.value) {
+    moveDesktopDiff(direction);
+    return;
+  }
   const paths = [...new Set<string>(filteredFiles.value.map((file) => file.path))];
   if (!paths.length) return;
   const selected = props.gitUi.selectedDiff;
@@ -928,6 +954,18 @@ function moveDiff(direction: number) {
   const next =
     filteredFiles.value.find((file) => file.path === path && file.scope === selected?.scope) ||
     filteredFiles.value.find((file) => file.path === path)!;
+  onFileSelect(next.path, next.scope);
+}
+
+// The desktop tree lists a staged + unstaged file as two rows, so step through
+// rows (path + scope) in the tree's own order rather than distinct paths.
+function moveDesktopDiff(direction: number) {
+  const rows = desktopTree.value?.orderedFiles || [];
+  if (!rows.length) return;
+  const selected = props.gitUi.selectedDiff;
+  const index = rows.findIndex((row) => row.path === selected?.path && row.scope === selected?.scope);
+  const current = index < 0 ? (direction > 0 ? -1 : 0) : index;
+  const next = rows[(current + direction + rows.length) % rows.length];
   onFileSelect(next.path, next.scope);
 }
 
@@ -1602,6 +1640,12 @@ useContextMenu({
   min-height: 0;
   flex: 1;
   overflow: hidden;
+}
+
+.git-changes__file-nav {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
 }
 
 .git-changes__diff-controls {

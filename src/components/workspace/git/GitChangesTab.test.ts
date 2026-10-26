@@ -407,6 +407,31 @@ describe("GitChangesTab", () => {
     expect(gitSelectDiff).toHaveBeenLastCalledWith("ws1", "next.ts", "unstaged");
   });
 
+  test("desktop previous/next steps through files in tree order and wraps", async () => {
+    observedWidth = 900;
+    const wrapper = mountTab({
+      snapshot: {
+        dirty: true,
+        staged: [{ path: "z.ts", code: "M" }],
+        unstaged: [{ path: "src/b.ts", code: "M" }],
+        untracked: [{ path: "src/a.ts", code: "??" }],
+        diffStat: null,
+      },
+      gitUi: { selectedDiff: { path: "src/a.ts", scope: "untracked" } },
+    });
+    await flushPromises();
+
+    await wrapper.get('[aria-label="Next file"]').trigger("click");
+    expect(gitSelectDiff).toHaveBeenLastCalledWith("ws1", "src/b.ts", "unstaged");
+
+    await wrapper.setProps({ gitUi: { selectedDiff: { path: "z.ts", scope: "staged" } } });
+    await wrapper.get('[aria-label="Next file"]').trigger("click");
+    expect(gitSelectDiff).toHaveBeenLastCalledWith("ws1", "src/a.ts", "untracked");
+
+    await wrapper.get('[aria-label="Previous file"]').trigger("click");
+    expect(gitSelectDiff).toHaveBeenLastCalledWith("ws1", "src/b.ts", "unstaged");
+  });
+
   test("opens conflicted files in Conflict Center instead of selecting a diff", async () => {
     const wrapper = mountTab({
       snapshot: {
