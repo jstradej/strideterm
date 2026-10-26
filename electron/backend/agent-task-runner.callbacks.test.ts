@@ -479,7 +479,11 @@ describe("task runner callback freshness", () => {
     await started;
     const replacementSnapshot = deps.replaceSnapshot();
     restart.resolve();
-    await waitFor(() => replacementSnapshot.task.lastShowerRound === 1);
+    // lastShowerRound is committed before the shower's cleanup I/O, and the
+    // evaluation holds its re-entrance guard until it leaves "refreshing" — a
+    // second idle arriving before that would be dropped.
+    await waitFor(() => replacementSnapshot.task.lastShowerRound === 1 && replacementSnapshot.task.state === "running");
+    await new Promise<void>((resolve) => setImmediate(resolve));
     expect(replacementSnapshot.task.showerResumePrompt).toContain("Progress so far.");
 
     const secondRestart = deferred<void>();
@@ -491,6 +495,10 @@ describe("task runner callback freshness", () => {
     });
     replacementSnapshot.task.state = "running";
     replacementSnapshot.task.promptSent = true;
+    // Advance the round the way a judge "continue" does: close the previous
+    // chip first, or #ensureRunningRound reuses round 1 and the round-2
+    // evaluation finds no chip of its own.
+    (replacementSnapshot.task.rounds as unknown as Array<{ action: string }>).at(-1)!.action = "re-prompted";
     replacementSnapshot.task.currentRound = 2;
     replacementSnapshot.task.showerInterval = 1;
     replacementSnapshot.task.lastShowerRound = 1;
