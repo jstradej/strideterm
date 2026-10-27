@@ -1010,6 +1010,8 @@ describe("useAppStore — Git tab activation surfaces a failed refreshGit", () =
           settings: { defaultAgentMode: "inherit", importedSshConfig: false },
         },
       },
+      // Inspected and not a repo — no Git tab, so the active view stays unset until activated.
+      git: { workspaces: { ws1: { available: false } } },
     });
     const transport = makeElectronTransport(payload);
     const logRenderer = vi.fn();
@@ -1050,6 +1052,8 @@ describe("useAppStore — Git tab activation surfaces a failed refreshGit", () =
           settings: { defaultAgentMode: "inherit", importedSshConfig: false },
         },
       },
+      // Inspected and not a repo — no Git tab, so the active view stays unset until activated.
+      git: { workspaces: { ws1: { available: false } } },
     });
     const transport = makeElectronTransport(payload);
     (window as AnyApi).strideterm = { startupFlags: { windowId: "" }, logRenderer: vi.fn() };

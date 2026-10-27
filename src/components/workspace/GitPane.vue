@@ -7,7 +7,7 @@
       :actions="headerActions"
       @action="onHeaderAction"
     />
-    <div v-if="isLoadingRemoteSnapshot" class="git-view git-view--loading" aria-busy="true">
+    <div v-if="isLoadingSnapshot" class="git-view git-view--loading" aria-busy="true">
       <div class="git-view__toolbar git-view__loading-toolbar" aria-hidden="true">
         <span class="git-view__loading-chip git-view__loading-chip--branch"></span>
         <span class="git-view__loading-chip git-view__loading-chip--worktree"></span>
@@ -443,8 +443,10 @@ function onToolbarClick(e: MouseEvent) {
 const snapshot = computed<Record<string, any> | null>(
   () => appStore.getActiveGitSnapshot(props.workspaceId) as Record<string, any> | null, // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT
 );
-const isLoadingRemoteSnapshot = computed(
-  () => appStore.isRemoteTransport && snapshot.value == null && appStore.getGitSummary(props.workspaceId)?.available,
+// No snapshot yet: either the first inspect is still running (no summary either)
+// or, on remote, the detail fetch is pending behind a known-available summary.
+const isLoadingSnapshot = computed(
+  () => snapshot.value == null && appStore.getGitSummary(props.workspaceId)?.available !== false,
 );
 const gitUi = computed(() => gitUiStore.get(props.workspaceId));
 

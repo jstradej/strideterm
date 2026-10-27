@@ -109,6 +109,25 @@ describe("TabStrip", () => {
     expect(gitTab().find(".tab__spinner").exists()).toBe(false);
   });
 
+  test("shows the Git tab with a loading spinner before the first snapshot arrives", async () => {
+    const store = useAppStore();
+    const base = makePayload([]);
+    (base.workspace as unknown as { workspace: { cwd: string } }).workspace.cwd = "C:/repo";
+    store.payload = { ...base, git: { workspaces: {} } } as unknown as StatePayload;
+    const wrapper = mount(TabStrip);
+    const gitTab = () => wrapper.get('[data-view-id="git:ws1"]');
+    expect(gitTab().find(".tab__spinner").attributes("aria-label")).toBe("Loading");
+    expect(gitTab().find("small").text()).toBe("loading");
+
+    store.payload = {
+      ...base,
+      git: { workspaces: { ws1: { available: true, branch: "main", dirty: false, dirtyCount: 0 } } },
+    } as unknown as StatePayload;
+    await flushPromises();
+    expect(gitTab().find(".tab__spinner").exists()).toBe(false);
+    expect(gitTab().find("small").text()).toBe("clean");
+  });
+
   test("marks active tab with tab--active class", () => {
     const store = useAppStore();
     store.payload = makePayload([

@@ -380,6 +380,7 @@ describe("app store — multi-window payload scoping", () => {
         },
         sessions: [{ sessionId: "ws-A:shell-a", panelId: "shell-a", title: "Shell A", status: "idle" }],
       },
+      git: { workspaces: { "ws-A": { available: false }, "ws-B": { available: false } } },
     } as AnyApi;
 
     expect(onStateUpdated).not.toBeNull();
@@ -405,6 +406,7 @@ describe("app store — multi-window payload scoping", () => {
         },
         sessions: [{ sessionId: "ws-B:shell-b", panelId: "shell-b", title: "Shell B", status: "idle" }],
       },
+      git: { workspaces: { "ws-A": { available: false }, "ws-B": { available: false } } },
     } as AnyApi);
     await Promise.resolve();
 

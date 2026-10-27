@@ -74,6 +74,8 @@ export interface WorkspaceTab {
   borrowed?: boolean;
   /** Overrides the tab-strip hover text when set. */
   tooltip?: string;
+  /** Content not known yet (Git tab before the first inspect) — rendered with a spinner. */
+  loading?: boolean;
 }
 
 /**
@@ -581,6 +583,19 @@ export function getWorkspaceTabs({
       status: gitSnapshot.dirty ? `${gitSnapshot.dirtyCount} dirty` : "clean",
       tone: gitSnapshot.dirty ? "error" : "running",
       closable: true,
+    });
+  } else if (!gitSnapshot && activeWorkspace.cwd && activeWorkspace.kind !== "docker") {
+    // No snapshot at all = the first inspect has not finished yet (a finished one
+    // always records a snapshot, `available: false` included). Show the tab as
+    // loading instead of letting it pop in seconds later on a large repo.
+    tabs.push({
+      id: `git:${activeWorkspace.id}`,
+      type: "git",
+      title: "Git",
+      status: "loading",
+      tone: "idle",
+      closable: true,
+      loading: true,
     });
   }
 

@@ -127,6 +127,27 @@ describe("workspace selectors", () => {
     });
   });
 
+  test("shows a loading Git tab until the first inspect records a snapshot", () => {
+    const tabsFor = (git: unknown) =>
+      getWorkspaceTabs({
+        workspace: {
+          workspace: { id: "ws1", kind: "terminal", cwd: "C:/repo", panels: [] } as unknown as WorkspaceState,
+          sessions: [],
+        },
+        payload: { git } as unknown as StatePayload,
+        hiddenViewIds: new Set(),
+        isContainerRunning: () => false,
+      }).filter((tab) => tab.type === "git");
+
+    expect(tabsFor({ workspaces: {} })).toEqual([
+      expect.objectContaining({ id: "git:ws1", status: "loading", loading: true }),
+    ]);
+    const [ready] = tabsFor({ workspaces: { ws1: { available: true, dirty: false, dirtyCount: 0 } } });
+    expect(ready).toMatchObject({ id: "git:ws1", status: "clean" });
+    expect(ready.loading).toBeUndefined();
+    expect(tabsFor({ workspaces: { ws1: { available: false } } })).toEqual([]);
+  });
+
   test("ignores virtual review tabs when resolving workspace panels", () => {
     const result = getWorkspacePanelByViewId(
       "review:review-1",

@@ -65,6 +65,7 @@ function taskPayload(state: string, taskOverrides: AnyApi = {}): AnyApi {
       sessions: [{ sessionId: COMPANION_SESSION, panelId: "panel-judge", title: "Reviewer", status: "running" }],
     },
     attention: { sessions: {}, byWorkspace: {} },
+    git: { workspaces: { "ws-source": { available: false }, "ws-task": { available: false } } },
     taskRunner: {},
   };
 }
@@ -88,6 +89,7 @@ function sourcePayload(state: string, sourceOverrides: AnyApi = {}): AnyApi {
       ],
     },
     attention: { sessions: {}, byWorkspace: {} },
+    git: { workspaces: { "ws-source": { available: false }, "ws-task": { available: false } } },
     taskRunner: {},
   };
 }
