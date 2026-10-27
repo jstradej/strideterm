@@ -6314,7 +6314,7 @@ export async function createRuntime({
   async function runGitWorkspaceAction(
     workspace: WorkspaceState,
     actionPromise: Promise<Record<string, unknown>>,
-    context: { cacheScope?: "status" | "refs" | "all"; rootPath?: string } = {},
+    context: { cacheScope?: "status" | "refs" | "all"; rootPath?: string; awaitRefresh?: boolean } = {},
   ) {
     const cacheScope = context.cacheScope || "all";
     const rootPath = context.rootPath || null;
@@ -6322,13 +6322,19 @@ export async function createRuntime({
     let result: Record<string, unknown>;
     try {
       result = await actionPromise;
-      return { payload: getPayload(), result };
     } finally {
       git.invalidateSnapshotCache?.(workspace.id, rootPath, cacheScope);
-      void refreshGit(workspace.id, { useCache: true, ...(rootPath ? { rootPath } : {}) }).catch((err: unknown) => {
-        log.warn("runGitWorkspaceAction: refresh failed", { workspaceId: workspace.id, err: (err as Error)?.message });
-      });
+      const refresh = refreshGit(workspace.id, { useCache: true, ...(rootPath ? { rootPath } : {}) }).catch(
+        (err: unknown) => {
+          log.warn("runGitWorkspaceAction: refresh failed", {
+            workspaceId: workspace.id,
+            err: (err as Error)?.message,
+          });
+        },
+      );
+      if (context.awaitRefresh) await refresh;
     }
+    return { payload: getPayload(), result };
   }
 
   const pendingWorktreeDeletions = new Set(); // paths being deleted — skip in syncWorktrees

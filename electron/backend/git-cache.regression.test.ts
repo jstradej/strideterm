@@ -205,7 +205,7 @@ describe.skipIf(!hasGit)("Git cache regressions on real repositories", () => {
     });
   });
 
-  it("keeps history and diff statistics out of a status refresh after stage and unstage", async () => {
+  it("keeps history out of a status refresh after stage and unstage and reads only the short diff statistics", async () => {
     const { root, manager, commands } = await repoFixture();
     const workspace = { id: "stage-refresh", cwd: root, kind: "terminal" };
     await manager.refreshWorkspaces([workspace]);
@@ -218,11 +218,12 @@ describe.skipIf(!hasGit)("Git cache regressions on real repositories", () => {
 
     expect(
       commands
-        .filter(({ args }) =>
-          args.some((arg) => ["log", "rev-list", "merge-base", "diff", "--shortstat"].includes(arg)),
-        )
+        .filter(({ args }) => args.some((arg) => ["log", "rev-list", "merge-base"].includes(arg)))
         .map(({ args }) => args.join(" ")),
     ).toEqual([]);
+    const diffs = commands.filter(({ args }) => args.includes("diff"));
+    expect(diffs).toHaveLength(2);
+    expect(diffs.every(({ args }) => args.includes("--shortstat"))).toBe(true);
   });
 
   // Each scenario warms the UI cache first, so its write exercises an incremental
@@ -368,6 +369,31 @@ describe.skipIf(!hasGit)("Git cache regressions on real repositories", () => {
     expect(fullInspects(commands)).toHaveLength(0);
     expect(statusCalls(commands)).toHaveLength(1);
     expect(manager.getSnapshot(workspace.id)?.stale).toBe(false);
+  });
+
+  it("recomputes the diff statistics on a status-only refresh", async () => {
+    const { root, git, manager, commands } = await repoFixture();
+    const workspace = { id: "status-only-stat", cwd: root, kind: "terminal" };
+    const groups = () =>
+      manager.getSnapshot(workspace.id)?.changes as Record<"staged" | "unstaged", { diffStat: { insertions: number } }>;
+    await manager.refreshWorkspaces([workspace]);
+    expect(manager.getSnapshot(workspace.id)?.diffStat).toMatchObject({ insertions: 0 });
+
+    await fs.appendFile(path.join(root, "tracked.txt"), "one\ntwo\n");
+    manager.invalidateSnapshotCache(workspace.id, root, "status");
+    commands.length = 0;
+    await manager.refreshWorkspaces([workspace]);
+    expect(fullInspects(commands)).toHaveLength(0);
+    expect(statusCalls(commands)).toHaveLength(1);
+    expect(manager.getSnapshot(workspace.id)?.diffStat).toMatchObject({ files: 1, insertions: 2, deletions: 0 });
+    expect(groups().unstaged.diffStat.insertions).toBe(2);
+    expect(manager.getSnapshot(workspace.id)?.diffStatStale).toBeUndefined();
+
+    await git(root, ["add", "tracked.txt"]);
+    manager.invalidateSnapshotCache(workspace.id, root, "status");
+    await manager.refreshWorkspaces([workspace]);
+    expect(groups().staged.diffStat.insertions).toBe(2);
+    expect(groups().unstaged.diffStat.insertions).toBe(0);
   });
 
   it("restores the dirty scope a failed refresh consumed", async () => {

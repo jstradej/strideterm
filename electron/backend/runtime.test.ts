@@ -15652,6 +15652,28 @@ describe("workspace lastWorkedAt — the work allowlist", () => {
     expect(inPayload).toBe(workedAt(fixture, "ws-a1"));
   });
 
+  test.each([
+    ["succeeds", { ok: true, summary: "1 file committed." }],
+    ["stops on a conflict", { ok: false, summary: "Commit stopped on a conflict.", conflicts: ["a.ts"] }],
+  ])("a git mutation that %s answers with the snapshot read after it, not before it", async (_label, outcome) => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.git as any).commitAll = vi.fn(async () => outcome);
+    const refreshWorkspaces = fixture.git.refreshWorkspaces.bind(fixture.git);
+    fixture.git.refreshWorkspaces = async (projects, options) => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await refreshWorkspaces(projects, options);
+      for (const snapshot of fixture.git.snapshots.values()) snapshot.lastUpdatedAt = "after-mutation";
+    };
+
+    const response = await fixture.runtime.gitCommitAll({ workspaceId: "ws-a1", message: "wip" });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((response.payload as any).git.workspaces["ws-a1"]?.lastUpdatedAt).toBe("after-mutation");
+  });
+
   test("a git mutation with no structured status still stamps on resolve", async () => {
     // A few mutations resolve with a plain payload and no `ok` field at all;
     // for those the resolution IS the success signal.

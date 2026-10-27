@@ -25,7 +25,7 @@ interface GitHandlerCtx {
   runGitWorkspaceAction: (
     workspace: WorkspaceState,
     action: Promise<GitActionResult>,
-    context?: { cacheScope?: "status" | "refs" | "all"; rootPath?: string },
+    context?: { cacheScope?: "status" | "refs" | "all"; rootPath?: string; awaitRefresh?: boolean },
   ) => Promise<GitWorkspaceActionResponse>;
   /** Stamp `lastWorkedAt` after an allowlisted user action succeeded. */
   recordWorkspaceWork: (workspaceId: string, viewerId?: string) => Promise<void>;
@@ -161,10 +161,10 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
    * and a rejection propagates untouched because the stamp happens after the
    * await.
    *
-   * When the stamp does land, the response payload is rebuilt from it: the
-   * wrapper used to return the snapshot `runGitWorkspaceAction` captured
-   * BEFORE the mutation, so a renderer adopting that response overwrote the
-   * fresh broadcast with a pre-stamp state (V3 review, §4 P2).
+   * The response is built after BOTH the stamp and the post-mutation Git
+   * refresh, so it carries the snapshot read after the mutation. It used to
+   * carry the one captured BEFORE it, and a renderer adopting that response
+   * overwrote the fresh broadcast with a pre-mutation state (V3 review, §4 P2).
    *
    * Read-only operations (log, diff, compare, list, stash inspection) keep
    * using the plain `runGitWorkspaceAction`: looking is not working. Stage,
@@ -177,7 +177,7 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
     windowId?: string,
     context: { cacheScope?: "status" | "refs" | "all"; rootPath?: string } = {},
   ) {
-    const response = await runGitWorkspaceAction(workspace, action, context);
+    const response = await runGitWorkspaceAction(workspace, action, { ...context, awaitRefresh: true });
     if (!isGitSuccess(response?.result)) return response;
     await recordWorkspaceWork(workspace.id, windowId);
     return { ...response, payload: getPayload() };

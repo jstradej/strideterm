@@ -66,7 +66,9 @@ async function fixture() {
 }
 
 const isStatus = (args: string[]) => args.includes("status");
-const isHistory = (args: string[]) => args.some((arg) => ["log", "rev-list", "merge-base", "diff"].includes(arg));
+const isHistory = (args: string[]) =>
+  args.some((arg) => ["log", "rev-list", "merge-base"].includes(arg)) ||
+  (args.includes("diff") && !args.includes("--shortstat"));
 
 describe("Git cache integration", () => {
   it("shares a physical checkout across subdirectory bindings and performs one status for two clients", async () => {

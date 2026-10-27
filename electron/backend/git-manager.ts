@@ -148,7 +148,6 @@ function snapshotRevision(snapshot: Record<string, unknown>): string {
               "cached",
               "summaryOnly",
               "refreshing",
-              "diffStatStale",
               "dataRevision",
             ].includes(key),
         )
@@ -1320,7 +1319,6 @@ export class GitManager extends EventEmitter {
         behindCount: parsedStatus.behindCount,
         compareWithBase,
         lastFetchAt: getFetchTimestamp(gitCommonDir),
-        ...(reuseStatus ? { diffStatStale: Boolean(reuseStatus.diffStatStale) } : {}),
         operationState: operationState.inProgress
           ? buildOperationState({
               kind: operationState.kind,
@@ -2646,13 +2644,15 @@ export class GitManager extends EventEmitter {
     try {
       const configurationToken = await this.readConfigurationToken(root, this.refreshReason.getStore() === "poll");
       if (previous.configurationToken && previous.configurationToken !== configurationToken) return null;
-      const [head, refs, statusResult] = await Promise.all([
+      const [head, refs, statusResult, stagedDiffStat, unstagedDiffStat] = await Promise.all([
         this.execGit(root, ["rev-parse", "--verify", "HEAD"]).catch(() => ({ stdout: "", stderr: "" })),
         this.execGit(root, ["for-each-ref", "--format=%(refname)%00%(objectname)", "refs"]).catch(() => ({
           stdout: "",
           stderr: "",
         })),
         this.readStatus(root),
+        this.readDiffStat(root, ["--no-optional-locks", "diff", "--cached", "--shortstat"]),
+        this.readDiffStat(root, ["--no-optional-locks", "diff", "--shortstat"]),
       ]);
       const stateToken = createHash("sha256").update(`${head.stdout.trim()}\0${refs.stdout}`).digest("hex");
       if (stateToken !== previous.stateToken) return null;
@@ -2661,6 +2661,7 @@ export class GitManager extends EventEmitter {
       const unstaged = parsed.unstaged;
       const untracked = parsed.untracked;
       const conflicts = parsed.conflicts;
+      const untrackedDiffStat = summarizeNameStatusEntries(untracked.map((entry) => ({ code: "?", path: entry.path })));
       const operation = await this.inspectOperationState(root, {
         gitDir: String(previous.gitDir || ""),
         gitCommonDir: String(previous.gitCommonDir || ""),
@@ -2694,12 +2695,16 @@ export class GitManager extends EventEmitter {
         refreshError: "",
         changes: {
           ...previousChanges,
-          staged: { ...(previousChanges.staged || {}), files: staged },
-          unstaged: { ...(previousChanges.unstaged || {}), files: [...unstaged, ...conflicts] },
-          untracked: { ...(previousChanges.untracked || {}), files: untracked },
+          staged: { ...(previousChanges.staged || {}), files: staged, diffStat: stagedDiffStat },
+          unstaged: {
+            ...(previousChanges.unstaged || {}),
+            files: [...unstaged, ...conflicts],
+            diffStat: unstagedDiffStat,
+          },
+          untracked: { ...(previousChanges.untracked || {}), files: untracked, diffStat: untrackedDiffStat },
         },
+        diffStat: mergeDiffStats(stagedDiffStat, unstagedDiffStat, untrackedDiffStat),
         lastUpdatedAt: this.now().toISOString(),
-        diffStatStale: true,
         contentRevision: this.workspacePhysicalKeys.get(this._cacheKey(workspace.id, root))
           ? this.physicalContentRevisions.get(this.workspacePhysicalKeys.get(this._cacheKey(workspace.id, root))!) || 0
           : 0,

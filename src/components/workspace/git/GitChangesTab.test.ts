@@ -189,7 +189,7 @@ afterEach(async () => {
 });
 
 describe("GitChangesTab", () => {
-  test("hides cached diff statistics after a status-only refresh marks them stale", async () => {
+  test("keeps the diff statistics visible beside the file list", async () => {
     observedWidth = 900;
     const wrapper = mountTab({
       snapshot: {
@@ -197,13 +197,13 @@ describe("GitChangesTab", () => {
         staged: [],
         unstaged: [],
         untracked: [],
-        diffStat: { insertions: 12, deletions: 4 },
-        diffStatStale: true,
+        diffStat: { files: 2, insertions: 12, deletions: 4 },
       },
     });
     await flushPromises();
-    expect(wrapper.text()).not.toContain("12");
-    expect(wrapper.text()).not.toContain("4");
+    expect(wrapper.find(".git-stat-row").exists()).toBe(true);
+    expect(wrapper.text()).toContain("12");
+    expect(wrapper.text()).toContain("4");
   });
 
   test("retains the staged commit message when the backend rejects the commit", async () => {
