@@ -361,6 +361,43 @@ describe("Git cache integration", () => {
     expect(events).toBe(2);
   });
 
+  it("hydrates every linked workspace of one checkout after restart", async () => {
+    const { root, scratch, git, manager } = await fixture();
+    manager.dispose();
+    const linked = path.join(scratch, "linked checkout");
+    await fs.symlink(root, linked, process.platform === "win32" ? "junction" : "dir");
+    const workspaces = [
+      { id: "linked-root", cwd: linked, kind: "terminal" },
+      { id: "linked-subdirectory", cwd: path.join(linked, "subdir"), kind: "terminal" },
+    ];
+    const dir = path.join(scratch, "data");
+    const store = new GitCacheStore(dir);
+    const first = new GitManager({ cacheStore: store, execGitImpl: git });
+    first.detectLazygit = manager.detectLazygit;
+    cleanups.push(async () => {
+      first.dispose();
+      await store.close();
+    });
+    await first.registerWorkspaces(workspaces);
+    await first.refreshWorkspaces([workspaces[0]]);
+    await first.refreshWorkspaces([workspaces[1]]);
+    first.dispose();
+    await store.close();
+
+    const reopened = new GitCacheStore(dir);
+    const runner = vi.fn(git);
+    const second = new GitManager({ cacheStore: reopened, execGitImpl: runner });
+    second.detectLazygit = manager.detectLazygit;
+    cleanups.push(async () => {
+      second.dispose();
+      await reopened.close();
+    });
+    await second.registerWorkspaces(workspaces);
+    expect(runner).not.toHaveBeenCalled();
+    for (const workspace of workspaces)
+      expect(second.getSnapshot(workspace.id)).toMatchObject({ branch: "main", stale: true });
+  });
+
   it("falls back to the real checkout root when the link points inside the repository", async () => {
     const { manager, root, scratch, git } = await fixture();
     const linkedSubdirectory = path.join(scratch, "linked subdirectory");

@@ -202,6 +202,10 @@ export class GitCacheStore {
     if (!copy) return;
     const key = identityKey(entry);
     const prior = this.writes.get(key);
+    // The newer write replaces the pending one, but the paths it was reached by belong to every
+    // workspace that wrote it: dropping the earlier ones leaves that workspace nothing to hydrate.
+    if (prior?.rootAliases?.length)
+      copy.rootAliases = sanitizeRootAliases([...prior.rootAliases, ...(copy.rootAliases ?? [])], copy.checkoutRoot);
     if (this.writes.size >= GitCacheStore.MAX_BUFFER_ENTRIES && !prior) return;
     if (this.writeBytes - (prior ? entryBytes(prior) : 0) + entryBytes(copy) > GitCacheStore.MAX_BUFFER_BYTES) return;
     if (prior) this.writeBytes -= entryBytes(prior);

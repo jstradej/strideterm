@@ -211,6 +211,20 @@ describe("GitCacheStore", () => {
     await reopened.close();
     await fs.rm(dir, { recursive: true, force: true });
   });
+  it("keeps every root alias of writes coalesced before a flush", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "git-cache-coalesced-aliases-"));
+    const canonical = "/private/var/repos/app";
+    const store = new GitCacheStore(dir);
+    store.write({ ...entry(canonical, "first"), rootAliases: ["/var/repos/app"] });
+    store.write({ ...entry(canonical, "second"), rootAliases: ["/var/repos/app/subdir"] });
+    await store.close();
+
+    const reopened = new GitCacheStore(dir);
+    expect(await reopened.readByRoot("/var/repos/app")).toMatchObject({ checkoutRoot: canonical, revision: "second" });
+    expect(await reopened.readByRoot("/var/repos/app/subdir")).toMatchObject({ checkoutRoot: canonical });
+    await reopened.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
   it("fails open for a corrupt database and an unusable data directory", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "git-cache-bad-"));
     await fs.mkdir(path.join(dir, "cache"));
