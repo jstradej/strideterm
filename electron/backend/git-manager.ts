@@ -233,6 +233,10 @@ interface SnapshotCacheEntry {
 interface CheckoutIdentity {
   key: string;
   root: string;
+  // `root` as the caller reached it. A workspace opened through a symlink or a junction
+  // (macOS `/var` → `/private/var`, a Windows 8.3 name) runs Git, takes the review-Git locks
+  // and writes audit rows under its own spelling, like the review Git engine does.
+  checkoutRoot: string;
   gitDir: string;
   commonDir: string;
   token: string;
@@ -335,6 +339,20 @@ function managedReviewSourceBranch(workspace: WorkspaceRef, branch: string): str
   return isManagedReviewBranch(branch, pullRequest?.id ?? "", source) ? source : "";
 }
 
+/**
+ * The real checkout root `realRoot` spelled the way `requested` reached it: as many levels up
+ * from `requested` as `realRequested` sits below `realRoot`. Falls back to the real path when
+ * the link lies below the checkout root, so walking up the requested spelling leaves it.
+ */
+async function spellCheckoutRoot(requested: string, realRequested: string, realRoot: string): Promise<string> {
+  const relative = path.relative(realRoot, realRequested);
+  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return realRoot;
+  const candidate = path.resolve(requested, ...(relative ? relative.split(path.sep).map(() => "..") : []));
+  if (!relative) return candidate;
+  const realCandidate = await fsRealpath(candidate).catch(() => "");
+  return realCandidate && canonicalLockKey(realCandidate) === canonicalLockKey(realRoot) ? candidate : realRoot;
+}
+
 export class GitManager extends EventEmitter {
   snapshots: Map<string, Record<string, unknown>>;
   execGitImpl: ExecGitImpl | null;
@@ -362,10 +380,7 @@ export class GitManager extends EventEmitter {
   private physicalGenerations = new Map<string, number>();
   private physicalContentRevisions = new Map<string, number>();
   private physicalSnapshotCache = new Map<string, SnapshotCacheEntry>();
-  private physicalIdentityCache = new Map<
-    string,
-    Promise<{ key: string; root: string; gitDir: string; commonDir: string; token: string }>
-  >();
+  private physicalIdentityCache = new Map<string, Promise<CheckoutIdentity>>();
   private checkoutWatch: GitCheckoutWatch | null = null;
   private unsubscribeGitLocks: (() => void) | null = null;
   private watchedBindings = new Map<string, Array<{ workspace: WorkspaceRef; root: string }>>();
@@ -374,7 +389,7 @@ export class GitManager extends EventEmitter {
     Array<{
       workspace: WorkspaceRef;
       root: string;
-      identity: { key: string; root: string; gitDir: string; commonDir: string };
+      identity: CheckoutIdentity;
     }>
   >();
   private interestedGeneration = 0;
@@ -452,7 +467,9 @@ export class GitManager extends EventEmitter {
           entries.some(({ identity }) =>
             event.level === "common"
               ? canonicalLockKey(identity.commonDir) === event.key
-              : canonicalLockKey(identity.root) === event.key || canonicalLockKey(identity.gitDir) === event.key,
+              : [identity.root, identity.checkoutRoot, identity.gitDir].some(
+                  (dir) => canonicalLockKey(dir) === event.key,
+                ),
           )
         ) {
           if (event.level === "common") this.markPhysicalDirty(physicalKey, "refs");
@@ -1014,6 +1031,11 @@ export class GitManager extends EventEmitter {
     try {
       const rootResult = await this.execGit(rootPath, ["rev-parse", "--show-toplevel"]);
       const root = rootResult.stdout.trim();
+      const [realRequested, realRoot] = await Promise.all(
+        [rootPath, root].map((value) => fsRealpath(value).catch(() => "")),
+      );
+      const spelled = realRequested && realRoot ? await spellCheckoutRoot(rootPath, realRequested, realRoot) : root;
+      const checkoutRoot = canonicalLockKey(spelled) === canonicalLockKey(realRoot || root) ? root : spelled;
       const configurationToken = await this.readConfigurationToken(rootPath, true);
       // Batch every independent read into one Promise.all. Previously
       // getStashCount and the two readDiffStat calls ran sequentially after
@@ -1276,8 +1298,8 @@ export class GitManager extends EventEmitter {
         cwd: rootPath,
         rootPath,
         available: true,
-        root,
-        repository: path.basename(root),
+        root: checkoutRoot,
+        repository: path.basename(checkoutRoot),
         branch,
         remotes: parsedRemotes,
         commitCount: parseIntSafe(commitCountResult.stdout),
@@ -1306,8 +1328,8 @@ export class GitManager extends EventEmitter {
         isWorktree: worktrees.length > 1,
         isMainWorktree: siblingWorktrees.find((entry) => entry.isCurrent)?.isMainWorktree || false,
         branchMerged,
-        worktreePath: root,
-        mainWorktreePath: mainWorktree?.path || root,
+        worktreePath: checkoutRoot,
+        mainWorktreePath: mainWorktree?.path || checkoutRoot,
         siblingWorktrees,
         upstream,
         baseBranch,
@@ -1913,7 +1935,9 @@ export class GitManager extends EventEmitter {
       this.knownBindings.set(identity.key, bindings);
       if (
         this.gitReadPriority.getStore() === "background" &&
-        (sharedReviewGitLocks.isCommonHeld(identity.commonDir) || sharedReviewGitLocks.isWorktreeHeld(identity.root))
+        (sharedReviewGitLocks.isCommonHeld(identity.commonDir) ||
+          sharedReviewGitLocks.isWorktreeHeld(identity.root) ||
+          sharedReviewGitLocks.isWorktreeHeld(identity.checkoutRoot))
       ) {
         return previous
           ? { ...previous, stale: true }
@@ -2095,6 +2119,7 @@ export class GitManager extends EventEmitter {
             return {
               key: resolvedRoot,
               root: resolvedRoot,
+              checkoutRoot: path.resolve(root),
               gitDir: path.join(resolvedRoot, ".git"),
               commonDir: path.join(resolvedRoot, ".git"),
               token: resolvedRoot,
@@ -2113,7 +2138,8 @@ export class GitManager extends EventEmitter {
         const commonDir = await resolveCanonicalPath(resolveGitPath(resolvedRoot, commonDirValue));
         const token = await this.identityFilesystemToken(realRoot, gitDir, commonDir);
         const canonical = [realRoot, gitDir, commonDir, token].join("\0");
-        return { key: canonical, root: realRoot, gitDir, commonDir, token };
+        const checkoutRoot = await spellCheckoutRoot(root, resolvedRoot, realRoot);
+        return { key: canonical, root: realRoot, checkoutRoot, gitDir, commonDir, token };
       })();
       this.physicalIdentityCache.set(root, cached!);
       if (this.physicalIdentityCache.size > 256)
@@ -2147,12 +2173,13 @@ export class GitManager extends EventEmitter {
   private async workingDirectory(cwd: string): Promise<string> {
     if (!cwd) return cwd;
     if (this.execGitImpl && !this.physicalIdentityCache.has(cwd)) {
-      let current = await fsRealpath(cwd).catch(() => "");
-      if (!current) return cwd;
+      const realCwd = await fsRealpath(cwd).catch(() => "");
+      if (!realCwd) return cwd;
+      let current = realCwd;
       while (current) {
         try {
           await fsStat(path.join(current, ".git"));
-          return current;
+          return spellCheckoutRoot(cwd, realCwd, current);
         } catch (error) {
           if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code || "")) throw error;
         }
@@ -2162,7 +2189,7 @@ export class GitManager extends EventEmitter {
       }
     }
     try {
-      return (await this.physicalIdentity(cwd)).root;
+      return (await this.physicalIdentity(cwd)).checkoutRoot;
     } catch (error) {
       if (this.execGitImpl) return cwd;
       throw error;
@@ -4174,7 +4201,7 @@ export class GitManager extends EventEmitter {
     let stashLabel = "";
     let stashOutput = "";
 
-    const effectiveCwd = await this.workingDirectory(String(snapshot.root || rootPath || workspace.cwd || ""));
+    const effectiveCwd = await this.workingDirectory(String(rootPath || workspace.cwd || snapshot.root || ""));
 
     // Stashing is a separate step from the action itself: when it fails the
     // action never ran, and the result must say so instead of "<label> failed."

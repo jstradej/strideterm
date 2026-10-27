@@ -336,6 +336,52 @@ describe("Git cache integration", () => {
     ).toContain("selected nested edit");
   });
 
+  it("runs Git, takes the review lock and reports the checkout under a linked workspace's own path", async () => {
+    const { manager, root, scratch } = await fixture();
+    const linked = path.join(scratch, "linked checkout");
+    await fs.symlink(root, linked, process.platform === "win32" ? "junction" : "dir");
+    const workspace = { id: "linked", cwd: path.join(linked, "subdir"), kind: "terminal" };
+    await manager.refreshWorkspaces([workspace]);
+    expect(manager.getSnapshot(workspace.id)).toMatchObject({ root: linked, worktreePath: linked });
+
+    await fs.writeFile(path.join(root, "subdir", "nested.txt"), "linked edit\n");
+    const runner = manager.execGitImpl!;
+    const writes: Array<{ cwd: string; locked: boolean }> = [];
+    manager.execGitImpl = (cwd, args, options) => {
+      if (args.includes("add")) writes.push({ cwd, locked: sharedReviewGitLocks.isWorktreeHeld(linked) });
+      return runner(cwd, args, options);
+    };
+    expect((await manager.stageFile(workspace, { path: "subdir/nested.txt" })).ok).toBe(true);
+    expect(writes).toEqual([{ cwd: linked, locked: true }]);
+
+    // The review Git engine locks the workspace's own path; the Git pane must see that mutation.
+    let events = 0;
+    manager.on("freshness", () => events++);
+    await sharedReviewGitLocks.withWorktree(linked, async () => {});
+    expect(events).toBe(2);
+  });
+
+  it("falls back to the real checkout root when the link points inside the repository", async () => {
+    const { manager, root, scratch, git } = await fixture();
+    const linkedSubdirectory = path.join(scratch, "linked subdirectory");
+    await fs.symlink(path.join(root, "subdir"), linkedSubdirectory, process.platform === "win32" ? "junction" : "dir");
+    const workspace = { id: "linked-subdirectory", cwd: linkedSubdirectory, kind: "terminal" };
+    await manager.refreshWorkspaces([workspace]);
+    const realRoot = await fs.realpath(root);
+    expect(path.resolve(String(manager.getSnapshot(workspace.id)?.root))).toBe(realRoot);
+
+    await fs.writeFile(path.join(root, "subdir", "nested.txt"), "linked subdirectory edit\n");
+    const runner = manager.execGitImpl!;
+    const cwds: string[] = [];
+    manager.execGitImpl = (cwd, args, options) => {
+      if (args.includes("add")) cwds.push(cwd);
+      return runner(cwd, args, options);
+    };
+    expect((await manager.stageFile(workspace, { path: "subdir/nested.txt" })).ok).toBe(true);
+    expect(cwds).toEqual([realRoot]);
+    expect((await git(root, ["diff", "--cached", "--name-only", "-z"])).stdout).toBe("subdir/nested.txt\0");
+  });
+
   it("rediscovers a newly created nested repository instead of sharing its former parent cache", async () => {
     const { manager, root, git } = await fixture();
     const nested = path.join(root, "subdir");
