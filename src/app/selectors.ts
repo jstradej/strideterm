@@ -76,6 +76,8 @@ export interface WorkspaceTab {
   tooltip?: string;
   /** Content not known yet (Git tab before the first inspect) — rendered with a spinner. */
   loading?: boolean;
+  /** Cached Git data shown while the checkout is re-inspected — spinner beside the status. */
+  revalidating?: boolean;
 }
 
 /**
@@ -295,7 +297,10 @@ export interface TabAccessors {
     dirty?: boolean;
     dirtyCount?: number;
     summaryOnly?: boolean;
+    refreshing?: boolean;
+    stale?: boolean;
     refreshError?: string | null;
+    error?: string | null;
   } | null;
   dockerCounts?: () => { available: boolean; total: number; running: number };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -581,10 +586,18 @@ export function getWorkspaceTabs({
   const gitSnapshot = accessors?.gitSummary
     ? accessors.gitSummary(activeWorkspace.id)
     : payload?.git?.workspaces?.[activeWorkspace.id] || payload?.git?.projects?.[activeWorkspace.id] || null;
-  // A summary restored from the cache is not verified yet: its "clean" may be stale.
-  const cacheState = gitSnapshot as { summaryOnly?: boolean; refreshError?: string | null } | null;
-  const verifying = Boolean(cacheState?.summaryOnly && !cacheState.refreshError);
-  if (gitSnapshot?.available && !verifying) {
+  // The backend publishes `{available: false, refreshing: true}` while the FIRST inspect of a
+  // checkout runs (the same cold-refresh placeholder GitPane renders as its loading skeleton).
+  // It is not a verdict that the directory has no repository, so it must not hide the tab.
+  const freshness = gitSnapshot as {
+    refreshing?: boolean;
+    stale?: boolean;
+    error?: string | null;
+    refreshError?: string | null;
+  } | null;
+  const coldRefresh =
+    freshness?.refreshing === true && !gitSnapshot?.available && !freshness.error && !freshness.refreshError;
+  if (gitSnapshot?.available) {
     tabs.push({
       id: `git:${activeWorkspace.id}`,
       type: "git",
@@ -592,8 +605,9 @@ export function getWorkspaceTabs({
       status: gitSnapshot.dirty ? `${gitSnapshot.dirtyCount} dirty` : "clean",
       tone: gitSnapshot.dirty ? "error" : "running",
       closable: true,
+      ...(freshness?.stale && !freshness.refreshError ? { revalidating: true } : {}),
     });
-  } else if ((verifying || !gitSnapshot) && activeWorkspace.cwd && activeWorkspace.kind !== "docker") {
+  } else if ((!gitSnapshot || coldRefresh) && activeWorkspace.cwd && activeWorkspace.kind !== "docker") {
     // No snapshot at all = the first inspect has not finished yet (a finished one
     // always records a snapshot, `available: false` included). Show the tab as
     // loading instead of letting it pop in seconds later on a large repo.

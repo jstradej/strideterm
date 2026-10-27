@@ -1,4 +1,5 @@
 import { watch, type FSWatcher } from "node:fs";
+import { stat } from "node:fs/promises";
 import path from "node:path";
 import { getLogger, redactSecrets } from "./logger.js";
 
@@ -23,6 +24,10 @@ interface TargetState {
   nextPollAt: number;
   lastWarningAt: number;
   ignoredDirectories: Map<string, boolean>;
+  ignoredAt: number;
+  ignoreFileStamps: Map<string, string>;
+  ignoreFileChecks: Map<string, Promise<boolean>>;
+  pendingEvents: Map<string, { scope: GitInvalidationScope; paths: Set<string> }>;
   classifying: Set<string>;
   pendingClassification: Set<string>;
   classificationRunning: boolean;
@@ -30,6 +35,28 @@ interface TargetState {
 }
 
 const IGNORE_CHECK_MAX_DEPTH = 3;
+const IGNORE_FORGET_AFTER_MS = 10 * 60_000;
+const MAX_PENDING_DIRECTORIES = 64;
+const MAX_PENDING_PATHS = 256;
+
+// Windows reports a plain read as a change (last-access), so Git's own reads during an inspect would
+// invalidate it. None of these can alter the repository state before HEAD, a ref, FETCH_HEAD or the
+// index does, and those keep their own events.
+const INERT_GIT_PATH = /^(?:(?:objects|logs|lfs|hooks|info)(?:\/|$)|(?:COMMIT_EDITMSG|description)$)/;
+
+function isInertGitPath(relative: string): boolean {
+  return INERT_GIT_PATH.test(relative) && relative !== "info/exclude";
+}
+
+// Only mtime and size: a read bumps atime (and Windows reports it as a change), which must not count.
+async function fileStamp(file: string): Promise<string> {
+  try {
+    const stats = await stat(file);
+    return `${stats.mtimeMs}:${stats.size}`;
+  } catch {
+    return "missing";
+  }
+}
 
 interface WatchEntry {
   watcher: FSWatcher;
@@ -79,7 +106,7 @@ export class GitCheckoutWatch {
     }
     for (const [key, target] of wanted) {
       if (this.targets.has(key)) continue;
-      this.targets.set(key, {
+      const state: TargetState = {
         target,
         paths: new Set(),
         timer: null,
@@ -91,11 +118,17 @@ export class GitCheckoutWatch {
         nextPollAt: this.now() + this.pollDelay(0, 0),
         lastWarningAt: -Infinity,
         ignoredDirectories: new Map(),
+        ignoredAt: this.now(),
+        ignoreFileStamps: new Map(),
+        ignoreFileChecks: new Map(),
+        pendingEvents: new Map(),
         classifying: new Set(),
         pendingClassification: new Set(),
         classificationRunning: false,
         ignoreGeneration: 0,
-      });
+      };
+      this.targets.set(key, state);
+      void this.primeIgnoreFileStamps(key, state);
     }
     this.syncWatchers();
     if (this.targets.size && !this.poll) {
@@ -159,7 +192,7 @@ export class GitCheckoutWatch {
           if (!entry) return;
           const filename = name === null ? "" : String(name);
           const normalized = process.platform === "win32" ? filename.replace(/\\/g, "/") : filename;
-          if (entry.metadata && /(?:^|\/)\S*\.lock$/.test(normalized)) return;
+          if (entry.metadata && (/(?:^|\/)\S*\.lock$/.test(normalized) || isInertGitPath(normalized))) return;
           if (!entry.metadata && (normalized === ".git" || normalized.startsWith(".git/"))) {
             if (normalized !== ".git") return;
           }
@@ -178,12 +211,15 @@ export class GitCheckoutWatch {
             const state = this.targets.get(key);
             if (!state) continue;
             const target = state.target;
-            if (entry.metadata && normalized === "info/exclude") this.forgetIgnored(state);
+            if (entry.metadata && normalized === "info/exclude") {
+              this.ignoreFileEvent(key, state, normalized, path.join(desired.directory, normalized), filename);
+              continue;
+            }
             if (!entry.metadata && normalized === ".git") {
               // Windows reports a change of the directory itself whenever an entry inside it is
               // written; the metadata watch already sees those. Only its creation or removal counts.
               if (event !== "rename" && path.resolve(target.gitDir) === path.resolve(target.root, ".git")) continue;
-            } else if (!entry.metadata && filename && this.isIgnored(key, state, normalized)) continue;
+            } else if (!entry.metadata && filename && this.isIgnored(key, state, normalized, scope, filename)) continue;
             let targetScope = scope;
             if (entry.metadata && filename && desired.directory === target.commonDir) {
               const privateParts = normalized.startsWith("worktrees/") ? normalized.slice(10).split("/") : [];
@@ -191,6 +227,7 @@ export class GitCheckoutWatch {
               const privatePath = privateParts.join("/");
               if (privateName) {
                 if (!privatePath || ["gitdir", "commondir"].includes(privatePath)) targetScope = "refs";
+                else if (isInertGitPath(privatePath)) continue;
                 else {
                   const expected = path.join(target.commonDir, "worktrees", privateName);
                   if (path.resolve(target.gitDir) !== path.resolve(expected)) continue;
@@ -237,23 +274,108 @@ export class GitCheckoutWatch {
     }
   }
 
-  private isIgnored(key: string, state: TargetState, relative: string): boolean {
+  /** "pending": the event waits in `pendingEvents` until Git has classified its top unknown directory. */
+  private isIgnored(
+    key: string,
+    state: TargetState,
+    relative: string,
+    scope: GitInvalidationScope,
+    filename: string,
+  ): boolean | "pending" {
     if (relative === ".gitignore" || relative.endsWith("/.gitignore")) {
-      this.forgetIgnored(state);
-      return false;
+      this.ignoreFileEvent(key, state, relative, path.join(state.target.root, relative), filename);
+      return true;
     }
     const parts = relative.split("/").filter(Boolean);
     const unknown: string[] = [];
+    let top: string | undefined;
     // Build output and dependency folders sit near the root; checking deeper would spawn a
     // classification for every new folder of a checkout being written.
     for (let depth = 1; depth < Math.min(parts.length, IGNORE_CHECK_MAX_DEPTH + 1); depth++) {
       const directory = parts.slice(0, depth).join("/");
       const ignored = state.ignoredDirectories.get(directory);
       if (ignored) return true;
-      if (ignored === undefined && !state.classifying.has(directory)) unknown.push(directory);
+      if (ignored === undefined) {
+        top ??= directory;
+        if (!state.classifying.has(directory)) unknown.push(directory);
+      }
     }
+    if (!this.options.classifyIgnored || top === undefined) return false;
     if (unknown.length) this.classify(key, state, unknown);
-    return false;
+    return this.hold(state, top, scope, filename) ? "pending" : false;
+  }
+
+  private async primeIgnoreFileStamps(key: string, state: TargetState): Promise<void> {
+    const files: Array<[string, string]> = [];
+    if (state.target.commonDir) files.push(["info/exclude", path.join(state.target.commonDir, "info", "exclude")]);
+    if (state.target.root) files.push([".gitignore", path.join(state.target.root, ".gitignore")]);
+    const stamps = await Promise.all(files.map(([, file]) => fileStamp(file)));
+    if (this.targets.get(key) !== state || this.disposed) return;
+    files.forEach(([relative], index) => {
+      if (!state.ignoreFileStamps.has(relative)) state.ignoreFileStamps.set(relative, stamps[index]);
+    });
+  }
+
+  /** True when the file differs from the last stamp seen, or none was seen yet. One stat serves a burst of events. */
+  private ignoreFileChanged(state: TargetState, relative: string, absolutePath: string): Promise<boolean> {
+    const running = state.ignoreFileChecks.get(relative);
+    if (running) return running;
+    const check = fileStamp(absolutePath)
+      .then((stamp) => {
+        if (state.ignoreFileStamps.get(relative) === stamp) return false;
+        state.ignoreFileStamps.set(relative, stamp);
+        return true;
+      })
+      .finally(() => state.ignoreFileChecks.delete(relative));
+    state.ignoreFileChecks.set(relative, check);
+    return check;
+  }
+
+  private ignoreFileEvent(
+    key: string,
+    state: TargetState,
+    relative: string,
+    absolutePath: string,
+    filename: string,
+  ): void {
+    void this.ignoreFileChanged(state, relative, absolutePath).then((changed) => {
+      if (!changed || this.disposed || this.targets.get(key) !== state) return;
+      this.forgetIgnored(key, state);
+      this.changed(key, "status", filename, "watch");
+    });
+  }
+
+  private hold(state: TargetState, directory: string, scope: GitInvalidationScope, filename: string): boolean {
+    let buffered = state.pendingEvents.get(directory);
+    if (!buffered) {
+      if (state.pendingEvents.size >= MAX_PENDING_DIRECTORIES) return false;
+      buffered = { scope, paths: new Set() };
+      state.pendingEvents.set(directory, buffered);
+    }
+    if (buffered.scope !== scope) buffered.scope = "all";
+    if (buffered.paths.has("")) return true;
+    if (buffered.paths.size >= MAX_PENDING_PATHS) buffered.paths = new Set([""]);
+    else buffered.paths.add(filename);
+    return true;
+  }
+
+  private release(key: string, buffered: { scope: GitInvalidationScope; paths: Set<string> }): void {
+    for (const filename of buffered.paths) this.changed(key, buffered.scope, filename, "watch");
+  }
+
+  /** Releases the events whose directory is now known to be tracked and starts the checks still missing. */
+  private settle(key: string, state: TargetState): void {
+    const unresolved: string[] = [];
+    for (const [directory, buffered] of [...state.pendingEvents]) {
+      const ignored = state.ignoredDirectories.get(directory);
+      if (ignored === undefined) {
+        if (!state.classifying.has(directory)) unresolved.push(directory);
+        continue;
+      }
+      state.pendingEvents.delete(directory);
+      if (!ignored) this.release(key, buffered);
+    }
+    if (unresolved.length) this.classify(key, state, unresolved);
   }
 
   /** One classification per checkout at a time; directories seen meanwhile wait for the next batch. */
@@ -283,16 +405,21 @@ export class GitCheckoutWatch {
       .finally(() => {
         for (const directory of batch) state.classifying.delete(directory);
         state.classificationRunning = false;
-        if (state.pendingClassification.size && this.targets.get(key) === state && !this.disposed)
-          this.classify(key, state, []);
+        if (this.targets.get(key) !== state || this.disposed) return;
+        this.settle(key, state);
+        if (state.pendingClassification.size) this.classify(key, state, []);
       });
   }
 
-  private forgetIgnored(state: TargetState): void {
+  private forgetIgnored(key: string, state: TargetState): void {
     state.ignoreGeneration++;
     state.ignoredDirectories.clear();
+    state.ignoredAt = this.now();
     for (const directory of state.pendingClassification) state.classifying.delete(directory);
     state.pendingClassification.clear();
+    const buffered = [...state.pendingEvents.values()];
+    state.pendingEvents.clear();
+    for (const events of buffered) this.release(key, events);
   }
 
   private changed(key: string, scope: GitInvalidationScope, filename: string, reason: GitInvalidationReason): void {
@@ -325,7 +452,7 @@ export class GitCheckoutWatch {
     for (const [key, state] of this.targets) {
       if (state.running || state.pending || now < state.nextPollAt) continue;
       state.nextPollAt = now + this.pollDelay(state.costMs, state.failures);
-      this.forgetIgnored(state);
+      if (now - state.ignoredAt >= IGNORE_FORGET_AFTER_MS) this.forgetIgnored(key, state);
       this.changed(key, "status", "", "poll");
     }
   }

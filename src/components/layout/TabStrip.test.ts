@@ -119,6 +119,15 @@ describe("TabStrip", () => {
     expect(gitTab().find(".tab__spinner").attributes("aria-label")).toBe("Loading");
     expect(gitTab().find("small").text()).toBe("loading");
 
+    // The first inspect publishes a cold-refresh placeholder before its result: still loading.
+    store.payload = {
+      ...base,
+      git: { workspaces: { ws1: { available: false, refreshing: true, stale: true, error: "" } } },
+    } as unknown as StatePayload;
+    await flushPromises();
+    expect(gitTab().find(".tab__spinner").attributes("aria-label")).toBe("Loading");
+    expect(gitTab().find("small").text()).toBe("loading");
+
     store.payload = {
       ...base,
       git: { workspaces: { ws1: { available: true, branch: "main", dirty: false, dirtyCount: 0 } } },
@@ -126,6 +135,54 @@ describe("TabStrip", () => {
     await flushPromises();
     expect(gitTab().find(".tab__spinner").exists()).toBe(false);
     expect(gitTab().find("small").text()).toBe("clean");
+  });
+
+  test("spins the Git tab beside its cached status while a restored snapshot is being verified", async () => {
+    const store = useAppStore();
+    const base = makePayload([]);
+    (base.workspace as unknown as { workspace: { cwd: string } }).workspace.cwd = "C:/repo";
+    const snapshot = { available: true, branch: "main", dirty: true, dirtyCount: 2 };
+    store.payload = {
+      ...base,
+      git: { workspaces: { ws1: { ...snapshot, stale: true, verified: false } } },
+    } as unknown as StatePayload;
+    const wrapper = mount(TabStrip);
+    const gitTab = () => wrapper.get('[data-view-id="git:ws1"]');
+    expect(gitTab().find(".tab__spinner").exists()).toBe(true);
+    expect(gitTab().find("small").text()).toBe("2 dirty");
+    expect(gitTab().find("small").attributes("title")).toContain("last known Git data");
+
+    store.payload = {
+      ...base,
+      git: { workspaces: { ws1: { ...snapshot, stale: false, verified: true } } },
+    } as unknown as StatePayload;
+    await flushPromises();
+    expect(gitTab().find(".tab__spinner").exists()).toBe(false);
+  });
+
+  test("does not spin the Git tab for a stale snapshot whose refresh failed", () => {
+    const store = useAppStore();
+    const base = makePayload([]);
+    (base.workspace as unknown as { workspace: { cwd: string } }).workspace.cwd = "C:/repo";
+    store.payload = {
+      ...base,
+      git: {
+        workspaces: {
+          ws1: {
+            available: true,
+            branch: "main",
+            dirty: true,
+            dirtyCount: 2,
+            stale: true,
+            refreshError: "disk unavailable",
+          },
+        },
+      },
+    } as unknown as StatePayload;
+    const wrapper = mount(TabStrip);
+    const gitTab = wrapper.get('[data-view-id="git:ws1"]');
+    expect(gitTab.find(".tab__spinner").exists()).toBe(false);
+    expect(gitTab.find("small").text()).toBe("2 dirty");
   });
 
   test("marks active tab with tab--active class", () => {

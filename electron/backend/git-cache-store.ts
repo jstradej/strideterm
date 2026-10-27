@@ -23,8 +23,8 @@ export interface GitCacheEntry extends GitCacheIdentity {
   revision: string;
   summary: GitCacheSummary;
   status?: unknown;
+  detail?: Record<string, unknown>;
 }
-export type GitCacheSummaryEntry = Omit<GitCacheEntry, "status">;
 interface Pending {
   id: number;
   op: string;
@@ -41,6 +41,36 @@ function safeMessage(value: unknown): string | undefined {
 function safeCode(value: unknown): string | undefined {
   return typeof value === "string" && /^[A-Z0-9_]{2,40}$/u.test(value) ? value : undefined;
 }
+const MAX_DETAIL_BYTES = 1024 * 1024;
+const DETAIL_KEYS = [
+  "root",
+  "repository",
+  "remotes",
+  "commitCount",
+  "changes",
+  "diffStat",
+  "log",
+  "gitDir",
+  "gitCommonDir",
+  "configurationToken",
+  "stateToken",
+  "isWorktree",
+  "isMainWorktree",
+  "branchMerged",
+  "worktreePath",
+  "mainWorktreePath",
+  "siblingWorktrees",
+  "baseBranch",
+  "defaultBranch",
+  "defaultRemote",
+  "branchNames",
+  "stashCount",
+  "compareWithBase",
+  "lastFetchAt",
+  "operationState",
+  "lastChangeAt",
+  "lazygit",
+] as const;
 const measuredEntryBytes = new WeakMap<GitCacheEntry, number>();
 function entryBytes(entry: GitCacheEntry): number {
   return measuredEntryBytes.get(entry) ?? byteSize(entry);
@@ -161,10 +191,10 @@ export class GitCacheStore {
     if (this.closed || !this.worker) return null;
     return (await this.call("read", identity)) as GitCacheEntry | null;
   }
-  async readByRoot(checkoutRoot: string): Promise<GitCacheSummaryEntry | null> {
+  async readByRoot(checkoutRoot: string): Promise<GitCacheEntry | null> {
     await this.ready;
     if (this.closed || !this.worker || !checkoutRoot) return null;
-    return (await this.call("readByRoot", checkoutRoot)) as GitCacheSummaryEntry | null;
+    return (await this.call("readByRoot", checkoutRoot)) as GitCacheEntry | null;
   }
   write(entry: GitCacheEntry): void {
     if (this.closed) return;
@@ -328,6 +358,12 @@ function boundedEntry(entry: GitCacheEntry): GitCacheEntry | null {
         else statusSize = 0;
       }
     }
+    let detailSize = 0;
+    const detail = boundedDetail(entry.detail);
+    if (detail) {
+      copy.detail = detail.detail;
+      detailSize = detail.bytes;
+    }
     const totalSize =
       byteSize({
         checkoutRoot: copy.checkoutRoot,
@@ -336,10 +372,25 @@ function boundedEntry(entry: GitCacheEntry): GitCacheEntry | null {
         validatedAt: copy.validatedAt,
         revision: copy.revision,
         summary: copy.summary,
-      }) + statusSize;
+      }) +
+      statusSize +
+      detailSize;
     if (totalSize > 2 * 1024 * 1024 + 4 * 1024 * 1024) return null;
     measuredEntryBytes.set(copy, totalSize);
     return copy;
+  } catch {
+    return null;
+  }
+}
+function boundedDetail(value: unknown): { detail: Record<string, unknown>; bytes: number } | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  try {
+    const source = value as Record<string, unknown>;
+    const picked: Record<string, unknown> = {};
+    for (const key of DETAIL_KEYS) if (source[key] !== undefined) picked[key] = source[key];
+    const encoded = JSON.stringify(picked);
+    const bytes = Buffer.byteLength(encoded);
+    return bytes <= MAX_DETAIL_BYTES ? { detail: JSON.parse(encoded) as Record<string, unknown>, bytes } : null;
   } catch {
     return null;
   }

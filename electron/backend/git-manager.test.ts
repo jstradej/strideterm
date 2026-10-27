@@ -874,7 +874,7 @@ describe("GitManager", () => {
     expect(updates).toBe(1);
   });
 
-  test("refreshWorkspaces discards a cold result invalidated while running and retries once", async () => {
+  test("refreshWorkspaces keeps a cold result invalidated while running as stale data without rerunning it", async () => {
     const manager = new GitManager({ execGitImpl: vi.fn(), snapshotCacheTtlMs: 0 });
     const workspace = [{ id: "ws-generation", cwd: "/tmp/project", kind: "terminal" }];
     let releaseFirst!: (snapshot: Record<string, unknown>) => void;
@@ -892,8 +892,14 @@ describe("GitManager", () => {
     manager.invalidateSnapshotCache("ws-generation");
     releaseFirst({ available: true, branch: "old" });
     await refresh;
+    expect(calls).toBe(1);
+    expect(manager.getSnapshot("ws-generation")).toMatchObject({ branch: "old", stale: true });
+    expect(manager.getSnapshot("ws-generation")?.refreshError).toBeFalsy();
+
+    await manager.refreshWorkspaces(workspace);
     expect(calls).toBe(2);
     expect(manager.getSnapshot("ws-generation")?.branch).toBe("new");
+    expect(manager.getSnapshot("ws-generation")?.stale).toBeFalsy();
   });
 
   test("refreshWorkspaces shares one physical checkout read across workspace clients", async () => {
@@ -2941,6 +2947,144 @@ describe("GitManager", () => {
       const result = await mgr.listBranches({ id: "ws-1", cwd }, { rootPath: cwd });
       const mainEntry = result.local.find((b) => b.name === "main")!;
       expect(mainEntry.worktreePath).toBeUndefined();
+    });
+  });
+
+  // ─── reads shared by the worktrees of one repository ───────────────────
+  describe("listBranches and listTags across worktrees of one repository", () => {
+    async function createLinkedWorktrees({ failIdentity = false }: { failIdentity?: boolean } = {}) {
+      const main = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-shared-refs-")));
+      tempPaths.push(main);
+      const linked = path.join(main, ".strideterm", "tree", "feature");
+      const adminDir = path.join(main, ".git", "worktrees", "feature");
+      await fs.mkdir(adminDir, { recursive: true });
+      await fs.mkdir(linked, { recursive: true });
+      await fs.writeFile(path.join(linked, ".git"), `gitdir: ${adminDir}\n`, "utf8");
+      const calls: string[] = [];
+      const execGitImpl = vi.fn(async (cwd: string, args: string[]) => {
+        const command = args.join(" ");
+        calls.push(command);
+        const head = cwd === main ? "main" : "feature";
+        const mark = (name: string) => (name === head ? "*" : " ");
+        if (command === "rev-parse --show-toplevel") return { stdout: `${cwd}\n`, stderr: "" };
+        if (command === "rev-parse --absolute-git-dir")
+          return { stdout: `${cwd === main ? path.join(main, ".git") : adminDir}\n`, stderr: "" };
+        if (command === "rev-parse --git-common-dir") {
+          if (failIdentity) throw { stderr: "fatal: not a git repository", stdout: "" };
+          return { stdout: `${path.join(main, ".git")}\n`, stderr: "" };
+        }
+        if (command === "rev-parse --abbrev-ref HEAD") return { stdout: `${head}\n`, stderr: "" };
+        if (command.endsWith("--sort=-committerdate refs/heads"))
+          return {
+            stdout: [
+              `refs/heads/main\tmain\t${mark("main")}\t\t\tabc1234\tInit\tAlice\t2h\t1700000000`,
+              `refs/heads/feature\tfeature\t${mark("feature")}\t\t\tdef5678\tWork\tBob\t3d\t1699900000`,
+            ].join("\n"),
+            stderr: "",
+          };
+        if (command.startsWith("rev-list --left-right --count")) return { stdout: "0\t1\n", stderr: "" };
+        if (command === "worktree list --porcelain")
+          return {
+            stdout: [
+              `worktree ${main}`,
+              "HEAD abc1234",
+              "branch refs/heads/main",
+              "",
+              `worktree ${linked}`,
+              "HEAD def5678",
+              "branch refs/heads/feature",
+              "",
+            ].join("\n"),
+            stderr: "",
+          };
+        if (command.endsWith("--sort=-creatordate refs/tags"))
+          return { stdout: "v1.0.0\ttag\t2026-03-15\tJaromir\tRelease\tabc1234", stderr: "" };
+        if (command === "ls-remote --tags origin") return { stdout: "abc123\trefs/tags/v1.0.0\n", stderr: "" };
+        return { stdout: "", stderr: "" };
+      });
+      const ran = (needle: string) => calls.filter((command) => command.includes(needle)).length;
+      return { main, linked, calls, execGitImpl, ran };
+    }
+    const HEADS = "--sort=-committerdate refs/heads";
+    const REMOTES = "--sort=-committerdate refs/remotes";
+    const currentNames = (result: { local: Array<{ name: string; isCurrent: boolean }> }) =>
+      result.local.filter((entry) => entry.isCurrent).map((entry) => entry.name);
+
+    test("listBranches reads refs and the worktree list once and keeps HEAD per worktree", async () => {
+      const { main, linked, execGitImpl, ran } = await createLinkedWorktrees();
+      const mgr = new GitManager({ execGitImpl });
+
+      const first = await mgr.listBranches({ id: "ws-main", cwd: main }, { rootPath: main });
+      const second = await mgr.listBranches({ id: "ws-feature", cwd: linked }, { rootPath: linked });
+
+      expect(ran(HEADS)).toBe(1);
+      expect(ran(REMOTES)).toBe(1);
+      expect(ran("worktree list")).toBe(1);
+      expect(ran("rev-parse --abbrev-ref HEAD")).toBe(2);
+      expect(first.current).toBe("main");
+      expect(currentNames(first)).toEqual(["main"]);
+      expect(second.current).toBe("feature");
+      expect(currentNames(second)).toEqual(["feature"]);
+      expect(second.local.find((entry) => entry.name === "main")?.worktreePath).toBe(main);
+    });
+
+    test("invalidating one worktree makes the next listBranches of another read refs again", async () => {
+      const { main, linked, calls, execGitImpl, ran } = await createLinkedWorktrees();
+      const mgr = new GitManager({ execGitImpl });
+      mgr.detectLazygit = async () => ({ available: false, backend: null, error: "missing", launch: null });
+      await mgr.refreshWorkspaces([{ id: "ws-main", cwd: main, kind: "terminal" }]);
+      calls.length = 0;
+
+      await mgr.listBranches({ id: "ws-main", cwd: main }, { rootPath: main });
+      await mgr.listBranches({ id: "ws-feature", cwd: linked }, { rootPath: linked });
+      expect(ran(HEADS)).toBe(1);
+
+      mgr.invalidateSnapshotCache("ws-main");
+      await mgr.listBranches({ id: "ws-feature", cwd: linked }, { rootPath: linked });
+
+      expect(ran(HEADS)).toBe(2);
+      expect(ran(REMOTES)).toBe(2);
+    });
+
+    test("listTags reads local and remote tags once for two worktrees", async () => {
+      const { main, linked, execGitImpl, ran } = await createLinkedWorktrees();
+      const mgr = new GitManager({ execGitImpl });
+
+      const first = await mgr.listTags({ id: "ws-main", cwd: main });
+      const second = await mgr.listTags({ id: "ws-feature", cwd: linked });
+
+      expect(ran("--sort=-creatordate refs/tags")).toBe(1);
+      expect(ran("ls-remote --tags origin")).toBe(1);
+      expect(second.tags).toEqual(first.tags);
+      expect(second.tags).toEqual([expect.objectContaining({ name: "v1.0.0", pushed: true, local: true })]);
+    });
+
+    test("pushing a tag drops the cached remote tag list", async () => {
+      const { main, execGitImpl, ran } = await createLinkedWorktrees();
+      const mgr = new GitManager({ execGitImpl });
+      mgr.detectLazygit = async () => ({ available: false, backend: null, error: "missing", launch: null });
+      await mgr.listTags({ id: "ws-main", cwd: main });
+      expect(ran("ls-remote --tags origin")).toBe(1);
+
+      const pushed = await mgr.pushTag({ id: "ws-main", cwd: main }, { tagName: "v2.0.0" });
+      expect(pushed.ok).toBe(true);
+      await mgr.listTags({ id: "ws-main", cwd: main });
+
+      expect(ran("ls-remote --tags origin")).toBe(2);
+    });
+
+    test("listBranches still lists branches when the checkout identity cannot be resolved", async () => {
+      const { main, linked, execGitImpl, ran } = await createLinkedWorktrees({ failIdentity: true });
+      const mgr = new GitManager({ execGitImpl });
+
+      const first = await mgr.listBranches({ id: "ws-main", cwd: main }, { rootPath: main });
+      const second = await mgr.listBranches({ id: "ws-feature", cwd: linked }, { rootPath: linked });
+
+      expect(first.ok).toBe(true);
+      expect(first.local.map((entry) => entry.name)).toEqual(["main", "feature"]);
+      expect(currentNames(first)).toEqual(["main"]);
+      expect(currentNames(second)).toEqual(["feature"]);
+      expect(ran(HEADS)).toBe(2);
     });
   });
 

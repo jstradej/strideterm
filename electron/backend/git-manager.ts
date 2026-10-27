@@ -90,6 +90,11 @@ const STASH_NOT_OURS_WARNING =
 
 const WORKTREE_DIRTY_CACHE_TTL_MS = 1500;
 const SNAPSHOT_CACHE_TTL_MS = 8000;
+// Upper bound for a shared ref read that is reused because the repository is watched, and the
+// lifetime of the remote tag list (a watcher event never reflects the remote).
+const SHARED_REF_READ_MAX_AGE_MS = 5 * 60_000;
+const SHARED_REF_READ_REPOSITORIES = 64;
+const REMOTE_TAG_WRITE_TYPES = new Set(["push-tag", "push-all-tags", "delete-remote-tag"]);
 const BASE_BRANCH_CHECK_CONCURRENCY = 4;
 
 // stderr patterns that indicate a transient/network failure worth retrying
@@ -102,6 +107,23 @@ const TRANSIENT_GIT_ERROR_RE =
 // permanently broken (locked/corrupt), gate the warning to ≤1 / minute so a
 // failing store doesn't spam the log while still leaving a trace it's broken.
 const auditLogFailureGate = createIntervalGate(60_000);
+
+/** The flags the UI decides a Git tab / pane state from, as one word per flag for the log. */
+function describeSnapshotState(snapshot: Record<string, unknown> | undefined): string {
+  if (!snapshot) return "none";
+  return [
+    snapshot.available ? "available" : "unavailable",
+    snapshot.refreshing ? "refreshing" : "",
+    snapshot.stale ? "stale" : "",
+    snapshot.cached ? "cached" : "",
+    snapshot.verified === false ? "unverified" : "",
+    snapshot.summaryOnly ? "summary-only" : "",
+    snapshot.refreshError ? "refresh-error" : "",
+    snapshot.error ? "error" : "",
+  ]
+    .filter(Boolean)
+    .join("+");
+}
 
 function snapshotRevision(snapshot: Record<string, unknown>): string {
   const normalize = (value: unknown): unknown => {
@@ -347,7 +369,6 @@ export class GitManager extends EventEmitter {
   >();
   private checkoutWatch: GitCheckoutWatch | null = null;
   private unsubscribeGitLocks: (() => void) | null = null;
-  private interestedWorkspaces = new Map<string, WorkspaceRef>();
   private watchedBindings = new Map<string, Array<{ workspace: WorkspaceRef; root: string }>>();
   private knownBindings = new Map<
     string,
@@ -395,6 +416,11 @@ export class GitManager extends EventEmitter {
     Map<"branches" | "worktrees" | "stash", { at: number; task: Promise<GitExecResult>; bytes?: number }>
   >();
   private rawReadBytes = 0;
+  private refsGenerations = new Map<string, number>();
+  private sharedRefReads = new Map<
+    string,
+    Map<string, { generation: number; at: number; task: Promise<GitExecResult> }>
+  >();
 
   constructor({
     execGitImpl = null,
@@ -508,6 +534,28 @@ export class GitManager extends EventEmitter {
       priority,
       checkout,
     );
+  }
+
+  private invalidationLogAt = new Map<string, { at: number; suppressed: number }>();
+
+  /** One line per checkout per second at most; polls are periodic by design and not logged. */
+  private logInvalidation(key: string, scope: GitInvalidationScope, paths: string[], reason: string): void {
+    if (reason === "poll") return;
+    const now = this.now().getTime();
+    const last = this.invalidationLogAt.get(key);
+    if (last && now - last.at < 1000) {
+      last.suppressed++;
+      return;
+    }
+    if (this.invalidationLogAt.size > 256) this.invalidationLogAt.clear();
+    this.invalidationLogAt.set(key, { at: now, suppressed: 0 });
+    log.debug("git checkout invalidated", {
+      rootPath: this.watchedBindings.get(key)?.[0]?.root || null,
+      scope,
+      reason,
+      paths: paths.slice(0, 3),
+      suppressed: last?.suppressed || 0,
+    });
   }
 
   private scheduleMutationRefresh(key: string): void {
@@ -1635,7 +1683,6 @@ export class GitManager extends EventEmitter {
       if (physicalKey) this.physicalGenerations.set(physicalKey, (this.physicalGenerations.get(physicalKey) || 0) + 1);
       if (physicalKey) this.invalidatePhysicalSnapshots(physicalKey);
       this.snapshotCache.delete(key);
-      this.physicalIdentityCache.delete(rootPath);
     } else {
       // Delete all cache entries for this workspace (prefix match)
       for (const key of new Set([
@@ -1690,7 +1737,10 @@ export class GitManager extends EventEmitter {
     this.dirtyScopes.set(physicalKey, !previous || previous === scope ? scope : "all");
     if (scope !== "status") {
       const common = this.knownBindings.get(physicalKey)?.[0]?.identity.commonDir;
-      if (common) this.commonMetadataReads.delete(common);
+      if (common) {
+        this.commonMetadataReads.delete(common);
+        this.refsGenerations.set(common, (this.refsGenerations.get(common) || 0) + 1);
+      }
     }
   }
 
@@ -1701,6 +1751,82 @@ export class GitManager extends EventEmitter {
     if (!registered) return false;
     const roots = registered.gitRoots?.length ? registered.gitRoots : [registered.cwd || null];
     return roots.includes(root || null);
+  }
+
+  /** Every write to the published `snapshots` map, logged when the state the UI shows changes. */
+  private publishSnapshot(key: string, snapshot: Record<string, unknown>, source: string): void {
+    const from = describeSnapshotState(this.snapshots.get(key));
+    const to = describeSnapshotState(snapshot);
+    this.snapshots.set(key, snapshot);
+    if (from !== to)
+      log.debug("git snapshot state", {
+        workspaceId: snapshot.workspaceId,
+        rootPath: snapshot.rootPath || snapshot.cwd || null,
+        source,
+        from,
+        to,
+        branch: snapshot.branch || "",
+        dirtyCount: snapshot.dirtyCount ?? null,
+      });
+  }
+
+  private snapshotFromCacheEntry(
+    workspace: WorkspaceRef,
+    root: string | null,
+    entry: GitCacheEntry,
+  ): Record<string, unknown> {
+    const summary = entry.summary;
+    const stored =
+      entry.status && typeof entry.status === "object" && !Array.isArray(entry.status)
+        ? (entry.status as Record<"staged" | "unstaged" | "untracked" | "conflicts", unknown[] | undefined>)
+        : null;
+    const files = stored
+      ? {
+          staged: (stored.staged || []) as ReturnType<typeof parsePorcelainV2>["staged"],
+          unstaged: (stored.unstaged || []) as ReturnType<typeof parsePorcelainV2>["unstaged"],
+          untracked: (stored.untracked || []) as ReturnType<typeof parsePorcelainV2>["untracked"],
+          conflicts: (stored.conflicts || []) as ReturnType<typeof parsePorcelainV2>["conflicts"],
+        }
+      : null;
+    const snapshot: Record<string, unknown> = {
+      ...entry.detail,
+      workspaceId: workspace.id,
+      projectId: workspace.id,
+      cwd: root,
+      rootPath: root,
+      available: true,
+      branch: summary.branch || "",
+      upstream: summary.upstream || "",
+      aheadCount: summary.ahead || 0,
+      behindCount: summary.behind || 0,
+      dirtyCount: summary.dirtyCount || 0,
+      dirty: (summary.dirtyCount || 0) > 0,
+      headOid: summary.headOid || "",
+      ...(files
+        ? {
+            ...files,
+            status: mapStatusForLegacy(files.staged, files.unstaged, files.untracked),
+            ...(entry.detail?.changes
+              ? {}
+              : {
+                  changes: {
+                    staged: { name: "Staged", files: files.staged },
+                    unstaged: { name: "Unstaged", files: [...files.unstaged, ...files.conflicts] },
+                    untracked: { name: "Untracked", files: files.untracked },
+                  },
+                }),
+          }
+        : {}),
+      stale: true,
+      verified: false,
+      cached: true,
+      summaryOnly: !entry.detail,
+      refreshing: false,
+      error: "",
+      lastUpdatedAt: new Date(entry.validatedAt).toISOString(),
+    };
+    snapshot.dataRevision = snapshotRevision(snapshot);
+    return snapshot;
   }
 
   private async inspectCached(
@@ -1728,7 +1854,7 @@ export class GitManager extends EventEmitter {
         error: "",
       };
       loading.dataRevision = snapshotRevision(loading);
-      this.snapshots.set(key, loading);
+      this.publishSnapshot(key, loading, "cold-refresh");
       this.emit("freshness", { workspaceId: workspace.id, rootPath: root, stale: true, refreshing: true });
     }
     let identity = null as Awaited<ReturnType<GitManager["physicalIdentity"]>> | null;
@@ -1765,26 +1891,16 @@ export class GitManager extends EventEmitter {
         .read({ checkoutRoot: identity.root, gitDir: identity.gitDir, commonDir: identity.commonDir })
         .catch(() => null);
       if (entry) {
-        previous = {
-          workspaceId: workspace.id,
-          projectId: workspace.id,
-          cwd: root,
-          rootPath: root,
-          available: true,
-          branch: entry.summary.branch || "",
-          upstream: entry.summary.upstream || "",
-          aheadCount: entry.summary.ahead || 0,
-          behindCount: entry.summary.behind || 0,
-          dirtyCount: entry.summary.dirtyCount || 0,
-          dirty: (entry.summary.dirtyCount || 0) > 0,
-          headOid: entry.summary.headOid || "",
-          status: entry.status,
-          stale: true,
-          verified: true,
-          cached: true,
-          stateToken: undefined,
-          dataRevision: entry.revision,
-        };
+        previous = this.snapshotFromCacheEntry(workspace, root, entry);
+        // The inspect usually starts before `hydrateRegisteredWorkspaces` has read the store, and
+        // its placeholder then blocks the hydration: list the last-known state now instead of a
+        // spinner for the whole verification.
+        const published = this.snapshots.get(key);
+        if (this.bindingIsCurrent(workspace, root) && (!published || (published.refreshing && !published.available))) {
+          this.publishSnapshot(key, previous, "cache-restore");
+          this.snapshotCache.set(key, { at: 0, snapshot: previous });
+          this.emit("updated", this.getWorkspaceMap());
+        }
       } else if (previous?.verified === false) {
         previous = undefined;
         this.snapshots.delete(key);
@@ -1807,14 +1923,11 @@ export class GitManager extends EventEmitter {
       }
     }
     if (
-      (this.inspectGenerations.get(key) || 0) !== generation ||
-      (identity && (this.physicalGenerations.get(identity.key) || 0) !== physicalGeneration)
-    ) {
-      if (retry === 0) return this.inspectCached(workspace, key, root, this.now().getTime(), 1);
-      return previous
-        ? { ...previous, stale: true, refreshError: "Git state changed during refresh." }
-        : { workspaceId: workspace.id, rootPath: root, available: false, stale: true };
-    }
+      retry === 0 &&
+      ((this.inspectGenerations.get(key) || 0) !== generation ||
+        (identity && (this.physicalGenerations.get(identity.key) || 0) !== physicalGeneration))
+    )
+      return this.inspectCached(workspace, key, root, this.now().getTime(), 1);
     const flightKey = identity
       ? `${identity.key}|${JSON.stringify([workspace.review?.role, workspace.review?.pullRequest?.sourceRefName, workspace.review?.pullRequest?.targetRefName, workspace.branchMerged])}`
       : key;
@@ -1848,62 +1961,67 @@ export class GitManager extends EventEmitter {
     if (flight)
       return flight.then((snapshot) => {
         const currentGeneration = identity ? this.physicalGenerations.get(identity.key) || 0 : 0;
-        if (identity && currentGeneration !== physicalGeneration && retry === 0)
-          return this.inspectCached(workspace, key, root, this.now().getTime(), 1);
+        const invalidated = Boolean(identity) && currentGeneration !== physicalGeneration;
         const projected: Record<string, unknown> = {
           ...snapshot,
           workspaceId: workspace.id,
           projectId: workspace.id,
           cwd: root,
           rootPath: root,
+          ...(invalidated ? { stale: true } : {}),
         };
         this.snapshotGenerations.set(projected, {
           workspace: generation,
           physicalKey: identity?.key,
           physical: physicalGeneration,
         });
-        if (this.bindingIsCurrent(workspace, root) && currentGeneration === physicalGeneration) {
+        if (this.bindingIsCurrent(workspace, root)) {
           this.snapshotCache.set(key, { at: this.now().getTime(), snapshot: projected });
-          if (identity && !projected.error && !projected.refreshError)
+          if (invalidated) {
+            if (identity && this.watchedBindings.has(identity.key)) this.scheduleMutationRefresh(identity.key);
+          } else if (identity && !projected.error && !projected.refreshError) {
             this.writePersistentSnapshot(identity, projected);
+          }
         }
         return projected;
       });
+    let consumedScope: GitInvalidationScope | undefined;
     const task = timedGitRead(async () => {
       const scope = identity ? this.dirtyScopes.get(identity.key) : undefined;
-      if (root && previous?.stateToken && scope === "refs") return this.refreshMetadata(workspace, root, previous);
+      consumedScope = scope;
+      if (identity) this.dirtyScopes.delete(identity.key);
+      const logMode = (mode: "metadata" | "status" | "full") =>
+        log.debug("git refresh mode", {
+          workspaceId: workspace.id,
+          rootPath: root,
+          reason: this.refreshReason.getStore() || "ensure",
+          scope: scope || null,
+          hasStateToken: Boolean(previous?.stateToken),
+          mode,
+        });
+      if (root && previous?.stateToken && scope === "refs") {
+        logMode("metadata");
+        return this.refreshMetadata(workspace, root, previous);
+      }
       const statusOnly =
         root && previous?.stateToken && !previous.error && scope !== "all"
           ? await this.refreshStatusOnly(workspace, root, previous)
           : null;
+      logMode(statusOnly ? "status" : "full");
       return statusOnly || this._inspectRoot(workspace, root);
     }, "Git refresh timed out. The repository may be unavailable.")
       .then(async (snapshot) => {
-        if (
+        if (!this.bindingIsCurrent(workspace, root)) return snapshot;
+        const invalidated =
           (this.inspectGenerations.get(key) || 0) !== generation ||
-          (identity && (this.physicalGenerations.get(identity.key) || 0) !== physicalGeneration)
-        ) {
-          if (retry === 0) {
-            if (this.inspectFlights.get(flightKey) === task) this.inspectFlights.delete(flightKey);
-            this.emit("freshness", {
-              workspaceId: workspace.id,
-              rootPath: root,
-              stale: true,
-              reason: "invalidated-during-refresh",
-            });
-            return this.inspectCached(workspace, key, root, this.now().getTime(), 1);
-          }
-          const old = this.snapshots.get(key) || cached?.snapshot;
-          if (old) return { ...old, stale: true, refreshError: "Git state changed during refresh." };
-          return {
+          Boolean(identity && (this.physicalGenerations.get(identity.key) || 0) !== physicalGeneration);
+        if (invalidated)
+          this.emit("freshness", {
             workspaceId: workspace.id,
             rootPath: root,
-            available: false,
             stale: true,
-            error: "Git state changed during refresh.",
-          };
-        }
-        if (!this.bindingIsCurrent(workspace, root)) return snapshot;
+            reason: "invalidated-during-refresh",
+          });
         const previous = this.snapshots.get(key) || cached?.snapshot;
         const failed = Boolean(snapshot.error) && previous?.available === true && !previous.error;
         const result = failed ? { ...previous, refreshError: snapshot.error, stale: true } : snapshot;
@@ -1912,6 +2030,7 @@ export class GitManager extends EventEmitter {
         const digest = snapshotRevision(result);
         const stable: Record<string, unknown> = {
           ...result,
+          ...(invalidated ? { stale: true } : {}),
           physicalIdentityToken: identity?.token || result.physicalIdentityToken,
           refreshing: false,
           contentRevision: identity ? this.physicalContentRevisions.get(identity.key) || 0 : 0,
@@ -1930,13 +2049,16 @@ export class GitManager extends EventEmitter {
             snapshot: stable,
             physicalKey: identity.key,
           });
-        if (identity && !stable.error && !stable.refreshError) this.dirtyScopes.delete(identity.key);
+        if (identity && snapshot.error && consumedScope) this.mergeDirtyScope(identity.key, consumedScope);
+        if (identity && invalidated && this.watchedBindings.has(identity.key))
+          this.scheduleMutationRefresh(identity.key);
         if (identity && !stable.error && !stable.refreshError) this.writePersistentSnapshot(identity, stable);
         return stable;
       })
       .catch((error: unknown) => {
         const message = redactSecrets(extractErrorMessage(error));
         log.warn("git refresh failed", { workspaceId: workspace.id, rootPath: root, err: message });
+        if (identity && consumedScope) this.mergeDirtyScope(identity.key, consumedScope);
         return previous
           ? { ...previous, stale: true, refreshError: message }
           : createUnavailableSnapshot(workspace, message);
@@ -2091,28 +2213,8 @@ export class GitManager extends EventEmitter {
                 this.snapshots.has(key)
               )
                 return;
-              const summary = entry.summary;
-              const snapshot: Record<string, unknown> = {
-                workspaceId: workspace.id,
-                projectId: workspace.id,
-                cwd: root,
-                rootPath: root,
-                available: true,
-                branch: summary.branch || "",
-                upstream: summary.upstream || "",
-                aheadCount: summary.ahead || 0,
-                behindCount: summary.behind || 0,
-                dirtyCount: summary.dirtyCount || 0,
-                dirty: (summary.dirtyCount || 0) > 0,
-                headOid: summary.headOid || "",
-                stale: true,
-                verified: false,
-                cached: true,
-                summaryOnly: true,
-                lastUpdatedAt: new Date(entry.validatedAt).toISOString(),
-              };
-              snapshot.dataRevision = snapshotRevision(snapshot);
-              this.snapshots.set(key, snapshot);
+              const snapshot = this.snapshotFromCacheEntry(workspace, root, entry);
+              this.publishSnapshot(key, snapshot, "hydrate");
               this.snapshotCache.set(key, { at: 0, snapshot });
               changed = true;
             })
@@ -2183,8 +2285,6 @@ export class GitManager extends EventEmitter {
   async setInterestedWorkspaces(workspaces: WorkspaceRef[] = []): Promise<void> {
     if (this.disposed) return;
     const generation = ++this.interestedGeneration;
-    this.interestedWorkspaces.clear();
-    for (const workspace of workspaces) if (workspace?.id) this.interestedWorkspaces.set(workspace.id, workspace);
     if (!workspaces.length) {
       this.watchedBindings.clear();
       this.checkoutWatch?.setTargets([]);
@@ -2216,6 +2316,7 @@ export class GitManager extends EventEmitter {
     this.watchedBindings = watchedBindings;
     this.checkoutWatch ??= new GitCheckoutWatch({
       onInvalidate: (key, scope, paths, reason) => {
+        this.logInvalidation(key, scope, paths, reason);
         this.watchReasons.set(key, reason);
         this.markPhysicalDirty(key, scope);
         if ((reason === "watch" || reason === "recovery") && paths.length > 0)
@@ -2289,10 +2390,10 @@ export class GitManager extends EventEmitter {
     this.unsubscribeGitLocks?.();
     this.unsubscribeGitLocks = null;
     this.gitProcessScheduler.stopBackground();
-    this.interestedWorkspaces.clear();
     this.watchedBindings.clear();
     this.statusReads.clear();
     this.commonMetadataReads.clear();
+    this.sharedRefReads.clear();
     this.configurationFiles.clear();
   }
 
@@ -2438,6 +2539,68 @@ export class GitManager extends EventEmitter {
     return task;
   }
 
+  private sharedCommonDir(cwd: string): Promise<string | null> {
+    return this.physicalIdentity(cwd).then(
+      (identity) => identity.commonDir,
+      () => null,
+    );
+  }
+
+  private isCommonDirWatched(commonDir: string): boolean {
+    for (const key of this.watchedBindings.keys())
+      if (this.knownBindings.get(key)?.[0]?.identity.commonDir === commonDir) return true;
+    return false;
+  }
+
+  /**
+   * Refs, tags and the worktree list live in the repository's common dir, so every worktree reads the
+   * same output. Output that names the worktree the command ran in (`%(HEAD)`, `@{upstream}`) must
+   * not be read through here. `worktrees` is reused for the TTL only: a sibling checkout switching
+   * branch changes it without any event the watcher of another worktree reports.
+   */
+  private readSharedRef(
+    commonDir: string | null,
+    kind: "heads" | "remotes" | "tags" | "worktrees" | "remote-tags",
+    read: () => Promise<GitExecResult>,
+    variant = "",
+  ): Promise<GitExecResult> {
+    if (!commonDir) return read();
+    const key = variant ? `${kind}:${variant}` : kind;
+    const now = this.now().getTime();
+    const generation = this.refsGenerations.get(commonDir) || 0;
+    let reads = this.sharedRefReads.get(commonDir);
+    const cached = reads?.get(key);
+    if (cached) {
+      const age = now - cached.at;
+      const reusable =
+        kind === "remote-tags"
+          ? age < SHARED_REF_READ_MAX_AGE_MS
+          : cached.generation === generation &&
+            (age < this.snapshotCacheTtlMs ||
+              (kind !== "worktrees" && age < SHARED_REF_READ_MAX_AGE_MS && this.isCommonDirWatched(commonDir)));
+      if (reusable) return cached.task;
+    }
+    if (!reads) {
+      reads = new Map();
+      this.sharedRefReads.set(commonDir, reads);
+      if (this.sharedRefReads.size > SHARED_REF_READ_REPOSITORIES)
+        this.sharedRefReads.delete(this.sharedRefReads.keys().next().value!);
+    }
+    const task = read();
+    const entry = { generation, at: now, task };
+    reads.set(key, entry);
+    const owner = reads;
+    void task.catch(() => {
+      if (owner.get(key) === entry) owner.delete(key);
+    });
+    return task;
+  }
+
+  private dropRemoteTagReads(): void {
+    for (const reads of this.sharedRefReads.values())
+      for (const key of reads.keys()) if (key.startsWith("remote-tags")) reads.delete(key);
+  }
+
   private trimRawReadCaches(): void {
     const entries: Array<{ at: number; bytes: number; remove: () => void }> = [];
     for (const [key, entry] of this.statusReads)
@@ -2573,15 +2736,17 @@ export class GitManager extends EventEmitter {
         untracked: snapshot.untracked || [],
         conflicts: snapshot.conflicts || [],
       },
+      detail: snapshot,
     };
     entry.revision = createHash("sha256")
-      .update(JSON.stringify({ summary: entry.summary, status: entry.status }))
+      .update(JSON.stringify({ summary: entry.summary, status: entry.status, stateToken: snapshot.stateToken }))
       .digest("hex");
     const key = JSON.stringify([identity.root, identity.gitDir, identity.commonDir, entry.rootAliases]);
     const previous = this.persistedRevisions.get(key);
     if (previous?.revision === entry.revision) {
       if (entry.validatedAt - previous.at < 60_000) return;
       delete entry.status;
+      delete entry.detail;
     }
     try {
       this.cacheStore.write(entry);
@@ -2669,7 +2834,7 @@ export class GitManager extends EventEmitter {
         String(this.snapshots.get(key)?.refreshError || "") !== String(snapshot.refreshError || "")
       )
         changed = true;
-      this.snapshots.set(key, snapshot);
+      this.publishSnapshot(key, snapshot, this.refreshReason.getStore() || "ensure");
     }
     if (changed) {
       const protectedWorkspaceKeys = new Set(
@@ -3906,19 +4071,23 @@ export class GitManager extends EventEmitter {
    * common-dir lock first (common, then worktree: the one allowed order).
    */
   async runWriteAction(workspace: WorkspaceRef, options: WriteActionOptions): Promise<Record<string, unknown>> {
-    return this.mutationScope.run(writeInvalidationScope(options.type), () =>
-      this.gitReadPriority.run("foreground", () =>
-        this.refreshReason.run("", async () => {
-          const cwd = await this.workingDirectory(options.rootPath || String(workspace.cwd || ""));
-          if (!cwd) return this.runWriteActionUnlocked(workspace, options);
-          const inWorktree = () =>
-            sharedReviewGitLocks.withWorktree(cwd, () => this.runWriteActionUnlocked(workspace, options));
-          if (options.type !== "fetch" && options.type !== "pull") return inWorktree();
-          const commonDir = await commonDirOf(cwd);
-          return sharedReviewGitLocks.withCommon(commonDir, inWorktree);
-        }),
-      ),
-    );
+    return this.mutationScope
+      .run(writeInvalidationScope(options.type), () =>
+        this.gitReadPriority.run("foreground", () =>
+          this.refreshReason.run("", async () => {
+            const cwd = await this.workingDirectory(options.rootPath || String(workspace.cwd || ""));
+            if (!cwd) return this.runWriteActionUnlocked(workspace, options);
+            const inWorktree = () =>
+              sharedReviewGitLocks.withWorktree(cwd, () => this.runWriteActionUnlocked(workspace, options));
+            if (options.type !== "fetch" && options.type !== "pull") return inWorktree();
+            const commonDir = await commonDirOf(cwd);
+            return sharedReviewGitLocks.withCommon(commonDir, inWorktree);
+          }),
+        ),
+      )
+      .finally(() => {
+        if (REMOTE_TAG_WRITE_TYPES.has(options.type)) this.dropRemoteTagReads();
+      });
   }
 
   async runWriteActionUnlocked(
@@ -5842,12 +6011,10 @@ export class GitManager extends EventEmitter {
         "%(subject)",
         "%(objectname:short)",
       ].join("%09");
-      const result = await this.execGit(effectiveCwd, [
-        "for-each-ref",
-        `--format=${fmt}`,
-        "--sort=-creatordate",
-        "refs/tags",
-      ]);
+      const commonDir = await this.sharedCommonDir(effectiveCwd);
+      const result = await this.readSharedRef(commonDir, "tags", () =>
+        this.execGit(effectiveCwd, ["for-each-ref", `--format=${fmt}`, "--sort=-creatordate", "refs/tags"]),
+      );
       const lines = String(result.stdout || "")
         .split(/\r?\n/)
         .filter(Boolean);
@@ -5866,7 +6033,12 @@ export class GitManager extends EventEmitter {
       // Check which tags exist on remote
       const remoteTags = new Set<string>();
       try {
-        const remoteResult = await this.execAuthGit(effectiveCwd, ["ls-remote", "--tags", "origin"], { connection });
+        const remoteResult = await this.readSharedRef(
+          commonDir,
+          "remote-tags",
+          () => this.execAuthGit(effectiveCwd, ["ls-remote", "--tags", "origin"], { connection }),
+          connection?.id ?? "",
+        );
         const remoteLines = String(remoteResult.stdout || "")
           .split(/\r?\n/)
           .filter(Boolean);
@@ -6089,21 +6261,22 @@ export class GitManager extends EventEmitter {
         "%(committerdate:unix)", // 9 epoch seconds (for date-range filter + sort)
       ].join("%09");
 
+      const commonDir = await this.sharedCommonDir(cwd);
       const [localResult, remoteResult, currentBranchResult, upstreamResult, worktreeListResult] = await Promise.all([
-        this.execGit(cwd, ["for-each-ref", `--format=${fmt}`, "--sort=-committerdate", "refs/heads"]).catch(() => ({
-          stdout: "",
-          stderr: "",
-        })),
-        this.execGit(cwd, ["for-each-ref", `--format=${fmt}`, "--sort=-committerdate", "refs/remotes"]).catch(() => ({
-          stdout: "",
-          stderr: "",
-        })),
+        this.readSharedRef(commonDir, "heads", () =>
+          this.execGit(cwd, ["for-each-ref", `--format=${fmt}`, "--sort=-committerdate", "refs/heads"]),
+        ).catch(() => ({ stdout: "", stderr: "" })),
+        this.readSharedRef(commonDir, "remotes", () =>
+          this.execGit(cwd, ["for-each-ref", `--format=${fmt}`, "--sort=-committerdate", "refs/remotes"]),
+        ).catch(() => ({ stdout: "", stderr: "" })),
         this.execGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => ({ stdout: "HEAD", stderr: "" })),
         this.execGit(cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]).catch(() => ({
           stdout: "",
           stderr: "",
         })),
-        this.execGit(cwd, ["worktree", "list", "--porcelain"]).catch(() => ({ stdout: "", stderr: "" })),
+        this.readSharedRef(commonDir, "worktrees", () => this.execGit(cwd, ["worktree", "list", "--porcelain"])).catch(
+          () => ({ stdout: "", stderr: "" }),
+        ),
       ]);
 
       // Map of branch shortname → worktree path so the UI can route "Delete
@@ -6127,7 +6300,8 @@ export class GitManager extends EventEmitter {
         const parts = line.split("\t");
         const fullRef = parts[0] || "";
         const shortName = parts[1] || fullRef.replace(/^refs\/heads\//, "");
-        const isCurrent = (parts[2] || "").trim() === "*";
+        // Not the %(HEAD) column: it marks the branch of the worktree the shared read ran in.
+        const isCurrent = shortName === current;
         const upstreamShort = (parts[3] || "").trim();
         const track = (parts[4] || "").trim();
         let ahead = 0;

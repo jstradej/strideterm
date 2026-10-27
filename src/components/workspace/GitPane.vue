@@ -53,7 +53,7 @@
       :class="{
         'git-view--menu-open': isMobile && menuOpen,
         'git-view--tabs-menu-open': isMobile && tabsMenuOpen,
-        'git-view--notice': snapshot?.refreshError || snapshot?.stale,
+        'git-view--notice': snapshot?.refreshError,
       }"
     >
       <div
@@ -66,9 +66,6 @@
           {{ snapshot.refreshError }}
         </span>
         <button type="button" class="button button--ghost button--small" @click="onRefresh">Retry</button>
-      </div>
-      <div v-else-if="snapshot?.stale" class="git-view__notice git-view__stale" role="status">
-        <span class="git-view__notice-text">Showing last known Git data while this checkout is revalidated.</span>
       </div>
       <button
         v-if="isMobile"

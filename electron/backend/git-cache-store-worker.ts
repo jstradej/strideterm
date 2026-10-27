@@ -3,9 +3,11 @@ import { parentPort, workerData } from "node:worker_threads";
 import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 
-const FORMAT = 7;
+const FORMAT = 8;
+const MIN_MIGRATABLE_FORMAT = 7;
 const MAX_SUMMARY_BYTES = 2 * 1024 * 1024;
 const MAX_STATUS_BYTES = 4 * 1024 * 1024;
+const MAX_DETAIL_BYTES = 1024 * 1024;
 const MAX_AGE_MS = 180 * 24 * 60 * 60 * 1000;
 type Identity = { checkoutRoot: string; gitDir: string; commonDir: string };
 type Entry = Identity & {
@@ -14,6 +16,7 @@ type Entry = Identity & {
   revision: string;
   summary: unknown;
   status?: unknown;
+  detail?: unknown;
 };
 let db: DatabaseSync | null = null;
 let initErrorCode = "";
@@ -86,6 +89,8 @@ function sanitizeStoredEntry(entry: Entry): Entry {
     if (safeStatus !== undefined && Buffer.byteLength(json(safeStatus)) <= MAX_STATUS_BYTES) safe.status = safeStatus;
     else delete safe.status;
   }
+  if (entry.detail !== undefined && (!entry.detail || typeof entry.detail !== "object" || Array.isArray(entry.detail)))
+    delete safe.detail;
   return safe;
 }
 function sanitizeStoredFiles(files: unknown[], budget: { remaining: number }): Record<string, string>[] {
@@ -118,7 +123,10 @@ function init(): boolean {
       const version = hasMeta
         ? (db.prepare("SELECT value FROM meta WHERE key='format'").get() as { value?: string } | undefined)
         : undefined;
-      if (!version || Number(version.value) !== FORMAT) {
+      const storedFormat = Number(version?.value);
+      if (version && storedFormat >= MIN_MIGRATABLE_FORMAT && storedFormat < FORMAT) {
+        db.exec("PRAGMA foreign_keys=ON; DROP TABLE IF EXISTS checkout_aliases; DROP TABLE IF EXISTS summaries;");
+      } else if (!version || storedFormat !== FORMAT) {
         initErrorCode = "INCOMPATIBLE_FORMAT";
         db.close();
         db = null;
@@ -126,7 +134,7 @@ function init(): boolean {
       }
     }
     db.exec(
-      "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA journal_size_limit=1048576; PRAGMA max_page_count=2304; CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS summaries (id TEXT PRIMARY KEY, checkout_root TEXT NOT NULL, git_dir TEXT NOT NULL, common_dir TEXT NOT NULL, validated_at INTEGER NOT NULL, revision TEXT NOT NULL, body TEXT NOT NULL, summary_body TEXT NOT NULL, status_body TEXT, bytes INTEGER NOT NULL, summary_bytes INTEGER NOT NULL, alias_bytes INTEGER NOT NULL, status_bytes INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS summaries_checkout_root_idx ON summaries(checkout_root); CREATE TABLE IF NOT EXISTS checkout_aliases (alias_root TEXT PRIMARY KEY, entry_id TEXT NOT NULL REFERENCES summaries(id) ON DELETE CASCADE); CREATE INDEX IF NOT EXISTS checkout_aliases_entry_id_idx ON checkout_aliases(entry_id);",
+      "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA journal_size_limit=1048576; PRAGMA max_page_count=2304; CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS summaries (id TEXT PRIMARY KEY, checkout_root TEXT NOT NULL, git_dir TEXT NOT NULL, common_dir TEXT NOT NULL, validated_at INTEGER NOT NULL, revision TEXT NOT NULL, body TEXT NOT NULL, summary_body TEXT NOT NULL, status_body TEXT, bytes INTEGER NOT NULL, summary_bytes INTEGER NOT NULL, alias_bytes INTEGER NOT NULL, status_bytes INTEGER NOT NULL, detail_body TEXT, detail_bytes INTEGER NOT NULL DEFAULT 0); CREATE INDEX IF NOT EXISTS summaries_checkout_root_idx ON summaries(checkout_root); CREATE TABLE IF NOT EXISTS checkout_aliases (alias_root TEXT PRIMARY KEY, entry_id TEXT NOT NULL REFERENCES summaries(id) ON DELETE CASCADE); CREATE INDEX IF NOT EXISTS checkout_aliases_entry_id_idx ON checkout_aliases(entry_id);",
     );
     db.prepare("INSERT OR REPLACE INTO meta(key,value) VALUES('format',?)").run(String(FORMAT));
     return true;
@@ -160,7 +168,7 @@ function init(): boolean {
     try {
       db = new DatabaseSync(dbPath);
       db.exec(
-        "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA journal_size_limit=1048576; PRAGMA max_page_count=2304; CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE summaries (id TEXT PRIMARY KEY, checkout_root TEXT NOT NULL, git_dir TEXT NOT NULL, common_dir TEXT NOT NULL, validated_at INTEGER NOT NULL, revision TEXT NOT NULL, body TEXT NOT NULL, summary_body TEXT NOT NULL, status_body TEXT, bytes INTEGER NOT NULL, summary_bytes INTEGER NOT NULL, alias_bytes INTEGER NOT NULL, status_bytes INTEGER NOT NULL); CREATE INDEX summaries_checkout_root_idx ON summaries(checkout_root); CREATE TABLE checkout_aliases (alias_root TEXT PRIMARY KEY, entry_id TEXT NOT NULL REFERENCES summaries(id) ON DELETE CASCADE); CREATE INDEX checkout_aliases_entry_id_idx ON checkout_aliases(entry_id);",
+        "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA journal_size_limit=1048576; PRAGMA max_page_count=2304; CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE summaries (id TEXT PRIMARY KEY, checkout_root TEXT NOT NULL, git_dir TEXT NOT NULL, common_dir TEXT NOT NULL, validated_at INTEGER NOT NULL, revision TEXT NOT NULL, body TEXT NOT NULL, summary_body TEXT NOT NULL, status_body TEXT, bytes INTEGER NOT NULL, summary_bytes INTEGER NOT NULL, alias_bytes INTEGER NOT NULL, status_bytes INTEGER NOT NULL, detail_body TEXT, detail_bytes INTEGER NOT NULL DEFAULT 0); CREATE INDEX summaries_checkout_root_idx ON summaries(checkout_root); CREATE TABLE checkout_aliases (alias_root TEXT PRIMARY KEY, entry_id TEXT NOT NULL REFERENCES summaries(id) ON DELETE CASCADE); CREATE INDEX checkout_aliases_entry_id_idx ON checkout_aliases(entry_id);",
       );
       db.prepare("INSERT INTO meta VALUES('format',?)").run(String(FORMAT));
       return true;
@@ -180,13 +188,14 @@ function run(op: string, args: unknown): unknown {
     const i = args as Identity;
     const row = db
       .prepare(
-        "SELECT body, summary_body, status_body, checkout_root, git_dir, common_dir, validated_at, revision FROM summaries WHERE id=? AND validated_at>=?",
+        "SELECT body, summary_body, status_body, detail_body, checkout_root, git_dir, common_dir, validated_at, revision FROM summaries WHERE id=? AND validated_at>=?",
       )
       .get(key(i), Date.now() - MAX_AGE_MS) as
       | {
           body?: string;
           summary_body?: string;
           status_body?: string | null;
+          detail_body?: string | null;
           checkout_root?: string;
           git_dir?: string;
           common_dir?: string;
@@ -205,6 +214,7 @@ function run(op: string, args: unknown): unknown {
         rootAliases: rootAliases.map((row) => row.alias_root),
         summary: JSON.parse(row.summary_body),
         ...(row.status_body ? { status: JSON.parse(row.status_body) } : {}),
+        ...(row.detail_body ? { detail: JSON.parse(row.detail_body) } : {}),
       } as Entry;
       if (
         e.checkoutRoot !== i.checkoutRoot ||
@@ -231,11 +241,13 @@ function run(op: string, args: unknown): unknown {
     if (typeof args !== "string" || !args) return null;
     const row = db
       .prepare(
-        "SELECT s.summary_body, s.checkout_root, s.git_dir, s.common_dir, s.validated_at, s.revision, s.id FROM summaries s WHERE (s.checkout_root=? OR s.id IN (SELECT entry_id FROM checkout_aliases WHERE alias_root=?)) AND s.validated_at>=? ORDER BY CASE WHEN s.checkout_root=? THEN 0 ELSE 1 END, s.validated_at DESC, s.id DESC LIMIT 1",
+        "SELECT s.summary_body, s.status_body, s.detail_body, s.checkout_root, s.git_dir, s.common_dir, s.validated_at, s.revision, s.id FROM summaries s WHERE (s.checkout_root=? OR s.id IN (SELECT entry_id FROM checkout_aliases WHERE alias_root=?)) AND s.validated_at>=? ORDER BY CASE WHEN s.checkout_root=? THEN 0 ELSE 1 END, s.validated_at DESC, s.id DESC LIMIT 1",
       )
       .get(args, args, Date.now() - MAX_AGE_MS, args) as
       | {
           summary_body?: string;
+          status_body?: string | null;
+          detail_body?: string | null;
           checkout_root?: string;
           git_dir?: string;
           common_dir?: string;
@@ -259,6 +271,8 @@ function run(op: string, args: unknown): unknown {
         revision: String(row.revision),
         validatedAt: Number(row.validated_at),
         summary,
+        ...(row.status_body ? { status: JSON.parse(row.status_body) } : {}),
+        ...(row.detail_body ? { detail: JSON.parse(row.detail_body) } : {}),
       });
     } catch {
       return null;
@@ -272,6 +286,9 @@ function run(op: string, args: unknown): unknown {
       for (const e of entries) {
         const summary = json(e.summary);
         const status = e.status === undefined ? undefined : json(e.status);
+        const detailJson = e.detail === undefined ? undefined : json(e.detail);
+        const detail =
+          detailJson !== undefined && Buffer.byteLength(detailJson) <= MAX_DETAIL_BYTES ? detailJson : undefined;
         if (
           Buffer.byteLength(summary) > MAX_SUMMARY_BYTES ||
           (status !== undefined && Buffer.byteLength(status) > MAX_STATUS_BYTES)
@@ -303,8 +320,9 @@ function run(op: string, args: unknown): unknown {
         const summaryBytes = Buffer.byteLength(json(e.summary));
         const summaryBody = json(e.summary);
         const statusBytes = status === undefined ? 0 : Buffer.byteLength(status);
+        const detailBytes = detail === undefined ? 0 : Buffer.byteLength(detail);
         db.prepare(
-          "INSERT INTO summaries VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET checkout_root=excluded.checkout_root, git_dir=excluded.git_dir, common_dir=excluded.common_dir, validated_at=excluded.validated_at, revision=excluded.revision, body=excluded.body, summary_body=excluded.summary_body, status_body=excluded.status_body, bytes=excluded.bytes, summary_bytes=excluded.summary_bytes, status_bytes=excluded.status_bytes",
+          "INSERT INTO summaries VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET checkout_root=excluded.checkout_root, git_dir=excluded.git_dir, common_dir=excluded.common_dir, validated_at=excluded.validated_at, revision=excluded.revision, body=excluded.body, summary_body=excluded.summary_body, status_body=excluded.status_body, bytes=excluded.bytes, summary_bytes=excluded.summary_bytes, status_bytes=excluded.status_bytes, detail_body=excluded.detail_body, detail_bytes=excluded.detail_bytes",
         ).run(
           key(e),
           e.checkoutRoot,
@@ -319,6 +337,8 @@ function run(op: string, args: unknown): unknown {
           summaryBytes,
           0,
           statusBytes,
+          detail ?? null,
+          detailBytes,
         );
         const aliases = mergeAliases(key(e), e.checkoutRoot, e.rootAliases);
         db.prepare("UPDATE summaries SET alias_bytes=? WHERE id=?").run(aliases.bytes, key(e));
@@ -397,15 +417,17 @@ function evictStatus(): boolean {
   if (!db) return false;
   let changed = false;
   const totalBytes = () =>
-    Number(db!.prepare("SELECT COALESCE(SUM(status_bytes),0) AS total FROM summaries").get()?.total ?? 0);
+    Number(db!.prepare("SELECT COALESCE(SUM(status_bytes+detail_bytes),0) AS total FROM summaries").get()?.total ?? 0);
   while (totalBytes() > MAX_STATUS_BYTES) {
     const oldest = db
       .prepare(
-        "SELECT id, status_bytes FROM summaries WHERE status_bytes > 0 ORDER BY validated_at ASC, id ASC LIMIT 1",
+        "SELECT id, status_bytes FROM summaries WHERE status_bytes + detail_bytes > 0 ORDER BY validated_at ASC, id ASC LIMIT 1",
       )
       .get() as { id?: string; body?: string; status_bytes?: number } | undefined;
     if (!oldest?.id) break;
-    const result = db.prepare("UPDATE summaries SET status_body=NULL, status_bytes=0 WHERE id=?").run(oldest.id);
+    const result = db
+      .prepare("UPDATE summaries SET status_body=NULL, status_bytes=0, detail_body=NULL, detail_bytes=0 WHERE id=?")
+      .run(oldest.id);
     if (!result.changes) break;
     changed = true;
   }

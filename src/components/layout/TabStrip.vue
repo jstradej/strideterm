@@ -41,7 +41,7 @@
         >{{ tab.taskBadge }}</small
       >
       <small v-else-if="tab.taskBadge" class="tab__task-badge" :title="tab.taskTooltip">{{ tab.taskBadge }}</small>
-      <small v-else-if="tab.refreshing" :title="tab.loading ? 'Loading…' : 'Refreshing…'"
+      <small v-else-if="tab.refreshing" :title="tab.refreshTooltip"
         ><span class="tab__spinner" :aria-label="tab.loading ? 'Loading' : 'Refreshing'" />{{ tab.status }}</small
       >
       <small v-else>{{ tab.status }}</small>
@@ -220,6 +220,7 @@ const compactTabModels = computed(() => {
         tone: "idle",
         loading: false,
         refreshing: false,
+        refreshTooltip: "",
         active: viewId === activeViewId,
         grouped: false,
         persistent: true,
@@ -247,6 +248,7 @@ const compactTabModels = computed(() => {
       tone: "idle",
       loading: false,
       refreshing: false,
+      refreshTooltip: "",
       active: binding.viewId === activeViewId,
       grouped: false,
       persistent: false,
@@ -353,7 +355,12 @@ const tabModels = computed(() => {
       status: suppressStatus ? "" : tab.status,
       tone: suppressStatus ? "idle" : tab.tone,
       loading: !!tab.loading,
-      refreshing: !!tab.loading || isGitTabRefreshing(tab.id),
+      refreshing: !!tab.loading || !!tab.revalidating || isGitTabRefreshing(tab.id),
+      refreshTooltip: tab.loading
+        ? "Loading…"
+        : tab.revalidating
+          ? "Showing last known Git data while this checkout is revalidated."
+          : "Refreshing…",
       active: tab.id === activeViewId,
       grouped: splitVisible && tab.id !== activeViewId && (splitGroup?.viewIds.includes(tab.id) || false),
       persistent: !!tab.persistent,

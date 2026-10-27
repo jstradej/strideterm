@@ -211,6 +211,17 @@ describe("GitPane repo picker", () => {
     expect(wrapper.find(".git-view__loading-caption").text()).toBe("Loading Git details…");
   });
 
+  test("renders a restored snapshot with detail without the loading skeleton or a notice", async () => {
+    const workspaceId = "ws-restored-detail";
+    const wrapper = mountPane(workspaceId, [buildWorkspace({ id: workspaceId })]);
+    patchGitSnapshot(workspaceId, { stale: true, verified: false, cached: true, summaryOnly: false });
+    await flushPromises();
+    expect(wrapper.find(".git-view--loading").exists()).toBe(false);
+    expect(wrapper.find(".git-view").classes()).not.toContain("git-view--notice");
+    expect(wrapper.find(".git-view__toolbar").exists()).toBe(true);
+    expect(wrapper.find(".git-view__refresh-error").exists()).toBe(false);
+  });
+
   test("keeps a cached full detail visible when the remote core reports summary-only", async () => {
     const workspaceId = "ws-cached-full-detail";
     const wrapper = mountPane(workspaceId, [buildWorkspace({ id: workspaceId })]);
@@ -244,7 +255,7 @@ describe("GitPane repo picker", () => {
     await flushPromises();
 
     expect(wrapper.find(".git-view--loading").exists()).toBe(false);
-    expect(wrapper.find(".git-view__stale").exists()).toBe(true);
+    expect(wrapper.find(".git-view__toolbar").exists()).toBe(true);
   });
 
   test("shows a cold unavailable snapshot error and retry action", async () => {
@@ -359,30 +370,19 @@ describe("GitPane repo picker", () => {
     const workspaceId = "ws-overview-status";
     const wrapper = mountPane(workspaceId, [buildWorkspace({ id: workspaceId })], { deep: true });
     const appStore = useAppStore();
-    const snapshot = appStore.payload!.git!.workspaces[workspaceId];
-    appStore.payload = {
-      ...appStore.payload!,
-      git: {
-        ...appStore.payload!.git!,
-        workspaces: {
-          ...appStore.payload!.git!.workspaces,
-          [workspaceId]: {
-            ...snapshot,
-            branch: "feature/update-overview",
-            branchNames: ["main", "origin/main", "feature/update-overview"],
-            baseBranch: "main",
-            upstream: "origin/feature/update-overview",
-            aheadCount: 3,
-            behindCount: 2,
-            dirty: true,
-            dirtyCount: 2,
-            stashCount: 0,
-            defaultRemote: "origin",
-            remotes: { origin: "https://example.test/repo.git" },
-          },
-        },
-      },
-    } as StatePayload;
+    patchGitSnapshot(workspaceId, {
+      branch: "feature/update-overview",
+      branchNames: ["main", "origin/main", "feature/update-overview"],
+      baseBranch: "main",
+      upstream: "origin/feature/update-overview",
+      aheadCount: 3,
+      behindCount: 2,
+      dirty: true,
+      dirtyCount: 2,
+      stashCount: 0,
+      defaultRemote: "origin",
+      remotes: { origin: "https://example.test/repo.git" },
+    });
     await flushPromises();
     await pickTab(wrapper, "Overview");
     const gitUiStore = useGitUiStore();

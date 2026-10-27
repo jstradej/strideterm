@@ -147,7 +147,125 @@ describe("Git cache integration", () => {
     await second.registerWorkspaces([workspace, aliasWorkspace]);
     expect(runner).not.toHaveBeenCalled();
     expect(second.getSnapshot(workspace.id)).toMatchObject({ branch: "main", stale: true });
-    expect(second.getSnapshot(aliasWorkspace.id)).toMatchObject({ branch: "main", stale: true, summaryOnly: true });
+    expect(second.getSnapshot(aliasWorkspace.id)).toMatchObject({ branch: "main", stale: true, summaryOnly: false });
+  });
+
+  it("restores a renderable snapshot after restart and verifies it without rebuilding the history", async () => {
+    const { root, scratch, git, manager } = await fixture();
+    manager.dispose();
+    const workspace = { id: "restored", cwd: root, kind: "terminal" };
+    const dir = path.join(scratch, "data");
+    await fs.writeFile(path.join(root, "tracked.txt"), "dirty before restart\n");
+    const store = new GitCacheStore(dir);
+    const first = new GitManager({ cacheStore: store, execGitImpl: git });
+    first.detectLazygit = manager.detectLazygit;
+    await first.refreshWorkspaces([workspace]);
+    const before = first.getSnapshot(workspace.id);
+    first.dispose();
+    await store.close();
+
+    let clock = Date.now();
+    const commands: string[][] = [];
+    const reopened = new GitCacheStore(dir);
+    const second = new GitManager({
+      cacheStore: reopened,
+      now: () => new Date(clock),
+      execGitImpl: async (cwd, args) => {
+        commands.push([...args]);
+        return git(cwd, args);
+      },
+    });
+    second.detectLazygit = manager.detectLazygit;
+    cleanups.push(async () => {
+      second.dispose();
+      await reopened.close();
+    });
+    await second.registerWorkspaces([workspace]);
+    expect(commands).toHaveLength(0);
+    const restored = second.getSnapshot(workspace.id);
+    expect(restored).toMatchObject({ available: true, stale: true, verified: false, branch: "main", dirtyCount: 1 });
+    expect(restored?.summaryOnly).toBeFalsy();
+    expect(restored?.stateToken).toBe(before?.stateToken);
+    expect(restored?.log).toEqual(before?.log);
+    expect(
+      (restored?.changes as { unstaged: { files: Array<{ path: string }> } }).unstaged.files.map((file) => file.path),
+    ).toEqual(["tracked.txt"]);
+
+    await second.refreshWorkspaces([workspace]);
+    const forbidden = commands.filter(
+      (args) =>
+        args.includes("log") ||
+        args.includes("rev-list") ||
+        args.includes("worktree") ||
+        args.includes("--format=%(refname:short)"),
+    );
+    expect(forbidden).toEqual([]);
+    expect(commands.filter(isStatus)).toHaveLength(1);
+    expect(second.getSnapshot(workspace.id)).toMatchObject({ stale: false, verified: true, dirtyCount: 1 });
+    expect(second.getSnapshot(workspace.id)?.log).toEqual(before?.log);
+
+    await git(root, ["add", "."]);
+    await git(root, ["commit", "-m", "External commit"]);
+    clock += 60_000;
+    commands.length = 0;
+    await second.refreshWorkspaces([workspace]);
+    expect(commands.some((args) => args.includes("log"))).toBe(true);
+    expect(second.getSnapshot(workspace.id)).toMatchObject({ dirtyCount: 0, available: true });
+    expect(second.getSnapshot(workspace.id)?.stale).toBeFalsy();
+    expect(second.getSnapshot(workspace.id)?.headOid).not.toBe(before?.headOid);
+  });
+
+  it("lists the cached state while the first inspect of a new run is still verifying it", async () => {
+    const { root, scratch, git, manager } = await fixture();
+    manager.dispose();
+    const workspace = { id: "raced", cwd: root, kind: "terminal" };
+    const dir = path.join(scratch, "data");
+    await fs.writeFile(path.join(root, "tracked.txt"), "dirty before restart\n");
+    const store = new GitCacheStore(dir);
+    const first = new GitManager({ cacheStore: store, execGitImpl: git });
+    first.detectLazygit = manager.detectLazygit;
+    await first.refreshWorkspaces([workspace]);
+    first.dispose();
+    await store.close();
+
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const reopened = new GitCacheStore(dir);
+    const second = new GitManager({
+      cacheStore: reopened,
+      execGitImpl: async (cwd, args) => {
+        if (!args.includes("rev-parse")) await gate;
+        return git(cwd, args);
+      },
+    });
+    second.detectLazygit = manager.detectLazygit;
+    cleanups.push(async () => {
+      second.dispose();
+      await reopened.close();
+    });
+    // Activation order: the registration's hydration reads the store asynchronously while the
+    // workspace refresh writes its placeholder in the same tick, so the refresh wins the race.
+    const registered = second.registerWorkspaces([workspace]);
+    const refreshed = second.refreshWorkspaces([workspace]);
+    await registered;
+    await vi.waitFor(() =>
+      expect(second.getSnapshot(workspace.id)).toMatchObject({
+        available: true,
+        cached: true,
+        verified: false,
+        dirtyCount: 1,
+      }),
+    );
+    release();
+    await refreshed;
+    expect(second.getSnapshot(workspace.id)).toMatchObject({
+      available: true,
+      verified: true,
+      stale: false,
+      dirtyCount: 1,
+    });
   });
 
   it("keeps the data revision stable when a forced validation finds no changes", async () => {
@@ -257,7 +375,8 @@ describe("Git cache integration", () => {
               (entry) => entry.snapshot.rootPath === root && entry.snapshot.available,
             ),
           ).toBe(true),
-        { timeout: 8000 },
+        // The gated second root holds one background slot, so under a full parallel suite the first root's refresh can take a while.
+        { timeout: 30_000 },
       );
       await fs.writeFile(path.join(root, "tracked.txt"), "newer root result\n");
       manager.invalidateSnapshotCache(workspace.id, root);

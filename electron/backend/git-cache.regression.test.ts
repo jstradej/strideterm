@@ -225,12 +225,11 @@ describe.skipIf(!hasGit)("Git cache regressions on real repositories", () => {
     ).toEqual([]);
   });
 
-  it("creates and drops stashes, and retains merge operation state after a failed merge or stage", async () => {
-    const { root, git, manager } = await repoFixture();
-    const workspace = { id: "merge-stash", cwd: root, kind: "terminal" };
-    // Warm the UI cache once. The subsequent mutation checks should exercise
-    // incremental refreshes where possible instead of charging a cold snapshot
-    // to every write.
+  // Each scenario warms the UI cache first, so its write exercises an incremental
+  // refresh instead of charging a cold snapshot to the write.
+  it("creates and drops stashes", async () => {
+    const { root, manager } = await repoFixture();
+    const workspace = { id: "stash", cwd: root, kind: "terminal" };
     await manager.refreshWorkspaces([workspace]);
     await fs.writeFile(path.join(root, "tracked.txt"), "stashed edit\n");
     expect((await manager.stash(workspace, { message: "regression stash" })).ok).toBe(true);
@@ -238,12 +237,22 @@ describe.skipIf(!hasGit)("Git cache regressions on real repositories", () => {
     expect(stashes.stashes).toHaveLength(1);
     expect((await manager.stashDrop(workspace, { ref: "stash@{0}" })).ok).toBe(true);
     expect((await manager.listStashes(workspace)).stashes).toHaveLength(0);
+  });
 
+  it("keeps the operation state idle after a failed stage", async () => {
+    const { root, manager } = await repoFixture();
+    const workspace = { id: "failed-stage", cwd: root, kind: "terminal" };
+    await manager.refreshWorkspaces([workspace]);
     expect((await manager.stageFile(workspace, { path: "missing-file.txt" })).ok).toBe(false);
     await manager.refreshWorkspaces([workspace]);
     const failedStage = manager.getSnapshot(workspace.id) || {};
     expect(failedStage.operationState).toMatchObject({ kind: "idle", inProgress: false });
+  });
 
+  it("retains merge operation state after a failed merge", async () => {
+    const { root, git, manager } = await repoFixture();
+    const workspace = { id: "failed-merge", cwd: root, kind: "terminal" };
+    await manager.refreshWorkspaces([workspace]);
     await fs.writeFile(path.join(root, "conflict.txt"), "base\n");
     await git(root, ["add", "conflict.txt"]);
     await git(root, ["commit", "-m", "conflict base"]);
@@ -330,5 +339,56 @@ describe.skipIf(!hasGit)("Git cache regressions on real repositories", () => {
     release();
     await pendingRefresh;
     expect(inFlight.manager.getSnapshot(pendingWorkspace.id)).toBeNull();
+  });
+
+  const fullInspects = (commands: Array<{ cwd: string; args: string[] }>) =>
+    commands.filter(({ args }) => args.includes("log"));
+
+  it("keeps an inspect that was invalidated while it ran as stale data instead of rerunning it", async () => {
+    const { root, manager, commands } = await repoFixture();
+    const workspace = { id: "invalidated-in-flight", cwd: root, kind: "terminal" };
+    const runner = manager.execGitImpl!;
+    let invalidated = false;
+    manager.execGitImpl = async (cwd, args, options) => {
+      if (!invalidated && args.includes("status")) {
+        invalidated = true;
+        manager.invalidateSnapshotCache(workspace.id, root, "status");
+      }
+      return runner(cwd, args, options);
+    };
+    await manager.refreshWorkspaces([workspace]);
+    expect(invalidated).toBe(true);
+    expect(manager.getSnapshot(workspace.id)).toMatchObject({ available: true, branch: "main", stale: true });
+    expect(manager.getSnapshot(workspace.id)?.refreshError).toBeFalsy();
+    expect(manager.getSnapshot(workspace.id)?.error).toBeFalsy();
+    expect(fullInspects(commands)).toHaveLength(1);
+
+    commands.length = 0;
+    await manager.refreshWorkspaces([workspace]);
+    expect(fullInspects(commands)).toHaveLength(0);
+    expect(statusCalls(commands)).toHaveLength(1);
+    expect(manager.getSnapshot(workspace.id)?.stale).toBe(false);
+  });
+
+  it("restores the dirty scope a failed refresh consumed", async () => {
+    const { root, manager, commands } = await repoFixture();
+    const workspace = { id: "failed-refresh", cwd: root, kind: "terminal" };
+    await manager.refreshWorkspaces([workspace]);
+    const runner = manager.execGitImpl!;
+    let failStatus = true;
+    manager.execGitImpl = async (cwd, args, options) => {
+      if (failStatus && args.includes("status")) throw new Error("status failed");
+      return runner(cwd, args, options);
+    };
+    manager.invalidateSnapshotCache(workspace.id, root, "all");
+    await manager.refreshWorkspaces([workspace]);
+    expect(manager.getSnapshot(workspace.id)?.refreshError).toBeTruthy();
+
+    failStatus = false;
+    commands.length = 0;
+    manager.invalidateSnapshotCache(workspace.id, root, "status");
+    await manager.refreshWorkspaces([workspace]);
+    expect(fullInspects(commands)).toHaveLength(1);
+    expect(manager.getSnapshot(workspace.id)?.refreshError).toBeFalsy();
   });
 });

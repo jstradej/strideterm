@@ -141,7 +141,7 @@ describe("GitCacheStore", () => {
     await store.close();
     await fs.rm(dir, { recursive: true, force: true });
   });
-  it("hydrates summary by exact root without returning status details", async () => {
+  it("hydrates by exact root with its summary and status", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "git-cache-hydrate-"));
     const store = new GitCacheStore(dir);
     store.write({
@@ -163,7 +163,7 @@ describe("GitCacheStore", () => {
     expect(summary).toMatchObject({ checkoutRoot: "/repos/app", summary: { branch: "main", dirtyCount: 1 } });
     expect(JSON.stringify(summary).includes("secret")).toBe(false);
     expect(summary?.summary).not.toHaveProperty("paths");
-    expect(summary).not.toHaveProperty("status");
+    expect(summary?.status).toEqual([{ path: "private/file.txt", code: "M" }]);
     expect(await restarted.readByRoot("/repos/app/subdir")).toBeNull();
     expect(await restarted.readByRoot("/repos/application")).toBeNull();
     await restarted.close();
@@ -198,7 +198,7 @@ describe("GitCacheStore", () => {
       checkoutRoot: canonical,
       summary: { branch: "main", dirtyCount: 2 },
     });
-    expect(hydrated).not.toHaveProperty("status");
+    expect(hydrated?.status).toEqual([{ path: "private/status.txt", code: "M" }]);
     expect(hydrated?.summary).not.toHaveProperty("role");
     expect((await reopened.readByRoot("/workspace/alias-0"))?.summary.branch).toBe("main");
     expect(await reopened.readByRoot("/workspace/new-4")).toBeNull();
@@ -270,6 +270,139 @@ describe("GitCacheStore", () => {
     );
     expect(warnings.some((meta) => (meta as { code?: string })?.code === "INCOMPATIBLE_FORMAT")).toBe(true);
     reopened.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+  it("round-trips the renderable detail and tokens through read and readByRoot", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "git-cache-detail-"));
+    const detail = {
+      root: "/repos/detail",
+      log: [{ hash: "abc1234", subject: "first" }],
+      changes: { staged: { name: "Staged", files: [{ path: "a.ts", code: "M" }] } },
+      stateToken: "state-token",
+      configurationToken: "config-token",
+      operationState: { kind: "idle", inProgress: false },
+      branchNames: ["main", "origin/main"],
+      lastChangeAt: 1234,
+    };
+    const first = new GitCacheStore(dir);
+    first.write({
+      ...entry("/repos/detail"),
+      status: { staged: [{ path: "a.ts", code: "M" }], unstaged: [], untracked: [], conflicts: [] },
+      detail,
+    });
+    expect((await first.read(entry("/repos/detail")))?.detail).toEqual(detail);
+    await first.close();
+    const restarted = new GitCacheStore(dir);
+    expect((await restarted.read(entry("/repos/detail")))?.detail).toEqual(detail);
+    const byRoot = await restarted.readByRoot("/repos/detail");
+    expect(byRoot?.detail).toEqual(detail);
+    expect(byRoot?.status).toEqual({
+      staged: [{ path: "a.ts", code: "M" }],
+      unstaged: [],
+      untracked: [],
+      conflicts: [],
+    });
+    await restarted.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+  it("keeps only the allowed detail keys", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "git-cache-detail-keys-"));
+    const store = new GitCacheStore(dir);
+    store.write({
+      ...entry("/repos/keys"),
+      detail: {
+        stateToken: "kept",
+        log: [],
+        workspaceId: "must not persist",
+        error: "must not persist",
+        refreshError: "must not persist",
+        remoteSecret: "must not persist",
+      },
+    });
+    await store.close();
+    const reopened = new GitCacheStore(dir);
+    const stored = await reopened.read(entry("/repos/keys"));
+    expect(stored?.detail).toEqual({ stateToken: "kept", log: [] });
+    expect(JSON.stringify(await reopened.readByRoot("/repos/keys")).includes("must not persist")).toBe(false);
+    await reopened.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+  it("drops a detail over 1 MiB and still stores the summary and status", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "git-cache-detail-large-"));
+    const store = new GitCacheStore(dir);
+    store.write({
+      ...entry("/repos/large"),
+      status: { staged: [], unstaged: [{ path: "kept.ts", code: "M" }], untracked: [], conflicts: [] },
+      detail: {
+        stateToken: "token",
+        branchNames: Array.from({ length: 70_000 }, (_, index) => `branch-${index}-xxxxxxxx`),
+      },
+    });
+    store.write({ ...entry("/repos/small"), detail: { stateToken: "small" } });
+    await store.close();
+    const reopened = new GitCacheStore(dir);
+    const large = await reopened.read(entry("/repos/large"));
+    expect(large?.detail).toBeUndefined();
+    expect(large?.summary).toEqual({ branch: "main", dirtyCount: 0 });
+    expect(large?.status).toEqual({
+      staged: [],
+      unstaged: [{ path: "kept.ts", code: "M" }],
+      untracked: [],
+      conflicts: [],
+    });
+    expect((await reopened.read(entry("/repos/small")))?.detail).toEqual({ stateToken: "small" });
+    await reopened.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+  it("counts the detail in the status budget and evicts the oldest status and detail together", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "git-cache-detail-budget-"));
+    const store = new GitCacheStore(dir);
+    const baseTime = Date.now();
+    const bulky = (name: string) => ({
+      stateToken: name,
+      branchNames: Array.from({ length: 24_000 }, (_, index) => `${name}-${index}-xxxxxxxxxxxxxxxxxxxx`),
+    });
+    const names = ["oldest", "older", "middle", "newer", "newest"];
+    names.forEach((name, index) =>
+      store.write({
+        ...entry(`/repos/${name}`),
+        validatedAt: baseTime + index * 1000,
+        status: { staged: [{ path: `${name}.ts`, code: "M" }], unstaged: [], untracked: [], conflicts: [] },
+        detail: bulky(name),
+      }),
+    );
+    await store.close();
+    const reopened = new GitCacheStore(dir);
+    const oldest = await reopened.read(entry("/repos/oldest"));
+    const newest = await reopened.read(entry("/repos/newest"));
+    expect(oldest?.revision).toBe("r1");
+    expect(oldest?.detail).toBeUndefined();
+    expect(oldest?.status).toBeUndefined();
+    expect(newest?.detail?.stateToken).toBe("newest");
+    expect(newest?.status).toBeDefined();
+    await reopened.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+  it("replaces a database of the previous format instead of disabling the cache", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "git-cache-previous-format-"));
+    const cacheDir = path.join(dir, "cache");
+    await fs.mkdir(cacheDir);
+    const dbPath = path.join(cacheDir, "git-cache.sqlite");
+    const db = new DatabaseSync(dbPath);
+    db.exec(
+      "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE summaries (id TEXT PRIMARY KEY, checkout_root TEXT NOT NULL, git_dir TEXT NOT NULL, common_dir TEXT NOT NULL, validated_at INTEGER NOT NULL, revision TEXT NOT NULL, body TEXT NOT NULL, summary_body TEXT NOT NULL, status_body TEXT, bytes INTEGER NOT NULL, summary_bytes INTEGER NOT NULL, alias_bytes INTEGER NOT NULL, status_bytes INTEGER NOT NULL); CREATE TABLE checkout_aliases (alias_root TEXT PRIMARY KEY, entry_id TEXT NOT NULL REFERENCES summaries(id) ON DELETE CASCADE);",
+    );
+    db.prepare("INSERT INTO meta VALUES('format','7')").run();
+    db.close();
+
+    const warnings: unknown[] = [];
+    const store = new GitCacheStore(dir, { warn: (_message, meta) => warnings.push(meta) });
+    store.write({ ...entry("/repos/migrated"), detail: { stateToken: "migrated" } });
+    await store.close();
+    const reopened = new GitCacheStore(dir);
+    expect((await reopened.read(entry("/repos/migrated")))?.detail).toEqual({ stateToken: "migrated" });
+    await reopened.close();
+    expect(warnings.some((meta) => (meta as { code?: string })?.code === "INCOMPATIBLE_FORMAT")).toBe(false);
     await fs.rm(dir, { recursive: true, force: true });
   });
   it("flushes latest coalesced values on close and bounds oversized entries", async () => {

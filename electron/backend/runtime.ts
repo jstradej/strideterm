@@ -6173,7 +6173,7 @@ export async function createRuntime({
     }
     return git.refreshWorkspaces(workspaces, {
       reason: options.force ? "manual" : "ensure",
-      priority: options.force ? "foreground" : "background",
+      priority: options.force || projectId ? "foreground" : "background",
     });
   }
 

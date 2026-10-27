@@ -7548,6 +7548,34 @@ describe("runtime integration", () => {
     await vi.waitFor(() => expect(fixture.git.refreshArgs.flat()).toContain("ws-old"));
   });
 
+  test("a workspace Git refresh runs at foreground priority while a bulk refresh stays in the background", async () => {
+    const fixture = await createFixture({
+      initialState: {
+        activeWorkspaceId: "ws-a",
+        workspaces: [
+          makeShellWorkspace("ws-a"),
+          { ...makeShellWorkspace("ws-b"), lastWorkedAt: new Date().toISOString() },
+          makeShellWorkspace("ws-gone"),
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    await new Promise((r) => setTimeout(r, 50));
+    const priorityOf = (match: (ids: string[]) => boolean) =>
+      fixture.git.refreshOptions[fixture.git.refreshArgs.findIndex(match)]?.priority;
+
+    fixture.git.refreshArgs = [];
+    fixture.git.refreshOptions = [];
+    await fixture.runtime.deleteWorkspace("ws-gone");
+    expect(priorityOf((ids) => ids.length > 1)).toBe("background");
+
+    fixture.git.refreshArgs = [];
+    fixture.git.refreshOptions = [];
+    await fixture.runtime.activateWorkspace("ws-b");
+    await vi.waitFor(() => expect(fixture.git.refreshArgs).toContainEqual(["ws-b"]));
+    expect(priorityOf((ids) => ids.length === 1 && ids[0] === "ws-b")).toBe("foreground");
+  });
+
   test("Krok 3: a single OSC triggers one refresh after the ~1s debounce", async () => {
     const fixture = await createFixture({
       initialState: { activeWorkspaceId: "ws-a", workspaces: [makeShellWorkspace("ws-a")] },
@@ -9135,7 +9163,7 @@ describe("runtime integration", () => {
     ]);
     expect(fixture.git.refreshArgs).toContainEqual(["ws-a1"]);
     expect(fixture.git.refreshOptions).toContainEqual(
-      expect.objectContaining({ reason: "ensure", priority: "background" }),
+      expect.objectContaining({ reason: "ensure", priority: "foreground" }),
     );
   });
 

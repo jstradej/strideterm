@@ -147,6 +147,6 @@ describe("Git cache lifecycle regressions", () => {
     cleanup.push(async () => reopened.close());
     await second.registerWorkspaces([{ id: "alias", cwd: alias, kind: "terminal" }]);
     expect(gitAfterRestart).not.toHaveBeenCalled();
-    expect(second.getSnapshot("alias", alias)).toMatchObject({ branch: "main", stale: true, summaryOnly: true });
+    expect(second.getSnapshot("alias", alias)).toMatchObject({ branch: "main", stale: true, summaryOnly: false });
   });
 });

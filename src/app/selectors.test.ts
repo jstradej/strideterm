@@ -147,13 +147,24 @@ describe("workspace selectors", () => {
     expect(ready.loading).toBeUndefined();
     expect(tabsFor({ workspaces: { ws1: { available: false } } })).toEqual([]);
 
-    const cached = { available: true, dirty: false, dirtyCount: 0, summaryOnly: true };
-    expect(tabsFor({ workspaces: { ws1: cached } })).toEqual([
+    // The backend's cold-refresh placeholder (first inspect running) keeps the loading tab; the
+    // tab must not vanish between "no snapshot yet" and the first result.
+    const placeholder = { available: false, refreshing: true, stale: true, error: "" };
+    expect(tabsFor({ workspaces: { ws1: placeholder } })).toEqual([
       expect.objectContaining({ id: "git:ws1", status: "loading", loading: true }),
     ]);
-    expect(tabsFor({ workspaces: { ws1: { ...cached, refreshError: "Git refresh timed out." } } })).toEqual([
-      expect.objectContaining({ id: "git:ws1", status: "clean" }),
-    ]);
+    expect(tabsFor({ workspaces: { ws1: { ...placeholder, error: "not a git repository" } } })).toEqual([]);
+    expect(tabsFor({ workspaces: { ws1: { ...placeholder, refreshError: "Git refresh timed out." } } })).toEqual([]);
+
+    // A snapshot restored from the cache is listed with its cached status, with or without its detail.
+    const restored = { available: true, dirty: true, dirtyCount: 2, stale: true, verified: false, cached: true };
+    for (const summaryOnly of [false, true]) {
+      const [tab] = tabsFor({ workspaces: { ws1: { ...restored, summaryOnly } } });
+      expect(tab).toMatchObject({ id: "git:ws1", status: "2 dirty", revalidating: true });
+      expect(tab.loading).toBeUndefined();
+    }
+    expect(tabsFor({ workspaces: { ws1: { ...restored, refreshError: "x" } } })[0]).not.toHaveProperty("revalidating");
+    expect(ready).not.toHaveProperty("revalidating");
   });
 
   test("ignores virtual review tabs when resolving workspace panels", () => {

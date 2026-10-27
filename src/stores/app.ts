@@ -625,12 +625,13 @@ export const useAppStore = defineStore("app", () => {
       // transport-aware accessors. On desktop these read the full payload.
       accessors: { gitSummary: getGitSummary, dockerCounts, providerInbox },
     });
-    // Fingerprint includes all visible fields: id, title, status, tone — plus
-    // the borrowed-Primary metadata, which changes what the tab drives without
-    // changing anything it displays.
+    // Fingerprint includes all visible fields: id, title, status, tone, the
+    // revalidating spinner — plus the borrowed-Primary metadata, which changes
+    // what the tab drives without changing anything it displays.
     const key = (result as AnyApi[])
       .map(
-        (t: AnyApi) => `${t.id}:${t.type}:${t.title}:${t.status}:${t.tone}:${t.sessionId || ""}:${t.borrowed ? 1 : 0}`,
+        (t: AnyApi) =>
+          `${t.id}:${t.type}:${t.title}:${t.status}:${t.tone}:${t.sessionId || ""}:${t.borrowed ? 1 : 0}:${t.revalidating ? 1 : 0}`,
       )
       .join("|");
     if (key === _prevTabsKey) return _prevTabs;
@@ -638,6 +639,27 @@ export const useAppStore = defineStore("app", () => {
     _prevTabs = result as AnyApi[];
     return result;
   });
+
+  // One line per transition of the active workspace's Git tab (hidden / loading / "clean" /
+  // "N dirty"), so a tab that vanishes and comes back can be traced in strideterm.log.
+  watch(
+    computed(() => {
+      const workspaceId = String((payload.value as AnyApi)?.workspace?.workspace?.id || "");
+      if (!workspaceId) return "";
+      const tab = (workspaceTabs.value as AnyApi[]).find((t: AnyApi) => t.type === "git");
+      return `${workspaceId}|${tab ? (tab.loading ? "loading" : tab.status) : "hidden"}`;
+    }),
+    (next, previous) => {
+      if (!next) return;
+      const [workspaceId, state] = next.split("|");
+      const [previousWorkspaceId, previousState] = (previous || "").split("|");
+      rlog("debug", "[git-tab] state", {
+        workspaceId,
+        state,
+        previousState: previousWorkspaceId === workspaceId ? previousState : "(other workspace)",
+      });
+    },
+  );
 
   /**
    * The split as it can actually be DRAWN right now: the authoritative
@@ -1632,7 +1654,10 @@ export const useAppStore = defineStore("app", () => {
       branchMerged: snap.branchMerged,
       lastChangeAt: snap.lastChangeAt,
       summaryOnly: Boolean(snap.summaryOnly),
+      refreshing: Boolean(snap.refreshing),
+      stale: Boolean(snap.stale),
       refreshError: snap.refreshError ?? null,
+      error: snap.error ?? null,
     };
   }
 
