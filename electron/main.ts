@@ -959,8 +959,9 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
       pendingCloseConfirmations.delete(id);
       pending(false);
     }
-    // Remove slot from persistent state
-    if (runtimeState.runtimeInteractive && runtimeState.runtime) {
+    // Remove slot from persistent state — but not for windows the app's own quit is closing: their
+    // slots are what the next start restores, and the store stays writable after runtime.stop().
+    if (!shutdownCleanupPromise && runtimeState.runtimeInteractive && runtimeState.runtime) {
       runtimeState.runtime
         .removeWindowSlot?.(id)
         .catch((err: unknown) => log.warn("removeWindowSlot failed", { windowId: id, err: (err as Error)?.message }));
