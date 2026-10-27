@@ -59,6 +59,11 @@ class KeyedMutex {
   // not wait on itself.
   private holders = new AsyncLocalStorage<ReadonlySet<string>>();
 
+  constructor(
+    private readonly level: "common" | "worktree",
+    private readonly notify: (event: ReviewGitLockStateChange) => void,
+  ) {}
+
   async run<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const mine = this.holders.getStore();
     if (mine?.has(key)) return fn();
@@ -71,10 +76,12 @@ class KeyedMutex {
     this.tails.set(key, tail);
     await previous;
     this.held.add(key);
+    this.notify({ level: this.level, key, held: true });
     try {
       return await this.holders.run(new Set([...(mine ?? []), key]), fn);
     } finally {
       this.held.delete(key);
+      this.notify({ level: this.level, key, held: false });
       release();
       if (this.tails.get(key) === tail) this.tails.delete(key);
     }
@@ -85,6 +92,12 @@ class KeyedMutex {
   }
 }
 
+export interface ReviewGitLockStateChange {
+  level: "common" | "worktree";
+  key: string;
+  held: boolean;
+}
+
 export interface ReviewGitLocks {
   withCommon<T>(commonDir: string, fn: () => Promise<T>): Promise<T>;
   withWorktree<T>(worktreeDir: string, fn: () => Promise<T>): Promise<T>;
@@ -92,11 +105,22 @@ export interface ReviewGitLocks {
   withBoth<T>(commonDir: string, worktreeDir: string, fn: () => Promise<T>): Promise<T>;
   isCommonHeld(commonDir: string): boolean;
   isWorktreeHeld(worktreeDir: string): boolean;
+  subscribe(listener: (event: ReviewGitLockStateChange) => void): () => void;
 }
 
 export function createReviewGitLocks(): ReviewGitLocks {
-  const common = new KeyedMutex();
-  const worktree = new KeyedMutex();
+  const listeners = new Set<(event: ReviewGitLockStateChange) => void>();
+  const notify = (event: ReviewGitLockStateChange) => {
+    for (const listener of listeners) {
+      try {
+        listener(event);
+      } catch {
+        process.emitWarning("Review Git lock state listener failed");
+      }
+    }
+  };
+  const common = new KeyedMutex("common", notify);
+  const worktree = new KeyedMutex("worktree", notify);
   return {
     withCommon: (dir, fn) => common.run(canonicalLockKey(dir), fn),
     withWorktree: (dir, fn) => worktree.run(canonicalLockKey(dir), fn),
@@ -104,6 +128,10 @@ export function createReviewGitLocks(): ReviewGitLocks {
       common.run(canonicalLockKey(commonDir), () => worktree.run(canonicalLockKey(worktreeDir), fn)),
     isCommonHeld: (dir) => common.isHeld(canonicalLockKey(dir)),
     isWorktreeHeld: (dir) => worktree.isHeld(canonicalLockKey(dir)),
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
   };
 }
 

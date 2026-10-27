@@ -14,9 +14,23 @@
           <span class="workspace-chip">
             <strong>{{ entry.isMainWorktree ? "main" : "linked" }}</strong> worktree
           </span>
-          <span class="workspace-chip">
+          <span
+            v-if="entry.dirtyKnown === false"
+            class="workspace-chip workspace-chip--muted"
+            :title="'This worktree is not currently being scanned.'"
+          >
+            <strong>{{ entry.dirtyStale ? "Last known" : "Unknown" }}</strong>
+            <template v-if="entry.dirtyStale">{{ ` ${entry.dirty ? "dirty" : "clean"}` }}</template>
+            <template v-else> status</template>
+            <span v-if="entry.dirtyStale"> · stale</span>
+          </span>
+          <span
+            v-else
+            class="workspace-chip"
+            :title="entry.dirtyStale ? 'Last known status; it may be out of date.' : undefined"
+          >
             <strong>{{ entry.dirty ? String(entry.dirtyCount || 0) : "0" }}</strong>
-            {{ entry.dirty ? "dirty" : "clean" }}
+            {{ entry.dirty ? "dirty" : "clean" }}{{ entry.dirtyStale ? " · stale" : "" }}
           </span>
           <span v-if="entry.isCurrent" class="workspace-chip workspace-chip--alert"><strong>active</strong></span>
           <span

@@ -292,6 +292,20 @@ export const gitPayloadSchema = z
   .passthrough();
 export type GitPayload = z.infer<typeof gitPayloadSchema>;
 
+export const gitRefreshSchema = z.object({
+  projectId: z.string().nullable().optional(),
+  force: z.boolean().optional(),
+  rootPath: z.string().max(4096).optional(),
+});
+export const gitInterestSchema = z.object({
+  viewId: nonEmptyString.max(200),
+  workspaceId: nonEmptyString,
+  rootPath: z.string().max(4096).optional().default(""),
+  scope: z.enum(["summary", "detail"]).default("detail"),
+  active: z.boolean(),
+  generation: z.number().int().nonnegative(),
+});
+
 // Permissive payload for the Azure DevOps Pipelines tab IPC calls. Only the
 // connection is required; projectName / pipelineId / runId / branch /
 // parameters / variables ride along via passthrough.
@@ -1158,6 +1172,20 @@ export const wsResourceInterestSchema = z.object({
   resources: z.array(nonEmptyString).max(256),
 });
 export type WsResourceInterest = z.infer<typeof wsResourceInterestSchema>;
+
+// Per-pane Git checkout interest. Unlike resource:interest (which identifies
+// only a workspace for remote detail invalidation), this carries the selected
+// repository root and is owned by the server socket that sent it.
+export const wsGitInterestSchema = z.object({
+  type: z.literal("git:interest"),
+  viewId: nonEmptyString.max(200),
+  workspaceId: nonEmptyString.max(512),
+  rootPath: z.string().max(4096).default(""),
+  scope: z.enum(["summary", "detail"]).default("detail"),
+  active: z.boolean(),
+  generation: z.number().int().nonnegative(),
+});
+export type WsGitInterest = z.infer<typeof wsGitInterestSchema>;
 
 // Client → server over the WS socket: keystrokes/resizes for a docker exec
 // shell session. Mirrors wsTerminalInputSchema/wsTerminalResizeSchema above —

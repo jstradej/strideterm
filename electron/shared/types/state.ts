@@ -903,6 +903,10 @@ export interface GitWorktreeEntry {
   isMainWorktree: boolean;
   dirty: boolean;
   dirtyCount: number;
+  /** False when this worktree has not been scanned for uncommitted changes. */
+  dirtyKnown?: boolean;
+  /** True when dirty/clean is the last known value and may be out of date. */
+  dirtyStale?: boolean;
   detached: boolean;
   bare: boolean;
   locked: boolean;
@@ -1130,6 +1134,12 @@ export interface GitSummary {
   dirtyCount: number;
   branchMerged?: boolean;
   lastChangeAt: string | null;
+  stale?: boolean;
+  refreshing?: boolean;
+  refreshError?: string | null;
+  error?: string | null;
+  verified?: boolean;
+  summaryOnly?: boolean;
 }
 
 /**

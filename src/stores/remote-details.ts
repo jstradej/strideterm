@@ -27,6 +27,54 @@ interface CachedDetail {
   fetchedAt: number;
 }
 
+type AnyRecord = Record<string, unknown>;
+
+function isRecord(value: unknown): value is AnyRecord {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * A cold backend may return a persisted Git summary while it rebuilds full
+ * status/log data. Keep already-loaded detail only for the exact same root,
+ * while applying the new summary scalars and freshness/error metadata. The
+ * incoming roots map remains authoritative, so removed roots never reappear.
+ */
+function preserveGitDetail(existing: unknown, incoming: unknown): unknown {
+  if (!isRecord(existing) || !isRecord(incoming)) return incoming;
+  const incomingRoots = isRecord(incoming.roots) ? incoming.roots : null;
+  const existingRoots = isRecord(existing.roots) ? existing.roots : null;
+
+  if (incomingRoots) {
+    const nextRoots: AnyRecord = {};
+    for (const [rootPath, incomingRoot] of Object.entries(incomingRoots)) {
+      const existingRoot =
+        existingRoots?.[rootPath] ?? (!existingRoots && existing.rootPath === rootPath ? existing : undefined);
+      nextRoots[rootPath] = preserveGitRootDetail(existingRoot, incomingRoot, rootPath);
+    }
+    return { ...incoming, roots: nextRoots };
+  }
+
+  const rootPath = String(incoming.rootPath || "");
+  const existingRoot = existingRoots?.[rootPath] ?? (!existingRoots ? existing : undefined);
+  return preserveGitRootDetail(existingRoot, incoming, rootPath);
+}
+
+function preserveGitRootDetail(existing: unknown, incoming: unknown, rootPath: string): unknown {
+  if (!isRecord(existing) || !isRecord(incoming) || incoming.summaryOnly !== true || existing.summaryOnly === true) {
+    return incoming;
+  }
+  if (!rootPath || incoming.rootPath !== rootPath || existing.rootPath !== rootPath) return incoming;
+  return {
+    ...existing,
+    ...incoming,
+    // The root still needs its detail revalidated even if this persisted
+    // summary itself has completed validation.
+    stale: true,
+    verified: false,
+    summaryOnly: false,
+  };
+}
+
 /** Max cached detail resources kept alive; currently-interested resources are
  *  never evicted. Reopening an evicted pane refetches it. */
 const MAX_CACHED = 48;
@@ -222,7 +270,9 @@ export const useRemoteDetailsStore = defineStore("remoteDetails", () => {
       // The pane may have unmounted mid-flight; still cache (cheap) but it will
       // be eligible for eviction since it's no longer interested.
       const next = new Map(cache.value);
-      next.set(resource, { revision: res.revision, data: res.data, fetchedAt: now() });
+      const previous = next.get(resource);
+      const data = resource.startsWith("git:") && previous ? preserveGitDetail(previous.data, res.data) : res.data;
+      next.set(resource, { revision: res.revision, data, fetchedAt: now() });
       evict(next);
       cache.value = next;
       clearRetry(resource); // succeeded — reset the retry backoff

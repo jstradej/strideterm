@@ -97,6 +97,115 @@ describe("remote-details store", () => {
     expect(store.revisionOf("docker")).toBe("rev-2");
   });
 
+  it("keeps matching full Git detail through a summary refresh, then replaces it with fresh detail", async () => {
+    const responses: Array<{ resource: string; revision: string; data: unknown }> = [
+      {
+        resource: "git:ws1",
+        revision: "full-1",
+        data: { rootPath: "/repo", summaryOnly: false, status: [{ path: "kept.txt" }], log: [{ subject: "loaded" }] },
+      },
+      {
+        resource: "git:ws1",
+        revision: "summary-2",
+        data: {
+          rootPath: "/repo",
+          summaryOnly: true,
+          stale: true,
+          refreshing: true,
+          verified: false,
+          refreshError: "temporary Git read failure",
+          branch: "main",
+        },
+      },
+      {
+        resource: "git:ws1",
+        revision: "full-3",
+        data: {
+          rootPath: "/repo",
+          summaryOnly: false,
+          stale: false,
+          refreshing: false,
+          verified: true,
+          status: [{ path: "fresh.txt" }],
+          log: [],
+        },
+      },
+    ];
+    const api = {
+      isRemote: true,
+      onResourceInvalidate: () => {},
+      subscribeResources: () => {},
+      fetchResourceDetail: async () => responses.shift() || null,
+    } as unknown as Transport;
+    const store = useRemoteDetailsStore();
+    store._resetForTest();
+    store.init(api);
+
+    store.addInterest("git:ws1");
+    await flush();
+    await store.fetchDetail("git:ws1");
+    const cached = store.get("git:ws1") as Record<string, unknown>;
+    expect(cached.status).toEqual([{ path: "kept.txt" }]);
+    expect(cached.log).toEqual([{ subject: "loaded" }]);
+    expect(cached).toMatchObject({
+      stale: true,
+      refreshing: true,
+      verified: false,
+      summaryOnly: false,
+      refreshError: "temporary Git read failure",
+      branch: "main",
+    });
+    expect(store.revisionOf("git:ws1")).toBe("summary-2");
+
+    await store.onInvalidate({ resource: "git:ws1", revision: "full-3" });
+    expect((store.get("git:ws1") as Record<string, unknown>).status).toEqual([{ path: "fresh.txt" }]);
+    expect(store.revisionOf("git:ws1")).toBe("full-3");
+  });
+
+  it("preserves only exact matching roots and does not restore removed or different roots", async () => {
+    const responses: Array<{ resource: string; revision: string; data: unknown }> = [
+      {
+        resource: "git:ws-multi",
+        revision: "full-1",
+        data: {
+          primaryRoot: "/repo-a",
+          roots: {
+            "/repo-a": { rootPath: "/repo-a", summaryOnly: false, status: [{ path: "a.txt" }] },
+            "/repo-removed": { rootPath: "/repo-removed", summaryOnly: false, status: [{ path: "removed.txt" }] },
+          },
+        },
+      },
+      {
+        resource: "git:ws-multi",
+        revision: "summary-2",
+        data: {
+          primaryRoot: "/repo-a",
+          summaryOnly: true,
+          roots: {
+            "/repo-a": { rootPath: "/repo-a", summaryOnly: true, stale: true, refreshing: true },
+            "/repo-b": { rootPath: "/repo-b", summaryOnly: true, stale: true, refreshing: true },
+          },
+        },
+      },
+    ];
+    const api = {
+      isRemote: true,
+      onResourceInvalidate: () => {},
+      subscribeResources: () => {},
+      fetchResourceDetail: async () => responses.shift() || null,
+    } as unknown as Transport;
+    const store = useRemoteDetailsStore();
+    store._resetForTest();
+    store.init(api);
+    await store.fetchDetail("git:ws-multi");
+    await store.fetchDetail("git:ws-multi");
+
+    const data = store.get("git:ws-multi") as { roots: Record<string, Record<string, unknown>> };
+    expect(data.roots["/repo-a"].status).toEqual([{ path: "a.txt" }]);
+    expect(data.roots["/repo-b"].status).toBeUndefined();
+    expect(data.roots["/repo-removed"]).toBeUndefined();
+  });
+
   it("ignores an invalidate for a resource it is no longer interested in", async () => {
     const t = fakeTransport();
     const store = useRemoteDetailsStore();

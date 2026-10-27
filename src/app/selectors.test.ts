@@ -146,6 +146,14 @@ describe("workspace selectors", () => {
     expect(ready).toMatchObject({ id: "git:ws1", status: "clean" });
     expect(ready.loading).toBeUndefined();
     expect(tabsFor({ workspaces: { ws1: { available: false } } })).toEqual([]);
+
+    const cached = { available: true, dirty: false, dirtyCount: 0, summaryOnly: true };
+    expect(tabsFor({ workspaces: { ws1: cached } })).toEqual([
+      expect.objectContaining({ id: "git:ws1", status: "loading", loading: true }),
+    ]);
+    expect(tabsFor({ workspaces: { ws1: { ...cached, refreshError: "Git refresh timed out." } } })).toEqual([
+      expect.objectContaining({ id: "git:ws1", status: "clean" }),
+    ]);
   });
 
   test("ignores virtual review tabs when resolving workspace panels", () => {

@@ -111,7 +111,9 @@ async function untilGone(selector: string) {
   await vi.waitFor(() => expect(document.querySelector(selector)).toBeNull(), { timeout: 10_000, interval: 25 });
 }
 
-describe("SSH dialog navigation flow", () => {
+// Each flow mounts several async dialogs and waits up to 10 s for each (untilMounted/untilGone); the
+// default 5 s test limit cut those waits short when the whole UI suite ran at once.
+describe("SSH dialog navigation flow", { timeout: 30_000 }, () => {
   beforeEach(() => {
     testPinia = createPinia();
     setActivePinia(testPinia);

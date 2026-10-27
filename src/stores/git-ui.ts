@@ -889,10 +889,16 @@ export const useGitUiStore = defineStore("git-ui", () => {
     // overwrites busyAction with "refresh" and clears it in finally.
     clearPendingGitAction(workspaceId);
     clearBusy(workspaceId);
+    const { useAppStore } = await import("./app.js");
+    const appStore = useAppStore();
+    const rootPath =
+      getActiveRoot(workspaceId) || String(appStore.getGitWorkspaceEntry(workspaceId)?.primaryRoot || "");
     await runGitAction(workspaceId, "refresh", async () => {
-      const payload = await (_api as Transport & { refreshGit: (id: string) => Promise<unknown> }).refreshGit!(
-        workspaceId,
-      );
+      const payload = await (
+        _api as Transport & {
+          refreshGit: (id: string, options?: { force?: boolean; rootPath?: string }) => Promise<unknown>;
+        }
+      ).refreshGit!(workspaceId, { force: true, ...(rootPath ? { rootPath } : {}) });
       return { payload };
     });
     // An explicit refresh also reloads the open conflict list — the reactive

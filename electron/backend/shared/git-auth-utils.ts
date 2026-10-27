@@ -37,6 +37,9 @@ export function sanitizeGitEnvironment(): Record<string, string | undefined> {
   // original message.
   env.GIT_EDITOR = "true";
   env.GIT_SEQUENCE_EDITOR = "true";
+  // A `git status` read must not rewrite the index: the checkout watcher sees
+  // that write as a change and would refresh again.
+  env.GIT_OPTIONAL_LOCKS = "0";
   return env;
 }
 

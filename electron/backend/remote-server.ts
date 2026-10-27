@@ -5,7 +5,7 @@ import http from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { isIP } from "node:net";
 import { brotliCompressSync, gzipSync } from "node:zlib";
 import { WebSocketServer } from "ws";
@@ -42,6 +42,8 @@ import {
   gitCommitStagedSchema,
   gitLogGraphSchema,
   gitPayloadSchema,
+  gitRefreshSchema,
+  gitInterestSchema,
   gitRemoteBranchDeleteSchema,
   gitStashApplySchema,
   gitStashBranchSchema,
@@ -84,6 +86,7 @@ import {
   wsDockerShellResizeSchema,
   wsDockerShellWriteSchema,
   wsResourceInterestSchema,
+  wsGitInterestSchema,
   wsTerminalInputSchema,
   wsTerminalSubmitSchema,
   wsTerminalResizeSchema,
@@ -489,6 +492,16 @@ interface Runtime {
    */
   listMobileTicketOrigins?(): string[];
   on(channel: string, handler: AnyFn): () => void;
+  setGitInterest?(
+    ownerId: string,
+    workspaceId: string,
+    rootPath: string,
+    scope: "summary" | "detail",
+    active: boolean,
+    windowId?: string,
+    generation?: number,
+  ): void;
+  clearGitInterestOwners?(prefix: string): void;
   /** Wires this server's session-revoke function back into the runtime (see MobileManager.revokeDevice). */
   addMobileRemoteSessionRevoker?(fn: (deviceId: string, reason?: string) => void): () => void;
   setRemoteBrowserSessionController?(
@@ -1854,7 +1867,15 @@ const API_ROUTES: Record<string, ApiRouteHandler> = {
   },
 
   "/api/docker/refresh": (runtime) => runtime.refreshDockerState(),
-  "/api/git/refresh": (runtime, body) => runtime.refreshGitState(body.projectId || null),
+  "/api/git/refresh": (runtime, body, caller) => {
+    const p = validateIpc(gitRefreshSchema, body, "POST /api/git/refresh");
+    if (!p.projectId) throw new ClientRequestError("Workspace id is required for a remote Git refresh", 400);
+    return runtime.refreshGitState(
+      p.projectId,
+      { force: p.force === true, rootPath: p.rootPath },
+      caller?.sessionId ? remoteViewerId(caller.sessionId) : undefined,
+    );
+  },
 
   // /api/git/skip, /list-conflicts, /conflict-detail, /resolve-conflict and
   // /unresolve-conflict are handled in the outer dispatch (slotAwareRoute) so
@@ -2510,6 +2531,34 @@ async function handleApiRequest(
     }
 
     if (request.method === "POST") {
+      if (url.pathname === "/api/git/interest") {
+        try {
+          const p = validateIpc(gitInterestSchema, body, "POST /api/git/interest");
+          const clientId = getClientIdFromRequest(request.url || "/", request.headers);
+          if (!clientId) {
+            json(response, 401, { error: "Git interest requires a client id" });
+            return;
+          }
+          if (p.active && !targetBelongsToCaller(runtime, p.workspaceId, callerProfileId)) {
+            json(response, 403, { error: "Target workspace is not available in this profile" });
+            return;
+          }
+          const ownerId = callerSessionId ? `remote:${callerSessionId}:${p.viewId}` : `remote:${clientId}:${p.viewId}`;
+          runtime.setGitInterest?.(
+            ownerId,
+            p.workspaceId,
+            p.rootPath,
+            p.scope,
+            p.active,
+            callerSessionId ? remoteViewerId(callerSessionId) : undefined,
+            p.generation,
+          );
+          json(response, 200, { ok: true });
+        } catch (error) {
+          json(response, 400, { error: (error as Error).message || "Invalid Git interest" });
+        }
+        return;
+      }
       const handler = API_ROUTES[url.pathname];
       if (handler) {
         if (
@@ -2518,6 +2567,17 @@ async function handleApiRequest(
           !targetBelongsToCaller(runtime, String(body.sessionId ?? ""), callerProfileId, true)
         ) {
           json(response, 403, { error: "Target session is not available in this profile" });
+          return;
+        }
+        if (
+          url.pathname === "/api/git/refresh" &&
+          (!body.projectId || !targetBelongsToCaller(runtime, String(body.projectId), callerProfileId))
+        ) {
+          json(response, body.projectId ? 403 : 400, {
+            error: body.projectId
+              ? "Target workspace is not available in this profile"
+              : "Workspace id is required for a remote Git refresh",
+          });
           return;
         }
         if (
@@ -4313,6 +4373,9 @@ export async function startRemoteServer({
   // Maps each WS socket to its cookie session ID so per-client payloads can
   // be composed on every state:updated event.
   const socketSession = new WeakMap<import("ws").WebSocket, string>();
+  // Includes token-client identities that are not composed through activeSessions.
+  // Used only to detect other sockets for the same auth session during cleanup.
+  const socketIdentitySession = new WeakMap<import("ws").WebSocket, string>();
   // Sockets we've already debug-logged a raw (uncomposed) broadcast for, so the
   // diagnostic below fires at most once per socket instead of once per broadcast.
   const rawBroadcastLogged = new WeakSet<import("ws").WebSocket>();
@@ -4656,6 +4719,8 @@ export async function startRemoteServer({
     backlogEnteredAt: number | null;
     /** Previous live-backlog sample, so the sweep can detect drain progress. */
     lastLiveBacklog: number;
+    /** Server-minted isolation boundary for Git interests owned by this socket. */
+    interestOwnerPrefix: string;
     /**
      * Detail resources this socket has declared interest in (mounted panes /
      * visible grid cells), analogous to the terminal subscription set. Only
@@ -4726,6 +4791,7 @@ export async function startRemoteServer({
         backlogSince: null,
         backlogEnteredAt: null,
         lastLiveBacklog: 0,
+        interestOwnerPrefix: randomUUID(),
         interests: new Set(),
         sentRevisions: new Map(),
       };
@@ -5096,6 +5162,7 @@ export async function startRemoteServer({
     requestedRaw: string[],
   ): void {
     const routing = routingFor(socket);
+    const previousInterests = routing.interests;
     const requested = Array.from(new Set(requestedRaw));
     if (requested.length > MAX_INTERESTS) {
       log.warn("WebSocket resource interest rejected: over cap", {
@@ -5124,8 +5191,66 @@ export async function startRemoteServer({
       const rev = resourceRevision(raw, key);
       routing.sentRevisions.set(key, rev);
       checkedSend(socket, JSON.stringify({ type: "resource:invalidate", payload: { resource: key, revision: rev } }));
+      if (key.startsWith("git:")) {
+        runtime.setGitInterest?.(
+          `remote-ws:${routing.interestOwnerPrefix}:resource:${key}`,
+          key.slice("git:".length),
+          "",
+          "detail",
+          true,
+          clientSessionId ? remoteViewerId(clientSessionId) : undefined,
+        );
+      }
     }
     routing.interests = next;
+    const priorGit = Array.from(previousInterests).filter((key) => key.startsWith("git:"));
+    const activeGit = new Set(Array.from(next).filter((key) => key.startsWith("git:")));
+    for (const key of priorGit) {
+      if (!activeGit.has(key)) {
+        const workspaceId = key.slice("git:".length);
+        runtime.setGitInterest?.(
+          `remote-ws:${routing.interestOwnerPrefix}:resource:${key}`,
+          workspaceId,
+          "",
+          "detail",
+          false,
+          clientSessionId ? remoteViewerId(clientSessionId) : undefined,
+        );
+      }
+    }
+  }
+
+  function handleGitInterest(
+    socket: import("ws").WebSocket,
+    clientSessionId: string,
+    interest: ReturnType<typeof wsGitInterestSchema.parse>,
+  ): void {
+    const routing = routingFor(socket);
+    const raw = runtime.getPayload() as Record<string, unknown>;
+    const profileId = clientSessionId ? (registry.get(clientSessionId)?.profileId ?? null) : null;
+    if (interest.active && !resourceProfileAuthorized(raw, profileId, `git:${interest.workspaceId}`)) {
+      log.warn("WebSocket Git interest rejected: workspace outside caller profile", {
+        sessionRef: remoteSessionRef(clientSessionId),
+      });
+      return;
+    }
+    const ownerId = `remote-ws:${routing.interestOwnerPrefix}:view:${interest.viewId}`;
+    try {
+      runtime.setGitInterest?.(
+        ownerId,
+        interest.workspaceId,
+        interest.rootPath,
+        interest.scope,
+        interest.active,
+        clientSessionId ? remoteViewerId(clientSessionId) : undefined,
+        interest.generation,
+      );
+    } catch (error) {
+      log.warn("WebSocket Git interest rejected", {
+        sessionRef: remoteSessionRef(clientSessionId),
+        error: (error as Error)?.message || String(error),
+      });
+    }
   }
 
   /**
@@ -5424,6 +5549,7 @@ export async function startRemoteServer({
       // A mobile session is always v2 with the full capability set — see the HTTP
       // equivalent (apiIsMobile) for why a client-chosen protocol 1 must not apply.
       const wsSessionId = sessionIdForRequest(request.url || "/", request.headers);
+      if (wsSessionId) socketIdentitySession.set(ws, wsSessionId);
       const wsIsMobile = Boolean(wsSessionId && activeSessions.get(wsSessionId)?.deviceId);
       const wsAdvertisedProtocol = wsIsMobile
         ? REMOTE_STATE_PROTOCOL
@@ -5492,6 +5618,7 @@ export async function startRemoteServer({
             message.type === "docker:shell:write" ||
             message.type === "docker:shell:resize" ||
             message.type === "resource:interest" ||
+            message.type === "git:interest" ||
             // The mobile page's foreground heartbeat: sent only while the page is visible, not
             // suspended and holding an open socket, i.e. while somebody is watching. Unlike a bare
             // keep-alive it is gated on that presence on the client, and the absolute deadline still
@@ -5674,6 +5801,15 @@ export async function startRemoteServer({
                 sessionRef: remoteSessionRef(wsSessionId),
               });
             }
+          } else if (message.type === "git:interest") {
+            const parsed = wsGitInterestSchema.safeParse(message);
+            if (parsed.success) {
+              handleGitInterest(ws, wsSessionId, parsed.data);
+            } else {
+              log.warn("WebSocket Git interest rejected: invalid payload", {
+                sessionRef: remoteSessionRef(wsSessionId),
+              });
+            }
           } else if (message.type === "state:sync") {
             // First-connect bootstrap handoff: the very first WS URL is built
             // before the HTTP bootstrap records a revision, so it cannot carry
@@ -5708,6 +5844,7 @@ export async function startRemoteServer({
         // so a closed socket doesn't leak its subscription set or a live timer.
         const routing = socketRouting.get(ws);
         if (routing?.closeTimer) clearTimeout(routing.closeTimer);
+        if (routing) runtime.clearGitInterestOwners?.(`remote-ws:${routing.interestOwnerPrefix}:`);
         socketRouting.delete(ws);
         if (wsSessionId && activeSessions.get(wsSessionId)?.deviceId) publishMobileSessions();
         // If this was the LAST live socket for the session, the viewer is gone
@@ -5718,12 +5855,13 @@ export async function startRemoteServer({
         if (wsSessionId) {
           let stillConnected = false;
           for (const other of sockets) {
-            if (socketSession.get(other) === wsSessionId) {
+            if (socketIdentitySession.get(other) === wsSessionId) {
               stillConnected = true;
               break;
             }
           }
           if (!stillConnected) {
+            runtime.clearGitInterestOwners?.(`remote:${wsSessionId}:`);
             void runtime.reviewAgentPreparationStopOwner?.(remoteViewerId(wsSessionId));
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             (runtime as any).dropViewerVisibility?.(remoteViewerId(wsSessionId));

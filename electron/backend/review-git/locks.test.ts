@@ -126,6 +126,37 @@ describe("review Git locks", () => {
     expect(result).toBe("nested");
   });
 
+  test("publishes acquired and released state once across reentrant calls", async () => {
+    const locks = createReviewGitLocks();
+    const events: Array<{ level: string; key: string; held: boolean }> = [];
+    locks.subscribe((event) => events.push(event));
+    await locks.withBoth("/repo/.git", "/repo/wt", () =>
+      locks.withWorktree("/repo/wt", async () => {
+        expect(locks.isWorktreeHeld("/repo/wt")).toBe(true);
+      }),
+    );
+    expect(events).toEqual([
+      { level: "common", key: canonicalLockKey("/repo/.git"), held: true },
+      { level: "worktree", key: canonicalLockKey("/repo/wt"), held: true },
+      { level: "worktree", key: canonicalLockKey("/repo/wt"), held: false },
+      { level: "common", key: canonicalLockKey("/repo/.git"), held: false },
+    ]);
+  });
+
+  test("listener errors do not break the lock and unsubscribe removes callbacks", async () => {
+    const locks = createReviewGitLocks();
+    const events: boolean[] = [];
+    const unsubscribe = locks.subscribe(() => {
+      throw new Error("listener fault");
+    });
+    locks.subscribe((event) => events.push(event.held));
+    await locks.withCommon("/repo/.git", async () => {});
+    unsubscribe();
+    await expect(locks.withCommon("/repo/.git", async () => "ok")).resolves.toBe("ok");
+    expect(events).toEqual([true, false, true, false]);
+    expect(locks.isCommonHeld("/repo/.git")).toBe(false);
+  });
+
   test("keys are canonical: trailing separators and (on Windows/macOS) case do not make a second lock", () => {
     expect(canonicalLockKey("/cache/wt/")).toBe(canonicalLockKey("/cache/wt"));
     if (process.platform === "win32" || process.platform === "darwin") {

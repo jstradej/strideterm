@@ -3,10 +3,18 @@ import path from "node:path";
 import os from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync, lstatSync, readdirSync } from "node:fs";
-import { rm as fsRm, readFile as fsReadFile, writeFile as fsWriteFile } from "node:fs/promises";
+import {
+  rm as fsRm,
+  readFile as fsReadFile,
+  writeFile as fsWriteFile,
+  realpath as fsRealpath,
+  stat as fsStat,
+} from "node:fs/promises";
 import { Effect } from "effect";
 import { execFileText, ProcessCommandError, quotePosixArg, spawnTextStreaming } from "./process-utils.js";
+import { reportGitReadProgress, timedGitRead } from "./git-read-progress.js";
 import {
   createGitConfigEnvProbe,
   encodeAuthHeader,
@@ -20,7 +28,11 @@ import { runEffect } from "./effect/runtime.js";
 import { GitCommandError, GitAuthError } from "./effect/errors/git-errors.js";
 import { errorMessage } from "../shared/error-message.js";
 import { httpRetry } from "./effect/schedules.js";
-import { commonDirOf, sharedReviewGitLocks } from "./review-git/locks.js";
+import { canonicalLockKey, commonDirOf, sharedReviewGitLocks } from "./review-git/locks.js";
+import { GitCheckoutWatch, type GitInvalidationScope } from "./git-checkout-watch.js";
+import { GitProcessScheduler, type GitReadPriority } from "./git-process-scheduler.js";
+import type { GitCacheEntry, GitCacheStore } from "./git-cache-store.js";
+import { enforceGitSnapshotBudget } from "./git-cache-budget.js";
 import { isManagedReviewBranch } from "../shared/review-source-identity.js";
 import {
   DEFAULT_DIFF_STAT,
@@ -91,12 +103,48 @@ const TRANSIENT_GIT_ERROR_RE =
 // failing store doesn't spam the log while still leaving a trace it's broken.
 const auditLogFailureGate = createIntervalGate(60_000);
 
+function snapshotRevision(snapshot: Record<string, unknown>): string {
+  const normalize = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(normalize);
+    if (!value || typeof value !== "object") return value;
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(
+          ([key]) =>
+            ![
+              "workspaceId",
+              "projectId",
+              "cwd",
+              "rootPath",
+              "lastUpdatedAt",
+              "lastChangeAt",
+              "lastFetchAt",
+              "relativeDate",
+              "refreshError",
+              "stale",
+              "verified",
+              "cached",
+              "summaryOnly",
+              "refreshing",
+              "diffStatStale",
+              "dataRevision",
+            ].includes(key),
+        )
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, item]) => [key, normalize(item)]),
+    );
+  };
+  return createHash("sha256")
+    .update(JSON.stringify(normalize(snapshot)))
+    .digest("hex");
+}
+
 // Hex-only commit hashes (short or full) — also rules out option injection
 // ("-x") since execGit passes args verbatim.
 const COMMIT_HASH_RE = /^[0-9a-f]{4,40}$/i;
 
 function normalizeStagePath(value: string): string {
-  const candidate = String(value || "").replace(/\\/g, "/");
+  const candidate = process.platform === "win32" ? String(value || "").replace(/\\/g, "/") : String(value || "");
   if (!candidate || candidate.startsWith("-") || candidate.startsWith("/") || candidate.includes("\0")) return "";
   const normalized = path.posix.normalize(candidate);
   return normalized === ".." || normalized.startsWith("../") || normalized === "." ? "" : normalized;
@@ -104,6 +152,19 @@ function normalizeStagePath(value: string): string {
 
 function normalizeCommitHashes(hashes: unknown): string[] {
   return (Array.isArray(hashes) ? hashes : []).map((hash) => String(hash || "").trim()).filter(Boolean);
+}
+
+function literalFileArgs(args: string[], filename: string): string[] {
+  return ["\\", "*", "?", "[", ":"].some((character) => filename.includes(character))
+    ? ["--literal-pathspecs", ...args]
+    : args;
+}
+
+function writeInvalidationScope(type: string): GitInvalidationScope {
+  if (["stage-file", "unstage-file", "stage-hunk", "unstage-hunk"].includes(type)) return "status";
+  if (["fetch", "create-tag", "delete-tag", "push-tag", "push-all-tags", "delete-remote-tag"].includes(type))
+    return "refs";
+  return "all";
 }
 
 interface GitExecResult {
@@ -145,6 +206,15 @@ interface WorktreeDirtyCacheEntry {
 interface SnapshotCacheEntry {
   at: number;
   snapshot: Record<string, unknown>;
+  physicalKey?: string;
+}
+
+interface CheckoutIdentity {
+  key: string;
+  root: string;
+  gitDir: string;
+  commonDir: string;
+  token: string;
 }
 
 interface GitManagerOptions {
@@ -156,6 +226,7 @@ interface GitManagerOptions {
   credentialStore?: CredentialStore | null;
   auditLogStore?: AuditLogStore | null;
   gitAuditLogStore?: AuditLogStore | null;
+  cacheStore?: Pick<GitCacheStore, "read" | "readByRoot" | "write"> | null;
 }
 
 interface WriteActionOptions {
@@ -255,10 +326,75 @@ export class GitManager extends EventEmitter {
   credentialStore: CredentialStore | null;
   auditLogStore: AuditLogStore | null;
   gitAuditLogStore: AuditLogStore | null;
+  cacheStore: Pick<GitCacheStore, "read" | "readByRoot" | "write"> | null;
   // Per-repo commit serialization (keyed by working dir) — see serializeCommit.
   private commitChains: Map<string, Promise<unknown>> = new Map();
   private activeBaseBranchChecks = 0;
   private baseBranchCheckWaiters: Array<() => void> = [];
+  private aheadBehindSupported = true;
+  readonly gitProcessScheduler = new GitProcessScheduler(4);
+  private gitReadPriority = new AsyncLocalStorage<GitReadPriority>();
+  private inspectFlights = new Map<string, Promise<Record<string, unknown>>>();
+  private inspectGenerations = new Map<string, number>();
+  private workspaceFlightKeys = new Map<string, string>();
+  private workspacePhysicalKeys = new Map<string, string>();
+  private physicalGenerations = new Map<string, number>();
+  private physicalContentRevisions = new Map<string, number>();
+  private physicalSnapshotCache = new Map<string, SnapshotCacheEntry>();
+  private physicalIdentityCache = new Map<
+    string,
+    Promise<{ key: string; root: string; gitDir: string; commonDir: string; token: string }>
+  >();
+  private checkoutWatch: GitCheckoutWatch | null = null;
+  private unsubscribeGitLocks: (() => void) | null = null;
+  private interestedWorkspaces = new Map<string, WorkspaceRef>();
+  private watchedBindings = new Map<string, Array<{ workspace: WorkspaceRef; root: string }>>();
+  private knownBindings = new Map<
+    string,
+    Array<{
+      workspace: WorkspaceRef;
+      root: string;
+      identity: { key: string; root: string; gitDir: string; commonDir: string };
+    }>
+  >();
+  private interestedGeneration = 0;
+  private registrationGeneration = 0;
+  private registeredWorkspaces = new Map<string, WorkspaceRef>();
+  private registrationEnabled = false;
+  private disposed = false;
+  private dirtyScopes = new Map<string, "status" | "refs" | "all">();
+  private statusReads = new Map<
+    string,
+    { at: number; generation: number; task: Promise<GitExecResult>; bytes?: number }
+  >();
+  private cacheMetrics = {
+    hits: 0,
+    misses: 0,
+    joinedReads: 0,
+    fullReads: 0,
+    statusReads: 0,
+    metadataReads: 0,
+    broadcasts: 0,
+  };
+  private refreshReason = new AsyncLocalStorage<string>();
+  private memoryBudget = { retainedBytes: 0, overBudget: false, evictedKeys: [] as string[] };
+  private mutationRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private mutationRefreshKeys = new Set<string>();
+  private configurationFiles = new Map<string, string[]>();
+  private configurationFlights = new Map<string, Promise<string>>();
+  private watchReasons = new Map<string, string>();
+  private persistedRevisions = new Map<string, { revision: string; at: number }>();
+  private persistenceWarningAt = -Infinity;
+  private snapshotGenerations = new WeakMap<
+    Record<string, unknown>,
+    { workspace: number; physicalKey?: string; physical: number }
+  >();
+  private mutationScope = new AsyncLocalStorage<GitInvalidationScope>();
+  private commonMetadataReads = new Map<
+    string,
+    Map<"branches" | "worktrees" | "stash", { at: number; task: Promise<GitExecResult>; bytes?: number }>
+  >();
+  private rawReadBytes = 0;
 
   constructor({
     execGitImpl = null,
@@ -268,6 +404,7 @@ export class GitManager extends EventEmitter {
     credentialStore = null,
     auditLogStore = null,
     gitAuditLogStore = null,
+    cacheStore = null,
   }: GitManagerOptions = {}) {
     super();
     this.snapshots = new Map();
@@ -283,6 +420,31 @@ export class GitManager extends EventEmitter {
     this.credentialStore = credentialStore ?? null;
     this.auditLogStore = auditLogStore ?? null;
     this.gitAuditLogStore = gitAuditLogStore ?? null;
+    this.cacheStore = cacheStore ?? null;
+    this.unsubscribeGitLocks = sharedReviewGitLocks.subscribe((event) => {
+      for (const [physicalKey, entries] of this.knownBindings) {
+        if (
+          entries.some(({ identity }) =>
+            event.level === "common"
+              ? canonicalLockKey(identity.commonDir) === event.key
+              : canonicalLockKey(identity.root) === event.key || canonicalLockKey(identity.gitDir) === event.key,
+          )
+        ) {
+          if (event.level === "common") this.markPhysicalDirty(physicalKey, "refs");
+          for (const { workspace, root } of entries) {
+            if (event.level === "worktree") {
+              const scope = this.mutationScope.getStore() || "all";
+              this.invalidateSnapshotCache(workspace.id, root, scope);
+              this.markPhysicalDirty(physicalKey, scope);
+            }
+            if (event.level === "worktree" && !event.held && this.mutationScope.getStore() !== "refs")
+              this.bumpContentRevision(workspace.id, root);
+            this.emit("freshness", { workspaceId: workspace.id, rootPath: root, stale: true, reason: "git-mutation" });
+          }
+          if (!event.held) this.scheduleMutationRefresh(physicalKey);
+        }
+      }
+    });
   }
 
   async execGit(
@@ -290,14 +452,80 @@ export class GitManager extends EventEmitter {
     args: string[],
     opts: { extraEnv?: Record<string, string>; stdin?: string } = {},
   ): Promise<GitExecResult> {
-    if (this.execGitImpl) {
-      if (opts.stdin !== undefined) {
-        throw new Error("The configured Git runner does not support standard input.");
+    return this.scheduleGit(cwd, args, async () => {
+      if (this.execGitImpl) {
+        if (opts.stdin !== undefined) throw new Error("The configured Git runner does not support standard input.");
+        return this.execGitImpl(cwd, args);
       }
-      return this.execGitImpl(cwd, args);
-    }
-    const env = opts.extraEnv ? { ...sanitizeGitEnvironment(), ...opts.extraEnv } : sanitizeGitEnvironment();
-    return execFileText("git", args, { cwd, env, ...(opts.stdin === undefined ? {} : { input: opts.stdin }) });
+      const env = opts.extraEnv ? { ...sanitizeGitEnvironment(), ...opts.extraEnv } : sanitizeGitEnvironment();
+      return execFileText("git", args, {
+        cwd,
+        env,
+        ...(this.refreshReason.getStore() || this.gitReadPriority.getStore() === "background"
+          ? { timeout: 15_000 }
+          : {}),
+        ...(opts.stdin === undefined ? {} : { input: opts.stdin }),
+      });
+    });
+  }
+
+  private scheduleGit<T>(cwd: string, args: string[], task: () => Promise<T>): Promise<T> {
+    const priority = this.gitReadPriority.getStore() ?? "foreground";
+    const area = args.includes("status")
+      ? "status"
+      : args.some((arg) => ["log", "rev-list"].includes(arg))
+        ? "history"
+        : args.includes("diff")
+          ? "diff"
+          : args.includes("rev-parse")
+            ? "discovery"
+            : "refs-or-action";
+    const queuedAt = performance.now();
+    const checkout = createHash("sha256").update(path.resolve(cwd)).digest("hex").slice(0, 12);
+    reportGitReadProgress(1);
+    return this.gitProcessScheduler.run(
+      async () => {
+        reportGitReadProgress(-1);
+        const started = performance.now();
+        let success = false;
+        try {
+          const result = await task();
+          success = true;
+          return result;
+        } finally {
+          reportGitReadProgress(0);
+          log.debug("git command completed", {
+            checkout,
+            reason: this.refreshReason.getStore() || "user-action",
+            area,
+            priority,
+            queueMs: Math.round(started - queuedAt),
+            durationMs: Math.round(performance.now() - started),
+            success,
+          });
+        }
+      },
+      priority,
+      checkout,
+    );
+  }
+
+  private scheduleMutationRefresh(key: string): void {
+    if (this.disposed) return;
+    this.mutationRefreshKeys.add(key);
+    if (this.mutationRefreshTimer) return;
+    this.mutationRefreshTimer = setTimeout(() => {
+      this.mutationRefreshTimer = null;
+      const workspaces = [...this.mutationRefreshKeys]
+        .flatMap((physicalKey) => this.watchedBindings.get(physicalKey) || [])
+        .map(({ workspace, root }) => ({ ...workspace, cwd: root, gitRoots: [root] }));
+      this.mutationRefreshKeys.clear();
+      if (workspaces.length && !this.disposed)
+        void this.refreshWorkspaces(workspaces, { reason: "mutation" }).catch((error: unknown) => {
+          log.warn("git refresh after mutation failed", { err: redactSecrets(extractErrorMessage(error)) });
+        });
+    }, 250);
+    this.mutationRefreshTimer.unref();
   }
 
   // Login + token for a connection, or null when there is no usable token and
@@ -357,10 +585,13 @@ export class GitManager extends EventEmitter {
     }
 
     const fullArgs = [...auth.args, ...args];
-    if (this.execGitImpl) {
-      return auth.env ? this.execGitImpl(cwd, fullArgs, { env: auth.env }) : this.execGitImpl(cwd, fullArgs);
-    }
-    return execFileText("git", fullArgs, { cwd, env: auth.env ?? sanitizeGitEnvironment() });
+    return this.scheduleGit(cwd, args, () =>
+      this.execGitImpl
+        ? auth.env
+          ? this.execGitImpl(cwd, fullArgs, { env: auth.env })
+          : this.execGitImpl(cwd, fullArgs)
+        : execFileText("git", fullArgs, { cwd, env: auth.env ?? sanitizeGitEnvironment() }),
+    );
   }
 
   /**
@@ -377,22 +608,24 @@ export class GitManager extends EventEmitter {
   ): Promise<GitExecResult> {
     const auth = await this.buildAuthInvocation(connection);
     const fullArgs = [...(auth?.args ?? []), ...args];
-    if (this.execGitImpl) {
-      try {
-        const result = auth?.env
-          ? await this.execGitImpl(cwd, fullArgs, { env: auth.env })
-          : await this.execGitImpl(cwd, fullArgs);
-        if (result?.stdout) onData?.(result.stdout);
-        if (result?.stderr) onData?.(result.stderr);
-        return result;
-      } catch (e) {
-        const err = e as { stdout?: string; stderr?: string };
-        if (err?.stdout) onData?.(err.stdout);
-        if (err?.stderr) onData?.(err.stderr);
-        throw e;
+    return this.scheduleGit(cwd, args, async () => {
+      if (this.execGitImpl) {
+        try {
+          const result = auth?.env
+            ? await this.execGitImpl(cwd, fullArgs, { env: auth.env })
+            : await this.execGitImpl(cwd, fullArgs);
+          if (result?.stdout) onData?.(result.stdout);
+          if (result?.stderr) onData?.(result.stderr);
+          return result;
+        } catch (e) {
+          const err = e as { stdout?: string; stderr?: string };
+          if (err?.stdout) onData?.(err.stdout);
+          if (err?.stderr) onData?.(err.stderr);
+          throw e;
+        }
       }
-    }
-    return spawnTextStreaming("git", fullArgs, { cwd, env: auth?.env ?? sanitizeGitEnvironment(), onData });
+      return spawnTextStreaming("git", fullArgs, { cwd, env: auth?.env ?? sanitizeGitEnvironment(), onData });
+    });
   }
 
   // Map a rejected git-exec promise into a tagged error. Preserves BOTH stdout
@@ -654,7 +887,7 @@ export class GitManager extends EventEmitter {
     const cwd = rootPath || workspace.cwd;
     const hostBinary = this.resolveLazygitBinary();
     try {
-      await execFileText(hostBinary, ["--version"], { cwd });
+      await execFileText(hostBinary, ["--version"], { cwd, timeout: 5000 });
       return {
         available: true,
         backend: "host",
@@ -679,7 +912,9 @@ export class GitManager extends EventEmitter {
     }
 
     try {
-      await execFileText("wsl.exe", ["-e", "sh", "-lc", "command -v lazygit >/dev/null 2>&1 && lazygit --version"]);
+      await execFileText("wsl.exe", ["-e", "sh", "-lc", "command -v lazygit >/dev/null 2>&1 && lazygit --version"], {
+        timeout: 5000,
+      });
       return {
         available: true,
         backend: "wsl",
@@ -716,7 +951,12 @@ export class GitManager extends EventEmitter {
     return "lazygit";
   }
 
-  async _inspectRoot(workspace: WorkspaceRef, rootPath: string | null): Promise<Record<string, unknown>> {
+  async _inspectRoot(
+    workspace: WorkspaceRef,
+    rootPath: string | null,
+    reuseStatus?: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    this.cacheMetrics.fullReads++;
     if (!workspace || workspace.kind === "docker" || !rootPath) {
       return createUnavailableSnapshot(
         workspace || { id: "", cwd: "" },
@@ -727,6 +967,7 @@ export class GitManager extends EventEmitter {
     try {
       const rootResult = await this.execGit(rootPath, ["rev-parse", "--show-toplevel"]);
       const root = rootResult.stdout.trim();
+      const configurationToken = await this.readConfigurationToken(rootPath, true);
       // Batch every independent read into one Promise.all. Previously
       // getStashCount and the two readDiffStat calls ran sequentially after
       // this block — they don't depend on parsed status, so moving them up
@@ -737,13 +978,14 @@ export class GitManager extends EventEmitter {
         remoteResult,
         commitCountResult,
         statusV2Result,
-        statusShortResult,
         logResult,
         lazygit,
         gitDirResult,
         gitCommonDirResult,
         worktreeListResult,
         branchListResult,
+        headOidResult,
+        refsTokenResult,
         stashCount,
         stagedDiffStat,
         unstagedDiffStat,
@@ -756,8 +998,7 @@ export class GitManager extends EventEmitter {
         this.execGit(rootPath, ["rev-list", "--count", "HEAD"]).catch(() => ({ stdout: "0", stderr: "" })),
         // -uall: without it a new directory is one `?? dir/` entry that the
         // Changes tree renders as an empty file instead of listing its files.
-        this.execGit(rootPath, ["status", "--porcelain=v2", "--branch", "--untracked-files=all"]),
-        this.execGit(rootPath, ["status", "--short"]).catch(() => ({ stdout: "", stderr: "" })),
+        reuseStatus ? Promise.resolve({ stdout: "", stderr: "" }) : this.readStatus(rootPath),
         this.execGit(rootPath, [
           "log",
           "--date=relative",
@@ -768,18 +1009,53 @@ export class GitManager extends EventEmitter {
         this.detectLazygit(workspace, rootPath),
         this.execGit(rootPath, ["rev-parse", "--git-dir"]).catch(() => ({ stdout: ".git", stderr: "" })),
         this.execGit(rootPath, ["rev-parse", "--git-common-dir"]).catch(() => ({ stdout: ".git", stderr: "" })),
-        this.execGit(rootPath, ["worktree", "list", "--porcelain"]).catch(() => ({ stdout: "", stderr: "" })),
-        this.execGit(rootPath, ["for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes"]).catch(
-          () => ({ stdout: "", stderr: "" }),
-        ),
+        this.readCommonMetadata(rootPath, "worktrees", ["worktree", "list", "--porcelain"]).catch(() => ({
+          stdout: "",
+          stderr: "",
+        })),
+        this.readCommonMetadata(rootPath, "branches", [
+          "for-each-ref",
+          "--format=%(refname:short)",
+          "refs/heads",
+          "refs/remotes",
+        ]).catch(() => ({ stdout: "", stderr: "" })),
+        this.execGit(rootPath, ["rev-parse", "--verify", "HEAD"]).catch(() => ({ stdout: "", stderr: "" })),
+        this.execGit(rootPath, ["for-each-ref", "--format=%(refname)%00%(objectname)", "refs"]).catch(() => ({
+          stdout: "",
+          stderr: "",
+        })),
         this.getStashCount(rootPath),
-        this.readDiffStat(rootPath, ["diff", "--cached", "--shortstat"]),
-        this.readDiffStat(rootPath, ["diff", "--shortstat"]),
+        reuseStatus
+          ? Promise.resolve(
+              (reuseStatus.changes as Record<string, { diffStat: typeof DEFAULT_DIFF_STAT }>)?.staged?.diffStat || {
+                ...DEFAULT_DIFF_STAT,
+              },
+            )
+          : this.readDiffStat(rootPath, ["diff", "--cached", "--shortstat"]),
+        reuseStatus
+          ? Promise.resolve(
+              (reuseStatus.changes as Record<string, { diffStat: typeof DEFAULT_DIFF_STAT }>)?.unstaged?.diffStat || {
+                ...DEFAULT_DIFF_STAT,
+              },
+            )
+          : this.readDiffStat(rootPath, ["diff", "--shortstat"]),
       ]);
 
       const gitDir = resolveGitPath(rootPath, gitDirResult.stdout);
       const gitCommonDir = resolveGitPath(rootPath, gitCommonDirResult.stdout);
-      const parsedStatus = parsePorcelainV2(statusV2Result.stdout);
+      const parsedStatus = reuseStatus
+        ? {
+            ...parsePorcelainV2(""),
+            branch: String(reuseStatus.branch || ""),
+            upstream: String(reuseStatus.upstream || ""),
+            aheadCount: Number(reuseStatus.aheadCount || 0),
+            behindCount: Number(reuseStatus.behindCount || 0),
+            staged: (reuseStatus.staged || []) as ReturnType<typeof parsePorcelainV2>["staged"],
+            unstaged: (reuseStatus.unstaged || []) as ReturnType<typeof parsePorcelainV2>["unstaged"],
+            untracked: (reuseStatus.untracked || []) as ReturnType<typeof parsePorcelainV2>["untracked"],
+            conflicts: (reuseStatus.conflicts || []) as ReturnType<typeof parsePorcelainV2>["conflicts"],
+          }
+        : parsePorcelainV2(statusV2Result.stdout);
       const staged = parsedStatus.staged;
       const unstaged = parsedStatus.unstaged;
       const untracked = parsedStatus.untracked;
@@ -810,7 +1086,22 @@ export class GitManager extends EventEmitter {
       // (their checkout measured against the pushed source branch).
       const isReviewAuthor = workspace.review?.role === "author";
       const reviewBaseRef = isReviewAuthor ? reviewTargetRef || reviewSourceRef : reviewSourceRef;
-      const parsedRemotes = parseGitRemotes(remoteResult.stdout);
+      const parsedRemotes = Object.fromEntries(
+        Object.entries(parseGitRemotes(remoteResult.stdout)).map(([name, value]) => {
+          let safe = value;
+          try {
+            const url = new URL(value);
+            if (url.username || url.password) {
+              url.username = "";
+              url.password = "";
+              safe = url.toString();
+            }
+          } catch {
+            /* scp-style Git URLs have no embedded HTTP credentials */
+          }
+          return [name, redactSecrets(safe)];
+        }),
+      );
       // Surface the symbolic default branch on the snapshot — every consumer
       // (History, MergeBack, Compare picker on every tab) should be able to
       // read it without first running listBranches.
@@ -845,7 +1136,11 @@ export class GitManager extends EventEmitter {
       // can't fold into the batched Promise.all up top; stashCount + diffStat
       // already happened there.
       const compareWithBase = await this.readBaseComparison(rootPath, baseBranch, branch);
-      const operationState = await this.inspectOperationState(rootPath, { gitDir, gitCommonDir });
+      const operationState = await this.inspectOperationState(rootPath, {
+        gitDir,
+        gitCommonDir,
+        conflicts: conflicts.map((entry) => entry.path),
+      });
       const untrackedDiffStat = summarizeNameStatusEntries(untracked.map((entry) => ({ code: "?", path: entry.path })));
       // Check if this worktree's branch has been merged into the base branch.
       // Only mark as merged if: not the main worktree, not dirty, HEAD is ancestor of baseBranch,
@@ -893,12 +1188,13 @@ export class GitManager extends EventEmitter {
       const siblingWorktrees = await Promise.all(
         worktrees.map(async (entry, index) => {
           const isCurrent = path.resolve(entry.path) === path.resolve(root);
-          const [dirtyState, lastActivity] = await Promise.all([
-            isCurrent
-              ? Promise.resolve({ dirty: dirtyCount > 0, dirtyCount })
-              : this.getCachedWorktreeDirtyState(entry.path),
-            this.getWorktreeLastActivity(entry.path, gitCommonDir, index === 0),
-          ]);
+          const cachedDirty = this.worktreeDirtyCache.get(path.resolve(entry.path));
+          const dirtyState = isCurrent
+            ? { dirty: dirtyCount > 0, dirtyCount }
+            : cachedDirty?.value || { dirty: false, dirtyCount: 0 };
+          const lastActivity = isCurrent
+            ? await this.getWorktreeLastActivity(entry.path, gitCommonDir, index === 0)
+            : 0;
           const entryBranch = entry.branch || "";
           return {
             path: entry.path,
@@ -908,6 +1204,9 @@ export class GitManager extends EventEmitter {
             isMainWorktree: index === 0,
             dirty: dirtyState.dirty,
             dirtyCount: dirtyState.dirtyCount,
+            dirtyKnown: isCurrent || Boolean(cachedDirty),
+            dirtyStale:
+              !isCurrent && (!cachedDirty || this.now().getTime() - cachedDirty.at >= WORKTREE_DIRTY_CACHE_TTL_MS),
             detached: entry.detached,
             bare: entry.bare,
             locked: entry.locked,
@@ -918,6 +1217,11 @@ export class GitManager extends EventEmitter {
           };
         }),
       );
+
+      this.worktreeDirtyCache.set(path.resolve(root), {
+        at: this.now().getTime(),
+        value: { dirty: dirtyCount > 0, dirtyCount },
+      });
 
       return {
         workspaceId: workspace.id,
@@ -932,10 +1236,11 @@ export class GitManager extends EventEmitter {
         commitCount: parseIntSafe(commitCountResult.stdout),
         dirty: dirtyCount > 0,
         dirtyCount,
-        status: status.length ? status : parseStatusEntries(statusShortResult.stdout),
+        status,
         staged,
         unstaged,
         untracked,
+        conflicts,
         changes: {
           staged: { name: "Staged", files: staged, diffStat: stagedDiffStat },
           unstaged: { name: "Unstaged", files: [...unstaged, ...conflicts], diffStat: unstagedDiffStat },
@@ -946,6 +1251,11 @@ export class GitManager extends EventEmitter {
         lazygit,
         gitDir,
         gitCommonDir,
+        headOid: headOidResult.stdout.trim(),
+        configurationToken,
+        stateToken: createHash("sha256")
+          .update(`${headOidResult.stdout.trim()}\0${refsTokenResult.stdout}`)
+          .digest("hex"),
         isWorktree: worktrees.length > 1,
         isMainWorktree: siblingWorktrees.find((entry) => entry.isCurrent)?.isMainWorktree || false,
         branchMerged,
@@ -962,6 +1272,7 @@ export class GitManager extends EventEmitter {
         behindCount: parsedStatus.behindCount,
         compareWithBase,
         lastFetchAt: getFetchTimestamp(gitCommonDir),
+        ...(reuseStatus ? { diffStatStale: Boolean(reuseStatus.diffStatStale) } : {}),
         operationState: operationState.inProgress
           ? buildOperationState({
               kind: operationState.kind,
@@ -982,7 +1293,7 @@ export class GitManager extends EventEmitter {
     } catch (error) {
       const message = extractErrorMessage(error);
       log.warn("git inspect failed", { workspaceId: workspace.id, rootPath, err: redactSecrets(message) });
-      return createUnavailableSnapshot(workspace, message);
+      return createUnavailableSnapshot(workspace, redactSecrets(message));
     }
   }
 
@@ -1152,7 +1463,11 @@ export class GitManager extends EventEmitter {
 
   async inspectOperationState(
     cwd: string,
-    { gitDir, gitCommonDir }: { gitDir: string; gitCommonDir: string },
+    {
+      gitDir,
+      gitCommonDir,
+      conflicts: suppliedConflicts,
+    }: { gitDir: string; gitCommonDir: string; conflicts?: string[] },
   ): Promise<{
     kind: string;
     inProgress: boolean;
@@ -1165,8 +1480,19 @@ export class GitManager extends EventEmitter {
     const cherryPickHeadPath = path.join(gitDir, "CHERRY_PICK_HEAD");
     const rebaseMergePath = path.join(gitDir, "rebase-merge");
     const rebaseApplyPath = path.join(gitDir, "rebase-apply");
-    const bisectPath = path.join(gitCommonDir || gitDir, "BISECT_LOG");
-    const conflicts = await this.readConflicts(cwd);
+    const bisectPath = path.join(gitDir || gitCommonDir, "BISECT_LOG");
+    const conflicts = suppliedConflicts ?? (await this.readConflicts(cwd));
+    const [merging, cherryPicking, rebasingMerge, rebasingApply, bisecting] = await Promise.all(
+      [mergeHeadPath, cherryPickHeadPath, rebaseMergePath, rebaseApplyPath, bisectPath].map((filename) =>
+        fsStat(filename).then(
+          () => true,
+          (error: NodeJS.ErrnoException) => {
+            if (error.code === "ENOENT" || error.code === "ENOTDIR") return false;
+            throw error;
+          },
+        ),
+      ),
+    );
 
     const readGitFile = async (filePath: string): Promise<string> => {
       try {
@@ -1176,7 +1502,7 @@ export class GitManager extends EventEmitter {
       }
     };
 
-    if (existsSync(mergeHeadPath)) {
+    if (merging) {
       const mergeHead = await readGitFile(mergeHeadPath);
       const mergeMsg = await readGitFile(path.join(gitDir, "MERGE_MSG"));
       let branch = "";
@@ -1208,8 +1534,8 @@ export class GitManager extends EventEmitter {
       };
     }
 
-    if (existsSync(rebaseMergePath) || existsSync(rebaseApplyPath)) {
-      const rmDir = existsSync(rebaseMergePath) ? rebaseMergePath : rebaseApplyPath;
+    if (rebasingMerge || rebasingApply) {
+      const rmDir = rebasingMerge ? rebaseMergePath : rebaseApplyPath;
       const [msgnumStr, endStr, stoppedSha, msgContent, headName, ontoName] = await Promise.all([
         readGitFile(path.join(rmDir, "msgnum")),
         readGitFile(path.join(rmDir, "end")),
@@ -1235,7 +1561,7 @@ export class GitManager extends EventEmitter {
       };
     }
 
-    if (existsSync(cherryPickHeadPath)) {
+    if (cherryPicking) {
       const cpHead = await readGitFile(cherryPickHeadPath);
       let subject = "";
       try {
@@ -1261,7 +1587,7 @@ export class GitManager extends EventEmitter {
       };
     }
 
-    if (existsSync(bisectPath)) {
+    if (bisecting) {
       return { kind: "bisect", inProgress: true, conflicts, progress: null, currentCommit: null, sides: null };
     }
 
@@ -1280,24 +1606,1005 @@ export class GitManager extends EventEmitter {
     }
   }
 
-  invalidateSnapshotCache(workspaceId: string | null = null, rootPath: string | null = null): void {
+  invalidateSnapshotCache(
+    workspaceId: string | null = null,
+    rootPath: string | null = null,
+    scope: GitInvalidationScope = "all",
+  ): void {
     if (!workspaceId) {
+      for (const key of new Set([
+        ...this.snapshotCache.keys(),
+        ...this.snapshots.keys(),
+        ...this.workspaceFlightKeys.keys(),
+      ])) {
+        this.inspectGenerations.set(key, (this.inspectGenerations.get(key) || 0) + 1);
+        const physicalKey = this.workspacePhysicalKeys.get(key);
+        if (physicalKey) this.mergeDirtyScope(physicalKey, scope);
+        if (physicalKey)
+          this.physicalGenerations.set(physicalKey, (this.physicalGenerations.get(physicalKey) || 0) + 1);
+      }
       this.snapshotCache.clear();
+      this.physicalSnapshotCache.clear();
       return;
     }
     if (rootPath) {
-      this.snapshotCache.delete(this._cacheKey(workspaceId, rootPath));
+      const key = this._cacheKey(workspaceId, rootPath);
+      this.inspectGenerations.set(key, (this.inspectGenerations.get(key) || 0) + 1);
+      const physicalKey = this.workspacePhysicalKeys.get(key);
+      if (physicalKey) this.mergeDirtyScope(physicalKey, scope);
+      if (physicalKey) this.physicalGenerations.set(physicalKey, (this.physicalGenerations.get(physicalKey) || 0) + 1);
+      if (physicalKey) this.invalidatePhysicalSnapshots(physicalKey);
+      this.snapshotCache.delete(key);
+      this.physicalIdentityCache.delete(rootPath);
     } else {
       // Delete all cache entries for this workspace (prefix match)
-      for (const key of this.snapshotCache.keys()) {
+      for (const key of new Set([
+        ...this.snapshotCache.keys(),
+        ...this.snapshots.keys(),
+        ...this.workspaceFlightKeys.keys(),
+      ])) {
         if (key === workspaceId || key.startsWith(`${workspaceId}:`)) {
+          this.inspectGenerations.set(key, (this.inspectGenerations.get(key) || 0) + 1);
+          const physicalKey = this.workspacePhysicalKeys.get(key);
+          if (physicalKey) this.mergeDirtyScope(physicalKey, scope);
+          if (physicalKey)
+            this.physicalGenerations.set(physicalKey, (this.physicalGenerations.get(physicalKey) || 0) + 1);
+          if (physicalKey) this.invalidatePhysicalSnapshots(physicalKey);
           this.snapshotCache.delete(key);
         }
+      }
+      for (const key of this.snapshots.keys())
+        if (key === workspaceId || key.startsWith(`${workspaceId}:`))
+          this.inspectGenerations.set(key, (this.inspectGenerations.get(key) || 0) + 1);
+      for (const key of this.inspectFlights.keys())
+        if (key === workspaceId || key.startsWith(`${workspaceId}:`))
+          this.inspectGenerations.set(key, (this.inspectGenerations.get(key) || 0) + 1);
+      for (const [workspaceKey, flightKey] of this.workspaceFlightKeys)
+        if (workspaceKey === workspaceId || workspaceKey.startsWith(`${workspaceId}:`))
+          this.inspectGenerations.set(workspaceKey, (this.inspectGenerations.get(workspaceKey) || 0) + 1);
+    }
+  }
+
+  private bumpContentRevision(workspaceId: string, rootPath: string): void {
+    const physicalKey = this.workspacePhysicalKeys.get(this._cacheKey(workspaceId, rootPath));
+    if (physicalKey)
+      this.physicalContentRevisions.set(physicalKey, (this.physicalContentRevisions.get(physicalKey) || 0) + 1);
+  }
+
+  private invalidatePhysicalSnapshots(physicalKey: string): void {
+    for (const key of this.physicalSnapshotCache.keys())
+      if (key === physicalKey || key.startsWith(`${physicalKey}|`)) this.physicalSnapshotCache.delete(key);
+  }
+
+  private markPhysicalDirty(physicalKey: string, scope: "status" | "refs" | "all"): void {
+    this.mergeDirtyScope(physicalKey, scope);
+    this.physicalGenerations.set(physicalKey, (this.physicalGenerations.get(physicalKey) || 0) + 1);
+    this.invalidatePhysicalSnapshots(physicalKey);
+    for (const [workspaceKey, key] of this.workspacePhysicalKeys) {
+      if (key === physicalKey) this.snapshotCache.delete(workspaceKey);
+    }
+  }
+
+  private mergeDirtyScope(physicalKey: string, scope: GitInvalidationScope): void {
+    const previous = this.dirtyScopes.get(physicalKey);
+    this.dirtyScopes.set(physicalKey, !previous || previous === scope ? scope : "all");
+    if (scope !== "status") {
+      const common = this.knownBindings.get(physicalKey)?.[0]?.identity.commonDir;
+      if (common) this.commonMetadataReads.delete(common);
+    }
+  }
+
+  private bindingIsCurrent(workspace: WorkspaceRef, root: string | null): boolean {
+    if (this.disposed) return false;
+    if (!this.registrationEnabled) return true;
+    const registered = this.registeredWorkspaces.get(workspace.id);
+    if (!registered) return false;
+    const roots = registered.gitRoots?.length ? registered.gitRoots : [registered.cwd || null];
+    return roots.includes(root || null);
+  }
+
+  private async inspectCached(
+    workspace: WorkspaceRef,
+    key: string,
+    root: string | null,
+    now: number,
+    retry = 0,
+  ): Promise<Record<string, unknown>> {
+    if (!this.bindingIsCurrent(workspace, root)) return createUnavailableSnapshot(workspace);
+    const cached = this.snapshotCache.get(key);
+    if (cached && !cached.snapshot.stale && now - cached.at < this.snapshotCacheTtlMs) {
+      this.cacheMetrics.hits++;
+      return cached.snapshot;
+    }
+    this.cacheMetrics.misses++;
+    const generation = this.inspectGenerations.get(key) || 0;
+    let previous = this.snapshots.get(key) || cached?.snapshot;
+    if (!previous && this.bindingIsCurrent(workspace, root)) {
+      const loading: Record<string, unknown> = {
+        ...createUnavailableSnapshot(workspace),
+        rootPath: root,
+        refreshing: true,
+        stale: true,
+        error: "",
+      };
+      loading.dataRevision = snapshotRevision(loading);
+      this.snapshots.set(key, loading);
+      this.emit("freshness", { workspaceId: workspace.id, rootPath: root, stale: true, refreshing: true });
+    }
+    let identity = null as Awaited<ReturnType<GitManager["physicalIdentity"]>> | null;
+    if (root) {
+      try {
+        identity = await this.physicalIdentity(root);
+      } catch (error) {
+        const message = extractErrorMessage(error);
+        if (previous) {
+          this.emit("freshness", { workspaceId: workspace.id, rootPath: root, stale: true, error: message });
+          return { ...previous, stale: true, refreshError: message };
+        }
+        log.warn("git identity resolution failed", {
+          workspaceId: workspace.id,
+          rootPath: root,
+          err: redactSecrets(message),
+        });
+      }
+    }
+    if (!this.bindingIsCurrent(workspace, root)) return previous || createUnavailableSnapshot(workspace);
+    if (identity && previous?.physicalIdentityToken && previous.physicalIdentityToken !== identity.token) {
+      const oldPhysicalKey = this.workspacePhysicalKeys.get(key);
+      if (oldPhysicalKey)
+        this.physicalGenerations.set(oldPhysicalKey, (this.physicalGenerations.get(oldPhysicalKey) || 0) + 1);
+      if (oldPhysicalKey) this.invalidatePhysicalSnapshots(oldPhysicalKey);
+      this.inspectGenerations.set(key, (this.inspectGenerations.get(key) || 0) + 1);
+      this.snapshotCache.delete(key);
+      this.snapshots.delete(key);
+      previous = undefined;
+    }
+    if (identity) this.workspacePhysicalKeys.set(key, identity.key);
+    if (identity && this.cacheStore && (!previous || previous.verified === false)) {
+      const entry = await this.cacheStore
+        .read({ checkoutRoot: identity.root, gitDir: identity.gitDir, commonDir: identity.commonDir })
+        .catch(() => null);
+      if (entry) {
+        previous = {
+          workspaceId: workspace.id,
+          projectId: workspace.id,
+          cwd: root,
+          rootPath: root,
+          available: true,
+          branch: entry.summary.branch || "",
+          upstream: entry.summary.upstream || "",
+          aheadCount: entry.summary.ahead || 0,
+          behindCount: entry.summary.behind || 0,
+          dirtyCount: entry.summary.dirtyCount || 0,
+          dirty: (entry.summary.dirtyCount || 0) > 0,
+          headOid: entry.summary.headOid || "",
+          status: entry.status,
+          stale: true,
+          verified: true,
+          cached: true,
+          stateToken: undefined,
+          dataRevision: entry.revision,
+        };
+      } else if (previous?.verified === false) {
+        previous = undefined;
+        this.snapshots.delete(key);
+        this.snapshotCache.delete(key);
+      }
+    }
+    const physicalGeneration = identity ? this.physicalGenerations.get(identity.key) || 0 : 0;
+    if (identity && root) {
+      const bindings = this.knownBindings.get(identity.key) || [];
+      if (!bindings.some((binding) => binding.workspace.id === workspace.id && binding.root === root))
+        bindings.push({ workspace, root, identity });
+      this.knownBindings.set(identity.key, bindings);
+      if (
+        this.gitReadPriority.getStore() === "background" &&
+        (sharedReviewGitLocks.isCommonHeld(identity.commonDir) || sharedReviewGitLocks.isWorktreeHeld(identity.root))
+      ) {
+        return previous
+          ? { ...previous, stale: true }
+          : { workspaceId: workspace.id, rootPath: root, available: false, stale: true };
+      }
+    }
+    if (
+      (this.inspectGenerations.get(key) || 0) !== generation ||
+      (identity && (this.physicalGenerations.get(identity.key) || 0) !== physicalGeneration)
+    ) {
+      if (retry === 0) return this.inspectCached(workspace, key, root, this.now().getTime(), 1);
+      return previous
+        ? { ...previous, stale: true, refreshError: "Git state changed during refresh." }
+        : { workspaceId: workspace.id, rootPath: root, available: false, stale: true };
+    }
+    const flightKey = identity
+      ? `${identity.key}|${JSON.stringify([workspace.review?.role, workspace.review?.pullRequest?.sourceRefName, workspace.review?.pullRequest?.targetRefName, workspace.branchMerged])}`
+      : key;
+    this.workspaceFlightKeys.set(key, flightKey);
+    const physicalCached = identity ? this.physicalSnapshotCache.get(flightKey) : null;
+    if (
+      physicalCached &&
+      !physicalCached.snapshot.stale &&
+      !physicalCached.snapshot.error &&
+      !physicalCached.snapshot.refreshError &&
+      now - physicalCached.at < this.snapshotCacheTtlMs
+    ) {
+      const snapshot = {
+        ...physicalCached.snapshot,
+        workspaceId: workspace.id,
+        projectId: workspace.id,
+        cwd: root,
+        rootPath: root,
+      };
+      this.snapshotGenerations.set(snapshot, {
+        workspace: generation,
+        physicalKey: identity?.key,
+        physical: physicalGeneration,
+      });
+      this.snapshotCache.set(key, { at: physicalCached.at, snapshot });
+      if (identity) this.writePersistentSnapshot(identity, snapshot);
+      return snapshot;
+    }
+    const flight = this.inspectFlights.get(flightKey);
+    if (flight) this.cacheMetrics.joinedReads++;
+    if (flight)
+      return flight.then((snapshot) => {
+        const currentGeneration = identity ? this.physicalGenerations.get(identity.key) || 0 : 0;
+        if (identity && currentGeneration !== physicalGeneration && retry === 0)
+          return this.inspectCached(workspace, key, root, this.now().getTime(), 1);
+        const projected: Record<string, unknown> = {
+          ...snapshot,
+          workspaceId: workspace.id,
+          projectId: workspace.id,
+          cwd: root,
+          rootPath: root,
+        };
+        this.snapshotGenerations.set(projected, {
+          workspace: generation,
+          physicalKey: identity?.key,
+          physical: physicalGeneration,
+        });
+        if (this.bindingIsCurrent(workspace, root) && currentGeneration === physicalGeneration) {
+          this.snapshotCache.set(key, { at: this.now().getTime(), snapshot: projected });
+          if (identity && !projected.error && !projected.refreshError)
+            this.writePersistentSnapshot(identity, projected);
+        }
+        return projected;
+      });
+    const task = timedGitRead(async () => {
+      const scope = identity ? this.dirtyScopes.get(identity.key) : undefined;
+      if (root && previous?.stateToken && scope === "refs") return this.refreshMetadata(workspace, root, previous);
+      const statusOnly =
+        root && previous?.stateToken && !previous.error && scope !== "all"
+          ? await this.refreshStatusOnly(workspace, root, previous)
+          : null;
+      return statusOnly || this._inspectRoot(workspace, root);
+    }, "Git refresh timed out. The repository may be unavailable.")
+      .then(async (snapshot) => {
+        if (
+          (this.inspectGenerations.get(key) || 0) !== generation ||
+          (identity && (this.physicalGenerations.get(identity.key) || 0) !== physicalGeneration)
+        ) {
+          if (retry === 0) {
+            if (this.inspectFlights.get(flightKey) === task) this.inspectFlights.delete(flightKey);
+            this.emit("freshness", {
+              workspaceId: workspace.id,
+              rootPath: root,
+              stale: true,
+              reason: "invalidated-during-refresh",
+            });
+            return this.inspectCached(workspace, key, root, this.now().getTime(), 1);
+          }
+          const old = this.snapshots.get(key) || cached?.snapshot;
+          if (old) return { ...old, stale: true, refreshError: "Git state changed during refresh." };
+          return {
+            workspaceId: workspace.id,
+            rootPath: root,
+            available: false,
+            stale: true,
+            error: "Git state changed during refresh.",
+          };
+        }
+        if (!this.bindingIsCurrent(workspace, root)) return snapshot;
+        const previous = this.snapshots.get(key) || cached?.snapshot;
+        const failed = Boolean(snapshot.error) && previous?.available === true && !previous.error;
+        const result = failed ? { ...previous, refreshError: snapshot.error, stale: true } : snapshot;
+        if (failed)
+          this.emit("freshness", { workspaceId: workspace.id, rootPath: root, stale: true, error: snapshot.error });
+        const digest = snapshotRevision(result);
+        const stable: Record<string, unknown> = {
+          ...result,
+          physicalIdentityToken: identity?.token || result.physicalIdentityToken,
+          refreshing: false,
+          contentRevision: identity ? this.physicalContentRevisions.get(identity.key) || 0 : 0,
+          dataRevision: digest,
+        };
+        stable.dataRevision = snapshotRevision(stable);
+        this.snapshotGenerations.set(stable, {
+          workspace: generation,
+          physicalKey: identity?.key,
+          physical: physicalGeneration,
+        });
+        this.snapshotCache.set(key, { at: this.now().getTime(), snapshot: stable });
+        if (identity && !stable.stale && !stable.error && !stable.refreshError)
+          this.physicalSnapshotCache.set(flightKey, {
+            at: this.now().getTime(),
+            snapshot: stable,
+            physicalKey: identity.key,
+          });
+        if (identity && !stable.error && !stable.refreshError) this.dirtyScopes.delete(identity.key);
+        if (identity && !stable.error && !stable.refreshError) this.writePersistentSnapshot(identity, stable);
+        return stable;
+      })
+      .catch((error: unknown) => {
+        const message = redactSecrets(extractErrorMessage(error));
+        log.warn("git refresh failed", { workspaceId: workspace.id, rootPath: root, err: message });
+        return previous
+          ? { ...previous, stale: true, refreshError: message }
+          : createUnavailableSnapshot(workspace, message);
+      })
+      .finally(() => {
+        if (this.inspectFlights.get(flightKey) === task) this.inspectFlights.delete(flightKey);
+        if (this.workspaceFlightKeys.get(key) === flightKey) this.workspaceFlightKeys.delete(key);
+      });
+    this.inspectFlights.set(flightKey, task);
+    return task;
+  }
+
+  private physicalIdentity(root: string): Promise<CheckoutIdentity> {
+    return timedGitRead(() => this.resolvePhysicalIdentity(root), "Git checkout discovery timed out.", 15_000);
+  }
+
+  private async resolvePhysicalIdentity(root: string): Promise<CheckoutIdentity> {
+    let cached = this.physicalIdentityCache.get(root);
+    if (cached) {
+      const identity = await cached;
+      const token = await this.identityFilesystemToken(identity.root, identity.gitDir, identity.commonDir);
+      if (token === identity.token && !(await this.hasCloserCheckout(root, identity.root))) return identity;
+      this.physicalIdentityCache.delete(root);
+    }
+    cached = this.physicalIdentityCache.get(root);
+    if (!cached) {
+      cached = (async () => {
+        const resolvedRoot = await fsRealpath(root).catch(() => path.resolve(root));
+        const [topResult, gitDirResult, commonDirResult] = await Promise.all([
+          this.execGit(resolvedRoot, ["rev-parse", "--show-toplevel"]),
+          this.execGit(resolvedRoot, ["rev-parse", "--absolute-git-dir"]),
+          this.execGit(resolvedRoot, ["rev-parse", "--git-common-dir"]),
+        ]);
+        if (!topResult?.stdout || !gitDirResult?.stdout || !commonDirResult?.stdout) {
+          if (this.execGitImpl)
+            return {
+              key: resolvedRoot,
+              root: resolvedRoot,
+              gitDir: path.join(resolvedRoot, ".git"),
+              commonDir: path.join(resolvedRoot, ".git"),
+              token: resolvedRoot,
+            };
+          throw new Error("Unable to resolve Git checkout identity.");
+        }
+        const resolveCanonicalPath = async (value: string): Promise<string> =>
+          fsRealpath(value).catch((error) => {
+            if (this.execGitImpl) return path.resolve(value);
+            throw error;
+          });
+        const realRoot = await resolveCanonicalPath(topResult.stdout.trim());
+        const gitDirValue = gitDirResult?.stdout || ".git";
+        const commonDirValue = commonDirResult?.stdout || ".git";
+        const gitDir = await resolveCanonicalPath(resolveGitPath(realRoot, gitDirValue));
+        const commonDir = await resolveCanonicalPath(resolveGitPath(resolvedRoot, commonDirValue));
+        const token = await this.identityFilesystemToken(realRoot, gitDir, commonDir);
+        const canonical = [realRoot, gitDir, commonDir, token].join("\0");
+        return { key: canonical, root: realRoot, gitDir, commonDir, token };
+      })();
+      this.physicalIdentityCache.set(root, cached!);
+      if (this.physicalIdentityCache.size > 256)
+        this.physicalIdentityCache.delete(this.physicalIdentityCache.keys().next().value!);
+      void cached!.catch(() => {
+        if (this.physicalIdentityCache.get(root) === cached) this.physicalIdentityCache.delete(root);
+      });
+    }
+    return cached!;
+  }
+
+  private async hasCloserCheckout(requested: string, checkout: string): Promise<boolean> {
+    let current = await fsRealpath(requested).catch(() => path.resolve(requested));
+    const expected = path.resolve(checkout);
+    while (path.resolve(current) !== expected) {
+      const relative = path.relative(expected, current);
+      if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return true;
+      try {
+        await fsStat(path.join(current, ".git"));
+        return true;
+      } catch (error) {
+        if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code || "")) throw error;
+      }
+      const parent = path.dirname(current);
+      if (parent === current) return true;
+      current = parent;
+    }
+    return false;
+  }
+
+  private async workingDirectory(cwd: string): Promise<string> {
+    if (!cwd) return cwd;
+    if (this.execGitImpl && !this.physicalIdentityCache.has(cwd)) {
+      let current = await fsRealpath(cwd).catch(() => "");
+      if (!current) return cwd;
+      while (current) {
+        try {
+          await fsStat(path.join(current, ".git"));
+          return current;
+        } catch (error) {
+          if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code || "")) throw error;
+        }
+        const parent = path.dirname(current);
+        if (parent === current) return cwd;
+        current = parent;
+      }
+    }
+    try {
+      return (await this.physicalIdentity(cwd)).root;
+    } catch (error) {
+      if (this.execGitImpl) return cwd;
+      throw error;
+    }
+  }
+
+  private async identityFilesystemToken(root: string, gitDir: string, commonDir: string): Promise<string> {
+    const stamp = async (target: string) => {
+      const info = await fsStat(target);
+      return `${info.dev}:${info.ino}:${info.birthtimeMs}`;
+    };
+    const dotGitPath = path.join(root, ".git");
+    try {
+      const dotGitInfo = await fsStat(dotGitPath);
+      let pointer = "";
+      if (dotGitInfo.isFile()) pointer = await fsReadFile(dotGitPath, "utf8");
+      const [gitStamp, commonStamp] = await Promise.all([stamp(gitDir), stamp(commonDir)]);
+      return createHash("sha256")
+        .update(
+          `${dotGitInfo.dev}:${dotGitInfo.ino}:${dotGitInfo.birthtimeMs}\0${pointer}\0${gitStamp}\0${commonStamp}`,
+        )
+        .digest("hex");
+    } catch (error) {
+      if (this.execGitImpl) return createHash("sha256").update(`${root}\0${gitDir}\0${commonDir}`).digest("hex");
+      throw error;
+    }
+  }
+
+  private async hydrateRegisteredWorkspaces(workspaces: WorkspaceRef[], generation: number): Promise<void> {
+    if (!this.cacheStore) return;
+    const pending: Promise<void>[] = [];
+    let changed = false;
+    for (const workspace of workspaces) {
+      const roots = (workspace.gitRoots?.length ? workspace.gitRoots : [workspace.cwd]).filter(Boolean) as string[];
+      for (const root of roots) {
+        const key = this._cacheKey(workspace.id, root);
+        if (this.snapshots.has(key)) continue;
+        pending.push(
+          Promise.resolve()
+            .then(() => this.cacheStore!.readByRoot(path.resolve(root)))
+            .then((entry) => {
+              if (
+                !entry ||
+                generation !== this.registrationGeneration ||
+                !this.bindingIsCurrent(workspace, root) ||
+                this.snapshots.has(key)
+              )
+                return;
+              const summary = entry.summary;
+              const snapshot: Record<string, unknown> = {
+                workspaceId: workspace.id,
+                projectId: workspace.id,
+                cwd: root,
+                rootPath: root,
+                available: true,
+                branch: summary.branch || "",
+                upstream: summary.upstream || "",
+                aheadCount: summary.ahead || 0,
+                behindCount: summary.behind || 0,
+                dirtyCount: summary.dirtyCount || 0,
+                dirty: (summary.dirtyCount || 0) > 0,
+                headOid: summary.headOid || "",
+                stale: true,
+                verified: false,
+                cached: true,
+                summaryOnly: true,
+                lastUpdatedAt: new Date(entry.validatedAt).toISOString(),
+              };
+              snapshot.dataRevision = snapshotRevision(snapshot);
+              this.snapshots.set(key, snapshot);
+              this.snapshotCache.set(key, { at: 0, snapshot });
+              changed = true;
+            })
+            .catch(() => {}),
+        );
+      }
+    }
+    await Promise.all(pending);
+    if (changed && generation === this.registrationGeneration && !this.disposed)
+      this.emit("updated", this.getWorkspaceMap());
+  }
+
+  async registerWorkspaces(workspaces: WorkspaceRef[] = []): Promise<void> {
+    if (this.disposed) return;
+    const generation = ++this.registrationGeneration;
+    this.registrationEnabled = true;
+    for (const workspace of workspaces) {
+      const previous = this.registeredWorkspaces.get(workspace.id);
+      if (
+        previous &&
+        JSON.stringify([previous.cwd, previous.gitRoots, previous.review, previous.branchMerged]) !==
+          JSON.stringify([workspace.cwd, workspace.gitRoots, workspace.review, workspace.branchMerged])
+      )
+        this.invalidateSnapshotCache(workspace.id);
+    }
+    this.registeredWorkspaces = new Map(
+      workspaces.filter((workspace) => workspace?.id).map((workspace) => [workspace.id, workspace]),
+    );
+    const wanted = new Set<string>();
+    const wantedRoots = new Set<string>();
+    for (const workspace of workspaces) {
+      const roots = workspace.gitRoots?.length ? workspace.gitRoots : [workspace.cwd || null];
+      for (const root of roots) {
+        wanted.add(this._cacheKey(workspace.id, root));
+        if (root) wantedRoots.add(root);
+      }
+    }
+    for (const key of new Set([
+      ...this.snapshots.keys(),
+      ...this.snapshotCache.keys(),
+      ...this.workspacePhysicalKeys.keys(),
+    ])) {
+      if (wanted.has(key)) continue;
+      this.inspectGenerations.set(key, (this.inspectGenerations.get(key) || 0) + 1);
+      this.snapshots.delete(key);
+      this.snapshotCache.delete(key);
+      this.workspacePhysicalKeys.delete(key);
+    }
+    for (const [key, bindings] of this.knownBindings) {
+      const current = bindings.filter(({ workspace, root }) => wanted.has(this._cacheKey(workspace.id, root)));
+      if (current.length) this.knownBindings.set(key, current);
+      else {
+        this.knownBindings.delete(key);
+        this.invalidatePhysicalSnapshots(key);
+        this.statusReads.delete(key);
+      }
+    }
+    for (const root of this.physicalIdentityCache.keys())
+      if (!wantedRoots.has(root)) this.physicalIdentityCache.delete(root);
+    const configuredRoots = new Set([...wantedRoots].map((root) => path.resolve(root)));
+    for (const root of this.configurationFiles.keys())
+      if (!configuredRoots.has(root)) this.configurationFiles.delete(root);
+    for (const key of this.inspectGenerations.keys())
+      if (!wanted.has(key) && !this.workspaceFlightKeys.has(key)) this.inspectGenerations.delete(key);
+    await this.hydrateRegisteredWorkspaces(workspaces, generation);
+  }
+
+  async setInterestedWorkspaces(workspaces: WorkspaceRef[] = []): Promise<void> {
+    if (this.disposed) return;
+    const generation = ++this.interestedGeneration;
+    this.interestedWorkspaces.clear();
+    for (const workspace of workspaces) if (workspace?.id) this.interestedWorkspaces.set(workspace.id, workspace);
+    if (!workspaces.length) {
+      this.watchedBindings.clear();
+      this.checkoutWatch?.setTargets([]);
+      return;
+    }
+    const targets = new Map<string, { key: string; root: string; gitDir: string; commonDir: string }>();
+    const watchedBindings = new Map<string, Array<{ workspace: WorkspaceRef; root: string }>>();
+    for (const workspace of workspaces) {
+      if (!workspace || workspace.kind === "docker") continue;
+      const roots = (workspace.gitRoots?.length ? workspace.gitRoots : [workspace.cwd]).filter(Boolean) as string[];
+      for (const root of roots) {
+        try {
+          const identity = await this.physicalIdentity(root);
+          targets.set(identity.key, identity);
+          const previous = this.getSnapshot(workspace.id, root);
+          if (previous?.physicalIdentityToken && previous.physicalIdentityToken !== identity.token)
+            this.invalidateSnapshotCache(workspace.id, root);
+          const bindings = watchedBindings.get(identity.key) || [];
+          bindings.push({ workspace, root });
+          watchedBindings.set(identity.key, bindings);
+        } catch {
+          const key = `unavailable:${path.resolve(root)}`;
+          targets.set(key, { key, root, gitDir: path.join(root, ".git"), commonDir: path.join(root, ".git") });
+          watchedBindings.set(key, [{ workspace, root }]);
+        }
+      }
+    }
+    if (generation !== this.interestedGeneration || this.disposed) return;
+    this.watchedBindings = watchedBindings;
+    this.checkoutWatch ??= new GitCheckoutWatch({
+      onInvalidate: (key, scope, paths, reason) => {
+        this.watchReasons.set(key, reason);
+        this.markPhysicalDirty(key, scope);
+        if ((reason === "watch" || reason === "recovery") && paths.length > 0)
+          this.physicalContentRevisions.set(key, (this.physicalContentRevisions.get(key) || 0) + 1);
+        for (const { workspace, root } of this.watchedBindings.get(key) || []) {
+          this.emit("invalidated", { workspaceId: workspace.id, rootPath: root, scope, paths, reason });
+        }
+      },
+      onRefresh: async (key) => {
+        const bindings = this.watchedBindings.get(key) || [];
+        if (bindings.length) {
+          await this.refreshWorkspaces(
+            bindings.map(({ workspace, root }) => ({ ...workspace, cwd: root, gitRoots: [root] })),
+            { reason: this.watchReasons.get(key) || "watch" },
+          );
+          this.watchReasons.delete(key);
+          for (const { workspace, root } of bindings) {
+            const snapshot = this.getSnapshot(workspace.id, root);
+            if (snapshot?.refreshError || snapshot?.error)
+              throw new Error(String(snapshot.refreshError || snapshot.error));
+          }
+        }
+      },
+      classifyIgnored: (target, directories) =>
+        this.refreshReason.run("ignore-check", () =>
+          this.gitReadPriority.run("background", () => this.ignoredDirectories(target.root, directories)),
+        ),
+    });
+    this.checkoutWatch.setTargets([...targets.values()].map((target) => ({ ...target, key: target.key })));
+  }
+
+  private async ignoredDirectories(root: string, directories: string[]): Promise<string[]> {
+    const ignored = await this.execGit(root, [
+      "-c",
+      "core.quotePath=false",
+      "check-ignore",
+      "--",
+      ...directories.map((directory) => `${directory}/`),
+    ]).then(
+      ({ stdout }) =>
+        stdout
+          .split(/\r?\n/)
+          .filter(Boolean)
+          .map((entry) => entry.replace(/\/$/, "")),
+      (error: unknown) => {
+        if (error instanceof ProcessCommandError && error.exitCode === 1) return [];
+        throw error;
+      },
+    );
+    if (!ignored.length) return [];
+    // A force-added file inside an ignored directory is still tracked, and its edits still count.
+    const { stdout } = await this.execGit(root, [
+      "ls-files",
+      "-z",
+      "--",
+      ...ignored.map((directory) => `${directory}/`),
+    ]);
+    const tracked = stdout.split("\0").filter(Boolean);
+    return ignored.filter((directory) => !tracked.some((file) => file.startsWith(`${directory}/`)));
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    this.interestedGeneration++;
+    this.registrationGeneration++;
+    if (this.mutationRefreshTimer) clearTimeout(this.mutationRefreshTimer);
+    this.mutationRefreshTimer = null;
+    this.mutationRefreshKeys.clear();
+    this.checkoutWatch?.dispose();
+    this.checkoutWatch = null;
+    this.unsubscribeGitLocks?.();
+    this.unsubscribeGitLocks = null;
+    this.gitProcessScheduler.stopBackground();
+    this.interestedWorkspaces.clear();
+    this.watchedBindings.clear();
+    this.statusReads.clear();
+    this.commonMetadataReads.clear();
+    this.configurationFiles.clear();
+  }
+
+  getProcessStats() {
+    this.trimRawReadCaches();
+    return {
+      ...this.gitProcessScheduler.getStats(),
+      cache: { ...this.cacheMetrics },
+      memory: {
+        retainedBytes: this.memoryBudget.retainedBytes,
+        rawReadBytes: this.rawReadBytes,
+        overBudget: this.memoryBudget.overBudget,
+      },
+      watches: this.checkoutWatch?.getStats() || { targets: 0, watchers: 0, refreshing: 0 },
+    };
+  }
+
+  private readStatus(root: string): Promise<GitExecResult> {
+    const background = this.gitReadPriority.getStore() === "background";
+    const physical = [...this.knownBindings.entries()].find(([, bindings]) =>
+      bindings.some((binding) => path.resolve(binding.root) === path.resolve(root)),
+    );
+    const key = physical?.[0] || path.resolve(root);
+    const generation = this.physicalGenerations.get(key) || 0;
+    const cached = this.statusReads.get(key);
+    if (
+      background &&
+      cached &&
+      cached.generation === generation &&
+      this.now().getTime() - cached.at < this.snapshotCacheTtlMs
+    )
+      return cached.task;
+    const task = this.execGit(root, [
+      "--no-optional-locks",
+      "status",
+      "--porcelain=v2",
+      "--branch",
+      "-z",
+      "--untracked-files=all",
+    ]);
+    if (background) {
+      const entry: { at: number; generation: number; task: Promise<GitExecResult>; bytes?: number } = {
+        at: this.now().getTime(),
+        generation,
+        task,
+      };
+      this.statusReads.set(key, entry);
+      void task.then(
+        (result) => {
+          entry.bytes = Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr);
+          this.trimRawReadCaches();
+        },
+        () => {},
+      );
+      void task.catch(() => {
+        if (this.statusReads.get(key) === entry) this.statusReads.delete(key);
+      });
+      if (this.statusReads.size > 128) this.statusReads.delete(this.statusReads.keys().next().value!);
+    }
+    return task;
+  }
+
+  private readConfigurationToken(root: string, discover: boolean): Promise<string> {
+    const key = path.resolve(root);
+    const flight = this.configurationFlights.get(key);
+    if (flight) return flight;
+    const task = (async () => {
+      let files = this.configurationFiles.get(key);
+      if (!files || discover) {
+        const result = await this.execGit(root, [
+          "config",
+          "--includes",
+          "--null",
+          "--show-origin",
+          "--name-only",
+          "--list",
+        ]);
+        files = [
+          ...new Set(
+            result.stdout
+              .split("\0")
+              .filter((part) => part.startsWith("file:"))
+              .map((part) => path.resolve(root, part.slice(5))),
+          ),
+        ].sort();
+        this.configurationFiles.set(key, files);
+        if (this.configurationFiles.size > 256)
+          this.configurationFiles.delete(this.configurationFiles.keys().next().value!);
+      }
+      const stamps = await Promise.all(
+        files.map(async (filename) => {
+          try {
+            const info = await fsStat(filename);
+            return [filename, info.dev, info.ino, info.size, info.mtimeMs];
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") return [filename, "missing"];
+            throw error;
+          }
+        }),
+      );
+      return createHash("sha256").update(JSON.stringify(stamps)).digest("hex");
+    })().finally(() => {
+      if (this.configurationFlights.get(key) === task) this.configurationFlights.delete(key);
+    });
+    this.configurationFlights.set(key, task);
+    return task;
+  }
+
+  private readCommonMetadata(
+    root: string,
+    kind: "branches" | "worktrees" | "stash",
+    args: string[],
+  ): Promise<GitExecResult> {
+    if (this.gitReadPriority.getStore() !== "background") return this.execGit(root, args);
+    const binding = [...this.knownBindings.values()]
+      .flat()
+      .find((entry) => path.resolve(entry.root) === path.resolve(root));
+    if (!binding) return this.execGit(root, args);
+    const key = binding.identity.commonDir;
+    let reads = this.commonMetadataReads.get(key);
+    if (!reads) {
+      reads = new Map();
+      this.commonMetadataReads.set(key, reads);
+    }
+    const cached = reads.get(kind);
+    if (cached && this.now().getTime() - cached.at < this.snapshotCacheTtlMs) return cached.task;
+    const task = this.execGit(root, args);
+    const entry: { at: number; task: Promise<GitExecResult>; bytes?: number } = { at: this.now().getTime(), task };
+    reads.set(kind, entry);
+    void task.then(
+      (result) => {
+        entry.bytes = Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr);
+        this.trimRawReadCaches();
+      },
+      () => {},
+    );
+    const owner = reads;
+    void task.catch(() => {
+      if (owner.get(kind) === entry) owner.delete(kind);
+    });
+    if (this.commonMetadataReads.size > 256)
+      this.commonMetadataReads.delete(this.commonMetadataReads.keys().next().value!);
+    return task;
+  }
+
+  private trimRawReadCaches(): void {
+    const entries: Array<{ at: number; bytes: number; remove: () => void }> = [];
+    for (const [key, entry] of this.statusReads)
+      if (entry.bytes !== undefined)
+        entries.push({ at: entry.at, bytes: entry.bytes, remove: () => this.statusReads.delete(key) });
+    for (const reads of this.commonMetadataReads.values())
+      for (const [kind, entry] of reads)
+        if (entry.bytes !== undefined)
+          entries.push({ at: entry.at, bytes: entry.bytes, remove: () => reads.delete(kind) });
+    let bytes = entries.reduce((total, entry) => total + entry.bytes, 0);
+    for (const entry of entries.sort((a, b) => a.at - b.at)) {
+      if (bytes <= 8 * 1024 * 1024) break;
+      entry.remove();
+      bytes -= entry.bytes;
+    }
+    this.rawReadBytes = bytes;
+  }
+
+  private async refreshMetadata(
+    workspace: WorkspaceRef,
+    root: string,
+    previous: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    this.cacheMetrics.metadataReads++;
+    const head = await this.execGit(root, ["rev-parse", "--verify", "HEAD"]).catch(() => ({ stdout: "", stderr: "" }));
+    if (head.stdout.trim() !== String(previous.headOid || "")) return this._inspectRoot(workspace, root);
+    const snapshot = await this._inspectRoot(workspace, root, previous);
+    if (snapshot.upstream && snapshot.available) {
+      const result = await this.execGit(root, ["rev-list", "--left-right", "--count", `HEAD...${snapshot.upstream}`]);
+      const counts = parseRevListCount(result.stdout);
+      snapshot.aheadCount = counts.left;
+      snapshot.behindCount = counts.right;
+    }
+    return snapshot;
+  }
+
+  private async refreshStatusOnly(
+    workspace: WorkspaceRef,
+    root: string,
+    previous: Record<string, unknown>,
+  ): Promise<Record<string, unknown> | null> {
+    this.cacheMetrics.statusReads++;
+    try {
+      const configurationToken = await this.readConfigurationToken(root, this.refreshReason.getStore() === "poll");
+      if (previous.configurationToken && previous.configurationToken !== configurationToken) return null;
+      const [head, refs, statusResult] = await Promise.all([
+        this.execGit(root, ["rev-parse", "--verify", "HEAD"]).catch(() => ({ stdout: "", stderr: "" })),
+        this.execGit(root, ["for-each-ref", "--format=%(refname)%00%(objectname)", "refs"]).catch(() => ({
+          stdout: "",
+          stderr: "",
+        })),
+        this.readStatus(root),
+      ]);
+      const stateToken = createHash("sha256").update(`${head.stdout.trim()}\0${refs.stdout}`).digest("hex");
+      if (stateToken !== previous.stateToken) return null;
+      const parsed = parsePorcelainV2(statusResult.stdout);
+      const staged = parsed.staged;
+      const unstaged = parsed.unstaged;
+      const untracked = parsed.untracked;
+      const conflicts = parsed.conflicts;
+      const operation = await this.inspectOperationState(root, {
+        gitDir: String(previous.gitDir || ""),
+        gitCommonDir: String(previous.gitCommonDir || ""),
+        conflicts: conflicts.map((entry) => entry.path),
+      });
+      const dirtyCount = uniqueByPath([...staged, ...unstaged, ...untracked, ...conflicts]).length;
+      const previousChanges = (previous.changes || {}) as Record<string, Record<string, unknown>>;
+      this.worktreeDirtyCache.set(path.resolve(root), {
+        at: this.now().getTime(),
+        value: { dirty: dirtyCount > 0, dirtyCount },
+      });
+      const snapshot: Record<string, unknown> = {
+        ...previous,
+        branch: parsed.branch && parsed.branch !== "(detached)" ? parsed.branch : previous.branch,
+        upstream: parsed.upstream || "",
+        aheadCount: parsed.aheadCount,
+        behindCount: parsed.behindCount,
+        dirty: dirtyCount > 0,
+        dirtyCount,
+        status: mapStatusForLegacy(staged, unstaged, untracked),
+        staged,
+        unstaged,
+        untracked,
+        conflicts,
+        operationState: operation.inProgress
+          ? buildOperationState(operation)
+          : { ...DEFAULT_OPERATION_STATE, canSkip: false, progress: null, currentCommit: null, sides: null },
+        stale: false,
+        verified: true,
+        cached: false,
+        refreshError: "",
+        changes: {
+          ...previousChanges,
+          staged: { ...(previousChanges.staged || {}), files: staged },
+          unstaged: { ...(previousChanges.unstaged || {}), files: [...unstaged, ...conflicts] },
+          untracked: { ...(previousChanges.untracked || {}), files: untracked },
+        },
+        lastUpdatedAt: this.now().toISOString(),
+        diffStatStale: true,
+        contentRevision: this.workspacePhysicalKeys.get(this._cacheKey(workspace.id, root))
+          ? this.physicalContentRevisions.get(this.workspacePhysicalKeys.get(this._cacheKey(workspace.id, root))!) || 0
+          : 0,
+      };
+      return { ...snapshot, dataRevision: snapshotRevision(snapshot) };
+    } catch {
+      return null;
+    }
+  }
+
+  private writePersistentSnapshot(
+    identity: { root: string; gitDir: string; commonDir: string },
+    snapshot: Record<string, unknown>,
+  ): void {
+    if (!this.cacheStore) return;
+    const entry: GitCacheEntry = {
+      checkoutRoot: identity.root,
+      gitDir: identity.gitDir,
+      commonDir: identity.commonDir,
+      rootAliases: [path.resolve(String(snapshot.rootPath || snapshot.cwd || identity.root))],
+      validatedAt: this.now().getTime(),
+      revision: String(snapshot.dataRevision || ""),
+      summary: {
+        branch: String(snapshot.branch || ""),
+        upstream: String(snapshot.upstream || ""),
+        ahead: Number(snapshot.aheadCount || 0),
+        behind: Number(snapshot.behindCount || 0),
+        dirtyCount: Number(snapshot.dirtyCount || 0),
+        headOid: String(snapshot.headOid || ""),
+      },
+      status: {
+        staged: snapshot.staged || [],
+        unstaged: snapshot.unstaged || [],
+        untracked: snapshot.untracked || [],
+        conflicts: snapshot.conflicts || [],
+      },
+    };
+    entry.revision = createHash("sha256")
+      .update(JSON.stringify({ summary: entry.summary, status: entry.status }))
+      .digest("hex");
+    const key = JSON.stringify([identity.root, identity.gitDir, identity.commonDir, entry.rootAliases]);
+    const previous = this.persistedRevisions.get(key);
+    if (previous?.revision === entry.revision) {
+      if (entry.validatedAt - previous.at < 60_000) return;
+      delete entry.status;
+    }
+    try {
+      this.cacheStore.write(entry);
+      this.persistedRevisions.set(key, { revision: entry.revision, at: entry.validatedAt });
+    } catch (error) {
+      if (this.now().getTime() - this.persistenceWarningAt >= 60_000) {
+        this.persistenceWarningAt = this.now().getTime();
+        log.warn("git cache persistence failed; keeping live data", { err: redactSecrets(extractErrorMessage(error)) });
       }
     }
   }
 
-  async refreshWorkspaces(workspaces: WorkspaceRef[] = []): Promise<Record<string, unknown>> {
+  async refreshWorkspaces(
+    workspaces: WorkspaceRef[] = [],
+    options: { reason?: string; priority?: GitReadPriority } = {},
+  ): Promise<Record<string, unknown>> {
+    if (this.disposed) return this.getWorkspaceMap();
+    return this.refreshReason.run(options.reason || "ensure", () =>
+      this.gitReadPriority.run(options.priority || "background", () => this.refreshWorkspacesInternal(workspaces)),
+    );
+  }
+
+  private async refreshWorkspacesInternal(workspaces: WorkspaceRef[] = []): Promise<Record<string, unknown>> {
     const now = this.now().getTime();
     const nextSnapshots = new Map<string, Record<string, unknown>>();
 
@@ -1307,37 +2614,81 @@ export class GitManager extends EventEmitter {
         if (!roots.length) {
           // Docker or cwd-less workspace
           const cacheKey = workspace.id;
-          const cached = this.snapshotCache.get(cacheKey);
-          if (cached && now - cached.at < this.snapshotCacheTtlMs) {
-            nextSnapshots.set(cacheKey, cached.snapshot);
-            return;
-          }
-          const snapshot = await this._inspectRoot(workspace, workspace.cwd || null);
-          this.snapshotCache.set(cacheKey, { at: this.now().getTime(), snapshot });
-          nextSnapshots.set(cacheKey, snapshot);
+          nextSnapshots.set(cacheKey, await this.inspectCached(workspace, cacheKey, workspace.cwd || null, now));
           return;
         }
 
         await Promise.all(
           roots.map(async (rootPath) => {
             const cacheKey = this._cacheKey(workspace.id, rootPath);
-            const cached = this.snapshotCache.get(cacheKey);
-            if (cached && now - cached.at < this.snapshotCacheTtlMs) {
-              nextSnapshots.set(cacheKey, cached.snapshot);
-              return;
-            }
-            const snapshot = await this._inspectRoot(workspace, rootPath);
-            this.snapshotCache.set(cacheKey, { at: this.now().getTime(), snapshot });
-            nextSnapshots.set(cacheKey, snapshot);
+            nextSnapshots.set(cacheKey, await this.inspectCached(workspace, cacheKey, rootPath, now));
           }),
         );
       }),
     );
 
-    for (const [key, snapshot] of nextSnapshots) {
+    let changed = false;
+    for (const [key, incoming] of nextSnapshots) {
+      let snapshot = incoming;
+      if (this.disposed) break;
+      if (
+        this.registrationEnabled &&
+        !workspaces.some(
+          (workspace) =>
+            this.bindingIsCurrent(workspace, String(snapshot.rootPath || workspace.cwd || "") || null) &&
+            this._cacheKey(workspace.id, String(snapshot.rootPath || workspace.cwd || "") || null) === key,
+        )
+      )
+        continue;
+      const version = this.snapshotGenerations.get(snapshot);
+      if (
+        version &&
+        ((this.inspectGenerations.get(key) || 0) !== version.workspace ||
+          (version.physicalKey && (this.physicalGenerations.get(version.physicalKey) || 0) !== version.physical))
+      ) {
+        const newer = this.snapshots.get(key);
+        const newerVersion = newer && this.snapshotGenerations.get(newer);
+        if (
+          newer &&
+          newerVersion &&
+          !newer.stale &&
+          newerVersion.workspace === (this.inspectGenerations.get(key) || 0) &&
+          (!newerVersion.physicalKey ||
+            newerVersion.physical === (this.physicalGenerations.get(newerVersion.physicalKey) || 0))
+        )
+          continue;
+        snapshot = { ...snapshot, stale: true };
+        if (version.physicalKey && this.watchedBindings.has(version.physicalKey))
+          this.scheduleMutationRefresh(version.physicalKey);
+      }
+      const oldRevision = this.snapshots.get(key)?.dataRevision;
+      if (oldRevision !== snapshot.dataRevision) changed = true;
+      if (
+        Boolean(this.snapshots.get(key)?.stale) !== Boolean(snapshot.stale) ||
+        Boolean(this.snapshots.get(key)?.refreshing) !== Boolean(snapshot.refreshing) ||
+        String(this.snapshots.get(key)?.refreshError || "") !== String(snapshot.refreshError || "")
+      )
+        changed = true;
       this.snapshots.set(key, snapshot);
     }
-    this.emit("updated", this.getWorkspaceMap());
+    if (changed) {
+      const protectedWorkspaceKeys = new Set(
+        [...this.watchedBindings.values()].flat().map(({ workspace, root }) => this._cacheKey(workspace.id, root)),
+      );
+      for (const workspace of workspaces) {
+        for (const root of workspace.gitRoots?.length ? workspace.gitRoots : [workspace.cwd || null])
+          protectedWorkspaceKeys.add(this._cacheKey(workspace.id, root));
+      }
+      this.memoryBudget = enforceGitSnapshotBudget({
+        snapshots: this.snapshots,
+        workspaceSnapshotCache: this.snapshotCache,
+        physicalSnapshotCache: this.physicalSnapshotCache,
+        protectedWorkspaceKeys,
+        workspacePhysicalKeys: this.workspacePhysicalKeys,
+      });
+      this.cacheMetrics.broadcasts++;
+      this.emit("updated", this.getWorkspaceMap());
+    }
     return this.getWorkspaceMap();
   }
 
@@ -2148,7 +3499,7 @@ export class GitManager extends EventEmitter {
       rootPath = "",
     }: { path?: string; scope?: string; baseBranch?: string; rootPath?: string } = {},
   ): Promise<Record<string, unknown>> {
-    const effectiveCwd = rootPath || workspace?.cwd;
+    const effectiveCwd = await this.workingDirectory(rootPath || workspace?.cwd || "");
     if (!effectiveCwd || !targetPath) {
       return {
         ok: false,
@@ -2174,12 +3525,14 @@ export class GitManager extends EventEmitter {
       };
     }
 
-    const args =
+    const args = literalFileArgs(
       normalizedScope === "staged"
         ? ["diff", "--cached", "--", targetPath]
         : normalizedScope === "branch"
           ? ["diff", `${baseBranch || "HEAD"}...HEAD`, "--", targetPath]
-          : ["diff", "--", targetPath];
+          : ["diff", "--", targetPath],
+      targetPath,
+    );
 
     try {
       const result = await this.execGit(effectiveCwd, args);
@@ -2322,7 +3675,7 @@ export class GitManager extends EventEmitter {
       allowDirty: true,
       rootPath,
       extraAudit: { path: normalized },
-      run: (cwd) => this.execGit(cwd, ["add", "--", normalized]),
+      run: (cwd) => this.execGit(cwd, literalFileArgs(["add", "--", normalized], normalized)),
     });
   }
 
@@ -2340,10 +3693,13 @@ export class GitManager extends EventEmitter {
       extraAudit: { path: normalized },
       run: async (cwd) => {
         try {
-          await this.execGit(cwd, ["restore", "--staged", "--", normalized]);
+          await this.execGit(cwd, literalFileArgs(["restore", "--staged", "--", normalized], normalized));
         } catch {
           // Initial commits have no HEAD; reset the path from the empty tree via rm --cached.
-          await this.execGit(cwd, ["rm", "--cached", "--ignore-unmatch", "--", normalized]);
+          await this.execGit(
+            cwd,
+            literalFileArgs(["rm", "--cached", "--ignore-unmatch", "--", normalized], normalized),
+          );
         }
         return { stdout: `Unstaged ${normalized}.`, stderr: "" };
       },
@@ -2550,13 +3906,19 @@ export class GitManager extends EventEmitter {
    * common-dir lock first (common, then worktree: the one allowed order).
    */
   async runWriteAction(workspace: WorkspaceRef, options: WriteActionOptions): Promise<Record<string, unknown>> {
-    const cwd = options.rootPath || String(workspace.cwd || "");
-    if (!cwd) return this.runWriteActionUnlocked(workspace, options);
-    const inWorktree = () =>
-      sharedReviewGitLocks.withWorktree(cwd, () => this.runWriteActionUnlocked(workspace, options));
-    if (options.type !== "fetch" && options.type !== "pull") return inWorktree();
-    const commonDir = await commonDirOf(cwd);
-    return sharedReviewGitLocks.withCommon(commonDir, inWorktree);
+    return this.mutationScope.run(writeInvalidationScope(options.type), () =>
+      this.gitReadPriority.run("foreground", () =>
+        this.refreshReason.run("", async () => {
+          const cwd = await this.workingDirectory(options.rootPath || String(workspace.cwd || ""));
+          if (!cwd) return this.runWriteActionUnlocked(workspace, options);
+          const inWorktree = () =>
+            sharedReviewGitLocks.withWorktree(cwd, () => this.runWriteActionUnlocked(workspace, options));
+          if (options.type !== "fetch" && options.type !== "pull") return inWorktree();
+          const commonDir = await commonDirOf(cwd);
+          return sharedReviewGitLocks.withCommon(commonDir, inWorktree);
+        }),
+      ),
+    );
   }
 
   async runWriteActionUnlocked(
@@ -2575,7 +3937,7 @@ export class GitManager extends EventEmitter {
       snapshot: precomputedSnapshot,
     }: WriteActionOptions,
   ): Promise<Record<string, unknown>> {
-    this.invalidateSnapshotCache(workspace.id, rootPath || null);
+    this.invalidateSnapshotCache(workspace.id, rootPath || null, writeInvalidationScope(type));
     const snapshot =
       precomputedSnapshot ??
       (await (rootPath ? this._inspectRoot(workspace, rootPath) : this.inspectWorkspace(workspace)));
@@ -2638,7 +4000,7 @@ export class GitManager extends EventEmitter {
     let stashLabel = "";
     let stashOutput = "";
 
-    const effectiveCwd = rootPath || String(workspace.cwd || "");
+    const effectiveCwd = await this.workingDirectory(String(snapshot.root || rootPath || workspace.cwd || ""));
 
     // Stashing is a separate step from the action itself: when it fails the
     // action never ran, and the result must say so instead of "<label> failed."
@@ -3012,7 +4374,7 @@ export class GitManager extends EventEmitter {
       return createStructuredResult({ ok: false, summary: "Commit message is required." });
     }
 
-    const effectiveCwd = rootPath || workspace?.cwd;
+    const effectiveCwd = await this.workingDirectory(rootPath || workspace?.cwd || "");
     if (!effectiveCwd) {
       return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
     }
@@ -3569,8 +4931,9 @@ export class GitManager extends EventEmitter {
       return symbolicDefault || preferBaseBranch(currentBranch, upstream, branchNames);
     }
 
-    const distances: Array<{ candidate: string; distance: number }> = new Array(candidates.length);
-    let nextCandidateIndex = 0;
+    const batched = await this.readBaseBranchDistances(cwd, candidates);
+    const distances: Array<{ candidate: string; distance: number }> = batched ?? new Array(candidates.length);
+    let nextCandidateIndex = batched ? candidates.length : 0;
     const checkCandidate = async (): Promise<void> => {
       while (nextCandidateIndex < candidates.length) {
         const index = nextCandidateIndex++;
@@ -3617,6 +4980,64 @@ export class GitManager extends EventEmitter {
     });
 
     return reachable[0].candidate;
+  }
+
+  /**
+   * Every candidate's distance in one process (`%(ahead-behind:HEAD)`, Git 2.41+): "behind" is
+   * the commits HEAD has past its fork from the candidate, what merge-base + rev-list --count
+   * gave per candidate. Null sends the caller to that per-candidate path.
+   */
+  private async readBaseBranchDistances(
+    cwd: string,
+    candidates: string[],
+  ): Promise<Array<{ candidate: string; distance: number }> | null> {
+    const counts = await this.readAheadBehindHead(cwd, ["refs/heads", "refs/remotes"]);
+    if (!counts || !candidates.some((candidate) => counts.has(candidate))) return null;
+    const nearest = Math.min(...candidates.map((candidate) => counts.get(candidate)?.behind ?? Infinity));
+    // A candidate with no shared history leaves every HEAD commit "behind"; the old path had no merge-base for it.
+    let headCommits = Infinity;
+    if (nearest > 0 && Number.isFinite(nearest)) {
+      const count = await this.execGit(cwd, ["rev-list", "--count", "HEAD"]).then(
+        ({ stdout: total }) => Number(total.trim()),
+        () => NaN,
+      );
+      if (Number.isInteger(count)) headCommits = count;
+    }
+    return candidates.map((candidate) => {
+      const distance = counts.get(candidate)?.behind;
+      return { candidate, distance: distance === undefined || distance >= headCommits ? Infinity : distance };
+    });
+  }
+
+  /**
+   * `ahead` (commits only the ref has) and `behind` (commits only HEAD has) for every ref under
+   * `patterns`, keyed by short name, in one process (`%(ahead-behind:HEAD)`, Git 2.41+). Null
+   * when that is unavailable, so the caller falls back to one `rev-list` per ref.
+   */
+  private async readAheadBehindHead(
+    cwd: string,
+    patterns: string[],
+  ): Promise<Map<string, { ahead: number; behind: number }> | null> {
+    if (!this.aheadBehindSupported) return null;
+    let stdout: string;
+    try {
+      ({ stdout } = await this.execGit(cwd, [
+        "for-each-ref",
+        "--format=%(refname:short)%09%(ahead-behind:HEAD)",
+        ...patterns,
+      ]));
+    } catch (error) {
+      if (error instanceof ProcessCommandError && /unknown field name/i.test(error.stderr))
+        this.aheadBehindSupported = false;
+      return null;
+    }
+    const counts = new Map<string, { ahead: number; behind: number }>();
+    for (const line of stdout.split(/\r?\n/)) {
+      const [name, pair] = line.split("\t");
+      const [ahead, behind] = (pair || "").trim().split(/\s+/).map(Number);
+      if (name && Number.isInteger(ahead) && Number.isInteger(behind)) counts.set(name, { ahead, behind });
+    }
+    return counts;
   }
 
   private async withBaseBranchCheck<T>(operation: () => Promise<T>): Promise<T> {
@@ -3689,7 +5110,7 @@ export class GitManager extends EventEmitter {
 
   async getStashCount(cwd: string): Promise<number> {
     try {
-      const result = await this.execGit(cwd, ["stash", "list"]);
+      const result = await this.readCommonMetadata(cwd, "stash", ["stash", "list"]);
       const lines = String(result.stdout || "")
         .split(/\r?\n/)
         .filter(Boolean);
@@ -3834,7 +5255,7 @@ export class GitManager extends EventEmitter {
       | "merge-into-base",
     run: (cwd: string) => Promise<Record<string, unknown>>,
   ): Promise<Record<string, unknown>> {
-    const cwd = rootPath || String(workspace?.cwd || "");
+    const cwd = await this.workingDirectory(rootPath || String(workspace?.cwd || ""));
     if (!cwd) return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
     const targetWorkspace = workspace || { id: "unknown", cwd };
     return sharedReviewGitLocks.withWorktree(cwd, async () => {
@@ -4738,26 +6159,31 @@ export class GitManager extends EventEmitter {
       // IDEA's "Compare with current" surfaces. Done in parallel so we
       // don't pay N round-trips serially for a 50-branch repo.
       if (current && current !== "HEAD") {
+        const headCounts = await this.readAheadBehindHead(cwd, ["refs/heads"]);
         await Promise.all(
           local.map(async (entry) => {
             if (entry.isCurrent || entry.name === current) return;
             try {
-              const result = await this.execGit(cwd, [
-                "rev-list",
-                "--left-right",
-                "--count",
-                `${current}...${entry.name}`,
-              ]);
-              const counts = parseRevListCount(result.stdout);
-              // left = current ahead of entry; right = entry ahead of current
+              let counts = headCounts?.get(entry.name);
+              if (!counts) {
+                const result = await this.execGit(cwd, [
+                  "rev-list",
+                  "--left-right",
+                  "--count",
+                  `${current}...${entry.name}`,
+                ]);
+                // left = current ahead of entry; right = entry ahead of current
+                const parsed = parseRevListCount(result.stdout);
+                counts = { ahead: parsed.right, behind: parsed.left };
+              }
               // We expose ahead/behind from the *entry's* perspective only
               // when we don't already have upstream tracking info.
               if (!entry.upstream) {
-                entry.ahead = counts.right;
-                entry.behind = counts.left;
+                entry.ahead = counts.ahead;
+                entry.behind = counts.behind;
               }
               // merged: HEAD reaches entry.name with 0 remaining
-              entry.merged = counts.right === 0;
+              entry.merged = counts.ahead === 0;
             } catch {
               // ignore — branch refs may not be reachable
             }

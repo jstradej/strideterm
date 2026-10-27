@@ -3,12 +3,16 @@ import type { WorkspaceState } from "../shared/types/state.js";
 import type { OperationRegistry } from "./operation-registry.js";
 import { randomUUID } from "node:crypto";
 
+type GitActionResult = Record<string, unknown>;
+type GitWorkspaceActionResponse = { payload: unknown; result: GitActionResult };
+
 /**
  * Runtime context subset consumed by git handlers.
  * The full runtime ctx is typed as a structural interface so new fields
  * can be added without breaking this module.
  */
 interface GitHandlerCtx {
+  log: { warn: (message: string, details?: Record<string, unknown>) => void };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   git: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -18,13 +22,29 @@ interface GitHandlerCtx {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   resolveGitConnection: (workspace: WorkspaceState) => any;
   resolveGitRootPath: (workspace: WorkspaceState, rawRootPath: string) => string | null;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  runGitWorkspaceAction: (workspace: WorkspaceState, action: Promise<any>) => Promise<any>;
+  runGitWorkspaceAction: (
+    workspace: WorkspaceState,
+    action: Promise<GitActionResult>,
+    context?: { cacheScope?: "status" | "refs" | "all"; rootPath?: string },
+  ) => Promise<GitWorkspaceActionResponse>;
   /** Stamp `lastWorkedAt` after an allowlisted user action succeeded. */
   recordWorkspaceWork: (workspaceId: string, viewerId?: string) => Promise<void>;
-  refreshGit: (projectId?: string | null) => Promise<void>;
+  refreshGit: (
+    projectId?: string | null,
+    options?: { force?: boolean; useCache?: boolean; rootPath?: string },
+  ) => Promise<void>;
   broadcastState: () => void;
   syncWorktrees: () => Promise<void>;
+  setGitInterest: (
+    ownerId: string,
+    workspaceId: string,
+    rootPath: string,
+    scope: "summary" | "detail",
+    active: boolean,
+    windowId?: string,
+    generation?: number,
+  ) => void;
+  clearGitInterestOwners: (prefix: string) => void;
   /** Emit a live push-progress frame (streamed git output, incl. pre-push hook) to connected clients. */
   emitGitProgress: (payload: { workspaceId: string; rootPath: string; chunk: string }) => void;
   operations: Pick<OperationRegistry, "accept" | "list">;
@@ -36,6 +56,7 @@ interface GitHandlerCtx {
  */
 export function createGitHandlers(ctx: GitHandlerCtx) {
   const {
+    log,
     git,
     store,
     getPayload,
@@ -46,6 +67,8 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
     recordWorkspaceWork,
     syncWorktrees,
     operations,
+    setGitInterest,
+    clearGitInterestOwners,
   } = ctx;
 
   function resolveRootPath(workspace: WorkspaceState, rawRootPath: string): string {
@@ -148,9 +171,13 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
    * unstage and commit-staged APIs use the manager's audited write actions;
    * the legacy selected-path commit retains its existing semantics.
    */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async function runGitWorkspaceMutation(workspace: WorkspaceState, action: Promise<any>, windowId?: string) {
-    const response = await runGitWorkspaceAction(workspace, action);
+  async function runGitWorkspaceMutation(
+    workspace: WorkspaceState,
+    action: Promise<GitActionResult>,
+    windowId?: string,
+    context: { cacheScope?: "status" | "refs" | "all"; rootPath?: string } = {},
+  ) {
+    const response = await runGitWorkspaceAction(workspace, action, context);
     if (!isGitSuccess(response?.result)) return response;
     await recordWorkspaceWork(workspace.id, windowId);
     return { ...response, payload: getPayload() };
@@ -228,7 +255,10 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
         let result;
         let priorWarnings: string[] = [];
         if (kind === "fetch") {
-          result = await runGitWorkspaceAction(workspace, git.fetch(workspace, { connection, rootPath }));
+          result = await runGitWorkspaceAction(workspace, git.fetch(workspace, { connection, rootPath }), {
+            cacheScope: "refs",
+            rootPath,
+          });
         } else if (kind === "pull") {
           result = await runGitWorkspaceMutation(
             workspace,
@@ -289,6 +319,7 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
             const fetchResponse = await runGitWorkspaceAction(
               workspace,
               git.fetch(workspace, { connection, rootPath }),
+              { cacheScope: "refs", rootPath },
             );
             if (fetchResponse?.result?.ok === false) {
               throw gitFailure("fetch", fetchResponse.result);
@@ -332,9 +363,24 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
   }
 
   return {
-    async refreshGitState(projectId: string | null = null) {
-      await ctx.refreshGit(projectId);
-      ctx.broadcastState();
+    setGitInterest,
+    clearGitInterestOwners,
+    async refreshGitState(
+      projectId: string | null = null,
+      options: { force?: boolean; rootPath?: string } = {},
+      windowId?: string,
+    ) {
+      if (!projectId && windowId) throw new Error("Workspace id is required for a viewer-scoped Git refresh.");
+      if (projectId) {
+        const workspace = resolveGitWorkspace(projectId, undefined, windowId);
+        if (options.rootPath && !resolveGitRootPath(workspace, options.rootPath))
+          throw new Error("Git root is not part of this workspace.");
+      }
+      void ctx.refreshGit(projectId, options).then(
+        () => undefined,
+        (error: unknown) =>
+          log.warn("refreshGitState failed", { projectId, error: (error as Error)?.message || String(error) }),
+      );
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -499,7 +545,10 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
     async gitStageFile(payload: any = {}, windowId?: string) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
-      return runGitWorkspaceMutation(workspace, git.stageFile(workspace, { path: payload.path, rootPath }), windowId);
+      return runGitWorkspaceMutation(workspace, git.stageFile(workspace, { path: payload.path, rootPath }), windowId, {
+        cacheScope: "status",
+        rootPath,
+      });
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitStageHunk(payload: any = {}, windowId?: string) {
@@ -516,13 +565,22 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
           rootPath,
         }),
         windowId,
+        { cacheScope: "status", rootPath },
       );
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitUnstageFile(payload: any = {}, windowId?: string) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
-      return runGitWorkspaceMutation(workspace, git.unstageFile(workspace, { path: payload.path, rootPath }), windowId);
+      return runGitWorkspaceMutation(
+        workspace,
+        git.unstageFile(workspace, { path: payload.path, rootPath }),
+        windowId,
+        {
+          cacheScope: "status",
+          rootPath,
+        },
+      );
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitCommitStaged(payload: any = {}, windowId?: string) {
@@ -650,8 +708,7 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
       const rootPath = resolveRootPath(workspace, payload.rootPath);
       return runGitWorkspaceMutation(workspace, git.deleteTag(workspace, { ...payload, rootPath }), windowId);
     },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitListBranches(payload: any = {}, windowId?: string) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
@@ -668,7 +725,7 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
         windowId,
       );
     },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitRenameBranch(payload: any = {}, windowId?: string) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);

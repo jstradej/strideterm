@@ -113,9 +113,13 @@ async function inspectPrivateKeyPermissions(file: string): Promise<void> {
     return;
   }
 
+  const system32 = path.join(process.env.SystemRoot || "C:\\Windows", "System32");
   const [{ stdout: whoami }, { stdout: icacls }] = await Promise.all([
-    promisify(execFile)("whoami.exe", ["/user", "/fo", "csv", "/nh"], { windowsHide: true, timeout: 5000 }),
-    promisify(execFile)("icacls.exe", [file], { windowsHide: true, timeout: 5000 }),
+    promisify(execFile)(path.join(system32, "whoami.exe"), ["/user", "/fo", "csv", "/nh"], {
+      windowsHide: true,
+      timeout: 5000,
+    }),
+    promisify(execFile)(path.join(system32, "icacls.exe"), [file], { windowsHide: true, timeout: 5000 }),
   ]);
   const identity = whoami.match(/"([^"]+)","(S-1-[0-9-]+)"/);
   expect(identity, `Could not read current Windows user SID: ${whoami}`).not.toBeNull();

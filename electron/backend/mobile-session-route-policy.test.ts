@@ -241,6 +241,7 @@ const MOBILE_ROUTE_CLASSIFICATION: Record<string, MobileRouteClass> = {
   "/api/git/commit-staged": "guarded",
   "/api/git/unresolve-conflict": "guarded",
   "/api/git/workspace-detail": "guarded",
+  "/api/git/interest": "guarded",
   "/api/github/audit-log/query": "guarded",
   "/api/github/audit-log/stats": "guarded",
   "/api/github/create-pull-request": "guarded",
@@ -525,7 +526,15 @@ describe("mobile route gate: methods other than POST", () => {
 
     // The two dispatchers that would answer a non-POST request are POST-only.
     const source = readRemoteServerSource();
-    expect(source).toMatch(/if \(request\.method === "POST"\) \{\s*const handler = API_ROUTES\[url\.pathname\];/);
+    const postGate = source.indexOf('if (request.method === "POST") {');
+    const apiHandler = source.indexOf("const handler = API_ROUTES[url.pathname];", postGate);
+    expect(postGate).toBeGreaterThan(-1);
+    expect(apiHandler).toBeGreaterThan(postGate);
+    const gateDepthAtHandler = [...source.slice(postGate, apiHandler)].reduce(
+      (depth, character) => depth + (character === "{" ? 1 : character === "}" ? -1 : 0),
+      0,
+    );
+    expect(gateDepthAtHandler, "API_ROUTES dispatch must remain inside the POST gate").toBe(1);
     expect(source).toMatch(/request\.method === "POST" \? slotAwareRoute\[url\.pathname\]/);
   });
 

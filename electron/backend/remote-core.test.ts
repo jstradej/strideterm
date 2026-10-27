@@ -244,6 +244,11 @@ describe("buildRemoteCore", () => {
       dirtyCount: 3,
       branchMerged: false,
       lastChangeAt: "2026-07-15T10:00:00Z",
+      stale: false,
+      refreshing: false,
+      refreshError: null,
+      error: null,
+      summaryOnly: false,
     });
     // The heavy log / compareWithBase never appear anywhere in the core.
     expect(JSON.stringify(core.gitSummaries)).not.toContain("big log entry");
@@ -307,7 +312,7 @@ describe("buildRemoteCore", () => {
 
   test("core carries revisions for git/docker/inboxes", () => {
     const core = buildRemoteCore(fullPayload());
-    expect(core.revisions["git:ws1"]).toBe("2026-07-15T10:00:01Z");
+    expect(core.revisions["git:ws1"]).toBe("");
     expect(core.revisions["git:ws2"]).toBeUndefined(); // other profile
     expect(core.revisions["docker"]).toBe("2026-07-15T12:00:00Z");
     expect(core.revisions["azure-inbox"]).toContain("2026-07-15T11:30:00Z");
@@ -639,6 +644,11 @@ describe("summarizeGit", () => {
       dirtyCount: 0,
       branchMerged: undefined,
       lastChangeAt: null,
+      stale: false,
+      refreshing: false,
+      refreshError: null,
+      error: null,
+      summaryOnly: false,
     });
   });
 });
@@ -700,7 +710,7 @@ describe("buildResourceDetail", () => {
     const detail = buildResourceDetail(p, "p1", "git:ws1");
     expect(detail).not.toBeNull();
     expect(detail!.resource).toBe("git:ws1");
-    expect(detail!.revision).toBe("2026-07-15T10:00:01Z");
+    expect(detail!.revision).toBe("");
     expect((detail!.data as { roots: unknown }).roots).toBeDefined();
     expect((detail!.data as { log: unknown[] }).log).toHaveLength(1);
   });
@@ -773,6 +783,27 @@ describe("buildResourceDetail", () => {
 });
 
 describe("resourceRevision", () => {
+  test("remote core carries freshness errors while keeping Git data revision stable", () => {
+    const p = fullPayload();
+    const gitSnap = p.git.workspaces.ws1 as Rec;
+    gitSnap.dataRevision = "content-r1";
+    const revision = resourceRevision(p, "git:ws1");
+    gitSnap.stale = true;
+    gitSnap.refreshError = "disk unavailable";
+    const core = buildRemoteCore(p);
+    expect(core.revisions["git:ws1"]).toBe(revision);
+    expect(core.gitSummaries.ws1).toMatchObject({ stale: true, refreshError: "disk unavailable" });
+  });
+  test("Git revision stays stable across validation timestamps and folds every root", () => {
+    const p = fullPayload();
+    const snap = p.git.workspaces.ws1 as Rec;
+    snap.rootRevisions = { "/repo": "r1", "/repo/sub": "r2" };
+    const before = resourceRevision(p, "git:ws1");
+    snap.lastUpdatedAt = "later";
+    expect(resourceRevision(p, "git:ws1")).toBe(before);
+    snap.rootRevisions["/repo/sub"] = "r3";
+    expect(resourceRevision(p, "git:ws1")).not.toBe(before);
+  });
   test("changes when the underlying timestamp changes", () => {
     const p = fullPayload();
     const before = resourceRevision(p, "review-bridge:azure:pr1");

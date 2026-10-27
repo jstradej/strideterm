@@ -290,7 +290,13 @@ export function getTabAttention(
  * heavy fields the core no longer carries.
  */
 export interface TabAccessors {
-  gitSummary?: (workspaceId: string) => { available?: boolean; dirty?: boolean; dirtyCount?: number } | null;
+  gitSummary?: (workspaceId: string) => {
+    available?: boolean;
+    dirty?: boolean;
+    dirtyCount?: number;
+    summaryOnly?: boolean;
+    refreshError?: string | null;
+  } | null;
   dockerCounts?: () => { available: boolean; total: number; running: number };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   providerInbox?: (provider: "azure" | "github") => { inbox?: any; connections?: any[] } | null;
@@ -575,7 +581,10 @@ export function getWorkspaceTabs({
   const gitSnapshot = accessors?.gitSummary
     ? accessors.gitSummary(activeWorkspace.id)
     : payload?.git?.workspaces?.[activeWorkspace.id] || payload?.git?.projects?.[activeWorkspace.id] || null;
-  if (gitSnapshot?.available) {
+  // A summary restored from the cache is not verified yet: its "clean" may be stale.
+  const cacheState = gitSnapshot as { summaryOnly?: boolean; refreshError?: string | null } | null;
+  const verifying = Boolean(cacheState?.summaryOnly && !cacheState.refreshError);
+  if (gitSnapshot?.available && !verifying) {
     tabs.push({
       id: `git:${activeWorkspace.id}`,
       type: "git",
@@ -584,7 +593,7 @@ export function getWorkspaceTabs({
       tone: gitSnapshot.dirty ? "error" : "running",
       closable: true,
     });
-  } else if (!gitSnapshot && activeWorkspace.cwd && activeWorkspace.kind !== "docker") {
+  } else if ((verifying || !gitSnapshot) && activeWorkspace.cwd && activeWorkspace.kind !== "docker") {
     // No snapshot at all = the first inspect has not finished yet (a finished one
     // always records a snapshot, `available: false` included). Show the tab as
     // loading instead of letting it pop in seconds later on a large repo.

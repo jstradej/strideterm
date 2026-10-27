@@ -128,6 +128,19 @@ function mountPane(
   return options.deep ? mount(GitPane, mountOptions) : shallowMount(GitPane, mountOptions);
 }
 
+function patchGitSnapshot(workspaceId: string, patch: Record<string, unknown>): void {
+  const appStore = useAppStore();
+  const payload = appStore.payload as unknown as {
+    [key: string]: unknown;
+    git: { [key: string]: unknown; workspaces: Record<string, Record<string, unknown>> };
+  };
+  const snapshot = payload.git.workspaces[workspaceId];
+  appStore.payload = {
+    ...payload,
+    git: { ...payload.git, workspaces: { ...payload.git.workspaces, [workspaceId]: { ...snapshot, ...patch } } },
+  } as unknown as StatePayload;
+}
+
 type PaneWrapper = ReturnType<typeof mountPane>;
 
 async function pickTab(wrapper: PaneWrapper, label: string) {
@@ -144,6 +157,136 @@ beforeEach(() => {
 });
 
 describe("GitPane repo picker", () => {
+  test("uses a fresh UUID for each mounted Git pane owner", async () => {
+    const appStore = useAppStore();
+    const api = { gitInterest: vi.fn().mockResolvedValue({ ok: true }) };
+    vi.spyOn(appStore, "getApi").mockReturnValue(api as never);
+    const first = mountPane("ws-uuid", [buildWorkspace({ id: "ws-uuid" })]);
+    const second = mountPane("ws-uuid", [buildWorkspace({ id: "ws-uuid" })]);
+    await flushPromises();
+    const ownerIds = api.gitInterest.mock.calls
+      .filter(([interest]) => interest.active)
+      .map(([interest]) => interest.viewId);
+    expect(ownerIds).toHaveLength(2);
+    expect(ownerIds[0]).toMatch(/^git-pane-[0-9a-f-]{36}$/i);
+    expect(ownerIds[1]).not.toBe(ownerIds[0]);
+    first.unmount();
+    second.unmount();
+  });
+
+  test.each([
+    { activeRootPath: "/repo/secondary", expectedRoot: "/repo/secondary" },
+    { activeRootPath: "", expectedRoot: "/repo/primary" },
+  ])(
+    "sends the selected root before a cold multi-root detail is available ($expectedRoot)",
+    async ({ activeRootPath, expectedRoot }) => {
+      const workspaceId = `ws-cold-${expectedRoot.split("/").at(-1)}`;
+      const appStore = useAppStore();
+      const api = { gitInterest: vi.fn().mockResolvedValue({ ok: true }) };
+      vi.spyOn(appStore, "getApi").mockReturnValue(api as never);
+      const workspace = buildWorkspace({
+        id: workspaceId,
+        cwd: "/repo",
+        activeRootPath,
+        gitRoots: ["/repo/primary", "/repo/secondary"],
+      });
+      const wrapper = mountPane(workspaceId, [workspace]);
+      appStore.isRemoteTransport = true;
+      await flushPromises();
+
+      expect(api.gitInterest.mock.calls.filter(([interest]) => interest.active).at(-1)?.[0]).toMatchObject({
+        workspaceId,
+        rootPath: expectedRoot,
+      });
+      wrapper.unmount();
+    },
+  );
+
+  test("shows desktop summary-only Git state as details loading", async () => {
+    const workspaceId = "ws-summary-only";
+    const wrapper = mountPane(workspaceId, [buildWorkspace({ id: workspaceId })]);
+    patchGitSnapshot(workspaceId, { summaryOnly: true, stale: true });
+    await flushPromises();
+    expect(wrapper.find(".git-view--loading").exists()).toBe(true);
+    expect(wrapper.find(".git-view__loading-caption").text()).toBe("Loading Git details…");
+  });
+
+  test("keeps a cached full detail visible when the remote core reports summary-only", async () => {
+    const workspaceId = "ws-cached-full-detail";
+    const wrapper = mountPane(workspaceId, [buildWorkspace({ id: workspaceId })]);
+    const appStore = useAppStore();
+    appStore.isRemoteTransport = true;
+    const detailStore = useRemoteDetailsStore();
+    detailStore._cache = new Map([
+      [
+        `git:${workspaceId}`,
+        {
+          revision: "summary-revision",
+          fetchedAt: Date.now(),
+          data: { ...makeSnapshot(), stale: true, verified: false, summaryOnly: false },
+        },
+      ],
+    ]) as never;
+    appStore.payload = {
+      ...(appStore.payload as unknown as StatePayload),
+      gitSummaries: {
+        [workspaceId]: {
+          available: true,
+          branch: "main",
+          dirty: false,
+          dirtyCount: 0,
+          lastChangeAt: null,
+          summaryOnly: true,
+          refreshing: true,
+        },
+      },
+    } as unknown as StatePayload;
+    await flushPromises();
+
+    expect(wrapper.find(".git-view--loading").exists()).toBe(false);
+    expect(wrapper.find(".git-view__stale").exists()).toBe(true);
+  });
+
+  test("shows a cold unavailable snapshot error and retry action", async () => {
+    const workspaceId = "ws-cold-error";
+    const wrapper = mountPane(workspaceId, [buildWorkspace({ id: workspaceId })]);
+    patchGitSnapshot(workspaceId, { available: false, error: "repository path is missing" });
+    await flushPromises();
+    expect(wrapper.text()).toContain("repository path is missing");
+    expect(wrapper.findAll("button").some((button) => button.text().includes("Retry Git refresh"))).toBe(true);
+  });
+
+  test("shows loading for a cold refresh and ends loading when it fails", async () => {
+    const workspaceId = "ws-cold-refresh";
+    const wrapper = mountPane(workspaceId, [buildWorkspace({ id: workspaceId })]);
+    patchGitSnapshot(workspaceId, { available: false, refreshing: true, stale: true, error: "" });
+    await flushPromises();
+    expect(wrapper.find(".git-view--loading").exists()).toBe(true);
+
+    patchGitSnapshot(workspaceId, { available: false, refreshing: false, refreshError: "repository path is missing" });
+    await flushPromises();
+    expect(wrapper.find(".git-view--loading").exists()).toBe(false);
+    expect(wrapper.text()).toContain("repository path is missing");
+    expect(wrapper.findAll("button").some((button) => button.text().includes("Retry Git refresh"))).toBe(true);
+  });
+
+  test("keeps the last snapshot visible and explains a failed refresh", async () => {
+    const workspaceId = "ws-refresh-error";
+    const wrapper = mountPane(workspaceId, [buildWorkspace({ id: workspaceId })]);
+    patchGitSnapshot(workspaceId, {
+      stale: true,
+      refreshError: "Git refresh timed out. The repository may be unavailable.",
+    });
+    await flushPromises();
+    expect(wrapper.find(".git-view").classes()).toContain("git-view--notice");
+    expect(wrapper.find(".git-view__refresh-error").text()).not.toContain("..");
+    patchGitSnapshot(workspaceId, { stale: true, refreshError: "disk unavailable" });
+    await flushPromises();
+    expect(wrapper.find(".git-view__refresh-error").text()).toContain("disk unavailable");
+    expect(wrapper.find(".git-view__refresh-error").text()).toContain("last available Git data");
+    expect(wrapper.find(".git-view--loading").exists()).toBe(false);
+  });
+
   test("exposes the full active repository path and working branch in a focusable details control", async () => {
     const workspaceId = "ws-long-repository-details";
     const wrapper = mountPane(workspaceId, [buildWorkspace({ id: workspaceId })]);

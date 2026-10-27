@@ -189,6 +189,23 @@ afterEach(async () => {
 });
 
 describe("GitChangesTab", () => {
+  test("hides cached diff statistics after a status-only refresh marks them stale", async () => {
+    observedWidth = 900;
+    const wrapper = mountTab({
+      snapshot: {
+        dirty: true,
+        staged: [],
+        unstaged: [],
+        untracked: [],
+        diffStat: { insertions: 12, deletions: 4 },
+        diffStatStale: true,
+      },
+    });
+    await flushPromises();
+    expect(wrapper.text()).not.toContain("12");
+    expect(wrapper.text()).not.toContain("4");
+  });
+
   test("retains the staged commit message when the backend rejects the commit", async () => {
     observedWidth = 900;
     gitCommitStaged.mockResolvedValue(false);

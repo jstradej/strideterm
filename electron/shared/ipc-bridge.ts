@@ -614,7 +614,15 @@ export interface StridetermAPI {
   onDockerShellClose: (handler: (payload: { sessionId: string; code: number | null }) => void) => void;
 
   // Git
-  refreshGit: (projectId?: string) => Promise<unknown>;
+  refreshGit: (projectId?: string, options?: { force?: boolean; rootPath?: string }) => Promise<unknown>;
+  gitInterest: (payload: {
+    viewId: string;
+    workspaceId: string;
+    rootPath?: string;
+    scope?: "summary" | "detail";
+    active: boolean;
+    generation: number;
+  }) => Promise<unknown>;
   gitFetch: (payload: GitPayload) => Promise<unknown>;
   gitPull: (payload: GitPayload) => Promise<unknown>;
   gitPush: (payload: GitPayload) => Promise<unknown>;

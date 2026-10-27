@@ -62,4 +62,37 @@ describe("GitWorktreeList ordering", () => {
       expect(el.text()).toMatch(/ago|just now/);
     }
   });
+
+  test("does not label an unscanned sleeping worktree as clean", () => {
+    const wrapper = mountList({
+      snapshot: makeSnapshot([
+        {
+          path: "/wt/sleeping",
+          branch: "sleeping",
+          isMainWorktree: false,
+          isCurrent: false,
+          dirty: false,
+          dirtyCount: 0,
+          dirtyKnown: false,
+          dirtyStale: false,
+        },
+        {
+          path: "/wt/last-known",
+          branch: "last-known",
+          isMainWorktree: true,
+          isCurrent: false,
+          dirty: true,
+          dirtyCount: 2,
+          dirtyKnown: false,
+          dirtyStale: true,
+        },
+      ]),
+    });
+    const rows = wrapper.findAll(".git-sibling-list > li").map((row) => row.text());
+    const unknown = rows.find((text) => text.includes("sleeping")) || "";
+    const stale = rows.find((text) => text.includes("last-known")) || "";
+    expect(unknown).toContain("Unknown status");
+    expect(unknown).not.toContain("0 clean");
+    expect(stale).toContain("Last known dirty · stale");
+  });
 });

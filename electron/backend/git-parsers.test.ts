@@ -1,12 +1,61 @@
 import { describe, expect, test } from "vitest";
+import { execFileSync } from "node:child_process";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import {
   findWindowsReservedPaths,
   parseLsFilesUntracked,
+  parsePorcelainV2,
   buildOperationState,
   resolveContinueArgs,
   resolveAbortArgs,
   resolveSkipArgs,
 } from "./git-parsers.js";
+
+describe("parsePorcelainV2 path delimiters", () => {
+  test("preserves spaces and tabs in NUL-delimited paths and rename source", () => {
+    const parsed = parsePorcelainV2(
+      [
+        "?  leading and trailing ",
+        "? tab\tname",
+        "2 R. N... 100644 100644 100644 abc abc R100 renamed\twith tab",
+        "old\tname",
+        "",
+      ].join("\0"),
+    );
+    expect(parsed.untracked.map((f) => f.path)).toEqual([" leading and trailing ", "tab\tname"]);
+    expect(parsed.staged[0]).toMatchObject({ path: "renamed\twith tab", previousPath: "old\tname" });
+  });
+
+  test("line fallback keeps rename source on the same record", () => {
+    const parsed = parsePorcelainV2("2 R. N... 100644 100644 100644 abc abc R100 new name\told name\n?  trailing ");
+    expect(parsed.staged[0]).toMatchObject({ path: "new name", previousPath: "old name" });
+    expect(parsed.untracked[0].path).toBe(" trailing ");
+  });
+
+  test("parses actual Git paths with Unicode and whitespace", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "git-porcelain-"));
+    try {
+      const git = (...args: string[]) => execFileSync("git", args, { cwd: dir, stdio: "ignore" });
+      git("init", "-q");
+      git("config", "user.email", "test@example.invalid");
+      git("config", "user.name", "Test");
+      await fs.writeFile(path.join(dir, "seed"), "x");
+      git("add", "seed");
+      git("commit", "-qm", "seed");
+      const names = ["名 file.txt", ...(process.platform === "win32" ? [] : ["tab\tname", "line\nbreak"])];
+      for (const name of names) await fs.writeFile(path.join(dir, name), "new");
+      const output = execFileSync("git", ["status", "--porcelain=v2", "-z", "--branch"], {
+        cwd: dir,
+        encoding: "utf8",
+      });
+      expect(parsePorcelainV2(output).untracked.map((f) => f.path)).toEqual(expect.arrayContaining(names));
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("parseLsFilesUntracked", () => {
   test("parses both-modified conflict", () => {

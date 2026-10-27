@@ -56,6 +56,8 @@ import {
   fileCommitFilesSchema,
   fileCommitDiffSchema,
   gitPayloadSchema,
+  gitRefreshSchema,
+  gitInterestSchema,
   azurePipelinePayloadSchema,
   gitDiffPreviewSchema,
   gitLogPageSchema,
@@ -1694,11 +1696,20 @@ export function registerIpc(
   handle("docker:refresh", async () =>
     withOperationPromise({ opId: "docker:refresh" }, () => runtime.refreshDockerState()),
   );
-  handle("git:refresh", async (_event, projectId) =>
-    withOperationPromise({ workspaceId: String(projectId || ""), opId: "git:refresh" }, () =>
-      runtime.refreshGitState(projectId),
-    ),
+  handle("git:refresh", async (_event, payload) =>
+    withOperationPromise({ workspaceId: String(payload?.projectId || ""), opId: "git:refresh" }, () => {
+      const p = validateIpc(gitRefreshSchema, payload, "git:refresh");
+      const windowId = getWindowIdByWebContentsId?.(_event.sender.id);
+      return runtime.refreshGitState(p.projectId || null, { force: p.force === true, rootPath: p.rootPath }, windowId);
+    }),
   );
+  handle("git:interest", async (event, payload) => {
+    const p = validateIpc(gitInterestSchema, payload, "git:interest");
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id);
+    if (!windowId) throw new Error("Git interest requires an owning window.");
+    runtime.setGitInterest(p.viewId, p.workspaceId, p.rootPath, p.scope, p.active, windowId, p.generation);
+    return { ok: true };
+  });
   handle("git:fetch", async (_event, payload) => {
     const p = validateIpc(gitPayloadSchema, payload, "git:fetch");
     return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:fetch" }, () => runtime.gitFetch(p));

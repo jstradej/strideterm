@@ -307,6 +307,223 @@ describe("native workspace and scratchpad lifecycle", () => {
     );
   });
 });
+
+describe("Git interest owner union", () => {
+  test("a rootless cold interest targets only the selected root for each workspace", async () => {
+    const initial = makeProfileSwitchState() as unknown as {
+      projects: Record<string, unknown>[];
+      windowSlots: Record<string, unknown>[];
+    };
+    initial.projects = [
+      {
+        ...initial.projects[0],
+        id: "ws-a1",
+        cwd: "/tmp/a1",
+        activeRootPath: "/tmp/a1-secondary",
+        gitRoots: ["/tmp/a1-primary", "/tmp/a1-secondary"],
+      },
+      {
+        ...initial.projects[0],
+        id: "ws-a2",
+        cwd: "/tmp/a2-primary",
+        activeRootPath: "",
+        gitRoots: ["/tmp/a2-primary", "/tmp/a2-secondary"],
+      },
+    ];
+    initial.windowSlots = [
+      { ...initial.windowSlots[0], id: "win-a1", profileId: "profile-a", activeWorkspaceId: "ws-a1" },
+      { ...initial.windowSlots[0], id: "win-a2", profileId: "profile-a", activeWorkspaceId: "ws-a2" },
+    ];
+    const fixture = await createFixture({ initialState: initial });
+    fixtures.push(fixture);
+    fixture.runtime.setGitInterest("cold-a1", "ws-a1", "", "detail", true, "win-a1", 1);
+    fixture.runtime.setGitInterest("cold-a2", "ws-a2", "", "detail", true, "win-a2", 1);
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const targets = fixture.git.interestedWorkspaces as Array<{ id: string; cwd: string; gitRoots?: string[] }>;
+    expect(targets.find((workspace) => workspace.id === "ws-a1")).toMatchObject({
+      cwd: "/tmp/a1-secondary",
+      gitRoots: ["/tmp/a1-secondary"],
+    });
+    expect(targets.find((workspace) => workspace.id === "ws-a2")).toMatchObject({
+      cwd: "/tmp/a2-primary",
+      gitRoots: ["/tmp/a2-primary"],
+    });
+  });
+
+  test("generation history is bounded while recent stale updates remain rejected", async () => {
+    const initial = makeProfileSwitchState() as unknown as {
+      projects: Record<string, unknown>[];
+      windowSlots: Record<string, unknown>[];
+    };
+    initial.projects = [
+      ...initial.projects,
+      {
+        ...initial.projects[0],
+        id: "ws-a-other",
+        name: "A other",
+        cwd: "/tmp/a-other",
+      },
+    ];
+    initial.windowSlots = [{ ...initial.windowSlots[0], activeWorkspaceId: "ws-a-other" }];
+    const fixture = await createFixture({ initialState: initial });
+    fixtures.push(fixture);
+    const lastView = "cycled-view-4100";
+    for (let index = 0; index < 4100; index += 1) {
+      const viewId = `cycled-view-${index + 1}`;
+      fixture.runtime.setGitInterest(viewId, "ws-a1", "/tmp/a1", "detail", true, "win-1", 1);
+      fixture.runtime.setGitInterest(viewId, "ws-a1", "/tmp/a1", "detail", false, "win-1", 2);
+    }
+    fixture.runtime.setGitInterest(lastView, "ws-a1", "/tmp/a1", "detail", true, "win-1", 1);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(fixture.runtime._gitInterestGenerationCountForTest()).toBeLessThanOrEqual(4096);
+    expect(fixture.git.interestedWorkspaces.map((workspace: { id: string }) => workspace.id)).not.toContain("ws-a1");
+  });
+
+  test("profile switch clears the old window view owner and tracks the restored profile workspace", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    fixture.runtime.setGitInterest("git-pane", "ws-a1", "/tmp/a1", "detail", true, "win-1", 1);
+    await new Promise((resolve) => setImmediate(resolve));
+    await fixture.runtime.activateProfileInWindow("profile-b", "win-1");
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(fixture.git.interestedWorkspaces.map((w: any) => w.id)).toContain("ws-b1");
+    expect(fixture.git.interestedWorkspaces.map((w: any) => w.id)).not.toContain("ws-a1");
+  });
+
+  test("same and cross-profile roots remain interested until their last window or pane owner leaves", async () => {
+    const initial = makeProfileSwitchState() as unknown as {
+      projects: Record<string, unknown>[];
+      windowSlots: Record<string, unknown>[];
+    };
+    initial.projects = [
+      { ...initial.projects[0], id: "p1-x", cwd: "/tmp/x", gitRoots: ["/tmp/x"] },
+      { ...initial.projects[0], id: "p1-y", cwd: "/tmp/y", gitRoots: ["/tmp/y"] },
+      { ...initial.projects[1], id: "p2-x", cwd: "/tmp/x", gitRoots: ["/tmp/x"] },
+    ];
+    initial.windowSlots = [
+      { ...initial.windowSlots[0], id: "win-a", profileId: "profile-a", activeWorkspaceId: "p1-x" },
+      { ...initial.windowSlots[0], id: "win-b", profileId: "profile-a", activeWorkspaceId: "p1-y" },
+      { ...initial.windowSlots[0], id: "win-c", profileId: "profile-b", activeWorkspaceId: "p2-x" },
+    ];
+    const fixture = await createFixture({ initialState: initial });
+    fixtures.push(fixture);
+    fixture.runtime.setGitInterest("view-x-a", "p1-x", "/tmp/x", "detail", true, "win-a", 1);
+    fixture.runtime.setGitInterest("view-y-b", "p1-y", "/tmp/y", "detail", true, "win-b", 1);
+    fixture.runtime.setGitInterest("view-x-c", "p2-x", "/tmp/x", "detail", true, "win-c", 1);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(fixture.git.interestedWorkspaces.map((w: any) => w.id).sort()).toEqual(["p1-x", "p1-y", "p2-x"]);
+
+    await fixture.runtime.removeWindowSlot("win-a");
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(fixture.git.interestedWorkspaces.map((w: any) => w.id).sort()).toEqual(["p1-y", "p2-x"]);
+    expect(fixture.git.interestedWorkspaces.some((w: any) => w.cwd === "/tmp/x")).toBe(true);
+  });
+
+  test("older slow registration cannot apply a stale interested-workspace union", async () => {
+    const initial = makeProfileSwitchState() as unknown as {
+      projects: Record<string, unknown>[];
+      windowSlots: Record<string, unknown>[];
+    };
+    initial.projects = [
+      { ...initial.projects[0], id: "p1-x", cwd: "/tmp/x", gitRoots: ["/tmp/x"] },
+      { ...initial.projects[0], id: "p1-y", cwd: "/tmp/y", gitRoots: ["/tmp/y"] },
+    ];
+    const fixture = await createFixture({ initialState: initial });
+    fixtures.push(fixture);
+    let release!: () => void;
+    let first = true;
+    fixture.git.registerWorkspaces = vi.fn(() =>
+      first
+        ? ((first = false),
+          new Promise<void>((resolve) => {
+            release = resolve;
+          }))
+        : Promise.resolve(),
+    );
+    const setTargets = vi.spyOn(fixture.git, "setInterestedWorkspaces");
+    fixture.runtime.setGitInterest("slow-view", "p1-x", "/tmp/x", "detail", true, "win-1", 1);
+    await new Promise((resolve) => setImmediate(resolve));
+    fixture.runtime.setGitInterest("fast-view", "p1-y", "/tmp/y", "detail", true, "win-1", 1);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(setTargets).toHaveBeenCalledTimes(1);
+    expect(fixture.git.interestedWorkspaces.map((w: any) => w.id)).toContain("p1-y");
+    release();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(setTargets).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Git refresh acknowledgement", () => {
+  test("manual refresh responds without waiting for a slow Git read", async () => {
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [{ id: "ws-slow", name: "Slow", kind: "terminal", cwd: "/tmp/slow", panels: [] }],
+        profiles: [{ id: "default", name: "Default" }],
+        windowSlots: [],
+      },
+    });
+    fixtures.push(fixture);
+    let finish!: () => void;
+    const refresh = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    fixture.git.refreshWorkspaces = refresh;
+    await expect(fixture.runtime.refreshGitState(null, { force: true }, "win-1")).rejects.toThrow(
+      /Workspace id is required/,
+    );
+    await expect(
+      fixture.runtime.refreshGitState("ws-slow", { force: true, rootPath: "/tmp/not-this-repo" }),
+    ).rejects.toThrow(/root is not part/);
+    expect(refresh).not.toHaveBeenCalled();
+    const result = await Promise.race([
+      fixture.runtime.refreshGitState("ws-slow", { force: true, rootPath: "/tmp/slow" }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("refresh acknowledgement waited for Git")), 250)),
+    ]);
+    expect(result).toBeDefined();
+    expect(refresh).toHaveBeenCalledTimes(1);
+    finish();
+  });
+});
+
+describe("Git root path authorization", () => {
+  test("uses exact normalized path casing and preserves POSIX backslashes", async () => {
+    const canonical = path.resolve("RootCaseAuthorization");
+    const childRoot = path.resolve("root-path-parent", "child");
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [
+          { id: "ws-root", name: "Root", kind: "terminal", cwd: canonical, panels: [], gitRoots: [] },
+          {
+            id: "ws-multi-root",
+            name: "Multi Root",
+            kind: "terminal",
+            cwd: path.dirname(childRoot),
+            panels: [],
+            gitRoots: [childRoot],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    fixture.git.refreshWorkspaces = vi.fn(async () => undefined);
+    await fixture.runtime.refreshGitState("ws-root", { rootPath: canonical });
+    await expect(fixture.runtime.refreshGitState("ws-root", { rootPath: canonical.toUpperCase() })).rejects.toThrow(
+      /root is not part/,
+    );
+
+    if (process.platform !== "win32") {
+      const backslashAlias = childRoot.replace(`${path.sep}child`, "\\child");
+      await expect(fixture.runtime.refreshGitState("ws-multi-root", { rootPath: backslashAlias })).rejects.toThrow(
+        /root is not part/,
+      );
+    }
+  });
+});
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
 // Lets a single test force classifyHookEvent to throw so dispatchAgentHookEvent's
@@ -647,8 +864,14 @@ class FakeGitManager extends EventEmitter {
   declare actions: any[];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   declare invalidateCalls: any[];
+  declare refreshOptions: Array<{ reason?: string; priority?: string }>;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   declare auditEntries: any[];
+  declare interestedWorkspaces: WorkspaceState[];
+  declare stageFile?: (
+    workspace: WorkspaceState,
+    options: { path: string; rootPath?: string },
+  ) => Promise<{ ok: boolean; summary: string }>;
 
   constructor() {
     super();
@@ -656,15 +879,25 @@ class FakeGitManager extends EventEmitter {
     this.refreshArgs = [];
     this.actions = [];
     this.invalidateCalls = [];
+    this.refreshOptions = [];
     this.auditEntries = [];
+    this.interestedWorkspaces = [];
   }
 
   _logGitAudit(entry: Record<string, unknown>) {
     this.auditEntries.push(entry);
   }
 
-  invalidateSnapshotCache(workspaceId: string | null = null, rootPath: string | null = null) {
-    this.invalidateCalls.push({ workspaceId, rootPath });
+  invalidateSnapshotCache(workspaceId: string | null = null, rootPath: string | null = null, scope = "all") {
+    this.invalidateCalls.push({ workspaceId, rootPath, scope });
+  }
+
+  registerWorkspaces() {
+    return Promise.resolve();
+  }
+  setInterestedWorkspaces(workspaces: WorkspaceState[]) {
+    this.interestedWorkspaces = workspaces;
+    return Promise.resolve();
   }
 
   getProjectMap() {
@@ -676,9 +909,10 @@ class FakeGitManager extends EventEmitter {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async refreshWorkspaces(projects: any[] = []) {
+  async refreshWorkspaces(projects: any[] = [], options: { reason?: string; priority?: string } = {}) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     this.refreshArgs.push(projects.map((project: any) => project.id));
+    this.refreshOptions.push(options);
     this.snapshots = new Map(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       projects.map((project: any) => [
@@ -7283,6 +7517,37 @@ describe("runtime integration", () => {
     }
   });
 
+  test("a bulk Git refresh after a delete leaves out workspaces nobody has open or worked in for 14 days", async () => {
+    const daysAgo = (days: number) => new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const fixture = await createFixture({
+      initialState: {
+        activeWorkspaceId: "ws-open",
+        workspaces: [
+          { ...makeShellWorkspace("ws-open"), lastWorkedAt: daysAgo(30) },
+          { ...makeShellWorkspace("ws-recent"), lastWorkedAt: daysAgo(13) },
+          { ...makeShellWorkspace("ws-old"), lastWorkedAt: daysAgo(15) },
+          makeShellWorkspace("ws-never"),
+          makeShellWorkspace("ws-gone"),
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    await new Promise((r) => setTimeout(r, 50));
+    fixture.git.refreshArgs = [];
+    const invalidate = vi.spyOn(fixture.git, "invalidateSnapshotCache");
+
+    await fixture.runtime.deleteWorkspace("ws-gone");
+
+    expect(fixture.git.refreshArgs).toContainEqual(["ws-open", "ws-recent"]);
+    expect(fixture.git.refreshArgs.flat()).not.toContain("ws-old");
+    expect(fixture.git.refreshArgs.flat()).not.toContain("ws-never");
+    expect(invalidate.mock.calls.map(([id]) => id)).toEqual(expect.arrayContaining(["ws-old", "ws-never"]));
+
+    fixture.git.refreshArgs = [];
+    await fixture.runtime.activateWorkspace("ws-old");
+    await vi.waitFor(() => expect(fixture.git.refreshArgs.flat()).toContain("ws-old"));
+  });
+
   test("Krok 3: a single OSC triggers one refresh after the ~1s debounce", async () => {
     const fixture = await createFixture({
       initialState: { activeWorkspaceId: "ws-a", workspaces: [makeShellWorkspace("ws-a")] },
@@ -8852,6 +9117,26 @@ describe("runtime integration", () => {
     expect(createTag).toHaveBeenCalledWith(workspace, { workspaceId: "ws-a1", rootPath: "/tmp/a1", tagName: "v1.0.0" });
     expect(deleteTag).toHaveBeenCalledTimes(1);
     expect(deleteTag).toHaveBeenCalledWith(workspace, { workspaceId: "ws-a1", rootPath: "/tmp/a1", tagName: "v1.0.0" });
+  });
+
+  test("stage invalidates only the resolved root status and revalidates without force", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+    fixture.git.stageFile = vi.fn(async () => ({ ok: true, summary: "Staged." }));
+    fixture.git.invalidateCalls = [];
+    fixture.git.refreshArgs = [];
+    fixture.git.refreshOptions = [];
+
+    await fixture.runtime.gitStageFile({ workspaceId: "ws-a1", rootPath: "/tmp/a1", path: "src/a.ts" });
+
+    expect(fixture.git.invalidateCalls).toEqual([
+      { workspaceId: "ws-a1", rootPath: "/tmp/a1", scope: "status" },
+      { workspaceId: "ws-a1", rootPath: "/tmp/a1", scope: "status" },
+    ]);
+    expect(fixture.git.refreshArgs).toContainEqual(["ws-a1"]);
+    expect(fixture.git.refreshOptions).toContainEqual(
+      expect.objectContaining({ reason: "ensure", priority: "background" }),
+    );
   });
 
   test("local Git mutation routes dispatch one manager write with the resolved root", async () => {
@@ -12014,12 +12299,7 @@ async function drainBackgroundLoop(iterations = 30): Promise<void> {
 }
 
 describe("startup git refresh — scoping + cache reuse", () => {
-  test("background warmup only refreshes workspaces in the active profile", async () => {
-    // Active workspace lives in profile-a. The other workspace in profile-a
-    // should get a background refresh. The two workspaces under profile-b
-    // belong to a profile the user can't see right now — refreshing them at
-    // startup would burn ~14 git spawns per workspace for no observable
-    // benefit. The scope guard in runInitialRefresh keeps this off.
+  test("startup refresh only targets the active workspace, not sleeping siblings", async () => {
     const fixture = await createFixture({
       initialState: {
         activeWorkspaceId: "ws-a-1",
@@ -12072,16 +12352,12 @@ describe("startup git refresh — scoping + cache reuse", () => {
 
     const refreshedIds = fixture.git.refreshArgs.flat();
     expect(refreshedIds).toContain("ws-a-1"); // foreground refresh for active
-    expect(refreshedIds).toContain("ws-a-2"); // background warmup, same profile
+    expect(refreshedIds).not.toContain("ws-a-2"); // sleeping sibling is not scanned at startup
     expect(refreshedIds).not.toContain("ws-b-1"); // different profile — skipped
     expect(refreshedIds).not.toContain("ws-b-2");
   });
 
-  test("background warmup skips invalidateSnapshotCache so the snapshot TTL still applies", async () => {
-    // refreshGit invalidates the snapshot cache by default — without the
-    // useCache opt-out the background loop would wipe and re-fetch every
-    // workspace even when GitManager's own 8s TTL already had fresh data
-    // from the foreground refresh.
+  test("startup ensure does not invalidate the active workspace cache", async () => {
     const fixture = await createFixture({
       initialState: {
         activeWorkspaceId: "ws-a-1",
@@ -12112,11 +12388,7 @@ describe("startup git refresh — scoping + cache reuse", () => {
     await drainBackgroundLoop();
 
     const invalidatedIds = fixture.git.invalidateCalls.map((call: { workspaceId: string | null }) => call.workspaceId);
-    // Foreground refresh of the active workspace went through the normal
-    // (invalidating) path.
-    expect(invalidatedIds).toContain("ws-a-1");
-    // Background warmup ran refreshGit("ws-a-2", { useCache: true }) — that
-    // workspace's cache slot must never have been invalidated.
+    expect(invalidatedIds).not.toContain("ws-a-1");
     expect(invalidatedIds).not.toContain("ws-a-2");
   });
 });

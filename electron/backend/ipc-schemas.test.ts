@@ -14,6 +14,8 @@ import {
   gitBranchRenameSchema,
   gitCheckoutRemoteSchema,
   gitPayloadSchema,
+  gitInterestSchema,
+  wsGitInterestSchema,
   gitDiffPreviewSchema,
   gitLogPageSchema,
   gitLogGraphSchema,
@@ -152,6 +154,33 @@ describe("ipc-schemas", () => {
   });
 
   describe("validateIpc", () => {
+    test("validates Git view interest identity and ordering", () => {
+      const valid = {
+        viewId: "view-1",
+        workspaceId: "ws-1",
+        rootPath: "/repo",
+        scope: "detail",
+        active: true,
+        generation: 2,
+      };
+      expect(gitInterestSchema.safeParse(valid).success).toBe(true);
+      expect(gitInterestSchema.safeParse({ ...valid, generation: -1 }).success).toBe(false);
+      expect(gitInterestSchema.safeParse({ ...valid, rootPath: "x".repeat(4097) }).success).toBe(false);
+    });
+    test("validates typed WebSocket Git interests", () => {
+      const valid = {
+        type: "git:interest",
+        viewId: "pane-uuid",
+        workspaceId: "ws-1",
+        rootPath: "/repo",
+        scope: "detail",
+        active: true,
+        generation: 1,
+      };
+      expect(wsGitInterestSchema.safeParse(valid).success).toBe(true);
+      expect(wsGitInterestSchema.safeParse({ ...valid, viewId: "x".repeat(201) }).success).toBe(false);
+      expect(wsGitInterestSchema.safeParse({ ...valid, rootPath: "x".repeat(4097) }).success).toBe(false);
+    });
     test("returns validated data on success", () => {
       const result = validateIpc(gitPayloadSchema, { workspaceId: "ws-1" }, "test");
       expect(result.workspaceId).toBe("ws-1");

@@ -1753,6 +1753,7 @@ describe("terminal streaming — subscription routing + backpressure", () => {
             dirty: false,
             dirtyCount: 0,
             lastChangeAt: "2026-07-15T10:00:00Z",
+            dataRevision: "git-rev-1",
             lastUpdatedAt: "2026-07-15T10:00:00Z",
             log: [{ subject: "HEAVY-GIT-LOG-ENTRY".repeat(20) }],
             roots: { "/repo": {} },
@@ -1810,6 +1811,15 @@ describe("terminal streaming — subscription routing + backpressure", () => {
     // can assert the HTTP route / WS message handler forwarded the right args.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const dockerShellCalls: Record<string, any>[] = [];
+    const gitInterestCalls: {
+      ownerId: string;
+      workspaceId: string;
+      rootPath: string;
+      scope: string;
+      active: boolean;
+      windowId?: string;
+    }[] = [];
+    const gitInterestOwners = new Map<string, (typeof gitInterestCalls)[number]>();
     const dockerShellCallbacks = new Map<
       string,
       { onData: (sid: string, data: string) => void; onClose: (sid: string, code: number | null) => void }
@@ -1956,6 +1966,28 @@ describe("terminal streaming — subscription routing + backpressure", () => {
       // under `.payload` (git ops return `{ ok, payload }`). The adapter must
       // slim the NESTED payload, not just top-level ones.
       refreshGitState: async () => ({ ok: true, payload }),
+      setGitInterest: (
+        ownerId: string,
+        workspaceId: string,
+        rootPath: string,
+        scope: string,
+        active: boolean,
+        windowId?: string,
+      ) => {
+        if (workspaceId === "ws1" && rootPath && !["/repo", "/repo/other"].includes(rootPath))
+          throw new Error("Git root is not part of this workspace.");
+        const call = { ownerId, workspaceId, rootPath, scope, active, windowId };
+        gitInterestCalls.push(call);
+        if (active) gitInterestOwners.set(ownerId, call);
+        else gitInterestOwners.delete(ownerId);
+      },
+      clearGitInterestOwners: (prefix: string) => {
+        for (const [ownerId, owner] of gitInterestOwners) {
+          if (!ownerId.includes(prefix)) continue;
+          gitInterestOwners.delete(ownerId);
+          gitInterestCalls.push({ ...owner, active: false });
+        }
+      },
       getTerminalReplaySnapshot: (sessionId: string) => {
         const snap = replay.get(sessionId) || { data: "", throughSeq: 0 };
         onSnapshot?.(sessionId);
@@ -1966,6 +1998,8 @@ describe("terminal streaming — subscription routing + backpressure", () => {
         onSnapshot = fn;
       },
       _dockerShellCalls: dockerShellCalls,
+      _gitInterestCalls: gitInterestCalls,
+      _gitInterestOwners: gitInterestOwners,
       _emitDockerShellData: (sessionId: string, data: string) =>
         dockerShellCallbacks.get(sessionId)?.onData(sessionId, data),
       _emitDockerShellClose: (sessionId: string, code: number | null) =>
@@ -1985,7 +2019,14 @@ describe("terminal streaming — subscription routing + backpressure", () => {
         if (ws && !ws.panels.some((p) => p.id === panelId)) ws.panels.push({ id: panelId });
       },
       // Bump a git workspace's revision so the interest/invalidate path fires.
-      _bumpGit: (workspaceId: string, ts: string) => {
+      _bumpGit: (workspaceId: string, revision: string) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const snap = (payload as any).git.workspaces[workspaceId];
+        if (snap) {
+          snap.dataRevision = revision;
+        }
+      },
+      _touchGitTimestamp: (workspaceId: string, ts: string) => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const snap = (payload as any).git.workspaces[workspaceId];
         if (snap) snap.lastUpdatedAt = ts;
@@ -3217,7 +3258,7 @@ describe("terminal streaming — subscription routing + backpressure", () => {
         expect(ok.status).toBe(200);
         const body = (await ok.json()) as { resource: string; revision: string; data: { log: unknown[] } };
         expect(body.resource).toBe("git:ws1");
-        expect(body.revision).toBe("2026-07-15T10:00:00Z");
+        expect(body.revision).toBe("git-rev-1");
         expect(body.data.log).toHaveLength(1); // full snapshot
 
         // ws2 belongs to p2 — the p1-bound client must be refused.
@@ -3260,7 +3301,7 @@ describe("terminal streaming — subscription routing + backpressure", () => {
           const c = connectWs(port, "tok-int", "int-aaaa", "p1", 2);
           await c.opened;
           await delay(40);
-          c.ws.send(JSON.stringify({ type: "resource:interest", resources: ["git:ws1"] }));
+          c.ws.send(JSON.stringify({ type: "resource:interest", resources: ["git:ws1", "git:ws2"] }));
           // First interest → immediate invalidate so the client fetches once.
           expect(
             await waitUntil(() =>
@@ -3272,6 +3313,7 @@ describe("terminal streaming — subscription routing + backpressure", () => {
           const firstCount = c.messages.filter((m) => m.type === "resource:invalidate").length;
 
           // A state broadcast with an UNCHANGED git revision must NOT re-invalidate.
+          runtime._touchGitTimestamp("ws1", "2026-07-15T11:00:00Z");
           runtime._emit("state:updated", runtime.getPayload());
           await delay(60);
           expect(c.messages.filter((m) => m.type === "resource:invalidate").length).toBe(firstCount);
@@ -3283,12 +3325,151 @@ describe("terminal streaming — subscription routing + backpressure", () => {
             await waitUntil(() => c.messages.filter((m) => m.type === "resource:invalidate").length > firstCount),
           ).toBe(true);
           c.ws.close();
+          expect(
+            await waitUntil(() =>
+              runtime._gitInterestCalls.some((x: AnyState) => String(x.ownerId).startsWith("remote-ws:") && !x.active),
+            ),
+          ).toBe(true);
+          const reconnected = connectWs(port, "tok-int", "int-aaaa", "p1", 2);
+          await reconnected.opened;
+          await delay(40);
+          reconnected.ws.send(JSON.stringify({ type: "resource:interest", resources: ["git:ws1"] }));
+          expect(
+            await waitUntil(() =>
+              reconnected.messages.some(
+                (m) => m.type === "resource:invalidate" && (m.payload as AnyState)?.resource === "git:ws1",
+              ),
+            ),
+          ).toBe(true);
+          reconnected.ws.close();
         });
       },
     );
 
+    test("HTTP Git interest is profile-authorized and remains owner-bound to its client", async () => {
+      await withServer("tok-git-interest", async ({ port, runtime }) => {
+        const client = connectWs(port, "tok-git-interest", "gi-aaaa", "p1", 2);
+        await client.opened;
+        const post = (workspaceId: string, rootPath: string) =>
+          fetch(`http://127.0.0.1:${port}/api/git/interest`, {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer tok-git-interest",
+              "X-Strideterm-Client-Id": "gi-aaaaa",
+              "X-Strideterm-State-Protocol": "2",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              viewId: "view-a",
+              workspaceId,
+              rootPath,
+              scope: "detail",
+              active: true,
+              generation: 1,
+            }),
+          });
+        const allowed = await post("ws1", "/repo");
+        expect(allowed.status).toBe(200);
+        expect(runtime._gitInterestCalls.at(-1)).toMatchObject({ workspaceId: "ws1", rootPath: "/repo", active: true });
+        expect((await post("ws1", "/outside")).status).toBe(400);
+        expect((await post("ws2", "/repo")).status).toBe(403);
+        client.ws.close();
+      });
+    });
+
+    test("Git WS interests are isolated per socket and removed when only that socket closes", async () => {
+      await withServer("tok-ws-git-interest", async ({ port, runtime }) => {
+        const first = connectWs(port, "tok-ws-git-interest", "same-client", "p1", 2);
+        const second = connectWs(port, "tok-ws-git-interest", "same-client", "p1", 2);
+        await Promise.all([first.opened, second.opened]);
+        first.ws.send(
+          JSON.stringify({
+            type: "git:interest",
+            viewId: "pane-first",
+            workspaceId: "ws1",
+            rootPath: "/repo",
+            scope: "detail",
+            active: true,
+            generation: 1,
+          }),
+        );
+        second.ws.send(
+          JSON.stringify({
+            type: "git:interest",
+            viewId: "pane-second",
+            workspaceId: "ws1",
+            rootPath: "/repo/other",
+            scope: "detail",
+            active: true,
+            generation: 1,
+          }),
+        );
+        const ownersReady = await waitUntil(() => runtime._gitInterestOwners.size === 2);
+        expect({
+          ownersReady,
+          calls: runtime._gitInterestCalls,
+          owners: [...runtime._gitInterestOwners.keys()],
+        }).toMatchObject({ ownersReady: true });
+
+        const firstOwner = [...runtime._gitInterestOwners.values()].find((x: AnyState) => x.rootPath === "/repo")!;
+        const secondOwner = [...runtime._gitInterestOwners.values()].find(
+          (x: AnyState) => x.rootPath === "/repo/other",
+        )!;
+        expect(firstOwner.ownerId).not.toBe(secondOwner.ownerId);
+        expect(firstOwner.ownerId).toContain("remote-ws:");
+        expect(secondOwner.windowId).toContain("remote:");
+
+        first.ws.close();
+        expect(await waitUntil(() => !runtime._gitInterestOwners.has(firstOwner.ownerId))).toBe(true);
+        expect(runtime._gitInterestOwners.has(secondOwner.ownerId)).toBe(true);
+
+        // A bad root and a workspace in another profile are both refused before
+        // they can become interests owned by this authenticated session.
+        second.ws.send(
+          JSON.stringify({
+            type: "git:interest",
+            viewId: "bad-root",
+            workspaceId: "ws1",
+            rootPath: "/outside",
+            active: true,
+            generation: 1,
+          }),
+        );
+        second.ws.send(
+          JSON.stringify({
+            type: "git:interest",
+            viewId: "bad-profile",
+            workspaceId: "ws2",
+            rootPath: "/repo",
+            active: true,
+            generation: 1,
+          }),
+        );
+        await delay(30);
+        expect([...runtime._gitInterestOwners.values()].some((x: AnyState) => x.workspaceId === "ws2")).toBe(false);
+        expect(
+          [...runtime._gitInterestOwners.keys()].some(
+            (ownerId: string) => ownerId.includes("bad-root") || ownerId.includes("bad-profile"),
+          ),
+        ).toBe(false);
+
+        second.ws.close();
+        expect(await waitUntil(() => runtime._gitInterestOwners.size === 0)).toBe(true);
+      });
+    });
+
     test("a v2 mutation/refresh returns a small targeted ack, NOT a nested core", async () => {
       await withServer("tok-mut", async ({ port }) => {
+        const unscoped = await fetch(`http://127.0.0.1:${port}/api/git/refresh`, {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer tok-mut",
+            "X-Strideterm-Client-Id": "mut-aaaa",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ projectId: null }),
+        });
+        expect(unscoped.status).toBe(400);
         // A route whose runtime method returns { ok, payload: <full state> } (git
         // ops shape). For a v2 client this must NOT serialize+transfer a whole
         // core after the button click — the response is a small targeted ack and
@@ -3301,7 +3482,7 @@ describe("terminal streaming — subscription routing + backpressure", () => {
             "X-Strideterm-State-Protocol": "2",
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ projectId: null }),
+          body: JSON.stringify({ projectId: "ws1" }),
         });
         expect(res.status).toBe(200);
         const body = (await res.json()) as {
@@ -3317,6 +3498,25 @@ describe("terminal streaming — subscription routing + backpressure", () => {
         expect(Array.isArray(body.changedResources)).toBe(true);
         expect(JSON.stringify(body)).not.toContain("HEAVY-GIT-LOG-ENTRY");
         expect(JSON.stringify(body)).not.toContain("gitSummaries");
+      });
+    });
+
+    test("a profile-p2 client can refresh its own workspace while the desktop is active in p1", async () => {
+      await withServer("tok-git-p2", async ({ port }) => {
+        const client = connectWs(port, "tok-git-p2", "git-p2-client", "p2", 2);
+        await client.opened;
+        const response = await fetch(`http://127.0.0.1:${port}/api/git/refresh`, {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer tok-git-p2",
+            "X-Strideterm-Client-Id": "git-p2-client",
+            "X-Strideterm-State-Protocol": "2",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ projectId: "ws2" }),
+        });
+        expect(response.status).toBe(200);
+        client.ws.close();
       });
     });
 
@@ -3354,7 +3554,7 @@ describe("terminal streaming — subscription routing + backpressure", () => {
             "X-Strideterm-Client-Id": "mut1-aaa",
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ projectId: null }),
+          body: JSON.stringify({ projectId: "ws1" }),
         });
         expect(res.status).toBe(200);
         const body = (await res.json()) as { ok: boolean; payload: AnyState };

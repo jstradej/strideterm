@@ -15,6 +15,7 @@ async function run(): Promise<number> {
   let stderr = "";
 
   const child = spawn(electronPath as unknown as string, buildSmokeElectronArgs(smokeDataDir), {
+    windowsHide: true,
     cwd: process.cwd(),
     env: {
       ...process.env,
@@ -48,6 +49,8 @@ async function run(): Promise<number> {
       child.kill("SIGTERM");
       await Promise.race([exitResult, new Promise((resolve) => setTimeout(resolve, 2_000))]);
       console.error(`Smoke failed: app did not exit within ${APP_CONFIG.electron.smokeAliveMs}ms.`);
+      if (stdout.trim()) console.error(stdout.trim());
+      if (stderr.trim()) console.error(stderr.trim());
       return 1;
     }
 

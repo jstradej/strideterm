@@ -53,6 +53,7 @@ import { DockerManager } from "./docker-manager.js";
 import { DockerLogManager } from "./docker-log-streamer.js";
 import { DockerShellManager } from "./docker-shell-streamer.js";
 import { GitManager } from "./git-manager.js";
+import { GitCacheStore } from "./git-cache-store.js";
 import { sharedReviewGitLocks } from "./review-git/locks.js";
 import { CloudflareTunnelManager, canReconnectTunnel } from "./tunnel-manager.js";
 import { createPluginManager } from "./plugin-loader.js";
@@ -441,6 +442,8 @@ async function checkRemoteOrigin(
     `Remote access origin ${originUrl} is not responding${lastErrMessage ? ` (${lastErrMessage})` : ""}.`,
   );
 }
+
+const BULK_GIT_REFRESH_MAX_IDLE_MS = 14 * 24 * 60 * 60 * 1000;
 
 const WINDOWS_RESERVED_DIRECTORY_NAMES = new Set([
   "con",
@@ -1299,7 +1302,14 @@ export async function createRuntime({
   const docker = new DockerManagerImpl();
   const dockerLogManager = new DockerLogManager();
   const dockerShellManager = new DockerShellManager();
-  const git = new GitManagerImpl({ credentialStore, auditLogStore, gitAuditLogStore });
+  const gitCacheStore = new GitCacheStore(userDataPath, {
+    warn: (message, meta) =>
+      log.warn(
+        message,
+        meta && typeof meta === "object" ? (meta as Record<string, unknown>) : { detail: String(meta ?? "") },
+      ),
+  });
+  const git = new GitManagerImpl({ credentialStore, auditLogStore, gitAuditLogStore, cacheStore: gitCacheStore });
   const tunnel = new TunnelManagerImpl();
   const azure = new AzureDevOpsManagerImpl({
     credentialStore,
@@ -6055,6 +6065,13 @@ export async function createRuntime({
   git.on("updated", () => {
     broadcastState();
   });
+  git.on(
+    "freshness",
+    (payload: { workspaceId: string; rootPath: string; stale: boolean; refreshing?: boolean; error?: string }) => {
+      events.emit("git:freshness", payload);
+      if (payload.refreshing) broadcastState();
+    },
+  );
 
   azure.on("updated", () => {
     broadcastState();
@@ -6115,21 +6132,143 @@ export async function createRuntime({
     return docker.refresh();
   }
 
-  async function refreshGit(projectId: string | null = null, options: { useCache?: boolean } = {}) {
+  async function refreshGit(
+    projectId: string | null = null,
+    options: { useCache?: boolean; force?: boolean; rootPath?: string } = {},
+  ) {
     // useCache=true skips invalidation so refreshWorkspaces' internal
     // snapshotCache (8 s TTL by default) can short-circuit when a recent
     // snapshot already exists. Used by the startup background warmup so a
     // first-time refresh populates the cache and re-entries within the TTL
     // are essentially free — without this the loop blindly re-spawned ~14
     // git processes per workspace even though the data hadn't changed.
-    if (!options.useCache) {
+    if (options.force && !options.useCache) {
       git.invalidateSnapshotCache?.(projectId || null);
     }
     const state = getState();
-    const workspaces = state.workspaces.filter(
+    let workspaces = state.workspaces.filter(
       (workspace) => (!projectId || workspace.id === projectId) && workspace.kind !== "azure",
     );
-    return git.refreshWorkspaces(workspaces);
+    if (!projectId) {
+      // A bulk refresh leaves out what nobody has open and nobody has worked in recently:
+      // those are re-read when they are opened, not after every cleanup.
+      const interested = interestedGitWorkspaceIds(state);
+      const workedSince = Date.now() - BULK_GIT_REFRESH_MAX_IDLE_MS;
+      const deferred = new Set(
+        workspaces
+          .filter(
+            (workspace) => !interested.has(workspace.id) && !(Date.parse(workspace.lastWorkedAt || "") >= workedSince),
+          )
+          .map((workspace) => workspace.id),
+      );
+      for (const id of deferred) git.invalidateSnapshotCache?.(id);
+      workspaces = workspaces.filter((workspace) => !deferred.has(workspace.id));
+    }
+    if (options.rootPath) {
+      if (!projectId) throw new Error("A workspace is required for a root-specific Git refresh.");
+      const workspace = workspaces.find((item) => item.id === projectId);
+      const root = workspace && resolveGitRootPath(workspace, options.rootPath);
+      if (!workspace || !root) throw new Error("Git root is not part of this workspace.");
+      workspaces = [{ ...workspace, cwd: root, gitRoots: [root] }];
+    }
+    return git.refreshWorkspaces(workspaces, {
+      reason: options.force ? "manual" : "ensure",
+      priority: options.force ? "foreground" : "background",
+    });
+  }
+
+  const gitInterestOwners = new Map<
+    string,
+    { workspaceId: string; rootPath: string; scope: "summary" | "detail"; generation: number }
+  >();
+  const gitInterestGenerations = new Map<string, number>();
+  const maxGitInterestGenerationRecords = 4096;
+  let gitInterestSyncGeneration = 0;
+  function interestedGitWorkspaceIds(state: AppState): Set<string> {
+    const ids = new Set<string>();
+    for (const slot of state.windowSlots || []) if (slot.activeWorkspaceId) ids.add(slot.activeWorkspaceId);
+    for (const owner of gitInterestOwners.values()) ids.add(owner.workspaceId);
+    return ids;
+  }
+
+  function syncInterestedGitWorkspaces() {
+    if (typeof git.setInterestedWorkspaces !== "function") return;
+    const syncGeneration = ++gitInterestSyncGeneration;
+    const state = getState();
+    const activeIds = interestedGitWorkspaceIds(state);
+    const targets = state.workspaces
+      .filter((workspace) => activeIds.has(workspace.id) && workspace.kind !== "docker")
+      .map((workspace) => {
+        const roots = new Set(
+          [...gitInterestOwners.values()]
+            .filter((owner) => owner.workspaceId === workspace.id && owner.rootPath)
+            .map((owner) => owner.rootPath),
+        );
+        if (roots.size) return { ...workspace, gitRoots: [...roots] };
+        const workspaceHasOwner = [...gitInterestOwners.values()].some((owner) => owner.workspaceId === workspace.id);
+        if (!workspaceHasOwner) return workspace;
+        const configuredRoots = workspace.gitRoots || [];
+        const preferredRoot = workspace.activeRootPath || workspace.cwd;
+        const selectedRoot =
+          (preferredRoot && (!configuredRoots.length || configuredRoots.includes(preferredRoot)) && preferredRoot) ||
+          configuredRoots[0] ||
+          workspace.cwd;
+        return selectedRoot ? { ...workspace, cwd: selectedRoot, gitRoots: [selectedRoot] } : workspace;
+      });
+    void Promise.resolve(git.registerWorkspaces?.(state.workspaces))
+      .then(() => {
+        if (syncGeneration !== gitInterestSyncGeneration) return;
+        return git.setInterestedWorkspaces(targets);
+      })
+      .catch((err: unknown) => {
+        log.warn("git interest update failed", { err: (err as Error)?.message || String(err) });
+      });
+  }
+  function rememberGitInterestGeneration(ownerKey: string, generation: number) {
+    // Keep all live owners and a generous LRU window of recent removals so
+    // delayed false/true updates remain ordered without unbounded UUID tombstones.
+    gitInterestGenerations.delete(ownerKey);
+    gitInterestGenerations.set(ownerKey, generation);
+    while (gitInterestGenerations.size > maxGitInterestGenerationRecords) {
+      const removable = [...gitInterestGenerations.keys()].find((key) => !gitInterestOwners.has(key));
+      if (!removable) break;
+      gitInterestGenerations.delete(removable);
+    }
+  }
+
+  function setGitInterest(
+    ownerId: string,
+    workspaceId: string,
+    rootPath: string,
+    scope: "summary" | "detail",
+    active: boolean,
+    windowId?: string,
+    generation = 0,
+  ) {
+    if (!ownerId) throw new Error("Git interest owner is required.");
+    const ownerKey = `${windowId || "runtime"}:${ownerId}`;
+    if (active && !gitInterestOwners.has(ownerKey) && gitInterestOwners.size >= 500)
+      throw new Error("Too many Git interest owners.");
+    const previousGeneration = gitInterestGenerations.get(ownerKey) ?? -1;
+    if (generation < previousGeneration) return;
+    if (!active) {
+      gitInterestOwners.delete(ownerKey);
+      rememberGitInterestGeneration(ownerKey, generation);
+    } else {
+      const workspace = resolveGitWorkspace(workspaceId, undefined, windowId);
+      const validRoot = rootPath ? resolveGitRootPath(workspace, rootPath) : "";
+      if (rootPath && !validRoot) throw new Error("Git root is not part of this workspace.");
+      gitInterestOwners.set(ownerKey, { workspaceId: workspace.id, rootPath: validRoot || "", scope, generation });
+      rememberGitInterestGeneration(ownerKey, generation);
+    }
+    syncInterestedGitWorkspaces();
+  }
+  function clearGitInterestOwners(prefix: string) {
+    const matchesOwner = (key: string) =>
+      key.startsWith(`runtime:${prefix}`) || key.startsWith(`${prefix}:`) || key.includes(`:${prefix}`);
+    for (const key of gitInterestOwners.keys()) if (matchesOwner(key)) gitInterestOwners.delete(key);
+    for (const key of gitInterestGenerations.keys()) if (matchesOwner(key)) gitInterestGenerations.delete(key);
+    syncInterestedGitWorkspaces();
   }
 
   function resolveGitWorkspace(
@@ -6152,36 +6291,44 @@ export async function createRuntime({
 
   function resolveGitRootPath(workspace: WorkspaceState, rootPath: string): string | null {
     const roots = workspace.gitRoots || [];
+    const normalize = (value: string) => {
+      let resolved = path.resolve(value);
+      const root = path.parse(resolved).root;
+      while (resolved.length > root.length && resolved.endsWith(path.sep)) resolved = resolved.slice(0, -1);
+      return resolved;
+    };
     if (!rootPath) {
       return roots[0] || "";
     }
     if (!roots.length) {
       const singleRoot = workspace.cwd || "";
       if (!singleRoot) return null;
-      const normalizedRequested = path.resolve(rootPath).replace(/[\\/]+$/, "");
-      const normalizedSingle = path.resolve(singleRoot).replace(/[\\/]+$/, "");
-      const sameRoot =
-        process.platform === "win32"
-          ? normalizedRequested.toLowerCase() === normalizedSingle.toLowerCase()
-          : normalizedRequested === normalizedSingle;
-      return sameRoot ? singleRoot : null;
+      return normalize(rootPath) === normalize(singleRoot) ? singleRoot : null;
     }
-    if (roots.includes(rootPath)) return rootPath;
-    // normalize comparison
-    const normalized = rootPath.replace(/\\/g, "/").replace(/\/+$/, "");
-    const match = roots.find((r: string) => r.replace(/\\/g, "/").replace(/\/+$/, "") === normalized);
+    const normalized = normalize(rootPath);
+    const match = roots.find((r: string) => normalize(r) === normalized);
     if (match) return match;
     return null; // rootPath not in gitRoots — reject
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async function runGitWorkspaceAction(workspace: WorkspaceState, actionPromise: Promise<any>) {
-    const result = await actionPromise;
-    await refreshGit(workspace.id);
-    return {
-      payload: getPayload(),
-      result,
-    };
+  async function runGitWorkspaceAction(
+    workspace: WorkspaceState,
+    actionPromise: Promise<Record<string, unknown>>,
+    context: { cacheScope?: "status" | "refs" | "all"; rootPath?: string } = {},
+  ) {
+    const cacheScope = context.cacheScope || "all";
+    const rootPath = context.rootPath || null;
+    git.invalidateSnapshotCache?.(workspace.id, rootPath, cacheScope);
+    let result: Record<string, unknown>;
+    try {
+      result = await actionPromise;
+      return { payload: getPayload(), result };
+    } finally {
+      git.invalidateSnapshotCache?.(workspace.id, rootPath, cacheScope);
+      void refreshGit(workspace.id, { useCache: true, ...(rootPath ? { rootPath } : {}) }).catch((err: unknown) => {
+        log.warn("runGitWorkspaceAction: refresh failed", { workspaceId: workspace.id, err: (err as Error)?.message });
+      });
+    }
   }
 
   const pendingWorktreeDeletions = new Set(); // paths being deleted — skip in syncWorktrees
@@ -7032,9 +7179,8 @@ export async function createRuntime({
     const activeId = getState().activeWorkspaceId;
     if (activeId) {
       await refreshGit(activeId);
-    } else {
-      await refreshGit();
     }
+    syncInterestedGitWorkspaces();
     await refreshAzure();
     scheduleAzurePolling();
     await refreshGitHub();
@@ -7051,43 +7197,6 @@ export async function createRuntime({
     // notice once the other instance shut down. Auto-tunnel now fires
     // from setRemoteInfo on the first reported state — see the one-shot
     // guard `autoTunnelBootstrapped` below.
-
-    // Background: inspect remaining workspaces so they don't block first render.
-    //
-    // Two scoping decisions that keep startup CPU bounded:
-    //   1. Only workspaces in the SAME profile as the active workspace. The user
-    //      can only see one profile at a time, so eagerly refreshing the other
-    //      profiles' workspaces is pure CPU burn — they'll be activated lazily
-    //      anyway. Cut this from "every git workspace across every profile" to
-    //      "every git workspace in this profile" (often ~halves the work).
-    //   2. useCache=true so the first pass populates each workspace's snapshot
-    //      cache without an explicit invalidation. A second startup refresh
-    //      within the cache TTL (8 s) becomes a no-op instead of re-spawning
-    //      14+ git processes per workspace.
-    if (activeId) {
-      const initialState = getState();
-      const activeProfileId = initialState.workspaces.find((w) => w.id === activeId)?.profileId || "default";
-      queueMicrotask(() => {
-        void (async () => {
-          const others = getState().workspaces.filter(
-            (ws) =>
-              ws.id !== activeId &&
-              ws.kind !== "azure" &&
-              ws.kind !== "github" &&
-              (ws.profileId || "default") === activeProfileId,
-          );
-          for (const ws of others) {
-            try {
-              await refreshGit(ws.id, { useCache: true });
-              broadcastState();
-            } catch {
-              // Non-fatal — background refresh; user can click Refresh if needed
-            }
-            await new Promise((r) => setImmediate(r));
-          }
-        })();
-      });
-    }
   }
 
   // ensureNotifyScript never rejects — it swallows its own fs errors and
@@ -7171,6 +7280,7 @@ export async function createRuntime({
 
   // --- Extracted handler groups ---
   const gitHandlers = createGitHandlers({
+    log,
     git,
     store,
     getPayload,
@@ -7186,6 +7296,8 @@ export async function createRuntime({
     syncWorktrees: async () => {
       await syncWorktrees();
     },
+    setGitInterest,
+    clearGitInterestOwners,
   });
 
   const sshHandlers = createSshHandlers({ sshManager, store, credentialStore, broadcastState });
@@ -8884,6 +8996,7 @@ export async function createRuntime({
   const returnObj = {
     ...providerHandlers,
     ...gitHandlers,
+    _gitInterestGenerationCountForTest: () => gitInterestGenerations.size,
     ...sshHandlers,
     ...dockerHandlers,
     ...gridHandlers,
@@ -10494,6 +10607,7 @@ export async function createRuntime({
           log.warn("activateWorkspace: docker refresh failed", { err: (err as Error)?.message });
         });
       }
+      syncInterestedGitWorkspaces();
       refreshGit(workspaceId).catch((err: unknown) => {
         log.warn("activateWorkspace: git refresh failed", { err: (err as Error)?.message });
       });
@@ -10662,6 +10776,7 @@ export async function createRuntime({
       refreshGit(workspaceId).catch((err: unknown) => {
         log.warn("activateWorkspaceInWindow: git refresh failed", { err: (err as Error)?.message });
       });
+      syncInterestedGitWorkspaces();
       broadcastState();
       return getPayload();
     },
@@ -10752,6 +10867,8 @@ export async function createRuntime({
         // Legacy mirror of the last activation — viewers read their own slot.
         draft.activeWorkspaceId = restoreTarget.workspaceId;
       });
+      clearGitInterestOwners(windowId);
+      syncInterestedGitWorkspaces();
       // PTY spawn must not wait on FS/network refreshes — otherwise the new
       // profile's active workspace sits at "0 running" while syncWorktrees
       // scans disks and Azure does network. Spawn first, then refresh.
@@ -10827,6 +10944,7 @@ export async function createRuntime({
       if (newActiveWorkspaceId) {
         ensureVisibleSession(newActiveWorkspaceId);
       }
+      syncInterestedGitWorkspaces();
       broadcastState();
       return { id: newId, profileId, bounds: defaultBounds };
     },
@@ -10842,6 +10960,7 @@ export async function createRuntime({
 
     async removeWindowSlot(windowId: string) {
       windowFocusedAt.delete(windowId);
+      clearGitInterestOwners(windowId);
       // The window that started the sign-in is closing, so the person who started it is gone. Any
       // OTHER window closing leaves the attempt alone — the link may be open on a phone right now.
       if (signInOwnerWindowId !== null && signInOwnerWindowId === windowId) {
@@ -10872,10 +10991,12 @@ export async function createRuntime({
       // The window is gone — drop its visible-session contribution so its
       // panels stop counting as visible (otherwise their alerts stay suppressed).
       dropViewerVisibility(windowId);
+      syncInterestedGitWorkspaces();
       // The closing window may have been the only one showing a docker
       // workspace; without this the poll would keep spawning probes for a view
       // that no longer exists.
       ensureDockerPolling();
+      syncInterestedGitWorkspaces();
       broadcastState();
     },
 
@@ -11916,6 +12037,7 @@ export async function createRuntime({
           // Batch cleanup performs one consolidated refresh after its sequential deletes.
         } else if (refreshTargets.length > 0) {
           for (const targetId of refreshTargets) {
+            git.invalidateSnapshotCache?.(targetId);
             await refreshGit(targetId);
           }
         } else {
@@ -13177,6 +13299,7 @@ export async function createRuntime({
       taskRunner.dispose();
       sessions.stopAll();
       await reviewBridgeStore.close?.();
+      await gitCacheStore.close();
       auditLogStore.close?.();
       githubAuditLogStore.close?.();
       gitAuditLogStore.close?.();

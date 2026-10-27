@@ -7,7 +7,11 @@
       :actions="headerActions"
       @action="onHeaderAction"
     />
-    <div v-if="isLoadingSnapshot" class="git-view git-view--loading" aria-busy="true">
+    <div
+      v-if="isLoadingSnapshot || (isSummaryOnly && !refreshError)"
+      class="git-view git-view--loading"
+      aria-busy="true"
+    >
       <div class="git-view__toolbar git-view__loading-toolbar" aria-hidden="true">
         <span class="git-view__loading-chip git-view__loading-chip--branch"></span>
         <span class="git-view__loading-chip git-view__loading-chip--worktree"></span>
@@ -20,7 +24,10 @@
         <span class="git-view__loading-tab"></span>
       </nav>
       <section class="git-view__panel git-view__loading-panel">
-        <Spinner size="md" label="Loading Git workspace…" />
+        <Spinner size="md" :label="isSummaryOnly ? 'Loading Git details…' : 'Loading Git workspace…'" />
+        <p class="git-view__loading-caption" aria-hidden="true">
+          {{ isSummaryOnly ? "Loading Git details…" : "Loading Git workspace…" }}
+        </p>
       </section>
       <span class="git-view__loading-mobile-trigger git-view__loading-mobile-trigger--tabs" aria-hidden="true"></span>
       <span
@@ -29,8 +36,16 @@
       ></span>
     </div>
     <div v-else-if="!snapshot?.available" class="terminal-empty">
-      <p>Git workspace is unavailable</p>
-      <small>This workspace is not inside a Git repository.</small>
+      <p>{{ refreshError ? "Git refresh failed" : "Git workspace is unavailable" }}</p>
+      <small>{{ refreshError || snapshot?.error || "This workspace is not inside a Git repository." }}</small>
+      <button
+        v-if="refreshError || snapshot?.error"
+        type="button"
+        class="button button--ghost button--small"
+        @click="onRefresh"
+      >
+        Retry Git refresh
+      </button>
     </div>
     <div
       v-else
@@ -38,8 +53,23 @@
       :class="{
         'git-view--menu-open': isMobile && menuOpen,
         'git-view--tabs-menu-open': isMobile && tabsMenuOpen,
+        'git-view--notice': snapshot?.refreshError || snapshot?.stale,
       }"
     >
+      <div
+        v-if="snapshot?.refreshError"
+        class="git-view__notice git-view__notice--error git-view__refresh-error"
+        role="status"
+      >
+        <span class="git-view__notice-text">
+          <strong>Showing the last available Git data.</strong>
+          {{ snapshot.refreshError }}
+        </span>
+        <button type="button" class="button button--ghost button--small" @click="onRefresh">Retry</button>
+      </div>
+      <div v-else-if="snapshot?.stale" class="git-view__notice git-view__stale" role="status">
+        <span class="git-view__notice-text">Showing last known Git data while this checkout is revalidated.</span>
+      </div>
       <button
         v-if="isMobile"
         type="button"
@@ -394,7 +424,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onScopeDispose, ref, watch } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useGitUiStore } from "../../stores/git-ui.js";
 import PaneShell from "../layout/PaneShell.vue";
@@ -445,8 +475,24 @@ const snapshot = computed<Record<string, any> | null>(
 );
 // No snapshot yet: either the first inspect is still running (no summary either)
 // or, on remote, the detail fetch is pending behind a known-available summary.
-const isLoadingSnapshot = computed(
-  () => snapshot.value == null && appStore.getGitSummary(props.workspaceId)?.available !== false,
+const isLoadingSnapshot = computed(() => {
+  const summary = appStore.getGitSummary(props.workspaceId);
+  const coldRefresh = (snapshot.value || summary)?.refreshing === true && !(snapshot.value || summary)?.available;
+  return !refreshError.value && (coldRefresh || (snapshot.value == null && summary?.available !== false));
+});
+const isSummaryOnly = computed(() =>
+  snapshot.value
+    ? Boolean(snapshot.value.summaryOnly)
+    : Boolean(appStore.getGitSummary(props.workspaceId)?.summaryOnly),
+);
+const refreshError = computed(() =>
+  String(
+    snapshot.value?.refreshError ||
+      snapshot.value?.error ||
+      appStore.getGitSummary(props.workspaceId)?.refreshError ||
+      appStore.getGitSummary(props.workspaceId)?.error ||
+      "",
+  ),
 );
 const gitUi = computed(() => gitUiStore.get(props.workspaceId));
 
@@ -477,7 +523,59 @@ const reviewLink = computed(() => {
 const gitRoots = computed(() => workspace.value?.gitRoots || []);
 const isMultiRepo = computed(() => gitRoots.value.length >= 2);
 const showRepoPicker = computed(() => isMultiRepo.value);
-const activeRootPath = computed(() => gitUiStore.getActiveRoot(props.workspaceId) || snapshot.value?.rootPath || "");
+const activeRootPath = computed(() => {
+  const configuredRoots = gitRoots.value;
+  const preferredRoot =
+    gitUiStore.getActiveRoot(props.workspaceId) || workspace.value?.activeRootPath || snapshot.value?.rootPath || "";
+  if (preferredRoot && (!configuredRoots.length || configuredRoots.includes(preferredRoot))) return preferredRoot;
+  return configuredRoots[0] || workspace.value?.cwd || "";
+});
+const gitInterestViewId = `git-pane-${crypto.randomUUID()}`;
+let currentGitInterest: { workspaceId: string; rootPath: string } | null = null;
+let gitInterestGeneration = 0;
+const stopGitInterestWatch = watch(
+  () => ({ workspaceId: props.workspaceId, rootPath: activeRootPath.value }),
+  (next) => {
+    const api = appStore.getApi?.();
+    const send = (active: boolean, item: { workspaceId: string; rootPath: string }) => {
+      if (!api) return;
+      void api
+        .gitInterest?.({
+          viewId: gitInterestViewId,
+          ...item,
+          scope: "detail",
+          active,
+          generation: ++gitInterestGeneration,
+        })
+        .catch(() => {});
+    };
+    if (
+      currentGitInterest &&
+      (currentGitInterest.workspaceId !== next.workspaceId || currentGitInterest.rootPath !== next.rootPath)
+    ) {
+      send(false, currentGitInterest);
+    }
+    currentGitInterest = next.workspaceId ? next : null;
+    if (currentGitInterest) send(true, currentGitInterest);
+  },
+  { immediate: true },
+);
+onScopeDispose(() => {
+  stopGitInterestWatch();
+  if (currentGitInterest) {
+    const api = appStore.getApi?.();
+    void api
+      ?.gitInterest?.({
+        viewId: gitInterestViewId,
+        ...currentGitInterest,
+        scope: "detail",
+        active: false,
+        generation: ++gitInterestGeneration,
+      })
+      .catch(() => {});
+    currentGitInterest = null;
+  }
+});
 const allRootsSnapshots = computed(() => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const entry = appStore.getGitWorkspaceEntry(props.workspaceId) as any;

@@ -85,7 +85,17 @@ describe("remote mobile security boundaries", () => {
       const state = await fetch(`${base}/api/state`, { headers });
       expect(state.status).toBe(200);
       expect(await state.text()).not.toContain("master-fixture");
-      const nested = await fetch(`${base}/api/git/refresh`, { method: "POST", headers, body: "{}" });
+      const missingRefreshTarget = await fetch(`${base}/api/git/refresh`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({}),
+      });
+      expect(missingRefreshTarget.status).toBe(400);
+      const nested = await fetch(`${base}/api/git/refresh`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ projectId: allowed }),
+      });
       expect(nested.status).toBe(200);
       expect(await nested.text()).not.toContain("master-fixture");
       for (const [path, body] of [

@@ -25,7 +25,12 @@ export default defineConfig({
     // there on cold workers). Linux / macOS finish in ~2s. Bumping to
     // 30s eliminates the Windows-only flake without hiding genuinely
     // hung tests.
-    testTimeout: 30_000,
+    // The real-Git suites (review-git engine/service, base-manager, the
+    // git-manager fixtures, git-cache) spawn hundreds of git processes each.
+    // On Windows a test that takes 10–25 s alone passed 30 s once every
+    // worker ran at the same time, and so did their fixture-building hooks.
+    testTimeout: 60_000,
+    hookTimeout: 60_000,
     setupFiles: [fileURLToPath(new URL("./test/vitest-backend-setup.ts", import.meta.url))],
     // The shared notify-URL registry lives in the user's HOME by design (it
     // has to be reachable from every data dir). A test run must never write

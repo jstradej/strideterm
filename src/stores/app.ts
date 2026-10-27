@@ -1514,8 +1514,11 @@ export const useAppStore = defineStore("app", () => {
       if (isGitViewId(viewId) && _api) {
         if (wsId) {
           adjustGitActivationRefresh(wsId, 1);
-          (_api as CallableTransport)
-            .refreshGit(wsId)
+          const rootPath = useGitUiStore().getActiveRoot(wsId) || String(getGitWorkspaceEntry(wsId)?.primaryRoot || "");
+          const refresh = rootPath
+            ? (_api as CallableTransport).refreshGit(wsId, { rootPath })
+            : (_api as CallableTransport).refreshGit(wsId);
+          refresh
             .then((nextPayload) => {
               if (nextPayload && isCurrent() && !pendingWorkspaceActivationId.value) {
                 adoptPayload(nextPayload as StatePayload);
@@ -1628,6 +1631,8 @@ export const useAppStore = defineStore("app", () => {
       dirtyCount: snap.dirtyCount,
       branchMerged: snap.branchMerged,
       lastChangeAt: snap.lastChangeAt,
+      summaryOnly: Boolean(snap.summaryOnly),
+      refreshError: snap.refreshError ?? null,
     };
   }
 

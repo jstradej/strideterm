@@ -78,6 +78,12 @@ export function summarizeGit(snap: AnyRecord | null | undefined): GitSummary {
     dirtyCount: Number(snap?.dirtyCount || 0),
     branchMerged: snap?.branchMerged,
     lastChangeAt: snap?.lastChangeAt ?? null,
+    stale: Boolean(snap?.stale),
+    refreshing: Boolean(snap?.refreshing),
+    refreshError: snap?.refreshError == null ? null : String(snap.refreshError),
+    error: snap?.error == null ? null : String(snap.error),
+    ...(snap?.verified !== undefined ? { verified: Boolean(snap.verified) } : {}),
+    summaryOnly: Boolean(snap?.summaryOnly),
   };
 }
 
@@ -288,7 +294,26 @@ export function resourceRevision(payload: AnyRecord, resourceKey: string): strin
   switch (type) {
     case "git": {
       const snap = payload?.git?.workspaces?.[id || ""];
-      return snap ? String(snap.lastUpdatedAt || snap.lastChangeAt || "") : "";
+      if (!snap) return "";
+      const rootSource = snap.rootRevisions || snap.dataRevisions || snap.roots;
+      const revisions =
+        snap.rootRevisions ||
+        snap.dataRevisions ||
+        (rootSource &&
+        Object.values(rootSource).some((value) => value && typeof value === "object" && "dataRevision" in value)
+          ? rootSource
+          : null);
+      if (revisions && typeof revisions === "object") {
+        return JSON.stringify(
+          Object.entries(revisions)
+            .map(([root, value]) => {
+              const revision = value && typeof value === "object" ? (value as AnyRecord).dataRevision : value;
+              return [root, String(revision ?? "")];
+            })
+            .sort(([a], [b]) => String(a).localeCompare(String(b))),
+        );
+      }
+      return String(snap.dataRevision || "");
     }
     case "docker":
       return String(payload?.docker?.lastUpdatedAt || "");

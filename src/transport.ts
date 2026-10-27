@@ -28,7 +28,12 @@ import {
   operationFinishedSchema,
   type OperationFinished,
 } from "../electron/shared/operation-events.js";
-import type { ProfilePayload, ReviewGitStart, StartReviewAgentPreparation } from "../electron/backend/ipc-schemas.js";
+import type {
+  ProfilePayload,
+  ReviewGitStart,
+  StartReviewAgentPreparation,
+  WsGitInterest,
+} from "../electron/backend/ipc-schemas.js";
 import {
   startPullRequestReviewSchema,
   type StartPullRequestReviewInput,
@@ -795,6 +800,7 @@ export function createRemoteTransport(): Transport {
   // invalidations. Empty until the first pane declares interest.
   let lastResourceInterest: string[] = [];
   let hasDeclaredInterest = false;
+  const desiredGitInterests = new Map<string, Omit<WsGitInterest, "type">>();
 
   // Slim-core protocol version this client speaks. Advertised on the WS upgrade
   // (?sp=) and every HTTP request (X-Strideterm-State-Protocol), so the server
@@ -1330,6 +1336,10 @@ export function createRemoteTransport(): Transport {
       // for this fresh socket (interests are per-socket and dropped on close).
       if (hasDeclaredInterest && nextWs.readyState === WebSocket.OPEN) {
         nextWs.send(JSON.stringify({ type: "resource:interest", resources: lastResourceInterest }));
+      }
+      for (const interest of desiredGitInterests.values()) {
+        if (nextWs.readyState !== WebSocket.OPEN) break;
+        nextWs.send(JSON.stringify({ type: "git:interest", ...interest }));
       }
       sendForegroundPresence(nextWs);
       // First-connect bootstrap handoff: if we already hold a bootstrap revision,
@@ -2412,7 +2422,34 @@ export function createRemoteTransport(): Transport {
     stopCloudflareTunnel: () => fetchJson("/api/tunnel/stop", {}),
     restartTerminal: (sessionId) => fetchJson("/api/terminal/restart", { sessionId }),
     refreshDocker: () => fetchJson("/api/docker/refresh", {}),
-    refreshGit: (projectId) => fetchJson("/api/git/refresh", { projectId }),
+    refreshGit: (projectId, options) => fetchJson("/api/git/refresh", { projectId, ...options }),
+    gitInterest: (payload) => {
+      const current = desiredGitInterests.get(payload.viewId);
+      if (current && payload.generation < current.generation) return Promise.resolve({ ok: true });
+      if (payload.active) {
+        desiredGitInterests.set(payload.viewId, {
+          ...payload,
+          rootPath: payload.rootPath || "",
+          scope: payload.scope || "detail",
+        });
+      } else {
+        // A late unmount from an old root must not remove the current binding
+        // for a still-mounted view. Root changes normally replace atomically,
+        // but this check also protects asynchronous callers.
+        if (
+          current &&
+          (current.workspaceId !== payload.workspaceId || (current.rootPath || "") !== (payload.rootPath || ""))
+        ) {
+          return Promise.resolve({ ok: true });
+        }
+        desiredGitInterests.delete(payload.viewId);
+      }
+      const socket = ws;
+      if (socket?.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: "git:interest", ...payload }));
+      }
+      return Promise.resolve({ ok: true });
+    },
     gitFetch: (payload) => fetchJson("/api/git/fetch", payload),
     gitPull: (payload) => fetchJson("/api/git/pull", payload),
     gitPush: (payload) => fetchJson("/api/git/push", payload),

@@ -123,7 +123,7 @@
                     Create branch from HEAD
                   </button>
                 </div>
-                <GitDiffStat v-if="!compactChanges" :stat="snapshot.diffStat" />
+                <GitDiffStat v-if="!compactChanges && !snapshot.diffStatStale" :stat="snapshot.diffStat" />
                 <GitChangeTree
                   ref="desktopTree"
                   :files="allChangedFiles"

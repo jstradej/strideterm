@@ -2391,6 +2391,45 @@ describe("remote transport endpoint routing", () => {
     expect(interests).toEqual([{ type: "resource:interest", resources: ["git:ws1", "docker"] }]);
   });
 
+  it("sends typed Git view interest over WS and restores the desired root on reconnect", async () => {
+    vi.useFakeTimers();
+    const transport = makeRemoteTransport();
+    const first = MockWebSocket.instances[0];
+    await transport.gitInterest!({
+      viewId: "pane-uuid-1",
+      workspaceId: "ws-root-a",
+      rootPath: "/repo/a",
+      scope: "detail",
+      active: true,
+      generation: 1,
+    });
+    first.open();
+    expect(first.sent.map((raw) => JSON.parse(raw))).toContainEqual({
+      type: "git:interest",
+      viewId: "pane-uuid-1",
+      workspaceId: "ws-root-a",
+      rootPath: "/repo/a",
+      scope: "detail",
+      active: true,
+      generation: 1,
+    });
+    expect(capturedUrls).toEqual([]); // web interest is no longer sent over HTTP
+
+    first.close(1006);
+    vi.advanceTimersByTime(500);
+    const second = MockWebSocket.instances[1];
+    second.open();
+    expect(second.sent.map((raw) => JSON.parse(raw))).toContainEqual({
+      type: "git:interest",
+      viewId: "pane-uuid-1",
+      workspaceId: "ws-root-a",
+      rootPath: "/repo/a",
+      scope: "detail",
+      active: true,
+      generation: 1,
+    });
+  });
+
   it("sends no resource-interest on connect until a pane declares one", () => {
     const transport = makeRemoteTransport();
     void transport;

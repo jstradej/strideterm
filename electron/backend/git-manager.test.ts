@@ -39,10 +39,16 @@ async function createGitFixture() {
 function createExecMock(responses: Record<string, { stdout: string; stderr: string } | Error>) {
   return vi.fn(async (cwd: string, args: string[]) => {
     const key = `${cwd}::${args.join(" ")}`;
-    if (!(key in responses)) {
-      throw { stderr: `Unexpected git call: ${key}`, stdout: "" };
-    }
-    const value = responses[key];
+    if (args.join(" ") === "config --includes --null --show-origin --name-only --list")
+      return { stdout: "", stderr: "" };
+    const legacyStatusKey =
+      args[0] === "--no-optional-locks" && args[1] === "status"
+        ? `${cwd}::status --porcelain=v2 --branch --untracked-files=all`
+        : "";
+    const responseKey =
+      key in responses ? key : legacyStatusKey && legacyStatusKey in responses ? legacyStatusKey : key;
+    if (!(responseKey in responses)) throw { stderr: `Unexpected git call: ${key}`, stdout: "" };
+    const value = responses[responseKey];
     if (value instanceof Error) {
       throw { stderr: value.message, stdout: "" };
     }
@@ -152,7 +158,8 @@ describe("GitManager", () => {
     expect(snapshot.siblingWorktrees as unknown[]).toHaveLength(2);
     expect((snapshot.siblingWorktrees as Array<Record<string, unknown>>)[1]).toMatchObject({
       branch: "feature-y",
-      dirty: true,
+      dirty: false,
+      dirtyKnown: false,
     });
     expect(snapshot.lastFetchAt).toBeTruthy();
   });
@@ -161,7 +168,7 @@ describe("GitManager", () => {
     const { root } = await createGitFixture();
     const execGitImpl = vi.fn(async (cwd: string, args: string[]) => {
       if (args.join(" ") === "rev-parse --show-toplevel") return { stdout: `${cwd}\n`, stderr: "" };
-      if (args.join(" ") === "status --porcelain=v2 --branch --untracked-files=all")
+      if (args.join(" ") === "--no-optional-locks status --porcelain=v2 --branch -z --untracked-files=all")
         throw new Error("fatal: index file corrupt");
       return { stdout: "", stderr: "" };
     });
@@ -307,7 +314,7 @@ describe("GitManager", () => {
       [`${root}::remote -v`]: { stdout: "", stderr: "" },
       [`${root}::rev-list --count HEAD`]: { stdout: "1\n", stderr: "" },
       [`${root}::status --porcelain=v2 --branch --untracked-files=all`]: {
-        stdout: "# branch.head feature-x\n",
+        stdout: "# branch.head feature-x\nu UU N... 100644 100644 100644 100644 abc def ghi src/app.js\n",
         stderr: "",
       },
       [`${root}::status --short`]: { stdout: "UU src/app.js\n", stderr: "" },
@@ -812,10 +819,8 @@ describe("GitManager", () => {
     await manager.inspectWorkspace({ id: "frontend", cwd: root, kind: "terminal" });
 
     expect(
-      execGitImpl.mock.calls.filter(
-        ([cwd, args]: [string, string[]]) => cwd === sibling && args.join(" ") === "status --short",
-      ),
-    ).toHaveLength(1);
+      execGitImpl.mock.calls.filter(([cwd, args]: [string, string[]]) => cwd === sibling && args.includes("status")),
+    ).toHaveLength(0);
   });
 
   test("refreshWorkspaces uses snapshot cache within TTL", async () => {
@@ -841,6 +846,74 @@ describe("GitManager", () => {
     nowValue = new Date(nowValue.getTime() + 3000);
     await manager.refreshWorkspaces(workspaces);
     expect(inspectCount).toBe(2);
+  });
+
+  test("refreshWorkspaces shares in-flight inspections and revisions ignore timestamps", async () => {
+    const manager = new GitManager({ execGitImpl: vi.fn(), snapshotCacheTtlMs: 0 });
+    let finish!: (snapshot: Record<string, unknown>) => void;
+    manager._inspectRoot = vi.fn(
+      () =>
+        new Promise<Record<string, unknown>>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const workspace = [{ id: "ws-flight", cwd: "/tmp/project", kind: "terminal" }];
+    let updates = 0;
+    manager.on("updated", () => updates++);
+    const first = manager.refreshWorkspaces(workspace);
+    const second = manager.refreshWorkspaces(workspace);
+    await vi.waitFor(() => expect(manager._inspectRoot).toHaveBeenCalledTimes(1));
+    expect(manager._inspectRoot).toHaveBeenCalledTimes(1);
+    finish({ available: true, branch: "main", lastUpdatedAt: "one" });
+    await Promise.all([first, second]);
+    const revision = manager.getSnapshot("ws-flight")?.dataRevision;
+    manager.invalidateSnapshotCache("ws-flight");
+    manager._inspectRoot = vi.fn(async () => ({ available: true, branch: "main", lastUpdatedAt: "two" }));
+    await manager.refreshWorkspaces(workspace);
+    expect(manager.getSnapshot("ws-flight")?.dataRevision).toBe(revision);
+    expect(updates).toBe(1);
+  });
+
+  test("refreshWorkspaces discards a cold result invalidated while running and retries once", async () => {
+    const manager = new GitManager({ execGitImpl: vi.fn(), snapshotCacheTtlMs: 0 });
+    const workspace = [{ id: "ws-generation", cwd: "/tmp/project", kind: "terminal" }];
+    let releaseFirst!: (snapshot: Record<string, unknown>) => void;
+    let calls = 0;
+    manager._inspectRoot = vi.fn(() => {
+      calls++;
+      if (calls === 1)
+        return new Promise<Record<string, unknown>>((resolve) => {
+          releaseFirst = resolve;
+        });
+      return Promise.resolve({ available: true, branch: "new" });
+    });
+    const refresh = manager.refreshWorkspaces(workspace);
+    await vi.waitFor(() => expect(calls).toBe(1));
+    manager.invalidateSnapshotCache("ws-generation");
+    releaseFirst({ available: true, branch: "old" });
+    await refresh;
+    expect(calls).toBe(2);
+    expect(manager.getSnapshot("ws-generation")?.branch).toBe("new");
+  });
+
+  test("refreshWorkspaces shares one physical checkout read across workspace clients", async () => {
+    const manager = new GitManager({ execGitImpl: vi.fn(), snapshotCacheTtlMs: 0 });
+    let release!: (snapshot: Record<string, unknown>) => void;
+    manager._inspectRoot = vi.fn(
+      () =>
+        new Promise<Record<string, unknown>>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const refresh = manager.refreshWorkspaces([
+      { id: "client-one", cwd: "/tmp/shared", kind: "terminal" },
+      { id: "client-two", cwd: "/tmp/shared", kind: "terminal" },
+    ]);
+    await vi.waitFor(() => expect(manager._inspectRoot).toHaveBeenCalledTimes(1));
+    release({ available: true, branch: "main" });
+    await refresh;
+    expect(manager.getSnapshot("client-one")?.branch).toBe("main");
+    expect(manager.getSnapshot("client-two")?.branch).toBe("main");
   });
 
   test("invalidateSnapshotCache forces re-inspection", async () => {
@@ -1061,6 +1134,13 @@ describe("GitManager", () => {
     const { root } = await createGitFixture();
     const execGitImpl = vi.fn().mockResolvedValue({ stdout: "Deleted tag 'v1.0.0'\n", stderr: "" });
     const manager = new GitManager({ execGitImpl });
+    manager.inspectWorkspace = vi.fn().mockResolvedValue({
+      available: true,
+      rootPath: root,
+      branch: "main",
+      dirty: false,
+      operationState: { kind: "idle", inProgress: false, conflicts: [] },
+    });
 
     const result = await manager.deleteTag({ id: "ws-1", cwd: root }, { tagName: "v1.0.0" });
 
@@ -1702,7 +1782,7 @@ describe("GitManager", () => {
         const { entries } = store.query();
         const entry = entries.find((candidate) => candidate.resourceId === `${type}@${expected}`);
         expect(entry).toBeDefined();
-        expect(entry?.remoteUrl).toBe(expected);
+        expect(entry).toMatchObject({ remoteUrl: expected });
         expect(entry?.errorMessage).not.toContain(secret);
       });
     } finally {
@@ -1910,7 +1990,7 @@ describe("GitManager", () => {
         },
       });
 
-      expect(actionCwd).toBe(subPath);
+      expect(path.resolve(actionCwd || "")).toBe(path.resolve(subPath));
     });
 
     test("runWriteAction uses workspace.cwd when rootPath is not provided", async () => {
@@ -1955,7 +2035,7 @@ describe("GitManager", () => {
         },
       });
 
-      expect(actionCwd).toBe(normalizedRoot);
+      expect(path.resolve(actionCwd || "")).toBe(path.resolve(normalizedRoot));
     });
 
     test("runWriteAction includes rootPath in audit log extra", async () => {
@@ -2007,7 +2087,9 @@ describe("GitManager", () => {
 
       const successEntry = auditEntries.find((e) => e.success === true);
       expect(successEntry).toBeTruthy();
-      expect((successEntry!.extra as Record<string, unknown>)?.rootPath).toBe(subPath);
+      expect(path.resolve(String((successEntry!.extra as Record<string, unknown>)?.rootPath || ""))).toBe(
+        path.resolve(subPath),
+      );
     });
 
     test.each([
@@ -2017,7 +2099,10 @@ describe("GitManager", () => {
       const root = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-audit-count-"));
       tempPaths.push(root);
       const gitAuditLogStore = { logEntry: vi.fn() };
-      const mgr = new GitManager({ gitAuditLogStore });
+      const mgr = new GitManager({
+        gitAuditLogStore,
+        execGitImpl: vi.fn(async () => ({ stdout: "", stderr: "" })),
+      });
       const operationState = { kind: "", inProgress: false, conflicts: [] };
       const snapshot = {
         available: true,
@@ -2093,7 +2178,12 @@ describe("GitManager", () => {
     });
 
     test("refreshWorkspaces cache key isolates siblings", async () => {
-      const mgr = new GitManager({});
+      const mgr = new GitManager({
+        execGitImpl: vi.fn(async (cwd: string, args: string[]) => ({
+          stdout: args[0] === "rev-parse" && args[1] === "--show-toplevel" ? cwd : ".git",
+          stderr: "",
+        })),
+      });
       let inspectCount = 0;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mgr._inspectRoot = vi.fn().mockImplementation(async (ws: any, rp: string) => {

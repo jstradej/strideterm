@@ -381,8 +381,11 @@ export function parsePorcelainV2(rawText: string): {
     conflicts: [],
   };
 
-  for (const rawLine of String(rawText || "").split(/\r?\n/)) {
-    const line = rawLine.trimEnd();
+  const nulDelimited = String(rawText || "").includes("\0");
+  const records = nulDelimited ? String(rawText || "").split("\0") : String(rawText || "").split(/\r?\n/);
+  for (let i = 0; i < records.length; i++) {
+    const rawLine = records[i];
+    const line = rawLine;
     if (!line) {
       continue;
     }
@@ -407,7 +410,7 @@ export function parsePorcelainV2(rawText: string): {
     }
 
     if (line.startsWith("? ")) {
-      const filePath = line.slice(2).trim();
+      const filePath = line.slice(2);
       summary.untracked.push({
         path: filePath,
         code: "??",
@@ -430,8 +433,21 @@ export function parsePorcelainV2(rawText: string): {
     const stagedStatus = xy[0] || ".";
     const unstagedStatus = xy[1] || ".";
     const pathOffset = prefix === "2" ? 9 : prefix === "u" ? 10 : 8;
-    const rest = pieces.slice(pathOffset).join(" ");
-    const [pathPart = "", previousPath = ""] = rest.split("\t");
+    const delimiters = pathOffset;
+    let pathStart = 0;
+    for (let field = 0; field < delimiters; field++) {
+      const space = line.indexOf(" ", pathStart);
+      if (space < 0) {
+        pathStart = line.length;
+        break;
+      }
+      pathStart = space + 1;
+    }
+    const rest = line.slice(pathStart);
+    const tab = prefix === "2" && !nulDelimited ? rest.indexOf("\t") : -1;
+    const pathPart = tab >= 0 ? rest.slice(0, tab) : rest;
+    const previousPath =
+      prefix === "2" ? (nulDelimited ? records[++i] || "" : tab >= 0 ? rest.slice(tab + 1) : "") : "";
     const filePath = pathPart;
     const entry = {
       path: filePath,

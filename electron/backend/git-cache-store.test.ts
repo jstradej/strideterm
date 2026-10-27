@@ -1,0 +1,346 @@
+import { describe, expect, it } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import type { Worker } from "node:worker_threads";
+import { GitCacheStore, type GitCacheEntry } from "./git-cache-store.js";
+
+const entry = (root: string, revision = "r1"): GitCacheEntry => ({
+  checkoutRoot: root,
+  gitDir: `${root}/.git`,
+  commonDir: `${root}/.git`,
+  validatedAt: Date.now(),
+  revision,
+  summary: { branch: "main", dirtyCount: 0 },
+});
+const largeStatus = (prefix: string) =>
+  Array.from({ length: 132 }, (_, index) => ({
+    path: `${prefix}/${index}-${"s".repeat(16_000)}`,
+    code: "M",
+    credential: "must not persist",
+  }));
+describe("GitCacheStore", () => {
+  it("persists across store restart and coalesces concurrent reads", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "git-cache-"));
+    const first = new GitCacheStore(dir);
+    first.write(entry("/repo"));
+    await first.close();
+    const second = new GitCacheStore(dir);
+    const [a, b] = await Promise.all([second.read(entry("/repo")), second.read(entry("/repo"))]);
+    expect(a?.revision).toBe("r1");
+    expect(b?.summary).toEqual({ branch: "main", dirtyCount: 0 });
+    await second.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+  it("does not report intentional worker termination as a warning", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "git-cache-close-normal-"));
+    const warnings: Array<{ message: string; meta: unknown }> = [];
+    const store = new GitCacheStore(dir, { warn: (message, meta) => warnings.push({ message, meta }) });
+    await store.read(entry("/close-normal"));
+    await store.close();
+    expect(warnings.some(({ message }) => message.includes("worker exited"))).toBe(false);
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+  it("reports a short close deadline with counts only", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "git-cache-close-timeout-"));
+    const warnings: Array<{ message: string; meta: unknown }> = [];
+    const store = new GitCacheStore(dir, { warn: (message, meta) => warnings.push({ message, meta }) });
+    await store.read(entry("/private/root"));
+    store.write({ ...entry("/private/root/credential-canary-one"), status: [{ path: "secret-one.txt" }] });
+    store.write({ ...entry("/private/root/credential-canary-two"), status: [{ path: "secret-two.txt" }] });
+    let releaseWrite!: () => void;
+    const writeGate = new Promise<unknown>((resolve) => {
+      releaseWrite = () => resolve(true);
+    });
+    const internal = store as unknown as {
+      call(op: string, args?: unknown): Promise<unknown>;
+      flushWrites(): Promise<void>;
+      inFlightWriteCount: number;
+    };
+    internal.call = () => writeGate;
+    const flush = internal.flushWrites();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(internal.inFlightWriteCount).toBe(2);
+    await store.close(5);
+    const deadline = warnings.find(
+      ({ message, meta }) =>
+        message.includes("close timed out") && (meta as { operation?: string })?.operation === "close",
+    );
+    expect(deadline).toBeDefined();
+    expect(deadline?.meta).toMatchObject({
+      code: "TIMEOUT",
+      operation: "close",
+      pendingWrites: 2,
+      inFlightWrites: 2,
+    });
+    expect(typeof (deadline?.meta as { pendingRequests?: unknown }).pendingRequests).toBe("number");
+    expect(typeof (deadline?.meta as { pendingWrites?: unknown }).pendingWrites).toBe("number");
+    expect(JSON.stringify(deadline).includes("credential-canary")).toBe(false);
+    expect(JSON.stringify(deadline).includes("secret-one.txt")).toBe(false);
+    releaseWrite();
+    await flush;
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+  it("excludes completed writes from close deadline counts", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "git-cache-close-inflight-count-"));
+    const warnings: Array<{ message: string; meta: unknown }> = [];
+    const store = new GitCacheStore(dir, { warn: (message, meta) => warnings.push({ message, meta }) });
+    await store.read(entry("/private/root"));
+    store.write(entry("/private/root/first"));
+    store.write(entry("/private/root/second"));
+    let releaseSecond!: () => void;
+    const secondWrite = new Promise<unknown>((resolve) => {
+      releaseSecond = () => resolve(true);
+    });
+    let callCount = 0;
+    const internal = store as unknown as {
+      call(op: string, args?: unknown): Promise<unknown>;
+      flushWrites(): Promise<void>;
+      inFlightWriteCount: number;
+    };
+    internal.call = () => {
+      callCount++;
+      return callCount === 1 ? Promise.resolve(true) : secondWrite;
+    };
+    const flush = internal.flushWrites();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(callCount).toBe(2);
+    expect(internal.inFlightWriteCount).toBe(1);
+    await store.close(5);
+    const deadline = warnings.find(
+      ({ message, meta }) =>
+        message.includes("close timed out") && (meta as { operation?: string })?.operation === "close",
+    );
+    expect(deadline?.meta).toMatchObject({ pendingWrites: 1, inFlightWrites: 1 });
+    releaseSecond();
+    await flush;
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+  it("logs postMessage failures without leaking the error payload", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "git-cache-post-message-"));
+    const warnings: Array<{ message: string; meta: unknown }> = [];
+    const store = new GitCacheStore(dir, { warn: (message, meta) => warnings.push({ message, meta }) });
+    await store.read(entry("/post-message"));
+    const internal = store as unknown as {
+      worker: Worker | null;
+      call(op: string, args?: unknown): Promise<unknown>;
+    };
+    const worker = internal.worker;
+    internal.worker = {
+      postMessage: () => {
+        throw new Error("could not clone https://user:secret@private.example/path");
+      },
+    } as unknown as Worker;
+    expect(await internal.call("read", { checkoutRoot: "/private/root" })).toBeNull();
+    const warning = warnings.find(({ meta }) => (meta as { operation?: string })?.operation === "read");
+    expect(warning?.meta).toMatchObject({ code: "POST_MESSAGE", operation: "read" });
+    expect(JSON.stringify(warning).includes("secret")).toBe(false);
+    expect(JSON.stringify(warning).includes("private.example")).toBe(false);
+    internal.worker = worker;
+    await store.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+  it("hydrates summary by exact root without returning status details", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "git-cache-hydrate-"));
+    const store = new GitCacheStore(dir);
+    store.write({
+      ...entry("/repos/app"),
+      summary: {
+        branch: "main",
+        dirtyCount: 1,
+        credential: "secret",
+        paths: ["should-not-persist"],
+      } as GitCacheEntry["summary"],
+      status: [{ path: "private/file.txt", code: "M", token: "also-secret" }],
+    });
+    await store.close();
+    const rawDb = new DatabaseSync(path.join(dir, "cache", "git-cache.sqlite"));
+    rawDb.prepare("UPDATE summaries SET body=? WHERE checkout_root=?").run("{malformed-and-status-heavy", "/repos/app");
+    rawDb.close();
+    const restarted = new GitCacheStore(dir);
+    const summary = await restarted.readByRoot("/repos/app");
+    expect(summary).toMatchObject({ checkoutRoot: "/repos/app", summary: { branch: "main", dirtyCount: 1 } });
+    expect(JSON.stringify(summary).includes("secret")).toBe(false);
+    expect(summary?.summary).not.toHaveProperty("paths");
+    expect(summary).not.toHaveProperty("status");
+    expect(await restarted.readByRoot("/repos/app/subdir")).toBeNull();
+    expect(await restarted.readByRoot("/repos/application")).toBeNull();
+    await restarted.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+  it("hydrates exact root aliases across restart and merges them within a 64 path limit", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "git-cache-root-aliases-"));
+    const canonical = "/repos/canonical";
+    const first = new GitCacheStore(dir);
+    first.write({
+      ...entry(canonical),
+      rootAliases: [
+        ...Array.from({ length: 60 }, (_, index) => `/workspace/alias-${index}`),
+        "https://user:secret@example.invalid/repo",
+        42,
+      ] as string[],
+      summary: { branch: "main", dirtyCount: 2, role: "must not persist" } as GitCacheEntry["summary"],
+      status: [{ path: "private/status.txt", code: "M" }],
+    });
+    await first.close();
+
+    const second = new GitCacheStore(dir);
+    second.write({
+      ...entry(canonical),
+      rootAliases: Array.from({ length: 10 }, (_, index) => `/workspace/new-${index}`),
+    });
+    await second.close();
+
+    const reopened = new GitCacheStore(dir);
+    const hydrated = await reopened.readByRoot("/workspace/new-3");
+    expect(hydrated).toMatchObject({
+      checkoutRoot: canonical,
+      summary: { branch: "main", dirtyCount: 2 },
+    });
+    expect(hydrated).not.toHaveProperty("status");
+    expect(hydrated?.summary).not.toHaveProperty("role");
+    expect((await reopened.readByRoot("/workspace/alias-0"))?.summary.branch).toBe("main");
+    expect(await reopened.readByRoot("/workspace/new-4")).toBeNull();
+    expect(await reopened.readByRoot("https://user:secret@example.invalid/repo")).toBeNull();
+    const byCanonical = await reopened.readByRoot(canonical);
+    expect(byCanonical?.rootAliases).toHaveLength(64);
+    expect(byCanonical?.rootAliases).toContain("/workspace/alias-0");
+    expect(byCanonical?.rootAliases).toContain("/workspace/new-3");
+    expect(JSON.stringify(byCanonical).includes("secret")).toBe(false);
+    await reopened.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+  it("fails open for a corrupt database and an unusable data directory", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "git-cache-bad-"));
+    await fs.mkdir(path.join(dir, "cache"));
+    await fs.writeFile(path.join(dir, "cache", "git-cache.sqlite"), "not sqlite");
+    const store = new GitCacheStore(dir);
+    expect(await store.read(entry("/missing"))).toBeNull();
+    await store.close();
+    const blockingFile = path.join(dir, "not-a-directory");
+    await fs.writeFile(blockingFile, "x");
+    const warnings: unknown[] = [];
+    const bad = new GitCacheStore(blockingFile, { warn: (_message, details) => warnings.push(details) });
+    expect(await bad.read(entry("/missing"))).toBeNull();
+    await bad.close();
+    expect(warnings.length > 0).toBe(true);
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+  it("leaves an incompatible SQLite database untouched", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "git-cache-version-"));
+    const cacheDir = path.join(dir, "cache");
+    await fs.mkdir(cacheDir);
+    const db = new DatabaseSync(path.join(cacheDir, "git-cache.sqlite"));
+    db.exec("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE preserve_me (value TEXT)");
+    db.prepare("INSERT INTO meta VALUES('format','999')").run();
+    db.prepare("INSERT INTO preserve_me VALUES('sentinel')").run();
+    db.close();
+    const store = new GitCacheStore(dir);
+    expect(await store.read(entry("/x"))).toBeNull();
+    await store.close();
+    const reopened = new DatabaseSync(path.join(cacheDir, "git-cache.sqlite"));
+    expect((reopened.prepare("SELECT value FROM preserve_me").get() as { value: string }).value).toBe("sentinel");
+    reopened.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+  it("leaves an unversioned database with existing tables untouched", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "git-cache-unversioned-"));
+    const cacheDir = path.join(dir, "cache");
+    await fs.mkdir(cacheDir);
+    const dbPath = path.join(cacheDir, "git-cache.sqlite");
+    const db = new DatabaseSync(dbPath);
+    db.exec("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE preserve_me (value TEXT)");
+    db.prepare("INSERT INTO meta VALUES('other','sentinel')").run();
+    db.prepare("INSERT INTO preserve_me VALUES('keep')").run();
+    db.close();
+
+    const warnings: unknown[] = [];
+    const store = new GitCacheStore(dir, { warn: (_message, meta) => warnings.push(meta) });
+    expect(await store.read(entry("/unversioned"))).toBeNull();
+    await store.close();
+    const reopened = new DatabaseSync(dbPath);
+    expect(reopened.prepare("SELECT value FROM meta WHERE key='format'").get()).toBeUndefined();
+    expect((reopened.prepare("SELECT value FROM meta WHERE key='other'").get() as { value: string }).value).toBe(
+      "sentinel",
+    );
+    expect((reopened.prepare("SELECT value FROM preserve_me").get() as { value: string }).value).toBe("keep");
+    expect(reopened.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='summaries'").get()).toBe(
+      undefined,
+    );
+    expect(warnings.some((meta) => (meta as { code?: string })?.code === "INCOMPATIBLE_FORMAT")).toBe(true);
+    reopened.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+  it("flushes latest coalesced values on close and bounds oversized entries", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "git-cache-bounds-"));
+    const store = new GitCacheStore(dir);
+    store.write({ ...entry("/same", "old"), status: [{ path: "名 file.txt", code: "M" }] });
+    store.write({ ...entry("/same", "new"), status: [{ path: "名 file.txt", code: "M" }] });
+    store.write({ ...entry("/huge"), status: "x".repeat(7 * 1024 * 1024) });
+    await store.close();
+    const reopened = new GitCacheStore(dir);
+    expect((await reopened.read(entry("/same")))?.revision).toBe("new");
+    expect((await reopened.read(entry("/huge")))?.status).toBeUndefined();
+    expect((await reopened.read(entry("/same")))?.status).toEqual([{ path: "名 file.txt", code: "M" }]);
+    await Promise.all([reopened.read(entry("/same")), reopened.read(entry("/same")), reopened.close()]);
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+  it("evicts status bytes independently and drains writes added during a flush", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "git-cache-status-budget-"));
+    const warnings: unknown[] = [];
+    const store = new GitCacheStore(dir, { warn: (_message, meta) => warnings.push(meta) });
+    const oldStatus = largeStatus("old");
+    const newStatus = largeStatus("new");
+    const baseTime = Date.now();
+    store.write({ ...entry("/old"), validatedAt: baseTime, status: oldStatus });
+    store.write({ ...entry("/new"), validatedAt: baseTime + 1000, status: newStatus });
+    const flush = (store as unknown as { flushWrites(): Promise<void> }).flushWrites();
+    store.write(entry("/during-flush"));
+    await flush;
+    await store.close();
+    expect(warnings.some((meta) => (meta as { code?: string } | undefined)?.code === "TIMEOUT")).toBe(false);
+    const cachePath = path.join(dir, "cache", "git-cache.sqlite");
+    const diskBytes = await Promise.all(
+      [cachePath, `${cachePath}-wal`, `${cachePath}-shm`].map(async (file) =>
+        fs.stat(file).then(
+          (s) => s.size,
+          () => 0,
+        ),
+      ),
+    );
+    expect(diskBytes.reduce((sum, n) => sum + n, 0)).toBeLessThan(12 * 1024 * 1024);
+    const reopened = new GitCacheStore(dir);
+    const oldEntry = await reopened.read(entry("/old"));
+    const newEntry = await reopened.read(entry("/new"));
+    expect(oldEntry?.status === undefined).toBe(true);
+    expect(newEntry?.status !== undefined).toBe(true);
+    expect(JSON.stringify(newEntry?.status).includes("credential")).toBe(false);
+    const statusBytes = [oldEntry?.status, newEntry?.status].reduce<number>(
+      (sum, value) => sum + Buffer.byteLength(JSON.stringify(value ?? null)),
+      0,
+    );
+    expect(statusBytes).toBeLessThanOrEqual(4 * 1024 * 1024);
+    expect((await reopened.read(entry("/during-flush")))?.revision).toBe("r1");
+    await reopened.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+  it("avoids repeated same-revision timestamp writes within one minute", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "git-cache-revision-"));
+    const baseTime = Date.now();
+    const store = new GitCacheStore(dir);
+    store.write({ ...entry("/same-revision"), validatedAt: baseTime });
+    await store.close();
+    const second = new GitCacheStore(dir);
+    second.write({ ...entry("/same-revision"), validatedAt: baseTime + 500 });
+    await second.close();
+    const third = new GitCacheStore(dir);
+    expect((await third.read(entry("/same-revision")))?.validatedAt).toBe(baseTime);
+    third.write({ ...entry("/same-revision"), validatedAt: baseTime + 60_000 });
+    await third.close();
+    const fourth = new GitCacheStore(dir);
+    expect((await fourth.read(entry("/same-revision")))?.validatedAt).toBe(baseTime + 60_000);
+    await fourth.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+});

@@ -7,6 +7,39 @@
   position: relative;
 }
 
+.git-view--notice {
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+}
+
+.git-view__notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 5px 6px 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(var(--tint), 0.03);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.git-view__notice--error {
+  border-color: rgba(255, 184, 108, 0.45);
+  background: rgba(255, 184, 108, 0.06);
+}
+
+.git-view__notice-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.git-view__notice-text strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
 /* Mobile-only: triggers and backdrop that hide chrome behind popovers.
    Default state hides them; the mobile media query reveals them. */
 .git-view__menu-trigger,
@@ -45,6 +78,14 @@
 .git-view__loading-panel {
   display: grid;
   place-items: center;
+  align-content: center;
+  gap: 10px;
+}
+
+.git-view__loading-caption {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .git-view__loading-mobile-trigger {
@@ -1038,6 +1079,19 @@
        triggers) and the data area. Toolbar and tabs both render as popovers
        anchored under the chrome strip when their menus are open. */
     grid-template-rows: 32px minmax(0, 1fr);
+  }
+
+  .git-view--notice {
+    grid-template-rows: 32px auto minmax(0, 1fr);
+  }
+
+  .git-view__notice {
+    grid-row: 2;
+    margin-bottom: 5px;
+  }
+
+  .git-view--notice .git-view__panel {
+    grid-row: 3;
   }
 
   .git-view__loading-mobile-trigger {

@@ -304,17 +304,27 @@ function acquireSshKeyFile(privKey: string, distro: string | null, wslUser?: str
         created = true;
         await handle.close();
         if (process.platform === "win32") {
-          const { stdout } = await promisify(execFile)("whoami.exe", ["/user", "/fo", "csv", "/nh"], {
-            windowsHide: true,
-            timeout: 5000,
-          });
+          // System32 by path: a PATH with Git's usr/bin first resolves `whoami.exe` to GNU whoami.
+          const system32 = path.join(process.env.SystemRoot || "C:\\Windows", "System32");
+          const { stdout } = await promisify(execFile)(
+            path.join(system32, "whoami.exe"),
+            ["/user", "/fo", "csv", "/nh"],
+            {
+              windowsHide: true,
+              timeout: 5000,
+            },
+          );
           const sid = stdout.match(/"(S-1-[0-9-]+)"/)?.[1];
           if (!sid)
             throw new Error("Could not determine the current Windows account SID to secure the temporary SSH key");
-          await promisify(execFile)("icacls.exe", [tmpPath, "/inheritance:r", "/grant:r", `*${sid}:(F)`], {
-            windowsHide: true,
-            timeout: 5000,
-          });
+          await promisify(execFile)(
+            path.join(system32, "icacls.exe"),
+            [tmpPath, "/inheritance:r", "/grant:r", `*${sid}:(F)`],
+            {
+              windowsHide: true,
+              timeout: 5000,
+            },
+          );
         } else {
           await fsp.chmod(tmpPath, 0o600);
         }
