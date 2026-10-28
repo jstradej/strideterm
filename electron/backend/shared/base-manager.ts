@@ -1376,6 +1376,7 @@ export class BaseProviderManager extends EventEmitter {
       activePanelId: panels[0]?.id || "",
       panels,
       internalMcpEnabled: !isolated && parentWorkspace?.internalMcpEnabled === true,
+      sshMcpEnabled: !isolated && parentWorkspace?.sshMcpEnabled === true,
       review: hooks.buildReviewMetadata(summary, checkout, { parentWorkspaceId: parentWorkspaceId || "" }),
     };
     await this.reviewStore.upsertTrackedPullRequest(prKey, {
@@ -1528,6 +1529,7 @@ export class BaseProviderManager extends EventEmitter {
       activePanelId: panels[0]?.id || "",
       panels,
       internalMcpEnabled: parentWorkspace?.internalMcpEnabled === true,
+      sshMcpEnabled: parentWorkspace?.sshMcpEnabled === true,
       review,
       quickfix,
     };

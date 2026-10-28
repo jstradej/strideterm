@@ -592,6 +592,12 @@ export interface WorkspaceState {
    */
   internalMcpEnabled?: boolean;
   /**
+   * Lets every eligible Claude Code / Codex tab of this workspace use the Built-in SSH
+   * tools without ticking the tab's own `sshMcpEnabled`. Same rules as the internal
+   * MCP: off by default, desktop-only to turn on, never on a task workspace.
+   */
+  sshMcpEnabled?: boolean;
+  /**
    * ISO timestamp of the last CONFIRMED, workspace-scoped piece of user work
    * — meaningful terminal input that the backend accepted, creating this
    * workspace, a task lifecycle action, or a successful git/review mutation

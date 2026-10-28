@@ -103,6 +103,17 @@ describe("EditTabDialog", () => {
     expect(unsupported.text()).toContain("Set Command to claude or codex to enable SSH tools.");
   });
 
+  test("SSH tools hint says when the workspace setting already covers the tab", async () => {
+    const wrapper = mountDialog({
+      mode: "edit",
+      title: "Claude Code",
+      command: "claude",
+      workspaceSshMcpEnabled: true,
+    });
+    await flushPromises();
+    expect(wrapper.text()).toContain("Already on for every agent tab through the workspace setting");
+  });
+
   test("SSH tools explain and disable the option for WSL and hide it in remote sessions", async () => {
     const local = mountDialog({ mode: "new", title: "Claude Code", command: "claude" });
     await flushPromises();

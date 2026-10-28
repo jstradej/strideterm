@@ -1038,7 +1038,8 @@ export async function createRuntime({
           profileExists &&
           profileId === grant.profileId &&
           workspace &&
-          panel?.sshMcpEnabled === true &&
+          panel &&
+          (panel.sshMcpEnabled === true || workspace.sshMcpEnabled === true) &&
           !panel.launch &&
           panel.command === grant.command &&
           getAgentSshMcpEligibility(panel.command).supported &&
@@ -1172,29 +1173,35 @@ export async function createRuntime({
         internalMcpEnv = { [INTERNAL_MCP_URL_ENV]: grant.url, [INTERNAL_MCP_CAPABILITY_ENV]: grant.capability };
       }
       reviewGitBroker?.revokeSession(sessionId);
-      const sshMcpEnabled = panelState.sshMcpEnabled === true && !pendingReview;
+      const panelSshMcpOptIn = panelState.sshMcpEnabled === true && !pendingReview;
+      const workspaceSshMcpOptIn = workspace?.sshMcpEnabled === true && !pendingReview;
       let sshMcpSpec;
       let sshMcpEnv: Record<string, string> | undefined;
-      if (sshMcpEnabled) {
+      if (panelSshMcpOptIn || workspaceSshMcpOptIn) {
         const eligibility = getAgentSshMcpEligibility(panelState.command);
-        if (!enableAgentSshMcp || !eligibility.supported || panelState.launch) {
+        const eligible = enableAgentSshMcp && eligibility.supported && !panelState.launch;
+        // The tab's own tick fails visibly. The workspace-wide one works like the internal MCP and
+        // simply skips a tab that is not a plain Claude Code / Codex launch.
+        if (!eligible && panelSshMcpOptIn) {
           throw new Error(
             eligibility.reason ||
               "Built-in SSH tools are available only for local Claude Code or Codex tabs without a custom launcher.",
           );
         }
-        const profileId = String(workspace?.profileId || "default");
-        const profileExists = getState().profiles.some((profile) => profile.id === profileId);
-        if (!workspace || !profileExists) throw new Error("The tab profile is no longer available for SSH tools.");
-        sshMcpSpec = buildAgentSshMcpServerSpec(processInfo);
-        const grant = sshMcpBroker!.mintGrant({
-          sessionId,
-          profileId,
-          workspaceId: workspace.id,
-          panelId: panelState.id,
-          command: panelState.command,
-        });
-        sshMcpEnv = { [SSH_MCP_URL_ENV]: grant.url, [SSH_MCP_CAPABILITY_ENV]: grant.capability };
+        if (eligible) {
+          const profileId = String(workspace?.profileId || "default");
+          const profileExists = getState().profiles.some((profile) => profile.id === profileId);
+          if (!workspace || !profileExists) throw new Error("The tab profile is no longer available for SSH tools.");
+          sshMcpSpec = buildAgentSshMcpServerSpec(processInfo);
+          const grant = sshMcpBroker!.mintGrant({
+            sessionId,
+            profileId,
+            workspaceId: workspace.id,
+            panelId: panelState.id,
+            command: panelState.command,
+          });
+          sshMcpEnv = { [SSH_MCP_URL_ENV]: grant.url, [SSH_MCP_CAPABILITY_ENV]: grant.capability };
+        }
       }
 
       // --- Review workspace: inject MCP bridge ---
@@ -11102,6 +11109,7 @@ export async function createRuntime({
         if (parseRemoteViewerId(windowId)) {
           // Desktop-only, like autoApprovePermissions: a remote client keeps whatever is stored.
           normalized.internalMcpEnabled = priorWorkspace?.internalMcpEnabled === true;
+          normalized.sshMcpEnabled = priorWorkspace?.sshMcpEnabled === true;
           const savedOptIns = new Map(
             ((priorWorkspace?.panels || []) as Array<{ id: string; sshMcpEnabled?: boolean }>).map((panel) => [
               panel.id,
@@ -13064,6 +13072,7 @@ export async function createRuntime({
             source: liveProject.source,
             pluginId: liveProject.pluginId,
             internalMcpEnabled: liveProject.internalMcpEnabled === true,
+            sshMcpEnabled: liveProject.sshMcpEnabled === true,
             profileId: liveProject.profileId,
             connectionId: liveProject.connectionId || "",
             cwd: treePath,

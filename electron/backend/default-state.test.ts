@@ -2119,4 +2119,11 @@ describe("workspace internal MCP option", () => {
   test("a task workspace never carries it", () => {
     expect(normalizeWorkspace({ ...base, kind: "task", internalMcpEnabled: true }).internalMcpEnabled).toBe(false);
   });
+
+  test("the workspace-wide SSH tools opt-in follows the same rules", () => {
+    expect(normalizeWorkspace(base).sshMcpEnabled).toBe(false);
+    expect(normalizeWorkspace({ ...base, sshMcpEnabled: "yes" }).sshMcpEnabled).toBe(false);
+    expect(normalizeWorkspace({ ...base, sshMcpEnabled: true }).sshMcpEnabled).toBe(true);
+    expect(normalizeWorkspace({ ...base, kind: "task", sshMcpEnabled: true }).sshMcpEnabled).toBe(false);
+  });
 });

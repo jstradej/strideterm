@@ -1800,6 +1800,87 @@ describe("runtime integration", () => {
     expect(broker.revokeSession).toHaveBeenCalledWith(sessionId);
   });
 
+  test("workspace-wide SSH tools opt-in mints for an eligible agent tab and skips a shell tab without failing it", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let brokerOptions: any;
+    let mintCount = 0;
+    const broker = {
+      async start() {
+        return { url: "http://127.0.0.1:43129/ssh-mcp" };
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mintGrant(context: any) {
+        brokerOptions.mintedContext = context;
+        mintCount += 1;
+        return { url: "http://127.0.0.1:43129/ssh-mcp", capability: `workspace-capability-secret-${mintCount}` };
+      },
+      revokeSession: vi.fn(),
+      revokeInvalid: vi.fn(async () => {}),
+      close: vi.fn(async () => {}),
+    };
+    const workspace = {
+      id: "ssh-mcp-workspace-wide",
+      name: "SSH MCP workspace test",
+      kind: "terminal",
+      cwd: process.cwd(),
+      profileId: "default",
+      sshMcpEnabled: true,
+      activePanelId: "agent",
+      panels: [
+        { id: "agent", title: "Claude", command: "claude" },
+        { id: "shell", title: "Shell", command: "" },
+      ],
+    };
+    const fixture = await createFixture({
+      initialState: { workspaces: [workspace] },
+      dependencies: {
+        enableAgentSshMcp: true,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        createSshMcpBroker: (options: any) => {
+          brokerOptions = options;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          return broker as any;
+        },
+      },
+    });
+    fixtures.push(fixture);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const savedWorkspace = fixture.store.getState().workspaces.find((item: any) => item.id === workspace.id);
+    if (!savedWorkspace) throw new Error("Saved workspace fixture was not found.");
+    expect(savedWorkspace.sshMcpEnabled).toBe(true);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const shellPanel = savedWorkspace.panels.find((item: any) => item.id === "shell");
+    expect(
+      fixture.sessionManager.getSessionLaunch({
+        workspace: savedWorkspace,
+        panel: shellPanel,
+        sessionId: `${workspace.id}:shell`,
+      }),
+    ).toBeNull();
+    expect(mintCount).toBe(0);
+
+    const sessionId = createSessionId(workspace.id, "agent");
+    fixture.sessionManager.sessions.set(sessionId, {
+      id: sessionId,
+      status: "running",
+      workspaceId: workspace.id,
+      panelId: "agent",
+      kind: "terminal",
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const agentPanel = savedWorkspace.panels.find((item: any) => item.id === "agent");
+    const launch = fixture.sessionManager.getSessionLaunch({ workspace: savedWorkspace, panel: agentPanel, sessionId });
+    expect(launch.env.STRIDETERM_SSH_MCP_CAPABILITY).toBe("workspace-capability-secret-1");
+    expect(launch.args.join(" ")).not.toContain("workspace-capability-secret");
+    expect(JSON.stringify(fixture.store.getState())).not.toContain("workspace-capability-secret");
+    expect(brokerOptions.isGrantLive(brokerOptions.mintedContext)).toBe(true);
+
+    await fixture.runtime.saveWorkspace({ ...savedWorkspace, sshMcpEnabled: false });
+    expect(broker.revokeInvalid).toHaveBeenCalled();
+    expect(brokerOptions.isGrantLive(brokerOptions.mintedContext)).toBe(false);
+  });
+
   test("a review workspace's agent tab gets a per-tab Git capability in its environment — never in argv or state — scoped to its PR, and it ends with the link", async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let brokerOptions: any;
@@ -5476,6 +5557,7 @@ describe("runtime integration", () => {
             color: "#ffa424",
             kind: "terminal",
             internalMcpEnabled: true,
+            sshMcpEnabled: true,
             cwd: projectRoot,
             activePanelId: "dev",
             panels: [
@@ -5505,6 +5587,7 @@ describe("runtime integration", () => {
     expect(payload.appState.activeProjectId).toBe(projectWorkspaces[1].id);
     expect(projectWorkspaces[1].cwd).toBe(path.join(projectRoot, ".strideterm", "tree", "feature-x"));
     expect(projectWorkspaces[1].internalMcpEnabled).toBe(true);
+    expect(projectWorkspaces[1].sshMcpEnabled).toBe(true);
     expect(fixture.git.auditEntries).toHaveLength(1);
     expect(fixture.git.auditEntries[0]).toMatchObject({
       type: "create-worktree",
@@ -19688,6 +19771,14 @@ describe("internal MCP: creating and watching task agents", () => {
     expect(byId("plain").internalMcpEnabled).toBe(true);
     await fixture.runtime.saveWorkspace({ ...byId("plain"), internalMcpEnabled: false });
     expect(byId("plain").internalMcpEnabled).toBe(false);
+
+    // the workspace-wide SSH tools opt-in is desktop-only the same way
+    await fixture.runtime.saveWorkspace({ ...byId("plain"), sshMcpEnabled: true }, "remote:sess-1");
+    expect(byId("plain").sshMcpEnabled).toBe(false);
+    await fixture.runtime.saveWorkspace({ ...byId("plain"), sshMcpEnabled: true });
+    expect(byId("plain").sshMcpEnabled).toBe(true);
+    await fixture.runtime.saveWorkspace({ ...byId("plain"), sshMcpEnabled: false }, "remote:sess-1");
+    expect(byId("plain").sshMcpEnabled).toBe(true);
   });
 
   describe("after a restart", () => {

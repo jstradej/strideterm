@@ -1036,9 +1036,9 @@ describe("BaseProviderManager.openReviewWorkspaceCore — forceReview", () => {
             ...state,
             workspaces: state.workspaces.map((workspace) =>
               workspace.id === "provider-root"
-                ? { ...workspace, internalMcpEnabled: parentOptIn }
+                ? { ...workspace, internalMcpEnabled: parentOptIn, sshMcpEnabled: parentOptIn }
                 : workspace.id === "workspace-main"
-                  ? { ...workspace, internalMcpEnabled: existingOptIn }
+                  ? { ...workspace, internalMcpEnabled: existingOptIn, sshMcpEnabled: existingOptIn }
                   : workspace,
             ),
           },
@@ -1082,12 +1082,15 @@ describe("BaseProviderManager.openReviewWorkspaceCore — forceReview", () => {
     const isolated = await openWith(true, { isolated: true, parentOptIn: true }).result;
 
     expect(manual.workspace.internalMcpEnabled).toBe(true);
+    expect(manual.workspace.sshMcpEnabled).toBe(true);
     expect(isolated.workspace.internalMcpEnabled).toBe(false);
+    expect(isolated.workspace.sshMcpEnabled).toBe(false);
   });
 
   test("reopening an existing review keeps its own opt-in when the provider default changes", async () => {
     const opened = await openWith(false, { parentOptIn: true, existingOptIn: false }).result;
     expect(opened.created).toBe(false);
     expect(opened.workspace.internalMcpEnabled).toBe(false);
+    expect(opened.workspace.sshMcpEnabled).toBe(false);
   });
 });

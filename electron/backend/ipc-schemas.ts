@@ -92,6 +92,7 @@ export const workspaceSchema = z
     gitRoots: z.array(z.string()).optional(),
     kind: z.string().optional(),
     internalMcpEnabled: z.boolean().optional(),
+    sshMcpEnabled: z.boolean().optional(),
     panels: z
       .array(
         z

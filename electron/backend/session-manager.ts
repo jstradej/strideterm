@@ -850,7 +850,7 @@ export class SessionManager extends EventEmitter {
         }) || null;
     } catch (error) {
       const sshTools = Boolean(panel.sshMcpEnabled);
-      if (!sshTools && workspace.internalMcpEnabled !== true) throw error;
+      if (!sshTools && workspace.internalMcpEnabled !== true && workspace.sshMcpEnabled !== true) throw error;
       this.sessions.delete(key);
       this.failedSpawns.add(key);
       const message = error instanceof Error ? error.message : String(error);

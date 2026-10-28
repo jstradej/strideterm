@@ -56,6 +56,8 @@ When creating or editing an SSH tab, you can set its own startup command and con
 
 You can optionally enable **SSH tools** for a tab that directly launches Claude Code or Codex. This lets that agent list saved Built-in SSH hosts and run a command on a selected host. The option is off by default, takes effect when the terminal starts, and requires restarting the terminal after a change. It is unavailable for manually launched agents, other tab types, WSL, System SSH, and remote sessions.
 
+To enable it for every such tab of a workspace at once, tick **Allow SSH tools for agents** in the workspace settings, next to the internal MCP option. Tabs that do not directly launch Claude Code or Codex are simply skipped. Like the internal MCP option, it is off by default, can only be changed from the desktop app, and is never available to task workspaces.
+
 ## Use SSH over remote access
 
 When connected to strIDEterm remotely, SSH sessions still run on the computer hosting the app and use that computer's SSH setup. Remote clients can open SSH sessions to hosts available to them and respond to connection prompts. Managing hosts or keys, transferring a public key, and testing a connection are desktop-only; a remote client cannot retrieve private keys.

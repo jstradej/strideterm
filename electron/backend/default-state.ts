@@ -489,6 +489,7 @@ export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
     starred: Boolean(workspace.starred),
     // Never on a task workspace: the Worker/Judge pair must not inherit the right to create tasks.
     internalMcpEnabled: workspace.kind !== "task" && workspace.internalMcpEnabled === true,
+    sshMcpEnabled: workspace.kind !== "task" && workspace.sshMcpEnabled === true,
     task: shouldNormalizeTask
       ? {
           // Spread first: preserves runtime-only properties (promptSent,

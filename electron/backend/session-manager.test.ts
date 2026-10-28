@@ -922,6 +922,24 @@ describe("SessionManager", () => {
     expect(manager.failedSpawns.has("workspace-a:shell")).toBe(false);
   });
 
+  test("shows a visible error and does not spawn when the workspace-wide SSH tools launch setup fails", async () => {
+    const state = createState() as Parameters<SessionManager["ensureSession"]>[0];
+    state.workspaces[0].sshMcpEnabled = true;
+    const manager = new SessionManager({
+      getSessionLaunch: () => {
+        throw new Error("The tab profile is no longer available for SSH tools.");
+      },
+    });
+    const dataEvents: Array<{ sessionId: string; data: string }> = [];
+    manager.on("terminal:data", (payload) => dataEvents.push(payload));
+
+    expect(await manager.ensureSession(state, "workspace-a:shell")).toBeNull();
+    expect(spawnCalls).toHaveLength(0);
+    expect(manager.failedSpawns.has("workspace-a:shell")).toBe(true);
+    expect(dataEvents[0]?.data).toContain("could not be enabled for this tab");
+    expect(dataEvents[0]?.data).toContain("The tab profile is no longer available for SSH tools.");
+  });
+
   test("shows a visible error and does not spawn when the internal MCP launch setup fails", async () => {
     const state = createState() as Parameters<SessionManager["ensureSession"]>[0];
     state.workspaces[0].internalMcpEnabled = true;

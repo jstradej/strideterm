@@ -233,6 +233,37 @@
             >
           </span>
         </label>
+        <label
+          v-if="showInternalMcpOption"
+          class="internal-mcp-option"
+          :title="
+            isAzure
+              ? 'Sets the default for newly created New Branch and manual PR workspaces. Existing workspaces keep their own setting. Restart open agent sessions after changing it.'
+              : 'Controls whether agents in this workspace can run commands on your saved Built-in SSH hosts. Restart open agent sessions after changing it.'
+          "
+        >
+          <input
+            v-model="draft.sshMcpEnabled"
+            type="checkbox"
+            data-testid="ssh-tools-checkbox"
+            :disabled="internalMcpLocked"
+          />
+          Allow SSH tools for agents
+          <span class="internal-mcp-hint">
+            Lets directly launched local Claude Code or Codex agents list your saved Built-in SSH hosts and run commands
+            on them with each host's saved sign-in. Shell, WSL, SSH and custom-launcher tabs are not affected, and hosts
+            using System SSH or WSL are not offered. To enable it for one tab only, use "SSH tools for this tab" in Edit
+            tab instead.
+            <template v-if="internalMcpLocked"> Desktop only — change it in the desktop app.</template>
+            <template v-if="isAzure">
+              Applies to new workspaces created with New Branch or opened manually for a PR. Existing workspaces keep
+              their own setting.
+            </template>
+            <template v-else
+              >Applies to agent sessions started after saving. Restart open agent sessions to apply changes.</template
+            >
+          </span>
+        </label>
         <PanelEditor
           v-model:panels="draft.panels"
           :tab-templates="tabTemplates"
@@ -510,8 +541,9 @@ interface WorkspaceDraft {
   judgeProvider: ProviderConfig;
   workerCommandOverride: boolean;
   judgeCommandOverride: boolean;
-  // internal MCP opt-in (workspace level, desktop-only to change)
+  // internal MCP and SSH tools opt-ins (workspace level, desktop-only to change)
   internalMcpEnabled?: boolean;
+  sshMcpEnabled?: boolean;
   // multi-repo
   gitRoots?: string[];
   // review workspace
@@ -577,9 +609,14 @@ if (rawDraft.workerCommandOverride === undefined) rawDraft.workerCommandOverride
 if (rawDraft.judgeCommandOverride === undefined) rawDraft.judgeCommandOverride = false;
 if (!("gitRoots" in rawDraft)) rawDraft.gitRoots = [];
 if (!("repositoryForWorktree" in rawDraft)) rawDraft.repositoryForWorktree = "";
-// Task workspaces never carry the grant; everything else defaults to off.
-if (rawDraft.kind === "task") delete rawDraft.internalMcpEnabled;
-else rawDraft.internalMcpEnabled = rawDraft.internalMcpEnabled === true;
+// Task workspaces never carry the grants; everything else defaults to off.
+if (rawDraft.kind === "task") {
+  delete rawDraft.internalMcpEnabled;
+  delete rawDraft.sshMcpEnabled;
+} else {
+  rawDraft.internalMcpEnabled = rawDraft.internalMcpEnabled === true;
+  rawDraft.sshMcpEnabled = rawDraft.sshMcpEnabled === true;
+}
 const draft = reactive(rawDraft);
 
 const store = useAppStore();

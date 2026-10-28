@@ -388,6 +388,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       title: target.panel.title || "",
       command: target.panel.command || "",
       sshMcpEnabled: Boolean(target.panel.sshMcpEnabled),
+      workspaceSshMcpEnabled: Boolean(target.workspace.sshMcpEnabled),
       hasCustomLaunch: Boolean(launch),
       sshTab: launch?.kind === "ssh",
       onCancel: closeDialog,

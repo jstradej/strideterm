@@ -426,6 +426,8 @@ interface Props {
   presetSshHostId?: string;
   cwdOverride?: string;
   sshMcpEnabled?: boolean;
+  /** The workspace-wide opt-in already covers every eligible agent tab, this one included. */
+  workspaceSshMcpEnabled?: boolean;
   hasCustomLaunch?: boolean;
   /** Edit mode for a tab that launches an SSH host: only title/icon/command apply. */
   sshTab?: boolean;
@@ -442,6 +444,7 @@ const props = withDefaults(defineProps<Props>(), {
   presetSshHostId: "",
   cwdOverride: "",
   sshMcpEnabled: false,
+  workspaceSshMcpEnabled: false,
   hasCustomLaunch: false,
   sshTab: false,
   onEditSshHost: null,
@@ -716,6 +719,8 @@ const sshToolsHint = computed(() => {
   if (runInWsl.value) return "Available for local Claude Code / Codex tabs; WSL is not supported yet.";
   if (props.hasCustomLaunch) return "Custom launch settings are not supported. Use the tab's direct Command field.";
   if (!agentSshEligibility.value.supported) return "Set Command to claude or codex to enable SSH tools.";
+  if (props.workspaceSshMcpEnabled)
+    return "Already on for every agent tab through the workspace setting; this tab-only setting changes nothing.";
   return "Built-in SSH only. Enabled when this terminal starts.";
 });
 
