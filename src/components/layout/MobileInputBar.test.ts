@@ -56,6 +56,13 @@ function mockPhysicalScreenSize(width: number, height: number) {
   };
 }
 
+// Multi-line mode lives in the ⋯ menu; open it and flip the checkbox item.
+async function toggleMultilineFromMenu(wrapper: VueWrapper): Promise<void> {
+  await wrapper.get("button.mobile-input-bar__key--more").trigger("click");
+  await wrapper.get("[data-role='mobile-input-bar-multiline-mode']").trigger("click");
+  await nextTick();
+}
+
 function mountBar({
   isRemote = true,
   sessionId = SESSION_ID as string | null,
@@ -739,8 +746,7 @@ describe("MobileInputBar", () => {
     describe("Enter handling", () => {
       const input = (wrapper: VueWrapper) => wrapper.get<HTMLTextAreaElement>("[data-role='mobile-input-bar-input']");
       const toggleEditor = async (wrapper: VueWrapper) => {
-        await wrapper.get(".mobile-input-bar__editor-toggle").trigger("click");
-        await nextTick();
+        await toggleMultilineFromMenu(wrapper);
       };
 
       it("sends on Enter in normal mode and keeps Shift+Enter as a newline", async () => {
@@ -866,12 +872,11 @@ describe("MobileInputBar", () => {
     it("offers a larger editor without replacing or sending the draft", async () => {
       const { wrapper, submitTerminal } = mountBar();
       await wrapper.get<HTMLTextAreaElement>("[data-role='mobile-input-bar-input']").setValue("keep\nthis draft");
-      await wrapper.get(".mobile-input-bar__editor-toggle").trigger("click");
-      await nextTick();
+      await toggleMultilineFromMenu(wrapper);
       expect(wrapper.find(".mobile-input-bar--editor-expanded").exists()).toBe(true);
       expect((wrapper.get("textarea").element as HTMLTextAreaElement).value).toBe("keep\nthis draft");
       expect(submitTerminal).not.toHaveBeenCalled();
-      await wrapper.get(".mobile-input-bar__editor-toggle").trigger("click");
+      await toggleMultilineFromMenu(wrapper);
       expect(wrapper.find(".mobile-input-bar--editor-expanded").exists()).toBe(false);
       expect((wrapper.get("textarea").element as HTMLTextAreaElement).value).toBe("keep\nthis draft");
     });
@@ -1534,6 +1539,178 @@ describe("MobileInputBar", () => {
       const second = mountBar();
       await nextTick();
       expect((second.wrapper.find("textarea").element as HTMLTextAreaElement).value).toBe("");
+    });
+  });
+
+  describe("multi-line mode in the ⋯ menu", () => {
+    it("toggles the placeholder and Enter behaviour, and closes the menu", async () => {
+      const { wrapper, submitTerminal } = mountBar();
+      const editor = wrapper.get<HTMLTextAreaElement>("[data-role='mobile-input-bar-input']");
+      const item = () => wrapper.get("[data-role='mobile-input-bar-multiline-mode']");
+      await wrapper.get("button.mobile-input-bar__key--more").trigger("click");
+      expect(item().attributes("aria-checked")).toBe("false");
+
+      await item().trigger("click");
+      expect(wrapper.find("[data-role='mobile-input-bar-multiline-mode']").exists()).toBe(false);
+      expect(editor.attributes("placeholder")).toContain("⏎ adds a line");
+      expect(editor.attributes("enterkeyhint")).toBe("enter");
+      await editor.setValue("line one");
+      await editor.trigger("keydown", { key: "Enter" });
+      expect(submitTerminal).not.toHaveBeenCalled();
+
+      await wrapper.get("button.mobile-input-bar__key--more").trigger("click");
+      expect(item().attributes("aria-checked")).toBe("true");
+      expect(item().text()).toContain("✓ Multi-line mode");
+      await item().trigger("click");
+      expect(editor.attributes("placeholder")).toBe("Type a command — ⏎ sends it");
+      await editor.trigger("keydown", { key: "Enter" });
+      expect(submitTerminal).toHaveBeenCalledWith(SESSION_ID, "line one", ORIGIN_WS);
+    });
+  });
+
+  describe("voice dictation", () => {
+    const MIC = "[data-role='mobile-input-bar-voice']";
+    const input = (wrapper: VueWrapper) => wrapper.get<HTMLTextAreaElement>("[data-role='mobile-input-bar-input']");
+    const sentRequest = (postMessage: Mock) => JSON.parse(postMessage.mock.calls.at(-1)![0]);
+    const dispatchResult = (requestId: string, text: string) =>
+      window.dispatchEvent(new CustomEvent("strideterm:voice-dictation-result", { detail: { requestId, text } }));
+
+    function mountWithVoice() {
+      const postMessage = vi.fn();
+      (window as AnyApi).StridetermHost = { postMessage };
+      document.documentElement.classList.add("native-voice-dictation");
+      const mounted = mountBar();
+      return { ...mounted, postMessage };
+    }
+
+    afterEach(() => {
+      document.documentElement.classList.remove("native-voice-dictation");
+      delete (window as AnyApi).StridetermHost;
+    });
+
+    it("is hidden without a native host", async () => {
+      document.documentElement.classList.add("native-voice-dictation");
+      const { wrapper } = mountBar();
+      await nextTick();
+      expect(wrapper.find(MIC).exists()).toBe(false);
+      wrapper.unmount();
+    });
+
+    it("is hidden with a host that lacks the native-voice-dictation class", async () => {
+      (window as AnyApi).StridetermHost = { postMessage: vi.fn() };
+      const { wrapper } = mountBar();
+      await nextTick();
+      expect(wrapper.find(MIC).exists()).toBe(false);
+      wrapper.unmount();
+    });
+
+    it("is shown with both, and appears when the class is added after mount", async () => {
+      (window as AnyApi).StridetermHost = { postMessage: vi.fn() };
+      const { wrapper } = mountBar();
+      await nextTick();
+      expect(wrapper.find(MIC).exists()).toBe(false);
+      document.documentElement.classList.add("native-voice-dictation");
+      await flushPromises();
+      expect(wrapper.find(MIC).exists()).toBe(true);
+      wrapper.unmount();
+    });
+
+    it("posts a voice-dictation request and disables the button while pending", async () => {
+      const { wrapper, postMessage } = mountWithVoice();
+      await wrapper.get(MIC).trigger("click");
+      expect(postMessage).toHaveBeenCalledTimes(1);
+      expect(sentRequest(postMessage)).toEqual({ type: "voice-dictation", requestId: expect.any(String) });
+      expect(wrapper.get(MIC).attributes("disabled")).toBeDefined();
+      expect(wrapper.get(MIC).classes()).toContain("mobile-input-bar__voice--listening");
+      await wrapper.get(MIC).trigger("click");
+      expect(postMessage).toHaveBeenCalledTimes(1);
+      wrapper.unmount();
+    });
+
+    it("inserts the dictated text at the caret without sending anything", async () => {
+      const { wrapper, postMessage, submitTerminal, writeTerminal } = mountWithVoice();
+      await input(wrapper).setValue("run tests");
+      input(wrapper).element.setSelectionRange(4, 4);
+      await wrapper.get(MIC).trigger("click");
+      const { requestId } = sentRequest(postMessage);
+
+      dispatchResult(requestId, "hello world");
+      await nextTick();
+
+      expect(input(wrapper).element.value).toBe("run hello world tests");
+      expect(wrapper.get(MIC).attributes("disabled")).toBeUndefined();
+      expect(submitTerminal).not.toHaveBeenCalled();
+      expect(writeTerminal).not.toHaveBeenCalled();
+      wrapper.unmount();
+    });
+
+    it("appends to the draft when it changed while the dictation was open", async () => {
+      const { wrapper, postMessage } = mountWithVoice();
+      await input(wrapper).setValue("first");
+      await wrapper.get(MIC).trigger("click");
+      const { requestId } = sentRequest(postMessage);
+      await input(wrapper).setValue("first more");
+
+      dispatchResult(requestId, "spoken");
+      await nextTick();
+
+      expect(input(wrapper).element.value).toBe("first more spoken");
+      wrapper.unmount();
+    });
+
+    it("ignores a result whose requestId does not match the pending request", async () => {
+      const { wrapper, postMessage } = mountWithVoice();
+      await input(wrapper).setValue("keep");
+      await wrapper.get(MIC).trigger("click");
+      const { requestId } = sentRequest(postMessage);
+
+      dispatchResult("some-other-request", "intruder");
+      await nextTick();
+
+      expect(input(wrapper).element.value).toBe("keep");
+      expect(wrapper.get(MIC).attributes("disabled")).toBeDefined();
+
+      dispatchResult(requestId, "welcome");
+      await nextTick();
+      expect(input(wrapper).element.value).toBe("keep welcome");
+      wrapper.unmount();
+    });
+
+    it("strips control characters from the dictated text", async () => {
+      const { wrapper, postMessage } = mountWithVoice();
+      await wrapper.get(MIC).trigger("click");
+      const { requestId } = sentRequest(postMessage);
+
+      dispatchResult(requestId, "\x1b[31mred\x1b[0m");
+      await nextTick();
+
+      expect(input(wrapper).element.value).toBe("[31mred [0m");
+      expect(input(wrapper).element.value).not.toContain("\x1b");
+      wrapper.unmount();
+    });
+
+    it("re-enables the button on cancel and reports an unavailable recognizer", async () => {
+      const toast = vi.spyOn(useNotificationStore(), "pushEphemeralToast").mockReturnValue("toast-1");
+      const { wrapper, postMessage } = mountWithVoice();
+      await wrapper.get(MIC).trigger("click");
+      const { requestId } = sentRequest(postMessage);
+
+      window.dispatchEvent(
+        new CustomEvent("strideterm:voice-dictation-cancel", { detail: { requestId, reason: "cancelled" } }),
+      );
+      await nextTick();
+      expect(wrapper.get(MIC).attributes("disabled")).toBeUndefined();
+      expect(toast).not.toHaveBeenCalled();
+
+      await wrapper.get(MIC).trigger("click");
+      const second = sentRequest(postMessage).requestId;
+      window.dispatchEvent(
+        new CustomEvent("strideterm:voice-dictation-cancel", { detail: { requestId: second, reason: "unavailable" } }),
+      );
+      await nextTick();
+      expect(wrapper.get(MIC).attributes("disabled")).toBeUndefined();
+      expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Voice input unavailable", kind: "error" }));
+      wrapper.unmount();
     });
   });
 

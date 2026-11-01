@@ -430,7 +430,7 @@
     cursor: pointer;
   }
 
-  .mobile-input-bar__editor-toggle {
+  .mobile-input-bar__voice {
     flex: 0 0 30px;
     height: 38px;
     align-self: flex-end;
@@ -440,6 +440,34 @@
     color: var(--muted);
     font-size: 15px;
     cursor: pointer;
+  }
+
+  .mobile-input-bar__voice:disabled {
+    opacity: 1;
+    cursor: progress;
+  }
+
+  .mobile-input-bar__voice--listening {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 25%, transparent);
+    color: var(--text);
+    animation: mobile-input-bar-voice-pulse 1.4s ease-in-out infinite;
+  }
+
+  @keyframes mobile-input-bar-voice-pulse {
+    0%,
+    100% {
+      box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent);
+    }
+    50% {
+      box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 0%, transparent);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .mobile-input-bar__voice--listening {
+      animation: none;
+    }
   }
 
   .mobile-input-bar__send:hover,

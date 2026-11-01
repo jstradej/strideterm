@@ -140,6 +140,17 @@
           <button
             type="button"
             class="mobile-input-bar__menu-item"
+            role="menuitemcheckbox"
+            :aria-checked="editorExpanded"
+            data-role="mobile-input-bar-multiline-mode"
+            title="Multi-line mode — ⏎ adds a new line and the send button sends. Turn it off to send with ⏎ again."
+            @click="toggleMultilineMode"
+          >
+            {{ editorExpanded ? "✓ " : "" }}Multi-line mode
+          </button>
+          <button
+            type="button"
+            class="mobile-input-bar__menu-item"
             title="Insert / into the field to start an agent slash command, then finish typing and send with ⏎ or the send button."
             @click="insertSlash"
           >
@@ -240,21 +251,18 @@
           @compositionend="handleCompositionEnd"
         />
         <button
+          v-if="voiceAvailable"
           type="button"
-          class="mobile-input-bar__editor-toggle"
-          :aria-label="editorExpanded ? 'Shrink command editor' : 'Expand command editor'"
-          :title="
-            editorExpanded
-              ? 'Shrink command editor — ⏎ sends the draft again'
-              : 'Expand command editor for multi-line prompts — ⏎ then adds a line, send with the button'
-          "
+          class="mobile-input-bar__voice"
+          :class="{ 'mobile-input-bar__voice--listening': !!voicePending }"
+          data-role="mobile-input-bar-voice"
+          aria-label="Dictate a prompt"
+          title="Dictate with the phone's speech recognition — the text lands in this field for you to review and edit; nothing is sent until you press send."
+          :disabled="!!voicePending"
           @mousedown.prevent
-          @click="
-            editorExpanded = !editorExpanded;
-            nextTick(resizeInput);
-          "
+          @click="requestVoiceDictation"
         >
-          {{ editorExpanded ? "↙" : "↗" }}
+          🎤
         </button>
         <button
           type="submit"
@@ -328,6 +336,11 @@ const targetSessionId = computed<string | null>(() => {
 const draft = ref("");
 const multilineNotice = ref(false);
 const editorExpanded = ref(false);
+function toggleMultilineMode(): void {
+  menuOpen.value = false;
+  editorExpanded.value = !editorExpanded.value;
+  void nextTick(resizeInput);
+}
 const collapsed = ref(readMobileInputBarCollapsed());
 const inputRef = ref<HTMLTextAreaElement | null>(null);
 const { isMobile, isPortrait, hasCoarsePointer } = useIsNarrow();
@@ -536,6 +549,9 @@ onUnmounted(() => {
   window.removeEventListener("strideterm:attachment-compose-open", requestAttachmentCompose);
   window.removeEventListener("strideterm:attachment-compose-result", handleAttachmentCompose);
   window.removeEventListener("strideterm:attachment-compose-cancel", handleAttachmentComposeCancel);
+  window.removeEventListener("strideterm:voice-dictation-result", handleVoiceDictationResult);
+  window.removeEventListener("strideterm:voice-dictation-cancel", handleVoiceDictationCancel);
+  clearTimeout(voiceTimer);
 });
 onMounted(() => {
   observeRailGeometry();
@@ -551,7 +567,8 @@ onMounted(() => {
   window.addEventListener("strideterm:focus-composer", focusComposer);
   window.addEventListener("strideterm:toggle-system-keyboard", toggleSystemKeyboard);
   window.addEventListener("strideterm:native-session-rail-change", updateNativeSessionRail);
-  nativeSessionRailObserver = new MutationObserver(updateNativeSessionRail);
+  voiceCapable.value = readVoiceCapability();
+  nativeSessionRailObserver = new MutationObserver(onRootClassChange);
   nativeSessionRailObserver.observe(document.documentElement, {
     attributes: true,
     attributeFilter: ["class", "style"],
@@ -559,6 +576,8 @@ onMounted(() => {
   window.addEventListener("strideterm:attachment-compose-open", requestAttachmentCompose);
   window.addEventListener("strideterm:attachment-compose-result", handleAttachmentCompose);
   window.addEventListener("strideterm:attachment-compose-cancel", handleAttachmentComposeCancel);
+  window.addEventListener("strideterm:voice-dictation-result", handleVoiceDictationResult);
+  window.addEventListener("strideterm:voice-dictation-cancel", handleVoiceDictationCancel);
   // Before the autofill sweep, so a restored draft is already "touched" when it runs. This is the
   // path a background teardown and re-bootstrap comes back through: the page is new, the draft is
   // not.
@@ -1135,6 +1154,124 @@ function handleAttachmentCompose(event: Event): void {
 function handleAttachmentComposeCancel(event: Event): void {
   const detail = (event as CustomEvent<{ requestId?: unknown }>).detail;
   if (detail?.requestId === attachmentPending.value?.requestId) attachmentPending.value = null;
+}
+
+// Voice dictation: the phone app's speech recognizer returns text into this field
+// for the user to review. Nothing here sends — the result only ever edits the draft.
+// The phone announces support by a class on <html>; the observer keeps it current.
+function readVoiceCapability(): boolean {
+  return document.documentElement.classList.contains("native-voice-dictation");
+}
+const voiceCapable = ref(readVoiceCapability());
+const voiceAvailable = computed(() => hostAvailable.value && voiceCapable.value);
+function onRootClassChange(): void {
+  updateNativeSessionRail();
+  voiceCapable.value = readVoiceCapability();
+}
+type VoiceDictationRequest = {
+  requestId: string;
+  sessionId: string;
+  draft: string;
+  selectionStart: number;
+  selectionEnd: number;
+};
+const voicePending = ref<VoiceDictationRequest | null>(null);
+const VOICE_DICTATION_TIMEOUT_MS = 5 * 60 * 1000; // safety valve so the button can never stay stuck
+const VOICE_DICTATION_MAX_CHARS = 4000;
+let voiceTimer: ReturnType<typeof setTimeout> | undefined;
+
+function clearVoicePending(): void {
+  voicePending.value = null;
+  clearTimeout(voiceTimer);
+  voiceTimer = undefined;
+}
+function sanitizeDictation(text: string): string {
+  return Array.from(text.replace(/[\x00-\x1f\x7f-\x9f]+/g, " ").trim())
+    .slice(0, VOICE_DICTATION_MAX_CHARS)
+    .join("");
+}
+function requestVoiceDictation(): void {
+  if (voicePending.value) return;
+  const sessionId = targetSessionId.value;
+  const host = getHost();
+  if (!sessionId || typeof host?.postMessage !== "function") return;
+  // Read the caret before any in-flight composition is committed, since writing
+  // the value can move it. Same commit dance as insertSlash().
+  const input = inputRef.value;
+  const rawValue = composing.value ? (input?.value ?? draft.value) : draft.value;
+  const start = Math.max(0, Math.min(input?.selectionStart ?? rawValue.length, rawValue.length));
+  const end = Math.max(start, Math.min(input?.selectionEnd ?? start, rawValue.length));
+  ignoreCompositionEnd.value = composing.value;
+  composing.value = false;
+  submitAfterComposition.value = false;
+  draft.value = rawValue;
+  valueAfterIgnoredComposition = draft.value;
+  if (input) input.value = draft.value;
+  const request: VoiceDictationRequest = {
+    requestId: requestId(),
+    sessionId,
+    draft: draft.value,
+    selectionStart: start,
+    selectionEnd: end,
+  };
+  menuOpen.value = false;
+  voicePending.value = request;
+  try {
+    host.postMessage(JSON.stringify({ type: "voice-dictation", requestId: request.requestId }));
+  } catch {
+    clearVoicePending();
+    toast("Voice input unavailable", "The phone's speech recognition could not be started.", "error");
+    return;
+  }
+  clearTimeout(voiceTimer);
+  voiceTimer = setTimeout(() => {
+    if (voicePending.value?.requestId === request.requestId) clearVoicePending();
+  }, VOICE_DICTATION_TIMEOUT_MS);
+}
+function handleVoiceDictationResult(event: Event): void {
+  const detail = (event as CustomEvent<unknown>).detail;
+  if (!detail || typeof detail !== "object") return;
+  const { requestId: resultId, text } = detail as { requestId?: unknown; text?: unknown };
+  const pending = voicePending.value;
+  if (!pending || typeof resultId !== "string" || resultId !== pending.requestId) return;
+  clearVoicePending();
+  if (targetSessionId.value !== pending.sessionId) {
+    toast("Dictation discarded", "The active terminal changed while you were speaking.");
+    return;
+  }
+  const spoken = sanitizeDictation(String(text ?? ""));
+  if (!spoken) return;
+  const current = draft.value;
+  let value: string;
+  let caret: number;
+  if (current === pending.draft) {
+    const before = current.slice(0, pending.selectionStart);
+    const after = current.slice(pending.selectionEnd);
+    const lead = before && !/\s$/.test(before) ? " " : "";
+    const trail = after && !/^\s/.test(after) ? " " : "";
+    value = `${before}${lead}${spoken}${trail}${after}`;
+    caret = before.length + lead.length + spoken.length;
+  } else {
+    const lead = current && !/\s$/.test(current) ? " " : "";
+    value = `${current}${lead}${spoken}`;
+    caret = value.length;
+  }
+  setDraftFromAttachment(value);
+  void nextTick(() => {
+    // No focus() here: on a phone only a direct tap may open the keyboard.
+    inputRef.value?.setSelectionRange(caret, caret);
+  });
+}
+function handleVoiceDictationCancel(event: Event): void {
+  const detail = (event as CustomEvent<{ requestId?: unknown; reason?: unknown }> | undefined)?.detail;
+  const pending = voicePending.value;
+  if (!pending || detail?.requestId !== pending.requestId) return;
+  clearVoicePending();
+  if (detail?.reason === "unavailable") {
+    toast("Voice input unavailable", "This phone has no speech recognition service.", "error");
+  } else if (detail?.reason === "error") {
+    toast("Voice input failed", "Speech recognition didn't return any text. Try again.", "error");
+  }
 }
 function toggleMenu(): void {
   dismissKeyHelp();
