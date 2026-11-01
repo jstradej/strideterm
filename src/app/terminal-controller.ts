@@ -10,6 +10,8 @@ import type { StatePayload, WorkspaceState } from "../../electron/shared/types/s
 import { detectPaths } from "./path-detector.js";
 import { userFacingMessage } from "../lib/error-message.js";
 import { buildTerminalTextSnapshot } from "./terminal-text-snapshot.js";
+import { isLightAppTheme } from "./app-theme.js";
+import { LIGHT_TERMINAL_THEME, terminalMinimumContrastRatio } from "./terminal-light-theme.js";
 import type { TerminalTextSnapshot, TerminalTextSnapshotOptions } from "./terminal-text-snapshot.js";
 
 // ---------------------------------------------------------------------------
@@ -317,9 +319,8 @@ type AppConfig = typeof APP_CONFIG;
 // ---------------------------------------------------------------------------
 
 function resolveTerminalTheme(appConfig: AppConfig): ITheme {
-  const isLight = document.documentElement.dataset.theme === "light";
-  return isLight
-    ? { background: "#f7f7f9", foreground: "#18181b", cursor: "#18181b", selectionBackground: "rgba(0,0,0,0.15)" }
+  return isLightAppTheme()
+    ? LIGHT_TERMINAL_THEME
     : {
         background: "#141416",
         foreground: appConfig?.ui?.terminalForegroundColor || "#d8e4f5",
@@ -805,6 +806,7 @@ export function createTerminalController({
         allowNonHttpProtocols: false,
       },
       theme: resolveTerminalTheme(appConfig),
+      minimumContrastRatio: terminalMinimumContrastRatio(),
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
     term.parser.registerOscHandler(52, (data) => {
@@ -2103,8 +2105,10 @@ export function createTerminalController({
     syncFontSize,
     syncTheme() {
       const theme = resolveTerminalTheme(appConfig);
+      const minimumContrastRatio = terminalMinimumContrastRatio();
       for (const view of views.value.values()) {
         view.term.options.theme = theme;
+        view.term.options.minimumContrastRatio = minimumContrastRatio;
       }
     },
   };

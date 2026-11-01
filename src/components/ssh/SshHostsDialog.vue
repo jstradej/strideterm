@@ -488,7 +488,7 @@ defineExpose({ requestClose });
   flex: 1 1 220px;
   min-width: 0;
   max-width: 340px;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(var(--tint), 0.05);
   border: 1px solid var(--border);
   color: var(--text);
   padding: 8px;
@@ -516,7 +516,7 @@ defineExpose({ requestClose });
   flex-direction: column;
   align-items: stretch;
   gap: 8px;
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(var(--tint), 0.03);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 12px;
@@ -582,7 +582,7 @@ defineExpose({ requestClose });
   margin-top: 4px;
 }
 .ssh-host-card__tag {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(var(--tint), 0.1);
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 10px;

@@ -1065,13 +1065,23 @@ export async function createRuntime({
     spawnPty: dependencies.sshTestPtySpawn,
     isBracketedPasteEnabled: (sessionId: string) => terminalReplay.isBracketedPasteEnabled(sessionId),
     getSessionEnv: ({
+      state,
       workspace,
       sessionId,
     }: {
+      state?: AppState | null;
       workspace: WorkspaceState | null | undefined;
       sessionId: string | null | undefined;
     }) => {
       const env: Record<string, string> = {};
+
+      // Programs that match their palette to the terminal background (Claude Code's
+      // "auto" theme, vim) read this. They would ask with an OSC 11 query, but ConPTY
+      // never forwards it, so on Windows this is the only answer they get. "system" is
+      // resolved in the renderer, so it is left unset here.
+      const theme = state?.settings?.theme;
+      if (theme === "light") env.COLORFGBG = "0;15";
+      else if (theme === "dark") env.COLORFGBG = "15;0";
 
       // Set provider-specific environment variables for task workspace sessions.
       // CLAUDE_CODE_DISABLE_BACKGROUND_TASKS is Claude-specific — only inject it

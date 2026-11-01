@@ -1,0 +1,332 @@
+/* Light theme: surfaces, form controls and selected states.
+ *
+ * Every rule is scoped to :root[data-theme="light"]; the dark theme is untouched.
+ *
+ * Two selector shapes, on purpose:
+ * - `:where(:root[data-theme="light"]) .x` adds no specificity, so it weighs exactly
+ *   what the global rule it restyles weighs and wins only by loading later (this file
+ *   is imported last). A component that styles its own control still wins, and a state
+ *   rule restated below its base rule keeps winning over it.
+ * - `:root[data-theme="light"] .x` outweighs a component's scoped `.x[data-v-…]`; it is
+ *   used only where a scoped rule has to be overridden. */
+
+:root[data-theme="light"] {
+  --field-bg: #ffffff;
+  --field-border: rgba(15, 23, 42, 0.2);
+  --field-border-hover: rgba(15, 23, 42, 0.32);
+  --focus-ring: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+  --segment-track: rgba(15, 23, 42, 0.055);
+  --segment-hover: rgba(15, 23, 42, 0.05);
+  --segment-raised: 0 1px 2px rgba(15, 23, 42, 0.14), 0 0 0 1px rgba(15, 23, 42, 0.05);
+  --selected-bg: color-mix(in srgb, var(--accent) 13%, #ffffff);
+  --selected-border: color-mix(in srgb, var(--accent) 55%, transparent);
+  --selected-fg: color-mix(in srgb, var(--accent) 70%, #000000);
+}
+
+/* ── Form controls ──────────────────────────────────────────────────────
+   A white field with a visible edge, instead of a grey wash that reads as
+   disabled. Text-like inputs get an accent focus ring in place of the UA
+   outline; checkboxes and radios keep their native focus indicator. */
+:where(:root[data-theme="light"]) input,
+:where(:root[data-theme="light"]) textarea,
+:where(:root[data-theme="light"]) select {
+  background: var(--field-bg);
+  border-color: var(--field-border);
+}
+
+:where(:root[data-theme="light"]) select {
+  color-scheme: light;
+}
+
+:where(:root[data-theme="light"]) input:where(:hover:not(:disabled, :focus)),
+:where(:root[data-theme="light"]) textarea:where(:hover:not(:disabled, :focus)),
+:where(:root[data-theme="light"]) select:where(:hover:not(:disabled, :focus)) {
+  border-color: var(--field-border-hover);
+}
+
+:where(:root[data-theme="light"])
+  input:where(:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"]):focus),
+:where(:root[data-theme="light"]) textarea:where(:focus),
+:where(:root[data-theme="light"]) select:where(:focus) {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+:where(:root[data-theme="light"]) input:where(:disabled),
+:where(:root[data-theme="light"]) textarea:where(:disabled),
+:where(:root[data-theme="light"]) select:where(:disabled) {
+  background: #f3f4f6;
+}
+
+:root[data-theme="light"] select option:checked {
+  background: var(--selected-bg) !important;
+  box-shadow: inset 0 0 0 100px var(--selected-bg);
+  color: var(--text) !important;
+}
+
+:root[data-theme="light"] .custom-select__button,
+:root[data-theme="light"] .template-input,
+:root[data-theme="light"] .new-profile-input,
+:root[data-theme="light"] .add-profile-input,
+:root[data-theme="light"] .input {
+  background: var(--field-bg);
+  border-color: var(--field-border);
+}
+
+:root[data-theme="light"] .custom-select__button:hover:not(:disabled) {
+  background: var(--field-bg);
+  border-color: var(--field-border-hover);
+}
+
+:root[data-theme="light"] .custom-select__button:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+:root[data-theme="light"] .custom-select__option--selected {
+  background: var(--selected-bg);
+  color: var(--selected-fg);
+}
+
+/* Fields and code blocks that are recessed with black at 15–30 % in dark:
+   on white that is a heavy grey slab. Fields become fields; code and output
+   blocks get a faint grey. Focus rules of the scoped fields are restated
+   where their :focus would otherwise lose to this. */
+:where(:root[data-theme="light"]) .git-commit-form input,
+:where(:root[data-theme="light"]) .git-stash-form__message,
+:where(:root[data-theme="light"]) .git-pr-form__input {
+  background: var(--field-bg);
+  border-color: var(--field-border);
+}
+
+:root[data-theme="light"] .create-pr__input,
+:root[data-theme="light"] .branch-picker__button,
+:root[data-theme="light"] .git-branches__filter-date,
+:root[data-theme="light"] .git-branches__filter-paths,
+:root[data-theme="light"] .git-branches__cselect .custom-select__button,
+:root[data-theme="light"] .td__hero-textarea,
+:root[data-theme="light"] .td__hero-textarea:focus {
+  background: var(--field-bg);
+  border-color: var(--field-border);
+}
+
+:root[data-theme="light"] .td__hero-textarea:focus {
+  border-color: var(--accent);
+}
+
+:where(:root[data-theme="light"]) .git-output,
+:where(:root[data-theme="light"]) .review-comment-context,
+:where(:root[data-theme="light"]) .review-code-snippet,
+:where(:root[data-theme="light"]) .review-comment__body pre,
+:root[data-theme="light"] .markdown-content pre,
+:root[data-theme="light"] .hook-log-tail,
+:root[data-theme="light"] .hook-setup-code,
+:root[data-theme="light"] .fingerprint-box,
+:root[data-theme="light"] .ssh-connection-test--inline,
+:root[data-theme="light"] .td__example,
+:root[data-theme="light"] .td__output,
+:root[data-theme="light"] .td__hero-meta-item {
+  background: rgba(15, 23, 42, 0.04);
+}
+
+:where(:root[data-theme="light"]) .remote-mode-tabs {
+  background: var(--segment-track);
+}
+
+/* ── Buttons ────────────────────────────────────────────────────────────
+   Secondary buttons are white with an edge; the transparent border on the
+   primary keeps both the same height side by side. A pressed toggle is a
+   tinted accent, not a solid orange block. */
+:where(:root[data-theme="light"]) .button {
+  border: 1px solid transparent;
+}
+
+:root[data-theme="light"] .button--ghost {
+  background: #ffffff;
+  border: 1px solid var(--field-border);
+  box-shadow: 0 1px 1px rgba(15, 23, 42, 0.04);
+}
+
+:root[data-theme="light"] .button--ghost:hover:not(:disabled) {
+  background: #f3f4f6;
+  border-color: var(--field-border-hover);
+}
+
+:root[data-theme="light"] .button--active {
+  background: var(--selected-bg);
+  border: 1px solid var(--selected-border);
+  color: var(--selected-fg);
+}
+
+/* ── Segmented controls ─────────────────────────────────────────────────
+   Settings sections, the theme picker and the Shell / WSL switch: a quiet
+   track with the chosen segment raised in white. */
+:root[data-theme="light"] .settings-tab-bar,
+:root[data-theme="light"] .segmented,
+:root[data-theme="light"] .theme-control {
+  background: var(--segment-track);
+  border-color: transparent;
+}
+
+:root[data-theme="light"] .settings-tab-btn:hover:not(.settings-tab-btn--active),
+:root[data-theme="light"] .segmented__btn:hover:not(.segmented__btn--active):not(:disabled) {
+  background: var(--segment-hover);
+  color: var(--text);
+}
+
+:root[data-theme="light"] .settings-tab-btn--active,
+:root[data-theme="light"] .segmented__btn--active {
+  background: #ffffff;
+  color: var(--text);
+  box-shadow: var(--segment-raised);
+}
+
+:root[data-theme="light"] .theme-control .button--ghost {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  color: var(--muted);
+}
+
+:root[data-theme="light"] .theme-control .button--ghost:hover:not(:disabled) {
+  background: var(--segment-hover);
+  border-color: transparent;
+  color: var(--text);
+}
+
+:root[data-theme="light"] .theme-control .button--active {
+  background: #ffffff;
+  border-color: transparent;
+  color: var(--text);
+  box-shadow: var(--segment-raised);
+}
+
+:root[data-theme="light"] .settings-tab-btn--active .settings-tab-btn__icon,
+:root[data-theme="light"] .theme-control .button--active .theme-control__icon {
+  color: var(--accent);
+}
+
+/* ── Dialogs ────────────────────────────────────────────────────────── */
+:where(:root[data-theme="light"]) .overlay {
+  background: rgba(30, 35, 48, 0.42);
+}
+
+:where(:root[data-theme="light"]) .dialog {
+  border-color: rgba(15, 23, 42, 0.08);
+  box-shadow:
+    0 24px 60px rgba(15, 23, 42, 0.22),
+    0 2px 8px rgba(15, 23, 42, 0.08);
+}
+
+/* Cards inside a white dialog (a workspace's tab list): a flat, faintly
+   grey group instead of a white card floating on white. */
+:where(:root[data-theme="light"]) .panel-card {
+  background: #fafbfc;
+  box-shadow: none;
+}
+
+/* ── Sidebar workspace cards ────────────────────────────────────────────
+   Neutral white cards; the workspace colour stays on the badge, the
+   worktree / grid stripe and the active card. Every state that sets a
+   border is restated after the base rule, which would otherwise repaint it. */
+:where(:root[data-theme="light"]) .project,
+:where(:root[data-theme="light"]) .workspace-card {
+  background: #ffffff;
+  border-color: rgba(15, 23, 42, 0.1);
+}
+
+:where(:root[data-theme="light"]) .project:where(:hover),
+:where(:root[data-theme="light"]) .workspace-card:where(:hover) {
+  border-color: rgba(15, 23, 42, 0.2);
+}
+
+:where(:root[data-theme="light"]) .workspace-card--sub,
+:where(:root[data-theme="light"]) .workspace-card--in-grid {
+  border-left-color: color-mix(in srgb, var(--accent), transparent 50%);
+}
+
+:where(:root[data-theme="light"]) .project--active,
+:where(:root[data-theme="light"]) .workspace-card--active,
+:where(:root[data-theme="light"]) .activity-row--active,
+:where(:root[data-theme="light"]) .project--active.project--attention,
+:where(:root[data-theme="light"]) .workspace-card--active.workspace-card--attention,
+:where(:root[data-theme="light"]) .activity-row--active.activity-row--attention {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, #ffffff);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent),
+    0 1px 3px rgba(15, 23, 42, 0.08);
+}
+
+/* ── Workspace header chips ─────────────────────────────────────────── */
+:where(:root[data-theme="light"]) .workspace-chip {
+  border-color: rgba(15, 23, 42, 0.12);
+  background: #ffffff;
+}
+
+:where(:root[data-theme="light"]) .workspace-chip--active {
+  border-color: var(--selected-border);
+  background: var(--selected-bg);
+  color: var(--selected-fg);
+}
+
+:where(:root[data-theme="light"]) .workspace-chip--alert {
+  border-color: rgba(183, 40, 76, 0.3);
+  background: rgba(183, 40, 76, 0.06);
+}
+
+/* ── Panes and terminals ────────────────────────────────────────────────
+   The terminal host's padding showed its dark background as a thick frame
+   around the light xterm canvas; it now matches LIGHT_TERMINAL_THEME. */
+:where(:root[data-theme="light"]) .workspace-pane--active {
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
+:root[data-theme="light"] .terminal-host,
+:root[data-theme="light"] .detail-shell,
+:root[data-theme="light"] .detail-log,
+:root[data-theme="light"] .xterm .xterm-viewport {
+  background: #ffffff;
+}
+
+/* ── Notifications ──────────────────────────────────────────────────────
+   Only the titles change: the mint and pink of the dark theme are
+   unreadable as text on white. The coloured bars and washes stay. */
+:where(:root[data-theme="light"]) .notification-item--finished .notification-item__title {
+  color: var(--success-fg);
+}
+
+:where(:root[data-theme="light"]) .notification-item--urgent .notification-item__title {
+  color: var(--danger);
+}
+
+/* `--surface` resolves to the panel in light; a toast floats above it. */
+:root[data-theme="light"] .persistent-toast {
+  background: var(--panel-elevated);
+  box-shadow: var(--menu-shadow);
+}
+
+:root[data-theme="light"] .persistent-toast__icon {
+  color: var(--muted);
+}
+
+:root[data-theme="light"] .persistent-toast--error .persistent-toast__icon {
+  background: rgba(183, 40, 76, 0.1);
+  color: var(--danger);
+}
+
+:root[data-theme="light"] .persistent-toast--warning .persistent-toast__icon {
+  background: rgba(154, 103, 0, 0.12);
+  color: #9a6700;
+}
+
+:root[data-theme="light"] .persistent-toast--info .persistent-toast__icon {
+  background: rgba(9, 105, 218, 0.1);
+  color: #0969da;
+}
+
+:root[data-theme="light"] .persistent-toast__copy {
+  border-color: var(--field-border);
+}

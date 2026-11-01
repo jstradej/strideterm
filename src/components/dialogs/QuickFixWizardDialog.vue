@@ -557,7 +557,7 @@ onMounted(() => {
   padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(var(--tint), 0.03);
   cursor: pointer;
   text-align: left;
   color: inherit;
@@ -565,7 +565,7 @@ onMounted(() => {
 }
 
 .nb-item:hover {
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(var(--tint), 0.07);
   border-color: var(--accent, #ffa424);
 }
 
@@ -640,7 +640,7 @@ onMounted(() => {
 }
 
 .nb-combo__option:hover {
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(var(--tint), 0.07);
 }
 
 .nb-combo__option--active {

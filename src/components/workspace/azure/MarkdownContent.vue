@@ -57,7 +57,7 @@ const rendered = computed(() => renderMarkdownToHtml(props.text));
 }
 
 .markdown-content :deep(code) {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--tint), 0.08);
   border-radius: 3px;
   padding: 1px 4px;
   font-size: 0.9em;

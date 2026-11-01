@@ -865,6 +865,19 @@ describe("SessionManager", () => {
     }
   });
 
+  test("does not pass the launching terminal's COLORFGBG to the shell", () => {
+    const prior = process.env.COLORFGBG;
+    process.env.COLORFGBG = "15;0";
+    try {
+      const state = createState() as Parameters<SessionManager["ensureSession"]>[0];
+      new SessionManager().ensureSession(state, "workspace-a:shell");
+      expect((spawnCalls[0].options.env as Record<string, string>).COLORFGBG).toBeUndefined();
+    } finally {
+      if (prior === undefined) delete process.env.COLORFGBG;
+      else process.env.COLORFGBG = prior;
+    }
+  });
+
   // What electron-builder's portable launcher (templates/nsis/portable.nsi) and the AppImage runtime
   // set for this launch. A strIDEterm started from the shell must not inherit them, or it would
   // detect itself as portable / AppImage (electron/shared/app-distribution.ts).

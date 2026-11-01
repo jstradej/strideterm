@@ -187,6 +187,8 @@ import { useIsNarrow } from "../../composables/useIsNarrow.js";
 import DiffLoadingIndicator from "./DiffLoadingIndicator.vue";
 import "../../app/monaco-setup.js";
 import * as monaco from "monaco-editor";
+import { onAppThemeChange } from "../../app/app-theme.js";
+import { monacoThemeName } from "../../app/monaco-theme.js";
 
 defineOptions({ inheritAttrs: false });
 
@@ -469,6 +471,7 @@ let diffComparisonIdentity = "";
 let resizeObserver: ResizeObserver | null = null;
 let updateDiffDisposable: monaco.IDisposable | null = null;
 const paneLayoutDisposables: monaco.IDisposable[] = [];
+let stopThemeSync: (() => void) | null = null;
 let paneLayoutFrame: number | null = null;
 const inlineCommentDisposables: monaco.IDisposable[] = [];
 const inlineCommentContextKeys: monaco.editor.IContextKey<boolean>[] = [];
@@ -615,7 +618,7 @@ function renderReviewZones() {
 function ensureEditor() {
   if (!containerRef.value || diffEditor) return;
   diffEditor = monaco.editor.createDiffEditor(containerRef.value, {
-    theme: "vs-dark",
+    theme: monacoThemeName(),
     readOnly: true,
     renderSideBySide: sideBySide.value,
     enableSplitViewResizing: true,
@@ -643,6 +646,7 @@ function ensureEditor() {
   layoutEditor();
   syncPaneWidths();
   updateDiffDisposable = diffEditor.onDidUpdateDiff(() => refreshChangeList());
+  stopThemeSync = onAppThemeChange(() => monaco.editor.setTheme(monacoThemeName()));
   installInlineCommentActions();
 }
 
@@ -875,6 +879,8 @@ onBeforeUnmount(() => {
   }
   if (keyListener) document.removeEventListener("keydown", keyListener);
   keyListener = null;
+  stopThemeSync?.();
+  stopThemeSync = null;
   for (const disposable of inlineCommentDisposables.splice(0)) disposable.dispose();
   inlineCommentContextKeys.splice(0);
   if (resizeObserver) {

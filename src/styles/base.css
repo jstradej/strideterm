@@ -41,20 +41,21 @@
 }
 
 :root[data-theme="light"] {
-  --bg: #ededf0;
-  --panel: #f7f7f9;
-  --panel-elevated: rgba(255, 255, 255, 0.95);
+  --bg: #eceef2;
+  --panel: #f6f7f9;
+  --panel-elevated: #ffffff;
   --menu-bg: #ffffff;
-  --menu-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+  --menu-shadow: 0 10px 30px rgba(15, 23, 42, 0.16), 0 1px 3px rgba(15, 23, 42, 0.08);
   --text: #18181b;
-  --muted: #6e6e76;
-  --border: rgba(0, 0, 0, 0.08);
-  --accent: #cc8520;
+  --muted: #5f6470;
+  --border: rgba(15, 23, 42, 0.11);
+  /* Deeper than the dark accent so it holds up as text and hairlines on white. */
+  --accent: #c26a0a;
   --success: #2e7d32;
   --success-fg: #1b6e2e;
   --danger: #b7284c;
   --danger-fg: #a1213f;
-  --status-running: #cc8520;
+  --status-running: #c26a0a;
   --status-success: #2e7d32;
   --status-success-soft: #1b6e2e;
   --status-failed: #b7284c;
@@ -63,9 +64,44 @@
   --status-review: #2b6cb0;
   --status-merged: #7b3fa1;
   --status-muted: #777;
-  --shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  --shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 2px 8px rgba(15, 23, 42, 0.06);
   --tint: 0, 0, 0;
   color-scheme: light;
+
+  /* Variables many components read but nothing defines: in dark they fall back
+     to the hardcoded dark value written beside each use (unchanged on purpose),
+     which on a light surface meant near-white text and black panels. */
+  --text-primary: var(--text);
+  --text-dim: var(--muted);
+  --text-muted: var(--muted);
+  --color-text: var(--text);
+  --color-text-muted: var(--muted);
+  --fg: var(--text);
+  --border-color: var(--border);
+  --border-subtle: var(--border);
+  --color-border: var(--border);
+  --surface: var(--panel);
+  --surface-hover: rgba(15, 23, 42, 0.05);
+  --bg-secondary: var(--panel);
+  --bg-elevated: var(--panel-elevated);
+  --bg-primary: rgba(15, 23, 42, 0.04);
+  --bg-hover: rgba(15, 23, 42, 0.05);
+  --hover: rgba(15, 23, 42, 0.06);
+  --hover-bg: rgba(15, 23, 42, 0.08);
+  --input-bg: #ffffff;
+  --warn: #9a6700;
+  --warning: #9a6700;
+  --color-warn: #9a6700;
+  --color-error: var(--danger);
+  --color-success: var(--success-fg);
+  --error-color: var(--danger);
+  --success-color: var(--success-fg);
+  --ok: var(--success-fg);
+  --fm-status-modified: #9a6700;
+  --fm-status-staged: #1a7f37;
+  --fm-status-untracked: #0969da;
+  --fm-status-conflict: #cf222e;
+  --fm-status-ignored: #6e7781;
 }
 
 /* ── Light mode overrides for hardcoded dark-theme colors ─────────── */
@@ -109,18 +145,9 @@
   color: var(--danger);
 }
 
-:root[data-theme="light"] .workspace-card,
-:root[data-theme="light"] .project {
-  border-color: color-mix(in srgb, var(--accent), transparent 55%);
-}
-
 :root[data-theme="light"] .remote-access__qr,
 :root[data-theme="light"] .remote-compact__qr {
   filter: invert(1);
-}
-
-:root[data-theme="light"] .workspace-pane--active {
-  border-color: color-mix(in srgb, var(--accent), transparent 20%);
 }
 
 :root[data-theme="light"] .noise-overlay,
@@ -128,14 +155,7 @@
   opacity: 0;
 }
 
-:root[data-theme="light"] .button--ghost {
-  background: rgba(0, 0, 0, 0.06);
-  border: 1px solid rgba(0, 0, 0, 0.1);
-}
-
-:root[data-theme="light"] .button--ghost:hover {
-  background: rgba(0, 0, 0, 0.1);
-}
+/* The rest of the light-theme polish lives in theme-light.css. */
 
 html,
 body,

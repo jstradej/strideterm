@@ -222,7 +222,7 @@ async function createProfileAndOpen(): Promise<void> {
   padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(var(--tint), 0.03);
   cursor: pointer;
   font: inherit;
   font-size: 13px;
@@ -231,7 +231,7 @@ async function createProfileAndOpen(): Promise<void> {
   transition: background 0.1s;
 }
 .profile-pick-item:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(var(--tint), 0.07);
 }
 .profile-pick-item:disabled {
   opacity: 0.45;
@@ -268,7 +268,7 @@ async function createProfileAndOpen(): Promise<void> {
   padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(var(--tint), 0.03);
   color: var(--text);
   font: inherit;
   font-size: 13px;

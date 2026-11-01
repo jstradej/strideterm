@@ -558,7 +558,7 @@ async function revoke(device: Device): Promise<void> {
 }
 .mobile-device-card__badge.badge--off {
   color: var(--muted);
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--tint), 0.06);
 }
 .mobile-device-card__pending-status {
   display: inline-flex;

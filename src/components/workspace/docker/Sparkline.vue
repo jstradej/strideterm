@@ -242,7 +242,7 @@ function onPointerLeave(): void {
   display: block;
   width: 100%;
   height: 60px;
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(var(--tint), 0.02);
   border-radius: 4px;
   touch-action: none; /* swipe-on-chart updates the tooltip; don't scroll the page */
 }

@@ -720,7 +720,7 @@ const completionEvidenceWithheld = computed(() => {
   padding: 2px 7px;
   border-radius: 10px;
   white-space: nowrap;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--tint), 0.06);
   color: var(--muted, #888);
 }
 .tdc__now-actor--primary {

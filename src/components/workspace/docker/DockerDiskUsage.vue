@@ -239,13 +239,13 @@ watch(
   border-radius: 3px;
   vertical-align: middle;
   overflow: hidden;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(var(--tint), 0.05);
 }
 .disk-usage__skel::after {
   content: "";
   position: absolute;
   inset: 0;
-  background: linear-gradient(90deg, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0));
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0), rgba(var(--tint), 0.08), rgba(255, 255, 255, 0));
   animation: disk-usage-skeleton 1.4s ease-in-out infinite;
 }
 .disk-usage__skel--sm {

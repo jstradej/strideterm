@@ -134,7 +134,7 @@ watch(
   min-width: 0;
   padding: 4px 8px;
   border: 1px solid var(--border-color, rgba(255, 255, 255, 0.1));
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint), 0.04);
   color: var(--text-primary, #e2e8f0);
   border-radius: 3px;
   font-size: 12px;
@@ -187,7 +187,7 @@ watch(
 }
 
 .env__table tbody tr:nth-child(odd) {
-  background: rgba(255, 255, 255, 0.025);
+  background: rgba(var(--tint), 0.025);
 }
 
 .env__table td {

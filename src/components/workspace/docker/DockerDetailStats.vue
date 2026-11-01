@@ -296,7 +296,7 @@ watch(
 }
 
 .stats__chart {
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(var(--tint), 0.03);
   border: 1px solid var(--border-color, rgba(255, 255, 255, 0.07));
   border-radius: 6px;
   padding: 10px 12px;
@@ -342,7 +342,7 @@ watch(
 }
 
 .stats__card {
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(var(--tint), 0.03);
   border: 1px solid var(--border-color, rgba(255, 255, 255, 0.07));
   border-radius: 6px;
   padding: 12px 14px;
@@ -376,7 +376,7 @@ watch(
 .stats__bar {
   margin-top: auto;
   height: 4px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--tint), 0.06);
   border-radius: 2px;
   overflow: hidden;
 }

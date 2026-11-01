@@ -300,8 +300,8 @@ async function runPending(): Promise<void> {
 .vol-list__filter-input {
   width: 100%;
   padding: 5px 10px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(var(--tint), 0.1);
+  background: rgba(var(--tint), 0.04);
   color: var(--text-primary, #e2e8f0);
   border-radius: 4px;
   font-size: 12px;

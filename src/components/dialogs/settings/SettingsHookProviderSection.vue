@@ -178,7 +178,7 @@ withDefaults(defineProps<Props>(), {
 .hook-status--not-configured,
 .hook-status--unknown {
   color: var(--muted);
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--tint), 0.06);
 }
 
 .hook-status--error,

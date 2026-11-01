@@ -1059,7 +1059,7 @@ watch(
     minmax(60px, max-content) minmax(50px, max-content);
   gap: 10px;
   padding: 4px 10px 4px 4px;
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(var(--tint), 0.03);
   border-bottom: 1px solid var(--border);
   font-size: 10px;
   letter-spacing: 0.5px;
@@ -1125,7 +1125,7 @@ watch(
   user-select: none; /* Shift+click extends the selection — don't highlight text */
   white-space: nowrap;
   border-left: 2px solid transparent;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid rgba(var(--tint), 0.03);
 }
 
 .git-tree--compact .git-tree__row {
@@ -1133,7 +1133,7 @@ watch(
 }
 
 .git-tree__row:hover {
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint), 0.04);
 }
 
 .git-tree__row--selected {
@@ -1195,7 +1195,7 @@ watch(
   font-size: 10px;
   padding: 1px 5px;
   border-radius: 3px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--tint), 0.06);
   color: var(--muted);
   font-weight: 600;
   max-width: 180px;

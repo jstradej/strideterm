@@ -438,7 +438,7 @@ onMounted(() => {
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 10px;
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(var(--tint), 0.03);
   display: grid;
   gap: 8px;
 }
@@ -487,7 +487,7 @@ onMounted(() => {
 }
 .profile-name-input:focus {
   border-color: var(--border);
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint), 0.04);
 }
 /* Visible focus ring for keyboard nav between cards — without this, the
    arrow-key handler moves focus invisibly and the user has no idea which
@@ -546,7 +546,7 @@ onMounted(() => {
   padding: 6px 10px;
   border: 1px solid var(--border);
   border-radius: 3px;
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint), 0.04);
   color: inherit;
   font: inherit;
   font-size: 13px;

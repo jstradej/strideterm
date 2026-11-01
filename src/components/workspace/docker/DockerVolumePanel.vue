@@ -164,8 +164,8 @@ async function doRemove(force: boolean): Promise<void> {
 .vol-panel__chip {
   font-size: 11px;
   padding: 2px 7px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(var(--tint), 0.05);
+  border: 1px solid rgba(var(--tint), 0.08);
   border-radius: 10px;
   color: var(--text-dim, #aaa);
 }

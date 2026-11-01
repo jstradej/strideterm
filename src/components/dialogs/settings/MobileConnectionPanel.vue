@@ -1667,7 +1667,7 @@ onBeforeUnmount(() => {
   padding: 4px;
   border: 1px solid var(--border, #333);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.025);
+  background: rgba(var(--tint), 0.025);
 }
 .mobile-tab__subtab {
   min-height: 36px;
@@ -1712,7 +1712,7 @@ onBeforeUnmount(() => {
   padding: 13px;
   border: 1px solid var(--border, #333);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.025);
+  background: rgba(var(--tint), 0.025);
 }
 .mobile-tab__summary-card--ready {
   border-color: color-mix(in srgb, #34d399 34%, var(--border, #333));
@@ -1884,7 +1884,7 @@ onBeforeUnmount(() => {
 
 .mobile-tab__intro--note {
   padding: 8px 10px;
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint), 0.04);
   border-left: 3px solid var(--accent);
   border-radius: 4px;
 }
@@ -2084,7 +2084,7 @@ onBeforeUnmount(() => {
 }
 
 .badge--off {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--tint), 0.06);
   color: var(--muted);
 }
 
@@ -2106,7 +2106,7 @@ onBeforeUnmount(() => {
 .quota-bar {
   height: 6px;
   border-radius: 3px;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--tint), 0.08);
   overflow: hidden;
 }
 

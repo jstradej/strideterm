@@ -170,6 +170,8 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import "../../app/monaco-setup.js";
 import * as monaco from "monaco-editor";
+import { onAppThemeChange } from "../../app/app-theme.js";
+import { monacoThemeName } from "../../app/monaco-theme.js";
 import { merge3, applyNonConflicting } from "../../lib/merge3.js";
 import type { Chunk } from "../../lib/merge3.js";
 import { useAppStore } from "../../stores/app.js";
@@ -578,7 +580,6 @@ function syncScrollFrom(source: monaco.editor.IStandaloneCodeEditor) {
 
 // ---- Editor lifecycle ----
 const EDITOR_OPTIONS: monaco.editor.IStandaloneEditorConstructionOptions = {
-  theme: "vs-dark",
   fontSize: 12,
   fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", monospace',
   lineNumbers: "on",
@@ -592,21 +593,25 @@ const EDITOR_OPTIONS: monaco.editor.IStandaloneEditorConstructionOptions = {
 function createEditors() {
   if (!oursContainer.value || !resultContainer.value || !theirsContainer.value) return;
   const lang = language.value;
+  const theme = monacoThemeName();
 
   oursEditor = monaco.editor.create(oursContainer.value, {
     ...EDITOR_OPTIONS,
+    theme,
     value: oursContent.value,
     language: lang,
     readOnly: true,
   });
   resultEditor = monaco.editor.create(resultContainer.value, {
     ...EDITOR_OPTIONS,
+    theme,
     value: "",
     language: lang,
     readOnly: false,
   });
   theirsEditor = monaco.editor.create(theirsContainer.value, {
     ...EDITOR_OPTIONS,
+    theme,
     value: theirsContent.value,
     language: lang,
     readOnly: true,
@@ -826,13 +831,18 @@ watch(isNarrow, async () => {
   if (!loading.value) void loadDetail();
 });
 
+let stopThemeSync: (() => void) | null = null;
+
 onMounted(() => {
   document.addEventListener("keydown", onKeydown);
+  stopThemeSync = onAppThemeChange(() => monaco.editor.setTheme(monacoThemeName()));
   void loadDetail();
 });
 
 onBeforeUnmount(() => {
   document.removeEventListener("keydown", onKeydown);
+  stopThemeSync?.();
+  stopThemeSync = null;
   disposeEditors();
 });
 </script>

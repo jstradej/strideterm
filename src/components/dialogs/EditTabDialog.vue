@@ -1058,7 +1058,7 @@ async function handleSubmit() {
   margin: 0;
   padding: 9px;
   border-left: 3px solid var(--accent);
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint), 0.04);
   font-size: 12px;
 }
 .quick-advanced {
@@ -1125,7 +1125,7 @@ async function handleSubmit() {
   gap: 4px;
   padding: 4px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint), 0.04);
   border: 1px solid var(--border);
 }
 .segmented__btn {
@@ -1146,7 +1146,7 @@ async function handleSubmit() {
 }
 .segmented__btn:hover:not(:disabled):not(.segmented__btn--active) {
   color: var(--text);
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint), 0.04);
 }
 .segmented__btn--active {
   background: var(--accent);
@@ -1264,13 +1264,13 @@ async function handleSubmit() {
   place-items: center;
   border: 1px solid var(--border);
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint), 0.04);
   cursor: pointer;
   font-size: 16px;
   padding: 0;
 }
 .icon-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--tint), 0.08);
 }
 .title-input {
   flex: 1;
@@ -1301,7 +1301,7 @@ async function handleSubmit() {
   padding: 0;
 }
 .icon-picker__btn:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--tint), 0.08);
   border-color: var(--border);
 }
 

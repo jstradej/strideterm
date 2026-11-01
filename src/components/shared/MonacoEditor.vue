@@ -6,6 +6,8 @@
 import { ref, onMounted, onBeforeUnmount, watch } from "vue";
 import "../../app/monaco-setup.js";
 import * as monaco from "monaco-editor";
+import { onAppThemeChange } from "../../app/app-theme.js";
+import { monacoThemeName } from "../../app/monaco-theme.js";
 
 interface Props {
   modelValue?: string;
@@ -32,6 +34,7 @@ const emit = defineEmits<{
 const container = ref<HTMLDivElement | null>(null);
 let editor: monaco.editor.IStandaloneCodeEditor | null = null;
 let resizeObserver: ResizeObserver | null = null;
+let stopThemeSync: (() => void) | null = null;
 
 onMounted(() => {
   if (!container.value) return;
@@ -39,7 +42,7 @@ onMounted(() => {
   editor = monaco.editor.create(container.value, {
     value: props.modelValue,
     language: props.language,
-    theme: "vs-dark",
+    theme: monacoThemeName(),
     readOnly: props.readOnly,
     columnSelection: props.columnSelection,
     minimap: { enabled: false },
@@ -60,6 +63,7 @@ onMounted(() => {
       horizontalScrollbarSize: 8,
     },
   });
+  stopThemeSync = onAppThemeChange(() => monaco.editor.setTheme(monacoThemeName()));
   if (props.autoFocus) editor.focus();
   emit("ready");
 
@@ -136,6 +140,8 @@ watch(
 );
 
 onBeforeUnmount(() => {
+  stopThemeSync?.();
+  stopThemeSync = null;
   if (resizeObserver) {
     resizeObserver.disconnect();
     resizeObserver = null;

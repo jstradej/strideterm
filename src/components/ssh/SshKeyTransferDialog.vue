@@ -389,7 +389,7 @@ defineExpose({ requestClose, isBusy: () => busy.value });
   padding: 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.025);
+  background: rgba(var(--tint), 0.025);
 }
 .ssh-key-transfer-dialog--inline > * {
   min-width: 0;
@@ -464,7 +464,7 @@ defineExpose({ requestClose, isBusy: () => busy.value });
   padding: 8px;
   border: 1px solid var(--border);
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(var(--tint), 0.05);
   color: var(--text);
   font: inherit;
 }

@@ -212,7 +212,7 @@ function removePanel(panelId: string) {
   place-items: center;
   border: 1px solid var(--border);
   border-radius: 3px;
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint), 0.04);
   cursor: pointer;
   font-size: 16px;
   padding: 0;
@@ -238,7 +238,7 @@ function removePanel(panelId: string) {
   place-items: center;
   border: 1px solid var(--border);
   border-radius: 3px;
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint), 0.04);
   cursor: pointer;
   font-size: 14px;
   padding: 0;

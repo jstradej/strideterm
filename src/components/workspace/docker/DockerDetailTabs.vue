@@ -119,7 +119,7 @@ function iconFor(kind: TabKind): string {
 }
 .detail-tab__close:hover {
   opacity: 1;
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(var(--tint), 0.1);
 }
 
 .detail-tabs__empty {

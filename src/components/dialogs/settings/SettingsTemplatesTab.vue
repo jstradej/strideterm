@@ -90,7 +90,7 @@ function addTemplate() {
   padding: 5px 8px;
   border: 1px solid var(--border);
   border-radius: 3px;
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint), 0.04);
   color: inherit;
   font: inherit;
   font-size: 13px;

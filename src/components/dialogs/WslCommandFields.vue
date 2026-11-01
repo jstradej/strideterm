@@ -223,7 +223,7 @@ onMounted(async () => {
   gap: 4px;
   padding: 4px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint), 0.04);
   border: 1px solid var(--border);
 }
 .segmented__btn {
@@ -248,7 +248,7 @@ onMounted(async () => {
 }
 .segmented__btn:hover:not(.segmented__btn--active) {
   color: var(--text);
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint), 0.04);
 }
 .segmented__btn--active {
   background: var(--accent);
@@ -299,7 +299,7 @@ onMounted(async () => {
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(var(--tint), 0.02);
 }
 .wsl-preview__label {
   font-size: 11px;

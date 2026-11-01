@@ -454,7 +454,7 @@ onMounted(() => {
   border-radius: 6px;
   padding: 6px 12px;
   color: var(--muted);
-  background: rgba(255, 255, 255, 0.025);
+  background: rgba(var(--tint), 0.025);
   font: inherit;
   font-size: 13px;
   font-weight: 600;
@@ -560,7 +560,7 @@ label {
 .input {
   width: 100%;
   padding: 8px;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(var(--tint), 0.05);
   border: 1px solid var(--border);
   border-radius: 4px;
   color: var(--text);

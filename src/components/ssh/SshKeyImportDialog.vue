@@ -230,7 +230,7 @@ label {
   color: var(--text);
 }
 .input {
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(var(--tint), 0.05);
   border: 1px solid var(--border);
   color: var(--text);
   padding: 8px;

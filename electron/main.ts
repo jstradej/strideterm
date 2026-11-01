@@ -652,7 +652,7 @@ function syncTitleBarTheme(): void {
   for (const win of windowRegistry.values()) {
     if (win.isDestroyed()) continue;
     win.setTitleBarOverlay({
-      color: isDark ? APP_CONFIG.electron.backgroundColor : "#f7f7f9",
+      color: isDark ? APP_CONFIG.electron.backgroundColor : "#f6f7f9",
       symbolColor: isDark ? "#dcdce0" : "#18181b",
     });
   }
@@ -1128,7 +1128,9 @@ function createDiffPopoutWindow(payload: DiffPopoutPayload): BrowserWindow {
     minHeight: 360,
     title: payload.title || "Diff",
     icon: windowIconPath,
-    backgroundColor: APP_CONFIG.electron.backgroundColor,
+    // nativeTheme.themeSource follows the app theme setting; the page itself applies it
+    // from prefers-color-scheme (popout-theme.js).
+    backgroundColor: nativeTheme.shouldUseDarkColors ? APP_CONFIG.electron.backgroundColor : "#f6f7f9",
     show: false,
     autoHideMenuBar: true,
     webPreferences: {

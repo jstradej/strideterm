@@ -660,7 +660,7 @@ onMounted(() => loadData());
 }
 
 .azure-audit-log__row:hover {
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(var(--tint), 0.03);
 }
 
 .azure-audit-log__row--error {
@@ -672,7 +672,7 @@ onMounted(() => loadData());
 }
 
 .azure-audit-log__row--expanded {
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint), 0.04);
 }
 
 .azure-audit-log__detail-row td {
@@ -684,7 +684,7 @@ onMounted(() => loadData());
 
 .azure-audit-log__detail {
   padding: 8px 12px;
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(var(--tint), 0.02);
   border-radius: 4px;
   border-left: 3px solid var(--accent);
 }

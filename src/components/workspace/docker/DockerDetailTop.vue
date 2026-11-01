@@ -239,7 +239,7 @@ watch(
 }
 
 .top__table tbody tr:nth-child(odd) {
-  background: rgba(255, 255, 255, 0.025);
+  background: rgba(var(--tint), 0.025);
 }
 
 .top__table tbody td:last-child {

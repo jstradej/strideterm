@@ -685,7 +685,7 @@ defineExpose({ focus: (): void => buttonRef.value?.focus() });
   padding-top: 6px;
   padding-bottom: 6px;
   border-top: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.025);
+  background: rgba(var(--tint), 0.025);
   color: var(--muted);
   font-size: 10px;
   letter-spacing: 0.5px;
@@ -699,7 +699,7 @@ defineExpose({ focus: (): void => buttonRef.value?.focus() });
 /* Even when the user is keyboard-navigating, sections shouldn't look picked. */
 .branch-picker__row--section.branch-picker__row--selected,
 .branch-picker__row--section.branch-picker__row--off-selected {
-  background: rgba(255, 255, 255, 0.025);
+  background: rgba(var(--tint), 0.025);
   color: var(--muted);
 }
 
@@ -708,7 +708,7 @@ defineExpose({ focus: (): void => buttonRef.value?.focus() });
   font-size: 10px;
   padding: 0 6px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--tint), 0.08);
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }

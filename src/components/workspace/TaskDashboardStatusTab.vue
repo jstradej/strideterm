@@ -588,7 +588,7 @@ function showOlderActivity(): void {
   margin: 8px 0 16px;
   border: 1px solid var(--border, #333);
   border-radius: 8px;
-  background: radial-gradient(circle at 50% 0%, rgba(255, 164, 36, 0.08), transparent 60%), rgba(255, 255, 255, 0.02);
+  background: radial-gradient(circle at 50% 0%, rgba(255, 164, 36, 0.08), transparent 60%), rgba(var(--tint), 0.02);
   text-align: center;
 }
 .td__hero-eyebrow {
@@ -724,7 +724,7 @@ function showOlderActivity(): void {
 }
 .td__hero-start--disabled,
 .td__hero-start:disabled {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--tint), 0.06);
   color: var(--muted, #888);
   cursor: not-allowed;
   box-shadow: none;
@@ -764,7 +764,7 @@ function showOlderActivity(): void {
 .td__hero--done {
   padding: 18px 20px 16px;
   gap: 10px;
-  background: radial-gradient(circle at 50% 0%, rgba(60, 200, 120, 0.08), transparent 60%), rgba(255, 255, 255, 0.02);
+  background: radial-gradient(circle at 50% 0%, rgba(60, 200, 120, 0.08), transparent 60%), rgba(var(--tint), 0.02);
 }
 .td__hero-eyebrow--complete {
   color: rgba(60, 200, 120, 0.95);
@@ -977,7 +977,7 @@ function showOlderActivity(): void {
   border-radius: 6px;
   padding: 8px 12px;
   margin-bottom: 8px;
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(var(--tint), 0.02);
 }
 .td__round-detail-header {
   display: flex;

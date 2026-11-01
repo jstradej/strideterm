@@ -585,8 +585,8 @@ thead th {
   box-sizing: border-box;
   font-size: 11px;
   padding: 2px 6px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(var(--tint), 0.12);
+  background: rgba(var(--tint), 0.04);
   color: var(--text-primary, #e2e8f0);
   border-radius: 4px;
   outline: none;
@@ -616,7 +616,7 @@ thead th {
 
 tbody td {
   padding: 6px 10px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid rgba(var(--tint), 0.04);
   color: var(--text-primary, #d8e4f5);
   vertical-align: middle;
   white-space: nowrap;
@@ -637,7 +637,7 @@ tbody tr {
 }
 
 tbody tr:hover {
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(var(--tint), 0.03);
 }
 
 .dr-table__row--selected {

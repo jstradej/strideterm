@@ -5332,6 +5332,35 @@ describe("runtime integration", () => {
     expect(env.STRIDETERM_NOTIFY_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/notify\?sid=proj%3Ashell&secret=.+$/);
   });
 
+  test("COLORFGBG tells terminal programs whether the app theme is light or dark", async () => {
+    const fixture = await createFixture({
+      initialState: {
+        activeProjectId: "proj",
+        projects: [
+          {
+            id: "proj",
+            name: "Proj",
+            kind: "terminal",
+            cwd: "/tmp/proj",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    const envFor = (theme: string) =>
+      fixture.sessionManager.getSessionEnv({
+        state: { settings: { theme } },
+        workspace: { id: "proj", cwd: "/tmp/proj" },
+        sessionId: "proj:shell",
+      });
+    expect(envFor("light").COLORFGBG).toBe("0;15");
+    expect(envFor("dark").COLORFGBG).toBe("15;0");
+    expect(envFor("system").COLORFGBG).toBeUndefined();
+  });
+
   test("STRIDETERM_NOTIFY_URL is not injected when notify server is disabled", async () => {
     const fixture = await createFixture({
       initialState: {

@@ -357,7 +357,7 @@ function onShowCommitInfo(entry: any) {
   padding: 10px 14px;
   border-radius: 6px;
   border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(var(--tint), 0.03);
   font-size: 13px;
 }
 

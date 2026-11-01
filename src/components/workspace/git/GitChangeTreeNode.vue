@@ -423,7 +423,7 @@ function onContextMenu(e: MouseEvent) {
   font-weight: 700;
   padding: 0 4px;
   border-radius: 3px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--tint), 0.06);
   font-variant-numeric: tabular-nums;
 }
 

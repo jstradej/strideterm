@@ -171,7 +171,7 @@
           border: 1px solid var(--border);
           border-radius: 6px;
           padding: 12px;
-          background: rgba(255, 255, 255, 0.03);
+          background: rgba(var(--tint), 0.03);
           display: grid;
           gap: 6px;
         "

@@ -271,7 +271,7 @@ async function onDrop() {
   font-size: 10px;
   padding: 0 4px;
   border-radius: 2px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--tint), 0.06);
   margin-right: 4px;
 }
 

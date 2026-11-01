@@ -593,7 +593,7 @@ async function browseClipboardImageDir() {
   padding: 4px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.035);
+  background: rgba(var(--tint), 0.035);
 }
 
 .theme-control__option {
@@ -711,7 +711,7 @@ async function browseClipboardImageDir() {
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(var(--tint), 0.02);
 }
 
 .metrics-summary {
@@ -796,14 +796,14 @@ async function browseClipboardImageDir() {
 }
 
 .path-opener-command code {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--tint), 0.06);
   padding: 1px 4px;
   border-radius: 3px;
   font-size: 11px;
 }
 
 .help-text code {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--tint), 0.06);
   padding: 1px 4px;
   border-radius: 3px;
   font-size: 11px;

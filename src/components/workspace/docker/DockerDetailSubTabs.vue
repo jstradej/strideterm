@@ -182,7 +182,7 @@ function onPick(id: SubTabKind): void {
   align-items: center;
   gap: 6px;
   padding: 6px 12px;
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint), 0.04);
   border: 1px solid var(--border-color, rgba(255, 255, 255, 0.1));
   border-radius: 4px;
   color: var(--text-primary, #e2e8f0);
@@ -193,7 +193,7 @@ function onPick(id: SubTabKind): void {
 }
 
 .sub-tabs-mobile__trigger:hover {
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(var(--tint), 0.07);
 }
 
 .sub-tabs-mobile__trigger:focus-visible {
@@ -248,7 +248,7 @@ function onPick(id: SubTabKind): void {
 }
 
 .sub-tabs-mobile__item:hover {
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint), 0.04);
   color: var(--text-primary, #e2e8f0);
 }
 

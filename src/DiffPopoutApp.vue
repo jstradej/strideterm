@@ -103,8 +103,8 @@ onMounted(async () => {
 .diff-popout__header {
   flex: 0 0 auto;
   padding: 8px 14px;
-  border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.08));
-  background: rgba(255, 255, 255, 0.025);
+  border-bottom: 1px solid var(--border, rgba(var(--tint), 0.08));
+  background: rgba(var(--tint), 0.025);
 }
 
 .diff-popout__title {
@@ -156,7 +156,7 @@ onMounted(async () => {
 .diff-popout__spinner {
   width: 16px;
   height: 16px;
-  border: 2px solid rgba(255, 255, 255, 0.15);
+  border: 2px solid rgba(var(--tint), 0.15);
   border-top-color: var(--accent, #ffa424);
   border-radius: 50%;
   animation: diff-popout-spin 0.8s linear infinite;

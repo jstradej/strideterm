@@ -2691,7 +2691,7 @@ watch(
   color: #80a8e0;
 }
 .git-branches__pane-count--muted {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--tint), 0.06);
   color: var(--muted);
   font-style: italic;
 }
@@ -2975,7 +2975,7 @@ watch(
   font-size: 10px;
   padding: 0 4px;
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--tint), 0.08);
   color: var(--text);
   max-width: 80px;
   overflow: hidden;

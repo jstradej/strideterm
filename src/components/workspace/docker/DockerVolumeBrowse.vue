@@ -336,7 +336,7 @@ watch(
 .vol-browse__error pre {
   font-size: 11px;
   color: var(--text-primary, #d8e4f5);
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(var(--tint), 0.03);
   padding: 8px;
   border-radius: 4px;
   max-width: 100%;
@@ -380,7 +380,7 @@ watch(
   outline: none;
 }
 .vol-browse__row:nth-child(odd) {
-  background: rgba(255, 255, 255, 0.025);
+  background: rgba(var(--tint), 0.025);
 }
 .vol-browse__row:hover {
   background: rgba(99, 179, 237, 0.08);

@@ -74,7 +74,7 @@ const emit = defineEmits<{
   padding: 8px;
   border: 1px solid var(--border);
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(var(--tint), 0.05);
   color: var(--text);
   font: inherit;
 }

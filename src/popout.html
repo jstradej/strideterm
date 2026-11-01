@@ -9,6 +9,7 @@
     />
     <title>Diff</title>
     <link rel="icon" type="image/svg+xml" href="./icon.svg" />
+    <script src="./popout-theme.js" vite-ignore></script>
     <link rel="stylesheet" href="./styles/main.css" />
   </head>
   <body>
@@ -21,8 +22,8 @@
           align-items: center;
           justify-content: center;
           gap: 10px;
-          background: #141416;
-          color: rgba(255, 255, 255, 0.6);
+          background: var(--bg);
+          color: var(--muted);
           font:
             13px system-ui,
             -apple-system,
@@ -34,8 +35,8 @@
           style="
             width: 16px;
             height: 16px;
-            border: 2px solid rgba(255, 255, 255, 0.15);
-            border-top-color: #ffa424;
+            border: 2px solid rgba(var(--tint), 0.15);
+            border-top-color: var(--accent);
             border-radius: 50%;
             animation: popout-spin 0.8s linear infinite;
           "

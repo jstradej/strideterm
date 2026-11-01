@@ -644,7 +644,7 @@ async function deleteCertificate(cert: SshCert): Promise<void> {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(var(--tint), 0.03);
   border: 1px solid var(--border);
   padding: 10px;
   border-radius: 6px;
@@ -758,7 +758,7 @@ async function deleteCertificate(cert: SshCert): Promise<void> {
 .empty-state code {
   font-family: var(--font-mono);
   font-size: 12px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--tint), 0.06);
   padding: 1px 5px;
   border-radius: 3px;
   color: var(--text);

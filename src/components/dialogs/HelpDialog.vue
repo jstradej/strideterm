@@ -9,12 +9,7 @@
     </div>
     <div class="form" style="margin-top: 14px">
       <article
-        style="
-          border: 1px solid var(--border);
-          border-radius: 4px;
-          padding: 12px;
-          background: rgba(255, 255, 255, 0.03);
-        "
+        style="border: 1px solid var(--border); border-radius: 4px; padding: 12px; background: rgba(var(--tint), 0.03)"
       >
         <h3 style="margin-bottom: 8px">Getting Started</h3>
         <p style="color: var(--muted); font-size: 13px; line-height: 1.6">
@@ -24,12 +19,7 @@
         </p>
       </article>
       <article
-        style="
-          border: 1px solid var(--border);
-          border-radius: 4px;
-          padding: 12px;
-          background: rgba(255, 255, 255, 0.03);
-        "
+        style="border: 1px solid var(--border); border-radius: 4px; padding: 12px; background: rgba(var(--tint), 0.03)"
       >
         <h3 style="margin-bottom: 8px">Keyboard Shortcuts</h3>
         <dl style="display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; font-size: 13px">
@@ -48,12 +38,7 @@
         </dl>
       </article>
       <article
-        style="
-          border: 1px solid var(--border);
-          border-radius: 4px;
-          padding: 12px;
-          background: rgba(255, 255, 255, 0.03);
-        "
+        style="border: 1px solid var(--border); border-radius: 4px; padding: 12px; background: rgba(var(--tint), 0.03)"
       >
         <h3 style="margin-bottom: 8px">Features</h3>
         <ul style="color: var(--muted); font-size: 13px; line-height: 1.8; padding-left: 18px; margin: 0">
@@ -87,12 +72,7 @@
         </ul>
       </article>
       <article
-        style="
-          border: 1px solid var(--border);
-          border-radius: 4px;
-          padding: 12px;
-          background: rgba(255, 255, 255, 0.03);
-        "
+        style="border: 1px solid var(--border); border-radius: 4px; padding: 12px; background: rgba(var(--tint), 0.03)"
       >
         <h3 style="margin-bottom: 8px">Configuration</h3>
         <p style="color: var(--muted); font-size: 13px; line-height: 1.6">

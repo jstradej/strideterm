@@ -294,7 +294,7 @@ onMounted(fetchDetails);
 .git-commit-dialog__subject {
   border: 1px solid var(--border);
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(var(--tint), 0.03);
   padding: 10px 12px;
 }
 
@@ -342,7 +342,7 @@ onMounted(fetchDetails);
 .git-commit-dialog__mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(var(--tint), 0.05);
   padding: 1px 6px;
   border-radius: 3px;
 }
@@ -375,7 +375,7 @@ onMounted(fetchDetails);
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(var(--tint), 0.03);
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 10px 12px;

@@ -421,7 +421,7 @@ function openUrl(url?: string) {
   padding: 5px 8px;
   font-size: 12px;
   cursor: pointer;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid rgba(var(--tint), 0.05);
 }
 .azure-pl-run:hover {
   background: var(--surface-hover, rgba(255, 255, 255, 0.05));
@@ -492,8 +492,8 @@ function openUrl(url?: string) {
    tinted, and divided from the header by a hairline. */
 .azure-pl-run__detail {
   padding: 8px 10px 10px 29px;
-  background: rgba(255, 255, 255, 0.02);
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(var(--tint), 0.02);
+  border-top: 1px solid rgba(var(--tint), 0.06);
 }
 .azure-pl-run__detail-meta {
   display: flex;

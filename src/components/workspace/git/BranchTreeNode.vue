@@ -467,7 +467,7 @@ function runAction(id: string) {
 }
 
 .branch-node__row:hover {
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint), 0.04);
 }
 
 .branch-node__row:focus-visible {
@@ -499,7 +499,7 @@ function runAction(id: string) {
   padding-top: 6px;
   padding-bottom: 6px;
   border-top: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.025);
+  background: rgba(var(--tint), 0.025);
   color: var(--muted);
   font-size: 10px;
   letter-spacing: 0.5px;
@@ -606,7 +606,7 @@ function runAction(id: string) {
   font-size: 10px;
   padding: 0 6px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--tint), 0.08);
   color: var(--muted);
 }
 
@@ -642,7 +642,7 @@ function runAction(id: string) {
   font-size: 10px;
   padding: 0 6px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--tint), 0.08);
   color: var(--muted);
 }
 

@@ -843,7 +843,7 @@ function onRejectVerdict() {
   font-size: 11px;
   font-family: monospace;
   color: var(--muted, #888);
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint), 0.04);
   padding: 1px 6px;
   border-radius: 3px;
   letter-spacing: 0.02em;

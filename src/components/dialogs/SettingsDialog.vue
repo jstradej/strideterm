@@ -695,7 +695,7 @@ defineExpose({ requestClose });
   margin: 12px 0 16px;
   padding: 4px;
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint), 0.04);
 }
 .settings-tab-btn {
   flex: 1 1 auto;

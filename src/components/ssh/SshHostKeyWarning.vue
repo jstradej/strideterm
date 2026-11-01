@@ -165,7 +165,7 @@ async function acceptPermanent() {
   background: rgba(0, 0, 0, 0.3);
   padding: 12px;
   border-radius: 4px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(var(--tint), 0.1);
 }
 .fingerprint-box--previous {
   border-left: 3px solid #f59e0b;

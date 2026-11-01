@@ -819,7 +819,7 @@ export const ConnectionForm = defineComponent({
 .telegram-tab__steps {
   margin: 0;
   padding: 10px 12px 10px 28px;
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint), 0.04);
   border-left: 3px solid var(--accent);
   border-radius: 4px;
   font-size: 12px;
@@ -828,7 +828,7 @@ export const ConnectionForm = defineComponent({
 }
 
 .telegram-tab__steps code {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--tint), 0.08);
   padding: 1px 5px;
   border-radius: 3px;
   font-size: 11px;
@@ -865,11 +865,11 @@ export const ConnectionForm = defineComponent({
   padding: 8px 12px;
   cursor: pointer;
   user-select: none;
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(var(--tint), 0.02);
 }
 
 .connection-item__header:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(var(--tint), 0.05);
 }
 
 .connection-item__label {
@@ -901,7 +901,7 @@ export const ConnectionForm = defineComponent({
 }
 
 .badge--off {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--tint), 0.06);
   color: var(--muted);
 }
 
@@ -1021,7 +1021,7 @@ export const ConnectionForm = defineComponent({
   color: var(--muted);
   margin: 0;
   padding: 6px 8px;
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint), 0.04);
   border-radius: 4px;
 }
 
@@ -1046,7 +1046,7 @@ export const ConnectionForm = defineComponent({
 
 .detect-list__item:hover {
   border-color: var(--accent);
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint), 0.04);
 }
 
 .detect-list__title {

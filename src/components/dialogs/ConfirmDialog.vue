@@ -84,7 +84,7 @@ const messageSegments = computed(() => toSegments(props.message));
 .confirm-dialog code {
   font-family: var(--mono, "Cascadia Mono", "JetBrains Mono", "Consolas", monospace);
   font-size: 0.9em;
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(var(--tint), 0.07);
   border: 1px solid rgba(255, 255, 255, 0.13);
   border-radius: 4px;
   padding: 0 5px;

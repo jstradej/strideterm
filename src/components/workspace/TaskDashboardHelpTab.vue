@@ -224,7 +224,7 @@ async function copyExample(which: string): Promise<void> {
   margin-bottom: 2px;
 }
 .td__help-list code {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--tint), 0.06);
   padding: 1px 5px;
   border-radius: 3px;
   font-size: 12px;

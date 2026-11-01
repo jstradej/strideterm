@@ -402,14 +402,14 @@ function runFromMenu(fn: () => void): void {
   width: 38px;
   min-height: 38px;
   padding: 0;
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint), 0.04);
   border: 1px solid var(--border-color, rgba(255, 255, 255, 0.1));
   border-radius: 4px;
   color: var(--text-primary, #e2e8f0);
   cursor: pointer;
 }
 .detail-toolbar__more:hover {
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(var(--tint), 0.07);
 }
 .detail-toolbar__more:focus-visible {
   outline: 1px solid var(--accent, #63b3ed);
@@ -454,7 +454,7 @@ function runFromMenu(fn: () => void): void {
   white-space: nowrap;
 }
 .detail-toolbar__menu-item:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(var(--tint), 0.05);
 }
 .detail-toolbar__menu-item:disabled {
   opacity: 0.5;

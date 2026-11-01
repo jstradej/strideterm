@@ -159,7 +159,7 @@ const sortedCommits = computed(() => {
 
 .git-log-info-btn {
   border: 1px solid transparent;
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint), 0.04);
   color: var(--accent, #ffa424);
   border-radius: 3px;
   padding: 1px 6px;
@@ -184,7 +184,7 @@ const sortedCommits = computed(() => {
 }
 
 .git-log-table__head:hover {
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint), 0.04);
 }
 
 .git-log-table__head--sorted {

@@ -116,7 +116,7 @@ async function copyPath(t: PersistentToast): Promise<void> {
   gap: 10px;
   background: var(--surface, #1e2128);
   color: var(--text, #e8e8e8);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(var(--tint), 0.08);
   border-left: 3px solid rgba(255, 255, 255, 0.25);
   border-radius: 6px;
   padding: 8px 10px 8px 11px;
@@ -177,7 +177,7 @@ async function copyPath(t: PersistentToast): Promise<void> {
   font-size: 11px;
   font-weight: 700;
   line-height: 1;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--tint), 0.06);
   color: rgba(255, 255, 255, 0.7);
 }
 
@@ -234,7 +234,7 @@ async function copyPath(t: PersistentToast): Promise<void> {
 }
 
 .persistent-toast__copy:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--tint), 0.06);
 }
 
 .persistent-toast__copy[data-copied="true"] {

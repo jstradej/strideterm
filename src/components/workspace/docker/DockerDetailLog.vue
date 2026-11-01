@@ -69,6 +69,8 @@ import { useAppStore } from "../../../stores/app.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
 import { userFacingMessage } from "../../../lib/error-message.js";
 import { downloadTextFile } from "../../../app/helpers.js";
+import { isLightAppTheme, onAppThemeChange } from "../../../app/app-theme.js";
+import { LIGHT_TERMINAL_THEME, terminalMinimumContrastRatio } from "../../../app/terminal-light-theme.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -79,9 +81,8 @@ type AnyApi = any;
  * coloured JSON output where the default 15% white wash disappears entirely.
  */
 function resolveLogTheme(searchActive = false): ITheme {
-  const isLight = document.documentElement.dataset.theme === "light";
-  const base: ITheme = isLight
-    ? { background: "#f7f7f9", foreground: "#18181b", cursor: "#18181b", selectionBackground: "rgba(0,0,0,0.15)" }
+  const base: ITheme = isLightAppTheme()
+    ? LIGHT_TERMINAL_THEME
     : {
         background: "#141416",
         foreground: "#d8e4f5",
@@ -126,6 +127,7 @@ let fitAddon: FitAddon | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let resizeFrame = 0;
 let scrollDisposer: { dispose(): void } | null = null;
+let stopThemeSync: (() => void) | null = null;
 
 // Connection state
 const connecting = ref(true);
@@ -695,6 +697,7 @@ function onTermWheel(e: WheelEvent): void {
 onMounted(() => {
   term = new Terminal({
     theme: resolveLogTheme(),
+    minimumContrastRatio: terminalMinimumContrastRatio(),
     scrollback: SCROLLBACK,
     convertEol: true,
     fontSize: readFontSize(),
@@ -707,6 +710,12 @@ onMounted(() => {
     cursorInactiveStyle: "none",
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any);
+
+  stopThemeSync = onAppThemeChange(() => {
+    if (!term) return;
+    term.options.theme = resolveLogTheme(Boolean(searchQuery.value));
+    term.options.minimumContrastRatio = terminalMinimumContrastRatio();
+  });
 
   fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
@@ -768,6 +777,8 @@ onBeforeUnmount(() => {
   }
   scrollDisposer?.dispose();
   scrollDisposer = null;
+  stopThemeSync?.();
+  stopThemeSync = null;
   closeLogSession();
   resizeObserver?.disconnect();
   rootEl.value?.removeEventListener("keydown", onKeyDown);

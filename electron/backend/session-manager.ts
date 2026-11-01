@@ -945,6 +945,9 @@ export class SessionManager extends EventEmitter {
       // This launch's own backend declaration (main.ts defaults it to prod) must not leak into
       // user shells: a dev.ps1 started from one would otherwise run against prod.
       delete inheritedEnv.STRIDETERM_ENV;
+      // The terminal strIDEterm was started from says nothing about this one's background;
+      // getSessionEnv sets COLORFGBG when the app theme is known.
+      delete inheritedEnv.COLORFGBG;
       // Same for the launcher variables this launch's build detection read: a strIDEterm started
       // from the shell would take them for its own.
       for (const name of DISTRIBUTION_LAUNCHER_ENV) delete inheritedEnv[name];

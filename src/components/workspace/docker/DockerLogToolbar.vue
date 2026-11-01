@@ -201,8 +201,8 @@ watch(
   align-items: center;
   gap: 5px;
   padding: 4px 8px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(var(--tint), 0.03);
+  border: 1px solid rgba(var(--tint), 0.05);
   color: var(--text-dim, #aaa);
   border-radius: 4px;
   font-size: 11px;
@@ -212,7 +212,7 @@ watch(
 
 .log-toolbar__btn:hover,
 .log-toolbar__toggle:hover {
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(var(--tint), 0.07);
   color: var(--text-primary, #e2e8f0);
 }
 
@@ -243,8 +243,8 @@ watch(
 .log-toolbar__search-input {
   width: 140px;
   padding: 3px 8px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(var(--tint), 0.04);
+  border: 1px solid rgba(var(--tint), 0.08);
   color: var(--text-primary, #e2e8f0);
   border-radius: 3px;
   font-size: 11px;
@@ -253,7 +253,7 @@ watch(
 }
 .log-toolbar__search-input:focus {
   border-color: var(--accent, #63b3ed);
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--tint), 0.06);
 }
 
 .log-toolbar__search-count {
@@ -269,8 +269,8 @@ watch(
   width: 22px;
   height: 26px;
   padding: 0;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(var(--tint), 0.03);
+  border: 1px solid rgba(var(--tint), 0.05);
   color: var(--text-dim, #aaa);
   border-radius: 3px;
   cursor: pointer;
@@ -290,8 +290,8 @@ watch(
   align-items: center;
   gap: 4px;
   padding: 2px 6px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(var(--tint), 0.03);
+  border: 1px solid rgba(var(--tint), 0.05);
   border-radius: 4px;
   font-size: 11px;
   color: var(--text-dim, #aaa);

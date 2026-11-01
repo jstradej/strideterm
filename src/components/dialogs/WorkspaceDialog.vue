@@ -1346,7 +1346,7 @@ function extractErrorMessage(err: unknown): string {
 .appearance-details {
   border: 1px solid var(--border);
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(var(--tint), 0.02);
   padding: 6px 10px;
 }
 .appearance-summary {
@@ -1378,7 +1378,7 @@ function extractErrorMessage(err: unknown): string {
   padding: 4px;
   border: 1px solid var(--border);
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(var(--tint), 0.02);
 }
 .icon-picker__btn {
   padding: 0;
@@ -1477,7 +1477,7 @@ function extractErrorMessage(err: unknown): string {
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 10px 12px;
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(var(--tint), 0.02);
 }
 .review-link-section {
   display: flex;

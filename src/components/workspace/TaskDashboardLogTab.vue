@@ -130,8 +130,8 @@ function saveLog() {
   gap: 4px;
 }
 .td__log-btn {
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(var(--tint), 0.06);
+  border: 1px solid rgba(var(--tint), 0.1);
   color: #aaa;
   font-size: 10px;
   padding: 2px 8px;
@@ -144,7 +144,7 @@ function saveLog() {
     color 0.15s;
 }
 .td__log-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(var(--tint), 0.1);
   color: #ddd;
 }
 

@@ -808,7 +808,7 @@ async function save() {
   padding: 8px;
   border: 1px solid var(--border);
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(var(--tint), 0.05);
   color: var(--text);
   font: inherit;
 }
@@ -832,7 +832,7 @@ async function save() {
   margin: 0;
   padding: 10px;
   border-left: 3px solid var(--accent);
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint), 0.04);
   font-size: 12px;
 }
 .advanced-options,

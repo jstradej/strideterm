@@ -189,7 +189,7 @@ const latestJudgeReason = computed(() => latestRound.value?.judgeReason || "");
   padding: 16px;
   border: 1px solid var(--color-border, #343434);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(var(--tint), 0.02);
 }
 
 .hj__eyebrow {
@@ -238,7 +238,7 @@ const latestJudgeReason = computed(() => latestRound.value?.judgeReason || "");
 
 .hj__badge--paused,
 .hj__badge--idle {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--tint), 0.08);
   color: var(--color-text, #ddd);
 }
 
@@ -252,7 +252,7 @@ const latestJudgeReason = computed(() => latestRound.value?.judgeReason || "");
   border: 1px solid var(--color-border, #343434);
   border-radius: 12px;
   padding: 14px 16px;
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(var(--tint), 0.02);
 }
 
 .hj__card--full {

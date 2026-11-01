@@ -24,14 +24,15 @@ import Spinner from "../../common/Spinner.vue";
 import { useAppStore } from "../../../stores/app.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
 import { userFacingMessage } from "../../../lib/error-message.js";
+import { isLightAppTheme, onAppThemeChange } from "../../../app/app-theme.js";
+import { LIGHT_TERMINAL_THEME, terminalMinimumContrastRatio } from "../../../app/terminal-light-theme.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
 
 function resolveShellTheme(): ITheme {
-  const isLight = document.documentElement.dataset.theme === "light";
-  return isLight
-    ? { background: "#f7f7f9", foreground: "#18181b", cursor: "#18181b", selectionBackground: "rgba(0,0,0,0.15)" }
+  return isLightAppTheme()
+    ? LIGHT_TERMINAL_THEME
     : {
         background: "#141416",
         foreground: "#d8e4f5",
@@ -65,6 +66,7 @@ let fitAddon: FitAddon | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let resizeFrame = 0;
 let onDataDisposer: { dispose(): void } | null = null;
+let stopThemeSync: (() => void) | null = null;
 let currentSessionId = props.sessionId;
 
 function scheduleFit(opts?: { sendResize?: boolean }): void {
@@ -156,6 +158,7 @@ function restart(): void {
 onMounted(() => {
   term = new Terminal({
     theme: resolveShellTheme(),
+    minimumContrastRatio: terminalMinimumContrastRatio(),
     scrollback: 5000,
     convertEol: false,
     fontSize: 13,
@@ -164,6 +167,12 @@ onMounted(() => {
     allowTransparency: false,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any);
+
+  stopThemeSync = onAppThemeChange(() => {
+    if (!term) return;
+    term.options.theme = resolveShellTheme();
+    term.options.minimumContrastRatio = terminalMinimumContrastRatio();
+  });
 
   fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
@@ -201,6 +210,8 @@ onBeforeUnmount(() => {
   if (resizeFrame) cancelAnimationFrame(resizeFrame);
   onDataDisposer?.dispose();
   onDataDisposer = null;
+  stopThemeSync?.();
+  stopThemeSync = null;
   closeSession();
   resizeObserver?.disconnect();
   term?.dispose();

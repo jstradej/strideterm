@@ -446,7 +446,7 @@ function onDiskUsageOpen(kind: "images" | "volumes" | "networks" | "cache"): voi
   width: 100%;
   padding: 6px 26px 6px 10px;
   border: 1px solid var(--border-color, rgba(255, 255, 255, 0.1));
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint), 0.04);
   color: var(--text-primary, #e2e8f0);
   border-radius: 4px;
   font-size: 12px;
@@ -470,7 +470,7 @@ function onDiskUsageOpen(kind: "images" | "volumes" | "networks" | "cache"): voi
   height: 20px;
   border: 0;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--tint), 0.08);
   color: var(--text-dim, #888);
   cursor: pointer;
   display: flex;
@@ -626,7 +626,7 @@ function onDiskUsageOpen(kind: "images" | "volumes" | "networks" | "cache"): voi
   width: 100%;
 }
 .docker-mobile-tabs__item:hover {
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint), 0.04);
 }
 .docker-mobile-tabs__item--active {
   border-left-color: var(--accent, #63b3ed);
@@ -665,7 +665,7 @@ function onDiskUsageOpen(kind: "images" | "volumes" | "networks" | "cache"): voi
   cursor: pointer;
 }
 .docker-mobile-tabs__close:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(var(--tint), 0.1);
   color: var(--text-primary, #e2e8f0);
 }
 

@@ -513,7 +513,7 @@ async function handleSubmit() {
   font-size: 12px;
 }
 .apr-branch__item:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--tint), 0.06);
 }
 .apr-branch__item--active {
   background: var(--accent-subtle, rgba(99, 179, 237, 0.15));
