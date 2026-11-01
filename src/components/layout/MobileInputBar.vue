@@ -262,7 +262,21 @@
           @mousedown.prevent
           @click="requestVoiceDictation"
         >
-          🎤
+          <svg
+            viewBox="0 0 20 20"
+            width="20"
+            height="20"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+            focusable="false"
+          >
+            <path d="M10 2.5a2.5 2.5 0 0 0-2.5 2.5v4a2.5 2.5 0 0 0 5 0V5A2.5 2.5 0 0 0 10 2.5Z" />
+            <path d="M16 9v1a6 6 0 0 1-12 0V9m6 7v2m-3.5 0h7" />
+          </svg>
         </button>
         <button
           type="submit"
