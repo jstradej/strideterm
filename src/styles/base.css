@@ -177,6 +177,26 @@ body,
   box-sizing: border-box;
 }
 
+/* Monaco's find widget is laid out for the browser's content-box default and names its icon buttons
+   `.button`, so the rule above and the app's `.button` (sidebar.css) shrank them and painted them
+   orange. Both resets stay below every rule of Monaco's own. */
+:where(.find-widget, .find-widget *) {
+  box-sizing: content-box;
+}
+
+.find-widget .button {
+  border: 0;
+  background: none;
+  color: inherit;
+}
+
+/* Monaco places its hovers (the find widget's tooltips among them) absolutely inside the editor's
+   container, where an `overflow: hidden` ancestor cut them off. ContextView measures where the view
+   lands before positioning it, so pinning it to the viewport keeps the placement right. */
+.context-view:not(.fixed) {
+  position: fixed !important;
+}
+
 body {
   margin: 0;
   min-height: 0;
