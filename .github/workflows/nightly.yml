@@ -20,7 +20,7 @@ jobs:
             args: --win
           # Pinned to match release.yml so nightly and release builds share
           # the same macOS/SDK and don't drift when `latest` migrates.
-          - os: macos-14
+          - os: macos-15
             args: --mac
           - os: ubuntu-latest
             args: --linux

@@ -75,9 +75,9 @@ jobs:
             args: --win
           # Pinned to a fixed image (not macos-latest) so the build
           # environment doesn't shift under us when GitHub migrates the
-          # `latest` label to a newer macOS/SDK. macos-14 = Apple Silicon,
+          # `latest` label to a newer macOS/SDK. macos-15 = Apple Silicon,
           # stable, broad runtime compatibility for the produced app.
-          - os: macos-14
+          - os: macos-15
             args: --mac
           - os: ubuntu-latest
             args: --linux
