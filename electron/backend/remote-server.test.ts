@@ -5763,7 +5763,7 @@ describe("a mobile session's activity is audited (metadata only)", () => {
     };
     const rows: AuditRow[] = [];
     const lists: { sessions: unknown[]; source?: string }[] = [];
-    const written: { sessionId: string; data: string }[] = [];
+    const written: { sessionId: string; data: string; pointerArrival?: string }[] = [];
     const tickets = new Map<string, { deviceId: string; pairId: string; profileId: string }>();
     return {
       rows,
@@ -5779,8 +5779,14 @@ describe("a mobile session's activity is audited (metadata only)", () => {
         listRemoteUrls: () => [],
         listMobileTicketOrigins: () => ["https://example.trycloudflare.com"],
         on: () => () => undefined,
-        writeToSession: (sessionId: string, data: string) => {
-          written.push({ sessionId, data });
+        writeToSession: (
+          sessionId: string,
+          data: string,
+          _viewerId?: string,
+          _originWorkspaceId?: string,
+          pointerArrival?: string,
+        ) => {
+          written.push({ sessionId, data, ...(pointerArrival !== undefined ? { pointerArrival } : {}) });
         },
         submitToSession: () => undefined,
         resizeSession: () => undefined,
@@ -6130,6 +6136,34 @@ describe("a mobile session's activity is audited (metadata only)", () => {
         expect.stringMatching(/^session.started profile=default transport=legacy sessionRef=cookie:[0-9a-f]{12}$/),
         "session.terminal-input terminal=ws1:1 bytes=3 lines=0",
         "session.ended reason=revoked",
+      ]);
+    });
+  });
+
+  test("a tap's click travels with its pointer arrival; an oversized arrival is refused", async () => {
+    await withAuditedServer({}, async ({ baseUrl, port, written, seedTicket }) => {
+      seedTicket("t1", "s1", "dev-1");
+      const cookie = await bootstrap(baseUrl, "t1", "s1");
+      const ws = await openSocket(`ws://127.0.0.1:${port}/ws`, { Cookie: cookie });
+      ws.send(
+        JSON.stringify({
+          type: "terminal:input",
+          sessionId: "ws1:1",
+          data: "\x1b[<0;5;4M",
+          pointerArrival: "x".repeat(257),
+        }),
+      );
+      ws.send(
+        JSON.stringify({
+          type: "terminal:input",
+          sessionId: "ws1:1",
+          data: "\x1b[<0;5;4M\x1b[<0;5;4m",
+          pointerArrival: "\x1b[<35;5;4M",
+        }),
+      );
+      await vi.waitFor(() => expect(written).toHaveLength(1));
+      expect(written).toEqual([
+        { sessionId: "ws1:1", data: "\x1b[<0;5;4M\x1b[<0;5;4m", pointerArrival: "\x1b[<35;5;4M" },
       ]);
     });
   });

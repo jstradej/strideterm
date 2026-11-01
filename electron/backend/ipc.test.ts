@@ -564,6 +564,36 @@ describe("SSH test IPC ownership and event privacy", () => {
     dispose();
   });
 
+  test("terminal:input forwards a tap's pointer arrival with the click, and drops a malformed one", () => {
+    const written: unknown[][] = [];
+    const callable = (..._args: unknown[]): unknown => callable;
+    const runtime = new Proxy(
+      {},
+      {
+        get: (_target, prop) => {
+          if (prop === "on") return callable;
+          if (prop === "sshTestSessionOwner") return () => undefined;
+          if (prop === "isPrivateSshOperationSessionId") return () => false;
+          if (prop === "writeToSession") return (...args: unknown[]) => written.push(args);
+          return callable;
+        },
+      },
+    ) as Parameters<typeof registerIpc>[0];
+    const dispose = registerIpc(runtime, () => {}, {
+      getWindowIdByWebContentsId: () => "window-a",
+    });
+    const input = [...(onRegistry.get("terminal:input") || [])][0] as (...args: unknown[]) => void;
+    input({ sender: { id: 7 } }, "ws-a:panel", "<down><up>", "ws-a", "<move>");
+    input({ sender: { id: 7 } }, "ws-a:panel", "x", undefined, 42);
+    input({ sender: { id: 7 } }, "ws-a:panel", "<down><up>", undefined, "m".repeat(257));
+    expect(written).toEqual([
+      ["ws-a:panel", "<down><up>", "window-a", "ws-a", "<move>"],
+      ["ws-a:panel", "x", "window-a", undefined, undefined],
+      ["ws-a:panel", "<down><up>", "window-a", undefined, undefined],
+    ]);
+    dispose();
+  });
+
   test("terminal:submit allows a private SSH submit only from its owner", () => {
     const writes: unknown[][] = [];
     const callable = (..._args: unknown[]): unknown => callable;

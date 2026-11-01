@@ -404,6 +404,10 @@ export class TerminalReplayStore {
     return this.sessions.get(sessionId)?.current.modes.bracketedPaste === true;
   }
 
+  isFocusReportingEnabled(sessionId: string): boolean {
+    return this.sessions.get(sessionId)?.current.modes.sendFocus === true;
+  }
+
   /**
    * Clear stored output but KEEP the sequence counter. Used on an intentional
    * restart: the next process generation continues the counter, so a client

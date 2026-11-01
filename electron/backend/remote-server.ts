@@ -586,7 +586,13 @@ interface Runtime {
       state?: string;
     } | null;
   };
-  writeToSession(sessionId: string, data: string, viewerId?: string, originWorkspaceId?: string): unknown;
+  writeToSession(
+    sessionId: string,
+    data: string,
+    viewerId?: string,
+    originWorkspaceId?: string,
+    pointerArrival?: string,
+  ): unknown;
   submitToSession(sessionId: string, text: string, viewerId?: string, originWorkspaceId?: string): unknown;
   resizeSession(sessionId: string, size: { cols: number; rows: number }): void;
   // getTerminalReplaySnapshot / getTerminalReplay and all other methods are
@@ -5672,6 +5678,7 @@ export async function startRemoteServer({
                   parsed.data.data,
                   viewerId,
                   parsed.data.originWorkspaceId,
+                  parsed.data.pointerArrival,
                 );
             } else {
               log.warn("WebSocket terminal input rejected: invalid payload", {
@@ -5849,7 +5856,7 @@ export async function startRemoteServer({
         if (wsSessionId && activeSessions.get(wsSessionId)?.deviceId) publishMobileSessions();
         // If this was the LAST live socket for the session, the viewer is gone
         // — drop its visible-session contribution so its panels stop counting
-        // as visible. A session can hold more than one socket (reconnect race,
+        // as visible, and its terminal focus. A session can hold more than one socket (reconnect race,
         // a second tab), so only drop when none remain; otherwise a transient
         // reconnect would wrongly clear a still-watching viewer.
         if (wsSessionId) {

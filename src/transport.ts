@@ -345,8 +345,10 @@ export interface Transport extends Partial<
    * hint the backend validates against the session before crediting it with
    * work (an attached task's Primary tab lives in the task workspace while
    * its session id names the source workspace).
+   * `pointerArrival` marks `data` as a click synthesised from a tap — see
+   * `ipc-bridge.ts`.
    */
-  writeTerminal: (sessionId: string, data: string, originWorkspaceId?: string) => void;
+  writeTerminal: (sessionId: string, data: string, originWorkspaceId?: string, pointerArrival?: string) => void;
   submitTerminal: (sessionId: string, text: string, originWorkspaceId?: string) => void;
   activateWorkspace: (workspaceId: string) => Promise<unknown>;
   restartTerminal: (sessionId: string) => Promise<unknown>;
@@ -2635,8 +2637,14 @@ export function createRemoteTransport(): Transport {
       send({ type: "terminal:resize", sessionId, cols: size.cols, rows: size.rows }),
     submitTerminal: (sessionId: string, text: string, originWorkspaceId?: string) =>
       send({ type: "terminal:submit", sessionId, text, ...(originWorkspaceId ? { originWorkspaceId } : {}) }),
-    writeTerminal: (sessionId: string, data: string, originWorkspaceId?: string) =>
-      send({ type: "terminal:input", sessionId, data, ...(originWorkspaceId ? { originWorkspaceId } : {}) }),
+    writeTerminal: (sessionId: string, data: string, originWorkspaceId?: string, pointerArrival?: string) =>
+      send({
+        type: "terminal:input",
+        sessionId,
+        data,
+        ...(originWorkspaceId ? { originWorkspaceId } : {}),
+        ...(pointerArrival !== undefined ? { pointerArrival } : {}),
+      }),
     onStateUpdated: (handler: Handler<CoreState>) => listeners.stateUpdated.add(handler),
     onTerminalData: (handler: Handler<TerminalDataPayload>) => listeners.terminalData.add(handler),
     onTerminalReplay: (handler: Handler<TerminalReplayPayload>) => listeners.terminalReplay.add(handler),

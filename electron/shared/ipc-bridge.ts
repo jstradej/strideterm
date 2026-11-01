@@ -513,8 +513,12 @@ export interface StridetermAPI {
    * a hint the backend validates against the session — needed because an
    * attached task's Primary tab is presented inside the task workspace while
    * its session id still names the source workspace.
+   *
+   * `pointerArrival` marks `data` as a click synthesised from a tap: the
+   * motion report to deliver first (empty when the app tracks no motion). The
+   * backend sequences focus, arrival and click at the PTY.
    */
-  writeTerminal: (sessionId: string, data: string, originWorkspaceId?: string) => void;
+  writeTerminal: (sessionId: string, data: string, originWorkspaceId?: string, pointerArrival?: string) => void;
   submitTerminal: (sessionId: string, text: string, originWorkspaceId?: string) => void;
 
   // Performance diagnostics (Electron-only; the remote transport does not

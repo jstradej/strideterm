@@ -262,6 +262,35 @@ describe("SessionManager", () => {
     }
   });
 
+  test("a write sequence holds each pause, keeps later writes behind it, and dies with a restart", async () => {
+    vi.useFakeTimers();
+    try {
+      const manager = new SessionManager();
+      const state = createState() as Parameters<typeof manager.ensureSession>[0];
+      manager.ensureSession(state, "workspace-a:shell");
+      manager.writeSequenceToSession("workspace-a:shell", [
+        { data: "focus", pauseAfterMs: 500 },
+        { data: "arrive", pauseAfterMs: 100 },
+        { data: "click" },
+      ]);
+      manager.writeToSession("workspace-a:shell", "typed");
+      expect(handles[0]!.writes).toEqual(["focus"]);
+      await vi.advanceTimersByTimeAsync(499);
+      expect(handles[0]!.writes).toEqual(["focus"]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(handles[0]!.writes).toEqual(["focus", "arrive"]);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(handles[0]!.writes).toEqual(["focus", "arrive", "click", "typed"]);
+
+      manager.writeSequenceToSession("workspace-a:shell", [{ data: "arrive", pauseAfterMs: 100 }, { data: "stale" }]);
+      await manager.restartSession(state, "workspace-a:shell");
+      await vi.advanceTimersByTimeAsync(100);
+      expect(handles[1]!.writes).not.toContain("stale");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("submits bracketed paste as one Paste event followed by one separate Enter", async () => {
     vi.useFakeTimers();
     try {

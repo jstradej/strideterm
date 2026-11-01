@@ -19,6 +19,7 @@ import { createStore } from "./store.js";
 import * as fm from "./file-manager.js";
 import { SessionManager, type SshTestPtySpawn } from "./session-manager.js";
 import { TerminalReplayStore } from "./terminal-replay-buffer.js";
+import { TerminalFocusArbiter, focusReportOf } from "./terminal-focus.js";
 import {
   createAccessToken,
   createSessionId,
@@ -1062,6 +1063,7 @@ export async function createRuntime({
   }
 
   const terminalReplay = new TerminalReplayStore(APP_CONFIG.session.replayMaxChars || 0);
+  const terminalFocus = new TerminalFocusArbiter((sessionId) => terminalReplay.isFocusReportingEnabled(sessionId));
   // One-shot action prompt/context lives only in runtime memory. It is consumed
   // by the first launch for this fresh session and never saved into workspace state.
   const pendingPullRequestReviewLaunch = new Map<
@@ -1662,7 +1664,10 @@ export async function createRuntime({
   const attentionContext = createAttentionContext();
   /** Record a chunk and return the sequence number assigned to it. */
   function appendTerminalReplay(sessionId: string, data: string): number {
-    return terminalReplay.append(sessionId, data);
+    const reportedFocus = terminalReplay.isFocusReportingEnabled(sessionId);
+    const seq = terminalReplay.append(sessionId, data);
+    if (!reportedFocus && terminalReplay.isFocusReportingEnabled(sessionId)) terminalFocus.forgetTold(sessionId);
+    return seq;
   }
 
   /**
@@ -1672,15 +1677,70 @@ export async function createRuntime({
    */
   function clearTerminalReplay(sessionId: string): void {
     terminalReplay.clear(sessionId);
+    terminalFocus.forgetSession(sessionId);
   }
 
   /** Drop replay and its sequence counter entirely (session/panel destroy). */
   function destroyTerminalReplay(sessionId: string): void {
     terminalReplay.delete(sessionId);
+    terminalFocus.forgetSession(sessionId);
   }
 
   function clearWorkspaceTerminalReplay(workspaceId: string): void {
     terminalReplay.deleteWorkspace(workspaceId);
+    terminalFocus.forgetSessionsWithPrefix(`${workspaceId}:`);
+  }
+
+  /**
+   * Let a viewer's focus report (ESC[I / ESC[O) decide what the app hears.
+   * Returns false for anything that is not a focus report.
+   */
+  function consumeFocusReport(sessionId: string, data: string, viewerId: string | undefined): boolean {
+    const focused = focusReportOf(data);
+    if (focused === null) return false;
+    const due = terminalFocus.report(sessionId, viewerId || "", focused);
+    if (due) sessions.writeToSession(sessionId, due);
+    return true;
+  }
+
+  /** A viewer is gone: it no longer keeps any terminal focused. */
+  function dropViewerFocus(viewerKey: string): void {
+    for (const { sessionId, data } of terminalFocus.dropViewer(viewerKey)) sessions.writeToSession(sessionId, data);
+  }
+
+  /**
+   * After the app is told focus came back, before the click. Apps ignore the
+   * click that only brings their terminal back into focus — Claude Code
+   * deliberately, and in practice for ~300 ms after the focus-in.
+   */
+  const POINTER_AFTER_FOCUS_IN_MS = 500;
+  /**
+   * After the pointer arrives, before the press. An app that highlights what
+   * is under the pointer clicks what it has already drawn as hovered; Claude
+   * Code pressed the previous control when both came in one read.
+   */
+  const POINTER_ARRIVAL_SETTLE_MS = 100;
+
+  /**
+   * A click from a viewer that cannot deliver a real pointer (a tap). The
+   * viewer encodes the reports — `arrival` (motion, empty when the app does not
+   * track motion) and `click` (press + release) — and they reach the app as a
+   * person's would: in a terminal it knows is focused, the pointer there first.
+   */
+  function clickSession(
+    sessionId: string,
+    click: string,
+    arrival: string,
+    viewerId: string | undefined,
+    originWorkspaceId: string | undefined,
+  ): void {
+    prepareTerminalInput(sessionId, click, viewerId, originWorkspaceId);
+    const steps: Array<{ data: string; pauseAfterMs?: number }> = [];
+    const focusIn = terminalFocus.report(sessionId, viewerId || "", true);
+    if (focusIn) steps.push({ data: focusIn, pauseAfterMs: POINTER_AFTER_FOCUS_IN_MS });
+    if (arrival) steps.push({ data: arrival, pauseAfterMs: POINTER_ARRIVAL_SETTLE_MS });
+    steps.push({ data: click });
+    sessions.writeSequenceToSession(sessionId, steps);
   }
 
   // --- Claude CLI availability (persisted; only re-checked when not yet found) ---
@@ -11025,8 +11085,10 @@ export async function createRuntime({
         draft.windowSlots = draft.windowSlots.filter((s) => s.id !== windowId);
       });
       // The window is gone — drop its visible-session contribution so its
-      // panels stop counting as visible (otherwise their alerts stay suppressed).
+      // panels stop counting as visible (otherwise their alerts stay suppressed),
+      // and its focus so it no longer keeps a terminal focused.
       dropViewerVisibility(windowId);
+      dropViewerFocus(windowId);
       syncInterestedGitWorkspaces();
       // The closing window may have been the only one showing a docker
       // workspace; without this the poll would keep spawning probes for a view
@@ -12497,8 +12559,17 @@ export async function createRuntime({
       sessions.resizeSession(sessionId, size.cols, size.rows, getState());
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    writeToSession(sessionId: any, data: any, viewerId?: string, originWorkspaceId?: string) {
-      prepareTerminalInput(String(sessionId), String(data), viewerId, originWorkspaceId);
+    writeToSession(sessionId: any, data: any, viewerId?: string, originWorkspaceId?: string, pointerArrival?: string) {
+      const id = String(sessionId);
+      const input = String(data);
+      if (typeof pointerArrival === "string") {
+        clickSession(id, input, pointerArrival, viewerId, originWorkspaceId);
+        return { ok: true };
+      }
+      // A focus report is the viewer's state, not input: no attention reset,
+      // no "user interacted" — merely connecting a viewer produces one.
+      if (consumeFocusReport(id, input, viewerId)) return { ok: true };
+      prepareTerminalInput(id, input, viewerId, originWorkspaceId);
       sessions.writeToSession(sessionId, data);
       return { ok: true };
     },
@@ -12745,6 +12816,7 @@ export async function createRuntime({
     // removeWindowSlot; the remote server calls this on WebSocket close.
     dropViewerVisibility(viewerKey: string) {
       dropViewerVisibility(viewerKey);
+      dropViewerFocus(viewerKey);
     },
     syncAttentionContext({
       visibleSessionIds = [],

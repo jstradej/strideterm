@@ -2751,7 +2751,7 @@ export function registerIpc(
     }
   });
 
-  on("terminal:input", (event, sessionId, data, originWorkspaceId) => {
+  on("terminal:input", (event, sessionId, data, originWorkspaceId, pointerArrival) => {
     if (typeof sessionId === "string" && typeof data === "string") {
       const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
       const reviewOwner = isReviewAgentSetupSession(sessionId)
@@ -2771,7 +2771,10 @@ export function registerIpc(
       // `originWorkspaceId` is the workspace whose UI the user typed in; the
       // runtime validates it before crediting that workspace with work.
       const origin = typeof originWorkspaceId === "string" ? originWorkspaceId : undefined;
-      runtime.writeToSession(sessionId, data, windowId || undefined, origin);
+      // Present when `data` is a click synthesised from a tap: the pointer
+      // motion to deliver first (see wsTerminalInputSchema.pointerArrival).
+      const arrival = typeof pointerArrival === "string" && pointerArrival.length <= 256 ? pointerArrival : undefined;
+      runtime.writeToSession(sessionId, data, windowId || undefined, origin, arrival);
     }
   });
 

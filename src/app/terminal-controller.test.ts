@@ -226,12 +226,16 @@ describe("createTerminalController", () => {
 
 function buildTouchController({
   isRemote = true,
+  clickTerminal,
+  getActiveSessionId = () => null,
   ...hooks
 }: {
   onTextSelectionRequested?: (sessionId: string) => void;
   onOverscrollRefresh?: () => void;
   getOverlay?: () => unknown;
   isRemote?: boolean;
+  clickTerminal?: (sessionId: string, click: string, arrival: string) => void;
+  getActiveSessionId?: () => string | null;
 } = {}) {
   const views = { value: new Map() };
   const writeTerminal = vi.fn();
@@ -240,14 +244,14 @@ function buildTouchController({
     views: views as any,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     buffers: { value: new Map() } as any,
-    getActiveSessionId: () => null,
+    getActiveSessionId,
     getOverlay: () => null,
     getPayload: () => null,
     // isRemote defaults to true, which skips desktop-only link/open-path
     // registration. The tap-to-focus cases pass false: only a desktop
     // touchscreen focuses xterm on a tap — a remote client has MobileInputBar.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    api: { writeTerminal, isRemote } as any,
+    api: { writeTerminal, isRemote, clickTerminal } as any,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     appConfig: {} as any,
     openTerminalLink: vi.fn(),
@@ -345,8 +349,14 @@ describe("a tap clicks what a desktop mouse would", () => {
     document.body.replaceChildren();
   });
 
+  // The mocked xterm encodes nothing, so each synthetic mouse event "reports"
+  // a marker through the onData handler the controller registered — the way
+  // the real xterm reports synchronously while the event is dispatched.
+  const REPORT = { mousemove: "<move>", mousedown: "<down>", mouseup: "<up>" } as const;
+
   function setup({ mouseTrackingMode = "none", isRemote = true }: { mouseTrackingMode?: string; isRemote?: boolean }) {
-    const instance = buildTouchController({ isRemote });
+    const clickTerminal = vi.fn();
+    const instance = buildTouchController({ isRemote, clickTerminal });
     built.push(instance);
     instance.controller.ensureTerminal(SESSION_ID);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -363,20 +373,25 @@ describe("a tap clicks what a desktop mouse would", () => {
     term.modes = { mouseTrackingMode };
     mount.append(term.element);
     document.body.append(mount);
+    const [[forwardTerminalData]] = term.onData.mock.calls as Array<[(_chunk: string) => void]>;
 
     const mouse: Array<{ type: string; clientX: number; clientY: number; button: number }> = [];
-    const keyboardSafeAtFocus: boolean[] = [];
-    for (const type of ["mousemove", "mousedown", "mouseup"]) {
+    const textareaDisabledAtPress: boolean[] = [];
+    const order: string[] = [];
+    term.focus.mockImplementation(() => order.push("focus"));
+    for (const type of ["mousemove", "mousedown", "mouseup"] as const) {
       screen.addEventListener(type, (event) => {
         const { clientX, clientY, button } = event as MouseEvent;
         mouse.push({ type, clientX, clientY, button });
+        order.push(type);
         if (type === "mousedown") {
-          keyboardSafeAtFocus.push(term.textarea.readOnly && term.textarea.getAttribute("inputmode") === "none");
+          textareaDisabledAtPress.push(term.textarea.disabled);
           term.textarea.focus();
         }
+        if (mouseTrackingMode !== "none") forwardTerminalData(REPORT[type]);
       });
     }
-    return { mount, term, screen, mouse, keyboardSafeAtFocus };
+    return { ...instance, mount, term, screen, mouse, textareaDisabledAtPress, order, clickTerminal };
   }
 
   function tap(mount: HTMLElement, x: number, y: number, liftX = x, liftY = y): void {
@@ -393,8 +408,13 @@ describe("a tap clicks what a desktop mouse would", () => {
     );
   }
 
-  test("a mouse-tracking TUI receives a click at the finger without the phone keyboard", () => {
-    const { mount, term, mouse, keyboardSafeAtFocus } = setup({ mouseTrackingMode: "vt200" });
+  // The arrival and the click go out as ONE write: the backend sequences them
+  // at the PTY, where a gap between two messages sent from here would not
+  // survive the network.
+  test("a mouse-tracking app gets the arrival and the click in one write, without xterm taking the focus", () => {
+    const { mount, term, mouse, textareaDisabledAtPress, clickTerminal, writeTerminal } = setup({
+      mouseTrackingMode: "any",
+    });
     const composer = document.createElement("input");
     document.body.append(composer);
     composer.focus();
@@ -402,18 +422,20 @@ describe("a tap clicks what a desktop mouse would", () => {
     tap(mount, 100, 200, 103, 202);
 
     expect(mouse).toEqual([
+      { type: "mousemove", clientX: 103, clientY: 202, button: 0 },
       { type: "mousedown", clientX: 103, clientY: 202, button: 0 },
       { type: "mouseup", clientX: 103, clientY: 202, button: 0 },
     ]);
-    expect(keyboardSafeAtFocus).toEqual([true]);
+    expect(clickTerminal).toHaveBeenCalledExactlyOnceWith(SESSION_ID, "<down><up>", "<move>");
+    expect(writeTerminal).not.toHaveBeenCalled();
+    expect(textareaDisabledAtPress).toEqual([true]);
     expect(document.activeElement).toBe(composer);
-    expect(term.textarea.readOnly).toBe(false);
-    expect(term.textarea.hasAttribute("inputmode")).toBe(false);
+    expect(term.textarea.disabled).toBe(false);
     expect(term.focus).not.toHaveBeenCalled();
   });
 
   test("without mouse tracking a tap clicks only when it lands on a link", () => {
-    const { mount, term, screen, mouse } = setup({});
+    const { mount, term, screen, mouse, clickTerminal } = setup({});
 
     tap(mount, 100, 200);
     expect(mouse.map((event) => event.type)).toEqual(["mousemove"]);
@@ -426,23 +448,121 @@ describe("a tap clicks what a desktop mouse would", () => {
     expect(mouse.map((event) => event.type)).toEqual(["mousemove", "mousedown", "mouseup"]);
     expect(mouse.every((event) => event.clientX === 120 && event.clientY === 220)).toBe(true);
     expect(document.activeElement).not.toBe(term.textarea);
+    expect(clickTerminal).not.toHaveBeenCalled();
   });
 
   test("a swipe clicks nothing", () => {
-    const { mount, mouse } = setup({ mouseTrackingMode: "any" });
+    const { mount, mouse, clickTerminal } = setup({ mouseTrackingMode: "any" });
 
     tap(mount, 100, 200, 100, 260);
 
     expect(mouse).toEqual([]);
+    expect(clickTerminal).not.toHaveBeenCalled();
   });
 
-  test("a desktop touchscreen tap clicks and still focuses the terminal", () => {
-    const { mount, term, mouse } = setup({ mouseTrackingMode: "vt200", isRemote: false });
+  test("a desktop touchscreen tap focuses the terminal first, then clicks", () => {
+    const { mount, term, textareaDisabledAtPress, order, clickTerminal } = setup({
+      mouseTrackingMode: "vt200",
+      isRemote: false,
+    });
 
     tap(mount, 100, 200);
 
-    expect(mouse.map((event) => event.type)).toEqual(["mousedown", "mouseup"]);
+    expect(order).toEqual(["focus", "mousemove", "mousedown", "mouseup"]);
     expect(term.focus).toHaveBeenCalledTimes(1);
+    expect(textareaDisabledAtPress).toEqual([false]);
+    expect(clickTerminal).toHaveBeenCalledExactlyOnceWith(SESSION_ID, "<down><up>", "<move>");
+  });
+});
+
+// xterm derives focus reports from its hidden textarea, which a remote client
+// never focuses: a phone that merely connected told the app focus was lost.
+describe("a remote client reports the focus of what it shows", () => {
+  const ACTIVE = "focus:panel-active";
+  const OTHER = "focus:panel-other";
+  const built: Array<ReturnType<typeof buildTouchController>> = [];
+  afterEach(() => {
+    for (const instance of built) instance.controller.pruneTerminalViews(new Set<string>());
+    built.length = 0;
+    vi.restoreAllMocks();
+  });
+
+  function setup({ isRemote = true, active = ACTIVE }: { isRemote?: boolean; active?: string | null } = {}) {
+    let activeSessionId = active;
+    const instance = buildTouchController({ isRemote, getActiveSessionId: () => activeSessionId });
+    built.push(instance);
+    const forward = new Map<string, (_chunk: string) => void>();
+    for (const sessionId of [ACTIVE, OTHER]) {
+      instance.controller.ensureTerminal(sessionId);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const term = (instance.views.value as any).get(sessionId).term;
+      term.modes = { sendFocusMode: true };
+      forward.set(sessionId, term.onData.mock.calls[0][0]);
+    }
+    return {
+      ...instance,
+      forward,
+      setActive: (sessionId: string | null) => {
+        activeSessionId = sessionId;
+      },
+    };
+  }
+
+  test("xterm's own report is replaced by whether the client shows that terminal", () => {
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const { forward, writeTerminal } = setup();
+
+    // The replay turned 1004 on; xterm answers from its unfocused textarea.
+    forward.get(ACTIVE)!("\x1b[O");
+    forward.get(OTHER)!("\x1b[O");
+
+    expect(writeTerminal.mock.calls).toEqual([
+      [ACTIVE, "\x1b[I"],
+      [OTHER, "\x1b[O"],
+    ]);
+  });
+
+  test("a change of active terminal or window focus is reported once per terminal", () => {
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const { controller, forward, writeTerminal, setActive } = setup();
+    forward.get(ACTIVE)!("\x1b[O");
+    forward.get(OTHER)!("\x1b[O");
+    writeTerminal.mockClear();
+
+    setActive(OTHER);
+    controller.syncRemoteFocus();
+    expect(writeTerminal.mock.calls).toEqual([
+      [ACTIVE, "\x1b[O"],
+      [OTHER, "\x1b[I"],
+    ]);
+
+    writeTerminal.mockClear();
+    controller.syncRemoteFocus();
+    expect(writeTerminal).not.toHaveBeenCalled();
+
+    hasFocus.mockReturnValue(false);
+    controller.syncRemoteFocus();
+    expect(writeTerminal.mock.calls).toEqual([[OTHER, "\x1b[O"]]);
+  });
+
+  test("a terminal whose app did not ask for focus reports is told nothing", () => {
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const { controller, views, writeTerminal, setActive } = setup({ active: null });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    for (const view of (views.value as any).values()) view.term.modes = { sendFocusMode: false };
+
+    setActive(ACTIVE);
+    controller.syncRemoteFocus();
+
+    expect(writeTerminal).not.toHaveBeenCalled();
+  });
+
+  test("a desktop forwards xterm's report as it is", () => {
+    const { forward, writeTerminal } = setup({ isRemote: false });
+
+    forward.get(ACTIVE)!("\x1b[O");
+
+    expect(writeTerminal).toHaveBeenCalledExactlyOnceWith(ACTIVE, "\x1b[O");
   });
 });
 

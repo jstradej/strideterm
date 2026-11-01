@@ -171,6 +171,8 @@ export const useTerminalStore = defineStore("terminal", () => {
       // that already has both the transport and the store.
       writeTerminal: (sessionId: string, data: string) =>
         api.writeTerminal(sessionId, data, inputOriginWorkspaceId(sessionId)),
+      clickTerminal: (sessionId: string, click: string, arrival: string) =>
+        api.writeTerminal(sessionId, click, inputOriginWorkspaceId(sessionId), arrival),
       onSearchRequested: (sessionId: string) => {
         window.dispatchEvent(new CustomEvent("strideterm:terminal-search", { detail: { sessionId } }));
       },
@@ -335,6 +337,17 @@ export const useTerminalStore = defineStore("terminal", () => {
     }
 
     window.addEventListener("strideterm:theme-changed", () => controller?.syncTheme());
+
+    // A remote client reports which terminal it shows (see syncRemoteFocus):
+    // re-evaluate whenever that, the page's visibility or the window's focus
+    // changes.
+    if (api.isRemote) {
+      const syncRemoteFocus = () => controller?.syncRemoteFocus();
+      watch(getActiveSessionId, syncRemoteFocus);
+      window.addEventListener("focus", syncRemoteFocus);
+      window.addEventListener("blur", syncRemoteFocus);
+      document.addEventListener("visibilitychange", syncRemoteFocus);
+    }
 
     const transportKey: "terminalFontSizeLocal" | "terminalFontSizeRemote" = api.isRemote
       ? "terminalFontSizeRemote"

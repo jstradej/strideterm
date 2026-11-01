@@ -333,8 +333,8 @@ contextBridge.exposeInMainWorld("strideterm", {
   browseFile: (options) => ipcRenderer.invoke("dialog:browse-file", options),
   saveFile: (options) => ipcRenderer.invoke("dialog:save-file", options),
   resizeTerminal: (sessionId, size) => ipcRenderer.send("terminal:resize", sessionId, size),
-  writeTerminal: (sessionId, data, originWorkspaceId) =>
-    ipcRenderer.send("terminal:input", sessionId, data, originWorkspaceId),
+  writeTerminal: (sessionId, data, originWorkspaceId, pointerArrival) =>
+    ipcRenderer.send("terminal:input", sessionId, data, originWorkspaceId, pointerArrival),
   submitTerminal: (sessionId, text, originWorkspaceId) =>
     ipcRenderer.send("terminal:submit", sessionId, text, originWorkspaceId),
   getPerformanceSnapshot: () => ipcRenderer.invoke("perf:get-snapshot"),

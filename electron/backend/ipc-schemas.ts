@@ -1132,6 +1132,12 @@ export const wsTerminalInputSchema = z.object({
    * session id still names the source workspace.
    */
   originWorkspaceId: z.string().optional(),
+  /**
+   * Present when `data` is a click the viewer synthesised (a tap): the pointer
+   * motion to deliver first, empty when the app does not track motion. The
+   * runtime sequences focus, arrival and click at the PTY.
+   */
+  pointerArrival: z.string().max(256).optional(),
 });
 export type WsTerminalInput = z.infer<typeof wsTerminalInputSchema>;
 

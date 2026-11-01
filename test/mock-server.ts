@@ -147,7 +147,7 @@ export interface MockServerHandle {
   wsUrl: string;
   browserUrl: string;
   /** Every `terminal:input` WS message received from clients, in arrival order. */
-  terminalInputs: Array<{ sessionId: string; data: string }>;
+  terminalInputs: Array<{ sessionId: string; data: string; pointerArrival?: string }>;
   /** Every `terminal:submit` WS message (text + Enter as one operation), in arrival order. */
   terminalSubmits: Array<{ sessionId: string; text: string }>;
   close(): Promise<void>;
@@ -199,7 +199,7 @@ export async function startMockServer({
   ensureRemoteClient(payload);
   const TOKEN = "test-token";
   const sockets = new Set<WebSocket>();
-  const terminalInputs: Array<{ sessionId: string; data: string }> = [];
+  const terminalInputs: Array<{ sessionId: string; data: string; pointerArrival?: string }> = [];
   const terminalSubmits: Array<{ sessionId: string; text: string }> = [];
   // Per-socket detail interests (resource keys the client's mounted panes render)
   // so state broadcasts can push resource:invalidate the same way remote-server
@@ -716,7 +716,11 @@ export async function startMockServer({
           try {
             const msg = JSON.parse(String(raw));
             if (msg?.type === "terminal:input" && typeof msg.sessionId === "string") {
-              terminalInputs.push({ sessionId: msg.sessionId, data: String(msg.data ?? "") });
+              terminalInputs.push({
+                sessionId: msg.sessionId,
+                data: String(msg.data ?? ""),
+                ...(typeof msg.pointerArrival === "string" ? { pointerArrival: msg.pointerArrival } : {}),
+              });
             } else if (msg?.type === "terminal:submit" && typeof msg.sessionId === "string") {
               terminalSubmits.push({ sessionId: msg.sessionId, text: String(msg.text ?? "") });
             } else if (msg?.type === "resource:interest" && Array.isArray(msg.resources)) {

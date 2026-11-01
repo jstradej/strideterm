@@ -125,6 +125,8 @@ const WEBGL_HEALTHY_UPTIME_MS = 5 * 60_000;
  * pane/workspace switching doesn't thrash dispose → attach.
  */
 const WEBGL_IDLE_DISPOSE_MS = 2_000;
+const FOCUS_IN_REPORT = "\x1b[I";
+const FOCUS_OUT_REPORT = "\x1b[O";
 
 function decodeOsc52Clipboard(data: string): string | null {
   const separator = data.indexOf(";");
@@ -143,6 +145,8 @@ function decodeOsc52Clipboard(data: string): string | null {
 interface TerminalControllerApi {
   resizeTerminal: (sessionId: string, size: { cols: number; rows: number }) => void;
   writeTerminal: (sessionId: string, data: string, originWorkspaceId?: string) => void;
+  /** A click synthesised from a tap: `arrival` (motion) first, then `click`, sequenced by the backend. */
+  clickTerminal?: (sessionId: string, click: string, arrival: string) => void;
   getTerminalReplay?: (sessionId: string) => Promise<{ data: string }>;
   /** Optional — desktop only. Path link clicks are no-ops in remote mode. */
   openTerminalPath?: (request: {
@@ -423,6 +427,37 @@ export function createTerminalController({
   // transport; on Electron no replay arrives so the guard never engages.
   const throughSeqBySession = new Map<string, number>();
 
+  // Reports xterm emits while a tap is being turned into a click are collected
+  // here instead of sent (see captureReports).
+  let capturedReports: string[] | null = null;
+
+  // --- Focus reports from a remote client ------------------------------------
+  // A remote client's terminal counts as focused the way a terminal emulator's
+  // pane does: it is this client's active terminal, on a visible page, in a
+  // focused window — not whether xterm's hidden textarea (never focused here)
+  // holds the caret. The backend combines this with every other viewer's.
+  const remoteFocusSent = new Map<string, boolean>();
+
+  function remoteFocusedSessionId(): string | null {
+    if (document.visibilityState !== "visible" || !document.hasFocus()) return null;
+    return getActiveSessionId();
+  }
+
+  /** `always`: the app just asked (it turned focus reports on) — answer even if unchanged. */
+  function reportRemoteFocus(sessionId: string, always: boolean): void {
+    if (!views.value.get(sessionId)?.term.modes?.sendFocusMode) return;
+    const focused = remoteFocusedSessionId() === sessionId;
+    if (!always && remoteFocusSent.get(sessionId) === focused) return;
+    remoteFocusSent.set(sessionId, focused);
+    api.writeTerminal(sessionId, focused ? FOCUS_IN_REPORT : FOCUS_OUT_REPORT);
+  }
+
+  /** Re-evaluate after the active terminal, page visibility or window focus changed. */
+  function syncRemoteFocus(): void {
+    if (!api.isRemote) return;
+    for (const sessionId of views.value.keys()) reportRemoteFocus(sessionId, false);
+  }
+
   // --- Performance diagnostics (gated; off unless the Performance panel is
   // open) --------------------------------------------------------------------
   // When disabled the only hot-path cost is a single boolean check with zero
@@ -654,6 +689,7 @@ export function createTerminalController({
     buffers.value.delete(sessionId);
     sessionsWithRendererData.delete(sessionId);
     throughSeqBySession.delete(sessionId);
+    remoteFocusSent.delete(sessionId);
   }
 
   function pruneTerminalViews(validSessionIds: Set<string>): void {
@@ -1423,53 +1459,65 @@ export function createTerminalController({
     }
 
     // xterm focuses its hidden textarea on every mousedown, which on a phone
-    // raises the keyboard over the terminal the user only tapped. A read-only
-    // field with inputmode=none takes the focus without summoning it; the
-    // focus then goes back to wherever it was (the composer, or nowhere).
-    function withoutSoftKeyboard(run: () => void): void {
+    // raises the keyboard over a terminal the user only tapped. A disabled
+    // textarea cannot take the focus.
+    function withoutTextareaFocus(run: () => void): void {
       const textarea = term.textarea;
-      if (!api.isRemote || !textarea) {
+      if (!api.isRemote || !textarea || document.activeElement === textarea) {
         run();
         return;
       }
-      const previous = document.activeElement;
-      const wasReadOnly = textarea.readOnly;
-      const inputMode = textarea.getAttribute("inputmode");
-      textarea.readOnly = true;
-      textarea.setAttribute("inputmode", "none");
+      const wasDisabled = textarea.disabled;
+      textarea.disabled = true;
       try {
         run();
       } finally {
-        if (document.activeElement === textarea && previous !== textarea) {
-          textarea.blur();
-          if (previous instanceof HTMLElement && previous !== document.body) previous.focus({ preventScroll: true });
-        }
-        textarea.readOnly = wasReadOnly;
-        if (inputMode === null) textarea.removeAttribute("inputmode");
-        else textarea.setAttribute("inputmode", inputMode);
+        textarea.disabled = wasDisabled;
       }
     }
 
     // touchstart's preventDefault() also stops the browser from turning a tap
     // into mouse events, so nothing a desktop mouse clicks — a link, or a
     // full-screen TUI's own control such as Claude Code's "1 new message" —
-    // answered a finger. Hand xterm the click a mouse would have made: an app
-    // that tracks the mouse gets it in the protocol it asked for; otherwise
-    // only a tap that lands on a link clicks, so a stray tap neither starts a
-    // selection nor reaches the app.
+    // answered a finger. Without mouse tracking a click is xterm's own
+    // business (links), so only a tap that lands on a link clicks: a stray tap
+    // neither starts a selection nor reaches the app. An app that tracks the
+    // mouse gets the pointer's arrival and the click, encoded by xterm in the
+    // protocol the app asked for, as ONE write — the backend delivers them the
+    // way a person's pointer would, which a gap between two messages sent from
+    // here could not guarantee across the network (see clickSession).
     function clickAtTap(clientX: number, clientY: number): void {
       const screen = term.element?.querySelector<HTMLElement>(".xterm-screen");
       if (!screen) return;
       const init: MouseEventInit = { clientX, clientY, button: 0, bubbles: true, cancelable: true };
+      const press = () =>
+        withoutTextareaFocus(() => {
+          screen.dispatchEvent(new MouseEvent("mousedown", { ...init, buttons: 1 }));
+          screen.dispatchEvent(new MouseEvent("mouseup", init));
+        });
       const mouseMode = term.modes?.mouseTrackingMode;
       if (!mouseMode || mouseMode === "none") {
         screen.dispatchEvent(new MouseEvent("mousemove", init));
-        if (!screen.classList.contains("xterm-cursor-pointer")) return;
+        if (screen.classList.contains("xterm-cursor-pointer")) press();
+        return;
       }
-      withoutSoftKeyboard(() => {
-        screen.dispatchEvent(new MouseEvent("mousedown", { ...init, buttons: 1 }));
-        screen.dispatchEvent(new MouseEvent("mouseup", init));
-      });
+      const arrival = captureReports(() => screen.dispatchEvent(new MouseEvent("mousemove", init)));
+      const click = captureReports(press);
+      if (!click) return;
+      if (api.clickTerminal) api.clickTerminal(sessionId, click, arrival);
+      else api.writeTerminal(sessionId, arrival + click);
+    }
+
+    /** What xterm reports to the app while `run` runs — kept back instead of sent. */
+    function captureReports(run: () => void): string {
+      const reports: string[] = [];
+      capturedReports = reports;
+      try {
+        run();
+      } finally {
+        capturedReports = null;
+      }
+      return reports.join("");
     }
 
     mount.addEventListener(
@@ -1661,9 +1709,10 @@ export function createTerminalController({
           const dx = Math.abs(lift.clientX - touch.startX);
           const dy = Math.abs(lift.clientY - touch.startY);
           if (dx < 10 && dy < 10) {
-            clickAtTap(lift.clientX, lift.clientY);
-            // Desktop touchscreen tap: focus the terminal for direct typing.
+            // Desktop touchscreen tap: focus the terminal for direct typing —
+            // first, so the click lands in an already focused terminal.
             if (!api.isRemote && touch.mode === "scroll") term.focus();
+            clickAtTap(lift.clientX, lift.clientY);
           }
         }
         touch.mode = "none";
@@ -1680,6 +1729,17 @@ export function createTerminalController({
     );
 
     term.onData((data) => {
+      if (capturedReports) {
+        capturedReports.push(data);
+        return;
+      }
+      // xterm derives focus reports from its hidden textarea, which a remote
+      // client never focuses — so a phone that merely connected would tell the
+      // app focus was lost. Report what this client actually shows instead.
+      if (api.isRemote && (data === FOCUS_IN_REPORT || data === FOCUS_OUT_REPORT)) {
+        reportRemoteFocus(sessionId, true);
+        return;
+      }
       onUserInput?.(sessionId, data);
       api.writeTerminal(sessionId, data);
     });
@@ -2142,6 +2202,7 @@ export function createTerminalController({
     ensureTerminal,
     exportTerminalTranscript,
     focusActiveTerminal,
+    syncRemoteFocus,
     getSearchAddon,
     getVisibleTerminalText,
     getTerminalTextSnapshot,

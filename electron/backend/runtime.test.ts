@@ -644,6 +644,7 @@ class FakeSessionManager extends EventEmitter {
   declare resizeCalls: any[];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   declare writeCalls: any[];
+  declare sequenceCalls: Array<{ sessionId: string; steps: Array<{ data: string; pauseAfterMs?: number }> }>;
   declare stopped: boolean;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   declare getSessionEnv: any;
@@ -661,6 +662,7 @@ class FakeSessionManager extends EventEmitter {
     this.closedSessions = [];
     this.resizeCalls = [];
     this.writeCalls = [];
+    this.sequenceCalls = [];
     this.stopped = false;
     this.getSessionEnv = typeof getSessionEnv === "function" ? getSessionEnv : null;
     this.getSessionLaunch = typeof getSessionLaunch === "function" ? getSessionLaunch : null;
@@ -766,6 +768,10 @@ class FakeSessionManager extends EventEmitter {
 
   submitToSession(sessionId: string, text: string) {
     this.writeCalls.push({ sessionId, data: text });
+  }
+
+  writeSequenceToSession(sessionId: string, steps: Array<{ data: string; pauseAfterMs?: number }>) {
+    this.sequenceCalls.push({ sessionId, steps });
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -2886,6 +2892,97 @@ describe("runtime integration", () => {
     } finally {
       Date.now = originalNow;
     }
+  });
+
+  // Several viewers share one PTY. A viewer's ESC[I / ESC[O is its own state:
+  // the app hears the combination, and a report is never "the user acted" —
+  // merely connecting a phone produces one.
+  async function createFocusFixture() {
+    const fixture = await createFixture({
+      initialState: {
+        activeProjectId: "backend",
+        projects: [
+          {
+            id: "backend",
+            name: "Backend",
+            kind: "terminal",
+            cwd: "/tmp/backend",
+            activePanelId: "tests",
+            panels: [
+              { id: "tests", title: "Tests", command: "npm test", shell: true, startup: "manual", alertsForceOn: true },
+            ],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    const writes = () =>
+      fixture.sessionManager.writeCalls.filter((call) => call.sessionId === "backend:tests").map((call) => call.data);
+    const askForFocusReports = () =>
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:tests", data: "\x1b[?1004h" });
+    return { fixture, writes, askForFocusReports };
+  }
+
+  test("viewers' focus reports reach the app combined, and only once it asked for them", async () => {
+    const { fixture, writes, askForFocusReports } = await createFocusFixture();
+
+    fixture.runtime.writeToSession("backend:tests", "\x1b[I", "window-main");
+    expect(writes()).toEqual([]);
+
+    askForFocusReports();
+    fixture.runtime.writeToSession("backend:tests", "\x1b[I", "window-main");
+    // A phone connects; its unfocused report changes nothing.
+    fixture.runtime.writeToSession("backend:tests", "\x1b[O", "remote:phone");
+    expect(writes()).toEqual(["\x1b[I"]);
+
+    // The desktop window loses focus while the phone shows the terminal.
+    fixture.runtime.writeToSession("backend:tests", "\x1b[I", "remote:phone");
+    fixture.runtime.writeToSession("backend:tests", "\x1b[O", "window-main");
+    expect(writes()).toEqual(["\x1b[I"]);
+
+    // The phone disconnects: nobody has the terminal focused any more.
+    fixture.runtime.dropViewerVisibility("remote:phone");
+    expect(writes()).toEqual(["\x1b[I", "\x1b[O"]);
+  });
+
+  test("a focus report is not user input: it does not clear an alert", async () => {
+    const { fixture, askForFocusReports } = await createFocusFixture();
+    fixture.sessionManager.emit("terminal:data", { sessionId: "backend:tests", data: "$ " });
+    fixture.runtime.writeToSession("backend:tests", "npm test\r");
+    askForFocusReports();
+    fixture.sessionManager.emit("terminal:exit", { sessionId: "backend:tests", exitCode: 2, intentional: false });
+    expect(fixture.runtime.getPayload().attention.byProject.backend).toMatchObject({ count: 1 });
+
+    const originalNow = Date.now;
+    Date.now = () => originalNow() + 16_000;
+    try {
+      fixture.runtime.writeToSession("backend:tests", "\x1b[O", "remote:phone");
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toMatchObject({ count: 1 });
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
+  test("a tap's click reaches the app focused, the pointer there first", async () => {
+    const { fixture, askForFocusReports } = await createFocusFixture();
+    askForFocusReports();
+    // The app was last told nobody has the terminal focused.
+    fixture.runtime.writeToSession("backend:tests", "\x1b[O", "window-main");
+
+    fixture.runtime.writeToSession("backend:tests", "<down><up>", "remote:phone", undefined, "<move>");
+    // Focused now: the next tap goes straight to the pointer.
+    fixture.runtime.writeToSession("backend:tests", "<down><up>", "remote:phone", undefined, "<move>");
+    // An app that tracks no motion gets no arrival step.
+    fixture.runtime.writeToSession("backend:tests", "<down><up>", "remote:phone", undefined, "");
+
+    expect(fixture.sessionManager.sequenceCalls).toEqual([
+      {
+        sessionId: "backend:tests",
+        steps: [{ data: "\x1b[I", pauseAfterMs: 500 }, { data: "<move>", pauseAfterMs: 100 }, { data: "<down><up>" }],
+      },
+      { sessionId: "backend:tests", steps: [{ data: "<move>", pauseAfterMs: 100 }, { data: "<down><up>" }] },
+      { sessionId: "backend:tests", steps: [{ data: "<down><up>" }] },
+    ]);
   });
 
   test("agentsOnly suppresses shell-exit alert (default behaviour)", async () => {

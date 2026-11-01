@@ -145,6 +145,16 @@ describe("TerminalReplayStore", () => {
     expect(store.snapshot("s")).toEqual({ data: "", throughSeq: 2 });
   });
 
+  test("tracks whether the app asked for focus reports, even with replay storage disabled", () => {
+    const store = new TerminalReplayStore(0);
+    expect(store.isFocusReportingEnabled("s")).toBe(false);
+    store.append("s", "\u001b[?10");
+    store.append("s", "04h");
+    expect(store.isFocusReportingEnabled("s")).toBe(true);
+    store.append("s", "\u001b[?1004l");
+    expect(store.isFocusReportingEnabled("s")).toBe(false);
+  });
+
   test("tracks live bracketed-paste mode across chunks, resets, and disabled replay storage", () => {
     const store = new TerminalReplayStore(0);
     expect(store.isBracketedPasteEnabled("s")).toBe(false);

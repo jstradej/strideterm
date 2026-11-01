@@ -515,7 +515,7 @@ export class SessionManager extends EventEmitter {
     string,
     {
       session: RuntimeSession;
-      pending: Array<{ data: string; submit: boolean; signal?: AbortSignal }>;
+      pending: Array<{ data: string; submit: boolean; signal?: AbortSignal; pauseAfterMs?: number }>;
       timer: NodeJS.Timeout | null;
     }
   >();
@@ -1560,11 +1560,29 @@ export class SessionManager extends EventEmitter {
     this.#drainTerminalWriteQueue(sessionId, queue);
   }
 
+  /**
+   * Write `steps` in order, holding each step's `pauseAfterMs` before the next
+   * one. The app reads each step on its own and has the pause to act on it —
+   * which a gap left between two network messages does not guarantee. Writes
+   * that arrive meanwhile queue behind the sequence.
+   */
+  writeSequenceToSession(sessionId: string, steps: Array<{ data: string; pauseAfterMs?: number }>): void {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.status !== "running") return;
+    let queue = this.#terminalWriteQueues.get(sessionId);
+    if (!queue) {
+      queue = { session, pending: [], timer: null };
+      this.#terminalWriteQueues.set(sessionId, queue);
+    }
+    for (const step of steps) queue.pending.push({ data: step.data, submit: false, pauseAfterMs: step.pauseAfterMs });
+    this.#drainTerminalWriteQueue(sessionId, queue);
+  }
+
   #drainTerminalWriteQueue(
     sessionId: string,
     queue: {
       session: RuntimeSession;
-      pending: Array<{ data: string; submit: boolean; signal?: AbortSignal }>;
+      pending: Array<{ data: string; submit: boolean; signal?: AbortSignal; pauseAfterMs?: number }>;
       timer: NodeJS.Timeout | null;
     },
   ): void {
@@ -1598,6 +1616,12 @@ export class SessionManager extends EventEmitter {
             log.warn("queued terminal submit failed", { sessionId, err: (error as Error)?.message || String(error) });
           }
         }, 200);
+      } else if (operation.pauseAfterMs) {
+        queue.timer = setTimeout(() => {
+          queue.timer = null;
+          if (this.#terminalWriteQueues.get(sessionId) !== queue) return;
+          this.#drainTerminalWriteQueue(sessionId, queue);
+        }, operation.pauseAfterMs);
       }
     }
   }
