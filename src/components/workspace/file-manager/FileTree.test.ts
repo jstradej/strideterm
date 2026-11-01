@@ -59,3 +59,92 @@ describe("FileTree layout filtering", () => {
     wrapper.unmount();
   });
 });
+
+describe("FileTree name filter", () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  const dir = (relativePath: string) => ({
+    name: relativePath.split("/").at(-1)!,
+    relativePath,
+    kind: "directory" as const,
+  });
+  const file = (relativePath: string) => ({
+    name: relativePath.split("/").at(-1)!,
+    relativePath,
+    kind: "file" as const,
+  });
+  const leaf = (entry: ReturnType<typeof dir> | ReturnType<typeof file>) => ({
+    entry,
+    children: null,
+    expanded: false,
+  });
+
+  function seedTree() {
+    const store = useFileManagerStore();
+    store.rootPath = "C:/repo";
+    const loaded = (entry: ReturnType<typeof dir>, children: ReturnType<typeof leaf>[]) => ({
+      entry,
+      children,
+      expanded: true,
+    });
+    store.treeNodes = new Map([
+      [
+        "",
+        loaded(dir(""), [
+          leaf(dir("assets")),
+          leaf(dir("dist")),
+          leaf(dir("dist-electron")),
+          leaf(dir("node_modules")),
+          leaf(dir("src")),
+          leaf(file("readme.md")),
+        ]),
+      ],
+      ["dist", loaded(dir("dist"), [leaf(file("dist/index.js")), leaf(dir("dist/assets"))])],
+      ["src", loaded(dir("src"), [leaf(file("src/dist-path.ts")), leaf(file("src/main.ts")), leaf(dir("src/lib"))])],
+      ["src/lib", loaded(dir("src/lib"), [leaf(dir("src/lib/distro"))])],
+    ]);
+    return store;
+  }
+
+  const labels = (wrapper: ReturnType<typeof mount>) => wrapper.findAll(".tree-node__name").map((node) => node.text());
+
+  it("hides folders whose name and loaded contents do not match, and lists a matching folder in full", () => {
+    const store = seedTree();
+    store.filterText = " DIST ";
+
+    const wrapper = mount(FileTree, { props: { editorLayout: true } });
+
+    expect(labels(wrapper)).toEqual([
+      "dist",
+      "index.js",
+      "assets",
+      "dist-electron",
+      "src",
+      "dist-path.ts",
+      "lib",
+      "distro",
+    ]);
+    wrapper.unmount();
+  });
+
+  it("keeps an unmatched folder in the folder-only layout only for a matching loaded subfolder", () => {
+    const store = seedTree();
+    store.filterText = "distro";
+
+    const wrapper = mount(FileTree, { props: { editorLayout: false } });
+
+    expect(labels(wrapper)).toEqual(["src", "lib", "distro"]);
+    wrapper.unmount();
+  });
+
+  it("shows the empty message when nothing loaded matches", () => {
+    const store = seedTree();
+    store.filterText = "nothing-like-this";
+
+    const wrapper = mount(FileTree, { props: { editorLayout: true } });
+
+    expect(labels(wrapper)).toEqual([]);
+    expect(wrapper.text()).toContain("No matching files");
+    wrapper.unmount();
+  });
+});

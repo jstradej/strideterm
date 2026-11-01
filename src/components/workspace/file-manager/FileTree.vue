@@ -24,6 +24,7 @@
 import { computed } from "vue";
 import { useFileManagerStore } from "../../../stores/file-manager.js";
 import FileTreeNode from "./FileTreeNode.vue";
+import { normalizeTreeFilter, visibleTreeChildren } from "./tree-filter.js";
 
 const props = withDefaults(defineProps<{ editorLayout?: boolean }>(), { editorLayout: false });
 defineEmits<{
@@ -37,15 +38,17 @@ const rootChildren = computed(() => {
   const root = store.treeNodes.get("");
   return root?.children || [];
 });
-const visibleChildren = computed(() => {
-  const filter = store.filterText.trim().toLowerCase();
-  const children = props.editorLayout
-    ? rootChildren.value
-    : rootChildren.value.filter((node) => node.entry.kind === "directory");
-  return filter
-    ? children.filter((node) => node.entry.kind === "directory" || node.entry.name.toLowerCase().includes(filter))
-    : children;
-});
+const visibleChildren = computed(() =>
+  visibleTreeChildren(
+    rootChildren.value,
+    {
+      filter: normalizeTreeFilter(store.filterText),
+      editorLayout: props.editorLayout,
+      treeNodes: store.treeNodes,
+    },
+    false,
+  ),
+);
 const emptyMessage = computed(() => {
   if (store.filterText) return props.editorLayout ? "No matching files" : "No matching folders";
   return props.editorLayout ? "This folder is empty" : "No folders";

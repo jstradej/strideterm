@@ -41,6 +41,7 @@
         :node="child"
         :depth="depth + 1"
         :editor-layout="editorLayout"
+        :inside-match="childrenInsideMatch"
         @select-file="emit('select-file', $event)"
         @navigate-directory="emit('navigate-directory', $event)"
       />
@@ -53,11 +54,18 @@ import { computed, inject, ref } from "vue";
 import TreeEntryIcon from "../../shared/TreeEntryIcon.vue";
 import { useFileManagerStore } from "../../../stores/file-manager.js";
 import { statusBadge, statusColor, statusLabel, statusTitle } from "./git-status-helpers.js";
+import {
+  loadedTreeChildren,
+  normalizeTreeFilter,
+  treeNameMatches,
+  visibleTreeChildren,
+  type FilterableTreeNode,
+} from "./tree-filter.js";
 
 const props = withDefaults(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  defineProps<{ node: Record<string, any>; depth?: number; editorLayout?: boolean }>(),
-  { depth: 0 },
+  defineProps<{ node: Record<string, any>; depth?: number; editorLayout?: boolean; insideMatch?: boolean }>(),
+  { depth: 0, insideMatch: false },
 );
 const emit = defineEmits<{
   (event: "select-file", entry: { name: string; relativePath: string; kind: string }): void;
@@ -79,12 +87,6 @@ const isDropTarget = ref<boolean>(false);
 const isExpanded = computed(() => store.treeNodes.get(props.node.entry.relativePath)?.expanded || false);
 const isActive = computed(() => store.currentPath === props.node.entry.relativePath);
 const isSelected = computed(() => store.selectedEntry?.relativePath === props.node.entry.relativePath);
-const children = computed(() => {
-  const path = props.node.entry.relativePath;
-  const treeNode = store.treeNodes.get(path);
-  return treeNode?.children || props.node.children || [];
-});
-
 const gitStatus = computed(() => {
   if (!store.gitIsRepo) return null;
   const path = props.node.entry.relativePath;
@@ -94,17 +96,17 @@ const gitStatus = computed(() => {
     : store.getStatusFor(path)?.status || null;
 });
 
-const visibleChildren = computed(() => {
-  const filter = store.filterText.trim().toLowerCase();
-  const visible = props.editorLayout
-    ? (children.value as Array<{ entry: { name: string; kind: string; relativePath: string } }>)
-    : (children.value as Array<{ entry: { name: string; kind: string; relativePath: string } }>).filter(
-        (child) => child.entry.kind === "directory",
-      );
-  return filter
-    ? visible.filter((child) => child.entry.kind === "directory" || child.entry.name.toLowerCase().includes(filter))
-    : visible;
-});
+const filter = computed(() => normalizeTreeFilter(store.filterText));
+const childrenInsideMatch = computed(
+  () => props.insideMatch || treeNameMatches(props.node as FilterableTreeNode, filter.value),
+);
+const visibleChildren = computed(() =>
+  visibleTreeChildren(
+    loadedTreeChildren(props.node as FilterableTreeNode, store.treeNodes),
+    { filter: filter.value, editorLayout: !!props.editorLayout, treeNodes: store.treeNodes },
+    childrenInsideMatch.value,
+  ),
+);
 
 async function toggleAndNavigate() {
   const path = props.node.entry.relativePath;

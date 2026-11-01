@@ -30,7 +30,7 @@
         type="search"
         :value="filterText"
         placeholder="Filter…"
-        title="Filter file names in the current list or expanded explorer folders. Folders stay visible while filtering. Press Escape to clear."
+        title="Filter files and folders by name in the current list and the explorer tree. A matching folder shows all its contents; folders that were never expanded are not searched. Press Escape to clear."
         class="file-toolbar__search-input"
         @input="$emit('filter', ($event.target as HTMLInputElement).value)"
         @keydown.escape="$emit('filter', '')"
