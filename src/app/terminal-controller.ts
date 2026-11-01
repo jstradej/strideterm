@@ -1422,6 +1422,56 @@ export function createTerminalController({
       return Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
     }
 
+    // xterm focuses its hidden textarea on every mousedown, which on a phone
+    // raises the keyboard over the terminal the user only tapped. A read-only
+    // field with inputmode=none takes the focus without summoning it; the
+    // focus then goes back to wherever it was (the composer, or nowhere).
+    function withoutSoftKeyboard(run: () => void): void {
+      const textarea = term.textarea;
+      if (!api.isRemote || !textarea) {
+        run();
+        return;
+      }
+      const previous = document.activeElement;
+      const wasReadOnly = textarea.readOnly;
+      const inputMode = textarea.getAttribute("inputmode");
+      textarea.readOnly = true;
+      textarea.setAttribute("inputmode", "none");
+      try {
+        run();
+      } finally {
+        if (document.activeElement === textarea && previous !== textarea) {
+          textarea.blur();
+          if (previous instanceof HTMLElement && previous !== document.body) previous.focus({ preventScroll: true });
+        }
+        textarea.readOnly = wasReadOnly;
+        if (inputMode === null) textarea.removeAttribute("inputmode");
+        else textarea.setAttribute("inputmode", inputMode);
+      }
+    }
+
+    // touchstart's preventDefault() also stops the browser from turning a tap
+    // into mouse events, so nothing a desktop mouse clicks — a link, or a
+    // full-screen TUI's own control such as Claude Code's "1 new message" —
+    // answered a finger. Hand xterm the click a mouse would have made: an app
+    // that tracks the mouse gets it in the protocol it asked for; otherwise
+    // only a tap that lands on a link clicks, so a stray tap neither starts a
+    // selection nor reaches the app.
+    function clickAtTap(clientX: number, clientY: number): void {
+      const screen = term.element?.querySelector<HTMLElement>(".xterm-screen");
+      if (!screen) return;
+      const init: MouseEventInit = { clientX, clientY, button: 0, bubbles: true, cancelable: true };
+      const mouseMode = term.modes?.mouseTrackingMode;
+      if (!mouseMode || mouseMode === "none") {
+        screen.dispatchEvent(new MouseEvent("mousemove", init));
+        if (!screen.classList.contains("xterm-cursor-pointer")) return;
+      }
+      withoutSoftKeyboard(() => {
+        screen.dispatchEvent(new MouseEvent("mousedown", { ...init, buttons: 1 }));
+        screen.dispatchEvent(new MouseEvent("mouseup", init));
+      });
+    }
+
     mount.addEventListener(
       "touchstart",
       (e) => {
@@ -1606,12 +1656,14 @@ export function createTerminalController({
           onOverscrollRefresh();
           return;
         }
-        if (touch.mode === "scroll" && e.changedTouches.length === 1) {
-          const dx = Math.abs(e.changedTouches[0].clientX - touch.startX);
-          const dy = Math.abs(e.changedTouches[0].clientY - touch.startY);
-          if (!api.isRemote && dx < 10 && dy < 10) {
+        if ((touch.mode === "scroll" || touch.mode === "keyboard-pan") && e.changedTouches.length === 1) {
+          const lift = e.changedTouches[0];
+          const dx = Math.abs(lift.clientX - touch.startX);
+          const dy = Math.abs(lift.clientY - touch.startY);
+          if (dx < 10 && dy < 10) {
+            clickAtTap(lift.clientX, lift.clientY);
             // Desktop touchscreen tap: focus the terminal for direct typing.
-            term.focus();
+            if (!api.isRemote && touch.mode === "scroll") term.focus();
           }
         }
         touch.mode = "none";

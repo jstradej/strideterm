@@ -333,6 +333,119 @@ describe("touch tap-to-focus", () => {
   });
 });
 
+// touchstart's preventDefault() suppresses the browser's tap → mouse events,
+// so a full-screen TUI's own controls (Claude Code's "1 new message") and
+// terminal links never answered a finger on the phone.
+describe("a tap clicks what a desktop mouse would", () => {
+  const SESSION_ID = "tap-click:panel-1";
+  const built: Array<ReturnType<typeof buildTouchController>> = [];
+  afterEach(() => {
+    for (const instance of built) instance.controller.pruneTerminalViews(new Set<string>());
+    built.length = 0;
+    document.body.replaceChildren();
+  });
+
+  function setup({ mouseTrackingMode = "none", isRemote = true }: { mouseTrackingMode?: string; isRemote?: boolean }) {
+    const instance = buildTouchController({ isRemote });
+    built.push(instance);
+    instance.controller.ensureTerminal(SESSION_ID);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (instance.views.value as any).get(SESSION_ID)!;
+    const mount = view.mount as HTMLElement;
+    const term = view.term;
+    // The parts of xterm's DOM the tap reaches: .xterm > .xterm-screen, and the
+    // hidden textarea xterm focuses on every mousedown.
+    term.element = document.createElement("div");
+    const screen = document.createElement("div");
+    screen.className = "xterm-screen";
+    term.textarea = document.createElement("textarea");
+    term.element.append(screen, term.textarea);
+    term.modes = { mouseTrackingMode };
+    mount.append(term.element);
+    document.body.append(mount);
+
+    const mouse: Array<{ type: string; clientX: number; clientY: number; button: number }> = [];
+    const keyboardSafeAtFocus: boolean[] = [];
+    for (const type of ["mousemove", "mousedown", "mouseup"]) {
+      screen.addEventListener(type, (event) => {
+        const { clientX, clientY, button } = event as MouseEvent;
+        mouse.push({ type, clientX, clientY, button });
+        if (type === "mousedown") {
+          keyboardSafeAtFocus.push(term.textarea.readOnly && term.textarea.getAttribute("inputmode") === "none");
+          term.textarea.focus();
+        }
+      });
+    }
+    return { mount, term, screen, mouse, keyboardSafeAtFocus };
+  }
+
+  function tap(mount: HTMLElement, x: number, y: number, liftX = x, liftY = y): void {
+    mount.dispatchEvent(
+      new TouchEvent("touchstart", {
+        bubbles: true,
+        cancelable: true,
+        touches: [touchPoint(mount, x, y)],
+        changedTouches: [touchPoint(mount, x, y)],
+      }),
+    );
+    mount.dispatchEvent(
+      new TouchEvent("touchend", { bubbles: true, touches: [], changedTouches: [touchPoint(mount, liftX, liftY)] }),
+    );
+  }
+
+  test("a mouse-tracking TUI receives a click at the finger without the phone keyboard", () => {
+    const { mount, term, mouse, keyboardSafeAtFocus } = setup({ mouseTrackingMode: "vt200" });
+    const composer = document.createElement("input");
+    document.body.append(composer);
+    composer.focus();
+
+    tap(mount, 100, 200, 103, 202);
+
+    expect(mouse).toEqual([
+      { type: "mousedown", clientX: 103, clientY: 202, button: 0 },
+      { type: "mouseup", clientX: 103, clientY: 202, button: 0 },
+    ]);
+    expect(keyboardSafeAtFocus).toEqual([true]);
+    expect(document.activeElement).toBe(composer);
+    expect(term.textarea.readOnly).toBe(false);
+    expect(term.textarea.hasAttribute("inputmode")).toBe(false);
+    expect(term.focus).not.toHaveBeenCalled();
+  });
+
+  test("without mouse tracking a tap clicks only when it lands on a link", () => {
+    const { mount, term, screen, mouse } = setup({});
+
+    tap(mount, 100, 200);
+    expect(mouse.map((event) => event.type)).toEqual(["mousemove"]);
+
+    // xterm marks a hovered link with this class on the screen element.
+    screen.addEventListener("mousemove", () => screen.classList.add("xterm-cursor-pointer"));
+    mouse.length = 0;
+    tap(mount, 120, 220);
+
+    expect(mouse.map((event) => event.type)).toEqual(["mousemove", "mousedown", "mouseup"]);
+    expect(mouse.every((event) => event.clientX === 120 && event.clientY === 220)).toBe(true);
+    expect(document.activeElement).not.toBe(term.textarea);
+  });
+
+  test("a swipe clicks nothing", () => {
+    const { mount, mouse } = setup({ mouseTrackingMode: "any" });
+
+    tap(mount, 100, 200, 100, 260);
+
+    expect(mouse).toEqual([]);
+  });
+
+  test("a desktop touchscreen tap clicks and still focuses the terminal", () => {
+    const { mount, term, mouse } = setup({ mouseTrackingMode: "vt200", isRemote: false });
+
+    tap(mount, 100, 200);
+
+    expect(mouse.map((event) => event.type)).toEqual(["mousedown", "mouseup"]);
+    expect(term.focus).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("touch long press opens the select-text panel", () => {
   const SESSION_ID = "long-press:panel-1";
   /** Matches LONG_PRESS_MS in terminal-controller.ts. */
