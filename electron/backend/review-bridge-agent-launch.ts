@@ -16,6 +16,7 @@ import {
 import { REVIEW_GIT_CAPABILITY_ENV, REVIEW_GIT_URL_ENV } from "../shared/review-git-env.js";
 import { buildReviewGitPolicy } from "../shared/review-git-policy.js";
 import { buildBasicReviewAgentPolicy } from "./basic-review-agent-policy.js";
+import { CODEX_NO_DAEMON_FLAG } from "./codex-no-daemon.js";
 
 const SUPPORTED_REVIEW_AGENTS = new Set(["claude", "codex", "copilot", "opencode"]);
 const REVIEW_BRIDGE_STDIO_ENTRY = fileURLToPath(new URL("./review-bridge-mcp-stdio.js", import.meta.url));
@@ -114,6 +115,8 @@ interface BuildLaunchInput extends GrantMcpServers {
    */
   reviewGitEnv?: Record<string, string>;
   internalMcpEnv?: Record<string, string>;
+  /** Start an interactive Codex with `--no-daemon` so its hooks and MCP servers see this tab's environment. */
+  codexNoDaemon?: boolean;
   /** One-shot first turn for a backend-started review action. Ordinary tab launches omit this. */
   initialPrompt?: string;
   /** Constrains the bridge to local draft tools for automated basic reviews. */
@@ -496,6 +499,7 @@ function buildCodexLaunch({
   processInfo,
   initialPrompt,
   draftOnlyReview,
+  codexNoDaemon,
   ...grants
 }: BuildLaunchInput): AgentLaunch {
   const installs = grantMcpInstalls(grants);
@@ -511,6 +515,7 @@ function buildCodexLaunch({
     args.unshift("-s");
   }
   if (!automaticReview) pushWorkspaceScope(args, workspace?.cwd);
+  if (codexNoDaemon && !automaticReview) args.unshift(CODEX_NO_DAEMON_FLAG);
   if (automaticReview) args.push("exec");
   args.push(
     "-c",
@@ -763,6 +768,7 @@ export function buildReviewAgentLaunch({
   internalMcp,
   internalMcpEnv,
   reviewGitEnv,
+  codexNoDaemon,
   initialPrompt,
   draftOnlyReview,
 }: BuildLaunchInput): AgentLaunch | null {
@@ -789,6 +795,7 @@ export function buildReviewAgentLaunch({
       panel,
       context,
       processInfo,
+      codexNoDaemon,
       sshMcp,
       internalMcp: draftOnlyReview ? undefined : internalMcp,
       initialPrompt,
@@ -854,8 +861,10 @@ export function buildAgentMcpLaunch({
   sshMcp,
   internalMcp,
   internalMcpEnv,
+  codexNoDaemon,
 }: GrantMcpServers & {
   workspace?: { cwd?: string };
+  codexNoDaemon?: boolean;
   panel?: ReviewPanel;
   processInfo?: ProcessInfo;
   /** The per-session grant values (URL + capability). Only OpenCode needs them here: its MCP config carries the values. */
@@ -871,6 +880,7 @@ export function buildAgentMcpLaunch({
   if (parsed.provider === "claude") {
     appendClaudeMcpServers(args, claudeMcpServerEntries(installs));
   } else if (parsed.provider === "codex") {
+    if (codexNoDaemon) args.unshift(CODEX_NO_DAEMON_FLAG);
     pushCodexMcpInstalls(args, installs);
   } else {
     if (sshMcp) throw new Error("SSH tools are available only for Claude Code and Codex tabs.");

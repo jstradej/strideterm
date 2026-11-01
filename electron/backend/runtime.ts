@@ -169,6 +169,7 @@ import {
   detectClaudeHookStatus,
 } from "./claude-hook-config.js";
 import { configureGeminiHook, removeGeminiHook, detectGeminiHookStatus } from "./gemini-hook-config.js";
+import { createCodexVersionProbe, insertCodexNoDaemon, shouldAddCodexNoDaemon } from "./codex-no-daemon.js";
 import { configureCodexHook, removeCodexHook, detectCodexHookStatus } from "./codex-hook-config.js";
 import { configureCopilotHook, removeCopilotHook, detectCopilotHookStatus } from "./copilot-hook-config.js";
 import {
@@ -713,6 +714,13 @@ export async function createRuntime({
   const GitHubManagerImpl = dependencies.GitHubManager || GitHubManager;
   const createPluginManagerImpl = dependencies.createPluginManager || createPluginManager;
   const execFileTextImpl = dependencies.execFileText || execFileText;
+  const codexVersionProbe = createCodexVersionProbe({ exec: (file, args, opts) => execFileTextImpl(file, args, opts) });
+  const codexNoDaemonFor = (command: unknown): boolean => {
+    const parsed = parseAgentCommand(command);
+    return (
+      parsed?.provider === "codex" && shouldAddCodexNoDaemon(parsed.args, codexVersionProbe.get(parsed.executable))
+    );
+  };
   const rmPathImpl = dependencies.rmPath ?? null;
 
   // Forward-declare plugin manager so getPayload() can read it safely even
@@ -1267,6 +1275,7 @@ export async function createRuntime({
             internalMcp: pendingReview ? undefined : internalMcpSpec,
             internalMcpEnv: pendingReview ? undefined : internalMcpEnv,
             reviewGitEnv: pendingReview ? undefined : reviewGitEnv,
+            codexNoDaemon: !panelState.launch && codexNoDaemonFor(panelState.command),
             ...(pendingReview ? { initialPrompt: pendingReview.prompt, draftOnlyReview: true } : {}),
           });
         }
@@ -1289,9 +1298,13 @@ export async function createRuntime({
           sshMcp: sshMcpSpec,
           internalMcp: internalMcpSpec,
           internalMcpEnv,
+          codexNoDaemon: codexNoDaemonFor(panelState.command),
         });
         if (!launch) throw new Error("MCP tools could not be enabled for this tab's agent command.");
         return { ...launch, env: { ...(launch.env || {}), ...sshMcpEnv, ...internalMcpEnv } };
+      }
+      if (!panelState.launch && codexNoDaemonFor(panelState.command)) {
+        return { command: insertCodexNoDaemon(panelState.command) };
       }
       return null;
     },

@@ -1800,6 +1800,65 @@ describe("runtime integration", () => {
     expect(broker.revokeSession).toHaveBeenCalledWith(sessionId);
   });
 
+  test("a plain Codex tab is launched with --no-daemon without touching the stored command", async () => {
+    const execFileText = vi.fn(async () => ({ stdout: "codex-cli 0.166.0\n", stderr: "" }));
+    const workspace = {
+      id: "codex-no-daemon",
+      name: "Codex no-daemon test",
+      kind: "terminal",
+      cwd: process.cwd(),
+      profileId: "default",
+      activePanelId: "codex",
+      panels: [
+        { id: "codex", title: "Codex", command: "codex --yolo" },
+        { id: "codex-exec", title: "Codex exec", command: "codex exec hi" },
+        { id: "claude", title: "Claude", command: "claude" },
+        { id: "custom", title: "Custom", command: "codex", launch: { file: "wsl.exe", args: ["codex"] } },
+      ],
+    };
+    const fixture = await createFixture({ initialState: { workspaces: [workspace] }, dependencies: { execFileText } });
+    fixtures.push(fixture);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const saved = fixture.store.getState().workspaces.find((item: any) => item.id === workspace.id)!;
+    const launchFor = (panelId: string) =>
+      fixture.sessionManager.getSessionLaunch({
+        workspace: saved,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        panel: saved.panels.find((item: any) => item.id === panelId),
+        sessionId: `${workspace.id}:${panelId}`,
+      });
+
+    expect(launchFor("codex")).toEqual({ command: "codex --no-daemon --yolo" });
+    await vi.waitFor(() => expect(execFileText).toHaveBeenCalledTimes(1));
+    expect(launchFor("codex-exec")).toBeNull();
+    expect(launchFor("claude")).toBeNull();
+    expect(launchFor("custom")).toBeNull();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(saved.panels.find((item: any) => item.id === "codex")!.command).toBe("codex --yolo");
+  });
+
+  test("a plain Codex tab on a Codex older than 0.157 keeps its command", async () => {
+    const execFileText = vi.fn(async () => ({ stdout: "codex-cli 0.150.0\n", stderr: "" }));
+    const workspace = {
+      id: "codex-old",
+      name: "Codex old test",
+      kind: "terminal",
+      cwd: process.cwd(),
+      profileId: "default",
+      activePanelId: "codex",
+      panels: [{ id: "codex", title: "Codex", command: "codex" }],
+    };
+    const fixture = await createFixture({ initialState: { workspaces: [workspace] }, dependencies: { execFileText } });
+    fixtures.push(fixture);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const saved = fixture.store.getState().workspaces.find((item: any) => item.id === workspace.id)!;
+    const ctx = { workspace: saved, panel: saved.panels[0], sessionId: `${workspace.id}:codex` };
+    fixture.sessionManager.getSessionLaunch(ctx);
+    await vi.waitFor(() => expect(execFileText).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(fixture.sessionManager.getSessionLaunch(ctx)).toBeNull();
+  });
+
   test("workspace-wide SSH tools opt-in mints for an eligible agent tab and skips a shell tab without failing it", async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let brokerOptions: any;

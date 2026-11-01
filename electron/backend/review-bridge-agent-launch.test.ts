@@ -340,6 +340,29 @@ describe("review bridge agent launch", () => {
     expect(launch.args).toContain("--add-dir");
   });
 
+  test("puts --no-daemon first for an interactive review codex session when asked, but never for the one-shot exec", () => {
+    const processInfo = { platform: "linux", execPath: "/usr/bin/node" };
+    const interactive = buildReviewAgentLaunch({
+      workspace: createWorkspace(),
+      panel: { id: "codex", title: "Codex", command: "codex" },
+      context: createContext(),
+      processInfo,
+      codexNoDaemon: true,
+    })!;
+    expect(interactive.args.slice(0, 3)).toEqual(["--no-daemon", "-s", "workspace-write"]);
+
+    const oneShot = buildReviewAgentLaunch({
+      workspace: createWorkspace(),
+      panel: { id: "codex", title: "Codex", command: "codex" },
+      context: createContext(),
+      processInfo,
+      codexNoDaemon: true,
+      initialPrompt: "Review it",
+      draftOnlyReview: true,
+    })!;
+    expect(oneShot.args).not.toContain("--no-daemon");
+  });
+
   test("runs the review server as Electron-as-Node when launched from Electron default-app mode", () => {
     const launch = buildReviewAgentLaunch({
       workspace: createWorkspace(),
@@ -715,6 +738,16 @@ describe("internal MCP launch composition", () => {
       'mcp_servers.strideterm_ssh.env_vars=["STRIDETERM_SSH_MCP_URL","STRIDETERM_SSH_MCP_CAPABILITY"]',
     );
     expect(codex.args).toContain("danger-full-access");
+    expect(codex.args).not.toContain("--no-daemon");
+
+    const noDaemon = buildAgentMcpLaunch({
+      workspace: { cwd: "/repo" },
+      panel: { id: "codex", command: "codex -s danger-full-access" },
+      processInfo: { platform: "linux", execPath: "/usr/bin/node" },
+      internalMcp,
+      codexNoDaemon: true,
+    })!;
+    expect(noDaemon.args[0]).toBe("--no-daemon");
   });
 
   describe("GitHub Copilot and OpenCode", () => {
