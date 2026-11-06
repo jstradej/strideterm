@@ -1060,10 +1060,17 @@
   align-items: center;
   /* Yield space to __actions when the header is tight: the tab bar shrinks
      (clipping its trailing edge) rather than pushing the right-aligned
-     pin/close controls off the panel. overflow: hidden lets the flex item
-     shrink below its content min-size. */
+     pin/close controls off the panel. min-width: 0 lets the flex item shrink
+     below its content min-size; if a tab is ever added past the collapse
+     threshold the row scrolls sideways instead of overlapping the actions. */
   min-width: 0;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.notification-center__tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .notification-center__tab {
@@ -1078,6 +1085,7 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  flex-shrink: 0;
   transition:
     color 0.15s,
     background 0.15s;
@@ -1101,7 +1109,7 @@
 }
 
 /* Hamburger tab switcher — hidden until the panel is too narrow for even the
-   icon tabs (revealed by the ≤240px container query below). */
+   icon tabs (revealed by the ≤480px container query below). */
 .notification-center__tabmenu {
   position: relative;
   display: none;
@@ -1185,7 +1193,7 @@
 }
 
 /* Icon tabs: all six tab labels (Approvals included, it is not always shown),
-   the Ack/Clear labels and pin/close need about 730px, so below that each tab
+   the Ack/Clear labels and pin/close need about 730px, so below 760px each tab
    drops to its icon (its title still names it). Placed after the base
    .notification-center__tab rules so these win on equal specificity. */
 @container notif-dock (max-width: 760px) {
@@ -1200,9 +1208,14 @@
   }
 }
 
-/* Hamburger: below 340px even the icon tabs crowd the action buttons, so
-   collapse the whole tab bar into the dropdown switcher. */
-@container notif-dock (max-width: 340px) {
+/* Hamburger: below 480px the icon tabs no longer fit beside the actions, so
+   collapse the whole tab bar into the dropdown switcher. Worst case at icon
+   width, measured from the CSS box model (emoji glyph ~17px): six icon tabs
+   (8+17+8 each) + 5 gaps = ~208px, count badges on Alerts (99+) and Agents
+   ~65px, Ack / Clear / pin / close ~114px, header padding 28px => ~415px
+   before the gap between the two groups and font-dependent glyph widths.
+   480px keeps that slack. Re-measure when adding a tab or an action. */
+@container notif-dock (max-width: 480px) {
   .notification-center__tabs {
     display: none;
   }
