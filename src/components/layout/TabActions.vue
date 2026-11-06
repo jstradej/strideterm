@@ -14,9 +14,10 @@
       type="button"
       class="button button--ghost"
       title="Add a new tab to this workspace — pick from your tab templates (Shell, Claude Code, Codex, Gemini, Files, Browser…)."
+      :aria-label="isMobile ? 'Add tab' : undefined"
       @click="$emit('toggle-tab-picker', $event)"
     >
-      + Tab
+      {{ isMobile ? "+" : "+ Tab" }}
     </button>
     <button
       v-if="!isMobile"

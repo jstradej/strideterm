@@ -60,16 +60,20 @@
     place-items: center;
   }
 
-  /* ── Hamburger button ── */
+  /* ── Hamburger button ──
+     Toolbar controls (hamburger, keyboard, TabActions) are flat 40px buttons
+     centred in the 48px toolbar, so they sit clear of its bottom line; only
+     the tab trigger runs the full height and joins the content below. */
   .mobile-hamburger {
     display: grid;
     place-items: center;
     position: relative;
-    width: 34px;
-    height: 34px;
-    border: 1px solid var(--border);
+    width: 40px;
+    height: 40px;
+    margin: 4px 2px 4px 4px;
+    border: 0;
     border-radius: 4px;
-    background: var(--panel);
+    background: transparent;
     color: var(--text);
     font-size: 18px;
     line-height: 1;
@@ -78,9 +82,9 @@
     z-index: 60;
   }
 
-  /* Hero (30px) + compact toolbar (34px + 1px border) + 8px gap. */
+  /* Hero (30px) + compact toolbar (48px + 1px line) + 8px gap. */
   .workspace-remote-alert {
-    top: calc(100% + 43px);
+    top: calc(100% + 57px);
   }
 
   .mobile-hamburger:hover {
@@ -174,6 +178,7 @@
     flex-wrap: nowrap;
     gap: 0;
     align-items: stretch;
+    min-height: 48px;
   }
 
   .tab-strip {
@@ -181,42 +186,101 @@
   }
 
   .mobile-tab-picker {
-    display: block;
+    display: flex;
     position: relative;
-    flex-shrink: 0;
-    margin-left: auto;
+    flex: 1 1 0;
+    min-width: 0;
   }
 
+  /* The "ear": same construction as the desktop .tab--active (dialogs.css) —
+     accent line on top, the content surface as background, side lines from
+     --tab-line, no bottom border so it covers the toolbar's bottom line. */
   .mobile-tab-picker__trigger {
-    display: grid;
-    place-items: center;
-    height: 44px;
-    min-height: 44px;
-    padding: 0 10px;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    background: var(--panel);
+    display: flex;
+    flex: 1 1 auto;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    min-height: 48px;
+    padding: 0 10px 0 10px;
+    border: 0;
+    border-top: 2px solid var(--accent);
+    border-radius: 0;
+    background: var(--surface-term);
+    box-shadow:
+      -1px 0 0 var(--tab-line),
+      1px 0 0 var(--tab-line);
     color: var(--text);
     font-size: 13px;
+    text-align: left;
     cursor: pointer;
+  }
+
+  .mobile-tab-picker__trigger:is(
+    [data-view-id^="git:"],
+    [data-view-id^="docker:"],
+    [data-view-id^="azure:"],
+    [data-view-id^="github:"],
+    [data-view-id^="review:"],
+    [data-view-id^="files:"],
+    [data-view-id^="browser:"],
+    [data-view-id^="task-dashboard:"],
+    [data-view-id^="jira:"]
+  ) {
+    background: var(--surface-pane);
+  }
+
+  .mobile-tab-picker__text {
+    display: grid;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .mobile-tab-picker__label,
+  .mobile-tab-picker__trigger-status {
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .mobile-tab-picker__trigger:hover {
-    background: rgba(var(--tint), 0.08);
+  .mobile-tab-picker__trigger-status {
+    color: var(--muted);
+    font-size: 11px;
   }
 
-  /* Keyboard rescue button — same look as the hamburger so the toolbar reads
-     as a uniform action row. Sits between the tab picker (margin-left:auto)
-     and the notification bell. */
+  .mobile-tab-picker__trigger-status:empty::before {
+    content: "\00a0";
+  }
+
+  .mobile-tab-picker__trigger-status--running {
+    color: var(--success-fg);
+  }
+
+  .mobile-tab-picker__trigger-status--error {
+    color: var(--danger);
+  }
+
+  .mobile-tab-picker__chevron {
+    flex-shrink: 0;
+    width: 12px;
+    height: 12px;
+    fill: none;
+    stroke: var(--muted);
+    stroke-width: 1.75;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  /* Keyboard rescue button — flat, same size as the hamburger. */
   .mobile-keyboard-btn {
     display: grid;
     place-items: center;
-    width: 34px;
-    height: 34px;
-    border: 1px solid var(--border);
+    width: 40px;
+    height: 40px;
+    margin: 4px 2px;
+    border: 0;
     border-radius: 4px;
-    background: var(--panel);
+    background: transparent;
     color: var(--text);
     font-size: 18px;
     line-height: 1;
@@ -482,7 +546,9 @@
        actions live to its right), so a picker-relative dropdown overflows
        off the left edge of the screen on narrow viewports. */
     position: fixed;
-    top: 56px;
+    /* App.vue sets the variable from the trigger's bottom edge when opening;
+       the fallback is hero (30px) + toolbar (48px + 1px line) + 4px gap. */
+    top: var(--mobile-tab-dropdown-top, 83px);
     left: 8px;
     right: 8px;
     z-index: 120;
@@ -491,8 +557,8 @@
     border-radius: 6px;
     background: var(--panel);
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-    max-height: calc(100dvh - 70px);
-    max-height: calc(100% - 70px);
+    max-height: calc(100dvh - var(--mobile-tab-dropdown-top, 83px) - 14px);
+    max-height: calc(100% - var(--mobile-tab-dropdown-top, 83px) - 14px);
     overflow-y: auto;
   }
 
@@ -556,7 +622,7 @@
     background: none;
     border-radius: 4px;
     color: var(--muted);
-    font-size: 14px;
+    font-size: 18px;
     font-family: inherit;
     line-height: 1;
     cursor: pointer;
@@ -581,15 +647,37 @@
   }
 
   .terminal-toolbar__actions {
-    padding: 0 4px;
+    padding: 0 4px 0 2px;
     flex-shrink: 0;
     flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: center;
     gap: 2px;
   }
 
+  .terminal-toolbar__actions .button {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 40px;
+    height: 40px;
+    min-height: 40px;
+    margin: 4px 0;
+    padding: 0 10px;
+    border: 0;
+    background: transparent;
+    font-size: 15px;
+    line-height: 1;
+  }
+
+  .terminal-toolbar__actions .button:hover,
+  .terminal-toolbar__actions .button:active {
+    background: rgba(var(--tint), 0.08);
+  }
+
   .terminal-toolbar__actions .jira-board-add-button {
-    min-height: 44px;
-    padding-inline: 9px;
+    font-size: 13px;
   }
 
   .tab-actions__separator,

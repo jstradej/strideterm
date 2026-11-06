@@ -1,8 +1,10 @@
 import { describe, expect, test, beforeEach } from "vitest";
+import { nextTick } from "vue";
 import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import TabActions from "./TabActions.vue";
 import { useAppStore } from "../../stores/app.js";
+import { isMobileViewport } from "../../composables/useIsNarrow.js";
 import type { StatePayload } from "../../../electron/shared/types/state.js";
 
 beforeEach(() => {
@@ -13,6 +15,30 @@ describe("TabActions", () => {
   test("shows + Tab button for terminal workspaces", () => {
     const wrapper = mount(TabActions);
     expect(wrapper.text()).toContain("+ Tab");
+  });
+
+  test("shortens + Tab to + on a mobile viewport and keeps the accessible name", async () => {
+    const original = window.matchMedia;
+    window.matchMedia = ((query: string) => ({
+      matches: true,
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+      onchange: null,
+    })) as unknown as typeof window.matchMedia;
+    try {
+      const wrapper = mount(TabActions);
+      await nextTick();
+      const button = wrapper.get("button.button--ghost");
+      expect(button.text()).toBe("+");
+      expect(button.attributes("aria-label")).toBe("Add tab");
+    } finally {
+      window.matchMedia = original;
+      isMobileViewport.value = false;
+    }
   });
 
   test("hides + Tab button for azure workspaces", () => {

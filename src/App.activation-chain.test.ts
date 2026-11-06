@@ -136,6 +136,10 @@ describe("App — the sidebar activate chain closes the mobile drawer", () => {
 
     expect(wrapper.get(".mobile-tab-picker__trigger").text()).toContain("Platform team board");
     expect(wrapper.find(".mobile-tab-picker__trigger .tab__spinner").exists()).toBe(true);
+    expect(wrapper.get(".mobile-tab-picker__trigger .mobile-tab-picker__trigger-status").text()).toContain("Syncing");
+    expect(wrapper.get(".mobile-tab-picker__trigger").attributes("data-view-id")).toBe(
+      "jira:jira-A:view:platform-board",
+    );
     await wrapper.get(".mobile-tab-picker__trigger").trigger("click");
     expect(wrapper.findAll(".mobile-tab-picker__item .tab__spinner")).toHaveLength(2);
     expect(wrapper.find('button.mobile-tab-picker__item[aria-label="Inbox, syncing"]').exists()).toBe(true);
@@ -145,6 +149,60 @@ describe("App — the sidebar activate chain closes the mobile drawer", () => {
     await actions.trigger("keydown.enter");
     expect(store.contextMenu?.viewId).toBe("jira:jira-A:view:platform-board");
     wrapper.unmount();
+  });
+
+  it("keeps the mobile tab list open under a row's action menu", async () => {
+    const wrapper = mountApp(true, document.body);
+    const store = useAppStore();
+    store.payload = {
+      workspace: { workspace: { id: "jira-A", kind: "jira", profileId: "default", panels: [] }, sessions: [] },
+      appState: {
+        workspaces: [{ id: "jira-A", kind: "jira", profileId: "default", panels: [] }],
+        activeWorkspaceId: "jira-A",
+        activeProfileId: "default",
+        profiles: [{ id: "default", name: "Default" }],
+      },
+      jiraWorkspaceViews: {
+        "jira-A": {
+          workspaceId: "jira-A",
+          profileId: "default",
+          views: [
+            { viewId: "issues", kind: "issues", title: "Issues" },
+            { viewId: "board", kind: "board", title: "Board", connectionId: "c1", boardId: 7, boardName: "Board" },
+          ],
+          activeViewId: "issues",
+        },
+      },
+    } as AnyApi;
+    await wrapper.vm.$nextTick();
+    try {
+      const trigger = wrapper.get(".mobile-tab-picker__trigger");
+      expect(trigger.text()).not.toContain("▤");
+      expect(trigger.find("svg.mobile-tab-picker__chevron").exists()).toBe(true);
+      await trigger.trigger("click");
+      const rows = wrapper.findAll(".mobile-tab-picker__menu");
+      expect(rows.length).toBeGreaterThan(1);
+      expect(rows[0]!.text()).toBe("⋯");
+
+      await rows[0]!.trigger("click");
+      expect(store.contextMenu).not.toBeNull();
+      expect(wrapper.find(".mobile-tab-picker__dropdown").exists()).toBe(true);
+
+      await rows[0]!.trigger("click");
+      expect(store.contextMenu).toBeNull();
+      await rows[1]!.trigger("click");
+      expect(store.contextMenu?.anchor).toBe(rows[1]!.element);
+
+      await wrapper.get(".mobile-tab-picker__backdrop").trigger("click");
+      expect(wrapper.find(".mobile-tab-picker__dropdown").exists()).toBe(true);
+
+      store.hideContextMenu();
+      await wrapper.vm.$nextTick();
+      await wrapper.get(".mobile-tab-picker__backdrop").trigger("click");
+      expect(wrapper.find(".mobile-tab-picker__dropdown").exists()).toBe(false);
+    } finally {
+      wrapper.unmount();
+    }
   });
 
   it("toggles the remote keyboard and tracks native IME inset changes in its label", async () => {

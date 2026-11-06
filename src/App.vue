@@ -180,13 +180,33 @@
               type="button"
               class="mobile-tab-picker__trigger"
               data-role="mobile-tab-picker-trigger"
-              title="Open the mobile tab list — every tab in the active workspace as a stacked dropdown. Tap a row to switch to that tab; tap the ☰ icon for the per-tab actions menu."
-              @click="mobileTabOpen = !mobileTabOpen"
+              :data-view-id="store.activeViewId || undefined"
+              title="Open the mobile tab list — every tab in the active workspace as a stacked dropdown. Tap a row to switch to that tab; tap the ⋯ icon for the per-tab actions menu."
+              @click="toggleMobileTabPicker"
             >
-              <span v-if="activeTabModel?.loading" class="tab__spinner" aria-hidden="true" />
-              ▤ {{ activeTabLabel || "Tabs" }}
+              <span class="mobile-tab-picker__text">
+                <span class="mobile-tab-picker__label">{{ activeTabLabel || "Tabs" }}</span>
+                <small
+                  v-if="activeTabModel"
+                  class="mobile-tab-picker__trigger-status"
+                  :class="`mobile-tab-picker__trigger-status--${activeTabModel.tone}`"
+                >
+                  <span v-if="activeTabModel.loading" class="tab__spinner" aria-hidden="true" />{{
+                    activeTabModel.loading ? "Syncing…" : activeTabModel.status
+                  }}
+                </small>
+              </span>
+              <svg class="mobile-tab-picker__chevron" viewBox="0 0 12 12" aria-hidden="true">
+                <path d="M2.5 4.5 6 8l3.5-3.5" />
+              </svg>
             </button>
-            <div v-if="mobileTabOpen" class="mobile-tab-picker__dropdown">
+            <div
+              v-if="mobileTabOpen"
+              class="mobile-tab-picker__dropdown"
+              :style="
+                mobileTabDropdownTop === null ? undefined : { '--mobile-tab-dropdown-top': `${mobileTabDropdownTop}px` }
+              "
+            >
               <div
                 v-for="tab in store.workspaceTabs"
                 :key="tab.id"
@@ -217,12 +237,12 @@
                   @keydown.enter.prevent="onMobileTabMenu($event, tab.id)"
                   @keydown.space.prevent="onMobileTabMenu($event, tab.id)"
                 >
-                  ☰
+                  ⋯
                 </button>
               </div>
             </div>
           </div>
-          <div v-if="mobileTabOpen" class="mobile-tab-picker__backdrop" @click="mobileTabOpen = false"></div>
+          <div v-if="mobileTabOpen" class="mobile-tab-picker__backdrop" @click="onMobileTabBackdrop"></div>
 
           <!-- Mobile: explicit keyboard show/hide control. The tap-to-focus path
                in the terminal touch handler can miss when the synthesized
@@ -436,6 +456,7 @@ const frameRef = ref<HTMLElement | null>(null);
 const sidebarRef = ref<HTMLElement | null>(null);
 const sidebarOpen = ref(false);
 const mobileTabOpen = ref(false);
+const mobileTabDropdownTop = ref<number | null>(null);
 const tabPickerAnchor = ref<DOMRect | null>(null);
 const mobileKeyboardVisible = ref(false);
 let mobileKeyboardObserver: MutationObserver | undefined;
@@ -647,11 +668,31 @@ function onEditTab(viewId: string): void {
   store.editTabWithDialog(viewId);
 }
 
-function onMobileTabMenu(event: MouseEvent | KeyboardEvent, viewId: string): void {
-  const btn = (event.currentTarget || event.target) as Element;
-  const rect = btn.getBoundingClientRect();
+function toggleMobileTabPicker(event: MouseEvent): void {
+  if (mobileTabOpen.value) {
+    mobileTabOpen.value = false;
+    return;
+  }
+  const trigger = event.currentTarget as HTMLElement | null;
+  mobileTabDropdownTop.value = trigger ? Math.round(trigger.getBoundingClientRect().bottom + 4) : null;
+  mobileTabOpen.value = true;
+}
+
+// The tab list stays open under a row's action menu, so the first tap outside
+// only dismisses the menu (its own outside-click handler) and keeps the list.
+function onMobileTabBackdrop(): void {
+  if (store.contextMenu) return;
   mobileTabOpen.value = false;
-  store.showContextMenu(rect.left, rect.bottom + 4, viewId, btn as HTMLElement);
+}
+
+function onMobileTabMenu(event: MouseEvent | KeyboardEvent, viewId: string): void {
+  const btn = (event.currentTarget || event.target) as HTMLElement;
+  if (store.contextMenu?.anchor === btn) {
+    store.hideContextMenu();
+    return;
+  }
+  const rect = btn.getBoundingClientRect();
+  store.showContextMenu(rect.left, rect.bottom + 4, viewId, btn);
 }
 
 function onToggleTabPicker(event: MouseEvent): void {
