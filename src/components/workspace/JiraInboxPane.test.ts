@@ -613,6 +613,7 @@ describe("JiraInboxPane", () => {
     expect(transport.saveJiraConnection).toHaveBeenCalledWith(
       expect.objectContaining({ label: "jira.example.com", pat: "temporary-test-token" }),
     );
+    expectEveryCallToMatch(jiraConnectionSaveSchema, transport.saveJiraConnection);
     expect(transport.verifyJiraConnection).not.toHaveBeenCalled();
     expect(wrapper.text()).toContain("Jira connection verified");
     expect(wrapper.get(".jira-inbox").classes()).toContain("jira-inbox--setup");
@@ -1514,6 +1515,7 @@ describe("JiraInboxPane", () => {
         clientCertificatePath: "C:/certs/client.p12",
       }),
     );
+    expectEveryCallToMatch(jiraConnectionSaveSchema, transport.saveJiraConnection);
     expect(transport.testJiraConnection).not.toHaveBeenCalled();
     expect(transport.verifyJiraConnection).not.toHaveBeenCalled();
     expect(wrapper.text()).toContain("Jira connection verified");
@@ -1573,6 +1575,8 @@ describe("JiraInboxPane", () => {
         subscriptionHeaderName: "X-Subscription-Key",
       }),
     );
+    expectEveryCallToMatch(jiraConnectionTestSchema, transport.testJiraConnection);
+    expectEveryCallToMatch(jiraConnectionSaveSchema, transport.saveJiraConnection);
     expect(transport.verifyJiraConnection).not.toHaveBeenCalled();
     expect(wrapper.text()).toContain("Saved and verified");
   });

@@ -1447,6 +1447,7 @@ export function useJiraConnections(ctx: JiraPaneContext) {
     try {
       const result = (await api.saveJiraConnection({
         ...draft,
+        email: draft.deployment === "cloud" ? draft.email.trim() : undefined,
         apiBaseUrl: draft.deployment === "cloud" ? draft.webUrl.trim() : draft.apiBaseUrl,
       })) as { id?: string; connection?: { id?: string } } | undefined;
       const savedId = result?.connection?.id || result?.id || draft.id;
