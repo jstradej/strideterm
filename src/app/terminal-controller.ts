@@ -324,6 +324,7 @@ function resolveTerminalTheme(appConfig: AppConfig): ITheme {
 export function createTerminalController({
   views,
   buffers,
+  outputSessions = new Set<string>(),
   getActiveSessionId,
   getOverlay,
   getPayload,
@@ -340,6 +341,7 @@ export function createTerminalController({
 }: {
   views: Ref<Map<string, TerminalView>>;
   buffers: Ref<Map<string, string>>;
+  outputSessions?: Set<string>;
   getActiveSessionId: () => string | null;
   getOverlay: () => unknown;
   getPayload: () => StatePayload | null | undefined;
@@ -656,6 +658,7 @@ export function createTerminalController({
     if (!view) {
       buffers.value.delete(sessionId);
       sessionsWithRendererData.delete(sessionId);
+      outputSessions.delete(sessionId);
       throughSeqBySession.delete(sessionId);
       return;
     }
@@ -676,6 +679,7 @@ export function createTerminalController({
     views.value.delete(sessionId);
     buffers.value.delete(sessionId);
     sessionsWithRendererData.delete(sessionId);
+    outputSessions.delete(sessionId);
     throughSeqBySession.delete(sessionId);
     remoteFocusSent.delete(sessionId);
   }
@@ -1924,6 +1928,7 @@ export function createTerminalController({
             if (!data) return;
             expectedView.term.write(data);
             sessionsWithRendererData.add(sessionId);
+            outputSessions.add(sessionId);
           })
           .catch((err: unknown) => {
             api.logRenderer?.("warn", "[terminal] replay load failed", {
@@ -2096,6 +2101,7 @@ export function createTerminalController({
       return;
     }
     sessionsWithRendererData.add(sessionId);
+    if (data) outputSessions.add(sessionId);
     // Count received data (chunks + approx bytes via string length) regardless
     // of whether the view is open yet, so "high PTY volume" is measured even
     // while buffered. Gated: zero cost when the Performance panel is closed.
@@ -2130,6 +2136,8 @@ export function createTerminalController({
     // the authoritative starting screen and later live frames append cleanly.
     if (typeof throughSeq === "number") throughSeqBySession.set(sessionId, throughSeq);
     const payload = data || "";
+    if (payload) outputSessions.add(sessionId);
+    else outputSessions.delete(sessionId);
     const view = views.value.get(sessionId);
     pendingReplayCallbacks.delete(sessionId);
     if (view?.opened) {
@@ -2168,6 +2176,7 @@ export function createTerminalController({
     if (intentional) {
       return;
     }
+    outputSessions.add(sessionId);
     const view = views.value.get(sessionId);
     const line = `\r\n[process exited with code ${exitCode}]\r\n`;
     if (view?.opened) {

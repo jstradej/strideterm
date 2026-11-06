@@ -61,6 +61,8 @@ export interface WorkspaceTab {
   title: string;
   status: string;
   tone: string;
+  /** Terminal tab only: the PTY exists (as opposed to a tab nobody started). */
+  processRunning?: boolean;
   persistent?: boolean;
   closable?: boolean;
   /** Opaque SQLite-backed view id for native Jira tabs. */
@@ -588,6 +590,7 @@ export function getWorkspaceTabs({
           title: session.title,
           status: headlessJudge?.status ?? disp.status,
           tone: headlessJudge?.tone ?? disp.tone,
+          processRunning: session.status === "running",
           persistent: panelMap.has(session.panelId),
           closable: true,
         };

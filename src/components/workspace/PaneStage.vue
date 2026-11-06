@@ -36,7 +36,7 @@
           :actions="terminalPaneActions(tab)"
           @action="(a, meta) => onPaneAction(a, tab, meta)"
         />
-        <TerminalPane :session-id="sessionIdOf(tab)" />
+        <TerminalPane :session-id="sessionIdOf(tab)" :starting-allowed="tab.processRunning === true" />
       </template>
 
       <!-- Non-terminal pane (dynamic component) -->
@@ -85,6 +85,7 @@ interface Tab {
   type: string;
   title: string;
   status?: string;
+  processRunning?: boolean;
   persistent?: boolean;
   url?: string;
   /** Real PTY target — differs from `id` only for a borrowed Primary. */

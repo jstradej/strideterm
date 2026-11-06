@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { nextTick, shallowRef, watch } from "vue";
+import { nextTick, reactive, shallowRef, watch } from "vue";
 import type { SearchAddon } from "@xterm/addon-search";
 import { createTerminalController } from "../app/terminal-controller.js";
 import type { TerminalView, TerminalDiagnosticsSnapshot } from "../app/terminal-controller.js";
@@ -74,6 +74,8 @@ export const useTerminalStore = defineStore("terminal", () => {
   // shallowRef makes them accessible via .value without deep tracking.
   const views = shallowRef(new Map<string, TerminalView>()); // sessionId → { mount, term, fitAddon, ... }
   const buffers = shallowRef(new Map<string, string>()); // sessionId → queued data string
+  // Sessions that have shown output; reactive per key so only the pane of that session re-renders.
+  const outputSessions = reactive(new Set<string>());
   const retainedTestSessionIds = new Set<string>();
 
   let controller: ReturnType<typeof createTerminalController> | null = null;
@@ -180,6 +182,7 @@ export const useTerminalStore = defineStore("terminal", () => {
     controller = createTerminalController({
       views,
       buffers,
+      outputSessions,
       getActiveSessionId,
       getOverlay,
       getPayload,
@@ -434,6 +437,10 @@ export const useTerminalStore = defineStore("terminal", () => {
     controller?.syncFontSize(size);
   }
 
+  function hasTerminalOutput(sessionId: string): boolean {
+    return outputSessions.has(sessionId);
+  }
+
   function getSearchAddon(sessionId: string): SearchAddon | null {
     return controller?.getSearchAddon(sessionId) ?? null;
   }
@@ -534,6 +541,7 @@ export const useTerminalStore = defineStore("terminal", () => {
     syncTheme,
     syncFontSize,
     getSearchAddon,
+    hasTerminalOutput,
     getVisibleTerminalText,
     getTerminalTextSnapshot,
     isBracketedPasteEnabled,

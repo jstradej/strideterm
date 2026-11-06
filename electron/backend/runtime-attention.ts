@@ -462,22 +462,71 @@ export function createRuntimeAttentionManager({
       // Task workspace pending recovery: the dialog owns the spawn decision.
       return sessions.resolveDefaultSessionId(state, workspaceId);
     }
-    for (const panel of workspace.panels) {
-      if (panel.startup === APP_CONFIG.ui.defaultPanelStartup && !/^https?:\/\//i.test(panel.command || "")) {
-        const sessionId = `${workspace.id}:${panel.id}`;
-        // ensureSession is fire-and-forget here. If it rejects synchronously
-        // wrapped in an async, the unhandled rejection vanishes — and the
-        // user sees "0 running" with no clue why. Surface it at error level
-        // so it shows up even on a "error"-only log level.
-        sessions.ensureSession(state, sessionId).catch((err: unknown) => {
-          log.error("ensureVisibleSession: ensureSession failed", {
-            sessionId,
-            err: (err as Error)?.message || String(err),
-          });
-        });
-      }
+    const defaultSessionId = sessions.resolveDefaultSessionId(state, workspaceId);
+    const autoStartIds = workspace.panels.filter(isAutoStartPanel).map((panel) => `${workspace.id}:${panel.id}`);
+    // The selected tab spawns now; the rest wait their turn, one per macrotask,
+    // because every PTY spawn blocks the event loop (100-300 ms on Windows) and
+    // the response carrying the selected tab must not queue behind them.
+    if (defaultSessionId && autoStartIds.includes(defaultSessionId)) {
+      spawnSession(state, defaultSessionId);
     }
-    return sessions.resolveDefaultSessionId(state, workspaceId);
+    for (const sessionId of autoStartIds) {
+      if (sessionId !== defaultSessionId) deferredSessionIds.add(sessionId);
+    }
+    scheduleDeferredSpawn();
+    return defaultSessionId;
+  }
+
+  function isAutoStartPanel(panel: PanelState): boolean {
+    return panel.startup === APP_CONFIG.ui.defaultPanelStartup && !/^https?:\/\//i.test(panel.command || "");
+  }
+
+  function spawnSession(state: AppState, sessionId: string): void {
+    // ensureSession is fire-and-forget here. If it rejects synchronously
+    // wrapped in an async, the unhandled rejection vanishes — and the
+    // user sees "0 running" with no clue why. Surface it at error level
+    // so it shows up even on a "error"-only log level.
+    sessions.ensureSession(state, sessionId).catch((err: unknown) => {
+      log.error("ensureVisibleSession: ensureSession failed", {
+        sessionId,
+        err: (err as Error)?.message || String(err),
+      });
+    });
+  }
+
+  const DEFERRED_SPAWN_DELAY_MS = 20;
+  const deferredSessionIds = new Set<string>();
+  let deferredSpawnTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function scheduleDeferredSpawn(): void {
+    if (deferredSpawnTimer || deferredSessionIds.size === 0) return;
+    deferredSpawnTimer = setTimeout(() => {
+      deferredSpawnTimer = null;
+      const sessionId = deferredSessionIds.values().next().value as string | undefined;
+      if (sessionId === undefined) return;
+      deferredSessionIds.delete(sessionId);
+      const state = getState();
+      const descriptor = parseSessionId(sessionId);
+      const workspace = descriptor ? state.workspaces.find((item) => item.id === descriptor.workspaceId) : null;
+      const panel = workspace?.panels.find((item) => item.id === descriptor?.panelId);
+      if (
+        workspace &&
+        panel &&
+        workspace.kind !== "azure" &&
+        isAutoStartPanel(panel) &&
+        !(getRecoveryCandidateIds?.() || new Set<string>()).has(workspace.id)
+      ) {
+        spawnSession(state, sessionId);
+      }
+      scheduleDeferredSpawn();
+    }, DEFERRED_SPAWN_DELAY_MS);
+    deferredSpawnTimer.unref?.();
+  }
+
+  function dispose(): void {
+    if (deferredSpawnTimer) clearTimeout(deferredSpawnTimer);
+    deferredSpawnTimer = null;
+    deferredSessionIds.clear();
   }
 
   function syncSessionSignalsWithState(): void {
@@ -613,6 +662,7 @@ export function createRuntimeAttentionManager({
     raiseAlert,
     raiseWaitingAlert,
     ensureVisibleSession,
+    disposeDeferredSpawns: dispose,
     syncSessionSignalsWithState,
     shouldTrackProjectAlert,
     updateVisibleSessions,

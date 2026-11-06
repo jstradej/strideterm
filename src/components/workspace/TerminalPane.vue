@@ -1,6 +1,10 @@
 <template>
   <div ref="paneBodyRef" class="workspace-pane__body workspace-pane__body--terminal">
     <TerminalSearchOverlay :session-id="sessionId" />
+    <div v-if="showStarting" class="term-starting" data-role="terminal-starting" role="status">
+      <span class="tab__spinner" aria-hidden="true" />
+      Starting…
+    </div>
     <!-- Touch affordance for "Select text". The long press inside the terminal
          does the same thing, but a gesture nobody has been told about is not a
          feature — and a tablet with an external keyboard and mouse never shows
@@ -24,14 +28,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import { useTerminal } from "../../composables/useTerminal.js";
 import { useIsNarrow } from "../../composables/useIsNarrow.js";
 import { useTerminalPathDrop } from "../../composables/useTerminalPathDrop.js";
 import { useTerminalStore } from "../../stores/terminal.js";
 import TerminalSearchOverlay from "./TerminalSearchOverlay.vue";
 
-const props = defineProps<{ sessionId: string }>();
+const props = defineProps<{ sessionId: string; startingAllowed?: boolean }>();
 
 const paneBodyRef = ref<HTMLDivElement | null>(null);
 useTerminal(() => props.sessionId, paneBodyRef);
@@ -39,6 +43,7 @@ useTerminalPathDrop(() => props.sessionId, paneBodyRef);
 
 const { hasCoarsePointer } = useIsNarrow();
 const termStore = useTerminalStore();
+const showStarting = computed(() => props.startingAllowed === true && !termStore.hasTerminalOutput(props.sessionId));
 
 function openTextSelection(): void {
   termStore.requestTextSelection(props.sessionId);
@@ -46,6 +51,23 @@ function openTextSelection(): void {
 </script>
 
 <style scoped>
+.term-starting {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel-elevated), transparent 15%);
+  color: var(--muted);
+  font-size: 12px;
+  pointer-events: none;
+}
+
 .term-select-btn {
   position: absolute;
   top: 6px;

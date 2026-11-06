@@ -10604,10 +10604,10 @@ describe("runtime integration", () => {
 
     expect(payload.appState.activeWorkspaceId).toBe("ws-b1");
     expect(fixture.sessionManager.sessions.get("ws-b1:p-b1-shell")?.status).toBe("running");
-    expect(fixture.sessionManager.sessions.get("ws-b1:p-b1-claude")?.status).toBe("running");
     const wsSessions = payload.workspace?.sessions || [];
     const running = wsSessions.filter((s: { status: string }) => s.status === "running");
-    expect(running).toHaveLength(2);
+    expect(running).toHaveLength(1);
+    await vi.waitFor(() => expect(fixture.sessionManager.sessions.get("ws-b1:p-b1-claude")?.status).toBe("running"));
   });
 
   test("createWindowSlot spawns PTYs for the new window's first workspace", async () => {
@@ -10664,7 +10664,7 @@ describe("runtime integration", () => {
     await fixture.runtime.createWindowSlot("profile-b");
 
     expect(fixture.sessionManager.sessions.get("ws-b1:p-b1-shell")?.status).toBe("running");
-    expect(fixture.sessionManager.sessions.get("ws-b1:p-b1-claude")?.status).toBe("running");
+    await vi.waitFor(() => expect(fixture.sessionManager.sessions.get("ws-b1:p-b1-claude")?.status).toBe("running"));
   });
 
   test("activateWorkspaceInWindow on cross-profile target does not revert activeWorkspaceId", async () => {

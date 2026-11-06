@@ -4624,6 +4624,7 @@ export async function createRuntime({
     raiseAlert: raiseAlertBase,
     raiseWaitingAlert,
     ensureVisibleSession,
+    disposeDeferredSpawns,
     syncSessionSignalsWithState,
     shouldTrackProjectAlert,
     updateVisibleSessions,
@@ -14518,6 +14519,7 @@ export async function createRuntime({
         cancelPromptTimer(signal);
       }
       sessionSignals.clear();
+      disposeDeferredSpawns();
       codexTerminalNotifications.clear();
       dockerLogManager.closeAll();
       dockerShellManager.closeAll();

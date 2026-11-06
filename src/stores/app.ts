@@ -677,7 +677,7 @@ export const useAppStore = defineStore("app", () => {
     const key = (result as AnyApi[])
       .map(
         (t: AnyApi) =>
-          `${t.id}:${t.type}:${t.title}:${t.status}:${t.tone}:${t.sessionId || ""}:${t.borrowed ? 1 : 0}:${t.loading ? 1 : 0}:${t.revalidating ? 1 : 0}`,
+          `${t.id}:${t.type}:${t.title}:${t.status}:${t.tone}:${t.sessionId || ""}:${t.processRunning ? 1 : 0}:${t.borrowed ? 1 : 0}:${t.loading ? 1 : 0}:${t.revalidating ? 1 : 0}`,
       )
       .join("|");
     if (key === _prevTabsKey) return _prevTabs;
