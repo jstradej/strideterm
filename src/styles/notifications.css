@@ -56,11 +56,15 @@
 }
 
 /* The count badge carries the unread state statically; the shared heartbeat
-   adds a short finite scale pulse while unread items remain. */
+   pulses only the bell glyph while unread items remain, so the count keeps its size. */
 .notification-bell--has-unread {
   color: var(--text);
   --heartbeat-on-opacity: 1;
   --heartbeat-on-scale: 1.16;
+}
+
+.notification-bell__icon {
+  display: inline-block;
 }
 
 .notification-bell__badge {
@@ -102,7 +106,7 @@
   -webkit-app-region: no-drag;
   width: var(--notif-dock-width, 360px);
   max-width: 100vw;
-  background: var(--panel);
+  background: var(--base-fill);
   border-left: 1px solid var(--border);
   box-shadow: -4px 0 24px rgba(0, 0, 0, 0.3);
   z-index: 9000;
@@ -324,7 +328,43 @@
   position: relative;
 }
 
+/* Rows and cards in every tab are surfaces on the grained centre, like the alerts: solid, with the
+   row's own tint laid over the surface colour. Scoped to the centre, where the base shows through. */
+.notification-center
+  .notification-center__body
+  :is(
+    .agent-run-item,
+    .telegram-status-item,
+    .approval-row,
+    .workspace-attachments__item,
+    .perf__card,
+    .perf__chart,
+    .perf__mini,
+    .perf__top-row,
+    .perf__table
+  ) {
+  background-color: var(--surface-card);
+  background-image: linear-gradient(var(--item-tint, transparent), var(--item-tint, transparent));
+}
+
+.notification-center .notification-center__body .perf__mini--alert {
+  --item-tint: rgba(255, 111, 141, 0.08);
+}
+
+.notification-center .notification-center__body .approval-row--open {
+  --item-tint: rgba(var(--tint), 0.03);
+}
+
+.notification-center
+  .notification-center__body
+  :is(.agent-run-item, .telegram-status-item, .approval-row, .workspace-attachments__item):hover {
+  --item-tint: rgba(var(--tint), 0.05);
+  background-color: var(--surface-card);
+  background-image: linear-gradient(var(--item-tint), var(--item-tint));
+}
+
 /* ── Notification item ── */
+/* Items are surfaces on the grained centre: solid, with each kind's tint laid over the surface colour. */
 .notification-item {
   display: grid;
   grid-template-columns: 28px 1fr 24px;
@@ -332,12 +372,14 @@
   align-items: start;
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
+  background-color: var(--surface-card);
+  background-image: linear-gradient(var(--item-tint, transparent), var(--item-tint, transparent));
   cursor: pointer;
   transition: background 0.12s;
 }
 
 .notification-item:hover {
-  background: rgba(var(--tint), 0.03);
+  --item-tint: rgba(var(--tint), 0.03);
 }
 
 .notification-item--unread {
@@ -352,7 +394,7 @@
 }
 
 .notification-item--unread:hover {
-  background: rgba(var(--tint), 0.04);
+  --item-tint: rgba(var(--tint), 0.04);
 }
 
 /* --- Day-band separator (Today / Yesterday / weekday / date) --- */
@@ -428,7 +470,7 @@
    NEW text pill + icon shake do the rest of the "this is new" signaling.
 */
 .notification-item--flash {
-  background: rgba(var(--tint), 0.07);
+  --item-tint: rgba(var(--tint), 0.07);
   animation: notif-item-flash-enter 0.9s ease-out;
   /* No accent-colored left bar overlay. The row's native border-left
      (green for finished, red for urgent, blue for review, orange for
@@ -439,20 +481,20 @@
      to tell state from freshness at a glance. */
 }
 .notification-item--flash:hover {
-  background: rgba(var(--tint), 0.1);
+  --item-tint: rgba(var(--tint), 0.1);
 }
 /* Short warm pulse on arrival — the orange wash flashes briefly to draw the
    eye, then settles into the neutral elevated tint so body text stays
    readable. The accent left bar carries the persistent "this is new" signal. */
 @keyframes notif-item-flash-enter {
   0% {
-    background: rgba(255, 164, 36, 0.35);
+    background-color: color-mix(in srgb, rgb(255 164 36) 35%, var(--surface-card));
   }
   60% {
-    background: rgba(255, 164, 36, 0.12);
+    background-color: color-mix(in srgb, rgb(255 164 36) 12%, var(--surface-card));
   }
   100% {
-    background: rgba(var(--tint), 0.07);
+    background-color: var(--surface-card);
   }
 }
 
@@ -518,10 +560,10 @@
   /* Subtle green wash — the left bar does the heavy lifting for recognition;
      this just adds a hint of color so the row reads as "completed, awaiting
      ack" rather than "neutral/archived". */
-  background: rgba(110, 223, 182, 0.05);
+  --item-tint: rgba(110, 223, 182, 0.05);
 }
 .notification-item--finished:hover {
-  background: rgba(110, 223, 182, 0.1);
+  --item-tint: rgba(110, 223, 182, 0.1);
 }
 .notification-item--finished .notification-item__title {
   color: #6edfb6;
@@ -544,15 +586,26 @@
   background: rgba(var(--tint), 0.06);
   border-color: var(--accent);
 }
+.notification-item__jira-link {
+  display: inline-block;
+  margin-top: 4px;
+  text-decoration: none;
+}
+.notification-item__jira-unavailable {
+  display: inline-block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
 
 /* Urgent (permission prompts, task failures) — distinct red styling */
 .notification-item--urgent {
   border-left-color: #ff5a5a;
-  background: rgba(255, 90, 90, 0.08);
+  --item-tint: rgba(255, 90, 90, 0.08);
 }
 
 .notification-item--urgent:hover {
-  background: rgba(255, 90, 90, 0.14);
+  --item-tint: rgba(255, 90, 90, 0.14);
 }
 
 .notification-item--urgent .notification-item__title {
@@ -576,24 +629,24 @@
    the provider at a glance. */
 .notification-item--review {
   border-left: 3px solid #7a8cff;
-  background: rgba(122, 140, 255, 0.05);
+  --item-tint: rgba(122, 140, 255, 0.05);
 }
 .notification-item--review:hover {
-  background: rgba(122, 140, 255, 0.1);
+  --item-tint: rgba(122, 140, 255, 0.1);
 }
 .notification-item--review-azure {
   border-left-color: #0078d4;
-  background: rgba(0, 120, 212, 0.06);
+  --item-tint: rgba(0, 120, 212, 0.06);
 }
 .notification-item--review-azure:hover {
-  background: rgba(0, 120, 212, 0.12);
+  --item-tint: rgba(0, 120, 212, 0.12);
 }
 .notification-item--review-github {
   border-left-color: #238636;
-  background: rgba(35, 134, 54, 0.06);
+  --item-tint: rgba(35, 134, 54, 0.06);
 }
 .notification-item--review-github:hover {
-  background: rgba(35, 134, 54, 0.12);
+  --item-tint: rgba(35, 134, 54, 0.12);
 }
 
 .notification-item__provider-badge {
@@ -680,6 +733,26 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* A pull request's card: what happened is the small line beside the time,
+   and the PR's own title gets the full width below it. */
+.notification-item__title--event {
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.notification-item__pr-title {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text);
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
 }
 
 .notification-item__time {
@@ -876,6 +949,24 @@
   font-weight: 600;
   color: var(--text);
   margin-bottom: 2px;
+}
+
+.notification-toast__title--event {
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.notification-toast__pr-title {
+  margin: 0 0 2px;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text);
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
 }
 
 .notification-toast__body {
@@ -1093,10 +1184,11 @@
   font-weight: 600;
 }
 
-/* Icon tabs: below 440px the three tab labels + action buttons + pin/close no
-   longer fit, so drop each tab to just its icon. Placed after the base
+/* Icon tabs: all six tab labels (Approvals included, it is not always shown),
+   the Ack/Clear labels and pin/close need about 730px, so below that each tab
+   drops to its icon (its title still names it). Placed after the base
    .notification-center__tab rules so these win on equal specificity. */
-@container notif-dock (max-width: 440px) {
+@container notif-dock (max-width: 760px) {
   .notification-center__tab-label {
     display: none;
   }

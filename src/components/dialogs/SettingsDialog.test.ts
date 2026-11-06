@@ -31,6 +31,7 @@ async function mountDialog(
         SettingsSshTab: true,
         SettingsTelegramTab: true,
         SettingsAboutTab: true,
+        JiraInboxPane: true,
       },
     },
   });
@@ -149,6 +150,7 @@ describe("SettingsDialog — section navigation", () => {
       "General",
       "Tab Templates",
       "Git",
+      "Jira",
       "SSH",
       "Telegram",
       "Remote access",
@@ -161,6 +163,25 @@ describe("SettingsDialog — section navigation", () => {
     await tabs.find((tab) => tab.text().trim() === "SSH")!.trigger("click");
     expect(tabs.find((tab) => tab.text().trim() === "SSH")?.attributes("aria-pressed")).toBe("true");
     expect(tabs.find((tab) => tab.text().trim() === "General")?.attributes("aria-pressed")).toBe("false");
+  });
+});
+
+describe("SettingsDialog — Jira connections", () => {
+  test("opens the shared connection manager directly without requiring a Jira workspace", async () => {
+    const wrapper = await mountDialog({}, {}, { initialTab: "jira" });
+    expect(wrapper.get('[data-testid="jira-settings-connections"]').text()).not.toContain("No Jira workspace exists");
+    expect(wrapper.get('[data-testid="jira-settings-connections"]').html()).toContain('connectionsonly="true"');
+  });
+
+  test("shows the comment attribution section above the connections", async () => {
+    const wrapper = await mountDialog(
+      { integrations: { jira: { commentAttribution: { enabled: true, text: "Hi {user}", position: "before" } } } },
+      { isRemote: false, setJiraCommentAttribution: vi.fn() },
+      { initialTab: "jira" },
+    );
+    const section = wrapper.get('[data-testid="jira-comment-attribution"]');
+    expect(section.text()).toContain("Comment attribution for technical accounts");
+    expect((section.get("textarea").element as HTMLTextAreaElement).value).toBe("Hi {user}");
   });
 });
 

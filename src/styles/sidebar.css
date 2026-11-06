@@ -8,7 +8,7 @@
   position: relative;
   padding: 10px;
   border-right: 1px solid var(--border);
-  background: var(--panel);
+  background: var(--base-fill);
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto auto minmax(0, 1fr) auto auto;
@@ -476,6 +476,27 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
 .workspace-new-tile:focus-visible .workspace-new-tile__plus {
   border-color: var(--accent);
   color: var(--accent);
+}
+
+.workspace-new-tile:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+.workspace-new-tile--busy .workspace-new-tile__plus {
+  position: relative;
+  color: transparent;
+}
+
+.workspace-new-tile--busy .workspace-new-tile__plus::after {
+  content: "";
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: btn-spin 0.6s linear infinite;
 }
 
 .workspace-suggestions__title {
@@ -1084,6 +1105,37 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   flex-shrink: 0;
 }
 
+/* Busy state that keeps the button's size: label stays in layout, spinner overlays it */
+.button.button--pending {
+  position: relative;
+  pointer-events: none;
+  color: transparent;
+}
+
+.button.button--pending > * {
+  visibility: hidden;
+}
+
+.button.button--pending::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: btn-spin 0.6s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .button.button--pending::after {
+    animation-duration: 2s;
+  }
+}
+
 @keyframes btn-spin {
   to {
     transform: rotate(360deg);
@@ -1573,6 +1625,62 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   white-space: nowrap;
 }
 
+.workspace-card__meta--inline-items {
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 6px;
+}
+.workspace-card__meta--inline-items .workspace-card__title-row {
+  grid-column: 1 / -1;
+}
+.workspace-card__meta--inline-items .workspace-card__jira-items {
+  grid-row: 2;
+  grid-column: 1;
+  align-self: center;
+}
+.workspace-card__meta--inline-items .workspace-card__subline {
+  grid-row: 2;
+  grid-column: 2;
+}
+
+.workspace-card__jira-items {
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.workspace-card__jira-chip,
+.workspace-card__jira-more {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  max-width: 100%;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+a.workspace-card__jira-chip {
+  cursor: pointer;
+  text-decoration: none;
+}
+
+a.workspace-card__jira-chip:hover {
+  border-color: var(--accent);
+}
+
+.workspace-card__jira-chip strong {
+  color: var(--accent);
+  font-weight: 600;
+}
+.workspace-card__jira-more {
+  flex: none;
+}
+
 .workspace-card__last-activity {
   flex-shrink: 0;
   opacity: 0.6;
@@ -1721,6 +1829,27 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
 .workspace-card--sub {
   border-left: 2px solid color-mix(in srgb, var(--accent), transparent 50%);
   font-size: 0.95em;
+}
+
+.workspace-card__glyph {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+  fill-rule: evenodd;
+}
+
+/* A new branch with no pull request yet, among the reviews of its inbox: a shade of the workspace colour, towards the
+   text colour, so lighter on dark and darker on light. Two classes so the stripe also wins over the grid stripe and the
+   light theme's restated sub-card border. */
+.workspace-card--new-branch {
+  --branch-shade: color-mix(in srgb, var(--accent), var(--text) 45%);
+}
+.workspace-card.workspace-card--new-branch {
+  border-left: 3px solid var(--branch-shade);
+}
+.workspace-card--new-branch .workspace-card__badge {
+  background: color-mix(in srgb, var(--branch-shade), transparent 72%);
+  color: var(--branch-shade);
 }
 
 /* Workspace status dot — replaces the old corner triangles */
@@ -2002,7 +2131,7 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
    V4 drew one closed box-in-box block per recent result. That stopped a child
    attaching itself optically to an unrelated time-neighbour, but it repeated a
    shared branch once per result — a recent PR and its recent task produced two
-   `Azure DevOps › mhub PR` blocks — and RUNNING drew the very same hierarchy
+   `Azure DevOps › orders PR` blocks — and RUNNING drew the very same hierarchy
    flat, as inline `parent / parent / name` text.
 
    So the box is now per CLUSTER, and inside it hierarchy is plain indentation
@@ -2117,7 +2246,7 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
 .activity-row::before {
   content: "";
   position: absolute;
-  left: calc(10px + (var(--activity-depth, 0) - 1) * var(--activity-indent-step, 12px));
+  left: calc((var(--activity-depth, 0) - 0.5) * var(--activity-indent-step, 12px));
   top: 0;
   bottom: 0;
   width: 1px;
@@ -2156,6 +2285,19 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   min-height: 34px;
   border-color: color-mix(in srgb, var(--accent), transparent 84%);
   background: color-mix(in srgb, var(--panel-elevated), var(--accent) 6%);
+}
+
+/* A nested activity row is a tinted card, so its indent moves the card instead of padding its inside: an indent inside
+   the tint read as an empty band with the rail running through it. The rail stays where a context row of the same depth
+   draws it, now in the margin beside the card. */
+.activity-row--activity:not([data-depth="0"]) {
+  margin-left: calc(var(--activity-depth, 0) * var(--activity-indent-step, 12px));
+  width: calc(100% - var(--activity-depth, 0) * var(--activity-indent-step, 12px));
+  padding-left: 6px;
+}
+
+.activity-row--activity::before {
+  left: calc(var(--activity-indent-step, 12px) * -0.5);
 }
 
 .activity-row--activity:hover {
@@ -2231,6 +2373,20 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   height: calc(var(--activity-badge-size, 22px) - 7px);
   border-radius: 2px;
   font-size: 8px;
+}
+
+/* The tree card's review / new-branch glyph, at the share of the badge it takes there (18 of 26 px). */
+.activity-row__glyph {
+  width: 69%;
+  height: 69%;
+  fill: currentColor;
+  fill-rule: evenodd;
+}
+
+.activity-row--new-branch .activity-row__badge {
+  --branch-shade: color-mix(in srgb, var(--accent), var(--text) 45%);
+  background: color-mix(in srgb, var(--branch-shade), transparent 72%);
+  color: var(--branch-shade);
 }
 
 /* The CANONICAL status dot, on the same corner of the same badge as the tree

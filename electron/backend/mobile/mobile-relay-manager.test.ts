@@ -12,10 +12,15 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { createMobileRelayManager, type RelayOriginServer } from "./mobile-relay-manager.js";
+import {
+  acceptableMobileSessionIdleTtlMs,
+  createMobileRelayManager,
+  RELAY_SESSION_POLICY_REJECTED,
+  type RelayOriginServer,
+} from "./mobile-relay-manager.js";
 import { RELAY_INSTALLATION_KEY_REF } from "./mobile-relay-identity.js";
 import type { RelayConnector } from "./mobile-relay-connector.js";
-import { RELAY_REVOCATION_TOMBSTONE_TTL_MS } from "./mobile-relay-protocol.js";
+import { RELAY_MOBILE_SESSION_ABSOLUTE_TTL_MS, RELAY_REVOCATION_TOMBSTONE_TTL_MS } from "./mobile-relay-protocol.js";
 import { MobileRelayGrantDefinitiveRefusalError } from "./mobile-firebase-transport.js";
 
 const logWarn = vi.hoisted(() => vi.fn());
@@ -61,7 +66,13 @@ interface Harness {
 
 function makeHarness(
   options: {
-    grant?: () => Promise<{ grant: string; relayOrigin: string; desktopInstallationId: string; expiresAt: number }>;
+    grant?: () => Promise<{
+      grant: string;
+      relayOrigin: string;
+      desktopInstallationId: string;
+      expiresAt: number;
+      mobileSessionIdleTtlMs?: number;
+    }>;
     retryDelayMs?: (attempt: number) => number;
     definitiveRefusalRetryDelayMs?: () => number;
     /** What the persistent device store would report. Empty unless a test cares. */
@@ -637,5 +648,169 @@ describe("a start that fails is retried, not abandoned", () => {
     const replayed = harness.relayRevocations();
     expect(replayed.map((entry) => entry.deviceId)).toEqual(["mobile-fresh", "mobile-dateless"]);
     expect(replayed.every((entry) => typeof entry.revokedAt === "number")).toBe(true);
+  });
+});
+
+test("namespace switch stops the old connector and reuses its signing key for the new namespace", async () => {
+  const harness = makeHarness();
+  harness.setEnabled(true);
+  await harness.manager.reconfigure();
+  const first = harness.grantRequests[0];
+  const key = harness.credentialStore.getSecret(RELAY_INSTALLATION_KEY_REF);
+  await harness.manager.switchInstallationIdentity("next-installation");
+  expect(harness.connectorsStopped).toBe(1);
+  expect(harness.manager.status().state).toBe("off");
+  await harness.manager.reconfigure();
+  expect(harness.grantRequests.at(-1)).toBe(`next-installation:${first.split(":")[1]}`);
+  expect(harness.credentialStore.getSecret(RELAY_INSTALLATION_KEY_REF)).toBe(key);
+  expect(harness.connectorsStarted).toBe(2);
+  await harness.manager.stop();
+});
+
+// ADR 0041. The idle deadline of a relay mobile session is the control plane's policy, and it reaches
+// the desktop inside the connector-grant answer the connector already fetches on every (re)connect.
+// What these tests pin is that the answer is treated as network input: only an in-range integer is
+// ever adopted, and nothing a bad answer carries can unset or corrupt the value already in force.
+describe("the relay mobile-session idle policy from the grant answer", () => {
+  const NINETY_MINUTES = 90 * 60_000;
+  const TWO_HOURS = 2 * 60 * 60_000;
+
+  /** A grant answer stating whatever [policy] returns as its session idle TTL; `undefined` omits it. */
+  function grantWithPolicy(policy: () => unknown) {
+    return async () => {
+      const value = policy();
+      return {
+        grant: "connector-grant",
+        relayOrigin: RELAY_ORIGIN,
+        desktopInstallationId: INSTALLATION_ID,
+        expiresAt: Date.now() + 900_000,
+        // Cast on purpose: the field is typed `number`, but what arrives is whatever the network says.
+        ...(value === undefined ? {} : { mobileSessionIdleTtlMs: value as number }),
+      };
+    };
+  }
+
+  /** Starts the relay with [policy] in the first grant, and returns a way to answer the next reconnect. */
+  async function runningWith(policy: unknown) {
+    let next: unknown = policy;
+    const harness = makeHarness({ grant: grantWithPolicy(() => next) });
+    harness.setEnabled(true);
+    await harness.manager.reconfigure();
+    const getGrant = harness.connectorGetGrant();
+    await getGrant(); // the cached first grant: no second fetch
+    return {
+      harness,
+      /** The connector reconnecting: exactly one more `issueRelayConnectorGrant`, answering [value]. */
+      async reconnectAnswering(value: unknown) {
+        next = value;
+        await getGrant();
+      },
+    };
+  }
+
+  afterEach(() => {
+    logWarn.mockClear();
+  });
+
+  test("before any grant has been fetched there is no policy, so tickets bind nothing", () => {
+    const harness = makeHarness();
+    expect(harness.manager.mobileSessionIdleTtlMs()).toBeNull();
+  });
+
+  test("an in-range value is adopted from the first grant, with no extra call", async () => {
+    const { harness } = await runningWith(NINETY_MINUTES);
+    expect(harness.manager.mobileSessionIdleTtlMs()).toBe(NINETY_MINUTES);
+    expect(harness.grantRequests).toHaveLength(1);
+    await harness.manager.stop();
+  });
+
+  test("no policy bound is the desktop's: a value today's backend would not send is still adopted", async () => {
+    // The control plane may lower the policy to a minute or raise it past four hours one day. An
+    // installed desktop must follow it without a release, so it judges only what can never be meant.
+    const { harness, reconnectAnswering } = await runningWith(60_000);
+    expect(harness.manager.mobileSessionIdleTtlMs()).toBe(60_000);
+    await reconnectAnswering(6 * 60 * 60_000);
+    expect(harness.manager.mobileSessionIdleTtlMs()).toBe(6 * 60 * 60_000);
+    await reconnectAnswering(RELAY_MOBILE_SESSION_ABSOLUTE_TTL_MS);
+    expect(harness.manager.mobileSessionIdleTtlMs()).toBe(RELAY_MOBILE_SESSION_ABSOLUTE_TTL_MS);
+    expect(logWarn).not.toHaveBeenCalled();
+    await harness.manager.stop();
+  });
+
+  test("a reconnect's answer replaces the policy: a backend change lands without a desktop release", async () => {
+    const { harness, reconnectAnswering } = await runningWith(NINETY_MINUTES);
+    await reconnectAnswering(TWO_HOURS);
+    expect(harness.manager.mobileSessionIdleTtlMs()).toBe(TWO_HOURS);
+    expect(harness.grantRequests).toHaveLength(2);
+    await harness.manager.stop();
+  });
+
+  test("an answer from a backend that predates the policy keeps the value in force, silently", async () => {
+    const { harness, reconnectAnswering } = await runningWith(NINETY_MINUTES);
+    await reconnectAnswering(undefined);
+    expect(harness.manager.mobileSessionIdleTtlMs()).toBe(NINETY_MINUTES);
+    expect(logWarn).not.toHaveBeenCalled();
+    await harness.manager.stop();
+  });
+
+  test.each([
+    ["past the absolute session lifetime", RELAY_MOBILE_SESSION_ABSOLUTE_TTL_MS + 1],
+    ["zero", 0],
+    ["negative", -90 * 60_000],
+    ["a fraction", 90 * 60_000 + 0.5],
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+    ["beyond safe integers", Number.MAX_SAFE_INTEGER + 2],
+    ["a numeric string", String(90 * 60_000)],
+    ["null", null],
+    ["a boolean", true],
+    ["an object", { ms: 90 * 60_000 }],
+  ])("%s is refused, keeps the previous value, and is logged as a code only", async (_label, bad) => {
+    const { harness, reconnectAnswering } = await runningWith(NINETY_MINUTES);
+    await reconnectAnswering(bad);
+
+    expect(harness.manager.mobileSessionIdleTtlMs()).toBe(NINETY_MINUTES);
+    expect(logWarn).toHaveBeenCalledTimes(1);
+    const [, fields] = logWarn.mock.calls[0]!;
+    expect(fields).toEqual({ code: RELAY_SESSION_POLICY_REJECTED });
+    await harness.manager.stop();
+  });
+
+  test("a refused value on the FIRST grant leaves no policy, and the grant itself still works", async () => {
+    const { harness } = await runningWith(RELAY_MOBILE_SESSION_ABSOLUTE_TTL_MS * 10);
+    expect(harness.manager.mobileSessionIdleTtlMs()).toBeNull();
+    expect(harness.manager.status()).toMatchObject({ state: "ready", relayOrigin: RELAY_ORIGIN, lastError: "" });
+    await harness.manager.stop();
+  });
+
+  test("the policy outlives a connector restart (it describes the deployment, not one socket)", async () => {
+    const { harness } = await runningWith(NINETY_MINUTES);
+    harness.setEnabled(false);
+    await harness.manager.reconfigure();
+    expect(harness.manager.status().state).toBe("off");
+    expect(harness.manager.mobileSessionIdleTtlMs()).toBe(NINETY_MINUTES);
+  });
+
+  test("an installation identity switch forgets it: the new identity's control plane states its own", async () => {
+    const { harness } = await runningWith(NINETY_MINUTES);
+    await harness.manager.switchInstallationIdentity("next-installation");
+    expect(harness.manager.mobileSessionIdleTtlMs()).toBeNull();
+  });
+});
+
+describe("acceptableMobileSessionIdleTtlMs", () => {
+  test("the backend's out-of-the-box value (ninety minutes) is adopted", () => {
+    expect(acceptableMobileSessionIdleTtlMs(90 * 60_000)).toBe(90 * 60_000);
+  });
+
+  test("anything from one millisecond to the absolute session lifetime passes, and nothing else", () => {
+    expect(acceptableMobileSessionIdleTtlMs(1)).toBe(1);
+    expect(acceptableMobileSessionIdleTtlMs(RELAY_MOBILE_SESSION_ABSOLUTE_TTL_MS)).toBe(
+      RELAY_MOBILE_SESSION_ABSOLUTE_TTL_MS,
+    );
+    expect(acceptableMobileSessionIdleTtlMs(0)).toBeNull();
+    expect(acceptableMobileSessionIdleTtlMs(-1)).toBeNull();
+    expect(acceptableMobileSessionIdleTtlMs(RELAY_MOBILE_SESSION_ABSOLUTE_TTL_MS + 1)).toBeNull();
+    expect(acceptableMobileSessionIdleTtlMs(undefined)).toBeNull();
   });
 });

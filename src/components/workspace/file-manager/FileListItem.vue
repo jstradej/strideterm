@@ -52,8 +52,11 @@
 <script setup lang="ts">
 import { computed, inject, ref } from "vue";
 import { useFileManagerStore } from "../../../stores/file-manager.js";
+import { useAppStore } from "../../../stores/app.js";
+import { runtimeAbsolutePath, setDragPaths } from "../../../lib/terminal-path-drop.js";
 import { statusBadge, statusColor, statusLabel, statusTitle } from "./git-status-helpers.js";
 import { formatSize } from "./file-format.js";
+import { iconFor } from "./file-icons.js";
 
 const props = withDefaults(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -68,47 +71,12 @@ defineEmits<{
 }>();
 
 const store = useFileManagerStore();
+const appStore = useAppStore();
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const fmDragState = inject<any>("fm-drag-state", null);
 const isDropTarget = ref<boolean>(false);
 
-const FOLDER_ICONS = {
-  node_modules: "📦",
-  ".git": "🔒",
-  src: "📁",
-  dist: "📤",
-  build: "📤",
-};
-const EXT_ICONS = {
-  ".js": "⬢",
-  ".mjs": "⬢",
-  ".ts": "◇",
-  ".vue": "◈",
-  ".json": "{ }",
-  ".md": "❖",
-  ".css": "◎",
-  ".html": "◆",
-  ".py": "◉",
-  ".go": "◈",
-  ".rs": "⬣",
-  ".java": "◆",
-  ".sh": "$_",
-  ".yml": "⚙",
-  ".yaml": "⚙",
-  ".png": "▣",
-  ".jpg": "▣",
-  ".jpeg": "▣",
-  ".gif": "▣",
-  ".svg": "▣",
-  ".lock": "🔒",
-};
-
-const icon = computed(() => {
-  if (props.entry.kind === "directory") {
-    return (FOLDER_ICONS as Record<string, string>)[props.entry.name as string] || "📁";
-  }
-  return (EXT_ICONS as Record<string, string>)[props.entry.extension as string] || "📄";
-});
+const icon = computed(() => iconFor(props.entry as { kind: string; name: string; extension?: string }));
 
 const gitStatus = computed(() => {
   if (!store.gitIsRepo) return null;
@@ -132,8 +100,9 @@ function formatDate(iso: string) {
 function onDragStart(event: DragEvent) {
   if (fmDragState) fmDragState.value = props.entry;
   if (event.dataTransfer) {
-    event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData("text/plain", props.entry.relativePath);
+    setDragPaths(event.dataTransfer, [
+      runtimeAbsolutePath(store.rootPath, props.entry.relativePath, appStore.payload?.meta?.platform || ""),
+    ]);
   }
 }
 

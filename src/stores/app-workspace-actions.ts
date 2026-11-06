@@ -1,4 +1,9 @@
 import { getWorkspaceTabs, getWorkspacePanelByViewId } from "../app/selectors.js";
+import { jiraViewIdFromTab, jiraViewTabId } from "../app/jira-view-tabs.js";
+import type {
+  JiraWorkspaceViewInput,
+  JiraWorkspaceViewsState,
+} from "../../electron/shared/types/jira-workspace-views.js";
 import { LAYOUTS } from "../app/layout-geometry.js";
 import { cloneWorkspace } from "../workspace-state.js";
 import {
@@ -7,6 +12,7 @@ import {
   isDockerViewId,
   isAzureViewId,
   isGitHubViewId,
+  isJiraViewId,
   isReviewViewId,
   isFilesViewId,
   isBrowserViewId,
@@ -29,6 +35,8 @@ import {
   type OperationFinished,
 } from "../../electron/shared/operation-events.js";
 import { reviewPrActionOutcomeSchema } from "../../electron/shared/review-pr-actions.js";
+import { OPERATION_KIND_PIPELINE_AGENT, pipelineRunRelativeDir } from "../../electron/shared/pipeline-agent.js";
+import { OPERATION_KIND_JIRA_DEVELOPMENT } from "../../electron/shared/jira-development.js";
 import { useNotificationStore } from "./notifications.js";
 import { fireNotificationAlert } from "../composables/useNotificationSound.js";
 
@@ -183,6 +191,53 @@ function describeOperationFinished(operation: OperationFinished): { title: strin
       body: `${agent} started a basic review of ${provider}${number}. The review is still in progress.`,
       failed: false,
     };
+  }
+  if (operation.kind === OPERATION_KIND_PIPELINE_AGENT) {
+    if ("error" in operation) {
+      return { title: "Pipeline agent could not be started", body: operation.error.message, failed: true };
+    }
+    const run =
+      `${String(operation.result.pipelineName || "the pipeline")} ${String(operation.result.buildNumber || "")}`.trim();
+    const agent = String(operation.result.agentName || "The agent");
+    const where =
+      operation.result.checkout === "worktree"
+        ? "a checkout of the commit the run built"
+        : "a scratchpad (the run's repository is not in Azure Repos)";
+    const buildId = Number(operation.result.buildId);
+    const filesAt =
+      Number.isInteger(buildId) && buildId > 0
+        ? ` Its BRIEF.md and step logs are in ${pipelineRunRelativeDir(buildId)}.`
+        : "";
+    return {
+      title: "Pipeline agent started",
+      body: `${agent} is looking at ${run} in ${where}, with the run's logs and a summary of its errors.${filesAt}`,
+      failed: false,
+    };
+  }
+  if (operation.kind === OPERATION_KIND_JIRA_DEVELOPMENT) {
+    if ("error" in operation) {
+      return { title: "Development could not be started", body: operation.error.message, failed: true };
+    }
+    const issueKey = String(operation.result.issueKey || "the Jira issue");
+    const filesDir = String(operation.result.filesDir || "");
+    const count = (value: unknown, word: string) => {
+      const n = Number(value) || 0;
+      return `${n} ${word}${n === 1 ? "" : "s"}`;
+    };
+    const copied = filesDir
+      ? ` ${issueKey} with ${count(operation.result.comments, "comment")} and ${count(operation.result.attachments, "attachment")} is in ${filesDir}.`
+      : "";
+    return operation.result.launched
+      ? {
+          title: `Development started · ${issueKey}`,
+          body: `${String(operation.result.agentName || "The agent")} is working on ${issueKey} in its branch workspace.${copied}`,
+          failed: false,
+        }
+      : {
+          title: `Branch ready · ${issueKey}`,
+          body: `The branch workspace for ${issueKey} is ready.${copied}`,
+          failed: false,
+        };
   }
   if (operation.kind === "review-agent.prepare") {
     if ("error" in operation) {
@@ -771,15 +826,15 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     const isTaskAgent = (ws as AnyApi).kind === "task";
     const hasOwnWorktree = isTaskAgent && !!(ws as AnyApi).task?.worktreeBase;
     // Use the formatted display name so the prompt matches the sidebar card
-    // and Telegram notification — without this, three "mhub" task agents
-    // would all confirm with "Delete task agent 'mhub'?" and you couldn't
+    // and Telegram notification — without this, three "orders" task agents
+    // would all confirm with "Delete task agent 'orders'?" and you couldn't
     // tell which one you're about to remove.
     const displayName = formatWorkspaceDisplayName(ws as AnyApi);
     const firstTitle = isTaskAgent ? "Delete task agent" : "Delete workspace";
     // For a task agent without its own worktree, spell out exactly what's
     // touched on disk — only the agent's .strideterm/tasks/{taskId} folder.
     // The base directory and project files are left alone. The previous
-    // "Delete workspace 'mhub'?" wording made it sound like the entire
+    // "Delete workspace 'orders'?" wording made it sound like the entire
     // workspace directory was about to be removed.
     const firstMessage = isTaskAgent
       ? hasOwnWorktree
@@ -838,9 +893,102 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
 
   // --- Tab management ----------------------------------------------------
 
+  function ownerOfView(viewId: string): AnyApi | null {
+    const wsId = viewId.split(":")[0];
+    return wsId ? findProfileWorkspace(wsId) : null;
+  }
+
+  function offerJiraViewUndo(
+    workspaceId: string,
+    profileId: string,
+    snapshot: JiraWorkspaceViewsState["views"][number] | undefined,
+  ): void {
+    if (!snapshot || snapshot.kind === "issues") return;
+    const { createdAt: _createdAt, updatedAt: _updatedAt, ...saved } = snapshot;
+    void _createdAt;
+    void _updatedAt;
+    const view = { ...saved, projectKeys: saved.projectKeys ?? null };
+    useNotificationStore().pushEphemeralToast({
+      title: `Closed Jira view "${snapshot.title}"`,
+      body: "The saved view was removed from this workspace.",
+      durationMs: 10_000,
+      undo: {
+        label: "Undo",
+        run: async () => {
+          const current = (ctx.payload.value as AnyApi)?.jiraWorkspaceViews?.[workspaceId] as
+            JiraWorkspaceViewsState | undefined;
+          const reopened = current?.views.some(
+            (item) =>
+              item.viewId === view.viewId ||
+              (item.kind !== "issues" && item.kind === view.kind && item.boardId === view.boardId),
+          );
+          if (reopened) throw new Error("This board tab was already reopened.");
+          const state = await (ctx.getApi() as CallableTransport).saveJiraWorkspaceView({ workspaceId, view });
+          if (state && state.profileId === profileId) mergeJiraViewState(workspaceId, state);
+        },
+      },
+    });
+  }
+
   function closeTab(viewId: string): void {
     if (!viewId) return;
     if (isAzureViewId(viewId) || isGitHubViewId(viewId)) return;
+    if (isJiraViewId(viewId)) {
+      const workspace = (ctx.payload.value as AnyApi)?.workspace;
+      const activeWs = workspace?.workspace || workspace?.project;
+      const workspaceId = String((activeWs as AnyApi)?.id || "");
+      const jiraViewId = jiraViewIdFromTab(viewId, workspaceId);
+      if (!workspaceId || !jiraViewId || jiraViewId === "issues" || (activeWs as AnyApi)?.kind === "jira-board") return;
+      const api = ctx.getApi() as CallableTransport;
+      if (!api?.removeJiraWorkspaceView) return;
+      const profileId = String((activeWs as AnyApi)?.profileId || "default");
+      const snapshot = (
+        (ctx.payload.value as AnyApi)?.jiraWorkspaceViews?.[workspaceId] as JiraWorkspaceViewsState | undefined
+      )?.views.find((item) => item.viewId === jiraViewId);
+      const previousSplit = ctx.splitGroup.value;
+      const previousActiveViewId = ctx.activeViewId.value;
+      let fallbackActiveViewId: string | null = previousActiveViewId;
+      let optimisticSplit = previousSplit;
+      if (previousSplit) {
+        const remaining = previousSplit.viewIds.filter((id) => id !== viewId);
+        ctx.splitGroup.value = remaining.length >= 2 ? { ...previousSplit, viewIds: remaining } : null;
+        optimisticSplit = ctx.splitGroup.value;
+      }
+      if (previousActiveViewId === viewId) {
+        fallbackActiveViewId = ctx.workspaceTabs.value.find((tab) => tab.id !== viewId)?.id || null;
+        ctx.activeViewId.value = fallbackActiveViewId;
+      }
+      void api
+        .removeJiraWorkspaceView({ workspaceId, viewId: jiraViewId })
+        .then((state) => {
+          if (state?.workspaceId !== workspaceId) return;
+          offerJiraViewUndo(workspaceId, profileId, snapshot);
+          const currentPayload = ctx.payload.value as AnyApi;
+          if (currentPayload) {
+            ctx.adoptPayload({
+              ...currentPayload,
+              jiraWorkspaceViews: { ...(currentPayload.jiraWorkspaceViews || {}), [workspaceId]: state },
+            } as StatePayload);
+          }
+          if (previousActiveViewId === viewId && ctx.activeViewId.value === fallbackActiveViewId) {
+            const selectedViewId = String(state.activeViewId || "issues");
+            const selectedTabId = jiraViewTabId(workspaceId, selectedViewId);
+            if (ctx.workspaceTabs.value.some((tab) => tab.id === selectedTabId)) ctx.activeViewId.value = selectedTabId;
+          }
+        })
+        .catch(async (err: Error) => {
+          if (ctx.activeViewId.value === fallbackActiveViewId) ctx.activeViewId.value = previousActiveViewId;
+          if (ctx.splitGroup.value === optimisticSplit) ctx.splitGroup.value = previousSplit;
+          const { useNotificationStore } = await import("./notifications.js");
+          useNotificationStore().pushPersistentToast({
+            title: "Couldn't close Jira view",
+            body: userFacingMessage(err, "Unknown error"),
+            kind: "error",
+            profileId: (activeWs as AnyApi)?.profileId || "default",
+          });
+        });
+      return;
+    }
     // The Review tab is not a panel — it exists for as long as the workspace is
     // linked to a PR, so there is nothing to hide and closing it used to be a
     // silent no-op. Offer the detach that actually removes it instead, so the
@@ -865,7 +1013,8 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     const activeWs = workspace?.workspace || workspace?.project;
     const sessionId = viewId;
     const panelId = sessionId.split(":").slice(1).join(":");
-    const isWorkspacePanel = (activeWs as AnyApi)?.panels?.some((p: AnyApi) => p.id === panelId);
+    const owner = (ownerOfView(viewId) ?? activeWs) as AnyApi;
+    const isWorkspacePanel = owner?.panels?.some((p: AnyApi) => p.id === panelId);
 
     if (isGitViewId(viewId) || isDockerViewId(viewId) || !isWorkspacePanel) {
       ctx.hiddenViewIds.value = new Set([...ctx.hiddenViewIds.value, viewId]);
@@ -897,10 +1046,10 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
       return;
     }
 
-    if (!activeWs) return;
-    if ((activeWs as AnyApi).panels.length <= 1 && (activeWs as AnyApi).kind !== "docker") return;
+    if (!owner) return;
+    if (owner.panels.length <= 1 && owner.kind !== "docker") return;
 
-    const nextWorkspace = cloneWorkspace(activeWs as AnyApi);
+    const nextWorkspace = cloneWorkspace(owner);
     nextWorkspace.panels = nextWorkspace.panels.filter((p: AnyApi) => p.id !== panelId);
     if (nextWorkspace.activePanelId === panelId) {
       nextWorkspace.activePanelId = nextWorkspace.panels[0]?.id || "";
@@ -962,6 +1111,60 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     await ctx.withSuppressedBroadcast(async () => {
       ctx.adoptPayload((await (ctx.getApi() as CallableTransport).saveWorkspace(nextWorkspace)) as StatePayload);
     });
+    ctx.activeViewId.value = `${nextWorkspace.id}:${panelId}`;
+  }
+
+  /**
+   * Starts a terminal that lives inside a Files commander instead of the tab
+   * strip.
+   */
+  function findProfileWorkspace(workspaceId: string): AnyApi | null {
+    const profileId = ctx.myActiveProfileId.value;
+    const found = ((ctx.payload.value as AnyApi)?.appState?.workspaces || []).find(
+      (w: AnyApi) => w.id === workspaceId && (!profileId || (w.profileId || "default") === profileId),
+    );
+    return found ?? null;
+  }
+
+  async function openHostedTerminal(
+    workspaceId: string,
+    hostViewId: string,
+    options: { cwd?: string; command?: string; title?: string } = {},
+  ): Promise<string> {
+    const owner = findProfileWorkspace(workspaceId);
+    const hostExists = owner?.panels?.some((p: AnyApi) => p.command === "__files__" && `files:${p.id}` === hostViewId);
+    if (!owner || !hostExists) throw new Error("The Files tab is no longer part of its workspace.");
+
+    const nextWorkspace = cloneWorkspace(owner);
+    const panelId = `panel-${crypto.randomUUID()}`;
+    const panel: AnyApi = {
+      id: panelId,
+      title: options.title || `${APP_CONFIG.ui.numberedPanelTitlePrefix} ${nextWorkspace.panels.length + 1}`,
+      command: options.command || "",
+      shell: true,
+      startup: APP_CONFIG.ui.defaultPanelStartup,
+      hostedBy: hostViewId,
+    };
+    if (options.cwd) panel.cwd = options.cwd;
+    nextWorkspace.panels.push(panel);
+    await ctx.withSuppressedBroadcast(async () => {
+      ctx.adoptPayload((await (ctx.getApi() as CallableTransport).saveWorkspace(nextWorkspace)) as StatePayload);
+    });
+    return `${nextWorkspace.id}:${panelId}`;
+  }
+
+  async function moveHostedTerminalToTab(workspaceId: string, panelId: string): Promise<void> {
+    const owner = findProfileWorkspace(workspaceId);
+    if (!owner || !owner.panels?.some((p: AnyApi) => p.id === panelId)) {
+      throw new Error("The terminal is no longer part of this workspace.");
+    }
+    const nextWorkspace = cloneWorkspace(owner);
+    nextWorkspace.panels = nextWorkspace.panels.map((p: AnyApi) => (p.id === panelId ? { ...p, hostedBy: "" } : p));
+    nextWorkspace.activePanelId = panelId;
+    await ctx.withSuppressedBroadcast(async () => {
+      ctx.adoptPayload((await (ctx.getApi() as CallableTransport).saveWorkspace(nextWorkspace)) as StatePayload);
+    });
+    if (ctx.myActiveWorkspaceId.value !== workspaceId) await ctx.activateWorkspaceInGrid(workspaceId);
     ctx.activeViewId.value = `${nextWorkspace.id}:${panelId}`;
   }
 
@@ -1165,6 +1368,179 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     ctx.adoptPayload((await (ctx.getApi() as CallableTransport).saveWorkspace(nextWorkspace)) as StatePayload);
   }
 
+  function currentJiraViewState(): { workspaceId: string; state: JiraWorkspaceViewsState } | null {
+    const workspaceId = ctx.myActiveWorkspaceId.value;
+    if (!workspaceId) return null;
+    const payload = ctx.payload.value as AnyApi;
+    const workspace = payload?.workspace?.workspace || payload?.workspace?.project;
+    const entry = (payload?.appState?.workspaces || []).find((item: AnyApi) => item.id === workspaceId);
+    const profileId = String(entry?.profileId || workspace?.profileId || "default");
+    const state = payload?.jiraWorkspaceViews?.[workspaceId] as JiraWorkspaceViewsState | undefined;
+    if (
+      !workspace ||
+      workspace.id !== workspaceId ||
+      (workspace.kind !== "jira" && workspace.kind !== "jira-board") ||
+      profileId !== (ctx.myActiveProfileId.value || "default") ||
+      !state ||
+      state.workspaceId !== workspaceId ||
+      state.profileId !== profileId
+    )
+      return null;
+    return { workspaceId, state };
+  }
+
+  function mergeJiraViewState(workspaceId: string, state: JiraWorkspaceViewsState): void {
+    if (state.workspaceId !== workspaceId) throw new Error("Jira view response belongs to another workspace.");
+    const current = ctx.payload.value as AnyApi;
+    if (!current) return;
+    const workspaceEntry = (current.appState?.workspaces || []).find((item: AnyApi) => item.id === workspaceId);
+    if (String(workspaceEntry?.profileId || "default") !== state.profileId) return;
+    ctx.payload.value = {
+      ...current,
+      jiraWorkspaceViews: { ...(current.jiraWorkspaceViews || {}), [workspaceId]: state },
+    } as StatePayload;
+  }
+
+  async function renameJiraWorkspaceView(tabId: string, title: string): Promise<void> {
+    const current = currentJiraViewState();
+    const viewId = current && jiraViewIdFromTab(tabId, current.workspaceId);
+    const view = viewId && viewId !== "issues" ? current?.state.views.find((item) => item.viewId === viewId) : null;
+    const cleanTitle = title.trim();
+    if (!current || !view || !cleanTitle || cleanTitle.length > 200) {
+      throw new Error("This Jira view cannot be renamed in the current workspace.");
+    }
+    const api = ctx.getApi() as CallableTransport;
+    if (typeof api.renameJiraWorkspaceView !== "function") throw new Error("Renaming Jira views is unavailable.");
+    const state = await api.renameJiraWorkspaceView({
+      workspaceId: current.workspaceId,
+      viewId: view.viewId,
+      title: cleanTitle,
+    });
+    if (state) mergeJiraViewState(current.workspaceId, state);
+  }
+
+  /**
+   * Opens a saved Jira board tab as a workspace of its own (a `jira-board` child of the Jira inbox). The board view
+   * is saved before anything is activated, and a child whose view could not be saved is removed again, so a failure
+   * never leaves a workspace that opens to an empty tab.
+   */
+  async function openJiraViewInOwnWorkspace(tabId: string): Promise<void> {
+    const current = currentJiraViewState();
+    const viewId = current && jiraViewIdFromTab(tabId, current.workspaceId);
+    const view = viewId && viewId !== "issues" ? current?.state.views.find((item) => item.viewId === viewId) : null;
+    if (!current || !view || view.kind !== "board" || view.boardId === null)
+      throw new Error("Only a saved board tab can open in its own workspace.");
+    const api = ctx.getApi() as CallableTransport;
+    if (typeof api.saveJiraWorkspaceView !== "function")
+      throw new Error("Saving a board view is not available in this session.");
+    const workspaces = ((ctx.payload.value as AnyApi)?.appState?.workspaces || []) as AnyApi[];
+    const parent = workspaces.find((item) => item.id === current.workspaceId);
+    if (!parent || parent.kind !== "jira") throw new Error("This tab does not belong to a Jira workspace.");
+    const profileId = String(parent.profileId || "default");
+    const boardId = String(view.boardId);
+    const existing = workspaces.find(
+      (item) =>
+        item.kind === "jira-board" &&
+        String(item.profileId || "default") === profileId &&
+        item.jiraBoard?.parentWorkspaceId === parent.id &&
+        item.jiraBoard.connectionId === view.connectionId &&
+        item.jiraBoard.boardId === boardId,
+    );
+    if (existing) {
+      await ctx.activateWorkspaceInGrid(existing.id);
+      return;
+    }
+    const child: AnyApi = {
+      ...parent,
+      id: crypto.randomUUID(),
+      name: view.boardName,
+      kind: "jira-board",
+      profileId,
+      connectionId: view.connectionId,
+      cwd: "",
+      gitRoots: [],
+      activeRootPath: "",
+      panels: [],
+      activePanelId: null,
+      activeViewId: null,
+      splitLayout: null,
+      splitViewIds: [],
+      notes: "",
+      review: null,
+      quickfix: null,
+      task: null,
+      starred: false,
+      workItems: [],
+      internalMcpEnabled: false,
+      jiraMcpEnabled: false,
+      jiraMcpCommentDrafts: [],
+      jiraBoard: {
+        parentWorkspaceId: parent.id,
+        connectionId: view.connectionId,
+        boardId,
+        boardName: view.boardName,
+        ...(view.projectKeys !== undefined ? { projectKeys: [...view.projectKeys] } : {}),
+      },
+      lastWorkedAt: undefined,
+    };
+    const childView: JiraWorkspaceViewInput = {
+      kind: "board",
+      connectionId: view.connectionId,
+      boardId: view.boardId,
+      boardName: view.boardName,
+      title: view.title,
+      mode: view.mode,
+      sprintId: view.sprintId,
+      quickFilterIds: [...view.quickFilterIds],
+      assignee: view.assignee,
+      doneWithinDays: view.doneWithinDays,
+      ...(view.presentation ? { presentation: view.presentation } : {}),
+      ...(view.statusFilter !== undefined ? { statusFilter: view.statusFilter } : {}),
+      ...(view.projectKeys !== undefined ? { projectKeys: [...view.projectKeys] } : {}),
+    };
+    let createdChildId = "";
+    try {
+      await saveWorkspace(child);
+      createdChildId = child.id;
+      await api.saveJiraWorkspaceView({ workspaceId: child.id, view: childView });
+      createdChildId = "";
+      await ctx.activateWorkspaceInGrid(child.id);
+    } catch (cause) {
+      if (createdChildId) {
+        try {
+          await api.deleteWorkspace(createdChildId, { deleteFromDisk: false });
+        } catch (cleanupCause) {
+          throw new Error(
+            `${userFacingMessage(cause, "The board could not be saved")}. The half-created workspace could not be removed either: ${userFacingMessage(cleanupCause, "unknown error")}`,
+            { cause: cleanupCause },
+          );
+        }
+      }
+      if (/was superseded/i.test(userFacingMessage(cause, ""))) return;
+      throw cause;
+    }
+  }
+
+  async function reorderJiraWorkspaceViews(orderedViewIds: string[]): Promise<void> {
+    const current = currentJiraViewState();
+    if (!current) throw new Error("Jira view ordering is unavailable in the current workspace.");
+    const currentIds = current.state.views.filter((item) => item.viewId !== "issues").map((item) => item.viewId);
+    if (
+      orderedViewIds.length !== currentIds.length ||
+      new Set(orderedViewIds).size !== currentIds.length ||
+      orderedViewIds.some((id) => !currentIds.includes(id))
+    ) {
+      throw new Error("The Jira view order changed. Refresh the workspace and try again.");
+    }
+    const api = ctx.getApi() as CallableTransport;
+    if (typeof api.reorderJiraWorkspaceViews !== "function") throw new Error("Reordering Jira views is unavailable.");
+    const state = await api.reorderJiraWorkspaceViews({
+      workspaceId: current.workspaceId,
+      viewIds: orderedViewIds,
+    });
+    if (state) mergeJiraViewState(current.workspaceId, state);
+  }
+
   async function createWorktree(workspaceId: string, name: string, rootPath = ""): Promise<void> {
     if (!workspaceId || !name) return;
     ctx.adoptPayload(
@@ -1260,6 +1636,8 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     closeTab,
     quickAddTab,
     quickAddTemplateTab,
+    openHostedTerminal,
+    moveHostedTerminalToTab,
     pickLayout,
     disbandSplit,
     ctxRemoveFromGroup,
@@ -1268,6 +1646,9 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     restartSession,
     reorderPanels,
     renameTab,
+    renameJiraWorkspaceView,
+    openJiraViewInOwnWorkspace,
+    reorderJiraWorkspaceViews,
     createWorktree,
     reorderWorkspaces,
   };

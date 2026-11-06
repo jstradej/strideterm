@@ -79,15 +79,17 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted } from "vue";
+import { computed, provide, ref, onMounted, onUnmounted } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useTerminalStore } from "../../stores/terminal.js";
 import { classifyViewType } from "../../app/helpers.js";
 import { resolvePaneComponent, resolvePaneProps } from "../../app/pane-resolver.js";
+import { jiraViewTabId } from "../../app/jira-view-tabs.js";
 import WorkspaceCellHeader from "./WorkspaceCellHeader.vue";
 import WorkspacePickerPopover from "./WorkspacePickerPopover.vue";
 import TabStrip from "../layout/TabStrip.vue";
 import TerminalPane from "./TerminalPane.vue";
+import { filesOwnerWorkspaceIdKey } from "../../types/keys.js";
 
 const props = defineProps<{
   workspaceId: string | null;
@@ -100,6 +102,10 @@ const emit = defineEmits<{
 }>();
 
 const store = useAppStore();
+provide(
+  filesOwnerWorkspaceIdKey,
+  computed(() => props.workspaceId),
+);
 const termStore = useTerminalStore();
 const showPicker = ref(false);
 const dragOver = ref(false);
@@ -133,6 +139,13 @@ const activeViewId = computed<string | null>(() => {
   if (!props.workspaceId) return null;
   // For focused cell, use live activeViewId from store
   if (props.focused) return store.activeViewId;
+  if (workspaceEntry.value?.kind === "jira" || workspaceEntry.value?.kind === "jira-board") {
+    const state = (store.payload as AnyApi)?.jiraWorkspaceViews?.[props.workspaceId];
+    if (state?.profileId === (workspaceEntry.value.profileId || "default")) {
+      const viewId = String(state.activeViewId || "issues");
+      if (state.views?.some((view: AnyApi) => view.viewId === viewId)) return jiraViewTabId(props.workspaceId, viewId);
+    }
+  }
   // For non-focused, use the workspace's persisted activeViewId
   return workspaceEntry.value?.activeViewId ?? null;
 });
@@ -151,7 +164,9 @@ const activeSessionId = computed<string | null>(() =>
 
 const paneComponent = computed(() => resolvePaneComponent(activeViewType.value));
 
-const paneProps = computed(() => resolvePaneProps(activeViewType.value, activeViewId.value || ""));
+const paneProps = computed(() =>
+  resolvePaneProps(activeViewType.value, activeViewId.value || "", props.workspaceId || ""),
+);
 
 function onMousedown(event: MouseEvent): void {
   // Header controls (×, +, picker, swap arrows) have their own intent —
@@ -178,12 +193,18 @@ function onClear(): void {
 }
 
 async function onAddTab(anchorRect: DOMRect): Promise<void> {
+  if (workspaceEntry.value?.kind === "jira-board") return;
   // Activate the cell's workspace first — the global TabPickerDropdown reads
   // the active workspace to figure out which workspace receives the new tab.
   // Without this step, clicking + on a non-focused cell would always land
   // the new tab in the focused cell's workspace instead.
   if (props.workspaceId && store.myActiveWorkspaceId !== props.workspaceId) {
     await store.activateWorkspace(props.workspaceId);
+  }
+  if (workspaceEntry.value?.kind === "jira" && props.workspaceId) {
+    store.requestJiraBoardChooser(props.workspaceId);
+    await store.activateView(`jira:${props.workspaceId}`);
+    return;
   }
   // Hand the anchor up to App.vue, which owns the TabPickerDropdown anchor
   // ref. Using a window event keeps this cell-level emit decoupled from the

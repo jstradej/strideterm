@@ -72,6 +72,10 @@ describe("logger secret redaction", () => {
     expect(redact("http://api/?api_key=SUPER")).not.toContain("SUPER");
     expect(redact("http://api/?api-key=SUPER")).not.toContain("SUPER");
     expect(redact("http://api/?access_token=abc")).not.toContain("=abc");
+    expect(redact('{"subscriptionKey":"super-secret-value"}')).not.toContain("super-secret-value");
+    expect(redact("http://api/?subscription-key=super-secret-value")).not.toContain("super-secret-value");
+    expect(redact('{"clientCertificatePassword":"private-pass"}')).not.toContain("private-pass");
+    expect(redact("Ocp-Apim-Subscription-Key: gateway-key-value")).not.toContain("gateway-key-value");
   });
 
   test("URL userinfo is redacted while credential-free SSH remotes remain intact", () => {
@@ -208,5 +212,34 @@ describe("logger secret redaction", () => {
     // fingerprint and an ordinary path must survive, or the logs stop being usable.
     const ordinary = "device e2e-mobile-device fingerprint AB12:CD34:EF56:7890 path v2/pairs/desktop-1/events";
     expect(redact(ordinary)).toBe(ordinary);
+  });
+});
+
+describe("OAuth value redaction", () => {
+  test("OAuth callback query values are redacted but the path survives", () => {
+    const out = redact(
+      "GET /api/oauth/callback?code=AUTH-CODE-123&state=CSRF-STATE-456&returnCode=RETURN-789&client_secret=SECRET-0",
+    );
+    for (const secret of ["AUTH-CODE-123", "CSRF-STATE-456", "RETURN-789", "SECRET-0"])
+      expect(out).not.toContain(secret);
+    expect(out).toContain("/api/oauth/callback?");
+  });
+
+  test("OAuth JSON keys are redacted", () => {
+    const out = redact(
+      JSON.stringify({
+        client_secret: "SECRET-A",
+        clientSecret: "SECRET-B",
+        returnCode: "RETURN-C",
+        endpoint: "/oauth/redeem",
+      }),
+    );
+    for (const secret of ["SECRET-A", "SECRET-B", "RETURN-C"]) expect(out).not.toContain(secret);
+    expect(out).toContain("/oauth/redeem");
+  });
+
+  test("a subscription-key header carrying a configurable name is still caught by its value shape in a URL", () => {
+    const out = redact("https://jira.example/rest/api/2/search?subscription-key=KEY-VALUE-1&jql=x");
+    expect(out).not.toContain("KEY-VALUE-1");
   });
 });

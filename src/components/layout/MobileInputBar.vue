@@ -149,6 +149,27 @@
             {{ editorExpanded ? "✓ " : "" }}Multi-line mode
           </button>
           <button
+            v-if="landscape"
+            type="button"
+            class="mobile-input-bar__menu-item"
+            title="Paste the clipboard into the field — review or edit the text, then send it with ⏎ or the send button. If the browser blocks clipboard access, long-press the field and paste from its menu instead."
+            @click="pasteFromClipboard"
+          >
+            📋&nbsp;&nbsp;Paste
+          </button>
+          <button
+            v-if="landscape && hostAvailable"
+            type="button"
+            class="mobile-input-bar__menu-item"
+            data-role="mobile-input-bar-attach-menu"
+            title="Attach a file and insert its path into this draft"
+            aria-label="Attach a file"
+            :disabled="composing || !!attachmentPending"
+            @click="requestAttachmentCompose"
+          >
+            📎&nbsp;&nbsp;Attach file
+          </button>
+          <button
             type="button"
             class="mobile-input-bar__menu-item"
             title="Insert / into the field to start an agent slash command, then finish typing and send with ⏎ or the send button."
@@ -330,7 +351,9 @@ function toast(title: string, body: string, kind: "info" | "error" = "info"): vo
 // formats, while every writable terminal has a matching runtime session.
 const targetSessionId = computed<string | null>(() => {
   if (store.isGridVisible) return null;
-  const candidate = store.activeViewId || store.activeSessionId;
+  const hosted = store.hostedTerminal;
+  const candidate =
+    hosted && hosted.hostViewId === store.activeViewId ? hosted.sessionId : store.activeViewId || store.activeSessionId;
   if (!candidate) return null;
   // A borrowed Companion Primary writes to the SOURCE session, which is not in
   // this workspace's session list. The projected tab is the validation: it
@@ -787,14 +810,40 @@ const INLINE_BAR_GAP = 4;
 const INLINE_HORIZONTAL_PADDING = 8;
 const RAIL_WIDTH = 56;
 const RAIL_MIN_VISIBLE_KEYS = 1;
-const LANDSCAPE_KEYS = [
-  accessoryKeys[0],
-  accessoryKeys[1],
-  accessoryKeys[3],
-  accessoryKeys[4],
-  accessoryKeys[2],
-  ...menuKeys,
+const LANDSCAPE_ORDER = [
+  "Esc",
+  "Tab",
+  "⇧Tab",
+  "←",
+  "↑",
+  "↓",
+  "→",
+  "^C",
+  "Home",
+  "End",
+  "^⇤",
+  "^⇥",
+  "⌥↑",
+  "^U",
+  "^R",
+  "^L",
 ];
+const LANDSCAPE_PRIORITY_GROUPS = [
+  ["Esc"],
+  ["↑", "↓"],
+  ["Tab"],
+  ["←", "→"],
+  ["⇧Tab"],
+  ["^C"],
+  ["Home", "End"],
+  ["^⇤", "^⇥"],
+  ["⌥↑"],
+  ["^U"],
+  ["^R"],
+  ["^L"],
+];
+const landscapeKeysByLabel = new Map([...accessoryKeys, ...menuKeys].map((key) => [key.label, key]));
+const LANDSCAPE_KEYS = LANDSCAPE_ORDER.map((label) => landscapeKeysByLabel.get(label)!);
 const railRows = computed(() => Math.floor((railMetrics.value.height + RAIL_GAP) / RAIL_CELL));
 const railKeyCapacity = computed(() => Math.max(0, railRows.value - 1));
 const railLayout = computed(() => railMetrics.value.width >= 300 && railKeyCapacity.value >= RAIL_MIN_VISIBLE_KEYS);
@@ -812,11 +861,16 @@ const inlineKeyCapacity = computed(() =>
     ),
   ),
 );
-const landscapeVisibleKeys = computed(() =>
-  sideRailActive.value
-    ? LANDSCAPE_KEYS.slice(0, railKeyCapacity.value)
-    : LANDSCAPE_KEYS.slice(0, inlineKeyCapacity.value),
-);
+const landscapeVisibleKeys = computed(() => {
+  let remaining = sideRailActive.value ? railKeyCapacity.value : inlineKeyCapacity.value;
+  const selected = new Set<string>();
+  for (const group of LANDSCAPE_PRIORITY_GROUPS) {
+    if (group.length > remaining) continue;
+    group.forEach((label) => selected.add(label));
+    remaining -= group.length;
+  }
+  return LANDSCAPE_KEYS.filter((key) => selected.has(key.label));
+});
 const landscapeOverflowKeys = computed(() => LANDSCAPE_KEYS.filter((key) => !landscapeVisibleKeys.value.includes(key)));
 const railStyle = computed(() => ({
   "--mobile-rail-top": `${railMetrics.value.top}px`,
@@ -1046,6 +1100,7 @@ function currentProfileId(): string {
   return store.myActiveProfileId || "default";
 }
 function requestAttachmentCompose(): void {
+  menuOpen.value = false;
   if (composing.value || attachmentPending.value) return;
   const sessionId = targetSessionId.value;
   const host = getHost();
@@ -1472,6 +1527,7 @@ function handleCompositionStart(): void {
 // composition is force-committed first (same dance as sendKey), so the late
 // compositionend can't clobber the merged draft.
 async function pasteFromClipboard(): Promise<void> {
+  menuOpen.value = false;
   let text = "";
   try {
     text = (await navigator.clipboard?.readText()) ?? "";

@@ -116,17 +116,33 @@ export function extractComments(
   );
 }
 
+export interface AzureRawReviewer {
+  id?: string;
+  displayName?: string;
+  uniqueName?: string;
+  vote?: number;
+  isRequired?: boolean;
+  hasDeclined?: boolean;
+  isContainer?: boolean;
+  votedFor?: Array<{ id?: string; displayName?: string }>;
+}
+
+export function findMyReviewer<T extends AzureRawReviewer>(
+  reviewers: T[],
+  login: unknown,
+  currentUserId?: string | null,
+): T | undefined {
+  const userId = String(currentUserId || "")
+    .trim()
+    .toLowerCase();
+  const byId = userId ? reviewers.find((reviewer) => String(reviewer.id || "").toLowerCase() === userId) : undefined;
+  return byId || reviewers.find((reviewer) => identityMatches(login, reviewer));
+}
+
 export function summarizeReviewers(
-  reviewers: Array<{
-    id?: string;
-    displayName?: string;
-    uniqueName?: string;
-    vote?: number;
-    isRequired?: boolean;
-    hasDeclined?: boolean;
-    isContainer?: boolean;
-  }> = [],
+  reviewers: AzureRawReviewer[] = [],
   login = "",
+  currentUserId?: string | null,
 ): {
   myVote: number;
   myReviewerId: string;
@@ -141,9 +157,10 @@ export function summarizeReviewers(
     isRequired: boolean;
     hasDeclined: boolean;
     isContainer: boolean;
+    votedFor: Array<{ id: string; displayName: string }>;
   }>;
 } {
-  const myReviewer = reviewers.find((reviewer) => identityMatches(login, reviewer));
+  const myReviewer = findMyReviewer(reviewers, login, currentUserId);
   return {
     myVote: myReviewer?.vote ?? 0,
     myReviewerId: myReviewer?.id || "",
@@ -158,6 +175,9 @@ export function summarizeReviewers(
       isRequired: Boolean(reviewer.isRequired),
       hasDeclined: Boolean(reviewer.hasDeclined),
       isContainer: Boolean(reviewer.isContainer),
+      votedFor: (Array.isArray(reviewer.votedFor) ? reviewer.votedFor : [])
+        .filter((group) => group?.id)
+        .map((group) => ({ id: String(group.id), displayName: group.displayName || String(group.id) })),
     })),
   };
 }
@@ -174,6 +194,24 @@ export function buildRepositoryRemoteUrl(
     return "";
   }
   return `${baseUrl}/${encodeURIComponent(project)}/_git/${encodeURIComponent(repository)}`;
+}
+
+const AZURE_CLOUD_HOST = /^(dev\.azure\.com|[a-z0-9-]+\.visualstudio\.com)$/iu;
+
+/** True when `remoteUrl` is an https URL on the connection's own Azure DevOps host (or, for the cloud service, one of its aliases). */
+export function isRemoteOnConnectionHost(
+  connection: { orgUrl?: string } | null | undefined,
+  remoteUrl: string,
+): boolean {
+  try {
+    const remote = new URL(remoteUrl);
+    const org = new URL(String(connection?.orgUrl || ""));
+    if (remote.protocol !== "https:" || org.protocol !== "https:") return false;
+    if (remote.host.toLowerCase() === org.host.toLowerCase()) return true;
+    return AZURE_CLOUD_HOST.test(remote.hostname) && AZURE_CLOUD_HOST.test(org.hostname);
+  } catch {
+    return false;
+  }
 }
 
 export function formatReviewWorkspaceError(error: unknown, reviewRoot: string): string {
@@ -419,41 +457,6 @@ export function createConnectionSnapshot(
     lastSuccessAt: persistedState.lastSuccessAt || null,
     lastError: persistedState.lastError || "",
   };
-}
-
-export function inferAttentionReason({
-  role,
-  newCommentsCount,
-  sourceUpdated,
-  voteChanged,
-  mergeStatusChanged,
-  mergeStatus,
-}: {
-  role: string;
-  newCommentsCount: number;
-  sourceUpdated: boolean;
-  voteChanged: boolean;
-  mergeStatusChanged: boolean;
-  mergeStatus: string;
-}): string {
-  if (newCommentsCount > 0) {
-    return role === "author" ? "new comment on my PR" : "new comment";
-  }
-  if (voteChanged) {
-    return "review state changed";
-  }
-  if (sourceUpdated) {
-    return role === "reviewer" ? "updated after review" : "branch updated";
-  }
-  if (
-    mergeStatusChanged ||
-    String(mergeStatus || "")
-      .toLowerCase()
-      .includes("failed")
-  ) {
-    return "policy failed";
-  }
-  return "";
 }
 
 export function normalizeConnectionInput(

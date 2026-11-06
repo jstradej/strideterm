@@ -19,6 +19,7 @@ import { computed } from "vue";
 import { runningAgentElapsedMs, formatRunningAgentElapsed, type RunningAgentRow } from "../../app/selectors.js";
 import type { ActivityRowView } from "../../app/workspace-activity-tree.js";
 import type { WorkspaceStatusCue } from "../../app/workspace-status.js";
+import type { WorkspaceBadgeGlyph } from "../../app/workspace-badge-glyphs.js";
 import type { PresentedActivityCluster } from "../../app/sidebar-presented-rows.js";
 import WorkspaceActivityCluster from "./WorkspaceActivityCluster.vue";
 
@@ -60,6 +61,8 @@ const props = defineProps<{
    * never disagree about what a workspace's state is.
    */
   statusCues?: Map<string, WorkspaceStatusCue>;
+  /** The tree card's review / new-branch glyph per workspace, from the same mapping as `statusCues`. */
+  badges?: Map<string, { badgeGlyph: WorkspaceBadgeGlyph; newBranch: boolean }>;
 }>();
 
 /**
@@ -122,6 +125,7 @@ const rowsByCluster = computed((): { key: string; rows: ActivityRowView[] }[] =>
         attentionCount: props.attentionCounts?.get(node.workspaceId) || 0,
         statusCue,
         missing: node.missing,
+        ...props.badges?.get(node.workspaceId),
       };
       if (node.role === "context") {
         const label = node.path.join(" › ");

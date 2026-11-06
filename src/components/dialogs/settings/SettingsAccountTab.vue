@@ -107,7 +107,8 @@ onUnmounted(() => {
   // dialog — closing it, or switching to another of its tabs, both of which unmount this component —
   // so ending the attempt here cancelled the sign-in as a direct consequence of the user doing the
   // one thing the flow asks of them. See `releaseSignInPanel` in `account-manager.ts` for why keeping
-  // the attempt is safe: it cannot become a credential without a press on this desktop.
+  // the attempt is safe: ordinary sign-in still needs a press here, while an action-bound link only
+  // completes the action the person explicitly selected before requesting it.
   void account.releaseSignInFlow();
 });
 
@@ -176,6 +177,32 @@ const busyLabel = computed(() => {
 const overview = computed(() => account.overview);
 const entitlement = computed(() => account.entitlement ?? account.overview?.entitlement);
 const auth = computed(() => account.auth);
+const signOutConfirmation = computed(() => auth.value?.purpose === "signout-installation");
+const deleteConfirmation = computed(() => auth.value?.purpose === "delete-account");
+const acceptedDeletion = computed(() => account.state.accountAction?.kind === "delete-account");
+watch(
+  () => auth.value?.purpose,
+  (purpose) => {
+    if (purpose === "signout-installation") {
+      showSignOut.value = true;
+      showDelete.value = false;
+    } else if (purpose === "delete-account") {
+      showDelete.value = true;
+      showSignOut.value = false;
+    }
+  },
+  { immediate: true },
+);
+watch(
+  acceptedDeletion,
+  (accepted) => {
+    if (accepted) {
+      showDelete.value = true;
+      showSignOut.value = false;
+    }
+  },
+  { immediate: true },
+);
 // A sent link is not the follow-up action the person chose; say what opening it will (and will not) do.
 const signInNextStepCopy = computed(() => {
   switch (auth.value?.purpose) {
@@ -283,6 +310,10 @@ watch(
   { immediate: true, flush: "sync" },
 );
 const completionMessage = computed(() => {
+  if (completingPurpose.value === "signout-installation")
+    return "We are verifying your email and signing out of this desktop.";
+  if (completingPurpose.value === "delete-account")
+    return "We are verifying your email and permanently deleting the account.";
   if (completingPurpose.value === "enrol-with-trial") {
     return "We are verifying your email, registering this computer and activating your free trial.";
   }
@@ -480,7 +511,11 @@ const ERROR_COPY: Record<string, string> = {
   "billing-unconfigured": "Subscriptions are not available in this build.",
   "no-subscription": "There is no subscription to manage yet.",
   "already-subscribed": "This account already has a subscription.",
-  "trial-already-used": "This desktop has already used its free trial.",
+  "trial-already-used":
+    "This desktop has already used its free trial. Using another account or email will not make it eligible again.",
+  "trial-account-has-billing-history": "This account has billing history, so it is not eligible for a free trial.",
+  "trial-account-has-active-entitlement":
+    "This account already has hosted access, so it is not eligible for a free trial.",
   "checkout-pending": "A checkout is already being prepared. Try again in a moment.",
   "checkout-link-unavailable": "The checkout link is no longer available. Start checkout again.",
   "provider-unavailable": "The payment service could not prepare the payment page. Try again later.",
@@ -519,6 +554,11 @@ const errorMessage = computed(() => {
   const code = account.actionError ?? account.state.lastError ?? "";
   if (code === "checkout-pending" && account.checkoutPendingOfferId !== null) return "";
   return code ? (ERROR_COPY[code] ?? ERROR_COPY.unknown) : "";
+});
+
+const trialIneligibilityMessage = computed(() => {
+  const code = account.state.trialIneligibility;
+  return code ? ERROR_COPY[code] : "";
 });
 
 /** Why no sign-in can be started, in the user's language. Four operator problems, four sentences. */
@@ -635,7 +675,7 @@ const canChoosePlan = computed(() => {
 
 const canStartTrial = computed(() => {
   const state = entitlement.value?.state;
-  return state === "unbound";
+  return state === "unbound" && !account.state.trialIneligibility;
 });
 
 const hasActiveHostedAccess = computed(() => {
@@ -857,7 +897,7 @@ async function submitDelete(): Promise<void> {
   await account.deleteAccount(confirmationPhrase.value);
   if (account.actionError) return;
   confirmationPhrase.value = "";
-  showDelete.value = false;
+  showDelete.value = acceptedDeletion.value;
 }
 
 async function submitSignOut(): Promise<void> {
@@ -866,34 +906,52 @@ async function submitSignOut(): Promise<void> {
 
 async function requestSignOutReauth(): Promise<void> {
   await act("signout-reauth", async () => {
-    pendingPurpose.value = "reauth";
-    await startReauth("reauth");
+    const address = account.state.ownerEmail || email.value;
+    if (address) await account.beginSignIn(address, "signout-installation");
   });
 }
 
 async function requestDeleteReauth(): Promise<void> {
   await act("delete-reauth", async () => {
     pendingPurpose.value = "delete-account";
-    await startReauth("delete-account");
+    const address = account.state.ownerEmail || email.value;
+    if (address) await account.beginSignIn(address, "delete-account", undefined, confirmationPhrase.value);
   });
 }
 
-function openSignOut(): void {
+async function openSignOut(): Promise<void> {
+  if (deleteConfirmation.value || signOutConfirmation.value) await account.cancelSignIn();
+  if (deleteConfirmation.value || signOutConfirmation.value) return;
   showSignOut.value = !showSignOut.value;
   account.actionError = null;
-  if (showSignOut.value) showDelete.value = false;
+  if (showSignOut.value) {
+    showDelete.value = false;
+    confirmationPhrase.value = "";
+  }
 }
 
-function openDelete(): void {
+async function openDelete(): Promise<void> {
+  if (signOutConfirmation.value || deleteConfirmation.value) await account.cancelSignIn();
+  if (signOutConfirmation.value || deleteConfirmation.value) return;
   showDelete.value = !showDelete.value;
   account.actionError = null;
-  if (showDelete.value) showSignOut.value = false;
+  if (showDelete.value) {
+    showSignOut.value = false;
+    confirmationPhrase.value = "";
+  }
 }
 
-function focusAuthPanel(): void {
-  const panel = document.querySelector<HTMLElement>(".account-auth");
-  panel?.scrollIntoView({ behavior: "smooth", block: "center" });
-  panel?.focus({ preventScroll: true });
+async function closeSignOut(): Promise<void> {
+  if (signOutConfirmation.value) await account.cancelSignIn();
+  if (signOutConfirmation.value) return;
+  showSignOut.value = false;
+}
+
+async function closeDelete(): Promise<void> {
+  if (deleteConfirmation.value) await account.cancelSignIn();
+  if (deleteConfirmation.value) return;
+  showDelete.value = false;
+  confirmationPhrase.value = "";
 }
 </script>
 
@@ -1348,7 +1406,11 @@ function focusAuthPanel(): void {
            Rendered in EVERY phase that can have one, and deliberately not as a phase of its own for
            an enrolled desktop: reauthenticating must not hide the device list and the entitlement
            this page exists to show (plan §8, Fáze 3). -->
-        <div v-if="auth" class="account-confirm account-auth" tabindex="-1">
+        <div
+          v-if="auth && !['signout-installation', 'delete-account'].includes(auth.purpose)"
+          class="account-confirm account-auth"
+          tabindex="-1"
+        >
           <template v-if="auth.phase === 'sending'">
             <h4>Sending a sign-in link…</h4>
             <p class="account-note">To {{ auth.email }}.</p>
@@ -1651,6 +1713,9 @@ function focusAuthPanel(): void {
                 Start 14-day trial
               </button>
             </div>
+            <p v-if="trialIneligibilityMessage" class="account-note account-note--warn">
+              {{ trialIneligibilityMessage }}
+            </p>
             <p
               v-if="account.checkoutRequestInFlight && canChoosePlan"
               class="account-note"
@@ -1892,7 +1957,10 @@ function focusAuthPanel(): void {
           </details>
 
           <!-- Destructive -->
-          <details class="account-section account-disclosure account-disclosure--danger">
+          <details
+            class="account-section account-disclosure account-disclosure--danger"
+            :open="showSignOut || showDelete || signOutConfirmation || deleteConfirmation || acceptedDeletion"
+          >
             <summary>
               <span
                 ><strong>Sign out or close account</strong
@@ -1911,25 +1979,35 @@ function focusAuthPanel(): void {
                 >Email partly hidden for privacy</small
               >
             </p>
-            <div class="account-danger">
-              <button
-                type="button"
-                class="button button--ghost"
-                :disabled="busy || pendingAction !== null"
-                title="Removes hosted access from this desktop. Your account remains open."
-                @click="openSignOut"
-              >
-                Sign out of this desktop
-              </button>
-              <button
-                type="button"
-                class="button button--danger"
-                :disabled="busy || pendingAction !== null"
-                title="Permanently closes the account and removes its data."
-                @click="openDelete"
-              >
-                Delete account
-              </button>
+            <div v-if="!acceptedDeletion" class="account-danger">
+              <div class="account-action-choice">
+                <div>
+                  <strong>Sign out</strong><small>Remove hosted access from this desktop; keep the account open.</small>
+                </div>
+                <button
+                  type="button"
+                  class="button button--ghost"
+                  :disabled="busy || pendingAction !== null"
+                  title="Removes hosted access from this desktop. Your account remains open."
+                  @click="openSignOut"
+                >
+                  Sign out of this desktop
+                </button>
+              </div>
+              <div class="account-action-choice account-action-choice--delete">
+                <div>
+                  <strong>Delete account</strong><small>Permanently close the account and remove its data.</small>
+                </div>
+                <button
+                  type="button"
+                  class="button button--danger"
+                  :disabled="busy || pendingAction !== null"
+                  title="Permanently closes the account and removes its data."
+                  @click="openDelete"
+                >
+                  Delete account
+                </button>
+              </div>
             </div>
 
             <div v-if="showSignOut" class="account-confirm">
@@ -1942,30 +2020,72 @@ function focusAuthPanel(): void {
                 This removes hosted access from this desktop. Your account, subscription and other devices stay as they
                 are. Local terminals keep working.
               </p>
-              <div v-if="needsReauth" class="account-reauth account-reauth--inline">
+              <div v-if="needsReauth || signOutConfirmation" class="account-reauth account-reauth--inline">
                 <p class="account-note account-note--warn">
-                  Confirm it is you to sign out. The email link only verifies you; it will not sign out automatically.
+                  Confirm the link in the email to sign out this desktop automatically.
                 </p>
-                <p v-if="auth" class="account-note" role="status">
-                  Your sign-in confirmation is above. After confirming the email link, return to this Settings panel.
+                <p v-if="signOutConfirmation" class="account-note" role="status" aria-live="polite">
+                  {{
+                    auth?.phase === "sending"
+                      ? "Sending confirmation email…"
+                      : auth?.phase === "verifying"
+                        ? "Verifying email and signing out…"
+                        : `Confirm the link sent to ${auth?.email}; this desktop will sign out automatically.`
+                  }}
                 </p>
-                <button v-if="auth" type="button" class="link" @click="focusAuthPanel">
-                  Go to sign-in confirmation
+                <button
+                  v-if="signOutConfirmation"
+                  type="button"
+                  class="button button--ghost"
+                  :disabled="busy"
+                  @click="closeSignOut"
+                >
+                  Cancel confirmation
                 </button>
-                <label v-if="!auth && !account.state.ownerEmail" class="account-field">
+                <label v-if="!signOutConfirmation && !account.state.ownerEmail" class="account-field">
                   <span>Your account email</span>
                   <input v-model="email" type="email" autocomplete="username" :disabled="busy" />
                 </label>
                 <button
-                  v-if="!auth"
+                  v-if="!signOutConfirmation"
                   type="button"
-                  class="button button--ghost"
+                  class="button"
                   :disabled="busy || pendingAction !== null || (!account.state.ownerEmail && !email)"
                   @click="requestSignOutReauth"
                 >
                   <span v-if="pendingAction === 'signout-reauth'" class="button-spinner" aria-hidden="true"></span>
-                  Send sign-in link to confirm identity
+                  Send confirmation and sign out
                 </button>
+                <div
+                  v-if="signOutConfirmation && auth && auth.phase !== 'sending' && auth.phase !== 'verifying'"
+                  class="account-actions account-action-followup"
+                >
+                  <button
+                    type="button"
+                    class="button button--ghost"
+                    :disabled="busy || resendInSeconds > 0"
+                    @click="act('resend', () => account.resendSignIn())"
+                  >
+                    {{ resendInSeconds > 0 ? `Resend in ${resendInSeconds}s` : "Resend email" }}
+                  </button>
+                  <button type="button" class="button button--ghost" :disabled="busy" @click="showPaste = !showPaste">
+                    {{ showPaste ? "Hide link field" : "Paste email link" }}
+                  </button>
+                </div>
+                <div v-if="signOutConfirmation && auth && (showPaste || auth.manualOnly)" class="account-paste">
+                  <label class="account-field"
+                    ><span>Paste the whole sign-in link</span
+                    ><input v-model="pastedLink" type="text" autocomplete="off" :disabled="busy"
+                  /></label>
+                  <button
+                    type="button"
+                    class="button button--ghost"
+                    :disabled="busy || !pastedLink"
+                    @click="submitPastedLink"
+                  >
+                    Verify link
+                  </button>
+                </div>
               </div>
               <p v-if="errorMessage" class="account-error account-error--inline" role="alert">
                 {{ errorMessage }}
@@ -1973,6 +2093,7 @@ function focusAuthPanel(): void {
               <p v-if="pendingAction === 'signout'" class="account-note" role="status">Signing out of this desktop…</p>
               <div class="account-actions">
                 <button
+                  v-if="!needsReauth && !auth && !signOutConfirmation"
                   type="button"
                   class="button button--danger"
                   title="Signs out this desktop and removes its hosted access."
@@ -1983,10 +2104,11 @@ function focusAuthPanel(): void {
                   Sign out of this desktop
                 </button>
                 <button
+                  v-if="!signOutConfirmation"
                   type="button"
                   class="button button--ghost"
                   :disabled="pendingAction !== null"
-                  @click="showSignOut = false"
+                  @click="closeSignOut"
                 >
                   Cancel
                 </button>
@@ -1994,66 +2116,127 @@ function focusAuthPanel(): void {
             </div>
 
             <div v-if="showDelete" class="account-confirm account-confirm--danger">
-              <h5>Delete this account permanently?</h5>
-              <p>
-                This closes the account for every device, cancels the subscription and deletes the personal data. It
-                cannot be undone. Type <code>DELETE MY ACCOUNT</code> to confirm.
-              </p>
-              <div v-if="needsReauth" class="account-reauth account-reauth--inline">
-                <p class="account-note account-note--warn">
-                  Confirm your identity here first. Opening the email link only verifies you; it will not delete
-                  anything by itself.
+              <template v-if="acceptedDeletion">
+                <h5>Account deletion submitted</h5>
+                <p class="account-note" role="status" aria-live="polite">
+                  The deletion request was accepted.
+                  {{
+                    account.state.accountAction?.providerCancellationRequired
+                      ? "Subscription cancellation is still being processed."
+                      : "The account and its data are being removed."
+                  }}
                 </p>
-                <p v-if="auth" class="account-note" role="status">
-                  Your sign-in confirmation is above. After confirming the email link, return to this Settings panel.
+              </template>
+              <template v-else>
+                <h5>Delete this account permanently?</h5>
+                <p>
+                  This closes the account for every device, cancels the subscription and deletes the personal data. It
+                  cannot be undone. Type <code>DELETE MY ACCOUNT</code> to confirm.
                 </p>
-                <button v-if="auth" type="button" class="link" @click="focusAuthPanel">
-                  Go to sign-in confirmation
-                </button>
-                <label v-if="!auth && !account.state.ownerEmail" class="account-field">
-                  <span>Your account email</span>
-                  <input v-model="email" type="email" autocomplete="username" :disabled="busy" />
+                <label v-if="!deleteConfirmation" class="account-field">
+                  <span>Type DELETE MY ACCOUNT to confirm</span>
+                  <input v-model="confirmationPhrase" type="text" :disabled="busy || deleteConfirmation" />
                 </label>
-                <button
-                  v-if="!auth"
-                  type="button"
-                  class="button button--ghost"
-                  :disabled="busy || pendingAction !== null || (!account.state.ownerEmail && !email)"
-                  @click="requestDeleteReauth"
-                >
-                  <span v-if="pendingAction === 'delete-reauth'" class="button-spinner" aria-hidden="true"></span>
-                  Send sign-in link to confirm identity
-                </button>
-              </div>
-              <label class="account-field">
-                <span>Type DELETE MY ACCOUNT to confirm</span>
-                <input v-model="confirmationPhrase" type="text" :disabled="busy" />
-              </label>
-              <p v-if="errorMessage" class="account-error account-error--inline" role="alert">
-                {{ errorMessage }}
-              </p>
-              <p v-if="pendingAction === 'delete-account'" class="account-note" role="status">Deleting account…</p>
-              <div class="account-actions">
-                <button
-                  type="button"
-                  class="button button--danger"
-                  :disabled="
-                    busy || pendingAction !== null || confirmationPhrase !== 'DELETE MY ACCOUNT' || needsReauth
-                  "
-                  @click="act('delete-account', submitDelete)"
-                >
-                  <span v-if="pendingAction === 'delete-account'" class="button-spinner" aria-hidden="true"></span>
-                  Delete account
-                </button>
-                <button
-                  type="button"
-                  class="button button--ghost"
-                  :disabled="pendingAction !== null"
-                  @click="showDelete = false"
-                >
-                  Cancel
-                </button>
-              </div>
+                <div v-if="needsReauth || deleteConfirmation" class="account-reauth account-reauth--inline">
+                  <p class="account-note account-note--warn">
+                    Confirm the link in the email to permanently delete this account automatically.
+                  </p>
+                  <p v-if="deleteConfirmation" class="account-note" role="status" aria-live="polite">
+                    {{
+                      auth?.phase === "sending"
+                        ? "Sending confirmation email…"
+                        : auth?.phase === "verifying"
+                          ? "Verifying email and deleting the account…"
+                          : `Confirm the link sent to ${auth?.email}; the account will be deleted automatically.`
+                    }}
+                  </p>
+                  <button
+                    v-if="deleteConfirmation"
+                    type="button"
+                    class="button button--ghost"
+                    :disabled="busy"
+                    @click="closeDelete"
+                  >
+                    Cancel confirmation
+                  </button>
+                  <label v-if="!deleteConfirmation && !account.state.ownerEmail" class="account-field">
+                    <span>Your account email</span>
+                    <input v-model="email" type="email" autocomplete="username" :disabled="busy" />
+                  </label>
+                  <button
+                    v-if="!deleteConfirmation && !acceptedDeletion"
+                    type="button"
+                    class="button button--danger"
+                    :disabled="
+                      busy ||
+                      pendingAction !== null ||
+                      (!account.state.ownerEmail && !email) ||
+                      confirmationPhrase !== 'DELETE MY ACCOUNT'
+                    "
+                    @click="requestDeleteReauth"
+                  >
+                    <span v-if="pendingAction === 'delete-reauth'" class="button-spinner" aria-hidden="true"></span>
+                    Send confirmation and delete account
+                  </button>
+                  <div
+                    v-if="deleteConfirmation && auth && auth.phase !== 'sending' && auth.phase !== 'verifying'"
+                    class="account-actions account-action-followup"
+                  >
+                    <button
+                      type="button"
+                      class="button button--ghost"
+                      :disabled="busy || resendInSeconds > 0"
+                      @click="act('resend', () => account.resendSignIn())"
+                    >
+                      {{ resendInSeconds > 0 ? `Resend in ${resendInSeconds}s` : "Resend email" }}
+                    </button>
+                    <button type="button" class="button button--ghost" :disabled="busy" @click="showPaste = !showPaste">
+                      {{ showPaste ? "Hide link field" : "Paste email link" }}
+                    </button>
+                  </div>
+                  <div v-if="deleteConfirmation && auth && (showPaste || auth.manualOnly)" class="account-paste">
+                    <label class="account-field"
+                      ><span>Paste the whole sign-in link</span
+                      ><input v-model="pastedLink" type="text" autocomplete="off" :disabled="busy"
+                    /></label>
+                    <button
+                      type="button"
+                      class="button button--ghost"
+                      :disabled="busy || !pastedLink"
+                      @click="submitPastedLink"
+                    >
+                      Verify link
+                    </button>
+                  </div>
+                </div>
+                <p v-if="errorMessage" class="account-error account-error--inline" role="alert">
+                  {{ errorMessage }}
+                </p>
+                <p v-if="pendingAction === 'delete-account'" class="account-note" role="status">Deleting account…</p>
+                <div class="account-actions">
+                  <button
+                    v-if="!needsReauth && !auth && !deleteConfirmation"
+                    type="button"
+                    class="button button--danger"
+                    :disabled="
+                      busy || pendingAction !== null || confirmationPhrase !== 'DELETE MY ACCOUNT' || needsReauth
+                    "
+                    @click="act('delete-account', submitDelete)"
+                  >
+                    <span v-if="pendingAction === 'delete-account'" class="button-spinner" aria-hidden="true"></span>
+                    Delete account
+                  </button>
+                  <button
+                    v-if="!deleteConfirmation && !acceptedDeletion"
+                    type="button"
+                    class="button button--ghost"
+                    :disabled="pendingAction !== null"
+                    @click="closeDelete"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </template>
             </div>
           </details>
         </template>
@@ -2448,7 +2631,9 @@ function focusAuthPanel(): void {
   max-width: 480px;
 }
 .account-disclosure > .account-danger {
-  margin-top: 0;
+  margin-top: 14px;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 .account-owner-identity {
   display: grid;
@@ -2465,6 +2650,7 @@ function focusAuthPanel(): void {
 .account-note {
   color: var(--muted);
   font-size: 12px;
+  line-height: 1.55;
   margin: 0;
 }
 .account-note--warn {
@@ -2547,24 +2733,98 @@ function focusAuthPanel(): void {
   color: var(--muted);
 }
 .account-notice {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: flex-start;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 16px;
+  align-items: center;
   border: 1px solid var(--border, #333);
-  border-radius: 4px;
-  padding: 8px;
+  border-radius: 7px;
+  padding: 12px 14px;
+  margin-top: 8px;
+  min-width: 0;
+}
+.account-notice > div {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+.account-notice strong {
+  font-size: 13px;
+  line-height: 1.35;
+}
+.account-notice p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.account-notice > button {
+  justify-self: end;
+  align-self: center;
+  white-space: nowrap;
+}
+@media (max-width: 520px) {
+  .account-notice {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .account-notice > button {
+    justify-self: start;
+  }
 }
 .account-danger {
-  display: flex;
-  gap: 12px;
-  margin-top: 8px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr));
+  gap: 10px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+.account-action-choice {
+  display: grid;
+  gap: 11px;
+  padding: 13px;
+  border: 1px solid var(--border, #333);
+  border-radius: 8px;
+  min-width: 0;
+}
+.account-action-choice > div {
+  display: grid;
+  gap: 4px;
+}
+.account-action-choice strong {
+  font-size: 13px;
+}
+.account-action-choice small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.account-action-choice--delete {
+  border-color: color-mix(in srgb, var(--danger, #c0392b) 48%, var(--border, #333));
 }
 .account-confirm {
   border: 1px solid var(--border, #333);
   border-radius: 8px;
   padding: 12px;
   font-size: 12px;
+  line-height: 1.5;
+  margin-top: 14px;
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.account-confirm p {
+  margin: 0;
+}
+.account-action-followup {
+  margin-top: 8px;
+}
+.account-confirm .account-field {
+  min-width: 0;
+}
+.account-confirm input {
+  max-width: 100%;
 }
 .account-diagnostics {
   display: grid;

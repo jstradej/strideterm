@@ -270,6 +270,12 @@ describe("error codes", () => {
     );
   });
 
+  test("canonical trial refusal reasons map to fixed trial errors", () => {
+    expect(toAccountErrorCode({ code: "installation-already-trialed" })).toBe("trial-already-used");
+    expect(toAccountErrorCode({ code: "account-has-billing-history" })).toBe("trial-account-has-billing-history");
+    expect(toAccountErrorCode({ code: "account-has-active-entitlement" })).toBe("trial-account-has-active-entitlement");
+  });
+
   test("anything else is `unknown` — a remote string is never shown to a user", () => {
     expect(toAccountErrorCode({ message: "Something went terribly wrong on server 14" })).toBe("unknown");
     expect(toAccountErrorCode({ code: "some-new-thing" })).toBe("unknown");

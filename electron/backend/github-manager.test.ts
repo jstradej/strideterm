@@ -802,6 +802,73 @@ describe("GitHubManager openReviewWorkspace", () => {
 });
 
 describe("GitHubManager openQuickFixWorkspace", () => {
+  test("derives the clone URL from the connection host and scopes the token to it, ignoring the caller's URL", async () => {
+    const execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const { manager } = createManager({ secrets: { "cred:gh-main": "ghp-token" } });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).execFileText = execFileTextImpl;
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+
+    const result = (await manager.openQuickFixWorkspace({
+      state: { tabTemplates: [{ id: "shell", title: "Shell", command: "" }], workspaces: [] },
+      connectionId: "gh-main",
+      owner: "acme",
+      repo: "web",
+      remoteUrl: "https://attacker.invalid/x.git",
+      baseBranch: "main",
+      newBranchName: "fix-attacker",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    })) as any;
+
+    const clone = execFileTextImpl.mock.calls.find((call) => call[1].includes("clone"));
+    expect(clone?.[1]).toContain("https://github.com/acme/web");
+    expect(JSON.stringify(execFileTextImpl.mock.calls)).not.toContain("attacker.invalid");
+    expect(result.workspace.quickfix.remoteUrl).toBe("https://github.com/acme/web");
+    const carriers = [...(clone?.[1] ?? []), ...Object.entries(clone?.[2]?.env ?? {}).flat()].map(String);
+    expect(carriers.some((item) => item.startsWith("http.https://github.com/.extraheader"))).toBe(true);
+    expect(carriers).not.toContain("http.extraheader");
+  });
+
+  test.each([
+    ["a", "ui"],
+    ["go", "x"],
+  ])("accepts the short owner/repo names %j/%j", async (owner, repo) => {
+    const execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const { manager } = createManager({ secrets: { "cred:gh-main": "ghp-token" } });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).execFileText = execFileTextImpl;
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+    await manager.openQuickFixWorkspace({
+      state: { tabTemplates: [{ id: "shell", title: "Shell", command: "" }], workspaces: [] },
+      connectionId: "gh-main",
+      owner,
+      repo,
+      baseBranch: "main",
+      newBranchName: "fix-short",
+    });
+    const clone = execFileTextImpl.mock.calls.find((call) => call[1].includes("clone"));
+    expect(clone?.[1]).toContain(`https://github.com/${owner}/${repo}`);
+  });
+
+  test.each(["../evil", "a/b", "", ".", ".."])("refuses the owner/repo name %j without running git", async (name) => {
+    const execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const { manager } = createManager({ secrets: { "cred:gh-main": "ghp-token" } });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).execFileText = execFileTextImpl;
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+    await expect(
+      manager.openQuickFixWorkspace({
+        state: { tabTemplates: [], workspaces: [] },
+        connectionId: "gh-main",
+        owner: "acme",
+        repo: name,
+        baseBranch: "main",
+        newBranchName: "fix-1",
+      }),
+    ).rejects.toThrow(/Invalid repository/);
+    expect(execFileTextImpl).not.toHaveBeenCalled();
+  });
+
   test.each([true, false])("creates a quickfix workspace using the parent opt-in default (%s)", async (parentOptIn) => {
     const execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
     const { manager } = createManager({ secrets: { "cred:gh-main": "ghp-token" } });

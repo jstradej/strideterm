@@ -19,12 +19,16 @@
       @refresh="store.refresh()"
       @toggle-hidden="toggleHidden"
       @toggle-view="store.viewMode = store.viewMode === 'list' ? 'grid' : 'list'"
-      @toggle-layout="toggleLayout"
+      @set-layout="setLayout"
       @filter="store.setFilter($event)"
     />
-    <FileBreadcrumb :items="store.breadcrumbs" @navigate="store.navigate" />
+    <FileBreadcrumb v-if="store.layoutMode !== 'commander'" :items="store.breadcrumbs" @navigate="store.navigate" />
     <div class="file-manager__body">
-      <nav v-if="isNarrow" class="file-manager__mobile-views" aria-label="Files views">
+      <nav
+        v-if="isNarrow && store.layoutMode !== 'commander'"
+        class="file-manager__mobile-views"
+        aria-label="Files views"
+      >
         <button
           v-if="store.layoutMode === 'editor'"
           type="button"
@@ -72,7 +76,13 @@
           </button>
         </template>
       </nav>
-      <Splitpanes v-if="store.layoutMode === 'editor'" class="default-theme fm-splitpanes">
+      <FileCommander
+        v-if="store.layoutMode === 'commander'"
+        ref="commanderRef"
+        :narrow="isNarrow"
+        :host-view-id="`files:${props.workspaceId}`"
+      />
+      <Splitpanes v-else-if="store.layoutMode === 'editor'" class="default-theme fm-splitpanes">
         <Pane
           v-if="!isNarrow || mobilePane === 'tree'"
           :size="isNarrow ? 100 : 24"
@@ -203,51 +213,118 @@
           v-if="fileContextMenu.entry.kind === 'file'"
           type="button"
           class="context-menu__item"
+          title="Open the file in the editor"
           @click="onCtxOpen"
         >
-          Open
+          <span class="context-menu__icon" aria-hidden="true">↗</span><span>Open</span>
         </button>
         <button
           v-if="fileContextMenu.entry.kind === 'file' && isTextLikeEntry(fileContextMenu.entry)"
           type="button"
           class="context-menu__item"
+          title="Open the file in the editor, ready for typing"
           @click="onCtxEdit"
         >
-          ✎ Edit
+          <span class="context-menu__icon" aria-hidden="true">✎</span><span>Edit</span>
         </button>
         <button
           v-if="fileContextMenu.entry.kind === 'file'"
           type="button"
           class="context-menu__item"
+          title="Compare the saved file against HEAD, a branch or a commit"
           @click="onCtxDiff"
         >
-          ⇄ Diff vs HEAD / branch / commit…
+          <span class="context-menu__icon" aria-hidden="true">⇄</span><span>Diff vs HEAD / branch / commit…</span>
         </button>
         <button
           v-if="fileContextMenu.entry.kind === 'directory'"
           type="button"
           class="context-menu__item"
+          :title="
+            store.layoutMode === 'commander'
+              ? 'Open a terminal in this folder, in the other panel'
+              : 'Open a new terminal tab in this folder'
+          "
           @click="onCtxOpenTerminal"
         >
-          ▸ Open in Terminal
+          <span class="context-menu__icon" aria-hidden="true">▸</span><span>Open in Terminal</span>
         </button>
-        <button type="button" class="context-menu__item" @click="onCtxReveal">📂 Open in Explorer</button>
-        <div class="context-menu__divider"></div>
-        <button type="button" class="context-menu__item" @click="onCtxCopyPath">📋 Copy Absolute Path</button>
-        <button type="button" class="context-menu__item" @click="onCtxCopyRelativePath">📋 Copy Relative Path</button>
-        <div class="context-menu__divider"></div>
-        <button type="button" class="context-menu__item" @click="onCtxCopy">⎘ Copy</button>
-        <button type="button" class="context-menu__item" @click="onCtxCut">✂ Cut</button>
-        <button v-if="store.clipboard" type="button" class="context-menu__item" @click="onCtxPaste">
-          ⎘ Paste here
+        <button
+          type="button"
+          class="context-menu__item"
+          title="Show it in your system file manager"
+          @click="onCtxReveal"
+        >
+          <span class="context-menu__icon" aria-hidden="true">📂</span><span>Open in Explorer</span>
         </button>
-        <button type="button" class="context-menu__item" @click="onCtxRename">✎ Rename (F2)</button>
         <div class="context-menu__divider"></div>
-        <button type="button" class="context-menu__item" @click="onCtxNewFile">+ New File…</button>
-        <button type="button" class="context-menu__item" @click="onCtxNewFolder">+ New Folder…</button>
+        <button
+          type="button"
+          class="context-menu__item"
+          title="Copy the full path to the clipboard"
+          @click="onCtxCopyPath"
+        >
+          <span class="context-menu__icon" aria-hidden="true">📋</span><span>Copy Absolute Path</span>
+        </button>
+        <button
+          type="button"
+          class="context-menu__item"
+          title="Copy the path relative to the workspace folder"
+          @click="onCtxCopyRelativePath"
+        >
+          <span class="context-menu__icon" aria-hidden="true">📋</span><span>Copy Relative Path</span>
+        </button>
         <div class="context-menu__divider"></div>
-        <button type="button" class="context-menu__item context-menu__item--danger" @click="onCtxDelete">
-          ✕ Delete (Del)
+        <button
+          type="button"
+          class="context-menu__item"
+          title="Remember it for Paste here; the original stays"
+          @click="onCtxCopy"
+        >
+          <span class="context-menu__icon" aria-hidden="true">⎘</span><span>Copy</span>
+        </button>
+        <button
+          type="button"
+          class="context-menu__item"
+          title="Remember it for Paste here; Paste moves it"
+          @click="onCtxCut"
+        >
+          <span class="context-menu__icon" aria-hidden="true">✂</span><span>Cut</span>
+        </button>
+        <button
+          v-if="store.clipboard"
+          type="button"
+          class="context-menu__item"
+          :title="`${store.clipboard.op === 'cut' ? 'Move' : 'Copy'} ${store.clipboard.entry.name} into this folder`"
+          @click="onCtxPaste"
+        >
+          <span class="context-menu__icon" aria-hidden="true">📥</span><span>Paste here</span>
+        </button>
+        <button type="button" class="context-menu__item" title="Rename it" @click="onCtxRename">
+          <span class="context-menu__icon" aria-hidden="true">✎</span><span>Rename</span
+          ><kbd class="fm-menu__shortcut">F2</kbd>
+        </button>
+        <div class="context-menu__divider"></div>
+        <button type="button" class="context-menu__item" title="Create a new file in this folder" @click="onCtxNewFile">
+          <span class="context-menu__icon" aria-hidden="true">+</span><span>New File…</span>
+        </button>
+        <button
+          type="button"
+          class="context-menu__item"
+          title="Create a new folder in this folder"
+          @click="onCtxNewFolder"
+        >
+          <span class="context-menu__icon" aria-hidden="true">+</span><span>New Folder…</span>
+        </button>
+        <div class="context-menu__divider"></div>
+        <button
+          type="button"
+          class="context-menu__item context-menu__item--danger"
+          title="Delete it after a confirmation"
+          @click="onCtxDelete"
+        >
+          <span class="context-menu__icon" aria-hidden="true">✕</span><span>Delete</span
+          ><kbd class="fm-menu__shortcut">{{ store.layoutMode === "commander" ? "F8" : "Del" }}</kbd>
         </button>
       </div>
     </Teleport>
@@ -319,7 +396,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted, onBeforeUnmount, nextTick, provide, computed } from "vue";
+import { ref, watch, onMounted, onBeforeUnmount, nextTick, provide, computed, inject } from "vue";
 import { Splitpanes, Pane } from "splitpanes";
 import "splitpanes/dist/splitpanes.css";
 import { useAppStore } from "../../stores/app.js";
@@ -330,15 +407,19 @@ import FileToolbar from "./file-manager/FileToolbar.vue";
 import FileBreadcrumb from "./file-manager/FileBreadcrumb.vue";
 import FileTree from "./file-manager/FileTree.vue";
 import FileList from "./file-manager/FileList.vue";
+import FileCommander from "./file-manager/FileCommander.vue";
+import type { CommanderEntry } from "./file-manager/commander-helpers.js";
 import FilePreview from "./file-manager/FilePreview.vue";
 import FileDiff from "./file-manager/FileDiff.vue";
 import { useContextMenu } from "../../composables/useContextMenu.js";
+import { filesOwnerWorkspaceIdKey } from "../../types/keys.js";
 
 const props = withDefaults(defineProps<{ workspaceId: string; showHeader?: boolean }>(), { showHeader: false });
 
 const appStore = useAppStore();
 const store = useFileManagerStore();
 const paneRoot = ref<HTMLElement | null>(null);
+const commanderRef = ref<InstanceType<typeof FileCommander> | null>(null);
 const paneWidth = ref(typeof window === "undefined" ? 1024 : window.innerWidth);
 const isNarrow = computed(() => paneWidth.value <= 680);
 const mobilePane = ref<"tree" | "editor" | "list" | "preview">("tree");
@@ -368,6 +449,19 @@ watch(
         : store.selectedEntry
           ? "preview"
           : "list";
+  },
+  { immediate: true },
+);
+const ownerWorkspaceId = inject(filesOwnerWorkspaceIdKey, null);
+watch(
+  [
+    () =>
+      appStore.activeViewId === `files:${props.workspaceId}` &&
+      (!ownerWorkspaceId?.value || ownerWorkspaceId.value === appStore.myActiveWorkspaceId),
+    commanderRef,
+  ],
+  ([active, commander]) => {
+    if (active && commander) commander.focus();
   },
   { immediate: true },
 );
@@ -553,14 +647,19 @@ function onCtxOpen() {
   dismissMenu();
   if (!entry) return;
   if (entry.kind === "directory") store.navigate(entry.relativePath as string);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  else store.selectEntry(entry as any);
+  else if (store.layoutMode === "commander") void commanderRef.value?.openInEditor(entry as CommanderEntry);
+  else {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    store.selectEntry(entry as any);
+  }
 }
 
 function onCtxEdit() {
   const entry = fileContextMenu.value?.entry;
   dismissMenu();
-  if (entry?.kind === "file")
+  if (entry?.kind === "file" && store.layoutMode === "commander")
+    void commanderRef.value?.openInEditor(entry as CommanderEntry);
+  else if (entry?.kind === "file")
     store
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .selectEntry(entry as any)
@@ -573,7 +672,10 @@ function onCtxEdit() {
 function onCtxDiff() {
   const entry = fileContextMenu.value?.entry;
   dismissMenu();
-  if (entry?.kind === "file") store.openDiff(entry as Parameters<typeof store.openDiff>[0]);
+  if (entry?.kind !== "file") return;
+  // The diff view lives in the editor layout, so a diff started from the commander switches to it.
+  if (store.layoutMode === "commander") applyLayout("editor");
+  store.openDiff(entry as Parameters<typeof store.openDiff>[0]);
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -598,13 +700,20 @@ function onCtxCopyRelativePath() {
   copyText(rel).then(() => showToast(`Copied: ${rel}`));
 }
 
-function onCtxOpenTerminal() {
+async function onCtxOpenTerminal() {
   const entry = fileContextMenu.value?.entry;
   dismissMenu();
   if (!entry || entry.kind !== "directory") return;
-  const cwd = absolutePathFor(entry);
-  if (typeof appStore.quickAddTab === "function") {
-    appStore.quickAddTab(cwd);
+  try {
+    if (store.layoutMode === "commander" && commanderRef.value) {
+      await commanderRef.value.openTerminalAt(absolutePathFor(entry));
+      return;
+    }
+    await appStore.quickAddTab(absolutePathFor(entry));
+  } catch (err) {
+    const message = (err as Error)?.message || String(err);
+    rlog("warn", "file-manager: opening a terminal failed", { err: message });
+    await store.notifyOpError("Could not open a terminal", message);
   }
 }
 
@@ -685,15 +794,21 @@ function onHeaderAction(action: { action: string }) {
   if (action.action === "refresh") store.refresh();
 }
 
-function toggleLayout() {
-  store.layoutMode = store.layoutMode === "editor" ? "browser" : "editor";
-  if (store.layoutMode === "editor" && store.activeTabPath) store.activateTab(store.activeTabPath);
-  if (store.layoutMode === "browser") void store.navigate(store.currentPath);
+function applyLayout(mode: "editor" | "browser" | "commander") {
+  store.layoutMode = mode;
   try {
-    localStorage.setItem("files.layoutMode", store.layoutMode);
+    localStorage.setItem("files.layoutMode", mode);
   } catch {
     // Layout remains available for this session when storage is disabled.
   }
+}
+
+function setLayout(mode: "editor" | "browser" | "commander") {
+  if (store.layoutMode === mode) return;
+  applyLayout(mode);
+  if (mode === "editor" && store.activeTabPath) void store.activateTab(store.activeTabPath);
+  if (mode !== "editor") void store.navigate(store.currentPath);
+  if (mode === "commander") nextTick(() => commanderRef.value?.focus());
 }
 
 function onEditorTreeFileSelect() {
@@ -823,9 +938,23 @@ function onKeydownPane(event: KeyboardEvent) {
   // Let the diff viewer own keyboard navigation while focus is inside it.
   if (target?.closest?.(".fm-diff-inline")) return;
 
-  if (event.key === "F5") {
+  if (event.key === "F5" && store.layoutMode !== "commander") {
     event.preventDefault();
     store.refresh();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "n" && !event.shiftKey) {
+    event.preventDefault();
+    onCreateFile();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "n") {
+    event.preventDefault();
+    onCreateDir();
+    return;
+  }
+  if (store.layoutMode === "commander") {
+    if (target === paneRoot.value) commanderRef.value?.onKeydown(event);
     return;
   }
   if (event.key === "F2") {
@@ -852,16 +981,6 @@ function onKeydownPane(event: KeyboardEvent) {
     event.preventDefault();
     if (store.selectedEntry.kind === "directory") store.navigate(store.selectedEntry.relativePath);
     else if (isTextLikeEntry(store.selectedEntry)) onOpenEdit(store.selectedEntry);
-    return;
-  }
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "n" && !event.shiftKey) {
-    event.preventDefault();
-    onCreateFile();
-    return;
-  }
-  if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "n") {
-    event.preventDefault();
-    onCreateDir();
     return;
   }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c" && store.selectedEntry) {
@@ -1247,13 +1366,14 @@ onBeforeUnmount(() => {
 }
 
 :deep(.fm-splitpanes > .splitpanes__splitter) {
-  background: var(--border);
+  background: var(--border) !important;
+  border: 0 !important;
   min-width: 3px;
   min-height: 3px;
 }
 
 :deep(.fm-splitpanes > .splitpanes__splitter:hover) {
-  background: var(--accent);
+  background: var(--accent) !important;
 }
 
 /* Dialogs */
@@ -1326,6 +1446,19 @@ onBeforeUnmount(() => {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 12px;
+}
+
+.fm-menu__shortcut {
+  margin-left: auto;
+  padding-left: 18px;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+}
+
+.context-menu__item--danger .fm-menu__shortcut {
+  color: inherit;
+  opacity: 0.7;
 }
 
 .fm-toast {

@@ -558,6 +558,152 @@ describe("MobileInputBar", () => {
     }
   });
 
+  describe("landscape key selection", () => {
+    const CANONICAL = [
+      "Esc",
+      "Tab",
+      "⇧Tab",
+      "←",
+      "↑",
+      "↓",
+      "→",
+      "^C",
+      "Home",
+      "End",
+      "^⇤",
+      "^⇥",
+      "⌥↑",
+      "^U",
+      "^R",
+      "^L",
+    ];
+    const cases: Array<[number, string[]]> = [
+      [1, ["Esc"]],
+      [2, ["Esc", "Tab"]],
+      [3, ["Esc", "↑", "↓"]],
+      [4, ["Esc", "Tab", "↑", "↓"]],
+      [5, ["Esc", "Tab", "⇧Tab", "↑", "↓"]],
+      [6, ["Esc", "Tab", "←", "↑", "↓", "→"]],
+      [7, ["Esc", "Tab", "⇧Tab", "←", "↑", "↓", "→"]],
+      [8, ["Esc", "Tab", "⇧Tab", "←", "↑", "↓", "→", "^C"]],
+      [20, CANONICAL],
+    ];
+
+    it("keeps arrow pairs together and sends the rest to the menu in canonical order", async () => {
+      const media = vi.spyOn(window, "matchMedia").mockImplementation(
+        (query) =>
+          ({
+            matches: query === "(any-pointer: coarse)",
+            addEventListener: vi.fn(),
+            removeEventListener: vi.fn(),
+          }) as unknown as MediaQueryList,
+      );
+      const screenOrientation = mockScreenOrientation("landscape-primary");
+      document.documentElement.classList.add("native-session-rail");
+      const workspace = document.createElement("div");
+      const terminal = document.createElement("div");
+      terminal.className = "workspace-pane__body--terminal";
+      document.body.appendChild(workspace);
+      const { wrapper } = mountBar({ attachTo: workspace });
+      const componentRoot = wrapper.get(".mobile-input-bar").element as HTMLElement;
+      const workspaceMain = componentRoot.parentElement!;
+      workspaceMain.className = "workspace-main";
+      workspaceMain.append(terminal);
+      const rect = (top: number, bottom: number, width: number): DOMRect =>
+        ({
+          x: 0,
+          y: top,
+          left: 0,
+          top,
+          right: width,
+          bottom,
+          width,
+          height: bottom - top,
+          toJSON: () => ({}),
+        }) as DOMRect;
+      const setRect = (element: HTMLElement, getRect: () => DOMRect) =>
+        Object.defineProperty(element, "getBoundingClientRect", { configurable: true, value: getRect });
+      // railHeight = min(terminal.bottom, 342 - 4) - terminal.top; capacity = floor((railHeight + 4) / 48) - 1
+      let capacity = 0;
+      const terminalTop = () => 338 - (48 * (capacity + 1) - 4);
+      setRect(workspaceMain, () => rect(0, 390, 400));
+      setRect(terminal, () => rect(terminalTop(), 350, 296));
+      setRect(componentRoot, () =>
+        componentRoot.classList.contains("mobile-input-bar--rail") ? rect(0, 390, 400) : rect(342, 390, 400),
+      );
+      setRect(wrapper.get(".mobile-input-bar__row").element as HTMLElement, () => rect(342, 390, 400));
+      try {
+        await flushPromises();
+        window.dispatchEvent(new CustomEvent("strideterm:toggle-system-keyboard", { detail: { show: true } }));
+        await flushPromises();
+        for (const [cap, expected] of cases) {
+          capacity = cap;
+          window.dispatchEvent(new Event("resize"));
+          await nextTick();
+          if (!wrapper.find(".mobile-input-bar__menu").exists()) {
+            await wrapper.get(".mobile-input-bar__key--more").trigger("click");
+          }
+          const visible = wrapper
+            .findAll(".mobile-input-bar__keys > .mobile-input-bar__key:not(.mobile-input-bar__key--more)")
+            .map((button) => button.attributes("aria-label"));
+          const overflow = wrapper
+            .findAll('.mobile-input-bar__menu-item[title^="Send"]')
+            .map((button) => button.attributes("aria-label"));
+          expect(visible, `capacity ${cap}`).toEqual(expected);
+          expect(overflow, `capacity ${cap} overflow`).toEqual(CANONICAL.filter((label) => !expected.includes(label)));
+        }
+      } finally {
+        wrapper.unmount();
+        workspace.remove();
+        document.documentElement.classList.remove("native-session-rail");
+        screenOrientation.restore();
+        media.mockRestore();
+      }
+    });
+
+    it("offers Paste and Attach file in the landscape menu only", async () => {
+      const postMessage = vi.fn();
+      (window as AnyApi).StridetermHost = { postMessage };
+      const media = vi.spyOn(window, "matchMedia").mockImplementation(
+        (query) =>
+          ({
+            matches: query === "(any-pointer: coarse)",
+            addEventListener: vi.fn(),
+            removeEventListener: vi.fn(),
+          }) as unknown as MediaQueryList,
+      );
+      const screenOrientation = mockScreenOrientation("landscape-primary");
+      document.documentElement.classList.add("native-session-rail");
+      const { wrapper } = mountBar();
+      try {
+        await flushPromises();
+        await wrapper.get(".mobile-input-bar__key--more").trigger("click");
+        const items = wrapper.findAll(".mobile-input-bar__menu-item").map((item) => item.text().replace(/\s+/g, " "));
+        expect(items).toContain("📋 Paste");
+        expect(items).toContain("📎 Attach file");
+        await wrapper.get("[data-role='mobile-input-bar-attach-menu']").trigger("click");
+        expect(JSON.parse(postMessage.mock.calls[0][0])).toMatchObject({ type: "attachment-compose" });
+        expect(wrapper.find(".mobile-input-bar__menu").exists()).toBe(false);
+      } finally {
+        wrapper.unmount();
+        document.documentElement.classList.remove("native-session-rail");
+        screenOrientation.restore();
+        media.mockRestore();
+      }
+    });
+
+    it("keeps Paste and Attach in the row, not the menu, in portrait", async () => {
+      (window as AnyApi).StridetermHost = { postMessage: vi.fn() };
+      const { wrapper } = mountBar();
+      await wrapper.get(".mobile-input-bar__key--more").trigger("click");
+      const items = wrapper.findAll(".mobile-input-bar__menu-item").map((item) => item.text());
+      expect(items.some((text) => text.includes("Paste"))).toBe(false);
+      expect(items.some((text) => text.includes("Attach file"))).toBe(false);
+      expect(wrapper.find("[data-role='mobile-input-bar-attach-menu']").exists()).toBe(false);
+      wrapper.unmount();
+    });
+  });
+
   it("cancels pending keyboard shows on a later hide, rotation, or unmount", async () => {
     const media = vi.spyOn(window, "matchMedia").mockImplementation(
       (query) =>

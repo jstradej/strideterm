@@ -22,7 +22,7 @@ export interface ReviewGitSubject {
   /** Set to the provider's word for it ("completed", "abandoned", "closed", "merged") once the pull request is no longer open. */
   pullRequestClosed?: string;
   checkout: ReviewCheckout | null;
-  auth: { login?: string; token: string };
+  auth: { login?: string; token: string; authUrl: string | readonly string[] };
 }
 
 export interface ReviewGitRequester {

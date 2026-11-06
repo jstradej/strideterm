@@ -228,18 +228,17 @@
 }
 
 /* ── Sidebar workspace cards ────────────────────────────────────────────
-   Neutral white cards; the workspace colour stays on the badge, the
-   worktree / grid stripe and the active card. Every state that sets a
-   border is restated after the base rule, which would otherwise repaint it. */
+   White cards tinted with the workspace colour, as in dark. Every state that
+   sets a border is restated after the base rule, which would otherwise repaint it. */
 :where(:root[data-theme="light"]) .project,
 :where(:root[data-theme="light"]) .workspace-card {
-  background: #ffffff;
-  border-color: rgba(15, 23, 42, 0.1);
+  background: color-mix(in srgb, var(--accent) 7%, #ffffff);
+  border-color: color-mix(in srgb, var(--accent) 24%, rgba(15, 23, 42, 0.1));
 }
 
 :where(:root[data-theme="light"]) .project:where(:hover),
 :where(:root[data-theme="light"]) .workspace-card:where(:hover) {
-  border-color: rgba(15, 23, 42, 0.2);
+  border-color: color-mix(in srgb, var(--accent) 45%, rgba(15, 23, 42, 0.2));
 }
 
 :where(:root[data-theme="light"]) .workspace-card--sub,
@@ -254,7 +253,7 @@
 :where(:root[data-theme="light"]) .workspace-card--active.workspace-card--attention,
 :where(:root[data-theme="light"]) .activity-row--active.activity-row--attention {
   border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 7%, #ffffff);
+  background: color-mix(in srgb, var(--accent) 13%, #ffffff);
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent),
     0 1px 3px rgba(15, 23, 42, 0.08);
@@ -262,8 +261,7 @@
 
 /* ── Workspace header chips ─────────────────────────────────────────── */
 :where(:root[data-theme="light"]) .workspace-chip {
-  border-color: rgba(15, 23, 42, 0.12);
-  background: #ffffff;
+  background: rgba(15, 23, 42, 0.06);
 }
 
 :where(:root[data-theme="light"]) .workspace-chip--active {
@@ -329,4 +327,13 @@
 
 :root[data-theme="light"] .persistent-toast__copy {
   border-color: var(--field-border);
+}
+
+/* ── PR inbox ───────────────────────────────────────────────────────────
+   The accent is a hairline/fill colour; as 11-12px text on white it falls
+   below 4.5:1, so the attention chip and the group counter use the deeper
+   accent-on-black mix already defined for selected states. */
+:where(:root[data-theme="light"]) .azure-pr-row__chip--attention,
+:where(:root[data-theme="light"]) .azure-repo-group__attention {
+  color: var(--selected-fg);
 }

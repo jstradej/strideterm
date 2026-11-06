@@ -3,6 +3,43 @@ import { buildWorkspaceCards } from "./workspace-render.js";
 import type { WorkspaceState } from "../../electron/shared/types/state.js";
 
 describe("buildWorkspaceCards", () => {
+  test("renders a pinned Jira board below its inbox with a board label", () => {
+    const [jiraCard, boardCard] = buildWorkspaceCards({
+      workspaces: [
+        {
+          id: "jira-inbox",
+          name: "Jira",
+          kind: "jira",
+          color: "#0052cc",
+          icon: "J",
+          profileId: "default",
+          panels: [],
+        } as unknown as WorkspaceState,
+        {
+          id: "jira-board-2",
+          name: "Platform board",
+          kind: "jira-board",
+          color: "#0052cc",
+          icon: "J",
+          profileId: "default",
+          panels: [],
+          jiraBoard: {
+            parentWorkspaceId: "jira-inbox",
+            connectionId: "jira-1",
+            boardId: "2",
+            boardName: "Platform board",
+          },
+        } as unknown as WorkspaceState,
+      ],
+      activeWorkspaceId: "jira-inbox",
+      getGitSnapshot: () => null,
+      getWorkspaceAttention: () => null,
+    });
+
+    expect(jiraCard).toMatchObject({ depth: 0, summary: "Jira inbox" });
+    expect(boardCard).toMatchObject({ name: "Platform board", summary: "Jira board", depth: 1, kind: "jira-board" });
+  });
+
   test("marks managed Azure review workspaces as child cards", () => {
     const [azureCard, reviewCard] = buildWorkspaceCards({
       workspaces: [
@@ -37,13 +74,47 @@ describe("buildWorkspaceCards", () => {
     expect(reviewCard.depth).toBe(1);
   });
 
+  test("marks a managed checkout with no pull request as a new branch, keeping a custom icon", () => {
+    const managedChild = (id: string, icon: string, review: Record<string, unknown>) =>
+      ({
+        id,
+        name: id,
+        kind: "terminal",
+        color: "#0078d4",
+        icon,
+        panels: [],
+        review: {
+          provider: "azure-devops",
+          parentWorkspaceId: "azure-root",
+          checkout: { mode: "managed-worktree", rootPath: "", cacheRepoPath: "" },
+          ...review,
+        },
+      }) as unknown as WorkspaceState;
+    const [, branchCard, customCard, reviewCard] = buildWorkspaceCards({
+      workspaces: [
+        { id: "azure-root", name: "Azure DevOps", kind: "azure", icon: "AZ", panels: [] } as unknown as WorkspaceState,
+        managedChild("pipeline-fix", "AZ", {}),
+        managedChild("quick-fix", "🔧", {}),
+        managedChild("pr-123", "AZ", { pullRequest: { id: 123 } }),
+      ],
+      activeWorkspaceId: "azure-root",
+      getGitSnapshot: () => null,
+      getWorkspaceAttention: () => null,
+    });
+
+    expect(branchCard).toMatchObject({ newBranch: true, badgeGlyph: "new-branch" });
+    expect(String(branchCard.summary)).toMatch(/^New branch/);
+    expect(customCard).toMatchObject({ newBranch: true, badgeGlyph: null, icon: "🔧" });
+    expect(reviewCard).toMatchObject({ newBranch: false, badgeGlyph: "review" });
+  });
+
   test("appends '#N' to a task workspace's display name and renders a relative-age chip", () => {
     const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
     const [card] = buildWorkspaceCards({
       workspaces: [
         {
           id: "ws-task",
-          name: "mhub",
+          name: "orders",
           kind: "task",
           color: "#7C4DFF",
           icon: "🤖",
@@ -60,7 +131,7 @@ describe("buildWorkspaceCards", () => {
       getWorkspaceAttention: () => null,
     });
 
-    expect(card.name).toBe("mhub #3");
+    expect(card.name).toBe("orders #3");
     expect(card.relativeAge).toBe("5m");
     // Description goes into the native title tooltip — confirm it lands there
     // so two agents on the same parent can be disambiguated on hover.

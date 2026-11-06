@@ -1,0 +1,79 @@
+/* Section tabs inside a main tab: folder tabs one size below the main ones. The strip sits on the pane,
+   the selected section opens into the framed panel right below it. Desktop only; on narrow or short
+   screens each pane keeps its own popover menu. */
+@media (min-width: 769px) and (min-height: 501px) {
+  .subtabs {
+    display: flex;
+    align-items: stretch;
+    flex-shrink: 0;
+    gap: 0;
+    margin: var(--subtabs-top, 8px) var(--subtabs-inset, 10px) 0;
+    padding: 0;
+    border: 0;
+    box-shadow: inset 0 -1px 0 var(--tab-line);
+  }
+
+  .subtabs .subtabs__tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: auto;
+    padding: 5px 12px;
+    border: 0;
+    border-top: 2px solid transparent;
+    border-right: 1px solid rgba(var(--tint), 0.08);
+    border-radius: 0;
+    background: transparent;
+    font-size: 12.5px;
+    font-weight: 400;
+    white-space: nowrap;
+  }
+
+  .subtabs .subtabs__tab:hover {
+    background: rgba(var(--tint), 0.045);
+  }
+
+  .subtabs .subtabs__tab--active,
+  .subtabs .subtabs__tab--active:hover,
+  .subtabs .subtabs__tab[aria-selected="true"] {
+    border-top-color: var(--accent);
+    border-right-color: var(--tab-line);
+    background: var(--panel);
+    box-shadow: -1px 0 0 var(--tab-line);
+  }
+
+  .subtabs .subtabs__tab--alert.subtabs__tab--active {
+    border-top-color: var(--danger);
+  }
+
+  .subtabs .subtabs__tab--active:first-child {
+    box-shadow: inset 1px 0 0 var(--tab-line);
+  }
+
+  .subtabs > .azure-inbox__actions {
+    align-self: center;
+    padding: 4px 0 4px 8px;
+  }
+
+  .subtabs-panel {
+    margin: 0 var(--subtabs-inset, 10px) var(--subtabs-inset, 10px);
+    padding-top: 8px;
+    border: 1px solid var(--tab-line);
+    border-top: 0;
+    background: var(--panel);
+  }
+}
+
+.subtabs__tab {
+  color: var(--muted);
+}
+
+.subtabs__tab:hover,
+.subtabs__tab--active,
+.subtabs__tab[aria-selected="true"] {
+  color: var(--text);
+}
+
+.subtabs__tab--alert {
+  color: var(--danger-fg);
+}

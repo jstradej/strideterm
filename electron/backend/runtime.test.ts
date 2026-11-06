@@ -17,6 +17,7 @@ import { GitHubManager } from "./github-manager.js";
 import { execFileText } from "./process-utils.js";
 import { createSessionId, normalizeState } from "./default-state.js";
 import { RemoteClientRegistry } from "./remote-client-registry.js";
+import { sanitizeSettingsFromRemote } from "./remote-server.js";
 import { buildRemoteCore, strayStatePayloadKeys } from "./remote-core.js";
 import {
   AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL,
@@ -28,6 +29,7 @@ import { reviewPrActionSnapshotSchema } from "../shared/review-pr-actions.js";
 import { normalizeCwd } from "./notify-url-registry.js";
 import { createStore } from "./store.js";
 import { createCredentialStore } from "./shared/credential-store.js";
+import { createJiraCache } from "./jira/jira-cache.js";
 import { shortPathKey } from "./azure-devops-utils.js";
 import { REMOTE_ACCESS_TOKEN_REF } from "./shared/connection-secret.js";
 import { OPERATION_FINISHED_CHANNEL, type OperationFinished } from "../shared/operation-events.js";
@@ -80,6 +82,20 @@ vi.mock("./logger.js", async (importOriginal) => {
         };
       }
       return wrapped;
+    },
+  };
+});
+
+const accountDepsCapture = vi.hoisted(() => ({ current: null as unknown }));
+vi.mock("./account/account-manager.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./account/account-manager.js")>();
+  return {
+    ...actual,
+    AccountManager: class extends actual.AccountManager {
+      constructor(deps: ConstructorParameters<typeof actual.AccountManager>[0]) {
+        accountDepsCapture.current = deps;
+        super(deps);
+      }
     },
   };
 });
@@ -2127,6 +2143,50 @@ describe("runtime integration", () => {
       },
     });
     expect(read().sourceBaselineSha).toBeUndefined();
+  });
+
+  test("saveWorkspace keeps the review's target repository runtime-owned, on an existing and on a new workspace", async () => {
+    const repository = {
+      id: "repo-1",
+      name: "web-app",
+      remoteUrl: "https://dev.azure.com/acme/Platform/_git/web-app",
+    };
+    const evil = { id: "evil", name: "evil", remoteUrl: "http://127.0.0.1:9/evil.git" };
+    const review = {
+      provider: "azure-devops",
+      prKey: "ado-main:repo-1:123",
+      connectionId: "ado-main",
+      repository,
+      pullRequest: { id: 123, sourceRefName: "refs/heads/feature/login-fix", targetRefName: "refs/heads/main" },
+    };
+    const workspace = {
+      id: "target-ws",
+      name: "Review",
+      kind: "terminal",
+      cwd: process.cwd(),
+      profileId: "default",
+      activePanelId: "shell",
+      panels: [{ id: "shell", title: "Shell", command: "" }],
+      review,
+    };
+    const fixture = await createFixture({ initialState: { workspaces: [workspace] } });
+    fixtures.push(fixture);
+    const read = (id: string) =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (fixture.store.getState().workspaces.find((item: any) => item.id === id) as any)?.review;
+    const saved = fixture.store.getState().workspaces.find((item: { id: string }) => item.id === workspace.id);
+
+    await fixture.runtime.saveWorkspace(
+      { ...saved, review: { ...read(workspace.id), repository: evil } },
+      "remote:phone",
+    );
+    expect(read(workspace.id).repository).toMatchObject(repository);
+
+    await fixture.runtime.saveWorkspace(
+      { ...saved, id: "forged-ws", review: { ...review, repository: evil, sourceRepository: evil } },
+      "remote:phone",
+    );
+    expect(read("forged-ws")).toMatchObject({ repository: null, sourceRepository: null });
   });
 
   test("keeps a bounded terminal replay tail for renderer startup attach", async () => {
@@ -5455,6 +5515,121 @@ describe("runtime integration", () => {
     expect(fixture.runtime.getPayload().appState.settings.git.ui).not.toHaveProperty("newView");
   });
 
+  test("a remote settings save that only carried integrations.jira leaves every other integration alone", async () => {
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+    await fixture.runtime.updateSettings({
+      integrations: { telegram: { defaultPollSeconds: 77 }, mobile: { relay: { requireE2e: false } } },
+    });
+    const before = fixture.runtime.getPayload().appState.settings.integrations;
+    expect(before.telegram.defaultPollSeconds).toBe(77);
+
+    const fromRemote: Record<string, unknown> = { integrations: { jira: { defaultPollSeconds: 300 } } };
+    expect(sanitizeSettingsFromRemote(fromRemote)).toContain("integrations.jira");
+    await fixture.runtime.updateSettings(fromRemote);
+
+    const after = fixture.runtime.getPayload().appState.settings.integrations;
+    expect(after.telegram.defaultPollSeconds).toBe(77);
+    expect(after.mobile).toEqual(before.mobile);
+    expect(after.jira).toEqual(before.jira);
+    expect(after.azureDevops).toEqual(before.azureDevops);
+    expect(after.github).toEqual(before.github);
+  });
+
+  describe("Jira polling state", () => {
+    const watch = {
+      config: {
+        profileId: "default",
+        connectionId: "jira-1",
+        queryId: "q-1",
+        query: "project = OPS",
+        intervalMs: 60_000,
+        enabled: true,
+      },
+      members: { "issue:1": { issueId: "1", issueKey: "OPS-1", updatedAt: 5 } },
+      watermark: 5,
+      baselinePending: false,
+      nextPollAt: Date.now() + 3_600_000,
+    };
+    const legacyState = {
+      version: 1,
+      watches: { [JSON.stringify(["default", "jira-1", "q-1"])]: watch },
+      dedupeIds: ["e1"],
+    };
+
+    test("moves the legacy state-file value into its own file once, and never keeps it in the main state again", async () => {
+      const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-polling-migration-"));
+      const initial = { settings: { integrations: { jira: { pollingState: legacyState } } } };
+      const fixture = await createFixture({ initialState: initial, dataDir });
+      fixtures.push(fixture);
+      const jira = fixture.runtime.getPayload().appState.settings.integrations.jira as unknown as Record<
+        string,
+        unknown
+      >;
+      expect(jira).not.toHaveProperty("pollingState");
+      expect(fixture.store.getState().settings.appliedMigrations).toContain("jira-polling-state-file-v1");
+      const moved = JSON.parse(await fs.readFile(path.join(dataDir, "jira-polling-state.json"), "utf8"));
+      // The one saved query it belonged to no longer exists, so the reconcile that follows disables the watch;
+      // what it remembered about the issues it had seen is kept.
+      expect(moved).toMatchObject({
+        version: 1,
+        dedupeIds: ["e1"],
+        watches: { [JSON.stringify(["default", "jira-1", "q-1"])]: { members: watch.members, watermark: 5 } },
+      });
+      await expect(fs.access(path.join(dataDir, "jira-polling-state.json.tmp"))).rejects.toThrow();
+    });
+
+    test("a malformed or newer persisted value is reset and the runtime still starts", async () => {
+      for (const bad of [
+        { version: 2, watches: {}, dedupeIds: [] },
+        { version: 1, watches: "nope" },
+        "garbage",
+        { version: 1, watches: { x: 1 }, dedupeIds: 5 },
+      ]) {
+        const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-polling-bad-"));
+        const fixture = await createFixture({
+          initialState: { settings: { integrations: { jira: { pollingState: bad } } } },
+          dataDir,
+        });
+        fixtures.push(fixture);
+        expect(fixture.runtime.getPayload().appState.settings.integrations.jira).not.toHaveProperty("pollingState");
+        await expect(fs.access(path.join(dataDir, "jira-polling-state.json"))).rejects.toThrow();
+      }
+    });
+
+    test("a corrupt polling state file does not stop the runtime from starting", async () => {
+      const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-polling-corrupt-"));
+      await fs.writeFile(path.join(dataDir, "jira-polling-state.json"), '{"jql": "project = SECRET-PROJECT" not json');
+      const captured: LogCall[] = [];
+      logCallCapture.current = captured;
+      let fixture: Awaited<ReturnType<typeof createFixture>>;
+      try {
+        fixture = await createFixture({ dataDir });
+      } finally {
+        logCallCapture.current = null;
+      }
+      fixtures.push(fixture);
+      expect(fixture.runtime.getPayload()).toBeTruthy();
+      const corrupt = captured.find((call) => /polling state file is corrupt/.test(call.message));
+      expect(corrupt?.meta).toEqual({ err: "SyntaxError" });
+      expect(JSON.stringify(captured)).not.toContain("SECRET-PROJECT");
+    });
+  });
+
+  test("a remote settings save carrying every integration but mobile and jira keeps those two", async () => {
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+    await fixture.runtime.updateSettings({ integrations: { mobile: { relay: { requireE2e: false } } } });
+    const before = fixture.runtime.getPayload().appState.settings.integrations;
+    const fromRemote = structuredClone(before) as unknown as Record<string, unknown>;
+    const remoteSettings: Record<string, unknown> = { integrations: fromRemote };
+    sanitizeSettingsFromRemote(remoteSettings);
+    await fixture.runtime.updateSettings(remoteSettings);
+    const after = fixture.runtime.getPayload().appState.settings.integrations;
+    expect(after.mobile).toEqual(before.mobile);
+    expect(after.jira).toEqual(before.jira);
+  });
+
   test("STRIDETERM_NOTIFY_URL is injected into session env when notify server is running", async () => {
     const fixture = await createFixture({
       initialState: {
@@ -6251,6 +6426,119 @@ describe("runtime integration", () => {
     // pick a workspace from windowSlots[0]'s profile (ws-default-keep), both
     // wrong. The fix must pick a sibling in profile-b.
     expect(slotB.activeWorkspaceId).toBe("ws-b-keep");
+  });
+
+  test("pruneOrphanedWorkspaces retains virtual Jira workspaces and their cached active tabs", async () => {
+    const userDataPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-prune-jira-"));
+    const profileId = "profile-jira";
+    const inboxId = "jira-inbox-stable";
+    const boardWorkspaceId = "jira-board-stable";
+    const inboxCwd = path.join(userDataPath, "jira-inbox", profileId);
+    const boardCwd = path.join(inboxCwd, "boards", "platform");
+    const savedViewId = "saved-platform-view";
+
+    const jiraCache = createJiraCache(path.join(userDataPath, "jira-cache.sqlite"));
+    expect(
+      jiraCache.saveView({
+        profileId,
+        workspaceId: inboxId,
+        viewId: savedViewId,
+        active: true,
+        value: {
+          viewId: savedViewId,
+          kind: "board",
+          connectionId: "jira-connection",
+          boardId: 7,
+          boardName: "Platform",
+          title: "Platform",
+          mode: "issues",
+          sprintId: null,
+          quickFilterIds: [],
+          assignee: null,
+          doneWithinDays: null,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      }),
+    ).toBe(true);
+    jiraCache.close();
+
+    const fixture = await createFixture({
+      dataDir: userDataPath,
+      initialState: {
+        profiles: [
+          { id: "default", name: "Default" },
+          { id: profileId, name: "Jira profile", lastActiveWorkspaceId: inboxId },
+        ],
+        activeWorkspaceId: inboxId,
+        activeProfileId: profileId,
+        workspaces: [
+          {
+            id: inboxId,
+            name: "Jira",
+            kind: "jira",
+            profileId,
+            cwd: inboxCwd,
+            panels: [],
+          },
+          {
+            id: boardWorkspaceId,
+            name: "Platform",
+            kind: "jira-board",
+            profileId,
+            cwd: boardCwd,
+            parentWorkspaceId: inboxId,
+            jiraBoard: {
+              parentWorkspaceId: inboxId,
+              connectionId: "jira-connection",
+              boardId: "7",
+              boardName: "Platform",
+            },
+            panels: [],
+          },
+        ],
+        windowSlots: [
+          {
+            id: "window-jira",
+            profileId,
+            activeWorkspaceId: inboxId,
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 1280, height: 800 },
+            lastFocusedAt: 1000,
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    await expect(fs.access(inboxCwd)).rejects.toThrow();
+    await expect(fs.access(boardCwd)).rejects.toThrow();
+    const before = fixture.runtime.getPayload();
+    expect(before.jiraWorkspaceViews?.[inboxId]).toMatchObject({
+      workspaceId: inboxId,
+      profileId,
+      activeViewId: savedViewId,
+      views: [{ viewId: "issues" }, { viewId: savedViewId, title: "Platform" }],
+    });
+
+    const removed = await fixture.runtime.pruneOrphanedWorkspaces();
+
+    expect(removed).toBe(0);
+    const after = fixture.runtime.getPayload();
+    expect(after.appState.workspaces.map((workspace) => workspace.id)).toEqual([inboxId, boardWorkspaceId]);
+    expect(after.appState.windowSlots?.find((slot) => slot.id === "window-jira")?.activeWorkspaceId).toBe(inboxId);
+    expect(after.jiraWorkspaceViews?.[inboxId]).toMatchObject({
+      workspaceId: inboxId,
+      profileId,
+      activeViewId: savedViewId,
+      views: [{ viewId: "issues" }, { viewId: savedViewId, title: "Platform" }],
+    });
+    expect(after.jiraWorkspaceViews?.[boardWorkspaceId]?.views.map((view) => view.viewId)).toEqual([
+      "issues",
+      `pinned-${boardWorkspaceId}`,
+    ]);
+    await expect(fs.access(inboxCwd)).rejects.toThrow();
+    await expect(fs.access(boardCwd)).rejects.toThrow();
   });
 
   test("resolveGitConnection uses the workspace's own profile, not windowSlots[0]", async () => {
@@ -9931,6 +10219,185 @@ describe("runtime integration", () => {
     );
   });
 
+  test("deleting a profile moves its Jira connections, queries, repo bindings and boards to the fallback, with one inbox", async () => {
+    const jiraConnection = (id: string, profileId: string) => ({
+      id,
+      profileId,
+      label: id,
+      enabled: true,
+      deployment: "data-center",
+      webUrl: "https://jira.example.com",
+      apiBaseUrl: "https://jira.example.com",
+      auth: { kind: "dc-pat", secretRef: `jira:${id}:pat` },
+      accountPurpose: "personal",
+    });
+    const fixture = await createFixture({
+      initialState: {
+        profiles: [
+          { id: "default", name: "Default", workspaceIds: [] },
+          { id: "other", name: "Other", workspaceIds: [] },
+        ],
+        activeWorkspaceId: "inbox-default",
+        workspaces: [
+          { id: "inbox-default", name: "Jira", kind: "jira", profileId: "default", cwd: "/jira-default", panels: [] },
+          { id: "inbox-other", name: "Jira", kind: "jira", profileId: "other", cwd: "/jira-other", panels: [] },
+          {
+            id: "board-other",
+            name: "Board",
+            kind: "jira-board",
+            profileId: "other",
+            cwd: "/jira-other",
+            panels: [],
+            jiraBoard: { parentWorkspaceId: "inbox-other", connectionId: "jira-other", boardId: 4, boardName: "Board" },
+          },
+        ],
+        settings: {
+          integrations: {
+            jira: {
+              connections: [jiraConnection("jira-default", "default"), jiraConnection("jira-other", "other")],
+              queries: [
+                {
+                  id: "q1",
+                  connectionId: "jira-other",
+                  profileId: "other",
+                  name: "Mine",
+                  jql: "assignee = currentUser()",
+                },
+              ],
+              repoBindings: [
+                {
+                  profileId: "other",
+                  jiraConnectionId: "jira-other",
+                  projectKey: "OPS",
+                  provider: "github",
+                  connectionId: "gh",
+                  repoId: "1",
+                  repoName: "o/r",
+                  remoteUrl: "https://github.com/o/r.git",
+                  baseBranch: "main",
+                },
+              ],
+            },
+          },
+        },
+      },
+    });
+    fixtures.push(fixture);
+
+    const payload = await fixture.runtime.deleteProfile("other");
+    const state = payload.appState;
+    const jira = state.settings.integrations.jira as unknown as {
+      connections: Array<{ id: string; profileId: string }>;
+      queries: Array<{ profileId: string }>;
+      repoBindings: Array<{ profileId: string }>;
+    };
+    expect(jira.connections.map((connection) => [connection.id, connection.profileId])).toEqual([
+      ["jira-default", "default"],
+      ["jira-other", "default"],
+    ]);
+    expect(jira.queries.map((query) => query.profileId)).toEqual(["default"]);
+    expect(jira.repoBindings.map((binding) => binding.profileId)).toEqual(["default"]);
+    expect(state.workspaces.filter((workspace) => workspace.kind === "jira").map((workspace) => workspace.id)).toEqual([
+      "inbox-default",
+    ]);
+    const board = state.workspaces.find((workspace) => workspace.id === "board-other")!;
+    expect(board.profileId).toBe("default");
+    expect(board.jiraBoard?.parentWorkspaceId).toBe("inbox-default");
+  });
+
+  test("saving a workspace from a renderer copy that never had the private Jira drafts keeps the stored drafts", async () => {
+    const draft = {
+      id: "d1",
+      ref: { provider: "jira", connectionId: "c", issueId: "1", issueKey: "OPS-1" },
+      body: "private",
+      createdAt: "2026-10-30T00:00:00.000Z",
+    };
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [
+          {
+            id: "ws-drafts",
+            name: "Agent workspace",
+            cwd: process.cwd(),
+            panels: [{ id: "p", title: "Shell", command: "" }],
+            jiraMcpCommentDrafts: [draft],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    const stored = () => fixture.store.getState().workspaces.find((workspace) => workspace.id === "ws-drafts")!;
+    expect(stored().jiraMcpCommentDrafts).toHaveLength(1);
+    const rendererCopy = { ...structuredClone(stored()), name: "Renamed" } as Record<string, unknown>;
+    delete rendererCopy.jiraMcpCommentDrafts;
+    await fixture.runtime.saveWorkspace(rendererCopy);
+    expect(stored().name).toBe("Renamed");
+    expect(stored().jiraMcpCommentDrafts).toEqual([draft]);
+  });
+
+  test("a newly inserted workspace cannot carry agent drafts planted by the client", async () => {
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+    const planted = {
+      id: "d-fake",
+      ref: { provider: "jira", connectionId: "c", issueId: "1", issueKey: "OPS-1" },
+      body: "planted",
+      createdAt: "2026-10-30T00:00:00.000Z",
+    };
+    await fixture.runtime.saveWorkspace({
+      id: "ws-planted",
+      name: "Planted",
+      cwd: process.cwd(),
+      panels: [{ id: "p", title: "Shell", command: "" }],
+      jiraMcpCommentDrafts: [planted],
+    });
+    const stored = fixture.store.getState().workspaces.find((workspace) => workspace.id === "ws-planted")!;
+    expect(stored.jiraMcpCommentDrafts ?? []).toEqual([]);
+  });
+
+  test("the runtime's own task create keeps the prepared Jira snapshot a client insert loses", async () => {
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+    const snapshot = [{ ref: { provider: "jira", connectionId: "c", issueId: "1", issueKey: "OPS-1" }, summary: "s" }];
+    const task = (taskId: string) => ({ taskId, state: "idle", jiraPreparedSnapshot: snapshot });
+    const panels = [{ id: "p", title: "Shell", command: "" }];
+    await fixture.runtime.saveWorkspace(
+      { id: "ws-client", name: "Client", kind: "task", cwd: process.cwd(), panels, task: task("t1") },
+      "window-1",
+    );
+    await fixture.runtime.saveWorkspace(
+      { id: "ws-runtime", name: "Runtime", kind: "task", cwd: process.cwd(), panels, task: task("t2") },
+      undefined,
+      { runtimeOwned: true },
+    );
+    const byId = (id: string) => fixture.store.getState().workspaces.find((workspace) => workspace.id === id)!;
+    expect(byId("ws-client").task?.jiraPreparedSnapshot).toBeUndefined();
+    expect(byId("ws-runtime").task?.jiraPreparedSnapshot).toEqual(snapshot);
+  });
+
+  test("updateSettings never replaces integrations.jira, whoever calls it", async () => {
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+    const before = structuredClone(fixture.store.getState().settings.integrations.jira);
+    await fixture.runtime.updateSettings({
+      integrations: {
+        jira: {
+          connections: [
+            {
+              id: "evil",
+              profileId: "default",
+              apiBaseUrl: "https://attacker.example",
+              auth: { kind: "dc-pat", secretRef: "cred:other" },
+            },
+          ],
+        },
+      },
+      notifications: { agentHook: true },
+    });
+    expect(fixture.store.getState().settings.integrations.jira).toEqual(before);
+    expect(fixture.store.getState().settings.integrations.mobile).toBeDefined();
+  });
+
   test("saves and deletes profiles while preserving a fallback default profile", async () => {
     const fixture = await createFixture();
     fixtures.push(fixture);
@@ -13223,6 +13690,41 @@ describe("multiple windows per profile — viewer model", () => {
     );
   });
 
+  test("remote activation uses the registry belonging to the request server when client IDs collide", async () => {
+    const base = makeProfileSwitchState();
+    const initialState = {
+      ...base,
+      projects: [
+        ...base.projects,
+        {
+          id: "ws-a2",
+          name: "A2",
+          kind: "terminal",
+          profileId: "profile-a",
+          cwd: "/tmp/a2",
+          activePanelId: "shell",
+          panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+        },
+      ],
+    };
+    const fixture = await createFixture({ initialState });
+    fixtures.push(fixture);
+    const primaryRegistry = new RemoteClientRegistry();
+    fixture.runtime.setRemoteClientRegistry(primaryRegistry);
+    const requestRegistry = new RemoteClientRegistry();
+    fixture.runtime.addRemoteClientRegistry(requestRegistry);
+    primaryRegistry.getOrCreate("same-client-id", fixture.store.getState(), "profile-a");
+    requestRegistry.getOrCreate("same-client-id", fixture.store.getState(), "profile-a");
+
+    await fixture.runtime.activateWorkspaceForRemoteClient("same-client-id", "ws-a2", requestRegistry);
+
+    expect(requestRegistry.get("same-client-id")?.activeWorkspaceId).toBe("ws-a2");
+    expect(primaryRegistry.get("same-client-id")?.activeWorkspaceId).toBe("ws-a1");
+    await expect(
+      fixture.runtime.activateWorkspaceForRemoteClient("same-client-id", "ws-a2", new RemoteClientRegistry()),
+    ).rejects.toThrow(/session not found/i);
+  });
+
   test("telegram screenshot-workspace prefers the window already showing the workspace", async () => {
     const base = makeProfileSwitchState();
     const initialState = {
@@ -14531,6 +15033,617 @@ describe("headless pull request review start", () => {
     expect(
       sessions.launches.filter((entry) => entry.launch?.args?.join(" ").includes("Perform a basic code review")),
     ).toHaveLength(2);
+  });
+});
+
+describe("agent on a failed pipeline run", () => {
+  test("checks out the failed commit, hands over the logs and a brief, and starts an interactive agent", async () => {
+    const failedSha = "f".repeat(40);
+    const tipSha = "e".repeat(40);
+    const checkoutDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-pipeline-fix-"));
+    const runFor = (buildId: number) => ({
+      status: "completed",
+      repository: {
+        id: "repo-1",
+        name: "orders",
+        // Run 78 builds a repository outside Azure Repos: it gets a scratchpad with the logs, no checkout.
+        type: buildId === 78 ? "GitHub" : "TfsGit",
+        url: "https://dev.azure.com/acme/ABC/_git/orders",
+      },
+      facts: {
+        pipelineName: "orders-release",
+        projectName: "ABC",
+        buildId,
+        buildNumber: `20261103.${buildId}`,
+        result: "failed",
+        sourceBranch: "refs/heads/develop",
+        sourceVersion: failedSha,
+        webUrl: `https://dev.azure.com/acme/ABC/_build/results?buildId=${buildId}`,
+        requestedFor: "Jana",
+        records: [
+          {
+            id: "stage",
+            parentId: "",
+            name: "Build",
+            type: "Stage",
+            result: "failed",
+            order: 1,
+            logId: null,
+            errors: [],
+          },
+          {
+            id: "job",
+            parentId: "stage",
+            name: "Publish",
+            type: "Job",
+            result: "failed",
+            order: 1,
+            logId: 2,
+            errors: [],
+          },
+          {
+            id: "task",
+            parentId: "job",
+            name: "Scan image",
+            type: "Task",
+            result: "failed",
+            order: 2,
+            logId: 3,
+            errors: ["Command failed: jf docker scan --fail=true"],
+          },
+        ],
+      },
+    });
+    const quickFixRequests: Array<{ baseBranch: string; newBranchName: string; callerProfileId: string }> = [];
+    class PipelineAzureManager extends EventEmitter {
+      getSnapshot() {
+        return {
+          connections: [{ id: "ado-1", profileId: "profile-a", enabled: true }],
+          pullRequests: {},
+          trackedPullRequests: {},
+          inbox: { needsMyReview: [], myPullRequests: [], recentlyUpdated: [], needsAttention: [] },
+          sync: { running: false, lastStartedAt: null, lastCompletedAt: null },
+        };
+      }
+      async sync() {
+        return this.getSnapshot();
+      }
+      stopPolling() {}
+      configurePolling() {}
+      setReviewWorkspaceMetadataStore() {}
+      async ensurePullRequestDetail() {
+        return null;
+      }
+      async getPipelineRunForAgent({ buildId }: { buildId: number }) {
+        return runFor(buildId);
+      }
+      async getBuildStepLog({ logId }: { logId: number }) {
+        return `step log ${logId}\nError: the image has a critical vulnerability\n`;
+      }
+      async openQuickFixWorkspace(options: { baseBranch: string; newBranchName: string; callerProfileId: string }) {
+        quickFixRequests.push(options);
+        return {
+          parentWorkspaceId: "",
+          workspace: {
+            id: "pipeline-fix-ws",
+            name: options.newBranchName,
+            kind: "terminal",
+            cwd: checkoutDir,
+            profileId: "profile-a",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", startup: "default" }],
+            review: {
+              provider: "azure-devops",
+              prKey: "",
+              connectionId: "ado-1",
+              role: "author",
+              checkout: { mode: "managed-worktree", rootPath: checkoutDir },
+            },
+            quickfix: { connectionId: "ado-1", projectName: "ABC", repositoryName: "orders", baseBranch: "develop" },
+          },
+        };
+      }
+    }
+    class LaunchCaptureSessionManager extends FakeSessionManager {
+      launches: Array<{ sessionId: string; launch?: { args: string[] } | null }> = [];
+      override syncWithState() {}
+      override async ensureSession(state: AppState, sessionId: string) {
+        const [workspaceId, panelId] = sessionId.split(":");
+        const workspace = state.workspaces.find((item) => item.id === workspaceId);
+        const panel = workspace?.panels.find((item) => item.id === panelId);
+        const launch = this.getSessionLaunch?.({ workspace, panel, sessionId }) as { args: string[] } | null;
+        this.launches.push({ sessionId, launch });
+        return super.ensureSession({ projects: state.workspaces }, sessionId);
+      }
+    }
+    const sessions = new LaunchCaptureSessionManager();
+    const gitCalls: string[][] = [];
+    const execFileTextImpl = vi.fn(async (file: string, args: string[]) => {
+      if (file !== "git") return { stdout: "/usr/bin/claude\n", stderr: "" };
+      gitCalls.push(args);
+      if (args[0] === "rev-parse" && args[1] === "--git-path") return { stdout: ".git/info/exclude\n", stderr: "" };
+      if (args[0] === "rev-parse") return { stdout: `${tipSha}\n`, stderr: "" };
+      return { stdout: "", stderr: "" };
+    });
+    const fixture = await createFixture({
+      initialState: {
+        activeWorkspaceId: "desktop-workspace",
+        profiles: [
+          { id: "default", name: "Default", workspaceIds: [] },
+          { id: "profile-a", name: "A", workspaceIds: [] },
+        ],
+        workspaces: [
+          {
+            id: "desktop-workspace",
+            name: "Keep active",
+            kind: "terminal",
+            profileId: "default",
+            cwd: "C:/work",
+            panels: [{ id: "shell", title: "Shell", command: "", startup: "default" }],
+          },
+        ],
+        windowSlots: [
+          { id: "win-default", profileId: "default", activeWorkspaceId: "desktop-workspace", activeSessionId: "" },
+          { id: "win-a", profileId: "profile-a", activeWorkspaceId: "", activeSessionId: "" },
+        ],
+        tabTemplates: [{ id: "claude", title: "Claude Code", command: "claude --model sonnet", icon: "" }],
+        settings: {
+          integrations: {
+            azureDevops: {
+              enabled: true,
+              connections: [
+                { id: "ado-1", enabled: true, profileId: "profile-a", orgUrl: "https://dev.azure.com/acme" },
+              ],
+            },
+          },
+        },
+      },
+      execFileTextImpl,
+      dependencies: {
+        AzureDevOpsManager: PipelineAzureManager,
+        SessionManager: class {
+          constructor(options: { getSessionLaunch?: unknown }) {
+            Object.assign(sessions, new LaunchCaptureSessionManager(options as never));
+            return sessions;
+          }
+        },
+      },
+    });
+    fixtures.push(fixture);
+    const input = { connectionId: "ado-1", projectName: "ABC", pipelineId: 5, buildId: 77 };
+
+    // A window on another profile cannot start an agent on this profile's connection.
+    await expect(
+      fixture.runtime.startPipelineAgent({ ...input, idempotencyKey: "foreign" }, "win-default"),
+    ).rejects.toThrow("Cross-profile refused");
+
+    const accepted = await fixture.runtime.startPipelineAgent({ ...input, idempotencyKey: "click-1" }, "win-a");
+    expect(accepted).toMatchObject({ started: true, replayed: false });
+    await vi.waitFor(() =>
+      expect(fixture.runtime.getPayload().operations.lastResults).toContainEqual(
+        expect.objectContaining({
+          operationId: accepted.operationId,
+          kind: "pipeline.agent",
+          result: expect.objectContaining({ launched: true, checkout: "worktree", agentName: "claude", buildId: 77 }),
+        }),
+      ),
+    );
+
+    expect(quickFixRequests).toEqual([
+      expect.objectContaining({
+        baseBranch: "develop",
+        newBranchName: "pipeline-fix/orders-release-20261103.77",
+        callerProfileId: "profile-a",
+      }),
+    ]);
+    // The fresh branch moves to the commit the run built: that is what the logs describe.
+    expect(gitCalls).toContainEqual(["reset", "--hard", failedSha]);
+    const runDir = path.join(checkoutDir, ".strideterm", "pipeline-run", "77");
+    const brief = await fs.readFile(path.join(runDir, "BRIEF.md"), "utf8");
+    expect(brief).toContain("Command failed: jf docker scan --fail=true");
+    expect(brief).toContain("Build › Publish › Scan image");
+    expect(brief).toMatch(/Log: logs\/002-Build-Publish-Scan-image\.log/u);
+    expect((await fs.readdir(path.join(runDir, "logs"))).sort()).toEqual([
+      "001-Build-Publish.log",
+      "002-Build-Publish-Scan-image.log",
+    ]);
+    expect(await fs.readFile(path.join(checkoutDir, ".git", "info", "exclude"), "utf8")).toContain(
+      "/.strideterm/pipeline-run/",
+    );
+
+    const workspace = fixture.store.getState().workspaces.find((item) => item.id === "pipeline-fix-ws");
+    expect(workspace).toMatchObject({ name: "orders-release 20261103.77", profileId: "profile-a" });
+    expect(workspace?.panels.filter((panel) => panel.command === "__files__")).toHaveLength(1);
+    expect(workspace?.panels.find((panel) => panel.id === workspace.activePanelId)?.command).toContain("claude");
+    // The agent is an ordinary interactive one: its first message names the brief, and it is not a one-shot run.
+    const launch = sessions.launches.find((entry) => entry.sessionId.startsWith("pipeline-fix-ws:"))?.launch;
+    const args = launch?.args || [];
+    expect(args.join(" ")).toContain(".strideterm/pipeline-run/77/BRIEF.md");
+    expect(args).not.toContain("-p");
+    // The window that asked keeps its view; the renderer opens the workspace once the outcome arrives.
+    expect(fixture.store.getState().activeWorkspaceId).toBe("desktop-workspace");
+
+    // A second click on the same run while its workspace exists leads to that one.
+    const again = await fixture.runtime.startPipelineAgent({ ...input, idempotencyKey: "click-2" }, "win-a");
+    expect(again).toMatchObject({ replayed: true, operationId: accepted.operationId });
+    expect(quickFixRequests).toHaveLength(1);
+
+    const logsOnly = await fixture.runtime.startPipelineAgent(
+      { ...input, buildId: 78, idempotencyKey: "click-3" },
+      "win-a",
+    );
+    await vi.waitFor(() =>
+      expect(fixture.runtime.getPayload().operations.lastResults).toContainEqual(
+        expect.objectContaining({
+          operationId: logsOnly.operationId,
+          result: expect.objectContaining({ launched: true, checkout: "logs-only" }),
+        }),
+      ),
+    );
+    const scratchpad = fixture.store.getState().scratchpads?.find((item) => item.name === "orders-release 20261103.78");
+    expect(scratchpad?.profileId).toBe("profile-a");
+    expect(
+      await fs.readFile(path.join(scratchpad!.path, ".strideterm", "pipeline-run", "78", "BRIEF.md"), "utf8"),
+    ).toContain("GitHub repository");
+    expect(quickFixRequests).toHaveLength(1);
+    const logsOnlyWorkspace = fixture.store
+      .getState()
+      .workspaces.find((item) => item.name === "orders-release 20261103.78");
+    expect(logsOnlyWorkspace?.panels.filter((panel) => panel.command === "__files__")).toHaveLength(1);
+    expect(logsOnlyWorkspace?.panels.find((panel) => panel.id === logsOnlyWorkspace.activePanelId)?.command).toContain(
+      "claude",
+    );
+  });
+});
+
+describe("start development on a Jira issue", () => {
+  test("creates the linked branch, copies the issue with every comment and attachment, and starts the agent on TASK.md", async () => {
+    const checkoutDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-jira-dev-"));
+    tempPaths.push(checkoutDir);
+    const quickFixRequests: Array<{ newBranchName: string; callerProfileId: string }> = [];
+    class QuickFixAzureManager extends EventEmitter {
+      getSnapshot() {
+        return {
+          connections: [{ id: "ado-1", profileId: "profile-a", enabled: true }],
+          pullRequests: {},
+          trackedPullRequests: {},
+          inbox: { needsMyReview: [], myPullRequests: [], recentlyUpdated: [], needsAttention: [] },
+          sync: { running: false, lastStartedAt: null, lastCompletedAt: null },
+        };
+      }
+      async sync() {
+        return this.getSnapshot();
+      }
+      stopPolling() {}
+      configurePolling() {}
+      setReviewWorkspaceMetadataStore() {}
+      async ensurePullRequestDetail() {
+        return null;
+      }
+      async openQuickFixWorkspace(options: { newBranchName: string; callerProfileId: string }) {
+        quickFixRequests.push(options);
+        return {
+          parentWorkspaceId: "",
+          workspace: {
+            id: `jira-dev-ws-${quickFixRequests.length}`,
+            name: options.newBranchName,
+            kind: "terminal",
+            cwd: checkoutDir,
+            profileId: "profile-a",
+            activePanelId: "claude",
+            // The quick-fix template already runs the agent tab: it has to be restarted to read its first message.
+            panels: [
+              { id: "claude", title: "Claude Code", command: "claude", startup: "default" },
+              { id: "codex", title: "Codex", command: "codex --yolo", startup: "default" },
+              { id: "shell", title: "Shell", command: "", shell: true, startup: "default" },
+            ],
+            review: {
+              provider: "azure-devops",
+              prKey: "",
+              connectionId: "ado-1",
+              role: "author",
+              checkout: { mode: "managed-worktree", rootPath: checkoutDir },
+            },
+            quickfix: { connectionId: "ado-1", projectName: "ABC", repositoryName: "orders", baseBranch: "develop" },
+          },
+        };
+      }
+    }
+    class LaunchCaptureSessionManager extends FakeSessionManager {
+      launches: Array<{ sessionId: string; launch?: { args: string[] } | null }> = [];
+      override syncWithState() {}
+      override async ensureSession(state: AppState, sessionId: string) {
+        const [workspaceId, panelId] = sessionId.split(":");
+        const workspace = state.workspaces.find((item) => item.id === workspaceId);
+        const panel = workspace?.panels.find((item) => item.id === panelId);
+        const launch = this.getSessionLaunch?.({ workspace, panel, sessionId }) as { args: string[] } | null;
+        this.launches.push({ sessionId, launch });
+        return super.ensureSession({ projects: state.workspaces }, sessionId);
+      }
+    }
+    const sessions = new LaunchCaptureSessionManager();
+    const execFileTextImpl = vi.fn(async (file: string, args: string[]) => {
+      if (file !== "git") return { stdout: "/usr/bin/claude\n", stderr: "" };
+      if (args[0] === "rev-parse" && args[1] === "--git-path") return { stdout: ".git/info/exclude\n", stderr: "" };
+      return { stdout: "", stderr: "" };
+    });
+    const jiraRequests: string[] = [];
+    let onJiraRead: (() => Promise<void>) | null = null;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      jiraRequests.push(url.pathname);
+      const hook = onJiraRead;
+      onJiraRead = null;
+      await hook?.();
+      if (url.pathname === "/jira/rest/api/2/issue/1001/comment")
+        return new Response(
+          JSON.stringify({
+            comments: [
+              {
+                id: "1",
+                author: { displayName: "Ann" },
+                created: "2026-11-01T10:00:00.000Z",
+                body: "First, use the EU tenant.",
+              },
+              {
+                id: "2",
+                author: { displayName: "Ben" },
+                created: "2026-11-02T10:00:00.000Z",
+                body: "Agreed; skip the US one.",
+              },
+            ],
+          }),
+        );
+      if (url.pathname === "/jira/rest/api/2/issue/1001")
+        return new Response(
+          JSON.stringify({
+            id: "1001",
+            key: "ABC-1",
+            fields: {
+              summary: "Kafka workload identity",
+              status: { name: "Open" },
+              issuetype: { name: "Story" },
+              project: { key: "ABC" },
+              updated: "2026-11-02T10:00:00.000Z",
+              description: "Switch Kafka to Entra ID workload identity.",
+              attachment: [
+                {
+                  id: "50",
+                  filename: "design.txt",
+                  mimeType: "text/plain",
+                  size: 5,
+                  content: "https://jira.example.com/jira/secure/attachment/50/design.txt",
+                },
+              ],
+            },
+          }),
+        );
+      if (url.pathname.endsWith("/secure/attachment/50/design.txt")) return new Response("hello");
+      return new Response("not found", { status: 404 });
+    });
+    const fixture = await createFixture({
+      initialState: {
+        activeWorkspaceId: "",
+        profiles: [
+          { id: "default", name: "Default", workspaceIds: [] },
+          { id: "profile-a", name: "A", workspaceIds: ["home-a"] },
+        ],
+        workspaces: [
+          {
+            id: "home-a",
+            name: "Home",
+            cwd: checkoutDir,
+            kind: "terminal",
+            profileId: "profile-a",
+            panels: [],
+          } as unknown as WorkspaceState,
+        ],
+        windowSlots: [
+          { id: "win-default", profileId: "default", activeWorkspaceId: "", activeSessionId: "" },
+          { id: "win-a", profileId: "profile-a", activeWorkspaceId: "home-a", activeSessionId: "" },
+        ],
+        tabTemplates: [{ id: "claude", title: "Claude Code", command: "claude", icon: "" }],
+        settings: {
+          integrations: {
+            azureDevops: {
+              enabled: true,
+              connections: [
+                { id: "ado-1", enabled: true, profileId: "profile-a", orgUrl: "https://dev.azure.com/acme" },
+              ],
+            },
+            jira: {
+              connections: [
+                {
+                  id: "jira-a",
+                  profileId: "profile-a",
+                  label: "Jira",
+                  enabled: true,
+                  deployment: "data-center",
+                  webUrl: "https://jira.example.com/jira",
+                  apiBaseUrl: "https://jira.example.com/jira",
+                  auth: { kind: "dc-pat", secretRef: "jira:jira-a:pat" },
+                  accountPurpose: "personal",
+                },
+              ],
+              queries: [],
+            },
+          },
+        },
+      },
+      execFileTextImpl,
+      dependencies: {
+        AzureDevOpsManager: QuickFixAzureManager,
+        fetchImpl,
+        createCredentialStore: async (filePath: string, options: Parameters<typeof createCredentialStore>[1]) => {
+          const real = await createCredentialStore(filePath, options);
+          return { ...real, getSecret: (ref: string) => (ref === "jira:jira-a:pat" ? "pat" : real.getSecret(ref)) };
+        },
+        SessionManager: class {
+          constructor(options: { getSessionLaunch?: unknown }) {
+            Object.assign(sessions, new LaunchCaptureSessionManager(options as never));
+            return sessions;
+          }
+        },
+      },
+    });
+    fixtures.push(fixture);
+    const gitCalls: Array<{ kind: "register" | "refresh"; ids: string[] }> = [];
+    const windowWhenCreated: string[] = [];
+    const realRefresh = fixture.git.refreshWorkspaces.bind(fixture.git);
+    fixture.git.registerWorkspaces = (workspaces: WorkspaceState[] = []) => {
+      gitCalls.push({ kind: "register", ids: workspaces.map((workspace) => workspace.id) });
+      const slot = fixture.store.getState().windowSlots?.find((item) => item.id === "win-a");
+      if (workspaces.some((workspace) => workspace.id === "jira-dev-ws-1"))
+        windowWhenCreated.push(slot?.activeWorkspaceId ?? "");
+      return Promise.resolve();
+    };
+    fixture.git.refreshWorkspaces = (workspaces: WorkspaceState[] = [], options = {}) => {
+      gitCalls.push({ kind: "refresh", ids: workspaces.map((workspace) => workspace.id) });
+      return realRefresh(workspaces, options);
+    };
+    const input = {
+      jiraIssueRef: { connectionId: "jira-a", issueId: "1001", issueKey: "ABC-1" },
+      target: {
+        provider: "azure" as const,
+        connectionId: "ado-1",
+        projectName: "ABC",
+        repositoryId: "repo-1",
+        repositoryName: "orders",
+        remoteUrl: "https://dev.azure.com/acme/ABC/_git/orders",
+        baseBranch: "develop",
+        newBranchName: "feature/ABC-1-kafka-workload-identity",
+      },
+      agent: "claude" as const,
+    };
+
+    // A window on another profile reaches neither the Jira nor the Azure DevOps connection of this one.
+    await expect(
+      fixture.runtime.startJiraDevelopment({ ...input, idempotencyKey: "foreign" }, "win-default"),
+    ).rejects.toThrow("The Jira connection is not available in this profile.");
+    expect(quickFixRequests).toHaveLength(0);
+
+    const accepted = await fixture.runtime.startJiraDevelopment(
+      { ...input, model: "opus", effort: "high", idempotencyKey: "click-1" },
+      "win-a",
+    );
+    expect(accepted).toMatchObject({ started: true, replayed: false });
+    await vi.waitFor(() =>
+      expect(fixture.runtime.getPayload().operations.lastResults).toContainEqual(
+        expect.objectContaining({
+          operationId: accepted.operationId,
+          kind: "jira.start-development",
+          result: expect.objectContaining({
+            launched: true,
+            agentName: "claude",
+            issueKey: "ABC-1",
+            comments: 2,
+            attachments: 1,
+            filesDir: ".strideterm/jira/ABC-1",
+          }),
+        }),
+      ),
+    );
+    expect(quickFixRequests).toEqual([
+      expect.objectContaining({ newBranchName: "feature/ABC-1-kafka-workload-identity", callerProfileId: "profile-a" }),
+    ]);
+
+    const dir = path.join(checkoutDir, ".strideterm", "jira", "ABC-1");
+    const issue = await fs.readFile(path.join(dir, "ISSUE.md"), "utf8");
+    expect(issue).toContain("# ABC-1: Kafka workload identity");
+    expect(issue).toContain("Switch Kafka to Entra ID workload identity.");
+    expect(issue.indexOf("First, use the EU tenant.")).toBeLessThan(issue.indexOf("Agreed; skip the US one."));
+    expect(issue).toContain("[attachments/design.txt](attachments/design.txt)");
+    expect(await fs.readFile(path.join(dir, "attachments", "design.txt"), "utf8")).toBe("hello");
+    const task = await fs.readFile(path.join(dir, "TASK.md"), "utf8");
+    expect(task).toContain("on the new branch `feature/ABC-1-kafka-workload-identity` created from `develop`");
+    expect(task).toContain("`.strideterm/jira/ABC-1/ISSUE.md`");
+    expect(await fs.readFile(path.join(checkoutDir, ".git", "info", "exclude"), "utf8")).toContain(
+      "/.strideterm/jira/",
+    );
+
+    const workspace = fixture.store.getState().workspaces.find((item) => item.id === "jira-dev-ws-1");
+    expect(workspace?.workItems).toEqual([
+      expect.objectContaining({
+        ref: expect.objectContaining({ issueKey: "ABC-1" }),
+        summary: "Kafka workload identity",
+      }),
+    ]);
+    expect(workspace?.panels.filter((panel) => panel.command === "__files__")).toHaveLength(1);
+    expect(workspace?.activePanelId).toBe("claude");
+    // Only the chosen agent starts; the inbox's other agent tab is there but waits, the shell is untouched.
+    expect(workspace?.panels.find((panel) => panel.id === "codex")?.startup).toBe("manual");
+    // The chosen agent starts once, with its first message, and starts with the workspace from then on.
+    expect(sessions.launches.filter((entry) => entry.sessionId === "jira-dev-ws-1:claude")).toHaveLength(1);
+    expect(workspace?.panels.find((panel) => panel.id === "claude")?.startup).toBe("default");
+    expect(workspace?.panels.find((panel) => panel.id === "shell")?.startup).toBe("default");
+    expect(sessions.launches.some((entry) => entry.sessionId === "jira-dev-ws-1:codex")).toBe(false);
+    // Analyze first is the default: the agent specifies the issue in SPEC.md and changes no code yet.
+    expect(task).toContain("Write the assignment to `.strideterm/jira/ABC-1/SPEC.md`");
+    // The tab that got the issue is the one on screen, and it runs the chosen model and effort.
+    expect(workspace?.activeViewId).toBe("jira-dev-ws-1:claude");
+    // The window switches to the workspace once that tab is the active one, not when the quick-fix creates it:
+    // a renderer reads the active tab as it activates the workspace, and would otherwise show the first agent tab.
+    expect(windowWhenCreated[0]).toBe("home-a");
+    expect(fixture.store.getState().windowSlots?.find((item) => item.id === "win-a")?.activeWorkspaceId).toBe(
+      "jira-dev-ws-1",
+    );
+    expect(workspace?.panels.find((panel) => panel.id === "claude")?.command).toBe("claude --model opus --effort high");
+    // The PR form reads the cached Git snapshot, and GitManager drops the snapshot of a workspace it has not
+    // registered. Nothing activates this one from the renderer, so the run registers it before refreshing it.
+    const firstRegistration = gitCalls.findIndex(
+      (call) => call.kind === "register" && call.ids.includes("jira-dev-ws-1"),
+    );
+    expect(firstRegistration).toBeGreaterThanOrEqual(0);
+    expect(
+      gitCalls.findIndex(
+        (call, index) => index > firstRegistration && call.kind === "refresh" && call.ids.includes("jira-dev-ws-1"),
+      ),
+    ).toBeGreaterThan(firstRegistration);
+    // The agent's first message points at TASK.md; the instructions themselves stay in the file.
+    const launch = sessions.launches.filter((entry) => entry.sessionId === "jira-dev-ws-1:claude").at(-1)?.launch;
+    expect(launch?.args).toContain("Read .strideterm/jira/ABC-1/TASK.md and follow it for Jira issue ABC-1.");
+
+    // Without an agent, the branch and the issue files are still prepared, and the user's own text is kept.
+    const plain = await fixture.runtime.startJiraDevelopment(
+      { ...input, agent: null, task: "Only look, do not change anything.", idempotencyKey: "click-2" },
+      "win-a",
+    );
+    await vi.waitFor(() =>
+      expect(fixture.runtime.getPayload().operations.lastResults).toContainEqual(
+        expect.objectContaining({
+          operationId: plain.operationId,
+          result: expect.objectContaining({ launched: false, issueKey: "ABC-1" }),
+        }),
+      ),
+    );
+    expect(await fs.readFile(path.join(dir, "TASK.md"), "utf8")).toBe("Only look, do not change anything.\n");
+
+    // An accepted run does not depend on the window that asked: its slot is gone before the run reaches the
+    // quick-fix, and the branch is still created in the profile captured at the start, with the issue linked.
+    onJiraRead = async () => {
+      await fixture.store.mutate((draft: AppState) => {
+        draft.windowSlots = (draft.windowSlots || []).filter((slot) => slot.id !== "win-a");
+      });
+    };
+    const orphaned = await fixture.runtime.startJiraDevelopment(
+      { ...input, agent: null, idempotencyKey: "click-3" },
+      "win-a",
+    );
+    await vi.waitFor(() =>
+      expect(fixture.runtime.getPayload().operations.lastResults).toContainEqual(
+        expect.objectContaining({
+          operationId: orphaned.operationId,
+          result: expect.objectContaining({ launched: false, issueKey: "ABC-1" }),
+        }),
+      ),
+    );
+    expect(fixture.store.getState().windowSlots?.some((slot) => slot.id === "win-a")).toBe(false);
+    expect(quickFixRequests.at(-1)).toMatchObject({ callerProfileId: "profile-a" });
+    const orphanWorkspace = fixture.store.getState().workspaces.find((item) => item.id === "jira-dev-ws-3");
+    expect(orphanWorkspace?.profileId).toBe("profile-a");
+    expect(orphanWorkspace?.workItems).toEqual([
+      expect.objectContaining({ ref: expect.objectContaining({ issueKey: "ABC-1" }) }),
+    ]);
   });
 });
 
@@ -17497,6 +18610,58 @@ describe("desktop installation identity (review 2 §Multiwindow)", () => {
     expect(secondIdentity.publicKey).toBe(firstIdentity.publicKey);
   });
 
+  test("the runtime identity transition keeps its keys and gives pairing and account enrollment the new namespace", async () => {
+    const fixture = await createMobileFixture();
+    fixtures.push(fixture);
+    const deps = accountDepsCapture.current as {
+      identity: { installationId: string; publicKeyBase64Url: string; signChallenge: unknown };
+      forgetInstallationCredential: () => Promise<void>;
+      writeInstallationBinding: (marker: "bound" | "enrolling" | "none") => Promise<void>;
+    } | null;
+    expect(deps).toBeTruthy();
+    const credentials = await createCredentialStore(path.join(fixture.userDataPath, "credentials.json"), {
+      safeStorage: ENCRYPTING_SAFE_STORAGE,
+    });
+    const oldDeviceId = fixture.runtime._mobileManagerForTest().ownDeviceId as string;
+    const oldMobileKey = credentials.getSecret("mobile:desktop-device-private-key");
+    await fixture.runtime.setMobileEnabled(true);
+    const oldInvitation = (await fixture.runtime.createMobilePairingInvitation({
+      profileAllowlist: ["default"],
+      capabilities: ["task.control"],
+    })) as import("./mobile/mobile-pairing.js").QrPairingPayload;
+    await fixture.runtime.cancelMobilePairingInvitation();
+    await fixture.runtime.setMobileEnabled(false);
+    const oldAccountKey = deps!.identity.signChallenge;
+    const oldFingerprintKey = deps!.identity.publicKeyBase64Url;
+
+    // Exercise the runtime's exact callback supplied to AccountManager after server revocation.
+    // AccountManager ordering/failure behavior is covered in its own suite; this pins assembly here.
+    await deps!.forgetInstallationCredential();
+    const persistedCredentials = await createCredentialStore(path.join(fixture.userDataPath, "credentials.json"), {
+      safeStorage: ENCRYPTING_SAFE_STORAGE,
+    });
+
+    expect(deps!.identity.installationId).not.toBe(oldDeviceId);
+    expect(fixture.runtime._mobileManagerForTest().ownDeviceId).toBe(deps!.identity.installationId);
+    expect(deps!.identity.publicKeyBase64Url).toBe(oldFingerprintKey);
+    expect(deps!.identity.signChallenge).toBe(oldAccountKey);
+    expect(persistedCredentials.getSecret("mobile:desktop-device-private-key")).toBe(oldMobileKey);
+    expect(persistedCredentials.getSecret("mobile:firebase-refresh-token")).toBe("");
+    expect(persistedCredentials.getSecret("mobile:account-binding")).toBe("none");
+
+    // Simulate successful re-enrolment, then verify the actual invitation is built from the
+    // replacement id while its pinned desktop public key remains the same.
+    await deps!.writeInstallationBinding("bound");
+    await fixture.runtime.setMobileEnabled(true);
+    const invitation = (await fixture.runtime.createMobilePairingInvitation({
+      profileAllowlist: ["default"],
+      capabilities: ["task.control"],
+    })) as import("./mobile/mobile-pairing.js").QrPairingPayload;
+    expect(invitation.desktopDeviceId).toBe(deps!.identity.installationId);
+    expect(invitation.desktopPublicKey).toBe(oldInvitation.desktopPublicKey);
+    await fixture.runtime.cancelMobilePairingInvitation();
+  });
+
   test("two data dirs are two desktops: different device id and different keypair", async () => {
     const deskA = await createMobileFixture();
     fixtures.push(deskA);
@@ -19926,17 +21091,26 @@ describe("internal MCP: creating and watching task agents", () => {
     const repo = await createRepo();
     const fixture = await createMcpFixture({
       workspaces: [
-        parentWorkspace(repo),
-        parentWorkspace(repo, { id: "plain", name: "Plain", internalMcpEnabled: false }),
+        parentWorkspace(repo, { jiraMcpEnabled: true }),
+        parentWorkspace(repo, { id: "plain", name: "Plain", internalMcpEnabled: false, jiraMcpEnabled: false }),
       ],
     });
     const byId = (id: string) => fixture.store.getState().workspaces.find((w: any) => w.id === id)!;
     expect(byId("plain").internalMcpEnabled).toBe(false);
+    expect(byId("plain").jiraMcpEnabled).toBe(false);
 
-    await fixture.runtime.saveWorkspace({ ...byId("plain"), internalMcpEnabled: true }, "remote:sess-1");
+    await fixture.runtime.saveWorkspace(
+      { ...byId("plain"), internalMcpEnabled: true, jiraMcpEnabled: true },
+      "remote:sess-1",
+    );
     expect(byId("plain").internalMcpEnabled).toBe(false);
-    await fixture.runtime.saveWorkspace({ ...byId("parent"), internalMcpEnabled: false }, "remote:sess-1");
+    expect(byId("plain").jiraMcpEnabled).toBe(false);
+    await fixture.runtime.saveWorkspace(
+      { ...byId("parent"), internalMcpEnabled: false, jiraMcpEnabled: false },
+      "remote:sess-1",
+    );
     expect(byId("parent").internalMcpEnabled).toBe(true);
+    expect(byId("parent").jiraMcpEnabled).toBe(true);
     await fixture.runtime.saveWorkspace(
       {
         id: "fresh",
@@ -19945,15 +21119,19 @@ describe("internal MCP: creating and watching task agents", () => {
         cwd: repo,
         profileId: "default",
         internalMcpEnabled: true,
+        jiraMcpEnabled: true,
         panels: [{ id: "p", title: "Shell", command: "" }],
       },
       "remote:sess-1",
     );
     expect(byId("fresh").internalMcpEnabled).toBe(false);
+    expect(byId("fresh").jiraMcpEnabled).toBe(false);
 
     // the desktop (no remote viewer id) can switch it on and off
     await fixture.runtime.saveWorkspace({ ...byId("plain"), internalMcpEnabled: true });
     expect(byId("plain").internalMcpEnabled).toBe(true);
+    await fixture.runtime.saveWorkspace({ ...byId("plain"), jiraMcpEnabled: true });
+    expect(byId("plain").jiraMcpEnabled).toBe(true);
     await fixture.runtime.saveWorkspace({ ...byId("plain"), internalMcpEnabled: false });
     expect(byId("plain").internalMcpEnabled).toBe(false);
 
@@ -19964,6 +21142,79 @@ describe("internal MCP: creating and watching task agents", () => {
     expect(byId("plain").sshMcpEnabled).toBe(true);
     await fixture.runtime.saveWorkspace({ ...byId("plain"), sshMcpEnabled: false }, "remote:sess-1");
     expect(byId("plain").sshMcpEnabled).toBe(true);
+    await fixture.runtime.saveWorkspace({ ...byId("plain"), jiraMcpEnabled: false });
+    expect(byId("plain").jiraMcpEnabled).toBe(false);
+  });
+
+  test("Jira-only workspace grants expose safe connection discovery and revoke when Jira opt-in is removed", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({
+      workspaces: [parentWorkspace(repo, { internalMcpEnabled: false, jiraMcpEnabled: true })],
+      settings: {
+        integrations: {
+          jira: {
+            connections: [
+              {
+                id: "jira-enabled",
+                profileId: "default",
+                label: "Company Jira",
+                enabled: true,
+                deployment: "data-center",
+                webUrl: "https://jira.example.invalid",
+                apiBaseUrl: "https://gateway.example.invalid/prefix",
+                auth: { kind: "dc-apim", secretRef: "do-not-return-this" },
+                clientCertificatePath: "C:\\private\\client.pfx",
+                accountPurpose: "technical",
+              },
+              {
+                id: "jira-disabled",
+                profileId: "default",
+                label: "Disabled",
+                enabled: false,
+                deployment: "cloud",
+                webUrl: "https://disabled.atlassian.net",
+                apiBaseUrl: "",
+                auth: { kind: "cloud-api-token", secretRef: "another-private-ref", email: "me@example.com" },
+                accountPurpose: "personal",
+              },
+              {
+                id: "other-profile",
+                profileId: "other",
+                label: "Other profile",
+                enabled: true,
+                deployment: "cloud",
+                webUrl: "https://other.atlassian.net",
+                apiBaseUrl: "",
+                auth: { kind: "cloud-api-token", secretRef: "another-private-ref", email: "me@example.com" },
+                accountPurpose: "personal",
+              },
+            ],
+          },
+        },
+      },
+    });
+    const { launch } = launchAgent(fixture);
+    expect(launch.env).toMatchObject({
+      STRIDETERM_INTERNAL_MCP_TASKS_ENABLED: "0",
+      STRIDETERM_INTERNAL_MCP_JIRA_ENABLED: "1",
+    });
+    const call = brokerClient(launch);
+    expect((await call("task_list", {})).status).toBe(403);
+    const connections = await call("jira_list_connections", {});
+    expect(connections.status).toBe(200);
+    expect(connections.result).toEqual([
+      {
+        id: "jira-enabled",
+        label: "Company Jira",
+        deployment: "data-center",
+        enabled: true,
+        accountPurpose: "technical",
+      },
+    ]);
+    expect(JSON.stringify(connections)).not.toMatch(/do-not-return|another-private|client\.pfx|apiBaseUrl/i);
+    const workspace = fixture.store.getState().workspaces[0];
+    await fixture.runtime.saveWorkspace({ ...workspace, jiraMcpEnabled: false });
+    expect((await call("jira_list_connections", {})).status).toBe(401);
   });
 
   describe("after a restart", () => {
@@ -20308,5 +21559,47 @@ describe("internal MCP: creating and watching task agents", () => {
     });
     expect(right.status).toBe(200);
     await waitForOperation(call, right.result.operationId);
+  });
+});
+
+describe("Jira issue pop-out profile resolution", () => {
+  async function popoutFixture() {
+    const fixture = await createFixture({
+      initialState: {
+        profiles: [
+          { id: "default", name: "Default", workspaceIds: [] },
+          { id: "other", name: "Other", workspaceIds: [] },
+        ],
+        activeWorkspaceId: "inbox-default",
+        windowSlots: [
+          { id: "win-default", profileId: "default", activeWorkspaceId: "inbox-default" },
+          { id: "win-other", profileId: "other", activeWorkspaceId: "inbox-other" },
+        ],
+        workspaces: [
+          { id: "inbox-default", name: "Jira", kind: "jira", profileId: "default", cwd: "/jira-default", panels: [] },
+          { id: "inbox-other", name: "Jira", kind: "jira", profileId: "other", cwd: "/jira-other", panels: [] },
+          { id: "term-default", name: "Shell", kind: "terminal", profileId: "default", cwd: "/work", panels: [] },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    return fixture.runtime;
+  }
+
+  test("answers the caller's own profile for one of its Jira workspaces", async () => {
+    const runtime = await popoutFixture();
+    expect(runtime.resolveJiraIssuePopoutProfile("inbox-default", "win-default")).toBe("default");
+    expect(runtime.resolveJiraIssuePopoutProfile("inbox-other", "win-other")).toBe("other");
+  });
+
+  test("refuses a workspace of another profile, a workspace that is not Jira, an unknown one and a caller without a window", async () => {
+    const runtime = await popoutFixture();
+    expect(() => runtime.resolveJiraIssuePopoutProfile("inbox-other", "win-default")).toThrow(/not available/);
+    expect(() => runtime.resolveJiraIssuePopoutProfile("term-default", "win-default")).toThrow(/not available/);
+    expect(() => runtime.resolveJiraIssuePopoutProfile("nope", "win-default")).toThrow(/not available/);
+    expect(() => runtime.resolveJiraIssuePopoutProfile("inbox-default", "")).toThrow(/needs a desktop window/);
+    expect(() => runtime.resolveJiraIssuePopoutProfile("inbox-default", "win-unknown")).toThrow(
+      /needs a desktop window/,
+    );
   });
 });

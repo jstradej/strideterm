@@ -6,6 +6,8 @@ import { isFullSha } from "../../shared/review-source-identity.js";
 export interface GitAuth {
   login?: string;
   token?: string;
+  /** Origin(s) the token is scoped to: git sends it nowhere else. */
+  authUrl?: string | readonly string[];
 }
 
 export type GitRun = (cwd: string, args: string[], auth?: GitAuth) => Promise<{ stdout: string; stderr: string }>;

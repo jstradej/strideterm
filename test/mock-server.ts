@@ -378,6 +378,18 @@ export async function startMockServer({
         }
 
         // Settings update — merge into settings
+        // Workspace save — replace the stored workspace and rebuild the active view's sessions
+        if (url.pathname.endsWith("/workspace/save") && body.workspace?.id) {
+          const list = payload.appState.workspaces;
+          const index = list.findIndex((w: { id: string }) => w.id === body.workspace.id);
+          if (index >= 0) list[index] = body.workspace;
+          else list.push(body.workspace);
+          if (String(payload.appState.activeWorkspaceId) === body.workspace.id) {
+            setActiveWorkspace(payload, body.workspace.id);
+          }
+          broadcastState();
+        }
+
         if (url.pathname.endsWith("/settings/update") && body.settings) {
           Object.assign(payload.appState.settings, body.settings);
           broadcastState();

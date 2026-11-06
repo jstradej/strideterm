@@ -30,7 +30,9 @@ const SRC_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // `(ctx.getApi() as AnyApi).x(`, `(_api as any)?.x(`, `(api as AnyApi).x(`,
 // and `const api = getApi() as AnyApi;` (whose later calls are untyped).
 const UNTYPED_CALL = /\(\s*(?:ctx\.)?(?:getApi\(\)|_?api)\s+as\s+(?:AnyApi|any)\s*\)\s*\??\.\s*\w+\s*\(/g;
-const UNTYPED_BINDING = /=\s*(?:ctx\.)?getApi\(\)\s+as\s+(?:AnyApi|any)\s*;/g;
+// Any transport expression (`getApi()`, `_api`, `x.api`, `transport`) bound `as AnyApi`; later calls are untyped:
+// `const api = ctx.getApi() as AnyApi;`, `const jiraApi = _api as AnyApi;`.
+const UNTYPED_BINDING = /=\s*[\w.$]*(?:[Aa]pi|[Tt]ransport)(?:\(\))?\s+as\s+(?:AnyApi|any)\s*;/g;
 
 describe("stores call the transport with typed payloads", () => {
   test.each(STORES)("%s has no transport call through an `any` cast", (file) => {
@@ -48,6 +50,8 @@ describe("stores call the transport with typed payloads", () => {
     ];
     for (const sample of samples) expect(sample.match(UNTYPED_CALL), sample).not.toBeNull();
     expect("const api = getApi() as AnyApi;".match(UNTYPED_BINDING)).not.toBeNull();
+    expect("const jiraApi = _api as AnyApi;".match(UNTYPED_BINDING)).not.toBeNull();
+    expect("const state = ctx.payload.value as AnyApi;".match(UNTYPED_BINDING)).toBeNull();
     expect('typeof (api as AnyApi).getPerformanceSnapshot === "function"'.match(UNTYPED_CALL)).toBeNull();
   });
 });

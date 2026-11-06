@@ -239,6 +239,52 @@ describe("file-manager core", () => {
     expect(image.imageSrc).toMatch(/file:\/\//);
   });
 
+  test("writeFileContent refuses a stale expectedMtimeMs and accepts a fresh one", async () => {
+    const root = path.join(tmpRoot, "mtime-guard");
+    await fs.mkdir(root, { recursive: true });
+    await writeFileContent(root, "f.txt", "v1");
+
+    const opened = await readFileContent(root, "f.txt");
+    expect(typeof opened.mtimeMs).toBe("number");
+
+    const abs = path.join(root, "f.txt");
+    await fs.writeFile(abs, "external");
+    const bumped = new Date(opened.mtimeMs! + 5000);
+    await fs.utimes(abs, bumped, bumped);
+
+    await expect(writeFileContent(root, "f.txt", "mine", opened.mtimeMs)).rejects.toThrow(/^FILE_CHANGED_ON_DISK:/);
+    expect(await fs.readFile(abs, "utf-8")).toBe("external");
+
+    const fresh = await readFileContent(root, "f.txt");
+    const written = await writeFileContent(root, "f.txt", "mine", fresh.mtimeMs);
+    expect(await fs.readFile(abs, "utf-8")).toBe("mine");
+    expect(written.mtimeMs).toBe((await readFileContent(root, "f.txt")).mtimeMs);
+    await writeFileContent(root, "f.txt", "again", written.mtimeMs);
+  });
+
+  test("writeFileContent treats a deleted file with expectedMtimeMs as a conflict", async () => {
+    const root = path.join(tmpRoot, "mtime-deleted");
+    await fs.mkdir(root, { recursive: true });
+    await writeFileContent(root, "gone.txt", "v1");
+    const opened = await readFileContent(root, "gone.txt");
+    await fs.unlink(path.join(root, "gone.txt"));
+    await expect(writeFileContent(root, "gone.txt", "mine", opened.mtimeMs)).rejects.toThrow(
+      /FILE_CHANGED_ON_DISK.*deleted/,
+    );
+    await expect(fs.stat(path.join(root, "gone.txt"))).rejects.toThrow();
+  });
+
+  test("writeFileContent without expectedMtimeMs overwrites as before, even a changed file", async () => {
+    const root = path.join(tmpRoot, "mtime-none");
+    await fs.mkdir(root, { recursive: true });
+    await writeFileContent(root, "f.txt", "v1");
+    await fs.writeFile(path.join(root, "f.txt"), "external");
+    await writeFileContent(root, "f.txt", "mine");
+    expect((await readFileContent(root, "f.txt")).content).toBe("mine");
+    await writeFileContent(root, "new.txt", "created");
+    expect((await readFileContent(root, "new.txt")).content).toBe("created");
+  });
+
   test("CRUD lifecycle: create, write, rename, copy, move, delete", async () => {
     const root = path.join(tmpRoot, "crud-test");
     await fs.mkdir(root, { recursive: true });

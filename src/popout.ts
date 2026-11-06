@@ -1,7 +1,8 @@
-// Entry of the diff popout window (popout.html). Deliberately separate from
+// Entry of the diff and file popout windows (popout.html; `#file` selects the file editor). Deliberately separate from
 // main.ts so the popout loads only Vue + Monaco, not the whole app.
 import { createApp } from "vue";
 import DiffPopoutApp from "./DiffPopoutApp.vue";
+import FilePopoutApp from "./FilePopoutApp.vue";
 import { rlog } from "./lib/renderer-log.js";
 
 window.addEventListener("unhandledrejection", (event) => {
@@ -11,10 +12,10 @@ window.addEventListener("unhandledrejection", (event) => {
     event.preventDefault();
     return;
   }
-  rlog("error", "[renderer] [diff-popout] unhandled rejection", { message: msg, stack: reason?.stack || "" });
+  rlog("error", "[renderer] [popout] unhandled rejection", { message: msg, stack: reason?.stack || "" });
 });
 window.addEventListener("error", (event) => {
-  rlog("error", "[renderer] [diff-popout] uncaught error", {
+  rlog("error", "[renderer] [popout] uncaught error", {
     message: event.message,
     source: event.filename,
     line: event.lineno,
@@ -23,4 +24,4 @@ window.addEventListener("error", (event) => {
   });
 });
 
-createApp(DiffPopoutApp).mount("#app");
+createApp(window.location.hash === "#file" ? FilePopoutApp : DiffPopoutApp).mount("#app");

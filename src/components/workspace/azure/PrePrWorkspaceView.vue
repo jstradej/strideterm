@@ -16,6 +16,33 @@
         </button>
       </div>
 
+      <section v-for="item in linkedIssues" :key="item.ref.issueId" class="nb-issue" aria-label="Linked Jira issue">
+        <div class="nb-issue__text">
+          <p class="eyebrow">Jira issue</p>
+          <strong>{{ item.ref.issueKey }}</strong>
+          <span v-if="item.summary"> · {{ item.summary }}</span>
+          <span v-if="item.status" class="nb-issue__status">{{ item.status }}</span>
+        </div>
+        <div class="nb-issue__actions">
+          <button
+            type="button"
+            class="button button--ghost button--small"
+            :title="`Open ${item.ref.issueKey} in the Jira inbox of this profile.`"
+            @click="openIssueInJira(item.ref)"
+          >
+            Open in Jira
+          </button>
+          <button
+            type="button"
+            class="button button--ghost button--small"
+            :title="`Open the copy of ${item.ref.issueKey} that Start development put into ${issueFilePath(item.ref.issueKey)}.`"
+            @click="openIssueFile(item.ref.issueKey)"
+          >
+            Issue file
+          </button>
+        </div>
+      </section>
+
       <!-- Workflow steps -->
       <div style="margin-top: 16px; display: grid; gap: 8px">
         <div :class="['nb-step', hasDirtyOrCommits && 'nb-step--done', !hasDirtyOrCommits && 'nb-step--active']">
@@ -95,10 +122,8 @@
               Load remote branches
             </button>
             <span v-else style="font-size: 12px; color: var(--muted); margin-left: 6px">Loading...</span>
-            <span v-if="prFormBranchesError" style="font-size: 12px; color: var(--danger, #e53935); margin-left: 6px">{{
-              prFormBranchesError
-            }}</span>
           </label>
+          <p v-if="prFormBranchesError" class="git-pr-form__error" role="alert">{{ prFormBranchesError }}</p>
           <label class="git-pr-form__field">
             <span class="git-pr-form__label">Title</span>
             <input v-model="prFormTitle" class="git-pr-form__input" type="text" placeholder="Pull request title" />
@@ -144,6 +169,9 @@ import { useAppStore } from "../../../stores/app.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
 import GitCommitLog from "../git/GitCommitLog.vue";
 import CustomSelect from "../../common/CustomSelect.vue";
+import { openPathInFilesTab } from "../../../app/open-in-files-tab.js";
+import { jiraIssueFilePath } from "../../../../electron/shared/jira-development.js";
+import { userFacingMessage } from "../../../lib/error-message.js";
 
 const props = defineProps<{ workspaceId: string }>();
 
@@ -182,6 +210,40 @@ const aheadCommits = computed(() => {
   return log.slice(0, ahead);
 });
 
+type LinkedIssue = {
+  ref: { connectionId: string; issueId: string; issueKey: string };
+  summary?: string;
+  status?: string;
+};
+const linkedIssues = computed<LinkedIssue[]>(() =>
+  ((workspace.value as { workItems?: LinkedIssue[] } | undefined)?.workItems || []).filter((item) => item?.ref),
+);
+const issueFilePath = jiraIssueFilePath;
+
+function openIssueInJira(ref: LinkedIssue["ref"]) {
+  const profileId = String(workspace.value?.profileId || "default");
+  const inbox = (appStore.payload?.appState?.workspaces || []).find(
+    (item) => item.kind === "jira" && (item.profileId || "default") === profileId,
+  );
+  if (!inbox) {
+    notifications.showError("Could not open the Jira issue", "This profile has no Jira inbox workspace.");
+    return;
+  }
+  appStore.requestJiraIssueOpen(inbox.id, ref);
+  void notifications.runWithToast("Could not open the Jira inbox", () => appStore.activateWorkspace(inbox.id));
+}
+
+async function openIssueFile(issueKey: string) {
+  const cwd = workspace.value?.cwd;
+  const relative = jiraIssueFilePath(issueKey);
+  const result = cwd ? await openPathInFilesTab(props.workspaceId, `${cwd}/${relative}`) : "no-workspace";
+  if (result !== "opened")
+    notifications.showError(
+      "Could not open the issue file",
+      `${relative} is written by Start development with an agent; this branch may have been created without it.`,
+    );
+}
+
 const prFormTarget = ref<string>("");
 const prFormTitle = ref<string>("");
 const prFormDescription = ref<string>("");
@@ -202,13 +264,19 @@ function generatePrTitleAndDescription() {
   const commits = aheadCommits.value;
   if (!commits.length) return;
 
-  if (commits.length === 1) {
+  const issue = linkedIssues.value[0];
+  if (issue) {
+    // A branch started from a Jira issue is about that issue: its key and summary name the PR.
+    prFormTitle.value = `${issue.ref.issueKey}: ${issue.summary || ""}`.replace(/:\s*$/u, "");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    prFormDescription.value = commits.map((c: any) => `- ${c.subject}`).join("\n");
+  } else if (commits.length === 1) {
     // Single commit: use subject as title
     prFormTitle.value = commits[0].subject || "";
   } else {
     // Multiple commits: use branch name as title, list commits as description
     const branch = gitSnapshot.value?.branch || "";
-    // Try to extract meaningful name from branch (e.g., "fix/MSP-12345-some-description" → "MSP-12345 some description")
+    // Try to extract meaningful name from branch (e.g., "fix/ABC-12345-some-description" → "ABC-12345 some description")
     const branchSuffix = branch.includes("/") ? branch.split("/").slice(1).join("/") : branch;
     prFormTitle.value = branchSuffix.replace(/[-_]/g, " ").replace(/\s+/g, " ").trim();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -235,7 +303,7 @@ async function loadPrBranches() {
     generatePrTitleAndDescription();
   } catch (error) {
     prFormBranches.value = [];
-    prFormBranchesError.value = (error as Error)?.message || "Failed to load remote branches.";
+    prFormBranchesError.value = userFacingMessage(error, "Failed to load remote branches.");
   } finally {
     prFormLoadingBranches.value = false;
   }
@@ -297,10 +365,26 @@ async function handleCreatePr() {
       summary: `PR #${prId} created.`,
       url: result.url,
     };
+    offerJiraUpdate({ url: result.url, number: prId, title: prFormTitle.value.trim() });
   } catch (err) {
     prFormResult.value = { ok: false, summary: (err as Error)?.message || "Failed to create pull request." };
   } finally {
     prFormBusy.value = false;
+  }
+}
+
+/** Jira writes are confirmed, desktop-only actions; the dialog outlives this view, which unmounts once the PR exists. */
+function offerJiraUpdate(pullRequest: { url?: string; number?: number | string; title: string }) {
+  const issue = linkedIssues.value[0];
+  if (!issue || !pullRequest.url || typeof api?.previewJiraWrite !== "function") return;
+  try {
+    appStore.openDialog("JiraUpdateDialog", {
+      issue,
+      pullRequest: { url: pullRequest.url, number: pullRequest.number, title: pullRequest.title },
+      onClose: () => appStore.closeDialog(),
+    });
+  } catch (cause) {
+    notifications.showError("Could not offer the Jira update", userFacingMessage(cause, "unknown error"));
   }
 }
 
@@ -351,6 +435,38 @@ function onShowCommitInfo(entry: any) {
 </script>
 
 <style scoped>
+.nb-issue {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin-top: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(var(--tint), 0.03);
+  font-size: 13px;
+}
+
+.nb-issue .eyebrow {
+  margin: 0 0 2px;
+}
+
+.nb-issue__status {
+  margin-left: 8px;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.nb-issue__actions {
+  display: flex;
+  gap: 6px;
+}
+
 .nb-step {
   display: flex;
   gap: 10px;

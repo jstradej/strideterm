@@ -126,7 +126,7 @@ describe("AgentProviderConfig", () => {
     expect((effortSelect.vm.$props as { modelValue?: string }).modelValue).toBe("xhigh");
     expect(
       ((effortSelect.vm.$props as { options?: Array<{ value: string }> }).options || []).map((o) => o.value),
-    ).toEqual(["", "minimal", "low", "medium", "high", "xhigh"]);
+    ).toEqual(["", "low", "medium", "high", "xhigh", "max", "ultra"]);
     await effortSelect.vm.$emit("update:modelValue", "high");
     expect(lastEmitted<{ effort: string }>(wrapper, "update:provider").effort).toBe("high");
 

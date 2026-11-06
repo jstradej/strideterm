@@ -19,10 +19,15 @@
     </div>
 
     <button
+      v-if="workspaceKind !== 'jira-board'"
       ref="addTabBtnRef"
       type="button"
       class="workspace-cell-header__btn"
-      title="Add a new tab to this workspace — pick a Shell, Claude Code, Codex, Gemini, Files, Browser, or any other tab template."
+      :title="
+        workspaceKind === 'jira'
+          ? 'Open the Jira board chooser and add a saved board as a native workspace tab.'
+          : 'Add a new tab to this workspace — pick a Shell, Claude Code, Codex, Gemini, Files, Browser, or any other tab template.'
+      "
       @click="onAddTab"
     >
       +
@@ -81,6 +86,7 @@ const wsEntry = computed(() => {
 
 const wsName = computed(() => wsEntry.value?.name || props.workspaceId);
 const wsIcon = computed(() => wsEntry.value?.icon || "");
+const workspaceKind = computed(() => wsEntry.value?.kind || "terminal");
 
 interface SwapAction {
   targetIndex: number;

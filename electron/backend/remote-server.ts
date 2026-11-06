@@ -15,6 +15,8 @@ import { AttachmentPolicyError } from "./attachment-file-policy.js";
 import { deriveSessionKey, openEnvelope, publicKeyFromRaw, sealEnvelope } from "./mobile/mobile-crypto.js";
 import { decodeCanonicalPublicKey } from "./mobile/mobile-crypto.js";
 import { START_PULL_REQUEST_REVIEW_ROUTE, startPullRequestReviewSchema } from "../shared/pull-request-review.js";
+import { START_PIPELINE_AGENT_ROUTE, startPipelineAgentSchema } from "../shared/pipeline-agent.js";
+import { START_JIRA_DEVELOPMENT_ROUTE, startJiraDevelopmentSchema } from "../shared/jira-development.js";
 import {
   dockerActionSchema,
   dockerComposeActionSchema,
@@ -65,7 +67,36 @@ import {
   mobileAttachmentOperationSchema,
   taskUpdateDescriptionSchema,
   taskWorkspaceCreateSchema,
+  quickFixCreateSchema,
+  githubQuickFixCreateSchema,
   taskWorkspaceActionSchema,
+  jiraConnectionIdSchema,
+  jiraSearchSchema,
+  jiraBoardSearchSchema,
+  jiraIssueLookupSchema,
+  jiraRemoteCommentsSchema,
+  jiraTransitionLookupSchema,
+  jiraWriteExecuteSchema,
+  jiraWriteHistorySchema,
+  jiraWritePreviewSchema,
+  jiraWriteReconcileRemoteSchema,
+  jiraAttachmentLookupSchema,
+  jiraBoardViewSchema,
+  jiraBoardQuickFiltersSchema,
+  jiraUserSearchSchema,
+  jiraOwnIssuesQuerySchema,
+  jiraOwnIdentitySchema,
+  jiraRecentListSchema,
+  jiraWorkspaceViewsGetSchema,
+  jiraWorkspaceProjectScopeGetSchema,
+  jiraWorkspaceProjectScopeSetSchema,
+  jiraWorkspaceViewSaveSchema,
+  jiraWorkspaceViewTargetSchema,
+  jiraWorkspaceViewRefreshSchema,
+  jiraWorkspaceViewRenameSchema,
+  jiraWorkspaceViewReorderSchema,
+  jiraRememberSearchSchema,
+  jiraRememberIssueViewedSchema,
   taskCompanionCreateSchema,
   taskCompanionAnswerSchema,
   terminalSessionSchema,
@@ -96,11 +127,14 @@ import { isLoopbackBindHost, resolveRemoteAccessPort, resolveRemoteBindHost } fr
 import { getLogger, createAuditLogger } from "./logger.js";
 import { RemoteClientRegistry } from "./remote-client-registry.js";
 import {
+  RELAY_HTTP_REQUEST_TIMEOUT_MS,
   RELAY_MOBILE_SESSION_ABSOLUTE_TTL_MS,
   RELAY_MOBILE_SESSION_IDLE_TTL_MS,
 } from "./mobile/mobile-relay-protocol.js";
 import { parseRemoteViewerId, remoteViewerId } from "./viewer-id.js";
 import { ClientRequestError } from "./shared/client-request-error.js";
+import { isFileChangedOnDiskError } from "../shared/file-conflict.js";
+import { JiraRequestError, withinJiraCallBudget } from "./jira/jira-manager.js";
 import { errorMessage } from "../shared/error-message.js";
 import { NativeWorkspaceError } from "./native-workspace-errors.js";
 import { classifyMobileRoute, evaluateMobileRoute } from "./mobile-session-route-policy.js";
@@ -203,6 +237,8 @@ const log = getLogger("remote-server");
  * loops.
  */
 const WS_HEARTBEAT_INTERVAL_MS = 20_000;
+/** All Jira requests of one remote Jira write call, leaving the relay round trip room within its cut-off. */
+const REMOTE_JIRA_CALL_BUDGET_MS = RELAY_HTTP_REQUEST_TIMEOUT_MS - 5_000;
 const WS_HEARTBEAT_MAX_MISSED = 3;
 
 // Live-backlog watermark above which a filtered socket is considered
@@ -531,6 +567,8 @@ interface Runtime {
     expiresAt: number;
     /** Last 8 characters of the command that issued the ticket; audit correlation only. */
     commandRef?: string;
+    /** The idle TTL bound at issuance (ADR 0041); absent = this server's `mobileSessionIdleTtlMs`. */
+    sessionIdleTtlMs?: number;
   } | null;
   /**
    * Whether [deviceId] may still hold a mobile session on [profileId], right now.
@@ -595,6 +633,7 @@ interface Runtime {
   ): unknown;
   submitToSession(sessionId: string, text: string, viewerId?: string, originWorkspaceId?: string): unknown;
   resizeSession(sessionId: string, size: { cols: number; rows: number }): void;
+  jiraRemoteEnsureWorkspace(profileId: string): Promise<unknown>;
   // getTerminalReplaySnapshot / getTerminalReplay and all other methods are
   // accessed dynamically via the string index signature below.
   // All other methods accessed dynamically via string keys
@@ -619,7 +658,7 @@ function isDesktopPrivateSshSession(runtime: Runtime, sessionId: unknown): boole
  *    `connect-src 'self' ws: wss:` allows WebSocket back to the server.
  *    `worker-src 'self' blob:` allows Monaco's web workers (created via
  *    blob: URLs from the same origin).
- *    `img-src 'self' data: blob:` allows inline SVGs and canvas exports.
+ *    `img-src 'self' data: blob: http: https:` allows inline exports and sanitized remote Markdown images.
  *    `font-src 'self' data:` allows the embedded terminal font.
  *    `frame-ancestors 'none'` is a stronger X-Frame-Options equivalent.
  *    `base-uri 'self'` prevents <base href="..."> injection.
@@ -644,7 +683,7 @@ const SECURITY_HEADERS: Record<string, string> = {
     "style-src 'self' 'unsafe-inline'",
     "connect-src 'self' ws: wss:",
     "worker-src 'self' blob:",
-    "img-src 'self' data: blob:",
+    "img-src 'self' data: blob: http: https:",
     "font-src 'self' data:",
     "frame-ancestors 'none'",
     "base-uri 'self'",
@@ -723,7 +762,9 @@ function writeHead(response: ServerResponse, statusCode: number, headers: Record
  * that:
  *
  *   - `expiresAt`: the ABSOLUTE end, eight hours from the bootstrap. Nothing moves it.
- *   - `idleExpiresAt`: thirty minutes of no meaningful activity. Moved forward by real requests and
+ *   - `idleExpiresAt`: `idleTtlMs` of no meaningful activity — the control plane's policy for a relay
+ *     session, bound when its ticket was issued (ADR 0041; ninety minutes by default, between five
+ *     minutes and four hours), else thirty minutes. Moved forward by real requests and
  *     real client messages, and deliberately NOT by a heartbeat or a ping — a keep-alive frame is the
  *     client saying its socket is open, not the user doing anything, and letting it hold a session
  *     open forever would make the idle deadline decorative.
@@ -901,6 +942,14 @@ function sanitizeIntegrationsMobileFromRemote(settings: Record<string, unknown>)
   return [];
 }
 
+/** Jira credentials/settings stay desktop-only; profile-scoped Jira read routes are registered separately below. */
+function sanitizeJiraFromRemote(settings: Record<string, unknown>): string[] {
+  const integrations = settings.integrations as Record<string, unknown> | undefined;
+  if (!integrations || typeof integrations !== "object" || !("jira" in integrations)) return [];
+  delete integrations.jira;
+  return ["integrations.jira"];
+}
+
 /**
  * Apply the same blocklist `/api/settings/update` enforces. Exported for
  * tests; mutates `settings` in place to drop both the blocked top-level keys
@@ -938,6 +987,7 @@ export function sanitizeSettingsFromRemote(settings: Record<string, unknown>): s
     }
   }
   removed.push(...sanitizeIntegrationsMobileFromRemote(settings));
+  removed.push(...sanitizeJiraFromRemote(settings));
   return removed;
 }
 
@@ -1325,7 +1375,26 @@ function mutationAck(ctx: RemoteAdaptContext): Record<string, unknown> {
 
 function composeAndSlim(payload: Record<string, unknown>, ctx: RemoteAdaptContext): unknown {
   const bound = Boolean(ctx.sessionId && ctx.registry.get(ctx.sessionId));
-  const composed = bound ? ctx.registry.composePayload(ctx.sessionId, payload) : payload;
+  let composed = (bound ? ctx.registry.composePayload(ctx.sessionId, payload) : payload) as Record<string, unknown>;
+  if (composed.jiraWorkspaceViews) {
+    const profileId =
+      ctx.registry.get(ctx.sessionId)?.profileId ?? ctx.registry.resolveFallbackProfileId(payload.appState);
+    const appState = composed.appState as { workspaces?: Array<{ id: string; profileId?: string }> };
+    const workspaceIds = new Set(
+      (appState.workspaces || [])
+        .filter((workspace) => (workspace.profileId || "default") === profileId)
+        .map((workspace) => workspace.id),
+    );
+    const views = composed.jiraWorkspaceViews as Record<string, { workspaceId: string; profileId: string }>;
+    composed = {
+      ...composed,
+      jiraWorkspaceViews: Object.fromEntries(
+        Object.entries(views).filter(
+          ([id, state]) => workspaceIds.has(id) && state.workspaceId === id && state.profileId === profileId,
+        ),
+      ),
+    };
+  }
   if (!servesRemoteCore(ctx.capabilities)) return composed;
   // v2 core is ALWAYS profile-scoped. A bound socket carries its profile in the
   // composed remoteClient; an unbound socket is scoped to the server's default
@@ -1742,6 +1811,140 @@ type ApiRouteHandler = (
  * here.
  */
 const API_ROUTES: Record<string, ApiRouteHandler> = {
+  // This only creates/returns the caller's local inbox workspace. The profile is resolved from
+  // the authenticated remote client, never from request data.
+  "/api/jira/ensure-workspace": (runtime, _body, caller) => runtime.jiraRemoteEnsureWorkspace(caller?.profileId || ""),
+  "/api/jira/connections": (runtime, _body, caller) => runtime.jiraRemoteListConnections(caller?.profileId || ""),
+  "/api/jira/own-issues-query": (runtime, body, caller) =>
+    runtime.jiraRemoteBuildOwnIssuesQuery(
+      validateIpc(jiraOwnIssuesQuerySchema, body, "/api/jira/own-issues-query"),
+      caller?.profileId || "",
+    ),
+  "/api/jira/own-identity/verify": (runtime, body, caller) =>
+    runtime.jiraRemoteVerifyOwnIdentity(
+      validateIpc(jiraOwnIdentitySchema, body, "/api/jira/own-identity/verify"),
+      caller?.profileId || "",
+    ),
+  "/api/jira/own-identity/set": (runtime, body, caller) =>
+    runtime.jiraRemoteSetOwnIdentity(
+      validateIpc(jiraOwnIdentitySchema, body, "/api/jira/own-identity/set"),
+      caller?.profileId || "",
+    ),
+  "/api/jira/recent-searches": (runtime, body, caller) =>
+    runtime.jiraRemoteGetRecentSearches(
+      validateIpc(jiraRecentListSchema, body, "/api/jira/recent-searches"),
+      caller?.profileId || "",
+    ),
+  "/api/jira/workspace-views/get": (runtime, body, caller) =>
+    runtime.jiraRemoteGetWorkspaceViews(
+      validateIpc(jiraWorkspaceViewsGetSchema, body, "/api/jira/workspace-views/get"),
+      caller?.profileId || "",
+    ),
+  "/api/jira/workspace-views/save": (runtime, body, caller) =>
+    runtime.jiraRemoteSaveWorkspaceView(
+      validateIpc(jiraWorkspaceViewSaveSchema, body, "/api/jira/workspace-views/save"),
+      caller?.profileId || "",
+    ),
+  "/api/jira/workspace-project-scope/get": (runtime, body, caller) =>
+    runtime.jiraRemoteGetWorkspaceProjectScope(
+      validateIpc(jiraWorkspaceProjectScopeGetSchema, body, "/api/jira/workspace-project-scope/get"),
+      caller?.profileId || "",
+    ),
+  "/api/jira/workspace-project-scope/set": (runtime, body, caller) =>
+    runtime.jiraRemoteSetWorkspaceProjectScope(
+      validateIpc(jiraWorkspaceProjectScopeSetSchema, body, "/api/jira/workspace-project-scope/set"),
+      caller?.profileId || "",
+    ),
+  "/api/jira/workspace-views/rename": (runtime, body, caller) =>
+    runtime.jiraRemoteRenameWorkspaceView(
+      validateIpc(jiraWorkspaceViewRenameSchema, body, "/api/jira/workspace-views/rename"),
+      caller?.profileId || "",
+    ),
+  "/api/jira/workspace-views/reorder": (runtime, body, caller) =>
+    runtime.jiraRemoteReorderWorkspaceViews(
+      validateIpc(jiraWorkspaceViewReorderSchema, body, "/api/jira/workspace-views/reorder"),
+      caller?.profileId || "",
+    ),
+  "/api/jira/workspace-views/remove": (runtime, body, caller) =>
+    runtime.jiraRemoteRemoveWorkspaceView(
+      validateIpc(jiraWorkspaceViewTargetSchema, body, "/api/jira/workspace-views/remove"),
+      caller?.profileId || "",
+    ),
+  "/api/jira/workspace-views/active": (runtime, body, caller) =>
+    runtime.jiraRemoteSetWorkspaceActiveView(
+      validateIpc(jiraWorkspaceViewTargetSchema, body, "/api/jira/workspace-views/active"),
+      caller?.profileId || "",
+    ),
+  "/api/jira/workspace-views/refresh": (runtime, body, caller) =>
+    runtime.jiraRemoteRefreshWorkspaceViews(
+      validateIpc(jiraWorkspaceViewRefreshSchema, body, "/api/jira/workspace-views/refresh"),
+      caller?.profileId || "",
+    ),
+  "/api/jira/recent-searches/remember": (runtime, body, caller) =>
+    runtime.jiraRemoteRememberSearch(
+      validateIpc(jiraRememberSearchSchema, body, "/api/jira/recent-searches/remember"),
+      caller?.profileId || "",
+    ),
+  "/api/jira/recent-issues": (runtime, body, caller) =>
+    runtime.jiraRemoteGetRecentIssues(
+      validateIpc(jiraRecentListSchema, body, "/api/jira/recent-issues"),
+      caller?.profileId || "",
+    ),
+  "/api/jira/recent-issues/viewed": (runtime, body, caller) =>
+    runtime.jiraRemoteRememberIssueViewed(
+      validateIpc(jiraRememberIssueViewedSchema, body, "/api/jira/recent-issues/viewed"),
+      caller?.profileId || "",
+    ),
+  "/api/jira/queries": (runtime, body, caller) =>
+    runtime.jiraRemoteListQueries(
+      validateIpc(jiraConnectionIdSchema, body.connectionId, "/api/jira/queries"),
+      caller?.profileId || "",
+    ),
+  // Jira is remote-read only. The caller profile comes from the authenticated remote session, never from the body.
+  "/api/jira/search": (runtime, body, caller) =>
+    runtime.jiraRemoteSearchIssues(validateIpc(jiraSearchSchema, body, "/api/jira/search"), caller?.profileId || ""),
+  "/api/jira/issue": (runtime, body, caller) =>
+    runtime.jiraRemoteGetIssue(validateIpc(jiraIssueLookupSchema, body, "/api/jira/issue"), caller?.profileId || ""),
+  "/api/jira/comments": (runtime, body, caller) =>
+    runtime.jiraRemoteListComments(
+      validateIpc(jiraRemoteCommentsSchema, body, "/api/jira/comments"),
+      caller?.profileId || "",
+    ),
+  "/api/jira/attachment/content": (runtime, body, caller) =>
+    runtime.jiraRemoteGetAttachmentImage(
+      validateIpc(jiraAttachmentLookupSchema, body, "/api/jira/attachment/content"),
+      caller?.profileId || "",
+    ),
+  "/api/jira/boards": (runtime, body, caller) =>
+    runtime.jiraRemoteListBoards(
+      validateIpc(jiraConnectionIdSchema, body.connectionId, "/api/jira/boards"),
+      caller?.profileId || "",
+    ),
+  "/api/jira/projects": (runtime, body, caller) =>
+    runtime.jiraRemoteListProjects(
+      validateIpc(jiraConnectionIdSchema, body.connectionId, "/api/jira/projects"),
+      caller?.profileId || "",
+    ),
+  "/api/jira/boards/search": (runtime, body, caller) =>
+    runtime.jiraRemoteSearchBoards(
+      validateIpc(jiraBoardSearchSchema, body, "/api/jira/boards/search"),
+      caller?.profileId || "",
+    ),
+  "/api/jira/board-view": (runtime, body, caller) =>
+    runtime.jiraRemoteBoardView(
+      validateIpc(jiraBoardViewSchema, body, "/api/jira/board-view"),
+      caller?.profileId || "",
+    ),
+  "/api/jira/board-quick-filters": (runtime, body, caller) =>
+    runtime.jiraRemoteBoardQuickFilters(
+      validateIpc(jiraBoardQuickFiltersSchema, body, "/api/jira/board-quick-filters"),
+      caller?.profileId || "",
+    ),
+  "/api/jira/users/search": (runtime, body, caller) =>
+    runtime.jiraRemoteSearchUsers(
+      validateIpc(jiraUserSearchSchema, body, "/api/jira/users/search"),
+      caller?.profileId || "",
+    ),
   "/api/azure/verify-connection": (runtime, body) => runtime.verifyAzureConnection(body.connection || {}),
   "/api/azure/refresh": (runtime) => runtime.refreshAzureState(),
   "/api/azure/audit-log/query": (runtime, body) => runtime.queryAzureAuditLog(body),
@@ -2282,10 +2485,26 @@ async function handleMobileAttachmentRequest(
   };
 }
 
-/** HTTP status for an error thrown out of a route handler: a refused request is the caller's (4xx), anything else is ours (500). */
+/**
+ * HTTP status for an error thrown out of a route handler: a refused request is the caller's (4xx), anything else is ours (500).
+ * A Jira failure is never answered with Jira's own status: a 401 from Jira would end the caller's strIDEterm session.
+ */
+const JIRA_UPSTREAM_FAILURE_STATUS = 424;
 function refusalStatus(error: unknown, message: string): number {
   if (error instanceof ClientRequestError) return error.status;
+  if (error instanceof JiraRequestError) return JIRA_UPSTREAM_FAILURE_STATUS;
   return message.startsWith("IPC validation failed") ? 400 : 500;
+}
+
+function refusalBody(error: unknown, message: string): Record<string, unknown> {
+  if (!(error instanceof JiraRequestError)) return { error: message };
+  return {
+    error: message,
+    jiraError: {
+      code: error.code,
+      ...(error.retryAfterMs !== undefined ? { retryAfterMs: error.retryAfterMs } : {}),
+    },
+  };
 }
 
 async function handleApiRequest(
@@ -2609,8 +2828,7 @@ async function handleApiRequest(
     json(response, 404, { error: "Not found" });
   } catch (error) {
     const msg = errorMessage(error, "Remote API failed");
-    const statusCode = refusalStatus(error, msg);
-    json(response, statusCode, { error: msg });
+    json(response, refusalStatus(error, msg), refusalBody(error, msg));
   }
 }
 
@@ -2642,7 +2860,8 @@ export async function startRemoteServer({
   /**
    * The two mobile-session deadlines and the sweep interval, injectable for the same reason as
    * everything above: eight hours and thirty minutes are the product's numbers, and a test that
-   * proves a deadline closes a live WebSocket cannot wait for either.
+   * proves a deadline closes a live WebSocket cannot wait for either. The idle one is the FALLBACK: a
+   * ticket that carries a bound `sessionIdleTtlMs` (ADR 0041) uses that instead.
    */
   mobileSessionAbsoluteTtlMs?: number;
   mobileSessionIdleTtlMs?: number;
@@ -3194,6 +3413,7 @@ export async function startRemoteServer({
     pairId: string;
     profileId: string;
     workspaceId?: string;
+    sessionIdleTtlMs?: number;
   }): string {
     const id = randomBytes(32).toString("base64url");
     const appState = (runtime.getPayload() as Record<string, unknown>).appState;
@@ -3205,6 +3425,12 @@ export async function startRemoteServer({
       throw error;
     }
     const now = Date.now();
+    const expiresAt = now + mobileSessionAbsoluteTtlMs;
+    // The idle TTL the ticket was issued with (ADR 0041: the control plane's policy for a relay
+    // session, bound when the ticket was minted and already range-checked there), else this server's
+    // fallback. Stored on the record, so every later `touchMobileSession` extends by the same amount
+    // the phone was told rather than by whatever the policy has become since.
+    const idleTtlMs = ticket.sessionIdleTtlMs ?? mobileSessionIdleTtlMs;
     activeSessions.set(id, {
       sessionId: id,
       deviceId: ticket.deviceId,
@@ -3213,8 +3439,9 @@ export async function startRemoteServer({
       createdAt: now,
       lastSeenAt: now,
       // Both deadlines start here, and the absolute one is never moved again.
-      expiresAt: now + mobileSessionAbsoluteTtlMs,
-      idleExpiresAt: now + mobileSessionIdleTtlMs,
+      expiresAt,
+      idleExpiresAt: Math.min(now + idleTtlMs, expiresAt),
+      idleTtlMs,
       origin: "mobile",
     });
     publishMobileSessions();
@@ -3422,6 +3649,7 @@ export async function startRemoteServer({
             if (error instanceof Error && error.message.startsWith("Root path not allowed")) {
               throw new ClientRequestError(error.message, 403);
             }
+            if (isFileChangedOnDiskError(error)) throw new ClientRequestError((error as Error).message, 409);
             throw error;
           },
         );
@@ -3473,6 +3701,54 @@ export async function startRemoteServer({
         validateIpc(startPullRequestReviewSchema, body, `POST ${START_PULL_REQUEST_REVIEW_ROUTE}`),
         windowId,
       ),
+    // Starts an agent on a pipeline run (a checkout plus its logs) and answers at once with an operation id; the
+    // runtime refuses a connection outside the caller's profile.
+    "/api/azure/pipelines/agent-start": (body, windowId) =>
+      runtime.startPipelineAgent(
+        validateIpc(startPipelineAgentSchema, body, `POST ${START_PIPELINE_AGENT_ROUTE}`),
+        windowId,
+      ),
+    // A branch workspace for a Jira issue with the issue copied into it, optionally an agent on it; answers at once
+    // with an operation id. The runtime refuses a Jira or Azure DevOps / GitHub connection outside the caller's profile.
+    "/api/jira/development/start": (body, windowId) =>
+      runtime.startJiraDevelopment(
+        validateIpc(startJiraDevelopmentSchema, body, `POST ${START_JIRA_DEVELOPMENT_ROUTE}`),
+        windowId,
+      ),
+    // Jira issue writes run through the same preview -> confirm -> execute flow as on the desktop. They are routed
+    // here because the write safety (confirmation tokens, journal) is keyed by viewer and profile, and the runtime
+    // refuses a Jira connection outside the caller's profile. Each makes several Jira requests in a row, so they share
+    // one budget that answers before the mobile relay's 30 s cut-off.
+    "/api/jira/transitions": (body, windowId) => {
+      const { ref } = validateIpc(jiraTransitionLookupSchema, body, "POST /api/jira/transitions");
+      return withinJiraCallBudget(REMOTE_JIRA_CALL_BUDGET_MS, () => runtime.jiraListTransitions(ref, windowId));
+    },
+    "/api/jira/write/preview": (body, windowId) => {
+      const input = validateIpc(jiraWritePreviewSchema, body, "POST /api/jira/write/preview");
+      return withinJiraCallBudget(REMOTE_JIRA_CALL_BUDGET_MS, async () => {
+        if (input.action === "assign") return runtime.jiraPreviewAssign(input, windowId);
+        if (input.action === "transition") return runtime.jiraPreviewTransition(input, windowId);
+        if (input.action === "comment") return runtime.jiraPreviewComment(input, windowId);
+        if (input.action === "worklog") return runtime.jiraPreviewWorklog(input, windowId);
+        return runtime.jiraPreviewRemoteLink(input, windowId);
+      });
+    },
+    "/api/jira/write/execute": (body, windowId) => {
+      const input = validateIpc(jiraWriteExecuteSchema, body, "POST /api/jira/write/execute");
+      return withinJiraCallBudget(REMOTE_JIRA_CALL_BUDGET_MS, async () => {
+        if (input.action === "assign") return runtime.jiraExecuteAssign(input, windowId);
+        if (input.action === "transition") return runtime.jiraExecuteTransition(input, windowId);
+        if (input.action === "comment") return runtime.jiraExecuteComment(input, windowId);
+        if (input.action === "worklog") return runtime.jiraExecuteWorklog(input, windowId);
+        return runtime.jiraExecuteRemoteLink(input, windowId);
+      });
+    },
+    "/api/jira/write/history": (body, windowId) =>
+      runtime.jiraGetWriteHistory(validateIpc(jiraWriteHistorySchema, body, "POST /api/jira/write/history"), windowId),
+    "/api/jira/write/reconcile": (body, windowId) => {
+      const { journalId } = validateIpc(jiraWriteReconcileRemoteSchema, body, "POST /api/jira/write/reconcile");
+      return withinJiraCallBudget(REMOTE_JIRA_CALL_BUDGET_MS, () => runtime.jiraReconcileWrite(journalId, windowId));
+    },
     "/api/review/agent-prepare": (body, windowId) =>
       runtime.startReviewAgentPreparation(
         validateIpc(startReviewAgentPreparationSchema, body, "POST /api/review/agent-prepare"),
@@ -3503,7 +3779,14 @@ export async function startRemoteServer({
       fm.readFileContent(body.rootPath as string, body.relativePath as string),
     ),
     "/api/file/write": fileRoute("write", (body) =>
-      fm.writeFileContent(body.rootPath as string, body.relativePath as string, body.content as string),
+      fm.writeFileContent(
+        body.rootPath as string,
+        body.relativePath as string,
+        body.content as string,
+        typeof body.expectedMtimeMs === "number" && Number.isFinite(body.expectedMtimeMs)
+          ? body.expectedMtimeMs
+          : undefined,
+      ),
     ),
     "/api/file/create-file": fileRoute("create-file", (body) =>
       fm.createFile(body.rootPath as string, body.parentPath as string, body.name as string),
@@ -3553,8 +3836,13 @@ export async function startRemoteServer({
     // taken from the authoritative candidate and the stamp is credited in the
     // deciding viewer's context (V5 review, Fáze 1).
     "/api/task-recovery/resolve": (body, windowId) => runtime.resolveTaskRecovery(body.decisions, windowId),
-    "/api/azure/quickfix/create": (body, windowId) => runtime.azureQuickFixCreate(body, windowId),
-    "/api/github/quickfix/create": (body, windowId) => runtime.githubQuickFixCreate(body, windowId),
+    "/api/azure/quickfix/create": (body, windowId) =>
+      runtime.azureQuickFixCreate(validateIpc(quickFixCreateSchema, body, "POST /api/azure/quickfix/create"), windowId),
+    "/api/github/quickfix/create": (body, windowId) =>
+      runtime.githubQuickFixCreate(
+        validateIpc(githubQuickFixCreateSchema, body, "POST /api/github/quickfix/create"),
+        windowId,
+      ),
     "/api/task/create": (body, windowId) =>
       runtime.createTaskWorkspace(validateIpc(taskWorkspaceCreateSchema, body, "POST /api/task/create"), windowId),
     "/api/git/create-worktree": (body, windowId) => runtime.createWorktree(body, windowId),
@@ -3870,7 +4158,13 @@ export async function startRemoteServer({
       connectionProfile: (connectionId) => {
         const integrations = ((runtime.getPayload() as { appState?: { settings?: { integrations?: unknown } } })
           ?.appState?.settings?.integrations || {}) as Record<string, { connections?: Array<Record<string, unknown>> }>;
-        const all = [...(integrations.azureDevops?.connections || []), ...(integrations.github?.connections || [])];
+        const jiraConnections =
+          (integrations.jira as unknown as { connections?: Array<Record<string, unknown>> })?.connections || [];
+        const all = [
+          ...(integrations.azureDevops?.connections || []),
+          ...(integrations.github?.connections || []),
+          ...jiraConnections,
+        ];
         const found = all.find((c) => c.id === connectionId);
         return found ? String(found.profileId || "default") : undefined;
       },
@@ -4241,7 +4535,7 @@ export async function startRemoteServer({
                 json(response, 403, { error: "This phone cannot access that profile" });
                 return;
               }
-              await runtime.activateTargetForRemoteClient(apiSessionId, parsed.profileId, parsed.workspaceId);
+              await runtime.activateTargetForRemoteClient(apiSessionId, parsed.profileId, parsed.workspaceId, registry);
               if (mobileSession?.deviceId) mobileSession.profileId = parsed.profileId;
             } else if (request.method === "POST" && url.pathname === "/api/remote-client/profile/activate") {
               const profileId = String(body.profileId ?? "");
@@ -4253,15 +4547,16 @@ export async function startRemoteServer({
                 json(response, 403, { error: "This phone cannot access that profile" });
                 return;
               }
-              await runtime.activateProfileForRemoteClient(apiSessionId, profileId);
+              await runtime.activateProfileForRemoteClient(apiSessionId, profileId, registry);
               if (mobileSession?.deviceId) mobileSession.profileId = profileId;
             } else if (request.method === "POST" && url.pathname === "/api/remote-client/workspace/activate") {
-              await runtime.activateWorkspaceForRemoteClient(apiSessionId, String(body.workspaceId ?? ""));
+              await runtime.activateWorkspaceForRemoteClient(apiSessionId, String(body.workspaceId ?? ""), registry);
             } else if (request.method === "POST" && url.pathname === "/api/remote-client/session/activate") {
               await runtime.activateSessionForRemoteClient(
                 apiSessionId,
                 String(body.workspaceId ?? ""),
                 String(body.sessionId ?? ""),
+                registry,
               );
             } else {
               json(response, 404, { error: "Not found" });
@@ -4309,8 +4604,7 @@ export async function startRemoteServer({
             json(response, 200, await slotAwareHandler(body, viewerId));
           } catch (err) {
             const msg = errorMessage(err, "Slot operation failed");
-            const statusCode = refusalStatus(err, msg);
-            json(response, statusCode, { error: msg });
+            json(response, refusalStatus(err, msg), refusalBody(err, msg));
           }
           return;
         }
@@ -4639,7 +4933,7 @@ export async function startRemoteServer({
     }
 
     // ONE LIVE SESSION PER DEVICE ON THIS SERVER. A device that bootstraps again has abandoned the page
-    // the old session served, but the old one used to linger until its idle deadline (30 minutes) with
+    // the old session served, but the old one used to linger until its idle deadline (30 minutes then) with
     // its sockets open (2026-10-05). Ending it here, with the reason the page maps to `superseded`,
     // closes those sockets and keeps a stale cookie from outliving the one that replaced it.
     for (const [existingId, existing] of [...activeSessions]) {

@@ -133,6 +133,7 @@
         @rerun="onRerun"
         @cancel="onCancel"
         @download-log="onDownloadLog"
+        @start-agent="onStartAgent"
         @close="selectedKey = null"
       />
     </div>
@@ -158,6 +159,8 @@ import { useAppStore } from "../../../stores/app.js";
 import { useAzurePipelinesStore } from "../../../stores/azure-pipelines.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
 import { downloadTextFile } from "../../../app/helpers.js";
+import { openPathInFilesTab } from "../../../app/open-in-files-tab.js";
+import { pipelineRunBriefPath } from "../../../../electron/shared/pipeline-agent.js";
 import type { AzurePipelineSummary } from "../../../../electron/shared/types/azure-pipelines.js";
 
 interface PipelineRow extends AzurePipelineSummary {
@@ -571,6 +574,47 @@ async function onDownloadLog({ pipeline, run }: { pipeline: AzurePipelineSummary
   } finally {
     notify.dismissPersistentToast(toastId);
     downloadingRunId.value = null;
+  }
+}
+
+async function openRunBrief(workspaceId: string, buildId: number | string, profileId: string) {
+  const cwd = (appStore.payload?.appState?.workspaces || []).find((ws: { id: string }) => ws.id === workspaceId)?.cwd;
+  const relative = pipelineRunBriefPath(Number(buildId));
+  const result = cwd ? await openPathInFilesTab(workspaceId, `${cwd}/${relative}`) : "no-workspace";
+  if (result !== "opened")
+    notify.showError(
+      "Couldn't open the run brief",
+      `Open ${relative} in the agent workspace — it summarises the errors and lists the step logs next to it.`,
+      { profileId },
+    );
+}
+
+/**
+ * Start an agent on the run and open its workspace once it runs. The Notification Center reports the outcome either
+ * way (app-workspace-actions); this only adds the jump, and only while this window still shows that profile.
+ */
+async function onStartAgent({ pipeline, run }: { pipeline: AzurePipelineSummary; run: { id: number | string } }) {
+  if (store.isAgentStarting(pipeline.connectionId, run.id)) return;
+  const requestedProfileId = profileId.value;
+  try {
+    const outcome = await store.startAgent({
+      connectionId: pipeline.connectionId,
+      projectName: pipeline.project.name,
+      pipelineId: pipeline.id,
+      buildId: run.id,
+    });
+    const failed = "error" in outcome;
+    const workspaceId = String((!failed && outcome.result.workspaceId) || outcome.workspaceId || "");
+    // An agent that did not start still leaves the workspace it got as far as creating, and its error says to start
+    // the agent there — so open it either way. A failure earlier names a workspace that was never created.
+    const exists = (appStore.payload?.appState?.workspaces || []).some((ws: { id: string }) => ws.id === workspaceId);
+    if (failed && !exists) return;
+    if (workspaceId && outcome.profileId === requestedProfileId && profileId.value === requestedProfileId) {
+      await appStore.activateWorkspaceInGrid(workspaceId);
+      await openRunBrief(workspaceId, run.id, requestedProfileId);
+    }
+  } catch (err) {
+    notify.showError("Couldn't start the agent", err, { profileId: requestedProfileId });
   }
 }
 </script>

@@ -606,6 +606,22 @@ export class MobileManager extends EventEmitter {
     this.emit("mobile:device-revoked", { deviceId: remote.deviceId });
   }
 
+  async switchInstallationIdentity(deviceId: string, retiredDeviceId: string): Promise<void> {
+    if (this.running || this.stopPromise) throw new Error("Stop mobile before switching installation identity");
+    this.lifecycleGeneration += 1;
+    this.pairing.resetIdentity(deviceId);
+    for (const device of this.deviceStore.listDevices()) {
+      if (device.pairId === retiredDeviceId) {
+        await this.applyLocalRevocation(device.deviceId);
+        await this.deviceStore.clearCloudRevokePending(device.deviceId);
+      }
+    }
+    this.sessionKeyCache.clear();
+    this.syncedAccess.clear();
+    this.ownDeviceId = deviceId;
+    this.pairAuthorization = "unknown";
+  }
+
   stop(): Promise<void> {
     if (this.stopPromise) return this.stopPromise;
     if (!this.running) return Promise.resolve();
@@ -750,6 +766,7 @@ export class MobileManager extends EventEmitter {
    */
   private async flushCloudRevoke(deviceId: string): Promise<boolean> {
     const device = this.deviceStore.getDevice(deviceId);
+    if (device && device.pairId !== this.ownDeviceId) return false;
     const pending = device?.pendingCloudRevoke;
     if (!device || !pending) return true;
     try {
@@ -946,11 +963,14 @@ export class MobileManager extends EventEmitter {
     if (!this.getProfileIds || !this.running || this.now() < this.profileSyncRetryAt) return Promise.resolve();
     this.profileSyncRequested = true;
     if (this.profileSync) return this.profileSync;
+    const generation = this.lifecycleGeneration;
     this.profileSync = (async () => {
-      while (this.profileSyncRequested) {
+      while (this.profileSyncRequested && generation === this.lifecycleGeneration) {
         this.profileSyncRequested = false;
         const ids = this.getProfileIds!();
         for (const original of this.deviceStore.listUsableDevices()) {
+          if (generation !== this.lifecycleGeneration) return;
+          if (original.pairId !== this.ownDeviceId) continue;
           const excluded = original.excludedProfileIds ?? [];
           const allowed = ids.filter((id) => !excluded.includes(id));
           const changed = JSON.stringify(allowed) !== JSON.stringify(original.profileAllowlist);
@@ -965,6 +985,7 @@ export class MobileManager extends EventEmitter {
             }
           }
           const device = this.deviceStore.getDevice(original.deviceId);
+          if (generation !== this.lifecycleGeneration) return;
           if (!device || device.revoked || device.state !== "active") continue;
           const catalogSignature = this.getCatalogSignature?.(device.profileAllowlist);
           const signature = JSON.stringify([device.capabilities, device.profileAllowlist, catalogSignature]);
@@ -1158,6 +1179,7 @@ export class MobileManager extends EventEmitter {
    * desktop ever derives the expected value; the renderer is told whether one exists and no more.
    */
   async approveDevice(deviceId: string, enteredSas: string): Promise<{ ok: boolean; reason?: string }> {
+    const generation = this.lifecycleGeneration;
     const device = this.deviceStore.getDevice(deviceId);
     if (!device || device.revoked) return { ok: false, reason: "device-not-found" };
     if (device.state === "active") return { ok: true };
@@ -1183,6 +1205,7 @@ export class MobileManager extends EventEmitter {
     }
 
     await this.deviceStore.markUserApproved(deviceId);
+    if (generation !== this.lifecycleGeneration) return { ok: false, reason: "device-not-found" };
     const identity = this.pairing.getDesktopIdentity();
     let transcriptHash: string;
     try {
@@ -1204,9 +1227,11 @@ export class MobileManager extends EventEmitter {
     try {
       // Adoption may have persisted locally while its cloud attestation failed.
       const remote = await this.transport.getDevice(this.ownDeviceId, deviceId);
+      if (generation !== this.lifecycleGeneration) return { ok: false, reason: "device-not-found" };
       if (remote?.state === "claimed") {
         await this.transport.attestPairingKeyProof(this.ownDeviceId, deviceId, device.pairingId);
       }
+      if (generation !== this.lifecycleGeneration) return { ok: false, reason: "device-not-found" };
       await this.transport.approvePairing(this.ownDeviceId, deviceId, device.pairingId, transcriptHash);
     } catch (err) {
       // The cloud refused or could not be reached. The local record stays `userApproved`, which is NOT
@@ -1224,7 +1249,9 @@ export class MobileManager extends EventEmitter {
       return { ok: false, reason: code };
     }
 
+    if (generation !== this.lifecycleGeneration) return { ok: false, reason: "device-not-found" };
     await this.deviceStore.markActive(deviceId, this.now());
+    if (generation !== this.lifecycleGeneration) return { ok: false, reason: "device-not-found" };
     this.auditLogStore.logEntry({
       deviceId,
       pairId: this.ownDeviceId,
@@ -1533,6 +1560,7 @@ export class MobileManager extends EventEmitter {
   private static readonly AUDIT_BURST_WINDOW_MS = 2_000;
 
   private async handleIncomingEnvelope(envelope: EncryptedEnvelope): Promise<void> {
+    const generation = this.lifecycleGeneration;
     if (envelope.messageType !== "command") return;
 
     // A message this manager already answered (a replay after a restart, or the transport's own
@@ -1717,6 +1745,7 @@ export class MobileManager extends EventEmitter {
     // sender's queued commands server-side, so a command from a revoked device is normally gone from the
     // mailbox before this desktop reconnects at all.
     const remote = await this.transport.getDevice(envelope.pairId, device.deviceId).catch(() => null);
+    if (generation !== this.lifecycleGeneration) return;
     if (remote && (remote.revoked || remote.state !== "active")) {
       // THE WHOLE cleanup, not just the record and the keys (plan §3.9's "an authoritative re-read
       // must not mark the local record revoked without the same cleanup"). This path used to stop
@@ -1731,6 +1760,7 @@ export class MobileManager extends EventEmitter {
     // Exactly-one-desktop-executes guard — also protects against a duplicate
     // delivery of the same envelope (e.g. transport offline-queue replay).
     const claimed = await this.transport.claimCommand(envelope.pairId, command.commandId);
+    if (generation !== this.lifecycleGeneration) return;
     this.markHandled(envelope.messageId);
     if (!claimed) {
       this.auditBurst(
@@ -1749,7 +1779,9 @@ export class MobileManager extends EventEmitter {
 
     await this.deviceStore.touchLastSeen(device.deviceId, this.now());
 
+    if (generation !== this.lifecycleGeneration) return;
     const result = await this.commandDispatcher.dispatch(command, device);
+    if (generation !== this.lifecycleGeneration) return;
 
     // messageId IS the commandId: database.rules.json requires `messageId === $commandId` on the
     // results node, and the mobile watcher subscribes to results/{deviceId}/{commandId}. A fresh

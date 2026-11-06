@@ -20,7 +20,7 @@ function createContext() {
     baseCommit: "abcdef0123456789abcdef0123456789abcdef01",
     repository: {
       id: "repo-1",
-      name: "mhub",
+      name: "orders",
     },
     pullRequest: {
       id: 123,
@@ -687,6 +687,41 @@ describe("review bridge agent launch", () => {
   });
 });
 
+describe("agent launch working directory", () => {
+  test.each(["claude", "codex", "copilot", "opencode"])(
+    "starts the %s review agent in the tab's own folder and keeps the workspace in scope",
+    (command) => {
+      const launch = buildReviewAgentLaunch({
+        workspace: createWorkspace(),
+        panel: { id: command, command, cwd: "C:/reviews/pr-123/mdk-listener/src" },
+        context: createContext(),
+        processInfo: { platform: "linux", execPath: "/usr/bin/node" },
+      })!;
+      expect(launch.cwd).toBe("C:/reviews/pr-123/mdk-listener/src");
+    },
+  );
+
+  test("falls back to the workspace folder when the tab has none", () => {
+    const launch = buildReviewAgentLaunch({
+      workspace: createWorkspace(),
+      panel: { id: "claude", command: "claude" },
+      context: createContext(),
+      processInfo: { platform: "linux", execPath: "/usr/bin/node" },
+    })!;
+    expect(launch.cwd).toBe("C:/reviews/pr-123");
+  });
+
+  test("starts an MCP-enabled agent in the tab's own folder", () => {
+    const launch = buildAgentMcpLaunch({
+      workspace: { cwd: "/repo" },
+      panel: { id: "claude", command: "claude", cwd: "/repo/src" },
+      processInfo: { platform: "linux", execPath: "/usr/bin/node" },
+      internalMcp: { command: "/usr/bin/node", args: ["/app/internal-mcp-stdio-entry.js", "--internal-mcp"] },
+    })!;
+    expect(launch.cwd).toBe("/repo/src");
+  });
+});
+
 describe("internal MCP launch composition", () => {
   const internalMcp = { command: "/usr/bin/node", args: ["/app/internal-mcp-stdio-entry.js", "--internal-mcp"] };
   const sshMcp = { command: "/usr/bin/node", args: ["/app/ssh-mcp-stdio.js", "--ssh-mcp"] };
@@ -732,7 +767,7 @@ describe("internal MCP launch composition", () => {
       internalMcp,
     })!;
     expect(codex.args).toContain(
-      'mcp_servers.strideterm.env_vars=["STRIDETERM_INTERNAL_MCP_URL","STRIDETERM_INTERNAL_MCP_CAPABILITY"]',
+      'mcp_servers.strideterm.env_vars=["STRIDETERM_INTERNAL_MCP_URL","STRIDETERM_INTERNAL_MCP_CAPABILITY","STRIDETERM_INTERNAL_MCP_TASKS_ENABLED","STRIDETERM_INTERNAL_MCP_JIRA_ENABLED"]',
     );
     expect(codex.args).toContain(
       'mcp_servers.strideterm_ssh.env_vars=["STRIDETERM_SSH_MCP_URL","STRIDETERM_SSH_MCP_CAPABILITY"]',
@@ -754,6 +789,8 @@ describe("internal MCP launch composition", () => {
     const env = {
       STRIDETERM_INTERNAL_MCP_URL: "http://127.0.0.1:4455/internal-mcp",
       STRIDETERM_INTERNAL_MCP_CAPABILITY: "capability-value-xyz",
+      STRIDETERM_INTERNAL_MCP_TASKS_ENABLED: "0",
+      STRIDETERM_INTERNAL_MCP_JIRA_ENABLED: "1",
     };
     const electronInternalMcp = { ...internalMcp, env: { ELECTRON_RUN_AS_NODE: "1" } };
 
@@ -777,6 +814,8 @@ describe("internal MCP launch composition", () => {
           ELECTRON_RUN_AS_NODE: "1",
           STRIDETERM_INTERNAL_MCP_URL: "${STRIDETERM_INTERNAL_MCP_URL}",
           STRIDETERM_INTERNAL_MCP_CAPABILITY: "${STRIDETERM_INTERNAL_MCP_CAPABILITY}",
+          STRIDETERM_INTERNAL_MCP_TASKS_ENABLED: "${STRIDETERM_INTERNAL_MCP_TASKS_ENABLED}",
+          STRIDETERM_INTERNAL_MCP_JIRA_ENABLED: "${STRIDETERM_INTERNAL_MCP_JIRA_ENABLED}",
         },
       });
       expect(launch.args.join(" ")).not.toContain("capability-value-xyz");
@@ -909,6 +948,8 @@ describe("internal MCP launch composition", () => {
     const internalMcpEnv = {
       STRIDETERM_INTERNAL_MCP_URL: "http://127.0.0.1:43112/internal-mcp",
       STRIDETERM_INTERNAL_MCP_CAPABILITY: "internal-capability-secret",
+      STRIDETERM_INTERNAL_MCP_TASKS_ENABLED: "1",
+      STRIDETERM_INTERNAL_MCP_JIRA_ENABLED: "0",
     };
     const launch = buildReviewAgentLaunch({
       workspace: createWorkspace(),
@@ -1055,4 +1096,57 @@ describe("review Git capability in the agent launch", () => {
       }
     },
   );
+});
+
+describe("an interactive agent started with its first message", () => {
+  const prompt = "The Azure Pipelines run orders-release 20261103.1 did not succeed. Read BRIEF.md first.";
+  const launchFor = (command: string, extra: Record<string, unknown> = {}) =>
+    buildAgentMcpLaunch({
+      workspace: { cwd: "/work/pipeline-fix" },
+      panel: { id: "agent", command },
+      processInfo: { platform: "linux", execPath: "/usr/bin/node" },
+      initialPrompt: prompt,
+      ...extra,
+    })!;
+
+  test("each agent gets the prompt the way its CLI starts an interactive session with one", () => {
+    expect(launchFor("claude --model sonnet").args).toEqual([prompt, "--model", "sonnet"]);
+    expect(launchFor("codex -m gpt-5").args).toEqual(["-m", "gpt-5", prompt]);
+    expect(launchFor("copilot").args).toEqual(["-i", prompt]);
+    expect(launchFor("opencode").args).toEqual(["--prompt", prompt]);
+  });
+
+  test("with no MCP server to add, nothing but the prompt is added", () => {
+    for (const command of ["claude", "copilot", "opencode"]) {
+      const launch = launchFor(command);
+      expect(launch.args.join(" ")).not.toContain("mcp");
+      expect(launch.env?.OPENCODE_CONFIG_CONTENT).toBeUndefined();
+    }
+  });
+
+  test("a bare executable pinned for the agent is still found on the Windows PATH", () => {
+    const resolved = "C:/Users/test/.local/bin/claude.exe";
+    const launch = buildAgentMcpLaunch({
+      workspace: { cwd: "C:/work/pipeline-fix" },
+      panel: { id: "agent", command: "claude --dangerously-skip-permissions" },
+      processInfo: {
+        platform: "win32",
+        commandLookup: { claude: "claude" },
+        pathEnv: "C:/Users/test/.local/bin",
+        pathExists: (candidate: string) => candidate.replaceAll("\\", "/") === resolved,
+      },
+      initialPrompt: prompt,
+    })!;
+    expect(launch.file.replaceAll("\\", "/")).toBe(resolved);
+    expect(launch.args[0]).toBe(prompt);
+  });
+
+  test("Claude's prompt stays clear of a --mcp-config that takes several values", () => {
+    const launch = launchFor("claude --mcp-config .mcp.json", {
+      sshMcp: { command: "/usr/bin/node", args: ["/app/ssh-mcp-stdio.js", "--ssh-mcp"] },
+    });
+    expect(launch.args[0]).toBe(prompt);
+    const configIndex = launch.args.indexOf("--mcp-config");
+    expect(launch.args.slice(configIndex + 1)).not.toContain(prompt);
+  });
 });

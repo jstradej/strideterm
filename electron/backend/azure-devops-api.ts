@@ -231,6 +231,60 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
     return { id: id.trim() };
   }
 
+  function identityBaseUrl(connection: AzureConnection): string {
+    const orgUrl = trimTrailingSlash(connection.orgUrl);
+    try {
+      const parsed = new URL(orgUrl);
+      const host = parsed.hostname.toLowerCase();
+      if (host === "dev.azure.com") {
+        const org = parsed.pathname.split("/").filter(Boolean)[0];
+        if (org) return `${parsed.protocol}//vssps.dev.azure.com/${org}`;
+      }
+      if (host.endsWith(".visualstudio.com") && !host.includes(".vssps.")) {
+        const org = host.slice(0, -".visualstudio.com".length);
+        return `${parsed.protocol}//${org}.vssps.visualstudio.com`;
+      }
+    } catch {
+      // not a parseable URL: fall through to the org URL itself
+    }
+    return orgUrl;
+  }
+
+  /** Ids of every group/team the user belongs to, transitively. */
+  async function getUserGroupIds(connection: AzureConnection, token: string, userId: string): Promise<string[]> {
+    const base = identityBaseUrl(connection);
+    const options = { login: "", token };
+    const membershipUrl = (queryMembership: string) =>
+      `${base}/_apis/identities?identityIds=${encodeURIComponent(userId)}&queryMembership=${queryMembership}&api-version=${API_VERSION}`;
+    type IdentityList = { value?: Array<{ memberOf?: unknown[] }> };
+    let user: IdentityList;
+    try {
+      user = (await requestJson(membershipUrl("ExpandedUp"), options)) as IdentityList;
+    } catch (error) {
+      if (!/request failed \(400\)/.test((error as Error).message || "")) throw error;
+      user = (await requestJson(membershipUrl("Expanded"), options)) as IdentityList;
+    }
+    const descriptors = (user.value?.[0]?.memberOf || [])
+      .map((entry) => {
+        if (typeof entry === "string") return entry.trim();
+        const { identityType, identifier } = (entry || {}) as { identityType?: string; identifier?: string };
+        return identityType && identifier ? `${identityType};${identifier}` : "";
+      })
+      .filter(Boolean);
+    const ids = new Set<string>();
+    for (let index = 0; index < descriptors.length; index += 25) {
+      const chunk = descriptors.slice(index, index + 25);
+      const resolved = (await requestJson(
+        `${base}/_apis/identities?descriptors=${encodeURIComponent(chunk.join(","))}&api-version=${API_VERSION}`,
+        options,
+      )) as { value?: Array<{ id?: string }> };
+      for (const identity of resolved.value || []) {
+        if (typeof identity?.id === "string" && identity.id.trim()) ids.add(identity.id.trim());
+      }
+    }
+    return [...ids];
+  }
+
   async function listPullRequestsByProject(connection: AzureConnection, token: string, projectName: string) {
     const result = (await requestJson(buildProjectPullRequestsUrl(connection, projectName), {
       login: connection.login,
@@ -295,6 +349,19 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
       login: connection.login,
       token,
     })) as { value?: unknown[] };
+    return result.value || [];
+  }
+
+  /** The files Azure's own merge of the PR conflicts in (unresolved only). */
+  async function listPullRequestConflicts(
+    connection: AzureConnection,
+    token: string,
+    projectName: string,
+    repositoryId: string,
+    pullRequestId: string | number,
+  ) {
+    const url = `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/git/repositories/${repositoryId}/pullRequests/${pullRequestId}/conflicts?excludeResolved=true&$top=1000&api-version=${API_VERSION}`;
+    const result = (await requestJson(url, { login: connection.login, token })) as { value?: unknown[] };
     return result.value || [];
   }
 
@@ -754,11 +821,13 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
     reEvaluatePolicy,
     listProjects,
     getAuthenticatedUser,
+    getUserGroupIds,
     listPullRequestsByProject,
     getPullRequestById,
     updatePullRequest,
     approvePullRequest,
     listThreads,
+    listPullRequestConflicts,
     listPullRequestStatuses,
     listPolicyEvaluations,
     listIterationChanges,

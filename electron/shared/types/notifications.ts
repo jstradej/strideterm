@@ -89,6 +89,9 @@ export interface ExternalNotificationEvent {
   /** Pull request identity and state for provider-specific native notification detail. */
   provider?: MobileReviewProvider;
   connectionId?: string;
+  /** Source-safe Jira notification identity; issue content and credentials are never included. */
+  issueId?: string;
+  issueKey?: string;
   prKey?: string;
   reviewWorkspaceId?: string;
   commentTarget?: ReviewNotificationCommentTarget;

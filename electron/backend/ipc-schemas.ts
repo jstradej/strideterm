@@ -1,6 +1,13 @@
 import { z } from "zod";
 import { reviewGitConfirmationSchema, reviewGitOperationKindSchema } from "../shared/review-git-events.js";
 import { EFFORT_LEVELS } from "../shared/agent-provider-catalog.js";
+import { JIRA_SMART_FILTER_IDS } from "../shared/jira-smart-filters.js";
+import {
+  JIRA_CONNECTION_HEALTH_STATES,
+  JIRA_REQUEST_ERROR_CODES,
+  JIRA_SAFE_ERROR_CODES,
+  JIRA_WRITE_SAFE_CODE_PATTERN,
+} from "../shared/jira-error-codes.js";
 import { reviewPrActionSchema, reviewPrActionOptionsSchema } from "../shared/review-pr-actions.js";
 export { remoteSessionRevokeSchema } from "../shared/remote-access.js";
 
@@ -93,6 +100,29 @@ export const workspaceSchema = z
     kind: z.string().optional(),
     internalMcpEnabled: z.boolean().optional(),
     sshMcpEnabled: z.boolean().optional(),
+    jiraMcpEnabled: z.boolean().optional(),
+    jiraMcpCommentDrafts: z
+      .array(
+        z
+          .object({
+            id: nonEmptyString.max(128),
+            ref: z
+              .object({
+                provider: z.literal("jira"),
+                connectionId: nonEmptyString.max(128),
+                issueId: nonEmptyString.max(128),
+                issueKey: nonEmptyString.max(128),
+              })
+              .strict(),
+            body: z.string().min(1).max(32_000),
+            sourceWorkspaceId: nonEmptyString.max(128),
+            sourceTaskId: nonEmptyString.max(128).optional(),
+            createdAt: z.string().max(64),
+          })
+          .strict(),
+      )
+      .max(100)
+      .optional(),
     panels: z
       .array(
         z
@@ -104,6 +134,7 @@ export const workspaceSchema = z
             shell: z.boolean().optional(),
             startup: z.string().optional(),
             sshMcpEnabled: z.boolean().optional(),
+            hostedBy: z.string().optional(),
             launch: panelLaunchSchema,
           })
           .passthrough(),
@@ -167,6 +198,970 @@ export const azureConnectionSchema = z
   })
   .passthrough();
 export type AzureConnectionPayload = z.infer<typeof azureConnectionSchema>;
+
+export const jiraConnectionIdSchema = nonEmptyString;
+export const jiraConnectionSaveSchema = z.object({
+  id: z.string().min(1).optional(),
+  label: z.string().trim().min(1).max(80),
+  deployment: z.enum(["cloud", "data-center"]),
+  webUrl: z.string().url(),
+  apiBaseUrl: z.string().url(),
+  email: z.string().trim().email().max(254).optional(),
+  apiToken: z.string().max(4096).optional(),
+  pat: z.string().optional(),
+  authMode: z.enum(["pat", "apim"]).optional(),
+  subscriptionKey: z.string().max(4096).optional(),
+  subscriptionHeaderName: z.string().trim().min(1).max(128).optional(),
+  clientCertificatePath: z.string().max(4096).optional(),
+  clientCertificatePassword: z.string().max(4096).optional(),
+  clearClientCertificatePassword: z.boolean().optional(),
+  profileId: z.string().optional(),
+  accountPurpose: z.enum(["personal", "technical"]).optional(),
+});
+export const jiraConnectionTestSchema = jiraConnectionSaveSchema;
+export const jiraSearchSchema = z.object({
+  connectionId: nonEmptyString,
+  jql: z.string().max(2000).default(""),
+  limit: z.number().int().min(1).max(100).optional(),
+  cursor: z.string().max(2048).optional(),
+  cacheOnly: z.boolean().optional(),
+  forceRefresh: z.boolean().optional(),
+  refreshInBackground: z.boolean().optional(),
+  projectKeys: z
+    .array(
+      z
+        .string()
+        .trim()
+        .toUpperCase()
+        .regex(/^[A-Z][A-Z0-9_]{0,19}$/),
+    )
+    .max(50)
+    .optional(),
+});
+export const jiraBoardSearchSchema = z.object({
+  connectionId: nonEmptyString,
+  query: z.string().trim().max(255).optional(),
+  limit: z.number().int().min(1).max(100).default(50),
+  cursor: z
+    .string()
+    .regex(/^\d{1,8}$/)
+    .optional(),
+  projectKeys: z
+    .array(
+      z
+        .string()
+        .trim()
+        .toUpperCase()
+        .regex(/^[A-Z][A-Z0-9_]{0,19}$/),
+    )
+    .max(50)
+    .optional(),
+});
+export const jiraConnectionMetadataSchema = z.object({
+  connectionId: nonEmptyString,
+  label: z.string().trim().min(1).max(80),
+  accountPurpose: z.enum(["personal", "technical"]),
+  issueKeyPrefixes: z
+    .array(
+      z
+        .string()
+        .trim()
+        .toUpperCase()
+        .regex(/^[A-Z][A-Z0-9_]{0,19}$/),
+    )
+    .max(50),
+  defaultJql: z.string().trim().max(2000),
+  projectKeys: z
+    .array(
+      z
+        .string()
+        .trim()
+        .toUpperCase()
+        .regex(/^[A-Z][A-Z0-9_]{0,19}$/),
+    )
+    .max(100),
+  pollSeconds: z.number().int().min(60).max(3600),
+});
+export const jiraRepoBindingPreferenceQuerySchema = z.object({
+  connectionId: nonEmptyString,
+  projectKey: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .regex(/^[A-Z][A-Z0-9_]{0,19}$/),
+});
+export const jiraSavedFilterLookupSchema = z.object({
+  connectionId: nonEmptyString,
+  filterId: z.string().regex(/^\d{1,20}$/),
+});
+export const jiraRepoBindingPreferenceDtoSchema = z
+  .object({
+    profileId: nonEmptyString.max(128),
+    jiraConnectionId: nonEmptyString.max(128),
+    projectKey: z.string().regex(/^[A-Z][A-Z0-9_]{0,19}$/),
+    provider: z.enum(["azure", "github"]),
+    connectionId: nonEmptyString.max(128),
+    repoId: nonEmptyString.max(255),
+    projectId: z.string().max(255).optional(),
+    repoName: z.string().max(255),
+    remoteUrl: z.string().max(2048),
+    baseBranch: z.string().max(255),
+  })
+  .strict();
+export const jiraIssueLookupSchema = z.object({
+  connectionId: nonEmptyString,
+  issueId: z.string().min(1).max(128),
+  cacheOnly: z.boolean().optional(),
+  forceRefresh: z.boolean().optional(),
+  refreshInBackground: z.boolean().optional(),
+});
+export const jiraAttachmentLookupSchema = z
+  .object({
+    connectionId: nonEmptyString.max(128),
+    issueId: z
+      .string()
+      .min(1)
+      .max(128)
+      .regex(/^[A-Za-z0-9_-]+$/),
+    attachmentId: z.string().min(1).max(32).regex(/^\d+$/),
+  })
+  .strict();
+export const jiraAttachmentUploadSchema = z
+  .object({
+    connectionId: nonEmptyString.max(128),
+    issueId: z
+      .string()
+      .min(1)
+      .max(128)
+      .regex(/^[A-Za-z0-9_-]+$/),
+  })
+  .strict();
+export const jiraRemoteCommentsSchema = z.object({ connectionId: nonEmptyString, issueId: z.string().min(1).max(128) });
+export const jiraBoardViewSchema = z.object({
+  connectionId: nonEmptyString,
+  boardId: z.number().int().min(1),
+  mode: z.enum(["issues", "backlog", "sprints"]).optional(),
+  cursor: z
+    .string()
+    .regex(/^\d{1,5}$/)
+    .optional(),
+  sprintId: z.number().int().positive().optional(),
+  quickFilterIds: z.array(z.number().int().positive()).max(50).optional(),
+  assignee: z
+    .discriminatedUnion("kind", [
+      z.object({ kind: z.literal("user"), id: nonEmptyString.max(255) }).strict(),
+      z.object({ kind: z.literal("unassigned") }).strict(),
+    ])
+    .optional(),
+  doneWithinDays: z.union([z.literal(7), z.literal(14), z.literal(30), z.literal(90)]).optional(),
+  cacheOnly: z.boolean().optional(),
+  forceRefresh: z.boolean().optional(),
+  refreshInBackground: z.boolean().optional(),
+  projectKeys: z
+    .array(
+      z
+        .string()
+        .trim()
+        .toUpperCase()
+        .regex(/^[A-Z][A-Z0-9_]{0,19}$/),
+    )
+    .max(50)
+    .optional(),
+});
+export const jiraBoardQuickFiltersSchema = z.object({
+  connectionId: nonEmptyString,
+  boardId: z.number().int().positive(),
+  limit: z.number().int().min(1).max(100).optional(),
+  cursor: z
+    .string()
+    .regex(/^\d{1,5}$/)
+    .optional(),
+  cacheOnly: z.boolean().optional(),
+  forceRefresh: z.boolean().optional(),
+  refreshInBackground: z.boolean().optional(),
+});
+export const jiraUserSearchSchema = z.object({
+  connectionId: nonEmptyString,
+  query: z.string().trim().min(1).max(100),
+  limit: z.number().int().min(1).max(50).optional(),
+});
+const jiraWriteIssueRefSchema = z.object({
+  connectionId: nonEmptyString,
+  issueId: nonEmptyString,
+  issueKey: nonEmptyString,
+});
+export const quickFixJiraIssueRefSchema = jiraWriteIssueRefSchema.strict();
+export const jiraRecentListSchema = z
+  .object({ connectionId: nonEmptyString, limit: z.number().int().min(1).max(20).optional() })
+  .strict();
+export const jiraWorkspaceViewsGetSchema = z.object({ workspaceId: nonEmptyString }).strict();
+export const jiraIssuePopoutSchema = z
+  .object({
+    workspaceId: nonEmptyString,
+    ref: jiraWriteIssueRefSchema.strict(),
+    summary: z.string().max(500).optional(),
+  })
+  .strict();
+export type JiraIssuePopoutPayload = z.infer<typeof jiraIssuePopoutSchema>;
+const jiraProjectKeysSchema = z
+  .array(
+    z
+      .string()
+      .trim()
+      .toUpperCase()
+      .regex(/^[A-Z][A-Z0-9_]{0,19}$/),
+  )
+  .max(50);
+export const jiraWorkspaceProjectScopeGetSchema = z
+  .object({ workspaceId: nonEmptyString, connectionId: nonEmptyString })
+  .strict();
+export const jiraWorkspaceProjectScopeSetSchema = z
+  .object({ workspaceId: nonEmptyString, connectionId: nonEmptyString, projectKeys: jiraProjectKeysSchema.nullable() })
+  .strict();
+export const jiraWorkspaceProjectScopeDtoSchema = jiraProjectKeysSchema.nullable();
+export const jiraWorkspaceViewInputSchema = z
+  .object({
+    viewId: nonEmptyString.max(128).optional(),
+    kind: z.enum(["board", "personal"]),
+    connectionId: nonEmptyString.max(256),
+    boardId: z.number().int().positive().nullable().optional(),
+    boardName: z.string().trim().max(200).optional(),
+    title: z.string().trim().max(200).optional(),
+    mode: z.enum(["issues", "backlog", "sprints"]).optional(),
+    sprintId: z.number().int().positive().nullable().optional(),
+    quickFilterIds: z.array(z.number().int().positive()).max(50).optional(),
+    assignee: z
+      .discriminatedUnion("kind", [
+        z
+          .object({ kind: z.literal("user"), id: nonEmptyString.max(255), label: z.string().max(256).optional() })
+          .strict(),
+        z.object({ kind: z.literal("unassigned") }).strict(),
+      ])
+      .nullable()
+      .optional(),
+    doneWithinDays: z
+      .union([z.literal(7), z.literal(14), z.literal(30), z.literal(90)])
+      .nullable()
+      .optional(),
+    presentation: z.enum(["board", "list"]).optional(),
+    statusFilter: z.string().max(200).nullable().optional(),
+    personalScope: z.enum(["open", "all"]).optional(),
+    projectKeys: jiraProjectKeysSchema.nullable().optional(),
+  })
+  .strict()
+  .superRefine((view, ctx) => {
+    if (view.kind === "board" && !view.boardId)
+      ctx.addIssue({ code: "custom", path: ["boardId"], message: "A board view requires a board." });
+    if (view.kind === "personal" && view.boardId != null)
+      ctx.addIssue({ code: "custom", path: ["boardId"], message: "A personal view cannot target a team board." });
+    if (view.kind === "board" && view.personalScope !== undefined)
+      ctx.addIssue({ code: "custom", path: ["personalScope"], message: "Only personal views have an issue scope." });
+  });
+export const jiraWorkspaceViewSaveSchema = z
+  .object({ workspaceId: nonEmptyString, view: jiraWorkspaceViewInputSchema })
+  .strict();
+export const jiraWorkspaceViewTargetSchema = z
+  .object({ workspaceId: nonEmptyString, viewId: nonEmptyString.max(128) })
+  .strict();
+export const jiraWorkspaceViewRefreshSchema = z
+  .object({ workspaceId: nonEmptyString, viewId: nonEmptyString.max(128).optional() })
+  .strict();
+export const jiraWorkspaceViewRenameSchema = z
+  .object({ workspaceId: nonEmptyString, viewId: nonEmptyString.max(128), title: z.string().trim().min(1).max(200) })
+  .strict();
+export const jiraWorkspaceViewReorderSchema = z
+  .object({ workspaceId: nonEmptyString, viewIds: z.array(nonEmptyString.max(128)).max(50) })
+  .strict()
+  .refine(({ viewIds }) => new Set(viewIds).size === viewIds.length, "View order cannot contain duplicates.");
+export const jiraRememberSearchSchema = z
+  .object({
+    connectionId: nonEmptyString,
+    jql: z.string().trim().min(1).max(2000),
+    label: z.string().trim().max(200).optional(),
+  })
+  .strict();
+export const jiraRememberIssueViewedSchema = z
+  .object({ ref: jiraWriteIssueRefSchema.extend({ provider: z.literal("jira") }) })
+  .strict();
+export const jiraWorkspaceIssueLinkSchema = z.object({ workspaceId: nonEmptyString, ref: jiraWriteIssueRefSchema });
+export const jiraCommentDraftSaveSchema = z.object({
+  sourceWorkspaceId: nonEmptyString,
+  ref: jiraWriteIssueRefSchema,
+  body: z.string().trim().min(1).max(32_000),
+});
+export const jiraCommentDraftDeleteSchema = z.object({ sourceWorkspaceId: nonEmptyString, draftId: nonEmptyString });
+export const jiraTransitionLookupSchema = z.object({ ref: jiraWriteIssueRefSchema });
+export const jiraCommentsLookupSchema = z.object({ ref: jiraWriteIssueRefSchema });
+export const jiraOwnIdentitySchema = z
+  .object({
+    connectionId: nonEmptyString,
+    userId: z.string().trim().min(1).max(255),
+  })
+  .strict();
+export const jiraCommentAttributionSchema = z
+  .object({
+    enabled: z.boolean(),
+    text: z.string().max(500),
+    position: z.enum(["before", "after"]),
+  })
+  .strict();
+export const jiraAgentAttachmentLimitsSchema = z
+  .object({
+    maxFiles: z.number().int().min(1).max(500),
+    maxMegabytes: z.number().int().min(1).max(500),
+  })
+  .strict();
+export const jiraOwnIssuesQuerySchema = z.object({
+  connectionId: nonEmptyString,
+  baseJql: z.string().max(2000).optional(),
+  personalScope: z.enum(["open", "all"]).optional(),
+  projectKeys: z
+    .array(
+      z
+        .string()
+        .trim()
+        .toUpperCase()
+        .regex(/^[A-Z][A-Z0-9_]{0,19}$/),
+    )
+    .max(50)
+    .optional(),
+  smartFilters: z.array(z.enum(JIRA_SMART_FILTER_IDS)).max(JIRA_SMART_FILTER_IDS.length).optional(),
+});
+export const jiraWriteHistorySchema = z.object({
+  connectionId: nonEmptyString.optional(),
+  issueId: z.string().min(1).max(128).optional(),
+  limit: z.number().int().min(1).max(100).optional(),
+});
+export const jiraWriteReconcileSchema = nonEmptyString;
+export const jiraWriteReconcileRemoteSchema = z.object({ journalId: nonEmptyString }).strict();
+export const jiraQuerySaveSchema = z.object({
+  id: z.string().min(1).optional(),
+  connectionId: nonEmptyString,
+  name: z.string().trim().min(1).max(100),
+  jql: z.string().max(2000),
+  notificationsEnabled: z.boolean().optional(),
+});
+export const jiraQueryDeleteSchema = nonEmptyString;
+export const jiraCacheMetadataDtoSchema = z
+  .object({
+    source: z.enum(["cache", "network"]),
+    fetchedAt: z.number().finite(),
+    stale: z.boolean(),
+    refreshError: z
+      .object({
+        code: z.enum(JIRA_REQUEST_ERROR_CODES),
+        message: z.string().max(240),
+        retryAfterMs: z.number().int().min(0).max(300_000).optional(),
+      })
+      .optional(),
+  })
+  .strict();
+export const jiraIssueDtoSchema = z.object({
+  ref: z.object({
+    provider: z.literal("jira"),
+    connectionId: nonEmptyString,
+    issueId: nonEmptyString,
+    issueKey: nonEmptyString,
+  }),
+  summary: z.string().max(32_000),
+  status: z.string().max(256),
+  statusId: z.string().max(128).optional(),
+  statusCategory: z.enum(["new", "indeterminate", "done"]).optional(),
+  issueType: z.string().max(256),
+  projectKey: z.string().max(128),
+  updated: z.string().max(128),
+  assignee: z.string().max(256).optional(),
+  assigneeRef: z
+    .discriminatedUnion("kind", [
+      z
+        .object({ kind: z.literal("cloud"), accountId: nonEmptyString.max(255), displayName: z.string().max(256) })
+        .strict(),
+      z
+        .object({
+          kind: z.literal("data-center"),
+          key: z.string().max(255).optional(),
+          name: nonEmptyString.max(255),
+          displayName: z.string().max(256),
+        })
+        .strict(),
+    ])
+    .optional(),
+  priority: z.string().max(256).optional(),
+  reporter: z.string().max(256).optional(),
+  created: z.string().max(128).optional(),
+  resolution: z.string().max(256).optional(),
+  labels: z.array(z.string().max(256)).max(100).optional(),
+  components: z.array(z.string().max(256)).max(100).optional(),
+  versions: z.array(z.string().max(256)).max(100).optional(),
+  issueLinks: z
+    .array(
+      z
+        .object({
+          type: z.string().max(256),
+          direction: z.enum(["inward", "outward"]),
+          issueKey: z.string().max(128),
+          summary: z.string().max(32_000).optional(),
+          status: z.string().max(256).optional(),
+        })
+        .strict(),
+    )
+    .max(100)
+    .optional(),
+  url: z.string().url(),
+  description: z.string().max(32_000).optional(),
+  descriptionMarkdown: z.string().max(32_000).optional(),
+  descriptionHtml: z.string().max(200_000).optional(),
+  cache: jiraCacheMetadataDtoSchema.optional(),
+  attachments: z
+    .array(
+      z
+        .object({
+          id: z.string().regex(/^\d{1,32}$/),
+          fileName: z.string().min(1).max(128),
+          mediaType: z.string().max(128),
+          sizeBytes: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+        })
+        .strict(),
+    )
+    .max(100)
+    .optional(),
+});
+export const jiraRecentSearchesDtoSchema = z
+  .array(
+    z
+      .object({
+        jql: z.string().max(2000),
+        label: z.string().max(200).optional(),
+        usedAt: z.number().int().nonnegative(),
+      })
+      .strict(),
+  )
+  .max(20);
+export const jiraRecentIssuesDtoSchema = z
+  .array(
+    z
+      .object({
+        ref: jiraIssueDtoSchema.shape.ref,
+        summary: z.string().max(32_000),
+        status: z.string().max(256),
+        statusCategory: z.enum(["new", "indeterminate", "done"]).optional(),
+        issueType: z.string().max(256).optional(),
+        viewedAt: z.number().int().nonnegative(),
+      })
+      .strict(),
+  )
+  .max(20);
+export const jiraSearchResultDtoSchema = z.object({
+  issues: z.array(jiraIssueDtoSchema).max(100),
+  hasMore: z.boolean(),
+  nextCursor: z.string().max(2048).optional(),
+  truncated: z.boolean(),
+  cache: jiraCacheMetadataDtoSchema.optional(),
+});
+export const jiraCommentDtoSchema = z.object({
+  id: z.string().max(128),
+  author: z.string().max(256),
+  created: z.string().max(128),
+  updated: z.string().max(128).optional(),
+  body: z.string().max(32_000),
+  bodyHtml: z.string().max(200_000).optional(),
+});
+export const jiraTransitionDtoSchema = z.object({
+  id: z.string().max(128),
+  name: z.string().max(500),
+  to: z.string().max(500),
+  requiredFields: z
+    .array(
+      z
+        .object({
+          id: z.string(),
+          name: z.string(),
+          type: z.string(),
+          required: z.boolean(),
+          supported: z.boolean(),
+          allowedValues: z.array(z.object({ value: z.string(), label: z.string() })).optional(),
+        })
+        .strict(),
+    )
+    .max(100),
+});
+export const jiraBoardDtoSchema = z.object({
+  id: z.number().int().positive(),
+  name: z.string(),
+  type: z.enum(["scrum", "kanban"]),
+  location: z.object({ projectKey: z.string().optional(), projectName: z.string().optional() }).optional(),
+});
+export const jiraBoardSearchResultDtoSchema = z.object({
+  boards: z.array(jiraBoardDtoSchema).max(100),
+  hasMore: z.boolean(),
+  nextCursor: z.string().max(8).optional(),
+  truncated: z.boolean(),
+});
+export const jiraIdentityDtoSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("cloud"), accountId: nonEmptyString.max(255), displayName: z.string().max(256) }).strict(),
+  z
+    .object({
+      kind: z.literal("data-center"),
+      key: z.string().max(255).optional(),
+      name: nonEmptyString.max(255),
+      displayName: z.string().max(256),
+    })
+    .strict(),
+]);
+export const jiraUserSearchDtoSchema = z.array(jiraIdentityDtoSchema).max(50);
+export const jiraConnectionHealthDtoSchema = z
+  .object({
+    state: z.enum(JIRA_CONNECTION_HEALTH_STATES),
+    checkedAt: z.string().max(64),
+    retryAfterMs: z.number().int().min(0).max(300_000).optional(),
+  })
+  .strict();
+export const jiraConnectionDtoSchema = z
+  .object({
+    id: nonEmptyString.max(128),
+    profileId: nonEmptyString.max(128),
+    label: z.string().max(80),
+    issueKeyPrefixes: z
+      .array(z.string().regex(/^[A-Z][A-Z0-9_]{0,19}$/))
+      .max(50)
+      .default([]),
+    defaultJql: z.string().max(2000).default(""),
+    projectKeys: z
+      .array(z.string().regex(/^[A-Z][A-Z0-9_]{0,19}$/))
+      .max(100)
+      .default([]),
+    pollSeconds: z.number().int().min(60).max(3600).default(120),
+    enabled: z.boolean(),
+    deployment: z.enum(["cloud", "data-center"]),
+    webUrl: z.string().url().max(2048),
+    apiBaseUrl: z.string().max(2048),
+    cloudId: z.string().max(255).optional(),
+    subscriptionHeaderName: z.string().max(128).optional(),
+    clientCertificatePath: z.string().max(4096).optional(),
+    auth: z
+      .object({ kind: z.enum(["cloud-api-token", "dc-pat", "dc-apim"]), email: z.string().max(254).optional() })
+      .strict(),
+    accountPurpose: z.enum(["personal", "technical"]),
+    verifiedIdentity: jiraIdentityDtoSchema.optional(),
+    ownIdentity: jiraIdentityDtoSchema.optional(),
+    status: z.enum(["connected", "needs-login", "unavailable"]).optional(),
+    health: jiraConnectionHealthDtoSchema.optional(),
+  })
+  .strict();
+export const jiraSavedQueryDtoSchema = z
+  .object({
+    id: nonEmptyString.max(128),
+    connectionId: nonEmptyString.max(128),
+    profileId: nonEmptyString.max(128),
+    name: z.string().max(100),
+    jql: z.string().max(2000),
+    notificationsEnabled: z.boolean(),
+    updatedAt: z.string().max(64),
+  })
+  .strict();
+export const jiraSavedFilterDtoSchema = z
+  .object({ id: z.string().regex(/^\d{1,20}$/), name: z.string().max(100), jql: z.string().max(2000).optional() })
+  .strict();
+export const jiraCommentDraftDtoSchema = z
+  .object({
+    id: nonEmptyString.max(128),
+    ref: z
+      .object({
+        provider: z.literal("jira"),
+        connectionId: nonEmptyString.max(128),
+        issueId: nonEmptyString.max(128),
+        issueKey: nonEmptyString.max(128),
+      })
+      .strict(),
+    body: z.string().min(1).max(32_000),
+    sourceWorkspaceId: nonEmptyString.max(128),
+    sourceTaskId: nonEmptyString.max(128).optional(),
+    createdAt: z.string().max(64),
+  })
+  .strict();
+export const jiraProjectDtoSchema = z
+  .object({ id: nonEmptyString.max(128), key: nonEmptyString.max(128), name: z.string().max(500) })
+  .strict();
+export const jiraMcpConnectionDtoSchema = z
+  .object({
+    id: nonEmptyString.max(128),
+    label: z.string().max(80),
+    deployment: z.enum(["cloud", "data-center"]),
+    enabled: z.literal(true),
+    accountPurpose: z.enum(["personal", "technical"]),
+  })
+  .strict();
+export const jiraOwnIssuesQueryDtoSchema = z
+  .object({ jql: z.string().max(2000), identityLabel: z.string().max(256) })
+  .strict();
+export const jiraLinkedWorkDtoSchema = z
+  .object({
+    id: z.string().max(128),
+    url: z.string().url().max(2048),
+    title: z.string().max(500),
+    relationship: z.string().max(256).optional(),
+  })
+  .strict();
+export const jiraMcpAttachmentDtoSchema = z
+  .object({
+    fileName: z.string().min(1).max(128),
+    filePath: z.string().min(1).max(4096),
+    mediaType: z.string().max(128),
+    sizeBytes: z
+      .number()
+      .int()
+      .min(0)
+      .max(10 * 1024 * 1024),
+  })
+  .strict();
+export const jiraCommentDraftResultDtoSchema = z
+  .object({
+    draftId: nonEmptyString.max(128),
+    createdAt: z.string().max(64),
+    status: z.literal("draft"),
+    reviewLocation: z.literal("Jira workspace → Agent comment drafts"),
+    message: z.literal("Saved for review only; nothing was posted to Jira."),
+  })
+  .strict();
+export const jiraTaskContextDtoSchema = z
+  .object({
+    jiraIssueRefs: z
+      .array(
+        z
+          .object({
+            provider: z.literal("jira").optional(),
+            connectionId: nonEmptyString.max(128),
+            issueId: nonEmptyString.max(128),
+            issueKey: z.string().max(128).optional(),
+          })
+          .strict(),
+      )
+      .max(100),
+    jiraPreparedSnapshot: z
+      .array(
+        z
+          .object({
+            ref: z
+              .object({
+                provider: z.literal("jira").optional(),
+                connectionId: nonEmptyString.max(128),
+                issueId: nonEmptyString.max(128),
+                issueKey: z.string().max(128).optional(),
+              })
+              .strict(),
+            fields: z
+              .object({
+                summary: z.string().max(32_000).optional(),
+                status: z.string().max(256).optional(),
+                issueType: z.string().max(256).optional(),
+                projectKey: z.string().max(128).optional(),
+                updated: z.string().max(128).optional(),
+                assignee: z.string().max(256).optional(),
+                description: z.string().max(32_000).optional(),
+                comments: z.array(jiraCommentDtoSchema).max(100).optional(),
+              })
+              .strict(),
+          })
+          .strict(),
+      )
+      .max(100),
+    jiraIssueSnapshots: z
+      .array(
+        z
+          .object({
+            ref: z
+              .object({
+                provider: z.literal("jira").optional(),
+                connectionId: nonEmptyString.max(128),
+                issueId: nonEmptyString.max(128),
+                issueKey: nonEmptyString.max(128).optional(),
+              })
+              .strict(),
+            fields: z
+              .object({
+                summary: z.string().max(32_000),
+                status: z.string().max(256),
+                issueType: z.string().max(256),
+                projectKey: z.string().max(128),
+                updated: z.string().max(128),
+                assignee: z.string().max(256).optional(),
+              })
+              .strict(),
+            hash: z.string().max(128),
+          })
+          .strict(),
+      )
+      .max(100),
+  })
+  .strict();
+export const jiraWriteExecutionResultDtoSchema = z
+  .object({ status: z.enum(["succeeded", "failed", "unknown"]), journalId: nonEmptyString })
+  .strict();
+export const jiraWriteConfirmationDtoSchema = z
+  .object({ token: nonEmptyString.max(128), intent: z.string().min(8).max(500), preview: z.string().max(32_000) })
+  .strict();
+export const jiraSafeErrorDtoSchema = z
+  .object({
+    code: z.enum(JIRA_SAFE_ERROR_CODES),
+    message: z.string().max(500),
+    journalId: nonEmptyString.max(128).optional(),
+    status: z.enum(["unknown", "failed"]).optional(),
+    retryAfterMs: z.number().int().min(0).max(300_000).optional(),
+  })
+  .strict();
+export const jiraVerifyConnectionDtoSchema = z.discriminatedUnion("ok", [
+  z
+    .object({
+      ok: z.literal(true),
+      identity: jiraIdentityDtoSchema,
+      serverTitle: z.string().max(500),
+      health: jiraConnectionHealthDtoSchema,
+    })
+    .strict(),
+  z.object({ ok: z.literal(false), health: jiraConnectionHealthDtoSchema, error: jiraSafeErrorDtoSchema }).strict(),
+]);
+export const jiraWriteInvokeResultDtoSchema = z.discriminatedUnion("ok", [
+  z.object({ ok: z.literal(true), data: jiraWriteExecutionResultDtoSchema }).strict(),
+  z.object({ ok: z.literal(false), error: jiraSafeErrorDtoSchema }).strict(),
+]);
+export const jiraAttachmentUploadResultDtoSchema = z.union([
+  jiraWriteInvokeResultDtoSchema,
+  z.object({ ok: z.literal(true), cancelled: z.literal(true) }).strict(),
+]);
+export const jiraBoardViewDtoSchema = z.object({
+  boardId: z.number().int().positive(),
+  mode: z.string(),
+  issues: z.array(jiraIssueDtoSchema),
+  filter: z
+    .object({
+      id: z.union([z.number().int(), z.string().max(128)]),
+      name: z.string().max(256),
+      jql: z.string().max(2000).optional(),
+    })
+    .optional(),
+  owner: z.object({ displayName: z.string().max(256), accountId: z.string().max(255).optional() }).optional(),
+  columns: z
+    .array(z.object({ name: z.string(), statuses: z.array(z.object({ id: z.string(), name: z.string() })) }))
+    .optional(),
+  sprints: z
+    .array(
+      z.object({
+        id: z.string(),
+        name: z.string(),
+        state: z.string(),
+        startDate: z.string().optional(),
+        endDate: z.string().optional(),
+      }),
+    )
+    .optional(),
+  capability: z.string().optional(),
+  hasMore: z.boolean(),
+  nextCursor: z.string().max(64).optional(),
+  truncated: z.boolean(),
+  cache: jiraCacheMetadataDtoSchema.optional(),
+  sprintsHasMore: z.boolean().optional(),
+  sprintsNextCursor: z.string().max(64).optional(),
+  selectedSprintId: z.number().int().positive().optional(),
+  capabilities: z.object({
+    configuration: z.enum(["available", "unknown", "unsupported", "permission-denied"]),
+    issues: z.enum(["available", "unknown", "unsupported", "permission-denied"]),
+    backlog: z.enum(["available", "unknown", "unsupported", "permission-denied"]),
+    sprints: z.enum(["available", "unknown", "unsupported", "permission-denied"]),
+    quickFilters: z.enum(["available", "unknown", "unsupported", "permission-denied"]),
+  }),
+});
+export const jiraBoardQuickFiltersDtoSchema = z.object({
+  filters: z
+    .array(
+      z.object({
+        id: z.number().int().positive(),
+        name: z.string().max(256),
+        description: z.string().max(1000).optional(),
+        jql: z.string().max(2000),
+        position: z.number().int(),
+      }),
+    )
+    .max(100),
+  hasMore: z.boolean(),
+  nextCursor: z.string().max(8).optional(),
+  truncated: z.boolean(),
+  capability: z.enum(["available", "unknown", "unsupported", "permission-denied"]),
+  cache: jiraCacheMetadataDtoSchema.optional(),
+});
+const jiraWriteMetadataDtoSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("transition"),
+      transitionId: nonEmptyString.max(128),
+      targetStatus: z.string().max(500),
+      beforeStatus: z.string().max(500),
+      beforeUpdatedAt: z.string().max(64),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("comment"),
+      bodyHash: z.string().regex(/^[a-f0-9]{64}$/),
+      submittedAt: z.number().finite(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("worklog"),
+      fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+      submittedAt: z.number().finite(),
+      seconds: z.number().int().positive(),
+      started: z.string().max(64),
+      commentHash: z.string().regex(/^[a-f0-9]{64}$/),
+    })
+    .strict(),
+  z
+    .object({ kind: z.literal("remote-link"), globalId: nonEmptyString.max(1000), submittedAt: z.number().finite() })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("assign"),
+      target: z.string().max(255),
+      beforeAssignee: z.string().max(255),
+      submittedAt: z.number().finite(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("attachment"),
+      nameHash: z.string().regex(/^[a-f0-9]{64}$/),
+      size: z.number().int().min(0),
+      beforeCount: z.number().int().min(0),
+      submittedAt: z.number().finite(),
+    })
+    .strict(),
+]);
+export const jiraWriteJournalEntryDtoSchema = z
+  .object({
+    id: nonEmptyString.max(128),
+    profileId: nonEmptyString.max(128),
+    connectionId: nonEmptyString.max(128),
+    issueId: nonEmptyString.max(128),
+    issueKey: nonEmptyString.max(128),
+    kind: z.enum(["transition", "comment", "worklog", "remote-link", "assign", "attachment"]),
+    fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+    requester: z.string().max(200),
+    apiActor: z.string().max(200),
+    createdAt: z.number().finite(),
+    updatedAt: z.number().finite(),
+    state: z.enum(["pending", "succeeded", "failed", "unknown", "reconciled"]),
+    reconciliation: z.enum(["applied", "not-applied", "unresolved"]).optional(),
+    safeCode: z.string().regex(JIRA_WRITE_SAFE_CODE_PATTERN).optional(),
+    metadata: jiraWriteMetadataDtoSchema,
+  })
+  .strict();
+export const jiraWriteReconcileResultDtoSchema = z
+  .object({
+    journalId: nonEmptyString.max(128),
+    status: z.enum(["reconciled", "unknown"]),
+    outcome: z.enum(["applied", "not-applied", "unresolved"]),
+  })
+  .strict();
+const jiraWriteConfirmationSchema = z.object({
+  token: nonEmptyString,
+  intent: nonEmptyString,
+  preview: z.string().max(32_000),
+});
+export const jiraAssignRequestSchema = z.discriminatedUnion("kind", [
+  z
+    .object({ kind: z.literal("user"), id: nonEmptyString.max(255), displayName: z.string().max(200).optional() })
+    .strict(),
+  z.object({ kind: z.literal("me") }).strict(),
+  z.object({ kind: z.literal("unassigned") }).strict(),
+]);
+export const jiraWritePreviewSchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("assign"),
+    ref: jiraWriteIssueRefSchema,
+    assignee: jiraAssignRequestSchema,
+    intent: z.string().min(8).max(500),
+  }),
+  z.object({
+    action: z.literal("transition"),
+    ref: jiraWriteIssueRefSchema,
+    transitionId: nonEmptyString,
+    fields: z
+      .record(z.string().min(1).max(200), z.unknown())
+      .refine((fields) => Object.keys(fields).length <= 30)
+      .optional(),
+    intent: z.string().min(8).max(500),
+  }),
+  z.object({
+    action: z.literal("comment"),
+    ref: jiraWriteIssueRefSchema,
+    body: z.string().min(1).max(32_000),
+    intent: z.string().min(8).max(500),
+  }),
+  z.object({
+    action: z.literal("worklog"),
+    ref: jiraWriteIssueRefSchema,
+    seconds: z.number().int().positive(),
+    started: z.string().min(1),
+    comment: z.string().max(32_000).optional(),
+    intent: z.string().min(8).max(500),
+  }),
+  z.object({
+    action: z.literal("remote-link"),
+    ref: jiraWriteIssueRefSchema,
+    url: z.string().url(),
+    title: z.string().min(1).max(500),
+    globalId: z.string().min(1).max(1000),
+    intent: z.string().min(8).max(500),
+  }),
+]);
+export const jiraWriteExecuteSchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("assign"),
+    ref: jiraWriteIssueRefSchema,
+    assignee: jiraAssignRequestSchema,
+    confirmation: jiraWriteConfirmationSchema,
+  }),
+  z.object({
+    action: z.literal("transition"),
+    ref: jiraWriteIssueRefSchema,
+    transitionId: nonEmptyString,
+    fields: z
+      .record(z.string().min(1).max(200), z.unknown())
+      .refine((fields) => Object.keys(fields).length <= 30)
+      .optional(),
+    confirmation: jiraWriteConfirmationSchema,
+  }),
+  z.object({
+    action: z.literal("comment"),
+    ref: jiraWriteIssueRefSchema,
+    body: z.string().min(1).max(32_000),
+    confirmation: jiraWriteConfirmationSchema,
+  }),
+  z.object({
+    action: z.literal("worklog"),
+    ref: jiraWriteIssueRefSchema,
+    seconds: z.number().int().positive(),
+    started: z.string().min(1),
+    comment: z.string().max(32_000).optional(),
+    confirmation: jiraWriteConfirmationSchema,
+  }),
+  z.object({
+    action: z.literal("remote-link"),
+    ref: jiraWriteIssueRefSchema,
+    url: z.string().url(),
+    title: z.string().min(1).max(500),
+    globalId: z.string().min(1).max(1000),
+    confirmation: jiraWriteConfirmationSchema,
+  }),
+]);
+export type JiraWritePreviewPayload = z.input<typeof jiraWritePreviewSchema>;
+export type JiraWriteExecutePayload = z.input<typeof jiraWriteExecuteSchema>;
+export type JiraWriteConfirmationDto = z.infer<typeof jiraWriteConfirmationDtoSchema>;
+export type JiraWriteInvokeResultDto = z.infer<typeof jiraWriteInvokeResultDtoSchema>;
+export type JiraAttachmentUploadResultDto = z.infer<typeof jiraAttachmentUploadResultDtoSchema>;
+export type JiraSearchPayload = z.infer<typeof jiraSearchSchema>;
+export type JiraBoardSearchPayload = z.infer<typeof jiraBoardSearchSchema>;
+export type JiraIssueLookupPayload = z.infer<typeof jiraIssueLookupSchema>;
 
 export const azureCommentSchema = z.object({
   prKey: nonEmptyString,
@@ -382,6 +1377,8 @@ export const gitTagSchema = z.object({
   tagName: nonEmptyString,
   message: z.string().optional(),
   commit: safeGitRef.optional(),
+  rootPath: z.string().optional(),
+  idempotencyKey: z.string().min(1).max(200).optional(),
 });
 export type GitTag = z.infer<typeof gitTagSchema>;
 
@@ -757,6 +1754,7 @@ export const quickFixCreateSchema = z.object({
   remoteUrl: nonEmptyString,
   baseBranch: nonEmptyString,
   newBranchName: nonEmptyString,
+  jiraIssueRef: quickFixJiraIssueRefSchema.optional(),
 });
 
 export const startReviewAgentPreparationSchema = z.discriminatedUnion("provider", [
@@ -948,6 +1946,7 @@ export const githubQuickFixCreateSchema = z.object({
   remoteUrl: nonEmptyString,
   baseBranch: nonEmptyString,
   newBranchName: nonEmptyString,
+  jiraIssueRef: quickFixJiraIssueRefSchema.optional(),
 });
 export type GithubQuickFixCreate = z.infer<typeof githubQuickFixCreateSchema>;
 
@@ -966,6 +1965,7 @@ export const TASK_BRIEF_MAX_CHARS = 20000;
 
 export const taskWorkspaceCreateSchema = z.object({
   cwd: nonEmptyString,
+  jiraMcpEnabled: z.boolean().optional().default(false),
   description: z.string().max(TASK_BRIEF_MAX_CHARS).optional().default(""),
   parentWorkspaceId: z.string().optional(),
   maxRounds: z.number().int().min(1).max(100).optional(),
@@ -980,8 +1980,62 @@ export const taskWorkspaceCreateSchema = z.object({
   judgeCommand: z.string().max(500).optional(),
   workerProvider: providerConfigSchema.optional(),
   judgeProvider: providerConfigSchema.optional(),
+  jiraIssueRefs: z
+    .array(
+      z.object({
+        provider: z.literal("jira"),
+        connectionId: nonEmptyString,
+        issueId: nonEmptyString,
+        issueKey: nonEmptyString,
+      }),
+    )
+    .max(20)
+    .optional(),
+  jiraPreparedContext: z.object({ token: nonEmptyString, hash: nonEmptyString }).optional(),
+  repoBinding: z
+    .object({
+      provider: z.enum(["azure", "github"]),
+      connectionId: nonEmptyString,
+      repoId: nonEmptyString,
+      projectId: nonEmptyString.optional(),
+      repoName: nonEmptyString,
+      remoteUrl: z.string().url(),
+      baseBranch: nonEmptyString,
+      branch: nonEmptyString,
+      checkoutMode: z.enum(["existing", "worktree"]),
+    })
+    .optional(),
 });
 export type TaskWorkspaceCreate = z.infer<typeof taskWorkspaceCreateSchema>;
+export const jiraTaskContextPrepareSchema = z.object({
+  refs: z
+    .array(
+      z.object({
+        provider: z.literal("jira"),
+        connectionId: nonEmptyString,
+        issueId: nonEmptyString,
+        issueKey: nonEmptyString,
+      }),
+    )
+    .min(1)
+    .max(20),
+  repo: z.object({
+    provider: z.enum(["azure", "github"]),
+    connectionId: nonEmptyString,
+    repoId: nonEmptyString,
+    projectId: nonEmptyString.optional(),
+    repoName: nonEmptyString,
+    remoteUrl: z.string().url(),
+    cwd: nonEmptyString,
+  }),
+  baseBranch: nonEmptyString,
+  branch: nonEmptyString,
+  checkoutMode: z.enum(["existing", "worktree"]),
+  taskConfig: z.object({
+    description: z.string().max(TASK_BRIEF_MAX_CHARS),
+    selectedFields: z.array(z.enum(["summary", "status", "description", "comments"])).max(4),
+  }),
+});
 
 export const taskWorkspaceActionSchema = z.object({
   workspaceId: nonEmptyString,
@@ -1231,6 +2285,7 @@ export const fileWriteSchema = z.object({
   rootPath: z.string().min(1),
   relativePath: z.string().min(1),
   content: z.string(),
+  expectedMtimeMs: z.number().finite().optional(),
 });
 export type FileWrite = z.infer<typeof fileWriteSchema>;
 
@@ -1756,12 +2811,14 @@ export const accountSignInStartSchema = z
       "portal",
       "change-email",
       "delete-account",
+      "signout-installation",
       // A revocation whose local recent-auth window had already lapsed (plan §7/C2). Carries the
       // packed revoke target the same way `checkout` carries an offer id — see `account-manager.ts`'s
       // `decodeRevokeTarget` and `SettingsAccountTab.vue`'s `revokeOrReauth`.
       "revoke-device",
     ]),
     offerId: z.string().min(1).max(128).optional(),
+    confirmationPhrase: z.string().max(64).optional(),
     // STRICT, so a field this channel does not have is a refusal rather than a silently dropped one.
     // Zod's default is to strip, which would let two builds of the renderer disagree about what a
     // request said while both were accepted.

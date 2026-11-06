@@ -172,7 +172,7 @@ test("Files tabs, drafts, diff and dialogs survive phone and tablet rotations", 
       "aria-pressed",
       "true",
     );
-    await page.getByRole("button", { name: "Toggle file manager layout" }).click();
+    await page.getByRole("button", { name: "Browser layout" }).click();
     const views = page.getByRole("navigation", { name: "Files views" });
     await views.getByRole("button", { name: "Files", exact: true }).click();
     await expectContained(page.locator(".file-list"));
@@ -230,7 +230,7 @@ test("Files list keeps a visible name column in narrow containers", async ({ pag
       }),
     );
     await openApp(page, mock);
-    await page.getByRole("button", { name: "Toggle file manager layout" }).click();
+    await page.getByRole("button", { name: "Browser layout" }).click();
 
     const list = page.locator(".file-list");
     const row = page.locator(".fli--list");

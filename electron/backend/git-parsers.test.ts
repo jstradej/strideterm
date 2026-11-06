@@ -199,7 +199,7 @@ describe("findWindowsReservedPaths", () => {
   test("matches reserved device basenames regardless of case, extension, or directory", () => {
     expect(
       findWindowsReservedPaths([
-        "vum-listener/nul",
+        "event-listener/nul",
         "commons/src/main/resources/NUL",
         "out\\con.txt",
         "COM1",
@@ -209,6 +209,6 @@ describe("findWindowsReservedPaths", () => {
         "console/aux-data.json",
         "",
       ]),
-    ).toEqual(["vum-listener/nul", "commons/src/main/resources/NUL", "out\\con.txt", "COM1", "lpt9.log"]);
+    ).toEqual(["event-listener/nul", "commons/src/main/resources/NUL", "out\\con.txt", "COM1", "lpt9.log"]);
   });
 });

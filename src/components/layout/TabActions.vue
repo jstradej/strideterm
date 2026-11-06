@@ -1,7 +1,16 @@
 <template>
   <div class="terminal-toolbar__actions" data-role="tab-actions">
     <button
-      v-if="workspaceKind !== 'docker' && workspaceKind !== 'azure' && workspaceKind !== 'github'"
+      v-if="workspaceKind === 'jira'"
+      type="button"
+      class="button button--ghost jira-board-add-button"
+      title="Open the Jira board chooser and add a saved board as a native workspace tab."
+      @click="onAddJiraBoard"
+    >
+      + Board
+    </button>
+    <button
+      v-else-if="!['docker', 'azure', 'github', 'jira-board'].includes(workspaceKind)"
       type="button"
       class="button button--ghost"
       title="Add a new tab to this workspace — pick from your tab templates (Shell, Claude Code, Codex, Gemini, Files, Browser…)."
@@ -113,6 +122,7 @@ const currentLayout = computed(() => {
 
 const emit = defineEmits<{
   (e: "toggle-tab-picker", event: MouseEvent): void;
+  (e: "open-jira-board-chooser"): void;
   (e: "disband-split"): void;
   (e: "open-layout-picker", event: MouseEvent): void;
   (e: "quick-fix"): void;
@@ -121,6 +131,12 @@ const emit = defineEmits<{
   (e: "edit-workspace"): void;
   (e: "delete-workspace"): void;
 }>();
+
+function onAddJiraBoard(): void {
+  const workspaceId = store.activeWorkspace?.id || store.myActiveWorkspaceId;
+  if (workspaceId) store.requestJiraBoardChooser(workspaceId);
+  emit("open-jira-board-chooser");
+}
 
 function onDisband(): void {
   if (store.isGridVisible) {

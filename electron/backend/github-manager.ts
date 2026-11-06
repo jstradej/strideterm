@@ -109,6 +109,8 @@ interface CheckItem {
   [key: string]: unknown;
 }
 
+const GITHUB_NAME_SEGMENT = /^(?!\.{1,2}$)[A-Za-z0-9_.-]{1,100}$/u;
+
 interface EnsureCacheRepoOptions {
   connection: SyncConnection;
   token: string;
@@ -152,7 +154,8 @@ interface OpenQuickFixWorkspaceOptions {
   connectionId: string;
   owner: string;
   repo: string;
-  remoteUrl: string;
+  /** Ignored: the clone URL is derived from the connection's host, never taken from the caller. */
+  remoteUrl?: string;
   baseBranch: string;
   newBranchName: string;
   /** Profile of the window that initiated the action. Refusing on mismatch
@@ -901,11 +904,15 @@ export class GitHubManager extends BaseProviderManager {
           () => [],
         )
       : [];
+    const localMergeCheck = workspaceCwd
+      ? await this.checkLocalMerge(workspaceCwd, stripRefsPrefix(pullRequest.targetRefName as string))
+      : null;
 
     const next: Record<string, unknown> = {
       ...currentRec,
       changedFiles,
       localChangedFiles: localChanges,
+      localMergeCheck,
       checks,
       existingWorkspaceId: (workspace as SyncWorkspace | undefined)?.id || currentRec.existingWorkspaceId || "",
       reviewWorkspaceId:
@@ -1025,6 +1032,7 @@ export class GitHubManager extends BaseProviderManager {
           `+refs/heads/${sourceBranch}:refs/remotes/origin/${sourceBranch}`,
           `+refs/heads/${targetBranch}:refs/remotes/origin/${targetBranch}`,
         ],
+        remoteUrl,
         token,
       });
 
@@ -1618,7 +1626,6 @@ export class GitHubManager extends BaseProviderManager {
     connectionId,
     owner,
     repo,
-    remoteUrl,
     baseBranch,
     newBranchName,
     callerProfileId = "",
@@ -1626,6 +1633,16 @@ export class GitHubManager extends BaseProviderManager {
     workspace: Record<string, unknown>;
     parentWorkspaceId: string;
   }> {
+    if (!GITHUB_NAME_SEGMENT.test(owner) || !GITHUB_NAME_SEGMENT.test(repo)) {
+      throw new Error(
+        "Invalid repository: owner and repository names may only contain letters, digits, '-', '_' and '.'.",
+      );
+    }
+    const remoteUrl = buildRepositoryRemoteUrl(
+      (this.resolveConnectionAndToken(connectionId).connection as { hostUrl?: string }).hostUrl,
+      owner,
+      repo,
+    );
     const result = await this.openQuickFixWorkspaceCore(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       { state: state as any, connectionId, baseBranch, newBranchName, callerProfileId },
@@ -1638,6 +1655,7 @@ export class GitHubManager extends BaseProviderManager {
             baseBranch,
             newBranchName,
             repoPathSegment: `${owner}-${repo}`,
+            remoteUrl,
             ensureCacheRepo: () => this.ensureCacheRepo({ connection, token, owner, repo, remoteUrl, reviewRoot }),
           }),
         buildQuickFixMetadata: ({ connection, checkout, parentWorkspaceId }) => {

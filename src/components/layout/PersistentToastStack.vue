@@ -19,7 +19,7 @@
           <div class="persistent-toast__content">
             <strong class="persistent-toast__title">{{ t.title }}</strong>
             <p class="persistent-toast__body">{{ t.body }}</p>
-            <div v-if="t.copyPath || canOpenDetails(t)" class="persistent-toast__actions">
+            <div v-if="t.copyPath || t.undo || canOpenDetails(t)" class="persistent-toast__actions">
               <button
                 v-if="t.copyPath"
                 type="button"
@@ -28,6 +28,9 @@
                 @click="copyPath(t)"
               >
                 {{ copiedId === t.id ? "Copied" : "Copy path" }}
+              </button>
+              <button v-if="t.undo" type="button" class="persistent-toast__copy" @click="runUndo(t)">
+                {{ t.undo.label }}
               </button>
               <button
                 v-if="canOpenDetails(t)"
@@ -73,6 +76,16 @@ function iconFor(kind: string): string {
 function openAction(t: PersistentToast): void {
   if (t.action === "open-mobile-account") {
     appStore.openSettingsDialog({ initialTab: "mobile", initialMobileView: "account" });
+  }
+}
+
+async function runUndo(t: PersistentToast): Promise<void> {
+  if (!t.undo) return;
+  notifStore.dismissPersistentToast(t.id);
+  try {
+    await t.undo.run();
+  } catch (error) {
+    notifStore.showError(`${t.undo.label} failed`, error, { profileId: t.profileId });
   }
 }
 

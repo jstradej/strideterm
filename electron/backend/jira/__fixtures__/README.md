@@ -1,0 +1,1 @@
+These PKCS#12 files contain synthetic self-signed certificates generated only for Jira APIM transport tests. They do not identify a person or connect to any Jira server. Their test-only export passwords are documented in the test cases that use them.

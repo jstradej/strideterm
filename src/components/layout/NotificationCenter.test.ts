@@ -113,6 +113,94 @@ describe("NotificationCenter — sessionProfileLabel render", () => {
     expect(wrapper.find(".notification-item__profile-label").exists()).toBe(false);
   });
 
+  it("opens a Jira alert using its exact same-profile connection and reports disabled sources", async () => {
+    const appStore = useAppStore();
+    const notifStore = useNotificationStore();
+    const openExternal = vi.fn().mockResolvedValue(undefined);
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "slot1" } };
+    appStore.payload = makePayload() as AnyApi;
+    notifStore.panelOpen = true;
+    const connections = [
+      {
+        id: "jira-target",
+        profileId: "p1",
+        enabled: true,
+        label: "Target account",
+        webUrl: "https://jira.example/jira",
+        issueKeyPrefixes: [],
+      },
+      {
+        id: "same-host-other-account",
+        profileId: "p1",
+        enabled: true,
+        label: "Other account",
+        webUrl: "https://jira.example/other",
+        issueKeyPrefixes: ["ENG"],
+      },
+      {
+        id: "foreign",
+        profileId: "p2",
+        enabled: true,
+        label: "Foreign",
+        webUrl: "https://foreign.example",
+        issueKeyPrefixes: ["ENG"],
+      },
+      {
+        id: "disabled",
+        profileId: "p1",
+        enabled: false,
+        label: "Disabled",
+        webUrl: "https://disabled.example",
+        issueKeyPrefixes: ["ENG"],
+      },
+    ];
+    notifStore.add({
+      title: "ENG-9 updated",
+      body: "Jira issue changed in a saved query.",
+      kind: "jira",
+      workspaceId: "ws-a",
+      viewId: "ws-a:jira",
+      category: "jira",
+      meta: {
+        profileId: "p1",
+        jiraIssueRef: { provider: "jira", connectionId: "jira-target", issueId: "99", issueKey: "ENG-9" },
+      },
+    });
+    notifStore.add({
+      title: "ENG-10 updated",
+      body: "Jira issue changed in a saved query.",
+      kind: "jira",
+      workspaceId: "ws-a",
+      viewId: "ws-a:jira-disabled",
+      category: "jira",
+      meta: {
+        profileId: "p1",
+        jiraIssueRef: { provider: "jira", connectionId: "disabled", issueId: "100", issueKey: "ENG-10" },
+      },
+    });
+    const wrapper = mount(NotificationCenter, {
+      global: {
+        provide: {
+          [apiKey as symbol]: { listJiraConnections: vi.fn().mockResolvedValue(connections), openExternal },
+        },
+      },
+    });
+    await flushPromises();
+    const link = wrapper.get(".notification-item__jira-link");
+    expect(link.attributes("href")).toBe("https://jira.example/jira/browse/ENG-9");
+    expect(link.attributes("target")).toBe("_blank");
+    expect(link.attributes("rel")).toBe("noopener noreferrer");
+    expect(wrapper.text()).toContain("Jira connection unavailable in this profile.");
+    expect(wrapper.text()).not.toContain("Other account");
+    await link.trigger("click");
+    expect(openExternal).toHaveBeenCalledWith("https://jira.example/jira/browse/ENG-9");
+
+    openExternal.mockRejectedValueOnce(new Error("Error invoking remote method 'shell:open-external': Error: blocked"));
+    await link.trigger("click");
+    await flushPromises();
+    expect(notifStore.sessions.flatMap((session) => session.events).map((event) => event.body)).toContain("blocked");
+  });
+
   it("does not render profile label when meta.profileId is absent", async () => {
     const appStore = useAppStore();
     const notifStore = useNotificationStore();
@@ -824,6 +912,49 @@ describe("NotificationCenter — alert card density", () => {
     expect(rows[1].className).toContain("notification-item__body");
     // The profile tag no longer owns a row of its own.
     expect(content.find(".notification-item__body .notification-item__profile-label").exists()).toBe(false);
+  });
+
+  it("a pull request card leads with the PR title on its own row, the event beside the time", async () => {
+    const appStore = useAppStore();
+    const notifStore = useNotificationStore();
+    appStore.payload = makePayload();
+    notifStore.panelOpen = true;
+    const pullRequestTitle = "Retry the outbox when the broker restarts in the middle of a batch";
+    notifStore.add({
+      title: `New pull request: ACME_CORE / orders-core — ${pullRequestTitle}`,
+      body: "#33007 by Doe, Jane",
+      kind: "review",
+      category: "review",
+      workspaceId: "",
+      viewId: "azure:33007",
+      meta: { provider: "azure-devops", kind: "pr-new", profileId: "p1", draftState: "ready", pullRequestTitle },
+    });
+    notifStore.add({
+      title: "New comment on orders-core #33008",
+      body: "Jana: looks good",
+      kind: "review",
+      category: "review",
+      workspaceId: "",
+      viewId: "azure:33008",
+      meta: { provider: "azure-devops", kind: "pr-new-comment", profileId: "p1", pullRequestTitle: "Fix login" },
+    });
+
+    const wrapper = mount(NotificationCenter);
+    await nextTick();
+    await nextTick();
+
+    const cards = wrapper.findAll(".notification-item");
+    const card = (prTitle: string) =>
+      cards.find((c) => c.findAll(".notification-item__pr-title").some((el) => el.text() === prTitle))!;
+    const created = card(pullRequestTitle);
+    expect(created.get(".notification-item__title").text()).toBe("New pull request: ACME_CORE / orders-core");
+    expect(created.get(".notification-item__pr-title").attributes("title")).toBe(pullRequestTitle);
+    expect(created.get(".notification-item__body").text()).toBe("#33007 by Doe, Jane");
+    expect(created.get(".notification-item__head .notification-item__pr-state").text()).toBe("Ready");
+
+    const commented = card("Fix login");
+    expect(commented.get(".notification-item__title").text()).toBe("New comment on orders-core #33008");
+    expect(commented.get(".notification-item__body").text()).toBe("Jana: looks good");
   });
 });
 

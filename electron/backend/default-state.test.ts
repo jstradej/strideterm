@@ -27,6 +27,116 @@ describe("default state", () => {
     expect(state.workspaces).toEqual([]);
   });
 
+  test("Jira normalization preserves APIM header and client certificate metadata across persistence rounds", () => {
+    const connection = {
+      id: "jira-apim-test",
+      profileId: "profile-a",
+      label: "Gateway Jira",
+      enabled: true,
+      deployment: "data-center",
+      webUrl: "https://jira.example.test",
+      apiBaseUrl: "https://gateway.example.test/jira-prefix",
+      subscriptionHeaderName: "Ocp-Apim-Subscription-Key",
+      clientCertificatePath: "C:\\test-fixtures\\client.pfx",
+      auth: { kind: "dc-apim", secretRef: "jira:test:key", passphraseRef: "jira:test:passphrase" },
+      accountPurpose: "technical",
+    };
+    const once = normalizeState({ settings: { integrations: { jira: { connections: [connection] } } } });
+    const twice = normalizeState(JSON.parse(JSON.stringify(once)));
+
+    for (const state of [once, twice]) {
+      expect(state.settings.integrations.jira.connections[0]).toMatchObject({
+        subscriptionHeaderName: "Ocp-Apim-Subscription-Key",
+        clientCertificatePath: "C:\\test-fixtures\\client.pfx",
+        auth: { kind: "dc-apim", secretRef: "jira:test:key", passphraseRef: "jira:test:passphrase" },
+      });
+    }
+  });
+
+  test("Jira normalization keeps a Cloud API token connection and drops a removed auth kind without throwing", () => {
+    const base = {
+      profileId: "profile-a",
+      enabled: true,
+      deployment: "cloud",
+      webUrl: "https://example.atlassian.net",
+      apiBaseUrl: "https://example.atlassian.net",
+      accountPurpose: "personal",
+    };
+    const persisted = {
+      settings: {
+        integrations: {
+          jira: {
+            connections: [
+              {
+                ...base,
+                id: "jira-token",
+                label: "Token",
+                cloudId: "cloud-1",
+                auth: { kind: "cloud-api-token", secretRef: "jira:jira-token:api-token", email: "me@example.com" },
+              },
+              { ...base, id: "jira-removed", label: "Removed", auth: { kind: "oauth-3lo", brokerGrantRef: "grant" } },
+            ],
+          },
+        },
+      },
+    };
+    const once = normalizeState(persisted);
+    const twice = normalizeState(JSON.parse(JSON.stringify(once)));
+    for (const state of [once, twice]) {
+      expect(state.settings.integrations.jira.connections.map((item) => item.id)).toEqual(["jira-token"]);
+      expect(state.settings.integrations.jira.connections[0]).toMatchObject({
+        cloudId: "cloud-1",
+        auth: { kind: "cloud-api-token", secretRef: "jira:jira-token:api-token", email: "me@example.com" },
+      });
+    }
+  });
+
+  test("Jira normalization preserves valid persisted connection health and drops malformed values", () => {
+    const state = normalizeState({
+      settings: {
+        integrations: {
+          jira: {
+            connections: [
+              {
+                id: "jira-health",
+                profileId: "profile-a",
+                label: "Jira",
+                enabled: true,
+                deployment: "data-center",
+                webUrl: "https://jira.example.test",
+                apiBaseUrl: "https://jira.example.test",
+                auth: { kind: "dc-pat", secretRef: "jira:health" },
+                accountPurpose: "personal",
+                status: "unavailable",
+                health: { state: "permission-denied", checkedAt: "2026-10-28T12:00:00Z", retryAfterMs: 3000 },
+              },
+              {
+                id: "jira-invalid-health",
+                profileId: "profile-a",
+                label: "Jira invalid",
+                enabled: true,
+                deployment: "data-center",
+                webUrl: "https://jira.example.test",
+                apiBaseUrl: "https://jira.example.test",
+                auth: { kind: "dc-pat", secretRef: "jira:invalid" },
+                accountPurpose: "personal",
+                status: "broken",
+                health: { state: "secret", checkedAt: {} },
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(state.settings.integrations.jira.connections[0]).toMatchObject({
+      status: "unavailable",
+      health: { state: "permission-denied", checkedAt: "2026-10-28T12:00:00Z", retryAfterMs: 3000 },
+    });
+    expect(state.settings.integrations.jira.connections[1]).not.toHaveProperty("status");
+    expect(state.settings.integrations.jira.connections[1]).not.toHaveProperty("health");
+  });
+
   test("normalizeState migrates legacy tabTemplates by adding copilot after gemini", () => {
     // Simulate a pre-Copilot user whose state was saved before the provider was added.
     const state = normalizeState({
@@ -248,6 +358,23 @@ describe("default state", () => {
     expect(workspace.panels.find((panel) => panel.id === "p1")!.notes).toBe("waiting on review");
     // Panels that never got a note normalize to the empty string, not undefined.
     expect(workspace.panels.find((panel) => panel.id === "p2")!.notes).toBe("");
+  });
+
+  test("normalizeWorkspace keeps hostedBy and defaults it to the empty string", () => {
+    const workspace = normalizeWorkspace({
+      id: "ws-hosted",
+      panels: [
+        { id: "files1", title: "Files", command: "__files__" },
+        { id: "t1", title: "Hosted", hostedBy: "files:files1" },
+        { id: "t2", title: "Plain" },
+        { id: "t3", title: "Bad", hostedBy: 7 },
+      ],
+    });
+
+    const hostedBy = (id: string) => workspace.panels.find((panel) => panel.id === id)!.hostedBy;
+    expect(hostedBy("t1")).toBe("files:files1");
+    expect(hostedBy("t2")).toBe("");
+    expect(hostedBy("t3")).toBe("");
   });
 
   test("normalizes per-tab SSH MCP opt-in to false and preserves an explicit opt-in", () => {
@@ -1060,15 +1187,15 @@ describe("default state", () => {
   test("normalizeState groups worktrees right after their parent", () => {
     const state = normalizeState({
       workspaces: [
-        { id: "mhub", name: "mhub" },
+        { id: "orders", name: "orders" },
         { id: "ide", name: "IDE" },
-        { id: "ale", name: "ALE" },
+        { id: "billing", name: "Billing" },
         { id: "ide-meta", name: "IDE / metaterm", notes: "Worktree of IDE" },
       ],
     });
 
     const names = state.workspaces.map((w) => w.name);
-    expect(names).toEqual(["mhub", "IDE", "IDE / metaterm", "ALE"]);
+    expect(names).toEqual(["orders", "IDE", "IDE / metaterm", "Billing"]);
   });
 
   test("normalizeState groups worktrees under same-profile parent when duplicates exist", () => {
@@ -1380,6 +1507,79 @@ describe("default state", () => {
     expect(ids.indexOf("child-task")).toBe(ids.indexOf("parent") + 1);
   });
 
+  test("normalizes, validates and groups saved Jira board workspaces under same-profile Jira inboxes", () => {
+    const state = normalizeState({
+      profiles: [
+        { id: "default", name: "Default" },
+        { id: "other", name: "Other" },
+      ],
+      workspaces: [
+        { id: "jira-inbox", name: "Jira", kind: "jira", profileId: "default", panels: [] },
+        {
+          id: "board-child",
+          name: "Platform",
+          kind: "jira-board",
+          profileId: "default",
+          cwd: "C:/must-not-be-created",
+          panels: [{ id: "shell", title: "Shell", command: "dangerous" }],
+          internalMcpEnabled: true,
+          jiraMcpEnabled: true,
+          jiraMcpCommentDrafts: [
+            {
+              id: "draft",
+              ref: { provider: "jira", connectionId: "jira-1", issueId: "1", issueKey: "ENG-1" },
+              body: "comment",
+              sourceWorkspaceId: "jira-inbox",
+              createdAt: "now",
+            },
+          ],
+          jiraBoard: {
+            parentWorkspaceId: "jira-inbox",
+            connectionId: "jira-1",
+            boardId: 7,
+            boardName: "Platform",
+            projectKeys: ["ops", "APP", "BAD;KEY"],
+          },
+        },
+        {
+          id: "duplicate-board",
+          name: "Platform copy",
+          kind: "jira-board",
+          profileId: "default",
+          jiraBoard: { parentWorkspaceId: "jira-inbox", connectionId: "jira-1", boardId: "7", boardName: "Platform" },
+        },
+        {
+          id: "foreign-board",
+          name: "Foreign board",
+          kind: "jira-board",
+          profileId: "other",
+          jiraBoard: { parentWorkspaceId: "jira-inbox", connectionId: "jira-2", boardId: "9", boardName: "Foreign" },
+        },
+      ],
+    });
+    const board = state.workspaces.find((workspace) => workspace.id === "board-child")!;
+    expect(state.workspaces.map((workspace) => workspace.id).slice(0, 2)).toEqual(["jira-inbox", "board-child"]);
+    expect(board).toMatchObject({
+      kind: "jira-board",
+      cwd: "",
+      panels: [],
+      internalMcpEnabled: false,
+      jiraMcpEnabled: false,
+      jiraMcpCommentDrafts: [],
+      jiraBoard: {
+        parentWorkspaceId: "jira-inbox",
+        connectionId: "jira-1",
+        boardId: "7",
+        boardName: "Platform",
+        projectKeys: ["APP", "OPS"],
+      },
+    });
+    expect(state.workspaces.some((workspace) => workspace.id === "duplicate-board")).toBe(false);
+    expect(state.workspaces.find((workspace) => workspace.id === "foreign-board")?.jiraBoard?.parentWorkspaceId).toBe(
+      "",
+    );
+  });
+
   describe("terminalFontSize settings", () => {
     test("createDefaultState sets both font size keys to 13", () => {
       const state = createDefaultState();
@@ -1532,6 +1732,38 @@ describe("default state", () => {
       const second = normalizeState(first);
       expect(second.profiles.find((p) => p.id === "p1")?.sidebarWorkspaceViewMode).toBe("recent");
     });
+  });
+});
+
+describe("workspace Jira work items", () => {
+  test("a workspace keeps the Jira issues it is linked to and drops malformed entries", () => {
+    const state = normalizeState({
+      workspaces: [
+        {
+          id: "ws-branch",
+          name: "feature/ABC-1",
+          kind: "terminal",
+          workItems: [
+            {
+              ref: { provider: "jira", connectionId: "jira-a", issueId: "1001", issueKey: "ABC-1" },
+              summary: "Fix",
+              status: "Open",
+            },
+            { ref: { connectionId: "jira-a", issueId: "", issueKey: "ABC-2" }, summary: "No id" },
+            { summary: "No ref" },
+          ],
+        },
+        { id: "ws-plain", name: "Plain", kind: "terminal", workItems: "nope" },
+      ],
+    });
+    expect(state.workspaces.find((workspace) => workspace.id === "ws-branch")?.workItems).toEqual([
+      {
+        ref: { provider: "jira", connectionId: "jira-a", issueId: "1001", issueKey: "ABC-1" },
+        summary: "Fix",
+        status: "Open",
+      },
+    ]);
+    expect(state.workspaces.find((workspace) => workspace.id === "ws-plain")).not.toHaveProperty("workItems");
   });
 });
 
@@ -2112,12 +2344,15 @@ describe("workspace internal MCP option", () => {
 
   test("is off unless explicitly on, and survives normalization when on", () => {
     expect(normalizeWorkspace(base).internalMcpEnabled).toBe(false);
+    expect(normalizeWorkspace(base).jiraMcpEnabled).toBe(false);
     expect(normalizeWorkspace({ ...base, internalMcpEnabled: "yes" }).internalMcpEnabled).toBe(false);
     expect(normalizeWorkspace({ ...base, internalMcpEnabled: true }).internalMcpEnabled).toBe(true);
+    expect(normalizeWorkspace({ ...base, jiraMcpEnabled: true }).jiraMcpEnabled).toBe(true);
   });
 
   test("a task workspace never carries it", () => {
     expect(normalizeWorkspace({ ...base, kind: "task", internalMcpEnabled: true }).internalMcpEnabled).toBe(false);
+    expect(normalizeWorkspace({ ...base, kind: "task", jiraMcpEnabled: true }).jiraMcpEnabled).toBe(true);
   });
 
   test("the workspace-wide SSH tools opt-in follows the same rules", () => {
@@ -2125,5 +2360,109 @@ describe("workspace internal MCP option", () => {
     expect(normalizeWorkspace({ ...base, sshMcpEnabled: "yes" }).sshMcpEnabled).toBe(false);
     expect(normalizeWorkspace({ ...base, sshMcpEnabled: true }).sshMcpEnabled).toBe(true);
     expect(normalizeWorkspace({ ...base, kind: "task", sshMcpEnabled: true }).sshMcpEnabled).toBe(false);
+  });
+});
+
+describe("Jira settings normalization", () => {
+  const jiraWith = (jira: Record<string, unknown>) => ({ settings: { integrations: { jira } } });
+  const validWatch = {
+    config: {
+      profileId: "default",
+      connectionId: "jira-1",
+      queryId: "q-1",
+      query: "project = OPS",
+      intervalMs: 60_000,
+      enabled: true,
+    },
+    members: { "issue:1": { issueId: "1", issueKey: "OPS-1", updatedAt: 5 } },
+    watermark: 5,
+    baselinePending: false,
+    nextPollAt: 10,
+  };
+  const validPolling = { version: 1, watches: { w1: validWatch }, dedupeIds: ["e1"] };
+  const pollingOf = (state: ReturnType<typeof normalizeState>) =>
+    (state.settings.integrations.jira as unknown as { pollingState?: unknown }).pollingState;
+
+  test("keeps a valid legacy pollingState only until the move to its own file is recorded", () => {
+    expect(pollingOf(normalizeState(jiraWith({ pollingState: validPolling })))).toEqual(validPolling);
+    const migrated = normalizeState({
+      settings: {
+        appliedMigrations: ["jira-polling-state-file-v1"],
+        integrations: { jira: { pollingState: validPolling } },
+      },
+    });
+    expect(pollingOf(migrated)).toBeUndefined();
+  });
+
+  test("resets a malformed, newer or partly invalid pollingState instead of copying it through", () => {
+    for (const bad of [
+      null,
+      "x",
+      5,
+      [],
+      { version: 2, watches: {}, dedupeIds: [] },
+      { version: 1 },
+      { version: 1, watches: [], dedupeIds: [] },
+    ])
+      expect(pollingOf(normalizeState(jiraWith({ pollingState: bad })))).toBeUndefined();
+    const partly = normalizeState(
+      jiraWith({
+        pollingState: {
+          version: 1,
+          watches: {
+            ok: validWatch,
+            broken: { config: { profileId: 7 } },
+            noMembers: { ...validWatch, members: null },
+          },
+          dedupeIds: ["e1", 3, null],
+        },
+      }),
+    );
+    expect(pollingOf(partly)).toEqual({ version: 1, watches: { ok: validWatch }, dedupeIds: ["e1"] });
+  });
+
+  test("fills the default comment attribution only when it is missing or invalid", () => {
+    const def = { enabled: true, text: "On behalf of {user}", position: "before" };
+    expect(normalizeState(jiraWith({})).settings.integrations.jira.commentAttribution).toEqual(def);
+    expect(normalizeState({}).settings.integrations.jira.commentAttribution).toEqual(def);
+    expect(
+      normalizeState(jiraWith({ commentAttribution: { enabled: "x", text: 1, position: "up" } })).settings.integrations
+        .jira.commentAttribution,
+    ).toEqual(def);
+  });
+
+  test("keeps a disabled, edited comment attribution across repeated normalisation", () => {
+    const mine = { enabled: false, text: "Sent by {account}", position: "after" as const };
+    const once = normalizeState(jiraWith({ commentAttribution: mine }));
+    const twice = normalizeState(once);
+    expect(once.settings.integrations.jira.commentAttribution).toEqual(mine);
+    expect(twice.settings.integrations.jira.commentAttribution).toEqual(mine);
+    const emptied = normalizeState(jiraWith({ commentAttribution: { enabled: true, text: "", position: "before" } }));
+    expect(emptied.settings.integrations.jira.commentAttribution.text).toBe("");
+  });
+
+  test("limits the comment attribution text to 500 characters without control characters", () => {
+    const text = normalizeState(
+      jiraWith({
+        commentAttribution: {
+          enabled: true,
+          text: `  a b
+c${"z".repeat(600)}`,
+          position: "before",
+        },
+      }),
+    ).settings.integrations.jira.commentAttribution.text;
+    expect(text.length).toBeLessThanOrEqual(500);
+    expect(text.startsWith("ab\nc")).toBe(true);
+  });
+
+  test("clips a connection label to the 80 characters the connection schema allows", () => {
+    const state = normalizeState(
+      jiraWith({
+        connections: [{ id: "jira-1", label: `${"L".repeat(90)} · site.atlassian.net`, profileId: "default" }],
+      }),
+    );
+    const [connection] = state.settings.integrations.jira.connections;
+    expect(connection.label).toHaveLength(80);
   });
 });

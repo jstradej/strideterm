@@ -75,6 +75,7 @@ import {
   type AccountUiState,
   type OwnerEmailNotice,
   type SignOutAssessment,
+  type TrialIneligibility,
 } from "./account-state.js";
 import {
   matchesAccountDisplay,
@@ -275,6 +276,7 @@ interface SignInFlow extends OperationScope {
    * single opaque string captured now and handed back unchanged when the identity is proved.
    */
   readonly offerId: string | null;
+  readonly confirmationPhrase: string | null;
   /** The verification window: at most two minutes from the moment the code was presented. */
   readonly deadline: number;
   /**
@@ -404,6 +406,8 @@ export class AccountManager extends EventEmitter {
   private bindingWrittenByOperationAt = 0;
   /** The attempt in progress, mirrored from the broker so the derived state is one object. */
   private auth: SignInAttemptState | null = null;
+  private accountAction: AccountUiState["accountAction"];
+  private armedConfirmationPhrase: string | null = null;
   /**
    * A login-address change that has been REQUESTED and not confirmed.
    *
@@ -500,6 +504,8 @@ export class AccountManager extends EventEmitter {
   private readonly pendingMutations = new Map<MutationName, PendingMutation>();
   private busy = false;
   private lastError: AccountErrorCode | null = null;
+  private trialIneligibility: TrialIneligibility | null = null;
+  private trialIneligibilityOwnerUid: string | null = null;
   private lastState: AccountUiState | null = null;
   private onlineServicesAttached: boolean;
   /** What this installation did, bounded. The whole of what a diagnostics report is made of. */
@@ -544,11 +550,25 @@ export class AccountManager extends EventEmitter {
 
   private attachBroker(broker: EmailSignInBroker | null): void {
     broker?.on("state", (state: SignInAttemptState | null) => {
+      if (state === null) this.armedConfirmationPhrase = null;
       this.auth = state;
       this.publish();
+      if (
+        state?.phase === "awaiting-confirmation" &&
+        (state.purpose === "signout-installation" ||
+          (state.purpose === "delete-account" && this.armedConfirmationPhrase === "DELETE MY ACCOUNT"))
+      ) {
+        const ref = broker.currentRef();
+        if (ref !== null && !this.redeemingAttemptIds.has(ref.attemptId)) {
+          void this.confirmEmailSignIn().catch(() => {
+            // The operation records its own refusal in the published account state.
+          });
+        }
+      }
     });
     broker?.on("failed", (code: string) => {
       this.auth = null;
+      this.armedConfirmationPhrase = null;
       this.lastError = toAccountErrorCode({ code });
       this.publish();
     });
@@ -567,41 +587,45 @@ export class AccountManager extends EventEmitter {
     // WHY, even when there is nothing to configure with (R06): a refused configuration is a state the
     // operator has to be able to read off the page.
     if (!this.configured) return unconfiguredState(this.deps.authLinkRefusal ?? null);
-    return deriveAccountState({
-      configured: true,
-      owner:
-        this.owner === null
-          ? null
-          : {
-              email: this.owner.email,
-              emailVerified: this.owner.emailVerified,
-              authenticatedAt: this.owner.authenticatedAt,
-            },
-      installationRegistered: this.installationRegistered,
-      overview: this.overview,
-      busy: this.busy,
-      lastError: this.lastError,
-      lastDiagnosticsReportId: this.lastDiagnosticsReportId,
-      auth: this.auth,
-      // THE ACCOUNT IT WAS ASKED FOR (S03). A note left by one person's request is not shown beside a
-      // different person's sign-in; with nobody signed in it is shown, because the address it names is
-      // the one fact about the last account that the person still has to act on.
-      pendingEmailChange:
-        this.pendingEmailChange !== null && (this.owner === null || this.owner.uid === this.pendingEmailChange.uid)
-          ? { email: this.pendingEmailChange.email, requestedAt: this.pendingEmailChange.requestedAt }
-          : null,
-      rememberedOwnerEmail: this.rememberedOwner?.email ?? null,
-      ownerEmailNotice: this.ownerEmailNotice,
-      recoveryRefused: this.recoveryRefused,
-      signInAvailable: this.signInAvailable,
-      // WHICH backend, or WHY none — exactly one of the two, and never both (F11). `authLinkRefusal`
-      // was previously accepted as a dependency and never read, so the page could say "sign-in is not
-      // available" and could not say which of four operator problems it was.
-      authEnvironment: this.signInAvailable ? (this.deps.broker?.environment ?? null) : null,
-      signInUnavailableReason: this.signInAvailable ? null : (this.deps.authLinkRefusal ?? null),
-      now: this.now(),
-      recentAuthWindowMs: RECENT_AUTH_WINDOW_MS,
-    });
+    return {
+      ...deriveAccountState({
+        configured: true,
+        owner:
+          this.owner === null
+            ? null
+            : {
+                email: this.owner.email,
+                emailVerified: this.owner.emailVerified,
+                authenticatedAt: this.owner.authenticatedAt,
+              },
+        installationRegistered: this.installationRegistered,
+        overview: this.overview,
+        busy: this.busy,
+        lastError: this.lastError,
+        lastDiagnosticsReportId: this.lastDiagnosticsReportId,
+        auth: this.auth,
+        // THE ACCOUNT IT WAS ASKED FOR (S03). A note left by one person's request is not shown beside a
+        // different person's sign-in; with nobody signed in it is shown, because the address it names is
+        // the one fact about the last account that the person still has to act on.
+        pendingEmailChange:
+          this.pendingEmailChange !== null && (this.owner === null || this.owner.uid === this.pendingEmailChange.uid)
+            ? { email: this.pendingEmailChange.email, requestedAt: this.pendingEmailChange.requestedAt }
+            : null,
+        rememberedOwnerEmail: this.rememberedOwner?.email ?? null,
+        ownerEmailNotice: this.ownerEmailNotice,
+        recoveryRefused: this.recoveryRefused,
+        signInAvailable: this.signInAvailable,
+        // WHICH backend, or WHY none — exactly one of the two, and never both (F11). `authLinkRefusal`
+        // was previously accepted as a dependency and never read, so the page could say "sign-in is not
+        // available" and could not say which of four operator problems it was.
+        authEnvironment: this.signInAvailable ? (this.deps.broker?.environment ?? null) : null,
+        signInUnavailableReason: this.signInAvailable ? null : (this.deps.authLinkRefusal ?? null),
+        now: this.now(),
+        recentAuthWindowMs: RECENT_AUTH_WINDOW_MS,
+      }),
+      ...(this.accountAction ? { accountAction: this.accountAction } : {}),
+      ...(this.trialIneligibility === null ? {} : { trialIneligibility: this.trialIneligibility }),
+    };
   }
 
   /** What signing out would break, before it breaks it. */
@@ -623,14 +647,31 @@ export class AccountManager extends EventEmitter {
    * authenticated — plan §7: "vyžádat odkaz s připnutým účelem; ověřit vazbu a provést původní
    * požadavek".
    */
-  async beginEmailSignIn(email: string, purpose: SignInPurpose, offerId?: string): Promise<void> {
+  async beginEmailSignIn(
+    email: string,
+    purpose: SignInPurpose,
+    offerId?: string,
+    confirmationPhrase?: string,
+  ): Promise<void> {
     const broker = this.requireBroker();
+    if (
+      purpose === "delete-account" &&
+      confirmationPhrase !== undefined &&
+      confirmationPhrase !== "DELETE MY ACCOUNT"
+    ) {
+      throw new AccountManagerError("invalid-credentials");
+    }
+    if (purpose !== "delete-account" && confirmationPhrase !== undefined) {
+      throw new AccountManagerError("invalid-credentials");
+    }
     // A NEW sign-in supersedes whatever was pending, including a half-finished one. The retention of
     // any previous owner session goes with it: the person is proving an identity again, and the old
     // proof must not survive into the new intention. And so does any COMPLETION still unwinding
     // (F01): its late answer must not set a session, run a mutation or end this new attempt — and so
     // does every other operation in flight (R01), for the same reason.
     this.abandonOperations();
+    this.accountAction = undefined;
+    this.armedConfirmationPhrase = purpose === "delete-account" ? (confirmationPhrase ?? null) : null;
     this.recoveryRefused = null;
     this.releaseOwnerSession();
     this.pendingOfferId = purpose === "checkout" || purpose === "revoke-device" ? (offerId ?? null) : null;
@@ -657,6 +698,8 @@ export class AccountManager extends EventEmitter {
   async bootstrapExternalSignIn(email: string, link: string): Promise<void> {
     const broker = this.requireBroker();
     this.abandonOperations();
+    this.armedConfirmationPhrase = null;
+    this.accountAction = undefined;
     this.releaseOwnerSession();
     this.pendingOfferId = null;
     broker.beginExternalLink(email, link, "enrol-with-trial");
@@ -666,6 +709,8 @@ export class AccountManager extends EventEmitter {
   async bootstrapExternalDeletion(email: string, link: string, confirmationPhrase: string): Promise<void> {
     const broker = this.requireBroker();
     this.abandonOperations();
+    this.armedConfirmationPhrase = null;
+    this.accountAction = undefined;
     this.releaseOwnerSession();
     this.pendingOfferId = null;
     broker.beginExternalLink(email, link, "delete-account");
@@ -727,6 +772,8 @@ export class AccountManager extends EventEmitter {
     // EVERY operation, not only the completion (R01): the owning panel closing reaches this method
     // too, and a checkout or portal request whose answer arrives afterwards must not open a browser.
     this.abandonOperations();
+    this.accountAction = undefined;
+    this.armedConfirmationPhrase = null;
     this.deps.broker?.cancel();
     this.releaseOwnerSession();
     this.pendingOfferId = null;
@@ -754,11 +801,11 @@ export class AccountManager extends EventEmitter {
    * kept is the one thing that has no credential attached to it yet: an attempt still WAITING for
    * somebody to open a link.
    *
-   * That distinction is safe precisely because of the confirmation step. An attempt cannot turn into
-   * an owner session on its own: the payload arrives, the state becomes `awaiting-confirmation`, and
-   * it stays there until a person presses confirm ON THIS DESKTOP. No credential can therefore
-   * appear while the panel is closed, which is what makes "keep the attempt, drop the retention" a
-   * complete answer rather than half of one.
+   * A normal sign-in cannot turn into an owner session on its own: the payload arrives, the state
+   * becomes `awaiting-confirmation`, and it stays there until a person presses confirm ON THIS
+   * DESKTOP. The two action purposes are the explicit exception: the person already chose sign-out,
+   * or armed deletion with the exact phrase before leaving for email, so that flow can finish without
+   * a panel press. Closing the panel alone does not create either authorization.
    *
    * The attempt is still bounded by everything that bounded it before — its own fifteen minutes, the
    * broker's deadline, the poll budget — so this widens no window. It only stops the desktop giving
@@ -825,6 +872,7 @@ export class AccountManager extends EventEmitter {
       ref: started.ref,
       purpose,
       offerId: purpose === "checkout" || purpose === "revoke-device" ? this.pendingOfferId : null,
+      confirmationPhrase: purpose === "delete-account" ? this.armedConfirmationPhrase : null,
       deadline: started.deadline,
       abort: new AbortController(),
       ownerGeneration: null,
@@ -833,6 +881,7 @@ export class AccountManager extends EventEmitter {
     };
     this.abandonActiveFlow();
     this.activeFlow = flow;
+    this.armedConfirmationPhrase = null;
     this.redeemingAttemptIds.add(flow.ref.attemptId);
     try {
       await this.run(
@@ -936,7 +985,9 @@ export class AccountManager extends EventEmitter {
         // THE OUTER OPERATION OWNS THE RETENTION. Whatever happened above, the credential does not
         // outlive it — except for the purposes whose follow-up action is a separate, deliberate second
         // step by the person (see `purposeKeepsOwner`).
-        if (!purposeKeepsOwner(purpose)) this.releaseOwnerSession();
+        if (!purposeKeepsOwner(purpose) && !(purpose === "delete-account" && flow.confirmationPhrase === null)) {
+          this.releaseOwnerSession();
+        }
         this.pendingOfferId = null;
         this.endFlow(flow);
       }
@@ -1027,7 +1078,7 @@ export class AccountManager extends EventEmitter {
    * new sign-in, sign-out, shutdown.
    */
   private abandonOperations(except?: OperationScope): void {
-    this.abandonActiveFlow();
+    if (this.activeFlow !== except) this.abandonActiveFlow();
     for (const scope of [...this.liveScopes]) {
       if (scope !== except) this.endScope(scope);
     }
@@ -1198,11 +1249,16 @@ export class AccountManager extends EventEmitter {
         return;
       case "reauth":
       case "change-email":
-      case "delete-account":
-        // The follow-up is a separate, deliberate act by the person — typing a new address, or the
-        // deletion phrase — inside the five-minute retention window. Nothing is performed here.
+        // These remain a reauthentication-only flow; a separate user action follows.
         void transport;
         void identity;
+        return;
+      case "signout-installation":
+        await this.signOutInstallation({ disconnect: true }, flow);
+        return;
+      case "delete-account":
+        if (flow.confirmationPhrase === null) return;
+        await this.deleteAccountInternal(flow.confirmationPhrase, flow);
         return;
       case "revoke-device": {
         // THE OPERAND PINNED WHEN THE FLOW WAS CREATED (F01), same reasoning as `checkout` above: a
@@ -1603,7 +1659,12 @@ export class AccountManager extends EventEmitter {
     // AN OPERATION'S ANSWER FENCES EVERY READ ALREADY OUT (T01); a read's own answer does not, or the
     // second of two in-order answers would be thrown away for having been issued beside the first.
     if (source === "operation") this.bindingWrittenByOperationAt = this.bindingRevision;
-    this.installationRegistered = marker === "bound";
+    const registered = marker === "bound";
+    if (this.installationRegistered !== registered && this.trialIneligibility !== "trial-already-used") {
+      this.trialIneligibility = null;
+      this.trialIneligibilityOwnerUid = null;
+    }
+    this.installationRegistered = registered;
     // A machine no longer bound to an account has no owner address to remind anybody of.
     if (marker === "none") this.forgetRememberedOwnerEmail();
     return this.recordBinding(marker);
@@ -1682,9 +1743,23 @@ export class AccountManager extends EventEmitter {
       { installationId: identity.installationId },
       (sent, key) => transport.startTrial({ ...sent, idempotencyKey: key }, { signal: scope.abort.signal }),
     );
+    this.requireScope(scope);
     // `not-eligible` carries WHY — the trial tombstone for this key, an account that has already
     // paid, a key that belongs elsewhere — and the page needs the reason, not just a refusal.
-    if (result.status === "not-eligible") throw new AccountManagerError(toAccountErrorCode({ code: result.reason }));
+    if (result.status === "not-eligible") {
+      const code = toAccountErrorCode({ code: result.reason });
+      if (
+        code === "trial-already-used" ||
+        code === "trial-account-has-billing-history" ||
+        code === "trial-account-has-active-entitlement"
+      ) {
+        this.trialIneligibility = code;
+        this.trialIneligibilityOwnerUid = owner.uid;
+      }
+      throw new AccountManagerError(code);
+    }
+    this.trialIneligibility = null;
+    this.trialIneligibilityOwnerUid = null;
     // THE TOKEN BEFORE THE PAGE. The overview below is what makes the page say "trial" and offer
     // "Pair a phone"; the old token would have that click refused with `entitlement-required` until
     // the token-refresh marker happened to arrive. The server answers only once the claims are issued,
@@ -1928,62 +2003,67 @@ export class AccountManager extends EventEmitter {
    *
    * The OWNER ACCOUNT is untouched. Closing the app is not a sign-out either.
    */
-  async signOutInstallation(args: { readonly disconnect: boolean }): Promise<void> {
-    await this.run("sign-out-installation", async (_client, transport, identity, scope) => {
-      // Match the server's recent-owner requirement before requesting a token. Unregistered
-      // installations have no remote registration to revoke and can still clear locally.
-      if (this.installationRegistered && (this.owner === null || !hasRecentAuth(this.owner, this.now()))) {
-        throw new AccountManagerError("requires-recent-login");
-      }
-      const assessment = assessSignOut(this.overview);
-      if (assessment.blockers.length > 0 && !args.disconnect) {
-        // The UI offers "cancel" or "disconnect this installation"; it never silently disconnects
-        // somebody's phones because they clicked sign out.
-        throw new AccountManagerError("account-mismatch");
-      }
-      if (this.installationRegistered) {
-        await transport.revokeAccountDevice(
-          {
-            kind: "installation",
-            targetId: identity.installationId,
-            idempotencyKey: this.newKey(),
-          },
-          { signal: scope.abort.signal },
-        );
-      }
-      // AND THE CREDENTIAL, but only now. Invariant 12: the server revocation has completed, so the
-      // refresh token this machine has been signing in with may finally go. Clearing only this
-      // object's own fields — which is all this used to do — left the token on disk, and the next
-      // start signed the machine straight back in as an installation the server had just revoked.
-      await this.deps.forgetInstallationCredential?.();
-      this.recentCheckoutLink = null;
-      // And the durable marker with it: this machine is deliberately no longer bound, so a fresh
-      // anonymous identity IS the right answer for it from here on. `none` is the one marker that
-      // releases it — which also makes this the way out of the recovery state for a machine whose
-      // marker could not be read. AUTHORITATIVE (S01): a registration answer that lands after this
-      // does not write `bound` back over it.
-      await this.applyBinding("none", "operation");
-      this.overview = null;
-      // THIS IS THE NEWEST AUTHORITATIVE ANSWER about the overview (R01): a read that was in flight
-      // when the machine signed out must not resurrect the account it just left when it lands.
-      this.overviewApplied = ++this.overviewRequests;
-      // THROUGH `releaseOwnerSession`, not by clearing two fields: it also cancels the retention
-      // timer, and a timer left armed would fire into an object that has just signed out.
-      this.releaseOwnerSession();
-      // And any attempt in flight, for the same reason — a sign-in that completed after this would be
-      // completing into a machine that is no longer bound to anything. The COMPLETION half too (F01):
-      // a redemption still unwinding would otherwise walk into `performPurpose` on a machine that has
-      // just signed out — and every other operation (R01), except this one.
-      this.abandonOperations(scope);
-      this.deps.broker?.cancel();
-      this.pendingMutations.clear();
-      // AND THE NOTE, as a CLEAR (T02): a change request still out when the machine signed out must not
-      // write the address back beside nobody once it answers. The same rule `clearPendingEmailChange`
-      // follows, for the most explicit clear there is.
-      this.pendingEmailChange = null;
-      this.recoveryRefused = null;
-      this.emailChangeSettled = this.emailChangeRequests;
-    });
+  async signOutInstallation(args: { readonly disconnect: boolean }, existing?: OperationScope): Promise<void> {
+    await this.run(
+      "sign-out-installation",
+      async (_client, transport, identity, scope) => {
+        // Match the server's recent-owner requirement before requesting a token. Unregistered
+        // installations have no remote registration to revoke and can still clear locally.
+        if (this.installationRegistered && (this.owner === null || !hasRecentAuth(this.owner, this.now()))) {
+          throw new AccountManagerError("requires-recent-login");
+        }
+        const assessment = assessSignOut(this.overview);
+        if (assessment.blockers.length > 0 && !args.disconnect) {
+          // The UI offers "cancel" or "disconnect this installation"; it never silently disconnects
+          // somebody's phones because they clicked sign out.
+          throw new AccountManagerError("account-mismatch");
+        }
+        if (this.installationRegistered) {
+          await transport.revokeAccountDevice(
+            {
+              kind: "installation",
+              targetId: identity.installationId,
+              idempotencyKey: this.newKey(),
+            },
+            { signal: scope.abort.signal },
+          );
+        }
+        // AND THE CREDENTIAL, but only now. Invariant 12: the server revocation has completed, so the
+        // refresh token this machine has been signing in with may finally go. Clearing only this
+        // object's own fields — which is all this used to do — left the token on disk, and the next
+        // start signed the machine straight back in as an installation the server had just revoked.
+        await this.deps.forgetInstallationCredential?.();
+        this.accountAction = undefined;
+        this.recentCheckoutLink = null;
+        // And the durable marker with it: this machine is deliberately no longer bound, so a fresh
+        // anonymous identity IS the right answer for it from here on. `none` is the one marker that
+        // releases it — which also makes this the way out of the recovery state for a machine whose
+        // marker could not be read. AUTHORITATIVE (S01): a registration answer that lands after this
+        // does not write `bound` back over it.
+        await this.applyBinding("none", "operation");
+        this.overview = null;
+        // THIS IS THE NEWEST AUTHORITATIVE ANSWER about the overview (R01): a read that was in flight
+        // when the machine signed out must not resurrect the account it just left when it lands.
+        this.overviewApplied = ++this.overviewRequests;
+        // THROUGH `releaseOwnerSession`, not by clearing two fields: it also cancels the retention
+        // timer, and a timer left armed would fire into an object that has just signed out.
+        this.releaseOwnerSession();
+        // And any attempt in flight, for the same reason — a sign-in that completed after this would be
+        // completing into a machine that is no longer bound to anything. The COMPLETION half too (F01):
+        // a redemption still unwinding would otherwise walk into `performPurpose` on a machine that has
+        // just signed out — and every other operation (R01), except this one.
+        this.abandonOperations(scope);
+        this.deps.broker?.cancel();
+        this.pendingMutations.clear();
+        // AND THE NOTE, as a CLEAR (T02): a change request still out when the machine signed out must not
+        // write the address back beside nobody once it answers. The same rule `clearPendingEmailChange`
+        // follows, for the most explicit clear there is.
+        this.pendingEmailChange = null;
+        this.recoveryRefused = null;
+        this.emailChangeSettled = this.emailChangeRequests;
+      },
+      existing,
+    );
   }
 
   async deleteAccount(confirmationPhrase: string): Promise<{ providerCancellationRequired: boolean }> {
@@ -2004,20 +2084,35 @@ export class AccountManager extends EventEmitter {
     }
   }
 
-  private async deleteAccountInternal(confirmationPhrase: string): Promise<{ providerCancellationRequired: boolean }> {
-    return this.run("delete-account", async (_client, transport, _identity, scope) => {
-      const owner = this.requireOwnerFor(scope);
-      if (!hasRecentAuth(owner, this.now())) throw new AccountManagerError("requires-recent-login");
-      const result = await transport.deleteAccount(
-        { confirmationPhrase, idempotencyKey: this.newKey() },
-        { signal: scope.abort.signal },
-      );
-      if (result.status === "refused") throw new AccountManagerError("unknown");
-      // The local credential is NOT dropped here. The deletion is a durable job that may still need
-      // this session to answer for it, and the runtime removes the credential when the job reports
-      // it is done — see the plan's §10 step 6.
-      return { providerCancellationRequired: result.providerCancellationRequired };
-    });
+  private async deleteAccountInternal(
+    confirmationPhrase: string,
+    existing?: OperationScope,
+  ): Promise<{ providerCancellationRequired: boolean }> {
+    return this.run(
+      "delete-account",
+      async (_client, transport, _identity, scope) => {
+        const owner = this.requireOwnerFor(scope);
+        if (!hasRecentAuth(owner, this.now())) throw new AccountManagerError("requires-recent-login");
+        const result = await transport.deleteAccount(
+          { confirmationPhrase, idempotencyKey: this.newKey() },
+          { signal: scope.abort.signal },
+        );
+        if (result.status === "refused") throw new AccountManagerError("unknown");
+        // The local credential is NOT dropped here. The deletion is a durable job that may still need
+        // this session to answer for it, and the runtime removes the credential when the job reports
+        // it is done — see the plan's §10 step 6.
+        if (scope.alive) {
+          this.accountAction = {
+            kind: "delete-account",
+            status: "submitted",
+            providerCancellationRequired: result.providerCancellationRequired,
+          };
+          this.publish();
+        }
+        return { providerCancellationRequired: result.providerCancellationRequired };
+      },
+      existing,
+    );
   }
 
   // --- diagnostics ---------------------------------------------------------------------------------
@@ -2103,6 +2198,14 @@ export class AccountManager extends EventEmitter {
   private setOwner(session: OwnerSession): void {
     this.ownerAbort?.abort();
     this.owner = session;
+    if (
+      this.trialIneligibility !== "trial-already-used" &&
+      this.trialIneligibilityOwnerUid !== null &&
+      this.trialIneligibilityOwnerUid !== session.uid
+    ) {
+      this.trialIneligibility = null;
+      this.trialIneligibilityOwnerUid = null;
+    }
     this.ownerGeneration += 1;
     this.ownerAbort = new AbortController();
     this.rememberOwnerEmail(session);
@@ -2584,6 +2687,7 @@ export class AccountManager extends EventEmitter {
     // against a configuration nobody chose for it; ending the flow aborts its requests and makes every
     // remaining step a refusal rather than a surprise.
     this.abandonOperations();
+    this.armedConfirmationPhrase = null;
     this.recentCheckoutLink = null;
     this.deps.broker?.cancel();
     this.releaseOwnerSession();
@@ -2602,14 +2706,12 @@ export class AccountManager extends EventEmitter {
 /**
  * Whether the owner credential survives the purpose chain, and for how good a reason.
  *
- * Three purposes end with the person having to do one more deliberate thing — type a new address,
- * type the deletion phrase, or simply be re-authenticated for a decision they have not made yet — and
- * a credential dropped the instant the link was redeemed would mean asking for a second link to
- * complete the first intention. The retention is capped at the recent-auth window either way, so the
- * question is only whether it ends now or in at most five minutes.
+ * These purposes end with the person having to do one more deliberate thing inside the five-minute
+ * retention window. A credential dropped the instant the link was redeemed would mean asking for a
+ * second link to complete the first intention.
  */
 function purposeKeepsOwner(purpose: SignInPurpose): boolean {
-  return purpose === "reauth" || purpose === "change-email" || purpose === "delete-account";
+  return purpose === "reauth" || purpose === "change-email";
 }
 
 type RevokeKind = "installation" | "mobile-device" | "pair" | "account-wide";

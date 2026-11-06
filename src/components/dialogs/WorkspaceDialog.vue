@@ -184,6 +184,27 @@
           :provider-options="providerOptions"
         />
 
+        <label
+          v-if="showJiraMcpOption"
+          class="internal-mcp-option"
+          title="Controls Jira tools for agent sessions started in this workspace."
+        >
+          <input
+            v-model="draft.jiraMcpEnabled"
+            type="checkbox"
+            data-testid="jira-mcp-checkbox"
+            :disabled="internalMcpLocked"
+          />
+          Allow Jira MCP for agents
+          <span class="internal-mcp-hint">
+            Lets supported agents use enabled Jira connections in this profile from this workspace.
+            <template v-if="internalMcpLocked"> Desktop only — change it in the desktop app.</template>
+            <template v-else
+              >Applies to new agent sessions. Restart existing agent tabs after changing this setting.</template
+            >
+          </span>
+        </label>
+
         <p v-if="isCreatingTask && !claudeAvailable && workerNeedsClaudeWarning" class="warning-box">
           Claude Code CLI (claude) was not found on your PATH. The selected provider requires it.
         </p>
@@ -262,6 +283,28 @@
             <template v-else
               >Applies to agent sessions started after saving. Restart open agent sessions to apply changes.</template
             >
+          </span>
+        </label>
+        <label
+          v-if="showJiraMcpOption"
+          class="internal-mcp-option"
+          :title="
+            internalMcpLocked
+              ? 'Jira MCP can be enabled in the desktop app.'
+              : 'Controls Jira tools for agent sessions started in this workspace.'
+          "
+        >
+          <input
+            v-model="draft.jiraMcpEnabled"
+            type="checkbox"
+            data-testid="jira-mcp-checkbox"
+            :disabled="internalMcpLocked"
+          />
+          Allow Jira MCP for agents
+          <span class="internal-mcp-hint">
+            Lets supported agents use enabled Jira connections in this profile from this workspace.
+            <template v-if="internalMcpLocked"> Desktop only — change it in the desktop app.</template>
+            <template v-else>Applies to agent sessions started after saving.</template>
           </span>
         </label>
         <PanelEditor
@@ -544,6 +587,8 @@ interface WorkspaceDraft {
   // internal MCP and SSH tools opt-ins (workspace level, desktop-only to change)
   internalMcpEnabled?: boolean;
   sshMcpEnabled?: boolean;
+  // Jira issue access is a separate per-workspace grant.
+  jiraMcpEnabled?: boolean;
   // multi-repo
   gitRoots?: string[];
   // review workspace
@@ -617,6 +662,9 @@ if (rawDraft.kind === "task") {
   rawDraft.internalMcpEnabled = rawDraft.internalMcpEnabled === true;
   rawDraft.sshMcpEnabled = rawDraft.sshMcpEnabled === true;
 }
+if (rawDraft.kind === "docker" || rawDraft.kind === "azure" || rawDraft.kind === "github") {
+  delete rawDraft.jiraMcpEnabled;
+} else rawDraft.jiraMcpEnabled = rawDraft.jiraMcpEnabled === true;
 const draft = reactive(rawDraft);
 
 const store = useAppStore();
@@ -696,6 +744,7 @@ const isAzure = computed(() => draft.kind === "azure" || draft.kind === "github"
 const isTask = computed(() => draft.kind === "task");
 const isCreatingTask = computed(() => isTask.value && props.creating);
 const showInternalMcpOption = computed(() => !isTask.value && !isDocker.value);
+const showJiraMcpOption = computed(() => !isDocker.value && !isAzure.value && !draft.quickfix);
 const internalMcpLocked = computed(() => store.isRemoteTransport);
 const taskDescriptionLength = computed(() => (draft.task?.description || "").length);
 

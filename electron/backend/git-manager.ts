@@ -16,6 +16,8 @@ import { Effect } from "effect";
 import { execFileText, ProcessCommandError, quotePosixArg, spawnTextStreaming } from "./process-utils.js";
 import { reportGitReadProgress, timedGitRead } from "./git-read-progress.js";
 import {
+  authHeaderConfigKeys,
+  connectionGitAuthScopes,
   createGitConfigEnvProbe,
   encodeAuthHeader,
   gitAuthEnvironment,
@@ -593,12 +595,18 @@ export class GitManager extends EventEmitter {
   }
 
   // Login + token for a connection, or null when there is no usable token and
-  // callers fall back to plain (unauthenticated) git.
-  private resolveAuthCredentials(connection: Connection | null): { login: string; token: string } | null {
+  // callers fall back to plain (unauthenticated) git. `scopes` are the connection's
+  // own Git hosts: `fetch --all`, a repointed origin or an added remote elsewhere
+  // gets no token.
+  private resolveAuthCredentials(
+    connection: Connection | null,
+  ): { login: string; token: string; scopes: string[] } | null {
     if (!connection?.tokenRef || !this.credentialStore) return null;
     const token = this.credentialStore.getSecret(connection.tokenRef);
     if (!token) return null;
-    return { login: String(connection.login || connection.currentUserLogin || "x-access-token"), token };
+    const scopes = connectionGitAuthScopes(connection);
+    if (!scopes.length) return null;
+    return { login: String(connection.login || connection.currentUserLogin || "x-access-token"), token, scopes };
   }
 
   private authLongpathsArgs(): string[] {
@@ -613,8 +621,10 @@ export class GitManager extends EventEmitter {
     if (!credentials) return [];
     return [
       ...this.authLongpathsArgs(),
-      "-c",
-      `http.extraheader=${encodeAuthHeader(credentials.login, credentials.token)}`,
+      ...authHeaderConfigKeys(credentials.scopes).flatMap((key) => [
+        "-c",
+        `${key}=${encodeAuthHeader(credentials.login, credentials.token)}`,
+      ]),
     ];
   }
 
@@ -626,7 +636,7 @@ export class GitManager extends EventEmitter {
     if (!(await this.supportsGitConfigEnv())) return { args: this.buildAuthArgs(connection) };
     return {
       args: this.authLongpathsArgs(),
-      env: gitAuthEnvironment(credentials.login, credentials.token, sanitizeGitEnvironment()),
+      env: gitAuthEnvironment(credentials.login, credentials.token, sanitizeGitEnvironment(), credentials.scopes),
     };
   }
 

@@ -1,13 +1,17 @@
 <template>
   <!-- Desktop / wide: classic horizontal row. -->
-  <div v-if="!isMobile" class="sub-tabs" role="tablist" aria-label="Container detail sections">
+  <div v-if="!isMobile" class="sub-tabs subtabs" role="tablist" aria-label="Container detail sections">
     <button
       v-for="tab in tabs"
       :key="tab.id"
       type="button"
       role="tab"
       :aria-selected="activeSubTab === tab.id"
-      :class="['sub-tabs__tab', activeSubTab === tab.id && 'sub-tabs__tab--active']"
+      :class="[
+        'sub-tabs__tab',
+        'subtabs__tab',
+        activeSubTab === tab.id && 'sub-tabs__tab--active subtabs__tab--active',
+      ]"
       @click="emit('change', tab.id)"
     >
       {{ tab.label }}
@@ -111,55 +115,57 @@ function onPick(id: SubTabKind): void {
 </script>
 
 <style scoped>
-.sub-tabs {
-  display: flex;
-  gap: 2px;
-  padding: 0 8px;
-  border-bottom: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
-  background: var(--bg-secondary, #1a1a1d);
-  flex-shrink: 0;
-  overflow-x: auto;
-  scrollbar-width: none;
-  -webkit-overflow-scrolling: touch;
-}
+@media (max-width: 768px), (max-height: 500px) {
+  .sub-tabs {
+    display: flex;
+    gap: 2px;
+    padding: 0 8px;
+    border-bottom: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+    background: var(--bg-secondary, #1a1a1d);
+    flex-shrink: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
 
-.sub-tabs::-webkit-scrollbar {
-  display: none;
-}
+  .sub-tabs::-webkit-scrollbar {
+    display: none;
+  }
 
-.sub-tabs__tab {
-  position: relative;
-  padding: 7px 14px;
-  background: transparent;
-  border: 0;
-  color: var(--text-dim, #888);
-  font-size: 12px;
-  cursor: pointer;
-  letter-spacing: 0.2px;
-  border-radius: 0;
-  white-space: nowrap;
-  flex-shrink: 0;
-  min-height: 36px; /* touch target on mobile */
-}
+  .sub-tabs__tab {
+    position: relative;
+    padding: 7px 14px;
+    background: transparent;
+    border: 0;
+    color: var(--text-dim, #888);
+    font-size: 12px;
+    cursor: pointer;
+    letter-spacing: 0.2px;
+    border-radius: 0;
+    white-space: nowrap;
+    flex-shrink: 0;
+    min-height: 36px; /* touch target on mobile */
+  }
 
-.sub-tabs__tab:hover {
-  color: var(--text-primary, #e2e8f0);
-}
+  .sub-tabs__tab:hover {
+    color: var(--text-primary, #e2e8f0);
+  }
 
-.sub-tabs__tab--active {
-  color: var(--text-primary, #e2e8f0);
-  font-weight: 600;
-}
+  .sub-tabs__tab--active {
+    color: var(--text-primary, #e2e8f0);
+    font-weight: 600;
+  }
 
-.sub-tabs__tab--active::after {
-  content: "";
-  position: absolute;
-  left: 8px;
-  right: 8px;
-  bottom: -1px;
-  height: 2px;
-  background: var(--accent, #63b3ed);
-  border-radius: 1px;
+  .sub-tabs__tab--active::after {
+    content: "";
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    bottom: -1px;
+    height: 2px;
+    background: var(--accent, #63b3ed);
+    border-radius: 1px;
+  }
 }
 
 .sub-tabs__tab:focus-visible {

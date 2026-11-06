@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref, computed, shallowRef, watch } from "vue";
 import { rlog } from "../lib/renderer-log.js";
+import { isFileChangedOnDiskError } from "../../electron/shared/file-conflict.js";
 
 interface FileEntry {
   name: string;
@@ -19,6 +20,7 @@ interface EditorTab {
   editMode: boolean;
   editContent: string;
   baselineContent: string;
+  baselineMtimeMs?: number;
   editDirty: boolean;
   editLoading?: boolean;
   diffOpen: boolean;
@@ -219,11 +221,11 @@ export const useFileManagerStore = defineStore("fileManager", () => {
 
   // View preferences
   const viewMode = ref("list");
-  const layoutMode = ref<"editor" | "browser">(
-    typeof localStorage !== "undefined" && localStorage.getItem("files.layoutMode") === "browser"
-      ? "browser"
-      : "editor",
+  const storedLayout = typeof localStorage !== "undefined" ? localStorage.getItem("files.layoutMode") : null;
+  const layoutMode = ref<"editor" | "browser" | "commander">(
+    storedLayout === "browser" || storedLayout === "commander" ? storedLayout : "editor",
   );
+  const listingRevision = ref(0);
   const showHidden = ref(false);
   const sortBy = ref("name");
   const sortAsc = ref(true);
@@ -343,8 +345,23 @@ export const useFileManagerStore = defineStore("fileManager", () => {
   // Actions
   // ---------------------------------------------------------------------
 
+  // The Files pane inits its root on mount and nobody awaits it. A caller that opens a path right after the tab
+  // appears (Fix with agent, a terminal link) must wait for that same init: returning early on the previous root's
+  // entries let its navigate("") land after the caller's and wipe the opened file.
+  let initInFlight: { root: string; done: Promise<void> } | null = null;
   async function init(root: string): Promise<void> {
+    if (initInFlight?.root === root) return initInFlight.done;
     if (rootPath.value === root && entries.value.length > 0) return;
+    const done = initRoot(root);
+    initInFlight = { root, done };
+    try {
+      await done;
+    } finally {
+      if (initInFlight?.done === done) initInFlight = null;
+    }
+  }
+
+  async function initRoot(root: string): Promise<void> {
     syncActiveTab();
     if (rootPath.value !== root) {
       rootChangeSequence += 1;
@@ -378,7 +395,7 @@ export const useFileManagerStore = defineStore("fileManager", () => {
   async function navigate(relativePath: string): Promise<void> {
     if (!_api) return;
     const requestRoot = rootPath.value;
-    const preserveEditor = layoutMode.value === "editor" && !!activeTabPath.value;
+    const preserveEditor = layoutMode.value !== "browser" && !!activeTabPath.value;
     loading.value = true;
     error.value = null;
     filterText.value = "";
@@ -475,7 +492,7 @@ export const useFileManagerStore = defineStore("fileManager", () => {
       if (
         activeTabPath.value === entry.relativePath &&
         selectedEntry.value?.relativePath === entry.relativePath &&
-        layoutMode.value === "editor" &&
+        layoutMode.value !== "browser" &&
         !tab.editMode &&
         !tab.editLoading &&
         (tab.preview?.kind === "text" || tab.preview?.kind === "empty")
@@ -504,7 +521,7 @@ export const useFileManagerStore = defineStore("fileManager", () => {
     selectedEntry.value = tab.entry;
     if (!tab.preview) await loadPreview(tab.entry);
     if (
-      layoutMode.value === "editor" &&
+      layoutMode.value !== "browser" &&
       !tab.editMode &&
       !tab.editLoading &&
       (tab.preview?.kind === "text" || tab.preview?.kind === "empty")
@@ -850,12 +867,13 @@ export const useFileManagerStore = defineStore("fileManager", () => {
       const result = (await _api.fileRead({
         rootPath: requestRoot,
         relativePath: entry.relativePath,
-      })) as { content: string };
+      })) as { content: string; mtimeMs?: number };
       if (!requestTab || !hasOpenTab(requestTab) || requestTab.rootPath !== requestRoot) return;
       requestTab.editLoading = false;
       if (!requestTab.editMode && !requestTab.editDirty) {
         requestTab.editContent = result.content;
         requestTab.baselineContent = result.content;
+        requestTab.baselineMtimeMs = result.mtimeMs;
         requestTab.editDirty = false;
         requestTab.editMode = true;
       }
@@ -894,16 +912,31 @@ export const useFileManagerStore = defineStore("fileManager", () => {
     );
     const content = editContent.value;
     try {
-      await _api.fileWrite({
-        rootPath: requestRoot,
-        relativePath: entry.relativePath,
-        content,
-      });
+      const writeArgs = { rootPath: requestRoot, relativePath: entry.relativePath, content };
+      let written: { mtimeMs?: number } | undefined;
+      try {
+        written = (await _api.fileWrite({
+          ...writeArgs,
+          ...(requestTab?.baselineMtimeMs !== undefined ? { expectedMtimeMs: requestTab.baselineMtimeMs } : {}),
+        })) as { mtimeMs?: number } | undefined;
+      } catch (err) {
+        if (!isFileChangedOnDiskError(err)) throw err;
+        const overwrite = await confirmInApp({
+          title: "File changed on disk",
+          message: `${entry.relativePath} changed on disk since you opened it. Overwrite it with your version?`,
+          confirmLabel: "Overwrite",
+          cancelLabel: "Cancel",
+          danger: true,
+        });
+        if (!overwrite) return;
+        written = (await _api.fileWrite(writeArgs)) as { mtimeMs?: number } | undefined;
+      }
       if (requestTab && hasOpenTab(requestTab)) {
         requestTab.baselineContent = content;
+        requestTab.baselineMtimeMs = written?.mtimeMs;
         requestTab.editDirty = requestTab.editContent !== content;
         if (!requestTab.editDirty) {
-          requestTab.editMode = rootPath.value === requestRoot ? layoutMode.value === "editor" : requestTab.editMode;
+          requestTab.editMode = rootPath.value === requestRoot ? layoutMode.value !== "browser" : requestTab.editMode;
         }
         if (
           rootPath.value === requestRoot &&
@@ -938,7 +971,7 @@ export const useFileManagerStore = defineStore("fileManager", () => {
       ) {
         preview.value = updatedPreview;
         editDirty.value = false;
-        editMode.value = layoutMode.value === "editor";
+        editMode.value = layoutMode.value !== "browser";
       }
       // After saving, the file likely became dirty (or maybe became clean).
       if (rootPath.value === requestRoot) await refreshGitStatus();
@@ -995,6 +1028,7 @@ export const useFileManagerStore = defineStore("fileManager", () => {
     const requestRoot = rootPath.value;
     const requestPath = currentPath.value;
     loading.value = true;
+    let listed = false;
     try {
       const result = (await _api.fileList({ rootPath: requestRoot, relativePath: requestPath })) as {
         entries: FileEntry[];
@@ -1007,12 +1041,31 @@ export const useFileManagerStore = defineStore("fileManager", () => {
         if (rootPath.value !== requestRoot) return;
         await expandTreeNode(path);
       }
+      listed = true;
     } catch (err) {
       if (rootPath.value === requestRoot) error.value = (err as Error).message || "Failed to refresh files";
     } finally {
       loading.value = false;
     }
-    if (rootPath.value === requestRoot) await refreshGitStatus();
+    if (rootPath.value !== requestRoot) return;
+    await refreshGitStatus();
+    if (listed && rootPath.value === requestRoot) listingRevision.value += 1;
+  }
+
+  async function listDirectory(relativePath: string): Promise<{ entries: FileEntry[]; path: string }> {
+    if (!_api) throw new Error("File API is not available");
+    const result = (await _api.fileList({ rootPath: rootPath.value, relativePath: relativePath || "" })) as {
+      entries: FileEntry[];
+      path?: string;
+    };
+    return { entries: result.entries, path: result.path || relativePath || "" };
+  }
+
+  async function fetchPreview(relativePath: string): Promise<FilePreview & { imageSrc?: string }> {
+    if (!_api) throw new Error("File API is not available");
+    return (await _api.filePreview({ rootPath: rootPath.value, relativePath })) as FilePreview & {
+      imageSrc?: string;
+    };
   }
 
   async function refreshGitStatus(): Promise<void> {
@@ -1179,6 +1232,58 @@ export const useFileManagerStore = defineStore("fileManager", () => {
       error.value = msg;
       await notifyOpError("Move failed", msg);
     }
+  }
+
+  function transferProblem(entries: FileEntry[], targetDir: string): string {
+    const target = (targetDir || "").replace(/^\/+|\/+$/g, "");
+    for (const entry of entries) {
+      const parent = entry.relativePath.split("/").slice(0, -1).join("/");
+      if (parent === target) return `"${entry.name}" is already in that folder`;
+      if (entry.kind === "directory" && (target === entry.relativePath || target.startsWith(entry.relativePath + "/")))
+        return `Cannot put "${entry.name}" into itself`;
+    }
+    return "";
+  }
+
+  async function transferEntries(
+    op: "copy" | "move",
+    entries: FileEntry[],
+    targetDir: string,
+  ): Promise<{ done: string[]; failed: string[] }> {
+    const result = { done: [] as string[], failed: [] as string[] };
+    if (!_api || !entries.length) return result;
+    const requestRoot = rootPath.value;
+    const target = (targetDir || "").replace(/^\/+|\/+$/g, "");
+    const errors: string[] = [];
+    for (const entry of entries) {
+      const destPath = target ? `${target}/${entry.name}` : entry.name;
+      try {
+        if (op === "copy") {
+          await _api.fileCopy({ rootPath: requestRoot, fromPath: entry.relativePath, toPath: destPath });
+        } else {
+          await _api.fileMove({ rootPath: requestRoot, fromPath: entry.relativePath, toPath: destPath });
+          closeDiffForPath(entry.relativePath, requestRoot);
+          remapOpenTabs(entry.relativePath, destPath, requestRoot);
+        }
+        result.done.push(entry.relativePath);
+      } catch (err) {
+        result.failed.push(entry.name);
+        errors.push(`${entry.name}: ${(err as Error).message || "failed"}`);
+      }
+    }
+    if (rootPath.value !== requestRoot) return result;
+    if (result.done.length) await refresh();
+    if (errors.length) {
+      error.value = errors.join("; ");
+      await notifyOpError(op === "copy" ? "Copy failed" : "Move failed", errors.join("\n"));
+    }
+    return result;
+  }
+
+  async function readFileText(relativePath: string): Promise<string> {
+    if (!_api) throw new Error("File API is not available");
+    const result = (await _api.fileRead({ rootPath: rootPath.value, relativePath })) as { content: string };
+    return result.content;
   }
 
   function toggleSort(column: string): void {
@@ -1357,6 +1462,7 @@ export const useFileManagerStore = defineStore("fileManager", () => {
     activeTabPath,
     viewMode,
     layoutMode,
+    listingRevision,
     showHidden,
     sortBy,
     sortAsc,
@@ -1401,7 +1507,13 @@ export const useFileManagerStore = defineStore("fileManager", () => {
     clearClipboard,
     pasteEntry,
     moveEntryTo,
+    transferProblem,
+    transferEntries,
+    readFileText,
     refresh,
+    listDirectory,
+    fetchPreview,
+    notifyOpError,
     refreshGitStatus,
     openInExplorer,
     toggleSort,

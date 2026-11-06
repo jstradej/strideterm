@@ -389,9 +389,12 @@
               </div>
               <div class="notification-item__content">
                 <div class="notification-item__head">
-                  <strong class="notification-item__title">
+                  <strong
+                    class="notification-item__title"
+                    :class="{ 'notification-item__title--event': pullRequestText(row.session) }"
+                  >
                     <span v-if="flashingIds.has(row.session.id)" class="notification-item__new-pill">NEW</span>
-                    {{ sessionTitle(row.session) }}
+                    {{ pullRequestText(row.session)?.event || sessionTitle(row.session) }}
                   </strong>
                   <span class="notification-item__meta">
                     <span
@@ -420,7 +423,33 @@
                     </time>
                   </span>
                 </div>
-                <p class="notification-item__body" :title="sessionBody(row.session)">{{ sessionBody(row.session) }}</p>
+                <template v-if="pullRequestText(row.session)">
+                  <p class="notification-item__pr-title" :title="pullRequestText(row.session)?.prTitle">
+                    {{ pullRequestText(row.session)?.prTitle }}
+                  </p>
+                  <p
+                    v-if="pullRequestText(row.session)?.detail"
+                    class="notification-item__body"
+                    :title="pullRequestText(row.session)?.detail"
+                  >
+                    {{ pullRequestText(row.session)?.detail }}
+                  </p>
+                </template>
+                <p v-else class="notification-item__body" :title="sessionBody(row.session)">
+                  {{ sessionBody(row.session) }}
+                </p>
+                <a
+                  v-if="jiraNotificationUrl(row.session)"
+                  class="quick-action notification-item__jira-link"
+                  :href="jiraNotificationUrl(row.session) || undefined"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  @click.stop.prevent="openJiraNotification(row.session)"
+                  >Open {{ row.session.meta?.jiraIssueRef?.issueKey }} in Jira</a
+                >
+                <span v-else-if="row.session.category === 'jira'" class="notification-item__jira-unavailable">
+                  Jira connection unavailable in this profile.
+                </span>
                 <details
                   v-if="sessionDetails(row.session)"
                   class="notification-item__details"
@@ -487,7 +516,7 @@
                       reviewAction.isStarting(row.session.meta || {}) ||
                       Boolean(reviewAction.recordFor(row.session.meta || {})?.operationId)
                     "
-                    :aria-label="`Start basic review for ${sessionTitle(row.session)}`"
+                    :aria-label="`Start basic review for ${pullRequestText(row.session)?.prTitle || sessionTitle(row.session)}`"
                     @click.stop="startBasicReview(row.session)"
                   >
                     {{ reviewActionLabel(row.session) }}
@@ -592,6 +621,9 @@ import { dayBandKey, dayBandLabel } from "../../app/helpers.js";
 import { apiKey } from "../../types/keys.js";
 import type { Transport } from "../../transport.js";
 import { usePullRequestReviewAction, isStartReviewTarget } from "../../composables/usePullRequestReviewAction.js";
+import { reviewNotificationText, type ReviewNotificationText } from "../../lib/review-notification-text.js";
+import { useJiraIssueLinkRoutes } from "../../composables/useJiraIssueLinkRoutes.js";
+import { jiraIssueUrl } from "../../lib/jira-issue-links.js";
 
 interface NotificationSession {
   id: string;
@@ -660,6 +692,7 @@ const performanceTabTitle = computed(() =>
 // second WebSocket on the remote client. Only the Approvals list uses it: it
 // reads the audit log and deletes from it.
 const api = inject<Transport>(apiKey) ?? null;
+const jiraLinkRoutes = useJiraIssueLinkRoutes(api || appStore.getApi(), activeProfileId);
 const reviewAction = usePullRequestReviewAction();
 
 /**
@@ -1168,6 +1201,7 @@ function sessionIcon(s: NotificationSession): string {
   if (s.urgency === "urgent") return "🚨";
   if (s.category === "error") return "❌";
   if (s.category === "mobile") return "📱";
+  if (s.category === "jira") return "🔖";
   // Rate-limit hits surface with the heavy-exclamation glyph so they read as
   // "stop and look" in the history list (the toast already shows 🚨 for the
   // matching urgent urgency).
@@ -1182,6 +1216,35 @@ function sessionIcon(s: NotificationSession): string {
   if (s.state === "waiting") return "⏳";
   if (s.state === "finished") return "✅";
   return "🔔";
+}
+
+function jiraNotificationUrl(s: NotificationSession): string | null {
+  if (s.category !== "jira" || String(s.meta?.profileId || "default") !== String(activeProfileId.value || "default"))
+    return null;
+  const ref = s.meta?.jiraIssueRef;
+  if (
+    !ref ||
+    ref.provider !== "jira" ||
+    typeof ref.connectionId !== "string" ||
+    typeof ref.issueId !== "string" ||
+    typeof ref.issueKey !== "string" ||
+    !/^[A-Z][A-Z0-9_]{0,19}-[1-9][0-9]*$/i.test(ref.issueKey)
+  )
+    return null;
+  const route = jiraLinkRoutes.routes.value.find((item) => item.connectionId === ref.connectionId);
+  return route ? jiraIssueUrl(route, ref.issueKey) : null;
+}
+
+async function openJiraNotification(s: NotificationSession): Promise<void> {
+  const url = jiraNotificationUrl(s);
+  if (!url) return;
+  try {
+    const transport = api || appStore.getApi();
+    if (!transport?.openExternal) throw new Error("Opening links is unavailable in this client.");
+    await transport.openExternal(url);
+  } catch (error) {
+    notifStore.showError("Could not open the Jira issue", error, { profileId: activeProfileId.value });
+  }
 }
 
 function isPullRequestNotification(s: NotificationSession): boolean {
@@ -1263,6 +1326,13 @@ function sessionProfileLabel(s: NotificationSession): string {
   const profiles = (appStore.payload?.appState?.profiles || []) as any[];
   const profile = profiles.find((p) => p.id === profileId);
   return profile?.name || "";
+}
+
+function pullRequestText(s: NotificationSession): ReviewNotificationText | null {
+  if (s.category !== "review") return null;
+  const latest = s.events?.[0];
+  const text = reviewNotificationText(latest?.title, latest?.body, s.meta?.pullRequestTitle);
+  return text.prTitle ? text : null;
 }
 
 function sessionBody(s: NotificationSession): string {
@@ -1356,6 +1426,10 @@ function resolveJumpTarget(s: NotificationSession): {
   reviewCommentFocus?: ReviewCommentFocus;
 } {
   if (s.category !== "review") {
+    if (s.category === "jira") {
+      const workspaceId = s.workspaceId || "";
+      return { workspaceId, viewId: workspaceId ? `jira:${workspaceId}` : "" };
+    }
     // Follow the tab to wherever it is currently PRESENTED: a Primary alerting
     // mid-companion-loop lives in the task workspace, and jumping to its owner
     // would land on a workspace that no longer shows it. Ownership is

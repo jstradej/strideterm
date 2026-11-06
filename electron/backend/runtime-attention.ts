@@ -65,6 +65,7 @@ interface RaiseAlertOptions {
   detail?: string;
   message?: string;
   exitCode?: number | null;
+  jiraIssueRef?: { provider: "jira"; connectionId: string; issueId: string; issueKey: string };
 }
 
 interface AddProjectAlertOptions {
@@ -78,6 +79,7 @@ interface AddProjectAlertOptions {
   message?: string;
   tier?: number;
   urgency?: string;
+  jiraIssueRef?: { provider: "jira"; connectionId: string; issueId: string; issueKey: string };
 }
 
 interface CreateRuntimeAttentionManagerOptions {
@@ -219,6 +221,7 @@ export function createRuntimeAttentionManager({
     message = "",
     tier = 1,
     urgency = "normal",
+    jiraIssueRef,
   }: AddProjectAlertOptions): void {
     const current = projectAlerts.get(projectId) || {
       count: 0,
@@ -238,6 +241,7 @@ export function createRuntimeAttentionManager({
         urgency,
         detail,
         message,
+        ...(jiraIssueRef ? { jiraIssueRef } : {}),
         at: new Date().toISOString(),
       },
       ...current.alerts.filter((alert) => alert.panelId !== panelId),
@@ -336,6 +340,7 @@ export function createRuntimeAttentionManager({
     detail = "",
     message = "",
     exitCode = null,
+    jiraIssueRef,
   }: RaiseAlertOptions): boolean {
     const signal = sessionSignals.get(sessionId);
 
@@ -403,6 +408,7 @@ export function createRuntimeAttentionManager({
       detail,
       message,
       exitCode,
+      jiraIssueRef,
     });
     if (signal) {
       // `question` arms the same dedupe latch as `waiting`: once the agent has

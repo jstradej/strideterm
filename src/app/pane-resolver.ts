@@ -1,13 +1,21 @@
-import { defineAsyncComponent } from "vue";
+import { defineAsyncComponent, type Component } from "vue";
+import { jiraViewIdFromTab } from "./jira-view-tabs.js";
+import PaneLoading from "../components/workspace/PaneLoading.vue";
 
-const GitPane = defineAsyncComponent(() => import("../components/workspace/GitPane.vue"));
-const DockerPane = defineAsyncComponent(() => import("../components/workspace/DockerPane.vue"));
-const InboxPane = defineAsyncComponent(() => import("../components/workspace/InboxPane.vue"));
-const AzureReviewPane = defineAsyncComponent(() => import("../components/workspace/AzureReviewPane.vue"));
-const BrowserPane = defineAsyncComponent(() => import("../components/workspace/BrowserPane.vue"));
-const FileManagerPane = defineAsyncComponent(() => import("../components/workspace/FileManagerPane.vue"));
-const TaskDashboardPane = defineAsyncComponent(() => import("../components/workspace/TaskDashboardPane.vue"));
-const HeadlessJudgePane = defineAsyncComponent(() => import("../components/workspace/HeadlessJudgePane.vue"));
+// A pane's chunk can take a moment on first open (the Files pane pulls in Monaco); show a spinner rather than an
+// empty panel. The short delay keeps a cached chunk from flashing it.
+const lazyPane = (loader: () => Promise<Component>) =>
+  defineAsyncComponent({ loader, loadingComponent: PaneLoading, delay: 150 });
+
+const GitPane = lazyPane(() => import("../components/workspace/GitPane.vue"));
+const DockerPane = lazyPane(() => import("../components/workspace/DockerPane.vue"));
+const InboxPane = lazyPane(() => import("../components/workspace/InboxPane.vue"));
+const JiraInboxPane = lazyPane(() => import("../components/workspace/JiraInboxPane.vue"));
+const AzureReviewPane = lazyPane(() => import("../components/workspace/AzureReviewPane.vue"));
+const BrowserPane = lazyPane(() => import("../components/workspace/BrowserPane.vue"));
+const FileManagerPane = lazyPane(() => import("../components/workspace/FileManagerPane.vue"));
+const TaskDashboardPane = lazyPane(() => import("../components/workspace/TaskDashboardPane.vue"));
+const HeadlessJudgePane = lazyPane(() => import("../components/workspace/HeadlessJudgePane.vue"));
 
 const PANE_COMPONENTS: Record<string, unknown> = {
   git: GitPane,
@@ -15,6 +23,7 @@ const PANE_COMPONENTS: Record<string, unknown> = {
   azure: InboxPane,
   review: AzureReviewPane,
   github: InboxPane,
+  jira: JiraInboxPane,
   browser: BrowserPane,
   files: FileManagerPane,
   "task-dashboard": TaskDashboardPane,
@@ -25,11 +34,15 @@ export function resolvePaneComponent(type: string): unknown {
   return PANE_COMPONENTS[type] ?? null;
 }
 
-export function resolvePaneProps(type: string, viewId: string): Record<string, unknown> {
+export function resolvePaneProps(type: string, viewId: string, workspaceId: string): Record<string, unknown> {
   if (type === "git") return { workspaceId: viewId.replace(/^git:/, "") };
   if (type === "docker") return { workspaceId: viewId.replace(/^docker:/, "") };
   if (type === "azure") return { workspaceId: viewId.replace(/^azure:/, ""), provider: "azure" };
   if (type === "github") return { workspaceId: viewId.replace(/^github:/, ""), provider: "github" };
+  if (type === "jira") {
+    const jiraViewId = jiraViewIdFromTab(viewId, workspaceId) || "issues";
+    return { workspaceId, jiraViewId };
+  }
   if (type === "review") return { workspaceId: viewId.replace(/^review:/, "") };
   if (type === "files") return { workspaceId: viewId.replace(/^files:/, "") };
   if (type === "task-dashboard") return { workspaceId: viewId.replace(/^task-dashboard:/, "") };

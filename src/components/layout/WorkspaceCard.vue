@@ -6,6 +6,7 @@
       'workspace-card--attention': workspace.attentionCount > 0,
       'workspace-card--attention-fresh': workspace.attentionFresh,
       'workspace-card--sub': workspace.depth > 0,
+      'workspace-card--new-branch': workspace.newBranch,
       'workspace-card--pr-completed': workspace.prStatus === 'completed',
       'workspace-card--pr-abandoned': workspace.prStatus === 'abandoned',
       'workspace-card--in-grid': workspace.inGrid,
@@ -20,7 +21,9 @@
   >
     <span class="workspace-card__badge">
       <span class="workspace-card__index">{{ workspace.index }}</span
-      >{{ workspace.icon }}
+      ><svg v-if="workspace.badgeGlyph" class="workspace-card__glyph" viewBox="0 0 24 24" aria-hidden="true">
+        <path v-for="d in BADGE_GLYPHS[workspace.badgeGlyph]" :key="d" :d="d" /></svg
+      ><template v-else>{{ workspace.icon }}</template>
       <span
         v-if="statusDot"
         v-heartbeat="statusDot.heartbeat"
@@ -56,7 +59,7 @@
     >
       {{ workspace.starred ? "★" : "☆" }}
     </button>
-    <span class="workspace-card__meta">
+    <span class="workspace-card__meta" :class="{ 'workspace-card__meta--inline-items': workspace.inlineWorkItems }">
       <span class="workspace-card__title-row">
         <strong>{{ workspace.name }}</strong>
         <span
@@ -89,6 +92,24 @@
           rightTimestamp.relative
         }}</span>
       </small>
+      <span v-if="workspace.workItems?.length" class="workspace-card__jira-items" aria-label="Linked Jira issues">
+        <a
+          v-for="item in workspace.workItems.slice(0, 3)"
+          :key="`${item.ref.connectionId}:${item.ref.issueId}`"
+          :href="jiraUrl(item)"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="workspace-card__jira-chip"
+          :title="`${item.ref.issueKey}${item.status ? ` · ${item.status}` : ''}${item.summary ? ` — ${item.summary}` : ''}`"
+          @click.stop.prevent="openJira(item)"
+        >
+          <strong>{{ item.ref.issueKey }}</strong
+          ><span v-if="item.status">{{ item.status }}</span>
+        </a>
+        <span v-if="workspace.workItems.length > 3" class="workspace-card__jira-more"
+          >+{{ workspace.workItems.length - 3 }}</span
+        >
+      </span>
     </span>
     <span class="workspace-card__actions">
       <button
@@ -133,7 +154,9 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { vHeartbeat } from "../../app/heartbeat-directive.js";
+import { BADGE_GLYPHS, type WorkspaceBadgeGlyph } from "../../app/workspace-badge-glyphs.js";
 import { isTaskRunningState, resolveWorkspaceStatusCue } from "../../app/workspace-status.js";
+import { jiraIssueUrl, type JiraLinkRoute } from "../../lib/jira-issue-links.js";
 
 interface WorkspaceCardData {
   active: boolean;
@@ -141,6 +164,10 @@ interface WorkspaceCardData {
   attentionFresh: boolean;
   attentionTooltip?: string;
   depth: number;
+  badgeGlyph?: WorkspaceBadgeGlyph | null;
+  newBranch?: boolean;
+  /** The linked issues share the summary line instead of taking a row of their own. */
+  inlineWorkItems?: boolean;
   prStatus?: string;
   color?: string;
   index?: number | string;
@@ -161,11 +188,28 @@ interface WorkspaceCardData {
   lastActivity?: string;
   lastActivityTitle?: string;
   cleanupBusy?: boolean;
+  workItems?: Array<{
+    ref: { connectionId: string; issueId: string; issueKey: string };
+    summary?: string;
+    status?: string;
+  }>;
 }
 
 const props = defineProps<{
   workspace: WorkspaceCardData;
+  jiraRoutes?: JiraLinkRoute[];
 }>();
+type JiraWorkspaceItem = NonNullable<WorkspaceCardData["workItems"]>[number];
+function routeFor(item: JiraWorkspaceItem) {
+  return (props.jiraRoutes || []).find((route) => route.connectionId === item.ref.connectionId);
+}
+function jiraUrl(item: JiraWorkspaceItem) {
+  const route = routeFor(item);
+  return route ? (jiraIssueUrl(route, item.ref.issueKey) ?? undefined) : undefined;
+}
+function openJira(item: JiraWorkspaceItem) {
+  emit("open-jira-issue", item.ref);
+}
 
 // The ONE shared semantic resolver, also used by the RUNNING and RECENT
 // activity rows — so the same workspace wears the same dot, colour, glyph and
@@ -183,8 +227,9 @@ const rightTimestamp = computed((): { relative: string; title?: string } | null 
   return null;
 });
 
-defineEmits<{
+const emit = defineEmits<{
   (e: "activate"): void;
+  (e: "open-jira-issue", ref: { connectionId: string; issueId: string; issueKey: string }): void;
   (e: "open-menu", event: MouseEvent): void;
   (e: "dragstart", event: DragEvent): void;
   (e: "dragover", event: DragEvent): void;

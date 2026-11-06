@@ -230,7 +230,7 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
   const gitRunFor =
     (manager: AnyManager): GitRun =>
     (cwd, args, auth) =>
-      manager.runGit(cwd, args, { login: auth?.login, token: auth?.token });
+      manager.runGit(cwd, args, { login: auth?.login, token: auth?.token, authUrl: auth?.authUrl });
 
   /**
    * Stale inline anchors after a history rewrite: mark, never move. The file must
@@ -303,10 +303,16 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
   const headBeforeRewrite = (result: ReviewGitResult, continuationBase: string): string =>
     result.status === "reset" || result.status === "rebased" ? String(result.previousHeadSha || "") : continuationBase;
 
-  async function afterOperation(located: Located): Promise<void> {
+  /** A refusal or a proposal changed nothing on the provider — an agent's first call only describes. */
+  const providerUnchanged = (result: ReviewGitResult): boolean =>
+    result.status === "blocked" || result.status === "confirm-required";
+
+  async function afterOperation(located: Located, result: ReviewGitResult): Promise<void> {
     await ctx.refreshGit(located.workspace.id);
-    if (located.provider === "github") await ctx.refreshGitHub();
-    else await ctx.refreshAzure();
+    if (!providerUnchanged(result)) {
+      if (located.provider === "github") await ctx.refreshGitHub();
+      else await ctx.refreshAzure();
+    }
     ctx.broadcastState();
   }
 
@@ -387,9 +393,11 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
           requireProposal: mcp,
         });
         break;
-      case "push-and-publish": {
+      case "push-and-publish":
+      case "force-push-and-publish": {
         const push = (await manager.pushReviewWorkspace({
           ...common,
+          force: kind === "force-push-and-publish",
           confirmation: input.confirmation,
           requireProposal: mcp,
         })) as ReviewGitResult;
@@ -397,7 +405,8 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
         const publish = pushed
           ? await publishDrafts(located, requester)
           : { attempted: false, published: [] as string[], failed: [] as Array<{ commentKey: string; error: string }> };
-        await afterOperation(located);
+        // A push that was refused or only proposed published nothing either.
+        await afterOperation(located, push);
         return { kind, push, publish };
       }
       case "stage":
@@ -423,7 +432,7 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
         throw new Error(`Unsupported review Git operation: ${String(kind)}`);
     }
     if (rewritesHistory(result)) await revalidateAnchors(located, headBeforeRewrite(result, continuationBase));
-    await afterOperation(located);
+    await afterOperation(located, result);
     return result;
   }
 

@@ -10,9 +10,15 @@ import {
   buildRepositoryRemoteUrl,
   computeThreadStatusCounts,
   compareThreads,
-  inferAttentionReason,
+  findMyReviewer,
 } from "./azure-devops-utils.js";
 import { isAzureCommentByCurrentUser } from "./azure-comment-identity.js";
+import {
+  buildAttentionReasons,
+  countRepliesToMe,
+  resolveMyReview,
+  trackReviewerVotes,
+} from "./azure-devops-attention.js";
 
 interface AzurePR {
   pullRequestId?: number | string;
@@ -78,6 +84,7 @@ export function buildPullRequestSummary({
   activeProfileId = "default",
   now: _now = () => Date.now(),
   currentUserId,
+  myGroupIds = [],
 }: {
   connection: { id: string; label?: string; orgUrl?: string; login?: string; profileId?: string };
   pr: Record<string, unknown>;
@@ -90,6 +97,7 @@ export function buildPullRequestSummary({
   activeProfileId?: string;
   now?: () => number;
   currentUserId?: string | null;
+  myGroupIds?: Iterable<string>;
 }): { summary: Record<string, unknown>; internals: Record<string, unknown> } {
   const p = pr as AzurePR;
   const repositoryId = p.repository?.id || "";
@@ -104,11 +112,14 @@ export function buildPullRequestSummary({
     hasDeclined?: boolean;
     isContainer?: boolean;
   };
-  const reviewerInfo = summarizeReviewers((p.reviewers || []) as AzureReviewer[], connection.login);
-  const isAuthor = identityMatches(connection.login, p.createdBy ?? null);
-  const isReviewer =
-    !isAuthor && reviewerInfo.reviewers.some((reviewer) => identityMatches(connection.login, reviewer));
-  const role = isAuthor ? "author" : isReviewer ? "reviewer" : "observer";
+  const reviewerInfo = summarizeReviewers((p.reviewers || []) as AzureReviewer[], connection.login, currentUserId);
+  const me = findMyReviewer(reviewerInfo.reviewers, connection.login, currentUserId);
+  const isAuthor =
+    identityMatches(connection.login, p.createdBy ?? null) ||
+    isAzureCommentByCurrentUser(p.createdBy ?? null, currentUserId);
+  const groupIds = new Set([...myGroupIds].map((id) => String(id).trim().toLowerCase()));
+  const { isDirectReviewer, reviewerVia, myReviewStatus } = resolveMyReview(reviewerInfo.reviewers, me, groupIds);
+  const role = isAuthor ? "author" : isDirectReviewer || reviewerVia.length > 0 ? "reviewer" : "observer";
   const latestCommentAt = Math.max(
     ...comments.map((comment) => parseDate(comment.lastUpdatedDate || comment.publishedDate)),
     0,
@@ -124,24 +135,55 @@ export function buildPullRequestSummary({
   const newCommentsCount = commentsByOthers.filter(
     (comment) => parseDate(comment.lastUpdatedDate || comment.publishedDate) > lastSeenAt,
   ).length;
+  // The inbox's "unread" must not light up for the user's own comments, pushes or new PR.
+  const committer = (lastMergeSourceCommit.committer || lastMergeSourceCommit.author || null) as {
+    name?: string;
+    email?: string;
+  } | null;
+  const pushedByMe = identityMatches(
+    connection.login,
+    committer ? { uniqueName: committer.email, mailAddress: committer.email, displayName: committer.name } : null,
+  );
+  const lastOthersActivityAt = toIsoOrNull(
+    Math.max(
+      ...commentsByOthers.map((comment) => parseDate(comment.lastUpdatedDate || comment.publishedDate)),
+      pushedByMe ? 0 : latestCommitAt,
+      isAuthor ? 0 : latestPrAt,
+      0,
+    ),
+  );
   const voteSignature = reviewerInfo.reviewers
     .map((reviewer) => `${reviewer.id}:${reviewer.vote}:${reviewer.hasDeclined ? 1 : 0}`)
     .sort()
     .join("|");
-  const sourceUpdated = latestCommitAt > lastSeenAt && latestCommitAt > 0;
-  const voteChanged = Boolean(tracked.lastVoteSignature && tracked.lastVoteSignature !== voteSignature);
   const mergeStatus = p.mergeStatus || p.status || "";
-  const mergeStatusChanged = Boolean(tracked.lastMergeStatus && tracked.lastMergeStatus !== mergeStatus);
   const unresolvedThreadCount = threads.filter(
     (thread) => String(thread.status || "").toLowerCase() === "active",
   ).length;
-  const attentionReason = inferAttentionReason({
-    role,
-    newCommentsCount,
-    sourceUpdated,
-    voteChanged,
-    mergeStatusChanged,
+  const reviewerVotes = trackReviewerVotes(
+    tracked.reviewerVotes,
+    reviewerInfo.reviewers,
+    lastMergeSourceCommit.commitId || "",
+  );
+  const attentionReasons = buildAttentionReasons({
+    isAuthor,
+    isDraft: Boolean(p.isDraft),
+    me,
+    reviewers: reviewerInfo.reviewers,
+    isDirectReviewer,
+    reviewerVia,
+    myReviewStatus,
+    reviewerVotes,
+    currentCommitId: lastMergeSourceCommit.commitId || "",
+    latestCommitAt,
+    lastSeenAt,
     mergeStatus,
+    replyCount: countRepliesToMe(
+      threads as Parameters<typeof countRepliesToMe>[0],
+      currentUserId,
+      isAuthor,
+      lastSeenAt,
+    ),
   });
   // Each PR belongs to the connection it was fetched through. Scope the
   // review/matching workspace lookup to the connection's profile so that a
@@ -240,9 +282,14 @@ export function buildPullRequestSummary({
     existingWorkspaceId: matchingWorkspace?.id || "",
     lastSeenActivityAt: tracked.lastSeenActivityAt || null,
     lastRemoteActivityAt,
+    lastOthersActivityAt,
     lastActivityAt: lastRemoteActivityAt,
-    hasAttention: Boolean(attentionReason),
-    attentionReason,
+    hasAttention: attentionReasons.length > 0,
+    attentionReason: attentionReasons[0]?.label ?? "",
+    attentionReasons,
+    isDirectReviewer,
+    reviewerVia,
+    myReviewStatus,
     newCommentsCount,
     unresolvedThreadCount,
     threadCounts: computeThreadStatusCounts(threads),
@@ -312,6 +359,7 @@ export function buildPullRequestSummary({
     comments,
     commentsByOthers,
     voteSignature,
+    reviewerVotes,
     sourceCommitId: lastMergeSourceCommit.commitId || "",
     sourceCommitter: lastMergeSourceCommit.committer || null,
     sourceCommitAuthor: lastMergeSourceCommit.author || null,

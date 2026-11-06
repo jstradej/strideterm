@@ -906,6 +906,117 @@ describe("signing out", () => {
 });
 
 describe("deletion", () => {
+  test("requires the exact phrase before a deletion link can be requested", async () => {
+    const fixture = fakes();
+    await expect(
+      fixture.manager.beginEmailSignIn("owner@example.test", "delete-account", undefined, "delete my account"),
+    ).rejects.toMatchObject({ code: "invalid-credentials" });
+    expect(fixture.brokerCalls.some((call) => call.path === "/start")).toBe(false);
+  });
+
+  test("an armed deletion runs once after the same email intent is confirmed", async () => {
+    const fixture = fakes();
+    await fixture.manager.beginEmailSignIn("owner@example.test", "delete-account", undefined, "DELETE MY ACCOUNT");
+    fixture.manager.submitSignInLink(`${AUTHLINK.origin}/c?attempt=${FIRST_ATTEMPT_ID}&oobCode=OOB-CODE`);
+    const duplicate = { ...fixture.broker.state()!, phase: "awaiting-confirmation" as const };
+    fixture.broker.emit("state", duplicate);
+    fixture.broker.emit("state", duplicate);
+    await vi.waitFor(() => expect(fixture.transport.deleteAccount).toHaveBeenCalledTimes(1));
+    expect(fixture.transport.deleteAccount).toHaveBeenCalledTimes(1);
+    expect(fixture.transport.deleteAccount).toHaveBeenCalledWith(
+      expect.objectContaining({ confirmationPhrase: "DELETE MY ACCOUNT" }),
+      expect.anything(),
+    );
+    expect(fixture.manager.state().accountAction).toEqual({
+      kind: "delete-account",
+      status: "submitted",
+      providerCancellationRequired: true,
+    });
+    expect(fixture.manager.state().ownerEmail).toBeUndefined();
+  });
+
+  test("resend carries the armed deletion phrase to the replacement attempt", async () => {
+    const clock = { now: NOW };
+    const fixture = fakes({ clock });
+    await fixture.manager.beginEmailSignIn("owner@example.test", "delete-account", undefined, "DELETE MY ACCOUNT");
+    clock.now += 61_000;
+    await fixture.manager.resendEmailSignIn();
+    fixture.manager.submitSignInLink(`${AUTHLINK.origin}/c?attempt=${fixture.attemptIds[1]}&oobCode=OOB-CODE`);
+    await vi.waitFor(() => expect(fixture.transport.deleteAccount).toHaveBeenCalledTimes(1));
+    expect(fixture.transport.deleteAccount).toHaveBeenCalledWith(
+      expect.objectContaining({ confirmationPhrase: "DELETE MY ACCOUNT" }),
+      expect.anything(),
+    );
+  });
+
+  test("cancelled armed deletion never mutates", async () => {
+    const fixture = fakes();
+    await fixture.manager.beginEmailSignIn("owner@example.test", "delete-account", undefined, "DELETE MY ACCOUNT");
+    fixture.manager.cancelEmailSignIn();
+    expect(() =>
+      fixture.manager.submitSignInLink(`${AUTHLINK.origin}/c?attempt=${FIRST_ATTEMPT_ID}&oobCode=OOB-CODE`),
+    ).toThrow();
+    expect(fixture.transport.deleteAccount).not.toHaveBeenCalled();
+  });
+
+  test("a replaced deletion attempt cannot consume its stale link", async () => {
+    const fixture = fakes();
+    await fixture.manager.beginEmailSignIn("owner@example.test", "delete-account", undefined, "DELETE MY ACCOUNT");
+    await fixture.manager.beginEmailSignIn("owner@example.test", "reauth");
+    expect(() =>
+      fixture.manager.submitSignInLink(`${AUTHLINK.origin}/c?attempt=${FIRST_ATTEMPT_ID}&oobCode=OOB-CODE`),
+    ).toThrow();
+    expect(fixture.transport.deleteAccount).not.toHaveBeenCalled();
+  });
+
+  test("an expired armed deletion attempt cannot consume its link", async () => {
+    const clock = { now: NOW };
+    const fixture = fakes({ clock });
+    await fixture.manager.beginEmailSignIn("owner@example.test", "delete-account", undefined, "DELETE MY ACCOUNT");
+    clock.now += 16 * 60_000;
+    expect(() =>
+      fixture.manager.submitSignInLink(`${AUTHLINK.origin}/c?attempt=${FIRST_ATTEMPT_ID}&oobCode=OOB-CODE`),
+    ).toThrow();
+    expect(fixture.transport.deleteAccount).not.toHaveBeenCalled();
+  });
+
+  test("sign-out purpose revokes this installation automatically after confirmation", async () => {
+    const fixture = fakes({ enrolled: true });
+    await fixture.manager.beginEmailSignIn("owner@example.test", "signout-installation");
+    fixture.manager.submitSignInLink(`${AUTHLINK.origin}/c?attempt=${FIRST_ATTEMPT_ID}&oobCode=OOB-CODE`);
+    await vi.waitFor(() => expect(fixture.transport.revokeAccountDevice).toHaveBeenCalledTimes(1));
+    expect(fixture.transport.revokeAccountDevice).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "installation" }),
+      expect.anything(),
+    );
+    expect(fixture.manager.state().phase).toBe("signed-out");
+  });
+
+  test("a mismatched account refuses the sign-out purpose before revocation", async () => {
+    const fixture = fakes({ enrolled: true });
+    await fixture.manager.restoreFromInstallation();
+    (fixture.transport.confirmOwnerForInstallation as ReturnType<typeof vi.fn>).mockResolvedValue({
+      status: "refused",
+      reason: "owner-mismatch",
+    });
+    await fixture.manager.beginEmailSignIn("owner@example.test", "signout-installation");
+    fixture.manager.submitSignInLink(`${AUTHLINK.origin}/c?attempt=${FIRST_ATTEMPT_ID}&oobCode=OOB-CODE`);
+    await vi.waitFor(() => expect(fixture.transport.confirmOwnerForInstallation).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(fixture.manager.state().busy).toBe(false));
+    expect(fixture.transport.revokeAccountDevice).not.toHaveBeenCalled();
+    expect(fixture.manager.state().installationRegistered).toBe(true);
+  });
+
+  test("ordinary reauthentication never triggers deletion automatically", async () => {
+    const fixture = fakes();
+    await fixture.manager.beginEmailSignIn("owner@example.test", "reauth");
+    fixture.manager.submitSignInLink(`${AUTHLINK.origin}/c?attempt=${FIRST_ATTEMPT_ID}&oobCode=OOB-CODE`);
+    expect(fixture.transport.deleteAccount).not.toHaveBeenCalled();
+    expect(fixture.transport.revokeAccountDevice).not.toHaveBeenCalled();
+    expect(fixture.manager.state().auth?.phase).toBe("awaiting-confirmation");
+    expect(fixture.manager.state().ownerEmail).toBeUndefined();
+  });
+
   test("needs a recent password proof, whatever the token says", async () => {
     const { manager } = fakes({ session: ownerSession({ authenticatedAt: NOW - 60 * 60 * 1000 }) });
     await signIn(manager);
@@ -1657,12 +1768,69 @@ describe("resuming a partial result (F06)", () => {
     // no — so the next attempt is a new intention and must not be deduplicated against the old one.
     const fixture = fakes({ newIdempotencyKey: countingKeys() });
     const startTrial = fixture.transport.startTrial as ReturnType<typeof vi.fn>;
-    startTrial.mockResolvedValueOnce({ status: "not-eligible", reason: "trial-already-used", claimsChanged: false });
+    startTrial.mockResolvedValueOnce({
+      status: "not-eligible",
+      reason: "installation-already-trialed",
+      claimsChanged: false,
+    });
     await signIn(fixture.manager, "reauth");
     await expect(fixture.manager.startTrial()).rejects.toMatchObject({ code: "trial-already-used" });
+    expect(fixture.manager.state().trialIneligibility).toBe("trial-already-used");
+    await fixture.manager.refreshOverview();
+    expect(fixture.manager.state().trialIneligibility).toBe("trial-already-used");
     await fixture.manager.startTrial();
+    expect(fixture.manager.state().trialIneligibility).toBeUndefined();
     const keys = startTrial.mock.calls.map((call) => (call[0] as { idempotencyKey: string }).idempotencyKey);
     expect(keys[0]).not.toBe(keys[1]);
+  });
+
+  test("the installation trial tombstone survives same-account reauthentication and overview reads", async () => {
+    const fixture = fakes();
+    (fixture.transport.startTrial as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      status: "not-eligible",
+      reason: "installation-already-trialed",
+      claimsChanged: false,
+    });
+    await signIn(fixture.manager, "reauth");
+    await expect(fixture.manager.startTrial()).rejects.toMatchObject({ code: "trial-already-used" });
+
+    await signIn(fixture.manager, "reauth", { attemptId: fixture.attemptIds[1] });
+    await fixture.manager.refreshOverview();
+    expect(fixture.manager.state().trialIneligibility).toBe("trial-already-used");
+    await fixture.manager.signOutInstallation({ disconnect: true });
+    expect(fixture.manager.state().installationRegistered).toBe(false);
+    expect(fixture.manager.state().trialIneligibility).toBe("trial-already-used");
+  });
+
+  test("a cancelled trial's late refusal cannot mark the current account ineligible", async () => {
+    const fixture = fakes();
+    await signIn(fixture.manager, "reauth");
+    const lateAnswer = heldAnswer<Awaited<ReturnType<AccountTransport["startTrial"]>>>();
+    (fixture.transport.startTrial as ReturnType<typeof vi.fn>).mockImplementationOnce(() => lateAnswer.promise);
+
+    const operation = fixture.manager.startTrial().catch((error: unknown) => error);
+    await vi.waitFor(() => expect(fixture.transport.startTrial).toHaveBeenCalledOnce());
+    fixture.manager.cancelEmailSignIn();
+    lateAnswer.resolve({ status: "not-eligible", reason: "installation-already-trialed", claimsChanged: false });
+
+    await expect(operation).resolves.toMatchObject({ code: "sign-in-superseded" });
+    expect(fixture.manager.state().trialIneligibility).toBeUndefined();
+  });
+
+  test.each([
+    ["account-has-billing-history", "trial-account-has-billing-history"],
+    ["account-has-active-entitlement", "trial-account-has-active-entitlement"],
+  ] as const)("canonical refusal %s remains explicit after refresh", async (reason, code) => {
+    const fixture = fakes();
+    (fixture.transport.startTrial as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      status: "not-eligible",
+      reason,
+      claimsChanged: false,
+    });
+    await signIn(fixture.manager, "reauth");
+    await expect(fixture.manager.startTrial()).rejects.toMatchObject({ code });
+    await fixture.manager.refreshOverview();
+    expect(fixture.manager.state().trialIneligibility).toBe(code);
   });
 
   test("a machine the account ALREADY lists is not registered again", async () => {

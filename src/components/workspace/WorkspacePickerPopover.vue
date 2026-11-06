@@ -313,6 +313,7 @@ const tree = computed<TreeNode[]>(() => {
 });
 
 function resolveParentId(ws: AnyApi, allWs: AnyApi[]): string | null {
+  if (ws.kind === "jira-board" && ws.jiraBoard?.parentWorkspaceId) return ws.jiraBoard.parentWorkspaceId;
   if (ws.review?.parentWorkspaceId) return ws.review.parentWorkspaceId;
   if (ws.quickfix?.parentWorkspaceId) return ws.quickfix.parentWorkspaceId;
   if (ws.task?.parentWorkspaceId) return ws.task.parentWorkspaceId;

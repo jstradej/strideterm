@@ -121,12 +121,12 @@
       </div>
 
       <!-- Tab bar -->
-      <div class="td__tabs">
+      <div class="td__tabs subtabs">
         <button
           v-for="t in tabs"
           :key="t.id"
-          class="td__tab"
-          :class="{ 'td__tab--active': activeTab === t.id }"
+          class="td__tab subtabs__tab"
+          :class="{ 'td__tab--active subtabs__tab--active': activeTab === t.id }"
           @click="activeTab = t.id"
         >
           {{ t.label }}
@@ -134,7 +134,125 @@
       </div>
 
       <!-- Tab content -->
-      <div class="td__body">
+      <div class="td__body subtabs-panel">
+        <section
+          v-if="activeTab === 'status' && workspace?.kind === 'task' && hasJiraContext"
+          class="td__jira-context"
+          aria-label="Jira task context"
+          :aria-busy="jiraContextLoading ? 'true' : 'false'"
+        >
+          <h3>Jira task context</h3>
+          <div class="td__jira-status" role="status" aria-live="polite">
+            <template v-if="jiraDraftError">
+              <span class="td__jira-error" role="alert">{{ jiraDraftError }}</span>
+              <button
+                v-if="!jiraContextLoaded && api?.getJiraTaskContext"
+                class="button button--ghost button--sm"
+                type="button"
+                :disabled="jiraContextLoading"
+                @click="loadJiraTaskContext()"
+              >
+                Retry
+              </button>
+            </template>
+            <template v-else-if="jiraDraftListStale">
+              <span>Draft saved, but the draft list could not be refreshed.</span>
+              <button class="button button--ghost button--sm" type="button" @click="reloadJiraDrafts()">Reload</button>
+            </template>
+            <template v-else-if="jiraContextLoading">
+              <Spinner size="sm" label="Loading Jira context" />
+              <span>Loading Jira context…</span>
+            </template>
+            <span v-else-if="jiraContextRefreshState === 'refreshing'">Checking current Jira details…</span>
+            <span v-else-if="jiraContextRefreshState === 'error'">
+              Current Jira details could not be refreshed. The prepared snapshot is still shown.
+            </span>
+          </div>
+          <p v-if="!api?.getJiraTaskContext" class="td__muted">Saved Jira context is available in the desktop app.</p>
+          <div
+            v-for="snapshot in jiraTaskContext?.jiraIssueSnapshots?.length
+              ? jiraTaskContext.jiraIssueSnapshots
+              : taskState?.jiraIssueSnapshots || []"
+            :key="`${snapshot.ref.connectionId}:${snapshot.ref.issueId}`"
+            class="td__jira-snapshot"
+          >
+            <div class="td__jira-snapshot-head">
+              <a
+                v-if="jiraIssueUrlFor(snapshot.ref)"
+                :href="jiraIssueUrlFor(snapshot.ref) || undefined"
+                target="_blank"
+                rel="noopener noreferrer"
+                >{{ snapshot.ref.issueKey }}</a
+              ><strong v-else>{{ snapshot.ref.issueKey }}</strong>
+              <span class="td__jira-summary">· {{ snapshot.fields.summary }}</span>
+            </div>
+            <span class="td__jira-meta"
+              >Prepared: {{ snapshot.fields.status }} · {{ snapshot.fields.issueType }} ·
+              {{ snapshot.fields.projectKey }} · {{ formatJiraDate(snapshot.fields.updated) }}</span
+            >
+            <span v-if="snapshot.fields.assignee" class="td__jira-meta">Assignee: {{ snapshot.fields.assignee }}</span>
+            <span v-if="currentJiraIssueFor(snapshot.ref)" class="td__jira-meta td__jira-current"
+              >Current in Jira: {{ currentJiraIssueFor(snapshot.ref)?.summary }} ·
+              {{ currentJiraIssueFor(snapshot.ref)?.status }} · {{ currentJiraIssueFor(snapshot.ref)?.issueType }} ·
+              {{ currentJiraIssueFor(snapshot.ref)?.projectKey }} ·
+              {{ formatJiraDate(currentJiraIssueFor(snapshot.ref)?.updated) }}
+              <template v-if="currentJiraIssueFor(snapshot.ref)?.assignee">
+                · Assignee: {{ currentJiraIssueFor(snapshot.ref)?.assignee }}
+              </template></span
+            >
+          </div>
+          <div v-for="draft in jiraCommentDrafts" :key="draft.id" class="td__jira-draft">
+            <strong>Comment draft · {{ draft.ref.issueKey }}</strong>
+            <pre>{{ draft.body }}</pre>
+            <button
+              class="button button--ghost button--sm"
+              type="button"
+              :disabled="jiraDraftBusy"
+              @click="deleteJiraDraft(draft.id)"
+            >
+              Delete draft
+            </button>
+          </div>
+          <button
+            v-if="jiraContextLoaded && jiraContextRefs.length && !jiraDraftFormOpen"
+            class="button button--ghost button--sm td__jira-action"
+            type="button"
+            @click="openJiraDraft"
+          >
+            Prepare result comment draft
+          </button>
+          <form
+            v-if="jiraContextLoaded && jiraContextRefs.length && jiraDraftFormOpen && api?.saveJiraCommentDraft"
+            class="td__jira-draft-form"
+            @submit.prevent="saveJiraDraft"
+          >
+            <label v-if="jiraContextRefs.length > 1"
+              ><span>Linked issue</span>
+              <CustomSelect v-model="jiraDraftRefKey" :options="jiraDraftRefOptions" />
+            </label>
+            <label><span>Result, changes and tests</span><textarea v-model="jiraDraftBody" rows="5"></textarea></label>
+            <p class="td__muted">The comment is saved as a local draft only. It will not be posted to Jira.</p>
+            <div class="td__jira-form-actions">
+              <button
+                class="button"
+                :class="{ 'button--pending': jiraDraftSaving }"
+                type="submit"
+                :aria-busy="jiraDraftSaving ? 'true' : 'false'"
+                :disabled="jiraDraftBusy || !jiraDraftBody.trim()"
+              >
+                <span>Save draft</span>
+              </button>
+              <button
+                class="button button--ghost"
+                type="button"
+                :disabled="jiraDraftSaving"
+                @click="jiraDraftFormOpen = false"
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        </section>
         <TaskDashboardHelpTab v-if="activeTab === 'help'" :task-id="taskState?.taskId" />
 
         <TaskDashboardStatusTab
@@ -290,6 +408,13 @@ import { ref, computed, inject, watch, onUnmounted } from "vue";
 import { apiKey } from "../../types/keys.js";
 import { useAppStore } from "../../stores/app.js";
 import { useTaskFiles } from "../../composables/useTaskFiles.js";
+import { useJiraIssueLinkRoutes } from "../../composables/useJiraIssueLinkRoutes.js";
+import { jiraIssueUrl } from "../../lib/jira-issue-links.js";
+import { userFacingMessage } from "../../lib/error-message.js";
+import { rlog } from "../../lib/renderer-log.js";
+import { jiraFailureCode } from "./jira/pane/jira-failure.js";
+import CustomSelect from "../common/CustomSelect.vue";
+import Spinner from "../common/Spinner.vue";
 import { PROVIDER_CHOICES } from "../../lib/agent-providers.js";
 import TaskDashboardHelpTab from "./TaskDashboardHelpTab.vue";
 import TaskDashboardStatusTab from "./TaskDashboardStatusTab.vue";
@@ -298,7 +423,7 @@ import { companionPrimaryViewId } from "../../../electron/shared/companion-prima
 import TaskDashboardFilesTab from "./TaskDashboardFilesTab.vue";
 import TaskDashboardLogTab from "./TaskDashboardLogTab.vue";
 
-withDefaults(defineProps<{ workspaceId: string; showHeader?: boolean; compact?: boolean }>(), {
+const props = withDefaults(defineProps<{ workspaceId: string; showHeader?: boolean; compact?: boolean }>(), {
   showHeader: false,
   compact: false,
 });
@@ -306,8 +431,249 @@ withDefaults(defineProps<{ workspaceId: string; showHeader?: boolean; compact?: 
 const store = useAppStore();
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const api = inject<any>(apiKey);
+const jiraRoutes = useJiraIssueLinkRoutes(
+  api || store.getApi(),
+  computed(() => String(store.activeWorkspace?.profileId || "default")),
+);
+function jiraIssueUrlFor(ref: { connectionId: string; issueKey: string }) {
+  const route = jiraRoutes.routes.value.find((item) => item.connectionId === ref.connectionId);
+  return route ? jiraIssueUrl(route, ref.issueKey) : null;
+}
 const activeTab = ref<string>("status");
 const statusTabRef = ref<InstanceType<typeof TaskDashboardStatusTab> | null>(null);
+const jiraDraftFormOpen = ref(false);
+const jiraDraftBusy = ref(false);
+const jiraContextLoading = ref(false);
+const jiraDraftSaving = ref(false);
+const jiraDraftListStale = ref(false);
+const jiraDraftError = ref("");
+const jiraDraftRefKey = ref("");
+const jiraDraftBody = ref("");
+const jiraContextLoaded = ref(false);
+const jiraTaskContext = ref<{
+  jiraIssueRefs?: Array<{ provider: "jira"; connectionId: string; issueId: string; issueKey: string }>;
+  jiraIssueSnapshots?: Array<{
+    ref: { connectionId: string; issueId: string; issueKey: string };
+    fields: {
+      summary: string;
+      status: string;
+      issueType: string;
+      projectKey: string;
+      updated: string;
+      assignee?: string;
+    };
+  }>;
+} | null>(null);
+const jiraContextRefs = computed<Array<{ provider: "jira"; connectionId: string; issueId: string; issueKey: string }>>(
+  () => jiraTaskContext.value?.jiraIssueRefs || taskState.value?.jiraIssueRefs || [],
+);
+const hasJiraContext = computed(() => jiraContextRefs.value.length > 0);
+const jiraDraftRefOptions = computed(() =>
+  jiraContextRefs.value.map((ref) => ({ value: `${ref.connectionId}:${ref.issueId}`, label: ref.issueKey })),
+);
+const jiraCommentDrafts = ref<Array<{ id: string; ref: { issueKey: string }; body: string }>>([]);
+function formatJiraDate(value: string | undefined): string {
+  if (!value) return "";
+  const time = Date.parse(value);
+  if (Number.isNaN(time)) return value;
+  return new Date(time).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+function reportJiraFailure(message: string, cause: unknown, meta: Record<string, unknown> = {}) {
+  const reason = userFacingMessage(cause, "");
+  jiraDraftError.value = reason ? `${message} ${reason}` : message;
+  rlog("warn", `[jira] task dashboard: ${message}`, {
+    workspaceId: props.workspaceId,
+    code: jiraFailureCode(cause),
+    ...meta,
+  });
+}
+type JiraIssueSummary = {
+  summary: string;
+  status: string;
+  issueType: string;
+  projectKey: string;
+  updated: string;
+  assignee?: string;
+};
+const currentJiraIssues = ref<Record<string, JiraIssueSummary>>({});
+const jiraContextRefreshState = ref<"idle" | "refreshing" | "error">("idle");
+let jiraContextRequestId = 0;
+function jiraIssueContextKey(ref: { connectionId: string; issueId: string }) {
+  return `${ref.connectionId}\0${ref.issueId}`;
+}
+function currentJiraIssueFor(ref: { connectionId: string; issueId: string }) {
+  return currentJiraIssues.value[jiraIssueContextKey(ref)] || null;
+}
+function isCurrentJiraContextRequest(requestId: number, workspaceId: string, profileId: string) {
+  return (
+    requestId === jiraContextRequestId &&
+    workspaceId === props.workspaceId &&
+    profileId === String(store.activeWorkspace?.profileId || "default")
+  );
+}
+async function refreshCurrentJiraIssues(
+  requestId: number,
+  workspaceId: string,
+  profileId: string,
+  refs: Array<{ connectionId: string; issueId: string }>,
+) {
+  if (!api?.getJiraIssue || !refs.length) return;
+  jiraContextRefreshState.value = "refreshing";
+  const results = await Promise.allSettled(
+    refs.map((ref) =>
+      Promise.resolve().then(() =>
+        api.getJiraIssue({
+          connectionId: ref.connectionId,
+          issueId: ref.issueId,
+          forceRefresh: true,
+        }),
+      ),
+    ),
+  );
+  if (!isCurrentJiraContextRequest(requestId, workspaceId, profileId)) return;
+  const current: Record<string, JiraIssueSummary> = {};
+  let failed = false;
+  results.forEach((result, index) => {
+    const ref = refs[index];
+    if (result.status === "rejected" || !result.value) {
+      failed = true;
+      return;
+    }
+    const issue = result.value as {
+      ref?: { connectionId?: string; issueId?: string };
+      summary?: string;
+      status?: string;
+      issueType?: string;
+      projectKey?: string;
+      updated?: string;
+      assignee?: string;
+    };
+    if (issue.ref?.connectionId !== ref.connectionId || issue.ref?.issueId !== ref.issueId) {
+      failed = true;
+      return;
+    }
+    if (
+      typeof issue.summary !== "string" ||
+      typeof issue.status !== "string" ||
+      typeof issue.issueType !== "string" ||
+      typeof issue.projectKey !== "string" ||
+      typeof issue.updated !== "string"
+    ) {
+      failed = true;
+      return;
+    }
+    current[jiraIssueContextKey(ref)] = {
+      summary: issue.summary,
+      status: issue.status,
+      issueType: issue.issueType,
+      projectKey: issue.projectKey,
+      updated: issue.updated,
+      ...(typeof issue.assignee === "string" ? { assignee: issue.assignee } : {}),
+    };
+  });
+  currentJiraIssues.value = current;
+  jiraContextRefreshState.value = failed ? "error" : "idle";
+}
+async function loadJiraTaskContext() {
+  if (!api?.getJiraTaskContext) return;
+  const requestId = ++jiraContextRequestId;
+  const workspaceId = props.workspaceId;
+  const profileId = String(store.activeWorkspace?.profileId || "default");
+  const issueRefs = [...jiraContextRefs.value];
+  void refreshCurrentJiraIssues(requestId, workspaceId, profileId, issueRefs);
+  try {
+    jiraDraftBusy.value = true;
+    jiraContextLoading.value = true;
+    jiraDraftError.value = "";
+    const [context, drafts] = await Promise.all([
+      api.getJiraTaskContext(workspaceId),
+      api.listJiraCommentDrafts?.(workspaceId) ?? Promise.resolve([]),
+    ]);
+    if (!isCurrentJiraContextRequest(requestId, workspaceId, profileId)) return;
+    jiraTaskContext.value = context as typeof jiraTaskContext.value;
+    jiraCommentDrafts.value = (drafts as typeof jiraCommentDrafts.value) || [];
+    jiraContextLoaded.value = true;
+  } catch (cause) {
+    if (isCurrentJiraContextRequest(requestId, workspaceId, profileId))
+      reportJiraFailure("Could not load the saved Jira context.", cause);
+  } finally {
+    if (requestId === jiraContextRequestId) {
+      jiraDraftBusy.value = false;
+      jiraContextLoading.value = false;
+    }
+  }
+}
+async function reloadJiraDrafts() {
+  const workspaceId = props.workspaceId;
+  try {
+    jiraDraftBusy.value = true;
+    const drafts = (await api.listJiraCommentDrafts?.(workspaceId)) as typeof jiraCommentDrafts.value;
+    if (workspaceId !== props.workspaceId) return;
+    jiraCommentDrafts.value = drafts || [];
+    jiraDraftListStale.value = false;
+  } catch (cause) {
+    if (workspaceId === props.workspaceId) reportJiraFailure("Could not reload the Jira comment drafts.", cause);
+  } finally {
+    jiraDraftBusy.value = false;
+  }
+}
+function openJiraDraft() {
+  jiraDraftFormOpen.value = true;
+  jiraDraftRefKey.value = jiraContextRefs.value[0]
+    ? `${jiraContextRefs.value[0].connectionId}:${jiraContextRefs.value[0].issueId}`
+    : "";
+  jiraDraftBody.value = "";
+  jiraDraftError.value = "";
+  jiraDraftListStale.value = false;
+}
+async function saveJiraDraft() {
+  if (jiraDraftBusy.value) return;
+  const issueRef = jiraContextRefs.value.find(
+    (item) => `${item.connectionId}:${item.issueId}` === jiraDraftRefKey.value,
+  );
+  if (!issueRef || !api?.saveJiraCommentDraft) return;
+  jiraDraftBusy.value = true;
+  jiraDraftSaving.value = true;
+  jiraDraftError.value = "";
+  try {
+    await api.saveJiraCommentDraft({
+      sourceWorkspaceId: props.workspaceId,
+      ref: issueRef,
+      body: jiraDraftBody.value.trim(),
+    });
+  } catch (cause) {
+    reportJiraFailure("Could not save the Jira comment draft.", cause, { issueKey: issueRef.issueKey });
+    jiraDraftBusy.value = false;
+    jiraDraftSaving.value = false;
+    return;
+  }
+  jiraDraftFormOpen.value = false;
+  jiraDraftBody.value = "";
+  jiraDraftSaving.value = false;
+  jiraDraftBusy.value = false;
+  await reloadJiraDrafts();
+  if (jiraDraftError.value) {
+    jiraDraftError.value = "";
+    jiraDraftListStale.value = true;
+  }
+}
+async function deleteJiraDraft(draftId: string) {
+  if (jiraDraftBusy.value) return;
+  const draft = jiraCommentDrafts.value.find((item) => item.id === draftId);
+  if (!window.confirm(`Delete the comment draft for ${draft?.ref.issueKey || "this issue"}? This cannot be undone.`))
+    return;
+  try {
+    jiraDraftBusy.value = true;
+    jiraDraftError.value = "";
+    await api.deleteJiraCommentDraft?.({ sourceWorkspaceId: props.workspaceId, draftId });
+  } catch (cause) {
+    reportJiraFailure("Could not delete the Jira comment draft.", cause, { draftId });
+    jiraDraftBusy.value = false;
+    return;
+  }
+  jiraDraftBusy.value = false;
+  await reloadJiraDrafts();
+}
 
 const tabs = [
   { id: "status", label: "Status" },
@@ -319,6 +685,28 @@ const tabs = [
 
 const workspace = computed(() => store.activeWorkspace);
 const taskState = computed(() => workspace.value?.task || null);
+watch(
+  () => {
+    const refs = (taskState.value?.jiraIssueRefs || []) as Array<{ connectionId: string; issueId: string }>;
+    return `${props.workspaceId}\0${String(store.activeWorkspace?.profileId || "default")}\0${refs
+      .map((item) => `${item.connectionId}:${item.issueId}`)
+      .join("|")}`;
+  },
+  (key) => {
+    jiraContextRequestId += 1;
+    jiraTaskContext.value = null;
+    jiraCommentDrafts.value = [];
+    jiraContextLoaded.value = false;
+    jiraDraftError.value = "";
+    jiraDraftListStale.value = false;
+    jiraDraftFormOpen.value = false;
+    currentJiraIssues.value = {};
+    jiraContextRefreshState.value = "idle";
+    const refsKey = key.slice(key.lastIndexOf("\0") + 1);
+    if (refsKey) void loadJiraTaskContext();
+  },
+  { immediate: true },
+);
 
 // File editing — delegated to composable
 const files = useTaskFiles(api, workspace, taskState);
@@ -853,29 +1241,34 @@ function onRejectVerdict() {
   gap: 4px;
   flex-shrink: 0;
 }
-.td__tabs {
-  display: flex;
-  border-bottom: 1px solid var(--border, #333);
-  padding: 0 16px;
+@media (max-width: 768px), (max-height: 500px) {
+  .td__tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border, #333);
+    padding: 0 16px;
+  }
+  .td__tab {
+    background: none;
+    border: none;
+    color: var(--muted, #888);
+    font-size: 12px;
+    padding: 6px 12px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition:
+      color 0.15s,
+      border-color 0.15s;
+  }
+  .td__tab:hover {
+    color: var(--fg, #ccc);
+  }
+  .td__tab--active {
+    color: var(--fg, #ccc);
+    border-bottom-color: var(--accent, #7c4dff);
+  }
 }
 .td__tab {
-  background: none;
-  border: none;
-  color: var(--muted, #888);
-  font-size: 12px;
-  padding: 6px 12px;
   cursor: pointer;
-  border-bottom: 2px solid transparent;
-  transition:
-    color 0.15s,
-    border-color 0.15s;
-}
-.td__tab:hover {
-  color: var(--fg, #ccc);
-}
-.td__tab--active {
-  color: var(--fg, #ccc);
-  border-bottom-color: var(--accent, #7c4dff);
 }
 .td__body {
   flex: 1;
@@ -923,6 +1316,122 @@ function onRejectVerdict() {
 }
 .td__value {
   line-height: 1.5;
+}
+.td__jira-context {
+  flex: 0 0 auto;
+  max-height: 45%;
+  overflow-y: auto;
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(var(--tint), 0.03);
+  font-size: var(--font-size-body, 13px);
+}
+.td__jira-context h3 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.td__jira-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.td__jira-error {
+  color: var(--danger);
+}
+.td__jira-snapshot {
+  display: grid;
+  gap: 2px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.td__jira-snapshot-head {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+.td__jira-snapshot-head a {
+  color: var(--accent);
+  white-space: nowrap;
+}
+.td__jira-summary {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.td__jira-meta {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.td__jira-current {
+  color: var(--text);
+}
+.td__jira-draft {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(var(--tint), 0.04);
+}
+.td__jira-draft pre {
+  margin: 0;
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.td__jira-draft .button,
+.td__jira-action {
+  justify-self: start;
+}
+.td__jira-draft-form {
+  display: grid;
+  gap: 8px;
+}
+.td__jira-draft-form label {
+  display: grid;
+  gap: 4px;
+}
+.td__jira-draft-form label > span {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.td__jira-draft-form textarea {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(var(--tint), 0.04);
+  color: var(--text);
+  font: inherit;
+  resize: vertical;
+}
+.td__jira-draft-form textarea:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+.td__jira-form-actions {
+  display: flex;
+  gap: 8px;
+}
+.td__muted {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
 }
 .td__link-btn {
   background: none;
@@ -974,6 +1483,10 @@ function onRejectVerdict() {
   font-size: 10px;
   height: auto;
   min-height: 0;
+}
+.td--compact {
+  --subtabs-inset: 4px;
+  --subtabs-top: 4px;
 }
 .td--compact .td__tabs {
   padding: 0 8px;

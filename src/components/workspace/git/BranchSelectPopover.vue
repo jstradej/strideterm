@@ -77,7 +77,7 @@ interface Props {
   options?: string[];
   defaultBranch?: string; // e.g. "master" — short name w/o remote
   defaultRemote?: string; // e.g. "origin"
-  remoteNames?: string[]; // names of all configured remotes ("origin", "vk", "jstradej", …)
+  remoteNames?: string[]; // names of all configured remotes ("origin", "vk", "jdoe", …)
   placeholder?: string;
   disabled?: boolean;
   buttonClass?: string | string[] | Record<string, boolean>;

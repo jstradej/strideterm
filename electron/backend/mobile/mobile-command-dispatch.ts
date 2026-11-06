@@ -57,7 +57,7 @@ import type { WorkspaceState } from "../../shared/types/state.js";
 import { checkCommandPolicy, policyFor } from "./mobile-command-policy.js";
 import { deviceAllowsProfile, deviceHasCapability, isDeviceUsable } from "./mobile-device-store.js";
 import { REMOTE_WEB_SESSION_CAPABILITY } from "./mobile-web-session-ticket-store.js";
-import { RELAY_MOBILE_SESSION_ABSOLUTE_TTL_MS } from "./mobile-relay-protocol.js";
+import { RELAY_MOBILE_SESSION_ABSOLUTE_TTL_MS, RELAY_MOBILE_SESSION_IDLE_TTL_MS } from "./mobile-relay-protocol.js";
 import {
   decodeCanonicalPublicKey,
   deriveRelayE2eKeys,
@@ -203,7 +203,9 @@ export interface MobileWebSessionTicketIssuer {
     transport: "relay" | "legacy";
     /** Audit correlation only: the last 8 characters of the requesting command's id. */
     commandRef?: string;
-  }): { ticketId: string; secret: string; expiresAt: number };
+    /** The idle TTL to bind to the session this ticket mints (ADR 0041); absent = server fallback. */
+    sessionIdleTtlMs?: number;
+  }): { ticketId: string; secret: string; expiresAt: number; sessionIdleTtlMs?: number };
 }
 
 /**
@@ -216,6 +218,12 @@ export interface MobileWebSessionTicketIssuer {
  */
 export interface MobileRelayTransportStatus {
   status(): { enabled: boolean; state: string; relayOrigin: string };
+  /**
+   * The control plane's idle TTL for relay mobile sessions, or null when it has stated none
+   * acceptable (ADR 0041; see `MobileRelayManager.mobileSessionIdleTtlMs`). Optional so a build or a
+   * test without it simply binds nothing.
+   */
+  mobileSessionIdleTtlMs?(): number | null;
 }
 
 export interface MobileCommandDispatcherDeps {
@@ -905,6 +913,10 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
         // same decision that chose `expectedOrigin` above, recorded so the redeeming server can
         // refuse a ticket that was minted for the other one.
         const transport = relayOrigin ? "relay" : "legacy";
+        // ADR 0041: the control plane's idle TTL applies to RELAY sessions only. A legacy (LAN or
+        // tunnel) session is the one where a cookie alone is enough to use it, with no signed grant
+        // and no end-to-end keys in the way, so it keeps the desktop's own conservative fallback.
+        const policyIdleTtlMs = transport === "relay" ? (deps.relay?.mobileSessionIdleTtlMs?.() ?? null) : null;
         const ticket = deps.ticketIssuer.issueTicket({
           deviceId: fresh.deviceId,
           pairId: fresh.pairId,
@@ -913,6 +925,7 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
           allowedOrigin: command.payload.allowedOrigin,
           transport,
           commandRef: command.commandId.slice(-8),
+          ...(policyIdleTtlMs !== null ? { sessionIdleTtlMs: policyIdleTtlMs } : {}),
         });
 
         if (e2eOffer && e2eAcceptance && deps.ownPrivateKey) {
@@ -982,6 +995,10 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
           requiredCapability: REMOTE_WEB_SESSION_CAPABILITY,
           issuedAt: now(),
           expiresAt: ticket.expiresAt,
+          // What the session this ticket mints WILL have, so the phone can tell a session that has
+          // certainly idle-expired from one worth resuming (ADR 0041). Exactly the bound value; with
+          // nothing bound, the redeeming server's fallback, which is this protocol constant.
+          sessionIdleTtlMs: ticket.sessionIdleTtlMs ?? RELAY_MOBILE_SESSION_IDLE_TTL_MS,
         });
       }
 

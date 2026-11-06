@@ -3,7 +3,10 @@ import os from "node:os";
 import fs from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { describe, expect, test, vi, afterEach } from "vitest";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { BaseProviderManager } from "./base-manager.js";
+import { shortPathKey } from "./provider-utils.js";
 
 const reviewRoot = path.join(os.tmpdir(), "strideterm-base-manager-tests");
 
@@ -25,8 +28,8 @@ function createReviewStore() {
 // gits, as `-c http.extraheader=…` argv. Returns the decoded "login:token" either way.
 function decodeGitAuth(call: unknown[]): string | null {
   const [, args, options] = call as [string, string[], { env?: Record<string, string> }?];
-  const argHeader = args.find((a) => a.startsWith("http.extraheader="));
-  const header = argHeader?.slice("http.extraheader=".length) ?? options?.env?.GIT_CONFIG_VALUE_0;
+  const argHeader = args.find((a) => a.startsWith("http.") && a.split("=")[0].endsWith("extraheader"));
+  const header = argHeader?.slice(argHeader.indexOf("=") + 1) ?? options?.env?.GIT_CONFIG_VALUE_0;
   if (!header) return null;
   return Buffer.from(header.replace("AUTHORIZATION: Basic ", ""), "base64").toString("utf8");
 }
@@ -143,12 +146,16 @@ describe("BaseProviderManager.ensureCacheRepoAt", () => {
     const execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
     const manager = createManager({ execFileTextImpl });
 
-    await manager.runGit("/repo", ["fetch", "origin"], { login: "me", token: "tok-123" });
+    await manager.runGit("/repo", ["fetch", "origin"], {
+      login: "me",
+      token: "tok-123",
+      authUrl: "https://example.com/acme/repo.git",
+    });
 
     const [, args, options] = execFileTextImpl.mock.calls[0];
     expect(JSON.stringify(args)).not.toMatch(/extraheader|Basic|tok-123/);
     expect(options.env.GIT_CONFIG_COUNT).toBe("1");
-    expect(options.env.GIT_CONFIG_KEY_0).toBe("http.extraheader");
+    expect(options.env.GIT_CONFIG_KEY_0).toBe("http.https://example.com/.extraheader");
     expect(decodeGitAuth(execFileTextImpl.mock.calls[0])).toBe("me:tok-123");
   });
 
@@ -156,10 +163,14 @@ describe("BaseProviderManager.ensureCacheRepoAt", () => {
     const execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
     const manager = createManager({ execFileTextImpl, gitVersion: "git version 2.30.2" });
 
-    await manager.runGit("/repo", ["fetch", "origin"], { login: "me", token: "tok-123" });
+    await manager.runGit("/repo", ["fetch", "origin"], {
+      login: "me",
+      token: "tok-123",
+      authUrl: "https://example.com/acme/repo.git",
+    });
 
     const [, args, options] = execFileTextImpl.mock.calls[0];
-    expect(args.some((a: string) => a.startsWith("http.extraheader="))).toBe(true);
+    expect(args.some((a: string) => a.startsWith("http.https://example.com/.extraheader="))).toBe(true);
     expect(options.env.GIT_CONFIG_COUNT).toBeUndefined();
     expect(decodeGitAuth(execFileTextImpl.mock.calls[0])).toBe("me:tok-123");
   });
@@ -292,6 +303,7 @@ describe("BaseProviderManager.ensureManagedWorktree", () => {
       localBranch: "pr-7-feature",
       sourceBranch: "feature",
       fetchRefspecs: ["+refs/heads/feature:refs/remotes/origin/feature", "+refs/heads/main:refs/remotes/origin/main"],
+      remoteUrl: "https://git.example.invalid/acme/repo",
       token: "tok-123",
     });
   }
@@ -390,6 +402,138 @@ describe("BaseProviderManager.ensureManagedWorktree", () => {
   });
 });
 
+describe("BaseProviderManager git credentials scope", () => {
+  const tempPaths: string[] = [];
+  afterEach(async () => {
+    await Promise.all(tempPaths.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
+  });
+
+  const expectedUrl = "https://git.example.invalid/acme/repo";
+
+  function realManager() {
+    return new BaseProviderManager({
+      credentialStore: createCredentialStore() as unknown as ConstructorParameters<
+        typeof BaseProviderManager
+      >[0]["credentialStore"],
+      reviewStore: createReviewStore() as unknown as ConstructorParameters<
+        typeof BaseProviderManager
+      >[0]["reviewStore"],
+      createApi: () => ({}),
+    });
+  }
+
+  async function listen(): Promise<{ url: string; authorizations: Array<string | undefined>; close: () => void }> {
+    const authorizations: Array<string | undefined> = [];
+    const server = http.createServer((request, response) => {
+      authorizations.push(request.headers.authorization);
+      response.statusCode = 404;
+      response.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    return { url: `http://127.0.0.1:${port}/evil.git`, authorizations, close: () => server.close() };
+  }
+
+  test("refuses to send a token that is not scoped to a repository URL", async () => {
+    const execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const manager = createManager({ execFileTextImpl });
+    await expect(manager.runGit(".", ["fetch", "origin"], { token: "tok" })).rejects.toThrow(/Refusing/);
+    expect(execFileTextImpl).not.toHaveBeenCalled();
+  });
+
+  test.skipIf(!GIT_AVAILABLE)(
+    "a review whose repository metadata names another host sends that host no token",
+    async () => {
+      const remote = await createRemote(tempPaths);
+      const server = await listen();
+      try {
+        const manager = new BaseProviderManager({
+          credentialStore: createCredentialStore({ "tok-ref": "tok-secret" }) as unknown as ConstructorParameters<
+            typeof BaseProviderManager
+          >[0]["credentialStore"],
+          reviewStore: createReviewStore() as unknown as ConstructorParameters<
+            typeof BaseProviderManager
+          >[0]["reviewStore"],
+          createApi: () => ({}),
+        });
+        manager.snapshot.connections = [
+          { id: "conn-1", tokenRef: "tok-ref", login: "me", orgUrl: "https://dev.azure.com/acme" },
+        ];
+        const subject = manager.buildReviewSubject({
+          id: "ws",
+          cwd: remote.root,
+          review: {
+            connectionId: "conn-1",
+            pullRequest: { id: 1, sourceRefName: "refs/heads/f" },
+            repository: { id: "r", name: "evil", remoteUrl: server.url },
+            sourceRepository: { id: "r", name: "evil", remoteUrl: server.url },
+          } as never,
+        });
+        expect(subject.auth.authUrl).toEqual(["https://dev.azure.com", "https://acme.visualstudio.com"]);
+        await expect(manager.runGit(remote.root, ["ls-remote", server.url], subject.auth)).rejects.toThrow();
+        expect(server.authorizations.length).toBeGreaterThan(0);
+        expect(server.authorizations.filter(Boolean)).toEqual([]);
+      } finally {
+        server.close();
+      }
+    },
+  );
+
+  test.skipIf(!GIT_AVAILABLE)("a quick-fix fetch from a repointed cache origin does not carry the token", async () => {
+    const remote = await createRemote(tempPaths);
+    const cache = path.join(remote.root, "cache");
+    rg(remote.root, ["clone", "-q", "--no-checkout", remote.remote, cache]);
+    const server = await listen();
+    try {
+      rg(cache, ["remote", "set-url", "origin", server.url]);
+      await expect(
+        realManager().prepareQuickFixCheckout({
+          connection: { id: "c1" },
+          token: "tok-secret",
+          reviewRoot: path.join(remote.root, "reviews"),
+          baseBranch: "main",
+          newBranchName: "fix-1",
+          repoPathSegment: "repo",
+          remoteUrl: expectedUrl,
+          ensureCacheRepo: async () => cache,
+        }),
+      ).rejects.toThrow();
+      expect(server.authorizations.length).toBeGreaterThan(0);
+      expect(server.authorizations.filter(Boolean)).toEqual([]);
+    } finally {
+      server.close();
+    }
+  });
+
+  test.skipIf(!GIT_AVAILABLE)(
+    "restores a cache repository origin that no longer names the provider's URL",
+    async () => {
+      const remote = await createRemote(tempPaths);
+      const reviewRootPath = path.join(remote.root, "reviews");
+      const repositoryRoot = path.join(
+        reviewRootPath,
+        "repos",
+        shortPathKey("c1", "connection"),
+        shortPathKey("acme/repo", "repository"),
+      );
+      await fs.mkdir(path.dirname(repositoryRoot), { recursive: true });
+      rg(remote.root, ["clone", "-q", "--no-checkout", remote.remote, repositoryRoot]);
+      rg(repositoryRoot, ["remote", "set-url", "origin", "http://127.0.0.1:9/evil.git"]);
+
+      await realManager().ensureCacheRepoAt({
+        connectionId: "c1",
+        repoIdentifier: "acme/repo",
+        repoLabel: "acme/repo",
+        remoteUrl: expectedUrl,
+        reviewRoot: reviewRootPath,
+        token: "",
+      });
+
+      expect(rg(repositoryRoot, ["config", "--get", "remote.origin.url"])).toBe(expectedUrl);
+    },
+  );
+});
+
 describe("BaseProviderManager review Git operations", () => {
   const tempPaths: string[] = [];
   afterEach(async () => {
@@ -442,7 +586,9 @@ describe("BaseProviderManager review Git operations", () => {
       createApi: () => ({}),
     });
     manager.providerLabel = "github";
-    manager.snapshot.connections = [{ id: "conn-1", tokenRef: "tok-ref-1", login: "me@example.com" }];
+    manager.snapshot.connections = [
+      { id: "conn-1", tokenRef: "tok-ref-1", login: "me@example.com", hostUrl: "https://git.example.invalid" },
+    ];
     const sourceRepository = {
       id: "100",
       name: "repo",
@@ -1092,5 +1238,136 @@ describe("BaseProviderManager.openReviewWorkspaceCore — forceReview", () => {
     expect(opened.created).toBe(false);
     expect(opened.workspace.internalMcpEnabled).toBe(false);
     expect(opened.workspace.sshMcpEnabled).toBe(false);
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)("BaseProviderManager.checkLocalMerge (real git merge-tree)", () => {
+  const tempPaths: string[] = [];
+  afterEach(async () => {
+    await Promise.all(tempPaths.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
+  });
+
+  async function realManager() {
+    const { execFileText } = await import("../process-utils.js");
+    return createManager({ execFileTextImpl: execFileText });
+  }
+
+  test("a feature that touches only its own files merges cleanly into origin/<target>", async () => {
+    const { seed } = await createRemote(tempPaths);
+    const manager = await realManager();
+
+    const check = await manager.checkLocalMerge(seed, "refs/heads/main");
+
+    expect(check).toEqual({
+      state: "clean",
+      paths: [],
+      headSha: rg(seed, ["rev-parse", "HEAD"]),
+      targetRef: "origin/main",
+    });
+  });
+
+  test("an edit/edit collision names exactly the conflicting file, and the checkout is untouched", async () => {
+    const { seed } = await createRemote(tempPaths);
+    rg(seed, ["checkout", "-q", "main"]);
+    await fs.writeFile(path.join(seed, "a.txt"), "main side\n");
+    rg(seed, ["commit", "-q", "-am", "main edits a"]);
+    rg(seed, ["push", "-q", "origin", "main"]);
+    rg(seed, ["checkout", "-q", "feature"]);
+    await fs.writeFile(path.join(seed, "a.txt"), "feature side\n");
+    rg(seed, ["commit", "-q", "-am", "feature edits a"]);
+    const head = rg(seed, ["rev-parse", "HEAD"]);
+    const manager = await realManager();
+
+    const check = await manager.checkLocalMerge(seed, "main");
+
+    expect(check).toEqual({ state: "conflicts", paths: ["a.txt"], headSha: head, targetRef: "origin/main" });
+    expect(rg(seed, ["status", "--porcelain"])).toBe("");
+    expect(rg(seed, ["rev-parse", "HEAD"])).toBe(head);
+  });
+
+  test("a target that was never fetched is unknown, not clean", async () => {
+    const { seed } = await createRemote(tempPaths);
+    const manager = await realManager();
+
+    const check = await manager.checkLocalMerge(seed, "refs/heads/does-not-exist");
+
+    expect(check.state).toBe("unknown");
+    expect(check.paths).toEqual([]);
+  });
+});
+
+describe("BaseProviderManager.markPullRequestSeen — attention reasons", () => {
+  const prKey = "conn:repo:1";
+  const reasons = [
+    { code: "review-requested", label: "Your review", ackOnSeen: false },
+    { code: "replies", label: "2 replies to you", ackOnSeen: true },
+  ];
+
+  function managerWith(summary: Record<string, unknown>) {
+    const manager = createManager({ execFileTextImpl: vi.fn() });
+    manager.setSnapshot({
+      connections: [],
+      reviewActivity: [],
+      pullRequests: { [prKey]: summary },
+      trackedPullRequests: {},
+      inbox: { needsMyReview: [summary], myPullRequests: [], recentlyUpdated: [summary], needsAttention: [summary] },
+      sync: { running: false, lastStartedAt: null, lastCompletedAt: null },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    return manager;
+  }
+
+  test("drops only the acknowledged reasons and keeps the PR in needsAttention", async () => {
+    const manager = managerWith({
+      prKey,
+      lastRemoteActivityAt: "2026-01-02T00:00:00Z",
+      hasAttention: true,
+      attentionReason: "Your review",
+      attentionReasons: reasons,
+      newCommentsCount: 2,
+    });
+
+    const snapshot = await manager.markPullRequestSeen(prKey);
+
+    expect(snapshot?.pullRequests[prKey]).toMatchObject({
+      hasAttention: true,
+      attentionReason: "Your review",
+      attentionReasons: [reasons[0]],
+      newCommentsCount: 0,
+    });
+    expect(snapshot?.inbox.needsAttention).toHaveLength(1);
+    expect(snapshot?.inbox.needsAttention[0]).toMatchObject({ attentionReasons: [reasons[0]], newCommentsCount: 0 });
+  });
+
+  test("removes the PR from needsAttention once nothing state-based remains", async () => {
+    const manager = managerWith({
+      prKey,
+      lastRemoteActivityAt: "2026-01-02T00:00:00Z",
+      hasAttention: true,
+      attentionReason: "2 replies to you",
+      attentionReasons: [reasons[1]],
+      newCommentsCount: 2,
+    });
+
+    const snapshot = await manager.markPullRequestSeen(prKey);
+
+    expect(snapshot?.pullRequests[prKey]).toMatchObject({ hasAttention: false, attentionReason: "" });
+    expect(snapshot?.inbox.needsAttention).toEqual([]);
+  });
+
+  test("a summary without reasons (GitHub, old snapshots) is cleared as before", async () => {
+    const manager = managerWith({
+      prKey,
+      lastRemoteActivityAt: "2026-01-02T00:00:00Z",
+      hasAttention: true,
+      attentionReason: "new comment",
+      newCommentsCount: 1,
+    });
+
+    const snapshot = await manager.markPullRequestSeen(prKey);
+
+    expect(snapshot?.pullRequests[prKey]).toMatchObject({ hasAttention: false, attentionReason: "" });
+    expect(snapshot?.pullRequests[prKey]).not.toHaveProperty("attentionReasons");
+    expect(snapshot?.inbox.needsAttention).toEqual([]);
   });
 });

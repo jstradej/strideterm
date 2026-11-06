@@ -25,6 +25,7 @@
       :active-workspace-id="store.myActiveWorkspaceId || ''"
       :attention-counts="recentAttentionCounts"
       :status-cues="workspaceStatusCues"
+      :badges="workspaceBadges"
       @activate="onActivateAgentRow"
     />
     <!-- "In split" group: workspaces currently displayed in the workspace grid.
@@ -58,12 +59,14 @@
         v-for="entry in splitGroupCards"
         :key="`split-${entry.slotIndex}-${entry.card.id}`"
         :workspace="{ ...entry.card, depth: 0, inGrid: true, slotIndex: entry.slotIndex + 1 }"
+        :jira-routes="jiraRoutes.routes.value"
         :data-workspace-id="entry.card.id"
         @activate="onActivate(entry.card.id)"
         @open-menu="onOpenMenu($event, entry.card)"
         @toggle-star="handleToggleStar(entry.card)"
         @task-toggle="handleTaskToggle(entry.card)"
         @task-stop="handleTaskStop(entry.card)"
+        @open-jira-issue="onOpenJiraIssue"
       />
       <hr class="workspace-list__divider" />
     </div>
@@ -140,12 +143,14 @@
       v-for="ws in treeCards"
       :key="ws.id"
       :workspace="ws"
+      :jira-routes="jiraRoutes.routes.value"
       :data-workspace-id="ws.id"
       @activate="onActivate(ws.id)"
       @open-menu="onOpenMenu($event, ws)"
       @toggle-star="handleToggleStar(ws)"
       @task-toggle="handleTaskToggle(ws)"
       @task-stop="handleTaskStop(ws)"
+      @open-jira-issue="onOpenJiraIssue"
     />
     <p v-if="searchQuery && treeCards.length === 0" class="workspace-list__no-match">
       No workspace matches “{{ store.workspaceSearchQuery.trim() }}”.
@@ -158,6 +163,18 @@
     >
       <span class="workspace-new-tile__plus" aria-hidden="true">+</span>
       <span class="workspace-new-tile__label">add new workspace</span>
+    </button>
+    <button
+      type="button"
+      class="workspace-new-tile workspace-new-tile--jira"
+      :class="{ 'workspace-new-tile--busy': jiraInboxBusy }"
+      title="Open the profile's Jira inbox workspace."
+      :disabled="jiraInboxBusy"
+      :aria-busy="jiraInboxBusy ? 'true' : 'false'"
+      @click="onOpenJiraInbox"
+    >
+      <span class="workspace-new-tile__plus" aria-hidden="true">J</span>
+      <span class="workspace-new-tile__label">open Jira inbox</span>
     </button>
     <div v-if="suggestions.length && !searchQuery" class="workspace-suggestions">
       <p class="eyebrow workspace-suggestions__title">Available plugins</p>
@@ -303,6 +320,7 @@ import { resolveParentId } from "../../app/workspace-tree.js";
 import { buildActivityForest, type ActivityCluster, type ActivityRowView } from "../../app/workspace-activity-tree.js";
 import { formatRelativeAge } from "../../app/relative-age.js";
 import { resolveWorkspaceStatusCue, type WorkspaceStatusCue } from "../../app/workspace-status.js";
+import type { WorkspaceBadgeGlyph } from "../../app/workspace-badge-glyphs.js";
 import type { Transport } from "../../transport.js";
 import type { GitSnapshot, StatePayload, WorkspaceState } from "../../../electron/shared/types/state.js";
 import { collectSupervisedAgents, type RunningAgentRow } from "../../app/selectors.js";
@@ -315,6 +333,8 @@ import { useSidebarInteractionLock } from "../../composables/useSidebarInteracti
 import WorkspaceCard from "./WorkspaceCard.vue";
 import WorkspaceActivityCluster from "./WorkspaceActivityCluster.vue";
 import RunningAgentsPanel from "./RunningAgentsPanel.vue";
+import { useJiraIssueLinkRoutes } from "../../composables/useJiraIssueLinkRoutes.js";
+import { jiraIssueUrl } from "../../lib/jira-issue-links.js";
 
 interface LiveTask {
   state?: string;
@@ -384,6 +404,10 @@ const props = defineProps<{
 }>();
 
 const store = useAppStore();
+const jiraRoutes = useJiraIssueLinkRoutes(
+  store.getApi(),
+  computed(() => String(store.myActiveProfileId || "default")),
+);
 const notifications = useNotificationStore();
 const listRef = ref<HTMLElement | null>(null);
 const dragDrop = useWorkspaceDragDrop(listRef);
@@ -958,6 +982,7 @@ const recentRowsByCluster = computed((): { key: string; rows: ActivityRowView[] 
         workspaceId: node.workspaceId,
         depth: node.depth,
         icon: node.icon,
+        ...workspaceBadges.value.get(node.workspaceId),
         color: identity?.color || node.color,
         active: node.workspaceId === store.myActiveWorkspaceId,
         attentionCount: recentAttentionCounts.value.get(node.workspaceId) || 0,
@@ -1065,6 +1090,18 @@ const workspaceStatusCues = computed((): Map<string, WorkspaceStatusCue> => {
   return cues;
 });
 
+// The tree card's review / new-branch glyph per workspace, from the same card mapping, so Recently worked and Running
+// draw the kind exactly where the tree does. Only workspaces that have one are listed.
+const workspaceBadges = computed((): Map<string, { badgeGlyph: WorkspaceBadgeGlyph; newBranch: boolean }> => {
+  const badges = new Map<string, { badgeGlyph: WorkspaceBadgeGlyph; newBranch: boolean }>();
+  for (const card of workspaceCards.value) {
+    if (card.badgeGlyph) {
+      badges.set(card.id, { badgeGlyph: card.badgeGlyph as WorkspaceBadgeGlyph, newBranch: card.newBranch === true });
+    }
+  }
+  return badges;
+});
+
 // Grid slot number per workspace, 1-based to match what the cards show.
 const gridSlotByWorkspace = computed((): Map<string, number> => {
   const slots = new Map<string, number>();
@@ -1145,6 +1182,57 @@ function onCreateEmptyWorkspace(): void {
   // Skip the New Workspace picker — go straight to the empty-workspace editor.
   // The picker is still reachable via the "+" button in the sidebar header.
   store.openWorkspaceDialog();
+}
+
+async function onOpenJiraIssue(ref: { connectionId: string; issueId: string; issueKey: string }): Promise<void> {
+  try {
+    const route = jiraRoutes.routes.value.find((item) => item.connectionId === ref.connectionId);
+    const url = route ? jiraIssueUrl(route, ref.issueKey) : null;
+    if (!route || !url) throw new Error(`The Jira connection for ${ref.issueKey} is unavailable in this profile.`);
+    const profileId = String(store.myActiveProfileId || "default");
+    const jiraWorkspace = (store.payload?.appState?.workspaces || []).find(
+      (workspace) => workspace.kind === "jira" && (workspace.profileId || "default") === profileId,
+    );
+    if (jiraWorkspace) {
+      store.requestJiraIssueOpen(jiraWorkspace.id, ref);
+      await onActivate(jiraWorkspace.id);
+      return;
+    }
+    const transport = store.getApi();
+    if (!transport?.openExternal) throw new Error("Opening links is unavailable in this client.");
+    await transport.openExternal(url);
+  } catch (cause) {
+    notifications.showError("Could not open the Jira issue", userFacingMessage(cause, "Could not open the issue."));
+  }
+}
+
+const jiraInboxBusy = ref(false);
+
+async function onOpenJiraInbox(): Promise<void> {
+  if (jiraInboxBusy.value) return;
+  jiraInboxBusy.value = true;
+  try {
+    const profileId = String(store.myActiveProfileId || "default");
+    const existing = (store.payload?.appState?.workspaces || []).find(
+      (workspace) => workspace.kind === "jira" && (workspace.profileId || "default") === profileId,
+    );
+    if (existing) {
+      await onActivate(existing.id);
+      return;
+    }
+    if (store.isMobileSession())
+      throw new Error("The Jira inbox does not exist in this profile yet. Create it on the desktop first.");
+    const api = store.getApi() as { ensureJiraWorkspace?: () => Promise<unknown> };
+    if (!api.ensureJiraWorkspace) throw new Error("Jira inbox is unavailable in this runtime.");
+    const result = (await api.ensureJiraWorkspace()) as { id?: string; workspaceId?: string };
+    const workspaceId = result.workspaceId || result.id;
+    if (!workspaceId) throw new Error("The Jira workspace was not returned by the runtime.");
+    await onActivate(workspaceId);
+  } catch (cause) {
+    notifications.showError("Open Jira inbox failed", userFacingMessage(cause, "Could not open Jira inbox."));
+  } finally {
+    jiraInboxBusy.value = false;
+  }
 }
 
 async function onActivate(workspaceId: string): Promise<void> {
@@ -1365,7 +1453,8 @@ const wsMenuHasChildren = computed<boolean>(() => {
     return (
       a.review?.parentWorkspaceId === ws.id ||
       a.quickfix?.parentWorkspaceId === ws.id ||
-      a.task?.parentWorkspaceId === ws.id
+      a.task?.parentWorkspaceId === ws.id ||
+      a.jiraBoard?.parentWorkspaceId === ws.id
     );
   });
 });
@@ -1492,7 +1581,8 @@ function openInGrid(parentId: string): void {
     return (
       a.review?.parentWorkspaceId === parentId ||
       a.quickfix?.parentWorkspaceId === parentId ||
-      a.task?.parentWorkspaceId === parentId
+      a.task?.parentWorkspaceId === parentId ||
+      a.jiraBoard?.parentWorkspaceId === parentId
     );
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   }) as any[];

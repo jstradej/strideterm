@@ -1,3 +1,5 @@
+import { createHash, randomUUID } from "node:crypto";
+import path from "node:path";
 import { getAllProviders } from "./providers/provider-registry.js";
 import { findWorkspace } from "./runtime-utils.js";
 import {
@@ -10,6 +12,17 @@ import { sessionIdFor } from "./agent-task-runner.js";
 import { TASK_ACTIVE_STATES } from "../shared/task-states.js";
 import { errorMessage } from "../shared/error-message.js";
 import { createRecoveryQueue } from "./shared/recovery-queue.js";
+import { sameProviderRepository } from "./jira/jira-repo-identity.js";
+import { JiraRequestError } from "./jira/jira-manager.js";
+import { parseRemoteViewerId } from "./viewer-id.js";
+import { findJiraTaskWorkspaces, isJiraTaskWorkspaceTerminal } from "../shared/jira-task-workspaces.js";
+import {
+  associateJiraIssues,
+  createJiraIssueSnapshot,
+  verifyJiraIssueSnapshot,
+} from "./jira/jira-workspace-context.js";
+import type { JiraIssueRef, JiraIssueSnapshot } from "../shared/types/task.js";
+import type { JiraIssue } from "./jira/jira-workspace-context.js";
 import type { Logger } from "./logger.js";
 import type {
   AppState,
@@ -33,6 +46,33 @@ interface TaskActionResult<Payload> {
   ok: boolean;
   outcomes?: Record<string, RecoveryOutcome>;
   payload: Payload;
+}
+
+/**
+ * Task create/start answer over the mobile relay, which cancels a request whose response has not started within
+ * 30 s. All Jira lookups of one request share this budget so the worktree work that follows still fits.
+ */
+const JIRA_TASK_LOOKUP_BUDGET_MS = 10_000;
+
+async function withinJiraLookupBudget<T>(work: Promise<T>, deadlineAt: number): Promise<T> {
+  const remaining = deadlineAt - Date.now();
+  const expired = () => new JiraRequestError("network", "Jira did not answer within the time limit. Try again.");
+  if (remaining <= 0) {
+    void work.catch(() => undefined);
+    throw expired();
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(expired()), remaining);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    void work.catch(() => undefined);
+  }
 }
 
 /**
@@ -102,6 +142,85 @@ interface RecoveryCheckFailure {
   actual: unknown;
 }
 
+interface JiraTaskPreviewInput {
+  refs: JiraIssueRef[];
+  repo: {
+    provider: "github" | "azure";
+    connectionId: string;
+    repoId: string;
+    repoName: string;
+    remoteUrl: string;
+    cwd: string;
+    projectId?: string;
+  };
+  baseBranch: string;
+  branch: string;
+  checkoutMode: string;
+  taskConfig: { description: string; selectedFields?: string[]; [key: string]: unknown };
+}
+
+interface JiraPreviewRepository {
+  id: string;
+  owner?: string;
+  name: string;
+  remoteUrl: string;
+  defaultBranch?: string;
+}
+
+interface JiraPreviewBranch {
+  name?: string;
+  displayName?: string;
+}
+type JiraPreviewBranches = string | JiraPreviewBranch;
+interface JiraProviderConnection {
+  id: string;
+  enabled?: boolean;
+  profileId?: string;
+}
+interface JiraProviderSettings {
+  connections?: JiraProviderConnection[];
+}
+interface JiraPreparedIssue {
+  ref: JiraIssueRef;
+  fields: Record<string, unknown>;
+}
+type JiraPreparedRepo = JiraTaskPreviewInput["repo"] & { projectId?: string };
+interface JiraPreparedPayload {
+  refs: JiraIssueRef[];
+  repo: JiraPreparedRepo;
+  baseBranch: string;
+  branch: string;
+  checkoutMode: string;
+  taskConfig: JiraTaskPreviewInput["taskConfig"];
+  issues: JiraPreparedIssue[];
+}
+interface JiraTaskPreviewRuntime {
+  jiraGetIssue(
+    input: { connectionId: string; issueId: string },
+    windowId?: string,
+  ): Promise<JiraIssue & { description?: string }>;
+  jiraRemoteGetIssue(
+    input: { connectionId: string; issueId: string },
+    profileId: string,
+  ): Promise<(JiraIssue & { description?: string }) | null>;
+  jiraListComments?(input: { ref: JiraIssueRef }, windowId?: string): Promise<unknown>;
+  githubQuickFixListRepos(input: { connectionId: string }): Promise<{ repositories?: JiraPreviewRepository[] }>;
+  azureQuickFixListRepositories(input: {
+    connectionId: string;
+    projectName?: string;
+  }): Promise<{ repositories?: JiraPreviewRepository[] }>;
+  githubQuickFixListBranches(input: {
+    connectionId: string;
+    owner?: string;
+    repo: string;
+  }): Promise<{ branches?: JiraPreviewBranches[] }>;
+  azureQuickFixListBranches(input: {
+    connectionId: string;
+    projectName?: string;
+    repositoryId: string;
+  }): Promise<{ branches?: JiraPreviewBranches[] }>;
+}
+
 /**
  * Compare a recovery's expectations with the task as it is now. `stagedPrompt`
  * reports only whether the staged prompt is still the one this recovery put
@@ -153,6 +272,18 @@ function recoveryTaskReplaced(failures: readonly RecoveryCheckFailure[]): boolea
  * to the full merged object at call time, not to this factory's return value.
  */
 export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
+  const jiraTaskPreviews = new Map<
+    string,
+    { windowId: string; hash: string; expiresAt: number; payload: JiraPreparedPayload }
+  >();
+  type JiraTaskCreateResult = {
+    workspaceId: string;
+    taskId: string;
+    cwdWarning: string;
+    repoPreferenceSaved?: boolean;
+    payload: Payload;
+  };
+  const jiraTaskCreationsInFlight = new Map<string, Promise<JiraTaskCreateResult | null>>();
   const {
     log,
     getState,
@@ -718,6 +849,118 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
   }
 
   return {
+    async previewJiraTaskContext(rawInput: unknown, windowId?: string) {
+      const input = rawInput as JiraTaskPreviewInput;
+      if (!windowId) throw new Error("Jira task preparation requires a trusted desktop window context.");
+      const profileId = resolveCallerProfileId(getState(), windowId);
+      if (!Array.isArray(input.refs) || input.refs.length < 1 || input.refs.length > 20)
+        throw new Error("Select between 1 and 20 Jira issues.");
+      const provider = input.repo?.provider;
+      if (provider !== "github" && provider !== "azure") throw new Error("Select a supported repository provider.");
+      const integrations = getState().settings.integrations as unknown as Record<
+        string,
+        JiraProviderSettings | undefined
+      >;
+      const settings = integrations[provider === "github" ? "github" : "azureDevops"];
+      const providerConnection = settings?.connections?.find(
+        (item) =>
+          item.id === input.repo.connectionId && item.enabled !== false && (item.profileId || "default") === profileId,
+      );
+      if (!providerConnection) throw new Error("Repository connection is missing or belongs to another profile.");
+      const reposResponse =
+        provider === "github"
+          ? await (this as unknown as JiraTaskPreviewRuntime).githubQuickFixListRepos({
+              connectionId: input.repo.connectionId,
+            })
+          : await (this as unknown as JiraTaskPreviewRuntime).azureQuickFixListRepositories({
+              connectionId: input.repo.connectionId,
+              projectName: input.repo.projectId,
+            });
+      const repos = reposResponse?.repositories || [];
+      const repo = repos.find((item) => String(item.id) === String(input.repo.repoId));
+      if (!repo || !repo.remoteUrl || (provider === "github" && `${repo.owner}/${repo.name}` !== input.repo.repoName))
+        throw new Error("Selected repository is no longer available.");
+      if (provider === "azure" && String(repo.name) !== input.repo.repoName)
+        throw new Error("Selected repository changed.");
+      const canonicalRepo = {
+        provider,
+        connectionId: input.repo.connectionId,
+        repoId: String(repo.id),
+        projectId: provider === "azure" ? String(input.repo.projectId || "") : undefined,
+        repoName: provider === "github" ? `${repo.owner}/${repo.name}` : String(repo.name),
+        remoteUrl: String(repo.remoteUrl),
+        cwd: String(input.repo.cwd),
+      };
+      const branchPayload =
+        provider === "github"
+          ? await (this as unknown as JiraTaskPreviewRuntime).githubQuickFixListBranches({
+              connectionId: input.repo.connectionId,
+              owner: repo.owner,
+              repo: repo.name,
+            })
+          : await (this as unknown as JiraTaskPreviewRuntime).azureQuickFixListBranches({
+              connectionId: input.repo.connectionId,
+              projectName: input.repo.projectId,
+              repositoryId: repo.id,
+            });
+      const branches = branchPayload?.branches || [];
+      const branchNames = branches.map((item) =>
+        typeof item === "string" ? item : String(item.name || item.displayName || ""),
+      );
+      if (!branchNames.includes(input.baseBranch)) throw new Error("Selected base branch is no longer available.");
+      const jiraRuntime = this as unknown as JiraTaskPreviewRuntime;
+      const issues = await Promise.all(
+        input.refs.map((ref) =>
+          jiraRuntime.jiraGetIssue({ connectionId: ref.connectionId, issueId: ref.issueId }, windowId),
+        ),
+      );
+      const selectedFields: string[] = Array.isArray(input.taskConfig?.selectedFields)
+        ? [...new Set(input.taskConfig.selectedFields as string[])]
+        : [];
+      const allowedFields = new Set(["summary", "status", "description", "comments"]);
+      if (selectedFields.some((field: string) => !allowedFields.has(field)))
+        throw new Error("Unsupported Jira snapshot field selection.");
+      const issueSnapshots = await Promise.all(
+        issues.map(async (issue) => {
+          const fields: Record<string, unknown> = Object.fromEntries(
+            selectedFields.map((field: string) => [
+              field,
+              (issue as unknown as Record<string, unknown>)[field] ?? null,
+            ]),
+          );
+          if (selectedFields.includes("comments")) {
+            const listComments = jiraRuntime.jiraListComments;
+            if (typeof listComments !== "function")
+              throw new Error("Jira comments lookup is unavailable for the selected snapshot.");
+            fields.comments = await listComments({ ref: issue.ref }, windowId);
+          }
+          return { ref: issue.ref, fields };
+        }),
+      );
+      const previewPayload: JiraPreparedPayload = {
+        refs: issueSnapshots.map((row) => row.ref),
+        repo: canonicalRepo,
+        baseBranch: input.baseBranch,
+        branch: input.branch,
+        checkoutMode: input.checkoutMode,
+        taskConfig: input.taskConfig,
+        issues: issueSnapshots,
+      };
+      const hash = createHash("sha256").update(JSON.stringify(previewPayload)).digest("hex");
+      const token = randomUUID();
+      for (const [key, value] of jiraTaskPreviews) if (value.expiresAt <= Date.now()) jiraTaskPreviews.delete(key);
+      while (jiraTaskPreviews.size >= 128) jiraTaskPreviews.delete(jiraTaskPreviews.keys().next().value!);
+      jiraTaskPreviews.set(token, { windowId, hash, expiresAt: Date.now() + 5 * 60_000, payload: previewPayload });
+      return {
+        token,
+        hash,
+        issues: issueSnapshots,
+        repo: canonicalRepo,
+        baseBranch: input.baseBranch,
+        branch: input.branch,
+        checkoutMode: input.checkoutMode,
+      };
+    },
     async recheckClaude() {
       const available = await recheckClaudeAvailability();
       return { available, payload: getPayload() };
@@ -763,174 +1006,483 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async createTaskWorkspace(config: any, windowId?: string, internal?: InternalTaskCreate) {
-      log.info("createTaskWorkspace", {
-        cwd: config.cwd,
-        hasDescription: !!config.description,
-        useWorktree: !!config.useWorktree,
-      });
-      const state = getState();
-
-      // Refuse upfront if the parent lives in another profile. Without this,
-      // a remote/mobile client bound to profile B could spawn a task
-      // workspace (and worktree on disk) under a profile-A parent just by
-      // passing its ID — the old logic only suppressed the slot mirror.
-      if (config.parentWorkspaceId) {
-        assertWorkspaceInViewerProfile(config.parentWorkspaceId, windowId);
-      }
-
-      // Compute the *intended* effective cwd up-front so the same-cwd guard
-      // can fire BEFORE any worktree disk side effects. Previously the
-      // gitignore write, parent mkdir, and `git worktree add` all ran first;
-      // a same-cwd race in useWorktree mode would leave orphan files behind
-      // even though the create ultimately threw.
-      let effectiveCwd = config.cwd;
-      let worktreeBase = "";
-      let worktreeBranch = "";
-      let plannedBranch = "";
-      let plannedTreePath = "";
-      if (config.useWorktree) {
-        const branch = (config.worktreeBranch || "").trim();
-        if (!branch || !/^[a-zA-Z0-9._/-]+$/.test(branch)) {
-          throw new Error(
-            "Worktree branch name must contain only alphanumeric characters, dots, hyphens, slashes, or underscores.",
-          );
-        }
-        plannedBranch = branch;
-        plannedTreePath = worktreeTreePath(config.cwd, branch);
-        effectiveCwd = plannedTreePath;
-      }
-
-      // Refuse same-cwd duplicates that would race on the filesystem and
-      // produce a stuck UI. Profile-scoped: a task in profile A does not
-      // block a task in profile B at the same path (CLAUDE.md: "profiles
-      // are organizational, not storage isolation" — users with separate
-      // dev/work profiles legitimately share a monorepo).
-      const callerProfileId = resolveCallerProfileId(state, windowId, config.parentWorkspaceId);
-      assertNoConflictingActiveTask(state, effectiveCwd, callerProfileId);
-      // Preserved for the return shape — callers (telegram, etc.) historically
-      // received an empty string when no conflict was detected. Always empty
-      // now that conflicts throw, but kept for API stability.
-      const cwdWarning = "";
-
-      // --- Git worktree mode: actual disk operations (after guard) ---
-      if (config.useWorktree) {
-        if (!internal?.worktreeCreated) {
-          await ensureWorktree(config.cwd, plannedBranch, { richErrorHandling: true });
-        }
-
-        worktreeBase = config.cwd;
-        worktreeBranch = plannedBranch;
-        log.info("createTaskWorkspace: worktree created", {
-          treePath: plannedTreePath,
-          branch: plannedBranch,
-          base: config.cwd,
-        });
-      }
-      const workspace = taskRunner.createTaskWorkspace({
-        state,
-        description: config.description,
-        cwd: effectiveCwd,
-        parentWorkspaceId: config.parentWorkspaceId,
-        maxRounds: config.maxRounds,
-        name: config.name,
-        icon: config.icon,
-        color: config.color,
-        notes: config.notes,
-        workerCommand: config.workerCommand,
-        judgeCommand: config.judgeCommand,
-        workerProvider: config.workerProvider,
-        judgeProvider: config.judgeProvider,
-        callerProfileId,
-        reservedIds: internal?.reservedIds,
-      });
-
-      // Store worktree metadata in task object
-      if (worktreeBase) {
-        workspace.task.worktreeBase = worktreeBase;
-        workspace.task.worktreeBranch = worktreeBranch;
-      }
-
-      // Inherit gitRoots for non-worktree tasks running inside a multi-repo parent workspace
-      if (Array.isArray(config.gitRoots) && config.gitRoots.length >= 2 && !config.useWorktree) {
-        workspace.gitRoots = config.gitRoots;
-      }
-
-      // Write task files immediately so they're available in the Dashboard.
-      // If this fails (disk full, permissions), don't persist a broken workspace.
+      let jiraCreateKey: string | undefined;
+      let jiraCreatePromise: Promise<JiraTaskCreateResult | null> | undefined;
+      let resolveJiraCreate: ((result: JiraTaskCreateResult | null) => void) | undefined;
       try {
-        await taskRunner.writeInitialFiles(workspace.cwd, workspace.task);
-        await internal?.afterFilesWritten?.(workspace);
-      } catch (err) {
-        log.error("createTaskWorkspace: failed to write initial task files", {
-          workspaceId: workspace.id,
-          cwd: workspace.cwd,
-          err: (err as Error).message,
+        log.info("createTaskWorkspace", {
+          cwd: config.cwd,
+          hasDescription: !!config.description,
+          useWorktree: !!config.useWorktree,
         });
-        throw new Error(`Failed to create task files: ${(err as Error).message}`, { cause: err });
-      }
-      // saveWorkspace normalizes and persists — and, because this is a NEW
-      // workspace, stamps `lastWorkedAt` (V2 plan allowlist: "creating a task
-      // workspace"). No second stamp is needed here.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await (this as any).saveWorkspace(workspace);
-      // If running in a git worktree, remove any "Worktree of" entry that
-      // syncWorktrees may have created for the same directory before the task
-      // workspace was registered (race-condition cleanup).
-      if (worktreeBase) {
-        const taskCwd = workspace.cwd || "";
-        const taskProfileId = workspace.profileId || "default";
-        // Scoped by profile as well as cwd. Two profiles legitimately hold
-        // workspaces at the same path (CLAUDE.md: profiles group workspaces,
-        // they do not isolate storage), and a cwd-only filter silently deleted
-        // the other profile's worktree entry.
-        const isReplacedWorktree = (w: WorkspaceState): boolean =>
-          w.id !== workspace.id &&
-          w.cwd === taskCwd &&
-          (w.notes || "").startsWith("Worktree of ") &&
-          (w.profileId || "default") === taskProfileId;
-        const replaced = getState().workspaces.filter(isReplacedWorktree);
-        await store.mutate((draft: AppState) => {
-          draft.workspaces = draft.workspaces.filter((w) => !isReplacedWorktree(w));
-        });
-        // The discovered entry is gone for good — same lifecycle as any other
-        // workspace removal, including its notification history.
-        for (const removed of replaced) {
-          void finalizeWorkspaceRemoval(removed);
+        const state = getState();
+
+        // Refuse upfront if the parent lives in another profile. Without this,
+        // a remote/mobile client bound to profile B could spawn a task
+        // workspace (and worktree on disk) under a profile-A parent just by
+        // passing its ID — the old logic only suppressed the slot mirror.
+        if (config.parentWorkspaceId) {
+          assertWorkspaceInViewerProfile(config.parentWorkspaceId, windowId);
         }
-      }
-      // Activate the new workspace unless the caller explicitly opted out
-      // (e.g. Telegram-driven creation, where the user is in another workspace
-      // and shouldn't have their UI yanked away). Use the slot-aware variant
-      // when the calling window is known — otherwise the global update alone
-      // leaves the per-window slot stuck on the previous workspace and the UI
-      // flickers (same root cause as openAzurePullRequest).
-      if (config.activate !== false) {
-        if (windowId) {
-          // activateWorkspaceInWindow refuses cross-profile mutation. That's
-          // expected when a remote/UI client triggers task creation under a
-          // parent in another profile (the new task inherits the parent's
-          // profile, not the caller's window). Treat that as "task created
-          // but don't yank the slot"; broadcastState so the new entry shows
-          // up everywhere it should.
-          try {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            await (this as any).activateWorkspaceInWindow(workspace.id, windowId);
-          } catch (err) {
-            log.info("createTaskWorkspace: skipping slot activation (cross-profile)", {
-              workspaceId: workspace.id,
-              windowId,
-              err: (err as Error).message,
+
+        // Compute the *intended* effective cwd up-front so the same-cwd guard
+        // can fire BEFORE any worktree disk side effects. Previously the
+        // gitignore write, parent mkdir, and `git worktree add` all ran first;
+        // a same-cwd race in useWorktree mode would leave orphan files behind
+        // even though the create ultimately threw.
+        let effectiveCwd = config.cwd;
+        let worktreeBase = "";
+        let worktreeBranch = "";
+        let plannedBranch = "";
+        let plannedTreePath = "";
+        if (config.useWorktree) {
+          const branch = (config.worktreeBranch || "").trim();
+          if (!branch || !/^[a-zA-Z0-9._/-]+$/.test(branch)) {
+            throw new Error(
+              "Worktree branch name must contain only alphanumeric characters, dots, hyphens, slashes, or underscores.",
+            );
+          }
+          plannedBranch = branch;
+          plannedTreePath = worktreeTreePath(config.cwd, branch);
+          effectiveCwd = plannedTreePath;
+        }
+
+        // Refuse same-cwd duplicates that would race on the filesystem and
+        // produce a stuck UI. Profile-scoped: a task in profile A does not
+        // block a task in profile B at the same path (CLAUDE.md: "profiles
+        // are organizational, not storage isolation" — users with separate
+        // dev/work profiles legitimately share a monorepo).
+        const callerProfileId = resolveCallerProfileId(state, windowId, config.parentWorkspaceId);
+        if (config.jiraIssueRefs === undefined) assertNoConflictingActiveTask(state, effectiveCwd, callerProfileId);
+
+        // Jira refs are untrusted request data. Resolve each through the
+        // profile-scoped Jira handler before any worktree or task-file side effect,
+        // and persist canonical refs plus the prepare-time drift snapshot.
+        let jiraIssueRefs: JiraIssueRef[] | undefined;
+        let jiraIssueSnapshots: JiraIssueSnapshot[] | undefined;
+        let jiraSelectedSnapshot: unknown;
+        let resolvedJiraIssues: Array<JiraIssue & { description?: string }> = [];
+        let repoPreferenceSaved: boolean | undefined;
+        if (config.jiraIssueRefs !== undefined) {
+          if (!Array.isArray(config.jiraIssueRefs) || config.jiraIssueRefs.length > 20) {
+            throw new Error("A task can include at most 20 Jira issues.");
+          }
+          const requested = config.jiraIssueRefs as JiraIssueRef[];
+          if (
+            requested.some(
+              (ref) =>
+                !ref ||
+                ref.provider !== "jira" ||
+                typeof ref.connectionId !== "string" ||
+                typeof ref.issueId !== "string" ||
+                !ref.connectionId.trim() ||
+                !ref.issueId.trim(),
+            )
+          ) {
+            throw new Error("Task Jira issue references are invalid.");
+          }
+          const unique = associateJiraIssues([], requested);
+          if (unique.length !== requested.length) throw new Error("Task Jira issue references contain duplicates.");
+          const jiraRuntime = this as unknown as JiraTaskPreviewRuntime;
+          const resolved = await withinJiraLookupBudget(
+            Promise.all(
+              unique.map((ref) =>
+                jiraRuntime.jiraGetIssue({ connectionId: ref.connectionId, issueId: ref.issueId }, windowId),
+              ),
+            ),
+            Date.now() + JIRA_TASK_LOOKUP_BUDGET_MS,
+          );
+          resolvedJiraIssues = resolved;
+          jiraIssueRefs = resolved.map((issue, index) => {
+            const wanted = unique[index];
+            if (issue?.ref?.connectionId !== wanted.connectionId || issue?.ref?.issueId !== wanted.issueId) {
+              throw new Error("Jira returned an issue that does not match the selected connection and issue id.");
+            }
+            return issue.ref as JiraIssueRef;
+          });
+          jiraIssueSnapshots = resolved.map((issue) => createJiraIssueSnapshot(issue));
+        }
+        if (config.jiraPreparedContext || config.repoBinding) {
+          const prepared = config.jiraPreparedContext;
+          const tokenRecord = prepared?.token ? jiraTaskPreviews.get(prepared.token) : undefined;
+          if (
+            !windowId ||
+            !tokenRecord ||
+            tokenRecord.windowId !== windowId ||
+            tokenRecord.expiresAt <= Date.now() ||
+            tokenRecord.hash !== prepared.hash
+          ) {
+            throw new Error("Jira task preview expired or belongs to another window. Prepare the task again.");
+          }
+          const expectedRepo = tokenRecord.payload.repo;
+          const selected = config.repoBinding;
+          if (
+            !selected ||
+            selected.provider !== expectedRepo.provider ||
+            selected.connectionId !== expectedRepo.connectionId ||
+            String(selected.repoId) !== expectedRepo.repoId ||
+            selected.repoName !== expectedRepo.repoName ||
+            selected.remoteUrl !== expectedRepo.remoteUrl ||
+            selected.baseBranch !== tokenRecord.payload.baseBranch ||
+            selected.branch !== tokenRecord.payload.branch ||
+            selected.checkoutMode !== tokenRecord.payload.checkoutMode ||
+            Boolean(config.useWorktree) !== (selected.checkoutMode === "worktree") ||
+            (selected.checkoutMode === "worktree" && config.worktreeBranch !== selected.branch) ||
+            path.resolve(config.cwd) !== path.resolve(expectedRepo.cwd) ||
+            String(config.description || "") !== String(tokenRecord.payload.taskConfig.description || "")
+          ) {
+            throw new Error("Task repository or configuration changed after preview. Prepare the task again.");
+          }
+          const integrations = getState().settings.integrations as unknown as Record<
+            string,
+            JiraProviderSettings | undefined
+          >;
+          const providerSettings = integrations[expectedRepo.provider === "github" ? "github" : "azureDevops"];
+          const providerConnection = providerSettings?.connections?.find(
+            (item) =>
+              item.id === expectedRepo.connectionId &&
+              item.enabled !== false &&
+              (item.profileId || "default") === callerProfileId,
+          );
+          if (!providerConnection) throw new Error("Repository connection is missing or belongs to another profile.");
+          const reposResponse =
+            expectedRepo.provider === "github"
+              ? await (this as unknown as JiraTaskPreviewRuntime).githubQuickFixListRepos({
+                  connectionId: expectedRepo.connectionId,
+                })
+              : await (this as unknown as JiraTaskPreviewRuntime).azureQuickFixListRepositories({
+                  connectionId: expectedRepo.connectionId,
+                  projectName: expectedRepo.projectId,
+                });
+          const repo = (reposResponse?.repositories || []).find((item) => String(item.id) === expectedRepo.repoId);
+          if (!repo || String(repo.remoteUrl) !== expectedRepo.remoteUrl)
+            throw new Error("Repository changed after preview. Prepare the task again.");
+          const freshBranches =
+            expectedRepo.provider === "github"
+              ? await (this as unknown as JiraTaskPreviewRuntime).githubQuickFixListBranches({
+                  connectionId: expectedRepo.connectionId,
+                  owner: repo.owner,
+                  repo: repo.name,
+                })
+              : await (this as unknown as JiraTaskPreviewRuntime).azureQuickFixListBranches({
+                  connectionId: expectedRepo.connectionId,
+                  projectName: expectedRepo.projectId,
+                  repositoryId: repo.id,
+                });
+          const freshBranchNames = (freshBranches?.branches || []).map((item) =>
+            typeof item === "string" ? item : String(item.name || item.displayName || ""),
+          );
+          if (!freshBranchNames.includes(tokenRecord.payload.baseBranch))
+            throw new Error("Base branch changed after preview. Prepare the task again.");
+          const remote = await execFileTextImpl("git", ["-C", expectedRepo.cwd, "remote", "get-url", "origin"]);
+          if (!sameProviderRepository(expectedRepo.provider, expectedRepo.remoteUrl, remote.stdout))
+            throw new Error("The selected local checkout does not match the selected remote repository.");
+          const preparedRefs = tokenRecord.payload.refs.map((ref) => `${ref.connectionId}\0${ref.issueId}`).sort();
+          const createdRefs = (jiraIssueRefs || []).map((ref) => `${ref.connectionId}\0${ref.issueId}`).sort();
+          if (JSON.stringify(preparedRefs) !== JSON.stringify(createdRefs))
+            throw new Error("Jira issue selection changed after preview.");
+          const selectedFields: string[] = tokenRecord.payload.taskConfig.selectedFields || [];
+          const currentSelected = await withinJiraLookupBudget(
+            Promise.all(
+              (jiraIssueRefs || []).map(async (ref, index) => {
+                const fields: Record<string, unknown> = Object.fromEntries(
+                  selectedFields.map((field) => [
+                    field,
+                    (resolvedJiraIssues[index] as unknown as Record<string, unknown> | undefined)?.[field] ?? null,
+                  ]),
+                );
+                if (selectedFields.includes("comments")) {
+                  const listComments = (this as unknown as JiraTaskPreviewRuntime).jiraListComments;
+                  if (typeof listComments !== "function")
+                    throw new Error("Jira comments lookup is unavailable for drift checking.");
+                  fields.comments = await listComments({ ref }, windowId);
+                }
+                return { ref, fields };
+              }),
+            ),
+            Date.now() + JIRA_TASK_LOOKUP_BUDGET_MS,
+          );
+          if (JSON.stringify(currentSelected) !== JSON.stringify(tokenRecord.payload.issues))
+            throw new Error(
+              "Jira issue details changed after preview. Review the updated snapshot before starting the task.",
+            );
+          jiraSelectedSnapshot = tokenRecord.payload.issues;
+        }
+        if (jiraIssueRefs?.length) {
+          const { activate: _activate, jiraPreparedContext: _prepared, jiraIssueRefs: _refs, ...dedupeConfig } = config;
+          const sortedRefs = [...jiraIssueRefs]
+            .map(({ connectionId, issueId }) => ({ connectionId, issueId }))
+            .sort((a, b) => `${a.connectionId}\0${a.issueId}`.localeCompare(`${b.connectionId}\0${b.issueId}`));
+          jiraCreateKey = createHash("sha256")
+            .update(
+              JSON.stringify({
+                profileId: callerProfileId,
+                refs: sortedRefs,
+                preparedSnapshot: jiraSelectedSnapshot,
+                config: dedupeConfig,
+              }),
+            )
+            .digest("hex");
+          const inFlight = jiraTaskCreationsInFlight.get(jiraCreateKey);
+          if (inFlight) {
+            const created = await inFlight;
+            if (created) {
+              if (config.jiraPreparedContext?.token) jiraTaskPreviews.delete(config.jiraPreparedContext.token);
+              if (config.activate !== false) {
+                if (windowId) {
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  await (this as any).activateWorkspaceInWindow(created.workspaceId, windowId);
+                } else {
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  await (this as any).activateWorkspace(created.workspaceId);
+                }
+              }
+              return { ...created, reused: true, alreadyExists: true, payload: getPayload() };
+            }
+          }
+          jiraCreatePromise = new Promise((resolve) => {
+            resolveJiraCreate = resolve;
+          });
+          jiraTaskCreationsInFlight.set(jiraCreateKey, jiraCreatePromise);
+          if (config.jiraPreparedContext?.token) jiraTaskPreviews.delete(config.jiraPreparedContext.token);
+        }
+        const selectedJiraIssueIds = (jiraIssueRefs || []).map((ref) => `${ref.connectionId}\0${ref.issueId}`).sort();
+        const existingTask = jiraIssueRefs?.length
+          ? findJiraTaskWorkspaces(getState().workspaces, jiraIssueRefs[0], callerProfileId).find((workspace) => {
+              const linkedJiraIssueIds = (workspace.task?.jiraIssueRefs || [])
+                .map((ref) => `${ref.connectionId}\0${ref.issueId}`)
+                .sort();
+              return (
+                !isJiraTaskWorkspaceTerminal(workspace) &&
+                JSON.stringify(linkedJiraIssueIds) === JSON.stringify(selectedJiraIssueIds) &&
+                path.resolve(workspace.task?.worktreeBase || workspace.cwd || "") === path.resolve(config.cwd || "") &&
+                Boolean(workspace.task?.worktreeBase) === Boolean(config.useWorktree) &&
+                (!config.useWorktree || workspace.task?.worktreeBranch === config.worktreeBranch)
+              );
+            })
+          : undefined;
+        if (existingTask) {
+          if (config.activate !== false) {
+            if (windowId) {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              await (this as any).activateWorkspaceInWindow(existingTask.id, windowId);
+            } else {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              await (this as any).activateWorkspace(existingTask.id);
+            }
+          }
+          const reused: JiraTaskCreateResult & { reused: true; alreadyExists: true } = {
+            workspaceId: existingTask.id,
+            taskId: existingTask.task?.taskId || "",
+            cwdWarning: "",
+            reused: true,
+            alreadyExists: true,
+            payload: getPayload(),
+          };
+          resolveJiraCreate?.(reused);
+          return reused;
+        }
+        if (config.jiraIssueRefs !== undefined)
+          assertNoConflictingActiveTask(getState(), effectiveCwd, callerProfileId);
+        // Preserved for the return shape — callers (telegram, etc.) historically
+        // received an empty string when no conflict was detected. Always empty
+        // now that conflicts throw, but kept for API stability.
+        const cwdWarning = "";
+
+        // --- Git worktree mode: actual disk operations (after guard) ---
+        if (config.useWorktree) {
+          if (!internal?.worktreeCreated) {
+            await ensureWorktree(config.cwd, plannedBranch, { richErrorHandling: true });
+          }
+
+          worktreeBase = config.cwd;
+          worktreeBranch = plannedBranch;
+          log.info("createTaskWorkspace: worktree created", {
+            treePath: plannedTreePath,
+            branch: plannedBranch,
+            base: config.cwd,
+          });
+        }
+        const workspace = taskRunner.createTaskWorkspace({
+          state: getState(),
+          description: config.description,
+          cwd: effectiveCwd,
+          parentWorkspaceId: config.parentWorkspaceId,
+          maxRounds: config.maxRounds,
+          name: config.name,
+          icon: config.icon,
+          color: config.color,
+          notes: config.notes,
+          workerCommand: config.workerCommand,
+          judgeCommand: config.judgeCommand,
+          workerProvider: config.workerProvider,
+          judgeProvider: config.judgeProvider,
+          jiraMcpEnabled: config.jiraMcpEnabled === true && Boolean(windowId) && !parseRemoteViewerId(windowId),
+          callerProfileId,
+          reservedIds: internal?.reservedIds,
+        });
+
+        if (jiraIssueRefs?.length) {
+          workspace.task.jiraIssueRefs = jiraIssueRefs;
+          workspace.task.jiraIssueSnapshots = jiraIssueSnapshots;
+          workspace.task.jiraPreparedSnapshot = jiraSelectedSnapshot;
+        }
+
+        // Store worktree metadata in task object
+        if (worktreeBase) {
+          workspace.task.worktreeBase = worktreeBase;
+          workspace.task.worktreeBranch = worktreeBranch;
+        }
+
+        // Inherit gitRoots for non-worktree tasks running inside a multi-repo parent workspace
+        if (Array.isArray(config.gitRoots) && config.gitRoots.length >= 2 && !config.useWorktree) {
+          workspace.gitRoots = config.gitRoots;
+        }
+
+        // Write task files immediately so they're available in the Dashboard.
+        // If this fails (disk full, permissions), don't persist a broken workspace.
+        try {
+          await taskRunner.writeInitialFiles(workspace.cwd, workspace.task);
+          await internal?.afterFilesWritten?.(workspace);
+        } catch (err) {
+          log.error("createTaskWorkspace: failed to write initial task files", {
+            workspaceId: workspace.id,
+            cwd: workspace.cwd,
+            err: (err as Error).message,
+          });
+          throw new Error(`Failed to create task files: ${(err as Error).message}`, { cause: err });
+        }
+        // saveWorkspace normalizes and persists — and, because this is a NEW
+        // workspace, stamps `lastWorkedAt` (V2 plan allowlist: "creating a task
+        // workspace"). No second stamp is needed here.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await (this as any).saveWorkspace(workspace, undefined, { runtimeOwned: true });
+        if (config.repoBinding && jiraIssueRefs?.length && resolvedJiraIssues.length === jiraIssueRefs.length) {
+          const binding = config.repoBinding;
+          const preferences = new Map<string, { connectionId: string; projectKey: string }>();
+          for (const issue of resolvedJiraIssues) {
+            const projectKey = String(issue.projectKey || "")
+              .trim()
+              .toUpperCase();
+            if (!/^[A-Z][A-Z0-9_]{0,19}$/.test(projectKey)) continue;
+            preferences.set(`${issue.ref.connectionId}\0${projectKey}`, {
+              connectionId: issue.ref.connectionId,
+              projectKey,
             });
-            broadcastState();
+          }
+          if (preferences.size) {
+            repoPreferenceSaved = true;
+            try {
+              await store.mutate((draft: AppState) => {
+                const jira = draft.settings.integrations.jira as unknown as {
+                  repoBindings?: Array<Record<string, unknown>>;
+                };
+                const existing = jira.repoBindings || [];
+                for (const { connectionId: jiraConnectionId, projectKey } of preferences.values()) {
+                  const preference = {
+                    profileId: callerProfileId,
+                    jiraConnectionId,
+                    projectKey,
+                    provider: binding.provider,
+                    connectionId: binding.connectionId,
+                    repoId: String(binding.repoId),
+                    ...(binding.projectId ? { projectId: String(binding.projectId) } : {}),
+                    repoName: String(binding.repoName),
+                    remoteUrl: String(binding.remoteUrl),
+                    baseBranch: String(binding.baseBranch),
+                  };
+                  const index = existing.findIndex(
+                    (item) =>
+                      item.profileId === callerProfileId &&
+                      item.jiraConnectionId === jiraConnectionId &&
+                      item.projectKey === projectKey,
+                  );
+                  if (index >= 0) existing[index] = preference;
+                  else existing.push(preference);
+                }
+                jira.repoBindings = existing.slice(-500);
+              });
+            } catch (error) {
+              repoPreferenceSaved = false;
+              log.warn("Jira task was created but its repository preference could not be saved", {
+                profileId: callerProfileId,
+                error: String(error),
+              });
+            }
+          }
+        }
+        // If running in a git worktree, remove any "Worktree of" entry that
+        // syncWorktrees may have created for the same directory before the task
+        // workspace was registered (race-condition cleanup).
+        if (worktreeBase) {
+          const taskCwd = workspace.cwd || "";
+          const taskProfileId = workspace.profileId || "default";
+          // Scoped by profile as well as cwd. Two profiles legitimately hold
+          // workspaces at the same path (CLAUDE.md: profiles group workspaces,
+          // they do not isolate storage), and a cwd-only filter silently deleted
+          // the other profile's worktree entry.
+          const isReplacedWorktree = (w: WorkspaceState): boolean =>
+            w.id !== workspace.id &&
+            w.cwd === taskCwd &&
+            (w.notes || "").startsWith("Worktree of ") &&
+            (w.profileId || "default") === taskProfileId;
+          const replaced = getState().workspaces.filter(isReplacedWorktree);
+          await store.mutate((draft: AppState) => {
+            draft.workspaces = draft.workspaces.filter((w) => !isReplacedWorktree(w));
+          });
+          // The discovered entry is gone for good — same lifecycle as any other
+          // workspace removal, including its notification history.
+          for (const removed of replaced) {
+            void finalizeWorkspaceRemoval(removed);
+          }
+        }
+        // Activate the new workspace unless the caller explicitly opted out
+        // (e.g. Telegram-driven creation, where the user is in another workspace
+        // and shouldn't have their UI yanked away). Use the slot-aware variant
+        // when the calling window is known — otherwise the global update alone
+        // leaves the per-window slot stuck on the previous workspace and the UI
+        // flickers (same root cause as openAzurePullRequest).
+        if (config.activate !== false) {
+          if (windowId) {
+            // activateWorkspaceInWindow refuses cross-profile mutation. That's
+            // expected when a remote/UI client triggers task creation under a
+            // parent in another profile (the new task inherits the parent's
+            // profile, not the caller's window). Treat that as "task created
+            // but don't yank the slot"; broadcastState so the new entry shows
+            // up everywhere it should.
+            try {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              await (this as any).activateWorkspaceInWindow(workspace.id, windowId);
+            } catch (err) {
+              log.info("createTaskWorkspace: skipping slot activation (cross-profile)", {
+                workspaceId: workspace.id,
+                windowId,
+                err: (err as Error).message,
+              });
+              broadcastState();
+            }
+          } else {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            await (this as any).activateWorkspace(workspace.id);
           }
         } else {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          await (this as any).activateWorkspace(workspace.id);
+          broadcastState();
         }
-      } else {
-        broadcastState();
+        const created: JiraTaskCreateResult = {
+          workspaceId: workspace.id,
+          taskId: workspace.task.taskId,
+          cwdWarning,
+          ...(repoPreferenceSaved !== undefined ? { repoPreferenceSaved } : {}),
+          payload: getPayload(),
+        };
+        resolveJiraCreate?.(created);
+        return created;
+      } finally {
+        if (jiraCreateKey && jiraTaskCreationsInFlight.get(jiraCreateKey) === jiraCreatePromise) {
+          jiraTaskCreationsInFlight.delete(jiraCreateKey);
+          resolveJiraCreate?.(null);
+        }
       }
-      return { workspaceId: workspace.id, taskId: workspace.task.taskId, cwdWarning, payload: getPayload() };
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async startTask(workspaceId: any, windowId?: string) {
@@ -941,10 +1493,44 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
       // worker agents in the same worktree, racing on TASK_LOG.jsonl and
       // source files. Refuse the second start with the same message the
       // create path uses, so the error is consistent across surfaces.
+      const workspace = findWorkspace(getState(), String(workspaceId));
+      const task = workspace?.task;
+      // Drift only guards the first start. A later start (continue, retry, restart after a reset) resumes work
+      // the user already approved; Jira's `updated` moves on every comment or transition, so re-checking would
+      // block it for good — and a task cannot be prepared again.
+      const isRestart = Boolean(task?.state && task.state !== "idle") || task?.needsContextClear === true;
+      if (task?.jiraIssueSnapshots?.length && !isRestart) {
+        const jiraRuntime = this as unknown as JiraTaskPreviewRuntime;
+        // Without a window (Telegram, internal MCP) the workspace's own profile is the trusted Jira context.
+        const taskProfileId = String(workspace?.profileId || "default");
+        const resolved = await withinJiraLookupBudget(
+          Promise.all(
+            task.jiraIssueSnapshots.map((snapshot: JiraIssueSnapshot) => {
+              const input = { connectionId: snapshot.ref.connectionId, issueId: snapshot.ref.issueId };
+              return windowId
+                ? jiraRuntime.jiraGetIssue(input, windowId)
+                : jiraRuntime.jiraRemoteGetIssue(input, taskProfileId);
+            }),
+          ),
+          Date.now() + JIRA_TASK_LOOKUP_BUDGET_MS,
+        );
+        const drift = resolved.flatMap((issue, index) => {
+          const result = verifyJiraIssueSnapshot(task.jiraIssueSnapshots![index], issue);
+          return result.drifted
+            ? [{ issueKey: task.jiraIssueSnapshots![index].ref.issueKey, fields: result.fields }]
+            : [];
+        });
+        if (drift.length) {
+          throw new Error(
+            `Jira task context changed since preparation (${drift.map((entry) => `${entry.issueKey}: ${entry.fields.join(", ")}`).join("; ")}). Review the issues and prepare the task again.`,
+          );
+        }
+      }
+      // The Jira awaits above can outlive another start of a task at the same cwd: judge against the state now.
       const state = getState();
-      const workspace = findWorkspace(state, String(workspaceId));
-      if (workspace?.kind === "task" && workspace.cwd) {
-        assertNoConflictingActiveTask(state, workspace.cwd, workspace.profileId || "default", workspace.id);
+      const current = findWorkspace(state, String(workspaceId));
+      if (current?.kind === "task" && current.cwd) {
+        assertNoConflictingActiveTask(state, current.cwd, current.profileId || "default", current.id);
       }
       const result = await taskRunner.startTask(workspaceId);
       // Starting a task IS work — but only when the runner accepted it.

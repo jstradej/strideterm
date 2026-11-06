@@ -16,12 +16,16 @@
         </span>
       </div>
     </div>
-    <div class="vol-panel__view-switch" role="tablist">
+    <div class="vol-panel__view-switch subtabs" role="tablist">
       <button
         type="button"
         role="tab"
         :aria-selected="view === 'inspect'"
-        :class="['vol-panel__view', view === 'inspect' && 'vol-panel__view--active']"
+        :class="[
+          'vol-panel__view',
+          'subtabs__tab',
+          view === 'inspect' && 'vol-panel__view--active subtabs__tab--active',
+        ]"
         @click="view = 'inspect'"
       >
         Inspect
@@ -30,13 +34,17 @@
         type="button"
         role="tab"
         :aria-selected="view === 'browse'"
-        :class="['vol-panel__view', view === 'browse' && 'vol-panel__view--active']"
+        :class="[
+          'vol-panel__view',
+          'subtabs__tab',
+          view === 'browse' && 'vol-panel__view--active subtabs__tab--active',
+        ]"
         @click="view = 'browse'"
       >
         Browse
       </button>
     </div>
-    <div class="vol-panel__body">
+    <div class="vol-panel__body subtabs-panel">
       <DockerResourceInspect
         v-if="view === 'inspect'"
         kind="volume"
@@ -141,7 +149,7 @@ async function doRemove(force: boolean): Promise<void> {
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  background: #141416;
+  background: transparent;
 }
 
 .vol-panel__toolbar {
@@ -174,42 +182,44 @@ async function doRemove(force: boolean): Promise<void> {
   color: var(--accent, #63b3ed);
 }
 
-.vol-panel__view-switch {
-  display: flex;
-  gap: 2px;
-  padding: 0 10px;
-  border-bottom: 1px solid var(--border-color, rgba(255, 255, 255, 0.06));
-  flex-shrink: 0;
-}
+@media (max-width: 768px), (max-height: 500px) {
+  .vol-panel__view-switch {
+    display: flex;
+    gap: 2px;
+    padding: 0 10px;
+    border-bottom: 1px solid var(--border-color, rgba(255, 255, 255, 0.06));
+    flex-shrink: 0;
+  }
 
-.vol-panel__view {
-  position: relative;
-  padding: 6px 12px;
-  background: transparent;
-  border: 0;
-  color: var(--text-dim, #888);
-  font-size: 11px;
-  letter-spacing: 0.2px;
-  cursor: pointer;
-  text-transform: uppercase;
-  min-height: 32px;
-}
-.vol-panel__view:hover {
-  color: var(--text-primary, #e2e8f0);
-}
-.vol-panel__view--active {
-  color: var(--text-primary, #e2e8f0);
-  font-weight: 600;
-}
-.vol-panel__view--active::after {
-  content: "";
-  position: absolute;
-  left: 8px;
-  right: 8px;
-  bottom: -1px;
-  height: 2px;
-  background: var(--accent, #63b3ed);
-  border-radius: 1px;
+  .vol-panel__view {
+    position: relative;
+    padding: 6px 12px;
+    background: transparent;
+    border: 0;
+    color: var(--text-dim, #888);
+    font-size: 11px;
+    letter-spacing: 0.2px;
+    cursor: pointer;
+    text-transform: uppercase;
+    min-height: 32px;
+  }
+  .vol-panel__view:hover {
+    color: var(--text-primary, #e2e8f0);
+  }
+  .vol-panel__view--active {
+    color: var(--text-primary, #e2e8f0);
+    font-weight: 600;
+  }
+  .vol-panel__view--active::after {
+    content: "";
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    bottom: -1px;
+    height: 2px;
+    background: var(--accent, #63b3ed);
+    border-radius: 1px;
+  }
 }
 
 .vol-panel__body {

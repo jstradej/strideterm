@@ -27,6 +27,7 @@
 import { ref } from "vue";
 import { useTerminal } from "../../composables/useTerminal.js";
 import { useIsNarrow } from "../../composables/useIsNarrow.js";
+import { useTerminalPathDrop } from "../../composables/useTerminalPathDrop.js";
 import { useTerminalStore } from "../../stores/terminal.js";
 import TerminalSearchOverlay from "./TerminalSearchOverlay.vue";
 
@@ -34,6 +35,7 @@ const props = defineProps<{ sessionId: string }>();
 
 const paneBodyRef = ref<HTMLDivElement | null>(null);
 useTerminal(() => props.sessionId, paneBodyRef);
+useTerminalPathDrop(() => props.sessionId, paneBodyRef);
 
 const { hasCoarsePointer } = useIsNarrow();
 const termStore = useTerminalStore();

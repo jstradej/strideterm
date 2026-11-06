@@ -98,10 +98,10 @@ function onUnsplit(): void {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 2px 8px;
-  border-radius: 3px;
-  border: 1px solid color-mix(in srgb, var(--accent), transparent 72%);
-  background: rgba(var(--tint), 0.04);
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: rgba(var(--tint), 0.07);
   color: var(--text);
   font: inherit;
   font-size: 11px;
@@ -116,7 +116,7 @@ function onUnsplit(): void {
 
 .workspace-layout-chip:hover {
   border-color: color-mix(in srgb, var(--accent), transparent 40%);
-  background: rgba(var(--tint), 0.08);
+  background: rgba(var(--tint), 0.1);
 }
 
 .workspace-layout-chip--active {
@@ -126,8 +126,8 @@ function onUnsplit(): void {
 }
 
 .workspace-layout-chip__thumb {
-  width: 24px;
-  height: 18px;
+  width: 16px;
+  height: 12px;
   flex-shrink: 0;
   color: currentColor;
 }
@@ -141,7 +141,7 @@ function onUnsplit(): void {
   border-color: rgba(var(--tint), 0.12);
   background: transparent;
   font-size: 11px;
-  padding: 2px 8px;
+  padding: 2px 9px;
 }
 
 .workspace-layout-chip--unsplit:hover {

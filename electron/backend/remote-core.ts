@@ -443,9 +443,18 @@ function providerPrRevision(entry: AnyRecord | null | undefined): string {
     size(e.issueComments),
     newest(e.issueComments, ["updatedAt", "createdAt"]),
     size(e.changedFiles),
+    Array.isArray(e.serverConflicts) ? e.serverConflicts.length : String(e.serverConflicts ?? ""),
+    [
+      (e.localMergeCheck as AnyRecord)?.state,
+      (e.localMergeCheck as AnyRecord)?.headSha,
+      size((e.localMergeCheck as AnyRecord)?.paths),
+    ].join(":"),
     String(e.unresolvedThreadCount ?? ""),
     String(e.newCommentsCount ?? ""),
     String(e.myVote ?? ""),
+    String(e.myReviewStatus ?? ""),
+    ((e.attentionReasons || []) as AnyRecord[]).map((r) => String(r?.code || "")).join(","),
+    String(e.lastSeenActivityAt ?? ""),
   ].join("|");
 }
 
@@ -577,6 +586,11 @@ export function slimRemoteSettings(settings: AnyRecord | undefined): AnyRecord {
   const telegram = integrations.telegram as AnyRecord | undefined;
   const remoteIntegrations = { ...integrations };
   delete remoteIntegrations.mobile;
+  // Jira connection/auth management is desktop-only until dedicated profile-scoped remote read routes exist.
+  if (Object.hasOwn(remoteIntegrations, "jira")) {
+    const jira = remoteIntegrations.jira as AnyRecord | undefined;
+    remoteIntegrations.jira = jira ? { enabled: false, defaultPollSeconds: 120, connections: [] } : jira;
+  }
   return {
     ...s,
     remoteAccess: s.remoteAccess ? { enabled: Boolean((s.remoteAccess as AnyRecord).enabled) } : s.remoteAccess,
@@ -699,6 +713,14 @@ export function buildRemoteCore(
     ) as RemoteStateV2["workspace"],
     attention: scopeAttention(composed.attention as AnyRecord | undefined, inProfile) as RemoteStateV2["attention"],
     taskRunner: filterByWorkspaceId(composed.taskRunner as Record<string, unknown> | undefined, inProfile),
+    ...(composed.jiraWorkspaceViews
+      ? {
+          jiraWorkspaceViews: filterByWorkspaceId(
+            composed.jiraWorkspaceViews,
+            inProfile,
+          ) as RemoteStateV2["jiraWorkspaceViews"],
+        }
+      : {}),
     azureClosedPrCleanup: {
       parentWorkspaceIds: ((composed.azureClosedPrCleanup?.parentWorkspaceIds || []) as string[]).filter((id) =>
         inProfile.has(id),
@@ -791,6 +813,7 @@ export const STATE_PAYLOAD_KEYS: ReadonlySet<string> = new Set([
   "environment",
   "remoteAccess",
   "taskRunner",
+  "jiraWorkspaceViews",
   "azureClosedPrCleanup",
   "operations",
   "reviewGit",

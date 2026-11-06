@@ -116,10 +116,13 @@ vi.mock("electron", () => ({
 // resolves "electron" to the mock even though this import appears first
 // in source order.
 import { registerIpc } from "./ipc.js";
+import { JiraRequestError } from "./jira/jira-manager.js";
+import { JIRA_IPC_FAILURE_MARKER, toJiraIpcFailure } from "../shared/jira-ipc-failure.js";
 import {
   AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL,
   azureClosedPrCleanupFinishedSchema,
 } from "../shared/azure-closed-pr-cleanup-events.js";
+import type { JiraWorkspaceViewsState } from "../shared/types/jira-workspace-views.js";
 
 /**
  * Minimal runtime stub: every property access returns a callable that
@@ -133,7 +136,8 @@ function makeRuntimeStub(): Parameters<typeof registerIpc>[0] {
   return new Proxy(
     {},
     {
-      get: () => callable,
+      get: (target, property, receiver) =>
+        Reflect.has(target, property) ? Reflect.get(target, property, receiver) : callable,
     },
   ) as Parameters<typeof registerIpc>[0];
 }
@@ -150,12 +154,336 @@ describe("registerIpc teardown", () => {
     // Sanity: this file wires up ~265 handle channels; a drastically smaller
     // number would mean registration silently broke.
     expect(registeredChannels.size).toBeGreaterThan(200);
+    expect(registeredChannels.has("jira:board-quick-filters")).toBe(true);
+    expect(registeredChannels.has("jira:users:search")).toBe(true);
 
     dispose();
 
     expect(handleRegistry.size).toBe(0);
     expect(new Set(removeHandlerCalls)).toEqual(registeredChannels);
     expect(removeHandlerCalls.length).toBe(registeredChannels.size);
+  });
+
+  test("Jira cache flags and board filters pass through validated IPC payloads", async () => {
+    const runtime = makeRuntimeStub();
+    runtime.jiraGetBoardView = vi.fn(async () => null);
+    runtime.jiraGetIssue = vi.fn(async () => null);
+    runtime.jiraListBoardQuickFilters = vi.fn(async () => null);
+    runtime.jiraSearchUsers = vi.fn(async () => []);
+    const dispose = registerIpc(runtime, () => {}, { getWindowIdByWebContentsId: () => "window-a" });
+    const event = { sender: { id: 1 } } as unknown as import("electron").IpcMainInvokeEvent;
+    const board = handleRegistry.get("jira:board-view") as (event: unknown, payload: unknown) => Promise<unknown>;
+    const issue = handleRegistry.get("jira:issue") as (event: unknown, payload: unknown) => Promise<unknown>;
+    const filters = handleRegistry.get("jira:board-quick-filters") as (
+      event: unknown,
+      payload: unknown,
+    ) => Promise<unknown>;
+    const users = handleRegistry.get("jira:users:search") as (event: unknown, payload: unknown) => Promise<unknown>;
+    await board(event, {
+      connectionId: "jira-a",
+      boardId: 7,
+      quickFilterIds: [4],
+      assignee: { kind: "unassigned" },
+      cacheOnly: true,
+    });
+    await issue(event, { connectionId: "jira-a", issueId: "OPS-4", forceRefresh: true });
+    await filters(event, { connectionId: "jira-a", boardId: 7, cacheOnly: true });
+    await users(event, { connectionId: "jira-a", query: "alice", limit: 5 });
+    expect(runtime.jiraGetBoardView).toHaveBeenCalledWith(
+      expect.objectContaining({ cacheOnly: true, quickFilterIds: [4] }),
+      "window-a",
+    );
+    expect(runtime.jiraGetIssue).toHaveBeenCalledWith(expect.objectContaining({ forceRefresh: true }), "window-a");
+    expect(runtime.jiraListBoardQuickFilters).toHaveBeenCalledWith(
+      expect.objectContaining({ cacheOnly: true }),
+      "window-a",
+    );
+    expect(runtime.jiraSearchUsers).toHaveBeenCalledWith(expect.objectContaining({ query: "alice" }), "window-a");
+    await expect(board(event, { connectionId: "jira-a", boardId: 7, quickFilterIds: [0] })).rejects.toThrow();
+    dispose();
+  });
+
+  test("a Jira failure crosses IPC as an envelope that keeps its code; other failures still reject", async () => {
+    const runtime = makeRuntimeStub();
+    runtime.jiraGetIssue = vi.fn(async () => {
+      throw new JiraRequestError("rate-limited", "Jira rate limit reached.", 4000, 429);
+    });
+    runtime.jiraSearchUsers = vi.fn(async () => {
+      throw new Error("plain failure");
+    });
+    const dispose = registerIpc(runtime, () => {}, { getWindowIdByWebContentsId: () => "window-a" });
+    const event = { sender: { id: 1 } } as unknown as import("electron").IpcMainInvokeEvent;
+    const issue = handleRegistry.get("jira:issue") as (event: unknown, payload: unknown) => Promise<unknown>;
+    const users = handleRegistry.get("jira:users:search") as (event: unknown, payload: unknown) => Promise<unknown>;
+
+    const failure = await issue(event, { connectionId: "jira-a", issueId: "OPS-4" });
+    expect(failure).toEqual(
+      toJiraIpcFailure({ message: "Jira rate limit reached.", code: "rate-limited", retryAfterMs: 4000 }),
+    );
+    expect(failure).toEqual({
+      [JIRA_IPC_FAILURE_MARKER]: 1,
+      message: "Jira rate limit reached.",
+      code: "rate-limited",
+      retryAfterMs: 4000,
+    });
+    await expect(users(event, { connectionId: "jira-a", query: "alice" })).rejects.toThrow("plain failure");
+    dispose();
+  });
+
+  test("the task channels that look up Jira issues answer a Jira failure with the envelope, anything else still rejects", async () => {
+    const runtime = makeRuntimeStub();
+    runtime.createTaskWorkspace = vi.fn(async () => {
+      throw new JiraRequestError("auth-expired", "Jira rejected this connection. Sign in again.", undefined, 401);
+    });
+    runtime.startTask = vi.fn(async () => {
+      throw new Error("plain failure");
+    });
+    runtime.stopTask = vi.fn(() => {
+      throw new JiraRequestError("auth-expired", "not for this channel", undefined, 401);
+    });
+    const jiraLookupFailure = () => {
+      throw new JiraRequestError("auth-expired", "Jira rejected this connection. Sign in again.", undefined, 401);
+    };
+    runtime.azureQuickFixCreate = vi.fn(jiraLookupFailure);
+    runtime.githubQuickFixCreate = vi.fn(jiraLookupFailure);
+    const dispose = registerIpc(runtime, () => {}, { getWindowIdByWebContentsId: () => "window-a" });
+    const event = { sender: { id: 1 } } as unknown as import("electron").IpcMainInvokeEvent;
+    const call = (channel: string, payload: unknown) =>
+      (handleRegistry.get(channel) as (event: unknown, payload: unknown) => Promise<unknown>)(event, payload);
+    await expect(call("task:create-workspace", { cwd: "/work/repo" })).resolves.toEqual(
+      toJiraIpcFailure({ message: "Jira rejected this connection. Sign in again.", code: "auth-expired" }),
+    );
+    const envelope = toJiraIpcFailure({
+      message: "Jira rejected this connection. Sign in again.",
+      code: "auth-expired",
+    });
+    await expect(
+      call("azure:quickfix:create", {
+        connectionId: "c",
+        projectName: "p",
+        repositoryId: "r",
+        repositoryName: "r",
+        remoteUrl: "https://example.com/r.git",
+        baseBranch: "main",
+        newBranchName: "fix",
+      }),
+    ).resolves.toEqual(envelope);
+    await expect(
+      call("github:quickfix:create", {
+        connectionId: "c",
+        owner: "o",
+        repo: "r",
+        remoteUrl: "https://example.com/r.git",
+        baseBranch: "main",
+        newBranchName: "fix",
+      }),
+    ).resolves.toEqual(envelope);
+    await expect(call("task:start", { workspaceId: "ws-1" })).rejects.toThrow("plain failure");
+    await expect(call("task:stop", { workspaceId: "ws-1" })).rejects.toThrow("not for this channel");
+    dispose();
+  });
+
+  test("a rejected write's Jira explanation never reaches the log, even when its message was clipped", async () => {
+    logCalls.length = 0;
+    const runtime = makeRuntimeStub();
+    const detail = "Error in the JQL Query: secret-project ".repeat(20);
+    runtime.jiraGetIssue = vi.fn(async () => {
+      throw Object.assign(new Error(`Jira rejected this write (400). ${detail}`.slice(0, 500)), {
+        name: "JiraWriteSafetyError",
+        detail,
+      });
+    });
+    const dispose = registerIpc(runtime, () => {}, { getWindowIdByWebContentsId: () => "window-a" });
+    const event = { sender: { id: 1 } } as unknown as import("electron").IpcMainInvokeEvent;
+    const issue = handleRegistry.get("jira:issue") as (event: unknown, payload: unknown) => Promise<unknown>;
+    await expect(issue(event, { connectionId: "jira-a", issueId: "OPS-4" })).rejects.toThrow();
+    expect(JSON.stringify(logCalls.find((call) => call.meta?.channel === "jira:issue"))).not.toContain(
+      "secret-project",
+    );
+    dispose();
+  });
+
+  test("a failing Jira call is logged with its code, status and cause code, never Jira's own explanation", async () => {
+    logCalls.length = 0;
+    const runtime = makeRuntimeStub();
+    const refusal = new JiraRequestError(
+      "unknown",
+      "Jira request failed (400): Error in the JQL Query: secret-project",
+      undefined,
+      400,
+      {
+        cause: Object.assign(new Error("fetch failed"), { code: "ECONNRESET" }),
+        detail: "Error in the JQL Query: secret-project",
+      },
+    );
+    runtime.jiraGetIssue = vi.fn(async () => {
+      throw refusal;
+    });
+    const dispose = registerIpc(runtime, () => {}, { getWindowIdByWebContentsId: () => "window-a" });
+    const event = { sender: { id: 1 } } as unknown as import("electron").IpcMainInvokeEvent;
+    const issue = handleRegistry.get("jira:issue") as (event: unknown, payload: unknown) => Promise<unknown>;
+    await issue(event, { connectionId: "jira-a", issueId: "OPS-4" });
+    const meta = logCalls.find((call) => call.meta?.channel === "jira:issue")?.meta;
+    expect(meta).toMatchObject({ channel: "jira:issue", code: "unknown", statusCode: 400, cause: "ECONNRESET" });
+    expect(JSON.stringify(meta)).not.toContain("secret-project");
+    dispose();
+  });
+
+  test("Jira workspace-view IPC methods use caller window, strict inputs, and return only view state", async () => {
+    const state: JiraWorkspaceViewsState = {
+      workspaceId: "jira-ws",
+      profileId: "p2",
+      views: [{ viewId: "issues", kind: "issues", title: "Issues" }],
+      activeViewId: "issues",
+      syncByViewId: {},
+    };
+    const runtime = makeRuntimeStub();
+    runtime.getJiraWorkspaceViews = vi.fn(async () => state);
+    runtime.saveJiraWorkspaceView = vi.fn(async () => state);
+    runtime.renameJiraWorkspaceView = vi.fn(async () => state);
+    runtime.reorderJiraWorkspaceViews = vi.fn(async () => state);
+    runtime.removeJiraWorkspaceView = vi.fn(async () => state);
+    runtime.setJiraWorkspaceActiveView = vi.fn(async () => state);
+    runtime.refreshJiraWorkspaceViews = vi.fn(async () => state);
+    const dispose = registerIpc(runtime, () => {}, {
+      getWindowIdByWebContentsId: (id) => (id === 7 ? "window-a" : "window-b"),
+    });
+    const event = { sender: { id: 9 } };
+    const invoke = (channel: string, payload: unknown) =>
+      (handleRegistry.get(channel) as (event: unknown, payload: unknown) => Promise<unknown>)(event, payload);
+    const get = { workspaceId: "jira-ws" };
+    const view = { kind: "board", connectionId: "jira-a", boardId: 7, title: "Platform" };
+    const save = { workspaceId: "jira-ws", view };
+    const target = { workspaceId: "jira-ws", viewId: "saved-opaque" };
+    const refresh = { workspaceId: "jira-ws", viewId: "saved-opaque" };
+    const rename = { workspaceId: "jira-ws", viewId: "saved-opaque", title: "Platform" };
+    const reorder = { workspaceId: "jira-ws", viewIds: ["saved-opaque"] };
+
+    await expect(invoke("jira:workspace-views:get", get)).resolves.toEqual(state);
+    await expect(invoke("jira:workspace-views:save", save)).resolves.toEqual(state);
+    await expect(invoke("jira:workspace-views:rename", rename)).resolves.toEqual(state);
+    await expect(invoke("jira:workspace-views:reorder", reorder)).resolves.toEqual(state);
+    await expect(invoke("jira:workspace-views:remove", target)).resolves.toEqual(state);
+    await expect(invoke("jira:workspace-views:active", target)).resolves.toEqual(state);
+    await expect(invoke("jira:workspace-views:refresh", refresh)).resolves.toEqual(state);
+    expect(runtime.getJiraWorkspaceViews).toHaveBeenCalledWith(get, "window-b");
+    expect(runtime.saveJiraWorkspaceView).toHaveBeenCalledWith(save, "window-b");
+    expect(runtime.renameJiraWorkspaceView).toHaveBeenCalledWith(rename, "window-b");
+    expect(runtime.reorderJiraWorkspaceViews).toHaveBeenCalledWith(reorder, "window-b");
+    expect(runtime.removeJiraWorkspaceView).toHaveBeenCalledWith(target, "window-b");
+    expect(runtime.setJiraWorkspaceActiveView).toHaveBeenCalledWith(target, "window-b");
+    expect(runtime.refreshJiraWorkspaceViews).toHaveBeenCalledWith(refresh, "window-b");
+    expect(state).not.toHaveProperty("appState");
+
+    await expect(invoke("jira:workspace-views:get", { ...get, profileId: "p1" })).rejects.toThrow();
+    await expect(
+      invoke("jira:workspace-views:save", {
+        workspaceId: "jira-ws",
+        view: { ...view, profileId: "p1" },
+      }),
+    ).rejects.toThrow();
+    expect(runtime.getJiraWorkspaceViews).toHaveBeenCalledTimes(1);
+    expect(runtime.saveJiraWorkspaceView).toHaveBeenCalledTimes(1);
+    dispose();
+  });
+
+  test("Jira recent reads and history writes use the calling window and reject profile spoofing", async () => {
+    const runtime = makeRuntimeStub();
+    runtime.getJiraRecentSearches = vi.fn(async () => []);
+    runtime.rememberJiraSearch = vi.fn(async () => ({ ok: true }));
+    runtime.getJiraRecentIssues = vi.fn(async () => []);
+    runtime.rememberJiraIssueViewed = vi.fn(async () => ({ ok: true }));
+    const dispose = registerIpc(runtime, () => {}, { getWindowIdByWebContentsId: () => "window-a" });
+    const event = { sender: { id: 1 } };
+    const invoke = (channel: string, payload: unknown) =>
+      (handleRegistry.get(channel) as (event: unknown, payload: unknown) => Promise<unknown>)(event, payload);
+    const ref = { provider: "jira", connectionId: "jira-a", issueId: "1", issueKey: "OPS-1" };
+    await invoke("jira:recent-searches:list", { connectionId: "jira-a", limit: 10 });
+    await invoke("jira:recent-searches:remember", { connectionId: "jira-a", jql: "key = OPS-1" });
+    await invoke("jira:recent-issues:list", { connectionId: "jira-a" });
+    await invoke("jira:recent-issues:viewed", { ref });
+    expect(runtime.getJiraRecentSearches).toHaveBeenCalledWith({ connectionId: "jira-a", limit: 10 }, "window-a");
+    expect(runtime.rememberJiraSearch).toHaveBeenCalledWith({ connectionId: "jira-a", jql: "key = OPS-1" }, "window-a");
+    expect(runtime.getJiraRecentIssues).toHaveBeenCalledWith({ connectionId: "jira-a" }, "window-a");
+    expect(runtime.rememberJiraIssueViewed).toHaveBeenCalledWith({ ref }, "window-a");
+    await expect(invoke("jira:recent-issues:list", { connectionId: "jira-a", profileId: "other" })).rejects.toThrow();
+    expect(runtime.getJiraRecentIssues).toHaveBeenCalledTimes(1);
+    dispose();
+  });
+
+  test("Jira attachment content validates its strict payload before reaching the runtime", async () => {
+    const runtime = makeRuntimeStub();
+    runtime.jiraGetAttachmentImage = vi.fn(async () => ({ mediaType: "image/png", bytes: new Uint8Array([1]) }));
+    const dispose = registerIpc(runtime, () => {});
+    const event = { sender: { id: 1 } } as unknown as import("electron").IpcMainInvokeEvent;
+    const content = handleRegistry.get("jira:attachment:content") as (
+      event: unknown,
+      payload: unknown,
+    ) => Promise<unknown>;
+    await expect(content(event, { connectionId: "jira-1", issueId: "OPS-1", attachmentId: "10" })).resolves.toEqual({
+      mediaType: "image/png",
+      bytes: new Uint8Array([1]),
+    });
+    await expect(content(event, { connectionId: "jira-1", issueId: "OPS-1", attachmentId: "x" })).rejects.toThrow();
+    await expect(
+      content(event, { connectionId: "jira-1", issueId: "OPS-1", attachmentId: "10", extra: 1 }),
+    ).rejects.toThrow();
+    expect(runtime.jiraGetAttachmentImage).toHaveBeenCalledTimes(1);
+    dispose();
+  });
+
+  test("Jira attachment dialogs never upload without a user-selected file and honor save cancellation", async () => {
+    const { dialog } = await import("electron");
+    const runtime = makeRuntimeStub();
+    runtime.jiraGetAttachmentBytes = vi.fn(async () => ({
+      fileName: "report.pdf",
+      mediaType: "application/pdf",
+      bytes: new Uint8Array([1, 2, 3]),
+    }));
+    runtime.jiraUploadAttachment = vi.fn(async () => ({
+      ok: true as const,
+      data: { status: "succeeded" as const, journalId: "j1" },
+    }));
+    const dispose = registerIpc(runtime, () => {});
+    const event = { sender: { id: 1 } } as unknown as import("electron").IpcMainInvokeEvent;
+    const save = handleRegistry.get("jira:attachment:save") as (event: unknown, payload: unknown) => Promise<unknown>;
+    const upload = handleRegistry.get("jira:attachment:upload") as (
+      event: unknown,
+      payload: unknown,
+    ) => Promise<unknown>;
+    vi.mocked(dialog.showSaveDialog).mockResolvedValueOnce({ canceled: true, filePath: "" });
+    await expect(save(event, { connectionId: "jira-1", issueId: "OPS-1", attachmentId: "10" })).resolves.toEqual({
+      saved: false,
+    });
+    vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({ canceled: true, filePaths: [] });
+    await expect(upload(event, { connectionId: "jira-1", issueId: "OPS-1" })).resolves.toEqual({
+      ok: true,
+      cancelled: true,
+    });
+    expect(runtime.jiraGetAttachmentBytes).toHaveBeenCalledTimes(1);
+    expect(runtime.jiraUploadAttachment).not.toHaveBeenCalled();
+    dispose();
+
+    vi.mocked(dialog.showSaveDialog).mockClear();
+    vi.mocked(dialog.showOpenDialog).mockClear();
+    const remoteDispose = registerIpc(runtime, () => {}, { getWindowIdByWebContentsId: () => "remote:session-1" });
+    const remoteSave = handleRegistry.get("jira:attachment:save") as (
+      event: unknown,
+      payload: unknown,
+    ) => Promise<unknown>;
+    const remoteUpload = handleRegistry.get("jira:attachment:upload") as (
+      event: unknown,
+      payload: unknown,
+    ) => Promise<unknown>;
+    await expect(remoteSave(event, { connectionId: "jira-1", issueId: "OPS-1", attachmentId: "10" })).rejects.toThrow(
+      "only from the desktop app",
+    );
+    await expect(remoteUpload(event, { connectionId: "jira-1", issueId: "OPS-1" })).rejects.toThrow(
+      "only from the desktop app",
+    );
+    expect(dialog.showSaveDialog).not.toHaveBeenCalled();
+    expect(dialog.showOpenDialog).not.toHaveBeenCalled();
+    remoteDispose();
   });
 
   test("every registered `on` channel is torn down via removeAllListeners", () => {
@@ -803,7 +1131,12 @@ describe("registerIpc — every failing handler is logged", () => {
       cause: failure,
     });
     expect((normalized as Error).message).not.toContain("[object Object]");
-    expect(ipcFailures()[0]?.meta).toEqual({ channel: "git:create-worktree", err: "fatal: bad ref" });
+    expect(ipcFailures()[0]?.meta).toEqual({
+      channel: "git:create-worktree",
+      err: "fatal: bad ref",
+      code: "checkout_conflict",
+      statusCode: 409,
+    });
     dispose();
   });
 
@@ -882,6 +1215,100 @@ describe("registerIpc — ssh:capabilities:get", () => {
       { refresh: true },
       undefined,
     ]);
+    dispose();
+  });
+});
+
+describe("registerIpc — Jira issue pop-out", () => {
+  beforeEach(() => {
+    resetIpcMainMock();
+  });
+
+  const ref = { connectionId: "c1", issueId: "10001", issueKey: "OPS-1" };
+
+  function setup(overrides: { windowId?: string; profile?: () => string } = {}) {
+    const resolved: Array<[string, string]> = [];
+    const opened: unknown[] = [];
+    const base = makeRuntimeStub();
+    const runtime = new Proxy(base, {
+      get: (target, property, receiver) =>
+        property === "resolveJiraIssuePopoutProfile"
+          ? (workspaceId: string, windowId: string) => {
+              resolved.push([workspaceId, windowId]);
+              return overrides.profile ? overrides.profile() : "default";
+            }
+          : Reflect.get(target, property, receiver),
+    }) as typeof base;
+    const dispose = registerIpc(runtime, () => {}, {
+      getWindowIdByWebContentsId: (id) => (id === 5 ? (overrides.windowId ?? "win-a") : undefined),
+      openJiraIssuePopout: (target) => {
+        opened.push(target);
+        return { focused: false };
+      },
+      getJiraIssuePopoutInit: (id) => (id === 9 ? ({ openerWindowId: "win-a" } as never) : null),
+    });
+    const call = (payload: unknown, senderId = 5) =>
+      (handleRegistry.get("jira:issue:popout") as (event: unknown, payload: unknown) => Promise<unknown>)(
+        { sender: { id: senderId } },
+        payload,
+      );
+    return { call, resolved, opened, dispose };
+  }
+
+  test("opens the window for the caller's window, resolved profile and validated issue", async () => {
+    const { call, resolved, opened, dispose } = setup();
+    await expect(call({ workspaceId: "ws1", ref, summary: "Fix it" })).resolves.toEqual({ focused: false });
+    expect(resolved).toEqual([["ws1", "win-a"]]);
+    expect(opened).toEqual([
+      { openerWindowId: "win-a", profileId: "default", workspaceId: "ws1", ref, summary: "Fix it" },
+    ]);
+    dispose();
+  });
+
+  test("refuses payloads that do not match the schema, without resolving or opening anything", async () => {
+    const { call, resolved, opened, dispose } = setup();
+    for (const bad of [
+      undefined,
+      {},
+      { workspaceId: "", ref },
+      { workspaceId: "ws1", ref: { connectionId: "c1", issueId: "1" } },
+      { workspaceId: "ws1", ref: { ...ref, extra: 1 } },
+      { workspaceId: "ws1", ref, profileId: "other" },
+      { workspaceId: "ws1", ref, summary: "x".repeat(501) },
+    ])
+      await expect(call(bad)).rejects.toThrow();
+    expect(resolved).toEqual([]);
+    expect(opened).toEqual([]);
+    dispose();
+  });
+
+  test("a workspace of another profile is refused and nothing opens", async () => {
+    const { call, opened, dispose } = setup({
+      profile: () => {
+        throw new Error("This Jira workspace is not available in the current profile.");
+      },
+    });
+    await expect(call({ workspaceId: "foreign", ref })).rejects.toThrow(/not available in the current profile/);
+    expect(opened).toEqual([]);
+    dispose();
+  });
+
+  test("a sender without a desktop window id, or a remote viewer, cannot pop out", async () => {
+    const unknown = setup();
+    await expect(unknown.call({ workspaceId: "ws1", ref }, 77)).rejects.toThrow(/desktop app/);
+    unknown.dispose();
+    resetIpcMainMock();
+    const remote = setup({ windowId: "remote:session-1" });
+    await expect(remote.call({ workspaceId: "ws1", ref })).rejects.toThrow(/desktop app/);
+    expect(remote.opened).toEqual([]);
+    remote.dispose();
+  });
+
+  test("the popout fetches its own target by webContents id and gets null for any other sender", async () => {
+    const { dispose } = setup();
+    const init = handleRegistry.get("jira:issue:popout:get-init") as (event: unknown) => Promise<unknown>;
+    await expect(init({ sender: { id: 9 } })).resolves.toEqual({ openerWindowId: "win-a" });
+    await expect(init({ sender: { id: 5 } })).resolves.toBeNull();
     dispose();
   });
 });

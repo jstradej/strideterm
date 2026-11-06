@@ -449,8 +449,7 @@ describe("AzureDevOpsManager review-activity deltas", () => {
     ).toEqual([]);
   });
 
-  test("brand-new PR discovered on second sync notifies even when current user is not a reviewer", async () => {
-    // First sync: only PR 123 exists
+  test("brand-new PR discovered on second sync notifies when the current user is a reviewer", async () => {
     const world = {
       nowIso: "2026-03-17T10:00:00.000Z",
       pullRequests: [basePullRequest()],
@@ -459,7 +458,6 @@ describe("AzureDevOpsManager review-activity deltas", () => {
     const { manager } = makeManager(world);
     await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
 
-    // Second sync: PR 456 appears (brand new, we're a reviewer)
     world.nowIso = "2026-03-17T10:05:00.000Z";
     world.pullRequests = [
       basePullRequest(),
@@ -471,7 +469,6 @@ describe("AzureDevOpsManager review-activity deltas", () => {
           commitId: "commit-new",
           committer: { name: "Alice", email: "alice@example.com", date: "2026-03-17T10:03:00.000Z" },
         },
-        reviewers: [{ id: "reviewer-2", displayName: "Bob", uniqueName: "bob@example.com", vote: 0 }],
       }),
     ];
 
@@ -484,6 +481,139 @@ describe("AzureDevOpsManager review-activity deltas", () => {
     expect(newEvents[0].title).toContain("Platform / web-app");
     expect(newEvents[0].title).toContain("Add feature X");
     expect(newEvents[0].body).toContain("Alice");
+  });
+
+  describe("only PRs that concern the current user notify", () => {
+    const bobOnly = [{ id: "reviewer-2", displayName: "Bob", uniqueName: "bob@example.com", vote: 0 }];
+    const teamReviewer = (overrides = {}) => ({
+      id: "team-1",
+      displayName: "[Platform]\\Web Team",
+      uniqueName: "vstfs:///Classification/TeamProject/team-1",
+      vote: 0,
+      isContainer: true,
+      ...overrides,
+    });
+    const bobComment = (id: number, at: string) =>
+      commentFrom({ id, author: { id: "author-2", displayName: "Bob" }, content: `note ${id}`, at });
+
+    const sync = async (manager: AzureDevOpsManager) =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ((await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} })) as any).reviewActivity;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const withTeam = (manager: any) => {
+      manager.api.getUserGroupIds = async () => ["team-1"];
+      return manager as AzureDevOpsManager;
+    };
+
+    test("a new PR the user neither authors nor reviews stays silent", async () => {
+      const world = { nowIso: "2026-03-17T10:00:00.000Z", pullRequests: [basePullRequest()], comments: [] };
+      const { manager } = makeManager(world);
+      await sync(manager);
+
+      world.nowIso = "2026-03-17T10:05:00.000Z";
+      world.pullRequests = [basePullRequest(), basePullRequest({ pullRequestId: 456, reviewers: bobOnly })];
+      expect(await sync(manager)).toEqual([]);
+    });
+
+    test("a new PR assigned to one of the user's groups notifies", async () => {
+      const world = { nowIso: "2026-03-17T10:00:00.000Z", pullRequests: [basePullRequest()], comments: [] };
+      const manager = withTeam(makeManager(world).manager);
+      await sync(manager);
+
+      world.nowIso = "2026-03-17T10:05:00.000Z";
+      world.pullRequests = [
+        basePullRequest(),
+        basePullRequest({ pullRequestId: 456, reviewers: [...bobOnly, teamReviewer()] }),
+      ];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((await sync(manager)).map((ev: any) => [ev.kind, ev.pullRequestNumber])).toEqual([["pr-new", 456]]);
+    });
+
+    test("comments, votes and pushes on an observed PR stay silent", async () => {
+      const world = {
+        nowIso: "2026-03-17T10:00:00.000Z",
+        pullRequests: [basePullRequest({ reviewers: bobOnly })],
+        comments: [] as ReturnType<typeof commentFrom>[],
+      };
+      const { manager } = makeManager(world);
+      await sync(manager);
+
+      world.nowIso = "2026-03-17T10:05:00.000Z";
+      world.comments.push(bobComment(300, "2026-03-17T10:02:00.000Z"));
+      world.pullRequests = [
+        basePullRequest({
+          reviewers: [{ ...bobOnly[0], vote: -10 }],
+          lastMergeSourceCommit: {
+            commitId: "commit-2",
+            committer: { name: "Bob", email: "bob@example.com", date: "2026-03-17T10:04:00.000Z" },
+          },
+        }),
+      ];
+      expect(await sync(manager)).toEqual([]);
+    });
+
+    test("comments on a PR reviewed through a group notify until a colleague covers the vote", async () => {
+      const world = {
+        nowIso: "2026-03-17T10:00:00.000Z",
+        pullRequests: [basePullRequest({ reviewers: [...bobOnly, teamReviewer()] })],
+        comments: [] as ReturnType<typeof commentFrom>[],
+      };
+      const manager = withTeam(makeManager(world).manager);
+      await sync(manager);
+
+      world.nowIso = "2026-03-17T10:05:00.000Z";
+      world.comments.push(bobComment(301, "2026-03-17T10:02:00.000Z"));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((await sync(manager)).map((ev: any) => ev.kind)).toEqual(["pr-new-comment"]);
+
+      world.nowIso = "2026-03-17T10:10:00.000Z";
+      world.pullRequests = [basePullRequest({ reviewers: [...bobOnly, teamReviewer({ vote: 10 })] })];
+      world.comments.push(bobComment(302, "2026-03-17T10:08:00.000Z"));
+      const after = await sync(manager);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect(after.filter((ev: any) => ev.at > "2026-03-17T10:05:00.000Z")).toEqual([]);
+    });
+
+    test("being added as a reviewer later notifies once, without replaying older activity", async () => {
+      const world = {
+        nowIso: "2026-03-17T10:00:00.000Z",
+        pullRequests: [basePullRequest({ reviewers: bobOnly })],
+        comments: [] as ReturnType<typeof commentFrom>[],
+      };
+      const { manager, reviewStore } = makeManager(world);
+      await sync(manager);
+      world.nowIso = "2026-03-17T10:05:00.000Z";
+      world.comments.push(bobComment(303, "2026-03-17T10:02:00.000Z"));
+      expect(await sync(manager)).toEqual([]);
+      expect(reviewStore.getTrackedPullRequest(prKey).lastConcernsMe).toBe(false);
+
+      world.nowIso = "2026-03-17T10:10:00.000Z";
+      world.pullRequests = [basePullRequest()];
+      const events = await sync(manager);
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ kind: "pr-new", pullRequestNumber: 123 });
+      expect(events[0].title).toContain("Review requested");
+
+      world.nowIso = "2026-03-17T10:15:00.000Z";
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((await sync(manager)).map((ev: any) => ev.id)).toEqual(events.map((ev: any) => ev.id));
+    });
+
+    test("the user's own new PR does not announce itself", async () => {
+      const authorConnection = { ...connection, login: "alice@example.com" };
+      const world = { nowIso: "2026-03-17T10:00:00.000Z", pullRequests: [] as unknown[], comments: [] };
+      const { manager } = makeManager(world);
+      await manager.sync({ connections: [authorConnection], workspaces: [], gitSnapshots: {} });
+
+      world.nowIso = "2026-03-17T10:05:00.000Z";
+      world.pullRequests = [basePullRequest({ reviewers: bobOnly })];
+      const snapshot = (await manager.sync({
+        connections: [authorConnection],
+        workspaces: [],
+        gitSnapshots: {},
+      })) as { reviewActivity?: unknown };
+      expect(snapshot.reviewActivity).toEqual([]);
+    });
   });
 
   test("connection error emits exactly once per transition, silent on re-poll", async () => {

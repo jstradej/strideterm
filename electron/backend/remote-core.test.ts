@@ -232,6 +232,45 @@ describe("buildRemoteCore", () => {
     expect(core.remoteClient).toEqual(fullPayload().remoteClient);
   });
 
+  test("Jira saved-view tabs and sync state are scoped to the client's workspaces", () => {
+    const payload = fullPayload();
+    const views = {
+      ws1: {
+        workspaceId: "ws1",
+        profileId: "p1",
+        activeViewId: "board-a",
+        views: [{ viewId: "board-a", kind: "board", title: "Home" }],
+        syncByViewId: {
+          "board-a": {
+            state: "error",
+            error: "Jira rate limit reached.",
+            failedAt: 5,
+            code: "rate-limited",
+            retryAfterMs: 4000,
+          },
+        },
+        pollingByQueryId: {
+          q1: { connectionId: "c1", status: "error", lastSuccessAt: 1, lastError: { code: "auth-expired", at: 2 } },
+        },
+      },
+      ws2: {
+        workspaceId: "ws2",
+        profileId: "p2",
+        activeViewId: "board-b",
+        views: [{ viewId: "board-b", kind: "board", title: "Other profile" }],
+        syncByViewId: { "board-b": { state: "error", error: "Private", failedAt: 6, code: "network" } },
+        pollingByQueryId: { q2: { connectionId: "c2", status: "error", lastError: { code: "private-code", at: 3 } } },
+      },
+    };
+    expect(buildRemoteCore({ ...payload, jiraWorkspaceViews: views }).jiraWorkspaceViews).toEqual({ ws1: views.ws1 });
+    expect(JSON.stringify(buildRemoteCore({ ...payload, jiraWorkspaceViews: views }).jiraWorkspaceViews)).not.toContain(
+      "private-code",
+    );
+    expect(
+      buildRemoteCore({ ...payload, remoteClient: undefined, jiraWorkspaceViews: views }).jiraWorkspaceViews,
+    ).toEqual({});
+  });
+
   test("git snapshots are replaced by summaries scoped to the client profile", () => {
     const core = buildRemoteCore(fullPayload());
     // Full snapshots gone; only summaries, and only for p1's workspace.
@@ -614,6 +653,14 @@ describe("slimRemoteSettings", () => {
     expect(JSON.stringify(result)).not.toMatch(/phone-1|remoteUiConnected/);
     expect(JSON.stringify(input)).toBe(before);
   });
+
+  test("strips Jira connection credentials from remote settings", () => {
+    const result = slimRemoteSettings({
+      integrations: { jira: { enabled: true, connections: [{ id: "j1", auth: { secretRef: "jira:j1:pat" } }] } },
+    });
+    expect(result.integrations.jira).toEqual({ enabled: false, defaultPollSeconds: 120, connections: [] });
+    expect(JSON.stringify(result)).not.toContain("jira:j1:pat");
+  });
 });
 
 describe("capability negotiation", () => {
@@ -854,6 +901,20 @@ describe("resourceRevision", () => {
     pr.changedFiles = [{ path: "a.ts" }];
     const afterFiles = resourceRevision(p, "azure-pr:azure:pr1");
     expect(afterFiles).not.toBe(afterThread);
+  });
+
+  test("azure-pr revision folds the conflict state (server list and the local merge check)", () => {
+    const p = fullPayload();
+    const pr = p.azureDevops.pullRequests["azure:pr1"] as Rec;
+    pr.serverConflicts = null;
+    pr.localMergeCheck = { state: "conflicts", paths: ["pom.xml"], headSha: "a1", targetRef: "origin/main" };
+    const before = resourceRevision(p, "azure-pr:azure:pr1");
+    pr.serverConflicts = [{ path: "pom.xml", type: "editEdit" }];
+    const afterServer = resourceRevision(p, "azure-pr:azure:pr1");
+    expect(afterServer).not.toBe(before);
+    // A local rebase resolves it: the next detail fetch must reach a remote client too.
+    pr.localMergeCheck = { state: "clean", paths: [], headSha: "b2", targetRef: "origin/main" };
+    expect(resourceRevision(p, "azure-pr:azure:pr1")).not.toBe(afterServer);
   });
 
   test("azure-pr revision folds PR status transitions (active→completed bumps it)", () => {

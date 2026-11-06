@@ -1,4 +1,15 @@
-import { app, BrowserWindow, ipcMain, nativeImage, nativeTheme, safeStorage, shell, Menu, screen } from "electron";
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  nativeImage,
+  nativeTheme,
+  safeStorage,
+  shell,
+  Menu,
+  screen,
+} from "electron";
 import os from "node:os";
 import path from "node:path";
 import { existsSync } from "node:fs";
@@ -6,7 +17,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { createRuntime } from "./backend/runtime.js";
-import { registerIpc } from "./backend/ipc.js";
+import { registerIpc, type JiraIssuePopoutTarget } from "./backend/ipc.js";
 import { startRemoteServer } from "./backend/remote-server.js";
 import { loadUiPackageDescriptor } from "./backend/ui-package-descriptor.js";
 import { parseReviewBridgeMcpArgs, runReviewBridgeMcpServer } from "./backend/review-bridge-mcp.js";
@@ -24,6 +35,7 @@ import { applySystemCaTrust } from "./backend/net/system-ca.js";
 import { SMOKE_READY_MARKER } from "./shared/smoke-protocol.js";
 import { detectAppDistribution } from "./shared/app-distribution.js";
 import { createPerformanceSampler } from "./performance-metrics.js";
+import type { FilePopoutPayload } from "./shared/ipc-bridge.js";
 import type { WindowSlot, WorkspaceState } from "./shared/types/state.js";
 import type { TaskExecutionState } from "./shared/types/task.js";
 import type { CpuProfileCaptureResult, RevealResult } from "./shared/performance.js";
@@ -340,6 +352,44 @@ interface DiffPopoutPayload {
 }
 const diffPopoutPayloads = new Map<number, DiffPopoutPayload>();
 const diffPopoutWindows = new Set<BrowserWindow>();
+
+const filePopoutPayloads = new Map<number, FilePopoutPayload>();
+
+function parseFilePopoutPayload(raw: unknown): FilePopoutPayload | string {
+  if (!raw || typeof raw !== "object") return "payload required";
+  const p = raw as Record<string, unknown>;
+  for (const key of ["rootPath", "relativePath", "name"] as const) {
+    if (typeof p[key] !== "string" || !(p[key] as string).trim()) return `${key} must be a non-empty string`;
+  }
+  if (p.content !== undefined && typeof p.content !== "string") return "content must be a string";
+  if (p.dirty !== undefined && typeof p.dirty !== "boolean") return "dirty must be a boolean";
+  return {
+    rootPath: p.rootPath as string,
+    relativePath: p.relativePath as string,
+    name: p.name as string,
+    ...(p.content !== undefined ? { content: p.content as string } : {}),
+    ...(p.dirty !== undefined ? { dirty: p.dirty as boolean } : {}),
+  };
+}
+
+function applyNativeTheme(payload: Record<string, unknown> | undefined): void {
+  const themeSetting =
+    ((payload?.appState as Record<string, unknown> | undefined)?.settings as Record<string, unknown> | undefined)
+      ?.theme || "dark";
+  nativeTheme.themeSource = (themeSetting === "system" ? "system" : themeSetting) as "system" | "dark" | "light";
+}
+
+// --- Jira issue popout windows ---
+// A popout is NOT in windowRegistry: it is not a restorable app window (no slot, no restore, never the primary
+// window, not counted by the last-window close flow). It borrows its opener's windowId only so that Jira IPC
+// resolves the same viewer profile and write journal as the window it was opened from; it closes with that window.
+interface JiraIssuePopout {
+  win: BrowserWindow;
+  target: JiraIssuePopoutTarget;
+  webContentsId: number;
+}
+const jiraIssuePopoutsByKey = new Map<string, JiraIssuePopout>();
+const jiraIssuePopoutsByWebContentsId = new Map<number, JiraIssuePopout>();
 
 /** Return the window that had focus most recently (non-minimized preferred). */
 function getPrimaryWindow(): BrowserWindow | null {
@@ -662,12 +712,13 @@ const distFileUrl = (file: string) =>
   new URL(`file://${path.join(app.getAppPath(), "dist", file).replace(/\\/g, "/")}`).href;
 const distIndexUrl = distFileUrl("index.html");
 const distPopoutUrl = distFileUrl("popout.html");
+const distJiraPopoutUrl = distFileUrl("jira-popout.html");
 
 function isRendererOrigin(target: string): boolean {
   if (!target) return false;
   if (target.startsWith("file://")) {
     const bare = target.split("?")[0].split("#")[0];
-    return bare === distIndexUrl || bare === distPopoutUrl;
+    return bare === distIndexUrl || bare === distPopoutUrl || bare === distJiraPopoutUrl;
   }
   try {
     const url = new URL(target);
@@ -950,6 +1001,7 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
       registrySizeBefore: windowRegistry.size,
     });
     windowRegistry.delete(id);
+    closeJiraIssuePopoutsOf(id);
     webContentsToWindowId.delete(webContentsId);
     windowFocusedAt.delete(id);
     windowAttentionCount.delete(id);
@@ -1116,7 +1168,13 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
  * parking a diff on a second monitor while you keep navigating in the main
  * window.
  */
-function createDiffPopoutWindow(payload: DiffPopoutPayload): BrowserWindow {
+function createPopoutWindow<T>(opts: {
+  kind: "diff" | "file";
+  title: string;
+  payload: T;
+  payloads: Map<number, T>;
+}): BrowserWindow {
+  const { kind, payload, payloads } = opts;
   const windowIconPath =
     process.platform === "win32"
       ? path.join(app.getAppPath(), "assets", "icon.ico")
@@ -1126,7 +1184,7 @@ function createDiffPopoutWindow(payload: DiffPopoutPayload): BrowserWindow {
     height: 900,
     minWidth: 640,
     minHeight: 360,
-    title: payload.title || "Diff",
+    title: opts.title,
     icon: windowIconPath,
     // nativeTheme.themeSource follows the app theme setting; the page itself applies it
     // from prefers-color-scheme (popout-theme.js).
@@ -1140,23 +1198,22 @@ function createDiffPopoutWindow(payload: DiffPopoutPayload): BrowserWindow {
       sandbox: true,
       backgroundThrottling: false,
       spellcheck: false,
-      additionalArguments: [...(webglDisabled ? ["--strideterm-disable-webgl"] : []), "--strideterm-popout=diff"],
+      additionalArguments: [...(webglDisabled ? ["--strideterm-disable-webgl"] : []), `--strideterm-popout=${kind}`],
     },
   });
 
-  diffPopoutPayloads.set(win.webContents.id, payload);
-  diffPopoutWindows.add(win);
+  const webContentsId = win.webContents.id;
+  payloads.set(webContentsId, payload);
   win.once("ready-to-show", () => win.show());
   win.on("closed", () => {
-    diffPopoutPayloads.delete(win.webContents.id);
-    diffPopoutWindows.delete(win);
+    payloads.delete(webContentsId);
   });
 
   // Navigation safety: same guard as the main window — the popout must
   // stay on the renderer origin.
   win.webContents.on("will-navigate", (event, url) => {
     if (!isRendererOrigin(url)) {
-      log.warn("blocked diff-popout navigation away from renderer origin", { url: url.slice(0, 200) });
+      log.warn("blocked popout navigation away from renderer origin", { url: url.slice(0, 200) });
       event.preventDefault();
     }
   });
@@ -1174,7 +1231,8 @@ function createDiffPopoutWindow(payload: DiffPopoutPayload): BrowserWindow {
   });
 
   const distPopoutPath = path.join(app.getAppPath(), "dist", "popout.html");
-  const popoutDevUrl = new URL("popout.html", rendererUrl).href;
+  const hash = kind === "file" ? "file" : "";
+  const popoutDevUrl = new URL("popout.html", rendererUrl).href + (hash ? `#${hash}` : "");
   if (isDev) {
     // Same fallback as createWindow: if the Vite dev URL refuses to load
     // (process not running yet, port conflict, …) the popout window would
@@ -1184,18 +1242,162 @@ function createDiffPopoutWindow(payload: DiffPopoutPayload): BrowserWindow {
     win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
       if (!isMainFrame || fellBackToDist || validatedUrl !== popoutDevUrl) return;
       fellBackToDist = true;
-      log.warn("diff-popout: dev renderer failed, falling back to dist", { errorCode, errorDescription });
-      win.loadFile(distPopoutPath);
+      log.warn("popout: dev renderer failed, falling back to dist", { kind, errorCode, errorDescription });
+      win.loadFile(distPopoutPath, hash ? { hash } : undefined);
     });
     win.loadURL(popoutDevUrl);
   } else {
-    win.loadFile(distPopoutPath);
+    win.loadFile(distPopoutPath, hash ? { hash } : undefined);
   }
-  log.info("diff-popout window created", {
-    webContentsId: win.webContents.id,
-    title: payload.title || "",
+  log.info("popout window created", { kind, webContentsId, title: opts.title });
+  return win;
+}
+
+function createDiffPopoutWindow(payload: DiffPopoutPayload): BrowserWindow {
+  const win = createPopoutWindow({
+    kind: "diff",
+    title: payload.title || "Diff",
+    payload,
+    payloads: diffPopoutPayloads,
+  });
+  diffPopoutWindows.add(win);
+  win.on("closed", () => diffPopoutWindows.delete(win));
+  return win;
+}
+
+function createFilePopoutWindow(payload: FilePopoutPayload): BrowserWindow {
+  const win = createPopoutWindow({ kind: "file", title: payload.name, payload, payloads: filePopoutPayloads });
+  // The renderer's beforeunload sets returnValue while the buffer is dirty; Electron then
+  // emits will-prevent-unload instead of showing anything. preventDefault() lets the close go on.
+  win.webContents.on("will-prevent-unload", (event) => {
+    const choice = dialog.showMessageBoxSync(win, {
+      type: "warning",
+      buttons: ["Discard", "Cancel"],
+      defaultId: 1,
+      cancelId: 1,
+      title: "Unsaved changes",
+      message: `Discard unsaved changes to ${payload.name}?`,
+    });
+    if (choice === 0) event.preventDefault();
   });
   return win;
+}
+
+function jiraIssuePopoutKey(target: JiraIssuePopoutTarget): string {
+  return [target.profileId, target.ref.connectionId, target.ref.issueId].join("|");
+}
+
+function closeJiraIssuePopoutsOf(openerWindowId: string): void {
+  for (const popout of [...jiraIssuePopoutsByKey.values()]) {
+    if (popout.target.openerWindowId !== openerWindowId || popout.win.isDestroyed()) continue;
+    popout.win.close();
+  }
+}
+
+function broadcastToJiraIssuePopouts(channel: string, payload: unknown): void {
+  for (const { win } of jiraIssuePopoutsByKey.values()) {
+    if (win.isDestroyed()) continue;
+    try {
+      win.webContents.send(channel, payload);
+    } catch (error: unknown) {
+      const err = error as { code?: string; message?: string };
+      if (err?.code === "EPIPE" || err?.message?.includes("EPIPE")) continue;
+      throw error;
+    }
+  }
+}
+
+/** One window per issue: asking again for an open one brings it forward. */
+function openJiraIssuePopoutWindow(target: JiraIssuePopoutTarget): { focused: boolean } {
+  const key = jiraIssuePopoutKey(target);
+  const existing = jiraIssuePopoutsByKey.get(key);
+  if (existing && !existing.win.isDestroyed()) {
+    if (existing.win.isMinimized()) existing.win.restore();
+    existing.win.show();
+    existing.win.focus();
+    return { focused: true };
+  }
+  const windowIconPath =
+    process.platform === "win32"
+      ? path.join(app.getAppPath(), "assets", "icon.ico")
+      : path.join(app.getAppPath(), "assets", "icon.png");
+  const win = new BrowserWindow({
+    width: 1100,
+    height: 860,
+    minWidth: 520,
+    minHeight: 400,
+    title: target.summary ? `${target.ref.issueKey} · ${target.summary}` : target.ref.issueKey,
+    icon: windowIconPath,
+    backgroundColor: nativeTheme.shouldUseDarkColors ? APP_CONFIG.electron.backgroundColor : "#f6f7f9",
+    show: false,
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: path.join(app.getAppPath(), "dist-electron", "electron", "preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      backgroundThrottling: false,
+      spellcheck: false,
+      additionalArguments: [
+        ...(webglDisabled ? ["--strideterm-disable-webgl"] : []),
+        "--strideterm-popout=jira-issue",
+        `--strideterm-window-id=${target.openerWindowId}`,
+      ],
+    },
+  });
+  const webContentsId = win.webContents.id;
+  const popout: JiraIssuePopout = { win, target, webContentsId };
+  jiraIssuePopoutsByKey.set(key, popout);
+  jiraIssuePopoutsByWebContentsId.set(webContentsId, popout);
+  webContentsToWindowId.set(webContentsId, target.openerWindowId);
+  win.once("ready-to-show", () => win.show());
+  win.on("closed", () => {
+    if (jiraIssuePopoutsByKey.get(key) === popout) jiraIssuePopoutsByKey.delete(key);
+    jiraIssuePopoutsByWebContentsId.delete(webContentsId);
+    webContentsToWindowId.delete(webContentsId);
+  });
+  win.webContents.on("will-navigate", (event, url) => {
+    if (!isRendererOrigin(url)) {
+      log.warn("blocked jira-popout navigation away from renderer origin", { url: url.slice(0, 200) });
+      event.preventDefault();
+    }
+  });
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return { action: "deny" };
+    }
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      void import("electron").then(({ shell }) => shell.openExternal(parsed.toString()));
+    } else {
+      log.warn("blocked openExternal for non-http(s) protocol", { protocol: parsed.protocol });
+    }
+    return { action: "deny" };
+  });
+
+  const distJiraPopoutPath = path.join(app.getAppPath(), "dist", "jira-popout.html");
+  const jiraPopoutDevUrl = new URL("jira-popout.html", rendererUrl).href;
+  if (isDev) {
+    let fellBackToDist = false;
+    win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
+      if (!isMainFrame || fellBackToDist || validatedUrl !== jiraPopoutDevUrl) return;
+      fellBackToDist = true;
+      log.warn("jira-popout: dev renderer failed, falling back to dist", { errorCode, errorDescription });
+      win.loadFile(distJiraPopoutPath);
+    });
+    win.loadURL(jiraPopoutDevUrl);
+  } else {
+    win.loadFile(distJiraPopoutPath);
+  }
+  log.info("jira-popout window created", {
+    webContentsId,
+    openerWindowId: target.openerWindowId,
+    profileId: target.profileId,
+    issueKey: target.ref.issueKey,
+  });
+  return { focused: false };
 }
 
 function persistWindowSlot(windowId: string, win: BrowserWindow): void {
@@ -1243,6 +1445,7 @@ function emitToWindow(windowId: string, channel: string, payload: unknown): void
 }
 
 function emitToRenderer(channel: string, payload: unknown): void {
+  if (channel === "state:updated") broadcastToJiraIssuePopouts(channel, payload);
   for (const win of windowRegistry.values()) {
     if (win.isDestroyed()) continue;
     try {
@@ -1570,6 +1773,8 @@ async function startServices(): Promise<void> {
     includeStateGet: true,
     getWindowIdByWebContentsId,
     emitToWindow,
+    openJiraIssuePopout: openJiraIssuePopoutWindow,
+    getJiraIssuePopoutInit: (webContentsId) => jiraIssuePopoutsByWebContentsId.get(webContentsId)?.target ?? null,
   });
   runtimeState.unsubscribeRemoteConfig = runtimeState.runtime.on("remote:config-changed", async () => {
     await restartRemoteServer().catch((error: Error) => {
@@ -1579,14 +1784,12 @@ async function startServices(): Promise<void> {
   runtimeState.unsubscribeStateUpdated = runtimeState.runtime.on(
     "state:updated",
     (payload: Record<string, unknown>) => {
-      const themeSetting =
-        ((payload?.appState as Record<string, unknown> | undefined)?.settings as Record<string, unknown> | undefined)
-          ?.theme || "dark";
-      nativeTheme.themeSource = (themeSetting === "system" ? "system" : themeSetting) as "system" | "dark" | "light";
+      applyNativeTheme(payload);
       updateNativeAttention(payload);
       syncTitleBarTheme();
     },
   );
+  applyNativeTheme(runtimeState.runtime.getPayload?.());
   nativeTheme.on("updated", () => syncTitleBarTheme());
   await restartRemoteServer();
   const desiredWorkspaceId =
@@ -1756,6 +1959,20 @@ if (mcpMode) {
   ipcMain.handle("diff:popout:get-init", (event) => {
     return diffPopoutPayloads.get(event.sender.id) ?? null;
   });
+
+  ipcMain.handle("file:popout:open", (_event, raw: unknown) => {
+    const payload = parseFilePopoutPayload(raw);
+    if (typeof payload === "string") return { error: payload };
+    try {
+      createFilePopoutWindow(payload);
+      return { ok: true };
+    } catch (err) {
+      log.error("file:popout:open failed", { err: (err as Error)?.message });
+      return { error: (err as Error)?.message || "Failed to open file popout" };
+    }
+  });
+
+  ipcMain.handle("file:popout:get-init", (event) => filePopoutPayloads.get(event.sender.id) ?? null);
 
   app.on("second-instance", (_event, argv) => {
     // Launching the exe while the app is already running means "give me

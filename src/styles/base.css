@@ -8,10 +8,31 @@
 
 :root {
   --noise-texture: url("../assets/noise.png");
+  /* Two layers: the grained base under the sidebar, the tab bar and the notification centre, and the
+     opaque surfaces on top of it (terminals, panes, the selected tab). */
+  --base: #1e1e23;
+  --surface-term: #141416;
+  --surface-pane: #18181c;
+  --surface-pane-raised: #222228;
+  --surface-card: #25252b;
+  --tab-line: rgba(255, 255, 255, 0.16);
+  --grain-veil: 97.2%;
+  --base-fill:
+    linear-gradient(
+        color-mix(in srgb, var(--base) var(--grain-veil), transparent),
+        color-mix(in srgb, var(--base) var(--grain-veil), transparent)
+      )
+      fixed,
+    var(--noise-texture) 0 0 / 256px 256px fixed, var(--base);
   --bg: #141416;
   --panel: #1c1c20;
   --panel-elevated: rgba(28, 28, 32, 0.95);
-  --menu-bg: #26262c;
+  --surface-dialog: #1c1c20;
+  --surface-control: #1c1c20;
+  --font-size-heading: 20px;
+  --font-size-body: 13px;
+  --font-size-caption: 12px;
+  --menu-bg: #2e2e35;
   --menu-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
   --text: #dcdce0;
   --muted: #76767e;
@@ -41,9 +62,18 @@
 }
 
 :root[data-theme="light"] {
+  --base: #e2e5ea;
+  --surface-term: #ffffff;
+  --surface-pane: #eceef2;
+  --surface-pane-raised: #f6f7f9;
+  --surface-card: #ffffff;
+  --tab-line: rgba(0, 0, 0, 0.16);
+  --grain-veil: 95.5%;
   --bg: #eceef2;
   --panel: #f6f7f9;
   --panel-elevated: #ffffff;
+  --surface-dialog: #f6f7f9;
+  --surface-control: #ffffff;
   --menu-bg: #ffffff;
   --menu-shadow: 0 10px 30px rgba(15, 23, 42, 0.16), 0 1px 3px rgba(15, 23, 42, 0.08);
   --text: #18181b;
@@ -150,8 +180,7 @@
   filter: invert(1);
 }
 
-:root[data-theme="light"] .noise-overlay,
-:root[data-theme="light"] body::after {
+:root[data-theme="light"] .noise-overlay {
   opacity: 0;
 }
 
@@ -200,29 +229,21 @@ body,
 body {
   margin: 0;
   min-height: 0;
-  background: var(--bg);
+  background: var(--base-fill);
   color: var(--text);
   isolation: isolate;
-}
-
-body::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: -1;
-  opacity: 0.028;
-  background-image: var(--noise-texture);
-  background-repeat: repeat;
-  background-size: 256px 256px;
-  contain: strict;
-  will-change: transform;
 }
 
 button,
 input,
 textarea {
   font: inherit;
+}
+
+/* Native checkboxes, radios and sliders take the app accent, not the OS blue. Set once on the root and
+   inherited, so a local --accent (a workspace colour on a card) does not repaint them. */
+:root {
+  accent-color: var(--accent);
 }
 
 .frame {

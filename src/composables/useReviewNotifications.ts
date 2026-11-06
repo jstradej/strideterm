@@ -4,6 +4,7 @@ import { useAppStore } from "../stores/app.js";
 import { useNotificationStore } from "../stores/notifications.js";
 import { fireNotificationAlert } from "./useNotificationSound.js";
 import { resolveEventProfileId } from "./useNotificationProfileScope.js";
+import { reviewNotificationText } from "../lib/review-notification-text.js";
 
 /**
  * Bridges backend `reviewActivity` deltas (emitted by Azure/GitHub sync) into
@@ -151,7 +152,10 @@ export function useReviewNotifications(latestToastRef: Ref<any> | null = null) {
         notifStore.pushToast({ ...entry, meta, category: "review" });
       }
 
-      fireNotificationAlert(entry.title, entry.body, {
+      // An OS popup cuts its title to one line; the PR title goes in the body, which wraps.
+      const text = reviewNotificationText(entry.title, entry.body, meta.pullRequestTitle);
+      const popupBody = text.prTitle ? [text.prTitle, text.detail].filter(Boolean).join("\n") : entry.body;
+      fireNotificationAlert(text.prTitle ? text.event : entry.title, popupBody, {
         tier: 2,
         urgency: entry.urgency,
         sessionKey: `review:${ev.prKey || ev.id}`,

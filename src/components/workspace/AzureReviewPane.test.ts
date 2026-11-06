@@ -14,6 +14,7 @@ import AzureReviewPane from "./AzureReviewPane.vue";
 import DialogOverlay from "../dialogs/DialogOverlay.vue";
 import { apiKey } from "../../types/keys.js";
 import ReviewPipelinesTab from "./shared/ReviewPipelinesTab.vue";
+import ReviewCommentsTab from "./azure/ReviewCommentsTab.vue";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { useGitUiStore } from "../../stores/git-ui.js";
@@ -226,6 +227,44 @@ beforeEach(() => {
 });
 
 describe("AzureReviewPane responsive chrome", () => {
+  test("passes only active-profile enabled Jira routes into the shared GitHub/Azure comments renderer", async () => {
+    const appStore = useAppStore();
+    vi.spyOn(appStore, "getApi").mockReturnValue({
+      listJiraConnections: vi.fn().mockResolvedValue([
+        {
+          id: "active",
+          profileId: "default",
+          enabled: true,
+          label: "Primary",
+          webUrl: "https://jira.example/jira",
+          issueKeyPrefixes: ["ENG"],
+        },
+        {
+          id: "foreign",
+          profileId: "other",
+          enabled: true,
+          label: "Foreign",
+          webUrl: "https://foreign.example",
+          issueKeyPrefixes: ["ENG"],
+        },
+        {
+          id: "disabled",
+          profileId: "default",
+          enabled: false,
+          label: "Disabled",
+          webUrl: "https://disabled.example",
+          issueKeyPrefixes: ["OPS"],
+        },
+      ]),
+    } as unknown as ReturnType<typeof appStore.getApi>);
+    const wrapper = mountPane("github", { includeComments: true });
+    useGitUiStore().reviewSwitchTab("ws-review", "comments");
+    await flushPromises();
+    expect((wrapper.findComponent(ReviewCommentsTab).props() as Record<string, unknown>).jiraRoutes).toEqual([
+      { connectionId: "active", label: "Primary", webUrl: "https://jira.example/jira", issueKeyPrefixes: ["ENG"] },
+    ]);
+  });
+
   test("notification focus selects Comments and clears saved filters", async () => {
     const appStore = useAppStore();
     const wrapper = mountPane();
@@ -567,6 +606,63 @@ describe("AzureReviewPane — manual Refresh drives the full sync, not just meta
     expect(wrapper.text()).toContain("Pushed abc to feature/x. Warning: Baseline not saved.");
   });
 
+  test("after a rewrite (ahead AND behind) the button says Force push and forces the push", async () => {
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+    const wrapper = mountPane();
+    await flushPromises();
+    const appStore = useAppStore();
+    const payload = buildPayload();
+    (payload as unknown as { git: { workspaces: Record<string, unknown> } }).git.workspaces["ws-review"] = {
+      available: true,
+      branch: "pr-1-feature-x",
+      aheadCount: 8,
+      behindCount: 6,
+    };
+    appStore.payload = payload;
+    await flushPromises();
+    const push = vi.spyOn(appStore, "pushAndPublishReview").mockResolvedValue({
+      push: { status: "pushed", message: "Force pushed abc to feature/x." },
+      publish: { attempted: true, published: [], failed: [] },
+    });
+
+    const button = wrapper.findAll("button").find((b) => b.text().startsWith("Force push (8) & publish"))!;
+    expect(button.attributes("title")).toContain("diverged (8 ahead, 6 behind)");
+    expect(button.attributes("title")).toContain("lease");
+    await button.trigger("click");
+    await flushPromises();
+
+    expect(push).toHaveBeenCalledWith("ws-review", { force: true });
+    expect(wrapper.text()).toContain("Force pushed abc to feature/x.");
+  });
+
+  test("ahead only stays a plain Push & publish", async () => {
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+    const wrapper = mountPane();
+    await flushPromises();
+    const appStore = useAppStore();
+    const payload = buildPayload();
+    (payload as unknown as { git: { workspaces: Record<string, unknown> } }).git.workspaces["ws-review"] = {
+      available: true,
+      branch: "pr-1-feature-x",
+      aheadCount: 2,
+      behindCount: 0,
+    };
+    appStore.payload = payload;
+    await flushPromises();
+    const push = vi.spyOn(appStore, "pushAndPublishReview").mockResolvedValue({
+      push: { status: "pushed", message: "Pushed abc to feature/x." },
+      publish: { attempted: true, published: [], failed: [] },
+    });
+
+    const button = wrapper.findAll("button").find((b) => b.text().startsWith("Push (2) & publish"))!;
+    await button.trigger("click");
+    await flushPromises();
+
+    expect(push).toHaveBeenCalledWith("ws-review", { force: false });
+  });
+
   test("a blocked Push & publish points queued comments at Publish only", async () => {
     setMatchMediaResult("(max-width: 768px)", false);
     setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
@@ -653,6 +749,124 @@ describe("AzureReviewPane — manual Refresh drives the full sync, not just meta
     await flushPromises();
 
     expect(syncSpy).not.toHaveBeenCalled();
+  });
+
+  test("clicking back and forth in a split does not run a provider sync each time", async () => {
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+    let now = 1_000_000;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const appStore = useAppStore();
+      const payload = buildPayload("azure-devops");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (payload as any).azureDevops.pullRequests["ado:1"].hasAttention = true;
+      appStore.payload = payload;
+      const views = appStore as unknown as { activeViewId: string };
+      views.activeViewId = "review:ws-review";
+      const refresh = vi.spyOn(appStore, "refreshAzure").mockResolvedValue(undefined);
+      const seen = vi.spyOn(appStore, "markAzurePrSeen").mockResolvedValue(undefined);
+
+      mount(AzureReviewPane, {
+        props: { workspaceId: "ws-review" },
+        global: {
+          stubs: {
+            PaneShell: true,
+            DiffViewer: true,
+            GitCommitLog: true,
+            MonacoDiffPanel: true,
+            ReviewSummaryTab: true,
+            ReviewCommentsTab: true,
+            ReviewAgentTab: true,
+            ReviewPipelinesTab: true,
+            CustomSelect: true,
+          },
+          provide: {
+            [apiKey]: {
+              azureListRemoteBranches: () => Promise.resolve({ branches: [] }),
+              githubListRemoteBranches: () => Promise.resolve({ branches: [] }),
+            },
+          },
+        },
+      });
+      await flushPromises();
+      expect(refresh).toHaveBeenCalledTimes(1);
+
+      // Into the terminal beside it and straight back: no second sync, but a PR
+      // flagged for attention is still marked seen.
+      views.activeViewId = "ws-review:panel-1";
+      await flushPromises();
+      views.activeViewId = "review:ws-review";
+      await flushPromises();
+      expect(refresh).toHaveBeenCalledTimes(1);
+      expect(seen).toHaveBeenCalledTimes(2);
+
+      now += 61_000;
+      views.activeViewId = "ws-review:panel-1";
+      await flushPromises();
+      views.activeViewId = "review:ws-review";
+      await flushPromises();
+      expect(refresh).toHaveBeenCalledTimes(2);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  test("a review request that looking does not clear is not marked seen on every focus bounce", async () => {
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => 1_000_000);
+    try {
+      const appStore = useAppStore();
+      const payload = buildPayload("azure-devops");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      Object.assign((payload as any).azureDevops.pullRequests["ado:1"], {
+        hasAttention: true,
+        attentionReason: "Your review",
+        attentionReasons: [{ code: "review-requested", label: "Your review", ackOnSeen: false }],
+        lastSeenActivityAt: "2026-01-02T00:00:00.000Z",
+        lastRemoteActivityAt: "2026-01-01T00:00:00.000Z",
+        lastOthersActivityAt: "2026-01-01T00:00:00.000Z",
+      });
+      appStore.payload = payload;
+      const views = appStore as unknown as { activeViewId: string };
+      views.activeViewId = "review:ws-review";
+      vi.spyOn(appStore, "refreshAzure").mockResolvedValue(undefined);
+      const seen = vi.spyOn(appStore, "markAzurePrSeen").mockResolvedValue(undefined);
+
+      mount(AzureReviewPane, {
+        props: { workspaceId: "ws-review" },
+        global: {
+          stubs: {
+            PaneShell: true,
+            DiffViewer: true,
+            GitCommitLog: true,
+            MonacoDiffPanel: true,
+            ReviewSummaryTab: true,
+            ReviewCommentsTab: true,
+            ReviewAgentTab: true,
+            ReviewPipelinesTab: true,
+            CustomSelect: true,
+          },
+          provide: {
+            [apiKey]: {
+              azureListRemoteBranches: () => Promise.resolve({ branches: [] }),
+              githubListRemoteBranches: () => Promise.resolve({ branches: [] }),
+            },
+          },
+        },
+      });
+      await flushPromises();
+      const afterMount = seen.mock.calls.length;
+
+      views.activeViewId = "ws-review:panel-1";
+      await flushPromises();
+      views.activeViewId = "review:ws-review";
+      await flushPromises();
+      expect(seen).toHaveBeenCalledTimes(afterMount);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   test("after an 'updated' result, the currently selected file's diff is reloaded", async () => {
@@ -1073,15 +1287,20 @@ describe("AzureReviewPane — Monaco diff loading via the shared useMonacoDiffLo
  * conflict state. This closes that gap through the real component.
  */
 describe("AzureReviewPane — Conflicts tab (ReviewFileTree's second call site)", () => {
-  function buildConflictsPayload(mergeStatus: string): StatePayload {
+  const SERVER_HEAD = "aaaaaaa1111111111111111111111111111111111";
+  const LOCAL_HEAD = "bbbbbbb2222222222222222222222222222222222";
+
+  function buildConflictsPayload(mergeStatus: string, extra: Record<string, unknown> = {}): StatePayload {
     const prKey = "ado:1";
     const detail = {
+      ...extra,
       pullRequest: {
         id: 1,
         title: "Sample review PR",
         isDraft: false,
         sourceRefName: "refs/heads/feature/x",
         targetRefName: "refs/heads/main",
+        sourceCommitId: SERVER_HEAD,
         url: "",
         webUrl: "",
         mergeStatus,
@@ -1137,9 +1356,9 @@ describe("AzureReviewPane — Conflicts tab (ReviewFileTree's second call site)"
     } as unknown as StatePayload;
   }
 
-  function mountWithMergeStatus(mergeStatus: string) {
+  function mountWithMergeStatus(mergeStatus: string, extra: Record<string, unknown> = {}) {
     const appStore = useAppStore();
-    appStore.payload = buildConflictsPayload(mergeStatus);
+    appStore.payload = buildConflictsPayload(mergeStatus, extra);
     for (const fn of ["refreshAzure", "markAzurePrSeen", "markAzurePullRequestSeen"]) {
       if (typeof (appStore as unknown as Record<string, unknown>)[fn] === "function") {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1170,26 +1389,35 @@ describe("AzureReviewPane — Conflicts tab (ReviewFileTree's second call site)"
     });
   }
 
-  test("mergeStatus:conflicts renders the real ReviewFileTree with the affected files", async () => {
-    setMatchMediaResult("(max-width: 768px)", false);
-    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
-    const wrapper = mountWithMergeStatus("conflicts");
-    await flushPromises();
-
+  async function openConflictsTab(wrapper: ReturnType<typeof mountWithMergeStatus>) {
     const conflictsTabBtn = wrapper.findAll(".azure-tab").find((b) => b.text().startsWith("Conflicts"))!;
-    expect(conflictsTabBtn.text()).toContain("2"); // conflictInfo.hasConflicts -> count = changedFiles.length
+    const tabText = conflictsTabBtn.text();
+    const tabClasses = conflictsTabBtn.classes();
     await conflictsTabBtn.trigger("click");
     await flushPromises();
+    return { tabText, tabClasses };
+  }
 
-    // The "no conflicts" simple card must NOT render...
+  test("mergeStatus:conflicts lists only the files Azure reports as conflicting, not the whole PR", async () => {
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+    const wrapper = mountWithMergeStatus("conflicts", {
+      serverConflicts: [{ path: "src/app/foo.ts", type: "editEdit" }],
+    });
+    await flushPromises();
+
+    const { tabText } = await openConflictsTab(wrapper);
+    expect(tabText).toBe("Conflicts1");
+
     expect(wrapper.text()).not.toContain("No conflicts");
-    // ...the real ReviewFileTree renders both changed files (nested dir included)...
+    expect(wrapper.text()).toContain("Conflicts in 1 file");
+    expect(wrapper.text()).toContain("Conflicting files (Azure DevOps)");
     const fileButtons = wrapper.findAll(".review-tree-file");
-    expect(fileButtons).toHaveLength(2);
+    expect(fileButtons).toHaveLength(1);
     expect(wrapper.text()).toContain("foo.ts");
-    expect(wrapper.text()).toContain("bar.ts");
+    expect(wrapper.text()).not.toContain("bar.ts");
 
-    // ...and clicking one wires through onSelectFile -> gitUiStore.reviewSelectFileDiff,
+    // Clicking one wires through onSelectFile -> gitUiStore.reviewSelectFileDiff,
     // which records the selection (after its internal `await import("./app.js")`)
     // before the (unmocked) diff fetch settles into its error-fallback shape.
     const gitUiStore = useGitUiStore();
@@ -1198,20 +1426,70 @@ describe("AzureReviewPane — Conflicts tab (ReviewFileTree's second call site)"
     expect(gitUiStore.get("ws-review").reviewSelectedFile).toBe("src/app/foo.ts");
   });
 
+  test("when Azure does not list them, the files this checkout conflicts in are shown", async () => {
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+    const wrapper = mountWithMergeStatus("conflicts", {
+      serverConflicts: null,
+      localMergeCheck: {
+        state: "conflicts",
+        paths: ["src/app/nested/bar.ts"],
+        headSha: SERVER_HEAD,
+        targetRef: "origin/main",
+      },
+    });
+    await flushPromises();
+    await openConflictsTab(wrapper);
+
+    expect(wrapper.text()).toContain("Conflicting files (this checkout)");
+    expect(wrapper.findAll(".review-tree-file")).toHaveLength(1);
+    expect(wrapper.text()).toContain("bar.ts");
+    expect(wrapper.get("[data-testid='local-merge-note']").text()).toContain("conflicts with origin/main too");
+  });
+
+  test("resolved by a local rebase that is not pushed yet: says so, and the tab stops alerting", async () => {
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+    const wrapper = mountWithMergeStatus("conflicts", {
+      serverConflicts: [{ path: "src/app/foo.ts", type: "editEdit" }],
+      localMergeCheck: { state: "clean", paths: [], headSha: LOCAL_HEAD, targetRef: "origin/main" },
+    });
+    await flushPromises();
+
+    const { tabText, tabClasses } = await openConflictsTab(wrapper);
+    expect(tabText).toBe("Conflicts0");
+    expect(tabClasses.join(" ")).not.toContain("alert");
+
+    expect(wrapper.text()).toContain("Resolved in this checkout — push to update the pull request");
+    expect(wrapper.find(".review-conflict-banner--ok").exists()).toBe(true);
+    const note = wrapper.get("[data-testid='local-merge-note']").text();
+    expect(note).toContain("bbbbbbb");
+    expect(note).toContain("aaaaaaa");
+  });
+
+  test("a conflict nobody can name says so instead of listing the PR's files", async () => {
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+    const wrapper = mountWithMergeStatus("conflicts", { serverConflicts: null });
+    await flushPromises();
+    await openConflictsTab(wrapper);
+
+    expect(wrapper.text()).toContain("Conflicts detected");
+    expect(wrapper.find(".review-tree-file").exists()).toBe(false);
+    expect(wrapper.text()).toContain("does not say which files conflict");
+  });
+
   test.each(["rejectedByPolicy", "renamedSourceBranch", "manualMergeRequired"])(
-    "mergeStatus:%s is also treated as a conflict state",
+    "mergeStatus:%s blocks the merge and is named, without inventing conflicting files",
     async (mergeStatus) => {
       setMatchMediaResult("(max-width: 768px)", false);
       setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
       const wrapper = mountWithMergeStatus(mergeStatus);
       await flushPromises();
+      await openConflictsTab(wrapper);
 
-      const conflictsTabBtn = wrapper.findAll(".azure-tab").find((b) => b.text().startsWith("Conflicts"))!;
-      await conflictsTabBtn.trigger("click");
-      await flushPromises();
-
-      expect(wrapper.find(".review-tree-file").exists()).toBe(true);
-      expect(wrapper.text()).toContain("Conflicts detected");
+      expect(wrapper.find(".review-tree-file").exists()).toBe(false);
+      expect(wrapper.text()).toContain(`Merge blocked: ${mergeStatus}`);
     },
   );
 

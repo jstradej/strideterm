@@ -37,6 +37,38 @@ test("review comment workspace lookup prefers an exact match and never crosses p
 });
 
 describe("buildExternalNotificationEvent", () => {
+  test("keeps only a bounded Jira source identity for Jira notifications", () => {
+    const event = buildExternalNotificationEvent({
+      eventId: "jira-event",
+      profileId: "profile-a",
+      workspaceId: "jira-ws",
+      kind: "jira",
+      title: "ENG-4 updated",
+      detail: "private Jira issue body must not be copied",
+      connectionId: "jira-c",
+      issueId: "100",
+      issueKey: "ENG-4",
+      prompt: "must not be included",
+    });
+    expect(event).toMatchObject({ profileId: "profile-a", connectionId: "jira-c", issueId: "100", issueKey: "ENG-4" });
+    expect(event).not.toHaveProperty("prompt");
+    expect(event.detail).toBe("Jira issue changed in an opted-in saved query.");
+    expect(event.title).toBe("ENG-4 changed");
+    expect(event.dedupeKey).toBe("jira-ws:jira:jira-c:100:jira");
+    expect(
+      buildExternalNotificationEvent({
+        eventId: "bad-jira-event",
+        profileId: "profile-a",
+        workspaceId: "jira-ws",
+        kind: "jira",
+        title: "x",
+        connectionId: "jira-c",
+        issueId: "100",
+        issueKey: "ENG-1;token=secret",
+      }),
+    ).not.toHaveProperty("issueKey");
+  });
+
   test("waiting alerts are high priority with reply actions", () => {
     const event = buildExternalNotificationEvent({
       eventId: "evt-1",

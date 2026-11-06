@@ -2736,3 +2736,18 @@ describe("default profile access and live synchronization", () => {
     }
   });
 });
+
+test("namespace switch retires only the authorized old pair and revokes its local sessions", async () => {
+  const fixture = await createFixture();
+  await addMobileDevice(fixture.deviceStore, { deviceId: "old-phone" });
+  await addMobileDevice(fixture.deviceStore, { deviceId: "other-phone", pairId: "other-pair" });
+  fixture.manager.start();
+  await expect(fixture.manager.switchInstallationIdentity("new-desktop", OWN_DEVICE_ID)).rejects.toThrow("Stop mobile");
+  await fixture.manager.stop();
+  await fixture.manager.switchInstallationIdentity("new-desktop", OWN_DEVICE_ID);
+  expect(fixture.deviceStore.getDevice("old-phone")?.revoked).toBe(true);
+  expect(fixture.deviceStore.getDevice("other-phone")?.revoked).toBe(false);
+  expect(fixture.revokeRemoteSessions).toHaveBeenCalledWith("old-phone");
+  expect(fixture.revokeRelayE2eSession).toHaveBeenCalledWith("old-phone");
+  expect(fixture.manager.getSystemChannelDevice("old-phone")).toBeNull();
+});

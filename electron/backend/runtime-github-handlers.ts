@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { findWorkspace, markWorkspaceWorked } from "./runtime-utils.js";
+import { findWorkspace, markWorkspaceWorked, type AcceptedQuickFixContext } from "./runtime-utils.js";
 import { normalizeWorkspace } from "./default-state.js";
+import { holdAgentTabs } from "../shared/jira-development.js";
 import { insertWorkspace } from "./workspace-order.js";
 import { ClientRequestError } from "./shared/client-request-error.js";
 import { errorMessage } from "../shared/error-message.js";
@@ -37,6 +38,8 @@ interface GitHubHandlerCtx {
   broadcastState: () => void;
   refreshGitHub: () => Promise<unknown>;
   refreshGit: (workspaceId?: string | null) => Promise<void>;
+  /** Makes GitManager know a workspace created outside a renderer activation, so its snapshot is kept. */
+  registerGitWorkspaces: () => Promise<void>;
   ensureGitHubWorkspace: (profileId?: string) => Promise<WorkspaceState>;
   ensureVisibleSession: (workspaceId?: string) => string | null;
   scheduleGitHubPolling: () => void;
@@ -55,6 +58,10 @@ interface GitHubHandlerCtx {
   assertWorkspaceInViewerProfile: (workspaceId: string, windowId?: string) => void;
   /** Stamp `lastWorkedAt` after an allowlisted user action succeeded. */
   recordWorkspaceWork: (workspaceId: string, viewerId?: string) => Promise<void>;
+  jiraResolveWorkItem?: (
+    ref: { connectionId: string; issueId: string; issueKey: string },
+    viewerId?: string,
+  ) => Promise<NonNullable<WorkspaceState["workItems"]>[number]>;
 }
 
 /**
@@ -76,6 +83,7 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
     broadcastState,
     refreshGitHub,
     refreshGit,
+    registerGitWorkspaces,
     ensureGitHubWorkspace,
     ensureVisibleSession,
     scheduleGitHubPolling,
@@ -89,6 +97,13 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
     assertWorkspaceInViewerProfile,
     recordWorkspaceWork,
   } = ctx;
+  const resolveQuickFixWorkItem = (
+    ref: { connectionId: string; issueId: string; issueKey: string },
+    windowId?: string,
+  ) => {
+    if (!ctx.jiraResolveWorkItem) throw new Error("Linking a Jira issue is not available here.");
+    return ctx.jiraResolveWorkItem(ref, windowId);
+  };
 
   function resolveRootPath(workspace: WorkspaceState, rawRootPath: string): string {
     return resolveRootPathShared(resolveGitRootPath, workspace, rawRootPath);
@@ -122,7 +137,7 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
     assertPrInViewerProfileShared({ getPayload, getViewerProfileId }, "github", prKey, windowId);
   }
 
-  return {
+  const handlers = {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async verifyGitHubConnection(connection: any) {
       return github.verifyConnection(connection);
@@ -470,9 +485,12 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
       return { branches: await github.listQuickFixBranches(payload.connectionId, payload.owner, payload.repo) };
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async githubQuickFixCreate(payload: any, windowId?: string) {
+    async githubQuickFixCreateWorkspace(payload: any, windowId?: string, accepted?: AcceptedQuickFixContext) {
       const state = getState();
-      const callerProfileId = getViewerProfileId(windowId) || "";
+      const callerProfileId = accepted?.profileId ?? (getViewerProfileId(windowId) || "");
+      const workItem =
+        accepted?.workItem ??
+        (payload.jiraIssueRef ? await resolveQuickFixWorkItem(payload.jiraIssueRef, windowId) : undefined);
       const result = await github.openQuickFixWorkspace({
         state,
         connectionId: payload.connectionId,
@@ -486,10 +504,14 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await store.mutate((draft: any) => {
         const normalized = normalizeWorkspace(result.workspace);
+        if (workItem) normalized.workItems = [workItem];
+        if (payload.holdAgentTabs === true) normalized.panels = holdAgentTabs(normalized.panels);
         insertWorkspace(draft.workspaces, normalized, getViewerActiveWorkspaceId(windowId));
-        draft.activeWorkspaceId = normalized.id;
         // Creating a quickfix workspace IS work (V2 plan allowlist).
         markWorkspaceWorked(draft, normalized.id);
+        // Start development switches to the workspace itself once its agent tab is the active one.
+        if (payload.deferActivation === true) return;
+        draft.activeWorkspaceId = normalized.id;
         // See openAzurePullRequest for the cross-profile guard rationale.
         const mirrorResult = mirrorActivationIntoSlot(draft, windowId, normalized);
         if (mirrorResult && !mirrorResult.mirrored) {
@@ -501,12 +523,19 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
         }
       });
       // Remote viewer: activate the quickfix in the CALLER's remote context.
-      mirrorRemoteViewerWorkspace(windowId, result.workspace.id);
+      if (payload.deferActivation !== true) mirrorRemoteViewerWorkspace(windowId, result.workspace.id);
+      await registerGitWorkspaces();
       await refreshGit(result.workspace.id);
       sessions.syncWithState(getState());
       ensureVisibleSession(result.workspace.id);
       broadcastState();
+      return { workspaceId: result.workspace.id as string };
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async githubQuickFixCreate(payload: any = {}, windowId?: string) {
+      await handlers.githubQuickFixCreateWorkspace(payload, windowId);
       return getPayload();
     },
   };
+  return handlers;
 }

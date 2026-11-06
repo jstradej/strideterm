@@ -164,6 +164,13 @@ export interface CompanionVerdictSnapshot {
 
 export interface TaskState {
   taskId: string;
+  /** Optional Jira context attached to this task, stable by connection and immutable issue id. */
+  jiraIssueRefs?: JiraIssueRef[];
+  /** Prepare-time fields used to detect Jira changes before the task is started. */
+  jiraIssueSnapshots?: JiraIssueSnapshot[];
+  /** Explicitly selected Jira fields captured during task preview; contains no credentials. */
+  jiraPreparedSnapshot?: Array<{ ref: JiraIssueRef; fields: Record<string, unknown> }>;
+  jiraCommentDrafts?: JiraCommentDraft[];
   description: string;
   parentWorkspaceId: string;
   worktreeBase: string;
@@ -318,6 +325,35 @@ export interface TaskState {
   // refer to a task by its number without renumbering surprises. Optional
   // for backward compat — pre-existing tasks render without the suffix.
   sequenceNumber?: number;
+}
+
+export interface JiraIssueRef {
+  provider: "jira";
+  connectionId: string;
+  issueId: string;
+  issueKey: string;
+}
+
+export interface JiraIssueSnapshot {
+  ref: JiraIssueRef;
+  fields: {
+    summary: string;
+    status: string;
+    issueType: string;
+    projectKey: string;
+    updated: string;
+    assignee?: string;
+  };
+  hash: string;
+}
+
+export interface JiraCommentDraft {
+  id: string;
+  ref: JiraIssueRef;
+  body: string;
+  sourceWorkspaceId: string;
+  sourceTaskId?: string;
+  createdAt: string;
 }
 
 export interface TaskWorkspace {

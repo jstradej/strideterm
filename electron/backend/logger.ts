@@ -90,7 +90,11 @@ const TOKEN_PATTERNS: Array<[RegExp, string]> = [
   // `?key=<key>` (mobile-firebase-config.ts's rtdbUrl/secureTokenUrl). Undici surfaces the full
   // request URL in several of its error messages, so without these two names a single failed fetch
   // put a live Firebase credential in the log — review 2 §"Logy a diagnostika".
-  [/([?&](?:token|pat|access_token|api[_-]?key|auth|key)=)[^&\s"']+/gi, `$1${REDACTED}`],
+  [
+    /([?&](?:token|pat|access_token|api[_-]?key|subscription[_-]?key|auth|key|code|state|client_secret|returnCode)=)[^&\s"']+/gi,
+    `$1${REDACTED}`,
+  ],
+  [/(\bOcp-Apim-Subscription-Key\s*[:=]\s*["']?)[^\s,"'}]+/gi, `$1${REDACTED}`],
   // Browser bootstrap tickets are short-lived bearer credentials. The encoded form covers a ticket
   // nested in a URL that has itself been percent-encoded (for example, inside a redirect URL).
   [/([?&]ticket=)[^&\s"']+/gi, `$1${REDACTED}`],
@@ -114,7 +118,7 @@ const TOKEN_PATTERNS: Array<[RegExp, string]> = [
   [/((?:oobCode|claimSecret|claimSecretHash)%3D)[^&\s"'%]+/gi, `$1${REDACTED}`],
   // JSON-style: "token":"...",  "pat":"...",  "password":"...", "secret":"..."
   [
-    /("(?:token|ticket|pat|access[_-]?token|api[_-]?key|password|passphrase|secret|secretHash|botToken|idToken|refreshToken|refresh_token|id_token|strideterm_session|oobCode|claimSecret|claimSecretHash|continueUrl|link)"\s*:\s*")[^"]+/gi,
+    /("(?:token|ticket|pat|access[_-]?token|api[_-]?key|subscription[_-]?key|subscriptionKey|password|client[_-]?certificate[_-]?password|passphrase|secret|secretHash|botToken|idToken|refreshToken|refresh_token|id_token|strideterm_session|oobCode|claimSecret|claimSecretHash|continueUrl|link|client_secret|clientSecret|returnCode)"\s*:\s*")[^"]+/gi,
     `$1${REDACTED}`,
   ],
   // Any JWT-shaped string, wherever it appears.

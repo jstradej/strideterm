@@ -9,7 +9,7 @@
  * per test via `setMatchMediaResult` so we can flip into desktop or
  * mobile mode without touching the viewport.
  */
-import { describe, expect, test, beforeEach, vi } from "vitest";
+import { afterEach, describe, expect, test, beforeEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import InboxPane from "./InboxPane.vue";
@@ -192,6 +192,8 @@ function mountGitHubPane() {
 
 beforeEach(() => {
   setActivePinia(createPinia());
+  // The inbox remembers its filters per workspace; every test starts unfiltered.
+  window.localStorage.clear();
 });
 
 describe("InboxPane (azure) responsive chrome", () => {
@@ -270,7 +272,8 @@ describe("InboxPane (azure) responsive chrome", () => {
   });
 });
 
-function buildPr(id: number, author: string, repo = "platform-api") {
+function buildPr(id: number, author: string, repo = "platform-api", extra: Record<string, unknown> = {}) {
+  const { pullRequest: pullRequestExtra, ...rest } = extra;
   return {
     prKey: `ado:${id}`,
     connectionId: "ado-1",
@@ -283,6 +286,7 @@ function buildPr(id: number, author: string, repo = "platform-api") {
       sourceRefName: `refs/heads/feat/${id}`,
       targetRefName: "refs/heads/main",
       url: "",
+      ...(pullRequestExtra as object),
     },
     author: {
       id: author.toLowerCase(),
@@ -293,6 +297,7 @@ function buildPr(id: number, author: string, repo = "platform-api") {
     hasAttention: true,
     attentionReason: "new comment",
     checks: { failedCount: 0, pendingCount: 0, passedCount: 1 },
+    ...rest,
   };
 }
 
@@ -319,45 +324,78 @@ function payloadWithPrs(prs: ReturnType<typeof buildPr>[]) {
   });
 }
 
-function filterRow(wrapper: ReturnType<typeof mountAzurePane>, label: string) {
-  return wrapper
-    .findAll(".azure-inbox__filter-row")
-    .find((row) => row.find(".azure-inbox__filter-label").text() === label)!;
+function group(wrapper: ReturnType<typeof mountAzurePane>, label: string) {
+  return wrapper.get(`[aria-label="${label}"]`);
 }
 
-describe("InboxPane (azure) author filter", () => {
+function chipNames(el: ReturnType<typeof group>) {
+  return el
+    .findAll("button")
+    .map((button) => (button.find("span").exists() ? button.get("span").text() : button.text()));
+}
+
+function rowAuthors(wrapper: ReturnType<typeof mountAzurePane>) {
+  return wrapper.findAll(".azure-pr-row-stub").map((row) => row.text());
+}
+
+async function openTab(wrapper: ReturnType<typeof mountAzurePane>, name: string) {
+  await wrapper
+    .findAll(".azure-tab")
+    .find((b) => b.text().startsWith(name))!
+    .trigger("click");
+  await flushPromises();
+}
+
+describe("InboxPane (azure) filters", () => {
   beforeEach(() => {
     setMatchMediaResult("(max-width: 768px)", false);
     setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
   });
 
-  test("shows author buttons for up to five authors and filters the PR rows", async () => {
+  test("author chips carry counts and filter the PR rows", async () => {
     const wrapper = mountAzurePane(payloadWithPrs([buildPr(1, "Alice"), buildPr(2, "Bob"), buildPr(3, "Carol")]));
     await flushPromises();
 
-    const authorRow = filterRow(wrapper, "Author");
-    expect(authorRow.find("select").exists()).toBe(false);
-    expect(authorRow.findAll("button").map((button) => button.text())).toEqual([
-      "All authors",
-      "Alice",
-      "Bob",
-      "Carol",
-    ]);
+    const authors = group(wrapper, "Author");
+    expect(authors.find("select").exists()).toBe(false);
+    expect(chipNames(authors)).toEqual(["All authors", "Alice", "Bob", "Carol"]);
+    expect(
+      authors
+        .get(".azure-inbox__author-chips")
+        .findAll(".azure-inbox__pill")
+        .map((p) => p.text()),
+    ).toEqual(["1", "1", "1"]);
 
-    await authorRow.findAll("button")[2].trigger("click");
-    expect(wrapper.findAll(".azure-pr-row-stub").map((row) => row.text())).toEqual(["Bob"]);
+    await authors.findAll("button")[2].trigger("click");
+    expect(rowAuthors(wrapper)).toEqual(["Bob"]);
+    expect(authors.findAll("button")[2].attributes("aria-pressed")).toBe("true");
   });
 
-  test("uses a select for more than five authors", async () => {
-    const prs = ["Alice", "Bob", "Carol", "Dave", "Erin", "Frank"].map((author, index) => buildPr(index + 1, author));
-    const wrapper = mountAzurePane(payloadWithPrs(prs));
+  test("the current user comes first as You, then by PR count, then by name", async () => {
+    const wrapper = mountAzurePane(
+      payloadWithPrs([
+        buildPr(1, "Zed", "platform-api", { role: "author" }),
+        buildPr(2, "Alice"),
+        buildPr(3, "Bob"),
+        buildPr(4, "Bob"),
+      ]),
+    );
     await flushPromises();
+    expect(chipNames(group(wrapper, "Author"))).toEqual(["All authors", "You", "Bob", "Alice"]);
+  });
 
-    const select = wrapper.get('select[aria-label="Filter pull requests by author"]');
-    expect(select.findAll("option")).toHaveLength(7);
+  test("a shared Azure project becomes the row prefix and chips show the repo name; mixed projects show project/repo", async () => {
+    const same = mountAzurePane(payloadWithPrs([buildPr(1, "Alice", "api"), buildPr(2, "Bob", "web")]));
+    await flushPromises();
+    expect(group(same, "Repository").get(".azure-inbox__filter-label").text()).toBe("MockProject /");
+    expect(chipNames(group(same, "Repository"))).toEqual(["All repos", "api", "web"]);
+    same.unmount();
 
-    await select.setValue("frank");
-    expect(wrapper.findAll(".azure-pr-row-stub").map((row) => row.text())).toEqual(["Frank"]);
+    const mixed = mountAzurePane(
+      payloadWithPrs([buildPr(1, "Alice", "api"), buildPr(2, "Bob", "web", { project: { name: "Other" } })]),
+    );
+    await flushPromises();
+    expect(chipNames(group(mixed, "Repository"))).toEqual(["All repos", "MockProject/api", "Other/web"]);
   });
 
   test("combines author and repository filters", async () => {
@@ -366,16 +404,344 @@ describe("InboxPane (azure) author filter", () => {
     );
     await flushPromises();
 
-    await filterRow(wrapper, "Repo")
+    await group(wrapper, "Repository")
       .findAll("button")
-      .find((button) => button.text() === "MockProject/api")!
+      .find((button) => button.text() === "api")!
       .trigger("click");
-    await filterRow(wrapper, "Author")
+    await group(wrapper, "Author")
       .findAll("button")
-      .find((button) => button.text() === "Bob")!
+      .find((button) => button.text().startsWith("Bob"))!
       .trigger("click");
 
-    expect(wrapper.findAll(".azure-pr-row-stub").map((row) => row.text())).toEqual(["Bob"]);
+    expect(rowAuthors(wrapper)).toEqual(["Bob"]);
+  });
+
+  test("several repositories and several authors can be picked at once; All clears the pick", async () => {
+    const wrapper = mountAzurePane(
+      payloadWithPrs([
+        buildPr(1, "Alice", "api"),
+        buildPr(2, "Bob", "web"),
+        buildPr(3, "Carol", "ops"),
+        buildPr(4, "Dave", "api"),
+      ]),
+    );
+    await flushPromises();
+    const chip = (groupName: string, label: string) =>
+      group(wrapper, groupName)
+        .findAll("button")
+        .find((button) => button.text().startsWith(label))!;
+
+    await chip("Repository", "api").trigger("click");
+    await chip("Repository", "web").trigger("click");
+    expect(rowAuthors(wrapper)).toEqual(["Alice", "Bob", "Dave"]);
+    expect(chip("Repository", "api").attributes("aria-pressed")).toBe("true");
+    expect(chip("Repository", "web").attributes("aria-pressed")).toBe("true");
+    expect(chip("Repository", "All repos").attributes("aria-pressed")).toBe("false");
+
+    await chip("Author", "Alice").trigger("click");
+    await chip("Author", "Bob").trigger("click");
+    expect(rowAuthors(wrapper)).toEqual(["Alice", "Bob"]);
+
+    // A second click takes one value back out.
+    await chip("Repository", "web").trigger("click");
+    expect(rowAuthors(wrapper)).toEqual(["Alice"]);
+
+    await chip("Repository", "All repos").trigger("click");
+    await chip("Author", "All authors").trigger("click");
+    expect(rowAuthors(wrapper)).toEqual(["Alice", "Bob", "Carol", "Dave"]);
+  });
+
+  test("the filters are remembered for the next start of the same inbox", async () => {
+    const prs = [
+      buildPr(1, "Alice", "api"),
+      buildPr(2, "Bob", "web"),
+      buildPr(3, "Carol", "api", { pullRequest: { isDraft: true } }),
+    ];
+    const first = mountAzurePane(payloadWithPrs(prs));
+    await flushPromises();
+    await group(first, "Repository")
+      .findAll("button")
+      .find((button) => button.text() === "api")!
+      .trigger("click");
+    await first.get("select.azure-inbox__select").setValue("created");
+    await first.get('input[type="checkbox"]').setValue(true);
+    first.unmount();
+
+    const second = mountAzurePane(payloadWithPrs(prs));
+    await flushPromises();
+    expect(rowAuthors(second)).toEqual(["Alice"]);
+    expect(
+      group(second, "Repository")
+        .findAll("button")
+        .find((button) => button.text() === "api")!
+        .attributes("aria-pressed"),
+    ).toBe("true");
+    expect((second.get("select.azure-inbox__select").element as HTMLSelectElement).value).toBe("created");
+    expect((second.get('input[type="checkbox"]').element as HTMLInputElement).checked).toBe(true);
+  });
+
+  test("a remembered pick with no PR right now stays visible, so it never hides the list silently", async () => {
+    window.localStorage.setItem(
+      "strideterm-inbox-filters-v1:ws-azure",
+      JSON.stringify({ repos: ["MockProject/gone"], authors: ["Zoe"], authorNames: { Zoe: "Zoe Former" } }),
+    );
+    const wrapper = mountAzurePane(payloadWithPrs([buildPr(1, "Alice", "api"), buildPr(2, "Bob", "web")]));
+    await flushPromises();
+
+    const gone = group(wrapper, "Repository")
+      .findAll("button")
+      .find((button) => button.text() === "gone")!;
+    expect(gone.attributes("aria-pressed")).toBe("true");
+    const zoe = group(wrapper, "Author")
+      .findAll("button")
+      .find((button) => button.text().startsWith("Zoe Former"))!;
+    expect(zoe.attributes("aria-pressed")).toBe("true");
+    expect(wrapper.text()).toContain("No pull requests match the selected filters.");
+
+    await gone.trigger("click");
+    await zoe.trigger("click");
+    expect(rowAuthors(wrapper)).toEqual(["Alice", "Bob"]);
+  });
+
+  test("each inbox keeps its own filters", async () => {
+    const prs = [buildPr(1, "Alice", "api"), buildPr(2, "Bob", "web")];
+    const azure = mountAzurePane(payloadWithPrs(prs));
+    await flushPromises();
+    await group(azure, "Repository")
+      .findAll("button")
+      .find((button) => button.text() === "api")!
+      .trigger("click");
+    azure.unmount();
+
+    expect(JSON.parse(window.localStorage.getItem("strideterm-inbox-filters-v1:ws-azure") || "{}").repos).toEqual([
+      "MockProject/api",
+    ]);
+    expect(window.localStorage.getItem("strideterm-inbox-filters-v1:ws-azure-secondary")).toBeNull();
+  });
+
+  describe("author chips fit the available width", () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+    });
+
+    test("chips that do not fit move into a +N more select that filters and takes the active style", async () => {
+      vi.stubGlobal(
+        "ResizeObserver",
+        class {
+          observe() {}
+          disconnect() {}
+        },
+      );
+      vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(700);
+      vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(100);
+
+      const prs = ["Alice", "Bob", "Carol", "Dave", "Erin", "Frank"].map((n, i) => buildPr(i + 1, n));
+      const wrapper = mountAzurePane(payloadWithPrs(prs));
+      await flushPromises();
+
+      const authors = group(wrapper, "Author");
+      expect(chipNames(authors.get(".azure-inbox__author-chips") as never)).toEqual([
+        "All authors",
+        "Alice",
+        "Bob",
+        "Carol",
+      ]);
+      const select = wrapper.get('select[aria-label="More authors"]');
+      expect(select.findAll("option").map((o) => o.text())).toEqual(["+3 more", "Dave (1)", "Erin (1)", "Frank (1)"]);
+      // The visible chip is sized to its own label, not to the longest option.
+      expect(wrapper.get(".azure-inbox__more-label").text()).toBe("+3 more");
+
+      await select.setValue("frank");
+      expect(rowAuthors(wrapper)).toEqual(["Frank"]);
+      const chip = wrapper.get(".azure-inbox__more");
+      expect(chip.attributes("data-active")).toBe("true");
+      expect(chip.get(".azure-inbox__more-label").text()).toBe("Frank");
+      expect(chip.get(".azure-inbox__pill").text()).toBe("1");
+      // The list is back on "+3 more" and marks who is picked.
+      expect((select.element as HTMLSelectElement).value).toBe("");
+      expect(select.findAll("option").map((o) => o.text())).toContain("✓ Frank (1)");
+
+      await select.setValue("dave");
+      expect(rowAuthors(wrapper)).toEqual(["Dave", "Frank"]);
+      expect(chip.get(".azure-inbox__more-label").text()).toBe("+2 authors");
+
+      // Picking a picked author again takes them out.
+      await select.setValue("frank");
+      expect(rowAuthors(wrapper)).toEqual(["Dave"]);
+    });
+  });
+
+  test("with no layout information every author chip is shown and there is no select", async () => {
+    const prs = ["Alice", "Bob", "Carol", "Dave", "Erin", "Frank"].map((n, i) => buildPr(i + 1, n));
+    const wrapper = mountAzurePane(payloadWithPrs(prs));
+    await flushPromises();
+    expect(chipNames(group(wrapper, "Author"))).toHaveLength(7);
+    expect(wrapper.find('select[aria-label="More authors"]').exists()).toBe(false);
+  });
+
+  test("Hide drafts drops draft PRs", async () => {
+    const wrapper = mountAzurePane(
+      payloadWithPrs([buildPr(1, "Alice"), buildPr(2, "Bob", "platform-api", { pullRequest: { isDraft: true } })]),
+    );
+    await flushPromises();
+    expect(rowAuthors(wrapper)).toEqual(["Alice", "Bob"].sort((a, b) => a.localeCompare(b)));
+
+    await wrapper.get('input[type="checkbox"]').setValue(true);
+    expect(rowAuthors(wrapper)).toEqual(["Alice"]);
+  });
+
+  test("Sort orders rows inside a group by activity, attention or creation date", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-01-05T00:00:00.000Z"));
+    try {
+      const wrapper = mountAzurePane(
+        payloadWithPrs([
+          buildPr(1, "Ann", "platform-api", {
+            hasAttention: false,
+            lastActivityAt: "2026-01-01T00:00:00.000Z",
+            pullRequest: { creationDate: "2026-01-04T00:00:00.000Z" },
+          }),
+          buildPr(2, "Bob", "platform-api", {
+            hasAttention: false,
+            lastActivityAt: "2026-01-03T00:00:00.000Z",
+            pullRequest: { creationDate: "2026-01-01T00:00:00.000Z" },
+          }),
+          buildPr(3, "Cid", "platform-api", {
+            hasAttention: true,
+            lastActivityAt: "2026-01-02T00:00:00.000Z",
+            pullRequest: { creationDate: "2026-01-02T00:00:00.000Z" },
+          }),
+        ]),
+      );
+      await flushPromises();
+      await openTab(wrapper, "All");
+
+      expect(rowAuthors(wrapper)).toEqual(["Bob", "Cid", "Ann"]);
+      const sort = wrapper.get("select.azure-inbox__select");
+      await sort.setValue("attention");
+      expect(rowAuthors(wrapper)).toEqual(["Cid", "Bob", "Ann"]);
+      await sort.setValue("created");
+      expect(rowAuthors(wrapper)).toEqual(["Ann", "Cid", "Bob"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("InboxPane (azure) groups", () => {
+  beforeEach(() => {
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+  });
+
+  test("a repo group header shows project, repo, count, unread and attention, and collapses its rows", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-01-05T00:00:00.000Z"));
+    const wrapper = mountAzurePane(
+      payloadWithPrs([
+        buildPr(1, "Alice", "api", { lastRemoteActivityAt: "2026-01-02T00:00:00.000Z" }),
+        buildPr(2, "Bob", "api", {
+          hasAttention: false,
+          lastSeenActivityAt: "2026-01-02T00:00:00.000Z",
+          lastRemoteActivityAt: "2026-01-02T00:00:00.000Z",
+        }),
+      ]),
+    );
+    await flushPromises();
+    await openTab(wrapper, "All");
+
+    const header = wrapper.get(".azure-repo-group__heading button");
+    expect(wrapper.get(".azure-repo-group__heading").element.tagName).toBe("H2");
+    expect(header.get(".azure-repo-group__project").text()).toBe("MockProject /");
+    expect(header.get(".azure-repo-group__name").text()).toBe("api");
+    expect(header.get(".azure-repo-group__count").text()).toBe("2");
+    expect(header.get(".azure-repo-group__stats").text()).toContain("1 unread");
+    expect(header.get(".azure-repo-group__attention").text()).toBe("1 needs attention");
+    expect(header.attributes("aria-expanded")).toBe("true");
+    expect(rowAuthors(wrapper)).toHaveLength(2);
+
+    await header.trigger("click");
+    expect(header.attributes("aria-expanded")).toBe("false");
+    expect(rowAuthors(wrapper)).toHaveLength(0);
+    await header.trigger("click");
+    expect(rowAuthors(wrapper)).toHaveLength(2);
+    vi.useRealTimers();
+  });
+
+  test("PRs idle for more than 30 days are folded behind a toggle row", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-03-01T00:00:00.000Z"));
+    try {
+      const wrapper = mountAzurePane(
+        payloadWithPrs([
+          buildPr(1, "Ann", "api", { lastActivityAt: "2026-02-25T00:00:00.000Z" }),
+          buildPr(2, "Bob", "api", { lastActivityAt: "2026-01-01T00:00:00.000Z" }),
+          buildPr(3, "Cid", "api", { lastActivityAt: "2025-12-01T00:00:00.000Z" }),
+        ]),
+      );
+      await flushPromises();
+      await openTab(wrapper, "All");
+
+      expect(rowAuthors(wrapper)).toEqual(["Ann"]);
+      const toggle = wrapper.get(".azure-repo-group__older");
+      expect(toggle.text()).toContain("2 older than 30 days");
+      expect(toggle.text()).toContain("last activity 59 d – 90 d ago");
+      expect(toggle.attributes("aria-expanded")).toBe("false");
+
+      await toggle.trigger("click");
+      expect(rowAuthors(wrapper)).toEqual(["Ann", "Bob", "Cid"]);
+      expect(wrapper.get(".azure-repo-group__older").text()).toContain("Hide 2 older pull requests");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("reason codes bucket the Needs attention tab; a payload without them keeps the role buckets", async () => {
+    const reason = (code: string, label: string) => ({
+      attentionReason: label,
+      attentionReasons: [{ code, label, ackOnSeen: true }],
+    });
+    const wrapper = mountAzurePane(
+      payloadWithPrs([
+        buildPr(1, "Ann", "api", reason("group-review-requested", "Review requested via Core Team")),
+        buildPr(2, "Bob", "api", reason("conflicts", "Merge conflicts")),
+        buildPr(3, "Cid", "api", reason("replies", "2 replies to you")),
+        buildPr(4, "Dan", "api", reason("something-new", "Something")),
+      ]),
+    );
+    await flushPromises();
+    expect(wrapper.findAll(".azure-repo-group__name").map((n) => n.text())).toEqual([
+      "Waiting for your review",
+      "Your pull requests",
+      "Replies to you",
+      "Other activity",
+    ]);
+  });
+});
+
+describe("InboxPane (azure) connections tab", () => {
+  beforeEach(() => {
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+  });
+
+  test("shows the reviewer-group recognition status, muted for ok and in the danger colour for an error", async () => {
+    const payload = buildAzurePayload();
+    const conn = payload.azureDevops!.connections as unknown as Array<Record<string, unknown>>;
+    conn[0].groupMembership = { status: "ok", count: 3 };
+    const wrapper = mountAzurePane(payload);
+    await flushPromises();
+    await openTab(wrapper, "Connections");
+    expect(wrapper.text()).toContain("Reviewer groups: 3 recognised");
+    wrapper.unmount();
+
+    conn[0].groupMembership = { status: "error", error: "403 Forbidden" };
+    const failed = mountAzurePane(payload);
+    await flushPromises();
+    await openTab(failed, "Connections");
+    const line = failed.findAll("div").find((d) => d.text() === "Reviewer groups not recognised: 403 Forbidden")!;
+    expect(line.attributes("style")).toContain("var(--danger-fg)");
   });
 });
 
@@ -483,14 +849,11 @@ describe("InboxPane (azure) needs-attention sub-bucketing", () => {
 });
 
 /**
- * `show-seen` is not a filter that hides already-seen PRs from a list — it
- * gates whether PrRow's own "Seen" acknowledge button renders at all (see
- * PrRow.vue's `v-if="showSeen"`). InboxPane derives it per active tab:
- * always true on "Needs attention"; `activeTab !== 'all'` elsewhere (so it's
- * hidden on "All" and shown on "Needs review"/"My PRs"). These tests mount
- * the real PrRow (no stub) so the button's presence is actually observable.
+ * Mark as read is an icon button on every row of every PR tab (it replaced
+ * the Needs-attention-only "Seen" text button). These tests mount the real
+ * PrRow so the button is actually observable.
  */
-describe("InboxPane (azure) show-seen gates the Seen button per tab", () => {
+describe("InboxPane (azure) mark as read", () => {
   beforeEach(() => {
     setMatchMediaResult("(max-width: 768px)", false);
     setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
@@ -505,34 +868,18 @@ describe("InboxPane (azure) show-seen gates the Seen button per tab", () => {
     });
   }
 
-  test("Seen is shown on Needs attention/Needs review but suppressed on the All tab", async () => {
-    const pr = buildPr(1, "Alice");
-    const wrapper = mountAzurePaneWithRealPrRow(payloadWithPrs([pr]));
+  test("is offered on every PR tab", async () => {
+    const wrapper = mountAzurePaneWithRealPrRow(payloadWithPrs([buildPr(1, "Alice")]));
     await flushPromises();
 
-    // Default tab: "Needs attention" — show-seen is always true here.
-    expect(wrapper.findAll("button").some((b) => b.text() === "Seen")).toBe(true);
-
-    // "All" tab: azure show-seen = activeTab !== 'all' -> false.
-    await wrapper
-      .findAll(".azure-tab")
-      .find((b) => b.text().startsWith("All"))!
-      .trigger("click");
-    await flushPromises();
-    expect(wrapper.findAll("button").some((b) => b.text() === "Seen")).toBe(false);
-
-    // "Needs review" tab: show-seen -> true again.
-    await wrapper
-      .findAll(".azure-tab")
-      .find((b) => b.text().startsWith("Needs review"))!
-      .trigger("click");
-    await flushPromises();
-    expect(wrapper.findAll("button").some((b) => b.text() === "Seen")).toBe(true);
+    for (const tab of ["Needs attention", "All", "Needs review"]) {
+      await openTab(wrapper as never, tab);
+      expect(wrapper.find('button[aria-label="Mark #1 as read"]').exists()).toBe(true);
+    }
   });
 
-  test("clicking Seen marks the PR seen via the store, and once the backend drops it the attention bucket empties", async () => {
-    const pr = buildPr(1, "Alice");
-    const wrapper = mountAzurePaneWithRealPrRow(payloadWithPrs([pr]));
+  test("clicking it marks the PR seen via the store, and once the backend drops it the attention bucket empties", async () => {
+    const wrapper = mountAzurePaneWithRealPrRow(payloadWithPrs([buildPr(1, "Alice")]));
     const appStore = useAppStore();
     vi.spyOn(appStore, "markAzurePrSeen").mockImplementation(async () => {
       // Simulate the real flow: the API round-trip completes and the next
@@ -542,13 +889,91 @@ describe("InboxPane (azure) show-seen gates the Seen button per tab", () => {
     await flushPromises();
 
     expect(wrapper.text()).toContain("Alice");
-    const seenBtn = wrapper.findAll("button").find((b) => b.text() === "Seen")!;
-    await seenBtn.trigger("click");
+    await wrapper.get('button[aria-label="Mark #1 as read"]').trigger("click");
     await flushPromises();
 
     expect(appStore.markAzurePrSeen).toHaveBeenCalledWith("ado:1");
     expect(wrapper.findAll(".azure-repo-group")).toHaveLength(0);
     expect(wrapper.text()).not.toContain("Alice");
+  });
+
+  test("a review request gets no chip under 'Waiting for your review', but keeps it in a repository group", async () => {
+    const pr = buildPr(1, "Alice", "platform-api", {
+      attentionReason: "Your review",
+      attentionReasons: [{ code: "review-requested", label: "Your review", ackOnSeen: false }],
+    });
+    const wrapper = mountAzurePaneWithRealPrRow(payloadWithPrs([pr]));
+    await flushPromises();
+
+    await openTab(wrapper as never, "Needs attention");
+    expect(wrapper.text()).toContain("Waiting for your review");
+    expect(wrapper.find(".azure-pr-row__chip--attention").exists()).toBe(false);
+    // The bucket mixes repositories, so the row names its own.
+    expect(wrapper.get(".azure-pr-row__repo").text()).toBe("platform-api");
+
+    await openTab(wrapper as never, "All");
+    expect(wrapper.get(".azure-pr-row__chip--attention").text()).toBe("Your review");
+    expect(wrapper.find(".azure-pr-row__repo").exists()).toBe(false);
+  });
+});
+
+describe("InboxPane (github) PR list", () => {
+  beforeEach(() => {
+    setMatchMediaResult("(max-width: 768px)", false);
+    setMatchMediaResult("(max-width: 768px), (max-height: 500px)", false);
+  });
+
+  function mountRealGitHub() {
+    const payload = buildGitHubPayload() as unknown as MutableInboxFixture & {
+      github: { inbox: { recentlyUpdated: Array<Record<string, unknown>> } };
+    };
+    const first = payload.github.inbox.recentlyUpdated[0];
+    first.connectionId = "gh-1";
+    payload.github.inbox.recentlyUpdated.push({
+      ...first,
+      prKey: "github:43",
+      repository: { fullName: "other-org/tools" },
+      pullRequest: { id: 43, number: 43, title: "A draft", draft: true },
+    });
+    const appStore = useAppStore();
+    appStore.payload = payload as unknown as StatePayload;
+    return mount(InboxPane, {
+      props: { workspaceId: "ws-github", provider: "github" },
+      global: { stubs: { PaneShell: true, AuditLog: true, AzurePipelinesTab: true } },
+    });
+  }
+
+  test("renders owner/repo groups and chips with the shared filter bar, but no author filter", async () => {
+    const wrapper = mountRealGitHub();
+    await flushPromises();
+
+    expect(wrapper.findAll(".azure-repo-group__project").map((t) => t.text())).toEqual(["mock-org /", "other-org /"]);
+    expect(wrapper.findAll(".azure-repo-group__name").map((t) => t.text())).toEqual(["strideterm", "tools"]);
+    expect(wrapper.text()).toContain("Sample GitHub PR");
+    const chips = wrapper.get('[aria-label="Repository"]');
+    expect(chips.findAll("button").map((b) => b.text())).toEqual([
+      "All repos",
+      "mock-org/strideterm",
+      "other-org/tools",
+    ]);
+    expect(wrapper.find('[aria-label="Author"]').exists()).toBe(false);
+
+    await chips.findAll("button")[2].trigger("click");
+    expect(wrapper.findAll(".azure-pr-row")).toHaveLength(1);
+  });
+
+  test("Hide drafts honours the GitHub draft flag, and mark as read calls the GitHub store action", async () => {
+    const wrapper = mountRealGitHub();
+    const appStore = useAppStore();
+    vi.spyOn(appStore, "markGitHubPrSeen").mockResolvedValue(undefined as never);
+    await flushPromises();
+    expect(wrapper.findAll(".azure-pr-row")).toHaveLength(2);
+
+    await wrapper.get('input[type="checkbox"]').setValue(true);
+    expect(wrapper.findAll(".azure-pr-row")).toHaveLength(1);
+
+    await wrapper.get('button[aria-label="Mark #42 as read"]').trigger("click");
+    expect(appStore.markGitHubPrSeen).toHaveBeenCalledWith("github:42");
   });
 });
 
@@ -655,12 +1080,14 @@ describe("InboxPane notification focus", () => {
       });
       await flushPromises();
       await wrapper
-        .findAll(".azure-inbox__filter-button")
+        .get('[aria-label="Repository"]')
+        .findAll("button")
         .find((button) => button.text().includes("platform-api"))!
         .trigger("click");
       await wrapper
-        .findAll(".azure-inbox__filter-button")
-        .find((button) => button.text() === "Bob")!
+        .get('[aria-label="Author"]')
+        .findAll("button")
+        .find((button) => button.text().startsWith("Bob"))!
         .trigger("click");
 
       appStore.requestInboxPullRequestFocus({
@@ -678,15 +1105,54 @@ describe("InboxPane notification focus", () => {
       expect(scrollIntoView).toHaveBeenCalledWith({ block: "center", behavior: "smooth" });
       expect(
         wrapper
-          .findAll(".azure-inbox__filter-button")
+          .get('[aria-label="Repository"]')
+          .findAll("button")
           .find((button) => button.text() === "All repos")
-          ?.classes(),
-      ).toContain("button--active");
+          ?.attributes("aria-pressed"),
+      ).toBe("true");
       wrapper.unmount();
     } finally {
       if (originalDescriptor) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", originalDescriptor);
       else Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
     }
+  });
+
+  test("keeps the remembered filters when they already show the requested PR", async () => {
+    const appStore = useAppStore();
+    const payload = buildAzurePayload() as unknown as MutableInboxFixture;
+    const inbox = payload.azureDevops!.inbox;
+    const target = inbox.recentlyUpdated[0];
+    const other = structuredClone(target);
+    other.prKey = "ado:2";
+    other.pullRequest.id = 2;
+    other.repository.name = "other-repo";
+    inbox.recentlyUpdated = [target, other];
+    inbox.needsAttention = [target, other];
+    appStore.payload = payload as unknown as StatePayload;
+    window.localStorage.setItem(
+      "strideterm-inbox-filters-v1:ws-azure",
+      JSON.stringify({ repos: [`MockProject/${target.repository.name}`] }),
+    );
+    appStore.requestInboxPullRequestFocus({
+      provider: "azure-devops",
+      connectionId: "ado-1",
+      prKey: "ado:1",
+      profileId: "default",
+      workspaceId: "ws-azure",
+    });
+
+    const wrapper = mount(InboxPane, {
+      props: { workspaceId: "ws-azure", provider: "azure" },
+      global: { stubs: { PaneShell: true, AuditLog: true, AzurePipelinesTab: true } },
+    });
+    await flushPromises();
+
+    expect(wrapper.get('[data-pr-key="ado:1"]').classes()).toContain("azure-pr-row--focused");
+    expect(wrapper.find('[data-pr-key="ado:2"]').exists()).toBe(false);
+    expect(JSON.parse(window.localStorage.getItem("strideterm-inbox-filters-v1:ws-azure") || "{}").repos).toHaveLength(
+      1,
+    );
+    wrapper.unmount();
   });
 });
 

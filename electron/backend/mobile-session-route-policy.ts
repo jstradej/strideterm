@@ -33,6 +33,9 @@ export type MobileRouteClass = "deny" | "own-check" | "guarded";
 /** Exact routes that are never available. */
 export const MOBILE_DENIED_ROUTES: ReadonlySet<string> = new Set([
   "/api/settings/update",
+  "/api/jira/ensure-workspace",
+  // Writes the personal identity into the persisted connection; a phone may verify, not change it.
+  "/api/jira/own-identity/set",
   "/api/azure/save-connection",
   "/api/azure/delete-connection",
   "/api/azure/verify-connection",
@@ -102,6 +105,7 @@ export const MOBILE_OWN_CHECK_ROUTES: ReadonlySet<string> = new Set([
   "/api/mobile/attachments",
   "/api/attachment/list",
   "/api/attachment/delete",
+  "/api/jira/connections",
 ]);
 
 /**
@@ -264,8 +268,11 @@ export function evaluateMobileRoute(input: MobileRouteInput): MobileRouteDecisio
   for (const id of sessionIds) {
     if (id && !checkWorkspace(workspaceOfSessionId(id))) return outside("session", id);
   }
-  const connectionId = body.connectionId;
-  if (typeof connectionId === "string" && connectionId) {
+  const nestedRef = body.ref;
+  const nestedConnectionId =
+    nestedRef && typeof nestedRef === "object" ? (nestedRef as { connectionId?: unknown }).connectionId : undefined;
+  for (const connectionId of [body.connectionId, nestedConnectionId]) {
+    if (typeof connectionId !== "string" || !connectionId) continue;
     const owner = input.connectionProfile(connectionId);
     if (owner !== undefined && owner !== profileId) return outside("connection", connectionId);
   }

@@ -38,6 +38,198 @@ describe("SidebarPanel — ghost rendering for grid workspaces", () => {
     (window as AnyApi).strideterm = { startupFlags: { windowId: "win-test" } };
   });
 
+  it("opens the profile-owned Jira inbox workspace from the sidebar shortcut", async () => {
+    const store = useAppStore();
+    store.payload = makePayload();
+    const ensureJiraWorkspace = vi.fn().mockResolvedValue({ id: "jira-profile-inbox" });
+    vi.spyOn(store, "getApi").mockReturnValue({ ensureJiraWorkspace } as AnyApi);
+    const activateWorkspace = vi.spyOn(store, "activateWorkspace").mockResolvedValue();
+    const wrapper = mount(SidebarPanel);
+
+    await wrapper.find(".workspace-new-tile--jira").trigger("click");
+    await flushPromises();
+
+    expect(ensureJiraWorkspace).toHaveBeenCalledOnce();
+    expect(activateWorkspace).toHaveBeenCalledWith("jira-profile-inbox");
+  });
+
+  it("disables the Jira inbox tile while it opens and ignores a second click", async () => {
+    const store = useAppStore();
+    store.payload = makePayload();
+    let finish!: (value: unknown) => void;
+    const ensureJiraWorkspace = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    vi.spyOn(store, "getApi").mockReturnValue({ ensureJiraWorkspace } as AnyApi);
+    vi.spyOn(store, "activateWorkspace").mockResolvedValue();
+    const wrapper = mount(SidebarPanel);
+    const tile = () => wrapper.get(".workspace-new-tile--jira");
+
+    await tile().trigger("click");
+    await tile().trigger("click");
+    expect(ensureJiraWorkspace).toHaveBeenCalledOnce();
+    expect(tile().attributes("disabled")).toBeDefined();
+    expect(tile().attributes("aria-busy")).toBe("true");
+
+    finish({ id: "jira-profile-inbox" });
+    await flushPromises();
+    expect(tile().attributes("disabled")).toBeUndefined();
+    expect(tile().attributes("aria-busy")).toBe("false");
+  });
+
+  it("reports a failed Jira inbox open as an error and re-enables the tile", async () => {
+    const store = useAppStore();
+    store.payload = makePayload();
+    const ensureJiraWorkspace = vi
+      .fn()
+      .mockRejectedValue(new Error("Error invoking remote method 'jira:ensure-workspace': Error: no connection"));
+    vi.spyOn(store, "getApi").mockReturnValue({ ensureJiraWorkspace } as AnyApi);
+    const showError = vi.spyOn(useNotificationStore(), "showError");
+    const wrapper = mount(SidebarPanel);
+
+    await wrapper.get(".workspace-new-tile--jira").trigger("click");
+    await flushPromises();
+
+    expect(showError).toHaveBeenCalledWith("Open Jira inbox failed", "no connection");
+    expect(wrapper.get(".workspace-new-tile--jira").attributes("disabled")).toBeUndefined();
+  });
+
+  it("opens an existing Jira inbox without asking the runtime to ensure it", async () => {
+    const store = useAppStore();
+    store.payload = makePayload({
+      workspaces: [
+        ...BASE_WORKSPACES,
+        {
+          id: "jira-inbox",
+          name: "Jira",
+          cwd: "/j",
+          kind: "jira",
+          panels: [],
+          icon: "J",
+          color: "#fff",
+          profileId: "default",
+        },
+      ],
+    });
+    const ensureJiraWorkspace = vi.fn();
+    vi.spyOn(store, "getApi").mockReturnValue({ ensureJiraWorkspace } as AnyApi);
+    vi.spyOn(store, "isMobileSession").mockReturnValue(true);
+    const activateWorkspace = vi.spyOn(store, "activateWorkspace").mockResolvedValue();
+    const wrapper = mount(SidebarPanel);
+
+    await wrapper.get(".workspace-new-tile--jira").trigger("click");
+    await flushPromises();
+
+    expect(ensureJiraWorkspace).not.toHaveBeenCalled();
+    expect(activateWorkspace).toHaveBeenCalledWith("jira-inbox");
+  });
+
+  it("tells a mobile session to create the Jira inbox on the desktop instead of calling the denied route", async () => {
+    const store = useAppStore();
+    store.payload = makePayload();
+    const ensureJiraWorkspace = vi.fn();
+    vi.spyOn(store, "getApi").mockReturnValue({ ensureJiraWorkspace } as AnyApi);
+    vi.spyOn(store, "isMobileSession").mockReturnValue(true);
+    const showError = vi.spyOn(useNotificationStore(), "showError");
+    const wrapper = mount(SidebarPanel);
+
+    await wrapper.get(".workspace-new-tile--jira").trigger("click");
+    await flushPromises();
+
+    expect(ensureJiraWorkspace).not.toHaveBeenCalled();
+    expect(showError).toHaveBeenCalledWith(
+      "Open Jira inbox failed",
+      "The Jira inbox does not exist in this profile yet. Create it on the desktop first.",
+    );
+  });
+
+  describe("Jira chip on a workspace card", () => {
+    const ref = { provider: "jira", connectionId: "c1", issueId: "1", issueKey: "ENG-1" };
+    const connections = [
+      {
+        id: "c1",
+        profileId: "default",
+        enabled: true,
+        label: "Jira",
+        webUrl: "https://jira.example/jira",
+        issueKeyPrefixes: [],
+      },
+    ];
+    function setup(withJiraWorkspace: boolean, apiExtras: AnyApi = {}) {
+      const store = useAppStore();
+      const workspaces: AnyApi[] = [
+        { ...BASE_WORKSPACES[0], workItems: [{ ref, summary: "Fix", status: "Open" }] },
+        ...(withJiraWorkspace
+          ? [
+              {
+                id: "jira-inbox",
+                name: "Jira",
+                cwd: "",
+                panels: [],
+                icon: "J",
+                color: "#fff",
+                profileId: "default",
+                kind: "jira",
+              },
+            ]
+          : []),
+      ];
+      store.payload = makePayload({ workspaces });
+      vi.spyOn(store, "getApi").mockReturnValue({
+        listJiraConnections: vi.fn().mockResolvedValue(connections),
+        ...apiExtras,
+      } as AnyApi);
+      const activateWorkspace = vi.spyOn(store, "activateWorkspace").mockResolvedValue();
+      return { store, activateWorkspace };
+    }
+
+    it("opens the issue in the profile's Jira pane instead of the browser", async () => {
+      const openExternal = vi.fn();
+      const { store, activateWorkspace } = setup(true, { openExternal });
+      const wrapper = mount(SidebarPanel);
+      await flushPromises();
+
+      await wrapper.find(".workspace-card__jira-chip").trigger("click");
+      await flushPromises();
+
+      expect(store.jiraIssueOpenRequest).toMatchObject({
+        workspaceId: "jira-inbox",
+        ref: { connectionId: "c1", issueId: "1", issueKey: "ENG-1" },
+      });
+      expect(activateWorkspace).toHaveBeenCalledWith("jira-inbox");
+      expect(openExternal).not.toHaveBeenCalled();
+    });
+
+    it("falls back to the browser only when no Jira pane exists", async () => {
+      const openExternal = vi.fn().mockResolvedValue(undefined);
+      const { store } = setup(false, { openExternal });
+      const wrapper = mount(SidebarPanel);
+      await flushPromises();
+
+      await wrapper.find(".workspace-card__jira-chip").trigger("click");
+      await flushPromises();
+
+      expect(openExternal).toHaveBeenCalledWith("https://jira.example/jira/browse/ENG-1");
+      expect(store.jiraIssueOpenRequest).toBeNull();
+    });
+
+    it("reports a browser failure to the user", async () => {
+      const openExternal = vi.fn().mockRejectedValue(new Error("blocked"));
+      setup(false, { openExternal });
+      const showError = vi.spyOn(useNotificationStore(), "showError");
+      const wrapper = mount(SidebarPanel);
+      await flushPromises();
+
+      await wrapper.find(".workspace-card__jira-chip").trigger("click");
+      await flushPromises();
+
+      expect(showError).toHaveBeenCalledWith("Could not open the Jira issue", "blocked");
+    });
+  });
+
   it("renders all workspaces in tree when grid is empty (no ghosts)", () => {
     const store = useAppStore();
     store.payload = makePayload({ workspaceGrid: null });
@@ -2174,7 +2366,7 @@ describe("SidebarPanel — hierarchical recent entries", () => {
         { id: "ws-az", name: "Azure DevOps", cwd: "/az", panels: [], icon: "AZ", color: "#fff", profileId: "default" },
         {
           id: "ws-pr",
-          name: "mhub PR #30746",
+          name: "orders PR #30746",
           cwd: "/pr",
           panels: [],
           icon: "AZ",
@@ -3204,7 +3396,7 @@ describe("SidebarPanel — RUNNING and RECENT are disjoint", () => {
       ...recentPayload({
         workspaces: [
           plain("ws-az", "Azure DevOps", { kind: "azure" }),
-          plain("ws-pr", "mhub PR #30746", {
+          plain("ws-pr", "orders PR #30746", {
             review: { checkout: { mode: "managed-worktree" }, parentWorkspaceId: "ws-az" },
             lastWorkedAt: new Date(now - MINUTE).toISOString(),
           }),
@@ -3237,7 +3429,7 @@ describe("SidebarPanel — RUNNING and RECENT are disjoint", () => {
       wrapper
         .findAll('.running-agents [data-role="activity-context-row"]')
         .map((c: AnyApi) => c.get(".activity-row__label").text()),
-    ).toEqual(["Azure DevOps › mhub PR #30746"]);
+    ).toEqual(["Azure DevOps › orders PR #30746"]);
     expect(recentIds(wrapper)).toEqual(["ws-pr"]);
     expect(
       wrapper
@@ -3371,7 +3563,7 @@ describe("SidebarPanel — clickable parent context", () => {
       { id: "ws-az", name: "Azure DevOps", cwd: "/az", panels: [], icon: "AZ", color: "#fff", profileId: "default" },
       {
         id: "ws-pr",
-        name: "mhub PR #30746",
+        name: "orders PR #30746",
         cwd: "/pr",
         panels: [],
         icon: "AZ",
@@ -3434,7 +3626,7 @@ describe("SidebarPanel — clickable parent context", () => {
 /**
  * V6 review, §"P2 UX — Recent zahazuje kanonický status dot na icon badge".
  *
- * The 15:19 screenshot: `mhub PR #30746` wears a coloured dot on its badge in
+ * The 15:19 screenshot: `orders PR #30746` wears a coloured dot on its badge in
  * ALL WORKSPACES and none at all in Recent, so the fastest state signal in the
  * sidebar disappeared exactly where the user scans first. One shared resolver
  * now feeds the card AND both activity surfaces.
@@ -3458,7 +3650,7 @@ describe("SidebarPanel — canonical status cue in the activity rows", () => {
   function reviewWorkspace(now: number, overrides: AnyApi = {}): AnyApi {
     return {
       id: "ws-pr",
-      name: "mhub PR #30746",
+      name: "orders PR #30746",
       cwd: "/pr",
       panels: [],
       icon: "P",
@@ -3529,6 +3721,45 @@ describe("SidebarPanel — canonical status cue in the activity rows", () => {
     const row = wrapper.get('.recent-shortcuts [data-workspace-id="ws-pr"]');
     expect(row.attributes("aria-label")).toContain("PR open");
     expect(row.attributes("title")).toContain("PR open");
+  });
+
+  it("draws the tree card's review and new-branch glyphs on the recent rows, and keeps a custom icon", () => {
+    const store = useAppStore();
+    const now = Date.now();
+    const review = { provider: "azure-devops", checkout: { mode: "managed-worktree" }, parentWorkspaceId: "ws-az" };
+    store.payload = azurePayload(now, [
+      {
+        ...reviewWorkspace(now),
+        id: "ws-review",
+        icon: "AZ",
+        review: { ...review, prKey: "pr-2", pullRequest: { pullRequestId: 2 } },
+      },
+      { ...reviewWorkspace(now), id: "ws-branch", icon: "AZ", review },
+    ]);
+
+    const wrapper = mount(SidebarPanel);
+
+    const pathsOf = (el: AnyApi) => el.findAll("path").map((p: AnyApi) => p.attributes("d"));
+    for (const id of ["ws-review", "ws-branch"]) {
+      const card = wrapper.get(`.workspace-card[data-workspace-id="${id}"]`);
+      const row = wrapper.get(`.recent-shortcuts [data-workspace-id="${id}"]`);
+      expect(row.find(".activity-row__glyph").exists()).toBe(true);
+      expect(row.get(".activity-row__badge").text()).not.toContain("AZ");
+      expect(pathsOf(row.get(".activity-row__glyph"))).toEqual(pathsOf(card.get(".workspace-card__glyph")));
+    }
+    expect(pathsOf(wrapper.get('.recent-shortcuts [data-workspace-id="ws-review"]'))).not.toEqual(
+      pathsOf(wrapper.get('.recent-shortcuts [data-workspace-id="ws-branch"]')),
+    );
+    expect(wrapper.get('.recent-shortcuts [data-workspace-id="ws-branch"]').classes()).toContain(
+      "activity-row--new-branch",
+    );
+    expect(wrapper.get('.recent-shortcuts [data-workspace-id="ws-review"]').classes()).not.toContain(
+      "activity-row--new-branch",
+    );
+    // `ws-pr` wears an icon of its own ("P"), so it keeps it — on the card and on the row.
+    const custom = wrapper.get('.recent-shortcuts [data-workspace-id="ws-pr"]');
+    expect(custom.find(".activity-row__glyph").exists()).toBe(false);
+    expect(custom.get(".activity-row__badge").text()).toContain("P");
   });
 
   /**

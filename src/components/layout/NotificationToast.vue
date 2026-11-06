@@ -17,11 +17,14 @@
         <span v-else>{{ kindIcon }}</span>
       </div>
       <div class="notification-toast__content">
-        <strong class="notification-toast__title">{{ toast?.title }}</strong>
+        <strong class="notification-toast__title" :class="{ 'notification-toast__title--event': pullRequestText }">{{
+          pullRequestText?.event || toast?.title
+        }}</strong>
         <span v-if="isPullRequestToast && toast?.meta?.draftState" class="notification-toast__pr-state">
           {{ toast.meta.draftState === "draft" ? "Draft" : "Ready" }}
         </span>
-        <p class="notification-toast__body">{{ toast?.body }}</p>
+        <p v-if="pullRequestText" class="notification-toast__pr-title">{{ pullRequestText.prTitle }}</p>
+        <p v-if="bodyText" class="notification-toast__body">{{ bodyText }}</p>
         <button
           v-if="canStartReview"
           type="button"
@@ -62,6 +65,7 @@ import { apiKey } from "../../types/keys.js";
 import type { Transport } from "../../transport.js";
 import type { StatePayload } from "../../../electron/shared/types/state.js";
 import { isStartReviewTarget, usePullRequestReviewAction } from "../../composables/usePullRequestReviewAction.js";
+import { reviewNotificationText } from "../../lib/review-notification-text.js";
 
 interface Toast {
   id?: string;
@@ -76,6 +80,7 @@ interface Toast {
     prKey?: string;
     profileId?: string;
     headSha?: string;
+    pullRequestTitle?: string;
   } | null;
   title?: string;
   body?: string;
@@ -128,6 +133,12 @@ const isPullRequestToast = computed(() => {
   const kind = props.toast?.meta?.reviewActionKind || props.toast?.meta?.kind;
   return props.toast?.category === "review" && (kind === "pr-new" || kind === "pr-ready");
 });
+const pullRequestText = computed(() => {
+  if (props.toast?.category !== "review") return null;
+  const text = reviewNotificationText(props.toast.title, props.toast.body, props.toast.meta?.pullRequestTitle);
+  return text.prTitle ? text : null;
+});
+const bodyText = computed(() => (pullRequestText.value ? pullRequestText.value.detail : props.toast?.body || ""));
 const canStartReview = computed(() => isPullRequestToast.value && isStartReviewTarget(props.toast?.meta));
 const reviewActionLabel = computed(() => {
   const record = props.toast?.meta ? reviewAction.recordFor(props.toast.meta) : undefined;

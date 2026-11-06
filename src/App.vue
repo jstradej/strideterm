@@ -172,42 +172,54 @@
             >
           </button>
 
-          <TabStrip
-            @edit-tab="store.editTabWithDialog($event)"
-            @contextmenu-tab="onTabContextMenu"
-            @menu-tab="onTabContextMenu"
-          />
+          <TabStrip @edit-tab="onEditTab($event)" @contextmenu-tab="onTabContextMenu" @menu-tab="onTabContextMenu" />
 
           <!-- Mobile tab picker (replaces cramped tab strip) -->
           <div class="mobile-tab-picker">
             <button
               type="button"
               class="mobile-tab-picker__trigger"
+              data-role="mobile-tab-picker-trigger"
               title="Open the mobile tab list — every tab in the active workspace as a stacked dropdown. Tap a row to switch to that tab; tap the ☰ icon for the per-tab actions menu."
               @click="mobileTabOpen = !mobileTabOpen"
             >
-              ▤ Tabs
+              <span v-if="activeTabModel?.loading" class="tab__spinner" aria-hidden="true" />
+              ▤ {{ activeTabLabel || "Tabs" }}
             </button>
             <div v-if="mobileTabOpen" class="mobile-tab-picker__dropdown">
-              <button
+              <div
                 v-for="tab in store.workspaceTabs"
                 :key="tab.id"
-                type="button"
-                :class="['mobile-tab-picker__item', tab.id === store.activeViewId && 'mobile-tab-picker__item--active']"
-                @click="
-                  store.activateView(tab.id);
-                  mobileTabOpen = false;
-                "
+                :class="['mobile-tab-picker__row', tab.id === store.activeViewId && 'mobile-tab-picker__item--active']"
               >
-                <span class="mobile-tab-picker__name">{{ tab.title }}</span>
-                <small class="mobile-tab-picker__status">{{ tab.status }}</small>
-                <span
-                  class="mobile-tab-picker__menu"
-                  title="Open the tab actions menu (Focus, Edit, Save scrollback, Clear, Restart, Close, split moves) — same options as the right-click context menu."
-                  @click.stop="onMobileTabMenu($event, tab.id)"
-                  >☰</span
+                <button
+                  type="button"
+                  class="mobile-tab-picker__item"
+                  :aria-label="`${tab.title}${tab.loading ? ', syncing' : ''}`"
+                  :aria-current="tab.id === store.activeViewId ? 'page' : undefined"
+                  @click="
+                    store.activateView(tab.id);
+                    mobileTabOpen = false;
+                  "
                 >
-              </button>
+                  <span class="mobile-tab-picker__name">{{ tab.title }}</span>
+                  <small class="mobile-tab-picker__status">
+                    <span v-if="tab.loading" class="tab__spinner" aria-hidden="true" />
+                    {{ tab.loading ? "Syncing…" : tab.status }}
+                  </small>
+                </button>
+                <button
+                  type="button"
+                  class="mobile-tab-picker__menu"
+                  :aria-label="`Actions for ${tab.title}`"
+                  title="Open the actions available for this tab, such as rename, refresh, move, split, or close."
+                  @click.stop="onMobileTabMenu($event, tab.id)"
+                  @keydown.enter.prevent="onMobileTabMenu($event, tab.id)"
+                  @keydown.space.prevent="onMobileTabMenu($event, tab.id)"
+                >
+                  ☰
+                </button>
+              </div>
             </div>
           </div>
           <div v-if="mobileTabOpen" class="mobile-tab-picker__backdrop" @click="mobileTabOpen = false"></div>
@@ -231,6 +243,7 @@
 
           <TabActions
             @toggle-tab-picker="onToggleTabPicker"
+            @open-jira-board-chooser="onToolbarOpenJiraBoardChooser"
             @disband-split="store.disbandSplit()"
             @open-layout-picker="onOpenLayoutPicker"
             @quick-fix="onToolbarQuickFix"
@@ -437,6 +450,8 @@ const mobileKeyboardButtonTitle = computed(() =>
 const sidebarCollapseLabel = computed(() => (store.sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"));
 
 const hasAnyStarred = computed(() => store.filteredWorkspaces.some((ws) => ws.starred));
+const activeTabLabel = computed(() => store.workspaceTabs.find((tab) => tab.id === store.activeViewId)?.title || "");
+const activeTabModel = computed(() => store.workspaceTabs.find((tab) => tab.id === store.activeViewId) || null);
 const showWelcome = computed(() => store.payload && store.filteredWorkspaces.length === 0);
 
 const versionLabel = computed(() => {
@@ -608,15 +623,35 @@ function onToolbarDeleteWorkspace(): void {
   if (wsId) store.deleteWorkspace(wsId);
 }
 
-function onTabContextMenu(event: { x: number; y: number; viewId: string }): void {
-  store.showContextMenu(event.x, event.y, event.viewId);
+function onTabContextMenu(event: { x: number; y: number; viewId: string; anchor?: HTMLElement }): void {
+  store.showContextMenu(event.x, event.y, event.viewId, event.anchor);
 }
 
-function onMobileTabMenu(event: MouseEvent, viewId: string): void {
+function onEditTab(viewId: string): void {
+  const tab = store.workspaceTabs.find((item) => item.id === viewId);
+  if (tab?.type === "jira" && tab.jiraViewId && tab.jiraViewId !== "issues") {
+    store.openDialog("TextInputDialog", {
+      eyebrow: "Jira",
+      title: "Rename saved view",
+      label: "View name",
+      value: tab.title,
+      submitLabel: "Save name",
+      onCancel: store.closeDialog,
+      onSubmit: async (title: string) => {
+        await store.renameJiraWorkspaceView(viewId, title);
+        store.closeDialog();
+      },
+    });
+    return;
+  }
+  store.editTabWithDialog(viewId);
+}
+
+function onMobileTabMenu(event: MouseEvent | KeyboardEvent, viewId: string): void {
   const btn = (event.currentTarget || event.target) as Element;
   const rect = btn.getBoundingClientRect();
   mobileTabOpen.value = false;
-  store.showContextMenu(rect.left, rect.bottom + 4, viewId);
+  store.showContextMenu(rect.left, rect.bottom + 4, viewId, btn as HTMLElement);
 }
 
 function onToggleTabPicker(event: MouseEvent): void {
@@ -626,6 +661,12 @@ function onToggleTabPicker(event: MouseEvent): void {
     const btn = (event.target ?? event.currentTarget) as Element | null;
     tabPickerAnchor.value = btn ? btn.getBoundingClientRect() : null;
   }
+}
+
+async function onToolbarOpenJiraBoardChooser(): Promise<void> {
+  const workspaceId = store.jiraBoardChooserRequest?.workspaceId;
+  if (!workspaceId || store.activeWorkspace?.kind !== "jira") return;
+  await store.activateView(`jira:${workspaceId}`);
 }
 
 function onOpenLayoutPicker(event: MouseEvent): void {

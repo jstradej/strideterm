@@ -87,6 +87,66 @@ describe("App — the sidebar activate chain closes the mobile drawer", () => {
     expect(wrapper.findComponent(WorkspaceAttachments).exists()).toBe(false);
   });
 
+  it("shows the current Jira view and keyboard-opens saved tab actions", async () => {
+    const wrapper = mountApp(true, document.body);
+    const store = useAppStore();
+    store.payload = {
+      workspace: {
+        workspace: { id: "jira-A", kind: "jira", profileId: "default", panels: [] },
+        sessions: [],
+      },
+      appState: {
+        workspaces: [{ id: "jira-A", kind: "jira", profileId: "default", panels: [] }],
+        activeWorkspaceId: "jira-A",
+        activeProfileId: "default",
+        profiles: [{ id: "default", name: "Default" }],
+      },
+      jiraWorkspaceViews: {
+        "jira-A": {
+          workspaceId: "jira-A",
+          profileId: "default",
+          views: [
+            { viewId: "issues", kind: "issues", title: "Issues" },
+            {
+              viewId: "platform-board",
+              kind: "board",
+              connectionId: "jira-c1",
+              boardId: 7,
+              boardName: "Platform",
+              title: "Platform team board",
+              mode: "issues",
+              sprintId: null,
+              quickFilterIds: [],
+              assignee: null,
+              doneWithinDays: null,
+              createdAt: 1,
+              updatedAt: 1,
+            },
+          ],
+          activeViewId: "platform-board",
+          syncByViewId: {
+            issues: { state: "syncing" },
+            "platform-board": { state: "syncing" },
+          },
+        },
+      },
+    } as AnyApi;
+    store.activeViewId = "jira:jira-A:view:platform-board";
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.get(".mobile-tab-picker__trigger").text()).toContain("Platform team board");
+    expect(wrapper.find(".mobile-tab-picker__trigger .tab__spinner").exists()).toBe(true);
+    await wrapper.get(".mobile-tab-picker__trigger").trigger("click");
+    expect(wrapper.findAll(".mobile-tab-picker__item .tab__spinner")).toHaveLength(2);
+    expect(wrapper.find('button.mobile-tab-picker__item[aria-label="Inbox, syncing"]').exists()).toBe(true);
+    const actions = wrapper.get('button[aria-label="Actions for Platform team board"]');
+    (actions.element as HTMLButtonElement).focus();
+    expect(document.activeElement).toBe(actions.element);
+    await actions.trigger("keydown.enter");
+    expect(store.contextMenu?.viewId).toBe("jira:jira-A:view:platform-board");
+    wrapper.unmount();
+  });
+
   it("toggles the remote keyboard and tracks native IME inset changes in its label", async () => {
     const wrapper = mountApp(true);
     const keyboardEvents: boolean[] = [];

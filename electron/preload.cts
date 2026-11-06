@@ -1,5 +1,5 @@
 /// <reference lib="dom" />
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { StridetermAPI } from "./shared/ipc-bridge.js";
 import type { AccountUiState } from "./backend/account/account-state.js";
 
@@ -14,6 +14,24 @@ const startupFlags = {
   disableWebgl: process.argv.includes("--strideterm-disable-webgl"),
   windowId: startupWindowId,
 };
+
+// Mirrors electron/shared/jira-ipc-failure.ts (a sandboxed preload cannot import it): the main process answers a Jira
+// failure with this envelope because a rejected IPC call loses `code`; the renderer gets the Error shape the remote
+// transport throws (`jiraError: { code, retryAfterMs? }` and `code`).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- each bridge method declares its own result type
+async function invokeJira(channel: string, ...args: unknown[]): Promise<any> {
+  const result = await ipcRenderer.invoke(channel, ...args);
+  if (result && typeof result === "object" && (result as Record<string, unknown>)["__strideJiraFailure"] === 1) {
+    const failure = result as { message?: unknown; code?: unknown; retryAfterMs?: unknown };
+    const code = typeof failure.code === "string" ? failure.code : "unknown";
+    const retryAfterMs = typeof failure.retryAfterMs === "number" ? failure.retryAfterMs : undefined;
+    throw Object.assign(new Error(typeof failure.message === "string" ? failure.message : "Jira request failed."), {
+      code,
+      jiraError: { code, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) },
+    });
+  }
+  return result;
+}
 
 contextBridge.exposeInMainWorld("strideterm", {
   openExternal: (url) => ipcRenderer.invoke("shell:open-external", url),
@@ -45,6 +63,61 @@ contextBridge.exposeInMainWorld("strideterm", {
     const result = (await ipcRenderer.invoke("settings:update", settings)) as Record<string, unknown>;
     return result["payload"] ?? result;
   },
+  listJiraConnections: () => invokeJira("jira:connections"),
+  getJiraRecentSearches: (payload) => invokeJira("jira:recent-searches:list", payload),
+  getJiraWorkspaceViews: (payload) => invokeJira("jira:workspace-views:get", payload),
+  saveJiraWorkspaceView: (payload) => invokeJira("jira:workspace-views:save", payload),
+  getJiraWorkspaceProjectScope: (payload) => invokeJira("jira:workspace-project-scope:get", payload),
+  setJiraWorkspaceProjectScope: (payload) => invokeJira("jira:workspace-project-scope:set", payload),
+  renameJiraWorkspaceView: (payload) => invokeJira("jira:workspace-views:rename", payload),
+  reorderJiraWorkspaceViews: (payload) => invokeJira("jira:workspace-views:reorder", payload),
+  removeJiraWorkspaceView: (payload) => invokeJira("jira:workspace-views:remove", payload),
+  setJiraWorkspaceActiveView: (payload) => invokeJira("jira:workspace-views:active", payload),
+  refreshJiraWorkspaceViews: (payload) => invokeJira("jira:workspace-views:refresh", payload),
+  rememberJiraSearch: (payload) => invokeJira("jira:recent-searches:remember", payload),
+  getJiraRecentIssues: (payload) => invokeJira("jira:recent-issues:list", payload),
+  rememberJiraIssueViewed: (payload) => invokeJira("jira:recent-issues:viewed", payload),
+  getJiraRepoBindingPreference: (payload) => invokeJira("jira:task:repo-binding", payload),
+  ensureJiraWorkspace: () => invokeJira("jira:ensure-workspace"),
+  previewJiraTaskContext: (payload) => invokeJira("jira:task:prepare", payload),
+  getJiraTaskContext: (workspaceId) => invokeJira("jira:task:context", workspaceId),
+  attachJiraIssueToWorkspace: (payload) => invokeJira("jira:workspace:attach", payload),
+  detachJiraIssueFromWorkspace: (payload) => invokeJira("jira:workspace:detach", payload),
+  saveJiraCommentDraft: (payload) => invokeJira("jira:comment-draft:save", payload),
+  listJiraCommentDrafts: (workspaceId) => invokeJira("jira:comment-draft:list", workspaceId),
+  deleteJiraCommentDraft: (payload) => invokeJira("jira:comment-draft:delete", payload),
+  saveJiraConnection: (connection) => invokeJira("jira:save-connection", connection),
+  testJiraConnection: (connection) => invokeJira("jira:test-connection", connection),
+  deleteJiraConnection: (connectionId) => invokeJira("jira:delete-connection", connectionId),
+  verifyJiraConnection: (connectionId) => invokeJira("jira:verify", connectionId),
+  updateJiraConnectionMetadata: (payload) => invokeJira("jira:connection:metadata", payload),
+  verifyJiraOwnIdentity: (payload) => invokeJira("jira:own-identity:verify", payload),
+  setJiraOwnIdentity: (payload) => invokeJira("jira:own-identity:set", payload),
+  setJiraCommentAttribution: (payload) => invokeJira("jira:settings:comment-attribution:set", payload),
+  setJiraAgentAttachmentLimits: (payload) => invokeJira("jira:settings:agent-attachments:set", payload),
+  buildJiraOwnIssuesQuery: (payload) => invokeJira("jira:own-issues-query", payload),
+  listJiraQueries: (connectionId) => invokeJira("jira:queries", connectionId),
+  listJiraFavoriteFilters: (connectionId) => invokeJira("jira:filters:favourite", connectionId),
+  getJiraSavedFilter: (payload) => invokeJira("jira:filter:get", payload),
+  saveJiraQuery: (payload) => invokeJira("jira:query:save", payload),
+  deleteJiraQuery: (queryId) => invokeJira("jira:query:delete", queryId),
+  getJiraWriteHistory: (payload) => invokeJira("jira:write:history", payload),
+  reconcileJiraWrite: (journalId) => invokeJira("jira:write:reconcile", journalId),
+  listJiraProjects: (connectionId) => invokeJira("jira:projects", connectionId),
+  listJiraBoards: (connectionId) => invokeJira("jira:boards", connectionId),
+  searchJiraBoards: (payload) => invokeJira("jira:boards:search", payload),
+  getJiraBoardView: (payload) => invokeJira("jira:board-view", payload),
+  listJiraBoardQuickFilters: (payload) => invokeJira("jira:board-quick-filters", payload),
+  searchJiraUsers: (payload) => invokeJira("jira:users:search", payload),
+  listJiraTransitions: (payload) => invokeJira("jira:transitions", payload),
+  listJiraComments: (payload) => invokeJira("jira:comments", payload),
+  previewJiraWrite: (payload) => invokeJira("jira:write:preview", payload),
+  executeJiraWrite: (payload) => invokeJira("jira:write:execute", payload),
+  searchJiraIssues: (payload) => invokeJira("jira:search", payload),
+  getJiraIssue: (payload) => invokeJira("jira:issue", payload),
+  getJiraAttachmentContent: (payload) => invokeJira("jira:attachment:content", payload),
+  saveJiraIssueAttachment: (payload) => invokeJira("jira:attachment:save", payload),
+  uploadJiraIssueAttachment: (payload) => invokeJira("jira:attachment:upload", payload),
   verifyAzureConnection: (connection) => ipcRenderer.invoke("azure:verify-connection", connection),
   saveAzureConnection: (connection) => ipcRenderer.invoke("azure:save-connection", connection),
   deleteAzureConnection: (connectionId) => ipcRenderer.invoke("azure:delete-connection", connectionId),
@@ -76,7 +149,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   azureQuickFixListProjects: (payload) => ipcRenderer.invoke("azure:quickfix:list-projects", payload),
   azureQuickFixListRepositories: (payload) => ipcRenderer.invoke("azure:quickfix:list-repositories", payload),
   azureQuickFixListBranches: (payload) => ipcRenderer.invoke("azure:quickfix:list-branches", payload),
-  azureQuickFixCreate: (payload) => ipcRenderer.invoke("azure:quickfix:create", payload),
+  azureQuickFixCreate: (payload) => invokeJira("azure:quickfix:create", payload),
   rerunAzureCheck: (prKey, checkItem) => ipcRenderer.invoke("azure:rerun-check", prKey, checkItem),
   listAzurePipelines: (payload) => ipcRenderer.invoke("azure:pipelines:list", payload),
   listAzurePipelineRuns: (payload) => ipcRenderer.invoke("azure:pipelines:runs", payload),
@@ -89,6 +162,8 @@ contextBridge.exposeInMainWorld("strideterm", {
   cancelAzureBuild: (payload) => ipcRenderer.invoke("azure:pipelines:cancel", payload),
   getAzureBuildLog: (payload) => ipcRenderer.invoke("azure:pipelines:build-log", payload),
   getAzurePipelineRunDetail: (payload) => ipcRenderer.invoke("azure:pipelines:run-detail", payload),
+  startAzurePipelineAgent: (payload) => ipcRenderer.invoke("azure:pipelines:agent-start", payload),
+  startJiraDevelopment: (payload) => invokeJira("jira:development:start", payload),
   verifyGitHubConnection: (connection) => ipcRenderer.invoke("github:verify-connection", connection),
   saveGitHubConnection: (connection) => ipcRenderer.invoke("github:save-connection", connection),
   deleteGitHubConnection: (connectionId) => ipcRenderer.invoke("github:delete-connection", connectionId),
@@ -104,7 +179,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   githubCreatePullRequest: (payload) => ipcRenderer.invoke("github:create-pull-request", payload),
   githubQuickFixListRepos: (payload) => ipcRenderer.invoke("github:quickfix:list-repos", payload),
   githubQuickFixListBranches: (payload) => ipcRenderer.invoke("github:quickfix:list-branches", payload),
-  githubQuickFixCreate: (payload) => ipcRenderer.invoke("github:quickfix:create", payload),
+  githubQuickFixCreate: (payload) => invokeJira("github:quickfix:create", payload),
   verifyTelegramConnection: (connection) => ipcRenderer.invoke("telegram:verify-connection", connection),
   detectTelegramChats: (connection) => ipcRenderer.invoke("telegram:detect-chats", connection),
   saveTelegramConnection: (connection) => ipcRenderer.invoke("telegram:save-connection", connection),
@@ -182,8 +257,8 @@ contextBridge.exposeInMainWorld("strideterm", {
   checkProviders: () => ipcRenderer.invoke("task:check-providers"),
   checkIsGitRepo: (cwd) => ipcRenderer.invoke("task:check-git-repo", cwd),
   probeDirectory: (cwd) => ipcRenderer.invoke("fs:probe-directory", cwd),
-  createTaskWorkspace: (payload) => ipcRenderer.invoke("task:create-workspace", payload),
-  startTask: (payload) => ipcRenderer.invoke("task:start", payload),
+  createTaskWorkspace: (payload) => invokeJira("task:create-workspace", payload),
+  startTask: (payload) => invokeJira("task:start", payload),
   stopTask: (payload) => ipcRenderer.invoke("task:stop", payload),
   pauseTask: (payload) => ipcRenderer.invoke("task:pause", payload),
   resumeTask: (payload) => ipcRenderer.invoke("task:resume", payload),
@@ -302,6 +377,17 @@ contextBridge.exposeInMainWorld("strideterm", {
   respondConfirmClose: (confirmed) => ipcRenderer.invoke("window:confirm-close-response", confirmed),
   openDiffPopout: (payload) => ipcRenderer.invoke("diff:popout:open", payload),
   getDiffPopoutInit: () => ipcRenderer.invoke("diff:popout:get-init"),
+  openFilePopout: (payload) => ipcRenderer.invoke("file:popout:open", payload),
+  getFilePopoutInit: () => ipcRenderer.invoke("file:popout:get-init"),
+  getPathForDroppedFile: (file) => {
+    try {
+      return webUtils.getPathForFile(file) || "";
+    } catch {
+      return "";
+    }
+  },
+  openJiraIssuePopout: (payload) => invokeJira("jira:issue:popout", payload),
+  getJiraIssuePopoutInit: () => invokeJira("jira:issue:popout:get-init"),
   onNewWindowShortcut: (handler) => ipcRenderer.on("shortcut:new-window", () => handler()),
   onWindowVisibility: (handler) => ipcRenderer.on("window:visibility", (_event, payload) => handler(payload)),
   onConfirmCloseRequest: (handler) =>
@@ -367,7 +453,11 @@ contextBridge.exposeInMainWorld("strideterm", {
   stopReviewAgentPreparation: (payload) => ipcRenderer.invoke("review:agent-prepare:stop", payload),
   onAzureClosedPrCleanupFinished: (handler) =>
     ipcRenderer.on("azure:closed-pr-cleanup:finished", (_event, payload) => handler(payload)),
-  onOperationFinished: (handler) => ipcRenderer.on("operation:finished", (_event, payload) => handler(payload)),
+  onOperationFinished: (handler) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(payload);
+    ipcRenderer.on("operation:finished", listener);
+    return () => ipcRenderer.removeListener("operation:finished", listener);
+  },
   onMobileStatus: (handler) => ipcRenderer.on("mobile:status", (_event, payload) => handler(payload)),
   onMobileSessionStarted: (handler) => ipcRenderer.on("mobile:session-started", (_event, payload) => handler(payload)),
   onRemoteAuthFailures: (handler) => ipcRenderer.on("remote:auth-failures", (_event, payload) => handler(payload)),

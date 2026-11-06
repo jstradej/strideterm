@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 import {
+  connectionGitAuthScopes,
   createGitConfigEnvProbe,
   encodeAuthHeader,
   gitAuthEnvironment,
@@ -38,6 +39,44 @@ describe("createGitConfigEnvProbe", () => {
   test("a failing version read resolves false", async () => {
     const probe = createGitConfigEnvProbe(() => Promise.reject(new Error("spawn git ENOENT")));
     expect(await probe()).toBe(false);
+  });
+});
+
+describe("gitAuthEnvironment with a scope URL", () => {
+  test("keys the header by the URL's origin so no other host receives it", () => {
+    const env = gitAuthEnvironment("me", "tok", {}, "https://me@dev.azure.com/acme/p/_git/r");
+    expect(env.GIT_CONFIG_KEY_0).toBe("http.https://dev.azure.com/.extraheader");
+    expect(env.GIT_CONFIG_VALUE_0).toBe(encodeAuthHeader("me", "tok"));
+  });
+
+  test("refuses a non-http(s) or unparseable scope instead of falling back to the global key", () => {
+    expect(() => gitAuthEnvironment("me", "tok", {}, "file:///etc/passwd")).toThrow(/not a valid http/);
+    expect(() => gitAuthEnvironment("me", "tok", {}, "not a url")).toThrow(/not a valid http/);
+    expect(() => gitAuthEnvironment("me", "tok", {}, [])).toThrow(/Refusing/);
+  });
+
+  test("writes one header entry per scope", () => {
+    const env = gitAuthEnvironment("me", "tok", {}, ["https://dev.azure.com", "https://acme.visualstudio.com"]);
+    expect(env.GIT_CONFIG_COUNT).toBe("2");
+    expect(env.GIT_CONFIG_KEY_0).toBe("http.https://dev.azure.com/.extraheader");
+    expect(env.GIT_CONFIG_KEY_1).toBe("http.https://acme.visualstudio.com/.extraheader");
+    expect(env.GIT_CONFIG_VALUE_1).toBe(encodeAuthHeader("me", "tok"));
+  });
+});
+
+describe("connectionGitAuthScopes", () => {
+  test.each([
+    [{ orgUrl: "https://dev.azure.com/Acme/" }, ["https://dev.azure.com", "https://acme.visualstudio.com"]],
+    [{ orgUrl: "https://acme.visualstudio.com" }, ["https://acme.visualstudio.com", "https://dev.azure.com"]],
+    [{ orgUrl: "https://tfs.corp.example/tfs/Collection" }, ["https://tfs.corp.example"]],
+    [{ orgUrl: "http://tfs.corp.example:8080/tfs" }, ["http://tfs.corp.example:8080"]],
+    [{ hostUrl: "https://ghe.corp.example" }, ["https://ghe.corp.example"]],
+    [{}, ["https://github.com"]],
+    [{ orgUrl: "https://dev.azure.com/evil.example%23" }, ["https://dev.azure.com"]],
+    [{ orgUrl: "file:///etc" }, []],
+    [{ orgUrl: "not a url" }, []],
+  ])("%j -> %j", (connection, expected) => {
+    expect(connectionGitAuthScopes(connection)).toEqual(expected);
   });
 });
 

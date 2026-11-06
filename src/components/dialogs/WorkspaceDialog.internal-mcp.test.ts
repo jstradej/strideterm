@@ -81,7 +81,7 @@ describe("WorkspaceDialog internal MCP option", () => {
     expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ internalMcpEnabled: true });
   });
 
-  test("not offered for a task workspace, and its draft carries no flag", async () => {
+  test("task workspaces do not get the generic task MCP flag and Jira access defaults off", async () => {
     const { wrapper } = mountDialog({
       workspace: {
         ...existing,
@@ -91,6 +91,7 @@ describe("WorkspaceDialog internal MCP option", () => {
       },
     });
     expect(wrapper.find('[data-testid="internal-mcp-checkbox"]').exists()).toBe(false);
+    expect((wrapper.get('[data-testid="jira-mcp-checkbox"]').element as HTMLInputElement).checked).toBe(false);
   });
 
   test.each([["azure"], ["github"]])("offered for a %s inbox as the default for new review children", async (kind) => {
@@ -105,5 +106,27 @@ describe("WorkspaceDialog internal MCP option", () => {
     const { wrapper } = mountDialog({ workspace: { ...existing, quickfix: { prId: 1 } } });
     expect(wrapper.find('[data-testid="internal-mcp-checkbox"]').exists()).toBe(true);
     expect(wrapper.get(".internal-mcp-hint").text()).toContain("Restart open agent sessions to apply changes");
+  });
+
+  test("Jira MCP is a separate opt-in, defaults off, and is saved per terminal workspace", async () => {
+    const { wrapper, onSubmit } = mountDialog({ workspace: existing });
+    expect((wrapper.get('[data-testid="jira-mcp-checkbox"]').element as HTMLInputElement).checked).toBe(false);
+    await wrapper.get('[data-testid="jira-mcp-checkbox"]').setValue(true);
+    await wrapper.get("form").trigger("submit");
+    await flushPromises();
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ jiraMcpEnabled: true, internalMcpEnabled: false });
+  });
+
+  test("Jira MCP flag is preserved on edit and remains separate on eligible task workspaces", async () => {
+    const { wrapper, onSubmit } = mountDialog({ workspace: { ...existing, jiraMcpEnabled: true } });
+    expect((wrapper.get('[data-testid="jira-mcp-checkbox"]').element as HTMLInputElement).checked).toBe(true);
+    await wrapper.get("form").trigger("submit");
+    await flushPromises();
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ jiraMcpEnabled: true });
+    const task = mountDialog({ workspace: { ...existing, kind: "task", jiraMcpEnabled: true } });
+    expect((task.wrapper.get('[data-testid="jira-mcp-checkbox"]').element as HTMLInputElement).checked).toBe(true);
+    expect(task.wrapper.find('[data-testid="internal-mcp-checkbox"]').exists()).toBe(false);
+    const review = mountDialog({ workspace: { ...existing, kind: "github", jiraMcpEnabled: true } });
+    expect(review.wrapper.find('[data-testid="jira-mcp-checkbox"]').exists()).toBe(false);
   });
 });

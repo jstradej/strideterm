@@ -38,11 +38,13 @@ export const PROVIDER_CHOICES: ProviderChoice[] = [
     effortLevels: ["low", "medium", "high", "xhigh", "max"],
     models: [
       // Aliases follow Claude Code's own latest per tier (code.claude.com/docs/en/model-config,
-      // checked 2026-10-17: fable = Fable 5.1, opus = Opus 5.5, sonnet = Sonnet 5.5, haiku = Haiku 5.5).
+      // checked 2026-11-05: fable = Fable 5.1, opus = Opus 5.5, sonnet = Sonnet 5.5, haiku = Haiku 5.5;
+      // best = Fable where the account has it, else Opus).
       { id: "", name: "Default", suggestedRole: null },
       { id: "sonnet", name: "Sonnet", suggestedRole: "worker" },
       { id: "opus", name: "Opus", suggestedRole: "judge" },
       { id: "fable", name: "Fable", suggestedRole: null },
+      { id: "best", name: "Best (Fable, else Opus)", suggestedRole: null },
       { id: "haiku", name: "Haiku", suggestedRole: null },
     ],
   },
@@ -51,14 +53,17 @@ export const PROVIDER_CHOICES: ProviderChoice[] = [
     name: "Codex CLI",
     defaultSkipPermissions: true,
     inspectionIsolation: "permission-gated",
-    effortLevels: ["minimal", "low", "medium", "high", "xhigh"],
-    // Catalog per developers.openai.com/codex/models (checked 2026-10-17).
+    // The levels current models list in Codex 0.166's model catalog; `ultra` runs the turn with subagents
+    // (not on GPT-6 Luna). The CLI still parses `minimal`, but no current model offers it.
+    effortLevels: ["low", "medium", "high", "xhigh", "max", "ultra"],
+    // Catalog per developers.openai.com/codex/models and Codex 0.166's own model list (checked 2026-11-05).
     // Dropped: gpt-5.3-codex-spark (retired 2026-09-14), gpt-5.5 (retired
     // 2026-10-14) and the older GPT-5.6 family. The worker keeps "Default":
     // Codex then runs its own recommended model.
     models: [
       { id: "", name: "Default", suggestedRole: null },
       { id: "gpt-6.1-sol", name: "GPT-6.1 Sol", suggestedRole: "judge", suggestedEffort: "xhigh" },
+      { id: "gpt-6.1-terra", name: "GPT-6.1 Terra", suggestedRole: null },
       { id: "gpt-6-astra", name: "GPT-6 Astra", suggestedRole: null },
       { id: "gpt-6-sol", name: "GPT-6 Sol", suggestedRole: null },
       { id: "gpt-6-luna", name: "GPT-6 Luna", suggestedRole: null },
@@ -70,14 +75,15 @@ export const PROVIDER_CHOICES: ProviderChoice[] = [
     defaultSkipPermissions: false,
     inspectionIsolation: "permission-gated",
     effortLevels: [],
-    // Per ai.google.dev/gemini-api/docs/models (checked 2026-10-17). Gemini 4
+    // Per ai.google.dev/gemini-api/docs/models (checked 2026-11-05). Gemini 4
     // Argon is left out: Google steers it to Antigravity CLI, not Gemini CLI.
+    // Dropped: 2.5 Pro (deprecated; routed to 3.8 Flash from 2026-12-01).
     models: [
       { id: "", name: "Default", suggestedRole: null },
       { id: "gemini-3.1-pro-preview", name: "3.1 Pro (preview)", suggestedRole: "judge" },
       { id: "gemini-3.8-flash", name: "3.8 Flash", suggestedRole: "worker" },
+      { id: "gemini-3.6-flash", name: "3.6 Flash", suggestedRole: null },
       { id: "gemini-3.5-flash-lite", name: "3.5 Flash-Lite", suggestedRole: null },
-      { id: "gemini-2.5-pro", name: "2.5 Pro", suggestedRole: null },
     ],
   },
   {
@@ -86,12 +92,15 @@ export const PROVIDER_CHOICES: ProviderChoice[] = [
     defaultSkipPermissions: true,
     inspectionIsolation: "permission-gated",
     effortLevels: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
-    // Per the Copilot CLI command reference (checked 2026-10-17).
+    // Per GitHub's supported-models reference and `copilot help config` (checked 2026-11-05). Fable needs an
+    // enterprise administrator to enable it.
     models: [
       { id: "", name: "Default", suggestedRole: null },
       { id: "claude-opus-5.5", name: "Claude Opus 5.5", suggestedRole: "judge" },
       { id: "claude-sonnet-5.5", name: "Claude Sonnet 5.5", suggestedRole: "worker" },
+      { id: "claude-fable-5.1", name: "Claude Fable 5.1", suggestedRole: null },
       { id: "gpt-6.1-sol", name: "GPT-6.1 Sol", suggestedRole: null },
+      { id: "gpt-6-astra", name: "GPT-6 Astra", suggestedRole: null },
       { id: "gpt-6-luna", name: "GPT-6 Luna", suggestedRole: null },
       { id: "gemini-3.8-flash", name: "Gemini 3.8 Flash", suggestedRole: null },
     ],
@@ -105,15 +114,19 @@ export const PROVIDER_CHOICES: ProviderChoice[] = [
     effortLevels: [],
     models: [
       { id: "default", name: "Default", suggestedRole: null },
+      // Ids per models.dev, the catalog OpenCode reads (checked 2026-11-05).
       { id: "anthropic/claude-opus-5-5", name: "Claude Opus 5.5", suggestedRole: "judge" },
       { id: "anthropic/claude-sonnet-5-5", name: "Claude Sonnet 5.5", suggestedRole: "worker" },
+      { id: "anthropic/claude-fable-5-1", name: "Claude Fable 5.1", suggestedRole: null },
       { id: "openai/gpt-6.1-sol", name: "GPT-6.1 Sol", suggestedRole: null },
+      { id: "openai/gpt-6.1-terra", name: "GPT-6.1 Terra", suggestedRole: null },
+      { id: "openai/gpt-6-astra", name: "GPT-6 Astra", suggestedRole: null },
       { id: "google/gemini-3.8-flash", name: "Gemini 3.8 Flash", suggestedRole: null },
     ],
   },
 ];
 
-export const EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export const EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
 
 /**
  * Launch arguments that set the reasoning effort. An effort the provider does

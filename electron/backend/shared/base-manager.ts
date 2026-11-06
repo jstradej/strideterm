@@ -18,6 +18,8 @@ import {
 import { appendReviewActivity, buildConnectionErrorEvent, shouldSeedConnection } from "./review-activity.js";
 import {
   createGitConfigEnvProbe,
+  authHeaderConfigKeys,
+  connectionGitAuthScopes,
   encodeAuthHeader,
   gitAuthEnvironment,
   sanitizeGitEnvironment,
@@ -25,7 +27,8 @@ import {
 import type { Logger } from "../logger.js";
 import { getLogger } from "../logger.js";
 import type { CredentialStore } from "./credential-store.js";
-import { reviewSourceIdentityKey } from "../../shared/review-source-identity.js";
+import { reviewSourceIdentityKey, sameRemote } from "../../shared/review-source-identity.js";
+import { parseMergeTreeConflicts, type LocalMergeCheck } from "../../shared/review-merge-check.js";
 import { errorMessage } from "../../shared/error-message.js";
 import type { ReviewInfo, ReviewSourceRepository } from "../../shared/types/state.js";
 import { createReviewGitEngine, type ReviewGitEngine } from "../review-git/engine.js";
@@ -166,6 +169,7 @@ interface SyncConnectionCtx {
   trackedPullRequests: Record<string, Record<string, unknown>>;
   detailMap: Record<string, PrSummaryItem>;
   newActivityEvents: unknown[];
+  connectionSnapshot?: ConnectionSnapshotLike;
 }
 
 interface ConnectionSnapshotLike {
@@ -336,6 +340,8 @@ interface BaseProviderManagerOptions {
 interface RunGitOptions {
   login?: string;
   token?: string;
+  /** Remote(s) the command talks to: the token is then sent to those origins only. */
+  authUrl?: string | readonly string[];
 }
 
 interface PanelTemplate {
@@ -533,6 +539,7 @@ export class BaseProviderManager extends EventEmitter {
           trackedPullRequests,
           detailMap,
           newActivityEvents,
+          connectionSnapshot,
         });
         this._seededConnections.add(connection.id);
 
@@ -671,19 +678,27 @@ export class BaseProviderManager extends EventEmitter {
       }
     }
 
+    // Providers that derive attention from state (Azure) list reasons; only the activity-based ones
+    // are acknowledged by opening the PR. Without a list everything is cleared.
+    const reasons = Array.isArray(summary.attentionReasons)
+      ? (summary.attentionReasons as Array<{ label?: string; ackOnSeen?: boolean }>).filter(
+          (reason) => !reason.ackOnSeen,
+        )
+      : null;
+    const attention = reasons
+      ? { attentionReasons: reasons, hasAttention: reasons.length > 0, attentionReason: reasons[0]?.label ?? "" }
+      : { hasAttention: false, attentionReason: "" };
+
     const nextPullRequest = {
       ...(this.snapshot.pullRequests[prKey] || summary),
       lastSeenActivityAt,
-      hasAttention: false,
-      attentionReason: "",
+      ...attention,
       newCommentsCount: 0,
     };
 
     const updateSummaryList = (items: PrSummaryItem[]): PrSummaryItem[] =>
       items.map((item) =>
-        item.prKey === prKey
-          ? { ...item, lastSeenActivityAt, hasAttention: false, attentionReason: "", newCommentsCount: 0 }
-          : item,
+        item.prKey === prKey ? { ...item, lastSeenActivityAt, ...attention, newCommentsCount: 0 } : item,
       );
 
     this.setSnapshot({
@@ -693,7 +708,9 @@ export class BaseProviderManager extends EventEmitter {
         needsMyReview: updateSummaryList(this.snapshot.inbox.needsMyReview),
         myPullRequests: updateSummaryList(this.snapshot.inbox.myPullRequests),
         recentlyUpdated: updateSummaryList(this.snapshot.inbox.recentlyUpdated),
-        needsAttention: this.snapshot.inbox.needsAttention.filter((item) => item.prKey !== prKey),
+        needsAttention: attention.hasAttention
+          ? updateSummaryList(this.snapshot.inbox.needsAttention)
+          : this.snapshot.inbox.needsAttention.filter((item) => item.prKey !== prKey),
       },
       trackedPullRequests: {
         ...this.snapshot.trackedPullRequests,
@@ -724,10 +741,36 @@ export class BaseProviderManager extends EventEmitter {
       });
   }
 
+  /**
+   * Merge HEAD into the PR target in memory (`git merge-tree`, git >= 2.38; the
+   * worktree and index are not touched). Anything but a clean or a conflicted
+   * merge — an older git, a target that was never fetched — is `unknown`.
+   */
+  async checkLocalMerge(cwd: string, targetRefName: string): Promise<LocalMergeCheck> {
+    const targetRef = `origin/${stripRefsPrefix(targetRefName)}`;
+    let headSha = "";
+    try {
+      headSha = (await this.execFileText("git", ["rev-parse", "HEAD"], { cwd })).stdout.trim();
+      await this.execFileText(
+        "git",
+        ["-c", "core.quotePath=false", "merge-tree", "--write-tree", "--name-only", "--no-messages", targetRef, "HEAD"],
+        { cwd },
+      );
+      return { state: "clean", paths: [], headSha, targetRef };
+    } catch (error) {
+      const failed = error as { exitCode?: number | null; stdout?: string };
+      if (headSha && failed.exitCode === 1 && typeof failed.stdout === "string") {
+        const paths = parseMergeTreeConflicts(failed.stdout);
+        if (paths.length) return { state: "conflicts", paths, headSha, targetRef };
+      }
+      return { state: "unknown", paths: [], headSha, targetRef };
+    }
+  }
+
   async runGit(
     cwd: string,
     args: string[],
-    { login, token }: RunGitOptions = {},
+    { login, token, authUrl }: RunGitOptions = {},
   ): Promise<{ stdout: string; stderr: string }> {
     const extraArgs: string[] = [];
     if (process.platform === "win32") {
@@ -736,12 +779,17 @@ export class BaseProviderManager extends EventEmitter {
     const effectiveLogin = login ?? this.defaultGitLogin;
     let env = sanitizeGitEnvironment();
     if (token) {
+      // A token without a scope would go to whatever URL the repository config names (a rewritten origin, an
+      // `insteadOf`), so it is never sent unscoped.
+      if (!authUrl?.length)
+        throw new Error("Refusing to attach credentials: the repository URL to scope them to is unknown.");
       // git >= 2.31 takes the header from the environment, keeping the token off the
       // command line; older (or unidentifiable) gits get `-c http.extraheader=…`.
       if (await this.supportsGitConfigEnv()) {
-        env = gitAuthEnvironment(effectiveLogin, token, env);
+        env = gitAuthEnvironment(effectiveLogin, token, env, authUrl);
       } else {
-        extraArgs.push("-c", `http.extraheader=${encodeAuthHeader(effectiveLogin, token)}`);
+        for (const key of authHeaderConfigKeys(authUrl))
+          extraArgs.push("-c", `${key}=${encodeAuthHeader(effectiveLogin, token)}`);
       }
     }
     // Log only user-visible args (the argv fallback's extraArgs contain credentials)
@@ -821,12 +869,22 @@ export class BaseProviderManager extends EventEmitter {
     const initialization = (async () => {
       const repositoryExists = await exists(path.join(repositoryRoot, ".git"));
       await mkdir(path.dirname(repositoryRoot), { recursive: true });
-      if (!repositoryExists) {
+      if (repositoryExists) {
+        // Review worktrees share this config, so anything running in one can repoint origin.
+        const origin = await this.runGit(repositoryRoot, ["config", "--get", "remote.origin.url"]).then(
+          (result) => result.stdout.trim(),
+          () => "",
+        );
+        if (!sameRemote(origin, remoteUrl)) {
+          this.log.warn("cache repository origin differs from the provider's; restoring it", { repository: repoLabel });
+          await this.runGit(repositoryRoot, ["remote", "set-url", "origin", remoteUrl]);
+        }
+      } else {
         try {
           await this.runGit(
             process.cwd(),
             ["clone", "--no-checkout", "--filter=blob:none", remoteUrl, repositoryRoot],
-            { login, token },
+            { login, token, authUrl: remoteUrl },
           );
         } catch (error) {
           this.log.warn("partial clone failed, retrying with full clone", {
@@ -834,7 +892,11 @@ export class BaseProviderManager extends EventEmitter {
             err: (error as Error)?.message || String(error),
           });
           await rm(repositoryRoot, { recursive: true, force: true }).catch(() => {});
-          await this.runGit(process.cwd(), ["clone", "--no-checkout", remoteUrl, repositoryRoot], { login, token });
+          await this.runGit(process.cwd(), ["clone", "--no-checkout", remoteUrl, repositoryRoot], {
+            login,
+            token,
+            authUrl: remoteUrl,
+          });
         }
       }
       return repositoryRoot;
@@ -871,6 +933,7 @@ export class BaseProviderManager extends EventEmitter {
     localBranch,
     sourceBranch,
     fetchRefspecs,
+    remoteUrl,
     login,
     token,
   }: {
@@ -879,13 +942,19 @@ export class BaseProviderManager extends EventEmitter {
     localBranch: string;
     sourceBranch: string;
     fetchRefspecs: string[];
+    /** The provider's clone URL of the cache repository; the token is scoped to it. */
+    remoteUrl: string;
     login?: string;
     token: string;
   }): Promise<void> {
     // The cache repo is a regular clone, so its common dir is `<cache>/.git` —
     // the same canonical key the review Git engine locks on from a worktree.
     await this.reviewGitLocks.withCommon(path.join(cacheRepoPath, ".git"), async () => {
-      await this.runGit(cacheRepoPath, ["fetch", "origin", ...fetchRefspecs], { login, token });
+      await this.runGit(cacheRepoPath, ["fetch", "origin", ...fetchRefspecs], {
+        login,
+        token,
+        authUrl: remoteUrl,
+      });
 
       await mkdir(path.dirname(worktreePath), { recursive: true });
       await this.runGit(cacheRepoPath, ["worktree", "prune"]).catch(() => {});
@@ -955,7 +1024,7 @@ export class BaseProviderManager extends EventEmitter {
   getReviewGitEngine(): ReviewGitEngine {
     if (!this.reviewGitEngine) {
       this.reviewGitEngine = createReviewGitEngine({
-        git: (cwd, args, auth) => this.runGit(cwd, args, { login: auth?.login, token: auth?.token }),
+        git: (cwd, args, auth) => this.runGit(cwd, args, auth),
         locks: this.reviewGitLocks,
         audit: this.createReviewGitAudit(),
         persistBaseline: async (subject, sha) => {
@@ -1137,7 +1206,9 @@ export class BaseProviderManager extends EventEmitter {
           }
         : {}),
       checkout: (review.checkout as ReviewGitSubject["checkout"]) || null,
-      auth: { login: connection.login, token },
+      // The token's scope comes from the stored connection, never from the review's repository URLs: those are
+      // workspace metadata, and a URL on another host must get no credentials.
+      auth: { login: connection.login, token, authUrl: connectionGitAuthScopes(connection as { orgUrl?: string }) },
     };
   }
 
@@ -1405,6 +1476,7 @@ export class BaseProviderManager extends EventEmitter {
     baseBranch,
     newBranchName,
     repoPathSegment,
+    remoteUrl,
     login,
     ensureCacheRepo,
   }: {
@@ -1415,6 +1487,8 @@ export class BaseProviderManager extends EventEmitter {
     baseBranch: string;
     newBranchName: string;
     repoPathSegment: string;
+    /** The provider's clone URL of the cache repository; the token is scoped to it. */
+    remoteUrl: string;
     login?: string;
     ensureCacheRepo: () => Promise<string>;
   }): Promise<{ rootPath: string; cacheRepoPath: string }> {
@@ -1423,7 +1497,7 @@ export class BaseProviderManager extends EventEmitter {
     await this.runGit(
       cacheRepoPath,
       ["fetch", "origin", `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`],
-      { login, token },
+      { login, token, authUrl: remoteUrl },
     );
 
     const worktreePath = path.join(

@@ -20,11 +20,11 @@ const Host = defineComponent({
 });
 
 /** The sanitized attempt substate, as the backend broadcasts it. */
-function attempt(phase: string): Record<string, unknown> {
+function attempt(phase: string, purpose = "enrol"): Record<string, unknown> {
   return {
     phase,
     email: "owner@example.test",
-    purpose: "enrol",
+    purpose,
     expiresAt: Date.now() + 600_000,
     canResendAt: Date.now(),
     manualOnly: false,
@@ -33,11 +33,11 @@ function attempt(phase: string): Record<string, unknown> {
   };
 }
 
-function setPhase(account: ReturnType<typeof useAccountStore>, phase: string | null): void {
+function setPhase(account: ReturnType<typeof useAccountStore>, phase: string | null, purpose = "enrol"): void {
   account.$patch((state) => {
     state.state = {
       ...state.state,
-      ...(phase === null ? { auth: undefined } : { auth: attempt(phase) as never }),
+      ...(phase === null ? { auth: undefined } : { auth: attempt(phase, purpose) as never }),
     };
   });
 }
@@ -124,6 +124,19 @@ describe("useSignInNotice", () => {
     expect(notifications.persistentToasts).toHaveLength(1);
     wrapper.unmount();
   });
+
+  it.each(["signout-installation", "delete-account"])(
+    "does not show a generic sign-in toast for %s",
+    async (purpose) => {
+      const account = useAccountStore();
+      const notifications = useNotificationStore();
+      const wrapper = mount(Host);
+      setPhase(account, "awaiting-confirmation", purpose);
+      await wrapper.vm.$nextTick();
+      expect(notifications.persistentToasts).toHaveLength(0);
+      wrapper.unmount();
+    },
+  );
 
   it("opens Mobile Account directly when the sign-in notice is clicked", async () => {
     const account = useAccountStore();

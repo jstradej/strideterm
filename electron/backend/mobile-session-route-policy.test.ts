@@ -15,7 +15,12 @@ import {
 
 const PROFILE = "home";
 const WORKSPACES: Record<string, string> = { "ws-home": "home", "ws-work": "work" };
-const CONNECTIONS: Record<string, string> = { "az-home": "home", "az-work": "work" };
+const CONNECTIONS: Record<string, string> = {
+  "az-home": "home",
+  "az-work": "work",
+  "jira-home": "home",
+  "jira-work": "work",
+};
 
 function decide(pathname: string, body: Record<string, unknown> = {}) {
   const input: MobileRouteInput = {
@@ -37,6 +42,40 @@ function decide(pathname: string, body: Record<string, unknown> = {}) {
  *   guarded    allowed, with the blanket profile guard over the targets its body names
  */
 const MOBILE_ROUTE_CLASSIFICATION: Record<string, MobileRouteClass> = {
+  "/api/jira/ensure-workspace": "deny",
+  "/api/jira/connections": "own-check",
+  "/api/jira/queries": "guarded",
+  "/api/jira/own-issues-query": "guarded",
+  "/api/jira/own-identity/verify": "guarded",
+  "/api/jira/own-identity/set": "deny",
+  "/api/jira/recent-searches": "guarded",
+  "/api/jira/recent-searches/remember": "guarded",
+  "/api/jira/recent-issues": "guarded",
+  "/api/jira/recent-issues/viewed": "guarded",
+  "/api/jira/workspace-views/get": "guarded",
+  "/api/jira/workspace-views/save": "guarded",
+  "/api/jira/workspace-project-scope/get": "guarded",
+  "/api/jira/workspace-project-scope/set": "guarded",
+  "/api/jira/workspace-views/rename": "guarded",
+  "/api/jira/workspace-views/reorder": "guarded",
+  "/api/jira/workspace-views/remove": "guarded",
+  "/api/jira/workspace-views/active": "guarded",
+  "/api/jira/workspace-views/refresh": "guarded",
+  "/api/jira/board-view": "guarded",
+  "/api/jira/board-quick-filters": "guarded",
+  "/api/jira/boards": "guarded",
+  "/api/jira/projects": "guarded",
+  "/api/jira/boards/search": "guarded",
+  "/api/jira/attachment/content": "guarded",
+  "/api/jira/comments": "guarded",
+  "/api/jira/issue": "guarded",
+  "/api/jira/search": "guarded",
+  "/api/jira/users/search": "guarded",
+  "/api/jira/transitions": "guarded",
+  "/api/jira/write/preview": "guarded",
+  "/api/jira/write/execute": "guarded",
+  "/api/jira/write/history": "guarded",
+  "/api/jira/write/reconcile": "guarded",
   "/api/ssh/capabilities": "own-check",
   "/api/azure/delete-connection": "deny",
   "/api/azure/save-connection": "deny",
@@ -132,6 +171,8 @@ const MOBILE_ROUTE_CLASSIFICATION: Record<string, MobileRouteClass> = {
   "/api/azure/create-pull-request": "guarded",
   "/api/azure/inbox": "guarded",
   "/api/azure/list-remote-branches": "guarded",
+  "/api/azure/pipelines/agent-start": "guarded",
+  "/api/jira/development/start": "guarded",
   "/api/azure/pipelines/build-log": "guarded",
   "/api/azure/pipelines/cancel": "guarded",
   "/api/azure/pipelines/commits": "guarded",
@@ -327,6 +368,27 @@ const MOBILE_ROUTE_CLASSIFICATION: Record<string, MobileRouteClass> = {
 };
 
 describe("mobile session route policy", () => {
+  test("Jira inbox creation is unavailable to mobile sessions", () => {
+    expect(decide("/api/jira/ensure-workspace").allow).toBe(false);
+    expect(decide("/api/jira/own-identity/set").allow).toBe(false);
+  });
+
+  test("Jira writes guard the connection named inside the issue ref", () => {
+    const ref = (connectionId: string) => ({ connectionId, issueId: "10001", issueKey: "ABC-1" });
+    for (const route of ["/api/jira/transitions", "/api/jira/write/preview", "/api/jira/write/execute"]) {
+      expect(decide(route, { ref: ref("jira-home") }).allow).toBe(true);
+      expect(decide(route, { ref: ref("jira-work") })).toMatchObject({
+        allow: false,
+        reason: "target-outside-profile",
+      });
+    }
+    expect(decide("/api/jira/write/history", { connectionId: "jira-work" }).allow).toBe(false);
+  });
+
+  test("Jira remote reads enforce connection ownership", () => {
+    expect(decide("/api/jira/search", { connectionId: "jira-home" }).allow).toBe(true);
+    expect(decide("/api/jira/search", { connectionId: "jira-work" }).allow).toBe(false);
+  });
   test("every /api literal in remote-server.ts is classified, and the policy agrees with the table", () => {
     const source = fs.readFileSync(path.join(__dirname, "remote-server.ts"), "utf8");
     const literals = [...new Set([...source.matchAll(/"(\/api\/[^"]*)"/g)].map((m) => m[1]))].sort();
@@ -450,6 +512,10 @@ describe("mobile session route policy", () => {
     expect(decide("/api/task/stop", { workspaceId: "ws-home" })).toEqual({ allow: true });
     expect(decide("/api/task/stop", { sessionId: "ws-home:panel-1" })).toEqual({ allow: true });
     expect(decide("/api/azure/pipelines/run", { connectionId: "az-home" })).toEqual({ allow: true });
+    // An agent on a pipeline run is started from the phone's webview like from the desktop: the profile is the
+    // only gate, no extra device grant.
+    expect(decide("/api/azure/pipelines/agent-start", { connectionId: "az-home" })).toEqual({ allow: true });
+    expect(decide("/api/azure/pipelines/agent-start", { connectionId: "az-work" })).toMatchObject({ allow: false });
     // The renderer generates the id of a new workspace on the client, so creating one sends an
     // id the state has never seen: there is nothing behind it to protect.
     expect(decide("/api/workspace/save", { workspace: { id: "workspace-new-uuid", cwd: "/anywhere" } })).toEqual({

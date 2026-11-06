@@ -310,7 +310,7 @@ function onContextMenu(e: MouseEvent) {
 
 .gct-node__row--staging .gct-node__name {
   flex: 1 1 0;
-  min-width: 0;
+  min-width: 3em;
 }
 
 .gct-node__row--staging .gct-node__scopes {
@@ -439,5 +439,24 @@ function onContextMenu(e: MouseEvent) {
   list-style: none;
   padding: 0;
   margin: 0;
+}
+
+@media (max-height: 500px) {
+  .gct-node__row--grouped .gct-node__check-target {
+    width: 32px;
+  }
+
+  .gct-node__scope {
+    min-width: 34px;
+  }
+
+  .gct-node__actions {
+    gap: 4px;
+  }
+
+  .gct-node__actions--grouped {
+    flex-basis: 134px;
+    width: 134px;
+  }
 }
 </style>

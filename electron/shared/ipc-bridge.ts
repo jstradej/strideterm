@@ -1,11 +1,22 @@
 import type { StatePayload, RecoveryResult } from "./types/state.js";
+import type { JiraWorkspaceViewInput, JiraWorkspaceViewsState } from "./types/jira-workspace-views.js";
+import type { JiraSmartFilterId } from "./jira-smart-filters.js";
 import type {
   AzureClosedPrCleanupStarted,
   ReviewGitStarted,
   ReviewPrActionConfirmationResult,
 } from "./types/ipc-results.js";
 import type { StartPullRequestReviewInput, StartPullRequestReviewResult } from "./pull-request-review.js";
-import type { StartReviewAgentPreparation } from "../backend/ipc-schemas.js";
+import type { StartPipelineAgentInput, StartPipelineAgentResult } from "./pipeline-agent.js";
+import type { StartJiraDevelopmentInput, StartJiraDevelopmentResult } from "./jira-development.js";
+import type {
+  JiraAttachmentUploadResultDto,
+  JiraWriteConfirmationDto,
+  JiraWriteExecutePayload,
+  JiraWriteInvokeResultDto,
+  JiraWritePreviewPayload,
+  StartReviewAgentPreparation,
+} from "../backend/ipc-schemas.js";
 import type { MobileConnectedDevice } from "./mobile-session-events.js";
 import type { RemoteBrowserSession } from "./remote-access.js";
 import type {
@@ -126,6 +137,14 @@ import type { AccountUiState } from "../backend/account/account-state.js";
 
 export type { StatePayload };
 
+export interface FilePopoutPayload {
+  rootPath: string;
+  relativePath: string;
+  name: string;
+  content?: string;
+  dirty?: boolean;
+}
+
 export interface TerminalSize {
   cols: number;
   rows: number;
@@ -230,6 +249,216 @@ export interface StridetermAPI {
   reorderProjects: (projectIds: string[]) => Promise<unknown>;
   updateSettings: (settings: SettingsPayload) => Promise<unknown>;
 
+  // Jira issue provider (read routes plus desktop-only Data Center connection setup).
+  listJiraConnections: () => Promise<unknown>;
+  getJiraRepoBindingPreference: (payload: { connectionId: string; projectKey: string }) => Promise<unknown>;
+  ensureJiraWorkspace: () => Promise<unknown>;
+  previewJiraTaskContext: (payload: {
+    refs: Array<{ provider: "jira"; connectionId: string; issueId: string; issueKey: string }>;
+    repo: {
+      provider: "azure" | "github";
+      connectionId: string;
+      repoId: string;
+      projectId?: string;
+      repoName: string;
+      remoteUrl: string;
+      cwd: string;
+    };
+    baseBranch: string;
+    branch: string;
+    checkoutMode: "existing" | "worktree";
+    taskConfig: { description: string; selectedFields: string[] };
+  }) => Promise<unknown>;
+  getJiraTaskContext: (workspaceId: string) => Promise<unknown>;
+  attachJiraIssueToWorkspace: (payload: {
+    workspaceId: string;
+    ref: { connectionId: string; issueId: string; issueKey: string };
+  }) => Promise<unknown>;
+  detachJiraIssueFromWorkspace: (payload: {
+    workspaceId: string;
+    ref: { connectionId: string; issueId: string; issueKey: string };
+  }) => Promise<unknown>;
+  saveJiraCommentDraft: (payload: {
+    sourceWorkspaceId: string;
+    ref: { connectionId: string; issueId: string; issueKey: string };
+    body: string;
+  }) => Promise<unknown>;
+  listJiraCommentDrafts: (workspaceId: string) => Promise<unknown>;
+  deleteJiraCommentDraft: (payload: { sourceWorkspaceId: string; draftId: string }) => Promise<unknown>;
+  saveJiraConnection: (connection: {
+    id?: string;
+    label: string;
+    deployment: "cloud" | "data-center";
+    webUrl: string;
+    apiBaseUrl: string;
+    email?: string;
+    apiToken?: string;
+    pat?: string;
+    authMode?: "pat" | "apim";
+    subscriptionKey?: string;
+    subscriptionHeaderName?: string;
+    clientCertificatePath?: string;
+    clientCertificatePassword?: string;
+    clearClientCertificatePassword?: boolean;
+    accountPurpose?: "personal" | "technical";
+  }) => Promise<unknown>;
+  testJiraConnection: (connection: {
+    id?: string;
+    label: string;
+    deployment: "cloud" | "data-center";
+    webUrl: string;
+    apiBaseUrl: string;
+    email?: string;
+    apiToken?: string;
+    pat?: string;
+    authMode?: "pat" | "apim";
+    subscriptionKey?: string;
+    subscriptionHeaderName?: string;
+    clientCertificatePath?: string;
+    clientCertificatePassword?: string;
+    clearClientCertificatePassword?: boolean;
+    accountPurpose?: "personal" | "technical";
+  }) => Promise<unknown>;
+  deleteJiraConnection: (connectionId: string) => Promise<unknown>;
+  verifyJiraConnection: (connectionId: string) => Promise<unknown>;
+  updateJiraConnectionMetadata: (payload: {
+    connectionId: string;
+    label: string;
+    accountPurpose: "personal" | "technical";
+    issueKeyPrefixes: string[];
+    defaultJql: string;
+    projectKeys: string[];
+    pollSeconds: number;
+  }) => Promise<unknown>;
+  verifyJiraOwnIdentity: (payload: { connectionId: string; userId: string }) => Promise<unknown>;
+  setJiraOwnIdentity: (payload: { connectionId: string; userId: string }) => Promise<unknown>;
+  setJiraCommentAttribution: (payload: {
+    enabled: boolean;
+    text: string;
+    position: "before" | "after";
+  }) => Promise<unknown>;
+  setJiraAgentAttachmentLimits: (payload: { maxFiles: number; maxMegabytes: number }) => Promise<unknown>;
+  buildJiraOwnIssuesQuery: (payload: {
+    connectionId: string;
+    baseJql?: string;
+    personalScope?: "open" | "all";
+    projectKeys?: string[];
+    smartFilters?: JiraSmartFilterId[];
+  }) => Promise<{ jql: string; identityLabel: string }>;
+  listJiraQueries: (connectionId: string) => Promise<unknown>;
+  getJiraRecentSearches: (payload: { connectionId: string; limit?: number }) => Promise<unknown>;
+  getJiraWorkspaceViews: (payload: { workspaceId: string }) => Promise<JiraWorkspaceViewsState>;
+  saveJiraWorkspaceView: (payload: {
+    workspaceId: string;
+    view: JiraWorkspaceViewInput;
+  }) => Promise<JiraWorkspaceViewsState>;
+  getJiraWorkspaceProjectScope: (payload: { workspaceId: string; connectionId: string }) => Promise<string[] | null>;
+  setJiraWorkspaceProjectScope: (payload: {
+    workspaceId: string;
+    connectionId: string;
+    projectKeys: string[] | null;
+  }) => Promise<string[] | null>;
+  renameJiraWorkspaceView: (payload: {
+    workspaceId: string;
+    viewId: string;
+    title: string;
+  }) => Promise<JiraWorkspaceViewsState>;
+  reorderJiraWorkspaceViews: (payload: { workspaceId: string; viewIds: string[] }) => Promise<JiraWorkspaceViewsState>;
+  removeJiraWorkspaceView: (payload: { workspaceId: string; viewId: string }) => Promise<JiraWorkspaceViewsState>;
+  setJiraWorkspaceActiveView: (payload: { workspaceId: string; viewId: string }) => Promise<JiraWorkspaceViewsState>;
+  refreshJiraWorkspaceViews: (payload: { workspaceId: string; viewId?: string }) => Promise<JiraWorkspaceViewsState>;
+  rememberJiraSearch: (payload: { connectionId: string; jql: string; label?: string }) => Promise<unknown>;
+  getJiraRecentIssues: (payload: { connectionId: string; limit?: number }) => Promise<unknown>;
+  rememberJiraIssueViewed: (payload: {
+    ref: { provider: "jira"; connectionId: string; issueId: string; issueKey: string };
+  }) => Promise<unknown>;
+  listJiraFavoriteFilters: (connectionId: string) => Promise<unknown>;
+  getJiraSavedFilter: (payload: { connectionId: string; filterId: string }) => Promise<unknown>;
+  saveJiraQuery: (payload: {
+    id?: string;
+    connectionId: string;
+    name: string;
+    jql: string;
+    notificationsEnabled?: boolean;
+  }) => Promise<unknown>;
+  deleteJiraQuery: (queryId: string) => Promise<unknown>;
+  getJiraWriteHistory: (payload: { connectionId?: string; issueId?: string; limit?: number }) => Promise<unknown>;
+  reconcileJiraWrite: (journalId: string) => Promise<{
+    journalId: string;
+    status: "reconciled" | "unknown";
+    outcome: "applied" | "not-applied" | "unresolved";
+  }>;
+  listJiraProjects: (connectionId: string) => Promise<unknown>;
+  listJiraBoards: (connectionId: string) => Promise<unknown>;
+  searchJiraBoards: (payload: {
+    connectionId: string;
+    query?: string;
+    cursor?: string;
+    limit?: number;
+    projectKeys?: string[];
+  }) => Promise<unknown>;
+  getJiraBoardView: (payload: {
+    connectionId: string;
+    boardId: number;
+    mode?: "issues" | "backlog" | "sprints";
+    cursor?: string;
+    sprintId?: number;
+    quickFilterIds?: number[];
+    assignee?: { kind: "user"; id: string } | { kind: "unassigned" };
+    doneWithinDays?: 7 | 14 | 30 | 90;
+    cacheOnly?: boolean;
+    forceRefresh?: boolean;
+    refreshInBackground?: boolean;
+    projectKeys?: string[];
+  }) => Promise<unknown>;
+  listJiraBoardQuickFilters: (payload: {
+    connectionId: string;
+    boardId: number;
+    limit?: number;
+    cursor?: string;
+    cacheOnly?: boolean;
+    forceRefresh?: boolean;
+    refreshInBackground?: boolean;
+  }) => Promise<unknown>;
+  searchJiraUsers: (payload: { connectionId: string; query: string; limit?: number }) => Promise<unknown>;
+  listJiraTransitions: (payload: {
+    ref: { connectionId: string; issueId: string; issueKey: string };
+  }) => Promise<unknown>;
+  listJiraComments: (payload: { ref: { connectionId: string; issueId: string; issueKey: string } }) => Promise<unknown>;
+  previewJiraWrite: (payload: JiraWritePreviewPayload) => Promise<JiraWriteConfirmationDto>;
+  executeJiraWrite: (payload: JiraWriteExecutePayload) => Promise<JiraWriteInvokeResultDto>;
+  searchJiraIssues: (payload: {
+    connectionId: string;
+    jql: string;
+    limit?: number;
+    cursor?: string;
+    cacheOnly?: boolean;
+    forceRefresh?: boolean;
+    refreshInBackground?: boolean;
+    projectKeys?: string[];
+  }) => Promise<unknown>;
+  getJiraIssue: (payload: {
+    connectionId: string;
+    issueId: string;
+    cacheOnly?: boolean;
+    forceRefresh?: boolean;
+    refreshInBackground?: boolean;
+  }) => Promise<unknown>;
+  getJiraAttachmentContent: (payload: {
+    connectionId: string;
+    issueId: string;
+    attachmentId: string;
+  }) => Promise<{ mediaType: string; bytes: Uint8Array }>;
+  saveJiraIssueAttachment: (payload: {
+    connectionId: string;
+    issueId: string;
+    attachmentId: string;
+  }) => Promise<{ saved: boolean; filePath?: string }>;
+  uploadJiraIssueAttachment: (payload: {
+    connectionId: string;
+    issueId: string;
+  }) => Promise<JiraAttachmentUploadResultDto>;
+
   // Azure integration
   verifyAzureConnection: (connection: AzureConnectionPayload) => Promise<unknown>;
   saveAzureConnection: (connection: AzureConnectionPayload) => Promise<unknown>;
@@ -327,6 +556,10 @@ export interface StridetermAPI {
     projectName: string;
     buildId: number | string;
   }) => Promise<unknown>;
+  /** Starts an agent on a finished run and resolves at once; the outcome arrives as `operation:finished`. */
+  startAzurePipelineAgent: (payload: StartPipelineAgentInput) => Promise<StartPipelineAgentResult>;
+  /** Starts development on a Jira issue and resolves at once; the outcome arrives as `operation:finished`. */
+  startJiraDevelopment: (payload: StartJiraDevelopmentInput) => Promise<StartJiraDevelopmentResult>;
 
   // GitHub integration
   verifyGitHubConnection: (connection: GithubConnectionPayload) => Promise<unknown>;
@@ -747,6 +980,28 @@ export interface StridetermAPI {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   getDiffPopoutInit: () => Promise<Record<string, any> | null>;
 
+  // Editable file popout — one file in its own Monaco window (desktop only).
+  openFilePopout: (payload: FilePopoutPayload) => Promise<{ ok?: boolean; error?: string }>;
+  getFilePopoutInit: () => Promise<FilePopoutPayload | null>;
+
+  // Absolute path of a file dropped from the OS file manager ("" when the File has none). Desktop only.
+  getPathForDroppedFile: (file: File) => string;
+
+  // Jira issue popout — show one issue in its own window. Desktop-only: the remote transport has neither method.
+  openJiraIssuePopout: (payload: {
+    workspaceId: string;
+    ref: { connectionId: string; issueId: string; issueKey: string };
+    summary?: string;
+  }) => Promise<{ focused: boolean }>;
+  // Called from the popout window itself: which issue, workspace and profile it was opened for.
+  getJiraIssuePopoutInit: () => Promise<{
+    openerWindowId: string;
+    profileId: string;
+    workspaceId: string;
+    ref: { connectionId: string; issueId: string; issueKey: string };
+    summary?: string;
+  } | null>;
+
   // File manager
   fileList: (p: FileList) => Promise<unknown>;
   fileTree: (p: FileList) => Promise<unknown>;
@@ -843,7 +1098,7 @@ export interface StridetermAPI {
   /** A background closed-PR cleanup finished. UNVALIDATED here; parsed at the transport boundary. */
   onAzureClosedPrCleanupFinished: (handler: (payload: unknown) => void) => void;
   /** A long-running runtime operation finished. UNVALIDATED here; parsed at the transport boundary. */
-  onOperationFinished: (handler: (payload: unknown) => void) => void;
+  onOperationFinished: (handler: (payload: unknown) => void) => () => void;
   onReviewGitOperation: (handler: (payload: unknown) => void) => void;
   onMobileStatus: (
     handler: (

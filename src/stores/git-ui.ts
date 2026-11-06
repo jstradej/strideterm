@@ -4,6 +4,7 @@ import type { Transport, CallableTransport } from "../transport.js";
 import type { StatePayload } from "../../electron/shared/types/state.js";
 import { operationFinishedSchema, type OperationFinished } from "../../electron/shared/operation-events.js";
 import { rlog } from "../lib/renderer-log.js";
+import { userFacingMessage } from "../lib/error-message.js";
 import { isManagedReviewBranch, sourceBranchName } from "../../electron/shared/review-source-identity.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1415,14 +1416,16 @@ export const useGitUiStore = defineStore("git-ui", () => {
     // Destructive actions dispatched by buildDestructiveConfirm
     if (pending.isDestructive) {
       const { action, payload: p } = pending;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const api = _api as any;
+      const api = _api as CallableTransport;
       if (action === "deleteLocalTag") {
         await runGitAction(
           workspaceId,
           "delete-tag",
           () => api.gitDeleteTag({ workspaceId, tagName: p!.tagName, rootPath }),
-          { rootPath, requireRefreshBeforeRetry: true },
+          {
+            rootPath,
+            requireRefreshBeforeRetry: true,
+          },
         );
         await gitListTags(workspaceId);
       } else if (action === "deleteRemoteTag") {
@@ -1471,8 +1474,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
       return;
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const api = _api as any;
+    const api = _api as CallableTransport;
     if (pending.type === "abort") {
       await runGitAction(workspaceId, "abort", () => api.gitAbortOperation({ workspaceId, rootPath }), {
         requireRefreshBeforeRetry: true,
@@ -1599,7 +1601,12 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   function confirmForcePushWithLease(
     workspaceId: string,
-    { branch, remote, behindCount }: { branch: string; remote: string; behindCount: number },
+    {
+      branch,
+      remote,
+      behindCount,
+      target = branch,
+    }: { branch: string; remote: string; behindCount: number; target?: string },
     snapshot: GitSnapshot | null = null,
   ): void {
     setPendingDestructiveAction(
@@ -1609,7 +1616,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
         severity: "danger",
         title: "Force push (with lease)",
         body:
-          `Force-push \`${branch}\` to \`${remote}/${branch}\`? Remote is ${behindCount} commit(s) ahead — those commits will be overwritten. ` +
+          `Force-push \`${branch}\` to \`${remote}/${target}\`? Remote is ${behindCount} commit(s) ahead — those commits will be overwritten. ` +
           "`--force-with-lease` aborts if the remote branch moved away from the commit it was checked against, but users who already pulled will need to reset their local branch.",
         confirmLabel: "Force push",
         payload: { branch, remote },
@@ -2285,7 +2292,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
       ui.remoteBranchesError = "";
     } catch (error) {
       ui.remoteBranches = [];
-      ui.remoteBranchesError = (error as Error)?.message || "Failed to load remote branches.";
+      ui.remoteBranchesError = userFacingMessage(error, "Failed to load remote branches.");
     } finally {
       ui.remoteBranchesLoading = false;
     }

@@ -159,8 +159,18 @@ export const useAccountStore = defineStore("account", () => {
     email: string,
     purpose: Parameters<StridetermAPI["accountBeginSignIn"]>[0]["purpose"],
     offerId?: string,
+    confirmationPhrase?: string,
   ) =>
-    run(() => api!.accountBeginSignIn!({ email, purpose, ...(offerId === undefined ? {} : { offerId }) }), undefined);
+    run(
+      () =>
+        api!.accountBeginSignIn!({
+          email,
+          purpose,
+          ...(offerId === undefined ? {} : { offerId }),
+          ...(confirmationPhrase === undefined ? {} : { confirmationPhrase }),
+        }),
+      undefined,
+    );
   const retryOnlineBootstrap = () => run(() => api!.accountRetryOnlineBootstrap!(), undefined);
   const cancelOnlineBootstrap = () => run(() => api!.accountCancelOnlineBootstrap!(), undefined);
   const confirmSignIn = () => run(() => api!.accountConfirmSignIn!(), undefined);

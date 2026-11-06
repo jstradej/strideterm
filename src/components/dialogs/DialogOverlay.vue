@@ -47,6 +47,7 @@ const DIALOGS = {
   ConnectionDialog: defineAsyncComponent(() => import("./ConnectionDialog.vue")),
   AzurePipelineRunDialog: defineAsyncComponent(() => import("./AzurePipelineRunDialog.vue")),
   QuickFixWizardDialog: defineAsyncComponent(() => import("./QuickFixWizardDialog.vue")),
+  JiraUpdateDialog: defineAsyncComponent(() => import("./JiraUpdateDialog.vue")),
   BusyOverlay: defineAsyncComponent(() => import("./BusyOverlay.vue")),
   TaskHookCheckDialog: defineAsyncComponent(() => import("./TaskHookCheckDialog.vue")),
   TaskRecoveryDialog: defineAsyncComponent(() => import("./TaskRecoveryDialog.vue")),

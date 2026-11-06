@@ -25,8 +25,8 @@ import {
 } from "./mobile-crypto.js";
 import { createRelayE2eOfferStore, type RelayE2eOfferStore } from "./mobile-relay-e2e-offer-store.js";
 import { createRelayE2eSessionStore, type RelayE2eSessionStore } from "./mobile-relay-e2e-session-store.js";
-import { RELAY_PROTOCOL_VERSION } from "./mobile-relay-protocol.js";
-import type { Command, MobileDeviceRecord } from "./mobile-schemas.js";
+import { RELAY_MOBILE_SESSION_IDLE_TTL_MS, RELAY_PROTOCOL_VERSION } from "./mobile-relay-protocol.js";
+import { RemoteWebSessionTicketSchema, type Command, type MobileDeviceRecord } from "./mobile-schemas.js";
 import { createStore } from "../store.js";
 import { createCredentialStore } from "../shared/credential-store.js";
 import type { AppState } from "../../shared/types/state.js";
@@ -2549,5 +2549,117 @@ describe("relay end-to-end encryption is required, not merely offered", () => {
     expect(result.status).toBe("succeeded");
     expect(result.data).toMatchObject({ transport: "legacy" });
     expect(markRelayE2eSeen).not.toHaveBeenCalled();
+  });
+});
+
+// ADR 0041. The ticket tells the phone the idle TTL its session WILL have, so the phone can tell a
+// session that has certainly idle-expired from one worth resuming. The value is the control plane's
+// policy for a relay ticket, bound at issuance, and the desktop's own fallback otherwise.
+describe("remote.webSession.issue binds and reports the session idle TTL", () => {
+  const RELAY_ORIGIN = "https://relay.test.invalid";
+  const TUNNEL_ORIGIN = "https://example.trycloudflare.com"; // matches createFakeRuntime's getPayload()
+  const READY_RELAY = { enabled: true, state: "ready", relayOrigin: RELAY_ORIGIN };
+  const NINETY_MINUTES = 90 * 60_000;
+  const FOUR_HOURS = 4 * 60 * 60_000;
+
+  /** A dispatcher whose relay reports [policy] through `mobileSessionIdleTtlMs` (a getter, read per call). */
+  async function relayWithPolicy(policy: () => number | null, relay = READY_RELAY) {
+    return createFixture({}, null, null, {
+      relay: { status: () => relay, mobileSessionIdleTtlMs: policy },
+    });
+  }
+
+  function issue(allowedOrigin: string, n = 1) {
+    return makeCommand({
+      type: "remote.webSession.issue",
+      commandId: `cmd-idle-${n}`,
+      idempotencyKey: `idem-idle-${n}`,
+      payload: { workspaceId: "ws-1", allowedOrigin },
+    });
+  }
+
+  const device = () => makeDevice({ capabilities: ["remote.webSession"] });
+
+  test("a relay ticket carries the policy, and the record the server redeems carries the same value", async () => {
+    const { dispatcher, ticketStore } = await relayWithPolicy(() => NINETY_MINUTES);
+    const result = await dispatcher.dispatch(issue(RELAY_ORIGIN), device());
+
+    expect(result.status).toBe("succeeded");
+    const data = result.data as { ticketId: string; ticketSecret: string; sessionIdleTtlMs: number };
+    expect(data.sessionIdleTtlMs).toBe(NINETY_MINUTES);
+    const record = ticketStore.consumeTicket(data.ticketId, data.ticketSecret, RELAY_TICKET_CONTEXT);
+    expect(record?.sessionIdleTtlMs).toBe(NINETY_MINUTES);
+  });
+
+  test("with no policy, a relay ticket reports the desktop's fallback and binds nothing", async () => {
+    const { dispatcher, ticketStore } = await relayWithPolicy(() => null);
+    const result = await dispatcher.dispatch(issue(RELAY_ORIGIN), device());
+
+    const data = result.data as { ticketId: string; ticketSecret: string; sessionIdleTtlMs: number };
+    expect(data.sessionIdleTtlMs).toBe(RELAY_MOBILE_SESSION_IDLE_TTL_MS);
+    expect(data.sessionIdleTtlMs).toBe(1_800_000);
+    const record = ticketStore.consumeTicket(data.ticketId, data.ticketSecret, RELAY_TICKET_CONTEXT);
+    expect(record).not.toBeNull();
+    expect(record).not.toHaveProperty("sessionIdleTtlMs");
+  });
+
+  test("a relay that cannot state a policy at all (an older wiring) is the same as no policy", async () => {
+    const { dispatcher } = await createFixture({}, READY_RELAY);
+    const result = await dispatcher.dispatch(issue(RELAY_ORIGIN), device());
+    expect(result.data).toMatchObject({ transport: "relay", sessionIdleTtlMs: RELAY_MOBILE_SESSION_IDLE_TTL_MS });
+  });
+
+  test("a LEGACY ticket ignores the policy: a cookie alone opens that session, so it keeps the fallback", async () => {
+    // The relay is not attached, so the dispatcher falls back to the tunnel even though a policy exists.
+    const { dispatcher, ticketStore } = await relayWithPolicy(() => NINETY_MINUTES, {
+      enabled: true,
+      state: "connecting",
+      relayOrigin: RELAY_ORIGIN,
+    });
+    const result = await dispatcher.dispatch(issue(TUNNEL_ORIGIN), device());
+
+    expect(result.status).toBe("succeeded");
+    const data = result.data as {
+      ticketId: string;
+      ticketSecret: string;
+      transport: string;
+      sessionIdleTtlMs: number;
+    };
+    expect(data.transport).toBe("legacy");
+    expect(data.sessionIdleTtlMs).toBe(RELAY_MOBILE_SESSION_IDLE_TTL_MS);
+    expect(ticketStore.consumeTicket(data.ticketId, data.ticketSecret, TICKET_CONTEXT)).not.toHaveProperty(
+      "sessionIdleTtlMs",
+    );
+  });
+
+  test("the value is read at mint time and bound per ticket: a later policy change leaves an issued ticket alone", async () => {
+    let policy: number | null = NINETY_MINUTES;
+    const { dispatcher, ticketStore } = await relayWithPolicy(() => policy);
+
+    const first = (await dispatcher.dispatch(issue(RELAY_ORIGIN, 1), device())).data as {
+      ticketId: string;
+      ticketSecret: string;
+      sessionIdleTtlMs: number;
+    };
+    policy = FOUR_HOURS;
+    const second = (await dispatcher.dispatch(issue(RELAY_ORIGIN, 2), device())).data as {
+      ticketId: string;
+      ticketSecret: string;
+      sessionIdleTtlMs: number;
+    };
+
+    expect(first.sessionIdleTtlMs).toBe(NINETY_MINUTES);
+    expect(second.sessionIdleTtlMs).toBe(FOUR_HOURS);
+    expect(ticketStore.consumeTicket(first.ticketId, first.ticketSecret, RELAY_TICKET_CONTEXT)?.sessionIdleTtlMs).toBe(
+      NINETY_MINUTES,
+    );
+  });
+
+  test("the result is a valid protocol ticket, so the phone's generated parser reads the new field", async () => {
+    const { dispatcher } = await relayWithPolicy(() => NINETY_MINUTES);
+    const result = await dispatcher.dispatch(issue(RELAY_ORIGIN), device());
+    const parsed = RemoteWebSessionTicketSchema.safeParse(result.data);
+    expect(parsed.success).toBe(true);
+    expect(parsed.data?.sessionIdleTtlMs).toBe(NINETY_MINUTES);
   });
 });

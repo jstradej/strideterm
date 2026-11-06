@@ -173,6 +173,26 @@ export function buildWorkspaceCards({
     const worktreeMerged = !isReviewChild && gitSnapshot?.branchMerged;
     const prStatus = prStatusInfo?.status || (worktreeMerged ? "completed" : null);
     const reviewProviderLabel = workspace.review?.provider === "github" ? "GitHub review" : "Azure review";
+    // A managed checkout with no pull request yet (Quick fix, Fix with agent) is a new branch, not a review. The badge
+    // draws the kind only while the icon is still the one inherited from the inbox — an icon picked in Edit workspace
+    // stays.
+    const newBranch = isReviewChild && !workspace.review?.pullRequest;
+    const workItems = ((workspace as WorkspaceState & { workItems?: unknown[] }).workItems || []) as Array<{
+      ref: { provider: "jira"; connectionId: string; issueId: string; issueKey: string };
+      summary?: string;
+      status?: string;
+    }>;
+    // A branch started from a Jira issue is named after it, so the card leads with the ticket instead of "New branch".
+    const jiraBranch = newBranch && workItems.length > 0;
+    const parentIcon = byId.get(getParentWorkspaceId(workspace) || "")?.icon;
+    const badgeGlyph =
+      isReviewChild && (!workspace.icon || workspace.icon === parentIcon)
+        ? jiraBranch
+          ? "jira-branch"
+          : newBranch
+            ? "new-branch"
+            : "review"
+        : null;
     const liveTask = taskRunnerSnapshot?.[workspace.id];
     const taskState = liveTask?.state || workspace.task?.state;
     const agentActivity = agentActivityByWorkspace.get(workspace.id);
@@ -189,17 +209,25 @@ export function buildWorkspaceCards({
     const summary =
       workspace.kind === "task" && taskSummary
         ? taskSummary
-        : workspace.kind === "docker"
-          ? "Docker"
-          : workspace.kind === "azure"
-            ? `${workspace.cwd || "Azure inbox"}${workspace.panels?.length ? ` \u00B7 ${workspace.panels.length} review tabs` : ""}`
-            : workspace.kind === "github"
-              ? `${workspace.cwd || "GitHub inbox"}${workspace.panels?.length ? ` \u00B7 ${workspace.panels.length} review tabs` : ""}`
-              : isReviewChild
-                ? `${workspace.review?.pullRequest ? reviewProviderLabel : "New branch"} \u00B7 ${gitSnapshot?.branch || `${workspace.panels.length} tabs`}${gitSnapshot?.dirty ? ` \u00B7 ${gitSnapshot.dirtyCount} dirty` : ""}`
-                : gitSnapshot?.available
-                  ? `${gitSnapshot.branch}${gitSnapshot.dirty ? ` \u00B7 ${gitSnapshot.dirtyCount} dirty` : ""}`
-                  : `${workspace.panels.length} tabs`;
+        : workspace.kind === "jira-board"
+          ? "Jira board"
+          : workspace.kind === "jira"
+            ? "Jira inbox"
+            : workspace.kind === "docker"
+              ? "Docker"
+              : workspace.kind === "azure"
+                ? `${workspace.cwd || "Azure inbox"}${workspace.panels?.length ? ` \u00B7 ${workspace.panels.length} review tabs` : ""}`
+                : workspace.kind === "github"
+                  ? `${workspace.cwd || "GitHub inbox"}${workspace.panels?.length ? ` \u00B7 ${workspace.panels.length} review tabs` : ""}`
+                  : jiraBranch
+                    ? gitSnapshot?.dirty
+                      ? `${gitSnapshot.dirtyCount} dirty`
+                      : `${workspace.panels.length} tabs`
+                    : isReviewChild
+                      ? `${workspace.review?.pullRequest ? reviewProviderLabel : "New branch"} \u00B7 ${gitSnapshot?.branch || `${workspace.panels.length} tabs`}${gitSnapshot?.dirty ? ` \u00B7 ${gitSnapshot.dirtyCount} dirty` : ""}`
+                      : gitSnapshot?.available
+                        ? `${gitSnapshot.branch}${gitSnapshot.dirty ? ` \u00B7 ${gitSnapshot.dirtyCount} dirty` : ""}`
+                        : `${workspace.panels.length} tabs`;
 
     // Task-agent-specific affordances: stable "#N" suffix on the display name
     // (via shared helper so Telegram alerts use the same string) and a
@@ -242,6 +270,8 @@ export function buildWorkspaceCards({
       id: workspace.id,
       index: index + 1,
       icon: workspace.icon,
+      badgeGlyph,
+      newBranch,
       name: displayName,
       active,
       color: safeColor(workspace.color),
@@ -251,6 +281,8 @@ export function buildWorkspaceCards({
       attentionFresh: isFreshAttention(attention),
       attentionTooltip,
       kind: workspace.kind || "terminal",
+      workItems,
+      inlineWorkItems: jiraBranch,
       gitAvailable: !!gitSnapshot?.available,
       depth,
       checksState,

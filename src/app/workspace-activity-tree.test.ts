@@ -56,7 +56,7 @@ describe("buildActivityForest — roles and deduplication", () => {
     expect(clusters[0].nodes[1].payload).toBe("leaf");
   });
 
-  // The screenshot case: `Azure DevOps → mhub PR #30746 → pr-30746`, where the
+  // The screenshot case: `Azure DevOps → orders PR #30746 → pr-30746`, where the
   // PR and its task are both recent.
   it("a parent and its child that are BOTH selected make one cluster, each drawn once", () => {
     const workspaces = [ws("azure"), child("pr", "azure"), child("task", "pr")];

@@ -13,7 +13,14 @@ import AzurePipelinesTab from "./AzurePipelinesTab.vue";
 import { apiKey } from "../../../types/keys.js";
 import { useAppStore } from "../../../stores/app.js";
 import { useAzurePipelinesStore } from "../../../stores/azure-pipelines.js";
+import { useNotificationStore } from "../../../stores/notifications.js";
+import { startPipelineAgentSchema } from "../../../../electron/shared/pipeline-agent.js";
+import { openPathInFilesTab } from "../../../app/open-in-files-tab.js";
 import type { Transport } from "../../../transport.js";
+
+vi.mock("../../../app/open-in-files-tab.js", () => ({ openPathInFilesTab: vi.fn(async () => "opened") }));
+
+const BRIEF = "C:/work/fix/.strideterm/pipeline-run/540/BRIEF.md";
 
 const PIPELINES = [
   {
@@ -214,5 +221,169 @@ describe("AzurePipelinesTab", () => {
     expect(capturedDownload).toBe("ci-build-run-555.log");
 
     vi.restoreAllMocks();
+  });
+
+  describe("Fix with agent", () => {
+    async function openRuns() {
+      const wrapper = mountTab();
+      await flushPromises();
+      await wrapper.findAll("tbody tr")[0].find("td").trigger("click");
+      await flushPromises();
+      const runRow = (id: number) =>
+        wrapper.findAll(".azure-pl-run").find((row) => row.text().includes(id === 540 ? "20260316.1" : "20260317.3"))!;
+      return { wrapper, runRow };
+    }
+
+    test("is offered on a run that failed, and opens the agent's workspace once it runs", async () => {
+      let finished: ((outcome: unknown) => void) | null = null;
+      const startAzurePipelineAgent = vi.fn(async (_payload: unknown) => ({
+        started: true as const,
+        operationId: "op-1",
+        replayed: false,
+      }));
+      Object.assign(api, {
+        startAzurePipelineAgent,
+        onOperationFinished: (handler: (outcome: unknown) => void) => {
+          finished = handler;
+        },
+      });
+      const appStore = useAppStore();
+      const activate = vi.spyOn(appStore, "activateWorkspaceInGrid").mockResolvedValue();
+      const { runRow } = await openRuns();
+      appStore.payload = {
+        ...(appStore.payload || {}),
+        appState: { ...(appStore.payload?.appState || {}), workspaces: [{ id: "ws-fix", cwd: "C:/work/fix" }] },
+      } as typeof appStore.payload;
+
+      expect(runRow(555).text()).not.toContain("Fix with agent");
+      const button = runRow(540)
+        .findAll("button")
+        .find((b) => b.text() === "Fix with agent")!;
+      await button.trigger("click");
+      await flushPromises();
+
+      const payload = startAzurePipelineAgent.mock.calls[0]?.[0];
+      expect(startPipelineAgentSchema.safeParse(payload).success).toBe(true);
+      expect(payload).toMatchObject({ connectionId: "ado-1", projectName: "Platform", pipelineId: 10, buildId: 540 });
+      expect(button.text()).toBe("Starting…");
+      expect(button.attributes("disabled")).toBeDefined();
+
+      finished!({
+        operationId: "op-1",
+        kind: "pipeline.agent",
+        profileId: "default",
+        workspaceId: "ws-fix",
+        finishedAt: new Date().toISOString(),
+        result: { workspaceId: "ws-fix", launched: true },
+      });
+      await flushPromises();
+      expect(activate).toHaveBeenCalledWith("ws-fix");
+      expect(openPathInFilesTab).toHaveBeenCalledWith("ws-fix", BRIEF);
+      expect(button.text()).toBe("Fix with agent");
+    });
+
+    test.each([
+      ["opens the workspace it created", ["ws-fix"], true],
+      ["stays put when it failed before creating one", [], false],
+    ])("an agent that did not start %s", async (_name, existing, opens) => {
+      let finished: ((outcome: unknown) => void) | null = null;
+      Object.assign(api, {
+        startAzurePipelineAgent: vi.fn(async () => ({ started: true as const, operationId: "op-2", replayed: false })),
+        onOperationFinished: (handler: (outcome: unknown) => void) => {
+          finished = handler;
+        },
+      });
+      const appStore = useAppStore();
+      const activate = vi.spyOn(appStore, "activateWorkspaceInGrid").mockResolvedValue();
+      const { runRow } = await openRuns();
+      appStore.payload = {
+        ...(appStore.payload || {}),
+        appState: {
+          ...(appStore.payload?.appState || {}),
+          workspaces: existing.map((id) => ({ id, cwd: "C:/work/fix" })),
+        },
+      } as typeof appStore.payload;
+
+      await runRow(540)
+        .findAll("button")
+        .find((b) => b.text() === "Fix with agent")!
+        .trigger("click");
+      await flushPromises();
+      finished!({
+        operationId: "op-2",
+        kind: "pipeline.agent",
+        profileId: "default",
+        workspaceId: "ws-fix",
+        finishedAt: new Date().toISOString(),
+        error: { code: "internal_error", message: "The claude session did not start.", classification: "failed" },
+      });
+      await flushPromises();
+
+      if (opens) {
+        expect(activate).toHaveBeenCalledWith("ws-fix");
+        expect(openPathInFilesTab).toHaveBeenCalledWith("ws-fix", BRIEF);
+      } else {
+        expect(activate).not.toHaveBeenCalled();
+        expect(openPathInFilesTab).not.toHaveBeenCalled();
+      }
+    });
+
+    test("tells the user where the brief is when it cannot be opened", async () => {
+      let finished: ((outcome: unknown) => void) | null = null;
+      Object.assign(api, {
+        startAzurePipelineAgent: vi.fn(async () => ({ started: true as const, operationId: "op-3", replayed: false })),
+        onOperationFinished: (handler: (outcome: unknown) => void) => {
+          finished = handler;
+        },
+      });
+      vi.mocked(openPathInFilesTab).mockResolvedValueOnce("no-files-tab");
+      const appStore = useAppStore();
+      vi.spyOn(appStore, "activateWorkspaceInGrid").mockResolvedValue();
+      const showError = vi.spyOn(useNotificationStore(), "showError");
+      const { runRow } = await openRuns();
+      appStore.payload = {
+        ...(appStore.payload || {}),
+        appState: { ...(appStore.payload?.appState || {}), workspaces: [{ id: "ws-fix", cwd: "C:/work/fix" }] },
+      } as typeof appStore.payload;
+
+      await runRow(540)
+        .findAll("button")
+        .find((b) => b.text() === "Fix with agent")!
+        .trigger("click");
+      await flushPromises();
+      finished!({
+        operationId: "op-3",
+        kind: "pipeline.agent",
+        profileId: "default",
+        workspaceId: "ws-fix",
+        finishedAt: new Date().toISOString(),
+        result: { workspaceId: "ws-fix", launched: true },
+      });
+      await flushPromises();
+
+      expect(showError).toHaveBeenCalledWith(
+        "Couldn't open the run brief",
+        expect.stringContaining(".strideterm/pipeline-run/540/BRIEF.md"),
+        { profileId: "default" },
+      );
+    });
+
+    test("a refused start is shown to the user", async () => {
+      Object.assign(api, {
+        startAzurePipelineAgent: vi.fn(async () => {
+          throw new Error("The Azure DevOps connection is not available in this profile.");
+        }),
+      });
+      const showError = vi.spyOn(useNotificationStore(), "showError");
+      const { runRow } = await openRuns();
+
+      await runRow(540)
+        .findAll("button")
+        .find((b) => b.text() === "Fix with agent")!
+        .trigger("click");
+      await flushPromises();
+
+      expect(showError).toHaveBeenCalledWith("Couldn't start the agent", expect.any(Error), { profileId: "default" });
+    });
   });
 });

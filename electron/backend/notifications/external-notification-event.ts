@@ -52,6 +52,8 @@ export interface BuildExternalNotificationEventInput {
   /** PR notification routing/display context; copied into the encrypted mobile payload. */
   provider?: MobileReviewProvider;
   connectionId?: string;
+  issueId?: string;
+  issueKey?: string;
   prKey?: string;
   reviewWorkspaceId?: string;
   commentTarget?: ReviewNotificationCommentTarget;
@@ -172,17 +174,32 @@ export function buildExternalNotificationEvent(input: BuildExternalNotificationE
   const workspaceId = input.workspaceId || "";
   const sessionId = input.sessionId || null;
   const panelId = input.panelId || null;
-  const activity = displayText(sanitizeTerminalText(input.activity || ""), 200);
   const connectionId = boundedId(input.connectionId);
+  const issueId = kind === "jira" && /^[A-Za-z0-9_-]{1,200}$/.test(input.issueId || "") ? input.issueId : undefined;
+  const issueKey =
+    kind === "jira" &&
+    (input.issueKey || "").length <= 64 &&
+    /^[A-Z][A-Z0-9_]{0,19}-[1-9][0-9]*$/i.test(input.issueKey || "")
+      ? displayText(input.issueKey, 64)
+      : undefined;
+  const canRouteToJira = Boolean(connectionId && issueId && issueKey);
+  const activity =
+    kind === "jira"
+      ? canRouteToJira
+        ? issueKey
+        : undefined
+      : displayText(sanitizeTerminalText(input.activity || ""), 200);
   const reviewWorkspaceId = boundedId(input.reviewWorkspaceId);
   const commentTarget = normalizeCommentTarget(input.provider, input.commentTarget);
   const canRouteToComment =
     kind === "review" && Boolean(input.provider && connectionId && input.prKey && reviewWorkspaceId && commentTarget);
   const dedupeKey = input.operationId
     ? `${workspaceId}:review-start:${input.operationId}`
-    : input.prKey
-      ? `${workspaceId}:review:${input.provider || "unknown"}:${input.prKey}:${kind}`
-      : `${workspaceId}:${sessionId || panelId || ""}:${kind}`;
+    : kind === "jira" && canRouteToJira
+      ? `${workspaceId}:jira:${connectionId}:${issueId}:${kind}`
+      : input.prKey
+        ? `${workspaceId}:review:${input.provider || "unknown"}:${input.prKey}:${kind}`
+        : `${workspaceId}:${sessionId || panelId || ""}:${kind}`;
 
   return {
     eventId: normalizeEventId(input.eventId),
@@ -192,16 +209,21 @@ export function buildExternalNotificationEvent(input: BuildExternalNotificationE
     panelId,
     kind,
     priority,
-    title: truncateUtf8Head(displayText(input.title, 500) || "", 500),
-    detail: truncateUtf8Head(input.detail || "", 1500),
+    title: truncateUtf8Head(
+      kind === "jira" ? (issueKey ? `${issueKey} changed` : "Jira issue changed") : displayText(input.title, 500) || "",
+      500,
+    ),
+    detail:
+      kind === "jira" ? "Jira issue changed in an opted-in saved query." : truncateUtf8Head(input.detail || "", 1500),
     ...(displayText(input.workspaceName, 120) ? { workspaceName: displayText(input.workspaceName, 120) } : {}),
     ...(input.taskId && input.taskId.length <= 200 ? { taskId: input.taskId } : {}),
     ...(displayText(input.tab, 120) ? { tab: displayText(input.tab, 120) } : {}),
     ...(activity ? { activity } : {}),
-    ...(input.prompt ? { prompt: truncateUtf8Head(input.prompt, 500) } : {}),
+    ...(input.prompt && kind !== "jira" ? { prompt: truncateUtf8Head(input.prompt, 500) } : {}),
     ...(Number.isInteger(input.exitCode) ? { exitCode: input.exitCode! } : {}),
     ...(Number.isInteger(input.durationMs) && input.durationMs! >= 0 ? { durationMs: input.durationMs! } : {}),
     ...(input.provider ? { provider: input.provider } : {}),
+    ...(canRouteToJira ? { connectionId, issueId, issueKey } : {}),
     ...(canRouteToComment ? { connectionId, reviewWorkspaceId, commentTarget } : {}),
     ...(input.prKey ? { prKey: input.prKey } : {}),
     ...(input.draftState ? { draftState: input.draftState } : {}),

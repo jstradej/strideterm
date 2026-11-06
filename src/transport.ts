@@ -8,6 +8,7 @@ import type {
   GitPushProgressPayload,
 } from "../electron/shared/ipc-bridge.js";
 import type { RemoteStateV2, RecoveryResult } from "../electron/shared/types/state.js";
+import type { JiraWorkspaceViewsState } from "../electron/shared/types/jira-workspace-views.js";
 import type {
   AzureClosedPrCleanupStarted,
   ReviewGitStarted,
@@ -29,6 +30,11 @@ import {
   type OperationFinished,
 } from "../electron/shared/operation-events.js";
 import type {
+  JiraWriteConfirmationDto,
+  JiraWriteExecutePayload,
+  JiraAttachmentUploadResultDto,
+  JiraWriteInvokeResultDto,
+  JiraWritePreviewPayload,
   ProfilePayload,
   ReviewGitStart,
   StartReviewAgentPreparation,
@@ -39,6 +45,16 @@ import {
   type StartPullRequestReviewInput,
   type StartPullRequestReviewResult,
 } from "../electron/shared/pull-request-review.js";
+import {
+  startPipelineAgentSchema,
+  type StartPipelineAgentInput,
+  type StartPipelineAgentResult,
+} from "../electron/shared/pipeline-agent.js";
+import {
+  startJiraDevelopmentSchema,
+  type StartJiraDevelopmentInput,
+  type StartJiraDevelopmentResult,
+} from "../electron/shared/jira-development.js";
 import type {
   SshAuthRequest,
   SshAuthPromptCancel,
@@ -66,6 +82,7 @@ import {
   revealResultSchema,
 } from "../electron/shared/performance.js";
 import { rlog } from "./lib/renderer-log.js";
+import type { JiraSmartFilterId } from "../electron/shared/jira-smart-filters.js";
 import {
   normalizeAttachmentList,
   type AttachmentDeleteRequest,
@@ -288,6 +305,190 @@ interface EventHub {
 export interface Transport extends Partial<
   Omit<StridetermAPI, "onConnectionState" | "getState" | "onStateUpdated" | "attachmentList" | "attachmentDelete">
 > {
+  listJiraConnections?: () => Promise<unknown>;
+  getJiraRepoBindingPreference?: (payload: { connectionId: string; projectKey: string }) => Promise<unknown>;
+  ensureJiraWorkspace?: () => Promise<unknown>;
+  previewJiraTaskContext?: (payload: {
+    refs: Array<{ provider: "jira"; connectionId: string; issueId: string; issueKey: string }>;
+    repo: {
+      provider: "azure" | "github";
+      connectionId: string;
+      repoId: string;
+      projectId?: string;
+      repoName: string;
+      remoteUrl: string;
+      cwd: string;
+    };
+    baseBranch: string;
+    branch: string;
+    checkoutMode: "existing" | "worktree";
+    taskConfig: { description: string; selectedFields: string[] };
+  }) => Promise<unknown>;
+  getJiraTaskContext?: (workspaceId: string) => Promise<unknown>;
+  attachJiraIssueToWorkspace?: (payload: {
+    workspaceId: string;
+    ref: { connectionId: string; issueId: string; issueKey: string };
+  }) => Promise<unknown>;
+  detachJiraIssueFromWorkspace?: (payload: {
+    workspaceId: string;
+    ref: { connectionId: string; issueId: string; issueKey: string };
+  }) => Promise<unknown>;
+  saveJiraCommentDraft?: (payload: {
+    sourceWorkspaceId: string;
+    ref: { connectionId: string; issueId: string; issueKey: string };
+    body: string;
+  }) => Promise<unknown>;
+  listJiraCommentDrafts?: (workspaceId: string) => Promise<unknown>;
+  deleteJiraCommentDraft?: (payload: { sourceWorkspaceId: string; draftId: string }) => Promise<unknown>;
+  saveJiraConnection?: (connection: {
+    id?: string;
+    label: string;
+    deployment: "cloud" | "data-center";
+    webUrl: string;
+    apiBaseUrl: string;
+    email?: string;
+    apiToken?: string;
+    pat?: string;
+    authMode?: "pat" | "apim";
+    subscriptionKey?: string;
+    subscriptionHeaderName?: string;
+    clientCertificatePath?: string;
+    clientCertificatePassword?: string;
+    clearClientCertificatePassword?: boolean;
+    accountPurpose?: "personal" | "technical";
+  }) => Promise<unknown>;
+  testJiraConnection?: (connection: {
+    id?: string;
+    label: string;
+    deployment: "cloud" | "data-center";
+    webUrl: string;
+    apiBaseUrl: string;
+    email?: string;
+    apiToken?: string;
+    pat?: string;
+    authMode?: "pat" | "apim";
+    subscriptionKey?: string;
+    subscriptionHeaderName?: string;
+    clientCertificatePath?: string;
+    clientCertificatePassword?: string;
+    clearClientCertificatePassword?: boolean;
+    accountPurpose?: "personal" | "technical";
+  }) => Promise<unknown>;
+  deleteJiraConnection?: (connectionId: string) => Promise<unknown>;
+  verifyJiraConnection?: (connectionId: string) => Promise<unknown>;
+  updateJiraConnectionMetadata?: (payload: {
+    connectionId: string;
+    label: string;
+    accountPurpose: "personal" | "technical";
+    issueKeyPrefixes: string[];
+    defaultJql: string;
+    projectKeys: string[];
+    pollSeconds: number;
+  }) => Promise<unknown>;
+  verifyJiraOwnIdentity?: (payload: { connectionId: string; userId: string }) => Promise<unknown>;
+  setJiraOwnIdentity?: (payload: { connectionId: string; userId: string }) => Promise<unknown>;
+  setJiraCommentAttribution?: (payload: {
+    enabled: boolean;
+    text: string;
+    position: "before" | "after";
+  }) => Promise<unknown>;
+  setJiraAgentAttachmentLimits?: (payload: { maxFiles: number; maxMegabytes: number }) => Promise<unknown>;
+  buildJiraOwnIssuesQuery?: (payload: {
+    connectionId: string;
+    baseJql?: string;
+    personalScope?: "open" | "all";
+    projectKeys?: string[];
+    smartFilters?: JiraSmartFilterId[];
+  }) => Promise<{ jql: string; identityLabel: string }>;
+  listJiraQueries?: (connectionId: string) => Promise<unknown>;
+  listJiraFavoriteFilters?: (connectionId: string) => Promise<unknown>;
+  getJiraSavedFilter?: (payload: { connectionId: string; filterId: string }) => Promise<unknown>;
+  saveJiraQuery?: (payload: {
+    id?: string;
+    connectionId: string;
+    name: string;
+    jql: string;
+    notificationsEnabled?: boolean;
+  }) => Promise<unknown>;
+  deleteJiraQuery?: (queryId: string) => Promise<unknown>;
+  getJiraWriteHistory?: (payload: { connectionId?: string; issueId?: string; limit?: number }) => Promise<unknown>;
+  reconcileJiraWrite?: (journalId: string) => Promise<{
+    journalId: string;
+    status: "reconciled" | "unknown";
+    outcome: "applied" | "not-applied" | "unresolved";
+  }>;
+  listJiraProjects?: (connectionId: string) => Promise<unknown>;
+  listJiraBoards?: (connectionId: string) => Promise<unknown>;
+  searchJiraBoards?: (payload: {
+    connectionId: string;
+    query?: string;
+    cursor?: string;
+    limit?: number;
+    projectKeys?: string[];
+  }) => Promise<unknown>;
+  getJiraBoardView?: (payload: {
+    connectionId: string;
+    boardId: number;
+    mode?: "issues" | "backlog" | "sprints";
+    cursor?: string;
+    sprintId?: number;
+    quickFilterIds?: number[];
+    assignee?: { kind: "user"; id: string } | { kind: "unassigned" };
+    doneWithinDays?: 7 | 14 | 30 | 90;
+    cacheOnly?: boolean;
+    forceRefresh?: boolean;
+    refreshInBackground?: boolean;
+    projectKeys?: string[];
+  }) => Promise<unknown>;
+  listJiraBoardQuickFilters?: (payload: {
+    connectionId: string;
+    boardId: number;
+    limit?: number;
+    cursor?: string;
+    cacheOnly?: boolean;
+    forceRefresh?: boolean;
+    refreshInBackground?: boolean;
+  }) => Promise<unknown>;
+  searchJiraUsers?: (payload: { connectionId: string; query: string; limit?: number }) => Promise<unknown>;
+  listJiraTransitions?: (payload: {
+    ref: { connectionId: string; issueId: string; issueKey: string };
+  }) => Promise<unknown>;
+  listJiraComments?: (payload: {
+    ref: { connectionId: string; issueId: string; issueKey: string };
+  }) => Promise<unknown>;
+  previewJiraWrite?: (payload: JiraWritePreviewPayload) => Promise<JiraWriteConfirmationDto>;
+  executeJiraWrite?: (payload: JiraWriteExecutePayload) => Promise<JiraWriteInvokeResultDto>;
+  searchJiraIssues?: (payload: {
+    connectionId: string;
+    jql: string;
+    limit?: number;
+    cursor?: string;
+    cacheOnly?: boolean;
+    forceRefresh?: boolean;
+    refreshInBackground?: boolean;
+    projectKeys?: string[];
+  }) => Promise<unknown>;
+  getJiraIssue?: (payload: {
+    connectionId: string;
+    issueId: string;
+    cacheOnly?: boolean;
+    forceRefresh?: boolean;
+    refreshInBackground?: boolean;
+  }) => Promise<unknown>;
+  getJiraAttachmentContent?: (payload: {
+    connectionId: string;
+    issueId: string;
+    attachmentId: string;
+  }) => Promise<{ mediaType: string; bytes: Uint8Array }>;
+  saveJiraIssueAttachment?: (payload: {
+    connectionId: string;
+    issueId: string;
+    attachmentId: string;
+  }) => Promise<{ saved: boolean; filePath?: string }>;
+  uploadJiraIssueAttachment?: (payload: {
+    connectionId: string;
+    issueId: string;
+  }) => Promise<JiraAttachmentUploadResultDto>;
   isRemote: boolean;
   /** Runtime platform and SSH administration capabilities. */
   sshCapabilitiesGet?: (payload?: { refresh?: boolean }) => Promise<SshRuntimeCapabilities>;
@@ -300,6 +501,10 @@ export interface Transport extends Partial<
   onSshTestState?: (handler: Handler<SshTestStatePayload>) => void;
   /** Native mobile host directory picker. Absent in ordinary browser tabs. */
   browseDirectory?: (initialPath?: string) => Promise<unknown>;
+  browseFile?: (options?: {
+    defaultPath?: string;
+    filters?: Array<{ name: string; extensions: string[] }>;
+  }) => Promise<unknown>;
   /** Manual state refresh — refetches /api/state and broadcasts the result.
    * Provided by the remote transport (no-op or absent for the Electron one,
    * where state is push-updated). Used by the mobile pull-up-to-refresh
@@ -367,7 +572,7 @@ export interface Transport extends Partial<
   /** A background closed-PR cleanup finished (result or unexpected error). Validated at this boundary. */
   onAzureClosedPrCleanupFinished: (handler: Handler<AzureClosedPrCleanupFinished>) => void;
   /** A long-running runtime operation finished (result or error). Validated at this boundary. */
-  onOperationFinished: (handler: Handler<OperationFinished>) => void;
+  onOperationFinished: (handler: Handler<OperationFinished>) => () => void;
   /** A review Git operation ended (result or error). Validated at this boundary. */
   onReviewGitOperation: (handler: Handler<ReviewGitOperationEvent>) => void;
   /** A paired phone opened a session (desktop only). Validated at this boundary. */
@@ -544,7 +749,7 @@ function bindElectronTransport(): Transport {
       });
     },
     onOperationFinished: (handler: Handler<OperationFinished>) => {
-      window.strideterm.onOperationFinished?.((payload: unknown) => {
+      const unsubscribe = window.strideterm.onOperationFinished?.((payload: unknown) => {
         const parsed = operationFinishedSchema.safeParse(payload);
         if (!parsed.success) {
           rlog("warn", "operation:finished ignored: malformed payload");
@@ -552,6 +757,7 @@ function bindElectronTransport(): Transport {
         }
         handler(parsed.data);
       });
+      return () => unsubscribe?.();
     },
     onReviewGitOperation: (handler: Handler<ReviewGitOperationEvent>) => {
       window.strideterm.onReviewGitOperation?.((payload: unknown) => {
@@ -2063,6 +2269,31 @@ export function createRemoteTransport(): Transport {
       if (options.signal?.aborted) {
         throw createRemoteIssue({ kind: "cancelled", recoverable: false });
       }
+      if (rawMessage.includes('"jiraError"')) {
+        try {
+          const parsed = JSON.parse(rawMessage) as {
+            error?: unknown;
+            jiraError?: { code?: unknown; retryAfterMs?: unknown };
+          };
+          if (parsed.jiraError && typeof parsed.jiraError.code === "string") {
+            const jiraError = Object.assign(
+              new Error(typeof parsed.error === "string" ? parsed.error : "Jira request failed."),
+              {
+                code: parsed.jiraError.code,
+                jiraError: {
+                  code: parsed.jiraError.code,
+                  ...(typeof parsed.jiraError.retryAfterMs === "number"
+                    ? { retryAfterMs: parsed.jiraError.retryAfterMs }
+                    : {}),
+                },
+              },
+            );
+            throw jiraError;
+          }
+        } catch (error) {
+          if (error instanceof Error && "jiraError" in error) throw error;
+        }
+      }
       const error = createRemoteIssue({
         kind: "http",
         statusCode: response.status,
@@ -2378,6 +2609,63 @@ export function createRemoteTransport(): Transport {
     resetAgentPrompts: () => fetchJson("/api/review-bridge/agent-prompt/reset", {}),
     syncReviewBridgePullRequest: (payload) => fetchJson("/api/review-bridge/pull-request/sync", payload),
     updateAzureThreadStatus: (payload) => fetchJson("/api/azure/pull-request/thread-status", payload),
+    ensureJiraWorkspace: () => fetchJson("/api/jira/ensure-workspace", {}),
+    buildJiraOwnIssuesQuery: (payload) =>
+      fetchJson("/api/jira/own-issues-query", payload) as Promise<{ jql: string; identityLabel: string }>,
+    verifyJiraOwnIdentity: (payload) => fetchJson("/api/jira/own-identity/verify", payload),
+    setJiraOwnIdentity: (payload) => fetchJson("/api/jira/own-identity/set", payload),
+    getJiraRecentSearches: (payload) => fetchJson("/api/jira/recent-searches", payload),
+    getJiraWorkspaceViews: (payload) =>
+      fetchJson("/api/jira/workspace-views/get", payload) as Promise<JiraWorkspaceViewsState>,
+    getJiraWorkspaceProjectScope: (payload) =>
+      fetchJson("/api/jira/workspace-project-scope/get", payload) as Promise<string[] | null>,
+    setJiraWorkspaceProjectScope: (payload) =>
+      fetchJson("/api/jira/workspace-project-scope/set", payload) as Promise<string[] | null>,
+    saveJiraWorkspaceView: (payload) =>
+      fetchJson("/api/jira/workspace-views/save", payload) as Promise<JiraWorkspaceViewsState>,
+    renameJiraWorkspaceView: (payload) =>
+      fetchJson("/api/jira/workspace-views/rename", payload) as Promise<JiraWorkspaceViewsState>,
+    reorderJiraWorkspaceViews: (payload) =>
+      fetchJson("/api/jira/workspace-views/reorder", payload) as Promise<JiraWorkspaceViewsState>,
+    removeJiraWorkspaceView: (payload) =>
+      fetchJson("/api/jira/workspace-views/remove", payload) as Promise<JiraWorkspaceViewsState>,
+    setJiraWorkspaceActiveView: (payload) =>
+      fetchJson("/api/jira/workspace-views/active", payload) as Promise<JiraWorkspaceViewsState>,
+    refreshJiraWorkspaceViews: (payload) =>
+      fetchJson("/api/jira/workspace-views/refresh", payload) as Promise<JiraWorkspaceViewsState>,
+    rememberJiraSearch: (payload) => fetchJson("/api/jira/recent-searches/remember", payload),
+    getJiraRecentIssues: (payload) => fetchJson("/api/jira/recent-issues", payload),
+    rememberJiraIssueViewed: (payload) => fetchJson("/api/jira/recent-issues/viewed", payload),
+    listJiraConnections: () => fetchJson("/api/jira/connections", {}),
+    listJiraProjects: (connectionId) => fetchJson("/api/jira/projects", { connectionId }),
+    listJiraQueries: (connectionId) => fetchJson("/api/jira/queries", { connectionId }),
+    searchJiraIssues: (payload) => fetchJson("/api/jira/search", payload),
+    getJiraIssue: (payload) => fetchJson("/api/jira/issue", payload),
+    listJiraComments: (payload) =>
+      fetchJson("/api/jira/comments", { connectionId: payload.ref.connectionId, issueId: payload.ref.issueId }),
+    getJiraAttachmentContent: async (payload) => {
+      const result = (await fetchJson("/api/jira/attachment/content", payload)) as {
+        mediaType: string;
+        base64: string;
+      };
+      const binary = atob(result.base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+      return { mediaType: result.mediaType, bytes };
+    },
+    listJiraBoards: (connectionId) => fetchJson("/api/jira/boards", { connectionId }),
+    searchJiraBoards: (payload) => fetchJson("/api/jira/boards/search", payload),
+    getJiraBoardView: (payload) => fetchJson("/api/jira/board-view", payload),
+    listJiraBoardQuickFilters: (payload) => fetchJson("/api/jira/board-quick-filters", payload),
+    searchJiraUsers: (payload) => fetchJson("/api/jira/users/search", payload),
+    listJiraTransitions: (payload) => fetchJson("/api/jira/transitions", payload),
+    previewJiraWrite: (payload) => fetchJson("/api/jira/write/preview", payload) as Promise<JiraWriteConfirmationDto>,
+    executeJiraWrite: (payload) => fetchJson("/api/jira/write/execute", payload) as Promise<JiraWriteInvokeResultDto>,
+    getJiraWriteHistory: (payload) => fetchJson("/api/jira/write/history", payload),
+    reconcileJiraWrite: (journalId) =>
+      fetchJson("/api/jira/write/reconcile", { journalId }) as ReturnType<
+        NonNullable<CallableTransport["reconcileJiraWrite"]>
+      >,
     voteAzurePullRequest: (payload) => fetchJson("/api/azure/pull-request/vote", payload),
     azureCreatePullRequest: (payload) => fetchJson("/api/azure/create-pull-request", payload),
     azureListRemoteBranches: (payload) => fetchJson("/api/azure/list-remote-branches", payload),
@@ -2397,6 +2685,16 @@ export function createRemoteTransport(): Transport {
     cancelAzureBuild: (payload) => fetchJson("/api/azure/pipelines/cancel", payload),
     getAzureBuildLog: (payload) => fetchJson("/api/azure/pipelines/build-log", payload),
     getAzurePipelineRunDetail: (payload) => fetchJson("/api/azure/pipelines/run-detail", payload),
+    startAzurePipelineAgent: (payload: StartPipelineAgentInput) =>
+      fetchJson(
+        "/api/azure/pipelines/agent-start",
+        startPipelineAgentSchema.parse(payload),
+      ) as Promise<StartPipelineAgentResult>,
+    startJiraDevelopment: (payload: StartJiraDevelopmentInput) =>
+      fetchJson(
+        "/api/jira/development/start",
+        startJiraDevelopmentSchema.parse(payload),
+      ) as Promise<StartJiraDevelopmentResult>,
     verifyGitHubConnection: (connection) => fetchJson("/api/github/verify-connection", { connection }),
     saveGitHubConnection: (connection) => fetchJson("/api/github/save-connection", { connection }),
     deleteGitHubConnection: (connectionId) => fetchJson("/api/github/delete-connection", { connectionId }),
@@ -2730,6 +3028,9 @@ export function createRemoteTransport(): Transport {
     },
     onOperationFinished: (handler: Handler<OperationFinished>) => {
       listeners.operationFinished.add(handler);
+      return () => {
+        listeners.operationFinished.delete(handler);
+      };
     },
     onReviewGitOperation: (handler: Handler<ReviewGitOperationEvent>) => {
       listeners.reviewGitOperation.add(handler);

@@ -1,17 +1,34 @@
 /* Azure DevOps */
 /* ── Azure DevOps Inbox ── */
 .azure-inbox {
+  /* Secondary / muted text derived from the theme so it keeps >= 4.5:1 in
+     both themes (the raw --muted is too dim on the dark panel for 11-12px). */
+  --inbox-soft: color-mix(in srgb, var(--text) 68%, var(--muted));
+  --inbox-mute: color-mix(in srgb, var(--text) 45%, var(--muted));
+  --inbox-pill-bg: rgba(var(--tint), 0.08);
+  --inbox-head-bg: color-mix(in srgb, var(--panel), var(--text) 6%);
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
 }
 
+.pr-icon {
+  flex: none;
+  width: 1em;
+  height: 1em;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .azure-inbox__toolbar {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 12px;
+  padding: 0 12px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
@@ -19,12 +36,14 @@
 .azure-inbox__tabs {
   display: flex;
   gap: 2px;
+  flex-wrap: wrap;
 }
 
 .azure-inbox__actions {
   display: flex;
   gap: 6px;
   margin-left: auto;
+  padding: 6px 0;
 }
 
 .azure-tab {
@@ -94,6 +113,63 @@
   color: var(--bg);
 }
 
+/* Inbox tabs: underline style with one neutral count pill. Scoped to
+   .azure-inbox because AzureReviewPane shares the .azure-tab classes. */
+.azure-inbox .azure-tab {
+  height: 42px;
+  padding: 0 12px;
+  gap: 7px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--inbox-soft);
+  font-weight: 500;
+}
+
+.azure-inbox .azure-tab:hover {
+  background: rgba(var(--tint), 0.04);
+  color: var(--text);
+}
+
+.azure-inbox .azure-tab--active {
+  border-bottom-color: var(--accent);
+  background: transparent;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.azure-inbox .azure-tab--alert,
+.azure-inbox .azure-tab--alert.azure-tab--active {
+  color: var(--danger-fg);
+}
+
+.azure-inbox .azure-tab--alert.azure-tab--active {
+  border-bottom-color: var(--danger);
+}
+
+.azure-inbox .azure-tab__count,
+.azure-inbox .azure-tab--active .azure-tab__count,
+.azure-inbox .azure-tab--alert .azure-tab__count,
+.azure-inbox .azure-tab--alert.azure-tab--active .azure-tab__count,
+.azure-inbox__pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--inbox-pill-bg);
+  color: var(--inbox-soft);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
 .azure-inbox__content {
   flex: 1;
   min-height: 0;
@@ -104,8 +180,9 @@
 .azure-inbox__filters {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 6px 12px 8px;
+  gap: 8px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--border);
 }
 
 .azure-inbox__filter-row {
@@ -115,33 +192,165 @@
   flex-wrap: wrap;
 }
 
+.azure-inbox__filter-row--split {
+  gap: 8px 16px;
+}
+
 .azure-inbox__filter-label {
-  width: 42px;
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
+  flex: 0 0 auto;
+  min-width: 52px;
+  margin-right: 2px;
+  color: var(--inbox-mute);
+  font-size: 12px;
 }
 
-.azure-inbox__filter-button {
-  padding: 2px 8px;
-  font-size: 11px;
+.azure-inbox__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 13px;
+  background: transparent;
+  color: var(--inbox-soft);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
 }
 
-.azure-inbox__filter-button.button--active {
-  background: var(--accent);
-  color: var(--bg);
+.azure-inbox__chip--counted {
+  padding-right: 4px;
 }
 
-.azure-inbox__author-select {
-  min-width: 180px;
-  padding: 3px 26px 3px 8px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
+.azure-inbox__chip:hover {
+  background: rgba(var(--tint), 0.07);
+  color: var(--text);
+}
+
+.azure-inbox__chip[aria-pressed="true"],
+.azure-inbox__more[data-active="true"] {
+  border-color: rgba(var(--tint), 0.18);
+  background: rgba(var(--tint), 0.14);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.azure-inbox__authors {
+  position: relative;
+  flex: 1 1 560px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.azure-inbox__authors .azure-inbox__filter-label {
+  flex-basis: 52px;
+}
+
+.azure-inbox__author-chips {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+}
+
+.azure-inbox__more {
+  position: relative;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 170px;
+  gap: 4px;
+  padding: 0 8px 0 10px;
+}
+
+.azure-inbox__more:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.azure-inbox__more-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.azure-inbox__more-chevron {
+  width: 12px;
+  height: 12px;
+  color: var(--inbox-mute);
+}
+
+/* Invisible, but it takes the clicks and the keyboard. The colours still
+   reach the native dropdown list, which opacity does not affect. */
+.azure-inbox__more-select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  border: 0;
+  opacity: 0;
   background: var(--panel);
   color: var(--text);
   font: inherit;
-  font-size: 11px;
+  cursor: pointer;
+}
+
+.azure-inbox__measure {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 0;
+  display: flex;
+  gap: 4px;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.azure-inbox__measure .azure-inbox__chip {
+  font-weight: 600;
+}
+
+.azure-inbox__filter-tools {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-left: auto;
+}
+
+.azure-inbox__tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--inbox-soft);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.azure-inbox__tool input[type="checkbox"] {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.azure-inbox__select {
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
 }
 
 .azure-section {
@@ -161,61 +370,159 @@
   min-height: 0;
 }
 
+.azure-inbox__groups {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 20px 32px;
+}
+
+/* A repository card. overflow: clip (not hidden) keeps the sticky header
+   working inside the .azure-inbox__content scroll container. */
 .azure-repo-group {
-  margin-bottom: 6px;
-  border-left: 3px solid color-mix(in srgb, var(--accent), transparent 55%);
-  background: rgba(var(--tint), 0.02);
-  border-radius: 0 4px 4px 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  overflow: clip;
+}
+
+.azure-repo-group__heading {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin: 0;
+  font-size: inherit;
+  font-weight: inherit;
 }
 
 .azure-repo-group__header {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 16px 6px;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px 16px 12px 12px;
+  border: 0;
   border-bottom: 1px solid var(--border);
-  background: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--accent), transparent 88%) 0%,
-    color-mix(in srgb, var(--accent), transparent 96%) 70%,
-    transparent 100%
-  );
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  background: var(--inbox-head-bg);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
 
-.azure-repo-group__header::before {
-  content: "▸";
-  color: var(--accent);
-  font-size: 10px;
-  opacity: 0.7;
+.azure-repo-group__header:hover {
+  background: color-mix(in srgb, var(--panel), var(--text) 9%);
 }
 
-/* Indent the PR rows under a project/repo group so the nesting reads
-   visually — the user reported it was "almost invisible". */
-.azure-repo-group .azure-pr-row {
-  padding-left: 26px;
+.azure-repo-group__chevron {
+  width: 14px;
+  height: 14px;
+  color: var(--inbox-soft);
+}
+
+.azure-repo-group__tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 28px;
+  box-sizing: border-box;
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(var(--tint), 0.12);
+  border-radius: 7px;
+  background: rgba(var(--tint), 0.07);
+  color: var(--text);
+  font-size: 15px;
+}
+
+.azure-repo-group__title {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.azure-repo-group__project {
+  color: var(--inbox-soft);
+  font-size: 12.5px;
+  font-weight: 500;
 }
 
 .azure-repo-group__name {
-  font-size: 12px;
+  color: var(--text);
+  font-size: 15px;
   font-weight: 700;
-  color: var(--accent);
-  letter-spacing: 0.06em;
+  letter-spacing: -0.005em;
+  overflow-wrap: anywhere;
 }
 
 .azure-repo-group__count {
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent), transparent 80%);
-  border: 1px solid color-mix(in srgb, var(--accent), transparent 60%);
-  padding: 1px 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
   border-radius: 9px;
-  line-height: 16px;
+  background: var(--inbox-pill-bg);
+  color: var(--inbox-soft);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.azure-repo-group__stats {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin-left: auto;
+  color: var(--inbox-soft);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.azure-repo-group__attention {
+  color: var(--accent);
+}
+
+/* Inline hint used in the Needs Attention sub-bucket headers — explains
+   why this group needs attention (e.g. "PRs where you are an explicit
+   reviewer..."). */
+.azure-repo-group__hint {
+  color: var(--inbox-soft);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.azure-repo-group__older {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 16px 9px 32px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  background: transparent;
+  color: var(--inbox-mute);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.azure-repo-group__older:hover {
+  background: rgba(var(--tint), 0.05);
+}
+
+.azure-repo-group__older-label {
+  color: var(--inbox-soft);
+  font-weight: 500;
 }
 
 /* Inline icon prefix on chips — keeps the chip width balanced and gives
@@ -228,33 +535,29 @@
   vertical-align: -1px;
 }
 
-/* Make the seen button keep its slot in the row when the PR has no
-   attention flag — disabled style instead of removed-from-DOM, so the
-   neighbouring buttons don't shift left and right as PRs cycle in/out
-   of the attention list. */
-.azure-pr-row__actions .button[disabled] {
-  opacity: 0.35;
+/* A disabled action (e.g. the primary button while a PR is opening) dims
+   instead of disappearing so neighbouring buttons don't shift. */
+.azure-pr-row__actions .azure-pr-row__btn[disabled] {
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
-/* Inline hint used in the Needs Attention sub-bucket headers — explains
-   why this group needs attention (e.g. "PRs where you are an explicit
-   reviewer..."). Reuses the same .azure-repo-group__header frame. */
-.azure-repo-group__hint {
-  font-size: 11px;
-  color: var(--muted);
-  text-transform: none;
-  letter-spacing: 0;
-  font-weight: 400;
+/* A PR is one line of fixed columns — repository, number, title, flags, author, age, actions — so a list is read top
+   to bottom like a table and several PRs of one change are told apart by the repository column. The rest sits in the
+   hover card and the expanded details. The row is its own container: a narrow pane wraps the line instead of
+   squeezing the title to nothing. */
+.azure-pr-row {
+  container: pr-row / inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 5px 14px 5px 10px;
+  border-top: 1px solid var(--border);
+  transition: background 0.1s;
 }
 
-.azure-pr-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
-  transition: background 0.1s;
+.azure-repo-group__heading + .azure-repo-group__body > .azure-pr-row:first-child {
+  border-top: 0;
 }
 
 .azure-pr-row--focused {
@@ -267,103 +570,361 @@
   background: rgba(var(--tint), 0.03);
 }
 
-.azure-pr-row__main {
-  flex: 1;
+.azure-pr-row__line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 30px;
+}
+
+.azure-pr-row__info {
+  flex: 1 1 auto;
   min-width: 0;
   display: grid;
-  gap: 3px;
+  grid-template-columns: 22px 56px minmax(0, 1fr) auto 140px 64px;
+  align-items: center;
+  gap: 10px;
+}
+
+.azure-pr-row--with-repo .azure-pr-row__info {
+  grid-template-columns: 22px 128px 56px minmax(0, 1fr) auto 140px 64px;
 }
 
 .azure-pr-row__title {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
+  min-width: 0;
 }
 
-.azure-pr-row__title strong {
-  font-size: 14px;
-}
-
-.azure-pr-row__id {
-  color: var(--muted);
-  font-size: 12px;
-  flex-shrink: 0;
-}
-
-.azure-pr-row__meta {
-  display: flex;
-  gap: 4px;
-  color: var(--muted);
-  font-size: 12px;
-  flex-wrap: wrap;
-}
-
-.azure-pr-row__branch {
-  color: var(--muted);
-  font-size: 12px;
-  font-family: var(--mono);
+.azure-pr-row__name {
+  position: relative;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--text) 80%, var(--muted));
+}
+
+/* Leading ticket keys: several PRs of one change share them, the rest of the title is what differs. */
+.azure-pr-row__keys {
+  color: var(--inbox-mute);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.azure-pr-row--unread .azure-pr-row__name {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.azure-pr-row--old .azure-pr-row__name {
+  color: var(--inbox-mute);
+}
+
+.azure-pr-row__sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.azure-pr-row__id {
+  flex: 0 0 auto;
+  color: var(--inbox-mute);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.azure-pr-row__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 10px;
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.azure-pr-row__chip--draft {
+  border: 1px dashed rgba(var(--tint), 0.3);
+  color: var(--inbox-soft);
+  font-weight: 500;
+}
+
+.azure-pr-row__chip--attention {
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* Merge conflicts / a failed merge check: something to fix, not something to look at. Two classes so it also wins
+   over the light theme's restated chip colour. */
+.azure-pr-row__chip--attention.azure-pr-row__chip--danger {
+  border-color: color-mix(in srgb, var(--danger-fg) 50%, transparent);
+  background: color-mix(in srgb, var(--danger-fg) 14%, transparent);
+  color: var(--danger-fg);
+}
+
+.azure-pr-row__author {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--inbox-mute);
+  font-size: 12px;
+}
+
+.azure-pr-row__author--you {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* Outside the repository cards (the attention buckets) the row names its repository itself, in its own column. The
+   project is the same on every row and is left to the hover card. */
+.azure-pr-row__repo {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--inbox-soft);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.azure-pr-row__flags {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--inbox-mute);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.azure-pr-row__comments,
+.azure-pr-row__conflicts {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.azure-pr-row__comments .pr-icon,
+.azure-pr-row__conflicts .pr-icon {
+  font-size: 13px;
+}
+
+.azure-pr-row__conflicts {
+  color: var(--danger-fg);
+  font-weight: 500;
+}
+
+/* Reviewer avatar: initials on a name-derived hue; a person is a circle, a
+   group/team a rounded square. The corner badge carries the vote. */
+.azure-avatar {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.azure-avatar--group {
+  border-radius: 6px;
+}
+
+.azure-avatar--ring {
+  box-shadow:
+    0 0 0 2px var(--panel),
+    0 0 0 3.5px var(--accent);
+}
+
+.azure-avatar__badge {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 13px;
+  height: 13px;
+  border: 2px solid var(--panel);
+  border-radius: 50%;
+  background: var(--muted);
+  color: var(--panel);
+  font-size: 7px;
+}
+
+.azure-avatar__badge .pr-icon {
+  stroke-width: 4.5;
+}
+
+.azure-avatar__badge--approved,
+.azure-pr-row__vote-dot--approved {
+  background: var(--success-fg);
+}
+
+.azure-avatar__badge--waiting,
+.azure-pr-row__vote-dot--waiting {
+  background: var(--status-paused);
+}
+
+.azure-avatar__badge--rejected,
+.azure-pr-row__vote-dot--rejected {
+  background: var(--danger-fg);
+}
+
+.azure-pr-row__age {
+  text-align: right;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--inbox-soft);
+}
+
+.azure-pr-row__age--fresh {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.azure-pr-row__age--recent {
+  color: var(--text);
+}
+
+.azure-pr-row__age--old {
+  color: var(--inbox-mute);
 }
 
 .azure-pr-row__actions {
   display: flex;
-  gap: 4px;
-  flex-shrink: 0;
-  padding-top: 2px;
-  margin-left: auto;
-  justify-content: flex-end;
   align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.azure-pr-row__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid rgba(var(--tint), 0.14);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.azure-pr-row__btn:hover:not([disabled]) {
+  background: rgba(var(--tint), 0.09);
+}
+
+/* A fixed width, so Review and Open leave the author and age columns where every other row has them. */
+.azure-pr-row__btn--primary {
+  min-width: 74px;
+  padding: 0 14px;
+  background: rgba(var(--tint), 0.06);
+}
+
+.azure-pr-row__btn--icon {
+  width: 28px;
+  padding: 0;
+  color: var(--inbox-soft);
+  font-size: 14px;
+}
+
+.azure-pr-row__btn--idle {
+  visibility: hidden;
 }
 
 /* Caret toggle that expands the row to reveal description, status, and
-   reviewer info inline. Uses a tight square so it doesn't push the title
-   down a line on dense lists. */
+   reviewer info inline. */
 .azure-pr-row__expand {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
-  margin-right: 2px;
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
   padding: 0;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: 4px;
-  background: rgba(var(--tint), 0.04);
-  color: var(--muted);
-  font: inherit;
-  font-size: 11px;
-  line-height: 1;
+  background: transparent;
+  color: var(--inbox-mute);
+  font-size: 14px;
   cursor: pointer;
-  flex-shrink: 0;
-  align-self: center;
 }
 
 .azure-pr-row__expand:hover {
-  border-color: color-mix(in srgb, var(--accent), transparent 50%);
+  background: rgba(var(--tint), 0.08);
   color: var(--text);
 }
 
-.azure-pr-row--expanded .azure-pr-row__expand {
-  border-color: color-mix(in srgb, var(--accent), transparent 50%);
-  color: var(--accent);
-}
-
-.azure-pr-row__expand-caret {
-  display: inline-block;
-  transform: translateY(-1px);
-}
-
 .azure-pr-row__details {
-  margin-top: 8px;
-  padding: 10px 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 32px;
+  margin: 0 0 6px 32px;
+  padding: 12px 14px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: rgba(var(--tint), 0.025);
-  display: grid;
+  background: rgba(var(--tint), 0.03);
+}
+
+.azure-pr-row__section {
+  flex: 1 1 220px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
   gap: 8px;
+}
+
+.azure-pr-row__section--wide {
+  flex: 2 1 280px;
+}
+
+.azure-pr-row__section h3 {
+  margin: 0;
+  color: var(--inbox-soft);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.azure-pr-row__event {
+  margin: 0;
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.azure-pr-row__event--empty {
+  margin: 0;
+  color: var(--inbox-soft);
+  font-size: 12.5px;
 }
 
 .azure-pr-row__description {
@@ -376,33 +937,73 @@
 }
 
 .azure-pr-row__description--empty {
-  color: var(--muted);
+  color: var(--inbox-soft);
   font-style: italic;
+}
+
+.azure-pr-row__reviewer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.azure-pr-row__vote-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.azure-pr-row__reviewer-vote {
+  color: var(--inbox-soft);
+}
+
+.azure-pr-row__required {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border: 1px solid rgba(var(--tint), 0.2);
+  border-radius: 9px;
+  color: var(--inbox-soft);
+  font-size: 10.5px;
 }
 
 .azure-pr-row__facts {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 6px 16px;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 14px;
   margin: 0;
+  font-size: 12.5px;
 }
 
 .azure-pr-row__fact {
-  display: grid;
-  gap: 1px;
+  display: contents;
 }
 
 .azure-pr-row__fact dt {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted);
+  color: var(--inbox-soft);
 }
 
 .azure-pr-row__fact dd {
   margin: 0;
-  font-size: 12px;
   color: var(--text);
+}
+
+.azure-pr-row__fact dd.azure-pr-row__fact--good {
+  color: var(--success-fg);
+}
+
+.azure-pr-row__fact dd.azure-pr-row__fact--bad {
+  color: var(--danger-fg);
+}
+
+.azure-pr-row__fact dd.azure-pr-row__fact--mono {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
 }
 
 .azure-pr-row__fact code {
@@ -427,12 +1028,141 @@
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--muted);
+  color: var(--inbox-soft);
 }
 
 .azure-pr-row__comment-body {
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* A narrow pane (a split cell, a phone): the title keeps the first line and the short columns wrap under it, with the
+   actions on the right. */
+@container pr-row (max-width: 720px) {
+  .azure-pr-row__line {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+  .azure-pr-row__info,
+  .azure-pr-row--with-repo .azure-pr-row__info {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 10px;
+  }
+  .azure-pr-row__title {
+    order: 1;
+    flex: 1 1 calc(100% - 40px);
+  }
+  .azure-pr-row__repo,
+  .azure-pr-row__id,
+  .azure-pr-row__flags,
+  .azure-pr-row__author,
+  .azure-pr-row__age {
+    order: 2;
+  }
+  /* The second line starts under the title: past the 22px toggle and its gap. */
+  .azure-pr-row__repo,
+  .azure-pr-row:not(.azure-pr-row--with-repo) .azure-pr-row__id {
+    margin-left: 32px;
+  }
+  .azure-pr-row__repo {
+    max-width: 40%;
+  }
+  .azure-pr-row__author {
+    max-width: 40%;
+  }
+  .azure-pr-row__actions {
+    margin-left: auto;
+  }
+}
+
+/* The hover card: what the one-line row leaves out, for the row under the pointer. Teleported to <body>, so the
+   repository card's overflow clip and the row's container cannot cut it off. */
+.azure-pr-hovercard {
+  position: fixed;
+  z-index: 11000;
+  box-sizing: border-box;
+  width: min(440px, calc(100vw - 16px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  border: 1px solid rgba(var(--tint), 0.18);
+  border-radius: 8px;
+  /* Opaque and a step lighter than the list under it (--panel-elevated is translucent, and in the dark theme the same
+     shade as the rows), so the rows never show through. */
+  --hovercard-bg: color-mix(in srgb, var(--panel) 92%, #fff);
+  background: var(--hovercard-bg);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+  pointer-events: none;
+}
+
+.azure-pr-hovercard__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--inbox-soft);
+}
+
+.azure-pr-hovercard__repo {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.azure-pr-hovercard__title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.azure-pr-hovercard__reason {
+  margin: 0;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.azure-pr-hovercard__reason--danger {
+  color: var(--danger-fg);
+}
+
+.azure-pr-hovercard__reviewers {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(var(--tint), 0.08);
+}
+
+.azure-pr-hovercard__reviewer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.azure-pr-hovercard .azure-avatar {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  font-size: 8.5px;
+}
+
+.azure-pr-hovercard .azure-avatar__badge {
+  border-color: var(--hovercard-bg);
+}
+
+.azure-pr-hovercard .azure-avatar--ring {
+  box-shadow:
+    0 0 0 2px var(--hovercard-bg),
+    0 0 0 3.5px var(--accent);
 }
 
 /* Right-align the action cluster on connection cards, review summary,
@@ -1349,6 +2079,7 @@
 .default-theme.review-files-split__panes.splitpanes > .splitpanes__splitter {
   min-width: 3px;
   min-height: 3px;
+  border: 0 !important;
   background: var(--border) !important;
 }
 
@@ -1749,6 +2480,8 @@ details[open] > .review-tree-dir__label .review-tree-dir__icon::before {
   }
   .azure-inbox--tabs-menu-open .azure-tab {
     padding: 10px 12px;
+    height: auto;
+    min-height: 44px;
     text-align: left;
     border-radius: 0;
     border: none;
@@ -1849,50 +2582,87 @@ details[open] > .review-tree-dir__label .review-tree-dir__icon::before {
     padding: 4px;
   }
 
-  /* PR row: stack title/meta and the action cluster vertically so the
-     buttons get full width instead of being squeezed off-screen. */
-  .azure-pr-row {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 8px;
-    padding: 10px 12px;
+  /* PR row: stack the title block and the action cluster so nothing is
+     squeezed off-screen; the title and branch may wrap and every control
+     keeps a >= 36px touch target. */
+  .azure-inbox__groups {
+    gap: 12px;
+    padding: 8px 8px 24px;
   }
-  .azure-pr-row__main {
+  .azure-inbox__filters {
+    padding: 8px 12px;
+  }
+  .azure-inbox__filter-tools {
+    margin-left: 0;
     width: 100%;
+  }
+  .azure-inbox__authors {
+    flex-basis: 100%;
+  }
+  .azure-inbox__chip {
+    height: 32px;
+  }
+  .azure-inbox__select,
+  .azure-inbox__tool {
+    min-height: 36px;
+  }
+  .azure-inbox .azure-tab {
+    height: auto;
+    min-height: 44px;
+  }
+  .azure-pr-row {
+    padding: 8px 12px;
   }
   .azure-pr-row__title {
     flex-wrap: wrap;
+    align-items: baseline;
   }
-  .azure-pr-row__title strong {
+  .azure-pr-row__name {
+    flex: 1 1 8em;
     font-size: 13px;
-    word-break: break-word;
+    white-space: normal;
     overflow-wrap: anywhere;
   }
-  .azure-pr-row__branch {
-    white-space: normal;
-    word-break: break-all;
+  .azure-pr-row__expand {
+    flex-basis: 36px;
+    width: 36px;
+    height: 36px;
+    align-self: center;
+  }
+  .azure-pr-row__title {
+    flex-basis: calc(100% - 46px);
+  }
+  .azure-pr-row__repo,
+  .azure-pr-row:not(.azure-pr-row--with-repo) .azure-pr-row__id {
+    margin-left: 46px;
+  }
+  .azure-inbox__tool {
+    white-space: nowrap;
+  }
+  .azure-pr-row__details {
+    margin-left: 0;
   }
   .azure-pr-row__actions {
-    margin-left: 0;
-    width: 100%;
     flex-wrap: wrap;
-    justify-content: flex-start;
+    justify-content: flex-end;
+    margin-left: auto;
   }
-  .azure-pr-row__actions .button {
-    flex: 1 1 auto;
-    min-width: 0;
-    padding: 6px 10px;
-    font-size: 12px;
+  .azure-pr-row__btn {
+    min-width: 36px;
+    height: 36px;
   }
-  .azure-repo-group .azure-pr-row {
-    /* drop the desktop indent so the cards use full width on phones */
+  .azure-repo-group__older {
     padding-left: 12px;
   }
 
-  /* Repo group header reads better wrapped on narrow screens. */
+  /* Repo group header reads better wrapped on narrow screens: the counts
+     drop to a second line. */
   .azure-repo-group__header {
-    flex-wrap: wrap;
-    padding: 8px 12px 6px;
+    padding: 8px 12px;
+  }
+  .azure-repo-group__stats {
+    flex: 1 1 100%;
+    margin-left: 0;
   }
   .azure-repo-group__hint {
     flex: 1 1 100%;
@@ -2046,5 +2816,17 @@ details[open] > .review-tree-dir__label .review-tree-dir__icon::before {
   /* Pre-PR ("New branch") form layout — ditto. */
   .review-shell .nb-step {
     flex-wrap: wrap;
+  }
+}
+
+@media (min-width: 769px) and (min-height: 501px) {
+  /* A card that only wraps the whole tab panel would be a frame inside the frame. The summary's
+     side-by-side cards are real subdivisions and keep theirs. */
+  .review-content > .review-panel > .git-card.review-card:only-child {
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    padding: 0 4px;
   }
 }

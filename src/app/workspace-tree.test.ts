@@ -29,6 +29,22 @@ describe("resolveParentId", () => {
     expect(resolveParentId(ws("c", { task: { parentWorkspaceId: "p" } }), [])).toBe("p");
   });
 
+  it("resolves Jira board children only beneath their Jira inbox", () => {
+    const parent = ws("jira-inbox", { kind: "jira" });
+    const child = ws("board", {
+      kind: "jira-board",
+      jiraBoard: { parentWorkspaceId: "jira-inbox", connectionId: "jira-a", boardId: "4", boardName: "Platform" },
+    });
+    expect(resolveParentId(child, [parent, child])).toBe("jira-inbox");
+    expect(buildWorkspaceTree([parent, child]).parentOf("board")).toBe("jira-inbox");
+    expect(
+      buildWorkspaceTree([
+        ws("other", { kind: "manual" }),
+        { ...child, jiraBoard: { ...child.jiraBoard, parentWorkspaceId: "other" } },
+      ]).parentOf("board"),
+    ).toBeNull();
+  });
+
   it("falls back to the legacy 'Worktree of' name link, preferring the same profile", () => {
     const child = ws("c", { name: "Repo / feature", notes: "Worktree of Repo", profileId: "p2" });
     const sameProfile = ws("same", { name: "Repo", profileId: "p2" });

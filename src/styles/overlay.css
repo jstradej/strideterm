@@ -228,7 +228,7 @@
 }
 
 .tab--grouped {
-  border-bottom-color: color-mix(in srgb, var(--accent), transparent 50%);
+  border-top-color: color-mix(in srgb, var(--accent), transparent 50%);
 }
 
 .form {

@@ -14,6 +14,60 @@
       </span>
       <span class="file-preview__meta">{{ formatSize(entry.size) }} · {{ formatDate(entry.modifiedAt) }}</span>
       <div class="file-preview__actions">
+        <div
+          v-if="store.editMode && isMarkdown"
+          class="file-preview__view-modes"
+          role="group"
+          aria-label="Markdown editor view"
+        >
+          <button
+            type="button"
+            class="button button--ghost file-preview__btn"
+            :class="{ 'file-preview__btn--active': !markdownEditPreview }"
+            :aria-pressed="!markdownEditPreview"
+            title="Edit the Markdown source. Unsaved changes stay in the editor."
+            @click="markdownEditPreview = false"
+          >
+            Edit
+          </button>
+          <button
+            type="button"
+            class="button button--ghost file-preview__btn"
+            :class="{ 'file-preview__btn--active': markdownEditPreview }"
+            :aria-pressed="markdownEditPreview"
+            title="Render the current Markdown buffer, including unsaved changes."
+            @click="markdownEditPreview = true"
+          >
+            Preview
+          </button>
+        </div>
+        <div
+          v-if="!store.editMode && preview?.kind === 'text' && isMarkdown"
+          class="file-preview__view-modes"
+          role="group"
+          aria-label="Markdown view"
+        >
+          <button
+            type="button"
+            class="button button--ghost file-preview__btn"
+            :class="{ 'file-preview__btn--active': markdownPreview }"
+            :aria-pressed="markdownPreview"
+            title="Render this Markdown file for reading."
+            @click="markdownPreview = true"
+          >
+            Preview
+          </button>
+          <button
+            type="button"
+            class="button button--ghost file-preview__btn"
+            :class="{ 'file-preview__btn--active': !markdownPreview }"
+            :aria-pressed="!markdownPreview"
+            title="Show the Markdown source as plain text."
+            @click="markdownPreview = false"
+          >
+            Source
+          </button>
+        </div>
         <button
           v-if="gitStatus && entry?.kind === 'file'"
           type="button"
@@ -38,7 +92,12 @@
             class="button button--ghost file-preview__btn"
             :aria-pressed="store.columnSelection"
             :class="{ 'file-preview__btn--active': store.columnSelection }"
-            title="Toggle rectangular selection. With this on, drag across lines to select a block."
+            :disabled="isMarkdown && markdownEditPreview"
+            :title="
+              isMarkdown && markdownEditPreview
+                ? 'Column selection is available in the Edit view.'
+                : 'Toggle rectangular selection. With this on, drag across lines to select a block.'
+            "
             @click="store.columnSelection = !store.columnSelection"
           >
             Column selection
@@ -74,11 +133,23 @@
     </div>
 
     <div class="file-preview__body" :class="gitStatus ? `file-preview__body--git-${gitStatus}` : ''">
-      <FileEditor v-if="store.editMode" :key="entry.relativePath" />
+      <div v-if="store.editMode" class="file-preview__edit-stage">
+        <FileEditor
+          v-show="!markdownEditPreview || !isMarkdown"
+          :key="entry.relativePath"
+          class="file-preview__editor"
+        />
+        <MarkdownContent
+          v-if="isMarkdown && markdownEditPreview"
+          class="file-preview__markdown file-preview__markdown--edit"
+          :text="store.editContent"
+        />
+      </div>
 
       <!-- Text preview -->
       <template v-else-if="preview?.kind === 'text'">
-        <pre class="file-preview__text">{{ preview.content }}</pre>
+        <MarkdownContent v-if="isMarkdown && markdownPreview" class="file-preview__markdown" :text="preview.content" />
+        <pre v-else class="file-preview__text">{{ preview.content }}</pre>
       </template>
 
       <!-- Image preview -->
@@ -134,11 +205,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import { useFileManagerStore } from "../../../stores/file-manager.js";
 import FileEditor from "./FileEditor.vue";
 import { statusBadge, statusColor, statusLabel, statusTitle } from "./git-status-helpers.js";
 import { formatSize } from "./file-format.js";
+import MarkdownContent from "../azure/MarkdownContent.vue";
+import { isMarkdownFile } from "../azure/markdown-renderer.js";
 
 defineEmits<{ (e: "open-in-explorer"): void }>();
 
@@ -146,6 +219,22 @@ const store = useFileManagerStore();
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const entry = computed<Record<string, any>>(() => store.selectedEntry || {});
 const preview = computed(() => store.preview);
+const isMarkdown = computed(() => isMarkdownFile(entry.value?.name || ""));
+const markdownPreview = ref(true);
+const markdownEditPreview = ref(false);
+watch(
+  () => entry.value?.relativePath,
+  () => {
+    markdownPreview.value = true;
+    markdownEditPreview.value = false;
+  },
+);
+watch(
+  () => store.editMode,
+  (editing) => {
+    if (editing) markdownEditPreview.value = false;
+  },
+);
 
 const isEditable = computed(() => {
   const kind = preview.value?.kind;
@@ -231,6 +320,12 @@ function formatDate(iso: string) {
   scrollbar-width: thin;
 }
 
+.file-preview__view-modes {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 2px;
+}
+
 .file-preview__btn {
   font-size: 11px !important;
   padding: 2px 8px !important;
@@ -270,6 +365,20 @@ function formatDate(iso: string) {
   position: relative;
 }
 
+.file-preview__edit-stage {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+}
+
+.file-preview__editor {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
 .file-preview__body--git-modified::before,
 .file-preview__body--git-staged::before,
 .file-preview__body--git-untracked::before,
@@ -306,6 +415,15 @@ function formatDate(iso: string) {
   word-break: break-all;
   tab-size: 2;
   color: var(--text);
+}
+
+.file-preview__markdown {
+  display: block;
+  padding: 10px 14px;
+}
+
+.file-preview__markdown--edit {
+  flex: 1 0 auto;
 }
 
 .file-preview__image {

@@ -93,7 +93,7 @@ describe("provider-registry", () => {
     test("parses codex command without model uses default", () => {
       const result = parseProviderFromCommand("codex --dangerously-bypass-approvals-and-sandbox -s danger-full-access");
       expect(result.providerId).toBe("codex");
-      expect(result.model).toBe("gpt-5.4-mini");
+      expect(result.model).toBe("gpt-6-luna");
     });
 
     test("parses codex command with explicit -m model", () => {
@@ -111,7 +111,7 @@ describe("provider-registry", () => {
     test("parses gemini command without model uses default", () => {
       const result = parseProviderFromCommand("gemini --yolo");
       expect(result.providerId).toBe("gemini");
-      expect(result.model).toBe("gemini-2.5-flash");
+      expect(result.model).toBe("gemini-3.8-flash");
     });
 
     test("parses copilot command with explicit --model", () => {
@@ -123,7 +123,7 @@ describe("provider-registry", () => {
     test("parses copilot command without model uses default", () => {
       const result = parseProviderFromCommand("copilot --allow-all-tools");
       expect(result.providerId).toBe("copilot");
-      expect(result.model).toBe("claude-sonnet-4.6");
+      expect(result.model).toBe("claude-sonnet-5.5");
     });
 
     test("parses opencode command without model uses default", () => {

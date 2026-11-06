@@ -1,5 +1,5 @@
 <template>
-  <div ref="rootEl" class="detail-shell">
+  <div ref="rootEl" class="detail-shell" @dragover="onDragOver" @drop="onDrop">
     <div v-if="!alive && !connecting" class="detail-shell__overlay detail-shell__overlay--exit">
       <div class="detail-shell__exit-card">
         <p>Shell session ended.</p>
@@ -23,6 +23,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import Spinner from "../../common/Spinner.vue";
 import { useAppStore } from "../../../stores/app.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
+import { PATHS_MIME } from "../../../lib/terminal-path-drop.js";
 import { userFacingMessage } from "../../../lib/error-message.js";
 import { isLightAppTheme, onAppThemeChange } from "../../../app/app-theme.js";
 import { LIGHT_TERMINAL_THEME, terminalMinimumContrastRatio } from "../../../app/terminal-light-theme.js";
@@ -68,6 +69,29 @@ let resizeFrame = 0;
 let onDataDisposer: { dispose(): void } | null = null;
 let stopThemeSync: (() => void) | null = null;
 let currentSessionId = props.sessionId;
+
+function carriesPaths(event: DragEvent): boolean {
+  const types = Array.from(event.dataTransfer?.types || []);
+  return types.includes(PATHS_MIME) || types.includes("Files");
+}
+
+function onDragOver(event: DragEvent): void {
+  if (!carriesPaths(event)) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+}
+
+function onDrop(event: DragEvent): void {
+  if (!carriesPaths(event)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  notifications.pushEphemeralToast({
+    title: "Cannot drop here",
+    body: "A path on this computer means nothing inside the container.",
+    kind: "error",
+    durationMs: 7000,
+  });
+}
 
 function scheduleFit(opts?: { sendResize?: boolean }): void {
   if (resizeFrame) cancelAnimationFrame(resizeFrame);

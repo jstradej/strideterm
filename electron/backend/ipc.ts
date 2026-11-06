@@ -2,13 +2,18 @@
 import { ipcMain, dialog, BrowserWindow, shell, clipboard, ClipboardItem, Notification, app } from "electron";
 import path, { join } from "node:path";
 import { homedir } from "node:os";
-import { stat, mkdir, writeFile, readFile } from "node:fs/promises";
+import { stat, lstat, mkdir, writeFile, readFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { open as openFileHandle } from "node:fs/promises";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import type { createRuntime } from "./runtime.js";
 import { startPullRequestReviewSchema } from "../shared/pull-request-review.js";
+import { START_PIPELINE_AGENT_CHANNEL, startPipelineAgentSchema } from "../shared/pipeline-agent.js";
+import { START_JIRA_DEVELOPMENT_CHANNEL, startJiraDevelopmentSchema } from "../shared/jira-development.js";
 import { withOperationPromise } from "./effect/runtime.js";
 import * as fm from "./file-manager.js";
 import * as attachments from "./attachments.js";
+import { parseRemoteViewerId } from "./viewer-id.js";
 import { parseCommandTemplate, substituteCommandArg } from "./command-template.js";
 import { resolveTerminalOpenAction } from "./terminal-open-action.js";
 import type { TerminalOpenAction } from "./terminal-open-action.js";
@@ -24,6 +29,48 @@ import {
   settingsSchema,
   remoteSessionRevokeSchema,
   azureConnectionSchema,
+  jiraConnectionIdSchema,
+  jiraIssuePopoutSchema,
+  jiraConnectionMetadataSchema,
+  jiraRepoBindingPreferenceQuerySchema,
+  jiraSavedFilterLookupSchema,
+  jiraTaskContextPrepareSchema,
+  jiraWorkspaceIssueLinkSchema,
+  jiraCommentDraftSaveSchema,
+  jiraCommentDraftDeleteSchema,
+  jiraConnectionSaveSchema,
+  jiraConnectionTestSchema,
+  jiraSearchSchema,
+  jiraBoardSearchSchema,
+  jiraIssueLookupSchema,
+  jiraAttachmentLookupSchema,
+  jiraAttachmentUploadSchema,
+  jiraBoardViewSchema,
+  jiraBoardQuickFiltersSchema,
+  jiraUserSearchSchema,
+  jiraWritePreviewSchema,
+  jiraWriteExecuteSchema,
+  jiraTransitionLookupSchema,
+  jiraOwnIdentitySchema,
+  jiraCommentAttributionSchema,
+  jiraAgentAttachmentLimitsSchema,
+  jiraOwnIssuesQuerySchema,
+  jiraRecentListSchema,
+  jiraWorkspaceViewsGetSchema,
+  jiraWorkspaceProjectScopeGetSchema,
+  jiraWorkspaceProjectScopeSetSchema,
+  jiraWorkspaceViewSaveSchema,
+  jiraWorkspaceViewTargetSchema,
+  jiraWorkspaceViewRefreshSchema,
+  jiraWorkspaceViewRenameSchema,
+  jiraWorkspaceViewReorderSchema,
+  jiraRememberSearchSchema,
+  jiraRememberIssueViewedSchema,
+  jiraWriteHistorySchema,
+  jiraWriteReconcileSchema,
+  jiraQuerySaveSchema,
+  jiraQueryDeleteSchema,
+  jiraCommentsLookupSchema,
   azureClosedPrCleanupSchema,
   azureCommentSchema,
   azureVoteSchema,
@@ -171,8 +218,34 @@ import { AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL } from "../shared/azure-closed
 import { OPERATION_FINISHED_CHANNEL } from "../shared/operation-events.js";
 import { REVIEW_GIT_OPERATION_CHANNEL } from "../shared/review-git-events.js";
 import { errorMessage } from "../shared/error-message.js";
+import { toJiraIpcFailure } from "../shared/jira-ipc-failure.js";
+import { JiraRequestError } from "./jira/jira-manager.js";
+import { jiraErrorFields } from "./jira/jira-request-error.js";
 
 type Runtime = Awaited<ReturnType<typeof createRuntime>>;
+
+function jiraUploadMediaType(fileName: string): string {
+  const extension = path.extname(fileName).toLowerCase();
+  const known: Record<string, string> = {
+    ".csv": "text/csv",
+    ".doc": "application/msword",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".gif": "image/gif",
+    ".html": "text/html",
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".json": "application/json",
+    ".md": "text/markdown",
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".txt": "text/plain",
+    ".webp": "image/webp",
+    ".xls": "application/vnd.ms-excel",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".zip": "application/zip",
+  };
+  return known[extension] || "application/octet-stream";
+}
 
 /**
  * Wraps a raw OS clipboard format name (CF_HDROP, public.file-url, …) in the
@@ -205,6 +278,14 @@ function normalizeIpcFailure(err: unknown): Error {
   return normalized;
 }
 
+export interface JiraIssuePopoutTarget {
+  openerWindowId: string;
+  profileId: string;
+  workspaceId: string;
+  ref: { connectionId: string; issueId: string; issueKey: string };
+  summary?: string;
+}
+
 export function registerIpc(
   runtime: Runtime,
   emitToRenderer: (channel: string, payload: unknown) => void,
@@ -212,10 +293,14 @@ export function registerIpc(
     includeStateGet = true,
     getWindowIdByWebContentsId,
     emitToWindow,
+    openJiraIssuePopout,
+    getJiraIssuePopoutInit,
   }: {
     includeStateGet?: boolean;
     getWindowIdByWebContentsId?: (webContentsId: number) => string | undefined;
     emitToWindow?: (windowId: string, channel: string, payload: unknown) => void;
+    openJiraIssuePopout?: (target: JiraIssuePopoutTarget) => { focused: boolean };
+    getJiraIssuePopoutInit?: (webContentsId: number) => JiraIssuePopoutTarget | null;
   } = {},
 ): () => void {
   const sshTestOwnerDestroyHandlers = new Map<string, { sender: Electron.WebContents; listener: () => void }>();
@@ -337,6 +422,13 @@ export function registerIpc(
   // moment its listener is registered. Teardown below iterates these arrays
   // instead of a hand-maintained duplicate list, so a channel can never be
   // registered without also being torn down.
+  /** `jira:*` plus the task and quick-fix channels that look up Jira issues; the preload must read these with `invokeJira`. */
+  const usesJiraFailureEnvelope = (channel: string) =>
+    channel.startsWith("jira:") ||
+    channel === "task:create-workspace" ||
+    channel === "task:start" ||
+    channel === "azure:quickfix:create" ||
+    channel === "github:quickfix:create";
   const registeredHandleChannels: string[] = [];
   const registeredListenerChannels: string[] = [];
   function handle(channel: string, listener: Parameters<typeof ipcMain.handle>[1]): void {
@@ -345,6 +437,7 @@ export function registerIpc(
         return await listener(event, ...args);
       } catch (err) {
         logIpcFailure(channel, err);
+        if (usesJiraFailureEnvelope(channel) && err instanceof JiraRequestError) return toJiraIpcFailure(err);
         throw normalizeIpcFailure(err);
       }
     });
@@ -359,14 +452,29 @@ export function registerIpc(
   const IPC_FAILURE_REPEAT_MS = 60_000;
   const recentIpcFailures = new Map<string, number>();
   function logIpcFailure(channel: string, err: unknown): void {
-    const message = describeIpcFailure(err);
+    // Jira's own explanation of a refusal can quote the user's JQL; the code and status carry what a log needs.
+    const rawDetail = (err as { detail?: unknown } | null)?.detail;
+    const detail = typeof rawDetail === "string" && rawDetail ? rawDetail : undefined;
+    const described = describeIpcFailure(err);
+    const detailAt = detail ? described.indexOf(detail.slice(0, 24)) : -1;
+    const message = detailAt >= 0 ? described.slice(0, detailAt).trim() : described;
+    const fields = jiraErrorFields(err);
+    const code = err instanceof JiraRequestError ? fields.code : (err as { code?: unknown } | null)?.code;
+    const statusSource = err as { statusCode?: unknown; status?: unknown } | null;
+    const statusCode = statusSource?.statusCode ?? statusSource?.status;
     const key = `${channel}\n${message}`;
     const now = Date.now();
     const last = recentIpcFailures.get(key);
     if (last !== undefined && now - last < IPC_FAILURE_REPEAT_MS) return;
     if (recentIpcFailures.size >= 500) recentIpcFailures.clear();
     recentIpcFailures.set(key, now);
-    ipcLog.warn("ipc handler failed", { channel, err: message });
+    ipcLog.warn("ipc handler failed", {
+      channel,
+      err: message,
+      ...(typeof code === "string" || typeof code === "number" ? { code } : {}),
+      ...(typeof statusCode === "number" ? { statusCode } : {}),
+      ...(fields.cause ? { cause: fields.cause } : {}),
+    });
   }
 
   /**
@@ -614,6 +722,409 @@ export function registerIpc(
       const validated = validateIpc(settingsSchema, settings, "settings:update");
       const { payload, remoteAccessChanged } = await runtime.updateSettings(validated);
       return { payload, remoteAccessChanged };
+    }),
+  );
+  handle("jira:issue:popout", async (event, payload) => {
+    const input = validateIpc(jiraIssuePopoutSchema, payload, "jira:issue:popout");
+    const openerWindowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    if (!openerWindowId || parseRemoteViewerId(openerWindowId) || !openJiraIssuePopout)
+      throw new Error("Issue pop-out is only available in the desktop app.");
+    const profileId = runtime.resolveJiraIssuePopoutProfile(input.workspaceId, openerWindowId);
+    return openJiraIssuePopout({
+      openerWindowId,
+      profileId,
+      workspaceId: input.workspaceId,
+      ref: input.ref,
+      ...(input.summary ? { summary: input.summary } : {}),
+    });
+  });
+  handle("jira:issue:popout:get-init", async (event) => getJiraIssuePopoutInit?.(event.sender.id) ?? null);
+  handle("jira:verify", async (event, connectionId) =>
+    runtime.jiraVerifyConnection(
+      validateIpc(jiraConnectionIdSchema, connectionId, "jira:verify"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:connection:metadata", async (event, payload) =>
+    runtime.jiraUpdateConnectionMetadata(
+      validateIpc(jiraConnectionMetadataSchema, payload, "jira:connection:metadata"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:task:prepare", async (event, payload) =>
+    runtime.previewJiraTaskContext(
+      validateIpc(jiraTaskContextPrepareSchema, payload, "jira:task:prepare"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:task:context", async (event, workspaceId) =>
+    runtime.jiraGetTaskContext(
+      validateIpc(jiraConnectionIdSchema, workspaceId, "jira:task:context"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:workspace:attach", async (event, payload) =>
+    runtime.jiraAttachIssueToWorkspace(
+      validateIpc(jiraWorkspaceIssueLinkSchema, payload, "jira:workspace:attach"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:workspace:detach", async (event, payload) =>
+    runtime.jiraDetachIssueFromWorkspace(
+      validateIpc(jiraWorkspaceIssueLinkSchema, payload, "jira:workspace:detach"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:comment-draft:save", async (event, payload) =>
+    runtime.saveJiraCommentDraft(
+      validateIpc(jiraCommentDraftSaveSchema, payload, "jira:comment-draft:save"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:comment-draft:list", async (event, workspaceId) =>
+    runtime.listJiraCommentDrafts(
+      validateIpc(jiraConnectionIdSchema, workspaceId, "jira:comment-draft:list"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:comment-draft:delete", async (event, payload) =>
+    runtime.deleteJiraCommentDraft(
+      validateIpc(jiraCommentDraftDeleteSchema, payload, "jira:comment-draft:delete"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:own-identity:verify", async (event, payload) =>
+    runtime.jiraVerifyOwnIdentity(
+      validateIpc(jiraOwnIdentitySchema, payload, "jira:own-identity:verify"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:own-identity:set", async (event, payload) =>
+    runtime.jiraSetOwnIdentity(
+      validateIpc(jiraOwnIdentitySchema, payload, "jira:own-identity:set"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:settings:comment-attribution:set", async (event, payload) =>
+    runtime.jiraSetCommentAttribution(
+      validateIpc(jiraCommentAttributionSchema, payload, "jira:settings:comment-attribution:set"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:settings:agent-attachments:set", async (event, payload) =>
+    runtime.jiraSetAgentAttachmentLimits(
+      validateIpc(jiraAgentAttachmentLimitsSchema, payload, "jira:settings:agent-attachments:set"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:own-issues-query", async (event, payload) =>
+    runtime.buildJiraOwnIssuesQuery(
+      validateIpc(jiraOwnIssuesQuerySchema, payload, "jira:own-issues-query"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:connections", async (event) =>
+    runtime.jiraListConnections(getWindowIdByWebContentsId?.(event.sender.id) ?? ""),
+  );
+  handle("jira:recent-searches:list", async (event, payload) =>
+    runtime.getJiraRecentSearches(
+      validateIpc(jiraRecentListSchema, payload, "jira:recent-searches:list"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:workspace-views:get", async (event, payload) =>
+    runtime.getJiraWorkspaceViews(
+      validateIpc(jiraWorkspaceViewsGetSchema, payload, "jira:workspace-views:get"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:workspace-views:save", async (event, payload) =>
+    runtime.saveJiraWorkspaceView(
+      validateIpc(jiraWorkspaceViewSaveSchema, payload, "jira:workspace-views:save"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:workspace-project-scope:get", async (event, payload) =>
+    runtime.getJiraWorkspaceProjectScope(
+      validateIpc(jiraWorkspaceProjectScopeGetSchema, payload, "jira:workspace-project-scope:get"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:workspace-project-scope:set", async (event, payload) =>
+    runtime.setJiraWorkspaceProjectScope(
+      validateIpc(jiraWorkspaceProjectScopeSetSchema, payload, "jira:workspace-project-scope:set"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:workspace-views:rename", async (event, payload) =>
+    runtime.renameJiraWorkspaceView(
+      validateIpc(jiraWorkspaceViewRenameSchema, payload, "jira:workspace-views:rename"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:workspace-views:reorder", async (event, payload) =>
+    runtime.reorderJiraWorkspaceViews(
+      validateIpc(jiraWorkspaceViewReorderSchema, payload, "jira:workspace-views:reorder"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:workspace-views:remove", async (event, payload) =>
+    runtime.removeJiraWorkspaceView(
+      validateIpc(jiraWorkspaceViewTargetSchema, payload, "jira:workspace-views:remove"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:workspace-views:active", async (event, payload) =>
+    runtime.setJiraWorkspaceActiveView(
+      validateIpc(jiraWorkspaceViewTargetSchema, payload, "jira:workspace-views:active"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:workspace-views:refresh", async (event, payload) =>
+    runtime.refreshJiraWorkspaceViews(
+      validateIpc(jiraWorkspaceViewRefreshSchema, payload, "jira:workspace-views:refresh"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:recent-searches:remember", async (event, payload) =>
+    runtime.rememberJiraSearch(
+      validateIpc(jiraRememberSearchSchema, payload, "jira:recent-searches:remember"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:recent-issues:list", async (event, payload) =>
+    runtime.getJiraRecentIssues(
+      validateIpc(jiraRecentListSchema, payload, "jira:recent-issues:list"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:recent-issues:viewed", async (event, payload) =>
+    runtime.rememberJiraIssueViewed(
+      validateIpc(jiraRememberIssueViewedSchema, payload, "jira:recent-issues:viewed"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:task:repo-binding", async (event, payload) =>
+    runtime.jiraGetRepoBindingPreference(
+      validateIpc(jiraRepoBindingPreferenceQuerySchema, payload, "jira:task:repo-binding"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:queries", async (event, connectionId) =>
+    runtime.jiraListQueries(
+      validateIpc(jiraConnectionIdSchema, connectionId, "jira:queries"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:filters:favourite", async (event, connectionId) =>
+    runtime.jiraListFavoriteFilters(
+      validateIpc(jiraConnectionIdSchema, connectionId, "jira:filters:favourite"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:filter:get", async (event, payload) =>
+    runtime.jiraGetSavedFilter(
+      validateIpc(jiraSavedFilterLookupSchema, payload, "jira:filter:get"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:query:save", async (event, payload) =>
+    runtime.jiraSaveQuery(
+      validateIpc(jiraQuerySaveSchema, payload, "jira:query:save"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:query:delete", async (event, queryId) =>
+    runtime.jiraDeleteQuery(
+      validateIpc(jiraQueryDeleteSchema, queryId, "jira:query:delete"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:write:history", async (event, payload) =>
+    runtime.jiraGetWriteHistory(
+      validateIpc(jiraWriteHistorySchema, payload, "jira:write:history"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:write:reconcile", async (event, journalId) =>
+    runtime.jiraReconcileWrite(
+      validateIpc(jiraWriteReconcileSchema, journalId, "jira:write:reconcile"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:ensure-workspace", async (event) =>
+    runtime.jiraEnsureWorkspace(getWindowIdByWebContentsId?.(event.sender.id) ?? ""),
+  );
+  handle("jira:save-connection", async (event, input) => {
+    const validated = validateIpc(jiraConnectionSaveSchema, input, "jira:save-connection");
+    return runtime.jiraSaveConnection(validated, getWindowIdByWebContentsId?.(event.sender.id) ?? "");
+  });
+  handle("jira:test-connection", async (event, input) => {
+    const validated = validateIpc(jiraConnectionTestSchema, input, "jira:test-connection");
+    return runtime.jiraTestConnection(validated, getWindowIdByWebContentsId?.(event.sender.id) ?? "");
+  });
+  handle("jira:delete-connection", async (event, connectionId) =>
+    runtime.jiraDeleteConnection(
+      validateIpc(jiraConnectionIdSchema, connectionId, "jira:delete-connection"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:projects", async (event, connectionId) =>
+    runtime.jiraListProjects(
+      validateIpc(jiraConnectionIdSchema, connectionId, "jira:projects"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:boards", async (event, connectionId) =>
+    runtime.jiraListBoards(
+      validateIpc(jiraConnectionIdSchema, connectionId, "jira:boards"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:boards:search", async (event, payload) =>
+    runtime.jiraSearchBoards(
+      validateIpc(jiraBoardSearchSchema, payload, "jira:boards:search"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:board-view", async (event, payload) =>
+    runtime.jiraGetBoardView(
+      validateIpc(jiraBoardViewSchema, payload, "jira:board-view"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:board-quick-filters", async (event, payload) =>
+    runtime.jiraListBoardQuickFilters(
+      validateIpc(jiraBoardQuickFiltersSchema, payload, "jira:board-quick-filters"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:users:search", async (event, payload) =>
+    runtime.jiraSearchUsers(
+      validateIpc(jiraUserSearchSchema, payload, "jira:users:search"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:transitions", async (event, payload) =>
+    runtime.jiraListTransitions(
+      validateIpc(jiraTransitionLookupSchema, payload, "jira:transitions").ref,
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:comments", async (event, payload) =>
+    runtime.jiraListComments(
+      validateIpc(jiraCommentsLookupSchema, payload, "jira:comments"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:write:preview", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    const input = validateIpc(jiraWritePreviewSchema, payload, "jira:write:preview");
+    if (input.action === "assign") return runtime.jiraPreviewAssign(input, windowId);
+    if (input.action === "transition") return runtime.jiraPreviewTransition(input, windowId);
+    if (input.action === "comment") return runtime.jiraPreviewComment(input, windowId);
+    if (input.action === "worklog") return runtime.jiraPreviewWorklog(input, windowId);
+    return runtime.jiraPreviewRemoteLink(input, windowId);
+  });
+  handle("jira:write:execute", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    const input = validateIpc(jiraWriteExecuteSchema, payload, "jira:write:execute");
+    if (input.action === "assign") return runtime.jiraExecuteAssign(input, windowId);
+    if (input.action === "transition") return runtime.jiraExecuteTransition(input, windowId);
+    if (input.action === "comment") return runtime.jiraExecuteComment(input, windowId);
+    if (input.action === "worklog") return runtime.jiraExecuteWorklog(input, windowId);
+    return runtime.jiraExecuteRemoteLink(input, windowId);
+  });
+  handle("jira:search", async (event, payload) =>
+    runtime.jiraSearchIssues(
+      validateIpc(jiraSearchSchema, payload, "jira:search"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:issue", async (event, payload) =>
+    runtime.jiraGetIssue(
+      validateIpc(jiraIssueLookupSchema, payload, "jira:issue"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:attachment:content", async (event, payload) =>
+    runtime.jiraGetAttachmentImage(
+      validateIpc(jiraAttachmentLookupSchema, payload, "jira:attachment:content"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:attachment:save", async (event, payload) =>
+    withOperationPromise({ opId: "jira:attachment:save" }, async () => {
+      const input = validateIpc(jiraAttachmentLookupSchema, payload, "jira:attachment:save");
+      const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+      if (parseRemoteViewerId(windowId))
+        throw new Error("Jira attachment saving is available only from the desktop app.");
+      const downloaded = await runtime.jiraGetAttachmentBytes(input, windowId);
+      if (!(downloaded?.bytes instanceof Uint8Array) || downloaded.bytes.byteLength > 10 * 1024 * 1024)
+        throw new Error("Jira attachment exceeds the 10 MiB save limit.");
+      const candidateName = path
+        .basename(String(downloaded.fileName || "jira-attachment"))
+        .replace(/[\\/\0-\x1f]/g, "_")
+        .slice(0, 128);
+      const fileName =
+        candidateName && candidateName !== "." && candidateName !== ".." ? candidateName : "jira-attachment";
+      const win = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getFocusedWindow();
+      const result = win
+        ? await dialog.showSaveDialog(win, { defaultPath: fileName })
+        : await dialog.showSaveDialog({ defaultPath: fileName });
+      if (result.canceled || !result.filePath) return { saved: false };
+      await writeFile(result.filePath, Buffer.from(downloaded.bytes));
+      return { saved: true, filePath: result.filePath };
+    }),
+  );
+  handle("jira:attachment:upload", async (event, payload) =>
+    withOperationPromise({ opId: "jira:attachment:upload" }, async () => {
+      const input = validateIpc(jiraAttachmentUploadSchema, payload, "jira:attachment:upload");
+      const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+      if (parseRemoteViewerId(windowId))
+        throw new Error("Jira attachment uploading is available only from the desktop app.");
+      const win = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getFocusedWindow();
+      const dialogOptions: import("electron").OpenDialogOptions = {
+        properties: ["openFile"],
+        title: "Choose an attachment to upload to Jira",
+      };
+      const picked = win ? await dialog.showOpenDialog(win, dialogOptions) : await dialog.showOpenDialog(dialogOptions);
+      if (picked.canceled || !picked.filePaths[0]) return { ok: true, cancelled: true };
+      const filePath = picked.filePaths[0];
+      const fileInfo = await lstat(filePath);
+      if (!fileInfo.isFile() || fileInfo.isSymbolicLink()) throw new Error("Choose a regular file to upload.");
+      if (fileInfo.size < 1 || fileInfo.size > 10 * 1024 * 1024)
+        throw new Error("Jira attachments must be between 1 byte and 10 MiB.");
+      const flags = process.platform === "win32" ? "r" : fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW;
+      const fileHandle = await openFileHandle(filePath, flags);
+      let bytes: Buffer;
+      try {
+        const openedInfo = await fileHandle.stat();
+        if (!openedInfo.isFile() || openedInfo.size < 1 || openedInfo.size > 10 * 1024 * 1024)
+          throw new Error("Jira attachments must be between 1 byte and 10 MiB.");
+        const buffer = Buffer.alloc(10 * 1024 * 1024 + 1);
+        let bytesRead = 0;
+        while (bytesRead < buffer.byteLength) {
+          const chunk = await fileHandle.read(buffer, bytesRead, buffer.byteLength - bytesRead, bytesRead);
+          if (!chunk.bytesRead) break;
+          bytesRead += chunk.bytesRead;
+        }
+        if (bytesRead > 10 * 1024 * 1024) throw new Error("Jira attachment exceeds the 10 MiB upload limit.");
+        bytes = buffer.subarray(0, bytesRead);
+      } finally {
+        await fileHandle.close();
+      }
+      const rawFileName = path
+        .basename(filePath)
+        .replace(/[\\/\0-\x1f]/g, "_")
+        .replace(/[^A-Za-z0-9._ -]/g, "_")
+        .slice(0, 128);
+      const fileName = /^[A-Za-z0-9]/.test(rawFileName) ? rawFileName : `attachment-${rawFileName}`.slice(0, 128);
+      return runtime.jiraUploadAttachment(input, windowId, {
+        fileName,
+        mediaType: jiraUploadMediaType(fileName),
+        bytes: new Uint8Array(bytes),
+      });
     }),
   );
   handle("azure:verify-connection", async (_event, connection) =>
@@ -1016,6 +1527,24 @@ export function registerIpc(
       runtime.getAzurePipelineRunDetail(validateIpc(azurePipelinePayloadSchema, payload, "azure:pipelines:run-detail")),
     ),
   );
+  handle(START_PIPELINE_AGENT_CHANNEL, async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: START_PIPELINE_AGENT_CHANNEL }, () =>
+      runtime.startPipelineAgent(
+        validateIpc(startPipelineAgentSchema, payload, START_PIPELINE_AGENT_CHANNEL),
+        windowId,
+      ),
+    );
+  });
+  handle(START_JIRA_DEVELOPMENT_CHANNEL, async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: START_JIRA_DEVELOPMENT_CHANNEL }, () =>
+      runtime.startJiraDevelopment(
+        validateIpc(startJiraDevelopmentSchema, payload, START_JIRA_DEVELOPMENT_CHANNEL),
+        windowId,
+      ),
+    );
+  });
 
   // --- GitHub ---
   handle("github:verify-connection", async (_event, connection) =>
@@ -1191,12 +1720,16 @@ export function registerIpc(
   // subscribes to. That is what makes "all windows see the same state" and "the flow can be cancelled
   // or resent while waiting" true at the same time (plan §8, Fáze 3).
   handle("account:sign-in:start", async (event, payload) => {
-    const { email, purpose, offerId } = validateIpc(accountSignInStartSchema, payload, "account:sign-in:start");
+    const { email, purpose, offerId, confirmationPhrase } = validateIpc(
+      accountSignInStartSchema,
+      payload,
+      "account:sign-in:start",
+    );
     // WHICH window started it. Every window renders the same attempt, but only this one's closing
     // means "never mind" — see `signInOwnerWindowId` in the runtime.
     const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
     return withOperationPromise({ opId: "account:sign-in:start" }, () =>
-      runtime.accountBeginSignIn(email, purpose, offerId, windowId || undefined),
+      runtime.accountBeginSignIn(email, purpose, offerId, windowId || undefined, confirmationPhrase),
     );
   });
   handle("account:online-bootstrap:retry", async (event) => {
@@ -2348,7 +2881,7 @@ export function registerIpc(
   handle("file:write", async (_event, payload) =>
     withOperationPromise({ opId: "file:write" }, async () => {
       const p = validateIpc(fileWriteSchema, payload, "file:write");
-      return fm.writeFileContent(p.rootPath, p.relativePath, p.content);
+      return fm.writeFileContent(p.rootPath, p.relativePath, p.content, p.expectedMtimeMs);
     }),
   );
   handle("file:create-file", async (_event, payload) =>

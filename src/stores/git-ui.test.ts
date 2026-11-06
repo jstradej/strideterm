@@ -4,6 +4,7 @@ import { setActivePinia, createPinia } from "pinia";
 import { useGitUiStore } from "./git-ui.js";
 import { useNotificationStore } from "./notifications.js";
 import type { Transport } from "../transport.js";
+import { gitTagSchema } from "../../electron/backend/ipc-schemas.js";
 import type { OperationFinished } from "../../electron/shared/operation-events.js";
 
 // gitSelectDiff is the only one of the three diff-preview loaders that reads
@@ -707,6 +708,37 @@ describe("git-ui store", () => {
       expect(store.get("ws1").pendingLongOperationKeys).toEqual({});
     });
 
+    test("tag deletions name the root the tag was listed from and keep the retry key, as the real schema sees them", async () => {
+      const deleteTag = vi.fn().mockResolvedValue({ result: { ok: true } });
+      const deleteRemoteTag = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("Connection lost before the operation ID arrived."))
+        .mockResolvedValueOnce({ result: { ok: true } });
+      const store = useGitUiStore();
+      store.init({
+        gitDeleteTag: deleteTag,
+        gitDeleteRemoteTag: deleteRemoteTag,
+        gitListTags: vi.fn().mockResolvedValue({ ok: true, tags: [] }),
+      } as unknown as Transport);
+      store.setActiveRoot("ws1", "/repo/b");
+
+      store.confirmDeleteLocalTag("ws1", "v1");
+      await store.gitConfirmAction("ws1");
+      store.confirmDeleteRemoteTag("ws1", "v1");
+      await store.gitConfirmAction("ws1");
+      store.confirmDeleteRemoteTag("ws1", "v1");
+      await store.gitConfirmAction("ws1");
+
+      const local = gitTagSchema.safeParse(deleteTag.mock.calls[0]![0]);
+      expect(local.success && local.data).toMatchObject({ tagName: "v1", rootPath: "/repo/b" });
+      const first = gitTagSchema.safeParse(deleteRemoteTag.mock.calls[0]![0]);
+      const retry = gitTagSchema.safeParse(deleteRemoteTag.mock.calls[1]![0]);
+      expect(first.success && first.data).toMatchObject({ rootPath: "/repo/b", idempotencyKey: expect.any(String) });
+      expect(retry.success && retry.data).toMatchObject({
+        idempotencyKey: first.success ? first.data.idempotencyKey : "missing",
+      });
+    });
+
     test("adopts the action payload through adoptPayload, not a raw store write", async () => {
       const store = useGitUiStore();
       const responsePayload = { appState: { workspaces: [] } };
@@ -1083,7 +1115,7 @@ describe("git-ui store", () => {
         snap({
           aheadCount: 0,
           behindCount: 0,
-          compareWithBase: { baseBranch: "origin/jstradej/feature-x", aheadCount: 0, behindCount: 0 },
+          compareWithBase: { baseBranch: "origin/jdoe/feature-x", aheadCount: 0, behindCount: 0 },
         }),
       );
 
@@ -1345,6 +1377,21 @@ describe("PR-linked checkouts", () => {
 
     expect(pushReviewCheckout).toHaveBeenCalledWith("ws1", { force: true });
     expect(transport.gitForcePushWithLease).not.toHaveBeenCalled();
+  });
+
+  test("the Force push confirmation names where the push lands, not the local alias", () => {
+    const store = useGitUiStore();
+    store.init(api());
+
+    store.confirmForcePushWithLease("ws1", {
+      branch: "pr-7-feature-login",
+      remote: "origin",
+      behindCount: 2,
+      target: "feature/login",
+    });
+
+    expect(store.get("ws1").pendingAction?.body).toContain("`origin/feature/login`");
+    expect(store.get("ws1").pendingAction?.body).not.toContain("origin/pr-7-feature-login");
   });
 
   test("updating a PR branch from its own target is a TARGET rebase run by the runtime (it asks itself)", async () => {

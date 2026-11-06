@@ -4,10 +4,10 @@ import HistoryRangePicker from "./HistoryRangePicker.vue";
 
 const baseProps = {
   modelValue: "__ALL__",
-  current: "jstradej/fix-waitingperiod",
+  current: "jdoe/fix-waitingperiod",
   favorites: ["origin/master"],
   recent: [] as string[],
-  local: ["jstradej/fix-waitingperiod", "jstradej/alpha", "MSP-91164-azuretest", "master"],
+  local: ["jdoe/fix-waitingperiod", "jdoe/alpha", "TASK-91164-azuretest", "master"],
   remotes: ["origin/master", "origin/feature/x", "origin/feature/y"],
   remoteNames: ["origin"],
   tags: ["v2", "v1"],
@@ -105,15 +105,15 @@ describe("HistoryRangePicker", () => {
     await flush();
     expect(menus()).toHaveLength(2);
     expect(labels(1)).toEqual([
-      "jstradej/fix-waitingperiod (working branch)",
-      "jstradej/alpha",
+      "jdoe/fix-waitingperiod (working branch)",
+      "jdoe/alpha",
       "master",
-      "MSP-91164-azuretest",
+      "TASK-91164-azuretest",
     ]);
-    expect(labels(1).some((text) => text?.startsWith("jstradej›"))).toBe(false);
-    find("jstradej/fix-waitingperiod", 1).click();
+    expect(labels(1).some((text) => text?.startsWith("jdoe›"))).toBe(false);
+    find("jdoe/fix-waitingperiod", 1).click();
     await flush();
-    expect(picker.emitted("change")).toEqual([["jstradej/fix-waitingperiod"]]);
+    expect(picker.emitted("change")).toEqual([["jdoe/fix-waitingperiod"]]);
     expect(menus()).toHaveLength(0);
   });
 

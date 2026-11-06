@@ -179,6 +179,10 @@ export function isGitHubViewId(value: unknown): boolean {
   return String(value || "").startsWith("github:");
 }
 
+export function isJiraViewId(value: unknown): boolean {
+  return String(value || "").startsWith("jira:");
+}
+
 export function isReviewViewId(value: unknown): boolean {
   return String(value || "").startsWith("review:");
 }
@@ -210,6 +214,7 @@ export function classifyViewType(
   if (isDockerViewId(viewId)) return "docker";
   if (isAzureViewId(viewId)) return "azure";
   if (isGitHubViewId(viewId)) return "github";
+  if (isJiraViewId(viewId)) return "jira";
   if (isReviewViewId(viewId)) return "review";
   if (isFilesViewId(viewId)) return "files";
   if (isTaskDashboardViewId(viewId)) return "task-dashboard";

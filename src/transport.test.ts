@@ -150,6 +150,177 @@ describe("remote transport endpoint routing", () => {
     });
   });
 
+  it("preserves Jira cache and board filter options through remote API payloads", async () => {
+    const transport = makeRemoteTransport();
+    const boardPayload = {
+      connectionId: "jira-a",
+      boardId: 7,
+      mode: "issues" as const,
+      cursor: "100",
+      quickFilterIds: [12],
+      assignee: { kind: "user" as const, id: "acct-1" },
+      cacheOnly: true,
+    };
+    await transport.ensureJiraWorkspace?.();
+    await transport.getJiraBoardView?.(boardPayload);
+    await transport.getJiraIssue?.({ connectionId: "jira-a", issueId: "OPS-2", forceRefresh: true });
+    await transport.listJiraBoardQuickFilters?.({ connectionId: "jira-a", boardId: 7, cacheOnly: true });
+    await transport.searchJiraUsers?.({ connectionId: "jira-a", query: "ali", limit: 10 });
+
+    expect(capturedUrls.map((url) => new URL(url, "http://localhost").pathname)).toEqual([
+      "/api/jira/ensure-workspace",
+      "/api/jira/board-view",
+      "/api/jira/issue",
+      "/api/jira/board-quick-filters",
+      "/api/jira/users/search",
+    ]);
+    expect(capturedBodies).toEqual([
+      {},
+      boardPayload,
+      { connectionId: "jira-a", issueId: "OPS-2", forceRefresh: true },
+      { connectionId: "jira-a", boardId: 7, cacheOnly: true },
+      { connectionId: "jira-a", query: "ali", limit: 10 },
+    ]);
+  });
+
+  it("routes Jira issue writes to the remote preview/execute endpoints and keeps attachments desktop-only", async () => {
+    const transport = makeRemoteTransport();
+    const ref = { connectionId: "jira-a", issueId: "1", issueKey: "OPS-1" };
+    const confirmation = { token: "t", intent: "User confirmed note", preview: "Hi" };
+    await transport.listJiraTransitions?.({ ref });
+    await transport.previewJiraWrite?.({ action: "comment", ref, body: "Hi", intent: "User confirmed note" });
+    await transport.executeJiraWrite?.({ action: "comment", ref, body: "Hi", confirmation });
+    await transport.getJiraWriteHistory?.({ connectionId: "jira-a" });
+    await transport.reconcileJiraWrite?.("journal-1");
+
+    expect(capturedUrls.map((url) => new URL(url, "http://localhost").pathname)).toEqual([
+      "/api/jira/transitions",
+      "/api/jira/write/preview",
+      "/api/jira/write/execute",
+      "/api/jira/write/history",
+      "/api/jira/write/reconcile",
+    ]);
+    expect(capturedBodies[4]).toEqual({ journalId: "journal-1" });
+    expect(transport.uploadJiraIssueAttachment).toBeUndefined();
+    expect(transport.saveJiraIssueAttachment).toBeUndefined();
+  });
+
+  it("routes Jira workspace-view APIs to the matching HTTP endpoints and returns view snapshots", async () => {
+    const state = {
+      workspaceId: "jira-ws",
+      profileId: "p1",
+      views: [{ viewId: "issues", kind: "issues", title: "Issues" }],
+      activeViewId: "issues",
+      syncByViewId: {},
+    };
+    globalThis.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      capturedUrls.push(String(url));
+      capturedBodies.push(JSON.parse(String(init?.body || "{}")));
+      return { ok: true, json: async () => state } as Response;
+    });
+    const transport = makeRemoteTransport();
+    const view = {
+      kind: "board" as const,
+      connectionId: "jira-a",
+      boardId: 7,
+      boardName: "Platform",
+      title: "Platform Sprint",
+      mode: "sprints" as const,
+      sprintId: 12,
+      quickFilterIds: [4],
+      assignee: { kind: "user" as const, id: "account-1" },
+      doneWithinDays: null,
+    };
+    const results = await Promise.all([
+      transport.getJiraWorkspaceViews?.({ workspaceId: "jira-ws" }),
+      transport.saveJiraWorkspaceView?.({ workspaceId: "jira-ws", view }),
+      transport.renameJiraWorkspaceView?.({ workspaceId: "jira-ws", viewId: "saved-opaque", title: "Platform" }),
+      transport.reorderJiraWorkspaceViews?.({ workspaceId: "jira-ws", viewIds: ["saved-opaque"] }),
+      transport.removeJiraWorkspaceView?.({ workspaceId: "jira-ws", viewId: "saved-opaque" }),
+      transport.setJiraWorkspaceActiveView?.({ workspaceId: "jira-ws", viewId: "saved-opaque" }),
+      transport.refreshJiraWorkspaceViews?.({ workspaceId: "jira-ws", viewId: "saved-opaque" }),
+    ]);
+
+    expect(capturedUrls.map((url) => new URL(url, "http://localhost").pathname)).toEqual([
+      "/api/jira/workspace-views/get",
+      "/api/jira/workspace-views/save",
+      "/api/jira/workspace-views/rename",
+      "/api/jira/workspace-views/reorder",
+      "/api/jira/workspace-views/remove",
+      "/api/jira/workspace-views/active",
+      "/api/jira/workspace-views/refresh",
+    ]);
+    expect(capturedBodies).toEqual([
+      { workspaceId: "jira-ws" },
+      { workspaceId: "jira-ws", view },
+      { workspaceId: "jira-ws", viewId: "saved-opaque", title: "Platform" },
+      { workspaceId: "jira-ws", viewIds: ["saved-opaque"] },
+      { workspaceId: "jira-ws", viewId: "saved-opaque" },
+      { workspaceId: "jira-ws", viewId: "saved-opaque" },
+      { workspaceId: "jira-ws", viewId: "saved-opaque" },
+    ]);
+    expect(results).toEqual([state, state, state, state, state, state, state]);
+    expect(results.every((result) => result === state)).toBe(true);
+  });
+
+  it("routes personal Jira history and preserves cached search refresh options", async () => {
+    const transport = makeRemoteTransport();
+    const ref = { provider: "jira" as const, connectionId: "jira-a", issueId: "42", issueKey: "OPS-42" };
+    const search = {
+      connectionId: "jira-a",
+      jql: 'text ~ "Cache"',
+      cacheOnly: true,
+      refreshInBackground: true,
+      projectKeys: ["OPS"],
+    };
+    await transport.buildJiraOwnIssuesQuery?.({
+      connectionId: "jira-a",
+      baseJql: "statusCategory != Done",
+      personalScope: "all",
+      projectKeys: ["OPS"],
+    });
+    await transport.getJiraWorkspaceProjectScope?.({ workspaceId: "jira-ws", connectionId: "jira-a" });
+    await transport.setJiraWorkspaceProjectScope?.({
+      workspaceId: "jira-ws",
+      connectionId: "jira-a",
+      projectKeys: [],
+    });
+    await transport.verifyJiraOwnIdentity?.({ connectionId: "jira-a", userId: "alice" });
+    await transport.setJiraOwnIdentity?.({ connectionId: "jira-a", userId: "alice" });
+    await transport.getJiraRecentSearches?.({ connectionId: "jira-a", limit: 10 });
+    await transport.rememberJiraSearch?.({ connectionId: "jira-a", jql: search.jql, label: "Cache work" });
+    await transport.getJiraRecentIssues?.({ connectionId: "jira-a", limit: 10 });
+    await transport.rememberJiraIssueViewed?.({ ref });
+    await transport.listJiraProjects?.("jira-a");
+    await transport.searchJiraIssues?.(search);
+    expect(capturedUrls.map((url) => new URL(url, "http://localhost").pathname)).toEqual([
+      "/api/jira/own-issues-query",
+      "/api/jira/workspace-project-scope/get",
+      "/api/jira/workspace-project-scope/set",
+      "/api/jira/own-identity/verify",
+      "/api/jira/own-identity/set",
+      "/api/jira/recent-searches",
+      "/api/jira/recent-searches/remember",
+      "/api/jira/recent-issues",
+      "/api/jira/recent-issues/viewed",
+      "/api/jira/projects",
+      "/api/jira/search",
+    ]);
+    expect(capturedBodies).toEqual([
+      { connectionId: "jira-a", baseJql: "statusCategory != Done", personalScope: "all", projectKeys: ["OPS"] },
+      { workspaceId: "jira-ws", connectionId: "jira-a" },
+      { workspaceId: "jira-ws", connectionId: "jira-a", projectKeys: [] },
+      { connectionId: "jira-a", userId: "alice" },
+      { connectionId: "jira-a", userId: "alice" },
+      { connectionId: "jira-a", limit: 10 },
+      { connectionId: "jira-a", jql: search.jql, label: "Cache work" },
+      { connectionId: "jira-a", limit: 10 },
+      { ref },
+      { connectionId: "jira-a" },
+      search,
+    ]);
+  });
+
   it("sets host visibility only for a native host and dispatches the visibility event", () => {
     const postMessage = vi.fn();
     (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
@@ -1509,6 +1680,31 @@ describe("remote transport endpoint routing", () => {
     ).toEqual([{ type: "session-lost", reason: "unauthorized" }]);
   });
 
+  it("a Jira failure on any route throws the typed jiraError and never reports the session lost", async () => {
+    const postMessage = vi.fn();
+    (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
+    const body = JSON.stringify({
+      error: "Jira rejected this connection. Sign in again.",
+      jiraError: { code: "auth-expired", retryAfterMs: 1500 },
+    });
+    // 424 is what the server answers; a 401 carrying the same body must not end the session either.
+    for (const status of [424, 401]) {
+      globalThis.fetch = vi.fn(async () => ({ ok: false, status, text: async () => body }) as Response);
+      const transport = makeRemoteTransport();
+      const error = await transport.startTask!({ workspaceId: "ws-1" }).then(
+        () => undefined,
+        (cause: unknown) => cause as Error & { jiraError?: { code: string; retryAfterMs?: number } },
+      );
+      expect(error?.message).toBe("Jira rejected this connection. Sign in again.");
+      expect(error?.jiraError).toEqual({ code: "auth-expired", retryAfterMs: 1500 });
+    }
+    expect(
+      postMessage.mock.calls
+        .map(([message]) => JSON.parse(message as string))
+        .filter(({ type }) => type === "session-lost"),
+    ).toEqual([]);
+  });
+
   it("a burst of relay bootstrap redirects reports the session lost exactly once", async () => {
     const postMessage = vi.fn();
     (window as unknown as Record<string, unknown>).StridetermHost = { postMessage };
@@ -2651,6 +2847,12 @@ describe("remote transport API parity — no method silently missing its remote 
     "respondConfirmClose",
     "openDiffPopout",
     "getDiffPopoutInit",
+    "openFilePopout",
+    "getFilePopoutInit",
+    "getPathForDroppedFile",
+    // A Jira issue in its own desktop window; the issue detail hides the pop-out button without it.
+    "openJiraIssuePopout",
+    "getJiraIssuePopoutInit",
     "onNewWindowShortcut",
     "onConfirmCloseRequest",
     // Stands in for the Page Visibility API, which Electron pins to "visible"
@@ -2761,6 +2963,31 @@ describe("remote transport API parity — no method silently missing its remote 
     "accountDelete",
     "accountSubmitDiagnostics",
     "accountExportDiagnostics",
+    // Jira auth/configuration and workspace/task mutations remain desktop-only; issue writes (comment,
+    // status, assign, worklog, link) go through the remote preview/execute routes. The one remote workspace bootstrap is
+    // profile-scoped and explicitly denied to paired mobile sessions.
+    "previewJiraTaskContext",
+    "getJiraTaskContext",
+    "attachJiraIssueToWorkspace",
+    "detachJiraIssueFromWorkspace",
+    "saveJiraCommentDraft",
+    "listJiraCommentDrafts",
+    "deleteJiraCommentDraft",
+    "saveJiraConnection",
+    "deleteJiraConnection",
+    "verifyJiraConnection",
+    "updateJiraConnectionMetadata",
+    "setJiraCommentAttribution",
+    "setJiraAgentAttachmentLimits",
+    "getJiraRepoBindingPreference",
+    "saveJiraQuery",
+    "deleteJiraQuery",
+    "listJiraFavoriteFilters",
+    "getJiraSavedFilter",
+    // Connection verification may mint temporary credentials and attachment writes target local files.
+    "testJiraConnection",
+    "saveJiraIssueAttachment",
+    "uploadJiraIssueAttachment",
   ]);
 
   function extractDesktopApiKeys(): string[] {
@@ -2790,6 +3017,18 @@ describe("remote transport API parity — no method silently missing its remote 
     const remoteKeys = new Set(Object.keys(transport));
     const stale = [...KNOWN_DESKTOP_ONLY_METHODS].filter((key) => remoteKeys.has(key));
     expect(stale).toEqual([]);
+  });
+});
+
+describe("remote transport — Jira agent attachment limits", () => {
+  it("has no setter, so a remote client cannot change them", () => {
+    expect((makeRemoteTransport() as unknown as Record<string, unknown>).setJiraAgentAttachmentLimits).toBeUndefined();
+  });
+});
+
+describe("remote transport — Jira comment attribution", () => {
+  it("has no setter, so a remote client cannot change it", () => {
+    expect((makeRemoteTransport() as unknown as Record<string, unknown>).setJiraCommentAttribution).toBeUndefined();
   });
 });
 
@@ -3353,6 +3592,12 @@ describe("operation:finished — transport boundary validation", () => {
       }
 
       expect(seen).toEqual([finished, failed]);
+
+      const stopped: unknown[] = [];
+      const stop = transport.onOperationFinished((event) => stopped.push(event));
+      stop();
+      socket.message({ type: "operation:finished", payload: finished });
+      expect(stopped).toEqual([]);
     } finally {
       globalThis.WebSocket = originalWebSocket;
       globalThis.fetch = originalFetch;
@@ -3360,10 +3605,13 @@ describe("operation:finished — transport boundary validation", () => {
   });
 
   it("electron transport subscribes through the preload bridge with the same validation", () => {
-    const bridge: { handler: ((payload: unknown) => void) | null } = { handler: null };
+    const bridge: { handler: ((payload: unknown) => void) | null; removed: number } = { handler: null, removed: 0 };
     (window as unknown as Record<string, unknown>).strideterm = {
       onOperationFinished: (handler: (payload: unknown) => void) => {
         bridge.handler = handler;
+        return () => {
+          bridge.removed += 1;
+        };
       },
     };
     try {
@@ -3374,6 +3622,9 @@ describe("operation:finished — transport boundary validation", () => {
       for (const payload of [finished, failed, ...malformed]) bridge.handler?.(payload);
 
       expect(seen).toEqual([finished, failed]);
+      const stop = transport.onOperationFinished(() => {});
+      stop();
+      expect(bridge.removed).toBe(1);
     } finally {
       delete (window as unknown as Record<string, unknown>).strideterm;
     }

@@ -25,32 +25,12 @@ import { ref, computed, watch, type CSSProperties } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import CustomSelect from "../common/CustomSelect.vue";
 import { useDismissable } from "../../composables/useDismissable.js";
-
-interface TabTemplate {
-  title?: string;
-  command?: string;
-  icon?: string;
-  platforms?: string[];
-}
+import { templatesForPlatform, type TabTemplate } from "../../app/tab-templates.js";
 
 interface AnchorRect {
   bottom: number;
   right: number;
 }
-
-const FALLBACK_TEMPLATES: TabTemplate[] = [
-  { title: "Shell", command: "", icon: "\u{1F4BB}" },
-  { title: "PowerShell", command: "powershell", icon: "\u{1F537}", platforms: ["win32"] },
-  { title: "Bash", command: "bash", icon: "\u{1F41A}", platforms: ["darwin", "linux"] },
-  { title: "Zsh", command: "zsh", icon: "\u{1F41A}", platforms: ["darwin", "linux"] },
-  { title: "Claude Code", command: "claude", icon: "\u{1F916}" },
-  { title: "Codex", command: "codex", icon: "\u{1F9E0}" },
-  { title: "Gemini CLI", command: "gemini", icon: "✨" },
-  { title: "GitHub Copilot", command: "copilot", icon: "\u{1F419}" },
-  { title: "OpenCode", command: "opencode", icon: "\u{1F9EC}" },
-  { title: "Browser", command: "https://", icon: "\u{1F310}" },
-  { title: "Files", command: "__files__", icon: "\u{1F4C2}" },
-];
 
 const props = withDefaults(
   defineProps<{
@@ -70,12 +50,9 @@ const dropdownRef = ref<HTMLElement | null>(null);
 const visible = computed(() => Boolean(props.anchorRect));
 const selectedCwd = ref("");
 
-const templates = computed(() => {
-  const tpls = store.payload?.appState?.tabTemplates;
-  const list = Array.isArray(tpls) && tpls.length ? tpls : FALLBACK_TEMPLATES;
-  const platform = store.payload?.meta?.platform || "";
-  return list.filter((tmpl) => !Array.isArray(tmpl.platforms) || !platform || tmpl.platforms.includes(platform));
-});
+const templates = computed(() =>
+  templatesForPlatform(store.payload?.appState?.tabTemplates, store.payload?.meta?.platform || ""),
+);
 
 const activeWorkspace = computed(() => {
   return store.payload?.workspace || null;

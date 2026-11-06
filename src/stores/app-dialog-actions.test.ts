@@ -389,7 +389,7 @@ describe("createDialogActions profile-aware saves", () => {
         settings: {},
         workspaces: [
           { id: "ws-active", name: "Azure", profileId: "profile-a", cwd: "C:\\active", kind: "azure", panels: [] },
-          { id: "ws-clicked", name: "mhub", profileId: "profile-a", cwd: "C:\\mhub", kind: "terminal", panels: [] },
+          { id: "ws-clicked", name: "orders", profileId: "profile-a", cwd: "C:\\orders", kind: "terminal", panels: [] },
         ],
         // This describe block's beforeEach sets the current window to "win-b" —
         // its slot must be present for currentProfileId() to resolve it (sibling
@@ -404,23 +404,27 @@ describe("createDialogActions profile-aware saves", () => {
     ctx.getApi = () => ({ isRemote: false, createTaskWorkspace });
     const actions = createDialogActions(ctx);
 
-    // Kebab menu on the (non-active) mhub workspace passes its id.
+    // Kebab menu on the (non-active) orders workspace passes its id.
     actions.openTaskWorkspaceDialog("ws-clicked");
 
     // The draft cwd must come from the clicked workspace, not the active one.
-    expect((ctx.overlayProps.value.workspace as AnyApi).cwd).toBe("C:\\mhub");
+    expect((ctx.overlayProps.value.workspace as AnyApi).cwd).toBe("C:\\orders");
+    expect((ctx.overlayProps.value.workspace as AnyApi).jiraMcpEnabled).toBe(false);
 
     await (ctx.overlayProps.value.onSubmit as (draft: AnyApi) => Promise<void>)({
-      cwd: "C:\\mhub",
+      cwd: "C:\\orders",
       name: "Task",
       icon: "T",
       color: "#fff",
       notes: "",
       task: { description: "Do work", maxRounds: 10 },
       panels: [],
+      jiraMcpEnabled: true,
     });
 
-    expect(createTaskWorkspace).toHaveBeenCalledWith(expect.objectContaining({ parentWorkspaceId: "ws-clicked" }));
+    expect(createTaskWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ parentWorkspaceId: "ws-clicked", jiraMcpEnabled: true }),
+    );
   });
 
   // Category D (code-review batch, 2026-07): recheckClaude/checkProviders

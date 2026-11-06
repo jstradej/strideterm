@@ -89,16 +89,16 @@ function makeCtx(state: ReturnType<typeof makeState>) {
 function attachedReviewWorkspace(overrides: Record<string, any> = {}): any {
   return {
     id: "ws-attached",
-    name: "mhub",
+    name: "orders",
     kind: "terminal",
-    cwd: "C:/work/mhub",
+    cwd: "C:/work/orders",
     profileId: "default",
     panels: [],
     review: {
       provider: "azure-devops",
       prKey: "ado-main:repo-1:29456",
       role: "author",
-      checkout: { mode: "linked-existing-workspace", rootPath: "C:/work/mhub", cacheRepoPath: "" },
+      checkout: { mode: "linked-existing-workspace", rootPath: "C:/work/orders", cacheRepoPath: "" },
     },
     ...overrides,
   };

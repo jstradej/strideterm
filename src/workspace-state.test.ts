@@ -50,6 +50,14 @@ describe("getParentWorkspaceId", () => {
     expect(getParentWorkspaceId(ws)).toBe("parent-3");
   });
 
+  test("resolves a pinned Jira board parent", () => {
+    const ws = {
+      kind: "jira-board",
+      jiraBoard: { parentWorkspaceId: "jira-inbox", connectionId: "jira-1", boardId: "2", boardName: "Team" },
+    } as unknown as Parameters<typeof getParentWorkspaceId>[0];
+    expect(getParentWorkspaceId(ws)).toBe("jira-inbox");
+  });
+
   test("returns null for a workspace with no parent reference", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const ws = { notes: "Worktree of Something" } as any;

@@ -54,6 +54,16 @@
           <path d="M5 6v8a4 4 0 0 0 4-4V6a4 4 0 0 1 4-4" />
         </svg>
         <svg
+          v-else-if="tab.id === 'jira'"
+          class="settings-tab-btn__icon"
+          viewBox="0 0 20 20"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <path d="m10 2.5 7 7.5-7 7.5L3 10l7-7.5Z" />
+          <path d="M7.5 8.5h5m-4 3h4" />
+        </svg>
+        <svg
           v-else-if="tab.id === 'ssh'"
           class="settings-tab-btn__icon"
           viewBox="0 0 20 20"
@@ -112,6 +122,19 @@
     <div v-else-if="activeTab === 'git'" class="settings-tab-content">
       <SettingsGitTab />
     </div>
+
+    <section
+      v-else-if="activeTab === 'jira'"
+      class="settings-tab-content settings-tab-content--jira"
+      data-testid="jira-settings-connections"
+    >
+      <SettingsJiraCommentAttribution
+        :value="settings.integrations?.jira?.commentAttribution"
+        :connections="settings.integrations?.jira?.connections"
+      />
+      <SettingsJiraAgentAttachments :value="settings.integrations?.jira?.agentAttachments" />
+      <JiraInboxPane connections-only />
+    </section>
 
     <div v-else-if="activeTab === 'ssh'" class="settings-tab-content">
       <SettingsSshTab ref="sshSettingsTab" />
@@ -245,12 +268,16 @@ import { useNotificationStore } from "../../stores/notifications.js";
 import type { RemoteBrowserSession } from "../../../electron/shared/remote-access.js";
 import type { AppDistribution } from "../../../electron/shared/app-distribution.js";
 import SettingsTemplatesTab from "./settings/SettingsTemplatesTab.vue";
+import JiraInboxPane from "../workspace/JiraInboxPane.vue";
+import SettingsJiraCommentAttribution from "./settings/SettingsJiraCommentAttribution.vue";
+import SettingsJiraAgentAttachments from "./settings/SettingsJiraAgentAttachments.vue";
 import { useAgentHookSettings } from "./settings/useAgentHookSettings.js";
 
 const BASE_TABS = [
   { id: "general", label: "General", title: "Theme, logging, notification timing, agent hooks." },
   { id: "templates", label: "Tab Templates", title: "Reusable tab presets shown in the “New tab” menu." },
   { id: "git", label: "Git", title: "Git UI options (e.g. always show all actions in the Git pane)." },
+  { id: "jira", label: "Jira", title: "Manage Jira Cloud, Data Center, and API gateway connections." },
   { id: "ssh", label: "SSH", title: "SSH host/key configuration used by remote terminals." },
   {
     id: "telegram",
@@ -322,6 +349,15 @@ interface SettingsObj {
     requireEncryptedStorage?: boolean;
   };
   integrations?: {
+    jira?: {
+      commentAttribution?: { enabled: boolean; text: string; position: "before" | "after" };
+      agentAttachments?: { maxFiles: number; maxMegabytes: number };
+      connections?: Array<{
+        accountPurpose?: string;
+        ownIdentity?: { displayName?: string };
+        verifiedIdentity?: { displayName?: string };
+      }>;
+    };
     telegram?: {
       enabled?: boolean;
       defaultPollSeconds?: number;
@@ -740,6 +776,16 @@ defineExpose({ requestClose });
 }
 .settings-tab-content--remote {
   align-content: start;
+}
+.settings-tab-content--jira {
+  display: block;
+}
+.settings-tab-content--jira :deep(.workspace-pane__body.workspace-pane__body--git.jira-inbox--connections-only) {
+  display: block;
+  height: auto;
+  min-height: 0;
+  overflow: visible;
+  padding: 0;
 }
 .remote-session-setting {
   display: grid;

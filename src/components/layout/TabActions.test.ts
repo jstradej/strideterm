@@ -25,6 +25,32 @@ describe("TabActions", () => {
     expect(wrapper.find('[class*="button"]').text()).not.toContain("+ Tab");
   });
 
+  test("offers + Board for Jira and emits its board chooser action", async () => {
+    const store = useAppStore();
+    store.payload = {
+      workspace: { workspace: { id: "jira-1", kind: "jira", panels: [] }, sessions: [] },
+      appState: { workspaces: [{ id: "jira-1", kind: "jira", panels: [] }] },
+    } as unknown as StatePayload;
+    const wrapper = mount(TabActions);
+
+    expect(wrapper.text()).toContain("+ Board");
+    expect(wrapper.text()).not.toContain("+ Tab");
+    await wrapper.get("button").trigger("click");
+    expect(wrapper.emitted("open-jira-board-chooser")).toHaveLength(1);
+    expect(store.jiraBoardChooserRequest).toMatchObject({ workspaceId: "jira-1", sequence: 1 });
+  });
+
+  test("does not offer terminal tabs from a pinned Jira board workspace", () => {
+    const store = useAppStore();
+    store.payload = {
+      workspace: { workspace: { id: "jira-board-1", kind: "jira-board", panels: [] }, sessions: [] },
+      appState: { workspaces: [{ id: "jira-board-1", kind: "jira-board", panels: [] }] },
+    } as unknown as StatePayload;
+    const wrapper = mount(TabActions);
+    expect(wrapper.text()).not.toContain("+ Tab");
+    expect(wrapper.text()).not.toContain("+ Board");
+  });
+
   test("shows Unsplit button when split group exists", () => {
     const store = useAppStore();
     store.splitGroup = { layout: "cols", viewIds: ["a", "b"] };

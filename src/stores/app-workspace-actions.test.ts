@@ -420,36 +420,36 @@ describe("createWorkspaceActions.deleteWorkspace (optimistic)", () => {
   });
 
   it("uses the formatted display name ('#N' suffix) in the delete prompt for task agents", async () => {
-    // Two "mhub" task agents under the same parent — without the formatted
-    // name, both delete prompts say "Delete task agent 'mhub'?" and the user
+    // Two "orders" task agents under the same parent — without the formatted
+    // name, both delete prompts say "Delete task agent 'orders'?" and the user
     // can't tell which one is about to go. The sequence suffix in the prompt
     // matches what the sidebar card and the Telegram notification show, so
     // all three surfaces refer to the same task by the same string.
     const initial = {
       appState: {
         workspaces: [
-          { id: "ws-parent", name: "mhub", cwd: "C:\\work\\mhub" },
+          { id: "ws-parent", name: "orders", cwd: "C:\\work\\orders" },
           {
-            id: "ws-mhub-2",
-            name: "mhub",
+            id: "ws-orders-2",
+            name: "orders",
             kind: "task",
-            cwd: "C:\\work\\mhub",
+            cwd: "C:\\work\\orders",
             task: { parentWorkspaceId: "ws-parent", taskId: "t-2", sequenceNumber: 2 },
           },
         ],
-        activeWorkspaceId: "ws-mhub-2",
+        activeWorkspaceId: "ws-orders-2",
       },
     };
     const { ctx, overlayProps } = makeCtx(initial);
     const actions = createWorkspaceActions(ctx);
 
-    const finished = actions.deleteWorkspace("ws-mhub-2");
+    const finished = actions.deleteWorkspace("ws-orders-2");
     // Yield for confirmInApp to mount the dialog
     await Promise.resolve();
     expect(ctx.overlay.value).toBe("ConfirmDialog");
     const props = overlayProps.value as AnyApi;
     expect(String(props.title)).toBe("Delete task agent");
-    expect(String(props.message)).toContain('"mhub #2"');
+    expect(String(props.message)).toContain('"orders #2"');
     // Decline so the rest of the suite isn't affected.
     props.onCancel();
     await finished;
@@ -737,6 +737,156 @@ describe("quickAddTemplateTab SSH target scope", () => {
   });
 });
 
+describe("hosted terminals", () => {
+  const filesPanel = { id: "files1", title: "Files", command: "__files__" };
+  const workspace = (panels: AnyApi[]) => ({
+    id: "ws-a",
+    name: "A",
+    kind: "terminal",
+    profileId: "profile-a",
+    panels,
+    activePanelId: "files1",
+  });
+  const make = (panels: AnyApi[]) => {
+    const ws = workspace(panels);
+    return makeWith([ws], ws);
+  };
+  const makeWith = (workspaces: AnyApi[], active: AnyApi) => {
+    const ws = active;
+    const saveWorkspace = vi.fn(async (next: AnyApi) => ({ workspace: { workspace: next } }));
+    const harness = makeCtx(
+      { workspace: { workspace: ws }, appState: { activeWorkspaceId: ws.id, workspaces } },
+      { saveWorkspace },
+    );
+    harness.ctx.activeViewId.value = "files:files1";
+    return { ...harness, actions: createWorkspaceActions(harness.ctx), saveWorkspace };
+  };
+
+  it("opens a hosted panel with the folder, command and host, without changing the active view or panel", async () => {
+    const { actions, saveWorkspace, ctx } = make([filesPanel]);
+
+    const viewId = await actions.openHostedTerminal("ws-a", "files:files1", {
+      cwd: "/repo/src",
+      command: "claude",
+      title: "Claude",
+    });
+
+    const saved = saveWorkspace.mock.calls[0][0];
+    expect(saved.panels).toHaveLength(2);
+    expect(saved.panels[1]).toMatchObject({
+      title: "Claude",
+      command: "claude",
+      cwd: "/repo/src",
+      shell: true,
+      hostedBy: "files:files1",
+    });
+    expect(viewId).toBe(`ws-a:${saved.panels[1].id}`);
+    expect(saved.activePanelId).toBe("files1");
+    expect(ctx.activeViewId.value).toBe("files:files1");
+  });
+
+  it("adds a second hosted panel beside an earlier one", async () => {
+    const old = { id: "old", title: "Terminal 2", command: "", hostedBy: "files:files1" };
+    const { actions, saveWorkspace } = make([filesPanel, old]);
+
+    await actions.openHostedTerminal("ws-a", "files:files1", { command: "codex" });
+
+    expect(saveWorkspace).toHaveBeenCalledTimes(1);
+    const ids = saveWorkspace.mock.calls[0][0].panels.map((panel: AnyApi) => panel.id);
+    expect(ids).toContain("old");
+    expect(ids).toHaveLength(3);
+  });
+
+  it("refuses a host that is not a Files panel of the active workspace", async () => {
+    const { actions, saveWorkspace } = make([filesPanel]);
+    await expect(actions.openHostedTerminal("ws-a", "files:elsewhere", {})).rejects.toThrow("Files tab");
+    expect(saveWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("Move to a tab clears hostedBy, makes it the active panel and selects its view", async () => {
+    const hosted = { id: "t2", title: "Hosted", command: "", hostedBy: "files:files1" };
+    const { actions, saveWorkspace, ctx } = make([filesPanel, hosted]);
+
+    await actions.moveHostedTerminalToTab("ws-a", "t2");
+
+    const saved = saveWorkspace.mock.calls[0][0];
+    expect(saved.panels.find((panel: AnyApi) => panel.id === "t2").hostedBy).toBe("");
+    expect(saved.activePanelId).toBe("t2");
+    expect(ctx.activeViewId.value).toBe("ws-a:t2");
+  });
+
+  describe("in a workspace that is not the active one", () => {
+    const other = (id: string, panels: AnyApi[], profileId = "profile-a") => ({
+      id,
+      name: id,
+      kind: "terminal",
+      profileId,
+      panels,
+      activePanelId: "files1",
+    });
+
+    it("saves the owning workspace, never the active one, even when both share the files panel id", async () => {
+      const active = other("ws-a", [filesPanel]);
+      const owner = other("ws-b", [filesPanel]);
+      const { actions, saveWorkspace } = makeWith([active, owner], active);
+
+      const viewId = await actions.openHostedTerminal("ws-b", "files:files1", { command: "codex" });
+
+      const saved = saveWorkspace.mock.calls[0][0];
+      expect(saved.id).toBe("ws-b");
+      expect(saved.panels[1]).toMatchObject({ command: "codex", hostedBy: "files:files1" });
+      expect(viewId).toBe(`ws-b:${saved.panels[1].id}`);
+    });
+
+    it("refuses a workspace of another profile and a host the owner does not have", async () => {
+      const active = other("ws-a", [filesPanel]);
+      const foreign = other("ws-b", [filesPanel], "profile-b");
+      const bare = other("ws-c", []);
+      const { actions, saveWorkspace } = makeWith([active, foreign, bare], active);
+
+      await expect(actions.openHostedTerminal("ws-b", "files:files1", {})).rejects.toThrow("Files tab");
+      await expect(actions.openHostedTerminal("ws-c", "files:files1", {})).rejects.toThrow("Files tab");
+      await expect(actions.moveHostedTerminalToTab("ws-b", "files1")).rejects.toThrow("no longer");
+      expect(saveWorkspace).not.toHaveBeenCalled();
+    });
+
+    it("Move to a tab saves the owner, activates it and then selects the terminal", async () => {
+      const hosted = { id: "t2", title: "Hosted", command: "", hostedBy: "files:files1" };
+      const active = other("ws-a", [filesPanel, { ...hosted, id: "t9" }]);
+      const owner = other("ws-b", [filesPanel, hosted]);
+      const { actions, saveWorkspace, ctx } = makeWith([active, owner], active);
+
+      await actions.moveHostedTerminalToTab("ws-b", "t2");
+
+      const saved = saveWorkspace.mock.calls[0][0];
+      expect(saved.id).toBe("ws-b");
+      expect(saved.panels.find((panel: AnyApi) => panel.id === "t2").hostedBy).toBe("");
+      expect(ctx.activateWorkspaceInGrid).toHaveBeenCalledWith("ws-b");
+      expect(ctx.activeViewId.value).toBe("ws-b:t2");
+    });
+
+    it("closes a hosted terminal of another workspace by saving that workspace", () => {
+      const hosted = { id: "t2", title: "Hosted", command: "", hostedBy: "files:files1" };
+      const active = other("ws-a", [filesPanel, { ...hosted, id: "t9" }]);
+      const owner = other("ws-b", [filesPanel, hosted]);
+      const { actions, saveWorkspace } = makeWith([active, owner], active);
+
+      actions.closeTab("ws-b:t2");
+
+      expect(saveWorkspace).toHaveBeenCalledTimes(1);
+      const saved = saveWorkspace.mock.calls[0][0];
+      expect(saved.id).toBe("ws-b");
+      expect(saved.panels.map((panel: AnyApi) => panel.id)).toEqual(["files1"]);
+    });
+  });
+
+  it("Move to a tab rejects a panel the workspace no longer has", async () => {
+    const { actions, saveWorkspace } = make([filesPanel]);
+    await expect(actions.moveHostedTerminalToTab("ws-a", "gone")).rejects.toThrow("no longer");
+    expect(saveWorkspace).not.toHaveBeenCalled();
+  });
+});
+
 describe("workspace actions leave notification history to the runtime event", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -993,5 +1143,237 @@ describe("createWorkspaceActions.pickLayout — grid re-shape failure", () => {
     const event = useNotificationStore().sessions[0].events[0];
     expect(event.title).toBe("Couldn't change layout");
     expect(event.body).toBe("Grid is not enabled for this window");
+  });
+});
+
+describe("createWorkspaceActions.openJiraViewInOwnWorkspace", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
+  const parent = {
+    id: "jira-ws",
+    name: "Jira inbox",
+    kind: "jira",
+    profileId: "profile-a",
+    cwd: "",
+    panels: [],
+    workItems: [],
+  };
+  const boardView = {
+    viewId: "view-42",
+    kind: "board" as const,
+    connectionId: "jira-1",
+    boardId: 42,
+    boardName: "Engineering board",
+    title: "Eng",
+    mode: "backlog" as const,
+    sprintId: null,
+    quickFilterIds: [3],
+    assignee: null,
+    doneWithinDays: 14 as const,
+    projectKeys: ["ENG"],
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const personalView = { ...boardView, viewId: "view-me", kind: "personal" as const, boardId: null };
+
+  function setup(extraWorkspaces: AnyApi[] = [], apiOverrides: AnyApi = {}) {
+    const state = {
+      workspaceId: "jira-ws",
+      profileId: "profile-a",
+      views: [{ viewId: "issues", kind: "issues", title: "Issues" }, boardView, personalView],
+      activeViewId: "issues",
+      syncByViewId: {},
+    };
+    const payload: AnyApi = {
+      appState: { activeWorkspaceId: "jira-ws", workspaces: [parent, ...extraWorkspaces] },
+      workspace: { workspace: parent },
+      jiraWorkspaceViews: { "jira-ws": state },
+    };
+    const calls: string[] = [];
+    const harness = makeCtx(payload, {
+      saveWorkspace: vi.fn(async (draft: AnyApi) => {
+        calls.push(`saveWorkspace:${draft.kind}`);
+        return payload;
+      }),
+      saveJiraWorkspaceView: vi.fn(async () => {
+        calls.push("saveJiraWorkspaceView");
+        return state;
+      }),
+      deleteWorkspace: vi.fn(async () => {
+        calls.push("deleteWorkspace");
+        return payload;
+      }),
+      ...apiOverrides,
+    });
+    harness.ctx.activateWorkspaceInGrid = vi.fn(async () => {
+      calls.push("activate");
+    });
+    return { ...harness, calls, actions: createWorkspaceActions(harness.ctx) };
+  }
+
+  it("saves a jira-board child with the saved view's settings, then activates it", async () => {
+    const { actions, api, calls, ctx } = setup();
+    await actions.openJiraViewInOwnWorkspace("jira:jira-ws:view:view-42");
+    expect(calls).toEqual(["saveWorkspace:jira-board", "saveJiraWorkspaceView", "activate"]);
+    const child = api.saveWorkspace.mock.calls[0][0];
+    expect(child).toMatchObject({
+      name: "Engineering board",
+      kind: "jira-board",
+      profileId: "profile-a",
+      connectionId: "jira-1",
+      cwd: "",
+      panels: [],
+      review: null,
+      task: null,
+      workItems: [],
+      jiraBoard: {
+        parentWorkspaceId: "jira-ws",
+        connectionId: "jira-1",
+        boardId: "42",
+        boardName: "Engineering board",
+        projectKeys: ["ENG"],
+      },
+    });
+    expect(api.saveJiraWorkspaceView).toHaveBeenCalledWith({
+      workspaceId: child.id,
+      view: expect.objectContaining({
+        kind: "board",
+        connectionId: "jira-1",
+        boardId: 42,
+        mode: "backlog",
+        quickFilterIds: [3],
+        doneWithinDays: 14,
+        projectKeys: ["ENG"],
+      }),
+    });
+    expect(api.saveJiraWorkspaceView.mock.calls[0][0].view).not.toHaveProperty("viewId");
+    expect(ctx.activateWorkspaceInGrid).toHaveBeenCalledWith(child.id);
+  });
+
+  it("opens the board workspace that already exists instead of creating a second one", async () => {
+    const existing = {
+      id: "board-child",
+      kind: "jira-board",
+      profileId: "profile-a",
+      jiraBoard: { parentWorkspaceId: "jira-ws", connectionId: "jira-1", boardId: "42" },
+    };
+    const { actions, api, ctx } = setup([existing]);
+    await actions.openJiraViewInOwnWorkspace("jira:jira-ws:view:view-42");
+    expect(api.saveWorkspace).not.toHaveBeenCalled();
+    expect(ctx.activateWorkspaceInGrid).toHaveBeenCalledWith("board-child");
+  });
+
+  it("checks that the board view can be saved before creating anything", async () => {
+    const { actions, api } = setup([], { saveJiraWorkspaceView: undefined });
+    await expect(actions.openJiraViewInOwnWorkspace("jira:jira-ws:view:view-42")).rejects.toThrow(
+      /Saving a board view is not available/,
+    );
+    expect(api.saveWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("removes the child again when its view could not be saved, and activates nothing", async () => {
+    const { actions, api, ctx, calls } = setup([], {
+      saveJiraWorkspaceView: vi.fn(async () => {
+        throw new Error("View store locked");
+      }),
+    });
+    await expect(actions.openJiraViewInOwnWorkspace("jira:jira-ws:view:view-42")).rejects.toThrow("View store locked");
+    const childId = api.saveWorkspace.mock.calls[0][0].id;
+    expect(api.deleteWorkspace).toHaveBeenCalledWith(childId, { deleteFromDisk: false });
+    expect(ctx.activateWorkspaceInGrid).not.toHaveBeenCalled();
+    expect(calls).toEqual(["saveWorkspace:jira-board", "deleteWorkspace"]);
+  });
+
+  it("treats a superseded activation as done, not as a failure", async () => {
+    const { actions, ctx } = setup();
+    ctx.activateWorkspaceInGrid = vi.fn(async () => {
+      throw new Error("Workspace activation was superseded");
+    });
+    await expect(actions.openJiraViewInOwnWorkspace("jira:jira-ws:view:view-42")).resolves.toBeUndefined();
+  });
+
+  it("refuses a view that is not a saved board", async () => {
+    const { actions, api } = setup();
+    await expect(actions.openJiraViewInOwnWorkspace("jira:jira-ws:view:view-me")).rejects.toThrow(/saved board tab/);
+    await expect(actions.openJiraViewInOwnWorkspace("jira:jira-ws")).rejects.toThrow(/saved board tab/);
+    expect(api.saveWorkspace).not.toHaveBeenCalled();
+  });
+});
+
+describe("createWorkspaceActions.closeTab for a saved Jira view", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
+  const parent = {
+    id: "jira-ws",
+    name: "Jira inbox",
+    kind: "jira",
+    profileId: "profile-a",
+    cwd: "",
+    panels: [],
+    workItems: [],
+  };
+  const boardView = {
+    viewId: "view-42",
+    kind: "board" as const,
+    connectionId: "jira-1",
+    boardId: 42,
+    boardName: "Engineering board",
+    title: "Eng",
+    mode: "backlog" as const,
+    sprintId: null,
+    quickFilterIds: [],
+    assignee: null,
+    doneWithinDays: 14 as const,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+
+  function stateWith(views: AnyApi[]) {
+    return {
+      workspaceId: "jira-ws",
+      profileId: "profile-a",
+      views: [{ viewId: "issues", kind: "issues", title: "Issues" }, ...views],
+      activeViewId: "issues",
+      syncByViewId: {},
+    };
+  }
+
+  async function closeAndGetUndo(afterClose: (ctx: AnyApi) => void) {
+    const saveJiraWorkspaceView = vi.fn(async () => stateWith([boardView]));
+    const payload: AnyApi = {
+      appState: { activeWorkspaceId: "jira-ws", workspaces: [parent] },
+      workspace: { workspace: parent },
+      jiraWorkspaceViews: { "jira-ws": stateWith([boardView]) },
+    };
+    const { ctx } = makeCtx(payload, {
+      removeJiraWorkspaceView: vi.fn(async () => stateWith([])),
+      saveJiraWorkspaceView,
+    });
+    const toast = vi.spyOn(useNotificationStore(), "pushEphemeralToast");
+    createWorkspaceActions(ctx).closeTab("jira:jira-ws:view:view-42");
+    await vi.waitFor(() => expect(toast).toHaveBeenCalled());
+    afterClose(ctx);
+    return { undo: toast.mock.calls[0][0].undo!, saveJiraWorkspaceView };
+  }
+
+  it("restores the closed view when nothing replaced it", async () => {
+    const { undo, saveJiraWorkspaceView } = await closeAndGetUndo(() => undefined);
+    await undo.run();
+    expect(saveJiraWorkspaceView).toHaveBeenCalledOnce();
+  });
+
+  it("does not overwrite a view of the same board saved again after the close", async () => {
+    const { undo, saveJiraWorkspaceView } = await closeAndGetUndo((ctx) => {
+      ctx.payload.value = {
+        ...ctx.payload.value,
+        jiraWorkspaceViews: { "jira-ws": stateWith([{ ...boardView, viewId: "view-new", title: "Eng again" }]) },
+      };
+    });
+    await expect(undo.run()).rejects.toThrow("This board tab was already reopened.");
+    expect(saveJiraWorkspaceView).not.toHaveBeenCalled();
   });
 });

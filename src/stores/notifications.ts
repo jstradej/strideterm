@@ -54,6 +54,7 @@ export interface PersistentToast {
   profileId?: string;
   sessionId?: string;
   action?: "open-mobile-account";
+  undo?: { label: string; run: () => void | Promise<void> };
   at: string;
 }
 
@@ -236,7 +237,7 @@ function kindToState(kind: NotificationKind, viewId: string): NotificationState 
   //
   // `question` falls through to "waiting" (the default): the agent is blocked
   // on the user, which is exactly what the Waiting section is for.
-  return kind === "completed" || kind === "info" || kind === "review" || kind === "subagent_done"
+  return kind === "completed" || kind === "info" || kind === "review" || kind === "jira" || kind === "subagent_done"
     ? "finished"
     : "waiting";
 }
@@ -1162,18 +1163,23 @@ export const useNotificationStore = defineStore("notifications", () => {
     body,
     kind = "info",
     durationMs = 4000,
+    undo,
   }: {
     title: string;
     body: string;
     kind?: NotificationKind;
     durationMs?: number;
+    undo?: PersistentToast["undo"];
   }): string {
     if (kind === "error") {
       recordFailure(title, body);
       body = userFacingMessage(body) || body;
     }
     const id = crypto.randomUUID();
-    persistentToasts.value = [...persistentToasts.value, { id, title, body, kind, at: new Date().toISOString() }];
+    persistentToasts.value = [
+      ...persistentToasts.value,
+      { id, title, body, kind, ...(undo ? { undo } : {}), at: new Date().toISOString() },
+    ];
     if (durationMs > 0) {
       setTimeout(() => dismissPersistentToast(id), durationMs);
     }

@@ -83,6 +83,26 @@ export function createGitConfigEnvProbe(readVersion: () => Promise<string>): () 
 }
 
 /**
+ * `http.extraheader`, or `http.<origin>/.extraheader` when `scopeUrl` is given:
+ * git then sends the header only to that origin, so a URL that points
+ * elsewhere (a redirect, a submodule, a mistaken remote) never receives the
+ * token. A non-http(s) or unparseable `scopeUrl` throws instead of falling
+ * back to the global key.
+ */
+export function authHeaderConfigKey(scopeUrl?: string): string {
+  if (scopeUrl === undefined) return "http.extraheader";
+  let origin: string;
+  try {
+    const parsed = new URL(scopeUrl);
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") throw new Error("not http(s)");
+    origin = parsed.origin;
+  } catch {
+    throw new Error("Refusing to attach credentials: the repository URL is not a valid http(s) URL.");
+  }
+  return `http.${origin}/.extraheader`;
+}
+
+/**
  * `baseEnv` plus the `http.extraheader` carrying the token, passed through
  * `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n` instead of
  * `-c http.extraheader=…`, so the token is not on the child's command line
@@ -93,13 +113,54 @@ export function gitAuthEnvironment(
   login: string,
   token: string,
   baseEnv: Record<string, string | undefined>,
+  scopeUrl?: string | readonly string[],
 ): Record<string, string | undefined> {
   const existing = Number.parseInt(baseEnv.GIT_CONFIG_COUNT ?? "", 10);
   const index = Number.isInteger(existing) && existing > 0 ? existing : 0;
-  return {
-    ...baseEnv,
-    GIT_CONFIG_COUNT: String(index + 1),
-    [`GIT_CONFIG_KEY_${index}`]: "http.extraheader",
-    [`GIT_CONFIG_VALUE_${index}`]: encodeAuthHeader(login, token),
-  };
+  const keys = authHeaderConfigKeys(scopeUrl);
+  const env: Record<string, string | undefined> = { ...baseEnv, GIT_CONFIG_COUNT: String(index + keys.length) };
+  keys.forEach((key, offset) => {
+    env[`GIT_CONFIG_KEY_${index + offset}`] = key;
+    env[`GIT_CONFIG_VALUE_${index + offset}`] = encodeAuthHeader(login, token);
+  });
+  return env;
+}
+
+/** One `authHeaderConfigKey` per scope; an empty list is refused, never widened to the global key. */
+export function authHeaderConfigKeys(scopeUrl?: string | readonly string[]): string[] {
+  if (scopeUrl === undefined || typeof scopeUrl === "string") return [authHeaderConfigKey(scopeUrl)];
+  if (!scopeUrl.length) throw new Error("Refusing to attach credentials: no repository URL to scope them to.");
+  return [...new Set(scopeUrl.map((url) => authHeaderConfigKey(url)))];
+}
+
+const AZURE_DEVOPS_ORG = /^[a-z0-9][a-z0-9-]*$/iu;
+
+/**
+ * The origins a provider connection's token may be sent to: the connection's own Git host (Azure `orgUrl`,
+ * GitHub `hostUrl`, github.com by default), plus the other spelling of an Azure DevOps cloud organization
+ * (`dev.azure.com/<org>` and `<org>.visualstudio.com` serve the same repositories). Taken from the stored
+ * connection, never from a workspace's repository metadata, so a rewritten remote cannot widen it.
+ */
+export function connectionGitAuthScopes(
+  connection: { orgUrl?: unknown; hostUrl?: unknown } | null | undefined,
+): string[] {
+  const orgUrl = String(connection?.orgUrl || "").trim();
+  let url: URL;
+  try {
+    url = new URL(orgUrl || String(connection?.hostUrl || "").trim() || "https://github.com");
+  } catch {
+    return [];
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return [];
+  const scopes = [url.origin];
+  const host = url.hostname.toLowerCase();
+  if (orgUrl && url.protocol === "https:") {
+    if (host === "dev.azure.com") {
+      const org = url.pathname.split("/").find(Boolean) || "";
+      if (AZURE_DEVOPS_ORG.test(org)) scopes.push(`https://${org.toLowerCase()}.visualstudio.com`);
+    } else if (/^[a-z0-9-]+\.visualstudio\.com$/u.test(host)) {
+      scopes.push("https://dev.azure.com");
+    }
+  }
+  return scopes;
 }

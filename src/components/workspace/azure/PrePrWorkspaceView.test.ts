@@ -21,6 +21,7 @@ function buildPayload(opts: {
   dirty?: boolean;
   log?: Array<Record<string, unknown>>;
   baseBranch?: string;
+  workItems?: Array<Record<string, unknown>>;
 }): StatePayload {
   const provider = opts.provider || "azure-devops";
   return {
@@ -37,6 +38,7 @@ function buildPayload(opts: {
           panels: [],
           review: { provider },
           quickfix: { baseBranch: opts.baseBranch || "" },
+          ...(opts.workItems ? { workItems: opts.workItems } : {}),
         },
       ],
       profiles: [{ id: "default", name: "Default", color: "", workspaceIds: ["ws-review"] }],
@@ -276,5 +278,84 @@ describe("PrePrWorkspaceView — refresh", () => {
     const notifications = useNotificationStore();
     expect(notifications.sessions).toHaveLength(1);
     expect(notifications.sessions[0].events[0].title).toBe("Refresh failed");
+  });
+});
+
+describe("PrePrWorkspaceView — a branch started from a Jira issue", () => {
+  const workItems = [
+    {
+      ref: { provider: "jira", connectionId: "jira-a", issueId: "1001", issueKey: "ABC-7" },
+      summary: "Retry failed deliveries",
+      status: "In Progress",
+    },
+  ];
+
+  test("shows the linked issue and names the pull request after it", async () => {
+    const wrapper = mountWizard(
+      { aheadCount: 1, workItems, log: [{ subject: "wip", shortHash: "a1" }] },
+      { azureListRemoteBranches: () => Promise.resolve({ branches: ["develop"] }) },
+    );
+    await flushPromises();
+    const card = wrapper.get(".nb-issue");
+    expect(card.text()).toContain("ABC-7");
+    expect(card.text()).toContain("Retry failed deliveries");
+    expect(card.text()).toContain("In Progress");
+    expect((wrapper.get('input[placeholder="Pull request title"]').element as HTMLInputElement).value).toBe(
+      "ABC-7: Retry failed deliveries",
+    );
+  });
+
+  test("offers the Jira update once the pull request exists, with its link and number", async () => {
+    const appStore = useAppStore();
+    const openDialog = vi.spyOn(appStore, "openDialog").mockImplementation(() => {});
+    const wrapper = mountWizard(
+      { aheadCount: 0, workItems },
+      {
+        azureListRemoteBranches: () => Promise.resolve({ branches: ["develop"] }),
+        azureCreatePullRequest: () =>
+          Promise.resolve({
+            result: { pullRequestId: 42, url: "https://dev.azure.com/acme/_git/orders/pullrequest/42" },
+          }),
+        previewJiraWrite: vi.fn(),
+        executeJiraWrite: vi.fn(),
+      },
+    );
+    await flushPromises();
+    await wrapper.find('input[placeholder="Pull request title"]').setValue("ABC-7: Retry failed deliveries");
+    await wrapper.find("button.button:not(.button--ghost)").trigger("click");
+    await flushPromises();
+    expect(openDialog).toHaveBeenCalledWith(
+      "JiraUpdateDialog",
+      expect.objectContaining({
+        issue: expect.objectContaining({ ref: expect.objectContaining({ issueKey: "ABC-7" }) }),
+        pullRequest: {
+          url: "https://dev.azure.com/acme/_git/orders/pullrequest/42",
+          number: 42,
+          title: "ABC-7: Retry failed deliveries",
+        },
+      }),
+    );
+  });
+
+  test("a client without Jira writes, or a branch with no issue, gets no Jira prompt", async () => {
+    const appStore = useAppStore();
+    const openDialog = vi.spyOn(appStore, "openDialog").mockImplementation(() => {});
+    const create = () => Promise.resolve({ result: { pullRequestId: 42, url: "https://example.com/pr/42" } });
+    for (const options of [{ workItems }, {}]) {
+      const wrapper = mountWizard(
+        { aheadCount: 0, ...options },
+        {
+          azureListRemoteBranches: () => Promise.resolve({ branches: ["develop"] }),
+          azureCreatePullRequest: create,
+          ...("workItems" in options ? {} : { previewJiraWrite: vi.fn() }),
+        },
+      );
+      await flushPromises();
+      await wrapper.find('input[placeholder="Pull request title"]').setValue("Title");
+      await wrapper.find("button.button:not(.button--ghost)").trigger("click");
+      await flushPromises();
+      wrapper.unmount();
+    }
+    expect(openDialog).not.toHaveBeenCalled();
   });
 });

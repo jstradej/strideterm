@@ -4,6 +4,8 @@ import {
   collectSupervisedAgents,
   formatRunningAgentElapsed,
   getVisibleTabs,
+  findHostedPanels,
+  hostedPanelIds,
   getWorkspacePanelByViewId,
   getWorkspaceTabs,
   resolveInputOriginWorkspaceId,
@@ -14,8 +16,178 @@ import {
 } from "./selectors.js";
 import { TASK_ACTIVE_STATES } from "../../electron/shared/task-states.js";
 import type { StatePayload, WorkspaceState } from "../../electron/shared/types/state.js";
+import type { JiraWorkspaceViewsState } from "../../electron/shared/types/jira-workspace-views.js";
 
 describe("workspace selectors", () => {
+  test("returns a discoverable virtual Jira inbox tab for Jira workspaces", () => {
+    const tabs = getWorkspaceTabs({
+      workspace: { workspace: { id: "jira-ws", kind: "jira", panels: [] } as unknown as WorkspaceState, sessions: [] },
+      payload: {} as StatePayload,
+      hiddenViewIds: new Set(),
+      isContainerRunning: () => false,
+    });
+    expect(tabs).toEqual([
+      expect.objectContaining({
+        id: "jira:jira-ws",
+        type: "jira",
+        title: "Inbox",
+        jiraViewId: "issues",
+        persistent: false,
+        closable: false,
+      }),
+    ]);
+  });
+
+  test("opens a saved Jira board workspace in the native Jira pane", () => {
+    const tabs = getWorkspaceTabs({
+      workspace: {
+        workspace: {
+          id: "jira-board-4",
+          name: "Platform",
+          kind: "jira-board",
+          jiraBoard: { parentWorkspaceId: "jira-ws", connectionId: "jira-c1", boardId: "4", boardName: "Platform" },
+          panels: [],
+        } as unknown as WorkspaceState,
+        sessions: [],
+      },
+      payload: {} as StatePayload,
+      hiddenViewIds: new Set(),
+      isContainerRunning: () => false,
+    });
+    expect(tabs).toEqual([
+      expect.objectContaining({
+        id: "jira:jira-board-4",
+        type: "jira",
+        title: "Platform",
+        persistent: false,
+        closable: false,
+      }),
+    ]);
+  });
+
+  test("keeps a pinned Jira board child on its own SQLite-backed view", () => {
+    const state: JiraWorkspaceViewsState = {
+      workspaceId: "pinned-child",
+      profileId: "p1",
+      views: [
+        {
+          viewId: "seeded-board",
+          kind: "board",
+          connectionId: "jira-c1",
+          boardId: 4,
+          boardName: "Platform",
+          title: "Platform",
+          mode: "issues",
+          sprintId: null,
+          quickFilterIds: [],
+          assignee: null,
+          doneWithinDays: null,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+      activeViewId: "seeded-board",
+      syncByViewId: { "seeded-board": { state: "syncing" } },
+    };
+    const tabs = getWorkspaceTabs({
+      workspace: {
+        workspace: {
+          id: "pinned-child",
+          kind: "jira-board",
+          profileId: "p1",
+          jiraBoard: { parentWorkspaceId: "jira-parent", connectionId: "jira-c1", boardId: "4", boardName: "Platform" },
+          panels: [],
+        } as unknown as WorkspaceState,
+        sessions: [],
+      },
+      payload: {} as StatePayload,
+      hiddenViewIds: new Set(),
+      isContainerRunning: () => false,
+      accessors: { jiraWorkspaceViews: () => state },
+    });
+    expect(tabs).toEqual([
+      expect.objectContaining({
+        id: "jira:pinned-child:view:seeded-board",
+        jiraViewId: "seeded-board",
+        title: "Platform",
+        closable: false,
+        loading: true,
+      }),
+    ]);
+  });
+
+  test("creates profile-scoped Jira tabs and reports per-view background sync", () => {
+    const viewsState: JiraWorkspaceViewsState = {
+      workspaceId: "jira-ws",
+      profileId: "p1",
+      views: [
+        { viewId: "issues", kind: "issues", title: "Issues" },
+        {
+          viewId: "board:42",
+          kind: "board",
+          connectionId: "jira-c1",
+          boardId: 42,
+          boardName: "Platform",
+          title: "Platform Sprint",
+          mode: "sprints",
+          sprintId: 7,
+          quickFilterIds: [],
+          assignee: null,
+          doneWithinDays: null,
+          createdAt: 1,
+          updatedAt: 2,
+        },
+      ],
+      activeViewId: "board:42",
+      syncByViewId: { "board:42": { state: "syncing", startedAt: 123 } },
+    };
+    const tabs = getWorkspaceTabs({
+      workspace: {
+        workspace: { id: "jira-ws", kind: "jira", profileId: "p1", panels: [] } as unknown as WorkspaceState,
+        sessions: [],
+      },
+      payload: {} as StatePayload,
+      hiddenViewIds: new Set(),
+      isContainerRunning: () => false,
+      accessors: { jiraWorkspaceViews: () => viewsState },
+    });
+
+    expect(tabs).toEqual([
+      expect.objectContaining({ id: "jira:jira-ws", title: "Inbox", jiraViewId: "issues", closable: false }),
+      expect.objectContaining({
+        id: "jira:jira-ws:view:board%3A42",
+        title: "Platform Sprint",
+        jiraViewId: "board:42",
+        persistent: false,
+        closable: true,
+        loading: true,
+      }),
+    ]);
+  });
+
+  test("does not expose view state belonging to another profile", () => {
+    const tabs = getWorkspaceTabs({
+      workspace: {
+        workspace: { id: "jira-ws", kind: "jira", profileId: "p2", panels: [] } as unknown as WorkspaceState,
+        sessions: [],
+      },
+      payload: {
+        jiraWorkspaceViews: {
+          "jira-ws": {
+            workspaceId: "jira-ws",
+            profileId: "p1",
+            views: [{ viewId: "private-board", kind: "board", title: "Private" }],
+            activeViewId: "private-board",
+            syncByViewId: {},
+          },
+        },
+      } as unknown as StatePayload,
+      hiddenViewIds: new Set(),
+      isContainerRunning: () => false,
+    });
+    expect(tabs.map((tab) => tab.id)).toEqual(["jira:jira-ws"]);
+  });
+
   test("returns an Azure inbox tab for azure workspaces", () => {
     const tabs = getWorkspaceTabs({
       workspace: {
@@ -1101,5 +1273,55 @@ describe("resolveTerminalTextSelectionTarget", () => {
     for (const id of ["", "ws-a", ":panel-shell", "ws-a:"]) {
       expect(resolveTerminalTextSelectionTarget(workspaces, "p1", id)).toBeNull();
     }
+  });
+});
+
+describe("terminals hosted by a Files commander", () => {
+  const panels = (extra: Record<string, unknown> = {}) =>
+    [
+      { id: "files1", title: "Files", command: "__files__" },
+      { id: "t1", title: "Shell", command: "" },
+      { id: "t2", title: "Hosted", command: "", hostedBy: "files:files1", ...extra },
+    ] as unknown as WorkspaceState["panels"];
+
+  const tabsFor = (list: WorkspaceState["panels"]) =>
+    getWorkspaceTabs({
+      workspace: {
+        workspace: { id: "ws", kind: "terminal", panels: list } as unknown as WorkspaceState,
+        sessions: list
+          .filter((panel) => panel.command !== "__files__")
+          .map((panel) => ({
+            sessionId: `ws:${panel.id}`,
+            panelId: panel.id,
+            title: panel.title,
+            status: "running",
+          })),
+      },
+      payload: null,
+      hiddenViewIds: new Set(),
+      isContainerRunning: () => false,
+    });
+
+  test("a hosted terminal is not a tab while its Files host exists", () => {
+    expect(tabsFor(panels()).map((tab) => tab.id)).toEqual(["ws:t1", "files:files1"]);
+  });
+
+  test("an orphan whose host is gone shows as an ordinary tab again", () => {
+    expect(tabsFor(panels({ hostedBy: "files:gone" })).map((tab) => tab.id)).toEqual([
+      "ws:t1",
+      "ws:t2",
+      "files:files1",
+    ]);
+  });
+
+  test("a hostedBy that names a non-Files panel is ignored", () => {
+    expect(tabsFor(panels({ hostedBy: "ws:t1" })).map((tab) => tab.id)).toContain("ws:t2");
+  });
+
+  test("hostedPanelIds and findHostedPanels resolve only existing hosts", () => {
+    expect([...hostedPanelIds(panels())]).toEqual(["t2"]);
+    expect(findHostedPanels(panels(), "files:files1").map((p) => p.id)).toEqual(["t2"]);
+    expect(findHostedPanels(panels(), "files:other")).toEqual([]);
+    expect(hostedPanelIds(panels({ hostedBy: "files:gone" })).size).toBe(0);
   });
 });

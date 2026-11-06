@@ -26,6 +26,11 @@ interface CardWorkspace {
   starred?: boolean;
   lastActivity?: string;
   lastActivityTitle?: string;
+  workItems?: Array<{
+    ref: { provider: "jira"; connectionId: string; issueId: string; issueKey: string };
+    summary?: string;
+    status?: string;
+  }>;
 }
 
 function props(overrides: Partial<CardWorkspace> = {}): { workspace: CardWorkspace } {
@@ -49,6 +54,51 @@ describe("WorkspaceCard — shared heartbeat targets", () => {
 
   afterEach(() => {
     resetHeartbeatForTests();
+  });
+
+  test("shows linked Jira issue keys and status chips", () => {
+    const wrapper = mount(WorkspaceCard, {
+      props: props({
+        workItems: [
+          {
+            ref: { provider: "jira", connectionId: "c1", issueId: "1", issueKey: "ENG-1" },
+            summary: "Login fix",
+            status: "In Progress",
+          },
+          { ref: { provider: "jira", connectionId: "c1", issueId: "2", issueKey: "ENG-2" }, status: "Open" },
+          {
+            ref: { provider: "jira", connectionId: "deleted-connection", issueId: "1", issueKey: "OLD-1" },
+            status: "Done",
+          },
+          {
+            ref: { provider: "jira", connectionId: "c2", issueId: "2", issueKey: "ENG-2" },
+            status: "Open",
+          },
+        ],
+      }),
+    });
+    expect(wrapper.findAll(".workspace-card__jira-chip")).toHaveLength(3);
+    expect(wrapper.findAll(".workspace-card__jira-chip")[0].text()).toContain("ENG-1");
+    expect(wrapper.findAll(".workspace-card__jira-chip")[0].text()).toContain("In Progress");
+    expect(wrapper.text()).toContain("OLD-1");
+    expect(wrapper.find(".workspace-card__jira-more").text()).toBe("+1");
+  });
+
+  test("links only refs belonging to the configured connection and preserves the Jira context path", () => {
+    const wrapper = mount(WorkspaceCard, {
+      props: {
+        ...props({
+          workItems: [
+            { ref: { provider: "jira", connectionId: "c1", issueId: "1", issueKey: "ENG-1" } },
+            { ref: { provider: "jira", connectionId: "disabled", issueId: "2", issueKey: "ENG-2" } },
+          ],
+        }),
+        jiraRoutes: [{ connectionId: "c1", label: "Jira", webUrl: "https://jira.example/jira", issueKeyPrefixes: [] }],
+      },
+    });
+    const chips = wrapper.findAll(".workspace-card__jira-chip");
+    expect(chips[0].attributes("href")).toBe("https://jira.example/jira/browse/ENG-1");
+    expect(chips[1].attributes("href")).toBeUndefined();
   });
 
   test("a running task dot registers exactly one target", () => {

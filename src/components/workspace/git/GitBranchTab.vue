@@ -33,7 +33,12 @@
           @click="
             gitUiStore.confirmForcePushWithLease(
               workspaceId,
-              { branch: snapshot.branch, remote: pushRemote, behindCount: snapshot.behindCount },
+              {
+                branch: snapshot.branch,
+                remote: pushRemote,
+                behindCount: snapshot.behindCount,
+                target: pushTargetBranch || snapshot.branch,
+              },
               snapshot,
             )
           "
@@ -248,6 +253,8 @@ const props = withDefaults(
     hasNoRemote?: boolean;
     showAllActions?: boolean;
     isDiverged?: boolean;
+    /** Where a push lands: the PR source branch on a managed review alias, else the local branch. */
+    pushTargetBranch?: string;
     reviewLink?: { pullRequestId: string | number; sourceBranch: string; targetBranch: string; role: string } | null;
     isLinkedWorktree?: boolean;
     pushRemote?: string;

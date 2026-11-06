@@ -77,24 +77,48 @@
     >
       {{ viewMode === "list" ? "▦" : "≡" }}
     </button>
-    <button
-      type="button"
-      class="file-toolbar__btn file-toolbar__btn--utility"
-      :class="{ 'file-toolbar__btn--active': layoutMode === 'editor' }"
-      :title="
-        layoutMode === 'editor'
-          ? 'Switch to the file browser layout with a separate list and preview.'
-          : 'Switch to the explorer and editor layout.'
-      "
-      aria-label="Toggle file manager layout"
-      @click="$emit('toggle-layout')"
-    >
-      {{ layoutMode === "editor" ? "▤" : "▥" }}
-    </button>
+    <div class="file-toolbar__layouts" role="group" aria-label="File manager layout">
+      <button
+        v-for="option in layoutOptions"
+        :key="option.mode"
+        type="button"
+        class="file-toolbar__btn file-toolbar__btn--utility"
+        :class="{ 'file-toolbar__btn--active': layoutMode === option.mode }"
+        :title="option.title"
+        :aria-label="option.label"
+        :aria-pressed="layoutMode === option.mode"
+        @click="$emit('set-layout', option.mode)"
+      >
+        {{ option.glyph }}
+      </button>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
+type LayoutMode = "editor" | "browser" | "commander";
+
+const layoutOptions: { mode: LayoutMode; glyph: string; label: string; title: string }[] = [
+  {
+    mode: "editor",
+    glyph: "▤",
+    label: "Editor layout",
+    title: "Explorer tree and tabbed editor.",
+  },
+  {
+    mode: "browser",
+    glyph: "▥",
+    label: "Browser layout",
+    title: "Folder tree, file list and a preview.",
+  },
+  {
+    mode: "commander",
+    glyph: "◫",
+    label: "Commander layout",
+    title: "Two side-by-side file panels, browsed with the keyboard.",
+  },
+];
+
 withDefaults(
   defineProps<{
     showHidden?: boolean;
@@ -102,7 +126,7 @@ withDefaults(
     filterText?: string;
     gitIsRepo?: boolean;
     dirtyCount?: number;
-    layoutMode?: "editor" | "browser";
+    layoutMode?: LayoutMode;
   }>(),
   { showHidden: false, viewMode: "list", filterText: "", gitIsRepo: false, dirtyCount: 0 },
 );
@@ -112,7 +136,7 @@ defineEmits<{
   (e: "refresh"): void;
   (e: "toggle-hidden"): void;
   (e: "toggle-view"): void;
-  (e: "toggle-layout"): void;
+  (e: "set-layout", mode: LayoutMode): void;
   (e: "filter", value: string): void;
 }>();
 </script>
@@ -197,6 +221,11 @@ defineEmits<{
   flex: 1;
 }
 
+.file-toolbar__layouts {
+  display: inline-flex;
+  gap: 2px;
+}
+
 @container file-toolbar (max-width: 560px) {
   .file-toolbar__btn {
     min-width: 36px;
@@ -226,7 +255,8 @@ defineEmits<{
     display: none;
   }
 
-  .file-toolbar__btn--utility {
+  .file-toolbar__btn--utility,
+  .file-toolbar__layouts {
     order: 2;
   }
 }

@@ -8,6 +8,7 @@ import {
   getWorkspaceAttention,
   getTabAttention,
   tabSessionId,
+  hostedPanelIds,
 } from "../app/selectors.js";
 import {
   companionPrimaryHostedPanelIds,
@@ -19,6 +20,7 @@ import {
   type CompanionPrimaryBinding,
 } from "../../electron/shared/companion-primary.js";
 import { LAYOUTS } from "../app/layout-geometry.js";
+import { jiraViewIdFromTab, jiraViewTabId } from "../app/jira-view-tabs.js";
 import {
   readSidebarCollapsed,
   isContainerRunning,
@@ -26,6 +28,7 @@ import {
   isDockerViewId,
   isAzureViewId,
   isGitHubViewId,
+  isJiraViewId,
   isReviewViewId,
   isBrowserViewId,
   isFilesViewId,
@@ -176,6 +179,9 @@ export const useAppStore = defineStore("app", () => {
   // --- UI state ---
   const activeViewId = ref<string | null>(null);
   const activeSessionId = ref<string | null>(null);
+  // Terminal a Files commander is showing right now (mobile composer target) and a one-shot request to reveal one.
+  const hostedTerminal = ref<{ hostViewId: string; sessionId: string } | null>(null);
+  const hostedTerminalReveal = ref<{ panelId: string; nonce: number } | null>(null);
   let viewActivationGeneration = 0;
   const splitGroup = ref<SplitGroup | null>(null); // { layout, viewIds } | null
   const hiddenViewIds = ref(new Set<string>());
@@ -190,7 +196,7 @@ export const useAppStore = defineStore("app", () => {
   const remoteReconnectAt = ref<number | null>(null);
   const remoteAccessMode = ref("lan"); // "lan" | "cloudflare" | "vps"
   const selectedLanUrl = ref("");
-  const contextMenu = ref<{ x: number; y: number; viewId: string } | null>(null); // { x, y, viewId } | null
+  const contextMenu = ref<{ x: number; y: number; viewId: string; anchor?: HTMLElement } | null>(null);
   const layoutPickerAnchor = ref<DOMRect | null>(null); // DOMRect | null (for positioning)
   // Which picker semantics to use when the user makes a selection:
   //   "grid"  — always operate on the multi-workspace grid (enable / change layout)
@@ -277,6 +283,25 @@ export const useAppStore = defineStore("app", () => {
   // --- Race condition prevention ---
   const pendingWorkspaceActivationId = ref("");
   const pendingViewActivationId = ref("");
+  const jiraBoardChooserRequest = ref<{ workspaceId: string; sequence: number } | null>(null);
+  let jiraBoardChooserSequence = 0;
+  function requestJiraBoardChooser(workspaceId: string): void {
+    if (!workspaceId) return;
+    jiraBoardChooserRequest.value = { workspaceId, sequence: ++jiraBoardChooserSequence };
+  }
+  function clearJiraBoardChooserRequest(sequence: number): void {
+    if (jiraBoardChooserRequest.value?.sequence === sequence) jiraBoardChooserRequest.value = null;
+  }
+  type JiraIssueOpenRef = { connectionId: string; issueId: string; issueKey: string };
+  const jiraIssueOpenRequest = ref<{ workspaceId: string; ref: JiraIssueOpenRef; sequence: number } | null>(null);
+  let jiraIssueOpenSequence = 0;
+  function requestJiraIssueOpen(workspaceId: string, ref: JiraIssueOpenRef): void {
+    if (!workspaceId || !ref.connectionId || !ref.issueId) return;
+    jiraIssueOpenRequest.value = { workspaceId, ref: { ...ref }, sequence: ++jiraIssueOpenSequence };
+  }
+  function clearJiraIssueOpenRequest(sequence: number): void {
+    if (jiraIssueOpenRequest.value?.sequence === sequence) jiraIssueOpenRequest.value = null;
+  }
   // Workspaces whose Git-tab activation refresh is still in flight — shown on the tab.
   // Counted, so an overlapping second activation keeps the marker until both settle.
   const gitActivationRefreshCounts = ref<Record<string, number>>({});
@@ -307,6 +332,11 @@ export const useAppStore = defineStore("app", () => {
   // Preserves split configuration when switching away from a workspace,
   // so the layout is restored when the user returns.
   const _splitGroupCache = new Map<string, SplitGroup>();
+
+  // The runtime's active view is the default for a workspace. Once this
+  // client has restored or explicitly selected a Jira view, keep its local
+  // choice across later cache/sync snapshots from other clients.
+  const _jiraLocalActiveViews = new Map<string, string>();
 
   // --- Internal api reference (set in init) ---
   let _api: Transport | null = null;
@@ -610,6 +640,17 @@ export const useAppStore = defineStore("app", () => {
     return count;
   });
 
+  // A terminal drawn inside a Files commander has no tab; its view id resolves to the Files tab that hosts it.
+  function resolveHostedView(viewId: string): { hostViewId: string; panelId: string } | null {
+    const workspace = (payload.value as AnyApi)?.workspace;
+    const activeWs = workspace?.workspace || workspace?.project;
+    if (!activeWs || !viewId.startsWith(`${activeWs.id}:`)) return null;
+    const panelId = viewId.slice(activeWs.id.length + 1);
+    if (!hostedPanelIds(activeWs.panels).has(panelId)) return null;
+    const panel = (activeWs.panels as AnyApi[]).find((p) => p.id === panelId);
+    return panel?.hostedBy ? { hostViewId: panel.hostedBy as string, panelId } : null;
+  }
+
   let _prevTabsKey = "";
   let _prevTabs: AnyApi[] = [];
   const workspaceTabs = computed(() => {
@@ -623,7 +664,12 @@ export const useAppStore = defineStore("app", () => {
       // On the remote slim core the git/docker/provider tab data lives in
       // summaries + on-demand detail, not in `payload` — route through the
       // transport-aware accessors. On desktop these read the full payload.
-      accessors: { gitSummary: getGitSummary, dockerCounts, providerInbox },
+      accessors: {
+        gitSummary: getGitSummary,
+        dockerCounts,
+        providerInbox,
+        jiraWorkspaceViews: (workspaceId) => (payload.value as AnyApi)?.jiraWorkspaceViews?.[workspaceId],
+      },
     });
     // Fingerprint includes all visible fields: id, title, status, tone, the
     // revalidating spinner — plus the borrowed-Primary metadata, which changes
@@ -631,7 +677,7 @@ export const useAppStore = defineStore("app", () => {
     const key = (result as AnyApi[])
       .map(
         (t: AnyApi) =>
-          `${t.id}:${t.type}:${t.title}:${t.status}:${t.tone}:${t.sessionId || ""}:${t.borrowed ? 1 : 0}:${t.revalidating ? 1 : 0}`,
+          `${t.id}:${t.type}:${t.title}:${t.status}:${t.tone}:${t.sessionId || ""}:${t.borrowed ? 1 : 0}:${t.loading ? 1 : 0}:${t.revalidating ? 1 : 0}`,
       )
       .join("|");
     if (key === _prevTabsKey) return _prevTabs;
@@ -732,11 +778,39 @@ export const useAppStore = defineStore("app", () => {
     // activeViewId would leave activeSessionId pointing at a session that is
     // no longer on screen — and the next keystroke from the mobile composer
     // would land in it.
-    const activeTab = validIds.has(activeViewId.value || "")
-      ? (tabs as AnyApi[]).find((t: AnyApi) => t.id === activeViewId.value)
+    const requestedViewId = resolveHostedView(activeViewId.value || "")?.hostViewId ?? activeViewId.value;
+    let activeTab = validIds.has(requestedViewId || "")
+      ? (tabs as AnyApi[]).find((t: AnyApi) => t.id === requestedViewId)
       : (tabs as AnyApi[])[0] || null;
+    const activeWorkspace = ((payload.value as AnyApi)?.workspace?.workspace ||
+      (payload.value as AnyApi)?.workspace?.project) as AnyApi;
+    if (workspaceId && (activeWorkspace?.kind === "jira" || activeWorkspace?.kind === "jira-board")) {
+      const localViewId = _jiraLocalActiveViews.get(workspaceId);
+      const localTabId = localViewId ? jiraViewTabId(workspaceId, localViewId) : "";
+      if (localTabId && validIds.has(localTabId)) {
+        activeTab = (tabs as AnyApi[]).find((tab: AnyApi) => tab.id === localTabId) || activeTab;
+      } else {
+        if (localViewId) _jiraLocalActiveViews.delete(workspaceId);
+        const viewsState = (payload.value as AnyApi)?.jiraWorkspaceViews?.[workspaceId];
+        const savedViewId = String(viewsState?.activeViewId || "");
+        const savedTabId =
+          viewsState?.profileId === (activeWorkspace.profileId || "default") &&
+          viewsState?.views?.some((view: AnyApi) => view.viewId === savedViewId)
+            ? jiraViewTabId(workspaceId, savedViewId)
+            : "";
+        if (savedTabId && validIds.has(savedTabId)) {
+          activeTab = (tabs as AnyApi[]).find((tab: AnyApi) => tab.id === savedTabId) || activeTab;
+          _jiraLocalActiveViews.set(workspaceId, savedViewId);
+        }
+      }
+    }
     const nextViewId = activeTab?.id || null;
-    const nextSessionId = activeTab?.type === "terminal" ? tabSessionId(activeTab) : null;
+    const hostedFocused =
+      !!nextViewId &&
+      hostedTerminal.value?.hostViewId === nextViewId &&
+      activeSessionId.value === hostedTerminal.value?.sessionId;
+    const nextSessionId =
+      activeTab?.type === "terminal" ? tabSessionId(activeTab) : hostedFocused ? activeSessionId.value : null;
     if (activeViewId.value !== nextViewId) activeViewId.value = nextViewId;
     if (activeSessionId.value !== nextSessionId) activeSessionId.value = nextSessionId;
 
@@ -930,7 +1004,14 @@ export const useAppStore = defineStore("app", () => {
 
   function isSessionViewIdFor(viewId: string, workspaceId: string): boolean {
     if (typeof viewId !== "string" || !viewId || !workspaceId) return false;
-    if (isGitViewId(viewId) || isDockerViewId(viewId) || isAzureViewId(viewId) || isGitHubViewId(viewId)) return false;
+    if (
+      isGitViewId(viewId) ||
+      isDockerViewId(viewId) ||
+      isAzureViewId(viewId) ||
+      isGitHubViewId(viewId) ||
+      isJiraViewId(viewId)
+    )
+      return false;
     if (isReviewViewId(viewId) || isBrowserViewId(viewId) || isFilesViewId(viewId) || isTaskDashboardViewId(viewId))
       return false;
     return viewId.startsWith(`${workspaceId}:`);
@@ -1140,6 +1221,23 @@ export const useAppStore = defineStore("app", () => {
       nextViewId = `azure:${workspaceId}`;
     } else if (wsEntry?.kind === "github") {
       nextViewId = `github:${workspaceId}`;
+    } else if (wsEntry?.kind === "jira" || wsEntry?.kind === "jira-board") {
+      const jiraViews = (payload.value as AnyApi)?.jiraWorkspaceViews?.[workspaceId];
+      const jiraWorkspaceTabs = (workspaceTabs.value as AnyApi[]).filter((tab: AnyApi) => tab.type === "jira");
+      const localViewId = _jiraLocalActiveViews.get(workspaceId);
+      const localTabId = localViewId ? jiraViewTabId(workspaceId, localViewId) : "";
+      const localViewIsValid = jiraWorkspaceTabs.some((tab: AnyApi) => tab.id === localTabId);
+      const activeViewIdFromState = jiraViews?.activeViewId;
+      const activeViewExists = jiraViews?.views?.some((view: AnyApi) => view.viewId === activeViewIdFromState);
+      nextViewId = localViewIsValid
+        ? localTabId
+        : activeViewExists
+          ? jiraViewTabId(workspaceId, activeViewIdFromState)
+          : jiraWorkspaceTabs[0]?.id || `jira:${workspaceId}`;
+      if (localViewId && !localViewIsValid) _jiraLocalActiveViews.delete(workspaceId);
+      if (!optimisticOnly && activeViewExists && !localViewIsValid) {
+        _jiraLocalActiveViews.set(workspaceId, activeViewIdFromState);
+      }
     }
 
     // Mobile override: on a phone-width viewport, task workspaces always
@@ -1488,7 +1586,13 @@ export const useAppStore = defineStore("app", () => {
       signal?: AbortSignal;
     } = {},
   ): Promise<void> {
-    if (!viewId || (viewId === activeViewId.value && !requireConfirmation)) return;
+    if (!viewId) return;
+    const hosted = resolveHostedView(viewId);
+    if (hosted) {
+      hostedTerminalReveal.value = { panelId: hosted.panelId, nonce: (hostedTerminalReveal.value?.nonce ?? 0) + 1 };
+      viewId = hosted.hostViewId;
+    }
+    if (viewId === activeViewId.value && !requireConfirmation) return;
     const generation = requestedGeneration ?? ++viewActivationGeneration;
     const isCurrent = () => generation === viewActivationGeneration && !signal?.aborted;
     if (!isCurrent()) throw new Error("View activation was superseded");
@@ -1519,6 +1623,7 @@ export const useAppStore = defineStore("app", () => {
       isDockerViewId(viewId) ||
       isAzureViewId(viewId) ||
       isGitHubViewId(viewId) ||
+      isJiraViewId(viewId) ||
       isReviewViewId(viewId) ||
       isBrowserViewId(viewId) ||
       isFilesViewId(viewId) ||
@@ -1526,10 +1631,36 @@ export const useAppStore = defineStore("app", () => {
     ) {
       pendingViewActivationId.value = "";
       activeSessionId.value = null;
-      // Persist the non-session active view so it's restored on workspace switch/restart.
-      // Sessions already persist via api.activateSession below.
       const wsId = myActiveWorkspaceId.value;
-      if (wsId && (_api as CallableTransport)?.setWorkspaceUIState) {
+      if (isJiraViewId(viewId) && wsId) {
+        const jiraViewId = jiraViewIdFromTab(viewId, wsId);
+        if (jiraViewId) {
+          _jiraLocalActiveViews.set(wsId, jiraViewId);
+          const jiraApi = _api as CallableTransport | null;
+          if (jiraApi?.setJiraWorkspaceActiveView) {
+            void jiraApi
+              .setJiraWorkspaceActiveView({ workspaceId: wsId, viewId: jiraViewId })
+              .then((state) => {
+                if (!state || !isCurrent() || pendingWorkspaceActivationId.value) return;
+                const currentPayload = payload.value as AnyApi;
+                if (state.workspaceId === wsId && currentPayload) {
+                  payload.value = {
+                    ...currentPayload,
+                    jiraWorkspaceViews: { ...(currentPayload.jiraWorkspaceViews || {}), [wsId]: state },
+                  } as StatePayload;
+                }
+              })
+              .catch((err: unknown) => {
+                rlog("warn", "Jira view activation: couldn't persist active view", {
+                  workspaceId: wsId,
+                  err: (err as Error)?.message || String(err),
+                });
+              });
+          }
+        }
+      } else if (wsId && (_api as CallableTransport)?.setWorkspaceUIState) {
+        // Persist the non-session active view so it's restored on workspace switch/restart.
+        // Sessions already persist via api.activateSession below.
         (_api as CallableTransport).setWorkspaceUIState(wsId, { activeViewId: viewId }).catch(() => {});
       }
       // Refresh git data on-demand when the Git tab is activated
@@ -1757,6 +1888,7 @@ export const useAppStore = defineStore("app", () => {
       isDockerViewId,
       isAzureViewId,
       isGitHubViewId,
+      isJiraViewId,
       isReviewViewId,
     });
   }
@@ -1853,7 +1985,8 @@ export const useAppStore = defineStore("app", () => {
               }
               const scopedWorkspaceId = ((payload.value as AnyApi)?.workspace?.workspace as AnyApi)?.id;
               if (scopedWorkspaceId !== detail.workspaceId) return;
-              if (!(workspaceTabs.value as AnyApi[]).some((tab: AnyApi) => tab.id === viewId)) {
+              const shownViewId = resolveHostedView(viewId)?.hostViewId ?? viewId;
+              if (!(workspaceTabs.value as AnyApi[]).some((tab: AnyApi) => tab.id === shownViewId)) {
                 finish(() => reject(new Error(`Target panel is missing: ${detail.panelId}`)));
                 return;
               }
@@ -1880,7 +2013,7 @@ export const useAppStore = defineStore("app", () => {
             signal: detail.signal,
           });
           if (!isCurrent()) throw new Error("Panel selection was superseded");
-          if (activeViewId.value !== viewId) {
+          if (activeViewId.value !== (resolveHostedView(viewId)?.hostViewId ?? viewId)) {
             throw new Error(`Target panel was not selected: ${detail.panelId}`);
           }
           detail.resolve(payload.value);
@@ -2552,6 +2685,8 @@ export const useAppStore = defineStore("app", () => {
     payload,
     activeViewId,
     activeSessionId,
+    hostedTerminal,
+    hostedTerminalReveal,
     splitGroup,
     hiddenViewIds,
     sidebarCollapsed,
@@ -2570,6 +2705,12 @@ export const useAppStore = defineStore("app", () => {
     workspaceSearchQuery,
     pendingWorkspaceActivationId,
     pendingViewActivationId,
+    jiraBoardChooserRequest,
+    requestJiraBoardChooser,
+    clearJiraBoardChooserRequest,
+    jiraIssueOpenRequest,
+    requestJiraIssueOpen,
+    clearJiraIssueOpenRequest,
     suppressBroadcast,
     recoveryCandidates,
     inboxConnectionFocus,

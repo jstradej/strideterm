@@ -18,6 +18,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { useReviewNotifications } from "./useReviewNotifications.js";
 import { useAppStore } from "../stores/app.js";
 import { useNotificationStore } from "../stores/notifications.js";
+import { fireNotificationAlert } from "./useNotificationSound.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -179,6 +180,46 @@ describe("useReviewNotifications — profile scoping", () => {
     await flushPromises();
 
     expect(notifStore.sessions[0].meta?.profileId).toBe("p1");
+    wrapper.unmount();
+  });
+
+  test("the OS popup names the pull request in its body, where a long title still wraps", async () => {
+    const appStore = useAppStore();
+    appStore.payload = buildPayload();
+    vi.mocked(fireNotificationAlert).mockClear();
+    const { wrapper } = mountHarness();
+    vi.setSystemTime(new Date("2025-01-01T00:00:10Z"));
+
+    appStore.payload = buildPayload({
+      azureDevops: {
+        reviewActivity: [
+          {
+            id: "comment-popup",
+            kind: "pr-new-comment",
+            connectionId: "conn-a",
+            prKey: "pr-12",
+            pullRequestTitle: "Fix login",
+            title: "New comment on repo #12",
+            body: "Jana: looks good",
+            reviewWorkspaceId: "",
+            existingWorkspaceId: "",
+          },
+        ],
+        connections: [],
+        inboxItems: [],
+        pullRequests: {},
+        lastUpdatedAt: null,
+        error: "",
+      },
+    });
+    await nextTick();
+    await flushPromises();
+
+    expect(fireNotificationAlert).toHaveBeenCalledWith(
+      "New comment on repo #12",
+      "Fix login\nJana: looks good",
+      expect.objectContaining({ tier: 2 }),
+    );
     wrapper.unmount();
   });
 

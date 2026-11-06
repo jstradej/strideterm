@@ -7,6 +7,7 @@ import fs from "node:fs/promises";
 import { WebSocket } from "ws";
 import { getLogDir } from "./logger.js";
 import { ClientRequestError } from "./shared/client-request-error.js";
+import { JiraRequestError } from "./jira/jira-manager.js";
 import {
   AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL,
   azureClosedPrCleanupFinishedSchema,
@@ -197,6 +198,23 @@ test("an enabled remote server with an empty token is not started", async () => 
 });
 
 describe("sanitizeSettingsFromRemote", () => {
+  test("drops Jira auth settings from remote writes", () => {
+    const settings = {
+      integrations: {
+        jira: {
+          enabled: true,
+          connections: [{ id: "j1", auth: { secretRef: "jira:j1:pat" } }],
+          commentAttribution: { enabled: false, text: "x", position: "after" },
+        },
+        telegram: { enabled: true },
+      },
+    };
+    const removed = sanitizeSettingsFromRemote(settings as unknown as Record<string, unknown>);
+    expect(removed).toContain("integrations.jira");
+    expect(settings.integrations).not.toHaveProperty("jira");
+    expect(settings.integrations.telegram).toEqual({ enabled: true });
+  });
+
   test("drops every blocked remoteAccess field", () => {
     const settings = {
       remoteAccess: {
@@ -672,11 +690,16 @@ describe("remote token client profile context", () => {
         ],
       },
     };
+    type RemoteClientRegistryLike = {
+      activateProfile(clientId: string, profileId: string, appState: unknown): void;
+      activateTarget(clientId: string, profileId: string, workspaceId: string, appState: unknown): void;
+      composePayload(clientId: string, payload: unknown): unknown;
+    };
     // Minimal runtime mock that mirrors the real activate-for-remote-client
     // wiring: the server hands its registry over via setRemoteClientRegistry
     // and the runtime mutates the client context through it.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let registryRef: any = null;
+    let registryRef: RemoteClientRegistryLike | null = null;
+    let activationRequestRegistry: RemoteClientRegistryLike | null = null;
     const runtime = {
       getPayload: () => payload,
       isSshTestSessionId: (sessionId: unknown) => typeof sessionId === "string" && sessionId.startsWith("ssh-test:"),
@@ -687,17 +710,23 @@ describe("remote token client profile context", () => {
       writeToSession: () => undefined,
       submitToSession: () => undefined,
       resizeSession: () => undefined,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      setRemoteClientRegistry: (registry: any) => {
+      setRemoteClientRegistry: (registry: RemoteClientRegistryLike) => {
         registryRef = registry;
       },
       async activateProfileForRemoteClient(clientId: string, profileId: string) {
+        if (!registryRef) throw new Error("Remote client registry is not set.");
         registryRef.activateProfile(clientId, profileId, payload.appState);
         return registryRef.composePayload(clientId, payload);
       },
-      async activateTargetForRemoteClient(clientId: string, profileId: string, workspaceId: string) {
-        registryRef.activateTarget(clientId, profileId, workspaceId, payload.appState);
-        return registryRef.composePayload(clientId, payload);
+      async activateTargetForRemoteClient(
+        clientId: string,
+        profileId: string,
+        workspaceId: string,
+        requestRegistry: RemoteClientRegistryLike,
+      ) {
+        activationRequestRegistry = requestRegistry;
+        requestRegistry.activateTarget(clientId, profileId, workspaceId, payload.appState);
+        return requestRegistry.composePayload(clientId, payload);
       },
     };
     const server = await startRemoteServer({
@@ -724,6 +753,7 @@ describe("remote token client profile context", () => {
         })
       ).json()) as { remoteClient?: { profileId?: string; activeWorkspaceId?: string } };
       expect(activated.remoteClient).toMatchObject({ profileId: "p2", activeWorkspaceId: "ws2" });
+      expect(activationRequestRegistry).toBe(registryRef);
 
       const sameClient = (await (await fetch(`${baseUrl}/api/state`, { headers })).json()) as {
         remoteClient?: { profileId?: string; activeWorkspaceId?: string };
@@ -775,6 +805,7 @@ describe("remote token client profile context", () => {
       submitToSession: () => undefined,
       resizeSession: () => undefined,
       setRemoteClientRegistry: () => undefined,
+      jiraRemoteEnsureWorkspace: async (_profileId: string): Promise<unknown> => null,
       // Both return the full global payload; the server must compose per-client.
       refreshAzureState: async () => payload,
       refreshGitHubState: async () => payload,
@@ -855,6 +886,7 @@ describe("remote token client profile context", () => {
       submitToSession: () => undefined,
       resizeSession: () => undefined,
       setRemoteClientRegistry: () => undefined,
+      jiraRemoteEnsureWorkspace: async (_profileId: string): Promise<unknown> => null,
     };
     const server = await startRemoteServer({
       runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
@@ -898,6 +930,7 @@ describe("remoteAccess.networkAccess (desktop-only, loopback bind)", () => {
         listRemoteUrls: () => info?.urls ?? [],
         on: () => () => undefined,
         setRemoteClientRegistry: () => undefined,
+        jiraRemoteEnsureWorkspace: async (_profileId: string): Promise<unknown> => null,
         updateSettings: async (settings: Record<string, unknown>) => {
           updates.push(JSON.parse(JSON.stringify(settings)));
           return { payload };
@@ -989,6 +1022,7 @@ describe("workspace delete endpoint validation", () => {
       submitToSession: () => undefined,
       resizeSession: () => undefined,
       setRemoteClientRegistry: () => undefined,
+      jiraRemoteEnsureWorkspace: async (_profileId: string): Promise<unknown> => null,
       deleteWorkspace: async () => payload,
     };
   }
@@ -1157,6 +1191,59 @@ describe("workspace delete endpoint validation", () => {
     }
   });
 
+  test("a Jira failure inside task create/start or a Jira read is a 424 with jiraError, never Jira's own 401/403", async () => {
+    const port = await getFreePort();
+    const auth = "test-token-jira-failure";
+    const runtime = makeMinimalRuntime(auth, port) as ReturnType<typeof makeMinimalRuntime> & Record<string, unknown>;
+    const expired = () => {
+      throw new JiraRequestError("auth-expired", "Jira rejected this connection. Sign in again.", undefined, 401);
+    };
+    runtime.createTaskWorkspace = async () => expired();
+    runtime.startTask = async () => {
+      throw new JiraRequestError("rate-limited", "Jira rate limit reached.", 4000, 429);
+    };
+    runtime.jiraRemoteSearchIssues = async () => {
+      throw new JiraRequestError("permission-denied", "No permission.", undefined, 403);
+    };
+    runtime.jiraPreviewComment = async () => {
+      throw new JiraRequestError("auth-expired", "Jira rejected this connection. Sign in again.", undefined, 401);
+    };
+    const server = await startRemoteServer({
+      runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      const post = (route: string, body: unknown) =>
+        fetch(`http://127.0.0.1:${port}${route}`, {
+          method: "POST",
+          headers: clientHeaders(auth),
+          body: JSON.stringify(body),
+        });
+      const created = await post("/api/task/create", { cwd: "/repo", description: "x" });
+      expect(created.status).toBe(424);
+      expect(await created.json()).toEqual({
+        error: "Jira rejected this connection. Sign in again.",
+        jiraError: { code: "auth-expired" },
+      });
+      const started = await post("/api/task/start", { workspaceId: "ws-1" });
+      expect(started.status).toBe(424);
+      expect(await started.json()).toMatchObject({ jiraError: { code: "rate-limited", retryAfterMs: 4000 } });
+      const search = await post("/api/jira/search", { connectionId: "jira-a", jql: "key = OPS-1" });
+      expect(search.status).toBe(424);
+      expect(await search.json()).toMatchObject({ jiraError: { code: "permission-denied" } });
+      const write = await post("/api/jira/write/preview", {
+        action: "comment",
+        ref: { connectionId: "jira-a", issueId: "1", issueKey: "OPS-1" },
+        body: "Hello",
+        intent: "User confirmed note",
+      });
+      expect(write.status).toBe(424);
+      expect(await write.json()).toMatchObject({ jiraError: { code: "auth-expired" } });
+    } finally {
+      await server.close();
+    }
+  });
+
   test("a body that breaks the shared create schema is a 400 and never reaches the runtime", async () => {
     const port = await getFreePort();
     const auth = "test-token-task-create";
@@ -1266,6 +1353,7 @@ describe("DETAIL_ROUTES / slotAwareRoute — built once per server instance, not
       submitToSession: () => undefined,
       resizeSession: () => undefined,
       setRemoteClientRegistry: () => undefined,
+      jiraRemoteEnsureWorkspace: async (_profileId: string): Promise<unknown> => null,
     };
   }
 
@@ -1330,12 +1418,229 @@ describe("API_ROUTES table — representative route coverage", () => {
       submitToSession: () => undefined,
       resizeSession: () => undefined,
       setRemoteClientRegistry: () => undefined,
+      jiraRemoteEnsureWorkspace: async (_profileId: string): Promise<unknown> => null,
     };
   }
 
   const headers = (auth: string) => ({
     Authorization: `Bearer ${auth}`,
     "Content-Type": "application/json",
+  });
+
+  test("POST /api/jira/ensure-workspace scopes creation to the authenticated remote profile", async () => {
+    const port = await getFreePort();
+    const auth = "test-token-jira-workspace";
+    const runtime = makeMinimalRuntime(auth, port) as ReturnType<typeof makeMinimalRuntime> & {
+      jiraRemoteEnsureWorkspace: (profileId: string) => Promise<unknown>;
+    };
+    let resolvedProfile = "";
+    runtime.jiraRemoteEnsureWorkspace = async (profileId) => {
+      resolvedProfile = profileId;
+      return { id: "jira-inbox", kind: "jira", profileId: profileId || "default" };
+    };
+    const server = await startRemoteServer({
+      runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/jira/ensure-workspace`, {
+        method: "POST",
+        headers: headers(auth),
+        body: JSON.stringify({ profileId: "attacker-selected-profile" }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ id: "jira-inbox", kind: "jira", profileId: "default" });
+      expect(resolvedProfile).toBe("");
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("Jira personal query and recent history routes validate inputs and use the authenticated caller", async () => {
+    const port = await getFreePort();
+    const auth = "test-token-jira-history";
+    const calls: Array<{ input: unknown; profileId: string }> = [];
+    const record = async (input: unknown, profileId: string) => {
+      calls.push({ input, profileId });
+      return { ok: true };
+    };
+    const runtime = Object.assign(makeMinimalRuntime(auth, port), {
+      jiraRemoteBuildOwnIssuesQuery: record,
+      jiraRemoteVerifyOwnIdentity: record,
+      jiraRemoteSetOwnIdentity: record,
+      jiraRemoteGetRecentSearches: record,
+      jiraRemoteRememberSearch: record,
+      jiraRemoteGetRecentIssues: record,
+      jiraRemoteRememberIssueViewed: record,
+    });
+    const server = await startRemoteServer({
+      runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      const ref = { provider: "jira", connectionId: "jira-a", issueId: "1", issueKey: "OPS-1" };
+      const requests = [
+        [
+          "/api/jira/own-issues-query",
+          { connectionId: "jira-a", baseJql: "statusCategory != Done", profileId: "forged" },
+        ],
+        ["/api/jira/own-identity/verify", { connectionId: "jira-a", userId: "alice" }],
+        ["/api/jira/own-identity/set", { connectionId: "jira-a", userId: "alice" }],
+        ["/api/jira/recent-searches", { connectionId: "jira-a", limit: 10 }],
+        ["/api/jira/recent-searches/remember", { connectionId: "jira-a", jql: "key = OPS-1", label: "Last work" }],
+        ["/api/jira/recent-issues", { connectionId: "jira-a" }],
+        ["/api/jira/recent-issues/viewed", { ref }],
+      ] as const;
+      for (const [route, body] of requests) {
+        const response = await fetch(`http://127.0.0.1:${port}${route}`, {
+          method: "POST",
+          headers: headers(auth),
+          body: JSON.stringify(body),
+        });
+        expect(response.status, route).toBe(200);
+      }
+      expect(calls).toHaveLength(7);
+      expect(calls.every((call) => call.profileId === "")).toBe(true);
+      expect(calls[0].input).toEqual({ connectionId: "jira-a", baseJql: "statusCategory != Done" });
+      expect(calls[1].input).toEqual({ connectionId: "jira-a", userId: "alice" });
+      expect(calls[6].input).toEqual({ ref });
+      for (const body of [
+        { connectionId: "jira-a", userId: "alice", profileId: "forged" },
+        { connectionId: "jira-a", userId: " " },
+      ]) {
+        expect(
+          (
+            await fetch(`http://127.0.0.1:${port}/api/jira/own-identity/verify`, {
+              method: "POST",
+              headers: headers(auth),
+              body: JSON.stringify(body),
+            })
+          ).status,
+        ).toBe(400);
+      }
+      for (const body of [
+        { connectionId: "jira-a", limit: 100 },
+        { connectionId: "jira-a", profileId: "forged" },
+      ]) {
+        const response = await fetch(`http://127.0.0.1:${port}/api/jira/recent-issues`, {
+          method: "POST",
+          headers: headers(auth),
+          body: JSON.stringify(body),
+        });
+        expect(response.status).toBe(400);
+      }
+      expect(calls).toHaveLength(7);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("Jira workspace-view routes preserve registry results and reject caller-supplied profile or sync state", async () => {
+    const port = await getFreePort();
+    const auth = "test-token-jira-views";
+    const calls: Array<{ input: unknown; profileId: string }> = [];
+    const state = {
+      workspaceId: "jira-inbox",
+      profileId: "default",
+      views: [],
+      activeViewId: "issues",
+      syncByViewId: {},
+    };
+    const record = async (input: unknown, profileId: string) => {
+      calls.push({ input, profileId });
+      return state;
+    };
+    const runtime = Object.assign(makeMinimalRuntime(auth, port), {
+      jiraRemoteGetWorkspaceViews: record,
+      jiraRemoteSaveWorkspaceView: record,
+      jiraRemoteRenameWorkspaceView: record,
+      jiraRemoteReorderWorkspaceViews: record,
+      jiraRemoteRemoveWorkspaceView: record,
+      jiraRemoteSetWorkspaceActiveView: record,
+      jiraRemoteRefreshWorkspaceViews: record,
+    });
+    const server = await startRemoteServer({
+      runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    const post = (action: string, body: unknown) =>
+      fetch(`http://127.0.0.1:${port}/api/jira/workspace-views/${action}`, {
+        method: "POST",
+        headers: headers(auth),
+        body: JSON.stringify(body),
+      });
+    try {
+      const view = { kind: "board", connectionId: "jira-a", boardId: 42 };
+      for (const [action, body] of [
+        ["get", { workspaceId: "jira-inbox" }],
+        ["save", { workspaceId: "jira-inbox", view }],
+        ["rename", { workspaceId: "jira-inbox", viewId: "board-a", title: "Platform" }],
+        ["reorder", { workspaceId: "jira-inbox", viewIds: ["board-a"] }],
+        ["active", { workspaceId: "jira-inbox", viewId: "board-a" }],
+        ["remove", { workspaceId: "jira-inbox", viewId: "board-a" }],
+        ["refresh", { workspaceId: "jira-inbox" }],
+      ] as const) {
+        const response = await post(action, body);
+        expect(response.status, action).toBe(200);
+        expect(await response.json()).toEqual(state);
+      }
+      expect(calls).toHaveLength(7);
+      expect(calls.every((call) => call.profileId === "")).toBe(true);
+      expect(calls[1].input).toEqual({ workspaceId: "jira-inbox", view });
+      expect(calls[2].input).toEqual({ workspaceId: "jira-inbox", viewId: "board-a", title: "Platform" });
+      expect(calls[3].input).toEqual({ workspaceId: "jira-inbox", viewIds: ["board-a"] });
+      for (const [action, body] of [
+        ["get", { workspaceId: "jira-inbox", profileId: "forged" }],
+        ["save", { workspaceId: "jira-inbox", view: { ...view, syncByViewId: {} } }],
+        ["save", { workspaceId: "jira-inbox", view: { ...view, boardId: -1 } }],
+      ] as const) {
+        expect((await post(action, body)).status).toBe(400);
+      }
+      expect(calls).toHaveLength(7);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("Jira project catalog and workspace scope routes use authenticated profile arguments", async () => {
+    const port = await getFreePort();
+    const auth = "test-token-jira-project-scope";
+    const calls: Array<{ name: string; input: unknown; profileId: string }> = [];
+    const record = (name: string) => async (input: unknown, profileId: string) => {
+      calls.push({ name, input, profileId });
+      return name === "projects" ? [{ id: "1", key: "OPS", name: "Operations" }] : null;
+    };
+    const runtime = Object.assign(makeMinimalRuntime(auth, port), {
+      jiraRemoteListProjects: record("projects"),
+      jiraRemoteGetWorkspaceProjectScope: record("get"),
+      jiraRemoteSetWorkspaceProjectScope: record("set"),
+    });
+    const server = await startRemoteServer({
+      runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      const requests = [
+        ["/api/jira/projects", { connectionId: "jira-a" }],
+        ["/api/jira/workspace-project-scope/get", { workspaceId: "jira-ws", connectionId: "jira-a" }],
+        ["/api/jira/workspace-project-scope/set", { workspaceId: "jira-ws", connectionId: "jira-a", projectKeys: [] }],
+      ] as const;
+      for (const [route, body] of requests) {
+        const response = await fetch(`http://127.0.0.1:${port}${route}`, {
+          method: "POST",
+          headers: headers(auth),
+          body: JSON.stringify(body),
+        });
+        expect(response.status, route).toBe(200);
+      }
+      expect(calls).toEqual([
+        { name: "projects", input: "jira-a", profileId: "" },
+        { name: "get", input: { workspaceId: "jira-ws", connectionId: "jira-a" }, profileId: "" },
+        { name: "set", input: { workspaceId: "jira-ws", connectionId: "jira-a", projectKeys: [] }, profileId: "" },
+      ]);
+    } finally {
+      await server.close();
+    }
   });
 
   test("POST /api/azure/audit-log/query (sync, no validateIpc) returns 200 with the runtime's return value", async () => {
@@ -1543,6 +1848,7 @@ describe("malformed request body handling — must respond, never hang", () => {
       submitToSession: () => undefined,
       resizeSession: () => undefined,
       setRemoteClientRegistry: () => undefined,
+      jiraRemoteEnsureWorkspace: async (_profileId: string): Promise<unknown> => null,
       saveWorkspace: async () => payload,
       activateWorkspaceForRemoteClient: async () => payload,
     };
@@ -1630,6 +1936,7 @@ describe("sendCoreCatchUp resilience — a rejecting getInitialState() must not 
       submitToSession: () => undefined,
       resizeSession: () => undefined,
       setRemoteClientRegistry: () => undefined,
+      jiraRemoteEnsureWorkspace: async (_profileId: string): Promise<unknown> => null,
     };
     const server = await startRemoteServer({
       runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
@@ -1688,6 +1995,7 @@ describe("sendCoreCatchUp resilience — a rejecting getInitialState() must not 
       submitToSession: () => undefined,
       resizeSession: () => undefined,
       setRemoteClientRegistry: () => undefined,
+      jiraRemoteEnsureWorkspace: async (_profileId: string): Promise<unknown> => null,
     };
     const server = await startRemoteServer({
       runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
@@ -1962,6 +2270,7 @@ describe("terminal streaming — subscription routing + backpressure", () => {
       submitToSession: () => undefined,
       resizeSession: () => undefined,
       setRemoteClientRegistry: () => undefined,
+      jiraRemoteEnsureWorkspace: async (_profileId: string): Promise<unknown> => null,
       // A mutation-shaped result: a runtime method that wraps the full payload
       // under `.payload` (git ops return `{ ok, payload }`). The adapter must
       // slim the NESTED payload, not just top-level ones.
@@ -4213,6 +4522,7 @@ describe("GET /api/approvals/audit-log", () => {
         submitToSession: () => undefined,
         resizeSession: () => undefined,
         setRemoteClientRegistry: () => undefined,
+        jiraRemoteEnsureWorkspace: async (_profileId: string): Promise<unknown> => null,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         queryApprovalAuditLog: (filters: any) => {
           queryCalls.push(filters);
@@ -5175,6 +5485,7 @@ describe("the ticket-bootstrap limiter on the relay's loopback origin", () => {
         submitToSession: () => undefined,
         resizeSession: () => undefined,
         setRemoteClientRegistry: () => undefined,
+        jiraRemoteEnsureWorkspace: async (_profileId: string): Promise<unknown> => null,
         consumeMobileWebSessionTicket: () => null,
       } as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
       staticRoot: process.cwd(),
@@ -5246,6 +5557,7 @@ describe("the mobile session cookie's attributes", () => {
         submitToSession: () => undefined,
         resizeSession: () => undefined,
         setRemoteClientRegistry: () => undefined,
+        jiraRemoteEnsureWorkspace: async (_profileId: string): Promise<unknown> => null,
         isMobileSessionStillAuthorized: () => true,
         consumeMobileWebSessionTicket: (ticketId: string, secret: string) => {
           const record = tickets.get(`${ticketId}:${secret}`);
@@ -5412,11 +5724,20 @@ describe("a mobile session is finite", () => {
         windowSlots: [],
       },
     };
-    const tickets = new Map<string, { deviceId: string; pairId: string; profileId: string }>();
+    const tickets = new Map<
+      string,
+      { deviceId: string; pairId: string; profileId: string; sessionIdleTtlMs?: number }
+    >();
     const authorized = new Set<string>();
     return {
-      seedTicket(ticketId: string, secret: string, deviceId: string) {
-        tickets.set(`${ticketId}:${secret}`, { deviceId, pairId: "pair-1", profileId: "default" });
+      /** [sessionIdleTtlMs] is the value the ticket store would have BOUND at issuance (ADR 0041). */
+      seedTicket(ticketId: string, secret: string, deviceId: string, sessionIdleTtlMs?: number) {
+        tickets.set(`${ticketId}:${secret}`, {
+          deviceId,
+          pairId: "pair-1",
+          profileId: "default",
+          ...(sessionIdleTtlMs !== undefined ? { sessionIdleTtlMs } : {}),
+        });
         authorized.add(deviceId);
       },
       deauthorize(deviceId: string) {
@@ -5433,6 +5754,7 @@ describe("a mobile session is finite", () => {
         submitToSession: () => undefined,
         resizeSession: () => undefined,
         setRemoteClientRegistry: () => undefined,
+        jiraRemoteEnsureWorkspace: async (_profileId: string): Promise<unknown> => null,
         isMobileSessionStillAuthorized: (deviceId: string) => authorized.has(deviceId),
         consumeMobileWebSessionTicket: (
           ticketId: string,
@@ -5738,6 +6060,180 @@ describe("a mobile session is finite", () => {
       await server.close();
     }
   });
+
+  // ADR 0041. The idle TTL a session gets is the one its ticket was ISSUED with — the control plane's
+  // policy for a relay session — and the server's own (production: 30 min) fallback only when the
+  // ticket bound nothing. These run at the shipped magnitudes, with `Date.now` moved instead of
+  // waited for: the point is that ninety minutes means ninety minutes, not that a small number works.
+  describe("the idle TTL bound to the ticket", () => {
+    const MINUTE = 60_000;
+    const NINETY_MINUTES = 90 * MINUTE;
+    const THIRTY_MINUTES = 30 * MINUTE;
+
+    async function serve(port: number, runtime: ReturnType<typeof makeFiniteSessionRuntime>["runtime"]) {
+      return startRemoteServer({
+        runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+        staticRoot: process.cwd(),
+        // The shipped absolute deadline and idle fallback. The sweep is fast so a test that relies
+        // on it does not wait; the ones that use the request path are unaffected by it.
+        mobileSessionAbsoluteTtlMs: 8 * 60 * MINUTE,
+        mobileSessionIdleTtlMs: THIRTY_MINUTES,
+        mobileSessionSweepMs: 25,
+      });
+    }
+
+    /** Runs [body] with `Date.now` reading [offsetMs] past the real time at which it was called. */
+    async function at<T>(origin: number, offsetMs: number, body: () => Promise<T>): Promise<T> {
+      const spy = vi.spyOn(Date, "now").mockReturnValue(origin + offsetMs);
+      try {
+        return await body();
+      } finally {
+        spy.mockRestore();
+      }
+    }
+
+    test("a session bound to 90 minutes is still alive after 60 idle minutes", async () => {
+      const port = await getFreePort();
+      const { seedTicket, runtime } = makeFiniteSessionRuntime(port);
+      seedTicket("t1", "s1", "dev-1", NINETY_MINUTES);
+      const server = await serve(port, runtime);
+      const baseUrl = `http://127.0.0.1:${port}`;
+      try {
+        const origin = Date.now();
+        const cookie = await bootstrap(baseUrl, "t1", "s1");
+        const status = await at(origin, 60 * MINUTE, async () => {
+          // Several sweep intervals at the moved clock: the sweep must not end it either.
+          await new Promise((resolve) => setTimeout(resolve, 120));
+          return (await fetch(`${baseUrl}/api/state`, { headers: { Cookie: cookie } })).status;
+        });
+        expect(status).toBe(200);
+      } finally {
+        await server.close();
+      }
+    });
+
+    test("a session bound to 90 minutes is idle-expired by the sweep once 90 minutes have passed", async () => {
+      const port = await getFreePort();
+      const { seedTicket, runtime } = makeFiniteSessionRuntime(port);
+      seedTicket("t1", "s1", "dev-1", NINETY_MINUTES);
+      const server = await serve(port, runtime);
+      const baseUrl = `http://127.0.0.1:${port}`;
+      try {
+        const origin = Date.now();
+        const cookie = await bootstrap(baseUrl, "t1", "s1");
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: { Cookie: cookie } });
+        await new Promise<void>((resolve, reject) => {
+          ws.on("open", () => resolve());
+          ws.on("error", reject);
+        });
+        const closeCode = await at(origin, NINETY_MINUTES + 1_000, async () => {
+          // No request and no message: only the sweep can end this, and it must.
+          return await new Promise<number>((resolve) => ws.on("close", (code: number) => resolve(code)));
+        });
+        expect(closeCode).toBe(1008);
+        expect((await fetch(`${baseUrl}/api/state`, { headers: { Cookie: cookie } })).status).toBe(401);
+      } finally {
+        await server.close();
+      }
+    });
+
+    test("a ticket that bound nothing gets the 30-minute fallback: gone after 31 idle minutes", async () => {
+      const port = await getFreePort();
+      const { seedTicket, runtime } = makeFiniteSessionRuntime(port);
+      seedTicket("t1", "s1", "dev-1");
+      seedTicket("t2", "s2", "dev-2");
+      const server = await serve(port, runtime);
+      const baseUrl = `http://127.0.0.1:${port}`;
+      try {
+        const origin = Date.now();
+        const early = await bootstrap(baseUrl, "t1", "s1");
+        const late = await bootstrap(baseUrl, "t2", "s2");
+        expect(
+          await at(origin, 29 * MINUTE, async () => {
+            return (await fetch(`${baseUrl}/api/state`, { headers: { Cookie: early } })).status;
+          }),
+        ).toBe(200);
+        expect(
+          await at(origin, 31 * MINUTE, async () => {
+            return (await fetch(`${baseUrl}/api/state`, { headers: { Cookie: late } })).status;
+          }),
+        ).toBe(401);
+      } finally {
+        await server.close();
+      }
+    });
+
+    test("activity extends by the session's OWN bound TTL, not by the server fallback", async () => {
+      // The trap this guards: `touchMobileSession` extending a 90-minute session by the 30-minute
+      // fallback after its first request, which would quietly undo the policy.
+      const port = await getFreePort();
+      const { seedTicket, runtime } = makeFiniteSessionRuntime(port);
+      seedTicket("t1", "s1", "dev-1", NINETY_MINUTES);
+      const server = await serve(port, runtime);
+      const baseUrl = `http://127.0.0.1:${port}`;
+      try {
+        const origin = Date.now();
+        const cookie = await bootstrap(baseUrl, "t1", "s1");
+        const touched = await at(origin, 10 * MINUTE, async () => {
+          return (await fetch(`${baseUrl}/api/state`, { headers: { Cookie: cookie } })).status;
+        });
+        expect(touched).toBe(200);
+        // 10 + 80 minutes: past a 30-minute extension, inside the session's own 90.
+        const later = await at(origin, 90 * MINUTE, async () => {
+          return (await fetch(`${baseUrl}/api/state`, { headers: { Cookie: cookie } })).status;
+        });
+        expect(later).toBe(200);
+      } finally {
+        await server.close();
+      }
+    });
+
+    test("two live sessions keep their own bound values side by side", async () => {
+      // A policy change between two issuances shows up here as two tickets with different values.
+      const port = await getFreePort();
+      const { seedTicket, runtime } = makeFiniteSessionRuntime(port);
+      seedTicket("t1", "s1", "dev-1", NINETY_MINUTES);
+      seedTicket("t2", "s2", "dev-2", 45 * MINUTE);
+      const server = await serve(port, runtime);
+      const baseUrl = `http://127.0.0.1:${port}`;
+      try {
+        const origin = Date.now();
+        const ninety = await bootstrap(baseUrl, "t1", "s1");
+        const fortyFive = await bootstrap(baseUrl, "t2", "s2");
+        const statuses = await at(origin, 60 * MINUTE, async () => ({
+          ninety: (await fetch(`${baseUrl}/api/state`, { headers: { Cookie: ninety } })).status,
+          fortyFive: (await fetch(`${baseUrl}/api/state`, { headers: { Cookie: fortyFive } })).status,
+        }));
+        expect(statuses).toEqual({ ninety: 200, fortyFive: 401 });
+      } finally {
+        await server.close();
+      }
+    });
+
+    test("the bound TTL never outlives the absolute deadline", async () => {
+      const port = await getFreePort();
+      const { seedTicket, runtime } = makeFiniteSessionRuntime(port);
+      seedTicket("t1", "s1", "dev-1", NINETY_MINUTES);
+      const server = await startRemoteServer({
+        runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+        staticRoot: process.cwd(),
+        mobileSessionAbsoluteTtlMs: 60 * MINUTE,
+        mobileSessionIdleTtlMs: THIRTY_MINUTES,
+        mobileSessionSweepMs: 1_000_000,
+      });
+      const baseUrl = `http://127.0.0.1:${port}`;
+      try {
+        const origin = Date.now();
+        const cookie = await bootstrap(baseUrl, "t1", "s1");
+        const status = await at(origin, 61 * MINUTE, async () => {
+          return (await fetch(`${baseUrl}/api/state`, { headers: { Cookie: cookie } })).status;
+        });
+        expect(status).toBe(401);
+      } finally {
+        await server.close();
+      }
+    });
+  });
 });
 
 describe("a mobile session's activity is audited (metadata only)", () => {
@@ -5791,6 +6287,7 @@ describe("a mobile session's activity is audited (metadata only)", () => {
         submitToSession: () => undefined,
         resizeSession: () => undefined,
         setRemoteClientRegistry: () => undefined,
+        jiraRemoteEnsureWorkspace: async (_profileId: string): Promise<unknown> => null,
         isMobileSessionStillAuthorized: () => true,
         recordMobileSessionAudit: (entry: AuditRow) => {
           if (options.auditThrows) throw new Error("audit store is down");
@@ -6307,6 +6804,38 @@ describe("a mobile session's activity is audited (metadata only)", () => {
     });
   });
 
+  test("a file write against a stale expectedMtimeMs is a 409, a fresh one succeeds", async () => {
+    await withAuditedServer({}, async ({ baseUrl, dir }) => {
+      await fs.writeFile(path.join(dir, "a.txt"), "x");
+      const post = (route: string, body: unknown) =>
+        fetch(`${baseUrl}${route}?token=unused-master-token`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Strideterm-Client-Id": "client-abcdef12" },
+          body: JSON.stringify(body),
+        });
+      const read = (await (await post("/api/file/read", { rootPath: dir, relativePath: "a.txt" })).json()) as {
+        mtimeMs: number;
+      };
+      const stale = await post("/api/file/write", {
+        rootPath: dir,
+        relativePath: "a.txt",
+        content: "mine",
+        expectedMtimeMs: read.mtimeMs - 1000,
+      });
+      expect(stale.status).toBe(409);
+      expect(JSON.stringify(await stale.json())).toContain("FILE_CHANGED_ON_DISK");
+      expect(await fs.readFile(path.join(dir, "a.txt"), "utf-8")).toBe("x");
+      const fresh = await post("/api/file/write", {
+        rootPath: dir,
+        relativePath: "a.txt",
+        content: "mine",
+        expectedMtimeMs: read.mtimeMs,
+      });
+      expect(fresh.status).toBe(200);
+      expect(typeof ((await fresh.json()) as { mtimeMs: number }).mtimeMs).toBe("number");
+    });
+  });
+
   test("a failing audit sink never breaks the session or the request", async () => {
     await withAuditedServer({ auditThrows: true }, async ({ baseUrl, port, dir, seedTicket }) => {
       await fs.writeFile(path.join(dir, "a.txt"), "x");
@@ -6539,6 +7068,7 @@ describe("the WebSocket keep-alive is tolerant, and still reaps", () => {
       submitToSession: () => undefined,
       resizeSession: () => undefined,
       setRemoteClientRegistry: () => undefined,
+      jiraRemoteEnsureWorkspace: async (_profileId: string): Promise<unknown> => null,
     };
   }
 
@@ -6640,6 +7170,7 @@ describe("the master token in payload.remoteAccess.urls, per transport", () => {
       submitToSession: () => undefined,
       resizeSession: () => undefined,
       setRemoteClientRegistry: () => undefined,
+      jiraRemoteEnsureWorkspace: async (_profileId: string): Promise<unknown> => null,
       addRemoteClientRegistry: () => () => undefined,
       addMobileRemoteSessionRevoker: () => () => undefined,
       isMobileSessionStillAuthorized: () => true,
@@ -6854,6 +7385,7 @@ describe("closed-PR cleanup over the remote server", () => {
         submitToSession: () => undefined,
         resizeSession: () => undefined,
         setRemoteClientRegistry: () => undefined,
+        jiraRemoteEnsureWorkspace: async (_profileId: string): Promise<unknown> => null,
         isMobileSessionStillAuthorized: () => true,
         consumeMobileWebSessionTicket: (
           ticketId: string,

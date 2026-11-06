@@ -85,6 +85,40 @@ describe("file-manager store", () => {
     expect(store.getDirectoryStatusFor("src")).toBe("modified");
   });
 
+  it("a second init of the root being opened waits for it, so a path opened right after is not overwritten", async () => {
+    let releaseRoot!: () => void;
+    const rootListed = new Promise<void>((resolve) => (releaseRoot = resolve));
+    const file = (name: string, relativePath: string) => ({
+      name,
+      relativePath,
+      kind: "file" as const,
+      isHidden: false,
+    });
+    const { api } = makeFakeApi({
+      fileList: async (p: AnyObj) => {
+        if (p.rootPath === "/old") return { entries: [file("old.txt", "old.txt")], path: "" };
+        if (!p.relativePath) {
+          await rootListed;
+          return { entries: [{ ...file(".strideterm", ".strideterm"), kind: "directory", isHidden: true }], path: "" };
+        }
+        return { entries: [file("BRIEF.md", ".strideterm/run/BRIEF.md")], path: p.relativePath };
+      },
+    });
+    const store = useFileManagerStore();
+    store.setApi(api);
+    await store.init("/old");
+
+    // The Files pane mounting: it inits its root and nobody waits for it.
+    const paneInit = store.init("/new");
+    const opened = store.init("/new").then(() => store.openFileAbsPath("/new/.strideterm/run/BRIEF.md"));
+    setTimeout(releaseRoot, 0);
+
+    expect(await opened).toBe(true);
+    await paneInit;
+    expect(store.currentPath).toBe(".strideterm/run");
+    expect(store.selectedEntry?.name).toBe("BRIEF.md");
+  });
+
   it("sortedEntries respects filterText and showHidden flags", async () => {
     const items = [
       { name: ".hidden", relativePath: ".hidden", kind: "file" as const, isHidden: true, extension: "" },
@@ -1031,6 +1065,74 @@ describe("file-manager store", () => {
     expect(notifications.persistentToasts.at(-1)?.title).toBe("Save failed");
   });
 
+  describe("file changed on disk", () => {
+    const conflict = () => new Error("FILE_CHANGED_ON_DISK: a.txt changed on disk since it was opened");
+    const entry = { name: "a.txt", relativePath: "a.txt", kind: "file" as const };
+
+    async function openEdited(overrides: AnyObj) {
+      const { api } = makeFakeApi({ fileRead: async () => ({ content: "hi", mtimeMs: 100 }), ...overrides });
+      const store = useFileManagerStore();
+      store.setApi(api);
+      await store.init("/r");
+      await store.selectEntry(entry);
+      await store.startEdit();
+      store.editContent = "edited";
+      store.editDirty = true;
+      return store;
+    }
+
+    it("sends the mtime from startEdit and the one from the last save", async () => {
+      const writes: AnyObj[] = [];
+      const store = await openEdited({
+        fileWrite: async (p: AnyObj) => {
+          writes.push(p);
+          return { ok: true, size: 6, mtimeMs: 200 };
+        },
+      });
+      await store.saveEdit();
+      store.editContent = "edited again";
+      store.editDirty = true;
+      await store.saveEdit();
+      expect(writes.map((w) => w.expectedMtimeMs)).toEqual([100, 200]);
+    });
+
+    it("Overwrite retries without expectedMtimeMs", async () => {
+      const writes: AnyObj[] = [];
+      const store = await openEdited({
+        fileWrite: async (p: AnyObj) => {
+          writes.push(p);
+          if (writes.length === 1) throw conflict();
+          return { ok: true, size: 6, mtimeMs: 300 };
+        },
+      });
+      const confirm = vi.spyOn(useAppStore(), "confirmInApp").mockResolvedValue(true);
+      await store.saveEdit();
+      expect(confirm).toHaveBeenCalledWith(
+        expect.objectContaining({ title: "File changed on disk", confirmLabel: "Overwrite", danger: true }),
+      );
+      expect(writes).toHaveLength(2);
+      expect(writes[1]).not.toHaveProperty("expectedMtimeMs");
+      expect(store.editDirty).toBe(false);
+      expect(useNotificationStore().persistentToasts).toHaveLength(0);
+    });
+
+    it("Cancel keeps the editor dirty and does not write again or toast", async () => {
+      const writes: AnyObj[] = [];
+      const store = await openEdited({
+        fileWrite: async (p: AnyObj) => {
+          writes.push(p);
+          throw conflict();
+        },
+      });
+      vi.spyOn(useAppStore(), "confirmInApp").mockResolvedValue(false);
+      await store.saveEdit();
+      expect(writes).toHaveLength(1);
+      expect(store.editDirty).toBe(true);
+      expect(store.error).toBeNull();
+      expect(useNotificationStore().persistentToasts).toHaveLength(0);
+    });
+  });
+
   it("copyToClipboard tolerates a missing or rejecting fileClipboardCopy", async () => {
     // Case 1: API doesn't implement fileClipboardCopy at all.
     const { api: api1 } = makeFakeApi();
@@ -1051,5 +1153,74 @@ describe("file-manager store", () => {
     store2.copyToClipboard({ name: "b", relativePath: "b", kind: "file" });
     await Promise.resolve();
     expect(store2.clipboard?.op).toBe("copy");
+  });
+  describe("commander helpers", () => {
+    it("listDirectory and fetchPreview do not change store state", async () => {
+      const { api, calls } = makeFakeApi({
+        fileList: async (p: AnyObj) => {
+          calls.fileList.push(p);
+          return { entries: [{ name: "a.txt", relativePath: "sub/a.txt", kind: "file" }], path: p.relativePath };
+        },
+      });
+      const store = useFileManagerStore();
+      store.setApi(api);
+      await store.init("/repo");
+      const beforeEntries = store.entries;
+      const beforeCurrent = store.currentPath;
+      const listed = await store.listDirectory("sub");
+      const previewed = await store.fetchPreview("sub/a.txt");
+      expect(listed).toEqual({ entries: [{ name: "a.txt", relativePath: "sub/a.txt", kind: "file" }], path: "sub" });
+      expect(previewed.kind).toBe("text");
+      expect(calls.fileList.at(-1)).toEqual({ rootPath: "/repo", relativePath: "sub" });
+      expect(store.entries).toBe(beforeEntries);
+      expect(store.currentPath).toBe(beforeCurrent);
+      expect(store.selectedEntry).toBeNull();
+      expect(store.editorTabs).toHaveLength(0);
+      expect(store.preview).toBeNull();
+    });
+
+    it("listDirectory and fetchPreview throw when the API fails", async () => {
+      const { api } = makeFakeApi();
+      const store = useFileManagerStore();
+      store.setApi({
+        ...api,
+        fileList: async () => {
+          throw new Error("no access");
+        },
+        filePreview: async () => {
+          throw new Error("no preview");
+        },
+      });
+      await expect(store.listDirectory("x")).rejects.toThrow("no access");
+      await expect(store.fetchPreview("x")).rejects.toThrow("no preview");
+    });
+
+    it("listingRevision increments after a successful refresh only", async () => {
+      const { api } = makeFakeApi();
+      const store = useFileManagerStore();
+      store.setApi(api);
+      await store.init("/repo");
+      const before = store.listingRevision;
+      await store.refresh();
+      expect(store.listingRevision).toBe(before + 1);
+      store.setApi({
+        ...api,
+        fileList: async () => {
+          throw new Error("boom");
+        },
+      });
+      await store.refresh();
+      expect(store.listingRevision).toBe(before + 1);
+    });
+
+    it("reads the commander layout from localStorage", () => {
+      localStorage.setItem("files.layoutMode", "commander");
+      try {
+        setActivePinia(createPinia());
+        expect(useFileManagerStore().layoutMode).toBe("commander");
+      } finally {
+        localStorage.removeItem("files.layoutMode");
+      }
+    });
   });
 });

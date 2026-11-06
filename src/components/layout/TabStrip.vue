@@ -4,10 +4,10 @@
     class="tab-strip"
     :class="{ 'tab-strip--compact': compact }"
     data-role="tab-strip"
-    @dragover.prevent="!compact && dragDrop.onDragover($event)"
+    @dragover="!compact && onTabDragover($event)"
     @dragleave="!compact && dragDrop.onDragleave($event)"
-    @drop="!compact && dragDrop.onDrop($event)"
-    @dragend="!compact && dragDrop.onDragend()"
+    @drop="!compact && onTabDrop($event)"
+    @dragend="!compact && onTabDragend()"
   >
     <button
       v-for="tab in tabModels"
@@ -24,12 +24,18 @@
       :data-view-id="tab.id"
       :data-persistent="tab.persistent ? 'true' : 'false'"
       :title="tab.titleTooltip"
-      :draggable="!compact && tab.persistent"
+      :draggable="!compact && (tab.persistent || tab.jiraSavedView)"
       @click="activateTab(tab.id)"
-      @dblclick="!compact && tab.persistent && $emit('edit-tab', tab.id)"
-      @dragstart="!compact && dragDrop.onDragstart($event)"
+      @dblclick="!compact && (tab.persistent || tab.jiraSavedView) && $emit('edit-tab', tab.id)"
+      @dragstart="!compact && onTabDragstart($event, tab)"
       @contextmenu.prevent="
-        !compact && $emit('contextmenu-tab', { x: $event.clientX, y: $event.clientY, viewId: tab.id })
+        !compact &&
+        $emit('contextmenu-tab', {
+          x: $event.clientX,
+          y: $event.clientY,
+          viewId: tab.id,
+          anchor: $event.currentTarget as HTMLElement,
+        })
       "
     >
       <span>{{ tab.title }}</span>
@@ -41,6 +47,14 @@
         >{{ tab.taskBadge }}</small
       >
       <small v-else-if="tab.taskBadge" class="tab__task-badge" :title="tab.taskTooltip">{{ tab.taskBadge }}</small>
+      <small v-else-if="tab.type === 'jira'" :title="tab.refreshing ? tab.refreshTooltip : undefined"
+        ><span
+          class="tab__spinner"
+          :class="{ 'tab__spinner--idle': !tab.refreshing }"
+          :aria-hidden="tab.refreshing ? undefined : 'true'"
+          :aria-label="tab.refreshing ? (tab.loading ? 'Loading' : 'Refreshing') : undefined"
+        />{{ tab.status }}</small
+      >
       <small v-else-if="tab.refreshing" :title="tab.refreshTooltip"
         ><span class="tab__spinner" :aria-label="tab.loading ? 'Loading' : 'Refreshing'" />{{ tab.status }}</small
       >
@@ -50,7 +64,7 @@
       <span
         v-if="!compact"
         class="tab__menu"
-        title="Open the tab actions menu (Focus, Edit, Save scrollback, Clear, Restart, Close, split moves) — same options as the right-click context menu but reachable on touch devices."
+        title="Open the actions available for this tab, such as rename, refresh, move, split, or close."
         @click.stop="onMenuClick($event, tab.id)"
         >☰</span
       >
@@ -96,7 +110,7 @@
           <span v-if="tab.notes" :title="tab.notes">📝</span>
           <span
             class="tab-strip-compact-picker__item-menu"
-            title="Open the tab actions menu."
+            title="Open the actions available for this tab."
             @click.stop="openCompactTabMenu($event, tab.id)"
             >☰</span
           >
@@ -114,7 +128,7 @@ import { useNotificationStore } from "../../stores/notifications.js";
 import { useGitUiStore } from "../../stores/git-ui.js";
 import { useTabDragDrop } from "../../composables/useDragDrop.js";
 import { isFreshAlert, isGitViewId, tabAttentionTitle } from "../../app/helpers.js";
-import { tabSessionId } from "../../app/selectors.js";
+import { hostedPanelIds, tabSessionId } from "../../app/selectors.js";
 import {
   companionPrimaryHostedPanelIds,
   resolveCompanionPrimaryBinding,
@@ -151,6 +165,34 @@ interface AttentionAlert {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
 
+interface TabStripTabModel {
+  id: string;
+  title: string;
+  status: string;
+  sessionId?: string;
+  tone?: string;
+  active?: boolean;
+  grouped?: boolean;
+  persistent?: boolean;
+  closable?: boolean;
+  loading?: boolean;
+  refreshing?: boolean;
+  refreshTooltip?: string;
+  borrowed?: boolean;
+  attention?: boolean;
+  attentionFresh?: boolean;
+  attentionTooltip?: string;
+  taskBadge?: string;
+  taskTooltip?: string;
+  companionWorkspaceId?: string;
+  companionRoleLabel?: string;
+  notes?: string;
+  titleTooltip?: string;
+  type?: string;
+  jiraViewId?: string;
+  jiraSavedView?: boolean;
+}
+
 const props = withDefaults(
   defineProps<{
     compact?: boolean;
@@ -181,6 +223,7 @@ const compactPickerAnchor = ref<{
   width: number;
 } | null>(null);
 const dragDrop = useTabDragDrop(stripRef);
+const jiraDraggingTabId = ref("");
 
 // In compact mode for a non-active workspace, derive minimal tab models from persisted panels.
 //
@@ -208,8 +251,9 @@ const compactTabModels = computed(() => {
   // cell would keep showing the source tab that has moved, and would omit the
   // borrowed Primary from the cell it moved into.
   const hostedElsewhere = companionPrimaryHostedPanelIds(workspaces, taskRunner, wsId);
+  const commanderHosted = hostedPanelIds(panels);
   const models = panels
-    .filter((p: AnyApi) => !hostedElsewhere.has(p.id))
+    .filter((p: AnyApi) => !hostedElsewhere.has(p.id) && !commanderHosted.has(p.id))
     .map((p: AnyApi) => {
       const viewId = `${wsId}:${p.id}`;
       return {
@@ -268,7 +312,7 @@ const compactTabModels = computed(() => {
   return models;
 });
 
-const tabModels = computed(() => {
+const tabModels = computed<TabStripTabModel[]>(() => {
   if (compactTabModels.value !== null) return compactTabModels.value;
 
   const tabs = store.workspaceTabs;
@@ -348,9 +392,11 @@ const tabModels = computed(() => {
     // "agent needs input". Keeping the activity chip visible ("running")
     // contradicts that — suppress the chip so the bell speaks alone.
     const suppressStatus = !!tabAttention;
+    const jiraViewId = String((tab as AnyApi).jiraViewId || "");
     return {
       id: tab.id,
       sessionId,
+      type: tab.type,
       title: tab.title,
       status: suppressStatus ? "" : tab.status,
       tone: suppressStatus ? "idle" : tab.tone,
@@ -364,6 +410,8 @@ const tabModels = computed(() => {
       active: tab.id === activeViewId,
       grouped: splitVisible && tab.id !== activeViewId && (splitGroup?.viewIds.includes(tab.id) || false),
       persistent: !!tab.persistent,
+      jiraViewId,
+      jiraSavedView: tab.type === "jira" && workspace?.kind === "jira" && !!jiraViewId && jiraViewId !== "issues",
       closable: tab.closable !== false,
       borrowed: !!tab.borrowed,
       attention: !!tabAttention,
@@ -382,7 +430,7 @@ const tabModels = computed(() => {
         taskTooltip ||
         tabAttentionTitle(tabAttention) ||
         tab.tooltip ||
-        (tab.persistent
+        (tab.persistent || (tab.type === "jira" && workspace?.kind === "jira" && jiraViewId !== "issues")
           ? "Double click to edit. Drag to reorder."
           : `${tab.title}${tab.status ? `\n${tab.status}` : ""}`),
     };
@@ -409,8 +457,8 @@ const compactPickerStyle = computed(() => {
 
 const emit = defineEmits<{
   (e: "edit-tab", viewId: string): void;
-  (e: "contextmenu-tab", payload: { x: number; y: number; viewId: string }): void;
-  (e: "menu-tab", payload: { x: number; y: number; viewId: string }): void;
+  (e: "contextmenu-tab", payload: { x: number; y: number; viewId: string; anchor: HTMLElement }): void;
+  (e: "menu-tab", payload: { x: number; y: number; viewId: string; anchor: HTMLElement }): void;
 }>();
 
 watch(
@@ -426,7 +474,90 @@ watch(
 function onMenuClick(event: MouseEvent, viewId: string): void {
   const btn = (event.currentTarget || event.target) as Element;
   const rect = btn.getBoundingClientRect();
-  emit("menu-tab", { x: rect.left, y: rect.bottom + 4, viewId });
+  emit("menu-tab", { x: rect.left, y: rect.bottom + 4, viewId, anchor: btn as HTMLElement });
+}
+
+function onTabDragstart(event: DragEvent, tab: (typeof tabModels.value)[number]): void {
+  if (tab.jiraSavedView) {
+    const element = (event.target as Element | null)?.closest<HTMLElement>(".tab");
+    if (!element || !event.dataTransfer) return;
+    jiraDraggingTabId.value = tab.id;
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", tab.id);
+    requestAnimationFrame(() => element.classList.add("tab--dragging"));
+    return;
+  }
+  dragDrop.onDragstart(event);
+}
+
+function onTabDragover(event: DragEvent): void {
+  if (!jiraDraggingTabId.value) {
+    dragDrop.onDragover(event);
+    return;
+  }
+
+  event.preventDefault();
+  const target = (event.target as Element | null)?.closest<HTMLElement>(".tab");
+  const targetModel = target ? tabModels.value.find((tab) => tab.id === target.dataset.viewId) : null;
+  const acceptsJiraDrop = !target || targetModel?.type === "jira";
+  if (event.dataTransfer) event.dataTransfer.dropEffect = acceptsJiraDrop ? "move" : "none";
+
+  stripRef.value
+    ?.querySelectorAll(".tab--drag-before, .tab--drag-after")
+    .forEach((element) => element.classList.remove("tab--drag-before", "tab--drag-after"));
+  if (!acceptsJiraDrop) return;
+
+  if (target && !target.classList.contains("tab--dragging")) {
+    const rect = target.getBoundingClientRect();
+    target.classList.add(event.clientX < rect.left + rect.width / 2 ? "tab--drag-before" : "tab--drag-after");
+    return;
+  }
+
+  const tabs = Array.from(stripRef.value?.querySelectorAll<HTMLElement>(".tab:not(.tab--dragging)") || []);
+  if (tabs.length) tabs[tabs.length - 1].classList.add("tab--drag-after");
+}
+
+async function onTabDrop(event: DragEvent): Promise<void> {
+  if (!jiraDraggingTabId.value) {
+    await dragDrop.onDrop(event);
+    return;
+  }
+  event.preventDefault();
+  const draggedTabId = jiraDraggingTabId.value;
+  jiraDraggingTabId.value = "";
+  const tabs = tabModels.value.filter((tab) => tab.jiraSavedView);
+  const orderedIds = tabs.map((tab) => tab.jiraViewId).filter((id): id is string => !!id);
+  const sourceIndex = orderedIds.indexOf(jiraViewIdFromTabId(draggedTabId));
+  if (sourceIndex < 0) return;
+  const target = (event.target as Element | null)?.closest<HTMLElement>(".tab");
+  const targetAny = target ? tabModels.value.find((tab) => tab.id === target.dataset.viewId) : null;
+  let insertionIndex = orderedIds.length;
+  if (target && targetAny?.type === "jira") {
+    if (targetAny.jiraViewId === "issues") insertionIndex = 0;
+    else if (targetAny.jiraSavedView) {
+      const targetIndex = orderedIds.indexOf(targetAny.jiraViewId || "");
+      const rect = target.getBoundingClientRect();
+      insertionIndex = targetIndex + (event.clientX >= rect.left + rect.width / 2 ? 1 : 0);
+    }
+  }
+  const [moved] = orderedIds.splice(sourceIndex, 1);
+  if (sourceIndex < insertionIndex) insertionIndex -= 1;
+  orderedIds.splice(Math.max(0, Math.min(insertionIndex, orderedIds.length)), 0, moved);
+  if (orderedIds.every((id, index) => id === tabs[index]?.jiraViewId)) return;
+  try {
+    await store.reorderJiraWorkspaceViews(orderedIds);
+  } catch (error) {
+    notifications.showError("Couldn't reorder Jira views", error);
+  }
+}
+
+function jiraViewIdFromTabId(tabId: string): string {
+  return String(store.workspaceTabs.find((tab) => tab.id === tabId)?.jiraViewId || "");
+}
+
+function onTabDragend(): void {
+  jiraDraggingTabId.value = "";
+  dragDrop.onDragend();
 }
 
 async function ensureCompactWorkspaceActive(): Promise<void> {
@@ -496,6 +627,6 @@ async function openCompactTabMenu(event: MouseEvent, viewId: string): Promise<vo
   const rect = btn.getBoundingClientRect();
   await ensureCompactWorkspaceActive();
   compactContextMenuViewId.value = viewId;
-  store.showContextMenu(rect.left, rect.bottom + 4, viewId);
+  store.showContextMenu(rect.left, rect.bottom + 4, viewId, btn as HTMLElement);
 }
 </script>

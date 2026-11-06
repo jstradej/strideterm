@@ -4,6 +4,7 @@ import { nextTick } from "vue";
 import { flushPromises } from "@vue/test-utils";
 import { useAppStore, resolveViewerProfileId } from "./app.js";
 import { useNotificationStore } from "./notifications.js";
+import { jiraWorkspaceViewSaveSchema } from "../../electron/backend/ipc-schemas.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -261,6 +262,31 @@ describe("useAppStore — remote mode identity", () => {
 
     expect(store.activeViewId).toBe("ws-panels:panel-two");
     expect(transport.activateSession).toHaveBeenCalledWith("ws-panels:panel-two");
+  });
+
+  it("selects a terminal hosted in a Files commander by opening its Files tab", async () => {
+    const payload = makeRemotePanelPayload();
+    payload.workspace.workspace.panels.push(
+      { id: "panel-files", title: "Files", command: "__files__", startup: "none" },
+      { id: "panel-term", title: "Shell", command: "", hostedBy: "files:panel-files" },
+    );
+    payload.workspace.sessions.push({
+      sessionId: "ws-panels:panel-term",
+      panelId: "panel-term",
+      title: "Shell",
+      command: "",
+      status: "idle",
+    });
+    const transport = makeRemoteTransport(payload);
+    const store = useAppStore();
+
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+    await requestRemotePanel("panel-term");
+
+    expect(store.activeViewId).toBe("files:panel-files");
+    expect(store.hostedTerminalReveal?.panelId).toBe("panel-term");
   });
 
   it("rejects a remote panel selection that is not in the active workspace", async () => {
@@ -669,6 +695,59 @@ describe("useAppStore — remote mode identity", () => {
     await activateTask;
   });
 
+  it("optimistically selects the virtual Jira tab when activating a saved board child", async () => {
+    const payload = makeBasePayload({
+      remoteClient: { id: "sess1", profileId: "p1", activeWorkspaceId: "jira-inbox", activeSessionId: "" },
+      appState: {
+        activeWorkspaceId: "jira-inbox",
+        profiles: [{ id: "p1", name: "P1", color: "#fff", workspaceIds: [] }],
+        workspaces: [
+          { id: "jira-inbox", name: "Jira", profileId: "p1", panels: [], kind: "jira" },
+          {
+            id: "jira-board-4",
+            name: "Platform",
+            profileId: "p1",
+            panels: [],
+            kind: "jira-board",
+            jiraBoard: { parentWorkspaceId: "jira-inbox", connectionId: "jira-1", boardId: "4", boardName: "Platform" },
+          },
+        ],
+        windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "jira-inbox", activeSessionId: "" }],
+        settings: {},
+        tabTemplates: [],
+        ssh: {
+          hosts: [],
+          keys: [],
+          certificates: [],
+          knownHosts: {},
+          settings: { defaultAgentMode: "inherit", importedSshConfig: false },
+        },
+      },
+    });
+    let resolveActivate!: (value: AnyApi) => void;
+    const activatePromise = new Promise<AnyApi>((resolve) => {
+      resolveActivate = resolve;
+    });
+    const transport = makeRemoteTransport(payload);
+    transport.activateWorkspace = vi.fn(() => activatePromise);
+    const store = useAppStore();
+
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+    await nextTick();
+
+    const activation = store.activateWorkspace("jira-board-4");
+    await nextTick();
+
+    expect(store.activeWorkspace.id).toBe("jira-board-4");
+    expect(store.activeViewId).toBe("jira:jira-board-4");
+    expect(store.activeSessionId).toBeNull();
+
+    resolveActivate(payload);
+    await activation;
+  });
+
   it("propagates workspace activation failures so the caller can report them", async () => {
     const payload = makeBasePayload({
       appState: {
@@ -825,6 +904,29 @@ describe("useAppStore — remote mode identity", () => {
 
     expect((store as AnyApi).pendingViewActivationId).toBe("");
     expect((store as AnyApi).payload.workspace.workspace.activePanelId).toBe("panel-two");
+  });
+
+  it("activating a terminal hosted by a Files commander opens the host and asks it to show the terminal", async () => {
+    const payload = makeRemotePanelPayload();
+    const hosted = { id: "files-host", title: "Files", command: "__files__" };
+    for (const target of [payload.appState.workspaces[0], payload.workspace.workspace, payload.workspace.project]) {
+      target.panels = [target.panels[0], { ...target.panels[1], hostedBy: "files:files-host" }, hosted];
+    }
+    const transport = makeRemoteTransport(payload);
+    transport.activateSession = vi.fn(() => Promise.resolve(payload));
+    const store = useAppStore();
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+    await flushPromises();
+
+    expect((store.workspaceTabs as AnyApi[]).map((tab) => tab.id)).not.toContain("ws-panels:panel-two");
+
+    await store.activateView("ws-panels:panel-two");
+
+    expect(store.activeViewId).toBe("files:files-host");
+    expect(transport.activateSession).not.toHaveBeenCalled();
+    expect(store.hostedTerminalReveal).toMatchObject({ panelId: "panel-two" });
   });
 
   it("adds a tab on its OWN workspace when saveWorkspace returns a desktop-scoped payload", async () => {
@@ -1080,6 +1182,197 @@ describe("useAppStore — Git tab activation surfaces a failed refreshGit", () =
     pending[1].reject(new Error("git backend unavailable"));
     await flushPromises();
     expect(store.isGitActivationRefreshing("ws1")).toBe(false);
+  });
+});
+
+describe("useAppStore — Jira saved native view tabs", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "" }, logRenderer: vi.fn() };
+  });
+
+  function jiraPayload(): AnyApi {
+    const jiraViews = {
+      workspaceId: "jira-ws",
+      profileId: "p1",
+      views: [
+        { viewId: "issues", kind: "issues", title: "Issues" },
+        { viewId: "board-opaque", kind: "board", title: "Platform" },
+      ],
+      activeViewId: "issues",
+      syncByViewId: {},
+    };
+    return makeBasePayload({
+      remoteClient: { id: "sess1", profileId: "p1", activeWorkspaceId: "jira-ws", activeSessionId: "" },
+      workspace: {
+        workspace: { id: "jira-ws", kind: "jira", profileId: "p1", panels: [] },
+        sessions: [],
+      },
+      jiraWorkspaceViews: { "jira-ws": jiraViews },
+      appState: {
+        activeWorkspaceId: "jira-ws",
+        profiles: [{ id: "p1", name: "P1", color: "#fff", workspaceIds: [] }],
+        workspaces: [{ id: "jira-ws", name: "Jira", profileId: "p1", panels: [], kind: "jira" }],
+        windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "jira-ws", activeSessionId: "" }],
+        settings: {},
+        tabTemplates: [],
+        ssh: {
+          hosts: [],
+          keys: [],
+          certificates: [],
+          knownHosts: {},
+          settings: { defaultAgentMode: "inherit", importedSshConfig: false },
+        },
+      },
+    });
+  }
+
+  it("keeps the latest Jira board chooser request until its matching sequence is cleared", () => {
+    const store = useAppStore();
+    store.requestJiraBoardChooser("jira-ws");
+    const first = store.jiraBoardChooserRequest;
+    store.requestJiraBoardChooser("jira-ws");
+    const second = store.jiraBoardChooserRequest;
+
+    expect(first?.sequence).toBe(1);
+    expect(second).toEqual({ workspaceId: "jira-ws", sequence: 2 });
+    store.clearJiraBoardChooserRequest(1);
+    expect(store.jiraBoardChooserRequest).toEqual(second);
+    store.clearJiraBoardChooserRequest(2);
+    expect(store.jiraBoardChooserRequest).toBeNull();
+  });
+
+  it("restores the saved Jira view on initial payload before the Issues tab becomes a local choice", async () => {
+    const payload = jiraPayload();
+    payload.jiraWorkspaceViews["jira-ws"].activeViewId = "board-opaque";
+    const transport = makeRemoteTransport(payload);
+    const store = useAppStore();
+    store.init(transport as AnyApi);
+    await flushPromises();
+
+    expect(store.activeViewId).toBe("jira:jira-ws:view:board-opaque");
+
+    transport._push({
+      ...payload,
+      jiraWorkspaceViews: {
+        "jira-ws": { ...payload.jiraWorkspaceViews["jira-ws"], activeViewId: "issues" },
+      },
+    });
+    await flushPromises();
+    expect(store.activeViewId).toBe("jira:jira-ws:view:board-opaque");
+  });
+
+  it("persists saved view activation through the Jira view API", async () => {
+    const payload = jiraPayload();
+    const transport = makeRemoteTransport(payload);
+    const state = { ...payload.jiraWorkspaceViews["jira-ws"], activeViewId: "board-opaque" };
+    (transport as AnyApi).setJiraWorkspaceActiveView = vi.fn(() => Promise.resolve(state));
+    (transport as AnyApi).setWorkspaceUIState = vi.fn(() => Promise.resolve());
+    const store = useAppStore();
+    store.init(transport as AnyApi);
+    await flushPromises();
+
+    await store.activateView("jira:jira-ws:view:board-opaque");
+    await flushPromises();
+
+    expect((transport as AnyApi).setJiraWorkspaceActiveView).toHaveBeenCalledWith({
+      workspaceId: "jira-ws",
+      viewId: "board-opaque",
+    });
+    expect((transport as AnyApi).setWorkspaceUIState).not.toHaveBeenCalled();
+    expect((store as AnyApi).payload.jiraWorkspaceViews["jira-ws"].activeViewId).toBe("board-opaque");
+  });
+
+  it("activates Jira Issues for board selection without creating a workspace panel", async () => {
+    const payload = jiraPayload();
+    payload.jiraWorkspaceViews["jira-ws"].activeViewId = "board-opaque";
+    const transport = makeRemoteTransport(payload);
+    (transport as AnyApi).setJiraWorkspaceActiveView = vi.fn(() =>
+      Promise.resolve({ ...payload.jiraWorkspaceViews["jira-ws"], activeViewId: "issues" }),
+    );
+    (transport as AnyApi).saveWorkspace = vi.fn(() => Promise.resolve(payload));
+    (transport as AnyApi).activateSession = vi.fn(() => Promise.resolve(payload));
+    const store = useAppStore();
+    store.init(transport as AnyApi);
+    await flushPromises();
+
+    await store.activateView("jira:jira-ws");
+    await flushPromises();
+
+    expect(store.activeViewId).toBe("jira:jira-ws");
+    expect((transport as AnyApi).setJiraWorkspaceActiveView).toHaveBeenCalledWith({
+      workspaceId: "jira-ws",
+      viewId: "issues",
+    });
+    expect((transport as AnyApi).saveWorkspace).not.toHaveBeenCalled();
+    expect((transport as AnyApi).activateSession).not.toHaveBeenCalled();
+    expect(store.activeWorkspace.panels).toEqual([]);
+  });
+
+  it("removes a saved view through its API without closing a terminal", async () => {
+    const payload = jiraPayload();
+    const transport = makeRemoteTransport(payload);
+    const state = {
+      ...payload.jiraWorkspaceViews["jira-ws"],
+      views: [{ viewId: "issues", kind: "issues", title: "Issues" }],
+      activeViewId: "issues",
+    };
+    (transport as AnyApi).removeJiraWorkspaceView = vi.fn(() => Promise.resolve(state));
+    (transport as AnyApi).closeTerminal = vi.fn(() => Promise.resolve(payload));
+    const store = useAppStore();
+    store.init(transport as AnyApi);
+    await flushPromises();
+
+    store.closeTab("jira:jira-ws:view:board-opaque");
+    await flushPromises();
+
+    expect((transport as AnyApi).removeJiraWorkspaceView).toHaveBeenCalledWith({
+      workspaceId: "jira-ws",
+      viewId: "board-opaque",
+    });
+    expect((transport as AnyApi).closeTerminal).not.toHaveBeenCalled();
+    expect((store as AnyApi).payload.jiraWorkspaceViews["jira-ws"].views).toHaveLength(1);
+  });
+
+  it("offers Undo after closing a saved view and re-saves the removed snapshot", async () => {
+    const payload = jiraPayload();
+    payload.jiraWorkspaceViews["jira-ws"].views[1] = {
+      viewId: "board-opaque",
+      kind: "board",
+      connectionId: "c1",
+      boardId: 7,
+      boardName: "Platform",
+      title: "Platform",
+      mode: "issues",
+      sprintId: null,
+      quickFilterIds: [],
+      assignee: null,
+      doneWithinDays: null,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    const transport = makeRemoteTransport(payload);
+    const original = payload.jiraWorkspaceViews["jira-ws"];
+    const removed = { ...original, views: [original.views[0]], activeViewId: "issues" };
+    (transport as AnyApi).removeJiraWorkspaceView = vi.fn(() => Promise.resolve(removed));
+    (transport as AnyApi).saveJiraWorkspaceView = vi.fn(() => Promise.resolve(original));
+    const store = useAppStore();
+    store.init(transport as AnyApi);
+    await flushPromises();
+
+    store.closeTab("jira:jira-ws:view:board-opaque");
+    await flushPromises();
+
+    const toast = useNotificationStore().persistentToasts.find((item) => item.undo);
+    expect(toast?.title).toContain("Platform");
+    await toast!.undo!.run();
+
+    const saved = (transport as AnyApi).saveJiraWorkspaceView.mock.calls[0][0];
+    expect(saved.workspaceId).toBe("jira-ws");
+    expect(saved.view).toMatchObject({ viewId: "board-opaque", kind: "board", boardId: 7, connectionId: "c1" });
+    expect(saved.view).not.toHaveProperty("createdAt");
+    expect(jiraWorkspaceViewSaveSchema.safeParse(saved).success).toBe(true);
+    expect((store as AnyApi).payload.jiraWorkspaceViews["jira-ws"].views).toHaveLength(2);
   });
 });
 

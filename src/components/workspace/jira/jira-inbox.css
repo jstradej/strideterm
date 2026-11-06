@@ -1,0 +1,4647 @@
+/* Jira inbox pane styles. Every selector is rooted at .jira-inbox (the pane root); each rule carries the same
+   specificity the scoped build had, so a root-state selector repeats .jira-inbox and a bare-tag subject excludes the
+   markup of the child components (CustomSelect, JiraPerson, ...) that scoped CSS never reached. */
+.jira-inbox.jira-inbox {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  min-height: 0;
+  container-type: inline-size;
+  font-family: Inter, "Segoe UI", system-ui, sans-serif;
+  font-size: var(--font-size-body);
+}
+.jira-inbox.workspace-pane__body.workspace-pane__body--git.jira-inbox {
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.jira-inbox.workspace-pane__body.workspace-pane__body--git.jira-inbox.jira-inbox--board-view {
+  overflow: hidden;
+}
+.jira-inbox.jira-inbox--compact-detail
+  > :not(.workspace-pane__header):not(.jira-topbar):not(.jira-head):not(.jira-error):not(.jira-sign-in-card):not(
+    .jira-columns
+  ):not(
+    :where(
+        .custom-select,
+        .spinner,
+        .markdown-content,
+        .jira-person,
+        .jira-badges,
+        .jira-project-scope-picker,
+        .workspace-pane__header
+      )
+      *
+  ) {
+  display: none;
+}
+.jira-inbox.jira-inbox--sign-in
+  > :not(.workspace-pane__header):not(.jira-topbar):not(.jira-head):not(.jira-sign-in-card):not(
+    :where(
+        .custom-select,
+        .spinner,
+        .markdown-content,
+        .jira-person,
+        .jira-badges,
+        .jira-project-scope-picker,
+        .workspace-pane__header
+      )
+      *
+  ) {
+  display: none;
+}
+.jira-inbox .jira-sign-in-card {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  width: min(100%, 560px);
+  margin: 24px auto auto;
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-card);
+}
+.jira-inbox .jira-sign-in-card h3,
+.jira-inbox .jira-sign-in-card p {
+  margin: 0;
+}
+.jira-inbox .jira-sign-in-card p:not(.jira-inline-error):not(.jira-help) {
+  color: var(--muted);
+}
+.jira-inbox .jira-sign-in-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.jira-inbox.jira-inbox--compact-detail > .jira-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  flex: 1 1 auto;
+  min-height: 220px;
+}
+.jira-inbox.jira-inbox--compact-detail .jira-results {
+  display: none;
+}
+.jira-inbox.jira-inbox--compact-detail .jira-detail:not([data-selected="true"]) {
+  display: none;
+}
+.jira-inbox.jira-inbox--compact-detail .jira-detail__back {
+  display: inline-flex;
+}
+.jira-inbox.jira-inbox--compact-detail .jira-head__identity > h2,
+.jira-inbox.jira-inbox--compact-detail .jira-head__sync {
+  display: none;
+}
+.jira-inbox.jira-inbox--compact-detail .jira-head__identity {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+}
+.jira-inbox.jira-inbox--compact-detail .jira-head__connection {
+  flex: 1 1 auto;
+}
+.jira-inbox.workspace-pane__body.workspace-pane__body--git.jira-inbox.jira-inbox--connections-only {
+  display: block;
+  height: auto;
+  overflow: visible;
+  padding: 0;
+}
+.jira-inbox.jira-inbox--connections-only
+  > :not(.jira-error):not(.jira-settings-manager):not(.jira-setup):not(.jira-connection-edit):not(.jira-account):not(
+    .jira-help
+  ):not(
+    :where(
+        .custom-select,
+        .spinner,
+        .markdown-content,
+        .jira-person,
+        .jira-badges,
+        .jira-project-scope-picker,
+        .workspace-pane__header
+      )
+      *
+  ) {
+  display: none;
+}
+.jira-inbox.jira-inbox--no-connections
+  > :not(.workspace-pane__header):not(.jira-topbar):not(.jira-head):not(.jira-error):not(.jira-settings-manager):not(
+    :where(
+        .custom-select,
+        .spinner,
+        .markdown-content,
+        .jira-person,
+        .jira-badges,
+        .jira-project-scope-picker,
+        .workspace-pane__header
+      )
+      *
+  ) {
+  display: none;
+}
+.jira-inbox.workspace-pane__body--git.jira-inbox
+  > :not(.workspace-pane__header):not(
+    :where(
+        .custom-select,
+        .spinner,
+        .markdown-content,
+        .jira-person,
+        .jira-badges,
+        .jira-project-scope-picker,
+        .workspace-pane__header
+      )
+      *
+  ) {
+  flex: 0 0 auto;
+}
+.jira-inbox.workspace-pane__body.workspace-pane__body--git.jira-inbox.jira-inbox--board-view > .jira-board-split {
+  flex: 1 1 0;
+  align-self: stretch;
+  min-height: 0;
+  max-height: 100%;
+}
+.jira-inbox.workspace-pane__body.workspace-pane__body--git.jira-inbox.jira-inbox--native-list
+  > .jira-native-issue-list {
+  flex: 1 1 0;
+  min-height: 0;
+}
+/* A phone shows one column at a time, so each column scrolls on its own there. */
+.jira-inbox.workspace-pane__body.workspace-pane__body--git.jira-inbox.jira-inbox--board-view.jira-inbox--compact
+  .jira-board-column {
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
+}
+/* A wide board scrolls as a whole: columns grow with their cards and the headers stay in view. */
+.jira-inbox.workspace-pane__body.workspace-pane__body--git.jira-inbox.jira-inbox--board-view:not(.jira-inbox--compact)
+  .jira-board-columns {
+  align-items: flex-start;
+}
+.jira-inbox.workspace-pane__body.workspace-pane__body--git.jira-inbox.jira-inbox--board-view:not(.jira-inbox--compact)
+  .jira-board-column {
+  min-height: 100%;
+}
+.jira-inbox.workspace-pane__body.workspace-pane__body--git.jira-inbox.jira-inbox--board-view:not(.jira-inbox--compact)
+  .jira-board-column__cards {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+.jira-inbox.workspace-pane__body.workspace-pane__body--git.jira-inbox.jira-inbox--board-view:not(.jira-inbox--compact)
+  .jira-board-column__header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  border-radius: 8px 8px 0 0;
+  background: color-mix(in srgb, var(--jira-tone) 10%, var(--surface-card));
+}
+/* The pane root holds the Issues / Board / Settings strip and, below it, the .jira-inbox panel. */
+.jira-pane.jira-pane {
+  container-type: inline-size;
+}
+.jira-pane.jira-pane > .jira-view-tabs {
+  flex: 0 0 auto;
+}
+.jira-pane.jira-pane--compact-detail .jira-view-tabs {
+  display: none;
+}
+.jira-pane.jira-pane--plain {
+  display: contents;
+}
+.jira-inbox.jira-inbox {
+  --jira-surface: var(--bg);
+}
+/* Folder tabs come from subtabs.css on desktop; on a phone the strip is a segmented control in the header row. */
+@media not all and (min-width: 769px) and (min-height: 501px) {
+  /* The head grid needs about 540px; below that the views wrap under it instead of covering Refresh. */
+  .jira-pane.jira-pane .jira-topbar > .jira-head {
+    flex-basis: 560px;
+  }
+  .jira-pane .jira-view-tabs {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 4px;
+    margin-left: auto;
+    padding: 3px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-card);
+  }
+  .jira-pane .jira-view-tab {
+    flex: 0 0 auto;
+    min-height: 34px;
+    padding: 6px 13px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: transparent;
+    cursor: pointer;
+  }
+  .jira-pane .jira-view-tab--active {
+    border-color: var(--border);
+    background: var(--surface-control);
+    font-weight: 600;
+  }
+  .jira-pane.jira-pane--compact-board .jira-view-tabs {
+    gap: 2px;
+    padding: 1px;
+  }
+  .jira-pane.jira-pane--compact-board .jira-view-tab {
+    min-height: 30px;
+    padding: 4px 9px;
+  }
+  @container (max-width: 680px) {
+    .jira-pane.jira-pane--issues-view .jira-view-tab {
+      min-height: 44px;
+    }
+  }
+  @media (max-height: 680px) {
+    .jira-pane.jira-pane--issues-view .jira-view-tab {
+      min-height: 28px;
+      padding: 3px 8px;
+    }
+  }
+}
+@media (min-width: 769px) and (min-height: 501px) {
+  .jira-pane > .jira-inbox.subtabs-panel {
+    --jira-surface: var(--panel);
+  }
+}
+.jira-inbox .jira-topbar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-width: 0;
+}
+.jira-inbox .jira-topbar > .jira-head {
+  flex: 1 1 420px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+}
+.jira-inbox.jira-inbox--compact-board .jira-head {
+  gap: 0;
+  padding: 0;
+  border: 0;
+}
+.jira-inbox.jira-inbox--compact-board .jira-head__identity > h2,
+.jira-inbox.jira-inbox--compact-board .jira-head__sync {
+  display: none;
+}
+.jira-inbox.jira-inbox--compact-board.jira-inbox--native-view .jira-head__identity > h2,
+.jira-inbox.jira-inbox--compact-detail.jira-inbox--native-view .jira-head__identity > h2 {
+  display: block;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: min(42vw, 260px);
+  overflow: hidden;
+  font-size: var(--font-size-body);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jira-inbox.jira-inbox--compact-board .jira-head__identity {
+  display: flex;
+  flex: 1 1 180px;
+  align-items: center;
+}
+.jira-inbox.jira-inbox--compact-board .jira-head__connection {
+  flex: 1 1 auto;
+}
+.jira-inbox.jira-inbox--compact-board .jira-topbar {
+  gap: 4px 8px;
+}
+.jira-inbox .jira-controls,
+.jira-inbox .jira-settings-manager,
+.jira-inbox .jira-search-details,
+.jira-inbox .jira-connection-status,
+.jira-inbox .jira-saved-query-details,
+.jira-inbox .jira-connection-actions,
+.jira-inbox .jira-connection-edit,
+.jira-inbox .jira-identity,
+.jira-inbox .jira-board-status-details,
+.jira-inbox .jira-sprints-details,
+.jira-inbox .jira-board-columns,
+.jira-inbox .jira-columns {
+  flex: 0 0 auto;
+  align-self: stretch;
+  min-width: 0;
+}
+.jira-inbox.jira-inbox--issues-view > .jira-settings-manager,
+.jira-inbox.jira-inbox--issues-view > .jira-board-load-more,
+.jira-inbox.jira-inbox--issues-view > .jira-sprints-details,
+.jira-inbox.jira-inbox--issues-view > .jira-board-split,
+.jira-inbox.jira-inbox--issues-view > .jira-connection-status,
+.jira-inbox.jira-inbox--issues-view > .jira-saved-query-details,
+.jira-inbox.jira-inbox--issues-view > .jira-connection-edit,
+.jira-inbox.jira-inbox--issues-view > .jira-identity,
+.jira-inbox.jira-inbox--issues-view .jira-controls .jira-connection-actions,
+.jira-inbox.jira-inbox--board-view .jira-controls .jira-search-details,
+.jira-inbox.jira-inbox--board-view .jira-controls .jira-connection-actions,
+.jira-inbox.jira-inbox--board-view > .jira-connection-edit,
+.jira-inbox.jira-inbox--board-view > .jira-settings-manager,
+.jira-inbox.jira-inbox--board-view > .jira-connection-status,
+.jira-inbox.jira-inbox--board-view > .jira-saved-query-details,
+.jira-inbox.jira-inbox--board-view > .jira-connection-edit,
+.jira-inbox.jira-inbox--board-view > .jira-identity,
+.jira-inbox.jira-inbox--settings-view .jira-controls .jira-search-details,
+.jira-inbox.jira-inbox--settings-view .jira-board-controls,
+.jira-inbox.jira-inbox--settings-view > .jira-board-load-more,
+.jira-inbox.jira-inbox--settings-view > .jira-sprints-details,
+.jira-inbox.jira-inbox--settings-view > .jira-board-split,
+.jira-inbox.jira-inbox--settings-view > .jira-columns,
+.jira-inbox.jira-inbox--settings-view .jira-controls .jira-connection-verify-result,
+.jira-inbox.jira-inbox--board-view > .jira-columns {
+  display: none;
+}
+.jira-inbox.jira-inbox--board-view.jira-inbox--board-detail > .jira-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  flex: 1 1 200px;
+  min-height: 200px;
+}
+.jira-inbox.jira-inbox--board-detail > .jira-columns > .jira-results {
+  display: none;
+}
+.jira-inbox.jira-inbox--board-detail > .jira-board-split,
+.jira-inbox.jira-inbox--board-detail > .jira-board-unmapped,
+.jira-inbox.jira-inbox--board-detail > .jira-sprints-details,
+.jira-inbox.jira-inbox--board-detail > .jira-board-load-more,
+.jira-inbox.jira-inbox--board-detail > .jira-board-empty,
+.jira-inbox.jira-inbox--board-detail > .jira-board-toolbar,
+.jira-inbox.jira-inbox--board-detail > .jira-controls {
+  display: none;
+}
+.jira-inbox.jira-inbox--board-detail.jira-inbox--native-view > .jira-board-toolbar {
+  display: flex;
+}
+.jira-inbox.jira-inbox--issues-view > .jira-columns,
+.jira-inbox.workspace-pane__body--git.jira-inbox:not(.jira-inbox--settings-view):not(.jira-inbox--board-view)
+  > .jira-columns {
+  flex: 1 1 200px;
+  min-height: 200px;
+}
+.jira-inbox.jira-inbox--board-view > .jira-board-split {
+  flex: 1 1 0;
+  min-height: 0;
+}
+.jira-inbox.jira-inbox--settings-view > .jira-settings-manager {
+  align-content: start;
+  order: 3;
+}
+.jira-inbox .jira-empty--search {
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 12px;
+  min-height: 100%;
+  padding: clamp(18px, 5vw, 36px);
+  text-align: center;
+}
+.jira-inbox .jira-empty--search p {
+  margin: 0;
+  color: var(--muted);
+}
+.jira-inbox .jira-empty--action {
+  min-height: 40px;
+  padding-inline: 18px;
+}
+.jira-inbox .jira-board-empty {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: var(--font-size-body);
+}
+.jira-inbox.jira-inbox--setup
+  > :not(.workspace-pane__header):not(.jira-topbar):not(.jira-head):not(.jira-error):not(.jira-setup):not(
+    :where(
+        .custom-select,
+        .spinner,
+        .markdown-content,
+        .jira-person,
+        .jira-badges,
+        .jira-project-scope-picker,
+        .workspace-pane__header
+      )
+      *
+  ) {
+  display: none;
+}
+.jira-inbox .jira-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  flex-wrap: wrap;
+  padding: 2px 0 8px;
+  border-bottom: 1px solid var(--border);
+}
+.jira-inbox .jira-head__identity {
+  display: grid;
+  grid-template-columns: max-content minmax(180px, 280px) 230px 36px;
+  grid-template-rows: auto auto;
+  justify-content: start;
+  align-items: center;
+  gap: 0 9px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.jira-inbox .jira-head__identity > h2 {
+  grid-row: 1 / span 2;
+  grid-column: 1;
+  margin: 0;
+  font-size: calc(var(--font-size-heading) * 0.9);
+  line-height: 1.15;
+}
+.jira-inbox .jira-head__connection {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-head__connection > .custom-select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.jira-inbox .jira-head__sync {
+  grid-row: 1 / span 2;
+  grid-column: 3;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 3px 6px;
+  white-space: nowrap;
+  max-width: 230px;
+  min-height: 2.6em;
+  max-height: 2.6em;
+  overflow: hidden;
+  align-content: center;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+  line-height: 1.3;
+}
+.jira-inbox .jira-head__sync time {
+  color: var(--text);
+  font-weight: 650;
+  white-space: nowrap;
+}
+.jira-inbox .jira-head__sync--error {
+  color: var(--danger);
+}
+.jira-inbox .jira-head__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-left: auto;
+}
+.jira-inbox .jira-head__refresh {
+  grid-row: 1 / span 2;
+  grid-column: 4;
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface-control);
+  color: var(--text);
+  cursor: pointer;
+}
+.jira-inbox .jira-head__refresh:disabled {
+  opacity: 0.58;
+  cursor: progress;
+}
+.jira-inbox .jira-head__refresh svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.jira-inbox .jira-head__add {
+  white-space: nowrap;
+}
+.jira-inbox .jira-board-toolbar {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+.jira-inbox .jira-native-view-toolbar {
+  display: flex;
+  flex: 1 1 260px;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+}
+.jira-inbox .jira-native-view-toolbar__modes,
+.jira-inbox .jira-native-view-toolbar__statuses {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+}
+.jira-inbox .jira-native-view-toolbar__modes {
+  flex: 0 0 auto;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-card);
+}
+.jira-inbox .jira-native-view-toolbar__statuses {
+  flex: 1 1 auto;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+}
+.jira-inbox .jira-native-view-toolbar__status-picker {
+  flex: 1 1 135px;
+  min-width: 0;
+}
+.jira-inbox .jira-native-view-toolbar__status-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.jira-inbox .jira-native-view-toolbar__mode,
+.jira-inbox .jira-native-view-toolbar__status {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--font-size-caption);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.jira-inbox .jira-native-view-toolbar__mode[aria-pressed="true"],
+.jira-inbox .jira-native-view-toolbar__status[aria-pressed="true"] {
+  border-color: var(--border);
+  background: var(--surface-control);
+  color: var(--text);
+  font-weight: 700;
+}
+.jira-inbox .jira-native-view-toolbar__status span {
+  /* Room for three digits, so a count changing under a filter does not shift the chips after it. */
+  min-width: 3ch;
+  color: var(--text);
+  font-size: var(--font-size-caption);
+  font-variant-numeric: tabular-nums;
+  text-align: start;
+  opacity: 0.8;
+}
+.jira-inbox .jira-native-view-toolbar__mode:focus-visible,
+.jira-inbox .jira-native-view-toolbar__status:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.jira-inbox .jira-native-board-filter-indicator {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: var(--font-size-caption);
+  white-space: nowrap;
+}
+.jira-inbox .jira-native-board-filter-indicator .button {
+  min-height: 26px;
+  padding: 2px 5px;
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-native-issue-list {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  gap: 7px;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 2px 10px;
+  overscroll-behavior: contain;
+}
+.jira-inbox .jira-native-issue-list:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.jira-inbox .jira-native-issue-list__toolbar {
+  position: sticky;
+  top: -4px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0 7px;
+  background: var(--jira-surface);
+}
+.jira-inbox .jira-native-issue-list__toolbar .jira-list-toolbar__search {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.jira-inbox .jira-native-issue-list__count {
+  flex: 0 0 auto;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+  white-space: nowrap;
+}
+.jira-inbox .jira-native-issue-list__item {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 5px;
+  width: 100%;
+  text-align: left;
+}
+.jira-inbox .jira-native-issue-list__item .jira-issue__topline {
+  align-items: center;
+}
+.jira-inbox .jira-native-issue-list__summary {
+  overflow-wrap: anywhere;
+}
+.jira-inbox .jira-board-toolbar > .jira-board-load-more {
+  flex: 0 0 auto;
+  min-height: 30px;
+  margin-left: auto;
+  padding: 4px 8px;
+}
+.jira-inbox .jira-board-filter-details {
+  min-width: 0;
+}
+.jira-inbox .jira-board-filter-details > summary:not(:where(.jira-project-scope-picker) *) {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text);
+  font-size: var(--font-size-caption);
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+.jira-inbox .jira-board-filter-details > summary:not(:where(.jira-project-scope-picker) *)::-webkit-details-marker {
+  display: none;
+}
+.jira-inbox .jira-project-scope-inline {
+  margin-left: auto;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jira-inbox .jira-board-filter-details > summary:not(:where(.jira-project-scope-picker) *)::after {
+  content: "▾";
+  color: var(--muted);
+}
+.jira-inbox .jira-board-filter-details[open] > summary:not(:where(.jira-project-scope-picker) *)::after {
+  content: "▴";
+}
+.jira-inbox .jira-board-filter-count {
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+  font-weight: 500;
+}
+.jira-inbox .jira-board-filter-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 260px);
+  align-items: start;
+  gap: 7px 12px;
+  padding: 8px 0 4px;
+}
+.jira-inbox .jira-assignee-chipbar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 6px 12px;
+  min-width: 0;
+  grid-column: 1;
+  grid-row: 2;
+}
+.jira-inbox .jira-assignee-chipbar__label {
+  padding-top: 5px;
+  color: var(--text);
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  white-space: nowrap;
+}
+.jira-inbox .jira-assignee-chipbar__label small {
+  display: block;
+  color: var(--muted);
+  font-weight: 400;
+}
+.jira-inbox .jira-assignee-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  max-height: 82px;
+  overflow: auto;
+  min-width: 0;
+}
+.jira-inbox .jira-assignee-chipbar__empty {
+  padding: 5px 0;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-board-toolbar .jira-assignee-filter {
+  grid-column: 2;
+  grid-row: 2;
+  align-self: center;
+  min-width: min(280px, 100%);
+  max-width: 440px;
+}
+.jira-inbox .jira-board-toolbar .jira-cache-status {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+.jira-inbox .jira-board-toolbar .jira-board-quick-filters {
+  grid-column: 1 / -1;
+  grid-row: 1;
+}
+.jira-inbox .jira-head__refresh svg {
+  display: block;
+}
+.jira-inbox .jira-setup {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  width: min(100%, 560px);
+  margin: 24px auto auto;
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-card);
+}
+.jira-inbox .jira-setup h2,
+.jira-inbox .jira-setup p {
+  margin: 0;
+}
+.jira-inbox .jira-setup h2 {
+  font-size: var(--font-size-heading);
+  line-height: 1.25;
+}
+.jira-inbox .jira-setup p:not(.eyebrow):not(.jira-setup__field-help) {
+  color: var(--text);
+  font-size: var(--font-size-body);
+  line-height: 1.5;
+}
+.jira-inbox .jira-setup > .eyebrow {
+  font-size: var(--font-size-caption);
+  letter-spacing: 0.1em;
+}
+.jira-inbox .jira-setup > label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: var(--font-size-body);
+}
+.jira-inbox .jira-setup__field {
+  gap: 4px;
+  color: var(--text) !important;
+  font-size: var(--font-size-body) !important;
+}
+.jira-inbox .jira-setup__field-title {
+  color: var(--text);
+  font-size: var(--font-size-body);
+  font-weight: 600;
+  line-height: 1.3;
+}
+.jira-inbox .jira-setup__field-help {
+  display: block;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+  font-weight: 400;
+  line-height: 1.45;
+}
+.jira-inbox .jira-setup__field-error {
+  color: var(--danger) !important;
+  font-size: var(--font-size-caption) !important;
+  font-weight: 400;
+}
+.jira-inbox .jira-setup input[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+.jira-inbox .jira-setup small {
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+  line-height: 1.4;
+}
+.jira-inbox .jira-setup input:not(:where(.custom-select) *),
+.jira-inbox .jira-setup textarea,
+.jira-inbox .jira-setup .custom-select__button,
+.jira-inbox .jira-setup .button {
+  font-size: var(--font-size-body);
+}
+.jira-inbox .jira-setup__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+.jira-inbox .jira-setup__actions .button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.jira-inbox .jira-setup__save-hint {
+  margin: -4px 0 0;
+}
+.jira-inbox .jira-setup__test-result {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-top: -6px;
+  color: var(--success-fg);
+  font-size: var(--font-size-body);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.jira-inbox .jira-setup__test-result--error {
+  color: var(--danger);
+  margin-bottom: 48px;
+}
+.jira-inbox .jira-setup__test-result:focus {
+  outline: 1px solid var(--accent);
+  outline-offset: 3px;
+}
+.jira-inbox .jira-setup__file-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.jira-inbox .jira-setup__file-row input {
+  flex: 1;
+}
+.jira-inbox .jira-settings-manager {
+  display: grid;
+  gap: 12px;
+  width: 100%;
+  color: var(--text);
+}
+.jira-inbox .jira-settings-manager__heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.jira-inbox .jira-settings-manager__heading h3,
+.jira-inbox .jira-settings-manager__heading p {
+  margin: 0;
+}
+.jira-inbox .jira-settings-manager__heading p,
+.jira-inbox .jira-settings-manager__details span,
+.jira-inbox .jira-settings-manager__details small {
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+  line-height: 1.45;
+}
+.jira-inbox .jira-settings-manager--general > h3 {
+  margin: 0;
+}
+.jira-inbox .jira-connection-panel {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-card);
+}
+.jira-inbox .jira-connection-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 12px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.jira-inbox .jira-connection-panel__header:hover {
+  background: rgba(var(--tint), 0.04);
+}
+.jira-inbox .jira-connection-panel__header:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.jira-inbox .jira-connection-panel__chevron {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 0.15s ease;
+}
+.jira-inbox .jira-connection-panel--open > .jira-connection-panel__header > .jira-connection-panel__chevron {
+  transform: rotate(180deg);
+}
+.jira-inbox .jira-connection-panel__body {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border-top: 1px solid var(--border);
+}
+.jira-inbox .jira-settings-manager__details {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.jira-inbox .jira-settings-manager__details span {
+  overflow-wrap: anywhere;
+}
+.jira-inbox .jira-settings-manager__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.jira-inbox .jira-connection-verify-result {
+  flex: 1 1 100%;
+  margin: 0;
+  color: var(--success-fg);
+  font-size: var(--font-size-caption);
+  overflow-wrap: anywhere;
+}
+.jira-inbox .jira-connection-verify-result--error {
+  color: var(--danger);
+}
+.jira-inbox .jira-head h2,
+.jira-inbox .jira-detail h2:not(:where(.markdown-content) *) {
+  margin: 2px 0 8px;
+  font-size: var(--font-size-heading);
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+.jira-inbox .jira-detail > p:not(:where(.markdown-content) *) {
+  margin: 0 0 12px;
+}
+.jira-inbox .jira-detail .jira-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  line-height: 1.45;
+}
+.jira-inbox .jira-controls {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.jira-inbox .jira-quick-search {
+  position: relative;
+  display: flex;
+  flex: 1 1 360px;
+  align-items: end;
+  gap: 8px;
+  min-width: 0;
+}
+.jira-inbox .jira-quick-search__error {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--danger);
+  font-size: var(--font-size-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.jira-inbox .jira-quick-search input {
+  min-height: 36px;
+}
+.jira-inbox .jira-quick-search > .button {
+  flex: 0 0 auto;
+  min-height: 36px;
+}
+.jira-inbox.jira-inbox--issues-view .jira-board-controls {
+  flex: 0 1 190px;
+  min-width: 150px;
+}
+.jira-inbox.jira-inbox--issues-view .jira-board-controls > label:not(:first-child) {
+  display: none;
+}
+.jira-inbox.jira-inbox--issues-view .jira-board-options {
+  display: none;
+}
+
+.jira-inbox.jira-inbox--compact-board .jira-board-options > summary {
+  min-height: 32px;
+  padding: 7px 11px;
+}
+.jira-inbox .jira-board-quick-filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.jira-inbox .jira-board-filter-chip {
+  min-height: 28px;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-control);
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+.jira-inbox .jira-board-filter-chip[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface-control));
+  color: var(--text);
+}
+.jira-inbox .jira-assignee-filter {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 200px;
+  max-width: 320px;
+  flex: 0 1 280px;
+}
+.jira-inbox .jira-assignee-filter > label {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-assignee-filter > input {
+  min-height: 30px;
+  padding: 4px 7px;
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-assignee-results {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  right: 0;
+  display: grid;
+  width: min(320px, calc(100vw - 32px));
+  max-height: 240px;
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-card);
+  box-shadow: var(--menu-shadow);
+}
+.jira-inbox .jira-assignee-results > button {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.jira-inbox .jira-assignee-results > button:hover,
+.jira-inbox .jira-assignee-results > button:focus-visible {
+  background: rgba(var(--tint), 0.08);
+}
+.jira-inbox .jira-assignee-results small,
+.jira-inbox .jira-cache-status {
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-cache-status {
+  flex: 0 1 auto;
+  margin: 0;
+}
+.jira-inbox .jira-native-view-sync-error {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
+  border-radius: 6px;
+  color: var(--danger);
+}
+.jira-inbox .jira-native-view-sync-error .button {
+  min-height: 28px;
+  margin-left: auto;
+}
+.jira-inbox .jira-controls > label:not(:where(.jira-project-scope-picker) *) {
+  flex: 0 1 280px;
+}
+.jira-inbox .jira-controls > .jira-search {
+  flex: 1 1 420px;
+}
+.jira-inbox .jira-board-controls {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 10px;
+  flex: 1 1 280px;
+  min-width: 0;
+}
+.jira-inbox .jira-board-controls > label {
+  flex: 1 1 180px;
+  min-width: min(180px, 100%);
+}
+.jira-inbox .jira-board-controls > label {
+  flex: 0 1 280px;
+}
+.jira-inbox .jira-board-picker-notice {
+  flex: 1 1 100%;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-controls label:not(:where(.jira-project-scope-picker) *),
+.jira-inbox .jira-write label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-search {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+}
+.jira-inbox .jira-search label {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox.jira-inbox input:not(:where(.custom-select, .markdown-content, .jira-project-scope-picker) *),
+.jira-inbox.jira-inbox select:not(:where(.markdown-content) *),
+.jira-inbox.jira-inbox textarea:not(:where(.markdown-content) *) {
+  min-width: 0;
+  width: 100%;
+  padding: 8px;
+  background: var(--surface-control);
+  color: var(--text);
+  border: 1px solid var(--field-border, var(--border));
+  border-radius: 5px;
+}
+.jira-inbox.jira-inbox input:not([type="checkbox"], [type="radio"]):focus,
+.jira-inbox.jira-inbox select:focus,
+.jira-inbox.jira-inbox textarea:focus {
+  border-color: var(--accent);
+}
+.jira-inbox .jira-columns {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.75fr) minmax(0, 2fr);
+  gap: 12px;
+  min-height: 0;
+  flex: 1;
+}
+.jira-inbox .jira-columns--empty > .jira-results {
+  grid-column: 1 / -1;
+}
+.jira-inbox .jira-columns--empty > .jira-detail {
+  display: none;
+}
+.jira-inbox.workspace-pane__body--git.jira-inbox > .jira-columns {
+  flex: 1 1 200px;
+  min-height: 200px;
+}
+/* A compact pane shows the list or the open issue, never both: an empty detail column beside the list would
+   squeeze it on a landscape phone, where the pane is wide but short. */
+.jira-inbox.jira-inbox--compact .jira-columns {
+  grid-template-columns: minmax(0, 1fr);
+}
+.jira-inbox.jira-inbox--compact .jira-detail:not([data-selected="true"]) {
+  display: none;
+}
+.jira-inbox .jira-results,
+.jira-inbox .jira-detail {
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 8px;
+}
+.jira-inbox .jira-detail:not([data-selected="true"]) {
+  justify-content: center;
+}
+.jira-inbox .jira-upload-status {
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-workspace-links__form {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.jira-inbox .jira-action-details {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 0 12px;
+}
+.jira-inbox .jira-action-details > summary {
+  display: flex;
+  align-items: center;
+  min-height: 42px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.jira-inbox .jira-action-details[open] > summary {
+  margin-bottom: 10px;
+}
+.jira-inbox .jira-action-details .jira-write,
+.jira-inbox .jira-action-details .jira-branch-start {
+  margin: 0 0 12px;
+}
+.jira-inbox.jira-inbox--board-detail .jira-detail__back {
+  display: inline-flex;
+}
+.jira-inbox .jira-issue small:not(:where(.jira-person) *),
+.jira-inbox .jira-empty {
+  color: var(--muted);
+}
+.jira-inbox .jira-account,
+.jira-inbox .jira-help {
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-mcp-drafts,
+.jira-inbox .jira-saved-query-details,
+.jira-inbox .jira-search-details,
+.jira-inbox .jira-connection-actions,
+.jira-inbox .jira-connection-status,
+.jira-inbox .jira-board-status-details,
+.jira-inbox .jira-sprints-details {
+  min-width: 0;
+}
+.jira-inbox .jira-mcp-drafts {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-card);
+}
+.jira-inbox .jira-mcp-drafts > summary,
+.jira-inbox .jira-saved-query-details > summary,
+.jira-inbox .jira-search-details > summary,
+.jira-inbox .jira-connection-actions > summary,
+.jira-inbox .jira-connection-status > summary,
+.jira-inbox .jira-board-status-details > summary,
+.jira-inbox .jira-sprints-details > summary {
+  cursor: pointer;
+  color: var(--text);
+  font-weight: 600;
+}
+.jira-inbox .jira-mcp-drafts > .jira-help {
+  margin-bottom: 8px;
+}
+.jira-inbox .jira-mcp-drafts__item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 9px 0;
+  border-top: 1px solid var(--border);
+}
+.jira-inbox .jira-mcp-drafts__body {
+  min-width: 0;
+}
+.jira-inbox .jira-mcp-drafts__body small {
+  display: block;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-mcp-drafts__body p {
+  margin: 5px 0 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.jira-inbox .jira-mcp-drafts__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.jira-inbox .jira-saved-queries {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+}
+.jira-inbox .jira-saved-query-details > summary,
+.jira-inbox .jira-search-details > summary,
+.jira-inbox .jira-connection-actions > summary,
+.jira-inbox .jira-connection-status > summary,
+.jira-inbox .jira-board-status-details > summary,
+.jira-inbox .jira-sprints-details > summary {
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-card);
+  cursor: pointer;
+}
+.jira-inbox .jira-search-details {
+  flex: 1 1 100%;
+}
+.jira-inbox .jira-search-details:not([open]) > :not(summary):not(:where(.spinner) *) {
+  display: none;
+}
+.jira-inbox .jira-connection-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: 1 1 100%;
+}
+.jira-inbox .jira-search-details .jira-search {
+  flex: 1 1 420px;
+}
+.jira-inbox.jira-inbox--compact .jira-controls {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: end;
+  gap: 6px;
+}
+.jira-inbox.jira-inbox--compact .jira-controls > label:not(:where(.jira-project-scope-picker) *),
+.jira-inbox.jira-inbox--compact .jira-board-controls > label {
+  min-width: 0;
+  flex-basis: auto;
+  font-size: var(--font-size-caption);
+}
+.jira-inbox.jira-inbox--compact .jira-board-controls {
+  display: contents;
+}
+.jira-inbox.jira-inbox--compact .jira-controls > details:not(:where(.jira-project-scope-picker) *) {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+.jira-inbox.jira-inbox--compact .jira-controls > :is(.jira-toolbar-row, .jira-smart-filters) {
+  grid-column: 1 / -1;
+}
+.jira-inbox.jira-inbox--compact .jira-search-details > summary,
+.jira-inbox.jira-inbox--compact .jira-connection-actions > summary,
+.jira-inbox.jira-inbox--compact .jira-saved-query-details > summary,
+.jira-inbox.jira-inbox--compact .jira-sprints-details > summary {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+}
+.jira-inbox.jira-inbox--compact .jira-board-options > summary,
+.jira-inbox.jira-inbox--compact .jira-board-filter-details > summary:not(:where(.jira-project-scope-picker) *) {
+  min-height: 44px;
+}
+.jira-inbox .jira-saved-queries label {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  gap: 5px;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-saved-queries > label:not(.jira-query-notifications) {
+  flex: 1 1 180px;
+  min-width: 180px;
+}
+.jira-inbox .jira-saved-queries > .jira-search {
+  flex: 1 1 300px;
+  min-width: min(300px, 100%);
+}
+.jira-inbox .jira-saved-queries > .jira-help {
+  flex-basis: 100%;
+}
+.jira-inbox .jira-saved-queries .jira-query-notifications {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 220px;
+  min-width: 220px;
+  line-height: 1.4;
+}
+.jira-inbox .jira-saved-queries .jira-query-notifications > input {
+  width: auto;
+  flex: 0 0 auto;
+  margin: 0;
+}
+.jira-inbox .jira-saved-queries input:not(:where(.custom-select) *) {
+  max-width: 220px;
+}
+.jira-issue-preview.jira-issue-preview {
+  position: fixed;
+  z-index: 1000;
+  max-width: calc(100vw - 24px);
+  max-height: min(320px, calc(100vh - 24px));
+  overflow: auto;
+  padding: 13px 15px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-card);
+  color: var(--text);
+  box-shadow: var(--menu-shadow);
+  pointer-events: none;
+}
+.jira-issue-preview .jira-issue-preview__key {
+  color: var(--accent);
+  font-size: var(--font-size-caption);
+  letter-spacing: 0.03em;
+}
+.jira-issue-preview .jira-issue-preview__summary {
+  margin: 4px 0 8px;
+  font-weight: 650;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.jira-issue-preview .jira-issue-preview__description,
+.jira-issue-preview .jira-issue-preview__loading {
+  display: -webkit-box;
+  margin: 9px 0 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+}
+.jira-inbox .jira-sprints {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+}
+.jira-inbox .jira-identity {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-card);
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-identity > p {
+  margin: 0;
+}
+.jira-inbox .jira-connection-status {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-card);
+}
+.jira-inbox .jira-connection-status__row {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 12px;
+}
+.jira-inbox .jira-connection-status dt {
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-connection-status dd {
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.jira-inbox .jira-connection-status__muted {
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-connection-status__dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: var(--muted);
+  vertical-align: middle;
+}
+.jira-inbox .jira-connection-status__dot[data-state="ok"] {
+  background: var(--success-fg);
+}
+.jira-inbox .jira-connection-status__dot[data-state="warn"] {
+  background: var(--warning, var(--accent));
+}
+.jira-inbox .jira-connection-status__dot[data-state="error"] {
+  background: var(--danger);
+}
+.jira-inbox .jira-connection-status .jira-connection-health {
+  color: var(--danger);
+}
+.jira-inbox .jira-connection-status__link {
+  margin-left: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: var(--font-size-caption);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+@container (max-width: 480px) {
+  .jira-inbox .jira-connection-status__row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+}
+.jira-inbox .jira-human-identity-setup {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-card);
+}
+.jira-inbox .jira-human-identity-setup h3,
+.jira-inbox .jira-human-identity-setup p {
+  margin: 0;
+}
+.jira-inbox .jira-human-identity-setup__search,
+.jira-inbox .jira-human-identity-setup__actions {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.jira-inbox .jira-human-identity-setup__search label {
+  display: grid;
+  flex: 1 1 180px;
+  gap: 4px;
+}
+.jira-inbox .jira-human-identity-setup__results {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.jira-inbox .jira-human-identity-setup__error {
+  color: var(--danger);
+}
+.jira-inbox .jira-identity label {
+  display: flex;
+  gap: 6px;
+  margin: 8px 0;
+}
+.jira-inbox .jira-connection-edit-card {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.jira-inbox .jira-connection-edit-card__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+.jira-inbox .jira-connection-edit-card__tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--border);
+}
+.jira-inbox .jira-connection-edit-card__tab {
+  margin-bottom: -1px;
+  padding: 6px 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.jira-inbox .jira-connection-edit-card__tab:hover:not(:disabled) {
+  color: var(--text);
+}
+.jira-inbox .jira-connection-edit-card__tab--active {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+}
+.jira-inbox .jira-connection-edit-card__tab:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.jira-inbox .jira-setup.jira-setup--inline {
+  width: min(100%, 640px);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+.jira-inbox .jira-connection-edit {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  align-items: start;
+  gap: 10px;
+}
+.jira-inbox .jira-connection-edit__title,
+.jira-inbox .jira-connection-edit > .jira-help,
+.jira-inbox .jira-connection-edit__actions {
+  grid-column: 1 / -1;
+}
+.jira-inbox .jira-connection-edit__title {
+  margin: 0;
+}
+.jira-inbox .jira-connection-edit label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--text);
+  font-size: var(--font-size-body);
+  font-weight: 600;
+}
+.jira-inbox .jira-connection-edit label .jira-help {
+  font-weight: 400;
+  line-height: 1.4;
+}
+.jira-inbox .jira-connection-edit__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 2px;
+}
+.jira-inbox .jira-saved-queries {
+  flex-wrap: wrap;
+}
+.jira-inbox .jira-error {
+  position: relative;
+  z-index: 6;
+  flex: 0 0 0;
+  height: 0;
+  margin-top: -8px;
+}
+.jira-inbox.jira-inbox--board-view
+  > .jira-controls:not(
+    :has(> .jira-toolbar-row, > .jira-board-picker-notice, > .jira-help, > .jira-connection-verify-result)
+  ) {
+  display: none;
+}
+.jira-inbox .jira-error__panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border));
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--danger) 12%, var(--surface-control));
+  color: var(--danger);
+}
+.jira-inbox .jira-error__alert {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+.jira-inbox .jira-error__message,
+.jira-inbox .jira-error__countdown {
+  margin: 0;
+}
+.jira-inbox .jira-error__actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.jira-inbox .jira-error__countdown {
+  font-variant-numeric: tabular-nums;
+}
+.jira-inbox:focus {
+  outline: none;
+}
+.jira-inbox .jira-inline-error,
+.jira-inbox .jira-field-error {
+  color: var(--danger);
+  font-size: var(--font-size-caption);
+  margin: 4px 0;
+}
+.jira-inbox .jira-project-scope-picker__save-error {
+  color: var(--danger);
+  font-size: var(--font-size-caption);
+  margin-left: 8px;
+  max-width: 28ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jira-inbox .jira-write {
+  margin-top: 22px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.jira-inbox .jira-write h3 {
+  margin: 0 0 8px;
+}
+.jira-inbox .jira-confirm {
+  padding: 10px;
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.jira-inbox .jira-confirm pre {
+  white-space: pre-wrap;
+}
+@media (max-width: 700px) {
+  .jira-inbox .jira-controls > label:not(:where(.jira-project-scope-picker) *),
+  .jira-inbox .jira-controls > .jira-search {
+    flex-basis: 100%;
+  }
+}
+@container (max-width: 680px) {
+  .jira-inbox.jira-inbox--compact .custom-select__button,
+  .jira-inbox.jira-inbox--compact-board .custom-select__button {
+    height: 44px;
+    min-height: 44px;
+  }
+  .jira-inbox .jira-topbar {
+    gap: 4px 8px;
+  }
+  .jira-inbox.jira-inbox--compact .jira-head__sync {
+    display: none;
+  }
+  .jira-inbox.jira-inbox--issues-view .jira-quick-search,
+  .jira-inbox.jira-inbox--issues-view .jira-board-controls {
+    flex: 1 1 100%;
+  }
+  .jira-inbox.jira-inbox--issues-view .jira-quick-search {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+  .jira-inbox.jira-inbox--issues-view .jira-primary-project-scope {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  .jira-inbox.jira-inbox--issues-view .jira-primary-project-scope > summary:not(:where(.jira-project-scope-picker) *),
+  .jira-inbox.jira-inbox--issues-view .jira-head__refresh,
+  .jira-inbox.jira-inbox--issues-view .jira-quick-search input,
+  .jira-inbox.jira-inbox--issues-view .jira-quick-search > .button,
+  .jira-inbox.jira-inbox--issues-view .jira-search-details > summary {
+    min-height: 44px;
+  }
+  .jira-inbox.jira-inbox--issues-view .jira-head__refresh {
+    width: 44px;
+    height: 44px;
+    flex-basis: 44px;
+  }
+  .jira-inbox .jira-head {
+    align-items: flex-start;
+  }
+  .jira-inbox .jira-head__identity {
+    grid-template-columns: minmax(90px, auto) minmax(120px, 1fr) 44px;
+    flex-basis: 100%;
+  }
+  .jira-inbox .jira-head__sync {
+    grid-row: 3;
+    grid-column: 1 / 3;
+    padding-top: 4px;
+  }
+  .jira-inbox .jira-head__refresh {
+    grid-row: 1 / span 3;
+    grid-column: 3;
+    align-self: center;
+  }
+  .jira-inbox .jira-head__actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view .jira-head {
+    height: 44px;
+    min-height: 44px;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 6px;
+  }
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view .jira-head__identity {
+    flex: 1 1 0;
+    flex-basis: 0;
+    gap: 6px;
+    min-width: 0;
+  }
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view .jira-head__identity > h2 {
+    flex: 1 1 0;
+    max-width: none;
+    min-width: 0;
+    font-size: var(--font-size-body);
+  }
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view .jira-head__refresh {
+    align-self: center;
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+    flex: 0 0 44px;
+  }
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view .jira-head__actions {
+    width: auto;
+    flex: 0 0 auto;
+    justify-content: flex-end;
+    gap: 4px;
+    margin-left: 0;
+  }
+  .jira-inbox .jira-board-toolbar {
+    align-items: stretch;
+  }
+  .jira-inbox .jira-board-filter-content {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .jira-inbox .jira-assignee-chipbar,
+  .jira-inbox .jira-board-toolbar .jira-assignee-filter,
+  .jira-inbox .jira-board-toolbar .jira-board-quick-filters,
+  .jira-inbox .jira-board-toolbar .jira-cache-status,
+  .jira-inbox .jira-board-toolbar .jira-cache-status--error {
+    grid-column: 1;
+  }
+  .jira-inbox .jira-assignee-chipbar {
+    grid-row: 2;
+  }
+  .jira-inbox .jira-board-toolbar .jira-assignee-filter {
+    grid-row: 3;
+    width: 100%;
+    max-width: 100%;
+  }
+  .jira-inbox .jira-assignee-chips {
+    max-height: 76px;
+  }
+  .jira-inbox .jira-columns {
+    grid-template-columns: minmax(0, 1fr);
+    min-height: 220px;
+    flex: 1 1 auto;
+  }
+  .jira-inbox .jira-results,
+  .jira-inbox .jira-detail {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .jira-inbox .jira-columns:has(.jira-detail[data-selected="true"]) .jira-results {
+    display: none;
+  }
+  .jira-inbox .jira-detail:not([data-selected="true"]) {
+    display: none;
+  }
+  .jira-inbox .jira-detail-sidebar dl {
+    grid-template-columns: minmax(75px, 0.3fr) minmax(0, 1fr);
+    column-gap: 10px;
+  }
+  .jira-inbox .jira-detail-sidebar dt {
+    margin-top: 4px;
+  }
+  .jira-inbox .jira-detail-header {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .jira-inbox .jira-detail-header__actions {
+    justify-content: flex-start;
+  }
+  .jira-inbox .jira-detail[data-selected="true"] .jira-detail__back {
+    display: inline-flex;
+  }
+  .jira-inbox .jira-controls,
+  .jira-inbox .jira-search,
+  .jira-inbox .jira-saved-queries {
+    align-items: stretch;
+  }
+  .jira-inbox .jira-controls > label:not(:where(.jira-project-scope-picker) *),
+  .jira-inbox .jira-controls > .jira-search,
+  .jira-inbox .jira-board-controls > label {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  .jira-inbox .jira-board-controls {
+    flex: 1 1 100%;
+  }
+  .jira-inbox .jira-search {
+    flex-wrap: wrap;
+  }
+  .jira-inbox .jira-search > .button,
+  .jira-inbox .jira-head__actions .button,
+  .jira-inbox .jira-board-issue,
+  .jira-inbox .jira-issue {
+    min-height: 44px;
+  }
+  .jira-inbox .jira-board-columns {
+    max-width: 100%;
+    padding-bottom: 6px;
+    overscroll-behavior-x: contain;
+    scroll-snap-type: x proximity;
+    -webkit-overflow-scrolling: touch;
+  }
+  .jira-inbox .jira-board-column {
+    flex: 0 0 min(82cqw, 280px);
+    scroll-snap-align: start;
+  }
+  .jira-inbox .jira-saved-queries > label:not(.jira-query-notifications),
+  .jira-inbox .jira-saved-queries > .jira-search,
+  .jira-inbox .jira-saved-queries .jira-query-notifications {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  .jira-inbox .jira-mcp-drafts__item {
+    flex-direction: column;
+  }
+  .jira-inbox .jira-mcp-drafts__actions .button {
+    min-height: 40px;
+  }
+  .jira-inbox.jira-inbox--compact .jira-saved-query-details > summary,
+  .jira-inbox.jira-inbox--compact .jira-search-details > summary,
+  .jira-inbox.jira-inbox--compact .jira-connection-actions > summary,
+  .jira-inbox.jira-inbox--compact .jira-connection-status > summary,
+  .jira-inbox.jira-inbox--compact .jira-board-status-details > summary,
+  .jira-inbox.jira-inbox--compact .jira-sprints-details > summary {
+    display: list-item;
+    min-height: 40px;
+    padding: 10px 0;
+  }
+}
+@container (max-width: 420px) {
+  .jira-inbox.jira-inbox--compact .jira-controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .jira-inbox.jira-inbox--compact .jira-controls > label:first-child:not(:where(.jira-project-scope-picker) *) {
+    grid-column: 1 / -1;
+  }
+  .jira-inbox.jira-inbox--compact .jira-board-controls > label {
+    min-width: 0;
+  }
+}
+@media (max-height: 680px) {
+  .jira-inbox.jira-inbox--issues-view .jira-head__identity > h2 {
+    display: none;
+  }
+  .jira-inbox.jira-inbox--issues-view .jira-head__identity {
+    display: flex;
+    flex: 1 1 260px;
+    align-items: center;
+  }
+  .jira-inbox.jira-inbox--issues-view .jira-head__connection {
+    flex: 1 1 auto;
+  }
+  .jira-inbox.jira-inbox--issues-view .jira-head__actions {
+    width: auto;
+    flex: 0 0 auto;
+    margin-left: 0;
+  }
+  .jira-inbox.jira-inbox--issues-view .jira-topbar > .jira-head {
+    flex-basis: 320px;
+  }
+  .jira-inbox.jira-inbox--issues-view .jira-controls > .jira-board-controls {
+    display: none;
+  }
+  .jira-inbox.jira-inbox--issues-view .jira-list-toolbar {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 4px 8px;
+    margin: -4px -4px 2px;
+    padding: 5px 6px;
+  }
+  .jira-inbox.jira-inbox--issues-view .jira-list-toolbar__search {
+    display: none;
+  }
+  .jira-inbox.jira-inbox--issues-view .jira-list-toolbar__row {
+    display: contents;
+  }
+  .jira-inbox.jira-inbox--issues-view .jira-list-toolbar__groups {
+    grid-column: 1 / -1;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+  .jira-inbox.jira-inbox--issues-view .jira-list-toolbar__group {
+    flex: 0 0 auto;
+    min-height: 24px;
+    padding: 1px 7px;
+  }
+  .jira-inbox.jira-inbox--issues-view .jira-list-toolbar__sort {
+    grid-column: 1;
+    grid-row: 2;
+    min-width: 0;
+    width: 100%;
+  }
+  .jira-inbox.jira-inbox--issues-view .jira-list-toolbar__count {
+    grid-column: 2;
+    grid-row: 2;
+    justify-self: end;
+    white-space: nowrap;
+  }
+  .jira-inbox.jira-inbox--compact-board {
+    gap: 4px;
+    padding: 6px 10px;
+  }
+  .jira-inbox.jira-inbox--compact-board .jira-controls {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 4px;
+  }
+  .jira-inbox.jira-inbox--compact-board .jira-board-controls > label:first-child {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .jira-inbox.jira-inbox--compact-board .jira-controls > .jira-board-options {
+    flex: 0 0 auto;
+    grid-column: auto;
+  }
+  .jira-inbox.jira-inbox--compact-board .jira-board-toolbar {
+    gap: 6px;
+    padding: 0;
+  }
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view .jira-board-toolbar {
+    flex-wrap: nowrap;
+    gap: 5px;
+    overflow: hidden;
+  }
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view .jira-native-view-toolbar {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view .jira-native-view-toolbar__statuses {
+    min-width: 32px;
+  }
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view .jira-native-view-toolbar {
+    flex: 1 1 0;
+    gap: 4px;
+  }
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view .jira-native-view-toolbar__status-picker {
+    flex: 1 1 70px;
+    min-width: 0;
+  }
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view .jira-native-view-toolbar__status-select {
+    min-width: 0;
+    padding: 4px 6px;
+    font-size: var(--font-size-caption);
+  }
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view .jira-head__refresh {
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+    flex-basis: 44px;
+  }
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view .jira-native-view-toolbar__mode {
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view .jira-list-toolbar__search {
+    min-height: 44px;
+  }
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view
+    .jira-personal-scope
+    > summary:not(:where(.jira-project-scope-picker) *),
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view
+    .jira-board-filter-details
+    > summary:not(:where(.jira-project-scope-picker) *) {
+    height: 44px;
+    min-height: 44px;
+  }
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view .jira-native-board-filter-indicator,
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view .jira-native-board-filter-indicator .button {
+    min-height: 44px;
+  }
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view .jira-personal-scope {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view
+    .jira-personal-scope
+    > summary:not(:where(.jira-project-scope-picker) *) {
+    gap: 4px;
+    padding: 4px 6px;
+    font-size: var(--font-size-caption);
+    white-space: nowrap;
+  }
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view .jira-personal-scope .jira-project-scope-inline {
+    font-size: var(--font-size-caption);
+  }
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view .jira-native-board-filter-indicator {
+    gap: 2px;
+    padding: 1px 3px;
+  }
+  .jira-inbox.jira-inbox--compact-board .jira-board-filter-details > summary:not(:where(.jira-project-scope-picker) *) {
+    min-height: 30px;
+    padding: 5px 0;
+  }
+  .jira-inbox.jira-inbox--compact-board .jira-board-toolbar > .jira-board-load-more {
+    min-height: 30px;
+    white-space: nowrap;
+  }
+}
+@media (pointer: coarse), (any-pointer: coarse) {
+  .jira-inbox .jira-controls .button,
+  .jira-inbox .jira-head__actions .button,
+  .jira-inbox .jira-board-issue,
+  .jira-inbox .jira-issue,
+  .jira-inbox .jira-detail__back,
+  .jira-inbox .jira-settings-manager__actions .button,
+  .jira-inbox .jira-attachments .button,
+  .jira-inbox .jira-mcp-drafts__actions .button {
+    min-height: 44px;
+  }
+  .jira-pane.jira-pane .jira-view-tab,
+  .jira-inbox.jira-inbox .jira-head__refresh,
+  .jira-inbox.jira-inbox .jira-native-view-toolbar__mode,
+  .jira-inbox.jira-inbox .jira-native-view-toolbar__status,
+  .jira-inbox.jira-inbox .jira-native-view-toolbar__status-select,
+  .jira-inbox.jira-inbox .jira-list-toolbar__search,
+  .jira-inbox.jira-inbox .jira-primary-project-scope > summary:not(:where(.jira-project-scope-picker) *),
+  .jira-inbox.jira-inbox .jira-quick-search input,
+  .jira-inbox.jira-inbox .jira-quick-search > .button,
+  .jira-inbox.jira-inbox .jira-board-filter-details > summary:not(:where(.jira-project-scope-picker) *),
+  .jira-inbox.jira-inbox .jira-personal-scope > summary:not(:where(.jira-project-scope-picker) *),
+  .jira-inbox.jira-inbox .jira-search-details > summary,
+  .jira-inbox.jira-inbox .jira-board-options > summary {
+    min-height: 44px;
+  }
+  .jira-inbox.jira-inbox .jira-head__refresh {
+    width: 44px;
+    height: 44px;
+    flex-basis: 44px;
+  }
+  .jira-inbox.jira-inbox .jira-native-view-toolbar__mode {
+    min-width: 44px;
+  }
+  .jira-inbox.jira-inbox .custom-select__button,
+  .jira-inbox.jira-inbox .jira-primary-project-scope .custom-select__button,
+  .jira-inbox.jira-inbox .jira-head__connection .custom-select__button,
+  .jira-inbox.jira-inbox .jira-board-controls .custom-select__button {
+    height: 44px;
+    min-height: 44px;
+  }
+  .jira-inbox.jira-inbox--compact-board .jira-board-filter-details > summary:not(:where(.jira-project-scope-picker) *) {
+    min-height: 44px;
+  }
+}
+
+@media (max-height: 480px), (max-width: 680px) {
+  .jira-inbox.jira-inbox--compact .custom-select__button,
+  .jira-inbox.jira-inbox--compact-board .custom-select__button,
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view .jira-head__refresh,
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view .jira-list-toolbar__search,
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view
+    .jira-personal-scope
+    > summary:not(:where(.jira-project-scope-picker) *),
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view
+    .jira-board-filter-details
+    > summary:not(:where(.jira-project-scope-picker) *) {
+    height: 44px;
+    min-height: 44px;
+  }
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view .jira-head__refresh {
+    width: 44px;
+    flex-basis: 44px;
+  }
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view .jira-native-view-toolbar__mode {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+}
+
+@media (max-width: 480px) {
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view .jira-board-toolbar {
+    flex-wrap: wrap;
+    overflow: visible;
+  }
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view .jira-native-view-toolbar {
+    flex: 1 1 100%;
+    width: 100%;
+  }
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view .jira-native-view-toolbar__mode,
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view .jira-native-view-toolbar__status-select {
+    font-size: var(--font-size-caption);
+  }
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view .jira-personal-scope {
+    flex: 1 1 100%;
+    width: 100%;
+    margin-top: 2px;
+  }
+  .jira-inbox.jira-inbox--compact-board.jira-inbox--native-view
+    .jira-personal-scope
+    > summary:not(:where(.jira-project-scope-picker) *) {
+    width: 100%;
+    justify-content: flex-start;
+    gap: 8px;
+    padding: 6px 8px;
+    font-size: var(--font-size-caption);
+    white-space: normal;
+  }
+}
+
+.jira-inbox .jira-detail-header__actions > .button,
+.jira-inbox .jira-extra-actions > summary {
+  min-height: 30px;
+  padding: 5px 9px;
+}
+.jira-inbox .jira-extra-actions {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.jira-inbox .jira-extra-actions > summary {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  list-style: none;
+}
+.jira-inbox .jira-extra-actions > summary::before {
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  content: "";
+  transform: translateY(-1px) rotate(45deg);
+  transition: transform 120ms ease;
+}
+.jira-inbox .jira-extra-actions[open] > summary::before {
+  transform: translateY(2px) rotate(225deg);
+}
+.jira-inbox .jira-extra-actions > summary::-webkit-details-marker {
+  display: none;
+}
+.jira-inbox .jira-extra-actions[open] {
+  z-index: 2;
+}
+.jira-inbox .jira-extra-actions__menu {
+  display: none;
+  position: fixed;
+  top: var(--jira-menu-top, 0);
+  left: var(--jira-menu-left, 0);
+  z-index: 20;
+  min-width: 190px;
+  max-width: min(280px, 76vw);
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--menu-bg, var(--surface-card));
+  box-shadow: var(--menu-shadow);
+}
+.jira-inbox .jira-extra-actions[open] .jira-extra-actions__menu {
+  display: grid;
+  gap: 3px;
+}
+.jira-inbox .jira-extra-actions__menu > a,
+.jira-inbox .jira-extra-actions__menu > button {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 34px;
+  max-width: none;
+  justify-content: flex-start;
+  text-align: left;
+  white-space: nowrap;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.jira-inbox .jira-extra-actions__menu > a {
+  text-decoration: none;
+}
+.jira-inbox .jira-extra-actions__menu > a:hover,
+.jira-inbox .jira-extra-actions__menu > button:hover,
+.jira-inbox .jira-extra-actions__menu > a:focus-visible,
+.jira-inbox .jira-extra-actions__menu > button:focus-visible {
+  background: rgba(var(--tint), 0.08);
+}
+.jira-inbox .jira-extra-actions__menu > .jira-upload-status {
+  padding: 6px 8px;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+  white-space: normal;
+}
+.jira-inbox .jira-description p {
+  margin: 0 0 0.75em;
+}
+.jira-inbox .jira-description p:last-child {
+  margin-bottom: 0;
+}
+.jira-inbox .jira-description h1,
+.jira-inbox .jira-description h2,
+.jira-inbox .jira-description h3,
+.jira-inbox .jira-description h4 {
+  margin: 1.15em 0 0.45em;
+  color: var(--text);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.35;
+}
+.jira-inbox .jira-description h1 {
+  margin-top: 0;
+  font-size: 1.3em;
+}
+.jira-inbox .jira-description h2 {
+  font-size: 1.18em;
+}
+.jira-inbox .jira-description h3 {
+  font-size: 1.08em;
+}
+.jira-inbox .jira-description h4 {
+  font-size: 1em;
+}
+.jira-inbox .jira-description ul,
+.jira-inbox .jira-description ol {
+  margin: 0.35em 0 0.85em;
+  padding-left: 1.5em;
+}
+.jira-inbox .jira-description li {
+  margin: 0.25em 0;
+  padding-left: 0.15em;
+}
+.jira-inbox .jira-description a {
+  color: var(--accent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+.jira-inbox .jira-description blockquote {
+  margin: 0.75em 0;
+  padding: 0.45em 0.85em;
+  border-left: 3px solid var(--accent);
+  color: var(--muted);
+  background: rgba(var(--tint), 0.035);
+}
+.jira-inbox .jira-description hr {
+  margin: 1em 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+.jira-inbox .jira-description table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.jira-inbox .jira-description th,
+.jira-inbox .jira-description td {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  text-align: left;
+}
+.jira-inbox .jira-description th {
+  background: rgba(var(--tint), 0.06);
+}
+.jira-inbox .jira-description img {
+  max-width: 100%;
+}
+.jira-inbox .jira-action-details:not([open]) {
+  display: none;
+}
+.jira-inbox .jira-action-details[open] {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 8px 12px;
+}
+.jira-inbox .jira-action-details[open] > summary {
+  display: none;
+}
+
+/* Status tones shared by board columns, status pills and linked issues. */
+.jira-inbox [data-tone],
+.jira-issue-preview [data-tone] {
+  --jira-tone: var(--status-muted);
+}
+.jira-inbox [data-tone="progress"],
+.jira-issue-preview [data-tone="progress"] {
+  --jira-tone: var(--status-review);
+}
+.jira-inbox [data-tone="waiting"],
+.jira-issue-preview [data-tone="waiting"] {
+  --jira-tone: var(--status-paused);
+}
+.jira-inbox [data-tone="blocked"],
+.jira-issue-preview [data-tone="blocked"] {
+  --jira-tone: var(--status-failed);
+}
+.jira-inbox [data-tone="review"],
+.jira-issue-preview [data-tone="review"] {
+  --jira-tone: var(--status-merged);
+}
+.jira-inbox [data-tone="testing"],
+.jira-issue-preview [data-tone="testing"] {
+  --jira-tone: color-mix(in srgb, var(--status-review) 55%, var(--status-success));
+}
+.jira-inbox [data-tone="done"],
+.jira-issue-preview [data-tone="done"] {
+  --jira-tone: var(--status-success);
+}
+.jira-inbox [data-tone="cancelled"],
+.jira-issue-preview [data-tone="cancelled"] {
+  --jira-tone: var(--status-muted);
+}
+.jira-inbox .jira-status-pill,
+.jira-issue-preview .jira-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  min-height: 22px;
+  padding: 2px 9px 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--jira-tone, var(--muted)) 38%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--jira-tone, var(--muted)) 15%, transparent);
+  color: color-mix(in srgb, var(--jira-tone, var(--muted)) 70%, var(--text) 30%);
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.2;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.jira-inbox .jira-status-pill::before,
+.jira-issue-preview .jira-status-pill::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* Assignee filter chips */
+.jira-inbox .jira-assignee-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 240px;
+  min-height: 30px;
+  padding: 3px 11px 3px 4px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-control);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--font-size-caption);
+  cursor: pointer;
+  transition:
+    border-color 0.12s ease,
+    background-color 0.12s ease;
+}
+.jira-inbox .jira-assignee-chip:first-child {
+  padding-inline: 13px;
+  font-weight: 600;
+}
+.jira-inbox .jira-assignee-chip:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+.jira-inbox .jira-assignee-chip[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, var(--surface-control));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 44%, transparent);
+}
+
+/* Board */
+.jira-inbox .jira-board-columns {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+  padding-bottom: 4px;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
+}
+.jira-inbox .jira-board-column {
+  display: flex;
+  flex-direction: column;
+  flex: 1 0 240px;
+  min-width: 240px;
+  min-height: 0;
+  max-width: 360px;
+  scroll-snap-align: start;
+  border: 1px solid var(--border);
+  border-top: 3px solid var(--jira-tone);
+  border-radius: 10px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--jira-tone) 10%, transparent), transparent 160px),
+    rgba(var(--tint), 0.015);
+}
+.jira-inbox .jira-board-column__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 12px 9px;
+}
+.jira-inbox .jira-board-column__header strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.jira-inbox .jira-board-column__dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--jira-tone);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--jira-tone) 24%, transparent);
+}
+.jira-inbox .jira-board-column__count {
+  flex: 0 0 auto;
+  min-width: 22px;
+  margin-left: auto;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--jira-tone) 18%, transparent);
+  color: color-mix(in srgb, var(--jira-tone) 70%, var(--text) 30%);
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  text-align: center;
+}
+.jira-inbox .jira-board-column__statuses {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: -3px 12px 8px;
+}
+.jira-inbox .jira-board-column__statuses span {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(var(--tint), 0.05);
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-board-column__cards {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  gap: 8px;
+  padding: 2px 8px 10px;
+  overscroll-behavior-y: contain;
+}
+.jira-inbox .jira-board-column__cards:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.jira-inbox .jira-board-column__empty {
+  margin: 0;
+  padding: 18px 8px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+  text-align: center;
+}
+.jira-inbox .jira-board-issue {
+  --jira-type: var(--status-muted);
+  flex: 0 0 auto;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  width: 100%;
+  min-width: 0;
+  padding: 10px 11px 9px 14px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-card);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease,
+    transform 0.12s ease;
+}
+.jira-inbox .jira-board-issue::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--jira-type);
+}
+.jira-inbox .jira-board-issue:hover {
+  border-color: color-mix(in srgb, var(--jira-type) 50%, var(--border));
+  box-shadow: var(--menu-shadow);
+  transform: translateY(-1px);
+}
+.jira-inbox .jira-board-issue:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.jira-inbox .jira-board-issue--bug {
+  --jira-type: var(--status-failed);
+}
+.jira-inbox .jira-board-issue--story {
+  --jira-type: var(--status-success);
+}
+.jira-inbox .jira-board-issue--task {
+  --jira-type: var(--status-review);
+}
+.jira-inbox .jira-board-issue--subtask {
+  --jira-type: var(--status-paused);
+}
+.jira-inbox .jira-board-issue--epic {
+  --jira-type: var(--status-merged);
+}
+.jira-inbox .jira-board-issue__topline {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.jira-inbox .jira-board-issue__key {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jira-inbox .jira-board-issue__summary {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: var(--font-size-body);
+  font-weight: 500;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+.jira-inbox .jira-board-issue[data-done] .jira-board-issue__summary {
+  color: color-mix(in srgb, var(--text) 72%, transparent);
+}
+.jira-inbox .jira-board-issue[data-done] .jira-board-issue__key {
+  text-decoration: line-through;
+}
+.jira-inbox .jira-board-issue__labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.jira-inbox .jira-board-issue__labels span {
+  max-width: 140px;
+  padding: 1px 7px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: rgba(var(--tint), 0.06);
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jira-inbox .jira-board-issue__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding-top: 7px;
+  border-top: 1px solid var(--border);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-board-issue__footer > .jira-person {
+  margin-left: auto;
+}
+.jira-inbox .jira-board-unmapped {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  flex: 0 0 auto;
+  gap: 8px;
+  padding: 12px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+}
+.jira-inbox .jira-board-unmapped h3,
+.jira-inbox .jira-board-unmapped p {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+.jira-inbox .jira-board-unmapped > p {
+  color: var(--muted);
+}
+
+/* Issue list */
+.jira-inbox .jira-issue {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  width: 100%;
+  padding: 10px 12px 10px 11px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-left: 3px solid transparent;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+.jira-inbox .jira-issue:hover {
+  background: rgba(var(--tint), 0.035);
+}
+.jira-inbox .jira-issue.selected {
+  border-left-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+.jira-inbox .jira-issue > strong {
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.jira-inbox .jira-issue__summary,
+.jira-inbox .jira-native-issue-list__summary {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+.jira-inbox .jira-issue__updated {
+  margin-left: auto;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.jira-inbox .jira-setup__choices {
+  display: grid;
+  gap: 14px;
+  margin: 12px 0;
+}
+.jira-inbox .jira-setup__choices > div {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+}
+.jira-inbox .jira-setup__choices p {
+  margin: 0;
+}
+.jira-inbox .jira-filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.jira-inbox .jira-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 2px 4px 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(var(--tint), 0.05);
+  color: var(--text);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-filter-chip__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jira-inbox .jira-filter-chip__remove {
+  flex: 0 0 auto;
+  min-width: 22px;
+  min-height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-filter-chip__remove:hover,
+.jira-inbox .jira-filter-chip__remove:focus-visible {
+  background: rgba(var(--tint), 0.1);
+  color: var(--text);
+}
+.jira-inbox .jira-empty__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+.jira-inbox .jira-issue__topline {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-width: 0;
+}
+.jira-inbox .jira-issue__key {
+  color: var(--accent);
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.jira-inbox .jira-issue__topline .jira-status-pill {
+  margin-left: auto;
+  min-height: 18px;
+  padding: 1px 6px;
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-issue__footer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  min-width: 0;
+  font-size: var(--font-size-caption);
+}
+
+/* Hover preview */
+.jira-issue-preview .jira-issue-preview__meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  font-size: var(--font-size-caption);
+}
+
+/* Issue detail */
+.jira-inbox .jira-detail {
+  container-name: jira-issue;
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+.jira-inbox .jira-detail[data-selected="true"] {
+  padding: 14px 20px 20px;
+}
+.jira-inbox.jira-inbox--board-detail .jira-detail[data-selected="true"] {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 1320px;
+  margin-inline: auto;
+}
+.jira-inbox .jira-detail__back {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  align-self: flex-start;
+  min-height: 28px;
+  padding: 3px 10px;
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-detail-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.jira-inbox .jira-detail-title {
+  min-width: 0;
+}
+.jira-inbox .jira-detail-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-detail-crumbs__project {
+  padding: 1px 7px;
+  border-radius: 5px;
+  background: rgba(var(--tint), 0.06);
+  font-weight: 600;
+}
+.jira-inbox .jira-detail-key {
+  color: var(--accent);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.jira-inbox .jira-detail__popout {
+  margin-left: auto;
+  align-items: center;
+  gap: 5px;
+}
+.jira-inbox .jira-detail .jira-detail-title h2 {
+  margin: 0 0 12px;
+  font-size: var(--font-size-heading);
+  font-weight: 650;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.jira-inbox .jira-detail-title h2:focus:not(:focus-visible) {
+  outline: none;
+}
+.jira-inbox .jira-detail-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-detail-meta .jira-status-pill {
+  min-height: 26px;
+  padding: 3px 11px 3px 9px;
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-detail-meta__person {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(var(--tint), 0.03);
+}
+.jira-inbox .jira-detail-meta__label {
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-detail-meta__freshness,
+.jira-inbox .jira-detail-refresh-error {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-detail-refresh-error {
+  color: var(--status-paused);
+}
+.jira-inbox .jira-detail-header__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 20px;
+}
+.jira-inbox .jira-detail-header__actions > .button,
+.jira-inbox .jira-extra-actions > summary {
+  min-height: 30px;
+  padding: 5px 11px;
+}
+.jira-inbox .jira-detail-header__actions > a.button {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+.jira-inbox .jira-extra-actions[open] > a,
+.jira-inbox .jira-extra-actions[open] > button {
+  background: var(--menu-bg);
+  box-shadow: var(--menu-shadow);
+}
+.jira-inbox .jira-detail-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 300px);
+  align-items: start;
+  gap: 20px;
+  min-width: 0;
+}
+.jira-inbox .jira-detail-main {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+.jira-inbox .jira-detail-card {
+  min-width: 0;
+  margin: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-card);
+}
+.jira-inbox .jira-detail-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.jira-inbox .jira-detail-card__title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 12px;
+  color: var(--text);
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.jira-inbox .jira-detail-card__header .jira-detail-card__title {
+  margin: 0;
+}
+.jira-inbox .jira-detail-card__count {
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(var(--tint), 0.08);
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+  letter-spacing: 0;
+  text-align: center;
+}
+.jira-inbox .jira-description {
+  max-width: 92ch;
+  font-size: var(--font-size-body);
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.jira-inbox .jira-description-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 18px 16px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  font-style: italic;
+}
+.jira-inbox .jira-issue-links ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.jira-inbox .jira-issue-links li {
+  display: grid;
+  grid-template-columns: minmax(90px, auto) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(var(--tint), 0.02);
+}
+.jira-inbox .jira-issue-links__type {
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+  white-space: nowrap;
+}
+.jira-inbox .jira-issue-links li > a {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text);
+  text-decoration: none;
+}
+.jira-inbox .jira-issue-links li > a strong {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+.jira-inbox .jira-issue-links li > a span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jira-inbox .jira-issue-links li > a:hover span {
+  text-decoration: underline;
+}
+.jira-inbox .jira-attachments > summary {
+  margin: 0;
+  cursor: pointer;
+  list-style: none;
+}
+.jira-inbox .jira-attachments > summary::-webkit-details-marker {
+  display: none;
+}
+.jira-inbox .jira-attachments[open] > summary {
+  margin-bottom: 12px;
+}
+.jira-inbox .jira-attachments ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.jira-inbox .jira-attachments li {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(var(--tint), 0.02);
+}
+.jira-inbox .jira-attachment__name {
+  flex: 1 1 180px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.jira-inbox .jira-attachments small {
+  color: var(--muted);
+}
+.jira-inbox .jira-workspace-links {
+  display: grid;
+  gap: 8px;
+}
+.jira-inbox .jira-development-links {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.jira-inbox .jira-development-links .jira-detail-card__title {
+  margin: 0;
+}
+.jira-inbox .jira-development-links__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0;
+}
+.jira-inbox .jira-development-links__item > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+.jira-inbox .jira-development-links__item small {
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jira-inbox .jira-workspace-links .jira-detail-card__title {
+  margin: 0;
+}
+.jira-inbox .jira-workspace-links__form {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.jira-inbox .jira-workspace-links label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-workspace-link-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  max-width: 540px;
+  margin: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.jira-inbox .jira-comments__notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 14px 4px 4px;
+  color: var(--muted);
+}
+.jira-inbox .jira-comments__notice--error {
+  color: var(--danger);
+}
+.jira-inbox .jira-comments__list {
+  display: grid;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.jira-inbox .jira-comment {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+}
+.jira-inbox .jira-comment__bubble {
+  min-width: 0;
+  padding: 9px 12px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px 10px 10px 10px;
+  background: rgba(var(--tint), 0.03);
+}
+.jira-inbox .jira-comment__meta {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin: 0 0 4px;
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-comment__meta time {
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-comment__body {
+  overflow-wrap: anywhere;
+}
+.jira-inbox .jira-detail-sidebar {
+  position: sticky;
+  top: 0;
+  min-width: 0;
+  margin: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-card);
+}
+.jira-inbox .jira-detail-sidebar > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+}
+.jira-inbox .jira-detail-sidebar > summary::-webkit-details-marker {
+  display: none;
+}
+.jira-inbox .jira-detail-sidebar > summary::after {
+  content: "▾";
+  color: var(--muted);
+}
+.jira-inbox .jira-detail-sidebar[open] > summary::after {
+  content: "▴";
+}
+.jira-inbox .jira-detail-sidebar dl {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px 12px;
+  margin: 0;
+}
+.jira-inbox .jira-detail-sidebar dt {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-detail-sidebar dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.jira-inbox .jira-detail-sidebar .jira-detail-sidebar__dates {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.jira-inbox .jira-detail-sidebar__dates dd {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.3;
+}
+.jira-inbox .jira-detail-sidebar__dates small {
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-metadata-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.jira-inbox .jira-metadata-tags span {
+  padding: 1px 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-metadata-tags--plain span {
+  border-color: var(--border);
+  border-radius: 5px;
+  background: rgba(var(--tint), 0.05);
+}
+/* The selected sprint, shown on the Board options trigger */
+.jira-inbox .jira-sprint-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-sprint-bar__name {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jira-inbox .jira-sprint-bar__state {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: rgba(var(--tint), 0.07);
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.jira-inbox .jira-sprint-bar__state[data-state="active"] {
+  background: color-mix(in srgb, var(--status-review) 18%, transparent);
+  color: color-mix(in srgb, var(--status-review) 70%, var(--text) 30%);
+}
+.jira-inbox .jira-sprint-bar__remaining {
+  color: var(--muted);
+}
+.jira-inbox .jira-sprint-bar__remaining {
+  color: var(--text);
+  font-weight: 600;
+}
+.jira-inbox .jira-sprint-bar__progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+}
+.jira-inbox .jira-sprint-bar__meter {
+  display: block;
+  width: 44px;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(var(--tint), 0.08);
+}
+.jira-inbox .jira-sprint-bar__meter > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--status-success);
+}
+
+/* Issue list filter and sort */
+.jira-inbox .jira-list-toolbar {
+  position: sticky;
+  top: -8px;
+  z-index: 2;
+  display: grid;
+  gap: 8px;
+  margin: -8px -8px 4px;
+  padding: 10px 10px 9px;
+  border-bottom: 1px solid var(--border);
+  background: var(--jira-surface);
+}
+.jira-inbox.jira-inbox .jira-list-toolbar__search {
+  min-height: 32px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-list-toolbar__row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+}
+.jira-inbox .jira-list-toolbar__groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.jira-inbox .jira-list-toolbar__group {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 26px;
+  padding: 2px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--font-size-caption);
+  cursor: pointer;
+}
+.jira-inbox .jira-list-toolbar__group span {
+  color: var(--text);
+  font-weight: 700;
+}
+.jira-inbox .jira-list-toolbar__group[data-tone]::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--jira-tone);
+}
+.jira-inbox .jira-list-toolbar__group[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--jira-tone, var(--accent)) 60%, var(--border));
+  background: color-mix(in srgb, var(--jira-tone, var(--accent)) 14%, transparent);
+  color: var(--text);
+}
+.jira-inbox .jira-list-toolbar__sort {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 170px;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-list-toolbar__sort > .custom-select {
+  flex: 1 1 auto;
+}
+.jira-inbox .jira-list-toolbar__empty {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 18px 8px;
+  color: var(--muted);
+}
+.jira-inbox .jira-list-toolbar__count {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+@container (max-width: 680px) {
+  .jira-inbox .jira-board-column {
+    flex: 0 0 min(82cqw, 280px);
+    min-width: 0;
+  }
+}
+@container jira-issue (max-width: 820px) {
+  .jira-inbox .jira-detail-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .jira-inbox .jira-detail-sidebar {
+    position: static;
+    order: 1;
+  }
+  .jira-inbox .jira-detail-header {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .jira-inbox .jira-detail-header__actions {
+    justify-content: flex-start;
+    padding-top: 0;
+  }
+}
+@container jira-issue (max-width: 520px) {
+  .jira-inbox .jira-detail[data-selected="true"] {
+    gap: 10px;
+    padding: 10px;
+  }
+  .jira-inbox .jira-detail-title h2 {
+    margin-bottom: 6px;
+    font-size: calc(var(--font-size-heading) * 0.9);
+    line-height: 1.2;
+  }
+  .jira-inbox .jira-detail-meta {
+    gap: 5px;
+  }
+  .jira-inbox .jira-detail-header__actions {
+    gap: 5px;
+  }
+  .jira-inbox .jira-detail-card {
+    padding: 12px;
+  }
+  .jira-inbox .jira-issue-links li {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .jira-inbox .jira-issue-links__type {
+    grid-column: 1 / -1;
+  }
+}
+@media (pointer: coarse), (any-pointer: coarse) {
+  .jira-inbox.jira-inbox .jira-list-toolbar__search {
+    height: 44px;
+    min-height: 44px;
+  }
+
+  .jira-inbox.jira-inbox .jira-empty--action {
+    min-height: 44px;
+  }
+}
+.jira-inbox.jira-inbox--compact .jira-empty--action {
+  min-height: 44px;
+}
+@media (max-height: 520px) {
+  .jira-inbox.jira-inbox--compact-board .jira-board-filter-details[open] {
+    position: fixed;
+    z-index: 1200;
+    inset-block: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-bottom));
+    inset-inline: 8px;
+    max-height: calc(100dvh - 16px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: var(--surface-card);
+    box-shadow: var(--menu-shadow);
+    -webkit-overflow-scrolling: touch;
+  }
+  .jira-inbox.jira-inbox--compact-board
+    .jira-board-filter-details[open]
+    > summary:not(:where(.jira-project-scope-picker) *) {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    margin: -8px -8px 8px;
+    padding-inline: 8px;
+    background: var(--surface-card);
+  }
+}
+@media (pointer: coarse), (any-pointer: coarse) {
+  .jira-inbox.jira-inbox
+    button:not(:where(.custom-select, .markdown-content, .jira-project-scope-picker, .workspace-pane__header) *),
+  .jira-inbox.jira-inbox
+    input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]):not(
+      :where(.custom-select, .markdown-content, .jira-project-scope-picker) *
+    ),
+  .jira-inbox.jira-inbox textarea:not(:where(.markdown-content) *),
+  .jira-inbox.jira-inbox summary:not(:where(.markdown-content, .jira-project-scope-picker) *) {
+    min-height: 44px;
+  }
+  .jira-inbox.jira-inbox summary:not(:where(.markdown-content, .jira-project-scope-picker) *) {
+    display: flex;
+    align-items: center;
+  }
+  .jira-inbox.jira-inbox
+    label:has(> input[type="checkbox"]):not(:where(.markdown-content, .jira-project-scope-picker) *),
+  .jira-inbox.jira-inbox label:has(> input[type="radio"]):not(:where(.markdown-content, .jira-project-scope-picker) *) {
+    display: flex;
+    min-height: 44px;
+    align-items: center;
+    gap: 8px;
+  }
+  .jira-inbox.jira-inbox input[type="checkbox"],
+  .jira-inbox.jira-inbox input[type="radio"] {
+    width: 20px;
+    height: 20px;
+    min-height: 0;
+    flex: 0 0 auto;
+  }
+}
+
+.jira-inbox .jira-head__sync-status {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+.jira-inbox .jira-head__sync-status .spinner {
+  flex: 0 0 auto;
+}
+.jira-inbox .jira-head__sync-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.jira-inbox .jira-head__sync-status.jira-native-view-sync-error {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-head__sync-status .button {
+  flex: 0 0 auto;
+  min-height: 0;
+  padding: 1px 6px;
+}
+@container (max-width: 360px) {
+  .jira-inbox .jira-assignee-filter,
+  .jira-inbox .jira-saved-queries > label:not(.jira-query-notifications),
+  .jira-inbox .jira-saved-queries .jira-query-notifications,
+  .jira-inbox .jira-list-toolbar__sort {
+    min-width: 0;
+    max-width: 100%;
+    flex: 1 1 100%;
+  }
+  .jira-inbox .jira-views-menu__panel,
+  .jira-inbox .jira-extra-actions__menu {
+    min-width: 0;
+    max-width: calc(100vw - 16px);
+  }
+  .jira-inbox .jira-filter-chip {
+    max-width: 100%;
+  }
+  .jira-inbox .jira-issue__footer {
+    gap: 4px 8px;
+  }
+}
+.jira-inbox .jira-status-slot {
+  min-height: 20px;
+  margin: 0;
+  visibility: hidden;
+}
+.jira-inbox .jira-status-slot[data-active="true"] {
+  visibility: visible;
+}
+.jira-inbox .jira-results,
+.jira-inbox .jira-board-columns,
+.jira-inbox .jira-native-issue-list,
+.jira-inbox .jira-detail {
+  transition: opacity 0.1s ease;
+}
+.jira-inbox .jira-results[aria-busy="true"],
+.jira-inbox .jira-board-columns[aria-busy="true"],
+.jira-inbox .jira-native-issue-list[aria-busy="true"],
+.jira-inbox .jira-detail[aria-busy="true"] {
+  opacity: 0.6;
+  transition: opacity 0.15s ease 0.2s;
+}
+.jira-inbox .jira-skeleton {
+  display: grid;
+  gap: 8px;
+  padding: 4px 0;
+}
+.jira-inbox .jira-skeleton__row {
+  height: 58px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--muted), transparent 82%);
+}
+.jira-inbox .jira-detail {
+  position: relative;
+}
+.jira-inbox .jira-detail__pending-spinner {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  z-index: 1;
+}
+.jira-inbox .jira-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+/* Detail actions: menus, inline confirmation, composer */
+.jira-inbox .jira-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+.jira-inbox .jira-status-menu {
+  display: inline-flex;
+}
+.jira-inbox .jira-status-menu > summary.jira-status-pill {
+  cursor: pointer;
+  list-style: none;
+}
+.jira-inbox .jira-status-menu > summary.jira-status-pill::-webkit-details-marker {
+  display: none;
+}
+.jira-inbox .jira-status-menu > summary.jira-status-pill::before {
+  width: 6px;
+  height: 6px;
+  margin: 0;
+  border: 0;
+  border-radius: 50%;
+  background: currentColor;
+  transform: none;
+}
+.jira-inbox .jira-status-menu > summary.jira-status-pill::after {
+  width: 5px;
+  height: 5px;
+  margin-left: 2px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  content: "";
+  transform: translateY(-1px) rotate(45deg);
+}
+.jira-inbox .jira-status-menu > summary.jira-status-pill:hover,
+.jira-inbox .jira-status-menu[open] > summary.jira-status-pill {
+  border-color: color-mix(in srgb, var(--jira-tone, var(--muted)) 70%, transparent);
+}
+.jira-inbox .jira-menu__item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 1px;
+  width: 100%;
+  min-height: 34px;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: var(--font-size-body);
+  text-align: left;
+  cursor: pointer;
+}
+/* Outranks the row layout `.jira-extra-actions__menu > button` gives every menu button: centred there, a long
+   label spilled past both edges of the menu instead of ending in an ellipsis. */
+.jira-inbox .jira-extra-actions__menu > .jira-menu__item {
+  flex-direction: column;
+  align-items: stretch;
+}
+.jira-inbox .jira-extra-actions__menu > .jira-menu__item:has(> .jira-menu__icon) {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-content: center;
+  column-gap: 9px;
+}
+.jira-inbox .jira-menu__item:has(> .jira-menu__icon) > :not(.jira-menu__icon) {
+  grid-column: 2;
+}
+.jira-inbox .jira-menu__icon {
+  grid-row: span 2;
+  align-self: center;
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  color: var(--muted);
+}
+.jira-inbox .jira-menu__item:hover:not(:disabled) > .jira-menu__icon,
+.jira-inbox .jira-menu__item:focus-visible > .jira-menu__icon {
+  color: var(--text);
+}
+.jira-inbox .jira-menu__item small {
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-menu__item:hover:not(:disabled),
+.jira-inbox .jira-menu__item:focus-visible {
+  background: rgba(var(--tint), 0.08);
+}
+.jira-inbox .jira-menu__item:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.jira-inbox .jira-menu__note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 6px 10px;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+  white-space: normal;
+}
+.jira-inbox .jira-extra-actions__menu > .jira-inline-error {
+  margin: 0;
+  padding: 6px 10px;
+  white-space: normal;
+}
+.jira-inbox .jira-assign-search {
+  display: block;
+  padding: 4px 6px;
+}
+.jira-inbox .jira-assign-search input {
+  width: 100%;
+  min-height: 30px;
+}
+.jira-inbox .jira-write-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent, var(--muted)) 55%, var(--border));
+  border-radius: 10px;
+  background: var(--surface-card);
+}
+.jira-inbox .jira-write-card__question {
+  margin: 0;
+  font-size: var(--font-size-body);
+  font-weight: 600;
+}
+.jira-inbox .jira-write-card__fields {
+  display: grid;
+  gap: 8px;
+}
+.jira-inbox .jira-write-card__fields label,
+.jira-inbox .jira-comment-composer label:not(.jira-visually-hidden) {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-write-card__actor,
+.jira-inbox .jira-comment-composer .jira-help {
+  margin: 0;
+}
+.jira-inbox .jira-write-card__actions,
+.jira-inbox .jira-comment-composer__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.jira-inbox .jira-reason {
+  min-width: 0;
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-reason__summary {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  color: var(--muted);
+}
+.jira-inbox .jira-reason__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jira-inbox .jira-reason__edit {
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent, inherit);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.jira-inbox .jira-reason__editor {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.jira-inbox .jira-reason__editor input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.jira-inbox .jira-reason__counter {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.jira-inbox .jira-reason__counter[data-short="true"] {
+  color: var(--danger);
+}
+.jira-inbox .jira-comment-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+.jira-inbox .jira-comment-composer__meta {
+  display: grid;
+  gap: 4px;
+}
+.jira-inbox .jira-comment-composer__meta[inert] {
+  visibility: hidden;
+}
+.jira-inbox .jira-comment-composer textarea {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+}
+.jira-inbox .jira-comment-composer__done {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-comment:focus-visible {
+  outline: 2px solid var(--accent, currentColor);
+  outline-offset: 2px;
+}
+.jira-inbox .jira-write-reconcile {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.jira-inbox .jira-write-reconcile p {
+  flex: 1 1 100%;
+  margin: 0;
+}
+/* One toolbar row */
+.jira-inbox .jira-toolbar-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.jira-inbox .jira-toolbar-row > .jira-quick-search,
+.jira-inbox .jira-toolbar-row > .jira-board-controls {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.jira-inbox .jira-toolbar-row .jira-board-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.jira-inbox .jira-toolbar-row .jira-board-controls > label {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.jira-inbox .jira-toolbar-row > .jira-extra-actions > summary,
+.jira-inbox .jira-toolbar-row .jira-save-board-tab {
+  min-height: 34px;
+}
+/* The caption sits beside the select, as "Connection" does in the head, so every control of the row shares one
+   centre line. Board options open as a popover over the board, like Views, so nothing below them moves. */
+.jira-inbox:not(.jira-inbox--compact) .jira-toolbar-row .jira-board-controls > label {
+  flex-direction: row;
+  align-items: center;
+  gap: 7px;
+}
+.jira-inbox:not(.jira-inbox--compact) .jira-toolbar-row .jira-board-controls > label > .custom-select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.jira-inbox:not(.jira-inbox--compact) .jira-controls > .jira-toolbar-row,
+.jira-inbox:not(.jira-inbox--compact) .jira-controls > .jira-board-options {
+  align-self: flex-start;
+}
+.jira-inbox:not(.jira-inbox--compact) .jira-controls > .jira-toolbar-row {
+  flex: 1 1 100%;
+}
+/* Few people write JQL: the editor stays out of the way until "Advanced JQL…" in ⋯ asks for it. */
+.jira-inbox .jira-search-details:not(.jira-search-details--requested) {
+  display: none;
+}
+.jira-inbox .jira-toolbar-row > .jira-save-board-tab {
+  margin-left: auto;
+}
+.jira-inbox .jira-board-options > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 5px 11px;
+  list-style: none;
+  cursor: pointer;
+}
+.jira-inbox .jira-board-options > summary::-webkit-details-marker {
+  display: none;
+}
+.jira-inbox .jira-board-options > summary::before {
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  content: "";
+  transform: translateY(-1px) rotate(45deg);
+  transition: transform 120ms ease;
+}
+.jira-inbox .jira-board-options[open] > summary::before {
+  transform: translateY(2px) rotate(225deg);
+}
+.jira-inbox .jira-board-options__panel {
+  display: grid;
+  gap: 10px;
+}
+.jira-inbox:not(.jira-inbox--compact) .jira-board-options {
+  position: relative;
+}
+.jira-inbox:not(.jira-inbox--compact) .jira-board-options__panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  width: max-content;
+  min-width: 240px;
+  max-width: min(320px, 80vw);
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--menu-bg, var(--surface-card));
+  box-shadow: var(--menu-shadow);
+}
+/* Board toolbar: assignees are avatars on the toolbar itself, as on a Jira board, and Board filters open as a
+   popover, so neither needs a click to find nor pushes the columns down. */
+.jira-inbox:not(.jira-inbox--compact) .jira-board-toolbar {
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+.jira-inbox:not(.jira-inbox--compact) .jira-native-view-toolbar {
+  flex: 0 1 auto;
+  overflow: visible;
+}
+.jira-inbox:not(.jira-inbox--compact) .jira-native-view-toolbar__statuses {
+  flex-wrap: wrap;
+  overflow-x: visible;
+}
+.jira-inbox .jira-board-people {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+.jira-inbox .jira-board-people > .jira-assignee-chip--all {
+  min-height: 28px;
+  margin-right: 4px;
+  padding: 2px 11px;
+}
+.jira-inbox .jira-board-people > .jira-assignee-chip:not(.jira-assignee-chip--all) {
+  min-height: 0;
+  padding: 2px;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: none;
+}
+/* The chosen person becomes a named pill: an accent ring alone looked like the ring that marks your own avatar. */
+.jira-inbox .jira-board-people > .jira-assignee-chip:not(.jira-assignee-chip--all)[aria-pressed="true"] {
+  margin-inline: 2px;
+  padding: 2px 11px 2px 2px;
+  border-color: var(--accent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 22%, var(--surface-control));
+  font-weight: 600;
+}
+.jira-inbox
+  .jira-board-people:has(> .jira-assignee-chip:not(.jira-assignee-chip--all)[aria-pressed="true"])
+  > .jira-assignee-chip:not(.jira-assignee-chip--all)[aria-pressed="false"]:not(:hover, :focus-visible) {
+  opacity: 0.35;
+}
+.jira-inbox .jira-board-people__find {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  margin-left: 2px;
+  padding: 0;
+  border: 1px dashed var(--border);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.jira-inbox .jira-board-people__find:hover,
+.jira-inbox .jira-board-people__find:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  color: var(--text);
+}
+.jira-inbox .jira-board-people__find svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+/* The board's own settings sit at the right end of its toolbar: the sprint (or board view) with its progress, which
+   opens Board options, then board information and Board filters. No band above the columns is left for them. */
+.jira-inbox .jira-board-toolbar__end {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.jira-inbox .jira-board-toolbar__end + .jira-board-load-more {
+  margin-left: 0;
+}
+.jira-inbox:not(.jira-inbox--compact) .jira-board-toolbar__end > details {
+  position: relative;
+}
+.jira-inbox:not(.jira-inbox--compact) .jira-board-toolbar .jira-board-options__panel {
+  right: 0;
+  left: auto;
+}
+.jira-inbox .jira-board-options__sprint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin: 0;
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-board-toolbar .jira-board-status-details > summary.jira-board-info__trigger {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  min-height: 34px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  list-style: none;
+}
+.jira-inbox .jira-board-info__trigger::-webkit-details-marker {
+  display: none;
+}
+.jira-inbox .jira-board-info__trigger:hover,
+.jira-inbox .jira-board-status-details[open] > .jira-board-info__trigger {
+  color: var(--text);
+}
+.jira-inbox .jira-board-info__trigger svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+.jira-inbox .jira-board-info__panel {
+  display: grid;
+  gap: 6px;
+}
+.jira-inbox:not(.jira-inbox--compact) .jira-board-info__panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  width: min(420px, 80vw);
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--menu-bg, var(--surface-card));
+  box-shadow: var(--menu-shadow);
+  overflow-wrap: anywhere;
+}
+.jira-inbox:not(.jira-inbox--compact) .jira-board-filter-details > .jira-board-filter-content {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  grid-template-columns: minmax(0, 1fr);
+  width: min(440px, 80vw);
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--menu-bg, var(--surface-card));
+  box-shadow: var(--menu-shadow);
+}
+.jira-inbox:not(.jira-inbox--compact) .jira-board-filter-content > * {
+  grid-column: 1 / -1;
+  grid-row: auto;
+  max-width: none;
+}
+.jira-inbox .jira-views-menu__panel {
+  max-height: min(70vh, 460px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  min-width: 260px;
+  max-width: min(360px, 90vw);
+}
+.jira-inbox .jira-menu__heading {
+  margin: 6px 10px 2px;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.jira-inbox .jira-menu__item > span,
+.jira-inbox .jira-menu__item > small {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jira-inbox .jira-saved-queries__list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.jira-inbox .jira-saved-queries__item {
+  display: grid;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.jira-inbox .jira-saved-queries__jql {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Board with the issue detail as a right-hand drawer (wide panes) */
+.jira-inbox .jira-board-split {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+}
+.jira-inbox .jira-board-split > .jira-board-columns {
+  min-width: 0;
+}
+.jira-inbox .jira-board-split--drawer {
+  position: relative;
+  gap: 0;
+  --jira-drawer-w: clamp(360px, 42%, 560px);
+}
+.jira-inbox .jira-board-split--drawer > .jira-board-columns {
+  flex: 1 1 0;
+  padding-right: 12px;
+}
+.jira-inbox .jira-board-split--drawer .jira-board-column {
+  flex: 1 1 200px;
+  min-width: 200px;
+}
+.jira-inbox .jira-board-drawer {
+  flex: 0 0 var(--jira-drawer-w);
+  max-width: calc(100% - 320px);
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  border-left: 1px solid var(--border);
+}
+.jira-inbox .jira-board-drawer__resizer {
+  flex: 0 0 6px;
+  margin-left: -6px;
+  position: relative;
+  z-index: 2;
+  cursor: col-resize;
+  touch-action: none;
+}
+.jira-inbox .jira-board-drawer__resizer:hover,
+.jira-inbox .jira-board-drawer__resizer:active,
+.jira-inbox .jira-board-drawer__resizer:focus-visible {
+  background: color-mix(in srgb, var(--accent) 55%, transparent);
+  outline: none;
+}
+.jira-inbox .jira-board-drawer .jira-detail-layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+.jira-inbox .jira-board-drawer .jira-detail__close {
+  align-self: flex-end;
+}
+.jira-inbox .jira-board-issue[data-nav-row][aria-current="true"],
+.jira-inbox .jira-board-issue:focus-visible {
+  outline: 2px solid var(--accent, currentColor);
+  outline-offset: -2px;
+}
+/* Start development */
+.jira-inbox .jira-branch-start__fields {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.jira-inbox .jira-branch-start__fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-branch-start__progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-branch-start__spinner {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: jira-branch-start-spin 0.8s linear infinite;
+}
+@keyframes jira-branch-start-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .jira-inbox .jira-branch-start__spinner {
+    animation-duration: 2.4s;
+  }
+}
+.jira-inbox .jira-branch-agent-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+/* The Start development dialog is teleported out of the pane, so its root carries .jira-inbox for these rules. */
+.jira-inbox.jira-branch-start {
+  width: min(760px, 100%);
+}
+.jira-inbox .jira-branch-start code {
+  font-size: var(--font-size-caption);
+}
+.jira-inbox .jira-branch-task__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.jira-inbox .jira-branch-mode {
+  display: inline-flex;
+  gap: 2px;
+  margin-left: auto;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(var(--tint), 0.04);
+}
+.jira-inbox .jira-branch-mode .segmented__btn {
+  padding: 3px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--font-size-caption);
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.jira-inbox .jira-branch-mode .segmented__btn:hover:not(.segmented__btn--active) {
+  color: var(--text);
+}
+.jira-inbox .jira-branch-mode .segmented__btn--active {
+  background: rgba(var(--tint), 0.12);
+  color: var(--text);
+}
+.jira-inbox .jira-branch-task textarea {
+  width: 100%;
+  min-height: 180px;
+  resize: vertical;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: var(--font-size-caption);
+  line-height: 1.45;
+}
+.jira-inbox .jira-branch-start__add {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-bottom: 10px;
+}
+.jira-inbox .jira-branch-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  width: 13px;
+  height: 13px;
+  color: var(--muted);
+}
+.jira-inbox .jira-branch-badge .jira-menu__icon {
+  width: 100%;
+  height: 100%;
+}
+
+/* Compact Issues list: the pane is the one scroll, only the status groups stay pinned, and the narrowing tools
+   live in a bottom sheet (JiraFilterSheet) pinned to the bottom of the same scroll. */
+.jira-inbox.workspace-pane__body--git.jira-inbox.jira-inbox--filter-sheet > .jira-columns {
+  flex: 0 0 auto;
+  min-height: 0;
+}
+.jira-inbox.jira-inbox.jira-inbox--filter-sheet .jira-results,
+.jira-inbox.jira-inbox.jira-inbox--filter-sheet .jira-detail {
+  overflow: visible;
+}
+.jira-inbox.jira-inbox.jira-inbox--filter-sheet .jira-list-toolbar {
+  top: -14px;
+  z-index: 3;
+  grid-template-columns: minmax(0, 1fr);
+}
+.jira-inbox.jira-inbox.jira-inbox--filter-sheet .jira-list-toolbar__row {
+  display: block;
+}
+.jira-inbox.jira-inbox.jira-inbox--filter-sheet .jira-list-toolbar__groups {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.jira-inbox.jira-inbox.jira-inbox--filter-sheet .jira-list-toolbar__group {
+  flex: 0 0 auto;
+}
+@container (max-width: 680px) {
+  .jira-inbox.jira-inbox.jira-inbox--filter-sheet .jira-toolbar-row > .jira-quick-search {
+    flex: 1 1 100%;
+  }
+  .jira-inbox.jira-inbox.jira-inbox--filter-sheet .jira-primary-project-scope {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+}
+.jira-inbox .jira-filter-sheet-toggle {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+.jira-inbox .jira-filter-sheet-toggle[aria-expanded="true"] {
+  border-color: var(--accent);
+}
+.jira-inbox .jira-filter-sheet-toggle__count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--bg);
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+}
+.jira-inbox .jira-filter-sheet {
+  position: sticky;
+  bottom: -14px;
+  z-index: 8;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  max-height: 70%;
+  margin: auto -14px -14px;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  border-top: 1px solid var(--tab-line);
+  border-radius: 14px 14px 0 0;
+  background: var(--surface-pane-raised);
+  box-shadow: var(--menu-shadow);
+  outline: none;
+}
+.jira-inbox .jira-filter-sheet__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.jira-inbox .jira-filter-sheet__head > strong {
+  margin-right: auto;
+}
+.jira-inbox .jira-filter-sheet__body {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  min-height: 0;
+  padding: 12px 14px 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.jira-inbox .jira-filter-sheet__body h3 {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.jira-inbox.jira-inbox .jira-filter-sheet .jira-smart-filters,
+.jira-inbox.jira-inbox .jira-filter-sheet .jira-facets {
+  flex-wrap: wrap;
+  overflow: visible;
+}
+.jira-inbox.jira-inbox .jira-filter-sheet__search {
+  width: 100%;
+  min-height: 40px;
+  margin-bottom: 10px;
+  padding: 6px 10px;
+  border-radius: 8px;
+}
+.jira-inbox .jira-filter-sheet__sort {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.jira-inbox .jira-filter-sheet__sort > .custom-select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.jira-inbox .jira-filter-sheet__count {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+
+/* Compact board: column chips to see where you are and jump; on a narrow pane one column at a time. */
+.jira-inbox .jira-board-jump {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.jira-inbox.jira-inbox--board-detail > .jira-board-jump {
+  display: none;
+}
+.jira-inbox .jira-board-jump__item {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--font-size-caption);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.jira-inbox .jira-board-jump__item[aria-current="true"] {
+  border-color: var(--jira-tone);
+  background: color-mix(in srgb, var(--jira-tone) 14%, transparent);
+  color: var(--text);
+}
+.jira-inbox .jira-board-jump__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--jira-tone);
+}
+.jira-inbox .jira-board-jump__count {
+  font-weight: 700;
+}
+.jira-inbox.jira-inbox--compact .jira-board-columns {
+  scroll-snap-type: x mandatory;
+}
+@container (max-width: 600px) {
+  .jira-inbox.jira-inbox--compact .jira-board-column {
+    flex: 0 0 calc(100cqw - 44px);
+    max-width: none;
+  }
+}
+/* A compact board scrolls the pane, not a squeezed strip: the toolbar scrolls away and the columns get a full
+   screen of height, so a short landscape phone still shows cards. */
+.jira-inbox.workspace-pane__body.workspace-pane__body--git.jira-inbox.jira-inbox--board-view.jira-inbox--compact {
+  overflow-y: auto;
+}
+.jira-inbox.workspace-pane__body.workspace-pane__body--git.jira-inbox.jira-inbox--board-view.jira-inbox--compact
+  > .jira-board-split {
+  flex: 0 0 auto;
+  height: 100%;
+  max-height: none;
+}

@@ -252,6 +252,68 @@
   border-bottom-color: var(--accent);
 }
 
+@media (min-width: 769px) and (min-height: 501px) {
+  .git-view .subtabs {
+    margin: 0;
+  }
+
+  .git-view .subtabs-panel {
+    margin: -10px 0 0;
+  }
+
+  /* One frame per level: the section panel is the frame. A card that only wraps the whole panel lies
+     flat on it, and stacked ones are split by a rule. */
+  .git-view .subtabs-panel > .git-section:not(.git-section--changes, .git-branches) > .git-card {
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    padding: 4px 6px 8px;
+  }
+
+  .git-view .subtabs-panel > .git-section:not(.git-section--changes, .git-branches) > .git-card ~ .git-card {
+    border-top: 1px solid var(--border);
+    padding-top: 12px;
+  }
+
+  /* Side-by-side panes (History, Branches) reach the section frame, which is their outer edge; the
+     rows above them (filters, search) keep their inset. */
+  .git-view .subtabs-panel > .git-branches {
+    padding: 0 0 0;
+  }
+
+  .git-view .subtabs-panel:has(> .git-section--changes:not(.git-changes--mobile)) {
+    padding-top: 0;
+  }
+
+  .git-view .subtabs-panel > .git-section--changes:not(.git-changes--mobile) {
+    padding-bottom: 0;
+  }
+
+  .git-view .subtabs-panel > .git-branches > :not(.git-branches__body) {
+    margin: 0 10px;
+  }
+
+  .git-view .subtabs-panel > .git-branches > .git-branches__body {
+    border-top: 1px solid var(--border);
+  }
+
+  /* Side-by-side panes (Changes, History, Branches) are split by their splitter alone, not boxed. */
+  .git-view
+    .subtabs-panel
+    :is(
+      .git-section__files--split > .git-card,
+      .git-card--diff,
+      .git-branches__commits-pane,
+      .git-branches__commit-files,
+      .git-branches__commit-diff,
+      .branch-tree
+    ) {
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+}
+
 .git-tabs__badge {
   display: inline-block;
   margin-left: 6px;
@@ -446,7 +508,7 @@
 }
 
 .git-overview__status-value--warn {
-  color: #ffb86c;
+  color: var(--warn, #ffb86c);
 }
 
 .git-overview__update {
@@ -752,8 +814,20 @@
   line-height: 1.4;
 }
 
-.git-sibling--current {
-  border-color: color-mix(in srgb, var(--accent), transparent 42%);
+.git-sibling-list {
+  gap: 0;
+}
+
+.git-sibling-list li + li {
+  border-top: 1px solid var(--border);
+}
+
+.git-sibling-list li:hover {
+  background: rgba(var(--tint), 0.05);
+}
+
+.git-sibling-list li.git-sibling--current {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
 .git-sibling__meta {
@@ -1038,6 +1112,12 @@
   font-weight: 600;
 }
 
+.git-pr-form__error {
+  margin: 0 0 0 128px;
+  color: var(--danger, #e53935);
+  font-size: 12px;
+}
+
 .git-pr-form__input {
   padding: 6px 8px;
   border: 1px solid var(--border);
@@ -1061,6 +1141,73 @@
   resize: vertical;
   min-height: 60px;
   grid-column: 2 / -1;
+}
+
+.git-pr-jira-link,
+.git-pr-jira-confirm {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(var(--tint), 0.03);
+  font-size: 12px;
+}
+
+.git-pr-jira-field {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.git-pr-jira-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.git-pr-jira-note,
+.git-pr-jira-confirm p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.git-pr-jira-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  min-height: 18px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.git-pr-jira-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.git-pr-jira-confirm pre {
+  margin: 0;
+  padding: 6px 8px;
+  max-height: 160px;
+  overflow: auto;
+  border-radius: 4px;
+  background: rgba(var(--tint), 0.04);
+  color: var(--text);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (max-width: 640px) {
+  .git-pr-jira-field {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .button--small {
@@ -1298,6 +1445,9 @@
   /* PR form: 3-col grid (label / input / action) → stacked. */
   .git-pr-form__field {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .git-pr-form__error {
+    margin-left: 0;
   }
   .git-pr-form__textarea {
     grid-column: 1 / -1;

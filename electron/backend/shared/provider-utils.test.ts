@@ -120,6 +120,20 @@ describe("buildInboxViews", () => {
     expect(views.recentlyUpdated).toHaveLength(3);
   });
 
+  it("keeps covered and declined reviews out of needsMyReview, and summaries without a status unchanged", () => {
+    const base = { role: "reviewer", hasAttention: false, lastActivityAt: "2026-01-01T00:00:00Z" };
+    const pending = { ...base, prKey: "pending", myReviewStatus: "pending" };
+    const voted = { ...base, prKey: "voted", myReviewStatus: "voted" };
+    const covered = { ...base, prKey: "covered", myReviewStatus: "covered" };
+    const declined = { ...base, prKey: "declined", myReviewStatus: "declined" };
+    const github = { ...base, prKey: "github" };
+
+    const views = buildInboxViews([pending, voted, covered, declined, github]);
+
+    expect(views.needsMyReview.map((s) => s.prKey).sort()).toEqual(["github", "pending", "voted"]);
+    expect(views.recentlyUpdated).toHaveLength(5);
+  });
+
   it("sorts each role bucket by hasAttention first, then most-recent activity", () => {
     const stale = { prKey: "stale", role: "reviewer", hasAttention: false, lastActivityAt: "2026-01-01T00:00:00Z" };
     const fresh = { prKey: "fresh", role: "reviewer", hasAttention: false, lastActivityAt: "2026-03-01T00:00:00Z" };

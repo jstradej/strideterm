@@ -148,12 +148,13 @@ export function createMobilePairing(deps: MobilePairingDeps) {
   // that somehow held a malformed key fails at startup of the pairing flow, not at a mismatch the
   // user would read as "the phone is broken".
   const desktopPublicKey = decodeCanonicalPublicKey(deps.identity.publicKeyBase64).toString("base64");
-  const desktopFingerprint = computeDesktopFingerprint({
+  let desktopFingerprint = computeDesktopFingerprint({
     protocolVersion: PROTOCOL_VERSION,
     desktopDeviceId: deps.identity.deviceId,
     desktopPublicKeyBase64: desktopPublicKey,
   });
-  const pairId = deps.identity.deviceId;
+  let pairId = deps.identity.deviceId;
+  let identityGeneration = 0;
 
   interface PendingInvitation {
     pairingId: string;
@@ -345,7 +346,12 @@ export function createMobilePairing(deps: MobilePairingDeps) {
       profileAllowlist: invitation.profileAllowlist,
       now: now(),
     };
+    const generation = identityGeneration;
     const result = await deps.deviceStore.addDevice(input);
+    if (generation !== identityGeneration) {
+      if (result.ok) await deps.deviceStore.revokeDevice(device.deviceId, now());
+      return;
+    }
     invitation.unsubscribe();
     pending = null;
 
@@ -387,6 +393,7 @@ export function createMobilePairing(deps: MobilePairingDeps) {
         status: "failure",
       });
     }
+    if (generation !== identityGeneration) return;
     // ADOPTED AND WAITING ON A HUMAN. `keyProven` is one step short of usable: the SAS still has to be
     // compared and approved on this desktop. That distinction is the one a support conversation turns
     // on — "the phone says it paired and the desktop disagrees" is this state, not a failure.
@@ -422,16 +429,18 @@ export function createMobilePairing(deps: MobilePairingDeps) {
      * of a single "Pair device" QR dialog.
      */
     async createInvitation(options: CreateInvitationOptions): Promise<QrPairingPayload> {
+      const generation = identityGeneration;
       if (pending) {
         await cancelInvitation();
       }
+      if (generation !== identityGeneration) throw new Error("Pairing identity changed");
       const secret = randomBytes(PAIRING_SECRET_BYTES).toString("base64url");
       // The one-time key-proof challenge. Generated here, put in the QR, and never sent to the cloud in
       // any form — which is what makes a valid key proof evidence that the claiming device physically
       // scanned this code (review 3 §P0.1).
       const keyProofChallenge = randomBytes(PAIRING_KEY_PROOF_CHALLENGE_BYTES).toString("base64url");
       const response = await deps.transport.createInvitation({
-        desktopDeviceId: deps.identity.deviceId,
+        desktopDeviceId: pairId,
         desktopLabel: deps.identity.label,
         desktopFingerprint,
         desktopPublicKey,
@@ -441,6 +450,7 @@ export function createMobilePairing(deps: MobilePairingDeps) {
         approvedCapabilities: [...options.capabilities],
         approvedProfileAllowlist: [...options.profileAllowlist],
       });
+      if (generation !== identityGeneration) throw new Error("Pairing identity changed");
       // The CONCRETE claim, not the whole devices map (review 3 §P0.1: "Nahradit broad adoption
       // watcher konkrétním claim watcherem"). The transport filters on `pairingId`, so a record claimed
       // under a different invitation — or one that predates this invitation entirely — never reaches
@@ -487,12 +497,24 @@ export function createMobilePairing(deps: MobilePairingDeps) {
         pairingId: response.pairingId,
         secret,
         keyProofChallenge,
-        desktopDeviceId: deps.identity.deviceId,
+        desktopDeviceId: pairId,
         desktopLabel: deps.identity.label,
         desktopPublicKey,
         desktopFingerprint,
         expiresAt: response.expiresAt,
       };
+    },
+
+    resetIdentity(deviceId = deps.identity.deviceId) {
+      identityGeneration += 1;
+      pending?.unsubscribe();
+      pending = null;
+      pairId = deviceId;
+      desktopFingerprint = computeDesktopFingerprint({
+        protocolVersion: PROTOCOL_VERSION,
+        desktopDeviceId: pairId,
+        desktopPublicKeyBase64: desktopPublicKey,
+      });
     },
 
     cancelInvitation,
@@ -528,7 +550,7 @@ export function createMobilePairing(deps: MobilePairingDeps) {
      * (review 2 §P0.4).
      */
     getDesktopIdentity(): { deviceId: string; publicKeyBase64: string; fingerprint: string } {
-      return { deviceId: deps.identity.deviceId, publicKeyBase64: desktopPublicKey, fingerprint: desktopFingerprint };
+      return { deviceId: pairId, publicKeyBase64: desktopPublicKey, fingerprint: desktopFingerprint };
     },
   };
 }

@@ -791,6 +791,7 @@ export class AgentTaskRunner {
     workerProvider,
     judgeProvider,
     callerProfileId = "",
+    jiraMcpEnabled = false,
     reservedIds,
   }: {
     state: Partial<Pick<AppState, "workspaces" | "windowSlots">>;
@@ -810,6 +811,7 @@ export class AgentTaskRunner {
      * is provided — picking windowSlots[0] instead silently puts the task
      * on the wrong profile in multi-window setups. */
     callerProfileId?: string;
+    jiraMcpEnabled?: boolean;
     /** Ids an orchestrator reserved (and persisted) before creating anything, so a restart can
      * find what a half-finished run made. Never accepted from a client. */
     reservedIds?: { workspaceId: string; taskId: string };
@@ -829,11 +831,11 @@ export class AgentTaskRunner {
     // workspaces with the same parentWorkspaceId (empty string buckets all
     // parentless tasks together — fine, that's not a normal flow). Deletions
     // don't renumber the survivors, which is the whole point — once you've
-    // referred to "mhub #3", deleting #2 must not silently turn #3 into #2.
+    // referred to "orders #3", deleting #2 must not silently turn #3 into #2.
     //
     // We also count *unnumbered* legacy siblings (created before this field
     // existed) so the new task doesn't claim "#1" when there are already
-    // three unnumbered "mhub" siblings around — that would read as "the
+    // three unnumbered "orders" siblings around — that would read as "the
     // first one" rather than "the newest one". Taking max(numbered max,
     // sibling count) handles both pure-legacy and post-feature populations
     // and any mix of the two.
@@ -928,6 +930,7 @@ export class AgentTaskRunner {
       splitLayout: null,
       splitViewIds: [],
       starred: false,
+      jiraMcpEnabled: jiraMcpEnabled === true,
       review: null,
       quickfix: null,
 

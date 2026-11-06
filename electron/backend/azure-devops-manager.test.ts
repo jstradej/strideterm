@@ -3,12 +3,28 @@ import os from "node:os";
 import { describe, expect, test, vi } from "vitest";
 import {
   AzureDevOpsManager,
+  carryOverCodeSnippets,
   createPullRequestKey,
   normalizeConnectionInput,
   normalizeRemoteUrl,
   stripRefsPrefix,
 } from "./azure-devops-manager.js";
 import { buildPullRequestSummary } from "./azure-devops-pr-summary.js";
+import { isRemoteOnConnectionHost } from "./azure-devops-utils.js";
+
+describe("isRemoteOnConnectionHost", () => {
+  test.each([
+    ["https://dev.azure.com/org", "https://dev.azure.com/org/p/_git/r", true],
+    ["https://dev.azure.com/org", "https://org.visualstudio.com/p/_git/r", true],
+    ["https://tfs.example.com/tfs", "https://tfs.example.com/tfs/c/p/_git/r", true],
+    ["https://dev.azure.com/org", "https://evil-visualstudio.com/p/_git/r", false],
+    ["https://dev.azure.com/org", "https://devXazure.com/p/_git/r", false],
+    ["https://dev.azure.com/org", "http://dev.azure.com/org/p/_git/r", false],
+    ["https://tfs.example.com/tfs", "https://attacker.invalid/r", false],
+  ])("org %s, remote %s -> %s", (orgUrl, remoteUrl, expected) => {
+    expect(isRemoteOnConnectionHost({ orgUrl }, remoteUrl)).toBe(expected);
+  });
+});
 
 function createCredentialStore(secrets: Record<string, string> = {}) {
   return {
@@ -176,7 +192,7 @@ function createFetchStub() {
               targetUrl: "https://dev.azure.com/acme/build/501",
               context: {
                 genre: "Build",
-                name: "MHUB JUnit Tests",
+                name: "Core JUnit Tests",
               },
             },
           ],
@@ -195,10 +211,10 @@ function createFetchStub() {
                 id: 77,
                 isBlocking: false,
                 type: { displayName: "Build" },
-                settings: { displayName: "MHUB JUnit Tests" },
+                settings: { displayName: "Core JUnit Tests" },
               },
               context: {
-                buildDefinitionName: "MHUB JUnit Tests",
+                buildDefinitionName: "Core JUnit Tests",
                 buildNumber: "20260313.8",
                 errorMessage: "Build failed",
                 targetUrl: "https://dev.azure.com/acme/build/501",
@@ -366,7 +382,7 @@ describe("AzureDevOpsManager", () => {
     expect(snapshot.inbox.needsMyReview).toHaveLength(1);
     expect(snapshot.inbox.needsMyReview[0]).toMatchObject({
       hasAttention: true,
-      attentionReason: "new comment",
+      attentionReason: "Your review",
       newCommentsCount: 1,
       unresolvedThreadCount: 1,
     });
@@ -396,8 +412,13 @@ describe("AzureDevOpsManager", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const snapshot = (await manager.markPullRequestSeen(prKey)) as any;
 
-    expect(snapshot.pullRequests[prKey].hasAttention).toBe(false);
-    expect(snapshot.inbox.needsAttention).toEqual([]);
+    // The review is still owed, so opening the PR keeps its state-based attention.
+    expect(snapshot.pullRequests[prKey]).toMatchObject({
+      hasAttention: true,
+      attentionReason: "Your review",
+      newCommentsCount: 0,
+    });
+    expect(snapshot.inbox.needsAttention).toHaveLength(1);
     expect(reviewBridgeStore.markPullRequestSeen).toHaveBeenCalledWith(prKey, expect.any(String));
   });
 
@@ -443,7 +464,7 @@ describe("AzureDevOpsManager", () => {
       optionalFailedCount: 1,
     });
     expect(detail.checks.items[0]).toMatchObject({
-      name: "MHUB JUnit Tests",
+      name: "Core JUnit Tests",
       state: "failed",
     });
     expect(reviewBridgeStore.syncPullRequest).toHaveBeenLastCalledWith(
@@ -456,6 +477,93 @@ describe("AzureDevOpsManager", () => {
         }),
       }),
     );
+  });
+
+  test("a poll sync keeps the code snippets the detail fetch added (no strip-and-restore blink)", async () => {
+    const prKey = createPullRequestKey("ado-main", "repo-1", 123);
+    const execFileTextImpl = vi.fn(async (_bin: string, args: string[]) =>
+      args.includes("--unified=4")
+        ? { stdout: "@@ -10,3 +10,4 @@\n line10\n line11\n+line12\n line13\n", stderr: "" }
+        : { stdout: "", stderr: "" },
+    );
+    const { manager } = createManager({ execFileTextImpl });
+    const workspaces = [{ id: "workspace-1", cwd: "/repo", review: { provider: "azure-devops", prKey } }];
+    await manager.sync({ connections: [connection], workspaces, gitSnapshots: {} });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: untyped snapshot in a test
+    const detail = (await manager.ensurePullRequestDetail(prKey, { workspaces, force: true })) as any;
+    const snippet = detail.threads[0].codeSnippet;
+    expect(snippet).toContain("line12");
+
+    await manager.sync({ connections: [connection], workspaces, gitSnapshots: {} });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: untyped snapshot in a test
+    const after = (manager.getSnapshot() as any).pullRequests[prKey];
+    expect(after.threads[0].codeSnippet).toBe(snippet);
+  });
+
+  test("a thread whose anchor moved does not keep a snippet of the old place", () => {
+    const before = [{ id: 7, filePath: "/a.js", lineStart: 12, lineEnd: 12, codeSnippet: "old" }];
+    expect(carryOverCodeSnippets(before, [{ id: 7, filePath: "/a.js", lineStart: 12, lineEnd: 12 }])).toEqual([
+      { id: 7, filePath: "/a.js", lineStart: 12, lineEnd: 12, codeSnippet: "old" },
+    ]);
+    expect(carryOverCodeSnippets(before, [{ id: 7, filePath: "/a.js", lineStart: 30, lineEnd: 30 }])).toEqual([
+      { id: 7, filePath: "/a.js", lineStart: 30, lineEnd: 30 },
+    ]);
+    expect(carryOverCodeSnippets(before, [{ id: 8, filePath: "/a.js", lineStart: 12, lineEnd: 12 }])).toEqual([
+      { id: 8, filePath: "/a.js", lineStart: 12, lineEnd: 12 },
+    ]);
+  });
+
+  test("a conflicting PR carries Azure's conflicting files; a listing that fails is unknown, not empty", async () => {
+    const prKey = createPullRequestKey("ado-main", "repo-1", 123);
+    const { manager, fetchImpl } = createManager();
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: untyped snapshot in a test
+    const detailBefore = (await manager.ensurePullRequestDetail(prKey, { force: true })) as any;
+    expect(detailBefore.serverConflicts).toEqual([]);
+    expect(fetchImpl.mock.calls.some((call) => String(call[0]).includes("/conflicts?"))).toBe(false);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: untyped snapshot in a test
+    const snapshot = manager.getSnapshot() as any;
+    const pr = snapshot.pullRequests[prKey];
+    manager.setSnapshot({
+      ...snapshot,
+      pullRequests: {
+        ...snapshot.pullRequests,
+        [prKey]: { ...pr, pullRequest: { ...pr.pullRequest, mergeStatus: "conflicts" } },
+      },
+    });
+    const base = fetchImpl.getMockImplementation()!;
+    let conflictsOk = true;
+    fetchImpl.mockImplementation((async (url: unknown, options?: unknown) => {
+      if (String(url).includes("/pullRequests/123/conflicts?")) {
+        if (!conflictsOk) throw new Error("503 Service Unavailable");
+        return {
+          ok: true,
+          json: async () => ({
+            value: [
+              { conflictPath: "/pom.xml", conflictType: "editEdit" },
+              { conflictPath: "/streams/docker-compose-streams.yml", conflictType: "editEdit" },
+            ],
+          }),
+        };
+      }
+      return base(url, options as never);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: the stub's inferred union has no conflicts shape
+    }) as any);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: untyped snapshot in a test
+    const listed = (await manager.ensurePullRequestDetail(prKey, { force: true })) as any;
+    expect(listed.serverConflicts).toEqual([
+      { path: "pom.xml", type: "editEdit" },
+      { path: "streams/docker-compose-streams.yml", type: "editEdit" },
+    ]);
+
+    conflictsOk = false;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: untyped snapshot in a test
+    const failed = (await manager.ensurePullRequestDetail(prKey, { force: true })) as any;
+    expect(failed.serverConflicts).toBeNull();
   });
 
   test("creates a managed review workspace when none exists", async () => {
@@ -1145,13 +1253,13 @@ describe("AzureDevOpsManager", () => {
 describe("azure manager helpers", () => {
   test("normalizeConnectionInput extracts project and repository hints from project URLs", () => {
     const connection = normalizeConnectionInput({
-      orgUrl: "https://devops.skoda.vwgroup.com/projects/JAVA/MSP_MHUB",
+      orgUrl: "https://devops.example.com/projects/CORE/ACME_CORE",
       projectFilters: [],
       repositoryFilters: [],
     });
 
-    expect(connection.orgUrl).toBe("https://devops.skoda.vwgroup.com/projects/JAVA");
-    expect(connection.projectFilters).toEqual(["MSP_MHUB"]);
+    expect(connection.orgUrl).toBe("https://devops.example.com/projects/CORE");
+    expect(connection.projectFilters).toEqual(["ACME_CORE"]);
     expect(connection.repositoryFilters).toEqual([]);
   });
 
@@ -1179,6 +1287,53 @@ describe("azure manager helpers", () => {
 });
 
 describe("AzureDevOpsManager openQuickFixWorkspace", () => {
+  test("clones the URL the connection lists for the repository, never the one the caller sent, with a host-scoped token", async () => {
+    const execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const { manager } = createManager({ execFileTextImpl });
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+
+    const result = (await manager.openQuickFixWorkspace({
+      state: { tabTemplates: [{ id: "shell", title: "Shell", command: "" }], workspaces: [] },
+      connectionId: "ado-main",
+      projectName: "Platform",
+      repositoryId: "repo-1",
+      repositoryName: "ignored-name",
+      remoteUrl: "https://attacker.invalid/x.git",
+      baseBranch: "main",
+      newBranchName: "fix-attacker",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test assertion cast on untyped manager result
+    })) as any;
+
+    const clone = execFileTextImpl.mock.calls.find((call) => call[1].includes("clone"));
+    expect(clone?.[1]).toContain("https://dev.azure.com/acme/Platform/_git/web-app");
+    expect(JSON.stringify(execFileTextImpl.mock.calls)).not.toContain("attacker.invalid");
+    expect(result.workspace.quickfix.remoteUrl).toBe("https://dev.azure.com/acme/Platform/_git/web-app");
+    expect(result.workspace.quickfix.repositoryName).toBe("web-app");
+    const carriers = [...(clone?.[1] ?? []), ...Object.entries(clone?.[2]?.env ?? {}).flat()].map(String);
+    expect(carriers.some((item) => item.startsWith("http.https://dev.azure.com/.extraheader"))).toBe(true);
+    expect(carriers).not.toContain("http.extraheader");
+  });
+
+  test("refuses a repository the connection does not list, without running git", async () => {
+    const execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const { manager } = createManager({ execFileTextImpl });
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+
+    await expect(
+      manager.openQuickFixWorkspace({
+        state: { tabTemplates: [], workspaces: [] },
+        connectionId: "ado-main",
+        projectName: "Platform",
+        repositoryId: "not-listed",
+        repositoryName: "web-app",
+        remoteUrl: "https://attacker.invalid/x.git",
+        baseBranch: "main",
+        newBranchName: "fix-1",
+      }),
+    ).rejects.toThrow(/was not found in project Platform/);
+    expect(execFileTextImpl).not.toHaveBeenCalled();
+  });
+
   test.each([true, false])("creates a quickfix workspace using the parent opt-in default (%s)", async (parentOptIn) => {
     const execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
     const { manager } = createManager({ execFileTextImpl });

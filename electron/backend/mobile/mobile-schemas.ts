@@ -1152,6 +1152,12 @@ export const RemoteWebSessionTicketSchema = z.object({
   requiredCapability: z.literal("remote.webSession"),
   issuedAt: z.number().int().min(0),
   expiresAt: z.number().int().min(0),
+  // The idle TTL the desktop BOUND to the session this ticket bootstraps (ADR 0041), so the phone
+  // can tell a session that has certainly idle-expired from one worth resuming. Optional because
+  // desktops before ADR 0041 do not send it; deliberately unbounded so a strange value cannot make
+  // the ticket unreadable, and so no policy bound is compiled into a client (the bounds are the
+  // control plane's).
+  sessionIdleTtlMs: z.number().int().optional(),
 });
 export type RemoteWebSessionTicket = z.infer<typeof RemoteWebSessionTicketSchema>;
 

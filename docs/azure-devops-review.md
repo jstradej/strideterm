@@ -44,7 +44,7 @@ Agent terminals in a review workspace can read pull-request discussions and code
 
 ## Activity, notifications, and cleanup
 
-The **Activity Log** tab records requests made by strIDEterm, including inbox refreshes and comment publishing. Open an entry to check whether an action succeeded or investigate a connection problem. Pull-request and review notifications appear in the app's Notification Center. A **Review now** action on a Ready notification starts a basic agent review and saves findings as drafts; it does not push or publish comments. To start reviews from a paired mobile device, enable **Start PR reviews** in its access settings; the permission is off by default.
+The **Activity Log** tab records requests made by strIDEterm, including inbox refreshes and comment publishing. Open an entry to check whether an action succeeded or investigate a connection problem. Pull-request and review notifications appear in the app's Notification Center. They cover only pull requests you author or review, directly or through one of your groups, and stop once you decline the review or a colleague covers your group's vote; you are notified once when you are added as a reviewer later. A **Review now** action on a Ready notification starts a basic agent review and saves findings as drafts; it does not push or publish comments. To start reviews from a paired mobile device, enable **Start PR reviews** in its access settings; the permission is off by default.
 
 Review worktrees remain on disk after closing a workspace so you can reopen the review with its local work. When deleting a review or quick-fix workspace, choose whether to remove its worktree files too. If you keep them, you can still inspect the branch from Git.
 

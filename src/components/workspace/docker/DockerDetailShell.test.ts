@@ -39,12 +39,13 @@ const mockApi: MockApi = {
   _emitClose: (p) => closeHandler?.(p),
 };
 const showError = vi.fn();
+const pushEphemeralToast = vi.fn();
 
 vi.mock("../../../stores/app.js", () => ({
   useAppStore: () => ({ getApi: () => mockApi }),
 }));
 vi.mock("../../../stores/notifications.js", () => ({
-  useNotificationStore: () => ({ showError }),
+  useNotificationStore: () => ({ showError, pushEphemeralToast }),
 }));
 
 import DockerDetailShell from "./DockerDetailShell.vue";
@@ -59,6 +60,39 @@ describe("DockerDetailShell — visual + transport integration with a mocked Tra
     mockApi.dockerShellResize.mockClear().mockResolvedValue({ ok: true });
     mockApi.dockerShellClose.mockClear().mockResolvedValue({ ok: true });
     showError.mockClear();
+    pushEphemeralToast.mockClear();
+  });
+
+  function dropEvent(type: "dragover" | "drop", types: string[]) {
+    const event = new Event(type, { bubbles: true, cancelable: true }) as Event & { dataTransfer: unknown };
+    event.dataTransfer = { types, files: [], dropEffect: "copy", getData: () => "" };
+    return event;
+  }
+
+  it("refuses a dropped path with a toast instead of ignoring it", async () => {
+    const wrapper = mount(DockerDetailShell, {
+      props: {
+        sessionId: "shell-1",
+        containerId: "abc",
+        containerName: "myapp",
+        backendId: "host",
+        contextName: "default",
+      },
+    });
+    await flushPromises();
+    const over = dropEvent("dragover", ["application/x-strideterm-paths"]);
+    wrapper.element.dispatchEvent(over);
+    expect(over.defaultPrevented).toBe(true);
+    wrapper.element.dispatchEvent(dropEvent("drop", ["Files"]));
+    expect(pushEphemeralToast).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "error", body: expect.stringContaining("inside the container") }),
+    );
+    const text = dropEvent("dragover", ["text/plain"]);
+    wrapper.element.dispatchEvent(text);
+    expect(text.defaultPrevented).toBe(false);
+    wrapper.element.dispatchEvent(dropEvent("drop", ["text/plain"]));
+    expect(pushEphemeralToast).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
   });
 
   it("renders the term host and shows connecting overlay on mount", async () => {

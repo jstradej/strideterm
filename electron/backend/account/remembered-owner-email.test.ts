@@ -8,13 +8,13 @@ import {
 
 describe("matchesAccountDisplay", () => {
   test.each([
-    ["tomas@stradej.cz", "t••••@stradej.cz", "match"],
-    ["Tomas@Stradej.cz", "t••••@stradej.cz", "match"],
+    ["tomas@example.cz", "t••••@example.cz", "match"],
+    ["Tomas@Example.cz", "t••••@example.cz", "match"],
     ["owner@example.test", "o***@example.test", "match"],
     ["owner@example.test", "ow•••r@ex•••.test", "match"],
-    ["jarek@stradej.cz", "t••••@stradej.cz", "mismatch"],
-    ["tomas@other.cz", "t••••@stradej.cz", "mismatch"],
-    ["t@stradej.cz", "t••••@stradej.cz", "mismatch"],
+    ["alex@example.cz", "t••••@example.cz", "mismatch"],
+    ["tomas@other.cz", "t••••@example.cz", "mismatch"],
+    ["t@example.cz", "t••••@example.cz", "mismatch"],
     ["owner@example.test", "owner@example.test", "match"],
     ["owner@example.test", "other@example.test", "mismatch"],
     ["owner@example.test", undefined, "uncheckable"],

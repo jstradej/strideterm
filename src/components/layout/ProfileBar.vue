@@ -107,7 +107,7 @@ defineEmits<{
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.04em;
-  color: var(--profile-color, #ffa424);
+  color: var(--profile-color, var(--accent));
   border: 1px solid currentColor;
   border-radius: 3px;
   vertical-align: middle;

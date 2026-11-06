@@ -62,7 +62,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, watch, nextTick } from "vue";
+import { computed, provide, watch, nextTick } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { useTerminalStore } from "../../stores/terminal.js";
@@ -78,6 +78,7 @@ import PaneShell from "../layout/PaneShell.vue";
 import TerminalPane from "./TerminalPane.vue";
 import { resolvePaneComponent, resolvePaneProps } from "../../app/pane-resolver.js";
 import { tabSessionId } from "../../app/selectors.js";
+import { filesOwnerWorkspaceIdKey } from "../../types/keys.js";
 import { SLOT_BOXES, gridAreaStyle as _gridAreaStyle, swapDirection, swapArrow } from "../../app/layout-geometry.js";
 interface Tab {
   id: string;
@@ -92,6 +93,10 @@ interface Tab {
 }
 
 const store = useAppStore();
+provide(
+  filesOwnerWorkspaceIdKey,
+  computed(() => store.myActiveWorkspaceId || null),
+);
 const notifications = useNotificationStore();
 const termStore = useTerminalStore();
 
@@ -405,7 +410,7 @@ function paneComponent(type: string) {
 }
 
 function paneProps(tab: Tab) {
-  return resolvePaneProps(tab.type, tab.id) || { tab };
+  return resolvePaneProps(tab.type, tab.id, store.myActiveWorkspaceId) || { tab };
 }
 
 function onStageMousedown(event: MouseEvent) {

@@ -1786,9 +1786,9 @@ describe("GitBranchesTab — create-pr dialog submission (shared submitPullReque
       branchList: { current: "main", local: [{ name: "main", isCurrent: true }], remotes: [] },
       graph: {
         commits: [
-          mk("a1".repeat(10), "MSP-1 first"),
+          mk("a1".repeat(10), "ABC-1 first"),
           mk("b2".repeat(10), "other work"),
-          mk("c3".repeat(10), "MSP-3 third"),
+          mk("c3".repeat(10), "ABC-3 third"),
         ],
         head: "a1".repeat(10),
         refs: {},
@@ -1813,11 +1813,11 @@ describe("GitBranchesTab — create-pr dialog submission (shared submitPullReque
       expect(g.props("rangeBase")).toBe("origin/develop");
     }
 
-    await picker.get('[aria-label="Search commits"]').setValue("MSP");
+    await picker.get('[aria-label="Search commits"]').setValue("ABC");
     await flushPromises();
     expect((graph().props("commits") as Array<{ subject: string }>).map((c) => c.subject)).toEqual([
-      "MSP-1 first",
-      "MSP-3 third",
+      "ABC-1 first",
+      "ABC-3 third",
     ]);
     expect(picker.get(".git-branches__pane-count").text()).toBe("2 of 3");
     for (const g of picker.findAllComponents({ name: "GitTreeGraph" })) {

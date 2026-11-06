@@ -128,12 +128,10 @@ describe("review Git broker", () => {
 
   test("an agent can never start publishing queued comments — that stays the user's own action", async () => {
     const { capability } = broker.mintGrant(baseGrant);
-    const refused = await call(capability, {
-      operation: "start",
-      kind: "push-and-publish",
-      idempotencyKey: "key-12345678",
-    });
-    expect(refused.status).toBe(400);
+    for (const kind of ["push-and-publish", "force-push-and-publish"]) {
+      const refused = await call(capability, { operation: "start", kind, idempotencyKey: "key-12345678" });
+      expect(refused.status).toBe(400);
+    }
     expect(fake.service.start).not.toHaveBeenCalled();
   });
 

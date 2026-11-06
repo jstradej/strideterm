@@ -20,19 +20,36 @@
           name="value"
           :placeholder="placeholder"
           required
+          :disabled="submitting"
           :data-validation-required="`Enter a value for ${label.toLowerCase()}.`"
         />
       </label>
+      <div v-if="errorMessage" class="dialog__error" role="alert">
+        <span class="dialog__error-icon" aria-hidden="true">⚠</span>
+        <span class="dialog__error-text">{{ errorMessage }}</span>
+      </div>
       <footer class="dialog__footer">
-        <button type="button" class="button button--ghost" @click="emit('cancel')">Cancel</button>
-        <button type="submit" class="button">{{ submitLabel }}</button>
+        <button type="button" class="button button--ghost" :disabled="submitting" @click="emit('cancel')">
+          Cancel
+        </button>
+        <button
+          type="submit"
+          class="button"
+          :class="{ 'button--pending': submitting }"
+          :aria-busy="submitting ? 'true' : 'false'"
+          :disabled="submitting"
+        >
+          <span>{{ submitLabel }}</span>
+        </button>
       </footer>
     </form>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, onMounted, onBeforeUnmount, useAttrs } from "vue";
+import { userFacingMessage } from "../../lib/error-message.js";
+import { rlog } from "../../lib/renderer-log.js";
 
 interface Props {
   eyebrow?: string;
@@ -51,13 +68,25 @@ const props = withDefaults(defineProps<Props>(), {
   submitLabel: "Save",
 });
 
+// "submit" is deliberately NOT a declared emit: emit is fire-and-forget, so a
+// rejected rename closed nothing and showed nothing. Calling attrs.onSubmit
+// lets us await it, show the rejection inline and close only after success
+// (the caller closes the dialog). inheritAttrs: false stops Vue from also
+// binding onSubmit as a native "submit" listener on the root div.
 const emit = defineEmits<{
   cancel: [];
-  submit: [value: string];
 }>();
+const attrs = useAttrs();
+defineOptions({ inheritAttrs: false });
 
 const inputRef = ref<HTMLInputElement | null>(null);
 const inputValue = ref(props.value);
+const submitting = ref(false);
+const errorMessage = ref("");
+let unmounted = false;
+onBeforeUnmount(() => {
+  unmounted = true;
+});
 
 onMounted(() =>
   requestAnimationFrame(() => {
@@ -66,10 +95,21 @@ onMounted(() =>
   }),
 );
 
-function handleSubmit() {
+async function handleSubmit() {
   const val = inputValue.value.trim();
-  if (!val) return;
-  emit("submit", val);
+  if (!val || submitting.value) return;
+  submitting.value = true;
+  errorMessage.value = "";
+  try {
+    await (attrs.onSubmit as ((value: string) => void | Promise<void>) | undefined)?.(val);
+  } catch (error) {
+    // A caller that already closed the dialog has nowhere to show it here.
+    if (unmounted) throw error;
+    errorMessage.value = userFacingMessage(error, "Could not save.");
+    rlog("warn", `[dialog] ${props.title} failed`, { error: errorMessage.value });
+  } finally {
+    submitting.value = false;
+  }
 }
 </script>
 

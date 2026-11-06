@@ -86,7 +86,7 @@
   grid-template-rows: auto minmax(0, 1fr);
   height: 100%;
   overflow: hidden;
-  background: var(--bg);
+  background: var(--surface-term);
 }
 
 /* Force the embedded pane component to fill the available cell height.
@@ -191,8 +191,8 @@
   align-items: stretch;
   gap: 2px;
   padding: 0 2px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--border);
+  background: var(--base-fill);
+  box-shadow: inset 0 -1px 0 var(--border);
   min-height: 24px;
   height: 24px;
   flex-shrink: 0;
@@ -308,11 +308,7 @@
 }
 
 .tab-strip--compact .tab {
-  /* Asymmetric vertical padding so the visible gap between text and the
-     3 px accent border-bottom is wider than the gap above — the bold
-     underline carries visual weight, so symmetric padding makes it feel
-     crammed against the text. */
-  padding: 2px 5px 6px;
+  padding: 3px 5px;
   height: 22px;
   font-size: 9px;
   white-space: nowrap;
@@ -325,11 +321,11 @@
 }
 
 /* In a split, only the focused cell can be "the" active cell — so a full
-   accent underline in a non-focused cell competes with the focused cell
-   for attention. Dim the active-tab underline there; the focused cell
-   keeps the full accent underline as its active-cell indicator. */
+   accent line in a non-focused cell competes with the focused cell
+   for attention. Dim the active-tab line there; the focused cell
+   keeps the full accent line as its active-cell indicator. */
 .workspace-cell:not(.workspace-cell--focused) .tab-strip--compact .tab--active {
-  border-bottom-color: color-mix(in srgb, var(--accent), transparent 70%);
+  border-top-color: color-mix(in srgb, var(--accent), transparent 70%);
 }
 
 .tab-strip-compact-picker__trigger {
@@ -465,6 +461,15 @@
 
   .workspace-cell .tab-strip--compact .tab-strip-compact-picker__trigger {
     display: inline-flex;
+    height: 44px;
+    min-height: 44px;
+    padding: 0 10px;
+    font-size: 12px;
+  }
+
+  .tab-strip-compact-picker__item,
+  .tab-strip-compact-picker__item-menu {
+    min-height: 44px;
   }
 }
 

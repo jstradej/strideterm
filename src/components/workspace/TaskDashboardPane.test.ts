@@ -1,5 +1,6 @@
 import { describe, expect, test, beforeEach, vi } from "vitest";
 import { shallowMount, mount, flushPromises } from "@vue/test-utils";
+import { defineComponent, h } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import TaskDashboardPane from "./TaskDashboardPane.vue";
 import { apiKey } from "../../types/keys.js";
@@ -31,6 +32,12 @@ interface TaskOverride {
   totalPausedMs?: number;
   currentRound?: number;
   maxRounds?: number;
+  jiraIssueRefs?: Array<{ provider: "jira"; connectionId: string; issueId: string; issueKey: string }>;
+  jiraIssueSnapshots?: Array<{
+    ref: { connectionId: string; issueId: string; issueKey: string };
+    fields: { summary: string; status: string; issueType: string; projectKey: string; updated: string };
+  }>;
+  jiraCommentDrafts?: Array<{ id: string; ref: { issueKey: string }; body: string }>;
 }
 
 function buildTaskWorkspace(taskOverrides: TaskOverride = {}) {
@@ -96,13 +103,13 @@ function mountDashboard(
   // `full: true` performs a real `mount` instead of `shallowMount` — needed
   // for tests that exercise the StatusTab's `defineExpose`d template ref
   // (shallowMount stubs the child, so its exposed state never resolves).
-  const mountFn = options.full ? mount : shallowMount;
-  return mountFn(TaskDashboardPane, {
+  const mountOptions = {
     props: { workspaceId: ws.id },
     global: {
       provide: { [apiKey]: apiStub },
     },
-  });
+  };
+  return options.full ? mount(TaskDashboardPane, mountOptions) : shallowMount(TaskDashboardPane, mountOptions);
 }
 
 beforeEach(() => {
@@ -129,6 +136,366 @@ describe("TaskDashboardPane — header", () => {
     expect(badge.exists()).toBe(true);
     expect(badge.classes()).toContain("td__badge--idle");
     expect(badge.text()).toBe("Idle");
+  });
+});
+
+describe("TaskDashboardPane — Jira task context and comment drafts", () => {
+  const refs = [{ provider: "jira" as const, connectionId: "jira-1", issueId: "123", issueKey: "ENG-1" }];
+  const snapshot = (ref: (typeof refs)[number], summary: string) => ({
+    ref,
+    fields: { summary, status: "Open", issueType: "Bug", projectKey: "ENG", updated: "today" },
+  });
+  test("shows the saved issue snapshot immediately and saves a local draft without Jira write calls", async () => {
+    const saveJiraCommentDraft = vi.fn().mockResolvedValue({ id: "draft-1" });
+    const getJiraTaskContext = vi.fn().mockResolvedValue({
+      jiraIssueSnapshots: [
+        {
+          ref: refs[0],
+          fields: { summary: "Fix input", status: "Open", issueType: "Bug", projectKey: "ENG", updated: "today" },
+        },
+      ],
+    });
+    const listJiraCommentDrafts = vi.fn().mockResolvedValue([]);
+    let resolveCurrentIssue!: (issue: unknown) => void;
+    const currentIssueRequest = new Promise<unknown>((resolve) => {
+      resolveCurrentIssue = resolve;
+    });
+    const getJiraIssue = vi.fn(() => currentIssueRequest);
+    const wrapper = mountDashboard(
+      {
+        jiraIssueRefs: refs,
+        jiraIssueSnapshots: [
+          {
+            ref: refs[0],
+            fields: {
+              summary: "Must not be rendered from payload",
+              status: "Open",
+              issueType: "Bug",
+              projectKey: "ENG",
+              updated: "today",
+            },
+          },
+        ],
+      },
+      {
+        apiOverrides: {
+          getJiraTaskContext,
+          getJiraIssue,
+          listJiraConnections: vi.fn().mockResolvedValue([
+            {
+              id: "jira-1",
+              profileId: "default",
+              enabled: true,
+              label: "Primary",
+              webUrl: "https://jira.example/jira",
+              issueKeyPrefixes: [],
+            },
+          ]),
+          listJiraCommentDrafts,
+          saveJiraCommentDraft,
+          previewJiraWrite: vi.fn(),
+          executeJiraWrite: vi.fn(),
+        },
+      },
+    );
+    expect(wrapper.text()).toContain("Must not be rendered from payload");
+    expect(wrapper.text()).toContain("ENG-1");
+    await flushPromises();
+    expect(getJiraTaskContext).toHaveBeenCalledWith("ws-task");
+    expect(wrapper.text()).toContain("ENG-1");
+    expect(wrapper.find(".td__jira-snapshot a").attributes("href")).toBe("https://jira.example/jira/browse/ENG-1");
+    expect(wrapper.text()).toContain("Fix input");
+    expect(getJiraIssue).toHaveBeenCalledWith({ connectionId: "jira-1", issueId: "123", forceRefresh: true });
+    expect(wrapper.text()).not.toContain("Current in Jira:");
+    resolveCurrentIssue({
+      ref: refs[0],
+      summary: "Current summary",
+      status: "In Progress",
+      issueType: "Bug",
+      projectKey: "ENG",
+      updated: "later",
+      assignee: "Alex",
+    });
+    await flushPromises();
+    expect(wrapper.text().replace(/\s+/g, " ")).toContain(
+      "Current in Jira: Current summary · In Progress · Bug · ENG · later · Assignee: Alex",
+    );
+    expect(wrapper.text()).toContain("Prepared: Open · Bug · ENG · today");
+    await wrapper
+      .findAll(".td__jira-context button")
+      .find((button) => button.text().includes("Prepare result"))!
+      .trigger("click");
+    await wrapper.find(".td__jira-draft-form textarea").setValue("Done; tests pass");
+    await wrapper.find(".td__jira-draft-form").trigger("submit");
+    await flushPromises();
+    expect(saveJiraCommentDraft).toHaveBeenCalledWith({
+      sourceWorkspaceId: "ws-task",
+      ref: refs[0],
+      body: "Done; tests pass",
+    });
+    expect(wrapper.find(".td__jira-draft-form").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("executeJiraWrite");
+  });
+
+  test("ignores a slow Jira refresh after the selected task changes", async () => {
+    const secondRef = { provider: "jira" as const, connectionId: "jira-1", issueId: "456", issueKey: "ENG-2" };
+    let resolveOldIssue!: (issue: unknown) => void;
+    const oldIssueRequest = new Promise<unknown>((resolve) => {
+      resolveOldIssue = resolve;
+    });
+    const getJiraTaskContext = vi.fn(async (workspaceId: string) => ({
+      jiraIssueRefs: workspaceId === "ws-task" ? refs : [secondRef],
+      jiraIssueSnapshots: [snapshot(workspaceId === "ws-task" ? refs[0] : secondRef, "Prepared summary")],
+    }));
+    const getJiraIssue = vi.fn(({ issueId }: { issueId: string }) =>
+      issueId === "123"
+        ? oldIssueRequest
+        : Promise.resolve({
+            ref: secondRef,
+            summary: "Fresh second task",
+            status: "Open",
+            issueType: "Bug",
+            projectKey: "ENG",
+            updated: "later",
+          }),
+    );
+    const initialWorkspace = buildTaskWorkspace({
+      jiraIssueRefs: refs,
+      jiraIssueSnapshots: [snapshot(refs[0], "Prepared summary")],
+    });
+    const appStore = useAppStore();
+    appStore.payload = {
+      appState: {
+        workspaces: [initialWorkspace],
+        activeWorkspaceId: initialWorkspace.id,
+        activeProjectId: initialWorkspace.id,
+        activeProfileId: "default",
+        profiles: [
+          {
+            id: "default",
+            name: "Default",
+            color: "#ffa424",
+            workspaceIds: [initialWorkspace.id],
+          },
+        ],
+      },
+      workspace: { workspace: initialWorkspace, project: initialWorkspace, sessions: [] },
+    } as unknown as StatePayload;
+    const TaskDashboardHost = defineComponent({
+      props: { workspaceId: { type: String, required: true } },
+      setup(props) {
+        return () => h(TaskDashboardPane, { workspaceId: props.workspaceId });
+      },
+    });
+    const wrapper = mount(TaskDashboardHost, {
+      props: { workspaceId: initialWorkspace.id },
+      global: {
+        provide: {
+          [apiKey]: {
+            fileRead: () => Promise.resolve({ content: "" }),
+            fileWrite: () => Promise.resolve({ ok: true }),
+            getJiraTaskContext,
+            getJiraIssue,
+            listJiraCommentDrafts: vi.fn().mockResolvedValue([]),
+          },
+        },
+      },
+    });
+    await flushPromises();
+    expect(getJiraIssue).toHaveBeenCalledWith({ connectionId: "jira-1", issueId: "123", forceRefresh: true });
+
+    const nextWorkspace = {
+      ...buildTaskWorkspace(),
+      id: "ws-other",
+      task: {
+        ...buildTaskWorkspace().task,
+        jiraIssueRefs: [secondRef],
+        jiraIssueSnapshots: [snapshot(secondRef, "Prepared second task")],
+      },
+    };
+    appStore.payload = {
+      appState: {
+        workspaces: [nextWorkspace],
+        activeWorkspaceId: nextWorkspace.id,
+        activeProjectId: nextWorkspace.id,
+        activeProfileId: "default",
+        profiles: [{ id: "default", name: "Default", color: "#ffa424", workspaceIds: [nextWorkspace.id] }],
+      },
+      workspace: { workspace: nextWorkspace, project: nextWorkspace, sessions: [] },
+    } as unknown as StatePayload;
+    await wrapper.setProps({ workspaceId: nextWorkspace.id });
+    await flushPromises();
+    expect(wrapper.text()).toContain("Current in Jira: Fresh second task");
+
+    resolveOldIssue({
+      ref: refs[0],
+      summary: "Stale first task response",
+      status: "Open",
+      issueType: "Bug",
+      projectKey: "ENG",
+      updated: "old",
+    });
+    await flushPromises();
+    expect(wrapper.text()).not.toContain("Stale first task response");
+    expect(wrapper.text()).toContain("Current in Jira: Fresh second task");
+  });
+
+  test("keeps the prepared Jira snapshot visible when current issue refresh fails", async () => {
+    const getJiraTaskContext = vi.fn().mockResolvedValue({
+      jiraIssueRefs: refs,
+      jiraIssueSnapshots: [snapshot(refs[0], "Prepared fallback")],
+    });
+    const wrapper = mountDashboard(
+      { jiraIssueRefs: refs, jiraIssueSnapshots: [snapshot(refs[0], "Prepared fallback")] },
+      {
+        apiOverrides: {
+          getJiraTaskContext,
+          getJiraIssue: vi.fn().mockRejectedValue(new Error("offline")),
+          listJiraCommentDrafts: vi.fn().mockResolvedValue([]),
+        },
+      },
+    );
+
+    await flushPromises();
+    expect(wrapper.text()).toContain("Prepared fallback");
+    expect(wrapper.text()).toContain(
+      "Current Jira details could not be refreshed. The prepared snapshot is still shown.",
+    );
+  });
+
+  test("hides lazy Jira context loading when the read-only transport has no task context API", () => {
+    const wrapper = mountDashboard({ jiraIssueRefs: refs }, { apiOverrides: {} });
+    expect(wrapper.text()).toContain("Saved Jira context is available in the desktop app.");
+    expect(wrapper.text()).not.toContain("Load saved Jira context");
+    expect(wrapper.find(".td__jira-draft-form").exists()).toBe(false);
+  });
+
+  test("renders no Jira block for a task without issue refs and none outside the Status tab", async () => {
+    const without = mountDashboard({}, { apiOverrides: { getJiraTaskContext: vi.fn().mockResolvedValue({}) } });
+    await flushPromises();
+    expect(without.find(".td__jira-context").exists()).toBe(false);
+
+    const getJiraTaskContext = vi.fn().mockResolvedValue({ jiraIssueRefs: refs, jiraIssueSnapshots: [] });
+    const wrapper = mountDashboard(
+      { jiraIssueRefs: refs },
+      { apiOverrides: { getJiraTaskContext, listJiraCommentDrafts: vi.fn().mockResolvedValue([]) } },
+    );
+    await flushPromises();
+    expect(wrapper.find(".td__jira-context").exists()).toBe(true);
+    await wrapper
+      .findAll(".td__tab")
+      .find((tab) => tab.text() === "Config")!
+      .trigger("click");
+    expect(wrapper.find(".td__jira-context").exists()).toBe(false);
+  });
+
+  test("shows the snapshot date in local time instead of raw ISO and keeps a status slot", async () => {
+    const iso = "2026-10-31T09:30:00.000Z";
+    const wrapper = mountDashboard(
+      {
+        jiraIssueRefs: refs,
+        jiraIssueSnapshots: [
+          { ref: refs[0], fields: { summary: "S", status: "Open", issueType: "Bug", projectKey: "ENG", updated: iso } },
+        ],
+      },
+      { apiOverrides: { getJiraTaskContext: vi.fn().mockResolvedValue({}), listJiraCommentDrafts: vi.fn() } },
+    );
+    expect(wrapper.find(".td__jira-status").exists()).toBe(true);
+    expect(wrapper.text()).not.toContain(iso);
+    expect(wrapper.text()).toContain("Prepared: Open · Bug · ENG · ");
+  });
+
+  test("a failed draft-list reload after a successful save is not reported as a failed save", async () => {
+    const saveJiraCommentDraft = vi.fn().mockResolvedValue({ id: "d1" });
+    const listJiraCommentDrafts = vi
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockRejectedValueOnce(new Error("Error invoking remote method 'jira:drafts': Error: db busy"))
+      .mockResolvedValueOnce([{ id: "d1", ref: { issueKey: "ENG-1" }, body: "Done" }]);
+    const wrapper = mountDashboard(
+      { jiraIssueRefs: refs },
+      {
+        apiOverrides: {
+          getJiraTaskContext: vi.fn().mockResolvedValue({ jiraIssueRefs: refs, jiraIssueSnapshots: [] }),
+          listJiraCommentDrafts,
+          saveJiraCommentDraft,
+        },
+      },
+    );
+    await flushPromises();
+    await wrapper
+      .findAll(".td__jira-context button")
+      .find((button) => button.text().includes("Prepare result"))!
+      .trigger("click");
+    await wrapper.find(".td__jira-draft-form textarea").setValue("Done");
+    await wrapper.find(".td__jira-draft-form").trigger("submit");
+    await flushPromises();
+    expect(saveJiraCommentDraft).toHaveBeenCalledTimes(1);
+    expect(wrapper.text()).toContain("Draft saved, but the draft list could not be refreshed.");
+    expect(wrapper.text()).not.toContain("Could not save");
+    expect(wrapper.find(".td__jira-draft-form").exists()).toBe(false);
+    await wrapper
+      .findAll(".td__jira-status button")
+      .find((button) => button.text() === "Reload")!
+      .trigger("click");
+    await flushPromises();
+    expect(saveJiraCommentDraft).toHaveBeenCalledTimes(1);
+    expect(wrapper.text()).toContain("Comment draft · ENG-1");
+  });
+
+  test("a failed save shows a cleaned message and keeps the form for a retry", async () => {
+    const saveJiraCommentDraft = vi
+      .fn()
+      .mockRejectedValue(new Error("Error invoking remote method 'jira:draft:save': Error: disk full"));
+    const wrapper = mountDashboard(
+      { jiraIssueRefs: refs },
+      {
+        apiOverrides: {
+          getJiraTaskContext: vi.fn().mockResolvedValue({ jiraIssueRefs: refs, jiraIssueSnapshots: [] }),
+          listJiraCommentDrafts: vi.fn().mockResolvedValue([]),
+          saveJiraCommentDraft,
+        },
+      },
+    );
+    await flushPromises();
+    await wrapper
+      .findAll(".td__jira-context button")
+      .find((button) => button.text().includes("Prepare result"))!
+      .trigger("click");
+    await wrapper.find(".td__jira-draft-form textarea").setValue("Done");
+    await wrapper.find(".td__jira-draft-form").trigger("submit");
+    await flushPromises();
+    expect(wrapper.find(".td__jira-error").text()).toContain("Could not save the Jira comment draft. disk full");
+    expect(wrapper.text()).not.toContain("Error invoking");
+    expect(wrapper.find(".td__jira-draft-form").exists()).toBe(true);
+  });
+
+  test("asks before deleting a draft and keeps it when the user declines", async () => {
+    const deleteJiraCommentDraft = vi.fn().mockResolvedValue(undefined);
+    const listJiraCommentDrafts = vi.fn().mockResolvedValue([{ id: "d1", ref: { issueKey: "ENG-1" }, body: "Keep" }]);
+    const wrapper = mountDashboard(
+      { jiraIssueRefs: refs },
+      {
+        apiOverrides: {
+          getJiraTaskContext: vi.fn().mockResolvedValue({ jiraIssueRefs: refs, jiraIssueSnapshots: [] }),
+          listJiraCommentDrafts,
+          deleteJiraCommentDraft,
+        },
+      },
+    );
+    await flushPromises();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const deleteButton = () =>
+      wrapper.findAll(".td__jira-draft button").find((button) => button.text() === "Delete draft")!;
+    await deleteButton().trigger("click");
+    await flushPromises();
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(deleteJiraCommentDraft).not.toHaveBeenCalled();
+    confirm.mockReturnValue(true);
+    await deleteButton().trigger("click");
+    await flushPromises();
+    expect(deleteJiraCommentDraft).toHaveBeenCalledWith({ sourceWorkspaceId: "ws-task", draftId: "d1" });
+    confirm.mockRestore();
   });
 });
 

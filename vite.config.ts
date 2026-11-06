@@ -67,6 +67,7 @@ export default defineConfig({
       input: {
         index: resolve(__dirname, "src/index.html"),
         popout: resolve(__dirname, "src/popout.html"),
+        "jira-popout": resolve(__dirname, "src/jira-popout.html"),
       },
       output: {
         // In watch mode, drop content hashes from chunk names so a rebuild

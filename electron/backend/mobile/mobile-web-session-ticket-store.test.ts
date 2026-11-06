@@ -5,6 +5,7 @@ import {
   REMOTE_WEB_SESSION_CAPABILITY,
   type TicketRedemptionContext,
 } from "./mobile-web-session-ticket-store.js";
+import { RELAY_MOBILE_SESSION_ABSOLUTE_TTL_MS } from "./mobile-relay-protocol.js";
 
 const TUNNEL_ORIGIN = "https://example.trycloudflare.com";
 const RELAY_ORIGIN = "https://relay.strideterm.dev";
@@ -199,5 +200,57 @@ describe("mobile-web-session-ticket-store", () => {
     const record = store.consumeTicket(issued.ticketId, issued.secret, LEGACY);
     expect(record?.requiredCapability).toBe("remote.webSession");
     expect(Object.keys(record ?? {})).not.toContain("capabilities");
+  });
+});
+
+// ADR 0041: the session idle TTL is bound when the ticket is issued, so that what the phone is told
+// and what the session gets are one value, whatever the policy does in the sixty seconds between.
+describe("the idle TTL bound to a ticket", () => {
+  const RELAY_INPUT = { ...INPUT, allowedOrigin: RELAY_ORIGIN, transport: "relay" as const };
+  const NINETY_MINUTES = 90 * 60_000;
+  const SIX_HOURS = 6 * 60 * 60_000;
+
+  test("a bound value is returned at issuance and comes back unchanged on redemption", () => {
+    const store = createMobileWebSessionTicketStore();
+    const issued = store.issueTicket({ ...RELAY_INPUT, sessionIdleTtlMs: NINETY_MINUTES });
+    expect(issued.sessionIdleTtlMs).toBe(NINETY_MINUTES);
+    expect(store.consumeTicket(issued.ticketId, issued.secret, RELAY)?.sessionIdleTtlMs).toBe(NINETY_MINUTES);
+  });
+
+  test("nothing bound means nothing on the record, so the redeeming server applies its own fallback", () => {
+    const store = createMobileWebSessionTicketStore();
+    const issued = store.issueTicket(RELAY_INPUT);
+    expect(issued).not.toHaveProperty("sessionIdleTtlMs");
+    const record = store.consumeTicket(issued.ticketId, issued.secret, RELAY);
+    expect(record).not.toBeNull();
+    expect(record).not.toHaveProperty("sessionIdleTtlMs");
+  });
+
+  test("each ticket keeps its own value: binding a new one does not rewrite an outstanding one", () => {
+    const store = createMobileWebSessionTicketStore();
+    const before = store.issueTicket({ ...RELAY_INPUT, sessionIdleTtlMs: NINETY_MINUTES });
+    const after = store.issueTicket({ ...RELAY_INPUT, sessionIdleTtlMs: SIX_HOURS });
+    expect(store.consumeTicket(before.ticketId, before.secret, RELAY)?.sessionIdleTtlMs).toBe(NINETY_MINUTES);
+    expect(store.consumeTicket(after.ticketId, after.secret, RELAY)?.sessionIdleTtlMs).toBe(SIX_HOURS);
+  });
+
+  test.each([
+    ["one minute", 60_000],
+    ["six hours, longer than today's policy allows", SIX_HOURS],
+    ["the absolute session lifetime itself", RELAY_MOBILE_SESSION_ABSOLUTE_TTL_MS],
+  ])("any value the control plane might choose (%s) can be bound: the bounds are not the desktop's", (_label, ms) => {
+    const store = createMobileWebSessionTicketStore();
+    const issued = store.issueTicket({ ...RELAY_INPUT, sessionIdleTtlMs: ms });
+    expect(store.consumeTicket(issued.ticketId, issued.secret, RELAY)?.sessionIdleTtlMs).toBe(ms);
+  });
+
+  test.each([
+    ["zero", 0],
+    ["negative", -NINETY_MINUTES],
+    ["past the absolute session lifetime", RELAY_MOBILE_SESSION_ABSOLUTE_TTL_MS + 1],
+    ["a fraction", NINETY_MINUTES + 0.5],
+  ])("an out-of-contract value (%s) cannot be bound at all: nothing is minted", (_label, bad) => {
+    const store = createMobileWebSessionTicketStore();
+    expect(() => store.issueTicket({ ...RELAY_INPUT, sessionIdleTtlMs: bad })).toThrow();
   });
 });

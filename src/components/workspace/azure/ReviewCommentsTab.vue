@@ -169,7 +169,7 @@
                     <span class="review-comment__date">{{ formatRelativeTime(comment.publishedDate) }}</span>
                   </div>
                   <div class="review-comment__body">
-                    <MarkdownContent :text="comment.content || ''" />
+                    <MarkdownContent :text="comment.content || ''" :jira-routes="jiraRoutes" />
                   </div>
                 </div>
               </div>
@@ -205,7 +205,7 @@
                 >
               </div>
               <div class="review-comment__body">
-                <MarkdownContent :text="draft.body || ''" />
+                <MarkdownContent :text="draft.body || ''" :jira-routes="jiraRoutes" />
               </div>
               <div class="docker-card__actions" style="margin-top: 6px">
                 <button
@@ -336,7 +336,7 @@
                   <strong>{{ displayAuthor(comment.authorAgent) }}</strong>
                 </div>
                 <div class="review-comment__body">
-                  <MarkdownContent :text="comment.summary" />
+                  <MarkdownContent :text="comment.summary" :jira-routes="jiraRoutes" />
                 </div>
               </div>
             </div>
@@ -356,7 +356,7 @@
                 >
               </div>
               <div class="review-comment__body">
-                <MarkdownContent :text="draft.body || ''" />
+                <MarkdownContent :text="draft.body || ''" :jira-routes="jiraRoutes" />
               </div>
               <div class="docker-card__actions" style="margin-top: 6px">
                 <button
@@ -424,7 +424,7 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import type { ReviewNotificationCommentTarget } from "../../../../electron/shared/review-notification-target.js";
 import { useAppStore } from "../../../stores/app.js";
 import { useGitUiStore } from "../../../stores/git-ui.js";
@@ -435,6 +435,7 @@ import { formatRelativeUntil } from "./azurePipelineFormat.js";
 const props = defineProps<{
   prKey: string;
   workspaceId: string;
+  jiraRoutes?: Array<{ connectionId: string; label: string; webUrl: string; issueKeyPrefixes: string[] }>;
   provider: "azure-devops" | "github";
   focusRequest: {
     requestId: string;
@@ -482,6 +483,7 @@ const emit = defineEmits<{
 }>();
 
 const appStore = useAppStore();
+const jiraRoutes = computed(() => props.jiraRoutes || []);
 const gitUiStore = useGitUiStore();
 const notifications = useNotificationStore();
 

@@ -459,3 +459,18 @@ describe("what the pairing handshake writes to the log", () => {
     }
   });
 });
+
+test("identity reset retires a pending invitation and routes a new invitation with the same public key", async () => {
+  const { pairing, transport } = await createFixture();
+  const create = vi.spyOn(transport, "createInvitation");
+  const oldQr = await pairing.createInvitation({ profileAllowlist: ["default"], capabilities: [] });
+  const oldIdentity = pairing.getDesktopIdentity();
+  pairing.resetIdentity("desktop-next");
+  expect(pairing.getPendingInvitation()).toBeNull();
+  const nextQr = await pairing.createInvitation({ profileAllowlist: ["default"], capabilities: [] });
+  expect(create.mock.calls.at(-1)?.[0].desktopDeviceId).toBe("desktop-next");
+  expect(nextQr.desktopDeviceId).toBe("desktop-next");
+  expect(nextQr.desktopPublicKey).toBe(oldQr.desktopPublicKey);
+  expect(pairing.getDesktopIdentity().deviceId).toBe("desktop-next");
+  expect(pairing.getDesktopIdentity().fingerprint).not.toBe(oldIdentity.fingerprint);
+});

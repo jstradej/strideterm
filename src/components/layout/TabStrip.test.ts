@@ -406,6 +406,130 @@ describe("TabStrip — relocated Companion Primary", () => {
     expect(primary.attributes("draggable")).toBe("false");
   });
 
+  test("a Jira tab always renders its spinner slot, so a sync never changes the tab's width", async () => {
+    const store = useAppStore();
+    const jiraPayload = (syncState: "idle" | "syncing") =>
+      ({
+        workspace: { workspace: { id: "jira-ws", kind: "jira", profileId: "default", panels: [] }, sessions: [] },
+        appState: {
+          workspaces: [{ id: "jira-ws", kind: "jira", profileId: "default", panels: [] }],
+          activeWorkspaceId: "jira-ws",
+          activeProfileId: "default",
+        },
+        jiraWorkspaceViews: {
+          "jira-ws": {
+            workspaceId: "jira-ws",
+            profileId: "default",
+            views: [{ viewId: "issues", kind: "issues", title: "Issues" }],
+            activeViewId: "issues",
+            syncByViewId: { issues: { state: syncState } },
+          },
+        },
+      }) as unknown as StatePayload;
+    store.payload = jiraPayload("idle");
+    const wrapper = mount(TabStrip);
+    const spinner = () => wrapper.get('[data-view-id="jira:jira-ws"] .tab__spinner');
+    expect(spinner().classes()).toContain("tab__spinner--idle");
+    expect(spinner().attributes("aria-hidden")).toBe("true");
+
+    store.payload = jiraPayload("syncing");
+    await flushPromises();
+    expect(spinner().classes()).not.toContain("tab__spinner--idle");
+    expect(spinner().attributes("aria-label")).toBe("Loading");
+  });
+
+  test("saved Jira view tabs support desktop rename and reorder while Issues remains fixed", async () => {
+    const store = useAppStore();
+    store.payload = {
+      workspace: {
+        workspace: { id: "jira-ws", kind: "jira", profileId: "default", panels: [] },
+        sessions: [],
+      },
+      appState: {
+        workspaces: [{ id: "jira-ws", kind: "jira", profileId: "default", panels: [] }],
+        activeWorkspaceId: "jira-ws",
+        activeProfileId: "default",
+      },
+      jiraWorkspaceViews: {
+        "jira-ws": {
+          workspaceId: "jira-ws",
+          profileId: "default",
+          views: [
+            { viewId: "issues", kind: "issues", title: "Issues" },
+            {
+              viewId: "board-1",
+              kind: "board",
+              connectionId: "jira-c1",
+              boardId: 7,
+              boardName: "Platform",
+              title: "Platform",
+              mode: "issues",
+              sprintId: null,
+              quickFilterIds: [],
+              assignee: null,
+              doneWithinDays: null,
+              createdAt: 1,
+              updatedAt: 1,
+            },
+            {
+              viewId: "board-2",
+              kind: "board",
+              connectionId: "jira-c1",
+              boardId: 8,
+              boardName: "Delivery",
+              title: "Delivery",
+              mode: "issues",
+              sprintId: null,
+              quickFilterIds: [],
+              assignee: null,
+              doneWithinDays: null,
+              createdAt: 2,
+              updatedAt: 2,
+            },
+          ],
+          activeViewId: "issues",
+          syncByViewId: {},
+        },
+      },
+    } as unknown as StatePayload;
+    const wrapper = mount(TabStrip);
+    const tabs = wrapper.findAll(".tab");
+    expect(tabs).toHaveLength(3);
+    expect(tabs.map((tab) => tab.attributes("draggable"))).toEqual(["false", "true", "true"]);
+    await tabs[1].trigger("dblclick");
+    expect(wrapper.emitted("edit-tab")?.[0]).toEqual(["jira:jira-ws:view:board-1"]);
+    expect(tabs[1].attributes("title")).toContain("Double click to edit");
+
+    const reorder = vi.spyOn(store, "reorderJiraWorkspaceViews").mockResolvedValue();
+    const dataTransfer = { effectAllowed: "", dropEffect: "none", setData: vi.fn(), getData: vi.fn() };
+    await tabs[2].trigger("dragstart", { dataTransfer });
+    expect(dataTransfer.effectAllowed).toBe("move");
+    expect(dataTransfer.setData).toHaveBeenCalled();
+
+    const dragover = new Event("dragover", { bubbles: true, cancelable: true });
+    Object.defineProperties(dragover, {
+      dataTransfer: { value: dataTransfer },
+      clientX: { value: -1 },
+    });
+    tabs[0].element.dispatchEvent(dragover);
+    expect(dragover.defaultPrevented).toBe(true);
+    expect(dataTransfer.dropEffect).toBe("move");
+
+    const drop = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperties(drop, {
+      dataTransfer: { value: dataTransfer },
+      clientX: { value: -1 },
+    });
+    tabs[0].element.dispatchEvent(drop);
+    await flushPromises();
+    expect(reorder).toHaveBeenCalledExactlyOnceWith(["board-2", "board-1"]);
+
+    await store.activateView("jira:jira-ws:view:board-1");
+    const compact = mount(TabStrip, { props: { compact: true } });
+    expect(compact.find(".tab-strip-compact-picker__label").text()).toBe("Platform");
+    compact.unmount();
+  });
+
   test("a compact grid cell uses the same projection as the main strip", async () => {
     const store = useAppStore();
     // Active workspace is the SOURCE, so the task cell takes the compact path

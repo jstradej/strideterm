@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 /**
- * Review Git operations (refresh, rebase, push, force push, push-and-publish,
+ * Review Git operations (refresh, rebase, push, force push, (force-)push-and-publish,
  * and the agent-facing stage / commit / conflict steps) can outlast the 30 s a
  * remote request may take to START its response over the mobile relay, so they
  * never answer the request that started them. The start call returns an
@@ -24,6 +24,7 @@ export const reviewGitOperationKindSchema = z.enum([
   "push",
   "force-push",
   "push-and-publish",
+  "force-push-and-publish",
   "stage",
   "unstage",
   "commit",

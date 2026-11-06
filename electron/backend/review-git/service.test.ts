@@ -72,7 +72,9 @@ async function createFixture(overrides: { workspaceProfile?: string } = {}): Pro
     createApi: () => ({}),
   });
   manager.providerLabel = "github";
-  manager.snapshot.connections = [{ id: "conn-1", tokenRef: "tok", login: "me" }];
+  manager.snapshot.connections = [
+    { id: "conn-1", tokenRef: "tok", login: "me", hostUrl: "https://git.example.invalid" },
+  ];
   const sourceRepository = {
     id: "100",
     name: "repo",
@@ -537,24 +539,28 @@ describe("push and publish", () => {
       runGit: f.manager.runGit.bind(f.manager),
     };
     f.bridge.syncPendingDrafts.mockImplementation(async (_prKey: string, run: never) => publish(run));
+    const refreshProvider = vi.fn(async () => {});
     const service = createReviewGitService({
       getState: () => f.state,
       azure: fakeManager,
       github: fakeManager,
       reviewBridgeStore: f.bridge,
       refreshGit: async () => {},
-      refreshAzure: async () => {},
-      refreshGitHub: async () => {},
+      refreshAzure: refreshProvider,
+      refreshGitHub: refreshProvider,
       broadcastState: () => {},
       emit: () => {},
       auditStores: {},
       log: { info() {}, warn() {}, error() {} },
     });
-    return { f, fakeManager, service };
+    return { f, fakeManager, service, refreshProvider };
   }
 
-  async function runPushAndPublish(service: ReturnType<typeof createReviewGitService>) {
-    const started = service.start({ kind: "push-and-publish", workspaceId: "ws-1" }, ui);
+  async function runPushAndPublish(
+    service: ReturnType<typeof createReviewGitService>,
+    kind: "push-and-publish" | "force-push-and-publish" = "push-and-publish",
+  ) {
+    const started = service.start({ kind, workspaceId: "ws-1" }, ui);
     await service.operations.idle();
     const looked = service.lookup(started.operationId, "default", "ws-1");
     return (looked as { operation: { result: any } }).operation.result;
@@ -580,6 +586,22 @@ describe("push and publish", () => {
     expect(fakeManager.pushReviewWorkspace).toHaveBeenCalledTimes(1);
   });
 
+  test("push-and-publish never forces; force-push-and-publish forces the push, then publishes", async () => {
+    const { service, fakeManager } = await withFakePush({ status: "pushed", message: "Force pushed." }, async (run) => {
+      await run({ commentKey: "c1", body: "one", remoteThreadId: null, comment: {} });
+    });
+
+    await runPushAndPublish(service);
+    expect(fakeManager.pushReviewWorkspace).toHaveBeenLastCalledWith(expect.objectContaining({ force: false }));
+
+    const result = await runPushAndPublish(service, "force-push-and-publish");
+    expect(fakeManager.pushReviewWorkspace).toHaveBeenLastCalledWith(
+      expect.objectContaining({ force: true, requireProposal: false }),
+    );
+    expect(result.push).toMatchObject({ status: "pushed" });
+    expect(result.publish).toMatchObject({ attempted: true, published: ["c1"] });
+  });
+
   test("a comment whose inline anchor went stale is refused, not posted at a guessed line", async () => {
     const { service, fakeManager } = await withFakePush({ status: "up-to-date", message: "same" }, async (run) => {
       await run({
@@ -600,11 +622,19 @@ describe("push and publish", () => {
       { status: "blocked", code: "branch-mismatch", message: "wrong branch" },
       { status: "confirm-required", proposal: { proposalId: "p" } },
     ]) {
-      const { service, f } = await withFakePush(push, async () => {});
+      const { service, f, refreshProvider } = await withFakePush(push, async () => {});
       const result = await runPushAndPublish(service);
       expect(result.publish).toMatchObject({ attempted: false, published: [], failed: [] });
       expect(f.bridge.syncPendingDrafts).not.toHaveBeenCalled();
+      // Nothing changed on the provider, so no full provider sync follows it.
+      expect(refreshProvider).not.toHaveBeenCalled();
     }
+  });
+
+  test("a push that landed is followed by a provider sync", async () => {
+    const { service, refreshProvider } = await withFakePush({ status: "pushed", message: "ok" }, async () => {});
+    await runPushAndPublish(service);
+    expect(refreshProvider).toHaveBeenCalledTimes(1);
   });
 
   test("a successful push does not re-validate (or heal) inline anchors", async () => {

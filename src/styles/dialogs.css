@@ -1,9 +1,16 @@
 .dialog,
 .panel-card {
   border: 1px solid var(--border);
-  background: var(--panel-elevated);
   border-radius: 4px;
   box-shadow: var(--shadow);
+}
+
+.dialog {
+  background: var(--surface-dialog);
+}
+
+.panel-card {
+  background: var(--surface-card);
 }
 
 .workspace-meta {
@@ -13,8 +20,6 @@
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
-  border-bottom: 1px solid var(--border);
-  background: rgba(var(--tint), 0.015);
   font-size: 13px;
   min-height: 0;
   -webkit-app-region: drag;
@@ -108,18 +113,43 @@
   flex: 1;
 }
 
-/* `display: block` is load-bearing: this is a <span>, and overflow /
-   text-overflow / max-width are all inert on an inline box. Without it a long
-   cwd ignored the ellipsis rules below and painted straight through the stats
-   chips sitting next to it. */
+/* The path is a chip like the stats beside it. A long one is cut in the middle: the head gives way
+   first, so the folder's own name stays readable. `inline-flex` + `max-width` keep it from painting
+   through the stats chips. */
 .workspace-meta__path {
-  display: block;
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
   color: var(--muted);
-  font-size: 12px;
   white-space: nowrap;
+  vertical-align: middle;
+}
+
+.workspace-meta__path-icon {
+  flex: 0 0 auto;
+  margin-right: 5px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.3;
+  stroke-linejoin: round;
+  opacity: 0.8;
+}
+
+.workspace-meta__path-head {
+  flex: 0 1000 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 100%;
+}
+
+.workspace-meta__path-tail {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
 }
 
 .workspace-meta__path--copyable {
@@ -127,7 +157,8 @@
 }
 
 .workspace-meta__path--copyable:hover {
-  color: var(--fg);
+  border-color: color-mix(in srgb, var(--accent), transparent 40%);
+  color: var(--text);
 }
 
 .workspace-meta__notes {
@@ -143,10 +174,10 @@
 }
 
 .workspace-chip {
-  border-radius: 3px;
-  border: 1px solid color-mix(in srgb, var(--accent), transparent 72%);
-  background: rgba(var(--tint), 0.04);
-  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: rgba(var(--tint), 0.07);
+  padding: 2px 9px;
   color: var(--text);
   white-space: nowrap;
   font-size: 11px;
@@ -181,6 +212,16 @@
 .workspace-chip--btn:hover {
   border-color: color-mix(in srgb, var(--accent), transparent 40%);
   background: rgba(var(--tint), 0.08);
+}
+
+.workspace-chip--clean {
+  background: color-mix(in srgb, var(--success-fg) 14%, transparent);
+  color: var(--success-fg);
+}
+
+.workspace-chip--dirty {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
 }
 
 .workspace-chip--active {
@@ -259,8 +300,8 @@
   display: flex;
   align-items: stretch;
   gap: 0;
-  border-bottom: 1px solid var(--border);
-  background: rgba(var(--tint), 0.01);
+  background: transparent;
+  box-shadow: inset 0 -1px 0 var(--tab-line);
   min-height: 0;
 }
 
@@ -320,11 +361,11 @@
 
 .tab {
   border: none;
-  border-bottom: 3px solid transparent;
-  border-right: 1px solid rgba(var(--tint), 0.06);
+  border-top: 2px solid transparent;
+  border-right: 1px solid rgba(var(--tint), 0.08);
   background: transparent;
   color: var(--muted);
-  padding: 6px 8px 5px 10px;
+  padding: 7px 8px 6px 10px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
   grid-template-rows: auto auto;
@@ -368,18 +409,46 @@
 
 .tab:hover {
   color: var(--text);
-  background: rgba(var(--tint), 0.025);
+  background: rgba(var(--tint), 0.045);
 }
 
-.tab--active {
-  color: var(--text);
-  border-bottom-color: var(--accent);
-  background: transparent;
-  box-shadow: none;
-}
-
+.tab--active,
 .tab--active:hover {
-  background: transparent;
+  color: var(--text);
+  border-top-color: var(--accent);
+  border-right-color: var(--tab-line);
+  background: var(--surface-term);
+  box-shadow: -1px 0 0 var(--tab-line);
+}
+
+.tab--active:first-child {
+  box-shadow: inset 1px 0 0 var(--tab-line);
+}
+
+/* A split is one framed surface holding its panes; the selected tab takes its colour and opens into it. */
+.workspace-main:has(.terminal-stage:not(.terminal-stage--count-1)) .tab--active,
+.workspace-main:has(.terminal-stage:not(.terminal-stage--count-1)) .tab--active:hover {
+  background: var(--surface-pane);
+}
+
+.terminal-stage:not(.terminal-stage--count-1) {
+  border: 1px solid var(--tab-line);
+  border-top: 0;
+  background: var(--surface-pane);
+}
+
+.tab--active:is(
+  [data-view-id^="git:"],
+  [data-view-id^="docker:"],
+  [data-view-id^="azure:"],
+  [data-view-id^="github:"],
+  [data-view-id^="review:"],
+  [data-view-id^="files:"],
+  [data-view-id^="browser:"],
+  [data-view-id^="task-dashboard:"],
+  [data-view-id^="jira:"]
+) {
+  background: var(--surface-pane);
 }
 
 .tab--attention .tab__attention {
@@ -418,6 +487,12 @@
   }
 }
 
+/* Jira tabs always reserve the spinner's slot so a background sync never changes the tab's width. */
+.tab__spinner--idle {
+  visibility: hidden;
+  animation: none;
+}
+
 .tab__menu {
   grid-row: 1;
   grid-column: 2;
@@ -430,7 +505,7 @@
   font-size: 12px;
   line-height: 1;
   color: var(--muted);
-  opacity: 0.5;
+  opacity: 0;
   transition:
     opacity 0.12s,
     background 0.12s,
@@ -438,8 +513,15 @@
 }
 
 .tab:hover .tab__menu,
+.tab:focus-visible .tab__menu,
 .tab--active .tab__menu {
   opacity: 1;
+}
+
+@media (hover: none) {
+  .tab__menu {
+    opacity: 0.5;
+  }
 }
 
 .tab__menu:hover {
@@ -530,13 +612,23 @@
   height: 100%;
   border-radius: 0;
   overflow: hidden;
-  background: var(--bg);
+  background: transparent;
   border: none;
   position: relative;
   display: grid;
   gap: 3px;
   padding: 3px;
   align-content: stretch;
+}
+
+.terminal-stage--count-1 {
+  padding: 0;
+}
+
+/* A lone pane is framed by the same line that runs under the tabs; the selected tab opens into it. */
+.terminal-stage--count-1 > .workspace-pane {
+  border-top: 0;
+  border-radius: 0;
 }
 
 .terminal-stage--solo {
@@ -575,10 +667,10 @@
   min-height: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  border: 1px solid var(--border);
+  border: 1px solid var(--tab-line);
   border-radius: 3px;
   overflow: hidden;
-  background: color-mix(in srgb, var(--panel), var(--bg) 10%);
+  background: var(--surface-term);
   /* Container query scope for responsive pane header: below the threshold
      the swap arrows collapse into a hamburger button. */
   container-type: inline-size;
@@ -595,6 +687,13 @@
    its view with `height: 100%` then overflows by exactly the header's height
    and offers a scrollbar for nothing. Collapse to one row whenever no
    PaneShell sits directly in the grid. */
+/* Files, Git and the other content panes sit one step lighter than a terminal. */
+.workspace-pane:not(:has(> .workspace-pane__body--terminal)) {
+  --bg: var(--surface-pane);
+  --panel: var(--surface-pane-raised);
+  background: var(--surface-pane);
+}
+
 .workspace-pane:not(:has(> .workspace-pane__header)) {
   grid-template-rows: minmax(0, 1fr);
 }
@@ -611,8 +710,9 @@
 .workspace-pane--active:has(.workspace-pane__body--browser),
 .workspace-pane--active:has(.workspace-pane__body--files),
 .workspace-pane--active:has(.workspace-pane__body--task-dashboard),
-.workspace-pane--active:has(.workspace-pane__body--headless-judge) {
-  border-color: var(--border);
+.workspace-pane--active:has(.workspace-pane__body--headless-judge),
+.terminal-stage--count-1 .workspace-pane--active {
+  border-color: var(--tab-line);
 }
 
 .workspace-pane__header {
@@ -819,7 +919,7 @@
   height: 100%;
   padding: 4px 4px 2px;
   overflow: hidden;
-  background: #071019;
+  background: var(--surface-term);
 }
 
 .terminal-host .xterm {

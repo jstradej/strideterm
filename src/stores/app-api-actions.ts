@@ -384,10 +384,13 @@ export function createApiActions(ctx: ApiActionsCtx) {
     return ctx.reviewGit.run(force ? "force-push" : "push", workspaceId);
   }
 
-  /** Push, then publish queued drafts. Reports the push and each comment independently. */
-  async function pushAndPublishReview(workspaceId: string): Promise<ReviewGitOutcome> {
+  /**
+   * Push (`force`: force push with a lease, for a rewritten history), then publish
+   * queued drafts. Reports the push and each comment independently.
+   */
+  async function pushAndPublishReview(workspaceId: string, { force = false } = {}): Promise<ReviewGitOutcome> {
     if (!workspaceId) return null;
-    return ctx.reviewGit.run("push-and-publish", workspaceId);
+    return ctx.reviewGit.run(force ? "force-push-and-publish" : "push-and-publish", workspaceId);
   }
 
   function isReviewGitBusy(workspaceId: string, kinds?: string[]): boolean {

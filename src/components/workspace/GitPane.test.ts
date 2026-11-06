@@ -298,6 +298,43 @@ describe("GitPane repo picker", () => {
     expect(wrapper.find(".git-view--loading").exists()).toBe(false);
   });
 
+  test("passes active-profile Jira routes into the PR surface", async () => {
+    const workspaceId = "ws-jira-pr-routes";
+    const workspace = buildWorkspace({ id: workspaceId });
+    const appStore = useAppStore();
+    vi.spyOn(appStore, "getApi").mockReturnValue({
+      listJiraConnections: vi.fn().mockResolvedValue([
+        {
+          id: "jira-active",
+          profileId: "default",
+          enabled: true,
+          label: "Engineering",
+          webUrl: "https://jira.example/jira",
+          issueKeyPrefixes: ["ENG"],
+        },
+        {
+          id: "jira-foreign",
+          profileId: "profile-b",
+          enabled: true,
+          label: "Foreign",
+          webUrl: "https://foreign.example",
+          issueKeyPrefixes: ["ENG"],
+        },
+      ]),
+    } as unknown as ReturnType<typeof appStore.getApi>);
+    const wrapper = mountPane(workspaceId, [workspace]);
+    await flushPromises();
+    await pickTab(wrapper, "Pull Request");
+    expect(wrapper.findComponent({ name: "GitPullRequestTab" }).props("jiraRoutes")).toEqual([
+      {
+        connectionId: "jira-active",
+        label: "Engineering",
+        webUrl: "https://jira.example/jira",
+        issueKeyPrefixes: ["ENG"],
+      },
+    ]);
+  });
+
   test("exposes the full active repository path and working branch in a focusable details control", async () => {
     const workspaceId = "ws-long-repository-details";
     const wrapper = mountPane(workspaceId, [buildWorkspace({ id: workspaceId })]);
@@ -831,7 +868,7 @@ describe("GitPane mobile shell menus (useMobileShellMenus wiring)", () => {
 });
 
 describe("GitPane push target", () => {
-  function pushButtonFor(branch: string) {
+  function pushButtonFor(branch: string, overrides: Record<string, unknown> = {}) {
     const ws = buildWorkspace({
       id: "ws-pr",
       review: {
@@ -850,10 +887,53 @@ describe("GitPane push target", () => {
       aheadCount: 1,
       upstream: "origin/feature/login",
       remotes: { origin: "https://example.com/repo.git" },
+      ...overrides,
     } as unknown as GitSnapshot;
     appStore.payload = { ...appStore.payload } as unknown as StatePayload;
     return { wrapper, appStore };
   }
+
+  test("the isolated review checkout's <alias>-review-<uuid> also pushes to the PR branch", async () => {
+    const { wrapper } = pushButtonFor("pr-7-feature-login-review-825dc26b-c0d3-4879-b180-99a41ba01cb1");
+    await flushPromises();
+    const button = wrapper.get("[data-testid='push-button']");
+    expect(button.text()).toBe("Push to PR branch");
+    expect(button.attributes("title")).toContain("origin/feature/login");
+  });
+
+  test("diverged on the PR branch: the toolbar offers the force push instead of a disabled Push", async () => {
+    const { wrapper } = pushButtonFor("pr-7-feature-login", { aheadCount: 8, behindCount: 6 });
+    await flushPromises();
+    const button = wrapper.get("[data-testid='push-button']");
+    expect(button.text()).toBe("Force push to PR branch");
+    expect(button.attributes("disabled")).toBeUndefined();
+    expect(button.classes()).toContain("button--danger");
+    expect(button.attributes("title")).toContain("origin/feature/login");
+
+    const confirm = vi.spyOn(useGitUiStore(), "confirmForcePushWithLease").mockImplementation(() => {});
+    const push = vi.spyOn(useGitUiStore(), "gitPush").mockResolvedValue(undefined);
+    await button.trigger("click");
+    expect(confirm).toHaveBeenCalledWith(
+      "ws-pr",
+      { branch: "pr-7-feature-login", remote: "origin", behindCount: 6, target: "feature/login" },
+      expect.anything(),
+    );
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  test("diverged on an ordinary branch: Force push (with lease) of that branch", async () => {
+    const { wrapper } = pushButtonFor("develop", { aheadCount: 1, behindCount: 2, upstream: "origin/develop" });
+    await flushPromises();
+    const button = wrapper.get("[data-testid='push-button']");
+    expect(button.text()).toBe("Force push (with lease)");
+    const confirm = vi.spyOn(useGitUiStore(), "confirmForcePushWithLease").mockImplementation(() => {});
+    await button.trigger("click");
+    expect(confirm).toHaveBeenCalledWith(
+      "ws-pr",
+      { branch: "develop", remote: "origin", behindCount: 2, target: "develop" },
+      expect.anything(),
+    );
+  });
 
   test("on the managed PR alias Push says it goes to the PR branch and names it", async () => {
     const { wrapper } = pushButtonFor("pr-7-feature-login");

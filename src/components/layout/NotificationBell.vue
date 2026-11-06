@@ -2,14 +2,13 @@
   <button
     v-if="!notifStore.pinned"
     type="button"
-    v-heartbeat="profileUnreadCount > 0"
     class="notification-bell"
     :class="{ 'notification-bell--has-unread': profileUnreadCount > 0 }"
     data-role="notification-bell"
     title="Open the notification panel — agent alerts, command-finished pings, PR review activity, and the Telegram bot status. The badge shows the unread count for this profile."
     @click="notifStore.togglePanel()"
   >
-    🔔
+    <span v-heartbeat="profileUnreadCount > 0" class="notification-bell__icon">🔔</span>
     <span class="notification-bell__badge" :class="{ 'notification-bell__badge--visible': profileUnreadCount > 0 }">{{
       profileUnreadCount > 0 ? (profileUnreadCount > 9 ? "9+" : profileUnreadCount) : ""
     }}</span>

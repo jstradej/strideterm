@@ -4,6 +4,8 @@ import { parseAgentCommand, type AgentCliProvider } from "./agent-ssh.js";
 
 export const INTERNAL_MCP_URL_ENV = "STRIDETERM_INTERNAL_MCP_URL";
 export const INTERNAL_MCP_CAPABILITY_ENV = "STRIDETERM_INTERNAL_MCP_CAPABILITY";
+export const INTERNAL_MCP_TASKS_ENABLED_ENV = "STRIDETERM_INTERNAL_MCP_TASKS_ENABLED";
+export const INTERNAL_MCP_JIRA_ENABLED_ENV = "STRIDETERM_INTERNAL_MCP_JIRA_ENABLED";
 export const INTERNAL_MCP_ENV_PREFIX = "STRIDETERM_INTERNAL_MCP_";
 export const INTERNAL_MCP_SERVER_NAME = "strideterm";
 export const INTERNAL_MCP_ROUTE = "/internal-mcp";
@@ -28,6 +30,8 @@ export const INTERNAL_MCP_ERROR_CODES = [
   "preparation_not_ready",
   "idempotency_conflict",
   "file_not_accessible",
+  "jira_unavailable",
+  "jira_draft_not_saved",
   "operation_not_found",
   "task_not_found",
   "busy",
@@ -162,6 +166,82 @@ export const internalMcpCompanionAnswerInputSchema = z
   })
   .strict();
 
+const jiraConnectionIdSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/u);
+const jiraIssueIdSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9_-]+$/u);
+export const internalMcpJiraGetIssueInputSchema = z
+  .object({ connectionId: jiraConnectionIdSchema, issueId: jiraIssueIdSchema })
+  .strict();
+export const internalMcpJiraSearchInputSchema = z
+  .object({
+    connectionId: jiraConnectionIdSchema,
+    query: z.string().trim().min(1).max(2000),
+    limit: z.number().int().min(1).max(50).optional(),
+  })
+  .strict();
+export const internalMcpJiraMyOpenIssuesInputSchema = z
+  .object({
+    connectionId: jiraConnectionIdSchema,
+    limit: z.number().int().min(1).max(50).optional(),
+    cursor: z.string().max(2048).optional(),
+  })
+  .strict();
+export const internalMcpJiraCommentsInputSchema = z
+  .object({ connectionId: jiraConnectionIdSchema, issueId: jiraIssueIdSchema })
+  .strict();
+export const internalMcpJiraConnectionInputSchema = z.object({ connectionId: jiraConnectionIdSchema }).strict();
+export const internalMcpJiraEmptyInputSchema = z.object({}).strict();
+export const internalMcpJiraSavedFilterInputSchema = z
+  .object({ connectionId: jiraConnectionIdSchema, filterId: z.string().regex(/^\d{1,20}$/) })
+  .strict();
+export const internalMcpJiraBoardViewInputSchema = z
+  .object({
+    connectionId: jiraConnectionIdSchema,
+    boardId: z.number().int().positive(),
+    mode: z.enum(["issues", "backlog", "sprints"]).optional(),
+    cursor: z.string().max(64).optional(),
+    sprintId: z.number().int().positive().optional(),
+  })
+  .strict();
+export const internalMcpJiraActiveSprintInputSchema = z
+  .object({ connectionId: jiraConnectionIdSchema, boardId: z.number().int().positive() })
+  .strict();
+export const internalMcpJiraTransitionsInputSchema = z
+  .object({ connectionId: jiraConnectionIdSchema, issueId: jiraIssueIdSchema })
+  .strict();
+export const internalMcpJiraAttachmentInputSchema = z
+  .object({
+    connectionId: jiraConnectionIdSchema,
+    issueId: jiraIssueIdSchema,
+    attachmentId: z.string().trim().min(1).max(32).regex(/^\d+$/u),
+    fileName: z
+      .string()
+      .trim()
+      .min(1)
+      .max(128)
+      .regex(/^[A-Za-z0-9][A-Za-z0-9._ -]*$/u),
+  })
+  .strict();
+export const internalMcpJiraLinkedWorkInputSchema = z
+  .object({ connectionId: jiraConnectionIdSchema, issueId: jiraIssueIdSchema })
+  .strict();
+export const internalMcpJiraProposeCommentInputSchema = z
+  .object({
+    connectionId: jiraConnectionIdSchema,
+    issueId: jiraIssueIdSchema,
+    body: z.string().trim().min(1).max(10_000),
+  })
+  .strict();
+
 /** The one request envelope the stdio bridge sends to the broker. */
 export const internalMcpRequestSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("prepare"), input: internalMcpPrepareInputSchema }).strict(),
@@ -173,6 +253,21 @@ export const internalMcpRequestSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("companion_start"), input: internalMcpCompanionControlInputSchema }).strict(),
   z.object({ operation: z.literal("companion_pause"), input: internalMcpCompanionControlInputSchema }).strict(),
   z.object({ operation: z.literal("companion_answer"), input: internalMcpCompanionAnswerInputSchema }).strict(),
+  z.object({ operation: z.literal("jira_get_issue"), input: internalMcpJiraGetIssueInputSchema }).strict(),
+  z.object({ operation: z.literal("jira_search"), input: internalMcpJiraSearchInputSchema }).strict(),
+  z.object({ operation: z.literal("jira_my_open_issues"), input: internalMcpJiraMyOpenIssuesInputSchema }).strict(),
+  z.object({ operation: z.literal("jira_get_comments"), input: internalMcpJiraCommentsInputSchema }).strict(),
+  z.object({ operation: z.literal("jira_list_projects"), input: internalMcpJiraConnectionInputSchema }).strict(),
+  z.object({ operation: z.literal("jira_list_connections"), input: internalMcpJiraEmptyInputSchema }).strict(),
+  z.object({ operation: z.literal("jira_list_filters"), input: internalMcpJiraConnectionInputSchema }).strict(),
+  z.object({ operation: z.literal("jira_get_filter"), input: internalMcpJiraSavedFilterInputSchema }).strict(),
+  z.object({ operation: z.literal("jira_list_boards"), input: internalMcpJiraConnectionInputSchema }).strict(),
+  z.object({ operation: z.literal("jira_board_view"), input: internalMcpJiraBoardViewInputSchema }).strict(),
+  z.object({ operation: z.literal("jira_active_sprint"), input: internalMcpJiraActiveSprintInputSchema }).strict(),
+  z.object({ operation: z.literal("jira_get_transitions"), input: internalMcpJiraTransitionsInputSchema }).strict(),
+  z.object({ operation: z.literal("jira_get_attachment"), input: internalMcpJiraAttachmentInputSchema }).strict(),
+  z.object({ operation: z.literal("jira_linked_work"), input: internalMcpJiraLinkedWorkInputSchema }).strict(),
+  z.object({ operation: z.literal("jira_propose_comment"), input: internalMcpJiraProposeCommentInputSchema }).strict(),
 ]);
 export type InternalMcpRequest = z.infer<typeof internalMcpRequestSchema>;
 

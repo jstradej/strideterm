@@ -39,7 +39,17 @@ interface Call {
 function makeRuntime(port: number, allowedMobileProfiles: string[] = ["home"]) {
   const payload = {
     appState: {
-      settings: { remoteAccess: { enabled: true, host: "127.0.0.1", port, token: MASTER } },
+      settings: {
+        remoteAccess: { enabled: true, host: "127.0.0.1", port, token: MASTER },
+        integrations: {
+          jira: {
+            connections: [
+              { id: "jira-home", profileId: "home" },
+              { id: "jira-work", profileId: "work" },
+            ],
+          },
+        },
+      },
       profiles: [
         { id: "home", name: "Home", color: "#fff", workspaceIds: ["ws-home"] },
         { id: "work", name: "Work Secret Profile", color: "#000", workspaceIds: ["ws-work"] },
@@ -555,5 +565,80 @@ describe("WebSocket writes are held to the caller's profile", () => {
     expect(f.called("dockerShellWrite")).toHaveLength(1);
     expect(f.called("dockerShellResize")).toHaveLength(1);
     browser.close();
+  });
+});
+
+describe("Jira issue writes over the remote API", () => {
+  const ref = (connectionId: string) => ({ connectionId, issueId: "10001", issueKey: "OPS-1" });
+  const confirmation = { token: "t", intent: "User confirmed note", preview: "Hello" };
+  const previewBody = (connectionId: string) => ({
+    action: "comment",
+    ref: ref(connectionId),
+    body: "Hello",
+    intent: "User confirmed note",
+  });
+  const executeBody = (connectionId: string) => ({
+    action: "comment",
+    ref: ref(connectionId),
+    body: "Hello",
+    confirmation,
+  });
+
+  test("a phone previews and executes in its own profile, as its own viewer", async () => {
+    const f = await startFixture();
+    const cookie = await f.mobileCookie();
+    expect((await post(f, "/api/jira/write/preview", cookie, previewBody("jira-home"))).status).toBe(200);
+    expect((await post(f, "/api/jira/write/execute", cookie, executeBody("jira-home"))).status).toBe(200);
+    expect((await post(f, "/api/jira/transitions", cookie, { ref: ref("jira-home") })).status).toBe(200);
+    expect((await post(f, "/api/jira/write/history", cookie, { connectionId: "jira-home" })).status).toBe(200);
+    expect((await post(f, "/api/jira/write/reconcile", cookie, { journalId: "j-1" })).status).toBe(200);
+    for (const name of [
+      "jiraPreviewComment",
+      "jiraExecuteComment",
+      "jiraListTransitions",
+      "jiraGetWriteHistory",
+      "jiraReconcileWrite",
+    ]) {
+      const calls = f.called(name);
+      expect(calls, name).toHaveLength(1);
+      expect(String(calls[0].args[calls[0].args.length - 1]), name).toMatch(/^remote:/);
+    }
+  });
+
+  test("a phone is refused another profile's connection before the runtime is reached", async () => {
+    const f = await startFixture();
+    const cookie = await f.mobileCookie();
+    const refused = [
+      await post(f, "/api/jira/write/preview", cookie, previewBody("jira-work")),
+      await post(f, "/api/jira/write/execute", cookie, executeBody("jira-work")),
+      await post(f, "/api/jira/transitions", cookie, { ref: ref("jira-work") }),
+      await post(f, "/api/jira/write/history", cookie, { connectionId: "jira-work" }),
+    ];
+    expect(refused.map((res) => res.status)).toEqual([403, 403, 403, 403]);
+    expect(f.calls.filter((c) => c.name.startsWith("jira"))).toEqual([]);
+  });
+
+  test("a malformed write is a 400 and never reaches the runtime", async () => {
+    const f = await startFixture();
+    const cookie = await f.mobileCookie();
+    const bad = [
+      await post(f, "/api/jira/write/preview", cookie, { ...previewBody("jira-home"), intent: "short" }),
+      await post(f, "/api/jira/write/preview", cookie, { ...previewBody("jira-home"), action: "delete-issue" }),
+      await post(f, "/api/jira/write/execute", cookie, { ...executeBody("jira-home"), confirmation: {} }),
+      await post(f, "/api/jira/write/reconcile", cookie, { journalId: "j-1", extra: true }),
+    ];
+    expect(bad.map((res) => res.status)).toEqual([400, 400, 400, 400]);
+    expect(f.calls.filter((c) => c.name.startsWith("jira"))).toEqual([]);
+  });
+
+  test("a caller without a bound session gets no viewer-less write", async () => {
+    const f = await startFixture();
+    const res = await fetch(`${f.base}/api/jira/write/preview`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${MASTER}` },
+      body: JSON.stringify(previewBody("jira-home")),
+    });
+    expect(res.status).toBe(400);
+    expect(f.calls.filter((c) => c.name.startsWith("jira"))).toEqual([]);
   });
 });

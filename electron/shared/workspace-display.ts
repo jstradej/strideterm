@@ -6,7 +6,7 @@ import type { WorkspaceState } from "./types/state.js";
  *
  * For task agents that have a `sequenceNumber` we append " #N" so multiple
  * agents inheriting the same name from their parent workspace can be told
- * apart at a glance — without this, a notification like "📍 mhub › Worker"
+ * apart at a glance — without this, a notification like "📍 orders › Worker"
  * is indistinguishable across three running agents on the same project.
  *
  * Pre-existing tasks created before the sequenceNumber field was introduced

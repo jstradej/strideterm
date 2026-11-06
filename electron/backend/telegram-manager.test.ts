@@ -566,9 +566,9 @@ describe("detectChats", () => {
               update_id: 1,
               message: {
                 message_id: 10,
-                chat: { id: 8429137159, type: "private", first_name: "jarek" },
+                chat: { id: 100000001, type: "private", first_name: "alex" },
                 text: "/start",
-                from: { id: 8429137159, first_name: "jarek" },
+                from: { id: 100000001, first_name: "alex" },
               },
             },
           ],
@@ -580,8 +580,8 @@ describe("detectChats", () => {
     const result = await manager.detectChats({ botToken: "tok" });
     expect(result.botUsername).toBe("strIDEtermbot");
     expect(result.chats).toHaveLength(1);
-    expect(result.chats[0].chatId).toBe("8429137159");
-    expect(result.chats[0].title).toBe("jarek");
+    expect(result.chats[0].chatId).toBe("100000001");
+    expect(result.chats[0].title).toBe("alex");
     expect(result.chats[0].type).toBe("private");
     expect(result.chats[0].lastText).toBe("/start");
     expect(calls).toEqual(["getMe", "getUpdates"]);
@@ -848,15 +848,15 @@ describe("_buildAlertText detail formatting", () => {
       workspaceId: "ws-1",
       panelId: "p-1",
       title: "Task done",
-      workspaceProfileName: "MessageHub",
+      workspaceProfileName: "Orders",
       workspaceName: "strideterm",
       panelTitle: "claude",
     });
-    expect(text).toContain("MessageHub");
+    expect(text).toContain("Orders");
     expect(text).toContain("strideterm");
     expect(text).toContain("claude");
     // Profile line is its own row (compass), not crammed into the location row.
-    expect(text.split("\n").some((line: string) => line.includes("🧭") && line.includes("MessageHub"))).toBe(true);
+    expect(text.split("\n").some((line: string) => line.includes("🧭") && line.includes("Orders"))).toBe(true);
   });
 
   test("omits profile line when workspaceProfileName is missing (legacy callers)", () => {

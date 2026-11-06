@@ -14,6 +14,9 @@ import {
   gitBranchRenameSchema,
   gitCheckoutRemoteSchema,
   gitPayloadSchema,
+  gitTagSchema,
+  quickFixCreateSchema,
+  githubQuickFixCreateSchema,
   gitInterestSchema,
   wsGitInterestSchema,
   gitDiffPreviewSchema,
@@ -41,9 +44,335 @@ import {
   sanitizeAccountUiStateOutput,
   sshKeyTransferStartSchema,
   startReviewAgentPreparationSchema,
+  jiraConnectionDtoSchema,
+  jiraConnectionSaveSchema,
+  jiraSavedQueryDtoSchema,
+  jiraCommentDraftDtoSchema,
+  jiraProjectDtoSchema,
+  jiraVerifyConnectionDtoSchema,
+  jiraTaskContextDtoSchema,
+  jiraWriteInvokeResultDtoSchema,
+  jiraLinkedWorkDtoSchema,
+  jiraBoardSearchSchema,
+  jiraBoardSearchResultDtoSchema,
+  jiraSearchSchema,
+  jiraIssueLookupSchema,
+  jiraRecentListSchema,
+  jiraWorkspaceViewsGetSchema,
+  jiraWorkspaceProjectScopeGetSchema,
+  jiraWorkspaceProjectScopeSetSchema,
+  jiraWorkspaceViewSaveSchema,
+  jiraWorkspaceViewRenameSchema,
+  jiraWorkspaceViewReorderSchema,
+  jiraWorkspaceViewTargetSchema,
+  jiraWorkspaceViewRefreshSchema,
+  jiraRememberSearchSchema,
+  jiraRememberIssueViewedSchema,
+  jiraRecentIssuesDtoSchema,
+  jiraOwnIdentitySchema,
+  jiraCommentAttributionSchema,
+  jiraOwnIssuesQuerySchema,
 } from "./ipc-schemas.js";
 
 describe("ipc-schemas", () => {
+  test("Jira project scope is bounded, normalized, and distinguishes inherited scope from all projects", () => {
+    expect(jiraSearchSchema.parse({ connectionId: "jira-a", jql: "", projectKeys: [" ops "] }).projectKeys).toEqual([
+      "OPS",
+    ]);
+    expect(jiraSearchSchema.parse({ connectionId: "jira-a", jql: "", projectKeys: [] }).projectKeys).toEqual([]);
+    expect(jiraSearchSchema.safeParse({ connectionId: "jira-a", jql: "", projectKeys: ["OPS; DROP"] }).success).toBe(
+      false,
+    );
+    expect(
+      jiraSearchSchema.safeParse({ connectionId: "jira-a", jql: "", projectKeys: Array(51).fill("OPS") }).success,
+    ).toBe(false);
+    expect(jiraWorkspaceProjectScopeGetSchema.parse({ workspaceId: "jira-ws", connectionId: "jira-a" })).toEqual({
+      workspaceId: "jira-ws",
+      connectionId: "jira-a",
+    });
+    expect(
+      jiraWorkspaceProjectScopeSetSchema.parse({
+        workspaceId: "jira-ws",
+        connectionId: "jira-a",
+        projectKeys: null,
+      }).projectKeys,
+    ).toBeNull();
+  });
+
+  test("Jira workspace-view APIs strictly validate scoped targets and bounded view config", () => {
+    expect(jiraWorkspaceViewsGetSchema.parse({ workspaceId: "jira-ws" })).toEqual({ workspaceId: "jira-ws" });
+    expect(jiraWorkspaceViewsGetSchema.safeParse({ workspaceId: "jira-ws", profileId: "p2" }).success).toBe(false);
+    expect(
+      jiraWorkspaceViewRenameSchema.parse({ workspaceId: "jira-ws", viewId: "opaque", title: "Platform" }),
+    ).toMatchObject({ title: "Platform" });
+    expect(
+      jiraWorkspaceViewRenameSchema.safeParse({ workspaceId: "jira-ws", viewId: "issues", title: " " }).success,
+    ).toBe(false);
+    expect(jiraWorkspaceViewReorderSchema.safeParse({ workspaceId: "jira-ws", viewIds: ["a", "a"] }).success).toBe(
+      false,
+    );
+    expect(
+      jiraWorkspaceViewReorderSchema.safeParse({
+        workspaceId: "jira-ws",
+        viewIds: Array.from({ length: 51 }, (_, i) => String(i)),
+      }).success,
+    ).toBe(false);
+    expect(jiraWorkspaceViewTargetSchema.safeParse({ workspaceId: "jira-ws", viewId: "opaque" }).success).toBe(true);
+    expect(jiraWorkspaceViewTargetSchema.safeParse({ workspaceId: "jira-ws", viewId: "x".repeat(129) }).success).toBe(
+      false,
+    );
+    expect(jiraWorkspaceViewRefreshSchema.parse({ workspaceId: "jira-ws" })).toEqual({ workspaceId: "jira-ws" });
+    expect(jiraWorkspaceViewRefreshSchema.safeParse({ workspaceId: "jira-ws", viewId: "x", extra: true }).success).toBe(
+      false,
+    );
+
+    const saveInput = {
+      workspaceId: "jira-ws",
+      view: {
+        kind: "board",
+        connectionId: "jira-a",
+        boardId: 7,
+        title: "Platform",
+        quickFilterIds: [2],
+      },
+    };
+    expect(jiraWorkspaceViewSaveSchema.parse(saveInput)).toEqual(saveInput);
+    expect(
+      jiraWorkspaceViewSaveSchema.parse({
+        workspaceId: "jira-ws",
+        view: { kind: "personal", connectionId: "jira-a", personalScope: "all" },
+      }).view.personalScope,
+    ).toBe("all");
+    expect(
+      jiraWorkspaceViewSaveSchema.safeParse({
+        workspaceId: "jira-ws",
+        view: { kind: "board", connectionId: "jira-a", boardId: 7, personalScope: "all" },
+      }).success,
+    ).toBe(false);
+    expect(jiraOwnIssuesQuerySchema.parse({ connectionId: "jira-a", personalScope: "all" }).personalScope).toBe("all");
+    expect(
+      jiraOwnIssuesQuerySchema.parse({ connectionId: "jira-a", smartFilters: ["watching", "current-sprint"] })
+        .smartFilters,
+    ).toEqual(["watching", "current-sprint"]);
+    expect(jiraOwnIssuesQuerySchema.safeParse({ connectionId: "jira-a", smartFilters: ["assignee = x"] }).success).toBe(
+      false,
+    );
+    expect(
+      jiraWorkspaceViewSaveSchema.parse({
+        ...saveInput,
+        view: { ...saveInput.view, presentation: "list", statusFilter: null },
+      }).view,
+    ).toMatchObject({ presentation: "list", statusFilter: null });
+    expect(
+      jiraWorkspaceViewSaveSchema.parse({
+        ...saveInput,
+        view: { ...saveInput.view, projectKeys: null },
+      }).view.projectKeys,
+    ).toBeNull();
+    expect(
+      jiraWorkspaceViewSaveSchema.parse({
+        ...saveInput,
+        view: { ...saveInput.view, projectKeys: [] },
+      }).view.projectKeys,
+    ).toEqual([]);
+    expect(
+      jiraWorkspaceViewSaveSchema.safeParse({
+        ...saveInput,
+        view: { ...saveInput.view, boardId: null },
+      }).success,
+    ).toBe(false);
+    expect(
+      jiraWorkspaceViewSaveSchema.safeParse({
+        ...saveInput,
+        view: { ...saveInput.view, quickFilterIds: Array.from({ length: 51 }, (_, index) => index + 1) },
+      }).success,
+    ).toBe(false);
+    expect(
+      jiraWorkspaceViewSaveSchema.safeParse({
+        ...saveInput,
+        view: { ...saveInput.view, profileId: "other-profile" },
+      }).success,
+    ).toBe(false);
+  });
+
+  test("Jira comment attribution is strict and bounded", () => {
+    const ok = { enabled: true, text: "On behalf of {user}", position: "before" };
+    expect(jiraCommentAttributionSchema.safeParse(ok).success).toBe(true);
+    expect(jiraCommentAttributionSchema.safeParse({ ...ok, text: "" }).success).toBe(true);
+    expect(jiraCommentAttributionSchema.safeParse({ ...ok, text: "x".repeat(501) }).success).toBe(false);
+    expect(jiraCommentAttributionSchema.safeParse({ ...ok, position: "middle" }).success).toBe(false);
+    expect(jiraCommentAttributionSchema.safeParse({ ...ok, enabled: "yes" }).success).toBe(false);
+    expect(jiraCommentAttributionSchema.safeParse({ ...ok, profileId: "spoof" }).success).toBe(false);
+  });
+
+  test("Jira recent history is bounded and cannot select another profile", () => {
+    expect(jiraOwnIdentitySchema.safeParse({ connectionId: "jira-a", userId: "alice" }).success).toBe(true);
+    expect(jiraOwnIdentitySchema.safeParse({ connectionId: "jira-a", userId: " " }).success).toBe(false);
+    expect(
+      jiraOwnIdentitySchema.safeParse({ connectionId: "jira-a", userId: "alice", profileId: "spoof" }).success,
+    ).toBe(false);
+    expect(jiraRecentListSchema.parse({ connectionId: "jira-a", limit: 20 }).limit).toBe(20);
+    expect(jiraRecentListSchema.safeParse({ connectionId: "jira-a", limit: 21 }).success).toBe(false);
+    expect(jiraRecentListSchema.safeParse({ connectionId: "jira-a", profileId: "other" }).success).toBe(false);
+    expect(jiraRememberSearchSchema.safeParse({ connectionId: "jira-a", jql: " ", label: "Empty" }).success).toBe(
+      false,
+    );
+    expect(
+      jiraRememberIssueViewedSchema.safeParse({
+        ref: { provider: "github", connectionId: "jira-a", issueId: "1", issueKey: "OPS-1" },
+      }).success,
+    ).toBe(false);
+    expect(
+      jiraRecentIssuesDtoSchema.safeParse([
+        {
+          ref: { provider: "jira", connectionId: "jira-a", issueId: "1", issueKey: "OPS-1" },
+          summary: "Cached",
+          status: "Open",
+          viewedAt: 1,
+          description: "must not be sent in a recent summary",
+        },
+      ]).success,
+    ).toBe(false);
+  });
+
+  test("Jira cache-first and background flags survive input validation", () => {
+    const flags = { cacheOnly: true, forceRefresh: false, refreshInBackground: true };
+    expect(jiraSearchSchema.parse({ connectionId: "jira-a", jql: "key = OPS-1", ...flags })).toMatchObject(flags);
+    expect(jiraIssueLookupSchema.parse({ connectionId: "jira-a", issueId: "1", ...flags })).toMatchObject(flags);
+    expect(jiraSearchSchema.safeParse({ connectionId: "jira-a", refreshInBackground: "true" }).success).toBe(false);
+  });
+
+  test("Jira board search uses bounded pages and a validated offset cursor", () => {
+    expect(jiraBoardSearchSchema.parse({ connectionId: "jira-a", query: " Platform " })).toEqual({
+      connectionId: "jira-a",
+      query: "Platform",
+      limit: 50,
+    });
+    expect(jiraBoardSearchSchema.safeParse({ connectionId: "jira-a", limit: 101 }).success).toBe(false);
+    expect(jiraBoardSearchSchema.safeParse({ connectionId: "jira-a", cursor: "1x" }).success).toBe(false);
+    expect(
+      jiraBoardSearchResultDtoSchema.safeParse({
+        boards: [{ id: 1, name: "Platform", type: "kanban" }],
+        hasMore: true,
+        nextCursor: "50",
+        truncated: true,
+      }).success,
+    ).toBe(true);
+  });
+
+  test("Jira output DTOs reject secrets, unbounded lists, and arbitrary task snapshot fields", () => {
+    const connection = {
+      id: "c",
+      profileId: "p",
+      label: "Jira",
+      enabled: true,
+      deployment: "cloud",
+      webUrl: "https://x.atlassian.net",
+      apiBaseUrl: "",
+      auth: { kind: "cloud-api-token", email: "me@example.com" },
+      accountPurpose: "personal",
+    };
+    expect(jiraConnectionDtoSchema.safeParse(connection).success).toBe(true);
+    expect(
+      jiraConnectionDtoSchema.safeParse({
+        ...connection,
+        deployment: "data-center",
+        apiBaseUrl: "https://gateway.example.com/prefix",
+        auth: { kind: "dc-apim" },
+        subscriptionHeaderName: "Ocp-Apim-Subscription-Key",
+        clientCertificatePath: "C:\\certs\\jira.pfx",
+      }).success,
+    ).toBe(true);
+    expect(
+      jiraConnectionDtoSchema.safeParse({ ...connection, auth: { kind: "cloud-api-token", accessToken: "secret" } })
+        .success,
+    ).toBe(false);
+    expect(
+      jiraConnectionDtoSchema.safeParse({ ...connection, auth: { kind: "dc-apim", passphraseRef: "secret-ref" } })
+        .success,
+    ).toBe(false);
+    expect(
+      jiraConnectionSaveSchema.safeParse({
+        label: "Gateway",
+        deployment: "data-center",
+        webUrl: "https://jira.example.com",
+        apiBaseUrl: "https://gateway.example.com/prefix",
+        authMode: "apim",
+        subscriptionKey: "temporary-test-key",
+        subscriptionHeaderName: "Ocp-Apim-Subscription-Key",
+        clientCertificatePath: "C:\\certs\\jira.pfx",
+        clientCertificatePassword: "temporary-test-password",
+      }).success,
+    ).toBe(true);
+    expect(
+      jiraSavedQueryDtoSchema.safeParse({
+        id: "q",
+        profileId: "p",
+        connectionId: "c",
+        name: "Q",
+        jql: "project=ABC",
+        notificationsEnabled: false,
+        updatedAt: "now",
+        refreshToken: "secret",
+      }).success,
+    ).toBe(false);
+    expect(
+      jiraCommentDraftDtoSchema.safeParse({
+        id: "d",
+        ref: { provider: "jira", connectionId: "c", issueId: "1", issueKey: "ABC-1" },
+        body: "draft",
+        sourceWorkspaceId: "w",
+        createdAt: "now",
+        accessToken: "secret",
+      }).success,
+    ).toBe(false);
+    expect(jiraProjectDtoSchema.safeParse({ id: "1", key: "ABC", name: "Project", raw: { token: "x" } }).success).toBe(
+      false,
+    );
+    expect(
+      jiraVerifyConnectionDtoSchema.safeParse({
+        identity: { kind: "cloud", accountId: "a", displayName: "Bot" },
+        serverTitle: "Jira",
+        rawResponse: { accessToken: "secret" },
+      }).success,
+    ).toBe(false);
+    const badTask = {
+      jiraIssueRefs: [],
+      jiraPreparedSnapshot: [{ ref: { connectionId: "c", issueId: "1" }, fields: { comments: "private" } }],
+      jiraIssueSnapshots: [],
+    };
+    expect(jiraTaskContextDtoSchema.safeParse(badTask).success).toBe(false);
+    expect(
+      jiraTaskContextDtoSchema.safeParse({
+        jiraIssueRefs: [],
+        jiraPreparedSnapshot: [],
+        jiraIssueSnapshots: [],
+        refreshToken: "secret",
+      }).success,
+    ).toBe(false);
+  });
+
+  test("Jira write envelopes and MCP linked-work DTOs are bounded clone-safe allowlists", () => {
+    const safe = {
+      ok: false,
+      error: { code: "jira-write-unknown", message: "Reconcile before retrying.", journalId: "j1", status: "unknown" },
+    };
+    expect(jiraWriteInvokeResultDtoSchema.parse(JSON.parse(JSON.stringify(safe)))).toEqual(safe);
+    expect(jiraWriteInvokeResultDtoSchema.safeParse({ ...safe, rawProviderError: { body: "secret" } }).success).toBe(
+      false,
+    );
+    expect(
+      jiraWriteInvokeResultDtoSchema.safeParse({
+        ok: true,
+        data: { status: "succeeded", journalId: "j1", result: { body: "comment" } },
+      }).success,
+    ).toBe(false);
+    expect(
+      jiraLinkedWorkDtoSchema.safeParse([
+        { id: "1", url: "https://github.com/org/repo/pull/1", title: "PR", accessToken: "secret" },
+      ]).success,
+    ).toBe(false);
+  });
   test("review Git operation starts accept an optional bounded idempotency key", () => {
     expect(reviewGitStartSchema.safeParse({ kind: "push", workspaceId: "ws-1" }).success).toBe(true);
     expect(
@@ -972,6 +1301,62 @@ describe("ipc-schemas", () => {
 
     test("rejects a non-positive limit", () => {
       expect(() => validateIpc(mobileAuditLogQuerySchema, { limit: 0 }, "test")).toThrow();
+    });
+  });
+
+  describe("gitTagSchema", () => {
+    test("keeps the root and the retry key that the tag handlers read", () => {
+      expect(
+        validateIpc(
+          gitTagSchema,
+          { workspaceId: "ws", tagName: "v1", rootPath: "/repo/b", idempotencyKey: "key-1" },
+          "test",
+        ),
+      ).toEqual({ workspaceId: "ws", tagName: "v1", rootPath: "/repo/b", idempotencyKey: "key-1" });
+    });
+  });
+
+  describe("quick-fix create payloads", () => {
+    const azure = {
+      connectionId: "az-1",
+      projectName: "Engineering",
+      repositoryId: "repo-1",
+      repositoryName: "web",
+      remoteUrl: "https://dev.azure.com/org/project/_git/web",
+      baseBranch: "main",
+      newBranchName: "feature/ENG-1-fix-login",
+    };
+    const github = {
+      connectionId: "gh-1",
+      owner: "acme",
+      repo: "web",
+      remoteUrl: "https://github.com/acme/web.git",
+      baseBranch: "main",
+      newBranchName: "feature/ENG-1-fix-login",
+    };
+    const jiraIssueRef = { connectionId: "jira-1", issueId: "1001", issueKey: "ENG-1" };
+
+    test.each([
+      ["azure", quickFixCreateSchema, azure],
+      ["github", githubQuickFixCreateSchema, github],
+    ])("%s accepts the payload with and without a Jira issue link", (_name, schema, payload) => {
+      expect(validateIpc(schema, payload, "test")).toEqual(payload);
+      expect(validateIpc(schema, { ...payload, jiraIssueRef }, "test")).toEqual({ ...payload, jiraIssueRef });
+    });
+
+    test.each([
+      ["azure", quickFixCreateSchema, azure],
+      ["github", githubQuickFixCreateSchema, github],
+    ])("%s refuses an incomplete or widened Jira issue link", (_name, schema, payload) => {
+      expect(() =>
+        validateIpc(schema, { ...payload, jiraIssueRef: { connectionId: "jira-1", issueId: "1" } }, "test"),
+      ).toThrow();
+      expect(() =>
+        validateIpc(schema, { ...payload, jiraIssueRef: { ...jiraIssueRef, profileId: "p" } }, "test"),
+      ).toThrow();
+      expect(() =>
+        validateIpc(schema, { ...payload, jiraIssueRef: { ...jiraIssueRef, issueKey: "" } }, "test"),
+      ).toThrow();
     });
   });
 });

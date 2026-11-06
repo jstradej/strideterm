@@ -520,6 +520,12 @@ export class SessionManager extends EventEmitter {
     }
   >();
   private pendingInitialSizes = new Map<string, { cols: number; rows: number }>();
+  /**
+   * The size a renderer last reported for a running terminal. A session that starts before its own view has measured
+   * itself (an agent tab started in the background) starts at this size instead of the 120x34 default: a TUI drawn
+   * at the default and then resized to the real pane leaves stale lines and shifted text behind on ConPTY.
+   */
+  private lastReportedSize: { cols: number; rows: number } | null = null;
   sessions: Map<string, RuntimeSession>;
   startingSessions: Map<string, StartRecord>;
   /**
@@ -897,11 +903,11 @@ export class SessionManager extends EventEmitter {
 
     const pendingSize = this.pendingInitialSizes.get(key);
     const initialCols = Math.max(
-      pendingSize?.cols || existing?.cols || APP_CONFIG.session.defaultCols,
+      pendingSize?.cols || existing?.cols || this.lastReportedSize?.cols || APP_CONFIG.session.defaultCols,
       APP_CONFIG.session.minCols,
     );
     const initialRows = Math.max(
-      pendingSize?.rows || existing?.rows || APP_CONFIG.session.defaultRows,
+      pendingSize?.rows || existing?.rows || this.lastReportedSize?.rows || APP_CONFIG.session.defaultRows,
       APP_CONFIG.session.minRows,
     );
 
@@ -1501,6 +1507,8 @@ export class SessionManager extends EventEmitter {
 
     const nextCols = Math.max(cols, APP_CONFIG.session.minCols);
     const nextRows = Math.max(rows, APP_CONFIG.session.minRows);
+    // Only a running terminal's own measurement counts: a size reported for a panel that never starts is no evidence.
+    if (cols > 0 && rows > 0) this.lastReportedSize = { cols: nextCols, rows: nextRows };
     if (
       Math.max(session.cols, APP_CONFIG.session.minCols) === nextCols &&
       Math.max(session.rows, APP_CONFIG.session.minRows) === nextRows

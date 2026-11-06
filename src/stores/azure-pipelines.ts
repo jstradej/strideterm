@@ -2,6 +2,9 @@ import { defineStore } from "pinia";
 import { ref } from "vue";
 import type { Transport } from "../transport.js";
 import { useNotificationStore } from "./notifications.js";
+import { useAppStore } from "./app.js";
+import type { OperationFinished } from "../../electron/shared/operation-events.js";
+import type { StartPipelineAgentInput, StartPipelineAgentResult } from "../../electron/shared/pipeline-agent.js";
 import { fireNotificationAlert } from "../composables/useNotificationSound.js";
 import type {
   AzurePipelineSummary,
@@ -95,6 +98,7 @@ type PipelinesApi = Transport & {
     projectName: string;
     buildId: number | string;
   }) => Promise<unknown>;
+  startAzurePipelineAgent: (p: StartPipelineAgentInput) => Promise<StartPipelineAgentResult>;
 };
 
 /** A build/run status is terminal once Azure marks it "completed". */
@@ -119,6 +123,71 @@ export const useAzurePipelinesStore = defineStore("azure-pipelines", () => {
   let _api: PipelinesApi | null = null;
   function init(api: Transport): void {
     _api = api as PipelinesApi;
+    api.onOperationFinished?.((outcome) => settleAgentStart(outcome));
+  }
+
+  // --- Agent on a finished run ---
+
+  /** Runs whose agent is being started from this client, `connectionId:buildId` → operation id. */
+  const agentStarts = ref<Record<string, string>>({});
+  const agentWaiters = new Map<string, (outcome: OperationFinished) => void>();
+
+  function agentStartKey(connectionId: string, buildId: number | string): string {
+    return `${connectionId}:${buildId}`;
+  }
+
+  function settleAgentStart(outcome: OperationFinished): void {
+    const resolve = agentWaiters.get(outcome.operationId);
+    if (!resolve) return;
+    agentWaiters.delete(outcome.operationId);
+    resolve(outcome);
+  }
+
+  /**
+   * Start an agent on a finished run; resolves with the operation's outcome. The backend answers at once and reports
+   * the end as `operation:finished`; a client that misses the event (a reconnect) finds it in the payload instead.
+   */
+  async function startAgent(params: {
+    connectionId: string;
+    projectName: string;
+    pipelineId: number | string;
+    buildId: number | string;
+  }): Promise<OperationFinished> {
+    if (!_api?.startAzurePipelineAgent) throw new Error("Transport unavailable.");
+    const key = agentStartKey(params.connectionId, params.buildId);
+    agentStarts.value = { ...agentStarts.value, [key]: "" };
+    try {
+      const started = await _api.startAzurePipelineAgent({
+        connectionId: params.connectionId,
+        projectName: params.projectName,
+        pipelineId: Number(params.pipelineId),
+        buildId: Number(params.buildId),
+        idempotencyKey: crypto.randomUUID(),
+      });
+      if (started.outcome) return started.outcome;
+      agentStarts.value = { ...agentStarts.value, [key]: started.operationId };
+      return await new Promise<OperationFinished>((resolve) => {
+        const fromPayload = () =>
+          useAppStore().payload?.operations?.lastResults?.find((result) => result.operationId === started.operationId);
+        const poll = setInterval(() => {
+          const found = fromPayload();
+          if (found) settleAgentStart(found);
+        }, 2_000);
+        agentWaiters.set(started.operationId, (outcome) => {
+          clearInterval(poll);
+          resolve(outcome);
+        });
+        const found = fromPayload();
+        if (found) settleAgentStart(found);
+      });
+    } finally {
+      const { [key]: _done, ...rest } = agentStarts.value;
+      agentStarts.value = rest;
+    }
+  }
+
+  function isAgentStarting(connectionId: string, buildId: number | string): boolean {
+    return agentStartKey(connectionId, buildId) in agentStarts.value;
   }
 
   function ensureConnection(connectionId: string): ConnectionPipelines {
@@ -436,5 +505,7 @@ export const useAzurePipelinesStore = defineStore("azure-pipelines", () => {
     watchRun,
     getRunStatus,
     getBuildLog,
+    startAgent,
+    isAgentStarting,
   };
 });

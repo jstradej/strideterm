@@ -111,6 +111,11 @@ export type OwnerEmailNotice =
 
 export interface AccountUiState {
   readonly phase: AccountPhase;
+  readonly accountAction?: {
+    readonly kind: "delete-account";
+    readonly status: "submitted";
+    readonly providerCancellationRequired: boolean;
+  };
   /** Preparation of online services, separate from the Firebase email-send phase. */
   readonly onlineBootstrap?: OnlineBootstrapState;
   /**
@@ -209,6 +214,8 @@ export interface AccountUiState {
    */
   readonly signInUnavailableReason?: string;
   readonly entitlement?: EntitlementSummary;
+  /** A definite server refusal to start this installation's trial, retained across overview reads. */
+  readonly trialIneligibility?: TrialIneligibility;
   /** The last sanitized overview. Rebuilt by a refresh, never assembled in the renderer. */
   readonly overview?: AccountOverview;
   /** A fixed code, never remote text. */
@@ -454,6 +461,8 @@ export const ACCOUNT_ERROR_CODES = [
   "no-subscription",
   "already-subscribed",
   "trial-already-used",
+  "trial-account-has-billing-history",
+  "trial-account-has-active-entitlement",
   "checkout-pending",
   "provider-unavailable",
   "entitlement-required",
@@ -480,6 +489,9 @@ export const ACCOUNT_ERROR_CODES = [
 
 export type AccountErrorCode = (typeof ACCOUNT_ERROR_CODES)[number];
 
+export type TrialIneligibility =
+  "trial-already-used" | "trial-account-has-billing-history" | "trial-account-has-active-entitlement";
+
 /**
  * Maps whatever came back onto a fixed code.
  *
@@ -498,6 +510,9 @@ export type AccountErrorCode = (typeof ACCOUNT_ERROR_CODES)[number];
  */
 const SERVER_REASON_ALIASES: Readonly<Record<string, AccountErrorCode>> = {
   "reauthentication-required": "requires-recent-login",
+  "installation-already-trialed": "trial-already-used",
+  "account-has-billing-history": "trial-account-has-billing-history",
+  "account-has-active-entitlement": "trial-account-has-active-entitlement",
 };
 
 function normalizeReason(reason: string): AccountErrorCode | null {

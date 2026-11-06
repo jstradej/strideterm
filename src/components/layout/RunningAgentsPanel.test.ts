@@ -107,7 +107,7 @@ describe("RunningAgentsPanel", () => {
     const workspaces = [
       workspace("azure", { name: "Azure DevOps" }),
       workspace("pr", {
-        name: "mhub PR #30746",
+        name: "orders PR #30746",
         review: { checkout: { mode: "managed-worktree" }, parentWorkspaceId: "azure" },
       }),
       workspace("task-a", { name: "pr-30746", task: { parentWorkspaceId: "pr" } }),
@@ -122,8 +122,8 @@ describe("RunningAgentsPanel", () => {
     // One cluster, and the shared branch drawn once — not once per task.
     expect(wrapper.findAll('[data-role="activity-cluster"]')).toHaveLength(1);
     const contexts = wrapper.findAll('[data-role="activity-context-row"]');
-    expect(contexts.map((c) => c.text())).toEqual(["Azure DevOps", "mhub PR #30746"]);
-    // `mhub PR #30746` BRANCHES, so it keeps its own row instead of being
+    expect(contexts.map((c) => c.text())).toEqual(["Azure DevOps", "orders PR #30746"]);
+    // `orders PR #30746` BRANCHES, so it keeps its own row instead of being
     // folded into the breadcrumb above it.
     expect(contexts[1].attributes("data-depth")).toBe("1");
     const activities = wrapper.findAll('[data-role="activity-node-row"]');
@@ -135,7 +135,7 @@ describe("RunningAgentsPanel", () => {
     const workspaces = [
       workspace("azure", { name: "Azure DevOps" }),
       workspace("pr", {
-        name: "mhub PR #30746",
+        name: "orders PR #30746",
         review: { checkout: { mode: "managed-worktree" }, parentWorkspaceId: "azure" },
       }),
       workspace("task-a", { name: "pr-30746", task: { parentWorkspaceId: "pr" } }),
@@ -145,7 +145,7 @@ describe("RunningAgentsPanel", () => {
 
     const contexts = wrapper.findAll('[data-role="activity-context-row"]');
     expect(contexts).toHaveLength(1);
-    expect(contexts[0].text()).toContain("Azure DevOps › mhub PR #30746");
+    expect(contexts[0].text()).toContain("Azure DevOps › orders PR #30746");
     // The breadcrumb navigates to the NEAREST parent of the activity below it.
     expect(contexts[0].attributes("data-workspace-id")).toBe("pr");
   });

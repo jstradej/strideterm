@@ -823,3 +823,14 @@ export function createIntervalGate(intervalMs = 10_000, now: () => number = () =
     },
   };
 }
+
+/**
+ * What an already-accepted background run hands a quick-fix create handler so
+ * it need not look the caller up again: the profile and the Jira work item
+ * were authorized when the run was accepted, and the caller's window or
+ * session may be gone by the time it executes.
+ */
+export interface AcceptedQuickFixContext {
+  profileId: string;
+  workItem?: NonNullable<import("../shared/types/state.js").WorkspaceState["workItems"]>[number];
+}

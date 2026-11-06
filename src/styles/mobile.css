@@ -130,7 +130,7 @@
     height: 100%;
     min-height: 0;
     z-index: 100;
-    background: var(--panel);
+    background: var(--base-fill);
     border-right: 1px solid var(--border);
     border-bottom: none;
     transform: translateX(-100%);
@@ -190,7 +190,8 @@
   .mobile-tab-picker__trigger {
     display: grid;
     place-items: center;
-    height: 34px;
+    height: 44px;
+    min-height: 44px;
     padding: 0 10px;
     border: 1px solid var(--border);
     border-radius: 4px;
@@ -495,12 +496,27 @@
     overflow-y: auto;
   }
 
-  .mobile-tab-picker__item {
+  .mobile-tab-picker__row {
     display: flex;
     align-items: center;
-    gap: 8px;
     width: 100%;
-    padding: 10px 14px;
+    min-height: 44px;
+    padding: 4px 8px 4px 0;
+  }
+
+  .mobile-tab-picker__row:hover {
+    background: rgba(var(--tint), 0.06);
+  }
+
+  .mobile-tab-picker__item {
+    display: flex;
+    flex: 1 1 auto;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+    min-width: 0;
+    width: auto;
+    padding: 8px 11px;
     border: none;
     background: none;
     color: var(--text);
@@ -529,14 +545,20 @@
   .mobile-tab-picker__menu {
     display: grid;
     place-items: center;
-    width: 32px;
-    height: 32px;
+    flex: 0 0 44px;
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
     margin-left: 4px;
+    padding: 0;
+    border: none;
+    background: none;
     border-radius: 4px;
     color: var(--muted);
     font-size: 14px;
+    font-family: inherit;
     line-height: 1;
-    flex-shrink: 0;
     cursor: pointer;
   }
 
@@ -544,6 +566,11 @@
   .mobile-tab-picker__menu:active {
     background: rgba(var(--tint), 0.12);
     color: var(--text);
+  }
+
+  .mobile-tab-picker__menu:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
 
   .mobile-tab-picker__backdrop {
@@ -558,6 +585,11 @@
     flex-shrink: 0;
     flex-direction: row;
     gap: 2px;
+  }
+
+  .terminal-toolbar__actions .jira-board-add-button {
+    min-height: 44px;
+    padding-inline: 9px;
   }
 
   .tab-actions__separator,
@@ -930,6 +962,9 @@
   min-height: 48px;
   padding: 4px;
 }
+.workspace-main:has(> .mobile-input-bar--landscape.mobile-input-bar--collapsed) .fc__fkeys {
+  padding-left: 48px;
+}
 .mobile-input-bar--landscape .mobile-input-bar__expand {
   width: 40px;
   height: 40px;
@@ -1296,5 +1331,11 @@ html.native-keyboard-viewport .mobile-input-bar:not(.mobile-input-bar--landscape
 @media (min-width: 769px) and (min-height: 501px) {
   html.native-keyboard-viewport .mobile-input-bar:not(.mobile-input-bar--landscape) .mobile-input-bar__menu {
     max-height: calc(100dvh - var(--strideterm-keyboard-bottom, 0px) - 112px);
+  }
+}
+
+@media (pointer: coarse), (any-pointer: coarse) {
+  .context-menu__item {
+    min-height: 44px;
   }
 }

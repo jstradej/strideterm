@@ -316,8 +316,8 @@ export function createDialogActions(ctx: DialogActionsCtx) {
 
   // --- Context menu ------------------------------------------------------
 
-  function showContextMenu(x: number, y: number, viewId: string): void {
-    ctx.contextMenu.value = { x, y, viewId };
+  function showContextMenu(x: number, y: number, viewId: string, anchor?: HTMLElement): void {
+    ctx.contextMenu.value = { x, y, viewId, ...(anchor ? { anchor } : {}) };
   }
 
   function hideContextMenu(): void {
@@ -954,6 +954,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       // Extra fields consumed by the creation flow only
       useWorktree: false,
       worktreeBranch: "",
+      jiraMcpEnabled: false,
     };
 
     openDialog("WorkspaceDialog", {
@@ -971,6 +972,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
             icon: draft.icon || "",
             color: draft.color || "",
             notes: draft.notes || "",
+            jiraMcpEnabled: draft.jiraMcpEnabled === true,
           };
 
           // Extract worker/judge config: provider dropdown or raw command override

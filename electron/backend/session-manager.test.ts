@@ -497,6 +497,18 @@ describe("SessionManager", () => {
     expect(spawnCalls[1].options).toMatchObject({ cols: 190, rows: 54 });
   });
 
+  test("starts a session no view has measured at the size of the last resized terminal", async () => {
+    const manager = new SessionManager();
+    const state = createState() as Parameters<typeof manager.ensureSession>[0];
+    state.workspaces[0].panels.push({ id: "agent", title: "Agent", command: "", startup: "manual" });
+
+    await manager.ensureSession(state, "workspace-a:shell");
+    manager.resizeSession("workspace-a:shell", 212, 64, state);
+    await manager.ensureSession(state, "workspace-a:agent");
+
+    expect(spawnCalls[1].options).toMatchObject({ cols: 212, rows: 64 });
+  });
+
   test("clamps a pending initial size to the configured terminal minimum", async () => {
     const manager = new SessionManager();
     const state = createState() as Parameters<typeof manager.ensureSession>[0];

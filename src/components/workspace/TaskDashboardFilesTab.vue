@@ -13,6 +13,28 @@
         <span v-if="f.dirty" class="td__file-dirty">*</span>
       </button>
       <div class="td__editor-actions">
+        <div v-if="markdownFile" class="td__markdown-modes" role="group" aria-label="Markdown view">
+          <button
+            type="button"
+            class="button button--ghost button--sm"
+            :aria-pressed="previewMode"
+            :class="{ 'td__markdown-mode--active': previewMode }"
+            title="Render this Markdown file, including any unsaved changes."
+            @click="previewMode = true"
+          >
+            Preview
+          </button>
+          <button
+            type="button"
+            class="button button--ghost button--sm"
+            :aria-pressed="!previewMode"
+            :class="{ 'td__markdown-mode--active': !previewMode }"
+            title="Edit the Markdown source. Unsaved changes stay in the editor."
+            @click="previewMode = false"
+          >
+            Edit
+          </button>
+        </div>
         <span
           v-if="fileSaveStatus"
           class="td__save-status"
@@ -31,7 +53,7 @@
     <div v-if="fileLoading" class="td__empty">Loading...</div>
     <div v-else-if="fileError" class="td__empty">{{ fileError }}</div>
     <template v-else>
-      <div class="td__editor-wrap">
+      <div v-show="!markdownFile || !previewMode" class="td__editor-wrap">
         <MonacoEditor
           :model-value="activeFileContent"
           :language="editorLanguage"
@@ -39,12 +61,17 @@
           @save="saveActiveFile"
         />
       </div>
+      <div v-if="markdownFile && previewMode" class="td__markdown-preview">
+        <MarkdownContent :text="activeFileContent" />
+      </div>
     </template>
   </div>
 </template>
 
 <script setup lang="ts">
-import { defineAsyncComponent } from "vue";
+import { computed, defineAsyncComponent, ref, watch } from "vue";
+import MarkdownContent from "./azure/MarkdownContent.vue";
+import { isMarkdownFile } from "./azure/markdown-renderer.js";
 
 const MonacoEditor = defineAsyncComponent(() => import("../shared/MonacoEditor.vue"));
 
@@ -55,7 +82,7 @@ interface TaskFile {
   dirty?: boolean;
 }
 
-withDefaults(
+const props = withDefaults(
   defineProps<{
     taskFiles: TaskFile[];
     activeFile: string;
@@ -76,6 +103,13 @@ const emit = defineEmits<{
   (e: "reload"): void;
   (e: "update:activeFileContent", value: string): void;
 }>();
+
+const markdownFile = computed(() => isMarkdownFile(props.activeFile));
+const previewMode = ref(false);
+watch(
+  () => props.activeFile,
+  () => (previewMode.value = false),
+);
 
 function switchFile(name: string): void {
   emit("switch-file", name);
@@ -153,6 +187,21 @@ function reloadActiveFile(): void {
   align-items: center;
   gap: 6px;
   margin-left: auto;
+}
+.td__markdown-modes {
+  display: flex;
+  gap: 2px;
+}
+.td__markdown-mode--active {
+  color: var(--text, #ccc);
+}
+.td__markdown-preview {
+  flex: 1 1 auto;
+  min-height: 300px;
+  overflow: auto;
+  padding: 12px 14px;
+  border-radius: 4px;
+  background: var(--bg, transparent);
 }
 .td__save-status {
   font-size: 12px;

@@ -6,10 +6,10 @@ describe("formatWorkspaceDisplayName", () => {
     expect(
       formatWorkspaceDisplayName({
         kind: "task",
-        name: "mhub",
+        name: "orders",
         task: { sequenceNumber: 2 } as never,
       }),
-    ).toBe("mhub #2");
+    ).toBe("orders #2");
   });
 
   test("returns plain name for task workspaces without a sequenceNumber (legacy / pre-feature)", () => {

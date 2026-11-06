@@ -68,6 +68,26 @@
         <div class="vol-browse__preview" role="dialog" :aria-label="`Preview ${previewPath}`">
           <header class="vol-browse__preview-head">
             <span class="vol-browse__preview-title">{{ previewPath }}</span>
+            <div v-if="isMarkdownPreview" class="vol-browse__preview-modes" role="group" aria-label="Markdown view">
+              <button
+                type="button"
+                class="button button--ghost button--sm"
+                :aria-pressed="markdownPreview"
+                title="Render this Markdown file for reading."
+                @click="markdownPreview = true"
+              >
+                Preview
+              </button>
+              <button
+                type="button"
+                class="button button--ghost button--sm"
+                :aria-pressed="!markdownPreview"
+                title="Show the Markdown source as plain text."
+                @click="markdownPreview = false"
+              >
+                Source
+              </button>
+            </div>
             <button type="button" class="button button--ghost button--sm" @click="closePreview">Close</button>
           </header>
           <div class="vol-browse__preview-body">
@@ -75,6 +95,11 @@
               <Spinner size="md" />
               <span>Reading {{ previewPath }}…</span>
             </div>
+            <MarkdownContent
+              v-else-if="isMarkdownPreview && markdownPreview"
+              class="vol-browse__markdown"
+              :text="previewContent"
+            />
             <pre v-else>{{ previewContent }}</pre>
           </div>
         </div>
@@ -89,6 +114,8 @@ import Spinner from "../../common/Spinner.vue";
 import { useAppStore } from "../../../stores/app.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
 import { userFacingMessage } from "../../../lib/error-message.js";
+import MarkdownContent from "../azure/MarkdownContent.vue";
+import { isMarkdownFile } from "../azure/markdown-renderer.js";
 
 interface Entry {
   name: string;
@@ -118,6 +145,8 @@ const previewOpen = ref(false);
 const previewPath = ref("");
 const previewContent = ref("");
 const previewLoading = ref(false);
+const markdownPreview = ref(true);
+const isMarkdownPreview = computed(() => isMarkdownFile(previewPath.value));
 
 const segments = computed(() => currentPath.value.split("/").filter(Boolean));
 
@@ -230,6 +259,7 @@ async function openPreview(path: string): Promise<void> {
   previewPath.value = path;
   previewContent.value = "";
   previewLoading.value = true;
+  markdownPreview.value = true;
   previewOpen.value = true;
   try {
     const raw = await appStore.dockerVolumeRead(props.volumeName, props.backendId, props.contextName, path);
@@ -471,6 +501,12 @@ watch(
   white-space: nowrap;
 }
 
+.vol-browse__preview-modes {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 2px;
+}
+
 .vol-browse__preview-body {
   flex: 1 1 auto;
   overflow: auto;
@@ -483,6 +519,12 @@ watch(
   color: #d8e4f5;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.vol-browse__markdown {
+  display: block;
+  min-height: 100%;
+  color: var(--text, #d8e4f5);
 }
 
 @media (max-width: 600px) {

@@ -46,8 +46,23 @@
           >
             {{ opt.label }}
           </li>
-          <li v-if="searchable && filteredOptions.length === 0" class="custom-select__empty">No matches</li>
+          <li v-if="loading" class="custom-select__loading" role="status" aria-live="polite">
+            <span class="custom-select__spinner" aria-hidden="true"></span>
+            <span>Loading…</span>
+          </li>
+          <li v-else-if="searchable && filteredOptions.length === 0" class="custom-select__empty">No matches</li>
         </ul>
+        <button
+          v-if="hasMore"
+          class="custom-select__load-more"
+          type="button"
+          :disabled="loading"
+          :aria-busy="loading ? 'true' : 'false'"
+          @mousedown.prevent
+          @click="!loading && emit('loadMore')"
+        >
+          Load more options
+        </button>
       </div>
     </Teleport>
   </div>
@@ -71,6 +86,8 @@ interface Props {
   buttonClass?: string | string[] | Record<string, boolean>;
   searchable?: boolean;
   searchPlaceholder?: string;
+  hasMore?: boolean;
+  loading?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -81,11 +98,15 @@ const props = withDefaults(defineProps<Props>(), {
   buttonClass: "",
   searchable: false,
   searchPlaceholder: "Type to filter…",
+  hasMore: false,
+  loading: false,
 });
 
 const emit = defineEmits<{
   "update:modelValue": [value: string | number];
   change: [value: string | number];
+  search: [query: string];
+  loadMore: [];
 }>();
 
 const open = ref(false);
@@ -111,16 +132,20 @@ function updateListPosition() {
   const rect = buttonRef.value.getBoundingClientRect();
   const vh = window.innerHeight;
   const vw = window.innerWidth;
-  const spaceBelow = vh - rect.bottom - 8;
-  const spaceAbove = rect.top - 8;
+  const spaceBelow = Math.max(0, vh - rect.bottom - 8);
+  const spaceAbove = Math.max(0, rect.top - 8);
   const flipAbove = spaceBelow < Math.min(MAX_LIST_HEIGHT, 160) && spaceAbove > spaceBelow;
-  const maxHeight = Math.max(120, Math.min(MAX_LIST_HEIGHT, flipAbove ? spaceAbove : spaceBelow));
+  const maxHeight = Math.max(0, Math.min(MAX_LIST_HEIGHT, flipAbove ? spaceAbove : spaceBelow));
+  const availableWidth = Math.max(0, vw - 16);
+  const width = Math.min(Math.max(rect.width, 160), availableWidth);
+  const measuredWidth = listRef.value?.getBoundingClientRect().width || width;
+  const left = Math.max(8, Math.min(rect.left, vw - 8 - Math.min(measuredWidth, availableWidth)));
   listStyle.value = {
     position: "fixed",
-    left: `${rect.left}px`,
+    left: `${left}px`,
     right: "auto",
     minWidth: `${rect.width}px`,
-    maxWidth: `${Math.max(160, vw - rect.left - 8)}px`,
+    maxWidth: `${availableWidth}px`,
     width: "max-content",
     maxHeight: `${maxHeight}px`,
     top: flipAbove ? "auto" : `${rect.bottom + 3}px`,
@@ -145,13 +170,13 @@ function firstEnabledIndex(from = 0, dir = 1) {
 
 function openList() {
   if (props.disabled || open.value) return;
-  updateListPosition();
   open.value = true;
   query.value = "";
   const list = filteredOptions.value;
   const selIdx = list.findIndex((o) => o.value === props.modelValue);
   activeIndex.value = selIdx >= 0 && !list[selIdx].disabled ? selIdx : firstEnabledIndex(0, 1);
   nextTick(() => {
+    updateListPosition();
     scrollActiveIntoView();
     if (props.searchable) searchRef.value?.focus();
   });
@@ -263,8 +288,9 @@ watch(
   { deep: false },
 );
 
-watch(query, () => {
+watch(query, (value) => {
   if (!open.value) return;
+  emit("search", value);
   // Reset active index to first match when query changes.
   const n = filteredOptions.value.length;
   if (n === 0) {
@@ -319,7 +345,7 @@ defineExpose({ focus: () => buttonRef.value?.focus() });
   border-radius: 3px;
   color: var(--text);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--font-size-body, 13px);
   line-height: 1.2;
   cursor: pointer;
   text-align: left;
@@ -373,7 +399,7 @@ defineExpose({ focus: () => buttonRef.value?.focus() });
   border: 1px solid rgba(var(--tint), 0.16);
   border-radius: 4px;
   box-shadow: var(--menu-shadow);
-  font-size: 13px;
+  font-size: var(--font-size-body, 13px);
   overflow: hidden;
 }
 .custom-select__search {
@@ -384,7 +410,7 @@ defineExpose({ focus: () => buttonRef.value?.focus() });
   border-bottom: 1px solid var(--border);
   color: var(--text);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--font-size-body, 13px);
   outline: none;
 }
 .custom-select__search:focus {
@@ -397,6 +423,50 @@ defineExpose({ focus: () => buttonRef.value?.focus() });
   margin: 0;
   padding: 4px 0;
   list-style: none;
+}
+.custom-select__load-more {
+  flex: 0 0 auto;
+  padding: 7px 10px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  background: var(--menu-bg);
+  color: var(--accent);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.custom-select__load-more:hover {
+  background: rgba(var(--tint), 0.08);
+}
+.custom-select__load-more:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+.custom-select__loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  color: var(--muted);
+}
+.custom-select__spinner {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: custom-select-spin 0.7s linear infinite;
+}
+@keyframes custom-select-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .custom-select__spinner {
+    animation-duration: 2s;
+  }
 }
 .custom-select__empty {
   padding: 8px 10px;
@@ -424,5 +494,19 @@ defineExpose({ focus: () => buttonRef.value?.focus() });
   opacity: 0.5;
   cursor: not-allowed;
   color: var(--muted);
+}
+@media (pointer: coarse), (any-pointer: coarse) {
+  .custom-select__list {
+    font-size: max(13px, var(--font-size-body, 13px));
+  }
+  .custom-select__search,
+  .custom-select__option,
+  .custom-select__load-more {
+    min-height: 44px;
+  }
+  .custom-select__option {
+    display: flex;
+    align-items: center;
+  }
 }
 </style>

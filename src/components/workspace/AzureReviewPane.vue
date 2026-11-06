@@ -96,10 +96,16 @@
             type="button"
             :class="['button', busyAction === 'pushPublish' && 'button--busy']"
             :disabled="!!busyAction || gitOperationRunning || (!pendingSyncCount && !aheadCount)"
-            :title="`Push ${aheadCount} commit${aheadCount !== 1 ? 's' : ''} and publish ${pendingSyncCount} comment${pendingSyncCount !== 1 ? 's' : ''}`"
+            :title="pushPublishTitle"
             @click="handlePushAndPublish"
           >
-            {{ busyAction === "pushPublish" ? "Pushing & publishing…" : pushPublishLabel }}
+            {{
+              busyAction === "pushPublish"
+                ? pushNeedsForce
+                  ? "Force pushing & publishing…"
+                  : "Pushing & publishing…"
+                : pushPublishLabel
+            }}
           </button>
           <button
             type="button"
@@ -236,15 +242,16 @@
       </div>
 
       <!-- Sub-tabs -->
-      <div class="review-subtabs">
+      <div class="review-subtabs subtabs">
         <button
           v-for="tab in reviewTabs"
           :key="tab.id"
           type="button"
           :class="[
             'azure-tab',
-            reviewUi.activeReviewTab === tab.id && 'azure-tab--active',
-            tab.alert && 'azure-tab--alert',
+            'subtabs__tab',
+            activeTab === tab.id && 'azure-tab--active subtabs__tab--active',
+            tab.alert && 'azure-tab--alert subtabs__tab--alert',
           ]"
           @click="onReviewTabClick(tab.id)"
         >
@@ -252,7 +259,7 @@
         </button>
       </div>
 
-      <div class="review-content">
+      <div class="review-content subtabs-panel">
         <!-- Summary panel -->
         <ReviewSummaryTab
           v-if="activeTab === 'summary'"
@@ -263,6 +270,8 @@
           :changed-files="changedFiles"
           :pr-key="prKey"
           :workspace-id="workspaceId"
+          :jira-issue-refs="workspace?.workItems || []"
+          :jira-routes="jiraIssueRoutes.routes.value"
           @new-comment="openAzureComment"
         />
 
@@ -329,6 +338,7 @@
           v-else-if="activeTab === 'comments'"
           :pr-key="prKey"
           :workspace-id="workspaceId"
+          :jira-routes="jiraIssueRoutes.routes.value"
           :provider="reviewProvider"
           :focus-request="scopedReviewCommentFocus"
           :filtered-threads="filteredThreads"
@@ -386,29 +396,42 @@
           <!-- Has conflicts — split layout like Files tab -->
           <div v-else class="review-files-split">
             <div class="review-files-split__left">
-              <div class="review-conflict-banner review-conflict-banner--danger" style="margin: 0 0 8px">
-                <span class="review-conflict-banner__icon">✗</span>
+              <div
+                :class="[
+                  'review-conflict-banner',
+                  conflictInfo.resolvedHere ? 'review-conflict-banner--ok' : 'review-conflict-banner--danger',
+                ]"
+                style="margin: 0 0 8px"
+              >
+                <span class="review-conflict-banner__icon">{{ conflictInfo.resolvedHere ? "✓" : "✗" }}</span>
                 <div>
                   <strong>{{ conflictInfo.label }}</strong>
                   <p class="review-conflict-banner__hint">
                     <code>{{ stripRef(pullRequest.sourceRefName) }}</code> &rarr;
                     <code>{{ stripRef(pullRequest.targetRefName) }}</code>
                   </p>
+                  <p v-if="conflictInfo.localNote" class="review-conflict-banner__hint" data-testid="local-merge-note">
+                    {{ conflictInfo.localNote }}
+                  </p>
                 </div>
               </div>
               <div class="section-head" style="padding: 0 6px">
                 <div>
-                  <p class="eyebrow">Affected files</p>
-                  <h3>{{ changedFiles.length }} files</h3>
+                  <p class="eyebrow">{{ conflictInfo.filesSource }}</p>
+                  <h3>{{ conflictTreeFiles.length }} {{ conflictTreeFiles.length === 1 ? "file" : "files" }}</h3>
                 </div>
               </div>
-              <div v-if="changedFiles.length" class="review-file-tree" style="margin-top: 6px">
+              <div v-if="conflictTreeFiles.length" class="review-file-tree" style="margin-top: 6px">
                 <ReviewFileTree
-                  :files="changedFiles"
+                  :files="conflictTreeFiles"
                   :selected-file="reviewUi.reviewSelectedFile"
                   @select-file="onSelectFile"
                 />
               </div>
+              <p v-else class="git-card__hint" style="padding: 0 6px">
+                {{ isGitHub ? "GitHub" : "Azure DevOps" }} does not say which files conflict, and this checkout could
+                not tell either.
+              </p>
             </div>
             <div class="review-files-split__right">
               <div v-if="reviewUi.reviewFileDiffPreview" class="section-head" style="padding: 0 6px">
@@ -474,7 +497,10 @@ import ReviewFileTree from "./azure/ReviewFileTree.vue";
 import ReviewFileDiffPreview from "./azure/ReviewFileDiffPreview.vue";
 import GitChangeTree from "./git/GitChangeTree.vue";
 import PrePrWorkspaceView from "./azure/PrePrWorkspaceView.vue";
+import { hasAcknowledgeableChange } from "./prRowFormat.js";
 import CustomSelect from "../common/CustomSelect.vue";
+import type { LocalMergeCheck } from "../../../electron/shared/review-merge-check.js";
+import { useJiraIssueLinkRoutes } from "../../composables/useJiraIssueLinkRoutes.js";
 
 const props = withDefaults(defineProps<{ workspaceId: string; showHeader?: boolean }>(), { showHeader: false });
 
@@ -498,6 +524,10 @@ const {
 // Data selectors
 const workspace = computed(() =>
   (appStore.payload?.appState?.workspaces || []).find((ws) => ws.id === props.workspaceId),
+);
+const jiraIssueRoutes = useJiraIssueLinkRoutes(
+  appStore.getApi(),
+  computed(() => String(workspace.value?.profileId || "default")),
 );
 const prKey = computed(() => workspace.value?.review?.prKey || "");
 const reviewProvider = computed<"azure-devops" | "github">(() =>
@@ -649,6 +679,11 @@ const agentPrompts = computed(() => appStore.reviewAgentPrompts(prKey.value));
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const gitSnapshot = computed(() => appStore.getGitSnapshot(props.workspaceId) as Record<string, any> | null);
 const aheadCount = computed(() => gitSnapshot.value?.aheadCount || 0);
+const behindCount = computed(() => gitSnapshot.value?.behindCount || 0);
+// Ahead AND behind the source branch: the history was rewritten (a rebase), so
+// only a force push can land it. The runtime still leases the exact server
+// commit and asks first if the server has commits that were never integrated.
+const pushNeedsForce = computed(() => aheadCount.value > 0 && behindCount.value > 0);
 
 // --- Pre-PR (new branch) state ---
 const isPrePrWorkspace = computed(
@@ -664,11 +699,24 @@ function openExternal(url: string) {
 
 const pushPublishLabel = computed(() => {
   const parts = [];
-  if (aheadCount.value > 0) parts.push(`Push (${aheadCount.value})`);
-  else parts.push("Push");
+  const push = pushNeedsForce.value ? "Force push" : "Push";
+  if (aheadCount.value > 0) parts.push(`${push} (${aheadCount.value})`);
+  else parts.push(push);
   if (pendingSyncCount.value > 0) parts.push(`publish (${pendingSyncCount.value})`);
   else parts.push("publish");
   return parts.join(" & ");
+});
+
+const pushPublishTitle = computed(() => {
+  const commits = `${aheadCount.value} commit${aheadCount.value !== 1 ? "s" : ""}`;
+  const comments = `${pendingSyncCount.value} comment${pendingSyncCount.value !== 1 ? "s" : ""}`;
+  if (!pushNeedsForce.value) return `Push ${commits} and publish ${comments}`;
+  return (
+    `This checkout and the PR source branch have diverged (${aheadCount.value} ahead, ${behindCount.value} behind) — ` +
+    `the history was rewritten, e.g. by a rebase. Force push ${commits} with a lease on the exact commit on the server, ` +
+    `replacing the ${behindCount.value} old commit${behindCount.value !== 1 ? "s" : ""} there, then publish ${comments}. ` +
+    "If the server has commits this checkout never integrated, you are asked first."
+  );
 });
 
 // PR info
@@ -1038,19 +1086,70 @@ async function deleteReviewComment(commentKey: string) {
   }
 }
 
-// Conflict info
+// Conflict info. The provider's merge status describes the PR as it is on the
+// SERVER; `localMergeCheck` (git merge-tree, runtime-side) describes this
+// checkout, which after a local rebase is not pushed yet. Only the files that
+// actually conflict are listed — never the PR's whole change list.
+const AZURE_BLOCKED_STATUSES = ["rejectedByPolicy", "renamedSourceBranch", "manualMergeRequired"];
 const conflictInfo = computed(() => {
-  const status = pullRequest.value.mergeStatus || "";
-  const conflictStatuses = ["conflicts", "rejectedByPolicy", "renamedSourceBranch", "manualMergeRequired"];
-  const hasConflicts = conflictStatuses.includes(status);
-  return {
-    hasConflicts,
-    label: hasConflicts
-      ? "Conflicts detected"
-      : status === "succeeded"
-        ? "No conflicts"
-        : `Status: ${status || "unknown"}`,
-  };
+  const providerName = isGitHub.value ? "GitHub" : "Azure DevOps";
+  const pr = pullRequestRaw.value;
+  const status = String((isGitHub.value ? pr.mergeableState : pr.mergeStatus) || "");
+  const serverConflicts = isGitHub.value ? status === "dirty" : status === "conflicts";
+  const serverBlocked = !isGitHub.value && AZURE_BLOCKED_STATUSES.includes(status);
+  const serverHead = String((isGitHub.value ? pr.headSha : pr.sourceCommitId) || "");
+  const listed: string[] = Array.isArray(detail.value?.serverConflicts)
+    ? detail.value.serverConflicts.map((file: { path: string }) => file.path)
+    : [];
+  const local = (detail.value?.localMergeCheck || null) as LocalMergeCheck | null;
+  const localPaths = local?.state === "conflicts" ? local.paths : [];
+  const unpushed = !!local?.headSha && !!serverHead && local.headSha !== serverHead;
+  const resolvedHere = serverConflicts && local?.state === "clean" && unpushed;
+  const hasConflicts = serverConflicts || serverBlocked || localPaths.length > 0;
+  const files = serverConflicts ? (listed.length ? listed : localPaths) : localPaths;
+  const filesSource =
+    serverConflicts && listed.length ? `Conflicting files (${providerName})` : "Conflicting files (this checkout)";
+  const plural = (n: number) => `${n} file${n !== 1 ? "s" : ""}`;
+  const short = (sha: string) => sha.slice(0, 7);
+
+  let label: string;
+  if (resolvedHere) label = "Resolved in this checkout — push to update the pull request";
+  else if (serverConflicts) label = files.length ? `Conflicts in ${plural(files.length)}` : "Conflicts detected";
+  else if (serverBlocked) label = `Merge blocked: ${status}`;
+  else if (localPaths.length)
+    label = `This checkout conflicts with ${local!.targetRef} in ${plural(localPaths.length)}`;
+  else if (status === "succeeded" || status === "clean") label = "No conflicts";
+  else label = `Status: ${status || "unknown"}`;
+
+  let localNote = "";
+  if (local && hasConflicts) {
+    if (resolvedHere)
+      localNote = `This checkout (${short(local.headSha)}) merges cleanly into ${local.targetRef}; ${providerName} still checks ${short(serverHead)}, the commit on the server.`;
+    else if (local.state === "unknown")
+      localNote = `This checkout could not be checked against ${local.targetRef} (needs git 2.38+ and a fetched target).`;
+    else if (serverConflicts && local.state === "clean")
+      localNote = `This checkout merges cleanly into ${local.targetRef} as last fetched — the target has probably moved since. Refresh, then rebase onto it.`;
+    else if (serverConflicts && local.state === "conflicts")
+      localNote = `This checkout (${short(local.headSha)}) conflicts with ${local.targetRef} too — rebase onto the target and resolve them.`;
+    else if (!serverConflicts && localPaths.length)
+      localNote = `${providerName} reports no conflicts for the commit on the server${serverHead ? ` (${short(serverHead)})` : ""}.`;
+  }
+  return { hasConflicts, resolvedHere, label, localNote, files, filesSource };
+});
+const conflictTreeFiles = computed(() => {
+  const byPath = new Map(reviewTreeFiles.value.map((file: { path: string }) => [file.path, file]));
+  return conflictInfo.value.files.map(
+    (path) =>
+      byPath.get(path) || {
+        path,
+        changeType: "edit",
+        scope: "review",
+        status: "modified",
+        statusTitle: "Conflicting",
+        codeColor: "",
+        code: "M",
+      },
+  );
 });
 
 // Tabs
@@ -1061,8 +1160,9 @@ const reviewTabs = computed(() => [
   {
     id: "conflicts",
     label: "Conflicts",
-    count: conflictInfo.value.hasConflicts ? changedFiles.value.length : 0,
-    alert: conflictInfo.value.hasConflicts,
+    count:
+      !conflictInfo.value.hasConflicts || conflictInfo.value.resolvedHere ? 0 : conflictTreeFiles.value.length || null,
+    alert: conflictInfo.value.hasConflicts && !conflictInfo.value.resolvedHere,
   },
   {
     id: "pipelines",
@@ -1112,12 +1212,28 @@ function onHeaderAction(action: { action: string }) {
 // activeViewId can fire repeatedly — e.g. while the view briefly churns — and
 // without this guard each fire stacked another refresh, piling up requests
 // that all eventually 524'd. Skip if one is already running.
+//
+// Interval: in a split, every click between this pane and its neighbour makes
+// it the active view again, and each of those ran a full provider sync — wasted
+// work that polling already covers. The pane refreshes when it is shown and then
+// at most once per interval; in between, a PR flagged for attention is still
+// marked seen, which is what looking at it means.
+const AUTO_REFRESH_MIN_INTERVAL_MS = 60_000;
+let lastAutoRefreshAt = 0;
 const autoRefreshInFlight = ref(false);
 watch(
   () => appStore.activeViewId,
   async (viewId) => {
     if (viewId !== `review:${props.workspaceId}`) return;
     if (autoRefreshInFlight.value) return;
+    if (Date.now() - lastAutoRefreshAt < AUTO_REFRESH_MIN_INTERVAL_MS) {
+      if (prKey.value && detail.value && hasAcknowledgeableChange(detail.value)) {
+        const seen = isGitHub.value ? appStore.markGitHubPrSeen(prKey.value) : appStore.markAzurePrSeen(prKey.value);
+        await Promise.resolve(seen).catch(() => {});
+      }
+      return;
+    }
+    lastAutoRefreshAt = Date.now();
     autoRefreshInFlight.value = true;
     try {
       if (isGitHub.value) {
@@ -1208,7 +1324,7 @@ async function handlePushAndPublish() {
   pushPublishSuccess.value = "";
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const outcome: any = await appStore.pushAndPublishReview(props.workspaceId);
+    const outcome: any = await appStore.pushAndPublishReview(props.workspaceId, { force: pushNeedsForce.value });
     if (outcome?.status === "cancelled") {
       pushPublishSuccess.value = String(outcome.message || "Cancelled — nothing was pushed.");
       return;

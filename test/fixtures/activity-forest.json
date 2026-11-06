@@ -97,12 +97,12 @@
       },
       {
         "id": "ws-repo",
-        "name": "messagehub-integration-platform",
+        "name": "orders-platform",
         "icon": "MH",
         "color": "#7c5cff",
         "kind": "terminal",
         "source": "manual",
-        "cwd": "C:\\work\\mhub",
+        "cwd": "C:\\work\\orders",
         "notes": "",
         "profileId": "default",
         "quickfix": {
@@ -121,12 +121,12 @@
       },
       {
         "id": "ws-pr",
-        "name": "mhub PR #30746 — streams-core watcher backpressure",
+        "name": "orders PR #30746 — core watcher backpressure",
         "icon": "PR",
         "color": "#ffa424",
         "kind": "terminal",
         "source": "manual",
-        "cwd": "C:\\work\\mhub\\pr-30746",
+        "cwd": "C:\\work\\orders\\pr-30746",
         "notes": "",
         "profileId": "default",
         "quickfix": {
@@ -150,7 +150,7 @@
         "color": "#42d392",
         "kind": "terminal",
         "source": "manual",
-        "cwd": "C:\\work\\mhub\\reviews\\pr-30746",
+        "cwd": "C:\\work\\orders\\reviews\\pr-30746",
         "notes": "",
         "profileId": "default",
         "quickfix": {
@@ -174,7 +174,7 @@
         "color": "#ff6f8d",
         "kind": "terminal",
         "source": "manual",
-        "cwd": "C:\\work\\mhub\\reviews\\pr-30746\\fix",
+        "cwd": "C:\\work\\orders\\reviews\\pr-30746\\fix",
         "notes": "",
         "profileId": "default",
         "quickfix": {
@@ -198,7 +198,7 @@
         "color": "#f5c14b",
         "kind": "terminal",
         "source": "manual",
-        "cwd": "C:\\work\\mhub\\reviews\\pr-30746\\fix\\notes",
+        "cwd": "C:\\work\\orders\\reviews\\pr-30746\\fix\\notes",
         "notes": "",
         "profileId": "default",
         "quickfix": {
@@ -222,7 +222,7 @@
         "color": "#8b5cf6",
         "kind": "task",
         "source": "manual",
-        "cwd": "C:\\work\\mhub\\.strideterm\\tree\\pr-30746",
+        "cwd": "C:\\work\\orders\\.strideterm\\tree\\pr-30746",
         "notes": "",
         "profileId": "default",
         "quickfix": {

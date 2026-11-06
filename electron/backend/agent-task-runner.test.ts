@@ -101,6 +101,7 @@ function createTaskWorkspace(runner: any, overrides: any = {}) {
     cwd: overrides.cwd || "/tmp/test-project",
     parentWorkspaceId: "",
     maxRounds: overrides.maxRounds || 3,
+    ...(typeof overrides.jiraMcpEnabled === "boolean" ? { jiraMcpEnabled: overrides.jiraMcpEnabled } : {}),
   });
   return ws;
 }
@@ -134,6 +135,26 @@ describe("AgentTaskRunner", () => {
       expect(workspace.task.maxRounds).toBe(3);
       expect(workspace.task.workerPanelId).toBe(workspace.panels[1].id);
       expect(workspace.task.judgePanelId).toBe(workspace.panels[2].id);
+      expect(workspace.jiraMcpEnabled).toBe(false);
+    });
+
+    test("a task workspace receives Jira MCP only when explicitly enabled and never inherits from its parent", () => {
+      const parent = { id: "parent", kind: "terminal", jiraMcpEnabled: true };
+      const ordinaryTask = runner.createTaskWorkspace({
+        state: { workspaces: [parent] },
+        description: "Read Jira",
+        cwd: "/tmp/task-default",
+        parentWorkspaceId: "parent",
+      });
+      const optedInTask = runner.createTaskWorkspace({
+        state: { workspaces: [parent] },
+        description: "Read Jira",
+        cwd: "/tmp/task-enabled",
+        parentWorkspaceId: "parent",
+        jiraMcpEnabled: true,
+      });
+      expect(ordinaryTask.jiraMcpEnabled).toBe(false);
+      expect(optedInTask.jiraMcpEnabled).toBe(true);
     });
 
     test("truncates long descriptions in workspace name", () => {
@@ -1101,8 +1122,8 @@ describe("AgentTaskRunner", () => {
     });
 
     test("alert title includes '#N' for task agents so Telegram notifications disambiguate siblings", () => {
-      // Without this, three "mhub" task agents on the same parent all produce
-      // identical "📍 mhub › Worker" Telegram alerts. The fix routes the
+      // Without this, three "orders" task agents on the same parent all produce
+      // identical "📍 orders › Worker" Telegram alerts. The fix routes the
       // formatted display name (name + " #N") into the alert title.
       workspace.task.sequenceNumber = 3;
       workspace.task.state = "running";

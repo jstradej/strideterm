@@ -241,7 +241,9 @@ function Kill-PortOwner([int]$portNum) {
 }
 
 function Start-ElectronProcess {
-    Start-Process -FilePath 'cmd.exe' -ArgumentList '/c','npm run dev:electron' `
+    # This launcher owns the backend/preload watchers and their restart lifecycle.
+    # Tell the Electron wrapper to validate existing outputs without starting a second pair.
+    Start-Process -FilePath 'cmd.exe' -ArgumentList '/c','npm run dev:electron -- --external-compilers' `
         -WorkingDirectory $PSScriptRoot `
         -PassThru -NoNewWindow
 }
@@ -263,7 +265,7 @@ function Get-LatestDistElectronWriteUtc {
 function Wait-DistElectronQuiet([int]$QuietMs = 2500, [int]$TimeoutSeconds = 45, [int]$MinimumWaitMs = 0) {
     $watchPath = Join-Path $PSScriptRoot 'dist-electron'
     if (-not (Test-Path $watchPath)) {
-        return
+        throw "Backend build output path $watchPath is missing; refusing to start Electron."
     }
 
     Write-Step "Waiting for dist-electron watcher emit to settle (${QuietMs}ms quiet window)..."
@@ -286,7 +288,7 @@ function Wait-DistElectronQuiet([int]$QuietMs = 2500, [int]$TimeoutSeconds = 45,
         }
     }
 
-    Write-Warn "Timed out waiting for dist-electron to settle after ${TimeoutSeconds}s; starting Electron anyway."
+    throw "Timed out waiting for dist-electron to settle after ${TimeoutSeconds}s; refusing to start Electron against a possibly partial build."
 }
 
 function Restart-Electron {
@@ -379,6 +381,10 @@ function Cleanup {
 $null = Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action { Cleanup }
 
 try {
+
+# Keep Vite and Electron on the same renderer port selected by this launcher.
+# Both read APP_CONFIG.renderer.devPort from STRIDETERM_RENDERER_PORT.
+$env:STRIDETERM_RENDERER_PORT = [string]$Port
 
 # --- Step 0: Configure isolated data dir ----------------------------------
 

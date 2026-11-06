@@ -75,6 +75,7 @@ export type SignInPurpose =
   | "portal"
   | "change-email"
   | "delete-account"
+  | "signout-installation"
   /**
    * A revocation whose local recent-auth window had already lapsed (plan §7/C2: "Desktop má umět
    * obsloužit recent-auth odmítnutí a vrátit se ke konkrétnímu potvrzovanému záměru"). Like `checkout`,
@@ -94,6 +95,7 @@ export const SIGN_IN_PURPOSES: readonly SignInPurpose[] = [
   "portal",
   "change-email",
   "delete-account",
+  "signout-installation",
   "revoke-device",
 ];
 
@@ -102,7 +104,7 @@ export const SIGN_IN_PURPOSES: readonly SignInPurpose[] = [
  *
  *   `sending`               the link is being requested. Short, and it is NOT "sent".
  *   `awaiting-link`         Firebase accepted the request; we are waiting for somebody to open it.
- *   `awaiting-confirmation` the payload arrived and the person must confirm ON THIS DESKTOP.
+ *   `awaiting-confirmation` the payload arrived; an ordinary sign-in waits for confirmation ON THIS DESKTOP.
  *   `verifying`             they confirmed; the code is being redeemed and the identity checked.
  *
  * The third exists because a link that completes itself is a link a stranger can complete: the last

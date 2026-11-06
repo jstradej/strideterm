@@ -290,7 +290,7 @@ export interface MobileFirebaseRestClient {
   /** Forgets the cached id token (the persisted refresh token stays, so the next call re-signs in). */
   clearCachedToken(): void;
   /** Forgets the persisted refresh token too — the next sign-in creates a NEW anonymous uid. */
-  forgetSession(): Promise<void>;
+  forgetSession(forgetCredential?: () => Promise<void>): Promise<void>;
 
   get<T>(path: string): Promise<T | null>;
   set(path: string, value: unknown): Promise<void>;
@@ -331,6 +331,11 @@ export function createMobileFirebaseRestClient(deps: MobileFirebaseRestClientDep
   const now = deps.now || (() => Date.now());
 
   let session: AuthSession | null = null;
+  let sessionGeneration = 0;
+  let forgetting: Promise<void> | null = null;
+  function checkGeneration(generation: number): void {
+    if (generation !== sessionGeneration) throw new Error("Firebase Auth session was forgotten");
+  }
   /**
    * The refresh token when the credential store REFUSED it (no secure storage: Mobile's keys are never
    * written as plaintext). This client also serves the account's installation session, which must not
@@ -403,18 +408,21 @@ export function createMobileFirebaseRestClient(deps: MobileFirebaseRestClientDep
     return REFRESH_TOKEN_REJECTIONS.has(named) ? named : null;
   }
 
-  async function persistRefreshToken(token: string): Promise<void> {
+  async function persistRefreshToken(token: string, generation: number): Promise<void> {
+    checkGeneration(generation);
     try {
       await credentialStore.setSecret(refreshTokenRef, token);
+      checkGeneration(generation);
       memoryOnlyRefreshToken = "";
     } catch (err) {
       if (credentialStore.isEncryptionAvailable?.() !== false) throw err;
+      checkGeneration(generation);
       memoryOnlyRefreshToken = token;
       log.warn("mobile Firebase refresh token kept in memory only: secure storage is unavailable");
     }
   }
 
-  async function exchangeRefreshToken(refreshToken: string): Promise<AuthSession> {
+  async function exchangeRefreshToken(refreshToken: string, generation: number): Promise<AuthSession> {
     const response = await timedFetch(secureTokenUrl(config), {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -432,7 +440,7 @@ export function createMobileFirebaseRestClient(deps: MobileFirebaseRestClientDep
     // Google rotates the refresh token on some exchanges; persist whatever came back so the
     // stored credential never goes stale.
     if (typeof body.refresh_token === "string" && body.refresh_token !== refreshToken) {
-      await persistRefreshToken(body.refresh_token);
+      await persistRefreshToken(body.refresh_token, generation);
     }
     return {
       idToken: body.id_token,
@@ -441,7 +449,7 @@ export function createMobileFirebaseRestClient(deps: MobileFirebaseRestClientDep
     };
   }
 
-  async function signInAnonymously(): Promise<AuthSession> {
+  async function signInAnonymously(generation: number): Promise<AuthSession> {
     const response = await timedFetch(identityToolkitUrl(config, "signUp"), {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -452,7 +460,7 @@ export function createMobileFirebaseRestClient(deps: MobileFirebaseRestClientDep
       throw new Error(`Firebase anonymous sign-in failed (${response.status}): ${JSON.stringify(body)}`);
     }
     if (typeof body.refreshToken === "string") {
-      await persistRefreshToken(body.refreshToken);
+      await persistRefreshToken(body.refreshToken, generation);
     }
     return {
       idToken: body.idToken,
@@ -461,7 +469,7 @@ export function createMobileFirebaseRestClient(deps: MobileFirebaseRestClientDep
     };
   }
 
-  async function establishSession(): Promise<AuthSession> {
+  async function establishSession(generation: number): Promise<AuthSession> {
     const storedRefreshToken = credentialStore.getSecret(refreshTokenRef) || memoryOnlyRefreshToken;
     if (!storedRefreshToken && deps.isPositivelyBound?.() === true) {
       // A durable bound marker with no token is identity loss, not a fresh install. Creating an
@@ -470,7 +478,7 @@ export function createMobileFirebaseRestClient(deps: MobileFirebaseRestClientDep
     }
     if (storedRefreshToken) {
       try {
-        const restored = await exchangeRefreshToken(storedRefreshToken);
+        const restored = await exchangeRefreshToken(storedRefreshToken, generation);
         log.info("restored mobile Firebase Auth session from the credential store");
         return restored;
       } catch (err) {
@@ -504,22 +512,27 @@ export function createMobileFirebaseRestClient(deps: MobileFirebaseRestClientDep
         log.warn("stored mobile Firebase refresh token was rejected; signing in as a new anonymous user", {
           reason: err.reason,
         });
+        checkGeneration(generation);
         await credentialStore.deleteSecret(refreshTokenRef);
       }
     }
-    return signInAnonymously();
+    checkGeneration(generation);
+    return signInAnonymously(generation);
   }
 
   async function currentSession(): Promise<AuthSession> {
+    if (forgetting) await forgetting;
+    const generation = sessionGeneration;
     if (session && session.expiresAt - TOKEN_REFRESH_MARGIN_MS > now()) return session;
     if (inFlight) return inFlight;
     inFlight = (async () => {
       try {
-        const next = await establishSession();
+        const next = await establishSession(generation);
+        checkGeneration(generation);
         session = next;
         return next;
       } finally {
-        inFlight = null;
+        if (generation === sessionGeneration) inFlight = null;
       }
     })();
     return inFlight;
@@ -567,6 +580,7 @@ export function createMobileFirebaseRestClient(deps: MobileFirebaseRestClientDep
     },
     async refreshSession() {
       if (forcedRefresh) return forcedRefresh;
+      const generation = sessionGeneration;
       forcedRefresh = (async () => {
         // An ordinary exchange may have started before the claims marker was written. Joining that
         // request can therefore return a token minted before the claims changed. Let it settle, then
@@ -574,10 +588,11 @@ export function createMobileFirebaseRestClient(deps: MobileFirebaseRestClientDep
         const earlier = inFlight;
         session = null;
         if (earlier) await earlier.catch(() => undefined);
+        checkGeneration(generation);
         session = null;
         return currentSession();
       })().finally(() => {
-        forcedRefresh = null;
+        if (generation === sessionGeneration) forcedRefresh = null;
       });
       return forcedRefresh;
     },
@@ -588,9 +603,22 @@ export function createMobileFirebaseRestClient(deps: MobileFirebaseRestClientDep
       session = null;
     },
 
-    async forgetSession() {
+    async forgetSession(forgetCredential) {
+      sessionGeneration += 1;
       session = null;
-      await credentialStore.deleteSecret(refreshTokenRef);
+      memoryOnlyRefreshToken = "";
+      inFlight = null;
+      forcedRefresh = null;
+      for (const controller of openStreams) controller.abort();
+      const operation = Promise.resolve().then(() =>
+        forgetCredential ? forgetCredential() : credentialStore.deleteSecret(refreshTokenRef),
+      );
+      forgetting = operation;
+      try {
+        await operation;
+      } finally {
+        if (forgetting === operation) forgetting = null;
+      }
     },
 
     async get<T>(path: string): Promise<T | null> {

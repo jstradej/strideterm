@@ -125,3 +125,24 @@ describe("NotificationToast — sticky question lifecycle", () => {
     }
   });
 });
+
+describe("NotificationToast — pull request", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
+  it("names the PR, and does not repeat its title in the event line", async () => {
+    const wrapper = await mountWithToast({
+      id: "evt-pr",
+      kind: "review",
+      category: "review",
+      title: "New pull request: ACME_CORE / orders-core — Fix login",
+      body: "#33007 by Doe, Jane",
+      meta: { provider: "azure-devops", kind: "pr-new", pullRequestTitle: "Fix login" },
+    });
+
+    expect(wrapper.get(".notification-toast__title").text()).toBe("New pull request: ACME_CORE / orders-core");
+    expect(wrapper.get(".notification-toast__pr-title").text()).toBe("Fix login");
+    expect(wrapper.get(".notification-toast__body").text()).toBe("#33007 by Doe, Jane");
+  });
+});

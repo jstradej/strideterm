@@ -4,6 +4,7 @@ import type {
   PanelState,
   WorkspaceGridState,
 } from "../../electron/shared/types/state.js";
+import type { JiraWorkspaceViewsState } from "../../electron/shared/types/jira-workspace-views.js";
 import {
   companionPrimaryHostedPanelIds,
   findCompanionPrimaryHost,
@@ -15,6 +16,7 @@ import {
 import { TASK_ACTIVE_STATES, sessionIdFor } from "../../electron/shared/task-states.js";
 import { isInputBlockingKind } from "../../electron/shared/attention-kinds.js";
 import { ancestorIdentities, buildWorkspaceTree, type WorkspaceAncestorIdentity } from "./workspace-tree.js";
+import { jiraViewTabId } from "./jira-view-tabs.js";
 
 // ---------------------------------------------------------------------------
 // Local structural types used by selectors
@@ -61,6 +63,8 @@ export interface WorkspaceTab {
   tone: string;
   persistent?: boolean;
   closable?: boolean;
+  /** Opaque SQLite-backed view id for native Jira tabs. */
+  jiraViewId?: string;
   url?: string;
   /**
    * Real PTY target. Equal to `id` for every ordinary terminal tab; only the
@@ -305,6 +309,7 @@ export interface TabAccessors {
   dockerCounts?: () => { available: boolean; total: number; running: number };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   providerInbox?: (provider: "azure" | "github") => { inbox?: any; connections?: any[] } | null;
+  jiraWorkspaceViews?: (workspaceId: string) => JiraWorkspaceViewsState | undefined;
 }
 
 /**
@@ -414,6 +419,21 @@ function applyCompanionPrimaryProjection(
   return [...ordered.slice(0, insertAt), alias, ...ordered.slice(insertAt)];
 }
 
+/**
+ * Terminal panels drawn inside a Files commander instead of the tab strip.
+ * A panel whose host Files panel is gone is not listed, so it surfaces as an
+ * ordinary tab again rather than becoming an invisible orphan.
+ */
+export function hostedPanelIds(panels: PanelState[] | null | undefined): Set<string> {
+  const filesViewIds = new Set((panels || []).filter((p) => p.command === "__files__").map((p) => `files:${p.id}`));
+  return new Set((panels || []).filter((p) => p.hostedBy && filesViewIds.has(p.hostedBy)).map((p) => p.id));
+}
+
+export function findHostedPanels(panels: PanelState[] | null | undefined, hostViewId: string): PanelState[] {
+  const hosted = hostedPanelIds(panels);
+  return (panels || []).filter((p) => hosted.has(p.id) && p.hostedBy === hostViewId);
+}
+
 export function getWorkspaceTabs({
   workspace,
   payload,
@@ -452,6 +472,70 @@ export function getWorkspaceTabs({
     return buildProviderInboxTab("github", activeWorkspace, githubData, hiddenViewIds);
   }
 
+  if (activeWorkspace.kind === "jira" || activeWorkspace.kind === "jira-board") {
+    const viewsState =
+      accessors?.jiraWorkspaceViews?.(activeWorkspace.id) ||
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ((payload as any)?.jiraWorkspaceViews?.[activeWorkspace.id] as JiraWorkspaceViewsState | undefined);
+    const profileId = activeWorkspace.profileId || "default";
+    const savedViews =
+      viewsState?.profileId === profileId ? viewsState.views.filter((view) => view.viewId !== "issues") : [];
+    if (activeWorkspace.kind === "jira-board") {
+      const activeSavedView =
+        viewsState?.profileId === profileId
+          ? savedViews.find((view) => view.viewId === viewsState.activeViewId) || savedViews[0]
+          : undefined;
+      const viewId = activeSavedView?.viewId || "issues";
+      const tabId = jiraViewTabId(activeWorkspace.id, viewId);
+      const sync = viewsState?.syncByViewId?.[viewId];
+      const tab: WorkspaceTab = {
+        id: tabId,
+        type: "jira",
+        title: activeSavedView?.title || activeWorkspace.jiraBoard?.boardName || "Jira",
+        status: sync?.state === "error" ? sync.error || "Sync failed" : activeSavedView ? "Board" : "Issues and boards",
+        tone: sync?.state === "error" ? "error" : "running",
+        loading: sync?.state === "syncing",
+        persistent: false,
+        closable: false,
+        jiraViewId: viewId,
+      };
+      return hiddenViewIds.has(tab.id) ? [] : [tab];
+    }
+
+    const loadedViews = viewsState?.profileId === profileId ? viewsState.views : null;
+    const views = loadedViews
+      ? [
+          loadedViews.find((view) => view.viewId === "issues") ||
+            ({ viewId: "issues", kind: "issues", title: "Issues" } as const),
+          ...loadedViews.filter((view) => view.viewId !== "issues"),
+        ]
+      : [{ viewId: "issues" as const, kind: "issues" as const, title: "Issues" }];
+    return views
+      .map((view): WorkspaceTab => {
+        const isIssues = view.viewId === "issues";
+        const sync = viewsState?.syncByViewId?.[view.viewId];
+        return {
+          id: jiraViewTabId(activeWorkspace.id, view.viewId),
+          type: "jira",
+          title: isIssues ? "Inbox" : view.title,
+          status:
+            sync?.state === "error"
+              ? sync.error || "Sync failed"
+              : isIssues
+                ? "Issues, boards and settings"
+                : view.kind === "personal"
+                  ? "Personal view"
+                  : "Board",
+          tone: sync?.state === "error" ? "error" : "running",
+          loading: sync?.state === "syncing",
+          persistent: false,
+          closable: !isIssues,
+          jiraViewId: view.viewId,
+        };
+      })
+      .filter((tab) => !hiddenViewIds.has(tab.id));
+  }
+
   // Identify browser panels (URL commands), files panels, and task-dashboard panels — these get virtual tabs, not terminal sessions
   const browserPanelIds = new Set(panels.filter((p) => /^https?:\/\//i.test(p.command || "")).map((p) => p.id));
   const filesPanelIds = new Set(panels.filter((p) => p.command === "__files__").map((p) => p.id));
@@ -466,6 +550,8 @@ export function getWorkspaceTabs({
     ((payload as any)?.taskRunner || null) as CompanionPrimaryTaskRunner,
     activeWorkspace.id,
   );
+
+  const commanderHostedPanelIds = hostedPanelIds(panels);
 
   // Terminal tabs from real sessions (exclude sessions for non-terminal panels)
   const tabs: WorkspaceTab[] = [
@@ -487,7 +573,12 @@ export function getWorkspaceTabs({
         ]
       : []),
     ...workspace.sessions
-      .filter((session) => !nonTerminalPanelIds.has(session.panelId) && !hostedElsewherePanelIds.has(session.panelId))
+      .filter(
+        (session) =>
+          !nonTerminalPanelIds.has(session.panelId) &&
+          !hostedElsewherePanelIds.has(session.panelId) &&
+          !commanderHostedPanelIds.has(session.panelId),
+      )
       .map((session) => {
         const headlessJudge = getHeadlessJudgeTabMeta(activeWorkspace, payload, session.panelId);
         const disp = terminalStatusDisplay(session);
@@ -695,6 +786,7 @@ export function getWorkspacePanelByViewId(
     isDockerViewId: (v: unknown) => boolean;
     isAzureViewId: (v: unknown) => boolean;
     isGitHubViewId?: (v: unknown) => boolean;
+    isJiraViewId?: (v: unknown) => boolean;
     isReviewViewId: (v: unknown) => boolean;
   },
 ): { workspace: WorkspaceState; panel: PanelState } | null {
@@ -704,6 +796,7 @@ export function getWorkspacePanelByViewId(
     helpers.isDockerViewId(viewId) ||
     helpers.isAzureViewId(viewId) ||
     helpers.isGitHubViewId?.(viewId) ||
+    helpers.isJiraViewId?.(viewId) ||
     helpers.isReviewViewId(viewId)
   ) {
     return null;

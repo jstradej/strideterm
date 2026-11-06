@@ -16,6 +16,7 @@
           'activity-row--attention': (node.attentionCount || 0) > 0 && !node.missing,
           'activity-row--in-grid': node.inGrid && !node.missing,
           'activity-row--missing': node.missing,
+          'activity-row--new-branch': node.newBranch,
         }"
         :style="`--accent:${node.color || 'var(--border)'};--activity-depth:${visualDepthOf(node.depth)}`"
         :data-role="node.role === 'context' ? 'activity-context-row' : 'activity-node-row'"
@@ -29,7 +30,10 @@
         @click="onActivate(node)"
       >
         <span class="activity-row__badge" aria-hidden="true">
-          {{ node.icon }}
+          <svg v-if="node.badgeGlyph" class="activity-row__glyph" viewBox="0 0 24 24">
+            <path v-for="d in BADGE_GLYPHS[node.badgeGlyph]" :key="d" :d="d" />
+          </svg>
+          <template v-else>{{ node.icon }}</template>
           <span
             v-if="node.statusCue && !node.missing"
             v-heartbeat="node.statusCue.heartbeat"
@@ -75,6 +79,7 @@
 <script setup lang="ts">
 import { visualDepthOf, type ActivityRowView } from "../../app/workspace-activity-tree.js";
 import { vHeartbeat } from "../../app/heartbeat-directive.js";
+import { BADGE_GLYPHS } from "../../app/workspace-badge-glyphs.js";
 
 /**
  * ONE activity cluster — the shared hierarchy layout behind both dynamic
@@ -90,7 +95,7 @@ import { vHeartbeat } from "../../app/heartbeat-directive.js";
  * The DOM shape is the contract:
  *
  *   ┌ [AZ] Azure DevOps          ← context, its own button
- *   │   [AZ] mhub PR #30746 1m   ← activity, its own button
+ *   │   [AZ] orders PR #30746 1m   ← activity, its own button
  *   │     [bot] pr-30746    now  ← activity, its own button
  *   └
  *

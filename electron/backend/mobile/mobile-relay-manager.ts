@@ -34,7 +34,7 @@ import {
 } from "./mobile-relay-connector.js";
 import { isLocalBootstrapUrl } from "./bootstrap-client.js";
 import { isSecureBootstrapEndpoint, type BootstrapEnvironment } from "./control-plane-bootstrap.js";
-import { RELAY_REVOCATION_TOMBSTONE_TTL_MS } from "./mobile-relay-protocol.js";
+import { RELAY_MOBILE_SESSION_ABSOLUTE_TTL_MS, RELAY_REVOCATION_TOMBSTONE_TTL_MS } from "./mobile-relay-protocol.js";
 import { loadRelayInstallationIdentity, type RelayInstallationIdentity } from "./mobile-relay-identity.js";
 import {
   MobileRelayGrantDefinitiveRefusalError,
@@ -48,6 +48,29 @@ const log = getLogger("mobile-relay-manager");
 
 /** The fixed code shown in `status().lastError` when a grant names an origin this desktop refuses to dial. */
 export const RELAY_ORIGIN_REJECTED = "relay-origin-rejected";
+
+/** Logged (as a code, never with the value) when a grant response carries an unusable session policy. */
+export const RELAY_SESSION_POLICY_REJECTED = "relay-session-policy-rejected";
+
+/**
+ * The control plane's relay mobile-session idle TTL, if [value] is one this desktop will apply.
+ *
+ * ADR 0041: the idle deadline of a relay mobile session is a control-plane policy, delivered in the
+ * `issueRelayConnectorGrant` answer the connector already fetches on every (re)connect — no extra
+ * call, no timer.
+ *
+ * NO POLICY BOUND IS COMPILED IN, deliberately. The control plane owns the number AND its bounds
+ * (`cloud/functions/src/mobile-session-policy.ts`); a minimum or maximum here would turn every later
+ * change of the policy into a desktop release again, and installed desktops update slowly. What this
+ * still refuses is only what can never be meant: anything but a positive safe integer, and anything
+ * past the session's own absolute lifetime (`RELAY_MOBILE_SESSION_ABSOLUTE_TTL_MS`), which bounds
+ * every session whatever its idle deadline. Refused is null, and the caller keeps what it had.
+ */
+export function acceptableMobileSessionIdleTtlMs(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isSafeInteger(value)) return null;
+  if (value <= 0 || value > RELAY_MOBILE_SESSION_ABSOLUTE_TTL_MS) return null;
+  return value;
+}
 
 /**
  * A grant named a relay origin that fails the endpoint rules or differs from the one the signed
@@ -162,6 +185,7 @@ export interface MobileRelayManager {
   /** Starts or stops the relay to match the flag. Safe to call repeatedly. */
   reconfigure(): Promise<void>;
   stop(): Promise<void>;
+  switchInstallationIdentity(installationId: string): Promise<void>;
   status(): MobileRelayStatus;
   /** Diagnostics for the local harness and the debug UI. Counts and states only. */
   stats(): ReturnType<RelayConnector["stats"]> | null;
@@ -172,6 +196,13 @@ export interface MobileRelayManager {
   endRemoteUiStreams(deviceId: string, reason?: RelayReason): void;
   /** The origin the WebView must be pointed at, or "" when the relay is not running. */
   relayOrigin(): string;
+  /**
+   * The relay mobile-session idle TTL the control plane last stated acceptably (ADR 0041), or null
+   * when it never has (a backend that predates the policy, or no grant fetched yet). The ticket
+   * issuer reads this at mint time and binds the value to the ticket; null means the desktop's own
+   * fallback, `RELAY_MOBILE_SESSION_IDLE_TTL_MS`.
+   */
+  mobileSessionIdleTtlMs(): number | null;
 }
 
 export function createMobileRelayManager(options: MobileRelayManagerOptions): MobileRelayManager {
@@ -204,6 +235,8 @@ export function createMobileRelayManager(options: MobileRelayManagerOptions): Mo
   let connector: RelayConnector | null = null;
   let relayOrigin = "";
   let lastError = "";
+  /** See `MobileRelayManager.mobileSessionIdleTtlMs`. Kept across connector restarts; reset with the identity. */
+  let sessionIdleTtlMs: number | null = null;
   let starting: Promise<void> | null = null;
   let retryTimer: NodeJS.Timeout | null = null;
   let retryAttempt = 0;
@@ -228,7 +261,26 @@ export function createMobileRelayManager(options: MobileRelayManagerOptions): Mo
     assertGrantOriginAcceptable(issued.relayOrigin);
     if (lastError === RELAY_ORIGIN_REJECTED) lastError = "";
     relayOrigin = issued.relayOrigin;
+    adoptSessionPolicy(issued.mobileSessionIdleTtlMs);
     return issued;
+  }
+
+  /**
+   * Takes the session policy a grant answer states, if it is acceptable.
+   *
+   * ABSENT is normal (an older backend) and changes nothing, silently. PRESENT BUT UNUSABLE is a
+   * control-plane defect: it changes nothing either, and says so once per answer, as a code. Never
+   * thrown — a malformed policy is no reason to refuse a perfectly good grant.
+   */
+  function adoptSessionPolicy(value: unknown): void {
+    if (value === undefined) return;
+    const accepted = acceptableMobileSessionIdleTtlMs(value);
+    if (accepted === null) {
+      log.warn("relay grant carried an unusable mobile session policy", { code: RELAY_SESSION_POLICY_REJECTED });
+      return;
+    }
+    if (accepted !== sessionIdleTtlMs) log.info("relay mobile session idle policy", { idleTtlMs: accepted });
+    sessionIdleTtlMs = accepted;
   }
 
   /**
@@ -397,6 +449,15 @@ export function createMobileRelayManager(options: MobileRelayManagerOptions): Mo
       starting = (starting ?? Promise.resolve()).catch(() => undefined).then(() => stopInternal());
       await starting;
     },
+    async switchInstallationIdentity(installationId: string) {
+      await manager.stop();
+      options.installationId = installationId;
+      identity = null;
+      relayOrigin = "";
+      lastError = "";
+      // A different installation may be bound to a different control plane; it states its own.
+      sessionIdleTtlMs = null;
+    },
     status: () => ({
       enabled: options.isEnabled(),
       state: connector ? connector.state() : "off",
@@ -416,6 +477,7 @@ export function createMobileRelayManager(options: MobileRelayManagerOptions): Mo
       connector?.endRemoteUiStreams(deviceId, reason);
     },
     relayOrigin: () => relayOrigin,
+    mobileSessionIdleTtlMs: () => sessionIdleTtlMs,
   };
 
   return manager;

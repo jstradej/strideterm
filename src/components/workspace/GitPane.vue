@@ -219,12 +219,23 @@
             v-if="showPush"
             type="button"
             data-testid="push-button"
-            :class="['button', pushIsPrimary ? '' : 'button--ghost', gitUi.busyAction === 'push' && 'button--busy']"
+            :class="[
+              'button',
+              pushIsPrimary ? '' : 'button--ghost',
+              isDiverged && 'button--danger',
+              (gitUi.busyAction === 'push' || gitUi.busyAction === 'force-push') && 'button--busy',
+            ]"
             :disabled="pushDisabled"
             :title="pushTooltip"
-            @click="gitUiStore.gitPush(workspaceId)"
+            @click="onPushClick"
           >
-            {{ gitUi.busyAction === "push" ? "Pushing…" : pushLabel }}
+            {{
+              gitUi.busyAction === "force-push"
+                ? "Force pushing…"
+                : gitUi.busyAction === "push"
+                  ? "Pushing…"
+                  : pushLabel
+            }}
           </button>
 
           <!-- New worktree: hidden when commitCount === 0 (UC-7) unless showAllActions -->
@@ -251,14 +262,18 @@
       </div>
 
       <!-- Tab nav -->
-      <nav class="git-tabs git-tabs--new" role="tablist" aria-label="Git sections">
+      <nav class="git-tabs git-tabs--new subtabs" role="tablist" aria-label="Git sections">
         <button
           v-for="tab in integratedTabs"
           :key="tab.id"
           type="button"
           role="tab"
           :aria-selected="tab.id === activeGitTabId ? 'true' : 'false'"
-          :class="['git-tabs__item', tab.id === activeGitTabId && 'git-tabs__item--active']"
+          :class="[
+            'git-tabs__item',
+            'subtabs__tab',
+            tab.id === activeGitTabId && 'git-tabs__item--active subtabs__tab--active',
+          ]"
           @click="selectGitTab(tab.id)"
         >
           {{ tab.label }}<span v-if="tab.badge" class="git-tabs__badge">{{ tab.badge }}</span>
@@ -267,7 +282,7 @@
 
       <section
         role="tabpanel"
-        :class="['git-view__panel', isSwitchingRepo && 'git-view__panel--busy']"
+        :class="['git-view__panel', 'subtabs-panel', isSwitchingRepo && 'git-view__panel--busy']"
         style="min-height: 0; overflow: auto; display: flex; flex-direction: column"
       >
         <div v-if="isSwitchingRepo" class="git-view__overlay" aria-hidden="true">
@@ -287,6 +302,7 @@
           :has-no-remote="hasNoRemote"
           :show-all-actions="showAllActions"
           :is-diverged="isDiverged"
+          :push-target-branch="pushTargetBranch"
           :review-link="reviewLink"
           :is-linked-worktree="isLinkedWorktree"
           :push-remote="pushRemote"
@@ -354,6 +370,7 @@
           :has-azure-connection="hasAzureConnection"
           :active-connection-id="activeConnectionId"
           :active-connection-label="activeConnectionLabel"
+          :jira-routes="jiraIssueLinkRoutes.routes.value"
         />
 
         <!-- ===== Worktrees tab ===== -->
@@ -442,12 +459,17 @@ import Spinner from "../common/Spinner.vue";
 import { useMobileShellMenus } from "../../composables/useMobileShellMenus.js";
 import { useResourceInterest } from "../../composables/useResourceInterest.js";
 import { useNotificationStore } from "../../stores/notifications.js";
-import { managedReviewBranchAlias } from "../../../electron/shared/review-source-identity.js";
+import { isManagedReviewBranch } from "../../../electron/shared/review-source-identity.js";
+import { useJiraIssueLinkRoutes } from "../../composables/useJiraIssueLinkRoutes.js";
 
 const props = withDefaults(defineProps<{ workspaceId: string; showHeader?: boolean }>(), { showHeader: false });
 
 const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
+const jiraIssueLinkRoutes = useJiraIssueLinkRoutes(
+  appStore.getApi(),
+  computed(() => String(appStore.myActiveProfileId || "default")),
+);
 // Declare interest in this workspace's git detail so the remote client fetches
 // and keeps the full snapshot current while the Git pane is mounted.
 useResourceInterest(() => (props.workspaceId ? `git:${props.workspaceId}` : null));
@@ -864,18 +886,21 @@ const pullTooltip = computed(() => {
 });
 
 // Push state
-// On the managed pr-<id>-<source> alias a push goes to the PR's source branch,
-// not to a remote branch of the local name.
+// On the managed pr-<id>-<source> alias (or the isolated review checkout's
+// <alias>-review-<uuid>) a push goes to the PR's source branch, not to a remote
+// branch of the local name.
 const pullRequestPushTarget = computed(() => {
   const link = reviewLink.value;
   const branch = String(snapshot.value?.branch || "");
   if (!link?.sourceBranch || !branch || branch === link.sourceBranch) return "";
   const sourceRef = workspace.value?.review?.pullRequest?.sourceRefName || "";
-  return branch === managedReviewBranchAlias(link.pullRequestId, sourceRef) ? link.sourceBranch : "";
+  return isManagedReviewBranch(branch, link.pullRequestId, sourceRef) ? link.sourceBranch : "";
 });
+const pushTargetBranch = computed(() => pullRequestPushTarget.value || String(snapshot.value?.branch || ""));
 const pushLabel = computed(() => {
   const s = snapshot.value;
   if (!s) return "Push";
+  if (isDiverged.value) return pullRequestPushTarget.value ? "Force push to PR branch" : "Force push (with lease)";
   if (pullRequestPushTarget.value) return "Push to PR branch";
   if (!s.upstream || !upstreamMatchesBranch.value) return "Publish branch";
   return "Push";
@@ -885,15 +910,21 @@ const pushDisabled = computed(() => {
   if (!!gitUi.value.busyAction || operation.value.inProgress || !!gitUi.value.pendingAction || !!longGitOperation.value)
     return true;
   if (appStore.isReviewGitBusy?.(props.workspaceId)) return true;
-  if (isDiverged.value && !showAllActions.value) return true;
   if (!canPush.value) return true;
   return false;
 });
 const pushTooltip = computed(() => {
   const s = snapshot.value;
   if (!s) return "Push the current branch to its remote tracking ref.";
-  if (isDiverged.value && !showAllActions.value)
-    return "Disabled — local branch has diverged from upstream and a regular push would be rejected. Resolve via the Force push (--force-with-lease) banner above if you intentionally rewrote history.";
+  if (isDiverged.value) {
+    const replaced = `${s.behindCount} commit${s.behindCount !== 1 ? "s" : ""}`;
+    return (
+      `Diverged (${s.aheadCount} ahead, ${s.behindCount} behind) — a regular push would be rejected. ` +
+      `Force push with a lease to ${pushRemote.value}/${pushTargetBranch.value}, replacing the ${replaced} only the remote has; ` +
+      "it aborts if the remote moved since it was checked. Use it after you intentionally rewrote history (rebase, amend); " +
+      "if the remote has new work instead, Pull. You are asked to confirm first."
+    );
+  }
   if (pullRequestPushTarget.value) {
     return `Push HEAD to ${pushRemote.value}/${pullRequestPushTarget.value}, the pull request's source branch (the local branch ${s.branch} is only its checkout name). The runtime checks the checkout and asks before anything is overwritten.`;
   }
@@ -905,6 +936,20 @@ const pushTooltip = computed(() => {
     return `Run git push to send ${s.aheadCount} local commit${s.aheadCount !== 1 ? "s" : ""} to ${target}.`;
   return "Disabled — local branch has nothing ahead of upstream; nothing to push.";
 });
+
+// Returns the push so Vue's error handler still sees a rejection (a `void` call never reaches it).
+function onPushClick(): Promise<void> | undefined {
+  const s = snapshot.value;
+  if (s && isDiverged.value) {
+    gitUiStore.confirmForcePushWithLease(
+      props.workspaceId,
+      { branch: s.branch, remote: pushRemote.value, behindCount: s.behindCount, target: pushTargetBranch.value },
+      s,
+    );
+    return undefined;
+  }
+  return gitUiStore.gitPush(props.workspaceId);
+}
 
 // Card visibility
 const showStashCard = computed(() => {
@@ -1163,7 +1208,6 @@ const connectionOptions = computed(() => [
 }
 
 .git-tabs--new {
-  align-items: center;
   flex-wrap: wrap;
 }
 

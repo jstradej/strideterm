@@ -12,6 +12,7 @@ import { userFacingMessage } from "../lib/error-message.js";
 import { buildTerminalTextSnapshot } from "./terminal-text-snapshot.js";
 import { isLightAppTheme } from "./app-theme.js";
 import { LIGHT_TERMINAL_THEME, terminalMinimumContrastRatio } from "./terminal-light-theme.js";
+import { openPathInWorkspaceFilesTab } from "./open-in-files-tab.js";
 import type { TerminalTextSnapshot, TerminalTextSnapshotOptions } from "./terminal-text-snapshot.js";
 
 // ---------------------------------------------------------------------------
@@ -282,24 +283,17 @@ function offsetToBufferPos(line: LogicalLine, offset: number): { x: number; y: n
  * shouldn't be).
  */
 async function openInInternalViewer(absPath: string, retryViaSystem: () => Promise<void>): Promise<void> {
-  const [appMod, fmMod, notifMod] = await Promise.all([
-    import("../stores/app.js"),
-    import("../stores/file-manager.js"),
-    import("../stores/notifications.js"),
-  ]);
+  const [appMod, notifMod] = await Promise.all([import("../stores/app.js"), import("../stores/notifications.js")]);
   const appStore = appMod.useAppStore();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const profileId = ((appStore as any).activeProfile?.id as string) || "default";
   const ws = appStore.activeWorkspace;
-  if (!ws) {
+  const result = ws ? await openPathInWorkspaceFilesTab(ws, absPath) : "no-workspace";
+  if (result === "no-workspace") {
     notifMod
       .useNotificationStore()
       .showError("Open in Files failed", "No active workspace to open the file in.", { profileId });
-    return;
-  }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- workspace.panels is loosely typed in the store
-  const filesPanel = ((ws.panels || []) as any[]).find((p) => p?.command === "__files__");
-  if (!filesPanel) {
+  } else if (result === "no-files-tab") {
     notifMod
       .useNotificationStore()
       .showError(
@@ -307,15 +301,9 @@ async function openInInternalViewer(absPath: string, retryViaSystem: () => Promi
         "No Files tab in this workspace — open one first, or change the path-opener mode in Settings.",
         { profileId },
       );
-    return;
+  } else if (result === "outside") {
+    await retryViaSystem();
   }
-  await appStore.activateView(`files:${filesPanel.id}`);
-  const fmStore = fmMod.useFileManagerStore();
-  if (ws.cwd) {
-    await fmStore.init(ws.cwd);
-  }
-  const ok = await fmStore.openFileAbsPath(absPath);
-  if (!ok) await retryViaSystem();
 }
 
 type AppConfig = typeof APP_CONFIG;

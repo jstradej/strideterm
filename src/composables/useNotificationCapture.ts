@@ -23,6 +23,7 @@ interface AttentionAlertEntry {
   message?: string;
   /** Backend event time; becomes the notification event's `occurredAt`. */
   at?: string;
+  jiraIssueRef?: { provider: "jira"; connectionId: string; issueId: string; issueKey: string };
 }
 
 interface AttentionAlertBucket {
@@ -843,10 +844,20 @@ export function useNotificationCapture(
           // Surface them with an exclamation in the title so they stand out from regular
           // waiting alerts — the user wanted to be jolted when an agent gets blocked.
           const isRateLimitAlert = typeof alertDetail === "string" && alertDetail.startsWith("rate-limited");
+          const jiraIssueRef = alert.kind === "jira" ? alert.jiraIssueRef : undefined;
+          const isJiraAlert = Boolean(
+            jiraIssueRef?.provider === "jira" &&
+            /^[A-Za-z0-9_-]{1,200}$/.test(jiraIssueRef.connectionId) &&
+            /^[A-Za-z0-9_-]{1,200}$/.test(jiraIssueRef.issueId) &&
+            /^[A-Z][A-Z0-9_]{0,19}-[1-9][0-9]*$/i.test(jiraIssueRef.issueKey),
+          );
 
           let title: string;
           let body: string;
-          if (isRateLimitAlert) {
+          if (isJiraAlert) {
+            title = alert.title || `${jiraIssueRef!.issueKey} changed`;
+            body = "Jira issue changed in a saved query.";
+          } else if (isRateLimitAlert) {
             title = "Rate limit hit!";
             const detailRest = (alertDetail as string).replace(/^rate-limited:\s*/, "");
             body = `${tabName} in ${wsName} — ${detailRest}`;
@@ -878,7 +889,7 @@ export function useNotificationCapture(
             body = `${tabName} in ${wsName} finished${exitInfo}.`;
           }
 
-          const category = isRateLimitAlert ? "rate-limit" : isTaskAlert ? "task" : "terminal";
+          const category = isJiraAlert ? "jira" : isRateLimitAlert ? "rate-limit" : isTaskAlert ? "task" : "terminal";
           const wsProfileId = ws?.profileId || "default";
           // Exactly-once against the PERSISTED history: this renderer's
           // in-memory `seenAlertIds` cannot see what another window already
@@ -894,7 +905,7 @@ export function useNotificationCapture(
             tabName,
             viewId: alert.sessionId || "",
             category,
-            meta: { profileId: wsProfileId },
+            meta: { profileId: wsProfileId, ...(isJiraAlert ? { jiraIssueRef } : {}) },
             sourceAlertId: key,
             occurredAt: alert.at || new Date().toISOString(),
           });

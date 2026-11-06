@@ -1068,3 +1068,41 @@ describe("server-sent event framing", () => {
     }
   });
 });
+
+test("logout fences a late rotated refresh response and creates a new session only after durable transition", async () => {
+  const credentialStore = makeCredentialStore({ [REFRESH_REF]: "old-refresh" });
+  let respond!: (response: Response) => void;
+  let finishLogout!: () => void;
+  const durableTransition = new Promise<void>((resolve) => {
+    finishLogout = resolve;
+  });
+  const fetchImpl = vi.fn(async (url: string) => {
+    if (url.includes("securetoken"))
+      return new Promise<Response>((resolve) => {
+        respond = resolve;
+      });
+    return json({ idToken: "new-id", refreshToken: "new-refresh", localId: "new-uid", expiresIn: "3600" });
+  });
+  const client = createMobileFirebaseRestClient({
+    config: CONFIG,
+    credentialStore,
+    refreshTokenRef: REFRESH_REF,
+    fetchImpl,
+  });
+  const old = client.currentSession();
+  const oldOutcome = expect(old).rejects.toThrow("forgotten");
+  await vi.waitFor(() => expect(respond).toBeDefined());
+  const logout = client.forgetSession(async () => {
+    await durableTransition;
+    await credentialStore.deleteSecret(REFRESH_REF);
+  });
+  const next = client.currentSession();
+  respond(json({ id_token: "old-id", refresh_token: "rotated-old", user_id: "old-uid", expires_in: "3600" }));
+  await oldOutcome;
+  expect(fetchImpl).toHaveBeenCalledTimes(1);
+  expect(credentialStore.getSecret(REFRESH_REF)).toBe("old-refresh");
+  finishLogout();
+  await logout;
+  expect((await next).uid).toBe("new-uid");
+  expect(credentialStore.getSecret(REFRESH_REF)).toBe("new-refresh");
+});

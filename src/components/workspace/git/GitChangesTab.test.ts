@@ -26,6 +26,7 @@ vi.mock("../../shared/MonacoDiffPanel.vue", async () => {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const fakeApi: Record<string, any> = {};
+let jiraWorkItems: Array<{ ref: { provider: "jira"; connectionId: string; issueId: string; issueKey: string } }> = [];
 const refreshGit = vi.fn(async () => {});
 const gitClearSelectedDiff = vi.fn();
 const gitSelectDiff = vi.fn();
@@ -55,7 +56,11 @@ class ResizeObserverMock {
 }
 
 vi.mock("../../../stores/app.js", () => ({
-  useAppStore: () => ({ getApi: () => fakeApi }),
+  useAppStore: () => ({
+    getApi: () => fakeApi,
+    myActiveProfileId: "default",
+    payload: { appState: { workspaces: [{ id: "ws1", profileId: "default", workItems: jiraWorkItems }] } },
+  }),
 }));
 vi.mock("../../../stores/git-ui.js", () => ({
   useGitUiStore: () => ({
@@ -153,6 +158,7 @@ function mountTab(overrides: Record<string, unknown> = {}): GitChangesTabTestWra
 
 beforeEach(() => {
   observedWidth = 390;
+  jiraWorkItems = [];
   vi.stubGlobal("ResizeObserver", ResizeObserverMock);
   setActivePinia(createPinia());
   for (const k of Object.keys(fakeApi)) delete fakeApi[k];
@@ -204,6 +210,27 @@ describe("GitChangesTab", () => {
     expect(wrapper.find(".git-stat-row").exists()).toBe(true);
     expect(wrapper.text()).toContain("12");
     expect(wrapper.text()).toContain("4");
+  });
+
+  test("adds a user-triggered commit prefix from the single linked Jira issue", async () => {
+    observedWidth = 1200;
+    jiraWorkItems = [{ ref: { provider: "jira", connectionId: "jira-1", issueId: "1001", issueKey: "ENG-1" } }];
+    const wrapper = mountTab({
+      snapshot: {
+        dirty: true,
+        staged: [],
+        unstaged: [{ path: "a.txt", code: "M", scope: "unstaged" }],
+        untracked: [],
+        diffStat: null,
+      },
+    });
+    await flushPromises();
+    expect(wrapper.text()).toContain("ENG-1:");
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Add prefix")!
+      .trigger("click");
+    expect((wrapper.find('input[name="commit-message"]').element as HTMLInputElement).value).toBe("ENG-1: ");
   });
 
   test("retains the staged commit message when the backend rejects the commit", async () => {

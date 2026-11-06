@@ -107,7 +107,7 @@ async function createFixture({ role = "reviewer" }: { role?: string } = {}): Pro
     targetRemoteUrl: remote,
     baselineSha: "",
     checkout: { mode: "managed-worktree", rootPath: checkout, cacheRepoPath: checkout },
-    auth: { token: "token" },
+    auth: { token: "token", authUrl: "https://git.example.invalid/acme/repo" },
   };
   const locks = createReviewGitLocks();
   const engine = createReviewGitEngine({

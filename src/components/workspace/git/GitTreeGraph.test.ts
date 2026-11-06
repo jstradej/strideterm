@@ -212,7 +212,7 @@ describe("GitTreeGraph", () => {
   });
 
   test("history rows drop the header and put refs inside the subject cell", () => {
-    const refs = ["HEAD", "main", "origin/pveselka/MSP-90906", "tag:v1"];
+    const refs = ["HEAD", "main", "origin/jdoe/ABC-90906", "tag:v1"];
     const wrapper = mountGraph({
       history: true,
       commits: [{ ...linearCommits[0], refs }],
@@ -223,7 +223,7 @@ describe("GitTreeGraph", () => {
     const chips = wrapper.findAll(".git-tree__cell--subject .git-tree__ref");
     expect(chips).toHaveLength(3);
     expect(chips[2].text()).toBe("+2");
-    expect(chips[2].attributes("title")).toBe("2 more refs:\nRemote branch origin/pveselka/MSP-90906\nTag v1");
+    expect(chips[2].attributes("title")).toBe("2 more refs:\nRemote branch origin/jdoe/ABC-90906\nTag v1");
     expect(chips[0].attributes("title")).toContain("the commit currently checked out");
     expect(chips[0].attributes("title")).toContain("On branch main");
     expect(chips[1].attributes("title")).toContain("Branch main");
@@ -231,11 +231,11 @@ describe("GitTreeGraph", () => {
 
     const full = mountGraph({
       history: true,
-      commits: [{ ...linearCommits[0], refs: ["origin/pveselka/MSP-90906"] }],
+      commits: [{ ...linearCommits[0], refs: ["origin/jdoe/ABC-90906"] }],
     });
     const chip = full.find(".git-tree__cell--subject .git-tree__ref");
-    expect(chip.find(".git-tree__ref-label").text()).toBe("origin/pveselka/MSP-90906");
-    expect(chip.attributes("title")).toBe("Remote branch origin/pveselka/MSP-90906");
+    expect(chip.find(".git-tree__ref-label").text()).toBe("origin/jdoe/ABC-90906");
+    expect(chip.attributes("title")).toBe("Remote branch origin/jdoe/ABC-90906");
   });
 
   test("full Git views can reuse History columns without enabling History reachability styling", () => {

@@ -17,7 +17,7 @@ export interface AgentSshMcpEligibility {
 
 const UNSUPPORTED_REASON = "SSH tools are available only when this tab directly launches Claude Code or Codex.";
 
-function tokenizeCommand(command: string): string[] {
+export function tokenizeCommand(command: string): string[] {
   const tokens: string[] = [];
   let current = "";
   let quote = "";

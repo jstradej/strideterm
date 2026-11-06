@@ -18,6 +18,16 @@ import type {
 } from "../shared/types/state.js";
 import { isCompanionPrimaryViewId, parseCompanionPrimaryViewId } from "../shared/companion-primary.js";
 import { isFullSha } from "../shared/review-source-identity.js";
+import { sanitizeJiraPollingState } from "./jira/jira-polling.js";
+import { JIRA_CONNECTION_HEALTH_STATES } from "../shared/jira-error-codes.js";
+import {
+  DEFAULT_JIRA_COMMENT_ATTRIBUTION,
+  normalizeJiraCommentAttribution,
+} from "../shared/jira-comment-attribution.js";
+import {
+  DEFAULT_JIRA_AGENT_ATTACHMENT_LIMITS,
+  normalizeJiraAgentAttachmentLimits,
+} from "../shared/jira-agent-attachments.js";
 
 const UTF8_DECODER = (() => {
   try {
@@ -191,6 +201,7 @@ function normalizePanel(panel: any, panelIndex = 0): any {
     alertsForceOn: panel.alertsForceOn === true,
     sshMcpEnabled: panel.sshMcpEnabled === true,
     notes: typeof panel.notes === "string" ? panel.notes : "",
+    hostedBy: typeof panel.hostedBy === "string" ? panel.hostedBy : "",
   };
 }
 
@@ -204,6 +215,7 @@ const KNOWN_VIEW_PREFIXES = [
   "browser:",
   "task-dashboard:",
 ];
+const JIRA_AUTH_KINDS = new Set(["cloud-api-token", "dc-pat", "dc-apim"]);
 const VALID_SPLIT_LAYOUTS = new Set(["cols", "rows", "top-split", "left-split", "grid"]);
 
 /**
@@ -215,6 +227,13 @@ const VALID_SPLIT_LAYOUTS = new Set(["cols", "rows", "top-split", "left-split", 
  * alone, so a user who then wants `waiting` on its own can have it.
  */
 export const TELEGRAM_QUESTION_FORWARD_MIGRATION = "telegram-forward-kinds-question-v1";
+
+/**
+ * Jira polling membership moved from `settings.integrations.jira.pollingState` to its own file. Until the runtime
+ * has copied it across and recorded this id, a valid legacy value is carried through normalizeState; afterwards the
+ * key is never kept in the main state again.
+ */
+export const JIRA_POLLING_STATE_FILE_MIGRATION = "jira-polling-state-file-v1";
 
 function isKnownPrefixViewId(viewId: unknown): boolean {
   return typeof viewId === "string" && KNOWN_VIEW_PREFIXES.some((prefix) => viewId.startsWith(prefix));
@@ -355,12 +374,67 @@ function normalizeSourceBaselineSha(value: unknown): string | undefined {
   return isFullSha(sha) ? sha : undefined;
 }
 
+/** The Jira issues a workspace is linked to (ref + display text only); malformed entries are dropped. */
+function normalizeWorkItems(value: unknown): WorkspaceState["workItems"] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const text = (item: unknown, max: number) => (typeof item === "string" ? item.slice(0, max) : "");
+  const items = value
+    .filter(
+      (item) =>
+        item?.ref &&
+        typeof item.ref.connectionId === "string" &&
+        typeof item.ref.issueId === "string" &&
+        typeof item.ref.issueKey === "string" &&
+        item.ref.connectionId &&
+        item.ref.issueId &&
+        item.ref.issueKey,
+    )
+    .slice(0, 20)
+    .map((item) => ({
+      ref: {
+        provider: "jira" as const,
+        connectionId: item.ref.connectionId,
+        issueId: item.ref.issueId,
+        issueKey: item.ref.issueKey,
+      },
+      summary: text(item.summary, 500),
+      status: text(item.status, 200),
+    }));
+  return items.length ? items : undefined;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
   const isDockerWorkspace = (workspace.id || "") === "docker" || workspace.kind === "docker";
   const isAzureWorkspace = workspace.kind === "azure";
   const isGitHubWorkspace = workspace.kind === "github";
   const isTaskWorkspace = workspace.kind === "task";
+  const isJiraBoardWorkspace = workspace.kind === "jira-board";
+  const rawJiraBoardProjectKeys: unknown = workspace.jiraBoard?.projectKeys;
+  const jiraBoardProjectKeys =
+    Array.isArray(rawJiraBoardProjectKeys) && rawJiraBoardProjectKeys.length <= 50
+      ? [
+          ...new Set(
+            rawJiraBoardProjectKeys
+              .filter((key: unknown): key is string => typeof key === "string")
+              .map((key) => key.trim().toUpperCase())
+              .filter((key) => /^[A-Z][A-Z0-9_]{0,19}$/.test(key)),
+          ),
+        ].sort()
+      : undefined;
+  const jiraBoard =
+    isJiraBoardWorkspace &&
+    workspace.jiraBoard &&
+    String(workspace.jiraBoard.connectionId || "").trim() &&
+    String(workspace.jiraBoard.boardId || "").trim()
+      ? {
+          parentWorkspaceId: String(workspace.jiraBoard.parentWorkspaceId || "").trim(),
+          connectionId: String(workspace.jiraBoard.connectionId).trim(),
+          boardId: String(workspace.jiraBoard.boardId).trim(),
+          boardName: repairVisibleText(workspace.jiraBoard.boardName || workspace.name || "Jira board"),
+          ...(jiraBoardProjectKeys !== undefined ? { projectKeys: jiraBoardProjectKeys } : {}),
+        }
+      : undefined;
   // WorkspaceDialog historically attached an all-empty task draft to every
   // ordinary workspace. Keep real task evidence as a fail-safe when a damaged
   // state lost `kind`, but remove that inert marker so it cannot disable
@@ -368,13 +442,15 @@ export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
   const preserveTask = isTaskWorkspace || hasTaskWorkspaceEvidence(workspace.task);
   const shouldNormalizeTask = Boolean(workspace.task && preserveTask);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const rawPanels: any[] = isDockerWorkspace
-    ? (workspace.panels || []).filter(
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (panel: any) => !(panel.id === "lazydocker" && panel.command === "lazydocker" && !panel.launch),
-      )
-    : // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (workspace.panels || []).filter((panel: any) => !(panel.id === "git" && !panel.command && !panel.launch));
+  const rawPanels: any[] = isJiraBoardWorkspace
+    ? []
+    : isDockerWorkspace
+      ? (workspace.panels || []).filter(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (panel: any) => !(panel.id === "lazydocker" && panel.command === "lazydocker" && !panel.launch),
+        )
+      : // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (workspace.panels || []).filter((panel: any) => !(panel.id === "git" && !panel.command && !panel.launch));
   const panels = rawPanels.map((panel, panelIndex) => normalizePanel(panel, panelIndex));
   const fallbackPanelId = panels[0]?.id || null;
   const activePanelId = panels.some((panel) => panel.id === workspace.activePanelId)
@@ -388,6 +464,7 @@ export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
     activePanelId,
   );
 
+  const workItems = normalizeWorkItems(workspace.workItems);
   return {
     id: workspaceId,
     name: repairVisibleText(workspace.name || `Workspace ${index + 1}`),
@@ -401,13 +478,15 @@ export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
           ? "github"
           : isTaskWorkspace
             ? "task"
-            : workspace.kind || APP_CONFIG.ui.defaultProjectKind,
+            : isJiraBoardWorkspace && jiraBoard
+              ? "jira-board"
+              : workspace.kind || APP_CONFIG.ui.defaultProjectKind,
     source: workspace.source === "plugin" ? "plugin" : "manual",
     pluginId: workspace.pluginId || "",
-    cwd: workspace.cwd || (isAzureWorkspace || isGitHubWorkspace ? "" : defaultCwd()),
+    cwd: isJiraBoardWorkspace ? "" : workspace.cwd || (isAzureWorkspace || isGitHubWorkspace ? "" : defaultCwd()),
     gitRoots: (function () {
       // Don't allow gitRoots on review workspaces or task workspaces that run in a worktree
-      if (isAzureWorkspace || isGitHubWorkspace) return [];
+      if (isAzureWorkspace || isGitHubWorkspace || isJiraBoardWorkspace) return [];
       if (isTaskWorkspace && workspace.task?.worktreeBranch) return [];
       const roots: unknown[] = Array.isArray(workspace.gitRoots)
         ? (workspace.gitRoots as unknown[]).filter(Boolean)
@@ -421,7 +500,12 @@ export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
     gitViewPreferences,
     notes: repairVisibleText(workspace.notes || ""),
     profileId: workspace.profileId || "default",
-    connectionId: workspace.connectionId || workspace.quickfix?.connectionId || workspace.review?.connectionId || "",
+    connectionId:
+      workspace.connectionId ||
+      jiraBoard?.connectionId ||
+      workspace.quickfix?.connectionId ||
+      workspace.review?.connectionId ||
+      "",
     activePanelId,
     activeViewId,
     splitLayout,
@@ -488,8 +572,15 @@ export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
       : null,
     starred: Boolean(workspace.starred),
     // Never on a task workspace: the Worker/Judge pair must not inherit the right to create tasks.
-    internalMcpEnabled: workspace.kind !== "task" && workspace.internalMcpEnabled === true,
-    sshMcpEnabled: workspace.kind !== "task" && workspace.sshMcpEnabled === true,
+    internalMcpEnabled: workspace.kind !== "task" && !isJiraBoardWorkspace && workspace.internalMcpEnabled === true,
+    sshMcpEnabled: workspace.kind !== "task" && !isJiraBoardWorkspace && workspace.sshMcpEnabled === true,
+    jiraMcpEnabled: !isJiraBoardWorkspace && workspace.jiraMcpEnabled === true,
+    jiraMcpCommentDrafts:
+      !isJiraBoardWorkspace && Array.isArray(workspace.jiraMcpCommentDrafts)
+        ? workspace.jiraMcpCommentDrafts.slice(-100)
+        : [],
+    jiraBoard,
+    ...(workItems ? { workItems } : {}),
     task: shouldNormalizeTask
       ? {
           // Spread first: preserves runtime-only properties (promptSent,
@@ -609,6 +700,14 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
           reviewRoot: defaultGitHubReviewRoot(),
           defaultPollSeconds: 120,
           connections: [],
+        },
+        jira: {
+          enabled: true,
+          defaultPollSeconds: 120,
+          connections: [],
+          queries: [],
+          commentAttribution: { ...DEFAULT_JIRA_COMMENT_ATTRIBUTION },
+          agentAttachments: { ...DEFAULT_JIRA_AGENT_ATTACHMENT_LIMITS },
         },
         telegram: {
           enabled: true,
@@ -922,6 +1021,14 @@ function groupChildWorkspaces(workspaces: WorkspaceState[]): WorkspaceState[] {
   }
 
   for (const workspace of workspaces) {
+    if (workspace.kind === "jira-board" && workspace.jiraBoard) {
+      const parent = byId.get(workspace.jiraBoard.parentWorkspaceId);
+      const validParent =
+        parent?.kind === "jira" && (parent.profileId || "default") === (workspace.profileId || "default");
+      addChild(validParent ? parent!.id : "", workspace);
+      continue;
+    }
+
     if ((workspace.notes || "").startsWith("Worktree of ")) {
       const parentName = workspace.name.split(" / ")[0];
       const childProfile = workspace.profileId || "default";
@@ -1196,6 +1303,8 @@ export function normalizeState(
   const rawAzureDevops = rawIntegrations.azureDevops || {};
   const rawGithub = rawIntegrations.github || {};
   const rawTelegram = rawIntegrations.telegram || {};
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: raw JSON from disk has unknown Jira shape
+  const { pollingState: rawJiraPollingState, ...rawJira } = (rawIntegrations.jira || {}) as Record<string, any>;
   const rawMobile = rawIntegrations.mobile || {};
   const rawRemoteAccess = rawSettings.remoteAccess || {};
   const remoteSessionAbsoluteTtlMinutes = normalizeTtlMinutes(
@@ -1513,6 +1622,134 @@ export function normalizeState(
           reviewRoot: connection.reviewRoot || defaults.settings.integrations.github.reviewRoot,
         })),
       },
+      jira: {
+        ...defaults.settings.integrations.jira,
+        ...rawJira,
+        commentAttribution: normalizeJiraCommentAttribution(rawJira.commentAttribution),
+        agentAttachments: normalizeJiraAgentAttachmentLimits(rawJira.agentAttachments),
+        ...(!rawAppliedMigrations.includes(JIRA_POLLING_STATE_FILE_MIGRATION) &&
+        sanitizeJiraPollingState(rawJiraPollingState)
+          ? { pollingState: sanitizeJiraPollingState(rawJiraPollingState) }
+          : {}),
+        repoBindings: Array.isArray(rawJira.repoBindings)
+          ? rawJira.repoBindings
+              .filter((item: unknown): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+              .filter(
+                (item: Record<string, unknown>) =>
+                  typeof item.profileId === "string" &&
+                  typeof item.jiraConnectionId === "string" &&
+                  typeof item.projectKey === "string" &&
+                  (item.provider === "azure" || item.provider === "github") &&
+                  typeof item.connectionId === "string" &&
+                  typeof item.repoId === "string" &&
+                  typeof item.repoName === "string" &&
+                  typeof item.remoteUrl === "string" &&
+                  typeof item.baseBranch === "string",
+              )
+              .slice(-500)
+          : [],
+        queries: Array.isArray(rawJira.queries)
+          ? rawJira.queries
+              .filter(
+                (query: unknown): query is Record<string, unknown> =>
+                  Boolean(query) &&
+                  typeof query === "object" &&
+                  typeof (query as Record<string, unknown>).id === "string" &&
+                  typeof (query as Record<string, unknown>).connectionId === "string" &&
+                  typeof (query as Record<string, unknown>).profileId === "string" &&
+                  typeof (query as Record<string, unknown>).name === "string" &&
+                  typeof (query as Record<string, unknown>).jql === "string",
+              )
+              .slice(0, 200)
+              .map((query: Record<string, unknown>) => ({
+                ...query,
+                notificationsEnabled: query.notificationsEnabled === true,
+              }))
+          : [],
+        connections: normalizeConnections(
+          {
+            connections: Array.isArray(rawJira.connections)
+              ? rawJira.connections.filter(
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: raw persisted state, no schema yet
+                  (connection: any) => !connection?.auth || JIRA_AUTH_KINDS.has(connection.auth.kind),
+                )
+              : [],
+          },
+          (connection, index) => ({
+            id: connection.id || `jira-${index + 1}`,
+            profileId: connection.profileId || "default",
+            issueKeyPrefixes: Array.isArray(connection.issueKeyPrefixes)
+              ? [
+                  ...new Set(
+                    connection.issueKeyPrefixes
+                      .filter((item: unknown): item is string => typeof item === "string")
+                      .map((item: string) => item.trim().toUpperCase())
+                      .filter((item: string) => /^[A-Z][A-Z0-9_]{0,19}$/.test(item)),
+                  ),
+                ].slice(0, 50)
+              : [],
+            defaultJql: typeof connection.defaultJql === "string" ? connection.defaultJql.slice(0, 2000) : "",
+            projectKeys: Array.isArray(connection.projectKeys)
+              ? [
+                  ...new Set(
+                    connection.projectKeys
+                      .filter((item: unknown): item is string => typeof item === "string")
+                      .map((item: string) => item.trim().toUpperCase())
+                      .filter((item: string) => /^[A-Z][A-Z0-9_]{0,19}$/.test(item)),
+                  ),
+                ].slice(0, 100)
+              : [],
+            pollSeconds: Math.max(60, Math.min(3600, Number(connection.pollSeconds) || 120)),
+            label: String(connection.label || connection.id || `Jira ${index + 1}`).slice(0, 80),
+            enabled: connection.enabled !== false,
+            deployment: connection.deployment === "cloud" ? "cloud" : "data-center",
+            webUrl: connection.webUrl || "",
+            apiBaseUrl: connection.apiBaseUrl || "",
+            ...(typeof connection.subscriptionHeaderName === "string"
+              ? { subscriptionHeaderName: connection.subscriptionHeaderName }
+              : {}),
+            ...(typeof connection.clientCertificatePath === "string"
+              ? { clientCertificatePath: connection.clientCertificatePath }
+              : {}),
+            ...(connection.cloudId ? { cloudId: connection.cloudId } : {}),
+            auth:
+              connection.auth && typeof connection.auth === "object"
+                ? {
+                    kind: connection.auth.kind,
+                    ...(typeof connection.auth.secretRef === "string" ? { secretRef: connection.auth.secretRef } : {}),
+                    ...(typeof connection.auth.passphraseRef === "string"
+                      ? { passphraseRef: connection.auth.passphraseRef }
+                      : {}),
+                    ...(typeof connection.auth.email === "string" ? { email: connection.auth.email } : {}),
+                  }
+                : { kind: "dc-pat", secretRef: "" },
+            accountPurpose: connection.accountPurpose === "technical" ? "technical" : "personal",
+            ...(connection.verifiedIdentity ? { verifiedIdentity: connection.verifiedIdentity } : {}),
+            ...(connection.ownIdentity ? { ownIdentity: connection.ownIdentity } : {}),
+            ...(connection.status === "connected" ||
+            connection.status === "needs-login" ||
+            connection.status === "unavailable"
+              ? { status: connection.status }
+              : {}),
+            ...(connection.health &&
+            typeof connection.health === "object" &&
+            JIRA_CONNECTION_HEALTH_STATES.includes(connection.health.state) &&
+            typeof connection.health.checkedAt === "string"
+              ? {
+                  health: {
+                    state: connection.health.state,
+                    checkedAt: connection.health.checkedAt.slice(0, 64),
+                    ...(Number.isInteger(connection.health.retryAfterMs) &&
+                    connection.health.retryAfterMs >= 0 &&
+                    connection.health.retryAfterMs <= 300_000
+                      ? { retryAfterMs: connection.health.retryAfterMs }
+                      : {}),
+                  },
+                }
+              : {}),
+          }),
+        ),
+      },
       telegram: {
         ...defaults.settings.integrations.telegram,
         ...rawTelegram,
@@ -1645,7 +1882,7 @@ export function normalizeState(
     (validProfileIds.has("default") ? "default" : null) ||
     profiles[0]?.id ||
     "default";
-  const workspaces = groupChildWorkspaces(
+  const normalizedWorkspaces =
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: raw JSON from disk has unknown workspace shape
     (rawWorkspaces as any[])
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: same raw JSON workspace
@@ -1675,8 +1912,33 @@ export function normalizeState(
           };
         }
         return workspace;
-      }),
-  );
+      });
+  const workspaceById = new Map(normalizedWorkspaces.map((workspace) => [workspace.id, workspace]));
+  const pinnedBoardKeys = new Set<string>();
+  const validatedWorkspaces = normalizedWorkspaces
+    .map((workspace) => {
+      if (workspace.kind !== "jira-board" || !workspace.jiraBoard) return workspace;
+      const parent = workspaceById.get(workspace.jiraBoard.parentWorkspaceId);
+      if (parent?.kind === "jira" && (parent.profileId || "default") === (workspace.profileId || "default")) {
+        return workspace;
+      }
+      // Keep the saved board usable as an orphan root if its inbox was removed,
+      // but clear stale/foreign hierarchy links before they reach persisted state.
+      return { ...workspace, jiraBoard: { ...workspace.jiraBoard, parentWorkspaceId: "" } };
+    })
+    .filter((workspace) => {
+      if (workspace.kind !== "jira-board" || !workspace.jiraBoard) return true;
+      const key = [
+        workspace.profileId || "default",
+        workspace.jiraBoard.parentWorkspaceId,
+        workspace.jiraBoard.connectionId,
+        workspace.jiraBoard.boardId,
+      ].join("\u0000");
+      if (pinnedBoardKeys.has(key)) return false;
+      pinnedBoardKeys.add(key);
+      return true;
+    });
+  const workspaces = groupChildWorkspaces(validatedWorkspaces);
 
   // Validate activeWorkspaceId against workspaces in the active profile
   const profileWorkspaces = workspaces.filter((workspace) => (workspace.profileId || "default") === activeProfileId);

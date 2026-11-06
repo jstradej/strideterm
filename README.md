@@ -18,6 +18,7 @@
 - **Multi-repo Workspaces** - group sibling repositories (e.g. microservices) under one workspace via `gitRoots`; Git pane shows a repo switcher above the tabs, and a dedicated Bulk sub-tab runs Fetch all / Pull all (ff-only) across every repo with per-row status. Single-repo behavior is unchanged when `gitRoots` is empty or has a single entry.
 - **Azure DevOps PR Review** - browse pull requests, review changes with AI agents, and publish updates — see the [Azure DevOps review guide](docs/azure-devops-review.md)
 - **GitHub PR Review** - browse pull requests, review changes with AI agents, and publish updates — see the [GitHub review guide](docs/github-pr-review.md)
+- **Jira** - search issues and boards in Jira Cloud or Data Center, comment and change status, and start development on an issue in a new branch workspace with an AI agent — see the [Jira guide](docs/jira.md)
 - **Agent Task Runner** - supervise coding tasks with Worker and Judge agents from supported AI coding tools — see the [Agent Task Runner guide](docs/agent-task-runner.md)
 - **Task agents from a planning terminal (internal MCP)** - supported AI agents can prepare and monitor a task, then wait for your approval before starting
 - **Docker Manager** - list containers, run actions, open shells, and stream logs
@@ -229,11 +230,12 @@ Use any supported AI coding tool installed on your computer to run Worker and Ju
 
 ## Internal MCP
 
-strIDEterm provides three MCP servers that give supported AI agents access to app capabilities:
+strIDEterm's built-in MCP servers give supported AI agents access to app capabilities:
 
 - **Task orchestration** — supported AI agents can prepare and monitor coding tasks; strIDEterm asks you to approve the task before it starts.
 - **Pull-request review** — AI agents can help inspect and respond to pull requests in Azure DevOps and GitHub review workspaces.
 - **SSH commands** — supported AI agents can run commands on saved SSH hosts from a terminal.
+- **Jira** — in workspaces where you allow it, AI agents can read Jira issues and boards and propose comments for you to post.
 
 ## Agent Notification Hooks
 

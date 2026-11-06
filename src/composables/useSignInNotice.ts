@@ -6,14 +6,12 @@
 // almost never the thing on screen — the person went back to work, which is exactly what they should
 // be able to do.
 //
-// AND THE FLOW DOES NOT FINISH BY ITSELF. `awaiting-confirmation` is a deliberate stop: the payload
-// has arrived and the last step is a person pressing confirm ON THIS DESKTOP, because a link that
-// completed itself would be a link a stranger could complete. That design is right, and it has a
-// consequence nobody was carrying — a stop nobody is told about is a stop that runs out the clock.
-// The attempt then expires silently, and what the person sees when they eventually come back is an
-// empty form and no explanation.
+// Ordinary sign-in stops at `awaiting-confirmation`: the payload has arrived and the last step is a
+// person pressing confirm ON THIS DESKTOP. Account actions are different: the user chose the exact
+// action before requesting this link, so confirmation completes that action automatically.
+// For those ordinary sign-ins, the handoff matters: a stop nobody is told about can run out the clock.
 //
-// SO THE HANDOFF IS THE WHOLE JOB. One persistent toast when the flow starts waiting on the desktop,
+// SO THE HANDOFF IS THE WHOLE JOB FOR ORDINARY SIGN-IN. One persistent toast when the flow starts waiting on the desktop,
 // taken away again the moment it stops waiting — confirmed, cancelled, superseded or expired. It is
 // persistent rather than timed on purpose: a four-second toast for a thing that needs an action in
 // another window is a toast that is gone before the person looks up.
@@ -42,9 +40,14 @@ export function useSignInNotice(): void {
     // confirmation raises the notice too. Without it the toast would only ever appear for somebody
     // who was elsewhere at the exact moment the payload landed — and "I clicked the link, glanced at
     // the desktop, then went back to what I was doing" is a perfectly ordinary way to lose it.
-    () => [account.auth?.phase ?? null, account.signInPanelMounted] as const,
-    ([phase, panelOpen]) => {
-      if (phase !== WAITING_ON_DESKTOP || panelOpen) {
+    () => [account.auth?.phase ?? null, account.auth?.purpose ?? null, account.signInPanelMounted] as const,
+    ([phase, purpose, panelOpen]) => {
+      if (
+        phase !== WAITING_ON_DESKTOP ||
+        panelOpen ||
+        purpose === "signout-installation" ||
+        purpose === "delete-account"
+      ) {
         clear();
         return;
       }

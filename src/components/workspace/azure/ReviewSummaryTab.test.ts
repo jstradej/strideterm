@@ -20,6 +20,7 @@ const getGitSnapshot = vi.fn(() => ({ aheadCount: 1, behindCount: 1 }));
 // ReviewSummaryTab.vue's targetComparison. Default to "behind" so the Rebase
 // button is enabled unless a test overrides it.
 const gitCompareBranch = vi.fn(async () => ({ ok: true, aheadCount: 0, behindCount: 1 }));
+const getJiraIssue = vi.fn();
 
 vi.mock("../../../stores/app.js", () => ({
   useAppStore: () => ({
@@ -27,7 +28,7 @@ vi.mock("../../../stores/app.js", () => ({
     rebaseReviewCheckout,
     pushReviewCheckout,
     getGitSnapshot,
-    getApi: () => ({ gitCompareBranch }),
+    getApi: () => ({ gitCompareBranch, getJiraIssue }),
   }),
 }));
 import ReviewSummaryTab from "./ReviewSummaryTab.vue";
@@ -52,6 +53,13 @@ function mountTab() {
       changedFiles: [],
       prKey: "pr-1",
       workspaceId: "ws-1",
+      jiraIssueRefs: [
+        {
+          ref: { provider: "jira", connectionId: "jira-1", issueId: "123", issueKey: "ENG-1" },
+          summary: "Fix input",
+          status: "Open",
+        },
+      ],
     },
   });
 }
@@ -63,7 +71,58 @@ beforeEach(() => {
   rebaseReviewCheckout.mockReset();
   pushReviewCheckout.mockReset();
   gitCompareBranch.mockClear();
+  getJiraIssue.mockReset();
   gitCompareBranch.mockImplementation(async () => ({ ok: true, aheadCount: 0, behindCount: 1 }));
+});
+
+describe("ReviewSummaryTab — explicit Jira review context", () => {
+  test("loads details only when selected from the existing workspace link", async () => {
+    getJiraIssue.mockResolvedValue({
+      ref: { issueKey: "ENG-1" },
+      summary: "Fresh issue detail",
+      status: "In Progress",
+      issueType: "Bug",
+      projectKey: "ENG",
+      updated: "today",
+    });
+    const wrapper = mountTab();
+    expect(getJiraIssue).not.toHaveBeenCalled();
+    expect(wrapper.text()).toContain("ENG-1 · Fix input");
+    await wrapper.find("button").trigger("click");
+    await flushPromises();
+    expect(getJiraIssue).toHaveBeenCalledWith({ connectionId: "jira-1", issueId: "123" });
+    expect(wrapper.text()).toContain("Fresh issue detail");
+  });
+
+  test("renders the issue as a readable card with a markdown description, not a text dump", async () => {
+    getJiraIssue.mockResolvedValue({
+      ref: { issueKey: "ENG-1" },
+      summary: "Fresh issue detail",
+      status: "In Progress",
+      issueType: "Bug",
+      projectKey: "ENG",
+      updated: "later",
+      description: "plain",
+      descriptionMarkdown: "Steps:\n\n- **first** step",
+    });
+    const wrapper = mountTab();
+    await wrapper.find("button").trigger("click");
+    await flushPromises();
+    expect(wrapper.find("pre").exists()).toBe(false);
+    const card = wrapper.get(".review-jira-issue");
+    expect(card.get(".review-jira-issue__key").text()).toBe("ENG-1");
+    expect(card.get(".review-jira-issue__status").text()).toBe("In Progress");
+    expect(card.get(".review-jira-issue__summary").text()).toBe("Fresh issue detail");
+    expect(card.get(".review-jira-issue__description strong").text()).toBe("first");
+  });
+
+  test("shows detail permission errors in the review pane", async () => {
+    getJiraIssue.mockRejectedValue(new Error("Issue permission denied"));
+    const wrapper = mountTab();
+    await wrapper.find("button").trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[role="alert"]').text()).toContain("Issue permission denied");
+  });
 });
 
 async function openAdvancedMenu(wrapper: ReturnType<typeof mountTab>) {

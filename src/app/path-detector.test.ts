@@ -188,9 +188,9 @@ describe("detectPaths", () => {
 
   describe("Windows absolute paths", () => {
     test("detects C:\\Users\\foo\\bar.txt with backslashes", () => {
-      const r = detectPaths("open C:\\Users\\jaromir\\file.txt please");
+      const r = detectPaths("open C:\\Users\\alice\\file.txt please");
       expect(r).toHaveLength(1);
-      expect(r[0].path).toBe("C:\\Users\\jaromir\\file.txt");
+      expect(r[0].path).toBe("C:\\Users\\alice\\file.txt");
     });
 
     test("detects D:/Users/foo/bar.txt with forward slashes (mixed Windows)", () => {

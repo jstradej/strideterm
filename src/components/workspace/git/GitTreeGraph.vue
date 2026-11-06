@@ -148,7 +148,6 @@
               height: `${ROW_HEIGHT}px`,
               paddingLeft: `${graphWidth + 4}px`,
               gridTemplateColumns: showHistoryHeader ? historyColumns : tight ? tightColumns : undefined,
-              borderLeftColor: node.hash === selectedHash ? laneColor(node.lane) : 'transparent',
             }"
             role="treeitem"
             :aria-selected="isSelected(node.hash) ? 'true' : 'false'"

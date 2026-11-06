@@ -26,7 +26,10 @@ import type {
 } from "../shared/review-pr-actions.js";
 import { classifyAzureRequest, parseAzureUrl } from "./azure-audit-log-store.js";
 import { buildPullRequestSummary, findWorkspaceForPullRequest } from "./azure-devops-pr-summary.js";
+import type { AzureAttentionReason, AzureMyReviewStatus, AzureReviewerVia } from "./azure-devops-attention.js";
+import type { PipelineRunFacts } from "./pipeline-agent-files.js";
 import { isAzureCommentByCurrentUser } from "./azure-comment-identity.js";
+import { mapAzureConflicts, type LocalMergeCheck, type ServerConflictFile } from "../shared/review-merge-check.js";
 import {
   buildReviewActivityEvent,
   diffSignatureKeys,
@@ -49,6 +52,7 @@ import {
   parseDate,
   normalizeRemoteUrl,
   buildRepositoryRemoteUrl,
+  isRemoteOnConnectionHost,
   sanitizeGitEnvironment,
   shortPathKey,
   formatReviewWorkspaceError,
@@ -123,6 +127,9 @@ interface AzurePrSummary {
   threads?: AzureThread[];
   changedFiles?: unknown[];
   localChangedFiles?: { changeType: string; path: string }[];
+  /** Azure's conflicting files while `mergeStatus` is `conflicts`; null when Azure would not list them. */
+  serverConflicts?: ServerConflictFile[] | null;
+  localMergeCheck?: LocalMergeCheck | null;
   checks?: {
     items?: AzureCheckItem[];
     failedCount?: number;
@@ -133,6 +140,10 @@ interface AzurePrSummary {
   };
   hasAttention?: boolean;
   attentionReason?: string;
+  attentionReasons?: AzureAttentionReason[];
+  isDirectReviewer?: boolean;
+  reviewerVia?: AzureReviewerVia[];
+  myReviewStatus?: AzureMyReviewStatus;
   newCommentsCount?: number;
   unresolvedThreadCount?: number;
   lastRemoteActivityAt?: string | null;
@@ -153,6 +164,35 @@ interface AzureThread {
   lastUpdatedDate?: string;
   comments?: AzureComment[];
   [key: string]: unknown;
+}
+
+/**
+ * Poll threads carry no `codeSnippet` — only the detail fetch (`readThreadCodeSnippets`)
+ * adds it. Replacing the detail's threads with them dropped every snippet until the
+ * detail fetch that follows the sync put them back: the review pane's comment list
+ * collapsed and re-expanded (a visible blink, scroll position lost) on every poll.
+ * A thread still anchored where it was keeps its snippet; the next detail fetch
+ * replaces it with a fresh one either way.
+ */
+export function carryOverCodeSnippets(
+  previous: AzureThread[] | undefined,
+  next: AzureThread[] | undefined,
+): AzureThread[] | undefined {
+  if (!previous?.length || !next?.length) return next;
+  const byId = new Map(previous.filter((thread) => thread.codeSnippet).map((thread) => [String(thread.id), thread]));
+  if (!byId.size) return next;
+  return next.map((thread) => {
+    const before = byId.get(String(thread.id));
+    if (
+      !before ||
+      thread.codeSnippet !== undefined ||
+      before.filePath !== thread.filePath ||
+      before.lineStart !== thread.lineStart ||
+      before.lineEnd !== thread.lineEnd
+    )
+      return thread;
+    return { ...thread, codeSnippet: before.codeSnippet };
+  });
 }
 
 interface AzureComment {
@@ -189,11 +229,21 @@ interface TrackedPullRequest {
   reviewWorkspaceId?: string;
   lastRemoteActivityAt?: string | null;
   lastVoteSignature?: string | null;
+  reviewerVotes?: Record<string, { vote: number; commitId: string }>;
   lastMergeStatus?: string | null;
   lastSourceCommitId?: string | null;
+  lastConcernsMe?: boolean;
   lastSeenActivityAt?: string | null;
   lastNotifiedActivityAt?: string | null;
   [key: string]: unknown;
+}
+
+// Same membership as the inbox's "Needs my review" + "My pull requests":
+// author, or reviewer directly or through a group, unless the review was
+// declined or a colleague already covered the group's vote.
+function azurePullRequestConcernsMe(summary: { role?: unknown; myReviewStatus?: unknown }): boolean {
+  if (summary.role === "author") return true;
+  return summary.role === "reviewer" && summary.myReviewStatus !== "covered" && summary.myReviewStatus !== "declined";
 }
 
 interface AzureReviewStore {
@@ -277,6 +327,14 @@ interface AuditRaw {
   durationMs?: number;
 }
 
+type AzureGroupMembershipStatus = { status: "ok"; count: number } | { status: "error"; error: string };
+
+interface GroupMembershipCacheEntry {
+  expiresAt: number;
+  result?: { ids: string[]; status: AzureGroupMembershipStatus | null };
+  pending?: Promise<{ ids: string[]; status: AzureGroupMembershipStatus | null }>;
+}
+
 // Typed return of createAzureApi (inferred from the factory)
 type AzureApi = ReturnType<typeof createAzureApi>;
 
@@ -291,7 +349,10 @@ export class AzureDevOpsManager extends BaseProviderManager {
     string,
     { expiresAt: number; userId: string | null; pending?: Promise<string | null> }
   >();
+  private groupMembershipCache = new Map<string, GroupMembershipCacheEntry>();
   private static readonly AUTHENTICATED_USER_FAILURE_TTL_MS = 30_000;
+  private static readonly GROUP_MEMBERSHIP_TTL_MS = 30 * 60 * 1000;
+  private static readonly GROUP_MEMBERSHIP_FAILURE_TTL_MS = 5 * 60 * 1000;
   // A pipeline's YAML parameters change rarely (only on a definition edit), so a
   // long TTL is fine; the cache is in-memory and cleared on restart anyway.
   private static readonly PARAM_SCHEMA_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
@@ -765,15 +826,64 @@ export class AzureDevOpsManager extends BaseProviderManager {
     });
   }
 
-  private async getAuthenticatedUserId(connection: AzureConnection, token: string): Promise<string | null> {
+  private identityCacheKey(connection: AzureConnection, token: string): string {
     const fingerprint = createHash("sha256").update(token).digest("hex");
-    const key = [
-      connection.profileId || "default",
-      connection.id,
-      connection.orgUrl,
-      connection.login,
-      fingerprint,
-    ].join("\0");
+    return [connection.profileId || "default", connection.id, connection.orgUrl, connection.login, fingerprint].join(
+      "\0",
+    );
+  }
+
+  private async getMyGroupIds(
+    connection: AzureConnection,
+    token: string,
+    currentUserId: string | null,
+  ): Promise<{ ids: string[]; status: AzureGroupMembershipStatus | null }> {
+    if (!currentUserId) return { ids: [], status: null };
+    const key = `${this.identityCacheKey(connection, token)}\0${currentUserId}`;
+    const cached = this.groupMembershipCache.get(key);
+    if (cached && cached.expiresAt > this.now()) return cached.pending || cached.result!;
+    const pending = Promise.resolve()
+      .then(() => this.azureApi.getUserGroupIds(connection, token, currentUserId))
+      .then((ids): { ids: string[]; status: AzureGroupMembershipStatus } => ({
+        ids,
+        status: { status: "ok", count: ids.length },
+      }))
+      .catch((error): { ids: string[]; status: AzureGroupMembershipStatus } => {
+        const message = (error as Error).message || String(error);
+        const denied = /request failed \((401|403)\)/.test(message);
+        const detail = denied ? `${message} (the PAT needs the "Identity (Read)" scope for group reviewers)` : message;
+        this.log.warn("Azure group membership lookup failed; group review requests are not recognised", {
+          connectionId: connection.id,
+          err: detail,
+        });
+        return { ids: [], status: { status: "error", error: detail } };
+      });
+    const entry: GroupMembershipCacheEntry = {
+      expiresAt: Number.POSITIVE_INFINITY,
+      pending,
+    };
+    this.groupMembershipCache.set(key, entry);
+    if (this.groupMembershipCache.size > 100) {
+      for (const [cacheKey, value] of this.groupMembershipCache) {
+        if (!value.pending && value.expiresAt <= this.now()) this.groupMembershipCache.delete(cacheKey);
+      }
+      while (this.groupMembershipCache.size > 100) {
+        this.groupMembershipCache.delete(this.groupMembershipCache.keys().next().value!);
+      }
+    }
+    const result = await pending;
+    entry.result = result;
+    entry.pending = undefined;
+    entry.expiresAt =
+      this.now() +
+      (result.status?.status === "ok"
+        ? AzureDevOpsManager.GROUP_MEMBERSHIP_TTL_MS
+        : AzureDevOpsManager.GROUP_MEMBERSHIP_FAILURE_TTL_MS);
+    return result;
+  }
+
+  private async getAuthenticatedUserId(connection: AzureConnection, token: string): Promise<string | null> {
+    const key = this.identityCacheKey(connection, token);
     const cached = this.authenticatedUserCache.get(key);
     if (cached && cached.expiresAt > this.now()) {
       if (cached.pending) return cached.pending;
@@ -1352,6 +1462,108 @@ export class AzureDevOpsManager extends BaseProviderManager {
     return { id: Number(build.id ?? buildId), status: build.status || "cancelling" };
   }
 
+  /**
+   * Everything an agent needs about one finished run: the build (branch, commit, the repository it built) and the
+   * timeline records with their log ids and error messages. Throws when the build cannot be read — unlike
+   * getPipelineRunDetail, an agent started on a run it cannot see is useless.
+   */
+  async getPipelineRunForAgent({
+    connectionId,
+    projectName,
+    buildId,
+  }: {
+    connectionId: string;
+    projectName: string;
+    buildId: number;
+  }): Promise<{
+    facts: PipelineRunFacts;
+    status: string;
+    repository: { id: string; name: string; type: string; url: string } | null;
+  }> {
+    const { connection, token } = this.resolveAzureConnectionAndToken(connectionId);
+    this.setAuditContext({ connectionId, userInitiated: true });
+    const build = (await this.azureApi.fetchBuildDetail(connection, token, projectName, buildId)) as {
+      id?: number;
+      buildNumber?: string;
+      status?: string;
+      result?: string;
+      sourceBranch?: string;
+      sourceVersion?: string;
+      requestedFor?: { displayName?: string };
+      definition?: { name?: string };
+      repository?: { id?: string; name?: string; type?: string; url?: string };
+      _links?: { web?: { href?: string } };
+    } | null;
+    if (!build?.id) throw new Error(`Pipeline run ${buildId} was not found in ${projectName}.`);
+    const timeline = (await this.azureApi.fetchBuildTimeline(connection, token, projectName, buildId)) as {
+      records?: Array<{
+        id?: string;
+        parentId?: string | null;
+        name?: string;
+        type?: string;
+        result?: string;
+        order?: number;
+        log?: { id?: number } | null;
+        issues?: Array<{ type?: string; message?: string }> | null;
+      }>;
+    } | null;
+    const records = (timeline?.records || [])
+      .filter((record) => record.id)
+      .map((record) => ({
+        id: String(record.id),
+        parentId: String(record.parentId || ""),
+        name: record.name || "",
+        type: record.type || "",
+        result: record.result || "",
+        order: record.order ?? 0,
+        logId: record.log?.id != null && Number.isFinite(Number(record.log.id)) ? Number(record.log.id) : null,
+        errors: (record.issues || [])
+          .filter((issue) => issue.type === "error" && issue.message)
+          .map((issue) => String(issue.message)),
+      }));
+    const repository = build.repository?.id
+      ? {
+          id: String(build.repository.id),
+          name: String(build.repository.name || ""),
+          type: String(build.repository.type || ""),
+          url: String(build.repository.url || ""),
+        }
+      : null;
+    return {
+      status: build.status || "",
+      repository,
+      facts: {
+        pipelineName: build.definition?.name || `Pipeline run ${buildId}`,
+        projectName,
+        buildId: Number(build.id),
+        buildNumber: build.buildNumber || `#${build.id}`,
+        result: build.result || "",
+        sourceBranch: build.sourceBranch || "",
+        sourceVersion: build.sourceVersion || "",
+        webUrl: build._links?.web?.href || "",
+        requestedFor: build.requestedFor?.displayName || "",
+        records,
+      },
+    };
+  }
+
+  /** Raw text of one step log of a build. */
+  async getBuildStepLog({
+    connectionId,
+    projectName,
+    buildId,
+    logId,
+  }: {
+    connectionId: string;
+    projectName: string;
+    buildId: number;
+    logId: number;
+  }): Promise<string> {
+    const { connection, token } = this.resolveAzureConnectionAndToken(connectionId);
+    this.setAuditContext({ connectionId, userInitiated: true });
+    return this.azureApi.getBuildLogText(connection, token, projectName, buildId, logId);
+  }
+
   /** Concatenate a build's step/job logs into one raw text document for download. */
   async getBuildLogText({
     connectionId,
@@ -1506,6 +1718,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
       trackedPullRequests: Record<string, TrackedPullRequest>;
       detailMap: Record<string, AzurePrSummary>;
       newActivityEvents: unknown[];
+      connectionSnapshot?: Record<string, unknown>;
     },
   ): Promise<void> {
     const {
@@ -1520,6 +1733,9 @@ export class AzureDevOpsManager extends BaseProviderManager {
     } = ctx;
 
     const currentUserId = await this.getAuthenticatedUserId(connection, token);
+    const membership = await this.getMyGroupIds(connection, token, currentUserId);
+    if (membership.status && ctx.connectionSnapshot) ctx.connectionSnapshot.groupMembership = membership.status;
+    const myGroupIds = new Set(membership.ids);
 
     const projects = (await this.azureApi.listProjects(connection, token)) as AzureProject[];
     const filteredProjects = connection.projectFilters?.length
@@ -1564,6 +1780,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
           gitSnapshots,
           activeProfileId,
           currentUserId,
+          myGroupIds,
           now: this.now,
         });
         const typedSummary = summary as AzurePrSummary;
@@ -1598,16 +1815,18 @@ export class AzureDevOpsManager extends BaseProviderManager {
           reviewWorkspaceId: typedSummary.reviewWorkspaceId || tracked.reviewWorkspaceId || "",
           lastRemoteActivityAt: typedSummary.lastRemoteActivityAt,
           lastVoteSignature: typedInternals.voteSignature as string | null,
+          reviewerVotes: typedInternals.reviewerVotes as Record<string, { vote: number; commitId: string }>,
           lastMergeStatus: typedSummary.pullRequest?.mergeStatus,
           lastSourceCommitId: typedSummary.pullRequest?.sourceCommitId,
           lastDraftState: typedSummary.pullRequest?.isDraft === true ? "draft" : "ready",
+          lastConcernsMe: azurePullRequestConcernsMe(typedSummary),
           lastSeenActivityAt: tracked.lastSeenActivityAt || null,
           lastNotifiedActivityAt: lastNotifiedActivityAt as string | null,
         };
         detailMap[prKey] = {
           ...(detailMap[prKey] || {}),
           ...typedSummary,
-          threads: typedSummary.threads,
+          threads: carryOverCodeSnippets(detailMap[prKey]?.threads, typedSummary.threads),
         };
       }
     }
@@ -1720,20 +1939,33 @@ export class AzureDevOpsManager extends BaseProviderManager {
 
     const prevNotifiedAt = tracked.lastNotifiedActivityAt || "";
 
-    // Brand-new PR that wasn't in the tracked store before this poll.
-    if (!prevNotifiedAt) {
-      const author = summary.author.displayName || summary.author.uniqueName || "Unknown author";
-      events.push(
-        buildReviewActivityEvent({
-          provider: "azure-devops",
-          summary,
-          kind: "pr-new",
-          at: summary.lastRemoteActivityAt || nowIso,
-          title: `New pull request: ${summary.project.name} / ${summary.repository.name} — ${summary.pullRequest.title}`,
-          body: `#${summary.pullRequest.id} by ${author}`,
-          actor: { login: summary.author.uniqueName, displayName: author },
-        }),
-      );
+    // A PR that is not mine to review or author stays silent, but its cursor
+    // keeps moving so becoming a reviewer later does not replay its history.
+    if (!azurePullRequestConcernsMe(summaryIn)) {
+      return {
+        events,
+        lastNotifiedActivityAt: seedNotifiedTimestamp(summary, nowIso),
+      };
+    }
+
+    const isReviewer = summary.role === "reviewer";
+    const becameMine = Boolean(prevNotifiedAt) && tracked.lastConcernsMe === false;
+    if (!prevNotifiedAt || becameMine) {
+      if (isReviewer) {
+        const author = summary.author.displayName || summary.author.uniqueName || "Unknown author";
+        const prLabel = `${summary.project.name} / ${summary.repository.name} — ${summary.pullRequest.title}`;
+        events.push(
+          buildReviewActivityEvent({
+            provider: "azure-devops",
+            summary,
+            kind: "pr-new",
+            at: (becameMine ? nowIso : summary.lastRemoteActivityAt) || nowIso,
+            title: becameMine ? `Review requested: ${prLabel}` : `New pull request: ${prLabel}`,
+            body: `#${summary.pullRequest.id} by ${author}`,
+            actor: { login: summary.author.uniqueName, displayName: author },
+          }),
+        );
+      }
       return {
         events,
         lastNotifiedActivityAt: seedNotifiedTimestamp(summary, nowIso),
@@ -1741,7 +1973,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
     }
 
     const wasDraft = tracked.lastDraftState === "draft";
-    if (wasDraft && summary.pullRequest.isDraft !== true) {
+    if (isReviewer && wasDraft && summary.pullRequest.isDraft !== true) {
       events.push(
         buildReviewActivityEvent({
           provider: "azure-devops",
@@ -1934,7 +2166,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
       throw new Error("PAT is missing.");
     }
 
-    const [changes, pullRequestStatuses, policyEvaluations] = await Promise.all([
+    const [changes, pullRequestStatuses, policyEvaluations, serverConflicts] = await Promise.all([
       this.azureApi
         .listIterationChanges(connection, token, current.project!.name, current.repository!.id, current.pullRequest!.id)
         .catch(() => []),
@@ -1950,6 +2182,18 @@ export class AzureDevOpsManager extends BaseProviderManager {
       this.azureApi
         .listPolicyEvaluations(connection, token, current.project!.name, current.project!.id, current.pullRequest!.id)
         .catch(() => []),
+      current.pullRequest?.mergeStatus === "conflicts"
+        ? this.azureApi
+            .listPullRequestConflicts(
+              connection,
+              token,
+              current.project!.name,
+              current.repository!.id,
+              current.pullRequest!.id,
+            )
+            .then(mapAzureConflicts)
+            .catch((): ServerConflictFile[] | null => null)
+        : ([] as ServerConflictFile[]),
     ]);
     const workspace: ReviewWorkspace | undefined =
       (findWorkspaceForPullRequest(workspaces as Array<{ id: string; [key: string]: unknown }>, prKey) as
@@ -1960,6 +2204,9 @@ export class AzureDevOpsManager extends BaseProviderManager {
     const localChanges = workspace?.cwd
       ? await this.listLocalChangedFiles(workspace.cwd, current.pullRequest!.targetRefName || "").catch(() => [])
       : [];
+    const localMergeCheck = workspace?.cwd
+      ? await this.checkLocalMerge(workspace.cwd, current.pullRequest!.targetRefName || "")
+      : null;
 
     const enrichedThreads = workspace?.cwd
       ? await this.readThreadCodeSnippets(
@@ -2023,6 +2270,8 @@ export class AzureDevOpsManager extends BaseProviderManager {
       ...current,
       changedFiles: changes,
       localChangedFiles: localChanges,
+      serverConflicts,
+      localMergeCheck,
       threads: enrichedThreads as AzureThread[],
       checks: checksResult as AzurePrSummary["checks"],
       existingWorkspaceId: workspace?.id || current.existingWorkspaceId || "",
@@ -2245,6 +2494,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
           `+${summary.pullRequest!.sourceRefName}:refs/remotes/origin/${sourceBranch}`,
           `+${summary.pullRequest!.targetRefName}:refs/remotes/origin/${targetBranch}`,
         ],
+        remoteUrl,
         login: connection.login,
         token,
       });
@@ -2487,12 +2737,19 @@ export class AzureDevOpsManager extends BaseProviderManager {
     if (!connection) {
       throw new Error("Azure DevOps connection was not found.");
     }
-    if (!summary.myReviewerId) {
+    const viaGroup = Array.isArray(summary.reviewerVia) && summary.reviewerVia.length > 0;
+    if (!summary.myReviewerId && !viaGroup) {
       throw new Error("Current user is not an active reviewer on this pull request.");
     }
     const token = this.credentialStore.getSecret(connection.tokenRef);
     if (!token) {
       throw new Error("PAT is missing.");
+    }
+    // A member of a requested group is not in the reviewer list yet: voting as themselves adds them,
+    // and Azure counts the vote for the group (votedFor).
+    const reviewerId = summary.myReviewerId || (await this.getAuthenticatedUserId(connection, token));
+    if (!reviewerId) {
+      throw new Error("Could not resolve the current Azure DevOps user identity.");
     }
     await this.azureApi.requestJson(
       this.azureApi.buildReviewerUrl(
@@ -2500,14 +2757,14 @@ export class AzureDevOpsManager extends BaseProviderManager {
         summary.project!.name,
         summary.repository!.id,
         summary.pullRequest!.id,
-        summary.myReviewerId,
+        reviewerId,
       ),
       {
         login: connection.login,
         token,
         method: "PUT",
         body: {
-          id: summary.myReviewerId,
+          id: reviewerId,
           vote,
         },
       },
@@ -2680,8 +2937,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
     connectionId,
     projectName,
     repositoryId,
-    repositoryName,
-    remoteUrl,
+    repositoryName: requestedRepositoryName,
     baseBranch,
     newBranchName,
     callerProfileId = "",
@@ -2691,7 +2947,8 @@ export class AzureDevOpsManager extends BaseProviderManager {
     projectName: string;
     repositoryId: string;
     repositoryName: string;
-    remoteUrl: string;
+    /** Ignored: the clone URL comes from the connection's own repository listing, never from the caller. */
+    remoteUrl?: string;
     baseBranch: string;
     newBranchName: string;
     /** Profile of the window that initiated the action. Refusing on
@@ -2699,6 +2956,16 @@ export class AzureDevOpsManager extends BaseProviderManager {
      * a profile-A quickfix workspace on disk. */
     callerProfileId?: string;
   }): Promise<{ workspace: ReviewWorkspace; parentWorkspaceId: string }> {
+    const listed = (await this.listQuickFixRepositories(connectionId, projectName)).find((r) => r.id === repositoryId);
+    const remoteUrl = listed?.remoteUrl || "";
+    if (!listed || !remoteUrl) {
+      throw new Error(`Repository ${requestedRepositoryName || repositoryId} was not found in project ${projectName}.`);
+    }
+    const repositoryName = listed.name;
+    const connectionForHost = this.resolveAzureConnectionAndToken(connectionId).connection;
+    if (!isRemoteOnConnectionHost(connectionForHost, remoteUrl)) {
+      throw new Error("Refusing to clone: the repository URL is not on the connection's Azure DevOps host.");
+    }
     const repository = { id: repositoryId, name: repositoryName, remoteUrl };
 
     const result = await this.openQuickFixWorkspaceCore(
@@ -2713,6 +2980,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
             baseBranch,
             newBranchName,
             repoPathSegment: repositoryName,
+            remoteUrl,
             login: (connection as AzureConnection).login,
             ensureCacheRepo: () =>
               this.ensureCacheRepo({ connection: connection as AzureConnection, token, repository, reviewRoot }),

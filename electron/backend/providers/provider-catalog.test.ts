@@ -26,7 +26,8 @@ describe("provider catalog", () => {
     expect(effortArgs("claude", "xhigh")).toEqual(["--effort", "xhigh"]);
     expect(effortArgs("codex", "xhigh")).toEqual(["-c", "model_reasoning_effort=xhigh"]);
     expect(effortArgs("copilot", "max")).toEqual(["--reasoning-effort", "max"]);
-    expect(effortArgs("codex", "max")).toEqual([]);
+    expect(effortArgs("codex", "max")).toEqual(["-c", "model_reasoning_effort=max"]);
+    expect(effortArgs("codex", "minimal")).toEqual([]);
     expect(effortArgs("claude", "high; rm -rf /")).toEqual([]);
     expect(effortArgs("claude", "")).toEqual([]);
     expect(effortArgs("gemini", "high")).toEqual([]);

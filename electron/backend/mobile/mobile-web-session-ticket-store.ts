@@ -46,6 +46,8 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 
+import { RELAY_MOBILE_SESSION_ABSOLUTE_TTL_MS } from "./mobile-relay-protocol.js";
+
 /** plan §12.6: "WebView ticket: 60 sekund a pouze v desktop paměti". */
 const TICKET_TTL_MS = 60_000;
 /** 256 bits of entropy, base64url-encoded (matches remote-server.ts's session id encoding). */
@@ -83,6 +85,14 @@ const IssueTicketInputSchema = z.object({
    * any decision.
    */
   commandRef: z.string().max(16).optional(),
+  /**
+   * The idle TTL the session minted from this ticket will have (ADR 0041), BOUND HERE so that a
+   * policy change between issuance and redemption cannot alter what the phone was told. Absent means
+   * the redeeming server's own fallback. The relay manager already filters network input; this
+   * refuses what can never be meant (not a positive integer, or past the absolute session lifetime)
+   * if anything slipped past it. No policy bound lives here: those are the control plane's.
+   */
+  sessionIdleTtlMs: z.number().int().positive().max(RELAY_MOBILE_SESSION_ABSOLUTE_TTL_MS).optional(),
 });
 export type IssueTicketInput = z.infer<typeof IssueTicketInputSchema>;
 
@@ -90,6 +100,8 @@ export interface IssuedTicket {
   ticketId: string;
   secret: string;
   expiresAt: number;
+  /** Exactly what was bound (see `IssueTicketInput.sessionIdleTtlMs`), so the caller can report it. */
+  sessionIdleTtlMs?: number;
 }
 
 /**
@@ -133,6 +145,8 @@ export interface TicketRecord {
   expiresAt: number;
   /** See `IssueTicketInput.commandRef`. Audit correlation only. */
   commandRef?: string;
+  /** See `IssueTicketInput.sessionIdleTtlMs`. */
+  sessionIdleTtlMs?: number;
 }
 
 interface StoredTicket extends TicketRecord {
@@ -191,6 +205,7 @@ function toRecord(stored: StoredTicket): TicketRecord {
     requiredCapability: stored.requiredCapability,
     expiresAt: stored.expiresAt,
     ...(stored.commandRef ? { commandRef: stored.commandRef } : {}),
+    ...(stored.sessionIdleTtlMs !== undefined ? { sessionIdleTtlMs: stored.sessionIdleTtlMs } : {}),
   };
 }
 
@@ -223,9 +238,15 @@ export function createMobileWebSessionTicketStore(now: () => number = () => Date
         requiredCapability: REMOTE_WEB_SESSION_CAPABILITY,
         expiresAt,
         ...(validated.commandRef ? { commandRef: validated.commandRef } : {}),
+        ...(validated.sessionIdleTtlMs !== undefined ? { sessionIdleTtlMs: validated.sessionIdleTtlMs } : {}),
         secretHash: hashSecret(secret),
       });
-      return { ticketId, secret, expiresAt };
+      return {
+        ticketId,
+        secret,
+        expiresAt,
+        ...(validated.sessionIdleTtlMs !== undefined ? { sessionIdleTtlMs: validated.sessionIdleTtlMs } : {}),
+      };
     },
 
     consumeTicket(ticketId, secret, context) {

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { findWorkspace, markWorkspaceWorked } from "./runtime-utils.js";
+import { findWorkspace, markWorkspaceWorked, type AcceptedQuickFixContext } from "./runtime-utils.js";
 import { normalizeWorkspace } from "./default-state.js";
+import { holdAgentTabs } from "../shared/jira-development.js";
 import { normalizeConnectionInput } from "./azure-devops-manager.js";
 import { insertWorkspace } from "./workspace-order.js";
 import { ClientRequestError } from "./shared/client-request-error.js";
@@ -39,6 +40,8 @@ interface AzureHandlerCtx {
   broadcastState: () => void;
   refreshAzure: () => Promise<unknown>;
   refreshGit: (workspaceId?: string | null) => Promise<void>;
+  /** Makes GitManager know a workspace created outside a renderer activation, so its snapshot is kept. */
+  registerGitWorkspaces: () => Promise<void>;
   ensureAzureWorkspace: (profileId?: string) => Promise<WorkspaceState>;
   ensureVisibleSession: (workspaceId?: string) => string | null;
   scheduleAzurePolling: () => void;
@@ -57,6 +60,10 @@ interface AzureHandlerCtx {
   assertWorkspaceInViewerProfile: (workspaceId: string, windowId?: string) => void;
   /** Stamp `lastWorkedAt` after an allowlisted user action succeeded. */
   recordWorkspaceWork: (workspaceId: string, viewerId?: string) => Promise<void>;
+  jiraResolveWorkItem?: (
+    ref: { connectionId: string; issueId: string; issueKey: string },
+    viewerId?: string,
+  ) => Promise<NonNullable<WorkspaceState["workItems"]>[number]>;
 }
 
 /**
@@ -77,6 +84,7 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
     broadcastState,
     refreshAzure,
     refreshGit,
+    registerGitWorkspaces,
     ensureAzureWorkspace,
     ensureVisibleSession,
     scheduleAzurePolling,
@@ -90,6 +98,13 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
     assertWorkspaceInViewerProfile,
     recordWorkspaceWork,
   } = ctx;
+  const resolveQuickFixWorkItem = (
+    ref: { connectionId: string; issueId: string; issueKey: string },
+    windowId?: string,
+  ) => {
+    if (!ctx.jiraResolveWorkItem) throw new Error("Linking a Jira issue is not available here.");
+    return ctx.jiraResolveWorkItem(ref, windowId);
+  };
 
   function resolveRootPath(workspace: WorkspaceState, rawRootPath: string): string {
     return resolveRootPathShared(resolveGitRootPath, workspace, rawRootPath);
@@ -134,7 +149,7 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
   // callers all await the same poll and get the same fresh payload.
   let azureRefreshInFlight: Promise<unknown> | null = null;
 
-  return {
+  const handlers = {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async verifyAzureConnection(connection: any) {
       return azure.verifyConnection(connection);
@@ -628,11 +643,14 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
       };
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async azureQuickFixCreate(payload: any = {}, windowId?: string) {
+    async azureQuickFixCreateWorkspace(payload: any = {}, windowId?: string, accepted?: AcceptedQuickFixContext) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let result: any;
       const state = getState();
-      const callerProfileId = getViewerProfileId(windowId) || "";
+      const callerProfileId = accepted?.profileId ?? (getViewerProfileId(windowId) || "");
+      const workItem =
+        accepted?.workItem ??
+        (payload.jiraIssueRef ? await resolveQuickFixWorkItem(payload.jiraIssueRef, windowId) : undefined);
       try {
         result = await azure.openQuickFixWorkspace({
           state,
@@ -653,10 +671,14 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await store.mutate((draft: any) => {
         const normalized = normalizeWorkspace(result.workspace);
+        if (workItem) normalized.workItems = [workItem];
+        if (payload.holdAgentTabs === true) normalized.panels = holdAgentTabs(normalized.panels);
         insertWorkspace(draft.workspaces, normalized, getViewerActiveWorkspaceId(windowId));
-        draft.activeWorkspaceId = normalized.id;
         // Creating a quickfix workspace IS work (V2 plan allowlist).
         markWorkspaceWorked(draft, normalized.id);
+        // Start development switches to the workspace itself once its agent tab is the active one.
+        if (payload.deferActivation === true) return;
+        draft.activeWorkspaceId = normalized.id;
         // See openAzurePullRequest for the cross-profile guard rationale.
         const mirrorResult = mirrorActivationIntoSlot(draft, windowId, normalized);
         if (mirrorResult && !mirrorResult.mirrored) {
@@ -668,12 +690,19 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
         }
       });
       // Remote viewer: activate the quickfix in the CALLER's remote context.
-      mirrorRemoteViewerWorkspace(windowId, result.workspace.id);
+      if (payload.deferActivation !== true) mirrorRemoteViewerWorkspace(windowId, result.workspace.id);
+      await registerGitWorkspaces();
       await refreshGit(result.workspace.id);
       sessions.syncWithState(getState());
       ensureVisibleSession(result.workspace.id);
       broadcastState();
+      return { workspaceId: result.workspace.id as string };
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async azureQuickFixCreate(payload: any = {}, windowId?: string) {
+      await handlers.azureQuickFixCreateWorkspace(payload, windowId);
       return getPayload();
     },
   };
+  return handlers;
 }

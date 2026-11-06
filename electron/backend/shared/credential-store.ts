@@ -36,6 +36,7 @@ export interface CredentialStore {
   getSecret(ref: string): string;
   hasSecret(ref: string): boolean;
   deleteSecret(ref: string): Promise<void>;
+  updateSecrets?(changes: Record<string, string | null>): Promise<void>;
   listRefs(): string[];
   /**
    * Reports whether the OS keychain (Electron `safeStorage`) is available
@@ -61,6 +62,7 @@ export interface CredentialStore {
  */
 const MOBILE_PLAINTEXT_EXEMPT_REFS: ReadonlySet<string> = new Set([
   "mobile:desktop-device-id",
+  "mobile:retired-desktop-device-id",
   "mobile:account-binding",
   "mobile:relay-registration-configured",
 ]);
@@ -122,7 +124,7 @@ async function loadState(filePath: string): Promise<CredentialState> {
 
 export async function createCredentialStore(
   filePath: string,
-  { safeStorage = null }: { safeStorage?: SafeStorage | null } = {},
+  { safeStorage = null, readOnly = false }: { safeStorage?: SafeStorage | null; readOnly?: boolean } = {},
 ): Promise<CredentialStore> {
   const state = await loadState(filePath);
   let pending: Promise<unknown> = Promise.resolve(undefined);
@@ -174,7 +176,13 @@ export async function createCredentialStore(
     return next as Promise<void>;
   }
 
-  function encode(value: string): string {
+  function encode(value: string, requireEncrypted = false): string {
+    // The caller rechecks encryption availability inside the serialized write.
+    // Once that check succeeds, never recheck here and silently downgrade: the
+    // availability can change between the two calls.
+    if (requireEncrypted) {
+      return encodeEncrypted(value, safeStorage as SafeStorage);
+    }
     if (canEncrypt(safeStorage)) {
       return encodeEncrypted(value, safeStorage);
     }
@@ -211,7 +219,7 @@ export async function createCredentialStore(
 
   // A mobile secret stored as plaintext by an earlier build moves under encryption as soon as
   // encryption is available, rather than staying readable on disk for ever.
-  if (canEncrypt(safeStorage)) {
+  if (!readOnly && canEncrypt(safeStorage)) {
     for (const [ref, entry] of Object.entries(state.secrets)) {
       if (refusesPlaintextStorage(ref) && String(entry?.value || "").startsWith("plain:")) {
         entry.value = encodeEncrypted(decodePlaintext(entry.value.slice(6)), safeStorage);
@@ -219,10 +227,11 @@ export async function createCredentialStore(
     }
   }
 
-  await persist();
+  if (!readOnly) await persist();
 
   return {
     async setSecret(ref: string, secret: string, opts: SetSecretOptions = {}): Promise<void> {
+      if (readOnly) throw new Error("Read-only credential store cannot be modified.");
       if (!ref) {
         throw new Error("Credential ref is required.");
       }
@@ -243,8 +252,16 @@ export async function createCredentialStore(
         throw new Error("Secure storage is not available. Refusing to store Mobile integration keys in plaintext.");
       }
       return enqueue(async () => {
+        // Recheck inside the serialized write. A caller-side `isEncryptionAvailable()` check can
+        // race a keychain shutdown while this operation waits behind another store mutation.
+        if (opts.requireEncryptedStorage && !opts.forcePlaintext && !canEncrypt(safeStorage)) {
+          throw new Error("Secure storage is not available. Refusing to store this credential in plaintext.");
+        }
+        if (refusesPlaintextStorage(ref) && !canEncrypt(safeStorage)) {
+          throw new Error("Secure storage is not available. Refusing to store Mobile integration keys in plaintext.");
+        }
         state.secrets[ref] = {
-          value: encode(secret),
+          value: encode(secret, (opts.requireEncryptedStorage && !opts.forcePlaintext) || refusesPlaintextStorage(ref)),
           updatedAt: new Date().toISOString(),
         };
         await persist();
@@ -260,12 +277,36 @@ export async function createCredentialStore(
       return Boolean(ref && state.secrets[ref]);
     },
     async deleteSecret(ref: string): Promise<void> {
+      if (readOnly) throw new Error("Read-only credential store cannot be modified.");
       if (!ref) {
         return;
       }
       return enqueue(async () => {
         delete state.secrets[ref];
         await persist();
+      });
+    },
+    async updateSecrets(changes: Record<string, string | null>): Promise<void> {
+      const encoded: Record<string, SecretEntry | null> = {};
+      for (const [ref, value] of Object.entries(changes)) {
+        if (!ref) throw new Error("Credential ref is required.");
+        if (value !== null && !canEncrypt(safeStorage) && (refusesPlaintextStorage(ref) || ref.startsWith("ssh:"))) {
+          throw new Error("Secure storage is required for this credential update.");
+        }
+        encoded[ref] = value === null ? null : { value: encode(value), updatedAt: new Date().toISOString() };
+      }
+      return enqueue(async () => {
+        const previous = { ...state.secrets };
+        for (const [ref, value] of Object.entries(encoded)) {
+          if (value === null) delete state.secrets[ref];
+          else state.secrets[ref] = value;
+        }
+        try {
+          await persist();
+        } catch (error) {
+          state.secrets = previous;
+          throw error;
+        }
       });
     },
     listRefs(): string[] {

@@ -53,6 +53,8 @@
 import { computed, inject, ref } from "vue";
 import TreeEntryIcon from "../../shared/TreeEntryIcon.vue";
 import { useFileManagerStore } from "../../../stores/file-manager.js";
+import { useAppStore } from "../../../stores/app.js";
+import { runtimeAbsolutePath, setDragPaths } from "../../../lib/terminal-path-drop.js";
 import { statusBadge, statusColor, statusLabel, statusTitle } from "./git-status-helpers.js";
 import {
   loadedTreeChildren,
@@ -73,6 +75,7 @@ const emit = defineEmits<{
 }>();
 
 const store = useFileManagerStore();
+const appStore = useAppStore();
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const fmContextMenu = inject<((event: MouseEvent, entry: any) => void) | null>("fm-context-menu", null);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -171,8 +174,9 @@ function showContextMenu(event: MouseEvent) {
 function onDragStart(event: DragEvent) {
   if (fmDragState) fmDragState.value = props.node.entry;
   if (event.dataTransfer) {
-    event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData("text/plain", props.node.entry.relativePath);
+    setDragPaths(event.dataTransfer, [
+      runtimeAbsolutePath(store.rootPath, props.node.entry.relativePath, appStore.payload?.meta?.platform || ""),
+    ]);
   }
 }
 

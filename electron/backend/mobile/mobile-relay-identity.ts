@@ -1,12 +1,12 @@
 /// <reference types="node" />
 /**
- * This installation's relay identity: one long-lived Ed25519 keypair, one stable installation id.
+ * This installation's relay identity: one long-lived Ed25519 keypair, one installation namespace id.
  *
  * WHAT AN INSTALLATION IS. One data directory. Not one window, not one profile, not one workspace —
  * the relay plan §4 is explicit that the Durable Object corresponds to "one desktop installation
  * identity / data directory", and a second `--data-dir` is therefore a different desktop with no
  * path between the two. The id used is the same `mobile:desktop-device-id` the pairing already
- * generates once per data directory and reuses forever, so "installation" means exactly what it
+ * generates per data directory and replaces after explicit installation logout, so "installation" means exactly what it
  * already meant everywhere else in this integration rather than a fourth notion of identity.
  *
  * WHY A SEPARATE KEYPAIR FROM THE PAIRING KEY. The pairing key is X25519 and exists to derive a
@@ -25,7 +25,7 @@ import { rawEd25519PublicKey, relayKeyFingerprint } from "./mobile-relay-protoco
 export const RELAY_INSTALLATION_KEY_REF = "mobile:relay-installation-private-key";
 
 export interface RelayInstallationIdentity {
-  /** Stable per data directory. Equals the desktop's mobile device id, which is also its pair id. */
+  /** Equals the desktop mobile device and pair id; explicit logout replaces the id and keeps the key. */
   installationId: string;
   /** Unpadded base64url of the raw 32-byte Ed25519 public key. */
   publicKeyBase64Url: string;

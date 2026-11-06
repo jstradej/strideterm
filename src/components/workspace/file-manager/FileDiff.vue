@@ -106,10 +106,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, defineAsyncComponent, onMounted, ref, watch } from "vue";
 import { useFileManagerStore } from "../../../stores/file-manager.js";
 import CustomSelect from "../../common/CustomSelect.vue";
-import MonacoDiffPanel from "../../shared/MonacoDiffPanel.vue";
+// Loaded on first diff, so opening the Files pane does not pull in Monaco.
+const MonacoDiffPanel = defineAsyncComponent(() => import("../../shared/MonacoDiffPanel.vue"));
 
 const store = useFileManagerStore();
 const diffRoot = ref<HTMLElement | null>(null);

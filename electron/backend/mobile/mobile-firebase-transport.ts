@@ -230,6 +230,13 @@ export interface RelayConnectorGrant {
   /** This installation, as the control plane records it. */
   desktopInstallationId: string;
   expiresAt: number;
+  /**
+   * The control plane's idle TTL for relay mobile sessions (ADR 0041), outside the signed token.
+   * Absent from a backend that predates it. NETWORK INPUT: the relay manager accepts only a positive
+   * safe integer no longer than the absolute session lifetime, and otherwise keeps what it had. The
+   * policy's bounds are the control plane's, not this desktop's (see `acceptableMobileSessionIdleTtlMs`).
+   */
+  mobileSessionIdleTtlMs?: number;
 }
 
 // ---------------------------------------------------------------------------

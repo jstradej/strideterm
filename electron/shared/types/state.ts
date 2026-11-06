@@ -7,6 +7,8 @@ import type { OperationsState } from "../operation-events.js";
 import type { ReviewGitState } from "../review-git-events.js";
 import type { ReviewPrActionsState } from "../review-pr-actions.js";
 import type { AppDistribution, MicrosoftStoreUpdateStatus } from "../app-distribution.js";
+import type { JiraWorkspaceViewsSnapshot } from "./jira-workspace-views.js";
+import type { JiraConnectionHealthState } from "../jira-error-codes.js";
 
 // Re-export for convenience
 export type { Alert };
@@ -90,6 +92,76 @@ export interface GitHubIntegrationSettings {
   reviewRoot: string;
   defaultPollSeconds: number;
   connections: GitHubConnection[];
+}
+
+export interface JiraConnection {
+  id: string;
+  profileId: string;
+  label: string;
+  issueKeyPrefixes?: string[];
+  defaultJql?: string;
+  projectKeys?: string[];
+  pollSeconds?: number;
+  enabled: boolean;
+  deployment: "cloud" | "data-center";
+  webUrl: string;
+  apiBaseUrl: string;
+  cloudId?: string;
+  auth: {
+    kind: "cloud-api-token" | "dc-pat" | "dc-apim";
+    secretRef?: string;
+    passphraseRef?: string;
+    email?: string;
+  };
+  subscriptionHeaderName?: string;
+  clientCertificatePath?: string;
+  accountPurpose: "personal" | "technical";
+  verifiedIdentity?:
+    | { kind: "cloud"; accountId: string; displayName: string }
+    | { kind: "data-center"; key?: string; name: string; displayName: string };
+  ownIdentity?:
+    | { kind: "cloud"; accountId: string; displayName: string }
+    | { kind: "data-center"; key?: string; name: string; displayName: string };
+  status?: "connected" | "needs-login" | "unavailable";
+  health?: {
+    state: JiraConnectionHealthState;
+    checkedAt: string;
+    retryAfterMs?: number;
+  };
+}
+
+export interface JiraIntegrationSettings {
+  enabled: boolean;
+  defaultPollSeconds: number;
+  connections: JiraConnection[];
+  queries: JiraSavedQuery[];
+  repoBindings?: JiraRepoBindingPreference[];
+  commentAttribution: { enabled: boolean; text: string; position: "before" | "after" };
+  agentAttachments: { maxFiles: number; maxMegabytes: number };
+}
+
+export interface JiraRepoBindingPreference {
+  profileId: string;
+  jiraConnectionId: string;
+  projectKey: string;
+  provider: "azure" | "github";
+  connectionId: string;
+  repoId: string;
+  projectId?: string;
+  repoName: string;
+  remoteUrl: string;
+  baseBranch: string;
+}
+
+export interface JiraSavedQuery {
+  id: string;
+  connectionId: string;
+  profileId: string;
+  name: string;
+  jql: string;
+  /** Explicit opt-in; false unless the user enables change notifications. */
+  notificationsEnabled: boolean;
+  updatedAt: string;
 }
 
 export interface TelegramConnection {
@@ -259,6 +331,7 @@ export interface MobileIntegrationSettings {
 export interface IntegrationSettings {
   azureDevops: AzureIntegrationSettings;
   github: GitHubIntegrationSettings;
+  jira: JiraIntegrationSettings;
   telegram: TelegramIntegrationSettings;
   mobile: MobileIntegrationSettings;
 }
@@ -483,6 +556,8 @@ export interface PanelState {
    * it but the notes dialog, and an empty string is stored as absent.
    */
   notes?: string;
+  /** `files:<panelId>` of the Files tab showing this terminal inside its commander; empty for an ordinary tab. */
+  hostedBy?: string;
 }
 
 export interface ReviewPrInfo {
@@ -561,6 +636,15 @@ export interface QuickfixInfo {
 export type WorkspaceKind = "docker" | "azure" | "github" | "task" | "manual" | string;
 export type WorkspaceSource = "plugin" | "manual";
 
+/** A saved Jira board view, represented as a child workspace of its Jira inbox. */
+export interface JiraBoardWorkspaceInfo {
+  parentWorkspaceId: string;
+  connectionId: string;
+  boardId: string;
+  boardName: string;
+  projectKeys?: string[];
+}
+
 export interface WorkspaceState {
   id: string;
   name: string;
@@ -585,12 +669,20 @@ export interface WorkspaceState {
   quickfix: QuickfixInfo | null;
   starred: boolean;
   task: TaskState | null;
+  /** Profile-scoped Jira work items linked to this workspace (no auth data). */
+  workItems?: Array<{ ref: import("./task.js").JiraIssueRef; summary: string; status: string }>;
+  /** Profile-scoped saved Jira board view; only used by `kind: "jira-board"` workspaces. */
+  jiraBoard?: JiraBoardWorkspaceInfo;
   /**
    * Lets Claude Code / Codex terminals started in this workspace create and watch
    * tasks through the internal MCP. Off by default, desktop-only to turn on, and
    * never inherited by the task workspaces it creates.
    */
   internalMcpEnabled?: boolean;
+  /** Enables read-only Jira tools for agents in this workspace; off by default and never inherited. */
+  jiraMcpEnabled?: boolean;
+  /** Jira MCP comment suggestions awaiting review; never posted automatically. */
+  jiraMcpCommentDrafts?: import("./task.js").JiraCommentDraft[];
   /**
    * Lets every eligible Claude Code / Codex tab of this workspace use the Built-in SSH
    * tools without ticking the tab's own `sshMcpEnabled`. Same rules as the internal
@@ -762,6 +854,7 @@ export interface AttentionAlert {
    * the technical code; nothing human goes in there.
    */
   message?: string;
+  jiraIssueRef?: { provider: "jira"; connectionId: string; issueId: string; issueKey: string };
   /** Backend event time. The renderer uses it as the event's `occurredAt`. */
   at: string;
 }
@@ -1185,6 +1278,7 @@ export interface StatePayload {
   environment: Record<string, unknown>;
   remoteAccess: RemoteAccessState;
   taskRunner: Record<string, unknown>;
+  jiraWorkspaceViews?: JiraWorkspaceViewsSnapshot;
   azureClosedPrCleanup: AzureClosedPrCleanupState;
   /** Runtime-only: running long operations and their last results (24 h). */
   operations: OperationsState;
@@ -1279,6 +1373,7 @@ export interface RemoteStateV2 {
   workspace: WorkspaceState | null;
   attention: AttentionState;
   taskRunner: Record<string, unknown>;
+  jiraWorkspaceViews?: JiraWorkspaceViewsSnapshot;
   /** Only the client's profile's parents and runs. */
   azureClosedPrCleanup: AzureClosedPrCleanupState;
   /** Only the client's profile's operations. */

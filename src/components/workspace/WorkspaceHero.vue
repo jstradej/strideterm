@@ -30,25 +30,25 @@
       <div class="workspace-meta" :style="`--accent:${safeColor(activeWorkspace.color)}`">
         <div class="workspace-meta__main">
           <span
-            class="workspace-meta__path workspace-meta__path--copyable"
-            :title="
-              activeWorkspace.cwd ? 'Click to copy this workspace’s working-directory path to the clipboard.' : ''
-            "
+            class="workspace-chip workspace-meta__path workspace-meta__path--copyable"
+            :title="pathTooltip"
             @click="copyPath"
-            >{{
-              pathCopied
-                ? "Copied!"
-                : pathCopyFailed
-                  ? "Copy failed"
-                  : activeWorkspace.cwd || (activeWorkspace.kind === "github" ? "GitHub inbox" : "Azure DevOps inbox")
-            }}</span
           >
+            <svg class="workspace-meta__path-icon" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+              <path d="M1.5 3.5h4l1.5 1.5h7.5v8h-13z" />
+            </svg>
+            <template v-if="pathCopied || pathCopyFailed">{{ pathCopied ? "Copied!" : "Copy failed" }}</template>
+            <template v-else
+              ><span class="workspace-meta__path-head">{{ pathParts.head }}</span
+              ><span class="workspace-meta__path-tail">{{ pathParts.tail }}</span></template
+            >
+          </span>
         </div>
         <div class="workspace-meta__stats">
-          <span class="workspace-chip"
+          <span class="workspace-chip" :title="inboxTitle"
             ><strong>{{ activeWorkspace.kind === "github" ? "GitHub" : "Azure" }}</strong> inbox</span
           >
-          <span class="workspace-chip"
+          <span class="workspace-chip" :title="reviewTabsTitle"
             ><strong>{{ reviewTabCount }}</strong> review tabs</span
           >
           <span
@@ -71,36 +71,38 @@
       <div class="workspace-meta" :style="`--accent:${safeColor(activeWorkspace.color)}`">
         <div class="workspace-meta__main">
           <span
-            class="workspace-meta__path workspace-meta__path--copyable"
-            :title="
-              activeWorkspace.cwd ? 'Click to copy this workspace’s working-directory path to the clipboard.' : ''
-            "
+            class="workspace-chip workspace-meta__path workspace-meta__path--copyable"
+            :title="pathTooltip"
             @click="copyPath"
-            >{{ pathCopied ? "Copied!" : pathCopyFailed ? "Copy failed" : activeWorkspace.cwd || "Not set" }}</span
           >
+            <svg class="workspace-meta__path-icon" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+              <path d="M1.5 3.5h4l1.5 1.5h7.5v8h-13z" />
+            </svg>
+            <template v-if="pathCopied || pathCopyFailed">{{ pathCopied ? "Copied!" : "Copy failed" }}</template>
+            <template v-else
+              ><span class="workspace-meta__path-head">{{ pathParts.head }}</span
+              ><span class="workspace-meta__path-tail">{{ pathParts.tail }}</span></template
+            >
+          </span>
         </div>
         <div class="workspace-meta__stats">
-          <span class="workspace-chip"
+          <span class="workspace-chip" :title="tabsTitle"
             ><strong>{{ sessionCount }}</strong> tabs</span
           >
-          <span class="workspace-chip"
+          <span class="workspace-chip" :title="runningTitle"
             ><strong>{{ runningCount }}</strong> running</span
           >
           <span
             v-if="gitSnapshot?.available"
             class="workspace-chip"
-            :title="gitSnapshot.branch"
-            :style="gitSnapshot.dirty ? 'border-color:rgba(255,111,141,0.4)' : 'border-color:rgba(110,223,182,0.4)'"
+            :class="gitSnapshot.dirty ? 'workspace-chip--dirty' : 'workspace-chip--clean'"
+            :title="branchTitle"
           >
-            <strong class="workspace-chip__branch" :style="gitSnapshot.dirty ? 'color:#ff6f8d' : 'color:#6edfb6'">{{
-              gitSnapshot.branch
-            }}</strong>
-            <span v-if="gitSnapshot.dirty" style="color: #ff6f8d; margin-left: 4px"
-              >{{ gitSnapshot.dirtyCount }} uncommitted</span
-            >
-            <span v-else style="color: #6edfb6; margin-left: 4px">clean</span>
+            <strong class="workspace-chip__branch">{{ gitSnapshot.branch }}</strong>
+            <span v-if="gitSnapshot.dirty" style="margin-left: 4px">{{ gitSnapshot.dirtyCount }} uncommitted</span>
+            <span v-else style="margin-left: 4px">clean</span>
           </span>
-          <span v-if="activeWorkspace.kind === 'docker' && dockerAvailable" class="workspace-chip"
+          <span v-if="activeWorkspace.kind === 'docker' && dockerAvailable" class="workspace-chip" :title="dockerTitle"
             ><strong>{{ dockerRunning }}</strong
             >/{{ dockerTotal }} containers up</span
           >
@@ -160,6 +162,25 @@ function copyPath() {
     },
   );
 }
+
+const pathText = computed(() => {
+  const workspace = activeWorkspace.value;
+  if (!workspace) return "";
+  if (workspace.cwd) return workspace.cwd;
+  if (workspace.kind === "github") return "GitHub inbox";
+  if (workspace.kind === "azure") return "Azure DevOps inbox";
+  return "Not set";
+});
+
+const pathParts = computed(() => {
+  const text = pathText.value;
+  const cut = text.replace(/[\\/]+$/, "").search(/[^\\/]*$/);
+  return cut > 0 ? { head: text.slice(0, cut), tail: text.slice(cut) } : { head: "", tail: text };
+});
+
+const pathTooltip = computed(() =>
+  activeWorkspace.value?.cwd ? `${activeWorkspace.value.cwd}\nClick to copy this path to the clipboard.` : "",
+);
 
 const isRemote = computed(() => api?.isRemote || false);
 const isNativeMobile = computed(() => typeof window.StridetermHost?.postMessage === "function");
@@ -234,4 +255,25 @@ const dockerCounts = computed(() =>
 const dockerAvailable = computed(() => dockerCounts.value.available);
 const dockerRunning = computed(() => dockerCounts.value.running);
 const dockerTotal = computed(() => dockerCounts.value.total);
+
+const inboxTitle = computed(
+  () =>
+    `This workspace is your ${activeWorkspace.value?.kind === "github" ? "GitHub" : "Azure DevOps"} pull request inbox.`,
+);
+const reviewTabsTitle = computed(() => `Tabs open in this inbox: ${reviewTabCount.value}.`);
+const tabsTitle = computed(
+  () => `Terminal sessions in this workspace: ${sessionCount.value}. Views such as Files or Git are not counted.`,
+);
+const runningTitle = computed(
+  () => `Terminal sessions whose program is still running: ${runningCount.value} of ${sessionCount.value}.`,
+);
+const branchTitle = computed(() => {
+  const snapshot = gitSnapshot.value;
+  if (!snapshot) return "";
+  const state = snapshot.dirty
+    ? `${snapshot.dirtyCount} uncommitted change${snapshot.dirtyCount === 1 ? "" : "s"} in the working tree.`
+    : "No uncommitted changes.";
+  return `Current Git branch: ${snapshot.branch}. ${state} The Git tab has the details.`;
+});
+const dockerTitle = computed(() => `Containers running: ${dockerRunning.value} of ${dockerTotal.value}.`);
 </script>

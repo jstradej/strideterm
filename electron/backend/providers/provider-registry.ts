@@ -77,15 +77,15 @@ export function parseProviderFromCommand(cmd: string | null | undefined): Parsed
   }
   if (trimmed.startsWith("copilot")) {
     const m = trimmed.match(/--model\s+(\S+)/);
-    return { providerId: "copilot", model: m?.[1] || "claude-sonnet-4.6" };
+    return { providerId: "copilot", model: m?.[1] || "claude-sonnet-5.5" };
   }
   if (trimmed.startsWith("codex")) {
     const m = trimmed.match(/(?:--model|-m)\s+(\S+)/);
-    return { providerId: "codex", model: m?.[1] || "gpt-5.4-mini" };
+    return { providerId: "codex", model: m?.[1] || "gpt-6-luna" };
   }
   if (trimmed.startsWith("gemini")) {
     const m = trimmed.match(/(?:--model|-m)\s+(\S+)/);
-    return { providerId: "gemini", model: m?.[1] || "gemini-2.5-flash" };
+    return { providerId: "gemini", model: m?.[1] || "gemini-3.8-flash" };
   }
   const modelMatch = trimmed.match(/--model\s+(\S+)/);
   return { providerId: "claude", model: modelMatch?.[1] || "sonnet" };

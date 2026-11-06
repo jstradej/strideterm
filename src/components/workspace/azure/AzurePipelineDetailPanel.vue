@@ -102,6 +102,22 @@
               >
                 {{ isDownloading(run.id) ? "Downloading…" : "↓ Log" }}
               </button>
+              <button
+                v-if="isPipelineAgentCandidate(run)"
+                type="button"
+                :class="[
+                  'button',
+                  'button--ghost',
+                  'button--xs',
+                  'azure-pl-run__agent',
+                  agentStarting(run.id) && 'button--busy',
+                ]"
+                :disabled="agentStarting(run.id)"
+                title="Open a temporary workspace with an agent: a checkout of the commit this run built, plus its logs and a summary of the errors, so you can talk the failure through and fix it."
+                @click="$emit('start-agent', { pipeline, run: { id: run.id } })"
+              >
+                {{ agentStarting(run.id) ? "Starting…" : "Fix with agent" }}
+              </button>
               <a
                 v-if="run.webUrl"
                 class="azure-pl-run__link"
@@ -178,6 +194,7 @@ import type {
   AzureRunStage,
   AzureRunError,
 } from "../../../../electron/shared/types/azure-pipelines.js";
+import { isPipelineAgentCandidate } from "../../../../electron/shared/pipeline-agent.js";
 
 const props = defineProps<{ pipeline: AzurePipelineSummary; downloadingRunId?: number | string | null }>();
 
@@ -185,6 +202,7 @@ defineEmits<{
   (e: "rerun", payload: { pipeline: AzurePipelineSummary; run: { id: number | string } }): void;
   (e: "cancel", payload: { pipeline: AzurePipelineSummary; run: { id: number | string } }): void;
   (e: "download-log", payload: { pipeline: AzurePipelineSummary; run: { id: number | string } }): void;
+  (e: "start-agent", payload: { pipeline: AzurePipelineSummary; run: { id: number | string } }): void;
   (e: "close"): void;
 }>();
 
@@ -197,6 +215,10 @@ const openRuns = ref<Record<string, boolean>>({});
 
 function isDownloading(id: number | string): boolean {
   return props.downloadingRunId != null && props.downloadingRunId === id;
+}
+
+function agentStarting(id: number | string): boolean {
+  return store.isAgentStarting(props.pipeline.connectionId, id);
 }
 
 const runsKey = computed(() => `${props.pipeline.connectionId}:${props.pipeline.id}`);
@@ -336,6 +358,7 @@ function openUrl(url?: string) {
   min-height: 0;
   overflow: auto;
   padding: 6px 8px;
+  container-type: inline-size;
 }
 
 .azure-pl-row__icon {
@@ -428,7 +451,8 @@ function openUrl(url?: string) {
 }
 /* Narrow (mobile drawer / tight docked) panel: drop the secondary duration and
    time columns so build number, author and the action buttons still fit on one
-   line without horizontal scrolling. The split sets container-type: inline-size. */
+   line without horizontal scrolling. The body is the container, so this follows the
+   panel's own (resizable) width — the split around it can be wide while the panel is not. */
 @container (max-width: 520px) {
   .azure-pl-run {
     grid-template-columns: 14px 18px 92px minmax(0, 1fr) auto;
@@ -487,6 +511,20 @@ function openUrl(url?: string) {
   cursor: pointer;
   color: var(--accent, #3b82f6);
   text-decoration: none;
+}
+/* Narrower still, up to four actions no longer fit beside the build number:
+   they move to their own line under it instead of being clipped. After the
+   base actions rule so its justify-self does not win. */
+@container (max-width: 460px) {
+  .azure-pl-run {
+    grid-template-columns: 14px 18px 92px minmax(0, 1fr);
+    row-gap: 4px;
+  }
+  .azure-pl-run__actions {
+    grid-column: 3 / -1;
+    justify-self: start;
+    flex-wrap: wrap;
+  }
 }
 /* Nested detail visibly belongs to the open run: indented under the name,
    tinted, and divided from the header by a hairline. */

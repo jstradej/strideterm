@@ -7,7 +7,12 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { createInternalMcpBroker, type InternalMcpGrantContext } from "./internal-mcp/internal-mcp-broker.js";
 import { InternalMcpError } from "./internal-mcp/errors.js";
 import { createInternalMcpStdioHandlers, readInternalMcpStdioConfig } from "./internal-mcp/internal-mcp-stdio.js";
-import { INTERNAL_MCP_CAPABILITY_ENV, INTERNAL_MCP_URL_ENV } from "../shared/internal-mcp.js";
+import {
+  INTERNAL_MCP_CAPABILITY_ENV,
+  INTERNAL_MCP_JIRA_ENABLED_ENV,
+  INTERNAL_MCP_TASKS_ENABLED_ENV,
+  INTERNAL_MCP_URL_ENV,
+} from "../shared/internal-mcp.js";
 
 const stdioEntry = fileURLToPath(new URL("./internal-mcp-stdio-entry.ts", import.meta.url));
 const cleanups: Array<() => Promise<void>> = [];
@@ -22,6 +27,8 @@ const context: InternalMcpGrantContext = {
   workspaceId: "parent",
   panelId: "agent",
   command: "claude",
+  tasksEnabled: true,
+  jiraEnabled: true,
 };
 
 function createService() {
@@ -40,11 +47,15 @@ function createService() {
   };
 }
 
-async function startBroker(service = createService(), isGrantLive: () => boolean = () => true) {
+async function startBroker(
+  service = createService(),
+  isGrantLive: () => boolean = () => true,
+  featureFlags: Partial<Pick<InternalMcpGrantContext, "tasksEnabled" | "jiraEnabled">> = {},
+) {
   const broker = createInternalMcpBroker({ service: service as never, isGrantLive });
   await broker.start();
   cleanups.push(() => broker.close());
-  return { broker, service, grant: broker.mintGrant(context) };
+  return { broker, service, grant: broker.mintGrant({ ...context, ...featureFlags }) };
 }
 
 function toolText(result: unknown): { text: string; isError: boolean } {
@@ -56,7 +67,12 @@ async function connect(env: Record<string, string>) {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: ["--import", "tsx", stdioEntry, "--internal-mcp"],
-    env: { ...process.env, ...env } as Record<string, string>,
+    env: {
+      ...process.env,
+      [INTERNAL_MCP_TASKS_ENABLED_ENV]: "1",
+      [INTERNAL_MCP_JIRA_ENABLED_ENV]: "1",
+      ...env,
+    } as Record<string, string>,
     stderr: "pipe",
   });
   const client = new Client({ name: "internal-mcp-integration-test", version: "1.0.0" });
@@ -66,7 +82,7 @@ async function connect(env: Record<string, string>) {
 }
 
 describe("internal MCP stdio end-to-end", () => {
-  test("exposes task and companion tools and carries calls to the broker", async () => {
+  test("exposes task, companion and Jira tools and carries calls to the broker", async () => {
     const { service, grant } = await startBroker();
     const client = await connect({
       [INTERNAL_MCP_URL_ENV]: grant.url,
@@ -79,6 +95,21 @@ describe("internal MCP stdio end-to-end", () => {
       "companion_create",
       "companion_pause",
       "companion_start",
+      "jira_active_sprint",
+      "jira_board_view",
+      "jira_get_attachment",
+      "jira_get_comments",
+      "jira_get_filter",
+      "jira_get_issue",
+      "jira_get_transitions",
+      "jira_linked_work",
+      "jira_list_boards",
+      "jira_list_connections",
+      "jira_list_filters",
+      "jira_list_projects",
+      "jira_my_open_issues",
+      "jira_propose_comment",
+      "jira_search",
       "operation_get",
       "task_get",
       "task_list",
@@ -128,6 +159,63 @@ describe("internal MCP stdio end-to-end", () => {
       "parent:agent",
       expect.objectContaining({ workspaceId: "companion-1" }),
     );
+    const deniedJira = toolText(
+      await client.callTool({ name: "jira_get_issue", arguments: { connectionId: "jira-1", issueId: "OPS-1" } }),
+    );
+    expect(deniedJira.isError).toBe(true);
+    expect(JSON.parse(deniedJira.text).error.code).toBe("jira_unavailable");
+    expect(deniedJira.text).not.toMatch(/token|secret|credential/i);
+  });
+
+  test("Jira-only discovery omits task tools and broker rejects forged task operations", async () => {
+    const { service, grant } = await startBroker(createService(), () => true, {
+      tasksEnabled: false,
+      jiraEnabled: true,
+    });
+    const client = await connect({
+      [INTERNAL_MCP_URL_ENV]: grant.url,
+      [INTERNAL_MCP_CAPABILITY_ENV]: grant.capability,
+      [INTERNAL_MCP_TASKS_ENABLED_ENV]: "0",
+      [INTERNAL_MCP_JIRA_ENABLED_ENV]: "1",
+    });
+    const listed = await client.listTools();
+    expect(
+      listed.tools.some(
+        (tool) => tool.name.startsWith("task_") || tool.name.startsWith("companion_") || tool.name === "operation_get",
+      ),
+    ).toBe(false);
+    const forged = await fetch(grant.url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${grant.capability}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ operation: "task_list", input: {} }),
+    });
+    expect(forged.status).toBe(403);
+    expect(service.taskList).not.toHaveBeenCalled();
+    const forgedCompanion = await fetch(grant.url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${grant.capability}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ operation: "companion_start", input: { workspaceId: "companion-1" } }),
+    });
+    expect(forgedCompanion.status).toBe(403);
+    expect(service.companionStart).not.toHaveBeenCalled();
+  });
+
+  test("task-only discovery omits Jira tools and broker rejects forged Jira operations", async () => {
+    const { grant } = await startBroker(createService(), () => true, { tasksEnabled: true, jiraEnabled: false });
+    const client = await connect({
+      [INTERNAL_MCP_URL_ENV]: grant.url,
+      [INTERNAL_MCP_CAPABILITY_ENV]: grant.capability,
+      [INTERNAL_MCP_TASKS_ENABLED_ENV]: "1",
+      [INTERNAL_MCP_JIRA_ENABLED_ENV]: "0",
+    });
+    const listed = await client.listTools();
+    expect(listed.tools.some((tool) => tool.name.startsWith("jira_"))).toBe(false);
+    const forged = await fetch(grant.url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${grant.capability}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ operation: "jira_list_connections", input: {} }),
+    });
+    expect(forged.status).toBe(403);
   });
 
   test("a broker refusal reaches the agent as a stable error code, not a crash", async () => {
@@ -230,7 +318,12 @@ describe("internal MCP stdio end-to-end", () => {
 
   test("the bridge reports an unreachable broker as data", async () => {
     const handlers = createInternalMcpStdioHandlers({
-      config: { url: "http://127.0.0.1:1/internal-mcp", capability: "c".repeat(43) },
+      config: {
+        url: "http://127.0.0.1:1/internal-mcp",
+        capability: "c".repeat(43),
+        tasksEnabled: true,
+        jiraEnabled: true,
+      },
       fetchImpl: vi.fn().mockRejectedValue(new Error("ECONNREFUSED")) as never,
     });
     const result = toolText(await handlers.send({ operation: "task_list", input: {} }));
@@ -257,10 +350,13 @@ describe("internal MCP connection environment", () => {
     const env = (url: string, cap = capability) => ({
       [INTERNAL_MCP_URL_ENV]: url,
       [INTERNAL_MCP_CAPABILITY_ENV]: cap,
+      [INTERNAL_MCP_JIRA_ENABLED_ENV]: "1",
     });
     expect(readInternalMcpStdioConfig(env("http://127.0.0.1:4010/internal-mcp"))).toEqual({
       url: "http://127.0.0.1:4010/internal-mcp",
       capability,
+      tasksEnabled: false,
+      jiraEnabled: true,
     });
     for (const bad of [
       "https://127.0.0.1:4010/internal-mcp",

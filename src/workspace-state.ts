@@ -64,6 +64,7 @@ export function getParentWorkspaceId(ws: WorkspaceWithParentRefs): string | null
   if (ws.review?.checkout?.mode === "managed-worktree" && ws.review?.parentWorkspaceId) {
     return ws.review.parentWorkspaceId;
   }
+  if (ws.kind === "jira-board" && ws.jiraBoard?.parentWorkspaceId) return ws.jiraBoard.parentWorkspaceId;
   if (ws.quickfix?.parentWorkspaceId) return ws.quickfix.parentWorkspaceId;
   if (ws.task?.parentWorkspaceId) return ws.task.parentWorkspaceId ?? null;
   return null;

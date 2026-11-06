@@ -163,6 +163,8 @@ export interface InboxSortableSummary {
   role?: unknown;
   hasAttention?: unknown;
   lastActivityAt?: unknown;
+  /** Azure only: a reviewer whose review is covered by a colleague or who declined is not asked again. */
+  myReviewStatus?: unknown;
 }
 
 export interface InboxViews<T> {
@@ -189,7 +191,12 @@ function byAttentionThenRecency(a: InboxSortableSummary, b: InboxSortableSummary
  */
 export function buildInboxViews<T extends InboxSortableSummary>(summaries: T[]): InboxViews<T> {
   return {
-    needsMyReview: summaries.filter((summary) => summary.role === "reviewer").sort(byAttentionThenRecency),
+    needsMyReview: summaries
+      .filter(
+        (summary) =>
+          summary.role === "reviewer" && summary.myReviewStatus !== "covered" && summary.myReviewStatus !== "declined",
+      )
+      .sort(byAttentionThenRecency),
     myPullRequests: summaries.filter((summary) => summary.role === "author").sort(byAttentionThenRecency),
     recentlyUpdated: summaries.slice().sort((a, b) => parseDate(b.lastActivityAt) - parseDate(a.lastActivityAt)),
     needsAttention: summaries

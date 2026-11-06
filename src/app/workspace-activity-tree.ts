@@ -1,5 +1,6 @@
 import { buildWorkspaceTree, type WorkspaceTreeNode } from "./workspace-tree.js";
 import type { WorkspaceStatusCue } from "./workspace-status.js";
+import type { WorkspaceBadgeGlyph } from "./workspace-badge-glyphs.js";
 
 /**
  * The MINIMAL ACTIVITY FOREST — the one hierarchy projection behind both
@@ -9,7 +10,7 @@ import type { WorkspaceStatusCue } from "./workspace-status.js";
  * original bug (a nested result optically attaching itself to whatever
  * unrelated workspace happened to sit above it in a time-ordered list), but it
  * has a mirror image: when a PARENT and its CHILD are both recent, two
- * independent blocks repeat the same branch, and `Azure DevOps › mhub PR
+ * independent blocks repeat the same branch, and `Azure DevOps › orders PR
  * #30746` shows up twice, reading as two different activities (V5 review,
  * §"P1 UX — per-result ancestry přímo vytváří duplicitní Azure větev").
  *
@@ -316,6 +317,10 @@ export interface ActivityRowView {
   viewId?: string;
   depth: number;
   icon: string;
+  /** Drawn in place of `icon`, as on the tree card: a review or a new branch under an inbox. */
+  badgeGlyph?: WorkspaceBadgeGlyph | null;
+  /** A new branch with no pull request yet — its badge wears a shade of `color`, as on the tree card. */
+  newBranch?: boolean;
   color: string;
   /** The visible label: a name, or `root › … › parent` for a compressed row. */
   label: string;

@@ -4,6 +4,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { bearerCapability, listenOnLoopback, readJsonBody, sendJson } from "../loopback-broker-http.js";
 import { INTERNAL_MCP_ROUTE, internalMcpRequestSchema, type InternalMcpErrorCode } from "../../shared/internal-mcp.js";
 import { InternalMcpError } from "./errors.js";
+import { jiraMcpCallSucceeded, jiraUnavailableError } from "./jira-mcp-errors.js";
 import type { InternalMcpScope, TaskService } from "./task-service.js";
 
 const MAX_BODY_BYTES = 6 * 1024 * 1024;
@@ -15,6 +16,8 @@ export interface InternalMcpGrantContext extends InternalMcpScope {
   sessionId: string;
   panelId: string;
   command: string;
+  tasksEnabled?: boolean;
+  jiraEnabled?: boolean;
 }
 
 export interface InternalMcpBrokerOptions {
@@ -30,8 +33,45 @@ export interface InternalMcpBrokerOptions {
     | "companionPause"
     | "companionAnswer"
   >;
+  jira?: JiraInternalMcpApi;
   isGrantLive: (_grant: Readonly<InternalMcpGrantContext>) => boolean | Promise<boolean>;
   onError?: (message: string, details: Record<string, unknown>) => void;
+}
+
+export interface JiraInternalMcpApi {
+  listConnections(scope: InternalMcpScope, input: Record<string, never>): Promise<unknown>;
+  getIssue(scope: InternalMcpScope, input: { connectionId: string; issueId: string }): Promise<unknown>;
+  search(scope: InternalMcpScope, input: { connectionId: string; query: string; limit?: number }): Promise<unknown>;
+  myOpenIssues(
+    scope: InternalMcpScope,
+    input: { connectionId: string; limit?: number; cursor?: string },
+  ): Promise<unknown>;
+  getComments(scope: InternalMcpScope, input: { connectionId: string; issueId: string }): Promise<unknown>;
+  listProjects(scope: InternalMcpScope, input: { connectionId: string }): Promise<unknown>;
+  listFilters(scope: InternalMcpScope, input: { connectionId: string }): Promise<unknown>;
+  getFilter(scope: InternalMcpScope, input: { connectionId: string; filterId: string }): Promise<unknown>;
+  listBoards(scope: InternalMcpScope, input: { connectionId: string }): Promise<unknown>;
+  boardView(
+    scope: InternalMcpScope,
+    input: {
+      connectionId: string;
+      boardId: number;
+      mode?: "issues" | "backlog" | "sprints";
+      cursor?: string;
+      sprintId?: number;
+    },
+  ): Promise<unknown>;
+  activeSprint(scope: InternalMcpScope, input: { connectionId: string; boardId: number }): Promise<unknown>;
+  getTransitions(scope: InternalMcpScope, input: { connectionId: string; issueId: string }): Promise<unknown>;
+  getAttachment(
+    scope: InternalMcpScope,
+    input: { connectionId: string; issueId: string; attachmentId: string; fileName: string },
+  ): Promise<unknown>;
+  linkedWork(scope: InternalMcpScope, input: { connectionId: string; issueId: string }): Promise<unknown>;
+  proposeComment(
+    scope: InternalMcpScope,
+    input: { connectionId: string; issueId: string; body: string },
+  ): Promise<unknown>;
 }
 
 interface GrantRecord {
@@ -54,6 +94,8 @@ const STATUS_BY_CODE: Record<InternalMcpErrorCode, number> = {
   provider_unavailable: 422,
   unsupported_workspace: 422,
   file_not_accessible: 422,
+  jira_unavailable: 422,
+  jira_draft_not_saved: 500,
   busy: 429,
   internal_error: 500,
 };
@@ -71,7 +113,7 @@ const GRANT_EXPIRED = {
   },
 };
 
-export function createInternalMcpBroker({ service, isGrantLive, onError }: InternalMcpBrokerOptions) {
+export function createInternalMcpBroker({ service, jira: jiraApi, isGrantLive, onError }: InternalMcpBrokerOptions) {
   const grants = new Map<string, GrantRecord>();
   let server: http.Server | null = null;
   let endpoint = "";
@@ -103,25 +145,120 @@ export function createInternalMcpBroker({ service, isGrantLive, onError }: Inter
     // The profile and workspace come from the grant. Nothing in the request can change them.
     const scope: InternalMcpScope = { profileId: grant.context.profileId, workspaceId: grant.context.workspaceId };
     const request = parsed.data;
+    const jiraCall = {
+      operation: request.operation,
+      connectionId:
+        "connectionId" in request.input && typeof request.input.connectionId === "string"
+          ? request.input.connectionId
+          : undefined,
+    };
+    const jira = async (call: (api: JiraInternalMcpApi) => Promise<unknown>) => {
+      if (!jiraApi) throw new InternalMcpError("jira_unavailable", "Jira is not available to this agent grant.");
+      try {
+        const result = await call(jiraApi);
+        jiraMcpCallSucceeded(jiraCall);
+        return result;
+      } catch (error) {
+        throw jiraUnavailableError(error, jiraCall);
+      }
+    };
     switch (request.operation) {
       case "prepare":
+        if (!grant.context.tasksEnabled)
+          throw new InternalMcpError("scope_denied", "Task tools are not enabled for this workspace.");
         return service.prepare(scope, request.input);
       case "start":
+        if (!grant.context.tasksEnabled)
+          throw new InternalMcpError("scope_denied", "Task tools are not enabled for this workspace.");
         return service.start(scope, request.input);
       case "operation_get":
+        if (!grant.context.tasksEnabled)
+          throw new InternalMcpError("scope_denied", "Task tools are not enabled for this workspace.");
         return service.operationGet(scope, request.input.operationId);
       case "task_list":
+        if (!grant.context.tasksEnabled)
+          throw new InternalMcpError("scope_denied", "Task tools are not enabled for this workspace.");
         return service.taskList(scope, request.input);
       case "task_get":
+        if (!grant.context.tasksEnabled)
+          throw new InternalMcpError("scope_denied", "Task tools are not enabled for this workspace.");
         return service.taskGet(scope, request.input);
       case "companion_create":
+        if (!grant.context.tasksEnabled)
+          throw new InternalMcpError("scope_denied", "Task tools are not enabled for this workspace.");
         return service.companionCreate(scope, grant.context.sessionId, request.input);
       case "companion_start":
+        if (!grant.context.tasksEnabled)
+          throw new InternalMcpError("scope_denied", "Task tools are not enabled for this workspace.");
         return service.companionStart(scope, grant.context.sessionId, request.input.workspaceId);
       case "companion_pause":
+        if (!grant.context.tasksEnabled)
+          throw new InternalMcpError("scope_denied", "Task tools are not enabled for this workspace.");
         return service.companionPause(scope, grant.context.sessionId, request.input.workspaceId);
       case "companion_answer":
+        if (!grant.context.tasksEnabled)
+          throw new InternalMcpError("scope_denied", "Task tools are not enabled for this workspace.");
         return service.companionAnswer(scope, grant.context.sessionId, request.input);
+      case "jira_get_issue":
+        if (!grant.context.jiraEnabled)
+          throw new InternalMcpError("scope_denied", "Jira tools are not enabled for this workspace.");
+        return jira((api) => api.getIssue(scope, request.input));
+      case "jira_search":
+        if (!grant.context.jiraEnabled)
+          throw new InternalMcpError("scope_denied", "Jira tools are not enabled for this workspace.");
+        return jira((api) => api.search(scope, request.input));
+      case "jira_my_open_issues":
+        if (!grant.context.jiraEnabled)
+          throw new InternalMcpError("scope_denied", "Jira tools are not enabled for this workspace.");
+        return jira((api) => api.myOpenIssues(scope, request.input));
+      case "jira_get_comments":
+        if (!grant.context.jiraEnabled)
+          throw new InternalMcpError("scope_denied", "Jira tools are not enabled for this workspace.");
+        return jira((api) => api.getComments(scope, request.input));
+      case "jira_list_projects":
+        if (!grant.context.jiraEnabled)
+          throw new InternalMcpError("scope_denied", "Jira tools are not enabled for this workspace.");
+        return jira((api) => api.listProjects(scope, request.input));
+      case "jira_list_connections":
+        if (!grant.context.jiraEnabled)
+          throw new InternalMcpError("scope_denied", "Jira tools are not enabled for this workspace.");
+        return jira((api) => api.listConnections(scope, request.input));
+      case "jira_list_filters":
+        if (!grant.context.jiraEnabled)
+          throw new InternalMcpError("scope_denied", "Jira tools are not enabled for this workspace.");
+        return jira((api) => api.listFilters(scope, request.input));
+      case "jira_get_filter":
+        if (!grant.context.jiraEnabled)
+          throw new InternalMcpError("scope_denied", "Jira tools are not enabled for this workspace.");
+        return jira((api) => api.getFilter(scope, request.input));
+      case "jira_list_boards":
+        if (!grant.context.jiraEnabled)
+          throw new InternalMcpError("scope_denied", "Jira tools are not enabled for this workspace.");
+        return jira((api) => api.listBoards(scope, request.input));
+      case "jira_board_view":
+        if (!grant.context.jiraEnabled)
+          throw new InternalMcpError("scope_denied", "Jira tools are not enabled for this workspace.");
+        return jira((api) => api.boardView(scope, request.input));
+      case "jira_active_sprint":
+        if (!grant.context.jiraEnabled)
+          throw new InternalMcpError("scope_denied", "Jira tools are not enabled for this workspace.");
+        return jira((api) => api.activeSprint(scope, request.input));
+      case "jira_get_transitions":
+        if (!grant.context.jiraEnabled)
+          throw new InternalMcpError("scope_denied", "Jira tools are not enabled for this workspace.");
+        return jira((api) => api.getTransitions(scope, request.input));
+      case "jira_get_attachment":
+        if (!grant.context.jiraEnabled)
+          throw new InternalMcpError("scope_denied", "Jira tools are not enabled for this workspace.");
+        return jira((api) => api.getAttachment(scope, request.input));
+      case "jira_linked_work":
+        if (!grant.context.jiraEnabled)
+          throw new InternalMcpError("scope_denied", "Jira tools are not enabled for this workspace.");
+        return jira((api) => api.linkedWork(scope, request.input));
+      case "jira_propose_comment":
+        if (!grant.context.jiraEnabled)
+          throw new InternalMcpError("scope_denied", "Jira tools are not enabled for this workspace.");
+        return jira((api) => api.proposeComment(scope, request.input));
     }
   }
 
@@ -179,7 +316,14 @@ export function createInternalMcpBroker({ service, isGrantLive, onError }: Inter
       }
       if (response.destroyed) return;
       if (error instanceof InternalMcpError) {
-        sendJson(response, STATUS_BY_CODE[error.code], { error: { code: error.code, message: error.message } });
+        sendJson(response, STATUS_BY_CODE[error.code], {
+          error: {
+            code: error.code,
+            message: error.message,
+            ...(error.jiraCode ? { jiraCode: error.jiraCode } : {}),
+            ...(error.retryAfterMs !== undefined ? { retryAfterMs: error.retryAfterMs } : {}),
+          },
+        });
         return;
       }
       const message = error instanceof Error ? error.message : "Internal MCP request failed.";

@@ -87,7 +87,7 @@ describe("GitManager", () => {
       },
       [`${root}::status --short`]: { stdout: "M  src/app.js\n M config/app.json\n?? docs/notes.md\n", stderr: "" },
       [`${root}::log --date=relative --pretty=format:%h%x09%ad%x09%an%x09%d%x09%s -n 18`]: {
-        stdout: "abc123\t2 hours ago\tJaromir\t(HEAD -> feature-x)\tRefine git tab",
+        stdout: "abc123\t2 hours ago\tJane\t(HEAD -> feature-x)\tRefine git tab",
         stderr: "",
       },
       [`${root}::rev-parse --git-dir`]: { stdout: ".git\n", stderr: "" },
@@ -111,7 +111,7 @@ describe("GitManager", () => {
       },
       [`${root}::rev-list --left-right --count HEAD...main`]: { stdout: "3\t1\n", stderr: "" },
       [`${root}::log --date=relative --pretty=format:%h%x09%ad%x09%an%x09%d%x09%s -n 18 main..HEAD`]: {
-        stdout: "bbb222\t1 hour ago\tJaromir\t\tAdd compare panel",
+        stdout: "bbb222\t1 hour ago\tJane\t\tAdd compare panel",
         stderr: "",
       },
       [`${root}::diff --name-status main...HEAD`]: { stdout: "M\tsrc/app.js\nA\tdocs/notes.md\n", stderr: "" },
@@ -396,14 +396,14 @@ describe("GitManager", () => {
   // button was permanently disabled. An author must base on the PR TARGET.
   test("inspectWorkspace bases a PR author's worktree on the target branch, not the source", async () => {
     const { root } = await createGitFixture();
-    const branch = "pr-30742-jstradej-MSP-756000-email-watcher";
+    const branch = "pr-30742-jdoe-ABC-756000-email-watcher";
     const execGitImpl = createExecMock({
       [`${root}::rev-parse --show-toplevel`]: { stdout: `${root}\n`, stderr: "" },
       [`${root}::rev-parse --abbrev-ref HEAD`]: { stdout: `${branch}\n`, stderr: "" },
       [`${root}::remote -v`]: { stdout: "", stderr: "" },
       [`${root}::rev-list --count HEAD`]: { stdout: "5\n", stderr: "" },
       [`${root}::status --porcelain=v2 --branch --untracked-files=all`]: {
-        stdout: `# branch.head ${branch}\n# branch.upstream origin/jstradej/MSP-756000-email-watcher\n`,
+        stdout: `# branch.head ${branch}\n# branch.upstream origin/jdoe/ABC-756000-email-watcher\n`,
         stderr: "",
       },
       [`${root}::status --short`]: { stdout: "", stderr: "" },
@@ -415,7 +415,7 @@ describe("GitManager", () => {
         stderr: "",
       },
       [`${root}::for-each-ref --format=%(refname:short) refs/heads refs/remotes`]: {
-        stdout: `${branch}\ndevelop\norigin/develop\norigin/jstradej/MSP-756000-email-watcher\n`,
+        stdout: `${branch}\ndevelop\norigin/develop\norigin/jdoe/ABC-756000-email-watcher\n`,
         stderr: "",
       },
       // Base comparison runs against origin/develop (the PR target) — 2 ahead, 11 behind.
@@ -440,7 +440,7 @@ describe("GitManager", () => {
       review: {
         role: "author",
         pullRequest: {
-          sourceRefName: "refs/heads/jstradej/MSP-756000-email-watcher",
+          sourceRefName: "refs/heads/jdoe/ABC-756000-email-watcher",
           targetRefName: "refs/heads/develop",
         },
       },
@@ -457,8 +457,8 @@ describe("GitManager", () => {
   // from regressing the reviewer path.
   test("inspectWorkspace keeps a reviewer's worktree based on the PR source branch", async () => {
     const { root } = await createGitFixture();
-    const branch = "pr-29806-jveselka-feature";
-    const src = "jveselka/feature";
+    const branch = "pr-29806-jdoe-feature";
+    const src = "jdoe/feature";
     const execGitImpl = createExecMock({
       [`${root}::rev-parse --show-toplevel`]: { stdout: `${root}\n`, stderr: "" },
       [`${root}::rev-parse --abbrev-ref HEAD`]: { stdout: `${branch}\n`, stderr: "" },
@@ -604,7 +604,7 @@ describe("GitManager", () => {
         .fn()
         .mockRejectedValueOnce({
           stdout: "Saved working directory and index state On develop: strideterm-pull-2026-09-11T14:22:17.000Z\n",
-          stderr: "warning: failed to remove vum-listener/nul: Permission denied\n",
+          stderr: "warning: failed to remove event-listener/nul: Permission denied\n",
         })
         .mockResolvedValueOnce({ stdout: "On develop: strideterm-pull-2026-09-11T14:22:17.000Z\n", stderr: "" })
         .mockResolvedValueOnce({ stdout: "Dropped refs/stash@{0}\n", stderr: "" });
@@ -647,7 +647,7 @@ describe("GitManager", () => {
       const manager = new GitManager({ execGitImpl });
       manager.inspectWorkspace = vi
         .fn()
-        .mockResolvedValue(dirtySnapshot({ untracked: [{ path: "docs/plan.md" }, { path: "vum-listener/nul" }] }));
+        .mockResolvedValue(dirtySnapshot({ untracked: [{ path: "docs/plan.md" }, { path: "event-listener/nul" }] }));
       const original = process.platform;
       Object.defineProperty(process, "platform", { value: "win32" });
       try {
@@ -655,7 +655,7 @@ describe("GitManager", () => {
         expect(result.ok).toBe(false);
         expect(result.summary).toContain("Pull did not start");
         expect(result.summary).toContain("1 untracked file(s)");
-        expect(result.rawOutput).toContain("vum-listener/nul");
+        expect(result.rawOutput).toContain("event-listener/nul");
         expect(result.rawOutput).not.toContain("docs/plan.md");
         expect(result.rawOutput).toContain("Remove-Item -LiteralPath '\\\\?\\");
         expect(execGitImpl).not.toHaveBeenCalled();
@@ -675,7 +675,7 @@ describe("GitManager", () => {
       const manager = new GitManager({ execGitImpl, now: () => new Date("2026-09-11T14:22:17.000Z") });
       manager.inspectWorkspace = vi
         .fn()
-        .mockResolvedValue(dirtySnapshot({ untracked: [{ path: "vum-listener/nul" }] }));
+        .mockResolvedValue(dirtySnapshot({ untracked: [{ path: "event-listener/nul" }] }));
       const original = process.platform;
       Object.defineProperty(process, "platform", { value: "linux" });
       try {
@@ -1014,8 +1014,8 @@ describe("GitManager", () => {
     const execGitImpl = createExecMock({
       [`${root}::for-each-ref --format=${tagFmt} --sort=-creatordate refs/tags`]: {
         stdout: [
-          "v1.0.0\ttag\t2026-03-15 10:00:00 +0000\tJaromir\tFirst release\tabc1234",
-          "v0.9.0\tcommit\t2026-03-10 09:00:00 +0000\tJaromir\t\tdef5678",
+          "v1.0.0\ttag\t2026-03-15 10:00:00 +0000\tJane\tFirst release\tabc1234",
+          "v0.9.0\tcommit\t2026-03-10 09:00:00 +0000\tJane\t\tdef5678",
         ].join("\n"),
         stderr: "",
       },
@@ -1033,7 +1033,7 @@ describe("GitManager", () => {
     expect((result.tags as Array<Record<string, unknown>>)[0]).toMatchObject({
       name: "v1.0.0",
       annotated: true,
-      author: "Jaromir",
+      author: "Jane",
       message: "First release",
       pushed: true,
       local: true,
@@ -1058,7 +1058,7 @@ describe("GitManager", () => {
     ].join("%09");
     const execGitImpl = createExecMock({
       [`${root}::for-each-ref --format=${tagFmt} --sort=-creatordate refs/tags`]: {
-        stdout: "v1.0.0\ttag\t2026-03-15\tJaromir\tRelease\tabc1234",
+        stdout: "v1.0.0\ttag\t2026-03-15\tJane\tRelease\tabc1234",
         stderr: "",
       },
       [`${root}::ls-remote --tags origin`]: {
@@ -1465,6 +1465,8 @@ describe("GitManager", () => {
   // ─── execAuthGit login resolution ────────────────────────────────
 
   const GIT_NEW = async () => "git version 2.43.0.windows.1\n";
+  // A connection with no host of its own is a github.com one; the token is scoped to that origin.
+  const GITHUB_SCOPE_KEY = "http.https://github.com/.extraheader";
 
   function decodeAuthHeader(header: string) {
     return Buffer.from(header.split("Basic ")[1], "base64").toString("utf8");
@@ -1473,11 +1475,11 @@ describe("GitManager", () => {
   // The token travels in GIT_CONFIG_* (git >= 2.31), never on the command line.
   function extractAuthCredentials(execMock: ReturnType<typeof vi.fn>) {
     const [, args, options] = execMock.mock.calls[0] as [string, string[], { env?: Record<string, string> }?];
-    expect(args.some((a) => a.includes("http.extraheader"))).toBe(false);
+    expect(args.some((a) => a.includes("extraheader"))).toBe(false);
     const env = options?.env;
     if (!env) return null;
     expect(env.GIT_CONFIG_COUNT).toBe("1");
-    expect(env.GIT_CONFIG_KEY_0).toBe("http.extraheader");
+    expect(env.GIT_CONFIG_KEY_0).toBe(GITHUB_SCOPE_KEY);
     return decodeAuthHeader(env.GIT_CONFIG_VALUE_0);
   }
 
@@ -1501,10 +1503,10 @@ describe("GitManager", () => {
     const manager = new GitManager({ execGitImpl, credentialStore, gitVersionImpl: GIT_NEW });
 
     await manager.execAuthGit(root, ["push", "origin", "refs/tags/v1.0.0"], {
-      connection: { currentUserLogin: "jstradej", tokenRef: "secret:gh" },
+      connection: { currentUserLogin: "jdoe", tokenRef: "secret:gh" },
     });
 
-    expect(extractAuthCredentials(execGitImpl)).toBe("jstradej:ghp_token123");
+    expect(extractAuthCredentials(execGitImpl)).toBe("jdoe:ghp_token123");
   });
 
   test("execAuthGit falls back to x-access-token when no login fields exist", async () => {
@@ -1535,13 +1537,13 @@ describe("GitManager", () => {
     expect(JSON.stringify(args)).not.toMatch(/extraheader|Basic|pat-xyz/);
     expect(args.slice(-2)).toEqual(["fetch", "origin"]);
     expect(options.env.GIT_CONFIG_COUNT).toBe("1");
-    expect(options.env.GIT_CONFIG_KEY_0).toBe("http.extraheader");
+    expect(options.env.GIT_CONFIG_KEY_0).toBe(GITHUB_SCOPE_KEY);
     expect(options.env.GIT_CONFIG_VALUE_0).toBe(`AUTHORIZATION: Basic ${Buffer.from("me:pat-xyz").toString("base64")}`);
     // The rest of the sanitized git environment is still there.
     expect(options.env.GIT_EDITOR).toBe("true");
   });
 
-  test("execAuthGit on git 2.30 keeps the -c http.extraheader argv path", async () => {
+  test("execAuthGit on git 2.30 keeps the -c extraheader argv path", async () => {
     const { root } = await createGitFixture();
     const execGitImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
     const manager = new GitManager({
@@ -1554,7 +1556,7 @@ describe("GitManager", () => {
 
     expect(execGitImpl.mock.calls[0]).toHaveLength(2);
     const args = execGitImpl.mock.calls[0][1] as string[];
-    const headerArg = args.find((a) => a.startsWith("http.extraheader="));
+    const headerArg = args.find((a) => a.startsWith(`${GITHUB_SCOPE_KEY}=`));
     expect(headerArg).toBeDefined();
     expect(decodeAuthHeader(headerArg!)).toBe("me:pat-xyz");
   });
@@ -1567,7 +1569,7 @@ describe("GitManager", () => {
 
       await manager.execAuthGit(root, ["fetch"], { connection: { login: "me", tokenRef: "secret:ref" } });
 
-      expect((execGitImpl.mock.calls[0][1] as string[]).some((a) => a.startsWith("http.extraheader="))).toBe(true);
+      expect((execGitImpl.mock.calls[0][1] as string[]).some((a) => a.startsWith(`${GITHUB_SCOPE_KEY}=`))).toBe(true);
       expect(execGitImpl.mock.calls[0]).toHaveLength(2);
     }
   });
@@ -1610,8 +1612,29 @@ describe("GitManager", () => {
     expect(env.GIT_CONFIG_COUNT).toBe("2");
     expect(env.GIT_CONFIG_KEY_0).toBe("core.autocrlf");
     expect(env.GIT_CONFIG_VALUE_0).toBe("false");
-    expect(env.GIT_CONFIG_KEY_1).toBe("http.extraheader");
+    expect(env.GIT_CONFIG_KEY_1).toBe(GITHUB_SCOPE_KEY);
     expect(decodeAuthHeader(env.GIT_CONFIG_VALUE_1)).toBe("me:pat-xyz");
+  });
+
+  test("execAuthGit sends an Azure token only to the organization's own hosts, never unscoped", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const manager = new GitManager({
+      execGitImpl,
+      credentialStore: { getSecret: () => "pat-xyz" },
+      gitVersionImpl: GIT_NEW,
+    });
+
+    await manager.execAuthGit(root, ["fetch", "--all"], {
+      connection: { login: "me", tokenRef: "secret:ref", orgUrl: "https://dev.azure.com/Acme" },
+    });
+
+    const env = execGitImpl.mock.calls[0][2].env;
+    expect(env.GIT_CONFIG_COUNT).toBe("2");
+    expect([env.GIT_CONFIG_KEY_0, env.GIT_CONFIG_KEY_1]).toEqual([
+      "http.https://dev.azure.com/.extraheader",
+      "http.https://acme.visualstudio.com/.extraheader",
+    ]);
   });
 
   test("execAuthGitStreaming passes the token through env on git >= 2.31", async () => {
@@ -2998,7 +3021,7 @@ describe("GitManager", () => {
             stderr: "",
           };
         if (command.endsWith("--sort=-creatordate refs/tags"))
-          return { stdout: "v1.0.0\ttag\t2026-03-15\tJaromir\tRelease\tabc1234", stderr: "" };
+          return { stdout: "v1.0.0\ttag\t2026-03-15\tJane\tRelease\tabc1234", stderr: "" };
         if (command === "ls-remote --tags origin") return { stdout: "abc123\trefs/tags/v1.0.0\n", stderr: "" };
         return { stdout: "", stderr: "" };
       });

@@ -454,6 +454,14 @@ export const useTerminalStore = defineStore("terminal", () => {
     return controller?.getTerminalTextSnapshot(sessionId, options) ?? null;
   }
 
+  function pasteToTerminal(sessionId: string, text: string): boolean {
+    const view = views.value.get(sessionId);
+    if (!view || !text) return false;
+    view.term.paste(text);
+    view.term.focus();
+    return true;
+  }
+
   function isBracketedPasteEnabled(sessionId: string): boolean | undefined {
     return controller?.isBracketedPasteEnabled(sessionId);
   }
@@ -529,6 +537,7 @@ export const useTerminalStore = defineStore("terminal", () => {
     getVisibleTerminalText,
     getTerminalTextSnapshot,
     isBracketedPasteEnabled,
+    pasteToTerminal,
     requestTextSelection,
     setTerminalDiagnosticsEnabled,
     getTerminalDiagnostics,

@@ -5,6 +5,7 @@ function profileId(workspace: WorkspaceState): string {
 }
 
 function explicitParentId(workspace: WorkspaceState): string {
+  if (workspace.kind === "jira-board") return workspace.jiraBoard?.parentWorkspaceId || "";
   if (workspace.review?.checkout?.mode === "managed-worktree") {
     return workspace.review.parentWorkspaceId || "";
   }

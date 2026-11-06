@@ -87,6 +87,68 @@ describe("Azure DevOps API - ETag caching", () => {
     expect(options.headers.Authorization).toBe(`Basic ${Buffer.from(":pat").toString("base64")}`);
   });
 
+  describe("group membership", () => {
+    const calls = (fetchImpl: ReturnType<typeof createMockFetch>) => fetchImpl.mock.calls.map(([url]) => String(url));
+
+    test("maps dev.azure.com and visualstudio.com to their identity hosts and keeps an on-prem URL", async () => {
+      const cases: Array<[string, string]> = [
+        ["https://dev.azure.com/acme", "https://vssps.dev.azure.com/acme/_apis/identities?"],
+        ["https://acme.visualstudio.com", "https://acme.vssps.visualstudio.com/_apis/identities?"],
+        ["https://tfs.example/tfs/Collection", "https://tfs.example/tfs/Collection/_apis/identities?"],
+      ];
+      for (const [orgUrl, prefix] of cases) {
+        const fetchImpl = createMockFetch([{ status: 200, body: { value: [{ memberOf: [] }] } }]);
+        const api = createAzureApi(fetchImpl as unknown as typeof fetch);
+        await expect(api.getUserGroupIds({ orgUrl, login: "u" }, "pat", "me-1")).resolves.toEqual([]);
+        expect(calls(fetchImpl)[0]).toBe(`${prefix}identityIds=me-1&queryMembership=ExpandedUp&api-version=7.1`);
+      }
+    });
+
+    test("resolves descriptors in chunks of 25, accepting strings and typed objects", async () => {
+      const memberOf = [
+        ...Array.from({ length: 26 }, (_, index) => `vssgp.d${index}`),
+        { identityType: "Microsoft.TeamFoundation.Identity", identifier: "S-1-9" },
+      ];
+      const fetchImpl = createMockFetch([
+        { status: 200, body: { value: [{ memberOf }] } },
+        { status: 200, body: { value: [{ id: "g-a" }, { id: "g-b" }] } },
+        { status: 200, body: { value: [{ id: "g-b" }, { id: "g-c" }] } },
+      ]);
+      const api = createAzureApi(fetchImpl as unknown as typeof fetch);
+
+      const ids = await api.getUserGroupIds({ orgUrl: "https://dev.azure.com/acme", login: "u" }, "pat", "me-1");
+
+      expect(ids.sort()).toEqual(["g-a", "g-b", "g-c"]);
+      const urls = calls(fetchImpl);
+      expect(urls).toHaveLength(3);
+      const first = decodeURIComponent(urls[1].split("descriptors=")[1].split("&")[0]).split(",");
+      expect(first).toHaveLength(25);
+      expect(decodeURIComponent(urls[2])).toContain("vssgp.d25,Microsoft.TeamFoundation.Identity;S-1-9");
+    });
+
+    test("retries once with Expanded after an HTTP 400", async () => {
+      const fetchImpl = createMockFetch([
+        { status: 400, body: { message: "bad query" } },
+        { status: 200, body: { value: [{ memberOf: [] }] } },
+      ]);
+      const api = createAzureApi(fetchImpl as unknown as typeof fetch);
+
+      await api.getUserGroupIds({ orgUrl: "https://dev.azure.com/acme", login: "u" }, "pat", "me-1");
+
+      expect(calls(fetchImpl)[0]).toContain("queryMembership=ExpandedUp");
+      expect(calls(fetchImpl)[1]).toContain("queryMembership=Expanded&");
+    });
+
+    test("any other failure is thrown", async () => {
+      const fetchImpl = createMockFetch([{ status: 403, body: { message: "denied" } }]);
+      const api = createAzureApi(fetchImpl as unknown as typeof fetch);
+      await expect(
+        api.getUserGroupIds({ orgUrl: "https://dev.azure.com/acme", login: "u" }, "pat", "me-1"),
+      ).rejects.toThrow("(403)");
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    });
+  });
+
   test("sends If-None-Match header on subsequent GET requests", async () => {
     const fetchImpl = createMockFetch([
       {

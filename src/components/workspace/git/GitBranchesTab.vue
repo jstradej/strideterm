@@ -157,6 +157,14 @@
         class="git-branches__filter-date"
         title="Show only branches updated on or after this date."
       />
+      <button
+        v-if="jiraBranchSuggestion && !newBranchName"
+        type="button"
+        class="button button--ghost button--small"
+        @click="newBranchName = jiraBranchSuggestion"
+      >
+        Use {{ jiraBranchSuggestion }}
+      </button>
       <CustomSelect
         v-if="!isMobile"
         v-model="branchSort"
@@ -874,6 +882,14 @@ const branchSort = ref<"name" | "newest" | "oldest">("name");
 const newBranchVisible = ref(false);
 const newBranchName = ref("");
 const startFrom = ref("");
+const jiraBranchSuggestion = computed(() => {
+  const workspace = appStore.payload?.appState?.workspaces?.find((item) => item.id === props.workspaceId);
+  if (!workspace || (workspace.profileId || "default") !== appStore.myActiveProfileId) return "";
+  type JiraWorkspaceItem = { ref: { provider: string; issueKey: string } };
+  const items = (workspace as typeof workspace & { workItems?: JiraWorkspaceItem[] }).workItems || [];
+  if (items.length !== 1 || items[0].ref.provider !== "jira") return "";
+  return `feature/${items[0].ref.issueKey.toLowerCase()}`;
+});
 
 // Mobile-only "wizard" step (tree → commits → diff)
 const mobileView = ref<"tree" | "commits" | "diff">("tree");
@@ -1016,7 +1032,7 @@ const localShortNames = computed(() => new Set(branchList.value.local.map((b) =>
 // Always merge the parent's prop (from snapshot.remotes) with names observed
 // in branchList.remotes — `git remote -v` may list a subset (e.g. only
 // origin) while the user has tracking branches from other remotes (`vk/…`,
-// `jveselka/…`). Union covers both.
+// `jdoe/…`). Union covers both.
 const effectiveRemoteNames = computed<string[]>(() => {
   const fromProps = props.remoteNames || [];
   const fromBranchList = branchList.value.remotes.map((r) => r.remote);
@@ -2622,7 +2638,6 @@ watch(
 }
 
 .git-branches__commits-pane {
-  border: none;
   background: var(--panel);
 }
 

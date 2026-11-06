@@ -21,7 +21,7 @@ const pathSchema = z.string().trim().min(1).max(4096);
  * What an agent may start. Publishing queued comments is deliberately not here:
  * it stays the user's own explicit action, and an agent's push never publishes.
  */
-const agentOperationKindSchema = reviewGitOperationKindSchema.exclude(["push-and-publish"]);
+const agentOperationKindSchema = reviewGitOperationKindSchema.exclude(["push-and-publish", "force-push-and-publish"]);
 
 export const reviewGitBrokerRequestSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("identity") }).strict(),

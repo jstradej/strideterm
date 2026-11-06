@@ -57,13 +57,18 @@
         aria-hidden="true"
         @click="closeAllMenus"
       ></div>
-      <div class="azure-inbox__toolbar">
+      <div class="azure-inbox__toolbar subtabs">
         <div class="azure-inbox__tabs">
           <button
             v-for="tab in inboxTabs"
             :key="tab.id"
             type="button"
-            :class="['azure-tab', activeTab === tab.id && 'azure-tab--active', tab.alert && 'azure-tab--alert']"
+            :class="[
+              'azure-tab',
+              'subtabs__tab',
+              activeTab === tab.id && 'azure-tab--active subtabs__tab--active',
+              tab.alert && 'azure-tab--alert subtabs__tab--alert',
+            ]"
             @click="onTabClick(tab.id)"
           >
             {{ tab.label }} <span v-if="tab.count != null" class="azure-tab__count">{{ tab.count }}</span>
@@ -135,7 +140,7 @@
         </button>
       </div>
 
-      <div class="azure-inbox__content">
+      <div class="azure-inbox__content subtabs-panel">
         <section
           v-for="tab in inboxTabs"
           :key="tab.id"
@@ -195,6 +200,18 @@
                   {{ conn.login }} · {{ conn.projectFilters?.join(", ") || "all projects" }} · poll
                   {{ conn.pollSeconds || 120 }}s
                 </div>
+                <div
+                  v-if="!isGitHub && conn.groupMembership?.status === 'ok'"
+                  style="font-size: 11px; color: var(--muted); padding: 2px 0"
+                >
+                  Reviewer groups: {{ conn.groupMembership.count }} recognised
+                </div>
+                <div
+                  v-else-if="!isGitHub && conn.groupMembership?.status === 'error'"
+                  style="font-size: 11px; color: var(--danger-fg); padding: 2px 0"
+                >
+                  Reviewer groups not recognised: {{ conn.groupMembership.error }}
+                </div>
                 <div v-if="conn.lastError" class="connection-error"><strong>Error:</strong> {{ conn.lastError }}</div>
                 <div v-if="conn.lastSyncAt" style="font-size: 11px; color: var(--muted); padding: 2px 0">
                   Last sync: {{ new Date(conn.lastSyncAt).toLocaleString() }}
@@ -250,164 +267,196 @@
           </template>
           <!-- PR list tabs -->
           <template v-else-if="activeTab === tab.id">
-            <!-- Azure: repo + author faceted filters -->
-            <div
-              v-if="
-                !isGitHub &&
-                (hasActiveFilters || (tabItems(activeTab).length && (repoNames.length > 1 || authorOptions.length > 1)))
-              "
-              class="azure-inbox__filters"
-            >
-              <div v-if="repoNames.length > 1 || repoFilter" class="azure-inbox__filter-row">
-                <span class="azure-inbox__filter-label">Repo</span>
+            <div v-if="tabItems(activeTab).length || hasActiveFilters" class="azure-inbox__filters">
+              <div
+                v-if="repoChips.length > 1 || repoFilter.length"
+                class="azure-inbox__filter-row"
+                role="group"
+                aria-label="Repository"
+              >
+                <span class="azure-inbox__filter-label">{{ repoPrefix || "Repo" }}</span>
                 <button
                   type="button"
-                  :class="['button', 'button--ghost', 'azure-inbox__filter-button', !repoFilter && 'button--active']"
+                  class="azure-inbox__chip"
+                  :aria-pressed="!repoFilter.length"
                   title="Show pull requests across every project / repository."
-                  @click="repoFilter = ''"
+                  @click="repoFilter = []"
                 >
                   All repos
                 </button>
                 <button
-                  v-for="repo in repoNames"
-                  :key="repo"
+                  v-for="repo in repoChips"
+                  :key="repo.key"
                   type="button"
-                  :class="[
-                    'button',
-                    'button--ghost',
-                    'azure-inbox__filter-button',
-                    repoFilter === repo && 'button--active',
-                  ]"
-                  :title="`Show only PRs from ${repo}.`"
-                  @click="repoFilter = repoFilter === repo ? '' : repo"
+                  class="azure-inbox__chip"
+                  :aria-pressed="repoFilter.includes(repo.key)"
+                  :title="`Show PRs from ${repo.key}. Pick several repositories to see them together.`"
+                  @click="repoFilter = toggled(repoFilter, repo.key)"
                 >
-                  {{ repo }}
+                  {{ repo.label }}
                 </button>
               </div>
-              <div v-if="authorOptions.length > 1 || authorFilter" class="azure-inbox__filter-row">
-                <span class="azure-inbox__filter-label">Author</span>
-                <template v-if="authorOptions.length <= 5">
-                  <button
-                    type="button"
-                    :class="[
-                      'button',
-                      'button--ghost',
-                      'azure-inbox__filter-button',
-                      !authorFilter && 'button--active',
-                    ]"
-                    @click="authorFilter = ''"
-                  >
-                    All authors
-                  </button>
-                  <button
-                    v-for="author in authorOptions"
-                    :key="author.key"
-                    type="button"
-                    :class="[
-                      'button',
-                      'button--ghost',
-                      'azure-inbox__filter-button',
-                      authorFilter === author.key && 'button--active',
-                    ]"
-                    :title="author.uniqueName || author.label"
-                    @click="authorFilter = authorFilter === author.key ? '' : author.key"
-                  >
-                    {{ author.label }}
-                  </button>
-                </template>
-                <select
-                  v-else
-                  v-model="authorFilter"
-                  class="azure-inbox__author-select"
-                  aria-label="Filter pull requests by author"
+              <div class="azure-inbox__filter-row azure-inbox__filter-row--split">
+                <div
+                  v-if="!isGitHub && (authorOptions.length > 1 || authorFilter.length)"
+                  :ref="setAuthorGroup"
+                  class="azure-inbox__authors"
+                  role="group"
+                  aria-label="Author"
                 >
-                  <option value="">All authors</option>
-                  <option v-for="author in authorOptions" :key="author.key" :value="author.key">
-                    {{ author.label }}
-                  </option>
-                </select>
+                  <span class="azure-inbox__filter-label">Author</span>
+                  <div class="azure-inbox__author-chips">
+                    <button
+                      type="button"
+                      class="azure-inbox__chip"
+                      :aria-pressed="!authorFilter.length"
+                      @click="authorFilter = []"
+                    >
+                      All authors
+                    </button>
+                    <button
+                      v-for="author in visibleAuthors"
+                      :key="author.key"
+                      type="button"
+                      class="azure-inbox__chip azure-inbox__chip--counted"
+                      :aria-pressed="authorFilter.includes(author.key)"
+                      :title="author.uniqueName || author.name"
+                      @click="authorFilter = toggled(authorFilter, author.key)"
+                    >
+                      <span>{{ author.label }}</span>
+                      <span class="azure-inbox__pill">{{ author.count }}</span>
+                    </button>
+                  </div>
+                  <!-- A chip sized to its label, with the native select laid invisibly
+                       over it: a bare <select> is as wide as its longest option. -->
+                  <label
+                    v-if="overflowAuthors.length"
+                    class="azure-inbox__chip azure-inbox__more"
+                    :data-active="overflowSelected.length ? 'true' : undefined"
+                    :title="
+                      overflowSelected.map((author) => author.uniqueName || author.name).join(', ') || 'More authors'
+                    "
+                  >
+                    <span class="azure-inbox__more-label">{{ overflowChipLabel }}</span>
+                    <span v-if="overflowSelected.length === 1" class="azure-inbox__pill">{{
+                      overflowSelected[0].count
+                    }}</span>
+                    <svg class="pr-icon azure-inbox__more-chevron" viewBox="0 0 24 24" aria-hidden="true">
+                      <path v-for="d in icons.chevronDown" :key="d" :d="d" />
+                    </svg>
+                    <!-- Picking an author adds or removes them; the list itself stays on "+N more". -->
+                    <select
+                      class="azure-inbox__more-select"
+                      aria-label="More authors"
+                      value=""
+                      @change="onOverflowPick($event.target as HTMLSelectElement)"
+                    >
+                      <option value="">+{{ overflowAuthors.length }} more</option>
+                      <option v-for="author in overflowAuthors" :key="author.key" :value="author.key">
+                        {{ authorFilter.includes(author.key) ? "✓ " : "" }}{{ author.label }} ({{ author.count }})
+                      </option>
+                    </select>
+                  </label>
+                  <div :ref="setMeasure" class="azure-inbox__measure" aria-hidden="true">
+                    <span class="azure-inbox__chip">All authors</span>
+                    <span
+                      v-for="author in authorOptions"
+                      :key="author.key"
+                      class="azure-inbox__chip azure-inbox__chip--counted"
+                    >
+                      <span>{{ author.label }}</span>
+                      <span class="azure-inbox__pill">{{ author.count }}</span>
+                    </span>
+                  </div>
+                </div>
+                <div class="azure-inbox__filter-tools">
+                  <label class="azure-inbox__tool">
+                    Sort
+                    <select v-model="sortMode" class="azure-inbox__select">
+                      <option value="activity">Last activity</option>
+                      <option value="attention">Needs attention first</option>
+                      <option value="created">Created</option>
+                    </select>
+                  </label>
+                  <label class="azure-inbox__tool">
+                    <input v-model="hideDrafts" type="checkbox" />
+                    Hide drafts
+                  </label>
+                </div>
               </div>
             </div>
-            <!-- GitHub: simple repo filter -->
-            <div
-              v-if="isGitHub && repoNames.length > 1 && tabItems(activeTab).length"
-              style="display: flex; gap: 4px; padding: 0 12px 8px; flex-wrap: wrap"
-            >
-              <button
-                type="button"
-                :class="['button', 'button--ghost']"
-                :style="
-                  !repoFilter
-                    ? 'font-size:11px;padding:2px 8px;background:var(--accent);color:var(--bg);'
-                    : 'font-size:11px;padding:2px 8px;'
-                "
-                @click="repoFilter = ''"
-              >
-                All repos
-              </button>
-              <button
-                v-for="repo in repoNames"
-                :key="repo"
-                type="button"
-                :class="['button', 'button--ghost']"
-                :style="
-                  repoFilter === repo
-                    ? 'font-size:11px;padding:2px 8px;background:var(--accent);color:var(--bg);'
-                    : 'font-size:11px;padding:2px 8px;'
-                "
-                @click="repoFilter = repoFilter === repo ? '' : repo"
-              >
-                {{ repo }}
-              </button>
+            <div v-if="displayGroups.length" class="azure-inbox__groups">
+              <section v-for="group in displayGroups" :key="group.key" class="azure-repo-group">
+                <h2 class="azure-repo-group__heading">
+                  <button
+                    type="button"
+                    class="azure-repo-group__header"
+                    :aria-expanded="!isCollapsed(group.key)"
+                    @click="toggleGroup(group.key)"
+                  >
+                    <svg class="pr-icon azure-repo-group__chevron" viewBox="0 0 24 24" aria-hidden="true">
+                      <path
+                        v-for="d in isCollapsed(group.key) ? icons.chevronRight : icons.chevronDown"
+                        :key="d"
+                        :d="d"
+                      />
+                    </svg>
+                    <span v-if="group.kind === 'repo'" class="azure-repo-group__tile" aria-hidden="true">
+                      <svg class="pr-icon" viewBox="0 0 24 24">
+                        <path v-for="d in icons.folderGit" :key="d" :d="d" />
+                      </svg>
+                    </span>
+                    <span class="azure-repo-group__title">
+                      <span v-if="group.project" class="azure-repo-group__project">{{ group.project }} /</span>
+                      <span class="azure-repo-group__name">{{ group.label }}</span>
+                    </span>
+                    <span class="azure-repo-group__count">{{ group.items.length }}</span>
+                    <small v-if="group.hint" class="azure-repo-group__hint">{{ group.hint }}</small>
+                    <span v-if="group.kind === 'repo'" class="azure-repo-group__stats">
+                      <span v-if="group.unread">{{ group.unread }} unread</span>
+                      <span v-if="group.attention" class="azure-repo-group__attention"
+                        >{{ group.attention }} {{ group.attention === 1 ? "needs" : "need" }} attention</span
+                      >
+                    </span>
+                  </button>
+                </h2>
+                <div v-if="!isCollapsed(group.key)" class="azure-repo-group__body">
+                  <template v-for="row in group.rows" :key="row.id">
+                    <button
+                      v-if="row.type === 'toggle'"
+                      type="button"
+                      class="azure-repo-group__older"
+                      :aria-expanded="row.open"
+                      @click="toggleOlder(group.key)"
+                    >
+                      <svg class="pr-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <path v-for="d in row.open ? icons.chevronDown : icons.chevronRight" :key="d" :d="d" />
+                      </svg>
+                      <span class="azure-repo-group__older-label">{{ row.label }}</span>
+                      <span>{{ row.sub }}</span>
+                    </button>
+                    <PrRow
+                      v-else
+                      :item="row.item"
+                      :provider="provider"
+                      :focused="
+                        focusedPr?.prKey === row.item.prKey && focusedPr?.connectionId === row.item.connectionId
+                      "
+                      :show-repo="group.kind === 'bucket'"
+                      :implied-reason-codes="group.impliedReasonCodes"
+                      :current-user-login="connectionLogin(row.item.connectionId)"
+                      :opening="row.item.prKey === openingPrKey"
+                      @open="onOpenPr"
+                      @browser="onOpenBrowser"
+                      @seen="onMarkSeen"
+                    />
+                  </template>
+                </div>
+              </section>
             </div>
-            <!-- Needs Attention (Azure only): same visual frame as the All tab
-                 (azure-repo-group), but the groups are sub-buckets by *why* the
-                 PR needs attention (reviewer / author / comments / other)
-                 instead of by repo. -->
-            <template v-if="!isGitHub && tab.id === 'attention' && attentionGroupedItems.length">
-              <div v-for="grp in attentionGroupedItems" :key="grp.bucket" class="azure-repo-group">
-                <div class="azure-repo-group__header">
-                  <span class="azure-repo-group__name">{{ grp.label }}</span>
-                  <span class="azure-repo-group__count">{{ grp.items.length }}</span>
-                  <small class="azure-repo-group__hint">{{ grp.hint }}</small>
-                </div>
-                <PrRow
-                  v-for="item in grp.items"
-                  :key="item.prKey"
-                  :item="item"
-                  :provider="provider"
-                  :focused="focusedPr?.prKey === item.prKey && focusedPr?.connectionId === item.connectionId"
-                  :show-seen="true"
-                  :opening="item.prKey === openingPrKey"
-                  @open="onOpenPr"
-                  @browser="onOpenBrowser"
-                  @seen="onMarkSeen"
-                />
-              </div>
-            </template>
-            <template v-else-if="activeGroupedItems.length">
-              <div v-for="group in activeGroupedItems" :key="group.repo" class="azure-repo-group">
-                <div v-if="!repoFilter && repoNames.length > 1" class="azure-repo-group__header">
-                  <span class="azure-repo-group__name">{{ group.repo }}</span>
-                  <span class="azure-repo-group__count">{{ group.items.length }}</span>
-                </div>
-                <PrRow
-                  v-for="item in group.items"
-                  :key="item.prKey"
-                  :item="item"
-                  :provider="provider"
-                  :focused="focusedPr?.prKey === item.prKey && focusedPr?.connectionId === item.connectionId"
-                  :show-seen="isGitHub ? undefined : activeTab !== 'all'"
-                  :opening="item.prKey === openingPrKey"
-                  @open="onOpenPr"
-                  @browser="onOpenBrowser"
-                  @seen="onMarkSeen"
-                />
-              </div>
-            </template>
             <div v-else class="azure-empty">
               <p>
-                {{ !isGitHub && hasActiveFilters ? "No pull requests match the selected filters." : tab.emptyMessage }}
+                {{ hasActiveFilters ? "No pull requests match the selected filters." : tab.emptyMessage }}
               </p>
             </div>
           </template>
@@ -418,7 +467,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch, nextTick } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref, watch, nextTick } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useAzurePipelinesStore } from "../../stores/azure-pipelines.js";
 import { useNotificationStore } from "../../stores/notifications.js";
@@ -427,6 +476,7 @@ import { useResourceInterest } from "../../composables/useResourceInterest.js";
 import { useInboxConnectionFocus } from "../../composables/useInboxConnectionFocus.js";
 import PaneShell from "../layout/PaneShell.vue";
 import PrRow from "./PrRow.vue";
+import { PR_ICONS, daysSince, isUnread } from "./prRowFormat.js";
 import AuditLog from "./azure/AzureAuditLog.vue";
 import AzurePipelinesTab from "./azure/AzurePipelinesTab.vue";
 
@@ -548,7 +598,7 @@ const inboxTabs = computed(() => {
       id: "attention",
       label: "Needs attention",
       count: inbox.value.needsAttention?.length || 0,
-      alert: !!inbox.value.needsAttention?.length,
+      alert: false,
       emptyMessage: "No pull requests need your attention right now.",
     },
     {
@@ -571,7 +621,7 @@ const inboxTabs = computed(() => {
       id: "pipelines",
       label: "Pipelines",
       count: failingPipelineCount.value || null,
-      alert: failingPipelineCount.value > 0,
+      alert: false,
     } as (typeof tabs)[number]);
   }
   tabs.push(
@@ -586,8 +636,71 @@ const inboxTabs = computed(() => {
   return tabs;
 });
 
-const repoFilter = ref<string>("");
-const authorFilter = ref<string>("");
+// Several repositories / authors can be picked at once; an empty list means all.
+const repoFilter = ref<string[]>([]);
+const authorFilter = ref<string[]>([]);
+type SortMode = "activity" | "attention" | "created";
+const SORT_MODES: SortMode[] = ["activity", "attention", "created"];
+const sortMode = ref<SortMode>("activity");
+const hideDrafts = ref(false);
+// Names of picked authors, so a restored pick still reads as a name while that author has no PR in the inbox.
+const savedAuthorNames = ref(new Map<string, string>());
+
+function toggled(list: string[], key: string): string[] {
+  return list.includes(key) ? list.filter((entry) => entry !== key) : [...list, key];
+}
+
+// The filters are this client's view preference — the desktop and a phone each keep their own — remembered
+// per inbox workspace, so the next start opens the inbox the way it was left.
+const FILTERS_STORAGE_PREFIX = "strideterm-inbox-filters-v1:";
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string" && entry !== "")
+    : [];
+}
+
+function loadFilters(workspaceId: string) {
+  let saved: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(FILTERS_STORAGE_PREFIX + workspaceId) || "{}");
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) saved = parsed as Record<string, unknown>;
+  } catch {
+    // No storage, or an unreadable entry: start unfiltered.
+  }
+  repoFilter.value = stringList(saved.repos);
+  authorFilter.value = stringList(saved.authors);
+  const names = saved.authorNames;
+  savedAuthorNames.value = new Map(
+    names && typeof names === "object"
+      ? Object.entries(names).filter((entry): entry is [string, string] => typeof entry[1] === "string")
+      : [],
+  );
+  sortMode.value = SORT_MODES.includes(saved.sort as SortMode) ? (saved.sort as SortMode) : "activity";
+  hideDrafts.value = saved.hideDrafts === true;
+}
+
+watch(() => props.workspaceId, loadFilters, { immediate: true });
+
+watch([repoFilter, authorFilter, sortMode, hideDrafts], () => {
+  const authorNames = new Map(authorFilter.value.map((key) => [key, authorNameOf(key)]));
+  savedAuthorNames.value = authorNames;
+  try {
+    localStorage.setItem(
+      FILTERS_STORAGE_PREFIX + props.workspaceId,
+      JSON.stringify({
+        repos: repoFilter.value,
+        authors: authorFilter.value,
+        authorNames: Object.fromEntries(authorNames),
+        sort: sortMode.value,
+        hideDrafts: hideDrafts.value,
+      }),
+    );
+  } catch {
+    // Without storage the filters still apply for this session.
+  }
+});
+
 const inboxRoot = ref<HTMLElement | null>(null);
 const focusedPr = ref<{ prKey: string; connectionId: string } | null>(null);
 let focusedPrTimer: ReturnType<typeof setTimeout> | null = null;
@@ -627,13 +740,17 @@ watch(
       return;
 
     activeTab.value = "all";
-    repoFilter.value = "";
-    authorFilter.value = "";
-    const rowExists = (items || []).some(
+    const target = (items || []).find(
       (item: { prKey?: string; connectionId?: string }) =>
         item.prKey === request.prKey && item.connectionId === request.connectionId,
     );
-    if (!rowExists) return;
+    if (!target) return;
+    // The saved filters stay unless they would hide the very PR the user asked to see.
+    if (!matchesActiveFilters(target)) {
+      repoFilter.value = [];
+      authorFilter.value = [];
+      hideDrafts.value = false;
+    }
 
     if (focusExpiryTimer) clearTimeout(focusExpiryTimer);
     focusExpiryTimer = null;
@@ -679,17 +796,66 @@ function repoKey(item: { project?: { name?: string }; repository?: { name?: stri
   return `${item.project?.name || ""}/${item.repository?.name || ""}`;
 }
 
-// Repo names offered as filter buttons. Azure facets them against the author
-// filter (only repos with PRs by the selected author show up, and vice versa
+const icons = PR_ICONS;
+
+const collapsedGroups = reactive(new Set<string>());
+const olderOpenGroups = reactive(new Set<string>());
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type InboxItem = Record<string, any>;
+
+function isDraftItem(item: InboxItem) {
+  return Boolean(item.pullRequest?.isDraft || item.pullRequest?.draft);
+}
+
+function timeOf(value: unknown) {
+  const ms = Date.parse(value as string);
+  return Number.isNaN(ms) ? 0 : ms;
+}
+
+function activityOf(item: InboxItem) {
+  return item.lastActivityAt || item.lastRemoteActivityAt;
+}
+
+function createdOf(item: InboxItem) {
+  return item.pullRequest?.creationDate || item.pullRequest?.createdAt;
+}
+
+// Items the repo / author facets are computed from: the whole inbox minus
+// whatever Hide drafts removes, so a chip's count matches what it filters to.
+function facetItems(): InboxItem[] {
+  const all: InboxItem[] = inbox.value.recentlyUpdated || [];
+  return hideDrafts.value ? all.filter((item) => !isDraftItem(item)) : all;
+}
+
+// Repo names offered as filter chips. Azure facets them against the author
+// filter (only repos with PRs by the selected authors show up, and vice versa
 // for authorOptions below) — GitHub has no author filter, so it's unfaceted.
+// A picked repo is always offered, even with no PR right now: an active filter
+// must stay visible, never hide the list silently.
 const repoNames = computed(() => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const all: any[] = inbox.value.recentlyUpdated || [];
+  const all = facetItems();
   const items =
-    !isGitHub.value && authorFilter.value ? all.filter((item) => authorKey(item) === authorFilter.value) : all;
-  const names = [...new Set(items.map(repoKey))];
-  return names.sort();
+    !isGitHub.value && authorFilter.value.length
+      ? all.filter((item) => authorFilter.value.includes(authorKey(item)))
+      : all;
+  return [...new Set([...items.map(repoKey), ...repoFilter.value])].sort();
 });
+
+// When every Azure repo lives in one project the project becomes the row
+// prefix and the chips only carry the repo name.
+const repoPrefix = computed(() => {
+  if (isGitHub.value) return "";
+  const projects = new Set(repoNames.value.map((key) => key.split("/")[0]));
+  return projects.size === 1 && repoNames.value.length ? `${[...projects][0]} /` : "";
+});
+
+const repoChips = computed(() =>
+  repoNames.value.map((key) => ({
+    key,
+    label: repoPrefix.value ? key.slice(key.indexOf("/") + 1) : key,
+  })),
+);
 
 function authorKey(item: { author?: { id?: string; uniqueName?: string; displayName?: string } }) {
   const author = item.author || {};
@@ -697,47 +863,173 @@ function authorKey(item: { author?: { id?: string; uniqueName?: string; displayN
 }
 
 // Author filter (Azure only — GitHub's inbox has no author-filter axis).
+// The current user comes first as "You", then by PR count, then by name.
 const authorOptions = computed(() => {
   if (isGitHub.value) return [];
-  const authors = new Map<string, { key: string; label: string; uniqueName: string }>();
-  for (const item of inbox.value.recentlyUpdated || []) {
-    if (repoFilter.value && repoKey(item) !== repoFilter.value) continue;
+  const authors = new Map<
+    string,
+    { key: string; name: string; label: string; uniqueName: string; count: number; isMe: boolean }
+  >();
+  for (const item of facetItems()) {
+    if (repoFilter.value.length && !repoFilter.value.includes(repoKey(item))) continue;
     const key = authorKey(item);
+    let entry = authors.get(key);
+    if (!entry) {
+      const name = item.author?.displayName || item.author?.uniqueName || "Unknown author";
+      entry = { key, name, label: name, uniqueName: item.author?.uniqueName || "", count: 0, isMe: false };
+      authors.set(key, entry);
+    }
+    entry.count++;
+    if (item.role === "author") {
+      entry.isMe = true;
+      entry.label = "You";
+    }
+  }
+  // Like a picked repo, a picked author stays on offer with no matching PR.
+  for (const key of authorFilter.value) {
     if (authors.has(key)) continue;
-    authors.set(key, {
-      key,
-      label: item.author?.displayName || item.author?.uniqueName || "Unknown author",
-      uniqueName: item.author?.uniqueName || "",
-    });
+    const name = authorNameOf(key);
+    authors.set(key, { key, name, label: name, uniqueName: "", count: 0, isMe: false });
   }
-  return [...authors.values()].sort((a, b) => a.label.localeCompare(b.label));
+  return [...authors.values()].sort(
+    (a, b) => Number(b.isMe) - Number(a.isMe) || b.count - a.count || a.name.localeCompare(b.name),
+  );
 });
 
-// Keep a stale selection from silently hiding everything when the facet it
-// came from disappears (data refresh or cross-filter narrowing).
-watch(authorOptions, (options) => {
-  if (authorFilter.value && !options.some((author) => author.key === authorFilter.value)) {
-    authorFilter.value = "";
-  }
+function authorNameOf(key: string): string {
+  const item = (inbox.value.recentlyUpdated || []).find((entry: InboxItem) => authorKey(entry) === key);
+  return item?.author?.displayName || item?.author?.uniqueName || savedAuthorNames.value.get(key) || "Unknown author";
+}
+
+// Author chips are fitted to the row: the ones that do not fit move into a
+// native <select>. `null` means "show them all" (not measured / no layout).
+const authorFit = ref<number | null>(null);
+const visibleAuthors = computed(() =>
+  authorFit.value == null ? authorOptions.value : authorOptions.value.slice(0, authorFit.value),
+);
+const overflowAuthors = computed(() => (authorFit.value == null ? [] : authorOptions.value.slice(authorFit.value)));
+const overflowSelected = computed(() =>
+  overflowAuthors.value.filter((author) => authorFilter.value.includes(author.key)),
+);
+const overflowChipLabel = computed(() => {
+  const picked = overflowSelected.value;
+  if (picked.length === 1) return picked[0].label;
+  return picked.length ? `+${picked.length} authors` : `+${overflowAuthors.value.length} more`;
 });
 
-watch(repoNames, (names) => {
-  if (repoFilter.value && !names.includes(repoFilter.value)) {
-    repoFilter.value = "";
+function onOverflowPick(select: HTMLSelectElement) {
+  if (select.value) authorFilter.value = toggled(authorFilter.value, select.value);
+  // Back on "+N more", so the same author can be picked again to remove them.
+  select.value = "";
+}
+
+let authorGroupEl: HTMLElement | null = null;
+let measureEl: HTMLElement | null = null;
+let resizeObserver: ResizeObserver | null = null;
+let measurePending = false;
+
+function scheduleMeasure() {
+  if (measurePending) return;
+  measurePending = true;
+  void nextTick(() => {
+    measurePending = false;
+    measureAuthors();
+  });
+}
+
+function setAuthorGroup(el: unknown) {
+  const next = el as HTMLElement | null;
+  if (next === authorGroupEl) return;
+  resizeObserver?.disconnect();
+  resizeObserver = null;
+  authorGroupEl = next;
+  if (next && typeof ResizeObserver !== "undefined") {
+    resizeObserver = new ResizeObserver(scheduleMeasure);
+    resizeObserver.observe(next);
   }
+  scheduleMeasure();
+}
+
+function setMeasure(el: unknown) {
+  measureEl = el as HTMLElement | null;
+  scheduleMeasure();
+}
+
+// The label column (52px) plus a 4px gap precede the chips.
+const AUTHOR_LABEL_WIDTH = 56;
+const AUTHOR_GAP = 4;
+const AUTHOR_SELECT_WIDTH = 170;
+
+function measureAuthors() {
+  if (!authorGroupEl || !measureEl || typeof ResizeObserver === "undefined") {
+    authorFit.value = null;
+    return;
+  }
+  const widths = Array.from(measureEl.children).map((el) => (el as HTMLElement).offsetWidth);
+  const available = authorGroupEl.clientWidth - AUTHOR_LABEL_WIDTH;
+  if (available <= 0 || !widths.length || widths.some((width) => width <= 0)) {
+    authorFit.value = null;
+    return;
+  }
+  const [allWidth, ...chipWidths] = widths;
+  const full = chipWidths.reduce((sum, width) => sum + AUTHOR_GAP + width, allWidth);
+  if (full <= available) {
+    authorFit.value = chipWidths.length;
+    return;
+  }
+  let used = allWidth + AUTHOR_GAP + AUTHOR_SELECT_WIDTH;
+  let fit = 0;
+  for (const width of chipWidths) {
+    if (used + AUTHOR_GAP + width > available) break;
+    used += AUTHOR_GAP + width;
+    fit++;
+  }
+  authorFit.value = fit;
+}
+
+watch(authorOptions, scheduleMeasure);
+
+onMounted(() => {
+  void document.fonts?.ready?.then(scheduleMeasure);
 });
 
-const hasActiveFilters = computed(() => Boolean(repoFilter.value || (!isGitHub.value && authorFilter.value)));
+const hasActiveFilters = computed(() =>
+  Boolean(repoFilter.value.length || (!isGitHub.value && authorFilter.value.length) || hideDrafts.value),
+);
 
-function matchesActiveFilters(item: {
-  project?: { name?: string };
-  repository?: { name?: string; fullName?: string };
-  author?: { id?: string; uniqueName?: string; displayName?: string };
-}) {
-  if (repoFilter.value && repoKey(item) !== repoFilter.value) {
-    return false;
+function matchesActiveFilters(item: InboxItem) {
+  if (repoFilter.value.length && !repoFilter.value.includes(repoKey(item))) return false;
+  if (hideDrafts.value && isDraftItem(item)) return false;
+  return isGitHub.value || !authorFilter.value.length || authorFilter.value.includes(authorKey(item));
+}
+
+function sortItems(items: InboxItem[]): InboxItem[] {
+  const byActivity = (a: InboxItem, b: InboxItem) => timeOf(activityOf(b)) - timeOf(activityOf(a));
+  if (sortMode.value === "attention") {
+    return [...items].sort(
+      (a, b) => Number(Boolean(b.hasAttention)) - Number(Boolean(a.hasAttention)) || byActivity(a, b),
+    );
   }
-  return isGitHub.value || !authorFilter.value || authorKey(item) === authorFilter.value;
+  if (sortMode.value === "created") {
+    return [...items].sort((a, b) => timeOf(createdOf(b)) - timeOf(createdOf(a)) || byActivity(a, b));
+  }
+  return [...items].sort(byActivity);
+}
+
+function isCollapsed(groupKey: string) {
+  return collapsedGroups.has(groupKey);
+}
+
+function toggleGroup(groupKey: string) {
+  if (!collapsedGroups.delete(groupKey)) collapsedGroups.add(groupKey);
+}
+
+function toggleOlder(groupKey: string) {
+  if (!olderOpenGroups.delete(groupKey)) olderOpenGroups.add(groupKey);
+}
+
+function connectionLogin(connectionId: string): string {
+  return (connections.value.find((c) => c.id === connectionId)?.currentUserLogin as string) || "";
 }
 
 // Sub-buckets for the "Needs attention" tab (Azure only): route reviews-of-mine /
@@ -772,17 +1064,57 @@ const attentionBuckets = [
   },
 ];
 
+const reasonBuckets = [
+  {
+    bucket: "waiting-review",
+    label: "Waiting for your review",
+    hint: "You (or a group you belong to) were asked to review, or the PR changed after your vote.",
+    codes: ["review-requested", "group-review-requested", "push-after-approval", "push-after-feedback"],
+    // The heading says it; a "Your review" chip on every row only repeats it.
+    implied: ["review-requested"],
+  },
+  {
+    bucket: "yours",
+    label: "Your pull requests",
+    hint: "Pull requests you opened that need changes, have conflicts or failed to merge.",
+    codes: ["changes-requested", "conflicts", "merge-failed"],
+  },
+  { bucket: "replies", label: "Replies to you", hint: "Someone replied to your comments.", codes: ["replies"] },
+  {
+    bucket: "other",
+    label: "Other activity",
+    hint: "Everything else flagged for your attention.",
+    codes: [] as string[],
+  },
+];
+
 const attentionGroupedItems = computed(() => {
   if (isGitHub.value) return [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const items: any[] = [...(inbox.value.needsAttention || [])].filter(matchesActiveFilters);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const buckets: { bucket: string; label: string; hint: string; items: any[] }[] = attentionBuckets.map((b) => ({
-    bucket: b.bucket,
-    label: b.label,
-    hint: b.hint,
-    items: [],
-  }));
+  const buckets: { bucket: string; label: string; hint: string; implied?: string[]; items: any[] }[] =
+    attentionBuckets.map((b) => ({
+      bucket: b.bucket,
+      label: b.label,
+      hint: b.hint,
+      items: [],
+    }));
+  if (items.some((item) => Array.isArray(item.attentionReasons) && item.attentionReasons.length)) {
+    const byCode = reasonBuckets.map((b) => ({
+      bucket: b.bucket,
+      label: b.label,
+      hint: b.hint,
+      implied: b.implied,
+      items: [] as typeof items,
+    }));
+    for (const item of items) {
+      const code = item.attentionReasons?.[0]?.code;
+      const index = reasonBuckets.findIndex((b) => b.codes.includes(code));
+      byCode[index === -1 ? byCode.length - 1 : index].items.push(item);
+    }
+    return byCode.filter((b) => b.items.length);
+  }
   outer: for (const item of items) {
     for (let i = 0; i < attentionBuckets.length; i++) {
       if (attentionBuckets[i].test(item)) {
@@ -794,21 +1126,91 @@ const attentionGroupedItems = computed(() => {
   return buckets.filter((b) => b.items.length);
 });
 
-// Group items by repo for the active tab, cached as computed. GitHub never
-// facets by author, so matchesActiveFilters is a no-op repo-only check there.
-const activeGroupedItems = computed(() => {
-  const items: unknown[] = tabItems(activeTab.value).filter(matchesActiveFilters);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const groups = new Map<string, any[]>();
-  for (const item of items) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const anyItem = item as any;
-    const repo = repoKey(anyItem);
-    if (!groups.has(repo)) groups.set(repo, []);
-    groups.get(repo)!.push(anyItem);
+const OLDER_THAN_DAYS = 30;
+
+type GroupRow =
+  | { id: string; type: "row"; item: InboxItem }
+  | { id: string; type: "toggle"; open: boolean; label: string; sub: string };
+
+function buildGroup(
+  base: {
+    key: string;
+    kind: "repo" | "bucket";
+    project: string;
+    label: string;
+    hint: string;
+    impliedReasonCodes?: string[];
+  },
+  items: InboxItem[],
+) {
+  const key = `${activeTab.value}:${base.key}`;
+  const recent: InboxItem[] = [];
+  const older: InboxItem[] = [];
+  for (const item of sortItems(items)) {
+    ((daysSince(activityOf(item)) ?? 0) >= OLDER_THAN_DAYS ? older : recent).push(item);
   }
-  return [...groups.entries()].map(([repo, items]) => ({ repo, items }));
+  const asRow = (item: InboxItem): GroupRow => ({ id: item.prKey, type: "row", item });
+  const rows: GroupRow[] = recent.map(asRow);
+  if (older.length) {
+    const open = olderOpenGroups.has(key);
+    const days = older.map((item) => Math.floor(daysSince(activityOf(item)) ?? 0));
+    const newest = Math.min(...days);
+    const oldest = Math.max(...days);
+    rows.push({
+      id: `older:${key}`,
+      type: "toggle",
+      open,
+      label: open ? `Hide ${older.length} older pull requests` : `${older.length} older than ${OLDER_THAN_DAYS} days`,
+      sub: open ? "" : `· last activity ${newest === oldest ? `${newest} d` : `${newest} d – ${oldest} d`} ago`,
+    });
+    if (open) rows.push(...older.map(asRow));
+  }
+  return {
+    ...base,
+    key,
+    items,
+    rows,
+    unread: items.filter(isUnread).length,
+    attention: items.filter((item) => item.hasAttention).length,
+  };
+}
+
+// The Azure "Needs attention" tab groups by why a PR needs attention; every
+// other tab (and GitHub) groups by repository.
+const displayGroups = computed(() => {
+  if (!isGitHub.value && activeTab.value === "attention") {
+    return attentionGroupedItems.value.map((bucket) =>
+      buildGroup(
+        {
+          key: bucket.bucket,
+          kind: "bucket",
+          project: "",
+          label: bucket.label,
+          hint: bucket.hint,
+          impliedReasonCodes: bucket.implied,
+        },
+        bucket.items,
+      ),
+    );
+  }
+  const groups = new Map<string, InboxItem[]>();
+  for (const item of tabItems(activeTab.value).filter(matchesActiveFilters) as InboxItem[]) {
+    const repo = repoKey(item);
+    if (!groups.has(repo)) groups.set(repo, []);
+    groups.get(repo)!.push(item);
+  }
+  return [...groups.entries()].map(([repo, items]) => {
+    const first = items[0];
+    const [project, name] = isGitHub.value
+      ? repo.includes("/")
+        ? [repo.slice(0, repo.indexOf("/")), repo.slice(repo.indexOf("/") + 1)]
+        : ["", repo]
+      : [first.project?.name || "", first.repository?.name || ""];
+    return buildGroup({ key: repo, kind: "repo", project, label: name, hint: "" }, items);
+  });
 });
+
+onUnmounted(() => resizeObserver?.disconnect());
 
 const headerStatus = computed(() => `${inbox.value.recentlyUpdated?.length || 0} PRs`);
 const headerActions = computed(() => [

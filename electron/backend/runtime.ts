@@ -26,6 +26,8 @@ import {
   normalizeWorkspace,
   normalizeWorkspaceGrid,
   parseSessionId,
+  strideDataDir,
+  JIRA_POLLING_STATE_FILE_MIGRATION,
 } from "./default-state.js";
 import { parseRemoteViewerId } from "./viewer-id.js";
 import {
@@ -38,7 +40,7 @@ import {
   type MobileConnectedDevice,
   type MobileSessionStarted,
 } from "../shared/mobile-session-events.js";
-import { filterConnectionsByOpenProfiles } from "./shared/runtime-provider-guards.js";
+import { filterConnectionsByOpenProfiles, mirrorActivationIntoSlot } from "./shared/runtime-provider-guards.js";
 import { ClientRequestError } from "./shared/client-request-error.js";
 import { NativeWorkspaceError, nativeWorkspaceFs } from "./native-workspace-errors.js";
 import {
@@ -93,6 +95,7 @@ import { createMobileNotificationOriginStore } from "./mobile/mobile-notificatio
 import { createMobileWebSessionTicketStore } from "./mobile/mobile-web-session-ticket-store.js";
 import { createRemoteBrowserTicketStore } from "./remote-browser-ticket-store.js";
 import type { RemoteBrowserSession, RemoteSessionRevoke, RemoteAuthFailures } from "../shared/remote-access.js";
+import type { JiraWorkspaceViewsSnapshot } from "../shared/types/jira-workspace-views.js";
 import { REMOTE_AUTH_FAILURES_CHANNEL } from "../shared/remote-access.js";
 import { createRelayE2eOfferStore } from "./mobile/mobile-relay-e2e-offer-store.js";
 import { createRelayE2eSessionStore } from "./mobile/mobile-relay-e2e-session-store.js";
@@ -206,6 +209,22 @@ import {
   getMetrics,
 } from "./notifications/metrics.js";
 import { createProviderHandlers } from "./runtime-provider-handlers.js";
+import { JiraManager, type JiraConnection } from "./jira/jira-manager.js";
+import { logJiraFailure, logJiraRecovered } from "./jira/jira-failure-log.js";
+import { createJiraCache } from "./jira/jira-cache.js";
+import { createJiraAttachmentCache } from "./jira/jira-attachment-cache.js";
+import {
+  JiraPollingService,
+  createJiraPollingStoreAdapter,
+  sanitizeJiraPollingState,
+  type JiraPollingState,
+} from "./jira/jira-polling.js";
+import { writeFileAtomic } from "./shared/fs-durable.js";
+import { pollJiraQuery } from "./jira/jira-polling-runtime.js";
+import { stripJiraPrivatePayload } from "./jira/jira-payload.js";
+import { createJiraInternalMcpApi } from "./internal-mcp/jira-mcp-api.js";
+import { normalizeJiraAgentAttachmentLimits } from "../shared/jira-agent-attachments.js";
+import type { CredentialStore } from "./shared/credential-store.js";
 import { createGitHandlers } from "./runtime-git-handlers.js";
 import { createDockerHandlers } from "./runtime-docker-handlers.js";
 import { createGridHandlers } from "./runtime-grid-handlers.js";
@@ -224,6 +243,8 @@ import { createOperationRegistry } from "./operation-registry.js";
 import {
   getInternalMcpEligibility,
   INTERNAL_MCP_CAPABILITY_ENV,
+  INTERNAL_MCP_JIRA_ENABLED_ENV,
+  INTERNAL_MCP_TASKS_ENABLED_ENV,
   INTERNAL_MCP_URL_ENV,
 } from "../shared/internal-mcp.js";
 import { OPERATION_FINISHED_CHANNEL, OPERATION_KIND_REVIEW_AGENT_PREPARE } from "../shared/operation-events.js";
@@ -232,6 +253,30 @@ import {
   type StartPullRequestReviewInput,
   type StartPullRequestReviewResult,
 } from "../shared/pull-request-review.js";
+import {
+  OPERATION_KIND_PIPELINE_AGENT,
+  pipelineRunRelativeDir,
+  type StartPipelineAgentInput,
+  type StartPipelineAgentResult,
+} from "../shared/pipeline-agent.js";
+import {
+  JIRA_DEVELOPMENT_DIR,
+  OPERATION_KIND_JIRA_DEVELOPMENT,
+  agentCommandWithModel,
+  jiraDevelopmentKickoff,
+  jiraDevelopmentTask,
+  type JiraDevelopmentAgent,
+  type StartJiraDevelopmentInput,
+  type StartJiraDevelopmentResult,
+} from "../shared/jira-development.js";
+import { JIRA_ATTACHMENT_MAX_BYTES, writeJiraIssueFiles } from "./jira/jira-development-files.js";
+import {
+  excludeLocalDir,
+  excludePipelineRunDir,
+  pipelineAgentPrompt,
+  pipelineFixBranchName,
+  writePipelineRunFiles,
+} from "./pipeline-agent-files.js";
 import { createReviewGitBroker } from "./review-git/broker.js";
 import { createReviewGitService, isReviewGitGrantLive } from "./review-git/service.js";
 import { createReviewPrActionService, type ReviewPrActionService } from "./review-git/pr-actions.js";
@@ -304,6 +349,7 @@ import type { Client as Ssh2Client, SFTPWrapper } from "ssh2";
 import type { AuthConfig } from "./ssh/ssh-auth.js";
 
 const log = getLogger("runtime");
+const jiraLog = getLogger("jira");
 
 const require = createRequire(import.meta.url);
 // Walk up from this file to the nearest package.json. The relative depth differs
@@ -610,6 +656,13 @@ function internalMcpWorkspaceSupported(workspace: Pick<WorkspaceState, "kind" | 
   );
 }
 
+function jiraMcpWorkspaceSupported(workspace: Pick<WorkspaceState, "kind" | "review" | "quickfix">): boolean {
+  return (
+    !["docker", "azure", "github"].includes(String(workspace.kind)) &&
+    ((!workspace.review && !workspace.quickfix) || workspace.kind === "terminal" || workspace.kind === "task")
+  );
+}
+
 export async function createRuntime({
   userDataPath,
   builtinPluginsDir,
@@ -669,7 +722,13 @@ export async function createRuntime({
    * than the registry: with more than one server, "no registry" is never the interesting case — an
    * id no live registry knows is a client that has expired or never existed.
    */
-  function requireRemoteClientRegistry(clientId: string): RemoteClientRegistry {
+  function requireRemoteClientRegistry(clientId: string, preferred?: RemoteClientRegistry): RemoteClientRegistry {
+    if (preferred) {
+      if (!_remoteClientRegistries.has(preferred) || !preferred.get(clientId)) {
+        throw new Error("Remote client session not found");
+      }
+      return preferred;
+    }
     const registry = registryOwning(clientId);
     if (!registry) throw new Error("Remote client session not found");
     return registry;
@@ -985,6 +1044,7 @@ export async function createRuntime({
   const sessionOwnershipTokens = new Map<string, string>();
   let sshMcpBroker: ReturnType<typeof createSshMcpBroker> | null = null;
   let internalMcpBroker: ReturnType<typeof createInternalMcpBroker> | null = null;
+  let jiraPolling: JiraPollingService | null = null;
   let reviewGitBroker: ReturnType<typeof createReviewGitBroker> | null = null;
   let reviewPrActionService: ReviewPrActionService | null = null;
   let sshMcpCommandService: ReturnType<typeof createSshCommandService> | null = null;
@@ -1070,6 +1130,10 @@ export async function createRuntime({
     string,
     { prompt: string; context: Record<string, unknown>; agentName: string; executable: string }
   >();
+  // The first message of an interactive agent a backend action started (a pipeline run, …). Same lifetime as above:
+  // consumed by the session's first launch, never persisted. Unlike the review launch it changes nothing else about
+  // the session — the agent stays an ordinary interactive one.
+  const pendingAgentInitialPrompt = new Map<string, { prompt: string; agentName: string; executable: string }>();
   const sessions = new SessionManagerImpl({
     sshManager,
     spawnPty: dependencies.sshTestPtySpawn,
@@ -1168,17 +1232,26 @@ export async function createRuntime({
     }) => {
       const panelState = panel as import("../shared/types/state.js").PanelState;
       const pendingReview = pendingPullRequestReviewLaunch.get(sessionId);
+      const pendingPrompt = pendingReview ? undefined : pendingAgentInitialPrompt.get(sessionId);
+      const promptProcessInfo = pendingPrompt
+        ? {
+            ...processInfo,
+            commandLookup: {
+              ...(processInfo.commandLookup || {}),
+              [pendingPrompt.agentName]: pendingPrompt.executable,
+            },
+          }
+        : processInfo;
       sshMcpBroker?.revokeSession(sessionId);
       internalMcpBroker?.revokeSession(sessionId);
-      // Workspace-wide opt-in: a panel that is not a plain Claude Code / Codex / Copilot / OpenCode launch simply does
-      // not get the server. Task workspaces never do, whatever their saved flag says.
+      // Workspace-wide feature opt-ins: each agent tab receives only the selected tool family.
       let internalMcpSpec;
       let internalMcpEnv: Record<string, string> | undefined;
       if (
         internalMcpBroker &&
         !pendingReview &&
-        workspace?.internalMcpEnabled === true &&
-        internalMcpWorkspaceSupported(workspace) &&
+        ((workspace?.internalMcpEnabled === true && internalMcpWorkspaceSupported(workspace)) ||
+          (workspace?.jiraMcpEnabled === true && jiraMcpWorkspaceSupported(workspace))) &&
         !panelState.launch &&
         getInternalMcpEligibility(panelState.command).supported
       ) {
@@ -1189,8 +1262,15 @@ export async function createRuntime({
           workspaceId: workspace.id,
           panelId: panelState.id,
           command: panelState.command,
+          tasksEnabled: workspace.internalMcpEnabled === true,
+          jiraEnabled: workspace.jiraMcpEnabled === true,
         });
-        internalMcpEnv = { [INTERNAL_MCP_URL_ENV]: grant.url, [INTERNAL_MCP_CAPABILITY_ENV]: grant.capability };
+        internalMcpEnv = {
+          [INTERNAL_MCP_URL_ENV]: grant.url,
+          [INTERNAL_MCP_CAPABILITY_ENV]: grant.capability,
+          [INTERNAL_MCP_TASKS_ENABLED_ENV]: workspace.internalMcpEnabled === true ? "1" : "0",
+          [INTERNAL_MCP_JIRA_ENABLED_ENV]: workspace.jiraMcpEnabled === true ? "1" : "0",
+        };
       }
       reviewGitBroker?.revokeSession(sessionId);
       const panelSshMcpOptIn = panelState.sshMcpEnabled === true && !pendingReview;
@@ -1266,7 +1346,7 @@ export async function createRuntime({
                   [pendingReview.agentName]: pendingReview.executable,
                 },
               }
-            : processInfo;
+            : promptProcessInfo;
           reviewLaunch = buildReviewAgentLaunch({
             workspace: workspace as WorkspaceState,
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1278,8 +1358,13 @@ export async function createRuntime({
             internalMcpEnv: pendingReview ? undefined : internalMcpEnv,
             reviewGitEnv: pendingReview ? undefined : reviewGitEnv,
             codexNoDaemon: !panelState.launch && codexNoDaemonFor(panelState.command),
-            ...(pendingReview ? { initialPrompt: pendingReview.prompt, draftOnlyReview: true } : {}),
+            ...(pendingReview
+              ? { initialPrompt: pendingReview.prompt, draftOnlyReview: true }
+              : pendingPrompt
+                ? { initialPrompt: pendingPrompt.prompt }
+                : {}),
           });
+          if (reviewLaunch && pendingPrompt) pendingAgentInitialPrompt.delete(sessionId);
         }
       }
 
@@ -1291,18 +1376,25 @@ export async function createRuntime({
           ? { ...reviewLaunch, env: { ...(reviewLaunch.env || {}), ...launchEnv } }
           : reviewLaunch;
       }
-      if (sshMcpSpec || internalMcpSpec) {
+      if (sshMcpSpec || internalMcpSpec || (pendingPrompt && !panelState.launch)) {
         const launch = buildAgentMcpLaunch({
           workspace: workspace || undefined,
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           panel: panel as any,
-          processInfo,
+          processInfo: promptProcessInfo,
           sshMcp: sshMcpSpec,
           internalMcp: internalMcpSpec,
           internalMcpEnv,
           codexNoDaemon: codexNoDaemonFor(panelState.command),
+          ...(pendingPrompt ? { initialPrompt: pendingPrompt.prompt } : {}),
         });
-        if (!launch) throw new Error("MCP tools could not be enabled for this tab's agent command.");
+        if (!launch)
+          throw new Error(
+            sshMcpSpec || internalMcpSpec
+              ? "MCP tools could not be enabled for this tab's agent command."
+              : "This tab's agent command could not be started with its first message.",
+          );
+        if (pendingPrompt) pendingAgentInitialPrompt.delete(sessionId);
         return { ...launch, env: { ...(launch.env || {}), ...sshMcpEnv, ...internalMcpEnv } };
       }
       if (!panelState.launch && codexNoDaemonFor(panelState.command)) {
@@ -1592,6 +1684,7 @@ export async function createRuntime({
     void sshMcpBroker?.revokeInvalid();
     void internalMcpBroker?.revokeInvalid();
     void reviewGitBroker?.revokeInvalid();
+    void syncJiraPolling();
     const state = getState();
     for (const [sessionId, record] of sshTestSessions) {
       const slot = (state.windowSlots || []).find((item) => item.id === record.ownerWindowId);
@@ -2111,7 +2204,11 @@ export async function createRuntime({
     auditLogStore: mobileAuditLogStore,
     ticketIssuer: mobileWebSessionTicketStore,
     notificationOrigins: mobileNotificationOrigins,
-    relay: { status: () => mobileRelayManager?.status() ?? RELAY_OFF },
+    relay: {
+      status: () => mobileRelayManager?.status() ?? RELAY_OFF,
+      // ADR 0041: what the control plane last said about relay session idleness, read at mint time.
+      mobileSessionIdleTtlMs: () => mobileRelayManager?.mobileSessionIdleTtlMs() ?? null,
+    },
     ownPrivateKey: mobileOwnKeyPair.privateKey,
     e2eOfferStore: mobileRelayE2eOfferStore,
     e2eSessionStore: mobileRelayE2eSessionStore,
@@ -2170,6 +2267,7 @@ export async function createRuntime({
    * answered", and that is not the same fact as "the server said this machine is not bound".
    */
   let mobileRuntimeInitialized = false;
+  let mobileIdentityTransition = false;
   const registrationOnboarding = createMobileRegistrationOnboarding({
     readMarker: () => credentialStore.getSecret(MOBILE_REGISTRATION_ONBOARDING_REF),
     writeMarker: (value) => credentialStore.setSecret(MOBILE_REGISTRATION_ONBOARDING_REF, value),
@@ -2360,7 +2458,9 @@ export async function createRuntime({
     deviceStore: mobileDeviceStore,
     auditLogStore: mobileAuditLogStore,
     identity: {
-      deviceId: mobileDeviceId,
+      get deviceId() {
+        return mobileDeviceId;
+      },
       label: os.hostname() || "strIDEterm Desktop",
       publicKeyBase64: mobileOwnPublicKeyBase64,
     },
@@ -2566,7 +2666,9 @@ export async function createRuntime({
     authLinkRefusal: authLink.refusal,
     transport: null,
     identity: {
-      installationId: accountInstallationIdentity.installationId,
+      get installationId() {
+        return mobileDeviceId;
+      },
       publicKeyBase64Url: accountInstallationIdentity.publicKeyBase64Url,
       signChallenge: (transcript: Buffer) => accountInstallationIdentity.signChallenge(transcript),
     },
@@ -2592,7 +2694,32 @@ export async function createRuntime({
     // owns the ordering; this is the one thing it cannot do itself, because it must not own a
     // credential store.
     forgetInstallationCredential: async () => {
-      await installationRestClient?.forgetSession();
+      mobileIdentityTransition = true;
+      mobileReconfigureGeneration += 1;
+      installationTokenRefresh?.stop();
+      installationTokenRefresh = null;
+      await mobileManager.stop();
+      await mobileRelayManager?.stop();
+      const retiredDeviceId = mobileDeviceId;
+      const nextDeviceId = randomUUID();
+      const persistIdentity = async () => {
+        if (!credentialStore.updateSecrets) throw new Error("Atomic credential updates are required for sign-out");
+        await credentialStore.updateSecrets({
+          [MOBILE_DEVICE_ID_REF]: nextDeviceId,
+          "mobile:retired-desktop-device-id": retiredDeviceId,
+          [MOBILE_FIREBASE_REFRESH_TOKEN_REF]: null,
+          [MOBILE_ACCOUNT_BINDING_REF]: "none",
+          [MOBILE_REGISTRATION_ONBOARDING_REF]: null,
+        });
+      };
+      if (installationRestClient) await installationRestClient.forgetSession(persistIdentity);
+      else await persistIdentity();
+      mobileDeviceId = nextDeviceId;
+      accountInstallationIdentity.installationId = nextDeviceId;
+      await mobileManager.switchInstallationIdentity(nextDeviceId, retiredDeviceId);
+      await mobileRelayManager?.switchInstallationIdentity(nextDeviceId);
+      await credentialStore.deleteSecret("mobile:retired-desktop-device-id");
+      mobileIdentityTransition = false;
     },
     refreshInstallationToken: async () => {
       await installationRestClient?.refreshSession();
@@ -2658,12 +2785,14 @@ export async function createRuntime({
     readonly email: string;
     readonly purpose: SignInPurpose;
     readonly offerId?: string;
+    readonly confirmationPhrase?: string;
     readonly ownerWindowId: string | null;
   } | null = null;
   let activeSignInIntent: {
     readonly email: string;
     readonly purpose: SignInPurpose;
     readonly offerId?: string;
+    readonly confirmationPhrase?: string;
     readonly ownerWindowId: string | null;
   } | null = null;
   let signInPreparationGeneration = 0;
@@ -2717,7 +2846,13 @@ export async function createRuntime({
   // an hour of a revoked one still being served on its long-lived RTDB stream.
   let installationTokenRefresh: ReturnType<typeof createInstallationTokenRefreshListener> | null = null;
   startInstallationTokenRefresh = () => {
-    if (installationTokenRefresh || !installationRestClient) return;
+    if (
+      mobileIdentityTransition ||
+      readInstallationBinding() === "none" ||
+      installationTokenRefresh ||
+      !installationRestClient
+    )
+      return;
     installationTokenRefresh = createInstallationTokenRefreshListener({
       client: installationRestClient,
       // A stream authenticates ONCE, at connect. Refreshing the token and leaving the stream up is
@@ -2725,6 +2860,8 @@ export async function createRuntime({
       restartStreams: async () => {
         await mobileManager.stop();
         if (
+          !mobileIdentityTransition &&
+          readInstallationBinding() !== "none" &&
           getState().settings.integrations.mobile.enabled &&
           !getState().settings.remoteAccess.paused &&
           mobileSecureStorageAvailable()
@@ -2962,7 +3099,7 @@ export async function createRuntime({
         // config and can never send the same email twice.
         pendingSignInIntent = null;
         activeSignInIntent = intent;
-        await accountManager.beginEmailSignIn(intent.email, intent.purpose, intent.offerId);
+        await accountManager.beginEmailSignIn(intent.email, intent.purpose, intent.offerId, intent.confirmationPhrase);
       })
       .catch((error: unknown) => {
         log.warn("could not start passwordless sign-in", {
@@ -3058,6 +3195,8 @@ export async function createRuntime({
         // Both flags: a relay without the mobile integration has no control plane to ask for a
         // grant, and a relay the user did not switch on must not exist at all.
         isEnabled: () =>
+          !mobileIdentityTransition &&
+          readInstallationBinding() !== "none" &&
           getState().settings.integrations.mobile.enabled &&
           getState().settings.integrations.mobile.relay.enabled &&
           !getState().settings.remoteAccess.paused &&
@@ -3070,7 +3209,7 @@ export async function createRuntime({
         listRevocations: () =>
           mobileDeviceStore
             .listDevices()
-            .filter((device) => device.revoked)
+            .filter((device) => device.revoked && device.pairId === mobileDeviceId)
             .map((device) => ({ deviceId: device.deviceId, revokedAt: device.revokedAt })),
         e2eSessionStore: mobileRelayE2eSessionStore,
         systemChannel: mobileSystemChannel,
@@ -3085,12 +3224,18 @@ export async function createRuntime({
     await mobileManager.stop();
     if (generation !== mobileReconfigureGeneration) return;
     const wantsMobile =
+      !mobileIdentityTransition &&
+      readInstallationBinding() !== "none" &&
       state.settings.integrations.mobile.enabled &&
       !state.settings.remoteAccess.paused &&
       mobileSecureStorageAvailable();
     const ready = wantsMobile ? await ensureOnlineServicesReady({ purpose: "refresh" }) : false;
     if (generation !== mobileReconfigureGeneration) return;
     const current = getState().settings;
+    if (mobileIdentityTransition || readInstallationBinding() === "none") {
+      await mobileRelayManager?.stop();
+      return;
+    }
     if (!current.integrations.mobile.enabled || current.remoteAccess.paused) {
       return mobileRelayManager?.reconfigure().catch(() => undefined);
     }
@@ -4665,6 +4810,7 @@ export async function createRuntime({
     broadcastState();
   }
 
+  let jiraWorkspaceViewsSnapshot: () => JiraWorkspaceViewsSnapshot = () => ({});
   function getPayload() {
     const state = getState();
     return {
@@ -4686,6 +4832,13 @@ export async function createRuntime({
         if (cloned.settings?.integrations?.github) {
           cloned.settings.integrations.github.connections = getGitHubConnections(state);
         }
+        if (cloned.settings?.integrations?.jira) {
+          cloned.settings.integrations.jira.connections = filterConnectionsByOpenProfiles(
+            cloned.settings.integrations.jira.connections || [],
+            state.windowSlots,
+          ).map((connection) => ({ ...connection, auth: { kind: connection.auth.kind } }));
+        }
+        stripJiraPrivatePayload(cloned);
         // Drop the legacy `projects` alias — it duplicates the entire
         // `workspaces` array in every broadcast (≈131 KB in a 59-workspace
         // install) and no renderer reads it. `workspaces` is the single source
@@ -4712,6 +4865,7 @@ export async function createRuntime({
         return ws;
       })(),
       attention: getAttentionSnapshot(),
+      jiraWorkspaceViews: jiraWorkspaceViewsSnapshot(),
       docker: docker.getSnapshot(),
       git: {
         // `projects` (alias of `workspaces`, ≈2.2 MB in a 59-workspace install)
@@ -6798,6 +6952,22 @@ export async function createRuntime({
     return sessionsExited;
   }
 
+  /** Best-effort: the agent's downloaded Jira attachments must not outlive their workspace (or profile). */
+  async function removeAgentData(profileId: string, workspaceId?: string): Promise<void> {
+    const safeSegment = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+    if (!safeSegment.test(profileId) || (workspaceId !== undefined && !safeSegment.test(workspaceId))) return;
+    const target = path.join(strideDataDir(), "agent-data", profileId, ...(workspaceId ? [workspaceId] : []));
+    try {
+      await rm(target, { recursive: true, force: true });
+    } catch (err) {
+      log.warn("could not remove the agent data folder", {
+        profileId,
+        workspaceId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   /**
    * Post-commit teardown for a workspace that has just been removed from
    * authoritative state: run the full runtime cleanup AND tell every connected
@@ -6822,6 +6992,8 @@ export async function createRuntime({
   function finalizeWorkspaceRemoval(workspace: Pick<WorkspaceState, "id" | "profileId">): Promise<void> {
     const sessionsExited = cleanupWorkspaceRuntimeState(workspace.id);
     void operations.removeForWorkspace(workspace.id);
+    if (!getState().workspaces.some((item) => item.id === workspace.id))
+      void removeAgentData(workspace.profileId || "default", workspace.id);
     emitNotificationTargetRemoved({
       target: "workspace",
       workspaceId: workspace.id,
@@ -6848,11 +7020,12 @@ export async function createRuntime({
    * children; this function extends the same hygiene to task-agent
    * workspaces and any other top-level entry whose cwd has gone missing.
    *
-   * Skipped: inbox-only kinds (azure / github), workspaces with no cwd at
-   * all, paths currently being deleted by another flow, and any workspace
-   * referenced by `_recoveryCandidates` (the user gets the recovery dialog
-   * first; resolveTaskRecovery clears the candidate, after which the next
-   * prune pass removes it).
+   * Skipped: inbox-only kinds (azure / github) and virtual Jira inbox / board
+   * workspaces, whose cwd is display metadata and need not exist on disk;
+   * workspaces with no cwd at all; paths currently being deleted by another
+   * flow; and any workspace referenced by `_recoveryCandidates` (the user
+   * gets the recovery dialog first; resolveTaskRecovery clears the candidate,
+   * after which the next prune pass removes it).
    */
   async function pruneOrphanedWorkspaces(): Promise<number> {
     const state = getState();
@@ -6860,7 +7033,7 @@ export async function createRuntime({
     const toRemove: WorkspaceState[] = [];
     for (const ws of state.workspaces) {
       if (!ws.cwd) continue;
-      if (ws.kind === "azure" || ws.kind === "github") continue;
+      if (ws.kind === "azure" || ws.kind === "github" || ws.kind === "jira" || ws.kind === "jira-board") continue;
       if (recoveryIds.has(ws.id)) continue;
       const resolvedCwd = path.resolve(ws.cwd);
       if (pendingWorktreeDeletions.has(resolvedCwd)) continue;
@@ -7317,6 +7490,11 @@ export async function createRuntime({
   ensureGitPolling();
   syncTreeDirWatchers();
   reconfigureTelegram();
+  const retiredMobileDeviceId = credentialStore.getSecret("mobile:retired-desktop-device-id");
+  if (retiredMobileDeviceId) {
+    await mobileManager.switchInstallationIdentity(mobileDeviceId, retiredMobileDeviceId);
+    await credentialStore.deleteSecret("mobile:retired-desktop-device-id");
+  }
   mobileRuntimeInitialized = true;
   if (bindingSaysEnrolled(readInstallationBinding()) && !getState().settings.integrations.mobile.enabled) {
     void ensureOnlineServicesReady({ purpose: "refresh" });
@@ -7407,6 +7585,10 @@ export async function createRuntime({
     ensureDockerPolling,
   });
 
+  const jiraCache = createJiraCache(path.join(userDataPath, "jira-cache.sqlite"));
+  const jiraAttachmentCache = createJiraAttachmentCache(path.join(userDataPath, "jira-attachment-cache"));
+  const jiraManager = new JiraManager(credentialStore, dependencies.fetchImpl || globalThis.fetch, jiraCache);
+  jiraManager.retainConfiguredScopes((getState().settings.integrations.jira?.connections || []) as JiraConnection[]);
   const providerHandlers = createProviderHandlers({
     log,
     getState,
@@ -7425,6 +7607,10 @@ export async function createRuntime({
     refreshAzure,
     refreshGitHub,
     refreshGit,
+    registerGitWorkspaces: async () => {
+      await git.registerWorkspaces?.(getState().workspaces);
+      syncInterestedGitWorkspaces();
+    },
     ensureAzureWorkspace,
     ensureGitHubWorkspace,
     ensureVisibleSession,
@@ -7440,9 +7626,25 @@ export async function createRuntime({
     assertPrInViewerProfile,
     getViewerProfileId: getWindowProfileId,
     getViewerActiveWorkspaceId,
+    jiraCache,
+    jiraAttachmentCache,
+    jiraManager,
     mirrorRemoteViewerWorkspace,
     recordWorkspaceWork,
+    finalizeWorkspaceRemoval,
+    removeJiraPollingForConnection: async (profileId: string, connectionId: string) => {
+      await jiraPolling?.removeConnection(profileId, connectionId);
+    },
+    getJiraPollingStatus: (profileId: string) => jiraPolling?.getWatchStatuses(profileId) ?? {},
+    getActiveJiraProfileIds: () => {
+      const ids = new Set<string>();
+      for (const slot of getState().windowSlots || []) if (slot.profileId) ids.add(slot.profileId);
+      for (const registry of _remoteClientRegistries) for (const id of registry.liveProfileIds()) ids.add(id);
+      return ids;
+    },
   });
+  jiraWorkspaceViewsSnapshot = providerHandlers.getJiraWorkspaceViewsSnapshot;
+  providerHandlers.startJiraWorkspaceViewSync();
 
   const gridHandlers = createGridHandlers({
     store,
@@ -7557,9 +7759,260 @@ export async function createRuntime({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (await (_rt as any).answerCompanionTask(workspaceId, questionIds, answer))?.ok === true,
   });
+  const jiraManagerForMcp = jiraManager;
+  const jiraConnections = (): JiraConnection[] =>
+    (getState().settings.integrations.jira?.connections || []) as JiraConnection[];
+  const findGrantWorkspace = (scope: { profileId: string; workspaceId: string }) => {
+    const workspace = getState().workspaces.find((item) => item.id === scope.workspaceId);
+    return workspace && String(workspace.profileId || "default") === scope.profileId ? workspace : undefined;
+  };
+  const jiraMcpApi = createJiraInternalMcpApi({
+    manager: jiraManagerForMcp,
+    listConnections: (scope) => jiraConnections().filter((item) => item.profileId === scope.profileId && item.enabled),
+    resolveConnection: async (_scope, connectionId) => jiraConnections().find((item) => item.id === connectionId),
+    authorizeConnection: async (scope, connectionId) => {
+      const workspace = findGrantWorkspace(scope);
+      return Boolean(
+        workspace &&
+        workspace.jiraMcpEnabled === true &&
+        jiraMcpWorkspaceSupported(workspace) &&
+        jiraConnections().some(
+          (connection) =>
+            connection.id === connectionId && connection.profileId === scope.profileId && connection.enabled,
+        ),
+      );
+    },
+    authorizeIssue: async (scope, connectionId, issueIdOrKey) => {
+      const workspace = findGrantWorkspace(scope);
+      return Boolean(
+        workspace?.jiraMcpEnabled === true &&
+        jiraConnections().some(
+          (item) => item.id === connectionId && item.profileId === scope.profileId && item.enabled,
+        ) &&
+        /^[A-Za-z0-9_-]{1,128}$/.test(issueIdOrKey),
+      );
+    },
+    managedDataRoot: async () => path.join(strideDataDir(), "agent-data"),
+    attachmentFolderLimits: () =>
+      normalizeJiraAgentAttachmentLimits(getState().settings.integrations.jira?.agentAttachments),
+    saveCommentDraft: async (scope, input) => {
+      const draftId = randomUUID();
+      const createdAt = new Date().toISOString();
+      const connection = jiraConnections().find(
+        (item) => item.id === input.connectionId && item.profileId === scope.profileId && item.enabled,
+      );
+      if (!connection) throw new Error("Jira connection is no longer available.");
+      const issue = await jiraManagerForMcp.issue(connection, input.issueId);
+      await store.mutate((draft: AppState) => {
+        const activeConnection = (draft.settings.integrations.jira?.connections || []).find(
+          (item) => item.id === input.connectionId && item.profileId === scope.profileId && item.enabled,
+        );
+        if (!activeConnection) throw new Error("Jira connection is no longer enabled in this profile.");
+        const workspace = draft.workspaces.find(
+          (item) => item.id === scope.workspaceId && String(item.profileId || "default") === scope.profileId,
+        );
+        if (!workspace?.jiraMcpEnabled) throw new Error("Jira MCP is no longer enabled for this workspace.");
+        const drafts = workspace.jiraMcpCommentDrafts || (workspace.jiraMcpCommentDrafts = []);
+        drafts.push({
+          id: draftId,
+          ref: issue.ref,
+          body: input.body,
+          sourceWorkspaceId: workspace.id,
+          createdAt,
+        });
+        if (drafts.length > 100) drafts.splice(0, drafts.length - 100);
+      });
+      broadcastState();
+      return { draftId, createdAt };
+    },
+  });
+  const jiraPollingStatePath = path.join(userDataPath, "jira-polling-state.json");
+  let jiraPollingSaveQueue: Promise<unknown> = Promise.resolve();
+  const loadJiraPollingStateFile = async (): Promise<JiraPollingState | undefined> => {
+    let raw: string;
+    try {
+      raw = await readFile(jiraPollingStatePath, "utf-8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+    try {
+      const parsed = sanitizeJiraPollingState(JSON.parse(raw));
+      if (!parsed) jiraLog.warn("jira polling state file was not understood and has been reset");
+      return parsed;
+    } catch (error) {
+      jiraLog.warn("jira polling state file is corrupt and has been reset", {
+        err: error instanceof Error ? error.name : "error",
+      });
+      return undefined;
+    }
+  };
+  const saveJiraPollingStateFile = (state: JiraPollingState): Promise<void> => {
+    const write = jiraPollingSaveQueue.then(() => writeFileAtomic(jiraPollingStatePath, JSON.stringify(state)));
+    jiraPollingSaveQueue = write.catch(() => undefined);
+    return write;
+  };
+  try {
+    const settings = getState().settings as unknown as {
+      appliedMigrations: string[];
+      integrations: { jira: { pollingState?: unknown } };
+    };
+    if (!settings.appliedMigrations.includes(JIRA_POLLING_STATE_FILE_MIGRATION)) {
+      const legacy = sanitizeJiraPollingState(settings.integrations.jira.pollingState);
+      if (legacy && !(await loadJiraPollingStateFile())) await saveJiraPollingStateFile(legacy);
+      await store.mutate((draft: AppState) => {
+        const draftSettings = draft.settings as unknown as {
+          appliedMigrations: string[];
+          integrations: { jira: { pollingState?: unknown } };
+        };
+        delete draftSettings.integrations.jira.pollingState;
+        if (!draftSettings.appliedMigrations.includes(JIRA_POLLING_STATE_FILE_MIGRATION))
+          draftSettings.appliedMigrations.push(JIRA_POLLING_STATE_FILE_MIGRATION);
+      });
+    }
+  } catch (error) {
+    jiraLog.warn("jira polling state could not be moved to its own file; it will be retried on next start", {
+      err: error instanceof Error ? error.name : "error",
+    });
+  }
+  const jiraPollingStore = createJiraPollingStoreAdapter(loadJiraPollingStateFile, saveJiraPollingStateFile);
+  const lastJiraPollVisibleStatus = new Map<string, string>();
+  jiraPolling = new JiraPollingService({
+    store: jiraPollingStore,
+    poller: async (request) => {
+      const connection = jiraConnections().find(
+        (item) => item.id === request.connectionId && item.profileId === request.profileId && item.enabled,
+      );
+      if (!connection) return { kind: "unsupported", reasonCode: "connection-unavailable" };
+      return pollJiraQuery(request, (cursor, limit) =>
+        jiraManagerForMcp.searchPage(connection, request.query, limit, cursor, { forceRefresh: true }),
+      );
+    },
+    onStatus: (status) => {
+      const scope = `poll:${status.queryId}`;
+      if (status.status === "idle") logJiraRecovered(status.connectionId, scope);
+      else if (status.status !== "polling")
+        logJiraFailure(
+          { connectionId: status.connectionId, scope, code: status.reasonCode ?? status.status },
+          { queryId: status.queryId, pollStatus: status.status },
+        );
+      const key = JSON.stringify([status.profileId, status.connectionId, status.queryId]);
+      const visible = status.status === "polling" ? undefined : `${status.status}:${status.reasonCode ?? ""}`;
+      if (visible !== undefined && lastJiraPollVisibleStatus.get(key) !== visible) {
+        lastJiraPollVisibleStatus.set(key, visible);
+        broadcastState();
+      }
+    },
+    onNotification: (notification) => {
+      const state = getState();
+      const workspace = state.workspaces.find(
+        (item) => item.kind === "jira" && String(item.profileId || "default") === notification.profileId,
+      );
+      const jiraIssueRef = {
+        provider: "jira" as const,
+        connectionId: notification.connectionId,
+        issueId: notification.issueId,
+        issueKey: notification.issueKey,
+      };
+      if (workspace) {
+        const jiraAlertPanelId = `jira:${notification.connectionId}:${notification.issueId}`;
+        raiseAlertBase({
+          projectId: workspace.id,
+          panelId: jiraAlertPanelId,
+          sessionId: `jira:${workspace.id}:${notification.connectionId}:${notification.issueId}`,
+          title: `${notification.issueKey} ${notification.type}`,
+          kind: "jira",
+          detail: "Jira issue changed in an opted-in saved query.",
+          jiraIssueRef,
+        });
+      }
+      externalNotificationEvents.emit(
+        "event",
+        buildExternalNotificationEvent({
+          eventId: notification.eventId,
+          profileId: notification.profileId,
+          workspaceId: workspace?.id || "",
+          kind: "jira",
+          title: `${notification.issueKey} ${notification.type}`,
+          detail: `Jira issue ${notification.type} in an opted-in saved query.`,
+          connectionId: notification.connectionId,
+          issueId: notification.issueId,
+          issueKey: notification.issueKey,
+          activity: notification.issueKey,
+        }),
+      );
+    },
+  });
+  await jiraPolling.start().catch((error: unknown) => {
+    jiraLog.warn("jira polling could not be started; it stays off until the next restart", {
+      err: error instanceof Error ? error.name : "error",
+    });
+  });
+  async function syncJiraPolling(): Promise<void> {
+    try {
+      await syncJiraPollingNow();
+    } catch (error) {
+      jiraLog.warn("jira polling could not be reconciled with the saved queries", {
+        err: error instanceof Error ? error.name : "error",
+      });
+    }
+  }
+  async function syncJiraPollingNow(): Promise<void> {
+    const service = jiraPolling;
+    if (!service) return;
+    const state = getState();
+    const queries = (state.settings.integrations.jira?.queries || []) as Array<{
+      id: string;
+      connectionId: string;
+      profileId: string;
+      jql: string;
+      notificationsEnabled?: boolean;
+      pollSeconds?: number;
+    }>;
+    const connections = jiraConnections();
+    const enabledKeys = new Set<string>();
+    for (const query of queries) {
+      const connection = connections.find(
+        (item) => item.id === query.connectionId && item.profileId === query.profileId && item.enabled,
+      );
+      if (!connection || query.notificationsEnabled !== true) continue;
+      const key = JSON.stringify([query.profileId, query.connectionId, query.id]);
+      enabledKeys.add(key);
+      await service
+        .enable({
+          profileId: query.profileId,
+          connectionId: query.connectionId,
+          queryId: query.id,
+          query: query.jql,
+          intervalMs: Math.max(
+            60_000,
+            Math.min(
+              60 * 60_000,
+              (query.pollSeconds ||
+                connection.pollSeconds ||
+                state.settings.integrations.jira.defaultPollSeconds ||
+                120) * 1000,
+            ),
+          ),
+          enabled: true,
+        })
+        .catch((error) =>
+          jiraLog.warn("jira polling configuration was rejected", {
+            queryId: query.id,
+            err: error instanceof Error ? error.name : "error",
+          }),
+        );
+    }
+    for (const config of await service.listEnabled()) {
+      if (!enabledKeys.has(JSON.stringify([config.profileId, config.connectionId, config.queryId])))
+        await service.disable(config);
+    }
+  }
+  await syncJiraPolling();
   if (dependencies.enableInternalMcp === true) {
     internalMcpBroker = createInternalMcpBroker({
       service: taskService,
+      jira: jiraMcpApi,
       onError: (message, details) => log.warn(message, details),
       isGrantLive: (grant) => {
         const state = getState();
@@ -7570,8 +8023,14 @@ export async function createRuntime({
           workspace &&
           String(workspace.profileId || "default") === grant.profileId &&
           state.profiles.some((profile) => profile.id === grant.profileId) &&
-          workspace.internalMcpEnabled === true &&
-          internalMcpWorkspaceSupported(workspace) &&
+          ((grant.tasksEnabled === true &&
+            workspace.internalMcpEnabled === true &&
+            internalMcpWorkspaceSupported(workspace)) ||
+            (grant.jiraEnabled === true &&
+              workspace.jiraMcpEnabled === true &&
+              jiraMcpWorkspaceSupported(workspace))) &&
+          grant.tasksEnabled === (workspace.internalMcpEnabled === true) &&
+          grant.jiraEnabled === (workspace.jiraMcpEnabled === true) &&
           panel &&
           !panel.launch &&
           panel.command === grant.command &&
@@ -7623,7 +8082,18 @@ export async function createRuntime({
                   "The runtime stopped before it could confirm that the review agent started. Retry to start a new review.",
               },
             })
-          : taskService.reconcile(record),
+          : record.kind === OPERATION_KIND_PIPELINE_AGENT
+            ? Promise.resolve({
+                status: "interrupted" as const,
+                workspaceId: String(record.artifacts.workspaceId || "") || undefined,
+                error: {
+                  code: "interrupted",
+                  classification: "interrupted",
+                  message:
+                    "The runtime stopped before the pipeline agent started. Any workspace it created is kept; start the agent again or open that workspace.",
+                },
+              })
+            : taskService.reconcile(record),
   );
   replayRecentReviewStartOutcomes = () => {
     const cutoff = Date.now() - 24 * 60 * 60 * 1000;
@@ -7755,6 +8225,50 @@ export async function createRuntime({
     return pr;
   }
 
+  /**
+   * The agent a backend-started action launches: a tab template whose command is a plain Claude Code / Codex /
+   * Copilot / OpenCode call, the configured worker provider first, and only one whose executable is installed.
+   */
+  /** The first installed agent tab template, by the task Worker's provider then a fixed order, or only `provider`. */
+  async function selectInstalledAgentTemplate(state: AppState, provider?: string) {
+    const configured = String(state.settings.taskDefaults?.workerProvider?.providerId || "");
+    const supportedTemplates = (state.tabTemplates || [])
+      .map((template) => ({ template, parsed: parseAgentCommand(template.command) }))
+      .filter((item) => {
+        const runtimeTemplate = item.template as typeof item.template & {
+          launch?: unknown;
+          sshMcpEnabled?: boolean;
+        };
+        return Boolean(
+          item.parsed &&
+          ["claude", "codex", "copilot", "opencode"].includes(item.parsed.provider) &&
+          !("launch" in runtimeTemplate) &&
+          runtimeTemplate.sshMcpEnabled !== true,
+        );
+      });
+    const order = provider
+      ? [provider]
+      : [configured, "claude", "codex", "copilot", "opencode"].filter((v, i, a) => v && a.indexOf(v) === i);
+    for (const agent of order) {
+      for (const candidate of supportedTemplates.filter((item) => item.parsed!.provider === agent)) {
+        const executable = candidate.parsed!.executable;
+        try {
+          if (path.isAbsolute(executable)) {
+            if (!existsSync(executable)) continue;
+          } else {
+            await execFileTextImpl(process.platform === "win32" ? "where.exe" : "which", [executable], {
+              timeout: 4_000,
+            });
+          }
+          return { template: candidate.template, parsed: candidate.parsed! };
+        } catch {
+          /* try another configured template or provider */
+        }
+      }
+    }
+    return null;
+  }
+
   async function startPullRequestReview(
     input: StartPullRequestReviewInput,
     windowId?: string,
@@ -7872,46 +8386,8 @@ export async function createRuntime({
       try {
         const initialState = getState();
         assertProfileExists(initialState, profileId);
-        const templates = initialState.tabTemplates || [];
-        const configured = String(initialState.settings.taskDefaults?.workerProvider?.providerId || "");
-        const supportedTemplates = templates
-          .map((template) => ({ template, parsed: parseAgentCommand(template.command) }))
-          .filter((item) => {
-            const runtimeTemplate = item.template as typeof item.template & {
-              launch?: unknown;
-              sshMcpEnabled?: boolean;
-            };
-            return Boolean(
-              item.parsed &&
-              ["claude", "codex", "copilot", "opencode"].includes(item.parsed.provider) &&
-              !("launch" in runtimeTemplate) &&
-              runtimeTemplate.sshMcpEnabled !== true,
-            );
-          });
-        const order = [configured, "claude", "codex", "copilot", "opencode"].filter(
-          (v, i, a) => v && a.indexOf(v) === i,
-        );
-        let selected: (typeof supportedTemplates)[number] | undefined;
-        for (const agent of order) {
-          for (const candidate of supportedTemplates.filter((item) => item.parsed!.provider === agent)) {
-            const executable = candidate.parsed!.executable;
-            try {
-              if (path.isAbsolute(executable)) {
-                if (!existsSync(executable)) continue;
-              } else {
-                await execFileTextImpl(process.platform === "win32" ? "where.exe" : "which", [executable], {
-                  timeout: 4_000,
-                });
-              }
-              selected = candidate;
-              break;
-            } catch {
-              /* try another configured template or provider */
-            }
-          }
-          if (selected) break;
-        }
-        if (!selected?.parsed)
+        const selected = await selectInstalledAgentTemplate(initialState);
+        if (!selected)
           throw new Error(
             "No installed MCP-compatible review agent is available. Configure Claude Code, Codex, GitHub Copilot, or OpenCode in tab templates.",
           );
@@ -8209,6 +8685,545 @@ export async function createRuntime({
       return await flight;
     } finally {
       if (pullRequestReviewFlights.get(dedupe) === flight) pullRequestReviewFlights.delete(dedupe);
+    }
+  }
+
+  const pipelineAgentFlights = new Map<string, Promise<StartPipelineAgentResult>>();
+
+  /**
+   * An interactive agent on a finished pipeline run that did not succeed: a checkout of the repository the run built
+   * (a quick-fix worktree on a new `pipeline-fix/…` branch, put on the failed commit) or, for a repository outside
+   * Azure Repos, a scratchpad — with the run's step logs and a BRIEF.md under `.strideterm/pipeline-run/<buildId>/`.
+   * Answers at once with an operation id; the outcome comes as `operation:finished`.
+   */
+  async function startPipelineAgent(
+    input: StartPipelineAgentInput,
+    windowId?: string,
+  ): Promise<StartPipelineAgentResult> {
+    const viewerProfileId = windowId ? getWindowProfileId(windowId) : null;
+    if (windowId && !viewerProfileId) throw new Error("The calling profile is no longer available.");
+    const initialState = getState();
+    const connection = getAzureSettings(initialState).connections.find((item) => item.id === input.connectionId);
+    if (!connection || connection.enabled === false)
+      throw new Error("The Azure DevOps connection is not available in this profile.");
+    const profileId = String(connection.profileId || "default");
+    if (viewerProfileId && viewerProfileId !== profileId) throw new Error("Cross-profile refused.");
+    assertProfileExists(initialState, profileId);
+    const { connectionId, projectName, buildId } = input;
+    const originWorkspaceId = `pipeline:${connectionId}:${buildId}`;
+
+    const replay = (record: import("./operation-registry.js").OperationRecord): StartPipelineAgentResult => ({
+      started: true,
+      operationId: record.operationId,
+      replayed: true,
+      ...(record.finishedAt
+        ? {
+            outcome: {
+              operationId: record.operationId,
+              kind: record.kind,
+              profileId: record.profileId,
+              ...(record.workspaceId ? { workspaceId: record.workspaceId } : {}),
+              finishedAt: record.finishedAt,
+              ...(record.status === "succeeded"
+                ? { result: record.result || {} }
+                : { error: record.error || { code: record.status, message: "The pipeline agent did not start." } }),
+            },
+          }
+        : {}),
+    });
+    const workspaceStillThere = (record: import("./operation-registry.js").OperationRecord) => {
+      const workspace = record.workspaceId
+        ? getState().workspaces.find((item) => item.id === record.workspaceId)
+        : null;
+      return Boolean(workspace && String(workspace.profileId || "default") === profileId && existsSync(workspace.cwd));
+    };
+    const exactRetry = operations.findByKey(profileId, originWorkspaceId, input.idempotencyKey);
+    if (exactRetry && (exactRetry.status !== "succeeded" || workspaceStillThere(exactRetry))) return replay(exactRetry);
+    // One agent per run: a second click while it starts, or while its workspace still exists, leads to that one.
+    const existing = operations
+      .list(profileId)
+      .find(
+        (record) =>
+          record.kind === OPERATION_KIND_PIPELINE_AGENT &&
+          record.originWorkspaceId === originWorkspaceId &&
+          (!record.finishedAt || (record.status === "succeeded" && workspaceStillThere(record))),
+      );
+    if (existing) return replay(existing);
+    const flightKey = `${profileId}:${originWorkspaceId}`;
+    const inFlight = pipelineAgentFlights.get(flightKey);
+    if (inFlight) return { ...(await inFlight), replayed: true };
+
+    const runner = async (handle: import("./operation-registry.js").OperationHandle) => {
+      const selected = await selectInstalledAgentTemplate(getState());
+      if (!selected)
+        throw new Error(
+          "No installed agent is available. Add a Claude Code, Codex, GitHub Copilot or OpenCode tab template.",
+        );
+      const agentName = selected.parsed.provider;
+      await handle.update({ step: "reading-run" });
+      const run = await azure.getPipelineRunForAgent({ connectionId, projectName, buildId });
+      if (run.status.toLowerCase() !== "completed")
+        throw new Error("The run is still in progress. Start the agent once it has finished.");
+      const { facts } = run;
+
+      await handle.update({ step: "checkout" });
+      let workspace: WorkspaceState;
+      let checkoutNote: string;
+      let checkout: "worktree" | "logs-only";
+      let scratchpad: NonNullable<AppState["scratchpads"]>[number] | null = null;
+      const branch = /^refs\/heads\/(.+)$/u.exec(facts.sourceBranch)?.[1] || "";
+      if (run.repository?.type === "TfsGit" && run.repository.url && branch) {
+        const repository = run.repository;
+        let prepared: Awaited<ReturnType<typeof azure.openQuickFixWorkspace>> | null = null;
+        let fixBranch = "";
+        for (let attempt = 1; !prepared; attempt += 1) {
+          fixBranch = pipelineFixBranchName(facts.pipelineName, facts.buildNumber, attempt);
+          try {
+            prepared = await azure.openQuickFixWorkspace({
+              state: getState(),
+              connectionId,
+              projectName,
+              repositoryId: repository.id,
+              repositoryName: repository.name,
+              remoteUrl: repository.url,
+              baseBranch: branch,
+              newBranchName: fixBranch,
+              callerProfileId: profileId,
+            });
+          } catch (error) {
+            if (attempt < 5 && /already exists/u.test(errorMessage(error))) continue;
+            throw error;
+          }
+        }
+        workspace = normalizeWorkspace(prepared.workspace);
+        const git = async (args: string[]) =>
+          String((await execFileTextImpl("git", args, { cwd: workspace.cwd, timeout: 60_000 }))?.stdout || "");
+        const head = (await git(["rev-parse", "HEAD"])).trim();
+        const branchTip = (await git(["rev-parse", `refs/remotes/origin/${branch}`])).trim();
+        const failed = facts.sourceVersion;
+        const short = (sha: string) => sha.slice(0, 8);
+        checkoutNote = `branch ${fixBranch}, created from ${branch} at ${short(head)}.`;
+        if (failed && head !== failed) {
+          // The logs describe the failed commit, so the checkout goes there — but only a checkout that is still
+          // exactly the fresh branch: a reused worktree may hold someone's work.
+          const fresh = head === branchTip && !(await git(["status", "--porcelain"])).trim();
+          const reachable = await git(["cat-file", "-e", `${failed}^{commit}`]).then(
+            () => true,
+            () => false,
+          );
+          if (fresh && reachable) {
+            await git(["reset", "--hard", failed]);
+            checkoutNote = `branch ${fixBranch} at the failed commit ${short(failed)}; ${branch} has moved on to ${short(branchTip)} since the run.`;
+          } else {
+            checkoutNote += ` The failed commit ${short(failed)} is not checked out: ${fresh ? "it is not in this branch any more" : "the checkout already had changes"}.`;
+          }
+        } else if (failed) {
+          checkoutNote = `branch ${fixBranch} at the failed commit ${short(failed)}, still the tip of ${branch}.`;
+        }
+        await excludePipelineRunDir(workspace.cwd, git);
+        checkout = "worktree";
+      } else {
+        const dir = path.join(userDataPath, "scratchpads", randomUUID());
+        await mkdir(dir, { recursive: true });
+        workspace = normalizeWorkspace({
+          id: `workspace-${randomUUID()}`,
+          name: "",
+          icon: "📁",
+          color: "#ffa424",
+          kind: "terminal",
+          source: "manual",
+          pluginId: "",
+          cwd: dir,
+          profileId,
+          notes: "",
+          activePanelId: "",
+          panels: [],
+        });
+        scratchpad = {
+          workspaceId: workspace.id,
+          profileId,
+          name: "",
+          path: dir,
+          createdAt: new Date().toISOString(),
+        };
+        checkoutNote = run.repository
+          ? `no checkout: the pipeline builds a ${run.repository.type || "non-Azure Repos"} repository (${run.repository.name}); this folder holds only the run files.`
+          : "no checkout: the run names no repository; this folder holds only the run files.";
+        checkout = "logs-only";
+      }
+
+      await handle.update({ step: "logs", workspaceId: workspace.id, artifacts: { workspaceId: workspace.id } });
+      const written = await writePipelineRunFiles({
+        root: workspace.cwd,
+        facts,
+        checkoutNote,
+        fetchLog: (logId) => azure.getBuildStepLog({ connectionId, projectName, buildId, logId }),
+      });
+
+      // The agent tab: the workspace's own tab for that agent when it has one, else the template's.
+      let panel = workspace.panels.find(
+        (item) => !item.launch && parseAgentCommand(item.command)?.provider === agentName,
+      );
+      if (panel) panel.startup = "manual";
+      else {
+        panel = {
+          id: `panel-${randomUUID()}`,
+          title: selected.template.title,
+          command: selected.template.command,
+          startup: "manual",
+          cwd: workspace.cwd,
+        };
+        workspace.panels = [...workspace.panels, panel];
+      }
+      if (!workspace.panels.some((item) => item.command === "__files__")) {
+        workspace.panels = [
+          ...workspace.panels,
+          {
+            id: `panel-${randomUUID()}`,
+            title: "Files",
+            command: "__files__",
+            cwd: workspace.cwd,
+          },
+        ];
+      }
+      workspace.activePanelId = panel.id;
+      workspace.name = `${facts.pipelineName} ${facts.buildNumber}`;
+      workspace.profileId = profileId;
+      if (scratchpad) scratchpad.name = workspace.name;
+      const sessionId = createSessionId(workspace.id, panel.id);
+      pendingAgentInitialPrompt.set(sessionId, {
+        prompt: pipelineAgentPrompt(facts.buildId, facts.pipelineName, facts.buildNumber),
+        agentName,
+        executable: selected.parsed.executable,
+      });
+      try {
+        await store.mutate((draft: AppState) => {
+          assertProfileExists(draft, profileId);
+          const live = getAzureSettings(draft).connections.find((item) => item.id === connectionId);
+          if (!live || live.enabled === false || String(live.profileId || "default") !== profileId)
+            throw new Error("The Azure DevOps connection changed while the agent workspace was being prepared.");
+          insertWorkspace(draft.workspaces, workspace, getViewerActiveWorkspaceId(windowId));
+          markWorkspaceWorked(draft, workspace.id);
+          if (scratchpad) draft.scratchpads = [...(draft.scratchpads || []), scratchpad];
+        });
+        await handle.update({
+          step: "starting",
+          workspaceId: workspace.id,
+          artifacts: { workspaceId: workspace.id, sessionId, agentName },
+        });
+        sessions.syncWithState(getState());
+        syncSessionSignalsWithState();
+        broadcastState();
+        if (checkout === "worktree") void refreshGit(workspace.id).catch(() => {});
+        const startedSession = await sessions.ensureSession(getState(), sessionId);
+        if (!startedSession || startedSession.status !== "running")
+          throw new Error(
+            `The ${agentName} session did not start. Check its CLI installation and sign-in state, then open the workspace "${workspace.name}" and start it there. The run brief and step logs are in ${pipelineRunRelativeDir(buildId)}.`,
+          );
+      } catch (error) {
+        pendingAgentInitialPrompt.delete(sessionId);
+        throw error;
+      }
+      return {
+        workspaceId: workspace.id,
+        sessionId,
+        agentName,
+        checkout,
+        buildId: facts.buildId,
+        pipelineName: facts.pipelineName,
+        buildNumber: facts.buildNumber,
+        logFiles: written.logFiles,
+        launched: true,
+      };
+    };
+
+    const inputHash = createHash("sha256")
+      .update(JSON.stringify({ connectionId, projectName, buildId, profileId }))
+      .digest("hex");
+    const flight = (async () => {
+      const accepted = await operations.accept(
+        {
+          kind: OPERATION_KIND_PIPELINE_AGENT,
+          profileId,
+          originWorkspaceId,
+          idempotencyKey: input.idempotencyKey,
+          inputHash,
+          initialStep: "reading-run",
+          intent: { connectionId, projectName, pipelineId: input.pipelineId, buildId, profileId },
+        },
+        runner,
+      );
+      return accepted.replayed
+        ? replay(accepted.record)
+        : { started: true as const, operationId: accepted.record.operationId, replayed: false };
+    })();
+    pipelineAgentFlights.set(flightKey, flight);
+    try {
+      return await flight;
+    } finally {
+      if (pipelineAgentFlights.get(flightKey) === flight) pipelineAgentFlights.delete(flightKey);
+    }
+  }
+
+  const jiraDevelopmentFlights = new Map<string, Promise<StartJiraDevelopmentResult>>();
+
+  /**
+   * Start development on a Jira issue: a branch workspace (the Azure DevOps / GitHub quick-fix checkout, linked to the
+   * issue), the issue with every comment and its attachments under `.strideterm/jira/<KEY>/` of the checkout, and —
+   * when one is chosen — an agent tab started on the TASK.md there. Answers at once with an operation id; the outcome
+   * comes as `operation:finished`.
+   */
+  async function startJiraDevelopment(
+    input: StartJiraDevelopmentInput,
+    windowId?: string,
+  ): Promise<StartJiraDevelopmentResult> {
+    const profileId = windowId ? getWindowProfileId(windowId) : "default";
+    if (!profileId) throw new Error("The calling profile is no longer available.");
+    const initialState = getState();
+    assertProfileExists(initialState, profileId);
+    const { jiraIssueRef, target } = input;
+    const jiraConnection = (initialState.settings.integrations.jira?.connections || []).find(
+      (item) => item.id === jiraIssueRef.connectionId && item.enabled !== false && item.profileId === profileId,
+    );
+    if (!jiraConnection) throw new Error("The Jira connection is not available in this profile.");
+    const providerConnections: Array<{ id: string; enabled?: boolean; profileId?: string }> =
+      target.provider === "azure"
+        ? getAzureSettings(initialState).connections
+        : getGitHubSettings(initialState).connections || [];
+    const providerConnection = providerConnections.find((item) => item.id === target.connectionId);
+    if (
+      !providerConnection ||
+      providerConnection.enabled === false ||
+      String(providerConnection.profileId || "default") !== profileId
+    )
+      throw new Error(
+        `The ${target.provider === "azure" ? "Azure DevOps" : "GitHub"} connection is not available in this profile.`,
+      );
+    if (input.agent && !(await selectInstalledAgentTemplate(initialState, input.agent)))
+      throw new Error(
+        `No installed ${input.agent} tab template is available. Add one in Settings, or start without an agent.`,
+      );
+    const originWorkspaceId = `jira:${jiraIssueRef.connectionId}:${jiraIssueRef.issueId}`;
+
+    const replay = (record: import("./operation-registry.js").OperationRecord): StartJiraDevelopmentResult => ({
+      started: true,
+      operationId: record.operationId,
+      replayed: true,
+      ...(record.finishedAt
+        ? {
+            outcome: {
+              operationId: record.operationId,
+              kind: record.kind,
+              profileId: record.profileId,
+              ...(record.workspaceId ? { workspaceId: record.workspaceId } : {}),
+              finishedAt: record.finishedAt,
+              ...(record.status === "succeeded"
+                ? { result: record.result || {} }
+                : { error: record.error || { code: record.status, message: "Development could not be started." } }),
+            },
+          }
+        : {}),
+    });
+    const exactRetry = operations.findByKey(profileId, originWorkspaceId, input.idempotencyKey);
+    if (exactRetry) return replay(exactRetry);
+    // One start per issue at a time: a second click while it runs leads to that one.
+    const running = operations
+      .list(profileId)
+      .find(
+        (record) =>
+          record.kind === OPERATION_KIND_JIRA_DEVELOPMENT &&
+          record.originWorkspaceId === originWorkspaceId &&
+          !record.finishedAt,
+      );
+    if (running) return replay(running);
+    const flightKey = `${profileId}:${originWorkspaceId}`;
+    const inFlight = jiraDevelopmentFlights.get(flightKey);
+    if (inFlight) return { ...(await inFlight), replayed: true };
+
+    const runner = async (handle: import("./operation-registry.js").OperationHandle) => {
+      await handle.update({ step: "checkout" });
+      const source = await providerHandlers.jiraDevelopmentSource(jiraIssueRef, profileId);
+      const linkedPayload = { ...target, holdAgentTabs: true, deferActivation: true };
+      const accepted = {
+        profileId,
+        workItem: { ref: source.issue.ref, summary: source.issue.summary, status: source.issue.status },
+      };
+      const { workspaceId } =
+        target.provider === "azure"
+          ? await providerHandlers.azureQuickFixCreateWorkspace(linkedPayload, windowId, accepted)
+          : await providerHandlers.githubQuickFixCreateWorkspace(linkedPayload, windowId, accepted);
+      await handle.update({ step: "issue", workspaceId, artifacts: { workspaceId } });
+      const created = getState().workspaces.find((item) => item.id === workspaceId);
+      if (!created) throw new Error("The branch workspace disappeared before the Jira issue was copied into it.");
+      const repository = target.provider === "azure" ? target.repositoryName : `${target.owner}/${target.repo}`;
+      const task =
+        input.task ||
+        jiraDevelopmentTask(
+          {
+            issueKey: source.issue.ref.issueKey,
+            summary: source.issue.summary,
+            branch: target.newBranchName,
+            baseBranch: target.baseBranch,
+            repository,
+          },
+          input.mode,
+        );
+      const runGit = async (args: string[]) =>
+        String((await execFileTextImpl("git", args, { cwd: created.cwd, timeout: 60_000 }))?.stdout || "");
+      await excludeLocalDir(created.cwd, runGit, JIRA_DEVELOPMENT_DIR);
+      const written = await writeJiraIssueFiles({
+        root: created.cwd,
+        issue: source.issue,
+        comments: source.comments,
+        commentsTotal: source.commentsTotal,
+        task,
+        fetchAttachment: (attachment) => source.readAttachment(attachment.id, JIRA_ATTACHMENT_MAX_BYTES),
+      });
+      const summary = {
+        workspaceId,
+        issueKey: source.issue.ref.issueKey,
+        filesDir: written.relativeDir,
+        attachments: written.attachments,
+        comments: written.comments,
+      };
+
+      const selected = input.agent ? await selectInstalledAgentTemplate(getState(), input.agent) : null;
+      if (input.agent && !selected)
+        throw new Error(
+          `The ${input.agent} tab template is no longer available. The branch workspace and ${written.relativeDir} are ready without it.`,
+        );
+      let agentPanelId = "";
+      await store.mutate((draft: AppState) => {
+        const workspace = draft.workspaces.find(
+          (item) => item.id === workspaceId && String(item.profileId || "default") === profileId,
+        );
+        if (!workspace) throw new Error("The branch workspace changed before the agent could be added.");
+        if (selected) {
+          let panel = workspace.panels.find(
+            (item) => !item.launch && parseAgentCommand(item.command)?.provider === selected.parsed.provider,
+          );
+          if (!panel) {
+            panel = {
+              id: `panel-${randomUUID()}`,
+              title: selected.template.title,
+              command: selected.template.command,
+              startup: "manual",
+              cwd: workspace.cwd,
+            };
+            workspace.panels = [...workspace.panels, panel];
+          }
+          const command = agentCommandWithModel(panel.command, selected.parsed.provider as JiraDevelopmentAgent, {
+            model: input.model,
+            effort: input.effort,
+          });
+          if (!command) throw new Error(`The ${selected.parsed.provider} tab command could not take the chosen model.`);
+          panel.command = command;
+          agentPanelId = panel.id;
+          workspace.activePanelId = panel.id;
+          workspace.activeViewId = createSessionId(workspace.id, panel.id);
+        }
+        if (!workspace.panels.some((item) => item.command === "__files__")) {
+          workspace.panels = [
+            ...workspace.panels,
+            { id: `panel-${randomUUID()}`, title: "Files", command: "__files__", cwd: workspace.cwd },
+          ];
+        }
+      });
+      // The window switches only now: a renderer reads the workspace's active tab when it activates the workspace,
+      // so switching at creation showed the quick-fix's first tab (a held agent) instead of the one given the issue.
+      const showWorkspace = async () => {
+        await store.mutate((draft: AppState) => {
+          const workspace = draft.workspaces.find((item) => item.id === workspaceId);
+          if (!workspace) return;
+          draft.activeWorkspaceId = workspace.id;
+          mirrorActivationIntoSlot(draft, windowId, workspace);
+        });
+        mirrorRemoteViewerWorkspace(windowId, workspaceId);
+        broadcastState();
+      };
+      if (!selected) {
+        await showWorkspace();
+        return { ...summary, launched: false };
+      }
+      const agentName = selected.parsed.provider;
+      const sessionId = createSessionId(workspaceId, agentPanelId);
+      await handle.update({ step: "agent", workspaceId, artifacts: { workspaceId, sessionId, agentName } });
+      pendingAgentInitialPrompt.set(sessionId, {
+        prompt: jiraDevelopmentKickoff(source.issue.ref.issueKey),
+        agentName,
+        executable: selected.parsed.executable,
+      });
+      try {
+        sessions.syncWithState(getState());
+        syncSessionSignalsWithState();
+        broadcastState();
+        // The quick-fix workspace may already run this agent tab; only a fresh start reads the first message.
+        const startedSession = await sessions.restartSession(getState(), sessionId);
+        if (!startedSession || startedSession.status !== "running")
+          throw new Error(
+            `The ${agentName} session did not start. Check its CLI installation and sign-in state, then start it in the branch workspace and point it at ${written.relativeDir}/TASK.md.`,
+          );
+        // Held while the workspace was created; from now on the tab starts with the workspace like any other.
+        await store.mutate((draft: AppState) => {
+          const panel = draft.workspaces
+            .find((item) => item.id === workspaceId)
+            ?.panels.find((item) => item.id === agentPanelId);
+          if (panel) panel.startup = APP_CONFIG.ui.defaultPanelStartup;
+        });
+        await showWorkspace();
+      } catch (error) {
+        pendingAgentInitialPrompt.delete(sessionId);
+        throw error;
+      }
+      return { ...summary, agentName, sessionId, launched: true };
+    };
+
+    const inputHash = createHash("sha256")
+      .update(
+        JSON.stringify({
+          jiraIssueRef,
+          target,
+          agent: input.agent,
+          model: input.model || "",
+          effort: input.effort || "",
+          mode: input.mode || "",
+          task: input.task || "",
+          profileId,
+        }),
+      )
+      .digest("hex");
+    const flight = (async () => {
+      const accepted = await operations.accept(
+        {
+          kind: OPERATION_KIND_JIRA_DEVELOPMENT,
+          profileId,
+          originWorkspaceId,
+          idempotencyKey: input.idempotencyKey,
+          inputHash,
+          initialStep: "checkout",
+          intent: {
+            jiraIssueRef,
+            provider: target.provider,
+            connectionId: target.connectionId,
+            branch: target.newBranchName,
+            agent: input.agent,
+            ...(input.model ? { model: input.model } : {}),
+            ...(input.effort ? { effort: input.effort } : {}),
+            ...(input.mode ? { mode: input.mode } : {}),
+            profileId,
+          },
+        },
+        runner,
+      );
+      return accepted.replayed
+        ? replay(accepted.record)
+        : { started: true as const, operationId: accepted.record.operationId, replayed: false };
+    })();
+    jiraDevelopmentFlights.set(flightKey, flight);
+    try {
+      return await flight;
+    } finally {
+      if (jiraDevelopmentFlights.get(flightKey) === flight) jiraDevelopmentFlights.delete(flightKey);
     }
   }
 
@@ -9101,6 +10116,19 @@ export async function createRuntime({
     sshTestSessionOwner(sessionId: unknown): string | undefined {
       if (typeof sessionId !== "string") return undefined;
       return sshTestSessions.get(sessionId)?.ownerWindowId || sshTransferOwnerForSession(sessionId);
+    },
+    /** The profile a Jira issue pop-out belongs to: the caller's own, and only for one of its Jira workspaces. */
+    resolveJiraIssuePopoutProfile(workspaceId: string, windowId: string): string {
+      const profileId = getWindowProfileId(windowId);
+      if (!profileId) throw new Error("Issue pop-out needs a desktop window.");
+      const workspace = getState().workspaces.find((candidate) => candidate.id === workspaceId);
+      if (
+        !workspace ||
+        (workspace.kind !== "jira" && workspace.kind !== "jira-board") ||
+        (workspace.profileId || "default") !== profileId
+      )
+        throw new Error("This Jira workspace is not available in the current profile.");
+      return profileId;
     },
     reviewAgentPreparationSessionOwner(sessionId: unknown): string | undefined {
       return typeof sessionId === "string" ? reviewAgentPreparationSessions.get(sessionId)?.ownerWindowId : undefined;
@@ -10146,12 +11174,19 @@ export async function createRuntime({
      * with the window that made it. What continues the flow is the account-state event every window
      * already subscribes to.
      */
-    accountBeginSignIn(email: string, purpose: SignInPurpose, offerId?: string, windowId?: string) {
+    accountBeginSignIn(
+      email: string,
+      purpose: SignInPurpose,
+      offerId?: string,
+      windowId?: string,
+      confirmationPhrase?: string,
+    ) {
       if (!normalizeAuthEmail(email)) return Promise.reject(new AccountManagerError("invalid-email"));
       const sameIntent = (intent: NonNullable<typeof pendingSignInIntent>) =>
         normalizeAuthEmail(intent.email) === normalizeAuthEmail(email) &&
         intent.purpose === purpose &&
-        intent.offerId === offerId;
+        intent.offerId === offerId &&
+        intent.confirmationPhrase === confirmationPhrase;
       if (signInStartInFlight && activeSignInIntent && sameIntent(activeSignInIntent)) return Promise.resolve();
       if (pendingSignInIntent && sameIntent(pendingSignInIntent)) {
         if (onlineBootstrapState.phase !== "failed") return Promise.resolve();
@@ -10165,6 +11200,7 @@ export async function createRuntime({
         email,
         purpose,
         ...(offerId === undefined ? {} : { offerId }),
+        ...(confirmationPhrase === undefined ? {} : { confirmationPhrase }),
         ownerWindowId: windowId ?? null,
       });
       return Promise.resolve();
@@ -10540,9 +11576,12 @@ export async function createRuntime({
       return externalNotificationEvents;
     },
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async activateProfileForRemoteClient(clientId: string, profileId: any): Promise<unknown> {
-      const registry = requireRemoteClientRegistry(clientId);
+    async activateProfileForRemoteClient(
+      clientId: string,
+      profileId: string,
+      requestRegistry?: RemoteClientRegistry,
+    ): Promise<unknown> {
+      const registry = requireRemoteClientRegistry(clientId, requestRegistry);
       // The remote client is an independent viewer — switching its profile
       // mutates only its own context; desktop windows are untouched. Any
       // EXISTING profile is valid, even one with no desktop window.
@@ -10555,50 +11594,66 @@ export async function createRuntime({
       return registry.composePayload(clientId, getPayload());
     },
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async activateWorkspaceForRemoteClient(clientId: string, workspaceId: any): Promise<unknown> {
-      const registry = requireRemoteClientRegistry(clientId);
+    async activateWorkspaceForRemoteClient(
+      clientId: string,
+      workspaceId: string,
+      requestRegistry?: RemoteClientRegistry,
+    ): Promise<unknown> {
+      const registry = requireRemoteClientRegistry(clientId, requestRegistry);
       // Throws on an unknown/cross-profile workspace.
       registry.activateWorkspace(clientId, workspaceId, getState());
       if (workspaceId) {
         // No `lastWorkedAt` stamp: activation is navigation, not work.
-        ensureVisibleSession(String(workspaceId));
+        ensureVisibleSession(workspaceId);
       }
       broadcastState();
       return registry.composePayload(clientId, getPayload());
     },
 
-    async activateTargetForRemoteClient(clientId: string, profileId: string, workspaceId: string): Promise<unknown> {
-      const registry = requireRemoteClientRegistry(clientId);
+    async activateTargetForRemoteClient(
+      clientId: string,
+      profileId: string,
+      workspaceId: string,
+      requestRegistry?: RemoteClientRegistry,
+    ): Promise<unknown> {
+      const registry = requireRemoteClientRegistry(clientId, requestRegistry);
       registry.activateTarget(clientId, profileId, workspaceId, getState());
       ensureVisibleSession(workspaceId);
       broadcastState();
       return registry.composePayload(clientId, getPayload());
     },
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async activateSessionForRemoteClient(clientId: string, workspaceId: any, sessionId: any): Promise<unknown> {
-      const registry = requireRemoteClientRegistry(clientId);
+    async activateSessionForRemoteClient(
+      clientId: string,
+      workspaceId: string,
+      sessionId: string,
+      requestRegistry?: RemoteClientRegistry,
+    ): Promise<unknown> {
+      const registry = requireRemoteClientRegistry(clientId, requestRegistry);
       registry.activateSession(clientId, workspaceId, sessionId, getState());
       // Remember the tab on the workspace, as the desktop paths do: switching
       // back restores the view from activeViewId / activePanelId, and without
       // this a phone's terminal-tab switch was never stored, so it returned to
       // a stale view. Only the workspace's own memory — never the desktop's
       // global activeWorkspaceId or a window slot.
-      const descriptor = parseSessionId(String(sessionId || ""));
+      const descriptor = parseSessionId(sessionId);
       if (descriptor) {
         await store.mutate((draft: AppState) => {
           const workspace = findWorkspace(draft, descriptor.workspaceId);
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          if (workspace && (workspace as any).panels?.some((panel: any) => panel.id === descriptor.panelId)) {
+          if (
+            workspace &&
+            workspace.panels.some(
+              (panel: import("../shared/types/state.js").PanelState) => panel.id === descriptor.panelId,
+            )
+          ) {
             workspace.activePanelId = descriptor.panelId;
-            workspace.activeViewId = String(sessionId);
+            workspace.activeViewId = sessionId;
           }
         });
       }
       if (sessionId) {
         // No `lastWorkedAt` stamp: opening a tab is navigation, not work.
-        ensureSessionSafe(String(sessionId));
+        ensureSessionSafe(sessionId);
       }
       broadcastState();
       return registry.composePayload(clientId, getPayload());
@@ -11114,7 +12169,7 @@ export async function createRuntime({
     },
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async saveWorkspace(workspace: any, windowId?: string) {
+    async saveWorkspace(workspace: any, windowId?: string, options: { runtimeOwned?: boolean } = {}) {
       log.debug("saveWorkspace: called", {
         workspaceId: workspace?.id,
         name: workspace?.name,
@@ -11195,6 +12250,7 @@ export async function createRuntime({
           // Desktop-only, like autoApprovePermissions: a remote client keeps whatever is stored.
           normalized.internalMcpEnabled = priorWorkspace?.internalMcpEnabled === true;
           normalized.sshMcpEnabled = priorWorkspace?.sshMcpEnabled === true;
+          normalized.jiraMcpEnabled = priorWorkspace?.jiraMcpEnabled === true;
           const savedOptIns = new Map(
             ((priorWorkspace?.panels || []) as Array<{ id: string; sshMcpEnabled?: boolean }>).map((panel) => [
               panel.id,
@@ -11223,18 +12279,46 @@ export async function createRuntime({
           const priorWorkedAt = draft.workspaces[index]?.lastWorkedAt;
           if (priorWorkedAt) normalized.lastWorkedAt = priorWorkedAt;
           else delete normalized.lastWorkedAt;
-          // The source repository and the baseline are runtime-owned facts about
-          // the checkout. A stale or hostile client copy must not rewind the
-          // baseline or point the review at another repository.
+          // The target and source repositories and the baseline are runtime-owned facts
+          // about the checkout. A stale or hostile client copy must not rewind the
+          // baseline or point the review's fetches and pushes at another repository.
           const priorReview = draft.workspaces[index]?.review;
-          if (normalized.review && priorReview) {
-            normalized.review.sourceRepository = priorReview.sourceRepository ?? null;
-            const baseline = carryOverSourceBaseline(priorReview, normalized.review);
+          if (normalized.review) {
+            normalized.review.repository = priorReview?.repository ?? null;
+            normalized.review.sourceRepository = priorReview?.sourceRepository ?? null;
+            const baseline = priorReview ? carryOverSourceBaseline(priorReview, normalized.review) : "";
             if (baseline) normalized.review.sourceBaselineSha = baseline;
             else delete normalized.review.sourceBaselineSha;
           }
+          // Jira bodies and agent drafts are not in the payload the renderer receives (stripJiraPrivatePayload),
+          // so a saved copy of the workspace cannot carry them: what is stored stays.
+          const priorStored = draft.workspaces[index];
+          if (priorStored?.jiraMcpCommentDrafts?.length)
+            normalized.jiraMcpCommentDrafts = priorStored.jiraMcpCommentDrafts;
+          else delete normalized.jiraMcpCommentDrafts;
+          if (normalized.task) {
+            if (priorStored?.task?.jiraPreparedSnapshot)
+              normalized.task.jiraPreparedSnapshot = priorStored.task.jiraPreparedSnapshot;
+            else delete normalized.task.jiraPreparedSnapshot;
+            if (priorStored?.task?.jiraCommentDrafts)
+              normalized.task.jiraCommentDrafts = priorStored.task.jiraCommentDrafts;
+            else delete normalized.task.jiraCommentDrafts;
+          }
           draft.workspaces[index] = normalized;
         } else {
+          // Agent drafts and the prepared snapshot are runtime-written: a client's new workspace starts without
+          // them. Only the runtime's own create (a Jira-linked task) may insert them.
+          if (!options.runtimeOwned) delete normalized.jiraMcpCommentDrafts;
+          // Review links are made by the runtime; a client's new workspace names no repository.
+          if (normalized.review && !options.runtimeOwned) {
+            normalized.review.repository = null;
+            normalized.review.sourceRepository = null;
+            delete normalized.review.sourceBaselineSha;
+          }
+          if (normalized.task && !options.runtimeOwned) {
+            delete normalized.task.jiraPreparedSnapshot;
+            delete normalized.task.jiraCommentDrafts;
+          }
           insertWorkspace(draft.workspaces, normalized, getViewerActiveWorkspaceId(windowId));
           // Creating a workspace IS work (V2 plan allowlist).
           markWorkspaceWorked(draft, normalized.id);
@@ -11969,6 +13053,12 @@ export async function createRuntime({
     startPullRequestReview(input: StartPullRequestReviewInput, windowId?: string, internalProfileId?: string) {
       return startPullRequestReview(input, windowId, internalProfileId);
     },
+    startPipelineAgent(input: StartPipelineAgentInput, windowId?: string) {
+      return startPipelineAgent(input, windowId);
+    },
+    startJiraDevelopment(input: StartJiraDevelopmentInput, windowId?: string) {
+      return startJiraDevelopment(input, windowId);
+    },
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async deleteWorkspace(workspaceId: any, options: any = {}, windowId?: string) {
@@ -12274,6 +13364,8 @@ export async function createRuntime({
         settingsToSave.git = { ...settingsToSave.git, ui: { ...settingsToSave.git.ui } };
         delete settingsToSave.git.ui.newView;
       }
+      // Jira settings (connections, secret refs, polling) have their own channels and are never saved here.
+      const { jira: _ignoredJiraSettings, ...integrationsToSave } = settings.integrations || {};
       const previousConfig = getState().settings.remoteAccess;
       let autoApproveDisarmed = false;
       await store.mutate((draft: AppState) => {
@@ -12286,6 +13378,12 @@ export async function createRuntime({
           remoteAccess: {
             ...draft.settings.remoteAccess,
             ...(settings.remoteAccess || {}),
+          },
+          // Per key: a remote save has its blocked integrations (mobile, jira) stripped, and a shallow
+          // replace of the subtree would reset them, and every integration it did not mention, to defaults.
+          integrations: {
+            ...draft.settings.integrations,
+            ...integrationsToSave,
           },
           notifications: {
             ...draft.settings.notifications,
@@ -13304,12 +14402,73 @@ export async function createRuntime({
           }
         }
       }
+      const jiraMerges: Array<{ profileId: string; fromWorkspaceId: string; toWorkspaceId: string }> = [];
+      let jiraFallbackProfileId = "";
       await store.mutate((draft: AppState) => {
         draft.profiles = draft.profiles.filter((p) => p.id !== profileId);
         if (draft.profiles.length === 0) {
           draft.profiles.push({ id: "default", name: "Default", color: "#6366f1", workspaceIds: [] });
         }
+        // normalizeState reattaches the deleted profile's workspaces to this profile; Jira data follows them so
+        // no connection, query or saved board is left behind under an id that no longer exists.
+        const activeWorkspaceProfileId = draft.workspaces.find((w) => w.id === draft.activeWorkspaceId)?.profileId;
+        const fallbackProfileId =
+          (activeWorkspaceProfileId && draft.profiles.some((p) => p.id === activeWorkspaceProfileId)
+            ? activeWorkspaceProfileId
+            : null) ||
+          draft.profiles[0]?.id ||
+          "default";
+        jiraFallbackProfileId = fallbackProfileId;
+        const jira = draft.settings.integrations.jira as unknown as {
+          connections: Array<{ profileId: string }>;
+          queries: Array<{ profileId: string }>;
+          repoBindings?: Array<{ profileId: string }>;
+        };
+        for (const list of [jira.connections, jira.queries, jira.repoBindings || []])
+          for (const item of list) if (item.profileId === profileId) item.profileId = fallbackProfileId;
+        const keptInbox = draft.workspaces.find(
+          (w) => w.kind === "jira" && (w.profileId || "default") === fallbackProfileId,
+        );
+        if (keptInbox) {
+          const mergedInboxIds = new Set(
+            draft.workspaces
+              .filter((w) => w.kind === "jira" && (w.profileId || "default") === profileId)
+              .map((w) => w.id),
+          );
+          for (const id of mergedInboxIds)
+            jiraMerges.push({ profileId: fallbackProfileId, fromWorkspaceId: id, toWorkspaceId: keptInbox.id });
+          for (const w of draft.workspaces) {
+            if (w.kind === "jira-board" && w.jiraBoard && mergedInboxIds.has(w.jiraBoard.parentWorkspaceId))
+              w.jiraBoard.parentWorkspaceId = keptInbox.id;
+          }
+          draft.workspaces = draft.workspaces.filter((w) => !mergedInboxIds.has(w.id));
+        }
       });
+      await jiraPolling?.disableProfile(profileId).catch((err: unknown) => {
+        log.warn("deleteProfile: could not disable Jira polling for the deleted profile", { err: String(err) });
+      });
+      if (!jiraCache.reassignProfile(profileId, jiraFallbackProfileId))
+        log.warn("deleteProfile: Jira saved views could not be moved to the fallback profile", {
+          fromProfileId: profileId,
+          toProfileId: jiraFallbackProfileId,
+        });
+      for (const merge of jiraMerges)
+        if (!jiraCache.reassignWorkspace(merge.profileId, merge.fromWorkspaceId, merge.toWorkspaceId))
+          log.warn("deleteProfile: Jira saved views of a merged inbox could not be moved", {
+            profileId: merge.profileId,
+            fromWorkspaceId: merge.fromWorkspaceId,
+            toWorkspaceId: merge.toWorkspaceId,
+          });
+      providerHandlers.forgetJiraProfileViewState(profileId);
+      void removeAgentData(profileId);
+      try {
+        const moved = await providerHandlers.moveJiraProfileWriteJournal(profileId, jiraFallbackProfileId);
+        if (moved) log.info("deleteProfile: Jira write history moved to the fallback profile", { count: moved });
+      } catch (err) {
+        log.warn("deleteProfile: Jira write history could not be moved to the fallback profile", {
+          err: err instanceof Error ? err.name : "error",
+        });
+      }
       await sshMcpBroker?.revokeInvalid();
       await internalMcpBroker?.revokeInvalid();
       // Fallback any remote clients that were on the deleted profile — in EVERY registry, because a
@@ -13347,6 +14506,10 @@ export async function createRuntime({
       // Stop the notify server first so no new callbacks arrive
       // while we clear session signals below.
       await stopAgentNotifyServer();
+      jiraPolling?.dispose();
+      jiraPolling = null;
+      providerHandlers.stopJiraWorkspaceViewSync();
+      jiraCache.close();
       await sshMcpBroker?.close();
       await internalMcpBroker?.close();
       await reviewGitBroker?.close();

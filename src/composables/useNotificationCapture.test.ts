@@ -68,6 +68,50 @@ describe("useNotificationCapture — per-window profile scoping", () => {
     expect(notifStore.latestToast).not.toBeNull();
   });
 
+  it("captures a bounded Jira issue ref into the profile-scoped notification without issue content", async () => {
+    const appStore = useAppStore();
+    const notifStore = useNotificationStore();
+    appStore.payload = makePayload({});
+    useNotificationCapture();
+    vi.advanceTimersByTime(16_000);
+    const jiraIssueRef = { provider: "jira", connectionId: "jira-c", issueId: "100", issueKey: "ENG-4" };
+    const secondJiraIssueRef = { provider: "jira", connectionId: "jira-c", issueId: "101", issueKey: "ENG-5" };
+    appStore.payload = makePayload({
+      "ws-a": {
+        alerts: [
+          {
+            alertId: "jira-alert-1",
+            panelId: "jira:jira-c:100",
+            sessionId: "jira:ws-a:jira-c:100",
+            kind: "jira",
+            title: "ENG-4 updated",
+            detail: "safe source message",
+            jiraIssueRef,
+          },
+          {
+            alertId: "jira-alert-2",
+            panelId: "jira:jira-c:101",
+            sessionId: "jira:ws-a:jira-c:101",
+            kind: "jira",
+            title: "ENG-5 updated",
+            detail: "safe source message",
+            jiraIssueRef: secondJiraIssueRef,
+          },
+        ],
+      },
+    });
+    await nextTick();
+    const captured = notifStore.sessions.find((session) => session.meta?.jiraIssueRef?.issueId === "100");
+    expect(notifStore.sessions).toHaveLength(2);
+    expect(captured).toMatchObject({
+      state: "finished",
+      category: "jira",
+      meta: { profileId: "profile-a", jiraIssueRef },
+      events: [{ title: "ENG-4 updated", body: "Jira issue changed in a saved query." }],
+    });
+    expect(JSON.stringify(captured)).not.toContain("safe source message");
+  });
+
   it("does NOT store an alert from another profile as this window's notification", async () => {
     const appStore = useAppStore();
     const notifStore = useNotificationStore();

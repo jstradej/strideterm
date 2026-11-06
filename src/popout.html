@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self';"
+      content="default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http: https:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self';"
     />
-    <title>Diff</title>
+    <title>strIDEterm</title>
     <link rel="icon" type="image/svg+xml" href="./icon.svg" />
     <script src="./popout-theme.js" vite-ignore></script>
     <link rel="stylesheet" href="./styles/main.css" />
@@ -41,7 +41,7 @@
             animation: popout-spin 0.8s linear infinite;
           "
         ></span>
-        Loading diff…
+        Loading…
         <style>
           @keyframes popout-spin {
             to {

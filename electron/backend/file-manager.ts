@@ -5,6 +5,7 @@ import { constants as fsConstants } from "node:fs";
 import path from "node:path";
 import { execFileText } from "./process-utils.js";
 import { errorMessage } from "../shared/error-message.js";
+import { fileChangedOnDiskMessage } from "../shared/file-conflict.js";
 import { guessLanguageFromPath } from "../../config/language-map.js";
 
 const TEXT_PREVIEW_MAX = 256 * 1024; // 256 KB
@@ -51,11 +52,13 @@ interface FileContentResult {
   content: string;
   size: number;
   encoding: string;
+  mtimeMs?: number;
 }
 
 interface WriteResult {
   ok: boolean;
   size: number;
+  mtimeMs: number;
 }
 
 interface EntryResult {
@@ -629,8 +632,15 @@ export async function readFileContent(rootPath: string, relativePath: string): P
   const absFile = safePath(rootPath, relativePath);
   await assertRealPathInside(rootPath, absFile);
   let content: string;
+  let mtimeMs: number;
   try {
-    content = await fs.readFile(absFile, "utf-8");
+    const fd = await fs.open(absFile, "r");
+    try {
+      mtimeMs = (await fd.stat()).mtimeMs;
+      content = await fd.readFile("utf-8");
+    } finally {
+      await fd.close();
+    }
   } catch (err) {
     const code = (err as NodeJS.ErrnoException)?.code;
     const normalizedRelativePath = relativePath.replace(/\\/g, "/");
@@ -639,15 +649,35 @@ export async function readFileContent(rootPath: string, relativePath: string): P
     }
     throw err;
   }
-  return { content, size: Buffer.byteLength(content, "utf-8"), encoding: "utf-8" };
+  return { content, size: Buffer.byteLength(content, "utf-8"), encoding: "utf-8", mtimeMs };
 }
 
-export async function writeFileContent(rootPath: string, relativePath: string, content: string): Promise<WriteResult> {
+/**
+ * `expectedMtimeMs` is compared exactly: it is always a value this same module returned for the
+ * same file, so no clock or rounding differs between the two sides, and coarse-mtime filesystems
+ * hand back the same coarse value both times.
+ */
+export async function writeFileContent(
+  rootPath: string,
+  relativePath: string,
+  content: string,
+  expectedMtimeMs?: number,
+): Promise<WriteResult> {
   const absFile = safePath(rootPath, relativePath);
   await assertRealPathInside(rootPath, absFile);
+  if (expectedMtimeMs !== undefined) {
+    let current: number | null;
+    try {
+      current = (await fs.stat(absFile)).mtimeMs;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err;
+      current = null;
+    }
+    if (current !== expectedMtimeMs) throw new Error(fileChangedOnDiskMessage(relativePath, current === null));
+  }
   await fs.writeFile(absFile, content, "utf-8");
   const stat = await fs.stat(absFile);
-  return { ok: true, size: stat.size };
+  return { ok: true, size: stat.size, mtimeMs: stat.mtimeMs };
 }
 
 export async function createFile(rootPath: string, parentPath: string, name: string): Promise<EntryResult> {

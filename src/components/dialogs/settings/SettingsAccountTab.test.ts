@@ -593,7 +593,7 @@ describe("the account page", () => {
       installations: [
         {
           installationId: "inst-1",
-          label: "Jaromir's workstation",
+          label: "Alice's workstation",
           registeredAt: NOW,
           isThisInstallation: true,
           state: "active",
@@ -601,7 +601,7 @@ describe("the account page", () => {
       ],
     });
     const { wrapper } = await render(stateFor({ overview: patched }));
-    expect(wrapper.text()).toContain("Jaromir's workstation");
+    expect(wrapper.text()).toContain("Alice's workstation");
     expect(wrapper.text()).not.toContain("DESKTOP-");
   });
 
@@ -1300,7 +1300,7 @@ describe("the account page", () => {
     expect(wrapper.find(".account-confirm h5").text()).toBe("Delete this account permanently?");
   });
 
-  test("sign-out reauthentication returns to the explicit final action", async () => {
+  test("sign-out sends an action-bound confirmation request", async () => {
     const { wrapper, calls, store } = await render(stateFor({ needsRecentAuth: true }));
     await wrapper
       .findAll("button")
@@ -1311,23 +1311,20 @@ describe("the account page", () => {
       .find((node) => node.text().includes("Sign out of this desktop?"))!;
     await confirm
       .findAll("button")
-      .find((button) => button.text() === "Send sign-in link to confirm identity")!
+      .find((button) => button.text() === "Send confirmation and sign out")!
       .trigger("click");
     await flushPromises();
     expect(calls.find((call) => call.method === "accountBeginSignIn")?.payload).toEqual({
       email: "owner@example.test",
-      purpose: "reauth",
+      purpose: "signout-installation",
     });
     expect(calls.some((call) => call.method === "accountSignOut")).toBe(false);
 
-    store.state = { ...store.state, needsRecentAuth: false };
+    store.state = { ...store.state, auth: authState({ purpose: "signout-installation" }) };
     await wrapper.vm.$nextTick();
-    await confirm
-      .findAll("button")
-      .find((button) => button.text().includes("Sign out of this desktop"))!
-      .trigger("click");
-    await flushPromises();
-    expect(calls.find((call) => call.method === "accountSignOut")?.payload).toEqual({ disconnect: true });
+    expect(confirm.text()).toContain("sign out this desktop automatically");
+    expect(confirm.text()).not.toContain("Go to sign-in confirmation");
+    expect(wrapper.findAll(".account-auth")).toHaveLength(0);
   });
 
   test("sign-out has an inline spinner and ignores a second press while pending", async () => {
@@ -1375,7 +1372,7 @@ describe("the account page", () => {
       .trigger("click");
     await flushPromises();
     expect(confirm.find(".account-error--inline").text()).toContain("Confirm it is you again");
-    expect(confirm.text()).toContain("Send sign-in link to confirm identity");
+    expect(confirm.text()).toContain("Send confirmation and sign out");
     expect(wrapper.find(".account-tab > .account-error").exists()).toBe(false);
   });
 
@@ -1391,7 +1388,7 @@ describe("the account page", () => {
       .findAll(".account-confirm")
       .find((node) => node.text().includes("Sign out of this desktop?"))!;
     expect(confirm.find(".account-error--inline").text()).toContain("Confirm it is you again");
-    expect(confirm.text()).toContain("Send sign-in link to confirm identity");
+    expect(confirm.text()).toContain("Send confirmation and sign out");
     expect(wrapper.find(".account-tab > .account-error").exists()).toBe(false);
   });
 
@@ -1402,11 +1399,13 @@ describe("the account page", () => {
       .find((button) => button.text() === "Delete account")!
       .trigger("click");
     const confirm = wrapper.find(".account-confirm--danger");
-    expect(confirm.text()).toContain("Confirm your identity here first");
-    expect(confirm.text()).toContain("it will not delete anything by itself");
+    expect(confirm.text()).toContain("automatically");
     await confirm.find("input").setValue("DELETE MY ACCOUNT");
-    const stillDisabled = confirm.findAll("button").find((entry) => entry.text() === "Delete account")!;
-    expect(stillDisabled.attributes("disabled")).toBeDefined();
+    const sendConfirmation = confirm
+      .findAll("button")
+      .find((entry) => entry.text() === "Send confirmation and delete account")!;
+    expect(sendConfirmation.attributes("disabled")).toBeUndefined();
+    expect(confirm.findAll("button").some((entry) => entry.text() === "Delete account")).toBe(false);
   });
 
   test("deleting requires the exact phrase before the button is usable", async () => {
@@ -1426,6 +1425,107 @@ describe("the account page", () => {
     expect(calls.find((call) => call.method === "accountDelete")?.payload).toEqual({
       confirmationPhrase: "DELETE MY ACCOUNT",
     });
+  });
+
+  test("deletion sends the exact phrase with the chosen action before email is requested", async () => {
+    const { wrapper, calls } = await render(stateFor({ needsRecentAuth: true }));
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Delete account")!
+      .trigger("click");
+    const panel = wrapper.find(".account-confirm--danger");
+    await panel.find("input[type='text']").setValue("DELETE MY ACCOUNT");
+    await panel
+      .findAll("button")
+      .find((button) => button.text() === "Send confirmation and delete account")!
+      .trigger("click");
+    await flushPromises();
+    expect(calls.find((call) => call.method === "accountBeginSignIn")?.payload).toEqual({
+      email: "owner@example.test",
+      purpose: "delete-account",
+      confirmationPhrase: "DELETE MY ACCOUNT",
+    });
+    expect(wrapper.findAll(".account-auth")).toHaveLength(0);
+  });
+
+  test.each(["signout-installation", "delete-account"])(
+    "keeps %s confirmation beside its selected action",
+    async (purpose) => {
+      const { wrapper, calls, store } = await render(stateFor({ needsRecentAuth: true }));
+      await wrapper
+        .findAll("button")
+        .find(
+          (button) => button.text() === (purpose === "delete-account" ? "Delete account" : "Sign out of this desktop"),
+        )!
+        .trigger("click");
+      store.state = { ...store.state, auth: authState({ phase: "awaiting-confirmation", purpose }) };
+      await wrapper.vm.$nextTick();
+      const panel =
+        purpose === "delete-account"
+          ? wrapper.find(".account-confirm--danger")
+          : wrapper.findAll(".account-confirm").find((node) => node.text().includes("Sign out of this desktop?"))!;
+      expect(wrapper.findAll(".account-auth")).toHaveLength(0);
+      expect(panel.text()).toContain("automatically");
+      const cancel = panel.findAll("button").find((button) => button.text() === "Cancel confirmation")!;
+      await cancel.trigger("click");
+      expect(calls.some((call) => call.method === "accountCancelSignIn")).toBe(true);
+    },
+  );
+
+  test("shows inline completion status while an action-bound email is being validated", async () => {
+    const { wrapper } = await render(
+      stateFor({
+        needsRecentAuth: true,
+        auth: authState({ phase: "verifying", purpose: "signout-installation" }),
+      }),
+    );
+    expect(wrapper.findAll(".account-auth")).toHaveLength(0);
+    expect(wrapper.text()).toContain("signing out of this desktop");
+  });
+
+  test("restores the selected action panel and disclosure when reopened with a pending action link", async () => {
+    const { wrapper } = await render(
+      stateFor({ needsRecentAuth: true, auth: authState({ purpose: "delete-account" }) }),
+    );
+    expect(wrapper.find("details.account-disclosure--danger").attributes("open")).toBeDefined();
+    expect(wrapper.find(".account-confirm--danger").text()).toContain("Confirm the link");
+    expect(wrapper.findAll(".account-auth")).toHaveLength(0);
+  });
+
+  test("switching from armed deletion to sign-out cancels the deletion intent first", async () => {
+    const { wrapper, calls, store } = await render(stateFor({ needsRecentAuth: true }));
+    await wrapper.findAll(".account-action-choice")[1]!.find("button").trigger("click");
+    store.state = { ...store.state, auth: authState({ purpose: "delete-account" }) };
+    await wrapper.vm.$nextTick();
+    await wrapper.findAll(".account-action-choice")[0]!.find("button").trigger("click");
+    await flushPromises();
+    expect(calls.some((call) => call.method === "accountCancelSignIn")).toBe(true);
+    store.state = { ...store.state, auth: undefined };
+    await wrapper.vm.$nextTick();
+    expect(
+      wrapper
+        .findAll(".account-confirm")
+        .find((panel) => panel.text().includes("Sign out of this desktop?"))
+        ?.exists(),
+    ).toBe(true);
+    expect(wrapper.find(".account-confirm--danger").exists()).toBe(false);
+  });
+
+  test("accepted deletion replaces the form and all repeat action controls", async () => {
+    const { wrapper } = await render(
+      stateFor({
+        accountAction: { kind: "delete-account", status: "submitted", providerCancellationRequired: true },
+      }),
+    );
+    expect(wrapper.find(".account-confirm--danger").text()).toContain("Account deletion submitted");
+    expect(wrapper.find(".account-confirm--danger").text()).toContain(
+      "Subscription cancellation is still being processed",
+    );
+    expect(wrapper.find(".account-confirm--danger input").exists()).toBe(false);
+    expect(wrapper.findAll("button").some((button) => button.text().includes("Send confirmation and delete"))).toBe(
+      false,
+    );
+    expect(wrapper.findAll(".account-action-choice")).toHaveLength(0);
   });
 
   test("a refusal is shown in OUR words, never the server's", async () => {
@@ -1645,6 +1745,35 @@ describe("what the page is allowed to claim about a send (F03)", () => {
 });
 
 describe("the trial button asks for the authentication it needs (F06)", () => {
+  test("a used installation key is not offered another account trial", async () => {
+    const { wrapper } = await render(
+      stateFor({
+        trialIneligibility: "trial-already-used",
+        lastError: "trial-already-used",
+        overview: overview({ entitlement: { state: "unbound", source: "trial" } }),
+        entitlement: { state: "unbound", source: "trial" },
+      }),
+    );
+    expect(wrapper.text()).toContain("Using another account or email will not make it eligible again.");
+    expect(wrapper.text()).not.toContain("Start 14-day trial");
+  });
+
+  test("a definite trial refusal is explained and does not offer the same trial again", async () => {
+    const refusal = stateFor({
+      trialIneligibility: "trial-account-has-billing-history",
+      lastError: "trial-account-has-billing-history",
+      overview: overview({ entitlement: { state: "unbound", source: "trial" } }),
+      entitlement: { state: "unbound", source: "trial" },
+    });
+    const { wrapper, store } = await render(refusal);
+    expect(wrapper.text()).toContain("This account has billing history, so it is not eligible for a free trial.");
+    expect(wrapper.text()).not.toContain("Start 14-day trial");
+    store.state = { ...refusal, lastError: undefined };
+    await wrapper.vm.$nextTick();
+    expect(wrapper.text()).toContain("This account has billing history, so it is not eligible for a free trial.");
+    expect(wrapper.text()).not.toContain("Start 14-day trial");
+  });
+
   test("with no recent authentication it starts a `trial` sign-in rather than calling the endpoint", async () => {
     // The finding, exactly: "Tlačítko trialu poté přímo volá owner endpoint bez zahájení potřebné
     // autentizace." The owner credential is transient, so after a restart there is none and the call

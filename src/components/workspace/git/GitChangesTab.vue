@@ -141,6 +141,12 @@
                   @stage-file="onStageFile"
                 />
                 <div v-if="newView && snapshot.dirty" class="git-commit-form" style="margin-top: 12px">
+                  <label v-if="jiraIssuePrefix" class="git-jira-prefix"
+                    >Jira issue prefix <code>{{ jiraIssuePrefix }}</code
+                    ><button type="button" class="button button--ghost button--small" @click="addJiraPrefix('staged')">
+                      Add prefix
+                    </button></label
+                  >
                   <input
                     v-model="stagedCommitMessage"
                     name="commit-staged-message"
@@ -168,6 +174,12 @@
                   class="git-commit-form"
                   style="margin-top: 12px"
                 >
+                  <label v-if="jiraIssuePrefix" class="git-jira-prefix"
+                    >Jira issue prefix <code>{{ jiraIssuePrefix }}</code
+                    ><button type="button" class="button button--ghost button--small" @click="addJiraPrefix('classic')">
+                      Add prefix
+                    </button></label
+                  >
                   <input
                     v-model="commitMessage"
                     name="commit-message"
@@ -616,6 +628,22 @@ const stagedCommitMessage = computed({
   set: (message: string) => gitUiStore.setStagedCommitMessage(props.workspaceId, props.activeRootPath, message),
 });
 const commitMessageInput = ref<HTMLTextAreaElement | null>(null);
+const jiraIssuePrefix = computed(() => {
+  const workspace = appStore.payload?.appState?.workspaces?.find((item) => item.id === props.workspaceId);
+  if (!workspace || (workspace.profileId || "default") !== appStore.myActiveProfileId) return "";
+  const links = (workspace as typeof workspace & { workItems?: Array<{ ref: { issueKey: string } }> }).workItems || [];
+  return links.length === 1 ? `${links[0].ref.issueKey}: ` : "";
+});
+function addJiraPrefix(target: "staged" | "classic") {
+  const prefix = jiraIssuePrefix.value;
+  if (!prefix) return;
+  if (target === "staged") {
+    if (!stagedCommitMessage.value.startsWith(prefix))
+      stagedCommitMessage.value = `${prefix}${stagedCommitMessage.value}`;
+  } else if (!commitMessage.value.startsWith(prefix)) {
+    commitMessage.value = `${prefix}${commitMessage.value}`;
+  }
+}
 const mobileExpandedDirectories = ref<Set<string>>(new Set());
 let resizeObserver: ResizeObserver | null = null;
 let mobileViewport = false;
@@ -1425,7 +1453,7 @@ useContextMenu({
 }
 
 .git-changes--mobile[data-layout="split"] .git-changes__mobile-list.is-visible {
-  flex: 0 0 36%;
+  flex: 0 0 46%;
   border-right: 1px solid var(--border);
 }
 
@@ -1529,7 +1557,7 @@ useContextMenu({
 @media (max-height: 500px) {
   .git-changes--mobile[data-layout="split"]:not([data-mode="commit"]) {
     display: grid;
-    grid-template-columns: minmax(230px, 36%) minmax(0, 1fr);
+    grid-template-columns: minmax(300px, 46%) minmax(0, 1fr);
     grid-template-rows: 34px minmax(0, 1fr) auto;
   }
 
@@ -1634,6 +1662,12 @@ useContextMenu({
   min-height: 0;
   overflow-y: auto;
   padding-right: 6px;
+}
+
+/* Like the diff pane beside it, the change list fills its column instead of ending mid-pane. */
+.git-section__files--split > .git-card {
+  min-height: 100%;
+  align-content: start;
 }
 
 @media (max-width: 768px), (max-height: 500px) {

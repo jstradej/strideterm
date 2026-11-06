@@ -38,7 +38,11 @@ describe("WorkspaceDialog SSH tools option", () => {
   test("sits after the internal MCP option and defaults to off when creating a workspace", async () => {
     const { wrapper, onSubmit } = mountDialog({ creating: true });
     const boxes = wrapper.findAll(".internal-mcp-option input[type=checkbox]");
-    expect(boxes.map((box) => box.attributes("data-testid"))).toEqual(["internal-mcp-checkbox", "ssh-tools-checkbox"]);
+    expect(boxes.map((box) => box.attributes("data-testid"))).toEqual([
+      "internal-mcp-checkbox",
+      "ssh-tools-checkbox",
+      "jira-mcp-checkbox",
+    ]);
     expect((wrapper.get(checkbox).element as HTMLInputElement).checked).toBe(false);
     await wrapper.get("input").setValue("Name");
     await wrapper.get("form").trigger("submit");

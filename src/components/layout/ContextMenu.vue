@@ -86,6 +86,44 @@
         </button>
       </template>
 
+      <template v-if="isSavedJiraView">
+        <button
+          type="button"
+          class="context-menu__item"
+          title="Change the name shown on this saved Jira tab."
+          @click="onRenameJiraView"
+        >
+          <span class="context-menu__icon">&#x270E;</span><span>Rename view</span>
+        </button>
+        <button
+          v-if="isSavedJiraBoardView"
+          type="button"
+          class="context-menu__item"
+          title="Open this board as a workspace of its own, next to your Jira workspace."
+          @click="onOpenJiraViewInOwnWorkspace"
+        >
+          <span class="context-menu__icon">&#x2197;</span><span>Open in own workspace</span>
+        </button>
+        <button
+          v-if="jiraViewOrderIndex > 0"
+          type="button"
+          class="context-menu__item"
+          title="Move this view one place earlier in the tab bar."
+          @click="onMoveJiraView(-1)"
+        >
+          <span class="context-menu__icon">&#x2190;</span><span>Move left</span>
+        </button>
+        <button
+          v-if="jiraViewOrderIndex >= 0 && jiraViewOrderIndex < jiraSavedViewIds.length - 1"
+          type="button"
+          class="context-menu__item"
+          title="Move this view one place later in the tab bar."
+          @click="onMoveJiraView(1)"
+        >
+          <span class="context-menu__icon">&#x2192;</span><span>Move right</span>
+        </button>
+      </template>
+
       <button
         v-if="hasPersistentPanel"
         type="button"
@@ -100,7 +138,11 @@
         v-if="refreshKind"
         type="button"
         class="context-menu__item"
-        :title="`Force a re-poll of ${refreshLabel} now (skip the configured poll interval) — refreshes container/PR data, comments, and statuses.`"
+        :title="
+          refreshKind === 'jira'
+            ? 'Synchronize this Jira view in the background. Saved data stays visible.'
+            : `Force a re-poll of ${refreshLabel} now (skip the configured poll interval) — refreshes container/PR data, comments, and statuses.`
+        "
         @click="onRefresh"
       >
         <span class="context-menu__icon">&#x21BB;</span><span>Refresh {{ refreshLabel }}</span>
@@ -199,11 +241,13 @@ import {
   isDockerViewId,
   isAzureViewId,
   isGitHubViewId,
+  isJiraViewId,
   isReviewViewId,
   isFilesViewId,
   isBrowserViewId,
   isTaskDashboardViewId,
 } from "../../app/helpers.js";
+import { jiraViewIdFromTab } from "../../app/jira-view-tabs.js";
 
 const store = useAppStore();
 const termStore = useTerminalStore();
@@ -221,6 +265,7 @@ const isTerminal = computed(() => {
     !isDockerViewId(id) &&
     !isAzureViewId(id) &&
     !isGitHubViewId(id) &&
+    !isJiraViewId(id) &&
     !isReviewViewId(id) &&
     !isFilesViewId(id) &&
     !isBrowserViewId(id) &&
@@ -229,6 +274,33 @@ const isTerminal = computed(() => {
 });
 
 const currentTab = computed(() => (store.workspaceTabs || []).find((t) => t.id === viewId.value) || null);
+
+const jiraViewId = computed(() => jiraViewIdFromTab(viewId.value, store.myActiveWorkspaceId));
+const jiraWorkspaceViews = computed(() => {
+  const workspaceId = store.myActiveWorkspaceId;
+  const state = store.payload?.jiraWorkspaceViews?.[workspaceId];
+  return state?.profileId === (store.myActiveProfileId || "default") ? state : null;
+});
+const isSavedJiraView = computed(() => {
+  const id = jiraViewId.value;
+  return (
+    store.activeWorkspace?.kind === "jira" &&
+    !!id &&
+    id !== "issues" &&
+    !!jiraWorkspaceViews.value?.views.some((view) => view.viewId === id)
+  );
+});
+const isSavedJiraBoardView = computed(() => {
+  const id = jiraViewId.value;
+  return (
+    isSavedJiraView.value &&
+    jiraWorkspaceViews.value?.views.some((view) => view.viewId === id && view.kind === "board" && view.boardId !== null)
+  );
+});
+const jiraSavedViewIds = computed(
+  () => jiraWorkspaceViews.value?.views.filter((view) => view.viewId !== "issues").map((view) => view.viewId) || [],
+);
+const jiraViewOrderIndex = computed(() => jiraSavedViewIds.value.indexOf(jiraViewId.value || ""));
 
 const hasPersistentPanel = computed(() => {
   const target = store.getPanelByViewId(viewId.value);
@@ -252,6 +324,7 @@ const refreshKind = computed(() => {
   if (isDockerViewId(id)) return "docker";
   if (isAzureViewId(id)) return "azure";
   if (isGitHubViewId(id)) return "github";
+  if (isJiraViewId(id)) return "jira";
   if (isReviewViewId(id)) {
     const wsId = id.replace(/^review:/, "");
     const ws = store.payload?.appState?.workspaces?.find((w) => w.id === wsId);
@@ -276,6 +349,7 @@ const refreshLabel = computed(() => {
     docker: "Docker",
     azure: "Azure DevOps",
     github: "GitHub",
+    jira: "Jira",
   };
   return labels[refreshKind.value] || "";
 });
@@ -414,7 +488,11 @@ watch(
     const rect = menuRef.value.getBoundingClientRect();
     if (rect.right > window.innerWidth) adjustedX.value = window.innerWidth - rect.width - 4;
     if (rect.bottom > window.innerHeight) adjustedY.value = window.innerHeight - rect.height - 4;
+    if (isJiraViewId(menu.viewId) && store.contextMenu === menu) {
+      menuRef.value.querySelector<HTMLElement>("button:not(:disabled)")?.focus({ preventScroll: true });
+    }
   },
+  { immediate: true },
 );
 
 // Every handler MUST snapshot viewId.value before hideContextMenu() — the
@@ -436,6 +514,67 @@ function onEdit() {
   const id = viewId.value;
   store.hideContextMenu();
   store.editTabWithDialog(id);
+}
+
+function onRenameJiraView() {
+  const id = viewId.value;
+  const tab = currentTab.value;
+  if (!id || !tab) return;
+  const anchor = store.contextMenu?.anchor;
+  store.hideContextMenu();
+  store.openDialog("TextInputDialog", {
+    eyebrow: "Jira",
+    title: "Rename saved view",
+    label: "View name",
+    value: tab.title,
+    submitLabel: "Save name",
+    onCancel: () => {
+      const focusWasInDialog =
+        document.activeElement instanceof HTMLElement && !!document.activeElement.closest(".dialog");
+      store.closeDialog();
+      if (!focusWasInDialog) return;
+      void nextTick(() => {
+        if (document.activeElement !== document.body) return;
+        const target =
+          (anchor?.isConnected ? anchor : null) ||
+          document.querySelector<HTMLElement>('[data-role="mobile-tab-picker-trigger"]');
+        target?.focus({ preventScroll: true });
+      });
+    },
+    onSubmit: async (title: string) => {
+      await store.renameJiraWorkspaceView(id, title);
+      store.closeDialog();
+    },
+  });
+}
+
+function onOpenJiraViewInOwnWorkspace() {
+  const id = viewId.value;
+  store.hideContextMenu();
+  void store.openJiraViewInOwnWorkspace(id).catch((error: unknown) => {
+    useNotificationStore().showError("Couldn't open the board in its own workspace", error);
+  });
+}
+
+function onMoveJiraView(direction: -1 | 1) {
+  const currentId = jiraViewId.value;
+  const order = [...jiraSavedViewIds.value];
+  const index = order.indexOf(currentId || "");
+  const nextIndex = index + direction;
+  if (index < 0 || nextIndex < 0 || nextIndex >= order.length) return;
+  [order[index], order[nextIndex]] = [order[nextIndex], order[index]];
+  const workspaceId = store.myActiveWorkspaceId;
+  const profileId = store.myActiveProfileId || "default";
+  store.hideContextMenu();
+  void store.reorderJiraWorkspaceViews(order).catch((error: unknown) => {
+    useNotificationStore().pushPersistentToast({
+      title: "Couldn't reorder Jira views",
+      body: error instanceof Error ? error.message : "The saved view order could not be changed.",
+      kind: "error",
+      profileId,
+      workspaceId,
+    });
+  });
 }
 
 function onNotes() {
@@ -492,10 +631,27 @@ function onClose() {
 
 function onRefresh() {
   const kind = refreshKind.value;
+  const id = viewId.value;
   store.hideContextMenu();
   if (kind === "docker") store.refreshDocker();
   else if (kind === "azure") store.refreshAzure();
   else if (kind === "github") store.refreshGitHub();
+  else if (kind === "jira") {
+    const workspaceId = store.myActiveWorkspaceId;
+    const jiraViewId = jiraViewIdFromTab(id, workspaceId);
+    const api = store.getApi();
+    if (!jiraViewId || !api?.refreshJiraWorkspaceViews) return;
+    void api
+      .refreshJiraWorkspaceViews({ workspaceId, ...(jiraViewId === "issues" ? {} : { viewId: jiraViewId }) })
+      .catch((error: unknown) => {
+        useNotificationStore().pushPersistentToast({
+          title: "Couldn't refresh Jira view",
+          body: error instanceof Error ? error.message : "Jira synchronization could not start.",
+          kind: "error",
+          profileId: store.myActiveProfileId || "default",
+        });
+      });
+  }
 }
 
 function onDetachReview() {
@@ -535,6 +691,21 @@ function onAddCompanionAgent() {
 useContextMenu({
   isOpen: () => !!store.contextMenu,
   menuRef,
-  onClose: () => store.hideContextMenu(),
+  onClose: () => {
+    const menu = store.contextMenu;
+    const activeElement = document.activeElement;
+    store.hideContextMenu();
+    if (!menu?.anchor || !isJiraViewId(menu.viewId)) return;
+    // Escape/outside dismissal restores keyboard navigation. Do not steal
+    // focus from a clicked control elsewhere or from an action that opened a dialog.
+    if (activeElement !== document.body && !menuRef.value?.contains(activeElement)) return;
+    void nextTick(() => {
+      if (store.contextMenu) return;
+      const target =
+        (menu.anchor?.isConnected ? menu.anchor : null) ||
+        document.querySelector<HTMLElement>('[data-role="mobile-tab-picker-trigger"]');
+      target?.focus({ preventScroll: true });
+    });
+  },
 });
 </script>

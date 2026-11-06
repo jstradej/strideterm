@@ -58,6 +58,23 @@ function review(id: string, parentWorkspaceId: string, profileId = "default"): W
 }
 
 describe("insertWorkspace", () => {
+  test("inserts a pinned Jira board directly after its inbox", () => {
+    const inbox = workspace("jira-inbox", "default", { kind: "jira" });
+    const oldBoard = workspace("old-board", "default", {
+      kind: "jira-board",
+      jiraBoard: { parentWorkspaceId: inbox.id, connectionId: "jira-1", boardId: "1", boardName: "Old" },
+    });
+    const workspaces = [inbox, oldBoard, workspace("after")];
+    const newBoard = workspace("new-board", "default", {
+      kind: "jira-board",
+      jiraBoard: { parentWorkspaceId: inbox.id, connectionId: "jira-1", boardId: "2", boardName: "New" },
+    });
+
+    insertWorkspace(workspaces, newBoard, "after");
+
+    expect(workspaces.map((item) => item.id)).toEqual(["jira-inbox", "new-board", "old-board", "after"]);
+  });
+
   test("inserts a new child directly below its parent before older children", () => {
     const workspaces = [workspace("before"), workspace("parent"), review("old-child", "parent"), workspace("after")];
 

@@ -3,7 +3,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseAgentCommand, SSH_MCP_CAPABILITY_ENV, SSH_MCP_URL_ENV } from "../shared/agent-ssh.js";
-import { INTERNAL_MCP_CAPABILITY_ENV, INTERNAL_MCP_SERVER_NAME, INTERNAL_MCP_URL_ENV } from "../shared/internal-mcp.js";
+import {
+  INTERNAL_MCP_CAPABILITY_ENV,
+  INTERNAL_MCP_JIRA_ENABLED_ENV,
+  INTERNAL_MCP_SERVER_NAME,
+  INTERNAL_MCP_TASKS_ENABLED_ENV,
+  INTERNAL_MCP_URL_ENV,
+} from "../shared/internal-mcp.js";
 import {
   appendClaudeMcpServers,
   claudeMcpServerEntries,
@@ -41,7 +47,12 @@ function grantMcpInstalls({ sshMcp, internalMcp }: GrantMcpServers): AgentMcpIns
           {
             name: INTERNAL_MCP_SERVER_NAME,
             spec: internalMcp,
-            grantEnvVars: [INTERNAL_MCP_URL_ENV, INTERNAL_MCP_CAPABILITY_ENV],
+            grantEnvVars: [
+              INTERNAL_MCP_URL_ENV,
+              INTERNAL_MCP_CAPABILITY_ENV,
+              INTERNAL_MCP_TASKS_ENABLED_ENV,
+              INTERNAL_MCP_JIRA_ENABLED_ENV,
+            ],
           },
         ]
       : []),
@@ -52,6 +63,7 @@ interface ReviewPanel {
   id?: string;
   title?: string;
   command?: string;
+  cwd?: string;
 }
 
 interface ReviewRepository {
@@ -284,7 +296,9 @@ function resolveWindowsCommandPath(
 ): string {
   const overrides = processInfo.commandLookup || {};
   const explicit = String(overrides[commandName] || "").trim();
-  if (explicit) {
+  // A backend-started agent pins the template's executable as `{ claude: "claude" }`; an entry naming itself is no
+  // resolution, and returning it skipped the PATH lookup — node-pty then reported "File not found" on Windows.
+  if (explicit && explicit !== commandName) {
     return explicit;
   }
   if (path.isAbsolute(commandName) && fs.existsSync(commandName)) return commandName;
@@ -324,6 +338,7 @@ interface FinishLaunchInput {
   preferredExtensions?: string[];
   args: string[];
   workspace?: { cwd?: string };
+  panel?: ReviewPanel;
   processInfo?: ProcessInfo;
   // env to attach when running on win32 (both the resolved-binary and the
   // bare-command-fallback returns always carry it, matching the pre-refactor
@@ -350,12 +365,13 @@ function finishLaunch({
   preferredExtensions,
   args,
   workspace,
+  panel,
   processInfo,
   win32Env,
   nonWin32Env,
   resolveWin32,
 }: FinishLaunchInput): AgentLaunch {
-  const cwd = workspace?.cwd || "";
+  const cwd = panel?.cwd || workspace?.cwd || "";
 
   if (platform === "win32") {
     const resolved = resolveWin32
@@ -483,6 +499,7 @@ function buildClaudeLaunch({
     preferredExtensions: [".exe", ".cmd", ".bat"],
     args,
     workspace,
+    panel,
     processInfo,
     win32Env: {
       ...(mcp.env || {}),
@@ -537,6 +554,7 @@ function buildCodexLaunch({
     commandName: processInfo?.commandLookup?.codex || "codex",
     args,
     workspace,
+    panel,
     processInfo,
     win32Env: {
       ...(mcp.env || {}),
@@ -634,6 +652,7 @@ function buildCopilotLaunch({
     preferredExtensions: [".cmd", ".bat", ".exe", ".ps1"],
     args,
     workspace,
+    panel,
     processInfo,
     win32Env: { ...(mcp.env || {}), ...(policy?.env || {}), ...installsEnv(installs), ...(internalMcpEnv || {}) },
     nonWin32Env: { ...(mcp.env || {}), ...(policy?.env || {}), ...installsEnv(installs), ...(internalMcpEnv || {}) },
@@ -713,6 +732,7 @@ function buildOpencodeLaunch({
     preferredExtensions: [".cmd", ".bat", ".exe", ".ps1"],
     args,
     workspace,
+    panel,
     processInfo,
     win32Env: env,
     // Unlike Claude/Codex/Copilot, OpenCode needs its env on every platform
@@ -862,6 +882,7 @@ export function buildAgentMcpLaunch({
   internalMcp,
   internalMcpEnv,
   codexNoDaemon,
+  initialPrompt,
 }: GrantMcpServers & {
   workspace?: { cwd?: string };
   codexNoDaemon?: boolean;
@@ -869,6 +890,8 @@ export function buildAgentMcpLaunch({
   processInfo?: ProcessInfo;
   /** The per-session grant values (URL + capability). Only OpenCode needs them here: its MCP config carries the values. */
   internalMcpEnv?: Record<string, string>;
+  /** First message of an interactive session a backend action started; the session stays interactive. */
+  initialPrompt?: string;
 }): AgentLaunch | null {
   const installs = grantMcpInstalls({ sshMcp, internalMcp });
   let env = installsEnv(installs);
@@ -876,8 +899,14 @@ export function buildAgentMcpLaunch({
   if (!parsed) return null;
   const platform = processInfo?.platform || process.platform;
   const args = [...parsed.args];
+  const prompt = initialPrompt?.trim() || "";
+  // Claude's --mcp-config takes several values, so a prompt after it would be read as one more config: the prompt
+  // goes first (its CLI accepts options after the prompt). The others take it last, like the review launch.
+  if (prompt && parsed.provider === "claude") args.unshift(prompt);
   let envOnEveryPlatform = false;
-  if (parsed.provider === "claude") {
+  if (!installs.length) {
+    if (parsed.provider === "codex" && codexNoDaemon) args.unshift(CODEX_NO_DAEMON_FLAG);
+  } else if (parsed.provider === "claude") {
     appendClaudeMcpServers(args, claudeMcpServerEntries(installs));
   } else if (parsed.provider === "codex") {
     if (codexNoDaemon) args.unshift(CODEX_NO_DAEMON_FLAG);
@@ -916,6 +945,9 @@ export function buildAgentMcpLaunch({
       envOnEveryPlatform = true;
     }
   }
+  if (prompt && parsed.provider === "codex") args.push(prompt);
+  else if (prompt && parsed.provider === "copilot") args.push("-i", prompt);
+  else if (prompt && parsed.provider === "opencode") args.push("--prompt", prompt);
 
   const explicitPath = /[\\/]/u.test(parsed.executable);
   if (explicitPath) {
@@ -935,7 +967,7 @@ export function buildAgentMcpLaunch({
       return {
         file: nodePath,
         args: [codexEntry, ...args],
-        cwd: workspace?.cwd || "",
+        cwd: panel?.cwd || workspace?.cwd || "",
         env,
         skipCommandInjection: true,
       };
@@ -943,7 +975,7 @@ export function buildAgentMcpLaunch({
     return {
       file: parsed.executable,
       args,
-      cwd: workspace?.cwd || "",
+      cwd: panel?.cwd || workspace?.cwd || "",
       ...((platform === "win32" && Object.keys(env).length) || envOnEveryPlatform ? { env } : {}),
       skipCommandInjection: true,
     };
@@ -977,6 +1009,7 @@ export function buildAgentMcpLaunch({
           : [".cmd", ".bat", ".exe"],
     args,
     workspace,
+    panel,
     processInfo,
     win32Env: env,
     ...(envOnEveryPlatform ? { nonWin32Env: env } : {}),

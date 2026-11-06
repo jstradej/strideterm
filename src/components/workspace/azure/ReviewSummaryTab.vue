@@ -8,9 +8,43 @@
             <h3>{{ pullRequest.title || "Azure review" }}</h3>
           </div>
         </div>
-        <p v-if="pullRequest.description" class="git-card__hint azure-review__description">
-          {{ pullRequest.description }}
-        </p>
+        <div v-if="pullRequest.description" class="git-card__hint azure-review__description">
+          <MarkdownContent :text="pullRequest.description" :jira-routes="jiraRoutes || []" />
+        </div>
+        <section v-if="jiraIssueRefs?.length" class="git-card" aria-label="Linked Jira context">
+          <strong>Linked Jira context</strong>
+          <button
+            v-for="item in jiraIssueRefs"
+            :key="`${item.ref.connectionId}:${item.ref.issueId}`"
+            type="button"
+            class="button button--ghost button--small"
+            @click="loadJiraContext(item)"
+          >
+            {{ item.ref.issueKey }} · {{ item.summary }} <span v-if="item.status">({{ item.status }})</span>
+          </button>
+          <p v-if="jiraContextLoading" class="git-card__hint" role="status">Loading Jira issue…</p>
+          <article v-if="jiraIssue" class="review-jira-issue" aria-label="Jira issue detail">
+            <header class="review-jira-issue__head">
+              <strong class="review-jira-issue__key">{{ jiraIssue.ref?.issueKey }}</strong>
+              <span v-if="jiraIssue.status" class="review-jira-issue__status">{{ jiraIssue.status }}</span>
+            </header>
+            <p class="review-jira-issue__summary">{{ jiraIssue.summary }}</p>
+            <p class="review-jira-issue__meta">
+              {{ jiraIssueMeta }}
+            </p>
+            <MarkdownContent
+              v-if="jiraIssue.descriptionMarkdown || jiraIssue.description"
+              class="review-jira-issue__description"
+              :text="jiraIssue.descriptionMarkdown || jiraIssue.description"
+              :jira-routes="jiraRoutes || []"
+              :rich-text="!!jiraIssue.descriptionMarkdown"
+              :plain-text="!jiraIssue.descriptionMarkdown"
+            />
+          </article>
+          <p v-if="jiraContextError" class="git-card__hint git-card__hint--warning" role="alert">
+            {{ jiraContextError }}
+          </p>
+        </section>
         <p class="git-card__hint" style="font-family: monospace; font-size: 12px">
           {{ stripRef(pullRequest.sourceRefName) }} &rarr; {{ stripRef(pullRequest.targetRefName) }}
         </p>
@@ -268,6 +302,10 @@ import { ref, computed, watch } from "vue";
 import { useAppStore } from "../../../stores/app.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
 import { useDismissable } from "../../../composables/useDismissable.js";
+import MarkdownContent from "./MarkdownContent.vue";
+import { userFacingMessage } from "../../../lib/error-message.js";
+import { rlog } from "../../../lib/renderer-log.js";
+import { jiraFailureCode } from "../jira/pane/jira-failure.js";
 
 const props = defineProps<{
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -282,12 +320,71 @@ const props = defineProps<{
   changedFiles: Array<Record<string, any>>;
   prKey: string;
   workspaceId: string;
+  jiraIssueRefs?: Array<{
+    ref: { provider: "jira"; connectionId: string; issueId: string; issueKey: string };
+    summary?: string;
+    status?: string;
+  }>;
+  jiraRoutes?: Array<{ connectionId: string; label: string; webUrl: string; issueKeyPrefixes: string[] }>;
 }>();
 
 defineEmits<{ (e: "new-comment"): void }>();
 
 const appStore = useAppStore();
 const notifications = useNotificationStore();
+type JiraReviewIssue = {
+  ref?: { issueKey?: string };
+  summary?: string;
+  status?: string;
+  issueType?: string;
+  projectKey?: string;
+  updated?: string;
+  assignee?: string;
+  description?: string;
+  descriptionMarkdown?: string;
+};
+const jiraIssue = ref<JiraReviewIssue | null>(null);
+const jiraContextLoading = ref(false);
+const jiraContextError = ref("");
+let jiraContextRequestId = 0;
+const jiraIssueMeta = computed(() => {
+  const issue = jiraIssue.value;
+  if (!issue) return "";
+  const updated = issue.updated ? Date.parse(issue.updated) : NaN;
+  return [
+    issue.issueType,
+    issue.projectKey,
+    issue.assignee ? `Assignee: ${issue.assignee}` : "",
+    issue.updated
+      ? `Updated ${Number.isNaN(updated) ? issue.updated : new Date(updated).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+});
+async function loadJiraContext(item: NonNullable<typeof props.jiraIssueRefs>[number]) {
+  const requestId = ++jiraContextRequestId;
+  jiraIssue.value = null;
+  jiraContextError.value = "";
+  jiraContextLoading.value = true;
+  try {
+    const issue = await appStore
+      .getApi()
+      .getJiraIssue?.({ connectionId: item.ref.connectionId, issueId: item.ref.issueId });
+    if (!issue) throw new Error("Jira issue detail is unavailable.");
+    if (requestId !== jiraContextRequestId) return;
+    jiraIssue.value = issue as JiraReviewIssue;
+  } catch (cause) {
+    if (requestId !== jiraContextRequestId) return;
+    jiraContextError.value = userFacingMessage(cause, "Could not load Jira review context.");
+    rlog("warn", "[jira] review summary issue load failed", {
+      issueKey: item.ref.issueKey,
+      code: jiraFailureCode(cause),
+    });
+  } finally {
+    if (requestId === jiraContextRequestId) jiraContextLoading.value = false;
+  }
+}
 
 const busyAction = ref<string>("");
 
@@ -468,3 +565,44 @@ function stripRef(ref: unknown) {
   return String(ref || "").replace(/^refs\/heads\//, "");
 }
 </script>
+
+<style scoped>
+.review-jira-issue {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(var(--tint), 0.03);
+}
+.review-jira-issue__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.review-jira-issue__status {
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.review-jira-issue__summary {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.review-jira-issue__meta {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.review-jira-issue__description {
+  max-height: 240px;
+  overflow: auto;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+</style>

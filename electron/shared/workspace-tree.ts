@@ -38,6 +38,9 @@ export interface WorkspaceTreeNode {
  * workspace is never present in `allWs`.
  */
 export function resolveParentId(ws: WsLike, allWs: WsLike[]): string | null {
+  if (ws.kind === "jira-board" && ws.jiraBoard?.parentWorkspaceId) {
+    return ws.jiraBoard.parentWorkspaceId;
+  }
   if (ws.review?.checkout?.mode === "managed-worktree" && ws.review?.parentWorkspaceId) {
     return ws.review.parentWorkspaceId;
   }
@@ -147,7 +150,9 @@ export function buildWorkspaceTree(workspaces: readonly WorkspaceTreeNode[]): Wo
     let parentId: string | null = null;
     if (ws) {
       let candidate: string | null = null;
-      if (ws.review?.checkout?.mode === "managed-worktree" && ws.review?.parentWorkspaceId) {
+      if (ws.kind === "jira-board" && ws.jiraBoard?.parentWorkspaceId) {
+        candidate = ws.jiraBoard.parentWorkspaceId;
+      } else if (ws.review?.checkout?.mode === "managed-worktree" && ws.review?.parentWorkspaceId) {
         candidate = ws.review.parentWorkspaceId;
       } else if (ws.quickfix?.parentWorkspaceId) {
         candidate = ws.quickfix.parentWorkspaceId;
@@ -164,7 +169,12 @@ export function buildWorkspaceTree(workspaces: readonly WorkspaceTreeNode[]): Wo
       // Same-profile only. `list` is normally pre-scoped to one profile, but a
       // caller that passes a wider list must not get a breadcrumb that leaks a
       // workspace name from another profile.
-      if (parent && candidate !== id && (parent.profileId || "default") === (ws.profileId || "default")) {
+      if (
+        parent &&
+        candidate !== id &&
+        (parent.profileId || "default") === (ws.profileId || "default") &&
+        (ws.kind !== "jira-board" || parent.kind === "jira")
+      ) {
         parentId = candidate;
       }
     }

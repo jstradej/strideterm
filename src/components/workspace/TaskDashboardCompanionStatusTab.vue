@@ -82,15 +82,18 @@
 
         <details class="tdc__accordion" open>
           <summary>Your focus <span class="tdc__accordion-file">TASK.md</span></summary>
-          <pre class="tdc__preview">{{ taskFocusPreview || "No additional focus specified." }}</pre>
+          <MarkdownContent v-if="taskFocusPreview" class="tdc__preview" :text="taskFocusPreview" />
+          <p v-else class="tdc__preview">No additional focus specified.</p>
         </details>
         <details class="tdc__accordion" open>
           <summary>Captured context <span class="tdc__accordion-file">CONTEXT.md</span></summary>
-          <pre class="tdc__preview">{{ contextPreview || "(not available)" }}</pre>
+          <MarkdownContent v-if="contextPreview" class="tdc__preview" :text="contextPreview" />
+          <p v-else class="tdc__preview">(not available)</p>
         </details>
         <details class="tdc__accordion">
           <summary>Current progress <span class="tdc__accordion-file">HANDOFF.md</span></summary>
-          <pre class="tdc__preview">{{ handoffPreview || "(not available)" }}</pre>
+          <MarkdownContent v-if="handoffPreview" class="tdc__preview" :text="handoffPreview" />
+          <p v-else class="tdc__preview">(not available)</p>
         </details>
 
         <div class="tdc__hero-actions">
@@ -167,6 +170,7 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch } from "vue";
 import { apiKey } from "../../types/keys.js";
+import MarkdownContent from "./azure/MarkdownContent.vue";
 import CompanionReportSections from "./CompanionReportSections.vue";
 
 const props = withDefaults(
@@ -612,13 +616,12 @@ const completionEvidenceWithheld = computed(() => {
   margin-left: 6px;
 }
 .tdc__preview {
-  white-space: pre-wrap;
   word-break: break-word;
   font-size: 12px;
   line-height: 1.5;
   margin: 8px 0 0;
   max-height: 280px;
-  overflow-y: auto;
+  overflow: auto;
 }
 .tdc__hero-actions {
   display: flex;

@@ -41,7 +41,7 @@
           />
         </div>
         <DockerDetailSubTabs v-else :active-sub-tab="activeTab.activeSubTab || 'logs'" @change="onSubTabChange" />
-        <div class="docker-detail__section">
+        <div class="docker-detail__section subtabs-panel">
           <!-- Logs: kept alive so the xterm buffer survives sub-tab switches. -->
           <KeepAlive>
             <DockerDetailLog
