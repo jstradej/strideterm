@@ -364,7 +364,7 @@ test.describe("Tab picker with all agents", () => {
 
     // Switch to the terminal workspace (which has regular tabs)
     await page.getByText("Dev Terminal").click();
-    await expect(page.getByText("Shell")).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByText("Shell", { exact: true })).toBeVisible({ timeout: 5_000 });
 
     // Open the tab picker
     await page.locator("button", { hasText: "+ Tab" }).click();

@@ -247,6 +247,9 @@ test("Commander layout browses two panels, previews a file and fits every size a
     await row(panels.nth(0), "README.md").click();
     await page.keyboard.press("F3");
     await expect(page.locator(".fcq__title-text")).toHaveText("Quick View: README.md");
+    // Markdown opens rendered; Source switches to the highlighted editor.
+    await expect(page.locator(".fcq__markdown").getByRole("heading", { name: "Getting started" })).toBeVisible();
+    await page.locator(".fcq__modes").getByRole("button", { name: "Source" }).click();
     await expect(page.locator(".fcq__code .view-lines")).toContainText("Getting started");
     // Highlighted: Monaco tokenises the markdown, so some tokens get a colour class other than the default mtk1.
     await expect(page.locator(".fcq__code .view-lines span[class^='mtk']:not(.mtk1)").first()).toBeVisible();
@@ -257,7 +260,7 @@ test("Commander layout browses two panels, previews a file and fits every size a
     await page.setViewportSize({ width: 390, height: 844 });
     const switcher = page.getByRole("navigation", { name: "Commander panels" });
     await switcher.getByRole("button", { name: "View" }).click();
-    await expect(page.locator(".fcq__code .view-lines")).toContainText("Getting started");
+    await expect(page.locator(".fcq__code")).toContainText("Getting started");
     await expectContained(page.locator(".fcq"));
     await expectNoPageOverflow(page);
     await settle(page);
@@ -314,6 +317,7 @@ test("Commander layout browses two panels, previews a file and fits every size a
     await page.setViewportSize({ width: 1440, height: 900 });
     await row(panels.nth(0), "README.md").click();
     await page.keyboard.press("F3");
+    await page.locator(".fcq__modes").getByRole("button", { name: "Source" }).click();
     await expect(page.locator(".fcq__code .monaco-editor")).toBeVisible();
     await settle(page);
     await page.screenshot({ path: testInfo.outputPath("light-quickview-desktop-1440x900.png") });

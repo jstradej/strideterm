@@ -67,7 +67,7 @@ test.describe("Multi-workspace state", () => {
   test("active workspace shows its panel tabs and not other workspace tabs", async ({ page }) => {
     await openApp(page, mock);
     // Frontend App (active) has Shell, Claude Code, Dev Server panels
-    await expect(page.getByText("Shell")).toBeVisible();
+    await expect(page.getByText("Shell", { exact: true })).toBeVisible();
     await expect(page.getByText("Claude Code")).toBeVisible();
     // Backend API's "Tests" panel should NOT be visible when Frontend is active
     await expect(page.getByText("Tests")).not.toBeVisible();

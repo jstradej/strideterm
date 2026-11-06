@@ -19,7 +19,7 @@ test.describe("Docker workspace", () => {
   test("loads workspace and shows expected UI elements", async ({ page }) => {
     await openApp(page, mock);
     await expect(page.getByText("Docker Services")).toBeVisible();
-    await expect(page.getByText("Shell")).toBeVisible();
+    await expect(page.getByText("Shell", { exact: true })).toBeVisible();
     // Should NOT show workspaces from other fixtures
     await expect(page.getByText("Frontend App")).not.toBeVisible();
     assertNoErrors(page);
@@ -38,7 +38,7 @@ test.describe("Git merge conflict workspace", () => {
   test("loads workspace with conflict data without errors", async ({ page }) => {
     await openApp(page, mock);
     await expect(page.getByText("Web App")).toBeVisible();
-    await expect(page.getByText("Shell")).toBeVisible();
+    await expect(page.getByText("Shell", { exact: true })).toBeVisible();
     await expect(page.getByText("Claude Code")).toBeVisible();
     assertNoErrors(page);
   });
