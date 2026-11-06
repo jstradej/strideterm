@@ -50,7 +50,9 @@ test.describe("Workspace switching", () => {
   test("Infrastructure workspace has only Shell panel", async ({ page }) => {
     await openApp(page, mock);
     await page.getByText("Infrastructure").click();
-    await expect(page.getByText("Shell", { exact: true })).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('[data-role="tab-strip"] .tab').getByText("Shell", { exact: true })).toBeVisible({
+      timeout: 5_000,
+    });
     // Should not have multi-panel tabs from other workspaces
     await expect(page.getByText("Claude Code")).not.toBeVisible();
     await expect(page.getByText("Tests")).not.toBeVisible();

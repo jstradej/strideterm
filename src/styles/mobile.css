@@ -671,6 +671,31 @@
     line-height: 1;
   }
 
+  /* A phone held sideways has ~375px of height: give the toolbar back the 4px
+     the ear layout added (44px, 36px buttons) so panes keep a usable canvas. */
+  @media (max-height: 500px) {
+    .terminal-toolbar,
+    .mobile-tab-picker__trigger {
+      min-height: 44px;
+    }
+
+    .mobile-hamburger,
+    .mobile-keyboard-btn {
+      width: 36px;
+      height: 36px;
+    }
+
+    .terminal-toolbar__actions .button {
+      min-width: 36px;
+      height: 36px;
+      min-height: 36px;
+    }
+
+    .workspace-remote-alert {
+      top: calc(100% + 53px);
+    }
+  }
+
   .terminal-toolbar__actions .button:hover,
   .terminal-toolbar__actions .button:active {
     background: rgba(var(--tint), 0.08);
