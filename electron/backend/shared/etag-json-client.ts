@@ -59,6 +59,34 @@ export interface EtagJsonClientConfig<TOptions extends EtagJsonRequestOptions> {
   maxCacheSize?: number;
 }
 
+const MAX_HTML_ERROR_TEXT_LENGTH = 500;
+
+const HTML_ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
+
+function looksLikeHtml(response: Response, text: string): boolean {
+  const contentType = typeof response.headers?.get === "function" ? response.headers.get("content-type") || "" : "";
+  return /text\/html/i.test(contentType) || /^\s*<(!doctype|html)\b/i.test(text);
+}
+
+/** A proxy or IIS error page as the text a person would read on it, without markup, styles or head. */
+function htmlToText(html: string): string {
+  const text = html
+    .slice(0, 64 * 1024)
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<(head|style|script)\b[\s\S]*?<\/\1\s*>/gi, " ")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (entity, code: string) => {
+      if (code[0] !== "#") return HTML_ENTITIES[code.toLowerCase()] ?? entity;
+      const point = code[1] === "x" || code[1] === "X" ? parseInt(code.slice(2), 16) : parseInt(code.slice(1), 10);
+      return Number.isFinite(point) && point > 0 && point <= 0x10ffff ? String.fromCodePoint(point) : entity;
+    })
+    .replace(/\s+/g, " ")
+    .trim();
+  return text.length > MAX_HTML_ERROR_TEXT_LENGTH
+    ? `${text.slice(0, MAX_HTML_ERROR_TEXT_LENGTH - 1).trimEnd()}…`
+    : text;
+}
+
 export function createEtagJsonClient<TOptions extends EtagJsonRequestOptions>(
   fetchImpl: typeof globalThis.fetch,
   config: EtagJsonClientConfig<TOptions>,
@@ -88,7 +116,9 @@ export function createEtagJsonClient<TOptions extends EtagJsonRequestOptions>(
     try {
       const parsed = JSON.parse(text);
       message = extractErrorMessage(parsed, message);
-    } catch {}
+    } catch {
+      if (looksLikeHtml(response, text)) message = htmlToText(text) || response.statusText;
+    }
     return message;
   }
 

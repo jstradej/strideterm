@@ -126,6 +126,26 @@ describe("Azure DevOps API - ETag caching", () => {
       expect(decodeURIComponent(urls[2])).toContain("vssgp.d25,Microsoft.TeamFoundation.Identity;S-1-9");
     });
 
+    test("keeps each descriptor query under the IIS query-string limit for long on-prem SIDs", async () => {
+      const sid = (index: number) =>
+        `Microsoft.TeamFoundation.Identity;S-1-9-1551374245-3661783324-4225370957-2907848618-2523286190-1-1670253583-1618125639-2439500389-${1104673100 + index}`;
+      const memberOf = Array.from({ length: 30 }, (_, index) => sid(index));
+      const fetchImpl = createMockFetch([
+        { status: 200, body: { value: [{ memberOf }] } },
+        ...Array.from({ length: 10 }, () => ({ status: 200, body: { value: [] } })),
+      ]);
+      const api = createAzureApi(fetchImpl as unknown as typeof fetch);
+
+      await api.getUserGroupIds({ orgUrl: "https://tfs.example/tfs/Collection", login: "u" }, "pat", "me-1");
+
+      const lookups = calls(fetchImpl).slice(1);
+      for (const url of lookups) expect(new URL(url).search.length).toBeLessThanOrEqual(2048);
+      const requested = lookups.flatMap((url) =>
+        decodeURIComponent(url.split("descriptors=")[1].split("&")[0]).split(","),
+      );
+      expect(requested).toEqual(memberOf);
+    });
+
     test("retries once with Expanded after an HTTP 400", async () => {
       const fetchImpl = createMockFetch([
         { status: 400, body: { message: "bad query" } },

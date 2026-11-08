@@ -31,6 +31,9 @@ interface CreateAzureApiOptions {
   auditLogger?: AuditLogger;
 }
 
+// IIS's default maxQueryString is 2048; leave room for `descriptors=` and `&api-version=…`.
+const MAX_DESCRIPTOR_QUERY_LENGTH = 1900;
+
 function buildBasicAuthHeader(login: string | undefined, token: string | undefined): string {
   return `Basic ${Buffer.from(`${login}:${token}`, "utf8").toString("base64")}`;
 }
@@ -271,11 +274,25 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
         return identityType && identifier ? `${identityType};${identifier}` : "";
       })
       .filter(Boolean);
+    // On-prem IIS answers an over-long query string with a bare HTML 404, and on-prem descriptors
+    // carry long SIDs, so a batch is bounded by its encoded length as well as by count.
+    const chunks: string[][] = [];
+    let chunk: string[] = [];
+    let chunkLength = 0;
+    for (const descriptor of descriptors) {
+      const length = encodeURIComponent(descriptor).length;
+      if (chunk.length && (chunk.length >= 25 || chunkLength + 3 + length > MAX_DESCRIPTOR_QUERY_LENGTH)) {
+        chunks.push(chunk);
+        chunk = [];
+      }
+      chunkLength = chunk.length ? chunkLength + 3 + length : length;
+      chunk.push(descriptor);
+    }
+    if (chunk.length) chunks.push(chunk);
     const ids = new Set<string>();
-    for (let index = 0; index < descriptors.length; index += 25) {
-      const chunk = descriptors.slice(index, index + 25);
+    for (const batch of chunks) {
       const resolved = (await requestJson(
-        `${base}/_apis/identities?descriptors=${encodeURIComponent(chunk.join(","))}&api-version=${API_VERSION}`,
+        `${base}/_apis/identities?descriptors=${encodeURIComponent(batch.join(","))}&api-version=${API_VERSION}`,
         options,
       )) as { value?: Array<{ id?: string }> };
       for (const identity of resolved.value || []) {
