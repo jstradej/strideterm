@@ -56,6 +56,11 @@ function mountDialog(props = {}, api: Record<string, unknown> = {}) {
   });
 }
 
+async function expandPreparation(wrapper: ReturnType<typeof mountDialog>) {
+  await wrapper.get('[data-testid="review-agent-preparation-toggle"]').trigger("click");
+  await flushPromises();
+}
+
 describe("WorkspaceDialog", () => {
   describe("review agent preparation", () => {
     const parent = (kind: "azure" | "github") => ({
@@ -97,6 +102,7 @@ describe("WorkspaceDialog", () => {
       );
 
       await flushPromises();
+      await expandPreparation(wrapper);
       expect(azureQuickFixListProjects).toHaveBeenCalledWith({ connectionId: "az-1" });
       expect(azureQuickFixListRepositories).toHaveBeenCalledWith({ connectionId: "az-1", projectName: "Project" });
       const preparation = wrapper.get('[data-testid="review-agent-preparation"]');
@@ -171,6 +177,89 @@ describe("WorkspaceDialog", () => {
       expect(onPrepareAgent).not.toHaveBeenCalled();
     });
 
+    test("a plain terminal workspace discovers nothing and reports no preparation error", async () => {
+      const store = useAppStore();
+      store.payload = {
+        appState: {
+          settings: {
+            integrations: {
+              azureDevops: { connections: [{ id: "az-1", enabled: true, profileId: "default" }] },
+            },
+          },
+        },
+      } as never;
+      const azureQuickFixListProjects = vi.fn().mockResolvedValue({ projects: [{ name: "Project" }] });
+      const githubQuickFixListRepos = vi.fn().mockRejectedValue(new Error("github connection was not found."));
+      const wrapper = mountDialog(
+        { workspace: { ...parent("azure"), kind: "terminal" } },
+        { azureQuickFixListProjects, githubQuickFixListRepos },
+      );
+
+      await flushPromises();
+
+      expect(wrapper.find('[data-testid="review-agent-preparation"]').exists()).toBe(false);
+      expect(azureQuickFixListProjects).not.toHaveBeenCalled();
+      expect(githubQuickFixListRepos).not.toHaveBeenCalled();
+      expect(useNotificationStore().sessions).toEqual([]);
+    });
+
+    test("an Azure inbox sends no discovery request until the section is expanded", async () => {
+      const store = useAppStore();
+      store.payload = {
+        appState: {
+          settings: {
+            integrations: {
+              azureDevops: { connections: [{ id: "az-1", enabled: true, profileId: "default" }] },
+            },
+          },
+        },
+      } as never;
+      const azureQuickFixListProjects = vi.fn().mockResolvedValue({ projects: [] });
+      const wrapper = mountDialog(
+        { workspace: parent("azure"), onPrepareAgent: vi.fn() },
+        { azureQuickFixListProjects },
+      );
+
+      await flushPromises();
+
+      const toggle = wrapper.get('[data-testid="review-agent-preparation-toggle"]');
+      expect(toggle.attributes("aria-expanded")).toBe("false");
+      expect(wrapper.find('[data-testid="prepare-review-agent"]').exists()).toBe(false);
+      expect(azureQuickFixListProjects).not.toHaveBeenCalled();
+      expect(useNotificationStore().sessions).toEqual([]);
+
+      await toggle.trigger("click");
+      await flushPromises();
+
+      expect(toggle.attributes("aria-expanded")).toBe("true");
+      expect(azureQuickFixListProjects).toHaveBeenCalledWith({ connectionId: "az-1" });
+    });
+
+    test("a GitHub inbox sends no discovery request until the section is expanded", async () => {
+      const store = useAppStore();
+      store.payload = {
+        appState: {
+          settings: {
+            integrations: { github: { connections: [{ id: "gh-1", enabled: true, profileId: "default" }] } },
+          },
+        },
+      } as never;
+      const githubQuickFixListRepos = vi.fn().mockResolvedValue({ repositories: [] });
+      const wrapper = mountDialog(
+        { workspace: parent("github"), onPrepareAgent: vi.fn() },
+        { githubQuickFixListRepos },
+      );
+
+      await flushPromises();
+
+      expect(githubQuickFixListRepos).not.toHaveBeenCalled();
+      expect(useNotificationStore().sessions).toEqual([]);
+
+      await expandPreparation(wrapper);
+
+      expect(githubQuickFixListRepos).toHaveBeenCalledWith({ connectionId: "gh-1" });
+    });
+
     test("keeps agent preparation available to a non-mobile remote client", async () => {
       const store = useAppStore();
       store.isRemoteTransport = true;
@@ -191,6 +280,7 @@ describe("WorkspaceDialog", () => {
       );
 
       await flushPromises();
+      await expandPreparation(wrapper);
 
       expect(wrapper.find('[data-testid="review-agent-preparation"]').exists()).toBe(true);
       expect(azureQuickFixListProjects).toHaveBeenCalledWith({ connectionId: "az-1" });
@@ -214,6 +304,7 @@ describe("WorkspaceDialog", () => {
       const wrapper = mountDialog({ workspace: parent("github"), onPrepareAgent }, { githubQuickFixListRepos });
 
       await flushPromises();
+      await expandPreparation(wrapper);
       expect(githubQuickFixListRepos).toHaveBeenCalledWith({ connectionId: "gh-1" });
       const preparationSelects = wrapper.findAllComponents({ name: "CustomSelect" });
       expect(
@@ -244,6 +335,7 @@ describe("WorkspaceDialog", () => {
 
     test("updates an open agent selector immediately when a Codex command is edited", async () => {
       const wrapper = mountDialog({ workspace: parent("azure"), onPrepareAgent: vi.fn() });
+      await expandPreparation(wrapper);
       const addCustom = wrapper.findAll(".template-btn").find((button) => button.text().includes("Custom"));
       expect(addCustom).toBeDefined();
       await addCustom!.trigger("click");
@@ -269,6 +361,7 @@ describe("WorkspaceDialog", () => {
 
     test("includes a Codex tab added from the preset button and allows selecting it", async () => {
       const wrapper = mountDialog({ workspace: parent("azure"), onPrepareAgent: vi.fn() });
+      await expandPreparation(wrapper);
       const addCodex = wrapper.findAll(".template-btn").find((button) => button.text().includes("Codex"));
       expect(addCodex).toBeDefined();
       await addCodex!.trigger("click");
@@ -321,6 +414,7 @@ describe("WorkspaceDialog", () => {
       const onPrepareAgent = vi.fn().mockResolvedValue(undefined);
       const wrapper = mountDialog({ workspace: parent("github"), onPrepareAgent }, { githubQuickFixListRepos });
       await flushPromises();
+      await expandPreparation(wrapper);
       await wrapper.get(".review-agent-repositories__heading button").trigger("click");
       await wrapper.get('[data-testid="prepare-review-agent"]').trigger("click");
       await flushPromises();

@@ -317,98 +317,111 @@
           class="review-agent-preparation"
           data-testid="review-agent-preparation"
         >
-          <h3>Prepare an agent for review checkouts</h3>
-          <p class="field-hint">
-            Prepare the selected agent for future PR and New Branch workspaces. Confirm any trust prompt in the
-            temporary terminal.
-          </p>
-          <label
-            :title="
-              draft.kind === 'azure'
-                ? 'Choose the Azure DevOps connection used to discover and prepare review repositories.'
-                : 'Choose the GitHub connection used to discover and prepare review repositories.'
-            "
-          >
-            <span>Connection</span>
-            <CustomSelect
-              v-model="preparationConnectionId"
-              placeholder="Select a connection…"
-              :disabled="preparationLoading || submitting"
-              :options="preparationConnectionOptions"
-            />
-          </label>
-          <label
-            v-if="draft.kind === 'azure'"
-            title="Choose the Azure DevOps project whose repositories you want to prepare."
-          >
-            <span>Project</span>
-            <CustomSelect
-              v-model="preparationProjectName"
-              placeholder="Select a project…"
-              :disabled="preparationLoading || submitting"
-              :options="preparationProjectOptions"
-              @change="loadPreparationRepositories"
-            />
-          </label>
-          <div class="review-agent-repositories">
-            <div class="review-agent-repositories__heading">
-              <span title="Select which repositories should get a temporary agent setup terminal.">Repositories</span>
-              <button
-                type="button"
-                class="button button--ghost"
-                :disabled="!preparationRepositories.length || preparationLoading"
-                :title="
-                  selectedPreparationRepositoryKeys.length === preparationRepositories.length
-                    ? 'Clear the repository selection.'
-                    : 'Select every repository listed here.'
-                "
-                @click="toggleAllPreparationRepositories"
+          <h3>
+            <button
+              type="button"
+              class="review-agent-preparation__toggle"
+              data-testid="review-agent-preparation-toggle"
+              :aria-expanded="preparationExpanded"
+              @click="preparationExpanded = !preparationExpanded"
+            >
+              <span aria-hidden="true">{{ preparationExpanded ? "▾" : "▸" }}</span>
+              Prepare an agent for review checkouts
+            </button>
+          </h3>
+          <template v-if="preparationExpanded">
+            <p class="field-hint">
+              Prepare the selected agent for future PR and New Branch workspaces. Confirm any trust prompt in the
+              temporary terminal.
+            </p>
+            <label
+              :title="
+                draft.kind === 'azure'
+                  ? 'Choose the Azure DevOps connection used to discover and prepare review repositories.'
+                  : 'Choose the GitHub connection used to discover and prepare review repositories.'
+              "
+            >
+              <span>Connection</span>
+              <CustomSelect
+                v-model="preparationConnectionId"
+                placeholder="Select a connection…"
+                :disabled="preparationLoading || submitting"
+                :options="preparationConnectionOptions"
+              />
+            </label>
+            <label
+              v-if="draft.kind === 'azure'"
+              title="Choose the Azure DevOps project whose repositories you want to prepare."
+            >
+              <span>Project</span>
+              <CustomSelect
+                v-model="preparationProjectName"
+                placeholder="Select a project…"
+                :disabled="preparationLoading || submitting"
+                :options="preparationProjectOptions"
+                @change="loadPreparationRepositories"
+              />
+            </label>
+            <div class="review-agent-repositories">
+              <div class="review-agent-repositories__heading">
+                <span title="Select which repositories should get a temporary agent setup terminal.">Repositories</span>
+                <button
+                  type="button"
+                  class="button button--ghost"
+                  :disabled="!preparationRepositories.length || preparationLoading"
+                  :title="
+                    selectedPreparationRepositoryKeys.length === preparationRepositories.length
+                      ? 'Clear the repository selection.'
+                      : 'Select every repository listed here.'
+                  "
+                  @click="toggleAllPreparationRepositories"
+                >
+                  {{
+                    selectedPreparationRepositoryKeys.length === preparationRepositories.length
+                      ? "Clear all"
+                      : "Select all"
+                  }}
+                </button>
+              </div>
+              <label
+                v-for="repository in preparationRepositories"
+                :key="repository.key"
+                class="review-agent-repository"
+                :title="`Prepare a trust setup terminal for ${repository.label}.`"
               >
-                {{
-                  selectedPreparationRepositoryKeys.length === preparationRepositories.length
-                    ? "Clear all"
-                    : "Select all"
-                }}
-              </button>
+                <input
+                  v-model="selectedPreparationRepositoryKeys"
+                  type="checkbox"
+                  :value="repository.key"
+                  :disabled="preparationLoading || submitting"
+                />
+                <span>{{ repository.label }}</span>
+              </label>
             </div>
             <label
-              v-for="repository in preparationRepositories"
-              :key="repository.key"
-              class="review-agent-repository"
-              :title="`Prepare a trust setup terminal for ${repository.label}.`"
+              title="Choose an agent tab configured above. Its saved command runs unchanged at the stable cached repository root used by future PR worktrees. If the agent stores trust at this repository root, confirming it here can apply to future worktrees."
             >
-              <input
-                v-model="selectedPreparationRepositoryKeys"
-                type="checkbox"
-                :value="repository.key"
+              <span>Agent tab</span>
+              <CustomSelect
+                v-model="preparationPanelId"
+                placeholder="Select an agent tab…"
                 :disabled="preparationLoading || submitting"
+                :options="preparationPanelOptions"
               />
-              <span>{{ repository.label }}</span>
             </label>
-          </div>
-          <label
-            title="Choose an agent tab configured above. Its saved command runs unchanged at the stable cached repository root used by future PR worktrees. If the agent stores trust at this repository root, confirming it here can apply to future worktrees."
-          >
-            <span>Agent tab</span>
-            <CustomSelect
-              v-model="preparationPanelId"
-              placeholder="Select an agent tab…"
-              :disabled="preparationLoading || submitting"
-              :options="preparationPanelOptions"
-            />
-          </label>
-          <p v-if="preparationLoading" class="field-hint">Loading repositories…</p>
-          <p v-if="preparationError" class="dialog__error" role="alert">{{ preparationError }}</p>
-          <button
-            type="button"
-            class="button button--ghost"
-            data-testid="prepare-review-agent"
-            title="Save this workspace, then open temporary setup terminals for the selected repositories, one at a time. Confirm any trust prompt yourself. No additional workspace is added."
-            :disabled="!canPrepareAgent || submitting || preparationLoading"
-            @click="prepareReviewAgent"
-          >
-            Save and prepare agent
-          </button>
+            <p v-if="preparationLoading" class="field-hint">Loading repositories…</p>
+            <p v-if="preparationError" class="dialog__error" role="alert">{{ preparationError }}</p>
+            <button
+              type="button"
+              class="button button--ghost"
+              data-testid="prepare-review-agent"
+              title="Save this workspace, then open temporary setup terminals for the selected repositories, one at a time. Confirm any trust prompt yourself. No additional workspace is added."
+              :disabled="!canPrepareAgent || submitting || preparationLoading"
+              @click="prepareReviewAgent"
+            >
+              Save and prepare agent
+            </button>
+          </template>
         </section>
       </template>
 
@@ -671,6 +684,7 @@ const store = useAppStore();
 const isMobileSession = computed(() => store.isMobileSession());
 
 const preparationConnections = computed(() => {
+  if (draft.kind !== "azure" && draft.kind !== "github") return [];
   const integrations = store.payload?.appState?.settings?.integrations as
     Record<string, { connections?: PreparationConnection[] }> | undefined;
   const key = draft.kind === "github" ? "github" : "azureDevops";
@@ -702,6 +716,7 @@ const preparationProjects = ref<{ name: string }[]>([]);
 const preparationRepositories = ref<{ key: string; label: string; id?: string; owner?: string; repo?: string }[]>([]);
 const preparationLoading = ref(false);
 const preparationError = ref("");
+const preparationExpanded = ref(false);
 let preparationLoadGeneration = 0;
 const canPrepareAgent = computed(
   () =>
@@ -737,7 +752,12 @@ watch(
   },
   { immediate: true },
 );
-watch(preparationConnectionId, () => void loadPreparationProjects(), { immediate: true });
+watch(preparationConnectionId, () => {
+  if (preparationExpanded.value) void loadPreparationProjects();
+});
+watch(preparationExpanded, (expanded) => {
+  if (expanded) void loadPreparationProjects();
+});
 
 const isDocker = computed(() => draft.kind === "docker");
 const isAzure = computed(() => draft.kind === "azure" || draft.kind === "github");
@@ -1094,7 +1114,7 @@ async function loadPreparationProjects() {
   selectedPreparationRepositoryKeys.value = [];
   preparationProjects.value = [];
   preparationRepositories.value = [];
-  if (store.isMobileSession() || !connectionId || !api) return;
+  if (store.isMobileSession() || !connectionId || !api || (kind !== "azure" && kind !== "github")) return;
   if (kind === "github") {
     await loadPreparationRepositories();
     return;
@@ -1133,7 +1153,8 @@ async function loadPreparationRepositories() {
   preparationError.value = "";
   selectedPreparationRepositoryKeys.value = [];
   preparationRepositories.value = [];
-  if (store.isMobileSession() || !connectionId || !api || (kind === "azure" && !projectName)) return;
+  if (store.isMobileSession() || !connectionId || !api || (kind !== "azure" && kind !== "github")) return;
+  if (kind === "azure" && !projectName) return;
   preparationLoading.value = true;
   try {
     const result =
@@ -1340,6 +1361,19 @@ function extractErrorMessage(err: unknown): string {
 .review-agent-preparation h3 {
   margin: 0;
   font-size: 14px;
+}
+.review-agent-preparation__toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
 .review-agent-preparation .field-hint {
   margin: 0;
