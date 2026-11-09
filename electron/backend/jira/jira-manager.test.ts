@@ -1969,7 +1969,7 @@ describe("JiraManager", () => {
       const url = new URL(String(input));
       if (url.pathname.endsWith("/board/9/configuration")) return new Response("{}");
       if (url.pathname.endsWith("/board/9/sprint")) {
-        if (url.searchParams.get("state") === "active")
+        if (url.searchParams.get("state") === "active,future")
           return new Response(JSON.stringify({ values: [{ id: 501, name: "Current sprint", state: "active" }] }));
         return new Response(JSON.stringify({ values: closedSprints, total: 101, isLast: false }));
       }
@@ -1979,9 +1979,9 @@ describe("JiraManager", () => {
     const result = await manager.boardView(dc, 9, "sprints");
     expect(result.sprints?.[0]).toMatchObject({ id: "501", state: "active" });
     expect(result.sprintsHasMore).toBe(true);
-    expect(fetchImpl.mock.calls.some(([input]) => new URL(String(input)).searchParams.get("state") === "active")).toBe(
-      true,
-    );
+    expect(
+      fetchImpl.mock.calls.some(([input]) => new URL(String(input)).searchParams.get("state") === "active,future"),
+    ).toBe(true);
   });
 
   it("rewinds the next sprint cursor when adding an active sprint displaced the last page entry", async () => {
@@ -1994,7 +1994,7 @@ describe("JiraManager", () => {
       const url = new URL(String(input));
       if (url.pathname.endsWith("/board/9/configuration")) return new Response("{}");
       if (url.pathname.endsWith("/board/9/sprint")) {
-        if (url.searchParams.get("state") === "active")
+        if (url.searchParams.get("state") === "active,future")
           return new Response(JSON.stringify({ values: [{ id: 501, name: "Current sprint", state: "active" }] }));
         const startAt = Number(url.searchParams.get("startAt"));
         const values =
@@ -2014,6 +2014,49 @@ describe("JiraManager", () => {
     expect(firstPage.sprintsNextCursor).toBe("99");
     const secondPage = await manager.boardView(dc, 9, "sprints", firstPage.sprintsNextCursor);
     expect(secondPage.sprints?.map((sprint) => sprint.id)).toEqual(["100", "101"]);
+  });
+
+  it("lists every parallel open sprint first, also beside a selected sprint, and never repeats them later", async () => {
+    const history = [
+      { id: 1, name: "Old 1", state: "closed" },
+      { id: 7, name: "Kanban Devops 26/22", state: "active" },
+      { id: 2, name: "Old 2", state: "closed" },
+    ];
+    const open = [
+      { id: 9, name: "Planned 26/24", state: "future" },
+      { id: 7, name: "Kanban Devops 26/22", state: "active" },
+      { id: 8, name: "Messagehub in progress 26/23", state: "active" },
+    ];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("/board/9/configuration")) return new Response("{}");
+      if (url.pathname.endsWith("/board/9/sprint/7/issue"))
+        return new Response(JSON.stringify({ issues: [], total: 0, startAt: 0 }));
+      if (url.pathname.endsWith("/board/9/sprint")) {
+        if (url.searchParams.get("state") === "active,future") return new Response(JSON.stringify({ values: open }));
+        const startAt = Number(url.searchParams.get("startAt"));
+        if (startAt === 0) return new Response(JSON.stringify({ values: history, total: 5, isLast: false }));
+        return new Response(
+          JSON.stringify({
+            values: [
+              { id: 8, name: "Messagehub in progress 26/23", state: "active" },
+              { id: 3, name: "Old 3", state: "closed" },
+            ],
+            total: 5,
+            isLast: true,
+          }),
+        );
+      }
+      throw new Error(`Unexpected Jira URL: ${url}`);
+    });
+    const manager = new JiraManager(credentials, fetchImpl as typeof fetch);
+    const firstPage = await manager.boardView(dc, 9, "sprints");
+    expect(firstPage.sprints?.map((sprint) => sprint.id)).toEqual(["7", "8", "9", "1", "2"]);
+    expect(firstPage.sprintsNextCursor).toBe("3");
+    const secondPage = await manager.boardView(dc, 9, "sprints", firstPage.sprintsNextCursor);
+    expect(secondPage.sprints?.map((sprint) => sprint.id)).toEqual(["3"]);
+    const selected = await manager.boardView(dc, 9, "sprints", undefined, 7);
+    expect(selected.sprints?.map((sprint) => sprint.id)).toEqual(["7", "8", "9", "1", "2"]);
   });
 
   it("reports a board-scoped sprint issue endpoint as unsupported without falling back to unscoped issue data", async () => {

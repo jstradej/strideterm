@@ -1900,45 +1900,44 @@ export class JiraManager {
     };
     if (mode === "sprints") {
       try {
-        const sprintRes = await requestPage(`board/${boardId}/sprint`, sprintId === undefined ? startAt : 0);
-        const sprintBody = (await this.readJson(sprintRes)) as { values?: unknown[]; total?: number; isLast?: boolean };
-        result.sprints = (sprintBody.values || []).slice(0, 100).map((item: any) => ({
+        const toSprint = (item: any) => ({
           id: String(item.id || ""),
           name: String(item.name || ""),
           state: String(item.state || "unknown"),
           ...(typeof item.startDate === "string" ? { startDate: item.startDate } : {}),
           ...(typeof item.endDate === "string" ? { endDate: item.endDate } : {}),
-        }));
+        });
+        const isOpenSprint = (sprint: { state: string }) => sprint.state === "active" || sprint.state === "future";
         const sprintStartAt = sprintId === undefined ? startAt : 0;
+        const sprintRes = await requestPage(`board/${boardId}/sprint`, sprintStartAt);
+        const sprintBody = (await this.readJson(sprintRes)) as { values?: unknown[]; total?: number; isLast?: boolean };
+        const page = (sprintBody.values || []).slice(0, 100).map(toSprint);
         result.sprintsHasMore =
           sprintBody.isLast === true
             ? false
             : typeof sprintBody.total === "number"
-              ? sprintStartAt + result.sprints.length < sprintBody.total
-              : result.sprints.length >= 100;
-        if (result.sprintsHasMore) result.sprintsNextCursor = String(sprintStartAt + result.sprints.length);
-        let activeSprintDisplacedLastPageEntry = false;
-        if (sprintId === undefined && startAt === 0 && !result.sprints.some((sprint) => sprint.state === "active")) {
-          const activeRes = await requestPage(`board/${boardId}/sprint`, 0, { state: "active" });
-          const activeBody = (await this.readJson(activeRes)) as { values?: unknown[] };
-          const activeSprint = (activeBody.values || []).find((item: any) => String(item.state || "") === "active") as
-            Record<string, unknown> | undefined;
-          if (activeSprint) {
-            if (result.sprints.length >= 100) {
-              result.sprints.pop();
-              activeSprintDisplacedLastPageEntry = true;
-            }
-            result.sprints.unshift({
-              id: String(activeSprint.id || ""),
-              name: String(activeSprint.name || ""),
-              state: "active",
-              ...(typeof activeSprint.startDate === "string" ? { startDate: activeSprint.startDate } : {}),
-              ...(typeof activeSprint.endDate === "string" ? { endDate: activeSprint.endDate } : {}),
-            });
+              ? sprintStartAt + page.length < sprintBody.total
+              : page.length >= 100;
+        let consumed = page.length;
+        if (sprintStartAt === 0) {
+          // Jira lists a board's sprints oldest first, and a board can run several sprints in parallel: every open
+          // sprint goes on the first page, ahead of the history, so none is left behind a "load more".
+          const openRes = await requestPage(`board/${boardId}/sprint`, 0, { state: "active,future" });
+          const openBody = (await this.readJson(openRes)) as { values?: unknown[] };
+          const open = (openBody.values || []).slice(0, 100).map(toSprint).filter(isOpenSprint);
+          open.sort((a, b) => Number(b.state === "active") - Number(a.state === "active"));
+          const openIds = new Set(open.map((sprint) => sprint.id));
+          const rest = page.filter((sprint) => !openIds.has(sprint.id));
+          const room = Math.max(0, 100 - open.length);
+          if (rest.length > room) {
+            consumed = page.indexOf(rest[room]!);
+            result.sprintsHasMore = true;
           }
+          result.sprints = [...open, ...rest.slice(0, room)];
+        } else {
+          result.sprints = page.filter((sprint) => !isOpenSprint(sprint));
         }
-        if (activeSprintDisplacedLastPageEntry && result.sprintsNextCursor)
-          result.sprintsNextCursor = String(sprintStartAt + result.sprints.length - 1);
+        if (result.sprintsHasMore) result.sprintsNextCursor = String(sprintStartAt + consumed);
         // Jira lists a board's sprints oldest first, so on a board with a long history the selected sprint is often
         // not on the first page; without it the UI cannot name it.
         if (sprintId !== undefined && !result.sprints.some((sprint) => sprint.id === String(sprintId))) {

@@ -28,9 +28,13 @@
         >Sprint<CustomSelect
           v-model.number="selectedSprintId"
           :options="sprintOptions"
-          :loading="isBusy('sprint')"
+          :loading="isBusy('sprint', 'board-more')"
+          :has-more="sprintsHasMore"
+          searchable
+          search-placeholder="Search sprints (name, active, closed…)"
           placeholder="Choose a sprint"
           @change="loadSelectedSprintIssues"
+          @load-more="loadMoreBoard"
       /></label>
       <p v-else-if="boardMode === 'sprints'" class="jira-board-options__empty">
         No sprints are available for this board. Switch to Issues or Backlog.
@@ -58,6 +62,7 @@ const {
   doneWithinOptions,
   isBusy,
   loadBoard,
+  loadMoreBoard,
   loadSelectedSprintIssues,
   onBoardModeChange,
   onMenuEscape,
@@ -67,6 +72,7 @@ const {
   sprintOptions,
   sprintProgress,
   sprintRemainingLabel,
+  sprintsHasMore,
 } = useJiraPaneContext();
 
 const modeLabel = computed(() => {

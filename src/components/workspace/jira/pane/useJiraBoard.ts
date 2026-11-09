@@ -194,9 +194,15 @@ export function useJiraBoard(ctx: JiraPaneContext) {
       doneWithinDays.value = value === "all" ? null : (Number(value) as JiraDoneWithinDays);
     },
   });
-  const sprintOptions = computed(() =>
-    boardSprints.value.map((sprint) => ({ value: Number(sprint.id), label: `${sprint.name} · ${sprint.state}` })),
-  );
+  const sprintOptions = computed(() => {
+    // Jira pages closed sprints oldest first; the most recent ones are the ones worth reaching.
+    const open = boardSprints.value.filter((sprint) => sprint.state !== "closed");
+    const closed = boardSprints.value.filter((sprint) => sprint.state === "closed").reverse();
+    return [...open, ...closed].map((sprint) => ({
+      value: Number(sprint.id),
+      label: `${sprint.name} · ${sprint.state}`,
+    }));
+  });
   const boardSprints = ref<JiraSprint[]>([]);
   const selectedSprint = computed(
     () => boardSprints.value.find((sprint) => Number(sprint.id) === selectedSprintId.value) || null,
