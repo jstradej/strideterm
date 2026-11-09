@@ -94,6 +94,7 @@ export function useJiraPaneCore(ctx: JiraPaneContext, props: JiraInboxPaneProps)
     pendingBoardChooserSequence: null as number | null,
     lastHandledBoardChooserSequence: 0,
     lastHandledIssueOpenSequence: 0,
+    lastHandledSearchSequence: 0,
     jiraResizeObserver: undefined as ResizeObserver | undefined,
     jiraWindowResizeHandler: undefined as (() => void) | undefined,
   };

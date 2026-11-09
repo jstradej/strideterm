@@ -37,6 +37,7 @@ export function useJiraPaneLifecycle(ctx: JiraPaneContext) {
     loadJiraCommentDrafts,
     nativeListPresentation,
     openRequestedJiraIssue,
+    runRequestedJiraSearch,
     resetLoadingState,
     nativePersonalScope,
     nativePersonalScopeConfigured,
@@ -169,6 +170,17 @@ export function useJiraPaneLifecycle(ctx: JiraPaneContext) {
       ctx.issuesLoading.value,
     ],
     openRequestedJiraIssue,
+    { immediate: true },
+  );
+  watch(
+    () => [
+      store.jiraSearchRequest?.sequence,
+      props.workspaceId,
+      connectionsLoaded.value,
+      connectionsLoading.value,
+      ctx.issuesLoading.value,
+    ],
+    runRequestedJiraSearch,
     { immediate: true },
   );
   watch(

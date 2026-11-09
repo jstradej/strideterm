@@ -326,6 +326,7 @@ export interface JiraPaneContext {
   boardActionError: Ref<string, string>;
   assigneeSearchError: Ref<string, string>;
   openRequestedJiraIssue: () => void;
+  runRequestedJiraSearch: () => void;
   draft: {
     id: string | undefined;
     label: string;
@@ -1390,6 +1391,7 @@ export interface JiraPaneContext {
     pendingBoardChooserSequence: number | null;
     lastHandledBoardChooserSequence: number;
     lastHandledIssueOpenSequence: number;
+    lastHandledSearchSequence: number;
     jiraResizeObserver: ResizeObserver | undefined;
     jiraWindowResizeHandler: (() => void) | undefined;
   };

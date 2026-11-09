@@ -126,6 +126,43 @@ export function useJiraPaneUi(ctx: JiraPaneContext) {
       }
     })();
   }
+  /** The header's Jira search hands its text over here to show every result; it searches what the header searched. */
+  function runRequestedJiraSearch() {
+    const request = store.jiraSearchRequest;
+    if (
+      !request ||
+      request.workspaceId !== props.workspaceId ||
+      ctx.connectionsOnly.value ||
+      request.sequence <= vars.lastHandledSearchSequence ||
+      !connectionsLoaded.value ||
+      connectionsLoading.value ||
+      ctx.issuesLoading.value
+    )
+      return;
+    vars.lastHandledSearchSequence = request.sequence;
+    store.clearJiraSearchRequest(request.sequence);
+    const enabled = ctx.connections.value.filter((connection) => connection.enabled !== false);
+    if (!enabled.length) {
+      ctx.reportFailure("Jira search failed", new Error("No Jira connection is enabled in this profile."));
+      return;
+    }
+    const target = enabled.length > 1 ? "__all__" : enabled[0].id;
+    void (async () => {
+      try {
+        activeView.value = "issues";
+        ctx.quickSearchText.value = request.text;
+        ctx.textSearch.value = request.text;
+        if (connectionId.value !== target) {
+          connectionId.value = target;
+          await ctx.onConnectionChange();
+          if (target === "__all__") return;
+        }
+        await ctx.searchQuick();
+      } catch (cause) {
+        ctx.reportFailure("Jira search failed", cause);
+      }
+    })();
+  }
   function onBoardChooserOpen() {
     if (connectionId.value && connectionId.value !== "__all__" && !boards.value.length && !boardsLoading.value) {
       void loadBoards("");
@@ -198,6 +235,7 @@ export function useJiraPaneUi(ctx: JiraPaneContext) {
     toggleAdvancedSearch,
     openRequestedJiraBoardChooser,
     openRequestedJiraIssue,
+    runRequestedJiraSearch,
     onBoardChooserOpen,
     focusQuickSearch,
     closeExtraActionsOnOutsideClick,

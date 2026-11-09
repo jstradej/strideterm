@@ -44,6 +44,7 @@
             >
           </span>
         </div>
+        <JiraHeaderSearch />
         <div class="workspace-meta__stats">
           <span class="workspace-chip" :title="inboxTitle"
             ><strong>{{ activeWorkspace.kind === "github" ? "GitHub" : "Azure" }}</strong> inbox</span
@@ -85,6 +86,7 @@
             >
           </span>
         </div>
+        <JiraHeaderSearch />
         <div class="workspace-meta__stats">
           <span class="workspace-chip" :title="tabsTitle"
             ><strong>{{ sessionCount }}</strong> tabs</span
@@ -131,6 +133,7 @@ import { useAppStore } from "../../stores/app.js";
 import { safeColor, attentionTitle, isFreshAttention } from "../../app/helpers.js";
 import WorkspaceLayoutChip from "./WorkspaceLayoutChip.vue";
 import NotificationBell from "../layout/NotificationBell.vue";
+import JiraHeaderSearch from "../layout/JiraHeaderSearch.vue";
 import MobileConnectedIndicator from "../layout/MobileConnectedIndicator.vue";
 import AgentRunChip from "../layout/AgentRunChip.vue";
 

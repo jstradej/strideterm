@@ -302,6 +302,15 @@ export const useAppStore = defineStore("app", () => {
   function clearJiraIssueOpenRequest(sequence: number): void {
     if (jiraIssueOpenRequest.value?.sequence === sequence) jiraIssueOpenRequest.value = null;
   }
+  const jiraSearchRequest = ref<{ workspaceId: string; text: string; sequence: number } | null>(null);
+  let jiraSearchSequence = 0;
+  function requestJiraSearch(workspaceId: string, text: string): void {
+    if (!workspaceId || !text.trim()) return;
+    jiraSearchRequest.value = { workspaceId, text: text.trim(), sequence: ++jiraSearchSequence };
+  }
+  function clearJiraSearchRequest(sequence: number): void {
+    if (jiraSearchRequest.value?.sequence === sequence) jiraSearchRequest.value = null;
+  }
   // Workspaces whose Git-tab activation refresh is still in flight — shown on the tab.
   // Counted, so an overlapping second activation keeps the marker until both settle.
   const gitActivationRefreshCounts = ref<Record<string, number>>({});
@@ -2711,6 +2720,9 @@ export const useAppStore = defineStore("app", () => {
     jiraIssueOpenRequest,
     requestJiraIssueOpen,
     clearJiraIssueOpenRequest,
+    jiraSearchRequest,
+    requestJiraSearch,
+    clearJiraSearchRequest,
     suppressBroadcast,
     recoveryCandidates,
     inboxConnectionFocus,

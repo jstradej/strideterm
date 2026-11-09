@@ -34,6 +34,7 @@ const mockStoreState = vi.hoisted(() => ({
     ref: { connectionId: string; issueId: string; issueKey: string };
     sequence: number;
   } | null,
+  jiraSearchRequest: null as { workspaceId: string; text: string; sequence: number } | null,
 }));
 import JiraInboxPane from "./JiraInboxPane.vue";
 import JiraStartDevelopmentDialog from "./jira/JiraStartDevelopmentDialog.vue";
@@ -312,6 +313,12 @@ vi.mock("../../stores/app.js", () => ({
     clearJiraIssueOpenRequest(sequence: number) {
       if (mockStoreState.jiraIssueOpenRequest?.sequence === sequence) mockStoreState.jiraIssueOpenRequest = null;
     },
+    get jiraSearchRequest() {
+      return mockStoreState.jiraSearchRequest;
+    },
+    clearJiraSearchRequest(sequence: number) {
+      if (mockStoreState.jiraSearchRequest?.sequence === sequence) mockStoreState.jiraSearchRequest = null;
+    },
     adoptPayload: transport.adoptPayload,
     openAzureConnectionDialog: transport.openAzureConnectionDialog,
     openGitHubConnectionDialog: transport.openGitHubConnectionDialog,
@@ -352,6 +359,7 @@ describe("JiraInboxPane", () => {
     mockStoreState.isMobileSession = false;
     mockStoreState.jiraBoardChooserRequest = null;
     mockStoreState.jiraIssueOpenRequest = null;
+    mockStoreState.jiraSearchRequest = null;
     mockStoreState.payload = reactive({
       appState: {
         activeProfileId: "default",
@@ -7267,6 +7275,21 @@ describe("JiraInboxPane", () => {
       );
       expect(wrapper.find(".jira-detail-header h2").text()).toBe("Fix login");
       expect(mockStoreState.jiraIssueOpenRequest).toBeNull();
+      wrapper.unmount();
+    });
+
+    test("runs the search the header handed over as a quick search, then clears the request", async () => {
+      mockStoreState.jiraSearchRequest = { workspaceId: "jira:ws", text: "login timeout", sequence: 1 };
+      const wrapper = mount(JiraInboxPane, { props: { workspaceId: "jira:ws" } });
+      await flushPromises();
+      expect(transport.searchJiraIssues).toHaveBeenCalledWith(
+        expect.objectContaining({
+          connectionId: "jira-1",
+          jql: 'text ~ "login" AND text ~ "timeout" ORDER BY updated DESC',
+        }),
+      );
+      expect((wrapper.find(".jira-quick-search input").element as HTMLInputElement).value).toBe("login timeout");
+      expect(mockStoreState.jiraSearchRequest).toBeNull();
       wrapper.unmount();
     });
 
