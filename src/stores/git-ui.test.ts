@@ -393,6 +393,43 @@ describe("git-ui store", () => {
       expect(checkout).toHaveBeenCalledTimes(2);
     });
 
+    test("checking out a remote branch whose local name tracks something else asks before resetting it", async () => {
+      const checkoutRemote = vi
+        .fn()
+        .mockResolvedValueOnce({
+          result: {
+            ok: false,
+            summary: "Local branch main already exists and tracks upstream/main, not origin/main.",
+            code: "local-branch-exists",
+            localBranch: "main",
+            remoteBranch: "origin/main",
+            upstream: "upstream/main",
+            localOnlyCommits: 2,
+          },
+        })
+        .mockResolvedValueOnce({ result: { ok: true, summary: "Reset main to origin/main completed successfully." } });
+      const listBranches = vi.fn().mockResolvedValue({ ok: true, local: [], remote: [] });
+      const store = useGitUiStore();
+      store.init({ gitCheckoutRemoteBranch: checkoutRemote, gitListBranches: listBranches } as unknown as Transport);
+      store.setActiveRoot("ws-checkout-remote", "/repo/a");
+
+      await store.gitCheckoutRemoteBranch("ws-checkout-remote", "origin/main");
+      expect(checkoutRemote).toHaveBeenLastCalledWith(
+        expect.objectContaining({ remoteBranch: "origin/main", reset: false, rootPath: "/repo/a" }),
+      );
+      const pending = store.get("ws-checkout-remote").pendingAction;
+      expect(pending).toMatchObject({ action: "checkoutRemoteReset", severity: "danger", confirmLabel: "Reset main" });
+      expect(pending?.body).toContain("`upstream/main`");
+      expect(pending?.body).toContain("2 commit(s)");
+
+      await store.gitConfirmAction("ws-checkout-remote");
+      expect(checkoutRemote).toHaveBeenCalledTimes(2);
+      expect(checkoutRemote).toHaveBeenLastCalledWith(
+        expect.objectContaining({ remoteBranch: "origin/main", reset: true, rootPath: "/repo/a" }),
+      );
+      expect(store.get("ws-checkout-remote").pendingAction ?? null).toBeNull();
+    });
+
     test("scopes conflict-action uncertainty to the dialog root after switching active roots", async () => {
       const resolveConflict = vi
         .fn()

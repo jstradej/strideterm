@@ -6594,8 +6594,9 @@ export class GitManager extends EventEmitter {
     {
       remoteBranch,
       localBranch = "",
+      reset = false,
       rootPath = "",
-    }: { remoteBranch?: string; localBranch?: string; rootPath?: string } = {},
+    }: { remoteBranch?: string; localBranch?: string; reset?: boolean; rootPath?: string } = {},
   ): Promise<Record<string, unknown>> {
     const remote = String(remoteBranch || "").trim();
     if (!remote) {
@@ -6610,13 +6611,101 @@ export class GitManager extends EventEmitter {
     if (!derived || derived.startsWith("-")) {
       return createStructuredResult({ ok: false, summary: "Invalid local branch name." });
     }
-    return this.runWriteAction(workspace, {
+    if (reset) {
+      return this.runWriteAction(workspace, {
+        type: "checkout-remote",
+        label: `Reset ${derived} to ${remote}`,
+        skipPreflight: true,
+        run: async (cwd) => this.execGit(cwd, ["checkout", "-B", derived, "--track", remote]),
+        rootPath,
+      });
+    }
+
+    const cwd = rootPath || String(workspace?.cwd || "");
+    const existing = cwd ? await this.readLocalBranchUpstream(cwd, derived) : null;
+    if (!existing) {
+      return this.runWriteAction(workspace, {
+        type: "checkout-remote",
+        label: `Checkout ${remote}`,
+        skipPreflight: true,
+        run: async (cwd) => this.execGit(cwd, ["checkout", "-b", derived, "--track", remote]),
+        rootPath,
+      });
+    }
+
+    // An existing local branch of the same name is never shadowed by an
+    // invented one ("origin-main"). When it already tracks this remote branch,
+    // checking out the remote IS checking out the local branch, brought up to
+    // date when that is a fast-forward.
+    if (existing.upstream !== remote) {
+      let localOnlyCommits = 0;
+      try {
+        const count = await this.execGit(cwd, ["rev-list", "--count", `${remote}..refs/heads/${derived}`]);
+        localOnlyCommits = Number.parseInt(String(count.stdout || "").trim(), 10) || 0;
+      } catch {
+        // Advisory only: the confirm falls back to the milder wording.
+      }
+      return {
+        ...createStructuredResult({
+          ok: false,
+          summary: existing.upstream
+            ? `Local branch ${derived} already exists and tracks ${existing.upstream}, not ${remote}.`
+            : `Local branch ${derived} already exists and has no upstream.`,
+        }),
+        code: "local-branch-exists",
+        localBranch: derived,
+        remoteBranch: remote,
+        upstream: existing.upstream,
+        localOnlyCommits,
+      };
+    }
+
+    let fastForwardError = "";
+    const result = await this.runWriteAction(workspace, {
       type: "checkout-remote",
-      label: `Checkout ${remote}`,
+      label: `Checkout ${derived}`,
       skipPreflight: true,
-      run: async (cwd) => this.execGit(cwd, ["checkout", "-b", derived, "--track", remote]),
+      run: async (cwd) => {
+        const checkout = await this.execGit(cwd, ["checkout", derived]);
+        try {
+          const merge = await this.execGit(cwd, ["merge", "--ff-only", remote]);
+          return {
+            stdout: joinRawOutput(checkout.stdout, merge.stdout),
+            stderr: joinRawOutput(checkout.stderr, merge.stderr),
+          };
+        } catch (error) {
+          fastForwardError = extractErrorMessage(error);
+          return checkout;
+        }
+      },
       rootPath,
     });
+    if (!result.ok) return result;
+    if (!fastForwardError) {
+      return { ...result, summary: `Checked out ${derived} and brought it up to date with ${remote}.` };
+    }
+    return {
+      ...result,
+      summary: `Checked out ${derived}; it could not be fast-forwarded to ${remote}.`,
+      warnings: [...((result.warnings as string[]) || []), fastForwardError],
+    };
+  }
+
+  private async readLocalBranchUpstream(cwd: string, branch: string): Promise<{ upstream: string } | null> {
+    try {
+      const result = await this.execGit(cwd, [
+        "for-each-ref",
+        "--format=%(refname)%00%(upstream:short)",
+        `refs/heads/${branch}`,
+      ]);
+      const line = String(result.stdout || "")
+        .split("\n")
+        .find((entry) => entry.startsWith(`refs/heads/${branch}\0`));
+      if (!line) return null;
+      return { upstream: line.slice(line.indexOf("\0") + 1).trim() };
+    } catch {
+      return null;
+    }
   }
 
   /**

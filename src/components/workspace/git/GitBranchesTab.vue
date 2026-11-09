@@ -1840,11 +1840,7 @@ async function onCheckout(ref: string) {
 }
 
 async function onCheckoutRemote(remoteRef: string) {
-  const slash = remoteRef.indexOf("/");
-  const remoteName = slash >= 0 ? remoteRef.slice(0, slash) : "";
-  const shortName = slash >= 0 ? remoteRef.slice(slash + 1) : remoteRef;
-  const localBranch = localShortNames.value.has(shortName) ? `${remoteName}-${shortName}` : shortName;
-  await gitUiStore.gitCheckoutRemoteBranch(props.workspaceId, remoteRef, localBranch);
+  await gitUiStore.gitCheckoutRemoteBranch(props.workspaceId, remoteRef);
   refreshAll(true);
 }
 

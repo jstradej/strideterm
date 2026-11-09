@@ -20,11 +20,12 @@
     >
       <span
         v-if="hasChildren"
-        class="branch-node__toggle"
+        :class="['branch-node__toggle', expanded[node.key] && 'branch-node__toggle--expanded']"
         :aria-label="expanded[node.key] ? 'Collapse' : 'Expand'"
         @click.stop="emit('toggle', node.key)"
-        >{{ expanded[node.key] ? "▾" : "▸" }}</span
       >
+        <svg viewBox="0 0 12 12" aria-hidden="true"><path d="m4 2.5 3.5 3.5L4 9.5" /></svg>
+      </span>
       <span v-else class="branch-node__toggle branch-node__toggle--leaf" />
 
       <span :class="['branch-node__icon', `branch-node__icon--${iconKind}`]">{{ iconChar }}</span>
@@ -512,12 +513,32 @@ function runAction(id: string) {
 }
 
 .branch-node__toggle {
-  display: inline-block;
-  width: 12px;
-  text-align: center;
-  flex: 0 0 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
   color: var(--muted);
-  font-size: 10px;
+}
+
+.branch-node__toggle svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 120ms ease;
+}
+
+.branch-node__toggle--expanded svg {
+  transform: rotate(90deg);
+}
+
+.branch-node__row:hover .branch-node__toggle {
+  color: var(--text);
 }
 
 .branch-node__toggle--leaf {

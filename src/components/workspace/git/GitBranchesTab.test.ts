@@ -1500,11 +1500,7 @@ describe("GitBranchesTab branch tree grouping", () => {
     expect(importantRemote).toBeTruthy();
     await importantRemote!.trigger("dblclick");
     await flushPromises();
-    expect(gitCheckoutRemoteBranch).toHaveBeenCalledWith(
-      "ws-important-refs",
-      "origin/people/alice/topic",
-      "origin-people/alice/topic",
-    );
+    expect(gitCheckoutRemoteBranch).toHaveBeenCalledWith("ws-important-refs", "origin/people/alice/topic");
     expect(
       picker
         .findAll(".branch-node--section > .branch-node__row")

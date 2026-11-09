@@ -1152,16 +1152,55 @@ export const useGitUiStore = defineStore("git-ui", () => {
   async function gitCheckoutRemoteBranch(
     workspaceId: string,
     remoteBranch: string,
-    localBranch: string,
+    { reset = false }: { reset?: boolean } = {},
   ): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
     await runGitAction(
       workspaceId,
       "checkout-remote",
-      () => (_api as CallableTransport).gitCheckoutRemoteBranch({ workspaceId, remoteBranch, localBranch, rootPath }),
+      () => (_api as CallableTransport).gitCheckoutRemoteBranch({ workspaceId, remoteBranch, reset, rootPath }),
       { requireRefreshBeforeRetry: true },
     );
+    const last = state.value[workspaceId]?.lastResult as Record<string, unknown> | null | undefined;
+    if (!reset && last && last.ok === false && last.code === "local-branch-exists") {
+      confirmResetLocalToRemote(workspaceId, {
+        localBranch: String(last.localBranch || ""),
+        remoteBranch,
+        upstream: String(last.upstream || ""),
+        localOnlyCommits: Number(last.localOnlyCommits) || 0,
+      });
+      return;
+    }
     await gitListBranches(workspaceId);
+  }
+
+  function confirmResetLocalToRemote(
+    workspaceId: string,
+    {
+      localBranch,
+      remoteBranch,
+      upstream,
+      localOnlyCommits,
+    }: { localBranch: string; remoteBranch: string; upstream: string; localOnlyCommits: number },
+  ): void {
+    const tracking = upstream ? `tracks \`${upstream}\`` : "has no upstream";
+    const loss =
+      localOnlyCommits > 0
+        ? ` ${localOnlyCommits} commit(s) that exist only on local \`${localBranch}\` will no longer be on any branch.`
+        : "";
+    setPendingDestructiveAction(
+      workspaceId,
+      buildDestructiveConfirm({
+        action: "checkoutRemoteReset",
+        severity: localOnlyCommits > 0 ? "danger" : "warn",
+        title: `Local branch ${localBranch} already exists`,
+        body:
+          `Local \`${localBranch}\` ${tracking}. Reset it to \`${remoteBranch}\`, make it track \`${remoteBranch}\` and check it out?${loss} ` +
+          `To keep it as it is, cancel and check out local \`${localBranch}\` instead.`,
+        confirmLabel: `Reset ${localBranch}`,
+        payload: { remoteBranch, localBranch },
+      }),
+    );
   }
 
   async function gitLoadGraph(
@@ -1452,6 +1491,8 @@ export const useGitUiStore = defineStore("git-ui", () => {
           () => api.gitRemoveWorktree({ workspaceId, worktreePath: p!.worktreePath, deleteBranch: true }),
           { requireRefreshBeforeRetry: true },
         );
+      } else if (action === "checkoutRemoteReset") {
+        await gitCheckoutRemoteBranch(workspaceId, String(p!.remoteBranch || ""), { reset: true });
       } else if (action === "forcePushWithLease") {
         if ((await pullRequestContext(workspaceId)).onPullRequestBranch) {
           await runGitAction(

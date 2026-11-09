@@ -3713,6 +3713,91 @@ describe("GitManager", () => {
         expect(result.ok).toBe(false);
         expect(calls.some((args) => args[0] === "checkout")).toBe(false);
       });
+
+      function makeMgrWithLocal({
+        upstream,
+        localOnly = "0",
+        failFastForward = false,
+      }: {
+        upstream: string;
+        localOnly?: string;
+        failFastForward?: boolean;
+      }) {
+        const calls: string[][] = [];
+        const execGitImpl = vi.fn(async (_cwd: string, args: string[]) => {
+          calls.push(args);
+          if (args[0] === "for-each-ref") {
+            // A prefix match on refs/heads/main also lists main/x; only the exact ref counts.
+            return { stdout: `refs/heads/main\0${upstream}\nrefs/heads/main/x\0origin/main/x\n`, stderr: "" };
+          }
+          if (args[0] === "rev-list") return { stdout: `${localOnly}\n`, stderr: "" };
+          if (args[0] === "merge" && failFastForward) {
+            throw Object.assign(new Error("fatal: Not possible to fast-forward, aborting."), {
+              stderr: "fatal: Not possible to fast-forward, aborting.",
+            });
+          }
+          return { stdout: "", stderr: "" };
+        });
+        const mgr = new GitManager({ execGitImpl });
+        mgr.inspectWorkspace = vi.fn().mockResolvedValue({
+          available: true,
+          branch: "feature",
+          dirty: false,
+          operationState: { kind: "idle", inProgress: false, conflicts: [] },
+          remotes: { origin: "https://example.com/repo.git" },
+        });
+        return { mgr, calls };
+      }
+
+      test("checks out and fast-forwards an existing local branch that already tracks the remote", async () => {
+        const { mgr, calls } = makeMgrWithLocal({ upstream: "origin/main" });
+        const result = await mgr.checkoutRemoteBranch({ id: "ws-1", cwd: "/repo" }, { remoteBranch: "origin/main" });
+        expect(result.ok).toBe(true);
+        expect(calls).toContainEqual(["checkout", "main"]);
+        expect(calls).toContainEqual(["merge", "--ff-only", "origin/main"]);
+        expect(calls.some((args) => args[0] === "checkout" && (args[1] === "-b" || args[1] === "-B"))).toBe(false);
+        expect(result.summary).toContain("up to date with origin/main");
+      });
+
+      test("keeps the checkout and warns when the existing branch cannot be fast-forwarded", async () => {
+        const { mgr, calls } = makeMgrWithLocal({ upstream: "origin/main", failFastForward: true });
+        const result = await mgr.checkoutRemoteBranch({ id: "ws-1", cwd: "/repo" }, { remoteBranch: "origin/main" });
+        expect(result.ok).toBe(true);
+        expect(calls).toContainEqual(["checkout", "main"]);
+        expect(result.summary).toContain("could not be fast-forwarded");
+        expect((result.warnings as string[]).join("\n")).toContain("Not possible to fast-forward");
+      });
+
+      test("refuses with code 'local-branch-exists' when the local branch tracks something else", async () => {
+        const { mgr, calls } = makeMgrWithLocal({ upstream: "upstream/main", localOnly: "3" });
+        const result = await mgr.checkoutRemoteBranch({ id: "ws-1", cwd: "/repo" }, { remoteBranch: "origin/main" });
+        expect(result.ok).toBe(false);
+        expect(result).toMatchObject({
+          code: "local-branch-exists",
+          localBranch: "main",
+          remoteBranch: "origin/main",
+          upstream: "upstream/main",
+          localOnlyCommits: 3,
+        });
+        expect(calls.some((args) => args[0] === "checkout")).toBe(false);
+      });
+
+      test("refuses with code 'local-branch-exists' when the local branch has no upstream", async () => {
+        const { mgr, calls } = makeMgrWithLocal({ upstream: "" });
+        const result = await mgr.checkoutRemoteBranch({ id: "ws-1", cwd: "/repo" }, { remoteBranch: "origin/main" });
+        expect(result).toMatchObject({ ok: false, code: "local-branch-exists", upstream: "" });
+        expect(calls.some((args) => args[0] === "checkout")).toBe(false);
+      });
+
+      test("reset re-points the existing local branch at the remote and tracks it", async () => {
+        const { mgr, calls } = makeMgrWithLocal({ upstream: "upstream/main" });
+        const result = await mgr.checkoutRemoteBranch(
+          { id: "ws-1", cwd: "/repo" },
+          { remoteBranch: "origin/main", reset: true },
+        );
+        expect(result.ok).toBe(true);
+        expect(calls).toContainEqual(["checkout", "-B", "main", "--track", "origin/main"]);
+      });
     });
   });
 

@@ -745,6 +745,7 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
         git.checkoutRemoteBranch(workspace, {
           remoteBranch: payload.remoteBranch,
           localBranch: payload.localBranch || "",
+          reset: payload.reset === true,
           rootPath,
         }),
         windowId,

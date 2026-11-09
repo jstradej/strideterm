@@ -912,7 +912,9 @@ export interface StridetermAPI {
   gitDeleteBranch: (payload: GitPayload & { branch: string; force?: boolean }) => Promise<unknown>;
   gitDeleteRemoteBranch: (payload: GitPayload & { branch: string; remote?: string }) => Promise<unknown>;
   gitRenameBranch: (payload: GitPayload & { branch?: string; newName: string }) => Promise<unknown>;
-  gitCheckoutRemoteBranch: (payload: GitPayload & { remoteBranch: string; localBranch?: string }) => Promise<unknown>;
+  gitCheckoutRemoteBranch: (
+    payload: GitPayload & { remoteBranch: string; localBranch?: string; reset?: boolean },
+  ) => Promise<unknown>;
   gitLogGraph: (
     payload: GitPayload & {
       limit?: number;

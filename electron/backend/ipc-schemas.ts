@@ -1474,6 +1474,7 @@ export const gitCheckoutRemoteSchema = z.object({
   workspaceId: nonEmptyString,
   remoteBranch: safeGitRef,
   localBranch: safeGitRef.optional(),
+  reset: z.boolean().optional(),
   rootPath: z.string().optional(),
 });
 export type GitCheckoutRemote = z.infer<typeof gitCheckoutRemoteSchema>;
