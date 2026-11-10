@@ -711,6 +711,10 @@ async function onToolbarOpenJiraBoardChooser(): Promise<void> {
 }
 
 function onOpenLayoutPicker(event: MouseEvent): void {
+  if (store.layoutPickerAnchor) {
+    store.hideLayoutPicker();
+    return;
+  }
   const btn = (event.target ?? event.currentTarget) as Element | null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   store.showLayoutPicker((btn ? btn.getBoundingClientRect() : null) as any);

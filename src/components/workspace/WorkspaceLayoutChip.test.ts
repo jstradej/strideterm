@@ -52,6 +52,19 @@ describe("WorkspaceLayoutChip — only reflects workspace grid, not tab-split", 
     expect(wrapper.find(".workspace-layout-chip--unsplit").exists()).toBe(false);
   });
 
+  it("a second click on the chip closes the layout picker without changing anything", async () => {
+    const store = useAppStore();
+    store.payload = makePayload({ workspaceGrid: null });
+    const wrapper = mount(WorkspaceLayoutChip);
+    const chip = wrapper.find("[data-role='workspace-layout-chip']");
+
+    await chip.trigger("click");
+    expect(store.layoutPickerAnchor).not.toBeNull();
+    await chip.trigger("click");
+    expect(store.layoutPickerAnchor).toBeNull();
+    expect(store.payload?.appState?.workspaceGrid).toBeNull();
+  });
+
   it("shows the grid layout label and Unsplit when a grid is visible", () => {
     const store = useAppStore();
     store.payload = makePayload({

@@ -74,7 +74,13 @@ const unsplitTitle = computed(
     "Disband the multi-workspace grid — the active workspace returns to a single full-width view. Cell assignments are forgotten.",
 );
 
+// A second click closes the picker unchanged (the picker's outside-click
+// dismiss deliberately ignores this button).
 function onOpenPicker(): void {
+  if (store.layoutPickerAnchor) {
+    store.hideLayoutPicker();
+    return;
+  }
   const rect = layoutBtnRef.value?.getBoundingClientRect();
   if (!rect) return;
   store.showLayoutPicker(rect, "grid");
