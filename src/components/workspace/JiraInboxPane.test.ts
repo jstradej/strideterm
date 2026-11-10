@@ -4318,6 +4318,53 @@ describe("JiraInboxPane", () => {
     wrapper.unmount();
   });
 
+  test("nothing refreshes on a timer; returning to the window refreshes only data older than 5 minutes, once", async () => {
+    writeLastJiraSearch(
+      "default",
+      "jira:search-return",
+      { connectionId: "jira-1", jql: "project = PAY", kind: "jql", label: "Payments", filterId: null },
+      localStorage,
+    );
+    const issue = {
+      ref: { provider: "jira" as const, connectionId: "jira-1", issueId: "pay-1", issueKey: "PAY-1" },
+      summary: "Result",
+    };
+    const start = Date.now();
+    let now = start;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const rects = vi
+      .spyOn(Element.prototype, "getClientRects")
+      .mockReturnValue([{ width: 1, height: 1 }] as unknown as DOMRectList);
+    // Like the runtime cache: a read past its 5-minute TTL comes back stale.
+    transport.searchJiraIssues.mockImplementation(async (payload: { cacheOnly?: boolean }) => ({
+      issues: [issue],
+      cache: payload.cacheOnly
+        ? { source: "cache", fetchedAt: start, stale: now - start >= 5 * 60_000 }
+        : { source: "network", fetchedAt: now, stale: false },
+    }));
+    const wrapper = mount(JiraInboxPane, { props: { workspaceId: "jira:search-return" }, attachTo: document.body });
+    await flushPromises();
+    const callsAfterMount = transport.searchJiraIssues.mock.calls.length;
+
+    window.dispatchEvent(new Event("focus"));
+    await flushPromises();
+    expect(transport.searchJiraIssues).toHaveBeenCalledTimes(callsAfterMount);
+
+    // Six minutes later the cached read is stale: one cache read, then one Jira request.
+    now = start + 6 * 60_000;
+    window.dispatchEvent(new Event("focus"));
+    await flushPromises();
+    expect(transport.searchJiraIssues).toHaveBeenCalledTimes(callsAfterMount + 2);
+    expect(transport.searchJiraIssues).toHaveBeenLastCalledWith(expect.objectContaining({ forceRefresh: true }));
+
+    window.dispatchEvent(new Event("focus"));
+    await flushPromises();
+    expect(transport.searchJiraIssues).toHaveBeenCalledTimes(callsAfterMount + 2);
+    wrapper.unmount();
+    rects.mockRestore();
+    clock.mockRestore();
+  });
+
   test("keeps the selected issue open when a passive background search refresh finishes", async () => {
     writeLastJiraSearch(
       "default",

@@ -28,6 +28,7 @@ export function useJiraPaneLifecycle(ctx: JiraPaneContext) {
     dismissIssuePreview,
     doneWithinDays,
     flushPendingNativeViewSave,
+    headCacheMetadata,
     isNativeSavedView,
     issueSort,
     issues,
@@ -59,6 +60,7 @@ export function useJiraPaneLifecycle(ctx: JiraPaneContext) {
     recentSearches,
     recentViewedIssues,
     refreshNativeBoardFromCache,
+    refreshVisibleJiraData,
     restoreNativePresentationScroll,
     restoringPreferences,
     searchCache,
@@ -82,6 +84,26 @@ export function useJiraPaneLifecycle(ctx: JiraPaneContext) {
     workspaceViewsState,
   } = ctx;
   if (props.detached) return useJiraDetachedLifecycle(ctx);
+  // Nothing polls Jira on a timer. Coming back to a visible inbox whose data is old refreshes it once.
+  const RETURN_REFRESH_AFTER_MS = 5 * 60_000;
+  const RETURN_REFRESH_THROTTLE_MS = 60_000;
+  let lastReturnRefreshAt = 0;
+  let syncClockTimer: ReturnType<typeof setInterval> | undefined;
+  function paneIsShown() {
+    const root = jiraRootRef.value;
+    return document.visibilityState !== "hidden" && !!root?.isConnected && root.getClientRects().length > 0;
+  }
+  function refreshAfterReturn() {
+    updateSyncClock();
+    if (!paneIsShown()) return;
+    const metadata = headCacheMetadata.value;
+    if (!metadata) return;
+    const now = Date.now();
+    if (!metadata.stale && now - metadata.fetchedAt < RETURN_REFRESH_AFTER_MS) return;
+    if (now - lastReturnRefreshAt < RETURN_REFRESH_THROTTLE_MS) return;
+    lastReturnRefreshAt = now;
+    void refreshVisibleJiraData();
+  }
   /** A different workspace, profile or view is a different context: no error and no loading flag of the old one stays. */
   function resetTransientState() {
     clearPaneError();
@@ -114,8 +136,12 @@ export function useJiraPaneLifecycle(ctx: JiraPaneContext) {
   onMounted(() => {
     void loadConnections();
     void loadJiraCommentDrafts();
-    window.addEventListener("focus", updateSyncClock);
-    document.addEventListener("visibilitychange", updateSyncClock);
+    window.addEventListener("focus", refreshAfterReturn);
+    document.addEventListener("visibilitychange", refreshAfterReturn);
+    // Keeps "N min ago" honest while the pane is on screen; renders a label, never asks Jira.
+    syncClockTimer = setInterval(() => {
+      if (document.visibilityState !== "hidden") updateSyncClock();
+    }, 30_000);
     updateCompactPane();
     vars.jiraWindowResizeHandler = updateCompactPane;
     window.addEventListener("resize", vars.jiraWindowResizeHandler);
@@ -139,8 +165,9 @@ export function useJiraPaneLifecycle(ctx: JiraPaneContext) {
     vars.jiraResizeObserver?.disconnect();
     vars.issuePreviewObserver?.disconnect();
     if (vars.jiraWindowResizeHandler) window.removeEventListener("resize", vars.jiraWindowResizeHandler);
-    window.removeEventListener("focus", updateSyncClock);
-    document.removeEventListener("visibilitychange", updateSyncClock);
+    window.removeEventListener("focus", refreshAfterReturn);
+    document.removeEventListener("visibilitychange", refreshAfterReturn);
+    if (syncClockTimer) clearInterval(syncClockTimer);
     window.removeEventListener("scroll", dismissIssuePreview, true);
     if (vars.boardSearchTimer) clearTimeout(vars.boardSearchTimer);
     if (vars.assigneeSearchTimer) clearTimeout(vars.assigneeSearchTimer);

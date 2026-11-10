@@ -221,11 +221,6 @@ export class RemoteClientRegistry {
     return client;
   }
 
-  /** Profiles at least one connected remote client is currently bound to. */
-  liveProfileIds(): string[] {
-    return [...new Set([...this.clients.values()].map((client) => client.profileId).filter(Boolean))];
-  }
-
   get(sessionId: string): RemoteClientContext | undefined {
     return this.clients.get(sessionId);
   }

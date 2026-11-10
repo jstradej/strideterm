@@ -7637,16 +7637,8 @@ export async function createRuntime({
       await jiraPolling?.removeConnection(profileId, connectionId);
     },
     getJiraPollingStatus: (profileId: string) => jiraPolling?.getWatchStatuses(profileId) ?? {},
-    getActiveJiraProfileIds: () => {
-      const ids = new Set<string>();
-      for (const slot of getState().windowSlots || []) if (slot.profileId) ids.add(slot.profileId);
-      for (const registry of _remoteClientRegistries) for (const id of registry.liveProfileIds()) ids.add(id);
-      return ids;
-    },
   });
   jiraWorkspaceViewsSnapshot = providerHandlers.getJiraWorkspaceViewsSnapshot;
-  providerHandlers.startJiraWorkspaceViewSync();
-
   const gridHandlers = createGridHandlers({
     store,
     getState,

@@ -102,7 +102,6 @@ export function createJiraHandlers(ctx: any) {
   const viewFlights = new Map<string, Promise<void>>();
   const viewFlightForceRefresh = new Map<string, boolean>();
   const queuedForceRefresh = new Set<string>();
-  let viewSyncTimer: ReturnType<typeof setTimeout> | undefined;
   let viewSyncDisposed = false;
   const viewStateKey = (profileId: string, workspaceId: string) => `${profileId}:${workspaceId}`;
   const sameViewData = (a: JiraSavedWorkspaceView, b: JiraSavedWorkspaceView) =>
@@ -477,7 +476,6 @@ export function createJiraHandlers(ctx: any) {
     workspaceId: string,
     selectedViewId?: string,
     forceRefresh = true,
-    lane: "interactive" | "background" = "interactive",
   ) => {
     const views = savedViewsFor(workspaceId, profileId);
     const selected = selectedViewId ? views.filter((view) => view.viewId === selectedViewId) : views;
@@ -486,93 +484,21 @@ export function createJiraHandlers(ctx: any) {
     const workers = Array.from({ length: Math.min(3, selected.length) }, async () => {
       while (next < selected.length) {
         if (viewSyncDisposed) return;
-        const view = selected[next++];
-        if (lane === "interactive") {
-          await syncWorkspaceView(profileId, workspaceId, view, forceRefresh);
-          continue;
-        }
-        const pendingKey = `${viewStateKey(profileId, workspaceId)}:${view.viewId}`;
-        if (backgroundViewSyncPending.has(pendingKey)) continue;
-        backgroundViewSyncPending.add(pendingKey);
-        try {
-          const release = await acquireBackgroundViewSyncSlot();
-          try {
-            if (viewSyncDisposed) return;
-            await syncWorkspaceView(profileId, workspaceId, view, forceRefresh);
-          } finally {
-            release();
-          }
-        } finally {
-          backgroundViewSyncPending.delete(pendingKey);
-        }
+        await syncWorkspaceView(profileId, workspaceId, selected[next++], forceRefresh);
       }
     });
     await Promise.all(workers);
     return makeWorkspaceViewsState(workspaceId, profileId);
-  };
-  // Unattended syncs share two slots, so a tick over many boards leaves the scheduler's capacity to interactive reads.
-  const BACKGROUND_VIEW_SYNC_SLOTS = 2;
-  let backgroundViewSyncActive = 0;
-  const backgroundViewSyncWaiters: Array<() => void> = [];
-  /** A view waiting for or holding a background slot: a slow Jira must not pile up one waiter per tick. */
-  const backgroundViewSyncPending = new Set<string>();
-  const acquireBackgroundViewSyncSlot = async () => {
-    while (backgroundViewSyncActive >= BACKGROUND_VIEW_SYNC_SLOTS)
-      await new Promise<void>((resolve) => backgroundViewSyncWaiters.push(resolve));
-    backgroundViewSyncActive += 1;
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      backgroundViewSyncActive -= 1;
-      backgroundViewSyncWaiters.shift()?.();
-    };
   };
   const runBackgroundViewSync = (operation: Promise<unknown>) => {
     void operation.catch((error) => {
       if (!viewSyncDisposed) log.warn("jira workspace view sync could not be scheduled", jiraErrorFields(error));
     });
   };
-  const startJiraWorkspaceViewSync = () => {
-    if (viewSyncDisposed || viewSyncTimer) return;
-    const run = () => {
-      if (viewSyncDisposed) return;
-      const activeProfiles: Set<string> | undefined = ctx.getActiveJiraProfileIds?.();
-      const workspaces = ctx
-        .getState()
-        .workspaces.filter(
-          (workspace: any) =>
-            ["jira", "jira-board"].includes(workspace.kind) &&
-            (!activeProfiles || activeProfiles.has(workspace.profileId || "default")),
-        );
-      for (const workspace of workspaces) makeWorkspaceViewsState(workspace.id, workspace.profileId || "default");
-      for (const workspace of workspaces) {
-        if (!viewSyncDisposed)
-          runBackgroundViewSync(
-            syncSavedViewsForWorkspace(workspace.profileId || "default", workspace.id, undefined, true, "background"),
-          );
-      }
-    };
-    // The cadence follows the connections as they are now, so a later change of `pollSeconds` takes effect.
-    const nextDelayMs = () => {
-      const configuredSeconds = connections()
-        .filter((connection) => connection.enabled)
-        .map((connection) => Number(connection.pollSeconds) || 120);
-      return Math.max(60_000, Math.min(60 * 60_000, Math.min(...configuredSeconds, 120) * 1000));
-    };
-    const tick = () => {
-      if (viewSyncDisposed) return;
-      run();
-      viewSyncTimer = setTimeout(tick, nextDelayMs());
-      viewSyncTimer.unref?.();
-    };
-    tick();
-  };
+  // No periodic sync: a view refreshes when somebody opens or switches to it, returns to it, or asks for it.
   const stopJiraWorkspaceViewSync = () => {
     viewSyncDisposed = true;
     queuedForceRefresh.clear();
-    if (viewSyncTimer) clearTimeout(viewSyncTimer);
-    viewSyncTimer = undefined;
   };
   const saveWorkspaceView = async (profileId: string, input: { workspaceId: string; view: JiraWorkspaceViewInput }) => {
     const workspace = workspaceForProfile(input.workspaceId, profileId);
@@ -1061,7 +987,6 @@ export function createJiraHandlers(ctx: any) {
       for (const key of [...writesByWindow.keys()]) if (key.endsWith(`:${fromProfileId}`)) writesByWindow.delete(key);
       return moved;
     },
-    startJiraWorkspaceViewSync,
     stopJiraWorkspaceViewSync,
     async getJiraWorkspaceViews(input: { workspaceId: string }, windowId: string) {
       const profileId = getViewerProfileId(windowId);

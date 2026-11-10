@@ -520,93 +520,33 @@ describe("connection and profile hygiene", () => {
     expect(desktop[0].apiBaseUrl).toBe("https://jira.example.com/jira");
   });
 
-  it("a slow Jira gets at most one queued background sync per view instead of one per tick", async () => {
+  it("saved views never sync on their own: hours pass without a Jira request until someone asks", async () => {
     vi.useFakeTimers();
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-jira-sync-pile-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-jira-sync-idle-"));
     const cache = createJiraCache(path.join(root, "jira.sqlite"));
     const { state, context } = setup();
     context.jiraCache = cache;
-    let release: () => void = () => undefined;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    let hold = false;
-    const boardView = vi.fn(async () => {
-      if (hold) await gate;
-      return { cache: {} };
-    });
-    context.jiraManager = { boardView, invalidate: vi.fn(), verifyUserIdentity: vi.fn() };
+    const searchPage = vi.fn(async () => ({ issues: [], hasMore: false, truncated: false, cache: {} }));
+    context.jiraManager = { searchPage, invalidate: vi.fn(), verifyUserIdentity: vi.fn() };
     state.workspaces.push({
       id: "inbox-a",
       kind: "jira",
       profileId: "profile-a",
     } as unknown as AppState["workspaces"][0]);
     const handlers = createJiraHandlers(context);
-    for (const boardId of [1, 2, 3])
-      await handlers.saveJiraWorkspaceView(
-        {
-          workspaceId: "inbox-a",
-          view: { kind: "board", connectionId: "conn-a", boardId, boardName: `B${boardId}` },
-        } as never,
-        "window-a",
-      );
-    await vi.advanceTimersByTimeAsync(10);
-    boardView.mockClear();
-
-    hold = true;
-    context.getActiveJiraProfileIds = () => new Set(["profile-a"]);
-    handlers.startJiraWorkspaceViewSync();
-    await vi.advanceTimersByTimeAsync(10);
-    for (let tick = 0; tick < 4; tick += 1) await vi.advanceTimersByTimeAsync(120_000);
-    release();
-    await vi.advanceTimersByTimeAsync(10);
-    expect(boardView.mock.calls.length).toBeLessThanOrEqual(3);
-    handlers.stopJiraWorkspaceViewSync();
-    cache.close();
-    await fs.rm(root, { recursive: true, force: true });
-  });
-
-  it("background view sync only touches profiles that are open in a window or bound to a remote session", async () => {
-    vi.useFakeTimers();
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-jira-sync-scope-"));
-    const cache = createJiraCache(path.join(root, "jira.sqlite"));
-    const { state, context } = setup();
-    context.jiraCache = cache;
-    const searchPage = vi.fn(async () => ({ issues: [], hasMore: false, truncated: false, cache: {} }));
-    context.jiraManager = { searchPage, invalidate: vi.fn(), verifyUserIdentity: vi.fn() };
-    state.workspaces.push(
-      ...([
-        { id: "inbox-a", kind: "jira", profileId: "profile-a" },
-        { id: "inbox-b", kind: "jira", profileId: "profile-b" },
-      ] as unknown as AppState["workspaces"]),
-    );
-    const handlers = createJiraHandlers(context);
     await handlers.saveJiraWorkspaceView(
       { workspaceId: "inbox-a", view: { kind: "personal", connectionId: "conn-a" } },
       "window-a",
     );
-    await handlers.saveJiraWorkspaceView(
-      { workspaceId: "inbox-b", view: { kind: "personal", connectionId: "conn-b" } },
-      "window-b",
-    );
     await vi.advanceTimersByTimeAsync(10);
     searchPage.mockClear();
 
-    context.getActiveJiraProfileIds = () => new Set(["profile-a"]);
-    handlers.startJiraWorkspaceViewSync();
-    await vi.advanceTimersByTimeAsync(10);
-    const touched = searchPage.mock.calls.map((call) => (call as unknown as [{ id: string }])[0].id);
-    expect(touched).toEqual(["conn-a"]);
+    await vi.advanceTimersByTimeAsync(8 * 60 * 60_000);
+    expect(searchPage).not.toHaveBeenCalled();
 
-    // pollSeconds is read again on every tick: a later change of cadence is honoured.
-    state.settings.integrations.jira.connections[0].pollSeconds = 3600;
-    context.getActiveJiraProfileIds = () => new Set(["profile-a", "profile-b"]);
-    searchPage.mockClear();
-    await vi.advanceTimersByTimeAsync(120_000);
-    expect(searchPage.mock.calls.map((call) => (call as unknown as [{ id: string }])[0].id).sort()).toEqual([
-      "conn-a",
-      "conn-b",
-    ]);
+    await handlers.refreshJiraWorkspaceViews({ workspaceId: "inbox-a" }, "window-a");
+    await vi.advanceTimersByTimeAsync(10);
+    expect(searchPage).toHaveBeenCalledTimes(1);
     handlers.stopJiraWorkspaceViewSync();
     cache.close();
     await fs.rm(root, { recursive: true, force: true });
