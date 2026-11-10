@@ -493,7 +493,7 @@ export function createJiraHandlers(ctx: any) {
         if (forceRefresh) return true;
         const sync = syncByViewId?.[view.viewId];
         if (sync?.state !== "idle" || sync.syncedAt === undefined) return true;
-        return view.updatedAt > sync.syncedAt || now - sync.syncedAt >= VIEW_SYNC_FRESH_MS;
+        return view.updatedAt >= sync.syncedAt || now - sync.syncedAt >= VIEW_SYNC_FRESH_MS;
       },
     );
     // Shared manager scheduler bounds individual Jira requests; this worker caps concurrent view work as well.
