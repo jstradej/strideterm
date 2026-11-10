@@ -314,6 +314,12 @@ export function createJiraHandlers(ctx: any) {
     return state;
   };
   const snapshotWorkspaceViews = (): JiraWorkspaceViewsSnapshot => {
+    // A Jira workspace nobody has opened yet still shows its saved-view tabs: built from local state, no Jira call.
+    for (const workspace of ctx.getState().workspaces as Array<{ id: string; kind?: string; profileId?: string }>) {
+      if (workspace.kind !== "jira" && workspace.kind !== "jira-board") continue;
+      const profileId = workspace.profileId || "default";
+      if (!viewSyncStates.has(viewStateKey(profileId, workspace.id))) makeWorkspaceViewsState(workspace.id, profileId);
+    }
     const snapshot: JiraWorkspaceViewsSnapshot = {};
     for (const state of viewSyncStates.values()) {
       const polling = ctx.getJiraPollingStatus?.(state.profileId);
