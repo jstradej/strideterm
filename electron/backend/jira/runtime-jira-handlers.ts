@@ -103,6 +103,8 @@ export function createJiraHandlers(ctx: any) {
   const viewFlights = new Map<string, Promise<void>>();
   const viewFlightForceRefresh = new Map<string, boolean>();
   const queuedForceRefresh = new Set<string>();
+  // The view version (updatedAt) each idle status was synced for; comparing it to syncedAt misses an edit made in the same millisecond.
+  const syncedViewVersions = new Map<string, number>();
   let viewSyncDisposed = false;
   const VIEW_SYNC_FRESH_MS = 5 * 60_000;
   const viewStateKey = (profileId: string, workspaceId: string) => `${profileId}:${workspaceId}`;
@@ -346,6 +348,8 @@ export function createJiraHandlers(ctx: any) {
       status.state !== "idle" && previousSync?.syncedAt !== undefined
         ? { ...status, syncedAt: previousSync.syncedAt }
         : status;
+    if (status.state === "idle" && expectedUpdatedAt !== undefined)
+      syncedViewVersions.set(`${viewStateKey(profileId, workspaceId)}:${viewId}`, expectedUpdatedAt);
     ctx.broadcastState?.();
   };
   const syncWorkspaceView = async (
@@ -493,7 +497,10 @@ export function createJiraHandlers(ctx: any) {
         if (forceRefresh) return true;
         const sync = syncByViewId?.[view.viewId];
         if (sync?.state !== "idle" || sync.syncedAt === undefined) return true;
-        return view.updatedAt >= sync.syncedAt || now - sync.syncedAt >= VIEW_SYNC_FRESH_MS;
+        return (
+          syncedViewVersions.get(`${viewStateKey(profileId, workspaceId)}:${view.viewId}`) !== view.updatedAt ||
+          now - sync.syncedAt >= VIEW_SYNC_FRESH_MS
+        );
       },
     );
     // Shared manager scheduler bounds individual Jira requests; this worker caps concurrent view work as well.
