@@ -562,7 +562,7 @@ export function getWorkspaceTabs({
           {
             id: `review:${activeWorkspace.id}`,
             type: "review",
-            title: "Review",
+            title: activeWorkspace.quickfix && !activeWorkspace.review?.pullRequest ? "Pull request" : "Review",
             status:
               activeWorkspace.review?.pullRequest?.title ||
               (activeWorkspace.quickfix

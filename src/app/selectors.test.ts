@@ -259,6 +259,31 @@ describe("workspace selectors", () => {
     ]);
   });
 
+  test("names the tab of a quickfix without a pull request after what it is for", () => {
+    const tabFor = (review: Record<string, unknown>) =>
+      getWorkspaceTabs({
+        workspace: {
+          workspace: {
+            id: "quickfix-1",
+            kind: "terminal",
+            review,
+            quickfix: { baseBranch: "develop" },
+            panels: [],
+          } as unknown as WorkspaceState,
+          sessions: [],
+        },
+        payload: { git: { workspaces: {} } } as unknown as StatePayload,
+        hiddenViewIds: new Set(),
+        isContainerRunning: () => false,
+      })[0];
+
+    expect(tabFor({ provider: "azure-devops" })).toMatchObject({ title: "Pull request", status: "No PR yet" });
+    expect(tabFor({ provider: "azure-devops", pullRequest: { title: "Fix login redirect" } })).toMatchObject({
+      title: "Review",
+      status: "Fix login redirect",
+    });
+  });
+
   test("prepends a review tab for Azure review workspaces", () => {
     const tabs = getWorkspaceTabs({
       workspace: {
