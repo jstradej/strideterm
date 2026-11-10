@@ -6,6 +6,17 @@
  * Shared between the workspace card renderer and the Git Stashes tab so both
  * surfaces format ages identically.
  */
+export function formatSyncAge(fetchedAt: number, now = Date.now()): string {
+  const elapsedMinutes = Math.max(0, Math.floor((now - fetchedAt) / 60_000));
+  if (!elapsedMinutes) return "<1m";
+  const days = Math.floor(elapsedMinutes / 1440);
+  const hours = Math.floor((elapsedMinutes % 1440) / 60);
+  const minutes = elapsedMinutes % 60;
+  if (days) return `${days}d${hours ? ` ${hours}h` : ""}`;
+  if (hours) return `${hours}h${minutes ? ` ${minutes}m` : ""}`;
+  return `${elapsedMinutes}m`;
+}
+
 export function formatRelativeAge(iso: string | undefined | null, now = Date.now()): string {
   if (!iso) return "";
   const then = Date.parse(iso);

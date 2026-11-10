@@ -721,7 +721,43 @@
     font-size: 11px;
   }
 
+  /* One row: path icon, Jira button, branch chip, bell. Only the branch chip of the stats is kept,
+     and it is the part that gives way (ellipsis) when the row is tight. */
+  .workspace-meta {
+    flex-wrap: nowrap;
+  }
+
+  .workspace-meta__main {
+    flex: 0 1 auto;
+    min-width: 32px;
+  }
+
   .workspace-meta__stats {
+    display: flex;
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 36%;
+  }
+
+  .workspace-meta__stats:not(:has(.workspace-branch-chip)) {
+    display: none;
+  }
+
+  .workspace-meta__stats > :not(.workspace-branch-chip) {
+    display: none;
+  }
+
+  .workspace-meta__stats .workspace-branch-chip {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .workspace-meta__stats .workspace-chip__branch {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+
+  .workspace-branch-chip__state-word {
     display: none;
   }
 

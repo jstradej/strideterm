@@ -441,7 +441,7 @@
 }
 .jira-inbox .jira-head__identity {
   display: grid;
-  grid-template-columns: max-content minmax(180px, 280px) 230px 36px;
+  grid-template-columns: max-content minmax(180px, 280px) 36px minmax(0, 230px);
   grid-template-rows: auto auto;
   justify-content: start;
   align-items: center;
@@ -472,25 +472,35 @@
 }
 .jira-inbox .jira-head__sync {
   grid-row: 1 / span 2;
-  grid-column: 3;
+  grid-column: 4;
   display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
+  align-items: center;
+  flex-wrap: nowrap;
   gap: 3px 6px;
   white-space: nowrap;
   max-width: 230px;
-  min-height: 2.6em;
-  max-height: 2.6em;
+  min-width: 0;
   overflow: hidden;
-  align-content: center;
   margin: 0;
   color: var(--muted);
   font-size: var(--font-size-caption);
   line-height: 1.3;
 }
+.jira-inbox .jira-head__sync--filled {
+  justify-self: start;
+  height: 28px;
+  margin-left: -18px;
+  padding: 0 11px 0 18px;
+  border-radius: 999px;
+  background: rgba(var(--tint), 0.08);
+}
+.jira-inbox .jira-head__sync--filled > span:not(.jira-head__sync-status),
+.jira-inbox .jira-head__sync--filled > time {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .jira-inbox .jira-head__sync time {
-  color: var(--text);
-  font-weight: 650;
   white-space: nowrap;
 }
 .jira-inbox .jira-head__sync--error {
@@ -505,7 +515,9 @@
 }
 .jira-inbox .jira-head__refresh {
   grid-row: 1 / span 2;
-  grid-column: 4;
+  grid-column: 3;
+  position: relative;
+  z-index: 1;
   display: inline-grid;
   place-items: center;
   width: 36px;
@@ -1857,6 +1869,10 @@
     grid-column: 1 / 3;
     padding-top: 4px;
   }
+  .jira-inbox .jira-head__sync--filled {
+    margin-left: 0;
+    padding: 0 11px;
+  }
   .jira-inbox .jira-head__refresh {
     grid-row: 1 / span 3;
     grid-column: 3;
@@ -2317,8 +2333,11 @@
 .jira-inbox .jira-extra-actions > summary::-webkit-details-marker {
   display: none;
 }
+/* The open <details> is a stacking context, so the menu's own z-index 20 only counts inside it. This value is what
+   competes with the sticky list toolbar (2, or 3 in the filter-sheet layout), the error panel (6) and the filter
+   sheet (8): an open menu has to sit above all of them. */
 .jira-inbox .jira-extra-actions[open] {
-  z-index: 2;
+  z-index: 10;
 }
 .jira-inbox .jira-extra-actions__menu {
   display: none;

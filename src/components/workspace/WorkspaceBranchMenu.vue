@@ -11,8 +11,10 @@
     @click="toggle"
   >
     <strong class="workspace-chip__branch">{{ summary.branch }}</strong>
-    <span v-if="summary.dirty" style="margin-left: 4px">{{ summary.dirtyCount }} uncommitted</span>
-    <span v-else style="margin-left: 4px">clean</span>
+    <span v-if="summary.dirty" class="workspace-branch-chip__state" style="margin-left: 4px"
+      >{{ summary.dirtyCount }}<span class="workspace-branch-chip__state-word"> uncommitted</span></span
+    >
+    <span v-else class="workspace-branch-chip__state" style="margin-left: 4px">clean</span>
     <span class="disclosure-chevron disclosure-chevron--down workspace-branch-chip__caret" aria-hidden="true" />
   </button>
 
@@ -997,7 +999,11 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
 }
+.workspace-branch-chip__state {
+  flex: 0 0 auto;
+}
 .workspace-branch-chip__caret {
+  flex: 0 0 auto;
   width: 10px;
   height: 10px;
   margin-left: 4px;

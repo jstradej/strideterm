@@ -36,6 +36,7 @@ const mockStoreState = vi.hoisted(() => ({
   } | null,
   jiraSearchRequest: null as { workspaceId: string; text: string; sequence: number } | null,
 }));
+import { resetJiraMyIssuesForTests } from "../../composables/useJiraMyIssues.js";
 import JiraInboxPane from "./JiraInboxPane.vue";
 import JiraStartDevelopmentDialog from "./jira/JiraStartDevelopmentDialog.vue";
 import { startJiraDevelopmentSchema } from "../../../electron/shared/jira-development.js";
@@ -229,6 +230,7 @@ const transport = vi.hoisted(() => ({
   removeJiraWorkspaceView: vi.fn(),
   setJiraWorkspaceActiveView: vi.fn(),
   refreshJiraWorkspaceViews: vi.fn(),
+  getJiraMyIssues: vi.fn(),
   rememberJiraSearch: vi.fn(),
   getJiraRecentIssues: vi.fn(),
   rememberJiraIssueViewed: vi.fn(),
@@ -400,6 +402,9 @@ describe("JiraInboxPane", () => {
     transport.saveJiraWorkspaceView.mockReset();
     transport.setJiraWorkspaceActiveView.mockReset();
     transport.refreshJiraWorkspaceViews.mockReset();
+    transport.getJiraMyIssues.mockReset();
+    transport.getJiraMyIssues.mockResolvedValue({ connections: [] });
+    resetJiraMyIssuesForTests();
     transport.getJiraRecentIssues.mockResolvedValue([]);
     transport.getJiraWriteHistory.mockResolvedValue([]);
     transport.deleteWorkspace.mockResolvedValue(undefined);
@@ -4313,7 +4318,7 @@ describe("JiraInboxPane", () => {
     });
     expect(wrapper.text()).toContain("Fresh result");
     expect(wrapper.find(".jira-cache-status").exists()).toBe(false);
-    expect(wrapper.get(".jira-head__sync").text()).toContain("Loaded");
+    expect(wrapper.get(".jira-head__sync").text()).toContain("Synced");
     expect((wrapper.find(".jira-search input").element as HTMLInputElement).value).toBe("project = PAY");
     wrapper.unmount();
   });
@@ -4360,6 +4365,7 @@ describe("JiraInboxPane", () => {
     window.dispatchEvent(new Event("focus"));
     await flushPromises();
     expect(transport.searchJiraIssues).toHaveBeenCalledTimes(callsAfterMount + 2);
+    expect(transport.getJiraMyIssues).not.toHaveBeenCalled();
     wrapper.unmount();
     rects.mockRestore();
     clock.mockRestore();
@@ -9076,6 +9082,73 @@ describe("JiraInboxPane", () => {
       await failure.get("button").trigger("click");
       await flushPromises();
       expect(transport.refreshJiraWorkspaceViews).toHaveBeenCalled();
+    });
+
+    describe("refreshing my issues for the header", () => {
+      async function mountBoardView() {
+        mockStoreState.transportApi = transport;
+        transport.getJiraWorkspaceViews.mockResolvedValue({
+          workspaceId: "jira:ws",
+          profileId: "default",
+          views: [
+            { viewId: "issues", kind: "issues", title: "Issues" },
+            {
+              viewId: "view-board",
+              kind: "board",
+              connectionId: "jira-1",
+              boardId: 42,
+              boardName: "Engineering board",
+              title: "Engineering board",
+              mode: "issues",
+              sprintId: null,
+              quickFilterIds: [],
+              assignee: null,
+              doneWithinDays: null,
+              createdAt: 1,
+              updatedAt: 1,
+            },
+          ],
+          activeViewId: "view-board",
+          syncByViewId: {},
+        });
+        const wrapper = mount(JiraInboxPane, { props: { workspaceId: "jira:ws", jiraViewId: "view-board" } });
+        await flushPromises();
+        return wrapper;
+      }
+
+      test("the Refresh button also force-refreshes my issues once", async () => {
+        transport.refreshJiraWorkspaceViews.mockResolvedValue({
+          workspaceId: "jira:ws",
+          profileId: "default",
+          views: [{ viewId: "issues", kind: "issues", title: "Issues" }],
+          activeViewId: "view-board",
+          syncByViewId: {},
+        });
+        const wrapper = await mountBoardView();
+        expect(transport.getJiraMyIssues).not.toHaveBeenCalled();
+        await wrapper.get(".jira-head__refresh").trigger("click");
+        await flushPromises();
+        expect(transport.refreshJiraWorkspaceViews).toHaveBeenCalledTimes(1);
+        expect(transport.getJiraMyIssues).toHaveBeenCalledTimes(1);
+        expect(transport.getJiraMyIssues).toHaveBeenCalledWith({ refresh: "force" });
+      });
+
+      test("a failing my-issues refresh does not fail the view refresh", async () => {
+        transport.getJiraMyIssues.mockRejectedValue(new Error("my issues down"));
+        transport.refreshJiraWorkspaceViews.mockResolvedValue({
+          workspaceId: "jira:ws",
+          profileId: "default",
+          views: [{ viewId: "issues", kind: "issues", title: "Issues" }],
+          activeViewId: "view-board",
+          syncByViewId: {},
+        });
+        const wrapper = await mountBoardView();
+        await wrapper.get(".jira-head__refresh").trigger("click");
+        await flushPromises();
+        expect(transport.getJiraMyIssues).toHaveBeenCalledTimes(1);
+        expect(wrapper.find(".jira-head__sync--error").exists()).toBe(false);
+        expect(wrapper.text()).not.toContain("my issues down");
+      });
     });
 
     describe("uploading an attachment", () => {

@@ -22,6 +22,7 @@ type Entry = {
   rows: ShallowRef<ConnectionRow[] | null>;
   loading: ShallowRef<boolean>;
   inflight: Promise<ConnectionRow[] | null> | null;
+  inflightRefresh: Refresh | null;
   lastAskedAt: number;
 };
 
@@ -36,7 +37,13 @@ const entries = new Map<string, Entry>();
 function entryFor(profileId: string): Entry {
   let entry = entries.get(profileId);
   if (!entry) {
-    entry = { rows: shallowRef(null), loading: shallowRef(false), inflight: null, lastAskedAt: 0 };
+    entry = {
+      rows: shallowRef(null),
+      loading: shallowRef(false),
+      inflight: null,
+      inflightRefresh: null,
+      lastAskedAt: 0,
+    };
     entries.set(profileId, entry);
   }
   return entry;
@@ -74,7 +81,10 @@ export function useJiraMyIssues(getApi: () => Api, profileId: Ref<string>) {
     const current = entry.value;
     const api = getApi();
     if (!api?.getJiraMyIssues) return null;
-    if (current.inflight && refresh !== "force") return current.inflight;
+    while (current.inflight && current.inflightRefresh === "cache-only" && refresh !== "cache-only") {
+      await current.inflight.catch(() => undefined);
+    }
+    if (current.inflight) return current.inflight;
     if (refresh === "if-stale" && Date.now() - current.lastAskedAt < BACKGROUND_THROTTLE_MS) return current.rows.value;
     if (refresh !== "cache-only") current.lastAskedAt = Date.now();
     current.loading.value = refresh !== "cache-only";
@@ -84,11 +94,13 @@ export function useJiraMyIssues(getApi: () => Api, profileId: Ref<string>) {
       return parsed;
     });
     current.inflight = request;
+    current.inflightRefresh = refresh;
     try {
       return await request;
     } finally {
       if (current.inflight === request) {
         current.inflight = null;
+        current.inflightRefresh = null;
         current.loading.value = false;
       }
     }

@@ -27,19 +27,39 @@
             placeholder="Select a connection"
             @change="onConnectionChange"
         /></label>
+        <button
+          v-if="activeView !== 'settings'"
+          class="jira-head__refresh"
+          type="button"
+          :disabled="isVisibleSyncing"
+          :aria-busy="isVisibleSyncing ? 'true' : undefined"
+          :aria-label="isVisibleSyncing ? 'Refreshing Jira data' : 'Refresh Jira data'"
+          :title="
+            isVisibleSyncing
+              ? 'Jira data is being refreshed.'
+              : 'Reload this view and the open issue from Jira. What is shown now stays until the new data arrives.'
+          "
+          @click="refreshVisibleJiraData({ userInitiated: true })"
+        >
+          <Spinner v-if="refreshSpinnerVisible" aria-hidden="true" label="Refreshing Jira data" />
+          <svg v-else aria-hidden="true" viewBox="0 0 24 24">
+            <path d="M20 7v5h-5M4 17v-5h5M5.5 9a7 7 0 0 1 11.7-2L20 12M4 12l2.8 5a7 7 0 0 0 11.7-2" />
+          </svg>
+        </button>
         <p
           v-if="activeView !== 'settings'"
           class="jira-head__sync"
           :class="{
             'jira-head__sync--error': visibleSyncError || backgroundFailureText || headFailure,
             'jira-head__sync--loading': headLoading,
+            'jira-head__sync--filled': headSyncFilled,
           }"
           role="status"
           aria-live="polite"
           :aria-busy="stripBusy ? 'true' : undefined"
         >
           <span v-if="headLoading" class="jira-head__sync-status">
-            <Spinner aria-hidden="true" :label="shownStripLabel" />
+            <Spinner v-if="!refreshSpinnerVisible" aria-hidden="true" :label="shownStripLabel" />
             <span class="jira-head__sync-text" :title="stripExistingResultsNote ? existingResultsNote : undefined">{{
               shownStripLabel
             }}</span>
@@ -69,25 +89,6 @@
             <span v-if="isVisibleSyncing">· Refreshing…</span>
           </template>
         </p>
-        <button
-          v-if="activeView !== 'settings'"
-          class="jira-head__refresh"
-          type="button"
-          :disabled="isVisibleSyncing"
-          :aria-busy="isVisibleSyncing ? 'true' : undefined"
-          :aria-label="isVisibleSyncing ? 'Refreshing Jira data' : 'Refresh Jira data'"
-          :title="
-            isVisibleSyncing
-              ? 'Jira data is being refreshed.'
-              : 'Reload this view and the open issue from Jira. What is shown now stays until the new data arrives.'
-          "
-          @click="refreshVisibleJiraData({ userInitiated: true })"
-        >
-          <Spinner v-if="refreshSpinnerVisible" aria-hidden="true" label="Refreshing Jira data" />
-          <svg v-else aria-hidden="true" viewBox="0 0 24 24">
-            <path d="M20 7v5h-5M4 17v-5h5M5.5 9a7 7 0 0 1 11.7-2L20 12M4 12l2.8 5a7 7 0 0 0 11.7-2" />
-          </svg>
-        </button>
       </div>
       <div
         v-if="
@@ -192,5 +193,15 @@ const headFailure = computed(() => {
     };
   return null;
 });
+const headSyncFilled = computed(
+  () =>
+    headLoading.value ||
+    Boolean(headFailure.value) ||
+    Boolean(headSyncLabel.value) ||
+    Boolean(headCacheMetadata.value) ||
+    Boolean(backgroundFailureText.value) ||
+    Boolean(visibleSyncError.value) ||
+    isVisibleSyncing.value,
+);
 const refreshSpinnerVisible = useDelayedFlag(isVisibleSyncing);
 </script>

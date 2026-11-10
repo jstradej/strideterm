@@ -230,7 +230,7 @@ export class JiraPollingService {
   /**
    * Somebody is using Jira in this profile: check its saved queries now instead of at their next slot.
    * Skips a watch that polled within `minAgeMs`, is already due or in flight, or is backing off from a
-   * rate limit. Returns how many watches were brought forward.
+   * rate limit or a failure. Returns how many watches were brought forward.
    */
   async pollProfileSoon(profileId: string, minAgeMs: number): Promise<number> {
     this.assertLive();
@@ -240,6 +240,8 @@ export class JiraPollingService {
     for (const [id, watch] of Object.entries(state.watches)) {
       if (watch.config.profileId !== profileId || !watch.config.enabled) continue;
       if (this.inFlight.has(id) || this.rateLimitStrikes.has(id) || watch.nextPollAt <= now) continue;
+      const lastStatus = this.watchStatuses.get(id)?.status;
+      if (lastStatus !== undefined && lastStatus !== "idle") continue;
       const lastPolledAt = watch.nextPollAt - watch.config.intervalMs;
       if (now - lastPolledAt < minAgeMs) continue;
       watch.nextPollAt = now;

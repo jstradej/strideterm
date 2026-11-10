@@ -131,6 +131,47 @@ describe("JiraManager", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(3);
   });
 
+  it("polls with only the updated field, the scoped JQL, and no cache read or write", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "jira-manager-poll-page-"));
+    const cache = createJiraCache(path.join(directory, "cache.sqlite"));
+    const fetchImpl = vi.fn(
+      async (_input: RequestInfo | URL) =>
+        new Response(
+          JSON.stringify({
+            issues: [{ id: "10001", key: "OPS-1", fields: { updated: "2026-01-01T00:00:00.000+0000" } }],
+            total: 3,
+            startAt: 0,
+          }),
+        ),
+    );
+    try {
+      const connection: JiraConnection = { ...dc, projectKeys: ["OPS"] };
+      const manager = new JiraManager(credentials, fetchImpl as typeof fetch, cache);
+      const page = await manager.pollSearchPage(connection, "assignee = currentUser()", 1);
+      expect(page).toEqual({
+        issues: [
+          expect.objectContaining({
+            ref: expect.objectContaining({ issueId: "10001", issueKey: "OPS-1" }),
+            updated: "2026-01-01T00:00:00.000+0000",
+          }),
+        ],
+        hasMore: true,
+        nextCursor: "1",
+      });
+      const url = new URL(String(fetchImpl.mock.calls[0]?.[0]));
+      expect(url.searchParams.get("fields")).toBe("updated");
+      expect(url.searchParams.get("jql")).toBe('(assignee = currentUser()) AND project IN ("OPS")');
+      await manager.pollSearchPage(connection, "assignee = currentUser()", 1);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      await expect(
+        manager.searchPage(connection, "assignee = currentUser()", 1, undefined, { cacheOnly: true }),
+      ).resolves.toBeNull();
+    } finally {
+      cache.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("does not share a completed native board page between different project scopes", async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "jira-manager-board-project-scope-"));
     const cache = createJiraCache(path.join(directory, "cache.sqlite"));

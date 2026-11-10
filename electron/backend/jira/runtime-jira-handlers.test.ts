@@ -672,6 +672,40 @@ describe("Jira runtime profile ownership", () => {
     await fs.rm(root, { recursive: true, force: true });
   });
 
+  it("does not re-read views that were synced minutes ago when workspace views are reloaded, but refresh still reads", async () => {
+    const { state, context } = setup();
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-jira-view-fresh-"));
+    const cache = createJiraCache(path.join(root, "jira.sqlite"));
+    context.jiraCache = cache;
+    state.workspaces.push({
+      id: "jira-workspace-a",
+      kind: "jira",
+      profileId: "profile-a",
+    } as AppState["workspaces"][number]);
+    const boardView = vi.fn(async () => ({ boardId: 42, issues: [], hasMore: false, truncated: false }));
+    context.jiraManager = { boardView };
+    const handlers = createJiraHandlers(context);
+    const saved = await handlers.saveJiraWorkspaceView(
+      { workspaceId: "jira-workspace-a", view: { kind: "board", connectionId: "same-host-a", boardId: 42 } },
+      "window-a",
+    );
+    const viewId = saved.views.find((view) => view.kind === "board")!.viewId;
+    const syncState = () => handlers.getJiraWorkspaceViewsSnapshot()["jira-workspace-a"]?.syncByViewId[viewId]?.state;
+    await vi.waitFor(() => expect(syncState()).toBe("idle"));
+    const initialReads = boardView.mock.calls.length;
+
+    await handlers.getJiraWorkspaceViews({ workspaceId: "jira-workspace-a" }, "window-a");
+    await handlers.getJiraWorkspaceViews({ workspaceId: "jira-workspace-a" }, "window-a");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(boardView).toHaveBeenCalledTimes(initialReads);
+
+    await handlers.refreshJiraWorkspaceViews({ workspaceId: "jira-workspace-a", viewId }, "window-a");
+    await vi.waitFor(() => expect(boardView.mock.calls.length).toBeGreaterThan(initialReads));
+    handlers.stopJiraWorkspaceViewSync();
+    cache.close();
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
   it("uses warm SQLite snapshots, reports refresh failures, and recovers on the next refresh", async () => {
     const { state, context } = setup();
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-jira-view-warm-"));

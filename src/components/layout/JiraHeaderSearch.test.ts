@@ -6,6 +6,7 @@ import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { resetJiraNudgeThrottleForTests } from "../../lib/jira-activity.js";
 import { resetJiraMyIssuesForTests } from "../../composables/useJiraMyIssues.js";
+import { isMobileViewport } from "../../composables/useIsNarrow.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -36,6 +37,8 @@ const jiraInbox = {
   kind: "jira",
 };
 
+const mountedWrappers: Array<ReturnType<typeof mount>> = [];
+
 function setup(api: AnyApi, workspaces: AnyApi[] = [jiraInbox]) {
   const store = useAppStore();
   store.payload = {
@@ -51,6 +54,7 @@ function setup(api: AnyApi, workspaces: AnyApi[] = [jiraInbox]) {
   const activateWorkspace = vi.spyOn(store, "activateWorkspace").mockResolvedValue();
   const activateView = vi.spyOn(store, "activateView").mockResolvedValue();
   const wrapper = mount(JiraHeaderSearch, { attachTo: document.body });
+  mountedWrappers.push(wrapper);
   return { store, wrapper, activateWorkspace, activateView };
 }
 
@@ -69,6 +73,8 @@ describe("JiraHeaderSearch", () => {
     resetJiraMyIssuesForTests();
   });
   afterEach(() => {
+    mountedWrappers.splice(0).forEach((wrapper) => wrapper.unmount());
+    isMobileViewport.value = false;
     document.body.innerHTML = "";
   });
 
@@ -241,7 +247,7 @@ describe("JiraHeaderSearch", () => {
         ["new", "2"],
         ["indeterminate", "1"],
       ]);
-      expect(badges[0].attributes("title")).toContain("updated 1m ago");
+      expect(badges[0].attributes("title")).toContain("synced 1m ago");
       expect(second.findAll(".jira-header-search__badge")).toHaveLength(2);
       second.unmount();
     });
@@ -268,6 +274,33 @@ describe("JiraHeaderSearch", () => {
       expect(badges[0].attributes("data-category")).toBe("indeterminate");
     });
 
+    it("shows how long ago the issues were synced inside an empty input, and hides it once typing starts", async () => {
+      const getJiraMyIssues = vi.fn().mockResolvedValue(cached);
+      const { wrapper } = setup({
+        listJiraConnections: vi.fn().mockResolvedValue([connection("c1", "Work")]),
+        getJiraMyIssues,
+      });
+      await flushPromises();
+
+      expect(wrapper.find(".jira-header-search__synced").text()).toBe("synced 1m ago");
+      await wrapper.find("input").setValue("lo");
+      expect(wrapper.find(".jira-header-search__synced").exists()).toBe(false);
+    });
+
+    it("focusing the field refreshes my issues only when they are older than 5 minutes", async () => {
+      const getJiraMyIssues = vi.fn().mockResolvedValue(cached);
+      const { wrapper } = setup({
+        listJiraConnections: vi.fn().mockResolvedValue([connection("c1", "Work")]),
+        getJiraMyIssues,
+      });
+      await flushPromises();
+      getJiraMyIssues.mockClear();
+
+      await wrapper.find("input").trigger("focus");
+      await flushPromises();
+      expect(getJiraMyIssues).not.toHaveBeenCalled();
+    });
+
     it("a badge lists that category newest first without waiting, and opens an issue from it", async () => {
       const getJiraMyIssues = vi.fn().mockResolvedValue(cached);
       const { wrapper, store } = setup({
@@ -288,6 +321,48 @@ describe("JiraHeaderSearch", () => {
       (panel.querySelectorAll(".jira-header-search__result")[0] as HTMLButtonElement).click();
       await flushPromises();
       expect(store.jiraIssueOpenRequest).toMatchObject({ ref: { issueKey: "MSP-2" } });
+    });
+
+    describe("panel placement", () => {
+      const originalWidth = window.innerWidth;
+      afterEach(() => {
+        Object.defineProperty(window, "innerWidth", { configurable: true, value: originalWidth });
+        vi.restoreAllMocks();
+      });
+
+      async function openBadgePanel(viewport: number, inputRect: { left: number; width: number }) {
+        Object.defineProperty(window, "innerWidth", { configurable: true, value: viewport });
+        const getJiraMyIssues = vi.fn().mockResolvedValue(cached);
+        const { wrapper } = setup({
+          listJiraConnections: vi.fn().mockResolvedValue([connection("c1", "Work")]),
+          getJiraMyIssues,
+        });
+        await flushPromises();
+        vi.spyOn(wrapper.find("input").element, "getBoundingClientRect").mockReturnValue({
+          ...inputRect,
+          right: inputRect.left + inputRect.width,
+          top: 4,
+          bottom: 28,
+          height: 24,
+          x: inputRect.left,
+          y: 4,
+          toJSON: () => ({}),
+        } as DOMRect);
+        await wrapper.findAll(".jira-header-search__badge")[0].trigger("click");
+        return document.querySelector<HTMLElement>(".jira-header-search__panel")!;
+      }
+
+      it("spans the viewport minus an 8px margin on a screen narrower than the panel", async () => {
+        const panel = await openBadgePanel(390, { left: 56, width: 235 });
+        expect(panel.style.left).toBe("8px");
+        expect(panel.style.width).toBe("374px");
+      });
+
+      it("keeps the desktop placement when there is room", async () => {
+        const panel = await openBadgePanel(1280, { left: 200, width: 300 });
+        expect(panel.style.left).toBe("200px");
+        expect(panel.style.width).toBe("420px");
+      });
     });
 
     it("Refresh always asks Jira and reports a failure as a toast", async () => {
@@ -312,6 +387,194 @@ describe("JiraHeaderSearch", () => {
         "Could not refresh your Jira issues",
         expect.stringContaining("Jira is down"),
       );
+    });
+  });
+
+  describe("mobile layout", () => {
+    const mine = (issueId: string, key: string, category: string, updated: string) => ({
+      ...issue("c1", issueId, key, `Summary ${key}`, updated),
+      status: category === "new" ? "To Do" : "In Progress",
+      statusCategory: category,
+    });
+    const cached = {
+      connections: [
+        {
+          connectionId: "c1",
+          label: "Work",
+          issues: [
+            mine("1", "MSP-1", "new", "2026-11-01T00:00:00Z"),
+            mine("2", "MSP-2", "new", "2026-11-03T00:00:00Z"),
+            mine("3", "MSP-3", "indeterminate", "2026-11-02T00:00:00Z"),
+          ],
+          hasMore: false,
+          cache: { source: "cache", fetchedAt: Date.now() - 60_000, stale: false },
+        },
+      ],
+    };
+    const panel = () => document.querySelector<HTMLElement>(".jira-header-search__panel");
+    const keys = () => [...document.querySelectorAll(".jira-header-search__key")].map((node) => node.textContent);
+    const counterTexts = () =>
+      [...panel()!.querySelectorAll<HTMLButtonElement>(".jira-header-search__counter")].map((counter) =>
+        counter.textContent?.replace(/\s+/g, " ").trim(),
+      );
+    const counter = (category: string) =>
+      panel()!.querySelector<HTMLButtonElement>(`.jira-header-search__counter[data-category="${category}"]`)!;
+
+    const originalMatchMedia = window.matchMedia;
+    beforeEach(() => {
+      window.matchMedia = ((query: string) => ({
+        matches: true,
+        media: query,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        addListener: () => {},
+        removeListener: () => {},
+        dispatchEvent: () => false,
+        onchange: null,
+      })) as unknown as typeof window.matchMedia;
+      isMobileViewport.value = true;
+    });
+    afterEach(() => {
+      window.matchMedia = originalMatchMedia;
+    });
+
+    async function mobileSetup(api: AnyApi = {}) {
+      const getJiraMyIssues = vi.fn().mockResolvedValue(cached);
+      const result = setup({
+        listJiraConnections: vi.fn().mockResolvedValue([connection("c1", "Work")]),
+        getJiraMyIssues,
+        ...api,
+      });
+      await flushPromises();
+      return { ...result, getJiraMyIssues };
+    }
+
+    it("shows only a Jira button in the header row", async () => {
+      const { wrapper } = await mobileSetup();
+
+      expect(wrapper.find("input").exists()).toBe(false);
+      expect(wrapper.findAll(".jira-header-search__badge")).toHaveLength(0);
+      const chip = wrapper.get("button.jira-header-search__chip");
+      expect(chip.text()).toBe("Jira");
+      expect(chip.attributes("aria-haspopup")).toBe("dialog");
+      expect(chip.attributes("aria-expanded")).toBe("false");
+      expect(panel()).toBeNull();
+    });
+
+    it("opens a panel with the input, both labelled counters and the In Progress list, and closes on a second tap", async () => {
+      const { wrapper, getJiraMyIssues } = await mobileSetup();
+      getJiraMyIssues.mockClear();
+
+      await wrapper.get("button.jira-header-search__chip").trigger("click");
+      await flushPromises();
+
+      expect(wrapper.get("button.jira-header-search__chip").attributes("aria-expanded")).toBe("true");
+      expect(panel()!.querySelector("input")).not.toBeNull();
+      expect(counterTexts()).toEqual(["To Do 2", "In Progress 1"]);
+      expect(counter("new").getAttribute("aria-pressed")).toBe("false");
+      expect(counter("indeterminate").getAttribute("aria-pressed")).toBe("true");
+      expect(keys()).toEqual(["MSP-3"]);
+      expect(panel()!.querySelector(".jira-header-search__mobile-age")?.textContent).toBe("synced 1m ago");
+      expect(getJiraMyIssues).not.toHaveBeenCalled();
+
+      await wrapper.get("button.jira-header-search__chip").trigger("click");
+      expect(panel()).toBeNull();
+    });
+
+    it("lists the tapped counter instead of the default", async () => {
+      const { wrapper } = await mobileSetup();
+      await wrapper.get("button.jira-header-search__chip").trigger("click");
+      await flushPromises();
+
+      counter("new").click();
+      await flushPromises();
+
+      expect(keys()).toEqual(["MSP-2", "MSP-1"]);
+      expect(counter("new").getAttribute("aria-pressed")).toBe("true");
+    });
+
+    it("shows a zero count, defaults to To Do when nothing is in progress and says so for an empty list", async () => {
+      const { wrapper } = await mobileSetup({
+        getJiraMyIssues: vi.fn().mockResolvedValue({
+          connections: [{ ...cached.connections[0], issues: [mine("1", "MSP-1", "new", "2026-11-01T00:00:00Z")] }],
+        }),
+      });
+      await wrapper.get("button.jira-header-search__chip").trigger("click");
+      await flushPromises();
+
+      expect(counterTexts()).toEqual(["To Do 1", "In Progress 0"]);
+      expect(counter("new").getAttribute("aria-pressed")).toBe("true");
+      expect(keys()).toEqual(["MSP-1"]);
+
+      counter("indeterminate").click();
+      await flushPromises();
+      expect(counter("indeterminate").getAttribute("aria-pressed")).toBe("true");
+      expect(keys()).toEqual([]);
+      expect(panel()!.querySelector(".jira-header-search__status")?.textContent).toContain("Nothing here");
+    });
+
+    it("typing runs a search and shows its results in the panel; clearing returns to the list", async () => {
+      const searchJiraIssues = vi.fn().mockResolvedValue({
+        issues: [issue("c1", "9", "MSP-9", "Login timeout", "2026-11-05T00:00:00Z")],
+      });
+      const { wrapper } = await mobileSetup({ searchJiraIssues });
+      await wrapper.get("button.jira-header-search__chip").trigger("click");
+      await flushPromises();
+
+      const input = panel()!.querySelector("input")!;
+      input.value = "login timeout";
+      input.dispatchEvent(new Event("input"));
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+      await flushPromises();
+
+      expect(searchJiraIssues).toHaveBeenCalledTimes(1);
+      expect(keys()).toEqual(["MSP-9"]);
+      expect(panel()!.querySelector(".jira-header-search__all")?.textContent).toContain("Show all results");
+
+      input.value = "";
+      input.dispatchEvent(new Event("input"));
+      await flushPromises();
+      expect(panel()).not.toBeNull();
+      expect(keys()).toEqual(["MSP-3"]);
+    });
+
+    it("Refresh asks Jira, opening an issue closes the panel, and so does Escape", async () => {
+      const { wrapper, getJiraMyIssues, store } = await mobileSetup();
+      await wrapper.get("button.jira-header-search__chip").trigger("click");
+      await flushPromises();
+
+      panel()!.querySelector<HTMLButtonElement>(".jira-header-search__mine-refresh")!.click();
+      await flushPromises();
+      expect(getJiraMyIssues).toHaveBeenLastCalledWith({ refresh: "force" });
+
+      panel()!.querySelector<HTMLButtonElement>(".jira-header-search__result")!.click();
+      await flushPromises();
+      expect(store.jiraIssueOpenRequest).toMatchObject({ ref: { issueKey: "MSP-3" } });
+      expect(panel()).toBeNull();
+
+      await wrapper.get("button.jira-header-search__chip").trigger("click");
+      await flushPromises();
+      panel()!
+        .querySelector("input")!
+        .dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+      await flushPromises();
+      expect(panel()).toBeNull();
+    });
+
+    it("spans the viewport minus the margin and stays within the visible height", async () => {
+      const originalWidth = window.innerWidth;
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+      try {
+        const { wrapper } = await mobileSetup();
+        await wrapper.get("button.jira-header-search__chip").trigger("click");
+        await flushPromises();
+
+        expect(panel()!.style.left).toBe("8px");
+        expect(panel()!.style.width).toBe("374px");
+        expect(panel()!.getAttribute("style")).toContain("--strideterm-keyboard-bottom");
+      } finally {
+        Object.defineProperty(window, "innerWidth", { configurable: true, value: originalWidth });
+      }
     });
   });
 });

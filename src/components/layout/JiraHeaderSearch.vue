@@ -1,23 +1,45 @@
 <template>
-  <div v-if="routes.length" ref="rootRef" class="jira-header-search">
-    <input
-      ref="inputRef"
-      v-model="text"
-      type="search"
-      class="jira-header-search__input"
-      placeholder="Search Jira or open an issue key…"
-      aria-label="Search Jira"
-      autocomplete="off"
-      spellcheck="false"
-      role="combobox"
-      aria-autocomplete="list"
-      :aria-expanded="open ? 'true' : 'false'"
-      @input="onInput"
-      @focus="onFocus"
-      @keydown="onKeydown"
-    />
+  <div
+    v-if="routes.length"
+    ref="rootRef"
+    class="jira-header-search"
+    :class="{ 'jira-header-search--mobile': isMobile }"
+  >
     <button
-      v-for="badge in badges"
+      v-if="isMobile"
+      ref="chipRef"
+      type="button"
+      class="workspace-chip workspace-chip--btn jira-header-search__chip"
+      title="Search Jira and see your issues"
+      aria-haspopup="dialog"
+      :aria-expanded="open ? 'true' : 'false'"
+      data-role="jira-header-chip"
+      @click="toggleMobilePanel"
+    >
+      <strong>Jira</strong>
+      <span class="disclosure-chevron disclosure-chevron--down jira-header-search__caret" aria-hidden="true" />
+    </button>
+    <div v-if="!isMobile" class="jira-header-search__field">
+      <input
+        ref="inputRef"
+        v-model="text"
+        type="search"
+        class="jira-header-search__input"
+        placeholder="Search Jira…"
+        aria-label="Search Jira"
+        autocomplete="off"
+        spellcheck="false"
+        role="combobox"
+        aria-autocomplete="list"
+        :aria-expanded="open ? 'true' : 'false'"
+        @input="onInput"
+        @focus="onFocus"
+        @keydown="onKeydown"
+      />
+      <span v-if="syncedHint" class="jira-header-search__synced" aria-hidden="true">{{ syncedHint }}</span>
+    </div>
+    <button
+      v-for="badge in isMobile ? [] : badges"
       :key="badge.category"
       type="button"
       class="jira-header-search__badge"
@@ -36,11 +58,51 @@
         ref="listRef"
         class="jira-header-search__panel"
         :style="panelStyle"
-        role="listbox"
-        :aria-label="listMode ? listTitle : 'Jira search results'"
+        :role="isMobile ? 'dialog' : 'listbox'"
+        :aria-label="isMobile ? 'Jira' : showMine ? listTitle : 'Jira search results'"
       >
-        <template v-if="listMode">
-          <div class="jira-header-search__mine-head">
+        <div v-if="isMobile" class="jira-header-search__tools">
+          <input
+            ref="inputRef"
+            v-model="text"
+            type="search"
+            class="jira-header-search__input jira-header-search__input--panel"
+            placeholder="Search Jira…"
+            aria-label="Search Jira"
+            autocomplete="off"
+            spellcheck="false"
+            @input="onInput"
+            @keydown="onKeydown"
+          />
+          <div class="jira-header-search__counters">
+            <button
+              v-for="counter in counters"
+              :key="counter.category"
+              type="button"
+              class="jira-header-search__counter"
+              :data-category="counter.category"
+              :aria-pressed="showMine === counter.category ? 'true' : 'false'"
+              @mousedown.prevent
+              @click="selectMobileList(counter.category)"
+            >
+              {{ counter.label }}
+              <span class="jira-header-search__counter-count">{{ counter.count }}</span>
+            </button>
+            <span class="jira-header-search__mobile-age">{{ mobileAgeText }}</span>
+            <button
+              type="button"
+              class="jira-header-search__mine-refresh"
+              :disabled="myIssues.loading.value"
+              title="Ask Jira for your issues now."
+              @mousedown.prevent
+              @click="refreshMine"
+            >
+              Refresh
+            </button>
+          </div>
+        </div>
+        <template v-if="showMine">
+          <div v-if="!isMobile" class="jira-header-search__mine-head">
             <span class="jira-header-search__mine-title">{{ listTitle }}</span>
             <span class="jira-header-search__mine-age">{{ listAgeText }}</span>
             <button
@@ -56,6 +118,9 @@
           </div>
           <p v-if="!visibleRows.length" class="jira-header-search__status" role="status">{{ listEmptyText }}</p>
         </template>
+        <p v-else-if="isMobile && !text.trim() && !searchedText" class="jira-header-search__status" role="status">
+          {{ listEmptyText }}
+        </p>
         <template v-else>
           <p v-if="busy" class="jira-header-search__status" role="status">
             {{ isIssueKey(text.trim()) ? "Looking up the issue…" : "Searching Jira…" }}
@@ -69,10 +134,10 @@
           v-for="(issue, index) in visibleRows"
           :key="`${issue.ref.connectionId}:${issue.ref.issueId}`"
           type="button"
-          role="option"
+          :role="isMobile ? undefined : 'option'"
           class="jira-header-search__result"
           :class="{ 'jira-header-search__result--active': index === activeIndex }"
-          :aria-selected="index === activeIndex ? 'true' : 'false'"
+          :aria-selected="isMobile ? undefined : index === activeIndex ? 'true' : 'false'"
           :title="issue.summary || issue.ref.issueKey"
           @mousedown.prevent
           @mouseenter="activeIndex = index"
@@ -86,7 +151,7 @@
           <span v-if="routes.length > 1" class="jira-header-search__source">{{ sourceLabel(issue) }}</span>
         </button>
         <button
-          v-if="!listMode && searchedText && !busy && !isIssueKey(searchedText)"
+          v-if="!showMine && searchedText && !busy && !isIssueKey(searchedText)"
           type="button"
           class="jira-header-search__all"
           :class="{ 'jira-header-search__result--active': activeIndex === results.length }"
@@ -98,7 +163,7 @@
           <span v-if="truncated" class="jira-header-search__more">(more than {{ results.length }})</span>
         </button>
         <button
-          v-if="listMode"
+          v-if="showMine"
           type="button"
           class="jira-header-search__all"
           :class="{ 'jira-header-search__result--active': activeIndex === visibleRows.length }"
@@ -120,12 +185,13 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { jiraViewTabId } from "../../app/jira-view-tabs.js";
 import { useJiraIssueLinkRoutes } from "../../composables/useJiraIssueLinkRoutes.js";
 import { useDismissable } from "../../composables/useDismissable.js";
+import { useIsNarrow } from "../../composables/useIsNarrow.js";
 import { jiraCandidates, jiraIssueUrl } from "../../lib/jira-issue-links.js";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { userFacingMessage } from "../../lib/error-message.js";
 import { nudgeJiraPolling } from "../../lib/jira-activity.js";
-import { formatRelativeAge } from "../../app/relative-age.js";
+import { formatSyncAge } from "../../app/relative-age.js";
 import { useJiraMyIssues, type JiraMyIssueCategory } from "../../composables/useJiraMyIssues.js";
 
 type HeaderIssue = {
@@ -138,13 +204,17 @@ type HeaderIssue = {
 
 const RESULT_LIMIT = 10;
 const DEBOUNCE_MS = 450;
+const PANEL_MARGIN = 8;
 
 const store = useAppStore();
 const notifications = useNotificationStore();
 const profileId = computed(() => String(store.myActiveProfileId || "default"));
 const { routes } = useJiraIssueLinkRoutes(store.getApi() || {}, profileId);
 
+const { isMobile } = useIsNarrow();
+
 const rootRef = ref<HTMLElement | null>(null);
+const chipRef = ref<HTMLButtonElement | null>(null);
 const inputRef = ref<HTMLInputElement | null>(null);
 const listRef = ref<HTMLElement | null>(null);
 const text = ref("");
@@ -164,12 +234,36 @@ const myIssues = useJiraMyIssues(() => store.getApi(), profileId);
 const listMode = ref<JiraMyIssueCategory | null>(null);
 const clock = ref(Date.now());
 const CATEGORY_LABEL: Record<JiraMyIssueCategory, string> = { new: "To Do", indeterminate: "In Progress" };
-const visibleRows = computed<HeaderIssue[]>(() => (listMode.value ? myIssues.issuesIn(listMode.value) : results.value));
+/** The my-issues list on screen: the picked one, or on a phone with nothing typed the In Progress list, else To Do. */
+const showMine = computed<JiraMyIssueCategory | null>(() => {
+  if (listMode.value) return listMode.value;
+  if (!isMobile.value || text.value.trim() || searchedText.value) return null;
+  return (["indeterminate", "new"] as const).find((category) => myIssues.issuesIn(category).length) ?? null;
+});
+const visibleRows = computed<HeaderIssue[]>(() => (showMine.value ? myIssues.issuesIn(showMine.value) : results.value));
 const ageText = computed(() => {
   const at = myIssues.fetchedAt.value;
   if (at === null) return "not loaded yet";
-  const age = formatRelativeAge(new Date(at).toISOString(), clock.value);
-  return age === "now" ? "updated just now" : `updated ${age} ago`;
+  return `synced ${formatSyncAge(at, clock.value)} ago`;
+});
+const syncedText = computed(() => {
+  const at = myIssues.fetchedAt.value;
+  if (at === null) return "";
+  return `synced ${formatSyncAge(at, clock.value)} ago`;
+});
+const syncedHint = computed(() => (text.value ? "" : syncedText.value));
+const counters = computed(() =>
+  (["new", "indeterminate"] as const).map((category) => ({
+    category,
+    label: CATEGORY_LABEL[category],
+    count: `${myIssues.issuesIn(category).length}${myIssues.hasMore.value ? "+" : ""}`,
+  })),
+);
+const mobileAgeText = computed(() => {
+  if (myIssues.loading.value) return "Refreshing…";
+  const base = syncedText.value || "not loaded yet";
+  const failed = myIssues.failedLabels.value;
+  return failed.length ? `${base} · ${failed.join(", ")} could not be refreshed` : base;
 });
 const badges = computed(() =>
   (["new", "indeterminate"] as const).flatMap((category) => {
@@ -180,7 +274,7 @@ const badges = computed(() =>
     return [{ category, text, label, title: `${label} · ${ageText.value}. Click to list them.` }];
   }),
 );
-const listTitle = computed(() => (listMode.value ? `My ${CATEGORY_LABEL[listMode.value]}` : ""));
+const listTitle = computed(() => (showMine.value ? `My ${CATEGORY_LABEL[showMine.value]}` : ""));
 const listAgeText = computed(() => {
   if (myIssues.loading.value) return "Refreshing…";
   const failed = myIssues.failedLabels.value;
@@ -215,10 +309,20 @@ function failureText(failures: Array<{ label: string; cause: unknown }>): string
 }
 
 function positionPanel(): void {
-  const rect = inputRef.value?.getBoundingClientRect();
+  const rect = (isMobile.value ? chipRef.value : inputRef.value)?.getBoundingClientRect();
   if (!rect) return;
-  const width = Math.max(rect.width, 420);
-  const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+  if (isMobile.value) {
+    const top = rect.bottom + 4;
+    panelStyle.value = {
+      top: `${top}px`,
+      left: `${PANEL_MARGIN}px`,
+      width: `${Math.max(0, window.innerWidth - 2 * PANEL_MARGIN)}px`,
+      maxHeight: `calc(100dvh - var(--strideterm-keyboard-bottom, 0px) - ${top}px - ${PANEL_MARGIN}px)`,
+    };
+    return;
+  }
+  const width = Math.min(Math.max(rect.width, 420), Math.max(0, window.innerWidth - 2 * PANEL_MARGIN));
+  const left = Math.max(PANEL_MARGIN, Math.min(rect.left, window.innerWidth - width - PANEL_MARGIN));
   panelStyle.value = { top: `${rect.bottom + 4}px`, left: `${left}px`, width: `${width}px` };
 }
 
@@ -254,6 +358,29 @@ function toggleList(category: JiraMyIssueCategory): void {
   refreshMineInBackground(() => myIssues.load("if-stale"));
 }
 
+function toggleMobilePanel(): void {
+  if (open.value) {
+    closePanel();
+    return;
+  }
+  openPanel();
+  nudgeJiraPolling(store.getApi());
+  refreshMineInBackground(() => myIssues.refreshIfOld());
+  void nextTick(() => inputRef.value?.focus());
+}
+
+function selectMobileList(category: JiraMyIssueCategory): void {
+  generation++;
+  if (debounceTimer) clearTimeout(debounceTimer);
+  busy.value = false;
+  text.value = "";
+  searchedText.value = "";
+  results.value = [];
+  error.value = "";
+  listMode.value = category;
+  activeIndex.value = -1;
+}
+
 async function refreshMine(): Promise<void> {
   try {
     const rows = await myIssues.load("force");
@@ -282,9 +409,10 @@ async function openInboxIssues(): Promise<void> {
 useDismissable(open, [rootRef, listRef], { onDismiss: closePanel, eventName: "mousedown" });
 
 function onFocus(): void {
+  if (isMobile.value) return;
   // Warms the connection and my issues while the user is still deciding what to type.
   nudgeJiraPolling(store.getApi());
-  refreshMineInBackground(() => myIssues.load("if-stale"));
+  refreshMineInBackground(() => myIssues.refreshIfOld());
   if (searchedText.value && searchedText.value === text.value.trim()) openPanel();
 }
 
@@ -299,7 +427,8 @@ function onInput(): void {
       searchedText.value = "";
       results.value = [];
       error.value = "";
-      closePanel();
+      if (isMobile.value) activeIndex.value = -1;
+      else closePanel();
     }
     return;
   }
@@ -455,7 +584,7 @@ async function showAllInInbox(): Promise<void> {
 }
 
 function onKeydown(event: KeyboardEvent): void {
-  const footer = listMode.value || (searchedText.value && !isIssueKey(searchedText.value)) ? 1 : 0;
+  const footer = showMine.value || (searchedText.value && !isIssueKey(searchedText.value)) ? 1 : 0;
   const optionCount = visibleRows.value.length + footer;
   if (event.key === "Escape") {
     if (open.value) closePanel();
@@ -471,7 +600,7 @@ function onKeydown(event: KeyboardEvent): void {
   }
   if (event.key !== "Enter") return;
   event.preventDefault();
-  if (open.value && listMode.value) {
+  if (open.value && showMine.value) {
     if (activeIndex.value >= 0 && activeIndex.value < visibleRows.value.length)
       void openIssue(visibleRows.value[activeIndex.value]);
     else if (activeIndex.value === visibleRows.value.length) void openInboxIssues();
@@ -499,6 +628,7 @@ function onWindowFocus(): void {
   nudgeJiraPolling(store.getApi());
   refreshMineInBackground(() => myIssues.refreshIfOld());
 }
+watch(isMobile, closePanel);
 watch(
   () => routes.value.length > 0,
   (hasRoutes) => {
@@ -508,7 +638,11 @@ watch(
 );
 window.addEventListener("resize", onWindowChange);
 window.addEventListener("focus", onWindowFocus);
+const clockTimer = setInterval(() => {
+  clock.value = Date.now();
+}, 60_000);
 onBeforeUnmount(() => {
+  clearInterval(clockTimer);
   window.removeEventListener("resize", onWindowChange);
   window.removeEventListener("focus", onWindowFocus);
   if (debounceTimer) clearTimeout(debounceTimer);
@@ -521,7 +655,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 4px;
-  flex: 0 1 400px;
+  flex: 0 1 300px;
   min-width: 160px;
   -webkit-app-region: no-drag;
 }
@@ -539,10 +673,6 @@ onBeforeUnmount(() => {
   font-weight: 600;
   line-height: 18px;
   cursor: pointer;
-}
-.jira-header-search__badge[data-category="indeterminate"] {
-  border-color: color-mix(in srgb, var(--accent, #4c9aff), transparent 55%);
-  color: var(--text);
 }
 .jira-header-search__badge[aria-pressed="true"],
 .jira-header-search__badge:hover {
@@ -581,6 +711,96 @@ onBeforeUnmount(() => {
   opacity: 0.5;
   cursor: default;
 }
+.jira-header-search__field {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  container-type: inline-size;
+}
+@container (max-width: 200px) {
+  .jira-header-search__synced {
+    display: none;
+  }
+}
+.jira-header-search--mobile {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.jira-header-search__chip {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+}
+.jira-header-search__caret {
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  margin-left: 4px;
+  opacity: 0.75;
+}
+.jira-header-search__tools {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 4px 8px;
+}
+.jira-header-search__input--panel {
+  height: 40px;
+  padding: 0 12px;
+  border-radius: 8px;
+  font-size: 16px;
+}
+.jira-header-search__counters {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.jira-header-search__counter {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(var(--tint), 0.16);
+  background: rgba(var(--tint), 0.08);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.jira-header-search__counter[aria-pressed="true"] {
+  background: rgba(var(--tint), 0.18);
+  border-color: color-mix(in srgb, var(--accent, var(--text)), transparent 40%);
+}
+.jira-header-search__counter-count {
+  font-weight: 600;
+}
+.jira-header-search__mobile-age {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jira-header-search__counters .jira-header-search__mine-refresh {
+  min-height: 32px;
+  padding: 0 10px;
+}
+.jira-header-search__synced {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
 .jira-header-search__input {
   flex: 1 1 auto;
   min-width: 0;
@@ -601,7 +821,9 @@ onBeforeUnmount(() => {
 .jira-header-search__panel {
   position: fixed;
   z-index: 1000;
+  box-sizing: border-box;
   max-height: min(420px, 70vh);
+  overflow-x: hidden;
   overflow-y: auto;
   padding: 4px;
   border-radius: 8px;

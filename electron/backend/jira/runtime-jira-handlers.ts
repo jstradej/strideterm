@@ -104,6 +104,7 @@ export function createJiraHandlers(ctx: any) {
   const viewFlightForceRefresh = new Map<string, boolean>();
   const queuedForceRefresh = new Set<string>();
   let viewSyncDisposed = false;
+  const VIEW_SYNC_FRESH_MS = 5 * 60_000;
   const viewStateKey = (profileId: string, workspaceId: string) => `${profileId}:${workspaceId}`;
   const sameViewData = (a: JiraSavedWorkspaceView, b: JiraSavedWorkspaceView) =>
     a.connectionId === b.connectionId &&
@@ -485,7 +486,16 @@ export function createJiraHandlers(ctx: any) {
     forceRefresh = true,
   ) => {
     const views = savedViewsFor(workspaceId, profileId);
-    const selected = selectedViewId ? views.filter((view) => view.viewId === selectedViewId) : views;
+    const syncByViewId = viewSyncStates.get(viewStateKey(profileId, workspaceId))?.syncByViewId;
+    const now = Date.now();
+    const selected = (selectedViewId ? views.filter((view) => view.viewId === selectedViewId) : views).filter(
+      (view) => {
+        if (forceRefresh) return true;
+        const sync = syncByViewId?.[view.viewId];
+        if (sync?.state !== "idle" || sync.syncedAt === undefined) return true;
+        return view.updatedAt > sync.syncedAt || now - sync.syncedAt >= VIEW_SYNC_FRESH_MS;
+      },
+    );
     // Shared manager scheduler bounds individual Jira requests; this worker caps concurrent view work as well.
     let next = 0;
     const workers = Array.from({ length: Math.min(3, selected.length) }, async () => {

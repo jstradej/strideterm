@@ -776,13 +776,7 @@ export class JiraManager {
     truncated: boolean;
     cache: JiraCacheMetadata;
   } | null> {
-    const effectiveProjectKeys = normalizeJiraProjectKeys(
-      options.projectKeys === undefined ? connection.projectKeys : options.projectKeys,
-      options.projectKeys === undefined ? 100 : 50,
-    );
-    const jql = applyJiraProjectScope(query.trim() || "ORDER BY updated DESC", effectiveProjectKeys);
-    if (jql.length > 2000) throw new Error("JQL is too long (maximum 2000 characters).");
-    const maxResults = Math.max(1, Math.min(100, Math.trunc(limit)));
+    const { jql, maxResults } = this.prepareSearch(connection, query, limit, options);
     const key = `search-page:v1:${JSON.stringify({ jql, maxResults, cursor: cursor || "" })}`;
     return this.cachedRead(
       connection,
@@ -793,13 +787,40 @@ export class JiraManager {
     );
   }
 
+  // Alert polling only reads id, key and `updated`: ask for nothing else and keep it out of the cache.
+  async pollSearchPage(
+    connection: JiraConnection,
+    query: string,
+    limit: number,
+    cursor?: string,
+  ): Promise<{ issues: JiraIssue[]; hasMore: boolean; nextCursor?: string }> {
+    const { jql, maxResults } = this.prepareSearch(connection, query, limit, {});
+    const { issues, hasMore, nextCursor } = await this.fetchSearchPage(connection, jql, maxResults, cursor, "updated");
+    return { issues, hasMore, ...(nextCursor ? { nextCursor } : {}) };
+  }
+
+  private prepareSearch(
+    connection: JiraConnection,
+    query: string,
+    limit: number,
+    options: JiraReadOptions,
+  ): { jql: string; maxResults: number } {
+    const effectiveProjectKeys = normalizeJiraProjectKeys(
+      options.projectKeys === undefined ? connection.projectKeys : options.projectKeys,
+      options.projectKeys === undefined ? 100 : 50,
+    );
+    const jql = applyJiraProjectScope(query.trim() || "ORDER BY updated DESC", effectiveProjectKeys);
+    if (jql.length > 2000) throw new Error("JQL is too long (maximum 2000 characters).");
+    return { jql, maxResults: Math.max(1, Math.min(100, Math.trunc(limit))) };
+  }
+
   private async fetchSearchPage(
     connection: JiraConnection,
     jql: string,
     maxResults: number,
     cursor?: string,
+    fields = "summary,status,issuetype,project,updated,created,assignee,priority",
   ): Promise<{ issues: JiraIssue[]; hasMore: boolean; nextCursor?: string; truncated: boolean }> {
-    const fields = "summary,status,issuetype,project,updated,created,assignee,priority";
     const cloud = connection.deployment === "cloud";
     const endpoint = cloud ? "/search/jql" : "/search";
     const url = new URL(endpoint.replace(/^\//, ""), this.apiRoot(connection));

@@ -1,4 +1,5 @@
 import { computed, reactive, ref, type Ref } from "vue";
+import { formatSyncAge as formatSharedSyncAge } from "../../../../app/relative-age.js";
 import { rlog } from "../../../../lib/renderer-log.js";
 import { type JiraDoneWithinDays, type JiraIssueSort, type JiraViewPreferences } from "../jira-view-preferences.js";
 import { useAppStore } from "../../../../stores/app.js";
@@ -232,14 +233,7 @@ export function useJiraPaneCore(ctx: JiraPaneContext, props: JiraInboxPaneProps)
   );
   const syncClock = ref(Date.now());
   function formatSyncAge(fetchedAt: number) {
-    const elapsedMinutes = Math.max(0, Math.floor((syncClock.value - fetchedAt) / 60_000));
-    if (!elapsedMinutes) return "less than a minute";
-    const days = Math.floor(elapsedMinutes / 1440);
-    const hours = Math.floor((elapsedMinutes % 1440) / 60);
-    const minutes = elapsedMinutes % 60;
-    if (days) return `${days}d${hours ? ` ${hours}h` : ""}`;
-    if (hours) return `${hours}h${minutes ? ` ${minutes}m` : ""}`;
-    return `${elapsedMinutes}m`;
+    return formatSharedSyncAge(fetchedAt, syncClock.value);
   }
   function updateSyncClock() {
     syncClock.value = Date.now();

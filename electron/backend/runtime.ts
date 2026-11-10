@@ -7880,9 +7880,10 @@ export async function createRuntime({
         (item) => item.id === request.connectionId && item.profileId === request.profileId && item.enabled,
       );
       if (!connection) return { kind: "unsupported", reasonCode: "connection-unavailable" };
-      return pollJiraQuery(request, (cursor, limit) =>
-        jiraManagerForMcp.searchPage(connection, request.query, limit, cursor, { forceRefresh: true }),
-      );
+      return pollJiraQuery(request, async (cursor, limit) => ({
+        ...(await jiraManagerForMcp.pollSearchPage(connection, request.query, limit, cursor)),
+        cache: {},
+      }));
     },
     onStatus: (status) => {
       const scope = `poll:${status.queryId}`;

@@ -1,5 +1,6 @@
 import { computed, onScopeDispose, ref, watch } from "vue";
 import { useDelayedFlag } from "../../../../composables/useDelayedFlag.js";
+import { useJiraMyIssues } from "../../../../composables/useJiraMyIssues.js";
 import { writeJiraViewPreferences } from "../jira-view-preferences.js";
 
 import type { JiraWorkspaceViewsState } from "../../../../../electron/shared/types/jira-workspace-views.js";
@@ -117,7 +118,7 @@ export function useJiraPaneSync(ctx: JiraPaneContext) {
   /** The head sync line keeps the last metadata until the next arrives, so it never empties and refills. */
   const headCacheMetadata = computed(() => visibleCacheMetadata.value ?? lastCacheMetadata.value);
   const headSyncLabel = computed(() => {
-    if (headCacheMetadata.value) return headCacheMetadata.value.stale ? "Saved data · last sync" : "Loaded";
+    if (headCacheMetadata.value) return headCacheMetadata.value.stale ? "Saved data · synced" : "Synced";
     if (visibleSyncError.value) return "Sync failed";
     return isVisibleSyncing.value ? "Syncing Jira data…" : "";
   });
@@ -272,6 +273,11 @@ export function useJiraPaneSync(ctx: JiraPaneContext) {
     }
     visibleRefreshInProgress.value = true;
     refreshFailure.value = "";
+    if (options.userInitiated) {
+      void useJiraMyIssues(() => store.getApi(), preferencesProfileId)
+        .load("force")
+        .catch(() => undefined);
+    }
     const task = (async () => {
       if (jiraViewId.value !== "issues" && dynamicApi.refreshJiraWorkspaceViews && props.workspaceId) {
         const refreshes: Promise<unknown>[] = [
