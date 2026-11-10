@@ -83,6 +83,8 @@ interface Prepared {
   fullRef: string;
   remote: SourceRemote;
   liveSha: string;
+  /** Only for a quickfix branch without a pull request: the remote does not have the branch yet (`liveSha` is empty). */
+  remoteMissing?: boolean;
 }
 
 type Block = Extract<ReviewGitResult, { status: "blocked" }>;
@@ -95,7 +97,27 @@ function proposalIdOf(
   kind: ReviewGitProposalKind,
   facts: ReviewGitProposal["facts"],
 ): string {
-  return digest(subject.workspaceId, subject.prKey, kind, JSON.stringify(facts));
+  return digest(
+    subject.workspaceId,
+    subject.prKey,
+    kind,
+    JSON.stringify(facts),
+    ...(subject.prePr ? [subject.sourceRefName] : []),
+  );
+}
+
+/** The local branches a checkout may be on for this subject: a quickfix branch is only itself, never a PR alias. */
+function onExpectedBranch(subject: ReviewGitSubject, branch: string): boolean {
+  const sourceBranch = sourceBranchName(subject.sourceRefName);
+  if (subject.prePr) return branch === sourceBranch;
+  return isManagedReviewBranch(branch, subject.prId, subject.sourceRefName) || branch === sourceBranch;
+}
+
+function expectedBranchHint(subject: ReviewGitSubject): string {
+  const sourceBranch = sourceBranchName(subject.sourceRefName);
+  return subject.prePr
+    ? sourceBranch
+    : `${managedReviewBranchAlias(subject.prId, subject.sourceRefName)} or ${sourceBranch}`;
 }
 
 export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
@@ -295,7 +317,7 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
           facts,
           "detached-head",
           "HEAD is detached, so this checkout is not on the pull request's branch.",
-          `Switch back to ${managedReviewBranchAlias(subject.prId, subject.sourceRefName)} or ${sourceBranch}.`,
+          `Switch back to ${expectedBranchHint(subject)}.`,
         ),
       };
     }
@@ -310,14 +332,17 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
       };
     }
     if (!facts.detached) {
-      const alias = managedReviewBranchAlias(subject.prId, subject.sourceRefName);
-      if (!isManagedReviewBranch(facts.branch, subject.prId, subject.sourceRefName) && facts.branch !== sourceBranch) {
+      if (!onExpectedBranch(subject, facts.branch)) {
         return {
           block: blocked(
             facts,
             "branch-mismatch",
-            `This checkout is on "${facts.branch}", not on the pull request's branch.`,
-            `Switch back to ${alias} or ${sourceBranch}, or detach the review link. General Git actions still work on "${facts.branch}".`,
+            subject.prePr
+              ? `This checkout is on "${facts.branch}", not on the quickfix branch.`
+              : `This checkout is on "${facts.branch}", not on the pull request's branch.`,
+            subject.prePr
+              ? `Switch back to ${expectedBranchHint(subject)}. General Git actions still work on "${facts.branch}".`
+              : `Switch back to ${expectedBranchHint(subject)}, or detach the review link. General Git actions still work on "${facts.branch}".`,
           ),
         };
       }
@@ -375,6 +400,9 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
       const live = await lsRemoteRef(git, subject.cwd, remote.target, fullRef, subject.auth).catch((error: Error) => {
         throw new Error(`Could not query the pull request source branch: ${error.message}`, { cause: error });
       });
+      if (!live && subject.prePr) {
+        return { prepared: { facts, sourceBranch, fullRef, remote, liveSha: "", remoteMissing: true } };
+      }
       if (!live) {
         return {
           block: blocked(
@@ -404,6 +432,30 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
       }
     }
     return { prepared: { facts, sourceBranch, fullRef, remote, liveSha } };
+  }
+
+  /** A quickfix branch the remote does not have yet: nothing to refresh, nothing to lease a force push against. */
+  function unpublished(facts: { headSha: string }, branch: string, action: "refresh" | "force-push"): Block {
+    return blocked(
+      facts,
+      "branch-not-published",
+      action === "refresh"
+        ? `The branch ${branch} has not been pushed to the remote yet, so there is nothing to refresh.`
+        : `The branch ${branch} is not on the remote yet, so there is no server commit to lease a force push against.`,
+      "Use push to publish it.",
+    );
+  }
+
+  /** The commits a first push of this branch would publish: those on top of the base branch's last fetched tip. */
+  async function publishedCommits(subject: ReviewGitSubject, head: string) {
+    const baseBranch = stripRefsPrefix(subject.targetRefName);
+    const base = baseBranch
+      ? await git(subject.cwd, ["rev-parse", "--verify", "-q", `refs/remotes/origin/${baseBranch}`]).then(
+          (out) => out.stdout.trim(),
+          () => "",
+        )
+      : "";
+    return base ? listCommits(git, subject.cwd, `${base}..${head}`) : { commits: [], total: 0 };
   }
 
   async function createRecoveryRef(subject: ReviewGitSubject, headSha: string): Promise<string> {
@@ -510,6 +562,7 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
       if ("block" in result) return result.block;
       const { facts, sourceBranch, liveSha } = result.prepared;
       const head = facts.headSha;
+      if (result.prepared.remoteMissing) return unpublished(facts, sourceBranch, "refresh");
       const relation = await compareCommits(git, subject.cwd, head, liveSha, { shallow: facts.shallow });
 
       if (relation === "equal") {
@@ -735,7 +788,7 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
         title: `Rebase onto ${targetBranch}?`,
         message:
           `Rebase this checkout's ${replayed.total} local commit${replayed.total !== 1 ? "s" : ""} onto ${targetBranch} (${short(targetSha)}). ` +
-          `Their hashes change (rewritten history, not lost code). This only rewrites the local branch; it does not push to the pull request's source branch.`,
+          `Their hashes change (rewritten history, not lost code). This only rewrites the local branch; it does not push anything to the remote.`,
         facts: { headSha: head, targetSha, targetRef },
         affected: { commits: replayed.commits, total: replayed.total },
         incoming: { commits: incoming.commits, total: incoming.total },
@@ -803,6 +856,48 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
       const { facts, sourceBranch, fullRef, remote, liveSha } = result.prepared;
       const head = facts.headSha;
       if (!head) return blocked(facts, "no-checkout", "There is nothing to push: the branch has no commits.");
+
+      if (result.prepared.remoteMissing) {
+        // A quickfix branch the remote has not got yet: pushing it publishes it. A plain push cannot replace
+        // anything (it is refused when the branch appeared meanwhile and does not fast-forward), and there is
+        // no server commit for a force push to lease against.
+        if (force) return unpublished(facts, sourceBranch, "force-push");
+        if (requireProposal) {
+          const outgoing = await publishedCommits(subject, head);
+          const proposal = makeProposal(subject, "push", {
+            title: `Publish ${sourceBranch}?`,
+            message: `Push HEAD ${short(head)} as the new remote branch ${sourceBranch} (it is not on the remote yet).`,
+            facts: { headSha: head, liveSha: null, published: false },
+            affected: { commits: outgoing.commits, total: outgoing.total },
+            proceedLabel: "Publish branch",
+          });
+          if (options.confirmation?.proposalId !== proposal.proposalId) {
+            return confirmRequired(facts, proposal, options.confirmation);
+          }
+        }
+        return audited(
+          subject,
+          requester,
+          "push",
+          facts,
+          { headSha: head, liveSha: "", baselineSha: subject.baselineSha, sourceRef: fullRef },
+          async () => {
+            const changed = await recheck(subject, facts);
+            if (changed) return changed;
+            await git(subject.cwd, ["push", remote.target, `${head}:refs/heads/${sourceBranch}`], subject.auth);
+            if (remote.viaOrigin) {
+              await git(subject.cwd, ["update-ref", `refs/remotes/origin/${sourceBranch}`, head]).catch(() => {});
+            }
+            const warning = await recordBaseline(subject, head);
+            return {
+              status: "pushed" as const,
+              ...baseResult({ headSha: head }, head, `Published ${short(head)} as ${sourceBranch}.`),
+              liveSha: "",
+              ...(warning ? { baselineWarning: warning } : {}),
+            };
+          },
+        );
+      }
 
       const relation = await compareCommits(git, subject.cwd, head, liveSha, { shallow: facts.shallow });
       if (relation === "equal") {
@@ -1121,6 +1216,7 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
         const result = await prepare(subject, { queryLive: true, allowOperation: true });
         if ("block" in result) return null;
         const { facts, liveSha } = result.prepared;
+        if (result.prepared.remoteMissing) return null;
         const relation = await compareCommits(git, subject.cwd, facts.headSha, liveSha, { shallow: facts.shallow });
         return relation === "equal" || relation === "ahead" ? liveSha : null;
       });

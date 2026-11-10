@@ -3010,6 +3010,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
             remoteUrl,
             baseBranch,
             parentWorkspaceId,
+            branchName: newBranchName,
           },
         }),
       },

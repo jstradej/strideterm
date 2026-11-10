@@ -2089,6 +2089,163 @@ describe("runtime integration", () => {
     expect(broker.revokeSession).toHaveBeenCalledWith(sessionId);
   });
 
+  test("a quickfix branch without a PR gets the Git capability in its environment, bound to its recorded branch; one without a recorded branch and a plain Git workspace do not", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let brokerOptions: any;
+    const minted: Array<Record<string, unknown>> = [];
+    const broker = {
+      async start() {
+        return { url: "http://127.0.0.1:43131/review-git" };
+      },
+      mintGrant(context: Record<string, unknown>) {
+        minted.push(context);
+        return { url: "http://127.0.0.1:43131/review-git", capability: "pre-pr-secret-test-value-1" };
+      },
+      revokeSession: vi.fn(),
+      revokeInvalid: vi.fn(async () => {}),
+      close: vi.fn(async () => {}),
+    };
+    const quickfixWorkspace = (id: string, quickfixOverrides: Record<string, unknown> = {}) => ({
+      id,
+      name: id,
+      kind: "terminal",
+      cwd: process.cwd(),
+      profileId: "default",
+      activePanelId: "agent",
+      panels: [{ id: "agent", title: "Claude", command: "claude" }],
+      review: {
+        provider: "azure-devops",
+        prKey: "",
+        connectionId: "ado-main",
+        repository: { id: "repo-1", name: "web-app", remoteUrl: "https://dev.azure.com/acme/Platform/_git/web-app" },
+        pullRequest: null,
+        role: "author",
+      },
+      quickfix: {
+        connectionId: "ado-main",
+        projectName: "Platform",
+        repositoryId: "repo-1",
+        repositoryName: "web-app",
+        remoteUrl: "https://dev.azure.com/acme/Platform/_git/web-app",
+        baseBranch: "main",
+        parentWorkspaceId: "",
+        branchName: "fix/login",
+        ...quickfixOverrides,
+      },
+    });
+    const plainWorkspace = {
+      id: "plain-ws",
+      name: "Plain",
+      kind: "terminal",
+      cwd: process.cwd(),
+      profileId: "default",
+      activePanelId: "agent",
+      panels: [{ id: "agent", title: "Claude", command: "claude" }],
+    };
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [quickfixWorkspace("qf-ws"), quickfixWorkspace("qf-old", { branchName: "" }), plainWorkspace],
+      },
+      dependencies: {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        createReviewGitBroker: (options: any) => {
+          brokerOptions = options;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          return broker as any;
+        },
+      },
+    });
+    fixtures.push(fixture);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.reviewBridgeStore as any).getRootPath = () => "/tmp/review-root";
+    const launchFor = (id: string) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const saved = fixture.store.getState().workspaces.find((item: any) => item.id === id)!;
+      const sessionId = createSessionId(id, "agent");
+      fixture.sessionManager.sessions.set(sessionId, {
+        id: sessionId,
+        status: "running",
+        workspaceId: id,
+        panelId: "agent",
+        kind: "terminal",
+      });
+      return {
+        sessionId,
+        launch: fixture.sessionManager.getSessionLaunch({
+          workspace: saved,
+          panel: saved.panels[0],
+          sessionId,
+        }),
+      };
+    };
+
+    const { sessionId, launch } = launchFor("qf-ws");
+    expect(launch.env.STRIDETERM_REVIEW_GIT_URL).toBe("http://127.0.0.1:43131/review-git");
+    expect(launch.env.STRIDETERM_REVIEW_GIT_CAPABILITY).toBe("pre-pr-secret-test-value-1");
+    expect(launch.args.join(" ")).not.toContain("pre-pr-secret-test-value");
+    // The briefing reaches Claude even though there is no pull request to describe.
+    expect(launch.args.join(" ")).toContain("pull request or quickfix branch");
+    expect(launch.args.join(" ")).toContain("AskUserQuestion");
+    expect(JSON.stringify(fixture.store.getState())).not.toContain("pre-pr-secret-test-value");
+    expect(minted).toHaveLength(1);
+    expect(minted[0]).toMatchObject({
+      sessionId,
+      profileId: "default",
+      workspaceId: "qf-ws",
+      panelId: "agent",
+      prKey: "",
+      agent: "claude",
+      command: "claude",
+      identityKey: expect.stringMatching(/^prepr\|azure-devops\|ado-main\|refs\/heads\/fix\/login\|/u),
+    });
+    expect(brokerOptions.isGrantLive(minted[0])).toBe(true);
+
+    // A quickfix created before the branch name was kept cannot be bound to a branch: no tools, never a guess.
+    const old = launchFor("qf-old");
+    expect(old.launch?.env?.STRIDETERM_REVIEW_GIT_URL).toBeUndefined();
+    // A plain Git workspace (no quickfix, no PR) gets nothing.
+    const plain = launchFor("plain-ws");
+    expect(plain.launch?.env?.STRIDETERM_REVIEW_GIT_URL).toBeUndefined();
+    expect(minted).toHaveLength(1);
+
+    // A client copy of the workspace cannot retarget the quickfix's repository, branch or baseline.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const saved = fixture.store.getState().workspaces.find((item: any) => item.id === "qf-ws") as any;
+    await fixture.runtime.saveWorkspace({
+      ...saved,
+      quickfix: {
+        ...saved.quickfix,
+        branchName: "other",
+        remoteUrl: "https://example.invalid/evil.git",
+        baseBranch: "evil",
+        sourceBaselineSha: "c".repeat(40),
+      },
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const after = fixture.store.getState().workspaces.find((item: any) => item.id === "qf-ws") as any;
+    expect(after.quickfix).toMatchObject({
+      branchName: "fix/login",
+      remoteUrl: "https://dev.azure.com/acme/Platform/_git/web-app",
+      baseBranch: "main",
+    });
+    expect(after.quickfix.sourceBaselineSha).toBeUndefined();
+    fixture.sessionManager.sessions.set(sessionId, {
+      id: sessionId,
+      status: "running",
+      workspaceId: "qf-ws",
+      panelId: "agent",
+      kind: "terminal",
+    });
+    expect(brokerOptions.isGrantLive(minted[0])).toBe(true);
+
+    // Deleting the quickfix's identity (panel command change) ends the capability for new requests.
+    await fixture.runtime.saveWorkspace({
+      ...after,
+      panels: [{ ...after.panels[0], command: "codex" }],
+    });
+    expect(brokerOptions.isGrantLive(minted[0])).toBe(false);
+  });
+
   test("saveWorkspace keeps the runtime-owned source baseline and source repository against a stale or forged client copy", async () => {
     const sourceRepository = {
       id: "repo-1",

@@ -74,3 +74,73 @@ describe("GitHub per-PR mutations — cross-profile viewer guard", () => {
     expect(markPullRequestSeen).toHaveBeenCalledWith("gh:pr1");
   });
 });
+
+describe("githubCreatePullRequest — a quickfix branch becomes a review workspace", () => {
+  const SHA = "a".repeat(40);
+  const remoteUrl = "https://github.com/acme/repo.git";
+
+  async function promote(payload: Record<string, unknown>) {
+    const workspace = {
+      id: "ws-qf",
+      profileId: "default",
+      cwd: "C:/fake/qf",
+      connectionId: "conn-1",
+      review: {
+        provider: "github",
+        prKey: "",
+        connectionId: "conn-1",
+        repository: { owner: "acme", name: "repo", fullName: "acme/repo", remoteUrl },
+        pullRequest: null,
+        checkout: { mode: "managed-worktree", rootPath: "C:/fake/qf", cacheRepoPath: "" },
+      },
+      quickfix: {
+        connectionId: "conn-1",
+        projectName: "",
+        repositoryId: "",
+        repositoryName: "",
+        remoteUrl,
+        baseBranch: "main",
+        parentWorkspaceId: "",
+        branchName: "fix/login",
+        sourceBaselineSha: SHA,
+      },
+    };
+    const state = { workspaces: [workspace] };
+    const handlers = createGitHubHandlers({
+      getState: () => state,
+      store: { mutate: async (mutator: (draft: typeof state) => void) => mutator(state) },
+      github: {
+        createPullRequestForWorkspace: vi.fn(async () => ({
+          pullRequestNumber: 9,
+          title: "T",
+          url: "https://example.invalid/pr/9",
+        })),
+        seedPullRequestSummary: vi.fn(),
+      },
+      azureReviewStore: { upsertTrackedPullRequest: vi.fn(async () => {}) },
+      git: { getSnapshot: () => ({ available: true, remotes: { origin: remoteUrl }, branch: "fix/login" }) },
+      resolveGitWorkspace: () => workspace,
+      resolveGitRootPath: () => "",
+      refreshGit: vi.fn(async () => {}),
+      refreshGitHub: vi.fn(async () => {}),
+      broadcastState: vi.fn(),
+      getPayload: () => ({}),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    await handlers.githubCreatePullRequest({ workspaceId: "ws-qf", targetBranch: "main", title: "T", ...payload });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return state.workspaces[0] as any;
+  }
+
+  test("the pre-PR baseline moves into the review for a PR from the same branch", async () => {
+    const promoted = await promote({});
+    expect(promoted.quickfix).toBeNull();
+    expect(promoted.review).toMatchObject({ prKey: expect.stringContaining("9"), sourceBaselineSha: SHA });
+  });
+
+  test("it is dropped when the PR comes from another branch than the one the baseline was bound to", async () => {
+    const promoted = await promote({ sourceBranch: "something-else" });
+    expect(promoted.review.prKey).toBeTruthy();
+    expect(promoted.review.sourceBaselineSha).toBeUndefined();
+  });
+});

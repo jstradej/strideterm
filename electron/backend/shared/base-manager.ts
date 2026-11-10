@@ -27,7 +27,12 @@ import {
 import type { Logger } from "../logger.js";
 import { getLogger } from "../logger.js";
 import type { CredentialStore } from "./credential-store.js";
-import { reviewSourceIdentityKey, sameRemote } from "../../shared/review-source-identity.js";
+import {
+  fullSourceRef,
+  prePrSourceIdentityKey,
+  reviewSourceIdentityKey,
+  sameRemote,
+} from "../../shared/review-source-identity.js";
 import { parseMergeTreeConflicts, type LocalMergeCheck } from "../../shared/review-merge-check.js";
 import { errorMessage } from "../../shared/error-message.js";
 import type { ReviewInfo, ReviewSourceRepository } from "../../shared/types/state.js";
@@ -83,6 +88,16 @@ export interface ReviewWorkspaceRef {
     role?: string;
     checkout?: { mode?: string; rootPath?: string; cacheRepoPath?: string } | null;
   };
+  /** Set while a quickfix workspace has no pull request yet. */
+  quickfix?: {
+    connectionId?: string;
+    repositoryId?: string;
+    repositoryName?: string;
+    remoteUrl?: string;
+    baseBranch?: string;
+    branchName?: string;
+    sourceBaselineSha?: string;
+  } | null;
 }
 
 /** Outcome of `syncReviewWorkspace` — the shared review Git preflight result. */
@@ -1029,6 +1044,13 @@ export class BaseProviderManager extends EventEmitter {
         audit: this.createReviewGitAudit(),
         persistBaseline: async (subject, sha) => {
           if (!this.reviewMetadataStore) throw new Error("No review metadata store is configured.");
+          if (subject.prePr) {
+            await this.reviewMetadataStore.updateReview(subject.workspaceId, {
+              sourceBaselineSha: sha,
+              expectedIdentityKey: subject.identityKey || "",
+            });
+            return;
+          }
           await this.reviewMetadataStore.updateReview(subject.workspaceId, {
             sourceBaselineSha: sha,
             ...(subject.sourceRepository ? { sourceRepository: subject.sourceRepository } : {}),
@@ -1092,7 +1114,7 @@ export class BaseProviderManager extends EventEmitter {
           durationMs: null,
           resourceType: "git",
           resourceId: subject.workspaceId,
-          summary: `git ${entry.kind} (review workspace)`,
+          summary: `git ${entry.kind} (${subject.prePr ? "quickfix branch" : "review workspace"})`,
           userInitiated: requester.source === "ui",
           operationId: entry.operationId,
           details: JSON.stringify({
@@ -1133,10 +1155,8 @@ export class BaseProviderManager extends EventEmitter {
   }
 
   /** Build the engine's view of one PR-linked checkout from persisted state plus the live provider snapshot. */
-  buildReviewSubject(workspace: ReviewWorkspaceRef): ReviewGitSubject {
-    const review = workspace.review;
-    if (!review) throw new Error("This workspace is not linked to a pull request.");
-    const connection = this.findConnection(review.connectionId || "");
+  private reviewSubjectBasics(workspace: ReviewWorkspaceRef, connectionId: string) {
+    const connection = this.findConnection(connectionId);
     if (!connection) throw new Error(this.connectionNotFoundMessage);
     // Profile-aware: a workspace never borrows the credentials of another profile's connection.
     const connectionProfile = (connection as { profileId?: string }).profileId;
@@ -1150,6 +1170,65 @@ export class BaseProviderManager extends EventEmitter {
     if (!token) throw new Error("PAT is missing.");
     const cwd = workspace.cwd || "";
     if (!cwd) throw new Error("Review workspace has no working directory.");
+    return {
+      cwd,
+      // The token's scope comes from the stored connection, never from the review's repository URLs: those are
+      // workspace metadata, and a URL on another host must get no credentials.
+      auth: { login: connection.login, token, authUrl: connectionGitAuthScopes(connection as { orgUrl?: string }) },
+    };
+  }
+
+  /**
+   * The engine's view of a quickfix branch that has no pull request yet, from the
+   * quickfix record alone: the branch name recorded at creation (never the live
+   * checkout's), the repository as both source and target, the base branch as
+   * target. A quickfix that predates the recorded branch name has no subject.
+   */
+  private buildPrePrSubject(workspace: ReviewWorkspaceRef): ReviewGitSubject {
+    const quickfix = workspace.quickfix;
+    const identityKey = prePrSourceIdentityKey(workspace);
+    if (!quickfix || !identityKey) {
+      throw new Error(
+        "This quickfix workspace has no recorded branch (it was created before that was kept), so its Git tools are unavailable.",
+      );
+    }
+    const baseBranch = String(quickfix.baseBranch || "").trim();
+    if (!baseBranch) throw new Error("This quickfix workspace has no recorded base branch.");
+    const { cwd, auth } = this.reviewSubjectBasics(workspace, quickfix.connectionId || "");
+    const remoteUrl = String(quickfix.remoteUrl || "");
+    return {
+      workspaceId: workspace.id,
+      profileId: workspace.profileId || "default",
+      cwd,
+      provider: workspace.review?.provider || this.providerLabel,
+      connectionId: quickfix.connectionId || "",
+      prKey: "",
+      prePr: true,
+      identityKey,
+      prId: "",
+      role: "author",
+      sourceRefName: fullSourceRef(quickfix.branchName),
+      targetRefName: fullSourceRef(baseBranch),
+      sourceRepository: {
+        id: String(quickfix.repositoryId || ""),
+        name: String(quickfix.repositoryName || ""),
+        fullName: String(quickfix.repositoryName || remoteUrl),
+        remoteUrl,
+        sameAsTarget: true,
+        canPush: null,
+      },
+      targetRemoteUrl: remoteUrl,
+      baselineSha: quickfix.sourceBaselineSha || "",
+      checkout: (workspace.review?.checkout as ReviewGitSubject["checkout"]) || null,
+      auth,
+    };
+  }
+
+  buildReviewSubject(workspace: ReviewWorkspaceRef): ReviewGitSubject {
+    const review = workspace.review;
+    if (!review) throw new Error("This workspace is not linked to a pull request.");
+    if (!review.prKey && workspace.quickfix) return this.buildPrePrSubject(workspace);
+    const { cwd, auth } = this.reviewSubjectBasics(workspace, review.connectionId || "");
     const summary = (
       review.prKey ? this.findSummary(review.prKey) || this.snapshot.pullRequests[review.prKey] : null
     ) as {
@@ -1206,9 +1285,7 @@ export class BaseProviderManager extends EventEmitter {
           }
         : {}),
       checkout: (review.checkout as ReviewGitSubject["checkout"]) || null,
-      // The token's scope comes from the stored connection, never from the review's repository URLs: those are
-      // workspace metadata, and a URL on another host must get no credentials.
-      auth: { login: connection.login, token, authUrl: connectionGitAuthScopes(connection as { orgUrl?: string }) },
+      auth,
     };
   }
 

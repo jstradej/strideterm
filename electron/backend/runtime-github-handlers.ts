@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { findWorkspace, markWorkspaceWorked, type AcceptedQuickFixContext } from "./runtime-utils.js";
 import { normalizeWorkspace } from "./default-state.js";
 import { holdAgentTabs } from "../shared/jira-development.js";
+import { carryOverPrePrBaseline } from "../shared/review-source-identity.js";
 import { insertWorkspace } from "./workspace-order.js";
 import { ClientRequestError } from "./shared/client-request-error.js";
 import { errorMessage } from "../shared/error-message.js";
@@ -415,7 +416,7 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
           const ws = draft.workspaces.find((w: any) => w.id === workspace.id);
           if (ws) {
             ws.name = `${owner}/${repo} PR #${result.pullRequestNumber}`;
-            ws.review = {
+            const promoted = {
               ...(ws.review || {}),
               provider: "github",
               prKey,
@@ -441,6 +442,8 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
                 cacheRepoPath: "",
               },
             };
+            const sourceBaselineSha = carryOverPrePrBaseline(ws, promoted);
+            ws.review = sourceBaselineSha ? { ...promoted, sourceBaselineSha } : promoted;
             ws.quickfix = null;
           }
         });

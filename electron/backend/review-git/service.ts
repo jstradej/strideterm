@@ -10,9 +10,12 @@ import {
 } from "../../shared/review-git-events.js";
 import { hasCommit, inspectCheckout, listCommits, lsRemoteRef, type GitRun } from "./inspect.js";
 import {
+  PRE_PR_IDENTITY_PREFIX,
   fullSourceRef,
   isManagedReviewBranch,
   managedReviewBranchAlias,
+  prePrGrantHolds,
+  prePrSourceIdentityKey,
   reviewSourceIdentityKey,
   sameRemote,
   sourceBranchName,
@@ -100,10 +103,12 @@ export interface ReviewGitCommitAnchor {
 /**
  * Is a capability still entitled to act? Re-proved against LIVE state on every
  * request: the workspace must still exist, still be linked to the same PR with
- * the same source identity, still be in the profile the capability was minted
- * for (and that profile must still exist), and the tab must still be the same
- * running agent session. A detached or closed tab, a deleted profile, a moved
- * workspace or a changed PR source all end it — for new requests only.
+ * the same source identity (or, for a quickfix branch without a PR, still be that
+ * quickfix branch — or the PR created from exactly it), still be in the profile
+ * the capability was minted for (and that profile must still exist), and the tab
+ * must still be the same running agent session. A detached or closed tab, a
+ * deleted profile, a moved workspace or a changed PR source all end it — for new
+ * requests only.
  */
 export function isReviewGitGrantLive({
   state,
@@ -128,12 +133,15 @@ export function isReviewGitGrantLive({
   identityKeyFor: (workspace: WorkspaceState) => string;
 }): boolean {
   const workspace = state.workspaces.find((item) => item.id === grant.workspaceId);
-  if (!workspace?.review?.prKey || workspace.review.prKey !== grant.prKey) return false;
+  const prePrGrant = grant.identityKey.startsWith(PRE_PR_IDENTITY_PREFIX);
+  if (prePrGrant) {
+    if (grant.prKey !== "" || !workspace?.review || !prePrGrantHolds(grant.identityKey, workspace)) return false;
+  } else if (!workspace?.review?.prKey || workspace.review.prKey !== grant.prKey) return false;
   const profileId = String(workspace.profileId || "default");
   if (profileId !== grant.profileId || !state.profiles.some((profile) => profile.id === profileId)) return false;
   const panel = workspace.panels.find((item) => item.id === grant.panelId);
   if (!panel || panel.command !== grant.command || agentFor(panel) !== grant.agent) return false;
-  if (!grantIdentityHolds(grant.identityKey, identityKeyFor(workspace))) return false;
+  if (!prePrGrant && !grantIdentityHolds(grant.identityKey, identityKeyFor(workspace))) return false;
   return Boolean(
     session?.status === "running" && session.workspaceId === grant.workspaceId && session.panelId === grant.panelId,
   );
@@ -216,10 +224,15 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
     throw new Error("This workspace is not linked to a supported pull request provider.");
   }
 
-  /** Profile-aware lookup: the workspace must exist, be PR-linked, and belong to the caller's profile. */
+  /**
+   * Profile-aware lookup: the workspace must exist, be PR-linked (or a quickfix
+   * branch that has no PR yet), and belong to the caller's profile.
+   */
   function locate(workspaceId: string, profileId: string): Located {
     const workspace = ctx.getState().workspaces.find((item) => item.id === workspaceId);
-    if (!workspace?.review?.prKey) throw new Error("Review workspace not found.");
+    if (!workspace?.review || (!workspace.review.prKey && !workspace.quickfix)) {
+      throw new Error("Review workspace not found.");
+    }
     const workspaceProfile = workspace.profileId || "default";
     if (workspaceProfile !== profileId) {
       throw new Error(`Cross-profile refused: workspace ${workspaceId} is not in profile ${profileId}.`);
@@ -445,7 +458,10 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
   function start(input: ReviewGitStartInput, caller: ReviewGitCaller): { started: true; operationId: string } {
     const located = locate(input.workspaceId, caller.profileId);
     // Building the subject proves the connection and PAT exist before anything starts.
-    located.manager.buildReviewSubject(located.workspace);
+    const subject = located.manager.buildReviewSubject(located.workspace);
+    if (subject.prePr && (input.kind === "push-and-publish" || input.kind === "force-push-and-publish")) {
+      throw new Error("There is no pull request yet, so there are no draft comments to publish. Use push.");
+    }
     if ((input.kind === "stage" || input.kind === "unstage") && !input.paths?.length) {
       throw new Error("At least one path is required.");
     }
@@ -535,13 +551,40 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
     const review = workspace.review!;
     const run = gitRunFor(manager);
     const cwd = workspace.cwd;
-    const sourceBranch = sourceBranchName(review.pullRequest?.sourceRefName);
     const liveSubject = manager.buildReviewSubject(workspace);
+    const prePr = Boolean(liveSubject.prePr);
+    const sourceRefName = prePr ? liveSubject.sourceRefName : review.pullRequest?.sourceRefName;
+    const sourceBranch = sourceBranchName(sourceRefName);
     const targetBranch = stripRefsPrefix(liveSubject.targetRefName);
     const git = async (args: string[]) => (await run(cwd, args)).stdout;
 
     switch (input.operation) {
       case "identity":
+        if (prePr) {
+          return {
+            workspaceId: workspace.id,
+            profileId,
+            provider: review.provider,
+            kind: "quickfix-branch",
+            prKey: null,
+            pullRequestId: null,
+            note: "This quickfix branch has no pull request yet.",
+            role: "author",
+            targetRepository: { name: liveSubject.sourceRepository?.name, remoteUrl: liveSubject.targetRemoteUrl },
+            sourceRepository: {
+              fullName: liveSubject.sourceRepository?.fullName,
+              remoteUrl: liveSubject.sourceRepository?.remoteUrl,
+              sameAsTarget: true,
+              writableByConnection: null,
+            },
+            sourceRef: liveSubject.sourceRefName,
+            targetRef: liveSubject.targetRefName,
+            expectedLocalBranches: [sourceBranch],
+            sourceBaselineSha: liveSubject.baselineSha || null,
+            sourceIdentity: liveSubject.identityKey || null,
+            checkoutMode: review.checkout?.mode ?? null,
+          };
+        }
         return {
           workspaceId: workspace.id,
           profileId,
@@ -574,10 +617,15 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
       case "status": {
         const facts = await inspectCheckout(run, cwd);
         const conflicts = facts.operation ? await manager.getReviewGitEngine().conflictedPaths(cwd) : [];
-        const onPullRequestBranch =
-          !facts.detached &&
-          (isManagedReviewBranch(facts.branch, review.pullRequest?.id ?? "", review.pullRequest?.sourceRefName || "") ||
-            facts.branch === sourceBranch);
+        const onPullRequestBranch = prePr
+          ? !facts.detached && facts.branch === sourceBranch
+          : !facts.detached &&
+            (isManagedReviewBranch(
+              facts.branch,
+              review.pullRequest?.id ?? "",
+              review.pullRequest?.sourceRefName || "",
+            ) ||
+              facts.branch === sourceBranch);
         return {
           headSha: facts.headSha,
           branch: facts.branch || null,
@@ -591,7 +639,7 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
           conflicted: facts.dirty.conflicted,
           changedPaths: facts.dirty.paths.slice(0, 500),
           shallow: facts.shallow,
-          sourceBaselineSha: review.sourceBaselineSha || null,
+          sourceBaselineSha: liveSubject.baselineSha || null,
         };
       }
       case "refs": {
@@ -626,11 +674,11 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
         return {
           headSha: facts.headSha,
           branch: facts.branch || null,
-          sourceRef: review.pullRequest?.sourceRefName,
+          sourceRef: sourceRefName,
           targetRef: liveSubject.targetRefName,
           trackingSourceSha: trackingSource || null,
           trackingTargetSha: trackingTarget || null,
-          sourceBaselineSha: review.sourceBaselineSha || null,
+          sourceBaselineSha: liveSubject.baselineSha || null,
           ...(live ? { live } : {}),
           note: "Tracking refs are local caches and can be stale; refresh/push re-query the live source.",
         };
@@ -672,6 +720,7 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
         return { operationInProgress: facts.operation, conflictedPaths: paths, files };
       }
       case "checks": {
+        if (prePr) return { prKey: null, checks: null, note: "There is no pull request yet, so there are no checks." };
         // The inbox summary (findSummary) carries no checks; the synced detail does.
         const candidates = [
           manager.snapshot?.pullRequests?.[review.prKey],
@@ -745,10 +794,11 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
     const facts = await inspectCheckout(run, cwd);
     const repo = subject.sourceRepository;
     const remote = !repo?.remoteUrl || sameRemote(facts.originUrl, repo.remoteUrl) ? "origin" : repo.remoteUrl;
-    const fullRef = fullSourceRef(workspace.review?.pullRequest?.sourceRefName);
+    const fullRef = fullSourceRef(subject.prePr ? subject.sourceRefName : workspace.review?.pullRequest?.sourceRefName);
     const sha = await lsRemoteRef(run, cwd, remote, fullRef, subject.auth).catch((error: Error) => {
       throw new Error(`Could not query the pull request source branch: ${error.message}`, { cause: error });
     });
+    if (!sha && subject.prePr) throw new Error("The quickfix branch is not on its remote yet. Use push to publish it.");
     if (!sha) throw new Error("The pull request source branch no longer exists on its remote.");
     if (!(await hasCommit(run, cwd, sha))) {
       throw new Error(
@@ -805,6 +855,7 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
     identityKeyFor(workspace: WorkspaceState): string {
       const review = workspace.review;
       return (
+        prePrSourceIdentityKey(workspace) ||
         reviewSourceIdentityKey(review) ||
         [
           "partial",

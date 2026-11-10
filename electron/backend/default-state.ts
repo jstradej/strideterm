@@ -569,6 +569,8 @@ export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
           remoteUrl: workspace.quickfix.remoteUrl || "",
           baseBranch: workspace.quickfix.baseBranch || "",
           parentWorkspaceId: workspace.quickfix.parentWorkspaceId || "",
+          branchName: String(workspace.quickfix.branchName || "").trim(),
+          sourceBaselineSha: normalizeSourceBaselineSha(workspace.quickfix.sourceBaselineSha),
         }
       : null,
     starred: Boolean(workspace.starred),

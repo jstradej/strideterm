@@ -18,6 +18,7 @@ import type { StatePayload } from "../../../../electron/shared/types/state.js";
 function buildPayload(opts: {
   provider?: "azure-devops" | "github";
   aheadCount?: number;
+  upstream?: string;
   dirty?: boolean;
   log?: Array<Record<string, unknown>>;
   baseBranch?: string;
@@ -63,6 +64,7 @@ function buildPayload(opts: {
         "ws-review": {
           branch: "feature/x",
           aheadCount: opts.aheadCount ?? 0,
+          ...(opts.upstream !== undefined ? { upstream: opts.upstream } : {}),
           dirty: opts.dirty ?? false,
           dirtyCount: 0,
           log: opts.log || [],
@@ -229,6 +231,34 @@ describe("PrePrWorkspaceView — creating a pull request", () => {
       expect.objectContaining({ workspaceId: "ws-review", targetBranch: "main", title: "Fix the thing" }),
     );
     expect(wrapper.text()).toContain("PR #42 created.");
+  });
+
+  test("a branch that was never pushed is published before the PR is created", async () => {
+    const appStore = useAppStore();
+    const confirmSpy = vi.spyOn(appStore, "confirmInApp").mockResolvedValue(true);
+    const calls: string[] = [];
+    const gitPush = vi.fn(() => {
+      calls.push("push");
+      return Promise.resolve({ result: { ok: true, summary: "Pushed." } });
+    });
+    const azureCreatePullRequest = vi.fn(() => {
+      calls.push("create");
+      return Promise.resolve({ result: { pullRequestId: 7, url: "https://example.test/pr/7" } });
+    });
+    const wrapper = mountWizard(
+      { aheadCount: 0, upstream: "", log: [{ subject: "Fix the thing", shortHash: "abc123" }] },
+      { azureListRemoteBranches: () => Promise.resolve({ branches: ["main"] }), azureCreatePullRequest, gitPush },
+    );
+    await flushPromises();
+    await wrapper.find('input[placeholder="Pull request title"]').setValue("Fix the thing");
+
+    await wrapper.find("button.button:not(.button--ghost)").trigger("click");
+    await flushPromises();
+
+    expect(confirmSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Publish the branch before creating PR?" }),
+    );
+    expect(calls).toEqual(["push", "create"]);
   });
 
   test("declining the push confirmation does not create the PR", async () => {

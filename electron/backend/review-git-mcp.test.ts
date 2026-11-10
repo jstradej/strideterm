@@ -238,6 +238,9 @@ describe("what the agent is told", () => {
     for (const operation of ["rebase", "stage", "commit", "push", "force push", "continue / skip / abort"]) {
       expect(generic).toContain(operation);
     }
+    // The same briefing serves a quickfix branch that has no pull request yet.
+    expect(generic).toContain("pull request or quickfix branch");
+    expect(generic).toContain("a force push needs the branch to be there already");
     const claude = buildReviewGitPolicy({ askTool: "AskUserQuestion" });
     expect(claude).toContain("call AskUserQuestion with those facts and WAIT for the user's actual answer");
     expect(claude).toContain("PermissionRequest hooks and auto-approval are NOT the user's consent");

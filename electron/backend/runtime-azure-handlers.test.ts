@@ -103,3 +103,79 @@ describe("markAzurePullRequestSeen — cross-profile viewer guard (#32/#63)", ()
     expect(markPullRequestSeen).toHaveBeenCalledWith("azure:pr1");
   });
 });
+
+describe("azureCreatePullRequest — a quickfix branch becomes a review workspace", () => {
+  const SHA = "a".repeat(40);
+  const remoteUrl = "https://dev.azure.com/acme/Platform/_git/web-app";
+
+  async function promote(payload: Record<string, unknown>, quickfixOverrides: Record<string, unknown> = {}) {
+    const workspace = {
+      id: "ws-qf",
+      profileId: "default",
+      cwd: "C:/fake/qf",
+      review: {
+        provider: "azure-devops",
+        prKey: "",
+        connectionId: "conn-1",
+        repository: { id: "repo-1", name: "web-app", remoteUrl },
+        pullRequest: null,
+        checkout: { mode: "managed-worktree", rootPath: "C:/fake/qf", cacheRepoPath: "" },
+      },
+      quickfix: {
+        connectionId: "conn-1",
+        projectName: "Platform",
+        repositoryId: "repo-1",
+        repositoryName: "web-app",
+        remoteUrl,
+        baseBranch: "main",
+        parentWorkspaceId: "",
+        branchName: "fix/login",
+        sourceBaselineSha: SHA,
+        ...quickfixOverrides,
+      },
+    };
+    const state = { workspaces: [workspace] };
+    const handlers = createAzureHandlers({
+      getState: () => state,
+      store: { mutate: async (mutator: (draft: typeof state) => void) => mutator(state) },
+      azure: {
+        createPullRequestForWorkspace: vi.fn(async () => ({
+          pullRequestId: 9,
+          title: "T",
+          url: "https://example.invalid/pr/9",
+        })),
+        buildPrKey: (connectionId: string, repositoryId: string, id: number) => `${connectionId}:${repositoryId}:${id}`,
+        reviewStore: { upsertTrackedPullRequest: vi.fn(async () => {}) },
+        seedPullRequestSummary: vi.fn(),
+      },
+      git: { getSnapshot: () => ({ available: true, remotes: { origin: remoteUrl }, branch: "fix/login" }) },
+      resolveGitWorkspace: () => workspace,
+      resolveGitRootPath: () => "",
+      refreshGit: vi.fn(async () => {}),
+      refreshAzure: vi.fn(async () => {}),
+      broadcastState: vi.fn(),
+      getPayload: () => ({}),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    await handlers.azureCreatePullRequest({ workspaceId: "ws-qf", targetBranch: "main", title: "T", ...payload });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return state.workspaces[0] as any;
+  }
+
+  test("the pre-PR baseline moves into the review for a PR from the same branch", async () => {
+    const promoted = await promote({});
+    expect(promoted.quickfix).toBeNull();
+    expect(promoted.review).toMatchObject({ prKey: "conn-1:repo-1:9", sourceBaselineSha: SHA });
+  });
+
+  test("it is dropped when the PR comes from another branch than the one the baseline was bound to", async () => {
+    const promoted = await promote({ sourceBranch: "something-else" });
+    expect(promoted.review.prKey).toBe("conn-1:repo-1:9");
+    expect(promoted.review.sourceBaselineSha).toBeUndefined();
+  });
+
+  test("nothing is invented for a quickfix that had no baseline", async () => {
+    const promoted = await promote({}, { sourceBaselineSha: undefined });
+    expect(promoted.review.sourceBaselineSha).toBeUndefined();
+  });
+});

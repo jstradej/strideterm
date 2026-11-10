@@ -332,11 +332,14 @@ async function handleCreatePr() {
   prFormBusy.value = true;
   prFormResult.value = null;
   try {
-    // Check for unpushed commits
-    if (aheadCount.value > 0) {
+    // A branch with no upstream reports 0 commits ahead, yet the provider cannot open a PR from a branch it has never seen.
+    const unpublished = gitSnapshot.value?.upstream === "";
+    if (aheadCount.value > 0 || unpublished) {
       const pushConfirmed = await appStore.confirmInApp({
-        title: "Push commits before creating PR?",
-        message: `You have ${aheadCount.value} unpushed commit${aheadCount.value === 1 ? "" : "s"}. Push to remote before creating the PR?`,
+        title: unpublished ? "Publish the branch before creating PR?" : "Push commits before creating PR?",
+        message: unpublished
+          ? "This branch is not on the remote yet. Push it before creating the PR?"
+          : `You have ${aheadCount.value} unpushed commit${aheadCount.value === 1 ? "" : "s"}. Push to remote before creating the PR?`,
         confirmLabel: "Push and create",
       });
       if (!pushConfirmed) {
@@ -367,7 +370,7 @@ async function handleCreatePr() {
     };
     offerJiraUpdate({ url: result.url, number: prId, title: prFormTitle.value.trim() });
   } catch (err) {
-    prFormResult.value = { ok: false, summary: (err as Error)?.message || "Failed to create pull request." };
+    prFormResult.value = { ok: false, summary: userFacingMessage(err, "Failed to create pull request.") };
   } finally {
     prFormBusy.value = false;
   }

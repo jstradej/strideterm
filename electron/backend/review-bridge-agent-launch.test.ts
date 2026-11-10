@@ -1082,6 +1082,51 @@ describe("review Git capability in the agent launch", () => {
     );
   });
 
+  describe("a quickfix tab that has no pull request yet", () => {
+    const quickfixLaunch = (agent: string, platform: string, extra: Record<string, unknown> = {}) =>
+      buildReviewAgentLaunch({
+        workspace: {
+          id: "workspace-quickfix",
+          cwd: "C:/reviews/quickfix",
+          review: { provider: "azure-devops", prKey: "" },
+        },
+        panel: { id: agent, title: agent, command: agent },
+        context: { rootPath: "C:/Users/strad/.strideterm/review-bridge", workspaceId: "workspace-quickfix", prKey: "" },
+        processInfo: info(platform),
+        ...extra,
+      } as never);
+
+    test.each(["linux", "win32"])(
+      "every agent gets the capability by name or environment, never on argv (%s)",
+      (platform) => {
+        for (const agent of ["claude", "codex", "copilot", "opencode"]) {
+          const result = quickfixLaunch(agent, platform, { reviewGitEnv })!;
+          expect(JSON.stringify(result.args)).not.toContain(CAPABILITY);
+          expect(JSON.stringify(result.args)).not.toContain("--review-pr-key");
+        }
+        const codex = quickfixLaunch("codex", platform, { reviewGitEnv })!;
+        expect(
+          (codex.args as string[]).some(
+            (arg) => arg.startsWith("mcp_servers.review.env_vars=") && arg.includes("STRIDETERM_REVIEW_GIT_CAPABILITY"),
+          ),
+        ).toBe(true);
+        const copilot = quickfixLaunch("copilot", platform, { reviewGitEnv })!;
+        const review = JSON.parse(copilot.args[copilot.args.indexOf("--additional-mcp-config") + 1]).mcpServers.review;
+        expect(review.env.STRIDETERM_REVIEW_GIT_CAPABILITY).toBe("${STRIDETERM_REVIEW_GIT_CAPABILITY}");
+        const opencode = quickfixLaunch("opencode", platform, { reviewGitEnv })!;
+        expect(JSON.parse(opencode.env!.OPENCODE_CONFIG_CONTENT).mcp.review.environment).toMatchObject(reviewGitEnv);
+      },
+    );
+
+    test("Claude's briefing covers the quickfix branch too", () => {
+      const result = quickfixLaunch("claude", "linux", { reviewGitEnv })!;
+      const prompt = result.args[result.args.indexOf("--append-system-prompt") + 1] as string;
+      expect(prompt).toContain("pull request or quickfix branch");
+      expect(prompt).toContain("Do not run git commands that change the repository in a shell");
+      expect(prompt).toContain("call AskUserQuestion with those facts and WAIT for the user's actual answer");
+    });
+  });
+
   test.each(["claude", "codex", "copilot", "opencode"])(
     "the same review bridge entry serves the Git tools for %s on every platform",
     (agent) => {

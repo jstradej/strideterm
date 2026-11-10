@@ -174,6 +174,120 @@ export function carryOverSourceBaseline(
   return previousKey === reviewSourceIdentityKey(next) ? baseline : "";
 }
 
+/** Marks the identity of a quickfix branch that has no pull request yet; a pull request identity never starts with it. */
+export const PRE_PR_IDENTITY_PREFIX = "prepr|";
+
+/** The parts of a workspace the pre-PR identity is built from. */
+interface PrePrWorkspaceInput {
+  review?: { provider?: string; prKey?: string; connectionId?: string } | null;
+  quickfix?: {
+    connectionId?: string;
+    repositoryId?: string;
+    remoteUrl?: string;
+    branchName?: string;
+    sourceBaselineSha?: string;
+  } | null;
+}
+
+function prePrKey(parts: {
+  provider?: string;
+  connectionId?: string;
+  repositoryId?: string;
+  remoteUrl?: string;
+  branchName?: string;
+}): string {
+  const provider = String(parts.provider || "");
+  const connectionId = String(parts.connectionId || "");
+  const ref = fullSourceRef(parts.branchName);
+  const remote = normalizeRemoteIdentity(parts.remoteUrl);
+  if (!provider || !connectionId || !ref || !remote) return "";
+  const repositoryId = String(parts.repositoryId || "")
+    .trim()
+    .toLowerCase();
+  return `${PRE_PR_IDENTITY_PREFIX}${[provider, connectionId, ref, `id:${repositoryId}`, `url:${remote}`].join("|")}`;
+}
+
+/**
+ * Everything a quickfix branch without a pull request is bound to: provider,
+ * connection, repository (id and clone URL) and the full branch ref recorded at
+ * creation. Source and target repository are the same one. Empty when the
+ * workspace already has a PR, or any part is unknown.
+ */
+export function prePrSourceIdentityKey(workspace: PrePrWorkspaceInput | null | undefined): string {
+  const review = workspace?.review;
+  const quickfix = workspace?.quickfix;
+  if (!review || !quickfix || review.prKey) return "";
+  if (!quickfix.connectionId || quickfix.connectionId !== review.connectionId) return "";
+  return prePrKey({
+    provider: review.provider,
+    connectionId: quickfix.connectionId,
+    repositoryId: quickfix.repositoryId,
+    remoteUrl: quickfix.remoteUrl,
+    branchName: quickfix.branchName,
+  });
+}
+
+/**
+ * The pre-PR identity a pull request created from that quickfix has: same
+ * connection, repository and source ref. Empty when the PR comes from a fork or
+ * from another repository than the target.
+ */
+function prePrKeyOfPullRequest(
+  review:
+    | (Partial<IdentityInput> & {
+        repository?: { id?: string; remoteUrl?: string } | null;
+      })
+    | null
+    | undefined,
+): string {
+  if (!review?.prKey) return "";
+  const target = review.repository;
+  const source = review.sourceRepository;
+  if (source) {
+    if (source.sameAsTarget === false) return "";
+    if (source.remoteUrl && !sameRemote(source.remoteUrl, target?.remoteUrl)) return "";
+  }
+  return prePrKey({
+    provider: review.provider,
+    connectionId: review.connectionId,
+    repositoryId: target?.id,
+    remoteUrl: target?.remoteUrl,
+    branchName: review.pullRequest?.sourceRefName || "",
+  });
+}
+
+/**
+ * Does a grant bound to a pre-PR identity still hold? While the workspace has no
+ * PR its own pre-PR identity must equal the grant's. Once a PR exists (the
+ * quickfix was promoted) it must be a PR for that same connection, repository and
+ * source ref — a different PR, branch, repository or connection ends the grant.
+ */
+export function prePrGrantHolds(
+  grantKey: string,
+  workspace: PrePrWorkspaceInput & { review?: Partial<IdentityInput> | null },
+): boolean {
+  if (!grantKey.startsWith(PRE_PR_IDENTITY_PREFIX)) return false;
+  const current = workspace.review?.prKey
+    ? prePrKeyOfPullRequest(workspace.review as Parameters<typeof prePrKeyOfPullRequest>[0])
+    : prePrSourceIdentityKey(workspace);
+  return current !== "" && current === grantKey;
+}
+
+/**
+ * The pre-PR counterpart of `carryOverSourceBaseline`, with the same rule: the
+ * baseline survives the move to a pull request only while connection,
+ * repository and source ref are unchanged.
+ */
+export function carryOverPrePrBaseline(
+  previous: PrePrWorkspaceInput | null | undefined,
+  next: Parameters<typeof prePrKeyOfPullRequest>[0],
+): string {
+  const baseline = String(previous?.quickfix?.sourceBaselineSha || "").trim();
+  if (!isFullSha(baseline)) return "";
+  const previousKey = prePrSourceIdentityKey(previous);
+  return previousKey && previousKey === prePrKeyOfPullRequest(next) ? baseline : "";
+}
+
 export function sameRemote(a: string | null | undefined, b: string | null | undefined): boolean {
   const left = normalizeRemoteIdentity(a);
   return left !== "" && left === normalizeRemoteIdentity(b);

@@ -238,7 +238,9 @@ export function createReviewPrActionService({
 
   function getLocated(workspaceId: string, profileId: string): Located {
     const located = locate(workspaceId, profileId);
-    if (!located.workspace.review?.prKey) throw new Error("Review workspace not found.");
+    if (!located.workspace.review?.prKey) {
+      throw new Error("There is no pull request yet for this quickfix branch, so there is nothing to act on.");
+    }
     if (located.provider !== located.workspace.review.provider) throw new Error("The pull request provider changed.");
     return located;
   }

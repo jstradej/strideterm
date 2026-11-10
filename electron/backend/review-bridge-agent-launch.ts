@@ -247,12 +247,21 @@ function pushWorkspaceScope(args: string[], workspaceCwd: unknown): void {
 // Ordinary review tabs get passive context. Only an explicit backend review
 // action supplies initialPrompt and starts a turn; that prompt is passed on
 // this process invocation and never persisted in panel state.
-function buildReviewPrompt(context: ReviewContext | undefined, draftOnlyReview = false): string {
+function buildReviewPrompt(context: ReviewContext | undefined, draftOnlyReview = false, hasReviewGit = false): string {
   const repository = String(context?.repository?.name || context?.repository?.id || "the repository").trim();
   const pullRequestId = Number.isInteger(context?.pullRequest?.id) ? `PR #${context!.pullRequest!.id}` : null;
   // PR-controlled title/description content is intentionally excluded from
   // the system instruction; it is untrusted review data.
 
+  if (!pullRequestId && hasReviewGit && !draftOnlyReview) {
+    // A quickfix branch without a pull request still has the Git tools: the briefing must reach the agent.
+    return [
+      "You are working inside a strIDEterm quickfix workspace that has no pull request yet.",
+      "The review comment tools activate once a pull request is created.",
+      "For now, focus on implementing and committing your changes.",
+      buildReviewGitPolicy({ askTool: "AskUserQuestion" }),
+    ].join(" ");
+  }
   if (!pullRequestId) {
     return [
       "You are working inside a strIDEterm review workspace.",
@@ -489,7 +498,14 @@ function buildClaudeLaunch({
   if (installs.length) appendClaudeMcpServers(args, mcpServers);
   else args.push("--mcp-config", JSON.stringify({ mcpServers }));
   if (initialPrompt?.trim() && draftOnlyReview) args.push("--strict-mcp-config");
-  args.push("--append-system-prompt", buildReviewPrompt(context, Boolean(initialPrompt?.trim() && draftOnlyReview)));
+  args.push(
+    "--append-system-prompt",
+    buildReviewPrompt(
+      context,
+      Boolean(initialPrompt?.trim() && draftOnlyReview),
+      Object.keys(grants.reviewGitEnv || {}).length > 0,
+    ),
+  );
   if (automaticReview) args.push("-p", initialPrompt!.trim());
   else if (initialPrompt?.trim()) args.push(initialPrompt.trim());
 
@@ -803,6 +819,7 @@ export function buildReviewAgentLaunch({
       panel,
       context,
       processInfo,
+      reviewGitEnv,
       sshMcp,
       internalMcp: draftOnlyReview ? undefined : internalMcp,
       initialPrompt,

@@ -1,12 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, test } from "vitest";
 import {
+  carryOverPrePrBaseline,
   carryOverSourceBaseline,
   fullSourceRef,
   isFullSha,
   isManagedReviewBranch,
   managedReviewBranchAlias,
   normalizeRemoteIdentity,
+  prePrGrantHolds,
+  prePrSourceIdentityKey,
   reviewSourceIdentityKey,
   sameRemote,
   sanitizePathSegment,
@@ -186,6 +189,118 @@ describe("source identity and the baseline bound to it", () => {
         "",
       );
       expect(carryOverSourceBaseline(null, review())).toBe("");
+    });
+  });
+});
+
+describe("the identity of a quickfix branch without a pull request", () => {
+  const quickfixWorkspace = (
+    quickfix: Record<string, unknown> = {},
+    reviewOverrides: Record<string, unknown> = {},
+  ) => ({
+    review: { provider: "azure-devops", prKey: "", connectionId: "conn-1", ...reviewOverrides },
+    quickfix: {
+      connectionId: "conn-1",
+      repositoryId: "Repo-1",
+      remoteUrl: "https://dev.azure.com/acme/Platform/_git/web-app",
+      branchName: "fix/login",
+      ...quickfix,
+    },
+  });
+  const pullRequest = (overrides: Record<string, unknown> = {}) => ({
+    provider: "azure-devops",
+    prKey: "conn-1:repo-1:9",
+    connectionId: "conn-1",
+    repository: { id: "repo-1", remoteUrl: "https://dev.azure.com/acme/Platform/_git/web-app.git" },
+    pullRequest: { sourceRefName: "refs/heads/fix/login" },
+    sourceRepository: null,
+    ...overrides,
+  });
+
+  test("binds provider, connection, repository and the full source ref, with a prefix no PR identity has", () => {
+    const key = prePrSourceIdentityKey(quickfixWorkspace());
+    expect(key).toBe(
+      "prepr|azure-devops|conn-1|refs/heads/fix/login|id:repo-1|url:dev.azure.com/acme/platform/_git/web-app",
+    );
+    expect(reviewSourceIdentityKey(review()).startsWith("prepr|")).toBe(false);
+  });
+
+  test.each([
+    ["no recorded branch", quickfixWorkspace({ branchName: "" })],
+    ["no connection", quickfixWorkspace({ connectionId: "" })],
+    ["a connection the review does not have", quickfixWorkspace({ connectionId: "conn-2" })],
+    ["no clone URL", quickfixWorkspace({ remoteUrl: "" })],
+    ["a pull request already", quickfixWorkspace({}, { prKey: "conn-1:repo-1:9" })],
+    ["no quickfix", { review: { provider: "azure-devops", prKey: "", connectionId: "conn-1" }, quickfix: null }],
+  ])("is empty for %s", (_label, workspace) => {
+    expect(prePrSourceIdentityKey(workspace)).toBe("");
+  });
+
+  test("a grant holds for the same quickfix and for the PR created from exactly it, and for nothing else", () => {
+    const key = prePrSourceIdentityKey(quickfixWorkspace());
+    expect(prePrGrantHolds(key, quickfixWorkspace())).toBe(true);
+    expect(prePrGrantHolds(key, quickfixWorkspace({ branchName: "other" }))).toBe(false);
+    expect(
+      prePrGrantHolds(key, quickfixWorkspace({ remoteUrl: "https://dev.azure.com/acme/Platform/_git/other" })),
+    ).toBe(false);
+    expect(prePrGrantHolds(key, { review: pullRequest(), quickfix: null })).toBe(true);
+    expect(prePrGrantHolds(key, { review: pullRequest({ connectionId: "conn-2" }), quickfix: null })).toBe(false);
+    expect(
+      prePrGrantHolds(key, {
+        review: pullRequest({ pullRequest: { sourceRefName: "refs/heads/elsewhere" } }),
+        quickfix: null,
+      }),
+    ).toBe(false);
+    expect(
+      prePrGrantHolds(key, {
+        review: pullRequest({
+          repository: { id: "repo-2", remoteUrl: "https://dev.azure.com/acme/Platform/_git/web-app" },
+        }),
+        quickfix: null,
+      }),
+    ).toBe(false);
+    // A fork is never the same repository, whatever its URL says.
+    expect(
+      prePrGrantHolds(key, {
+        review: pullRequest({
+          sourceRepository: { sameAsTarget: false, remoteUrl: "https://dev.azure.com/acme/Platform/_git/web-app" },
+        }),
+        quickfix: null,
+      }),
+    ).toBe(false);
+    expect(prePrGrantHolds("github|conn-1|k|refs/heads/x|id:1", quickfixWorkspace())).toBe(false);
+    expect(prePrGrantHolds("", quickfixWorkspace())).toBe(false);
+  });
+
+  describe("carryOverPrePrBaseline", () => {
+    const withBaseline = (overrides: Record<string, unknown> = {}) =>
+      quickfixWorkspace({ sourceBaselineSha: SHA, ...overrides });
+
+    test("keeps the baseline for a PR with the same connection, repository and source ref", () => {
+      expect(carryOverPrePrBaseline(withBaseline(), pullRequest())).toBe(SHA);
+    });
+
+    test.each([
+      ["another source ref", pullRequest({ pullRequest: { sourceRefName: "refs/heads/elsewhere" } })],
+      ["another connection", pullRequest({ connectionId: "conn-2" })],
+      [
+        "another repository",
+        pullRequest({ repository: { id: "repo-2", remoteUrl: "https://dev.azure.com/acme/Platform/_git/web-app" } }),
+      ],
+      [
+        "a fork",
+        pullRequest({ sourceRepository: { sameAsTarget: false, remoteUrl: "https://example.invalid/fork.git" } }),
+      ],
+      ["no PR key", pullRequest({ prKey: "" })],
+    ])("drops it for %s", (_label, next) => {
+      expect(carryOverPrePrBaseline(withBaseline(), next)).toBe("");
+    });
+
+    test("nothing is invented: no baseline, a malformed one, or no identity yields none", () => {
+      expect(carryOverPrePrBaseline(quickfixWorkspace(), pullRequest())).toBe("");
+      expect(carryOverPrePrBaseline(withBaseline({ sourceBaselineSha: "not-a-sha" }), pullRequest())).toBe("");
+      expect(carryOverPrePrBaseline(withBaseline({ branchName: "" }), pullRequest())).toBe("");
+      expect(carryOverPrePrBaseline(null, pullRequest())).toBe("");
     });
   });
 });

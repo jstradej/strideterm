@@ -1,7 +1,11 @@
 import type { ReviewCheckout, ReviewSourceRepository } from "../../shared/types/state.js";
 import type { CommitSummary } from "./inspect.js";
 
-/** Everything the engine needs to know about one PR-linked checkout. */
+/**
+ * Everything the engine needs to know about one checkout: a PR-linked one, or a
+ * quickfix branch that has no pull request yet (`prePr`, empty `prKey`, source
+ * and target repository the same one).
+ */
 export interface ReviewGitSubject {
   workspaceId: string;
   profileId: string;
@@ -9,6 +13,10 @@ export interface ReviewGitSubject {
   provider: string;
   connectionId: string;
   prKey: string;
+  /** True for a quickfix branch without a pull request: the only expected local branch is `sourceRefName`. */
+  prePr?: boolean;
+  /** The pre-PR identity the baseline is bound to (`prePrSourceIdentityKey`); only set when `prePr`. */
+  identityKey?: string;
   prId: string | number;
   role: string;
   sourceRefName: string;
@@ -41,6 +49,7 @@ export type ReviewGitBlockCode =
   | "dirty-tree"
   | "operation-in-progress"
   | "source-ref-deleted"
+  | "branch-not-published"
   | "source-unverified"
   | "source-identity-changed"
   | "pull-request-closed"

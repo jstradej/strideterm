@@ -322,7 +322,7 @@ import { initLogger, getLogger, setLogLevel, reconfigureLogger, createAuditLogge
 import type { Logger } from "./logger.js";
 import { createRuntimeAttentionManager } from "./runtime-attention.js";
 import type { AppState, WorkspaceState } from "../shared/types/state.js";
-import { carryOverSourceBaseline } from "../shared/review-source-identity.js";
+import { carryOverSourceBaseline, prePrSourceIdentityKey } from "../shared/review-source-identity.js";
 import { reviewAgentPreparationStopSchema } from "./ipc-schemas.js";
 import type { ReviewGitStart, StartReviewAgentPreparation, ReviewPrActionConfirm } from "./ipc-schemas.js";
 import { formatWorkspaceDisplayName } from "../shared/workspace-display.js";
@@ -1325,7 +1325,10 @@ export async function createRuntime({
           // identity and tab. Never the remote master token, never a provider PAT.
           const reviewAgent = detectReviewAgentPanel(panelState);
           const reviewPrKey = workspace!.review!.prKey;
-          if (!pendingReview && reviewGitBroker && reviewAgent && reviewPrKey) {
+          // A quickfix branch without a PR gets the same tools, bound to its recorded connection,
+          // repository and branch instead of a PR; one without a recorded branch gets none.
+          const prePrIdentity = reviewPrKey ? "" : prePrSourceIdentityKey(workspace);
+          if (!pendingReview && reviewGitBroker && reviewAgent && (reviewPrKey || prePrIdentity)) {
             const grant = reviewGitBroker.mintGrant({
               sessionId,
               profileId: String(workspace!.profileId || "default"),
@@ -12281,6 +12284,26 @@ export async function createRuntime({
             if (baseline) normalized.review.sourceBaselineSha = baseline;
             else delete normalized.review.sourceBaselineSha;
           }
+          // The same holds for a quickfix branch that has no PR yet: its repository, base branch, recorded
+          // branch and baseline are what the Git tools bind to, and a client copy must not retarget them.
+          const priorQuickfix = draft.workspaces[index]?.quickfix;
+          if (normalized.quickfix) {
+            if (priorQuickfix) {
+              normalized.quickfix = {
+                ...normalized.quickfix,
+                connectionId: priorQuickfix.connectionId,
+                repositoryId: priorQuickfix.repositoryId,
+                repositoryName: priorQuickfix.repositoryName,
+                remoteUrl: priorQuickfix.remoteUrl,
+                baseBranch: priorQuickfix.baseBranch,
+                branchName: priorQuickfix.branchName,
+                sourceBaselineSha: priorQuickfix.sourceBaselineSha,
+              };
+            } else {
+              normalized.quickfix.branchName = "";
+              delete normalized.quickfix.sourceBaselineSha;
+            }
+          }
           // Jira bodies and agent drafts are not in the payload the renderer receives (stripJiraPrivatePayload),
           // so a saved copy of the workspace cannot carry them: what is stored stays.
           const priorStored = draft.workspaces[index];
@@ -12305,6 +12328,10 @@ export async function createRuntime({
             normalized.review.repository = null;
             normalized.review.sourceRepository = null;
             delete normalized.review.sourceBaselineSha;
+          }
+          if (normalized.quickfix && !options.runtimeOwned) {
+            normalized.quickfix.branchName = "";
+            delete normalized.quickfix.sourceBaselineSha;
           }
           if (normalized.task && !options.runtimeOwned) {
             delete normalized.task.jiraPreparedSnapshot;

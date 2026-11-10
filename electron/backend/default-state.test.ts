@@ -633,6 +633,28 @@ describe("default state", () => {
     expect(workspace.review!.sourceBaselineSha).toBeUndefined();
   });
 
+  test("normalizeWorkspace keeps a quickfix's recorded branch and valid baseline, and leaves an older quickfix without them", () => {
+    const base = {
+      id: "qf-1",
+      name: "fix/login",
+      cwd: "C:/work/qf",
+      panels: [{ id: "shell", title: "Shell", command: "" }],
+    };
+    const quickfix = { connectionId: "conn-1", remoteUrl: "https://example.com/r.git", baseBranch: "main" };
+    const recorded = normalizeWorkspace({
+      ...base,
+      quickfix: { ...quickfix, branchName: " fix/login ", sourceBaselineSha: "A".repeat(40) },
+    });
+    expect(recorded.quickfix).toMatchObject({ branchName: "fix/login", sourceBaselineSha: "a".repeat(40) });
+
+    const older = normalizeWorkspace({ ...base, quickfix });
+    expect(older.quickfix!.branchName).toBe("");
+    expect(older.quickfix!.sourceBaselineSha).toBeUndefined();
+    expect(
+      normalizeWorkspace({ ...base, quickfix: { ...quickfix, sourceBaselineSha: "nope" } }).quickfix!.sourceBaselineSha,
+    ).toBeUndefined();
+  });
+
   test("normalizeState preserves Azure connection config", () => {
     const state = normalizeState({
       settings: {

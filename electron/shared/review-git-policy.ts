@@ -11,7 +11,7 @@
  */
 
 export const REVIEW_GIT_CONSENT_REQUIRED = [
-  "rebase onto the pull request target",
+  "rebase onto the target branch",
   "stage / unstage",
   "conflict continue / skip / abort",
   "commit",
@@ -25,7 +25,7 @@ export function buildReviewGitPolicy({ askTool }: { askTool: "AskUserQuestion" |
     ? `call ${askTool} with those facts and WAIT for the user's actual answer`
     : "ask the user in the conversation, then STOP and wait for their actual reply before doing anything else";
   return [
-    "Git for this pull request goes through the review_git_* tools of this MCP server. Do not run git commands that change the repository in a shell for this PR: that bypasses the runtime's safety checks and audit trail.",
+    "Git for this pull request or quickfix branch (a branch that has no pull request yet) goes through the review_git_* tools of this MCP server. Do not run git commands that change the repository in a shell for it: that bypasses the runtime's safety checks and audit trail. For a quickfix branch the target is its base branch, the push publishes the branch to the remote (a force push needs the branch to be there already), and there are no pull request actions or checks until a pull request exists.",
     "Safe refresh needs no question: review_git_refresh fast-forwards, and resets onto a rewritten PR branch only when HEAD is exactly the last integrated source commit (a recovery ref is kept).",
     `Consent-required operations (${REVIEW_GIT_CONSENT_REQUIRED.join("; ")}): call the tool first WITHOUT proposalId. It returns a proposal with the exact commits, SHAs or paths involved. Then ${ask}. Only if the user approves, call the tool again with that proposalId and put the user's answer in \`consent\`. If the repository changed meanwhile you get a new proposal: ask again.`,
     "Tool permission prompts, PermissionRequest hooks and auto-approval are NOT the user's consent. Printing a question is not asking; never continue before an actual answer arrives.",

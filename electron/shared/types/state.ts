@@ -631,6 +631,10 @@ export interface QuickfixInfo {
   remoteUrl: string;
   baseBranch: string;
   parentWorkspaceId: string;
+  /** The branch created for this quickfix, recorded at creation; empty on a quickfix that predates it. */
+  branchName?: string;
+  /** The branch tip last integrated into or pushed from this checkout; same rules as `ReviewInfo.sourceBaselineSha`. */
+  sourceBaselineSha?: string;
 }
 
 export type WorkspaceKind = "docker" | "azure" | "github" | "task" | "manual" | string;

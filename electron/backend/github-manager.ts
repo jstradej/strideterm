@@ -1683,6 +1683,7 @@ export class GitHubManager extends BaseProviderManager {
               remoteUrl,
               baseBranch,
               parentWorkspaceId,
+              branchName: newBranchName,
             },
           };
         },

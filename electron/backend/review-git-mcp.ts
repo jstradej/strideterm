@@ -303,7 +303,7 @@ export function registerReviewGitTools(
     {
       title: "Review Git: identity",
       description:
-        "Which pull request, source repository/branch, target branch and local branches this review checkout is bound to, plus the persisted source baseline (the PR source commit last integrated or pushed). Start here.",
+        "Which pull request (or quickfix branch without a pull request yet), source repository/branch, target branch and local branches this checkout is bound to, plus the persisted source baseline (the source commit last integrated or pushed). Start here.",
       inputSchema: {},
     },
     async (_input, extra) => read({ operation: "identity" }, extra.signal),
@@ -313,7 +313,7 @@ export function registerReviewGitTools(
     {
       title: "Review Git: status",
       description:
-        "HEAD, current branch, whether it is the pull request's branch, staged/unstaged/untracked/conflicted counts and paths, any rebase/merge/cherry-pick/revert in progress. Read-only and always allowed, even while an operation is paused on conflicts.",
+        "HEAD, current branch, whether it is the pull request's (or quickfix) branch, staged/unstaged/untracked/conflicted counts and paths, any rebase/merge/cherry-pick/revert in progress. Read-only and always allowed, even while an operation is paused on conflicts.",
       inputSchema: {},
     },
     async (_input, extra) => read({ operation: "status" }, extra.signal),
@@ -368,7 +368,8 @@ export function registerReviewGitTools(
     "review_git_checks",
     {
       title: "Review Git: pull request checks",
-      description: "Read-only CI / check summary of the pull request from the last provider sync.",
+      description:
+        "Read-only CI / check summary of the pull request from the last provider sync (none while a quickfix branch has no pull request).",
       inputSchema: {},
     },
     async (_input, extra) => read({ operation: "checks" }, extra.signal),
@@ -483,7 +484,7 @@ export function registerReviewGitTools(
     {
       title: "Review Git: refresh",
       description:
-        "Bring the checkout up to the pull request's live source commit. The exact live SHA is pinned. Fast-forwards automatically; resets onto a rewritten PR branch automatically ONLY when HEAD is exactly the last integrated source commit, the tree is clean and no operation is active (a recovery ref is created first). If commits would be discarded it returns a proposal instead." +
+        "Bring the checkout up to the live source commit of the pull request's (or quickfix) branch. The exact live SHA is pinned. Fast-forwards automatically; resets onto a rewritten PR branch automatically ONLY when HEAD is exactly the last integrated source commit, the tree is clean and no operation is active (a recovery ref is created first). If commits would be discarded it returns a proposal instead." +
         REFRESH_NOTE,
       inputSchema: { ...proposalFields },
     },
@@ -504,7 +505,7 @@ export function registerReviewGitTools(
     "review_git_rebase",
     "rebase",
     "Review Git: rebase onto the target branch",
-    "Rebase the local branch onto the pull request's TARGET branch (the target SHA is pinned). Rewrites local history only; it never pushes and never changes the source baseline.",
+    "Rebase the local branch onto the TARGET branch: the pull request's, or the base branch of a quickfix (the target SHA is pinned). Rewrites local history only; it never pushes and never changes the source baseline.",
   );
   mutation(
     "review_git_stage",
@@ -549,13 +550,13 @@ export function registerReviewGitTools(
     "review_git_push",
     "push",
     "Review Git: push",
-    "Push HEAD to the pull request's SOURCE branch in the verified source repository. Allowed only when it fast-forwards the live source branch. Never publishes queued draft comments.",
+    "Push HEAD to the pull request's SOURCE branch (or the quickfix branch) in the verified source repository. Allowed only when it fast-forwards the live source branch; for a quickfix branch that is not on the remote yet it publishes it. Never publishes queued draft comments.",
   );
   mutation(
     "review_git_force_push",
     "force-push",
     "Review Git: force push",
-    "Force push HEAD over the pull request's source branch using a lease on the exact live SHA. A lease rejection is reported and never retried automatically.",
+    "Force push HEAD over the pull request's source branch (or the quickfix branch) using a lease on the exact live SHA; refused while the branch is not on the remote (use push). A lease rejection is reported and never retried automatically.",
   );
 
   server.registerTool(
