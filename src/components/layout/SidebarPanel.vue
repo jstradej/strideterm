@@ -84,7 +84,7 @@
           :title="recentCollapsed ? 'Expand recently worked' : 'Collapse recently worked'"
           @click="recentCollapsed = !recentCollapsed"
         >
-          <span class="recent-shortcuts__caret" aria-hidden="true">{{ recentCollapsed ? "▸" : "▾" }}</span>
+          <span :class="['disclosure-chevron', !recentCollapsed && 'disclosure-chevron--open']" aria-hidden="true" />
           <span>Recently worked · 24h ({{ recentTotal }})</span>
         </button>
       </p>

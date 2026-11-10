@@ -64,8 +64,14 @@
                 ? 'Collapse this connection — close the inline editor and return to the connection list view.'
                 : 'Expand this connection to edit its bot token, chat ID, poll interval, notification forwarding, and alert filter.'
             "
-            >{{ editingId === conn.id ? "▲" : "▼" }}</span
-          >
+            ><span
+              :class="[
+                'disclosure-chevron',
+                'disclosure-chevron--down',
+                editingId === conn.id && 'disclosure-chevron--open',
+              ]"
+              aria-hidden="true"
+          /></span>
         </div>
         <div v-if="editingId === conn.id" class="connection-form">
           <ConnectionForm
@@ -885,7 +891,7 @@ export const ConnectionForm = defineComponent({
 }
 
 .connection-item__chevron {
-  font-size: 10px;
+  display: inline-flex;
   color: var(--muted);
 }
 

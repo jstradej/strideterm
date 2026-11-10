@@ -325,7 +325,10 @@
               :aria-expanded="preparationExpanded"
               @click="preparationExpanded = !preparationExpanded"
             >
-              <span aria-hidden="true">{{ preparationExpanded ? "▾" : "▸" }}</span>
+              <span
+                :class="['disclosure-chevron', preparationExpanded && 'disclosure-chevron--open']"
+                aria-hidden="true"
+              />
               Prepare an agent for review checkouts
             </button>
           </h3>

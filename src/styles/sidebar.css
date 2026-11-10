@@ -681,11 +681,6 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   color: var(--accent);
 }
 
-.remote-compact__caret-glyph {
-  display: inline-block;
-  transform: translateY(-1px);
-}
-
 .remote-compact__qr-thumb {
   display: inline-flex;
   align-items: center;
@@ -2092,12 +2087,6 @@ a.workspace-card__jira-chip:hover {
 
 .recent-shortcuts__toggle:hover {
   color: var(--text);
-}
-
-.recent-shortcuts__caret {
-  display: inline-block;
-  width: 8px;
-  flex-shrink: 0;
 }
 
 .recent-shortcuts__all-title {

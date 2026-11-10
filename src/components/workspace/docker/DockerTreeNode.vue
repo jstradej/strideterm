@@ -15,7 +15,7 @@
     >
       <!-- Expand toggle -->
       <span v-if="hasChildren" class="tree-node__toggle" @click.stop="emit('toggle', node.id)">
-        {{ isExpanded ? "▼" : "▶" }}
+        <span :class="['disclosure-chevron', isExpanded && 'disclosure-chevron--open']" aria-hidden="true" />
       </span>
       <span v-else class="tree-node__toggle tree-node__toggle--leaf" />
 
@@ -177,7 +177,6 @@ function onKeyDown(e: KeyboardEvent): void {
   }
   .tree-node__toggle {
     width: 22px;
-    font-size: 11px;
   }
   .tree-node__label {
     font-size: 14px;
@@ -197,12 +196,12 @@ function onKeyDown(e: KeyboardEvent): void {
 }
 
 .tree-node__toggle {
-  width: 14px;
-  font-size: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
   color: var(--text-dim, #888);
   flex-shrink: 0;
-  text-align: center;
-  line-height: 1;
 }
 .tree-node__toggle--leaf {
   pointer-events: none;

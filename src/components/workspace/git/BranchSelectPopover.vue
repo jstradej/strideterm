@@ -47,9 +47,9 @@
               @mouseenter="activeIndex = idx"
             >
               <span class="branch-picker__indent" :style="indentStyle(row.depth)" />
-              <span v-if="row.isFolder" class="branch-picker__toggle" @mousedown.stop.prevent="toggleFolder(row.key)">{{
-                row.expanded ? "▾" : "▸"
-              }}</span>
+              <span v-if="row.isFolder" class="branch-picker__toggle" @mousedown.stop.prevent="toggleFolder(row.key)">
+                <span :class="['disclosure-chevron', row.expanded && 'disclosure-chevron--open']" aria-hidden="true" />
+              </span>
               <span v-else class="branch-picker__toggle branch-picker__toggle--leaf" />
               <span :class="['branch-picker__icon', `branch-picker__icon--${row.iconKind}`]">{{ row.icon }}</span>
               <span class="branch-picker__label" :title="row.title">{{ row.label }}</span>
@@ -646,11 +646,12 @@ defineExpose({ focus: (): void => buttonRef.value?.focus() });
   flex: 0 0 auto;
 }
 .branch-picker__toggle {
-  flex: 0 0 12px;
-  width: 12px;
-  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 16px;
+  width: 16px;
   color: var(--muted);
-  font-size: 10px;
 }
 .branch-picker__toggle--leaf {
   visibility: hidden;

@@ -325,3 +325,32 @@ html.native-keyboard-viewport #app {
   --strideterm-keyboard-bottom: 0px;
   --strideterm-keyboard-pan: 0px;
 }
+
+/* Expand/collapse chevron shared by every tree, section and disclosure toggle.
+   A mask (not a glyph) so it renders at the same weight in every font, and so
+   a details > summary::after can use it too. Points right; --open turns it
+   down. The --down variant is for trailing toggles: down, up when open. */
+:root {
+  --disclosure-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4 2.5 3.5 3.5L4 9.5'/%3E%3C/svg%3E");
+}
+
+.disclosure-chevron {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  vertical-align: middle;
+  background-color: currentColor;
+  -webkit-mask: var(--disclosure-chevron) center / contain no-repeat;
+  mask: var(--disclosure-chevron) center / contain no-repeat;
+  transition: transform 120ms ease;
+}
+
+.disclosure-chevron--open,
+.disclosure-chevron--down {
+  transform: rotate(90deg);
+}
+
+.disclosure-chevron--down.disclosure-chevron--open {
+  transform: rotate(-90deg);
+}

@@ -25,7 +25,10 @@
         @click="filtersOpen = !filtersOpen"
       >
         Filters<span v-if="activeFilterCount" class="git-history-picker__toggle-count">{{ activeFilterCount }}</span>
-        <span aria-hidden="true">{{ filtersOpen ? "▴" : "▾" }}</span>
+        <span
+          :class="['disclosure-chevron', 'disclosure-chevron--down', filtersOpen && 'disclosure-chevron--open']"
+          aria-hidden="true"
+        />
       </button>
       <div
         v-if="!isMobile || filtersOpen"

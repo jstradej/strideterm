@@ -724,11 +724,19 @@
   white-space: nowrap;
 }
 .jira-inbox .jira-board-filter-details > summary:not(:where(.jira-project-scope-picker) *)::after {
-  content: "▾";
+  content: "";
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  background-color: currentColor;
+  -webkit-mask: var(--disclosure-chevron) center / contain no-repeat;
+  mask: var(--disclosure-chevron) center / contain no-repeat;
   color: var(--muted);
+  transform: rotate(90deg);
+  transition: transform 120ms ease;
 }
 .jira-inbox .jira-board-filter-details[open] > summary:not(:where(.jira-project-scope-picker) *)::after {
-  content: "▴";
+  transform: rotate(-90deg);
 }
 .jira-inbox .jira-board-filter-count {
   color: var(--muted);
@@ -3321,11 +3329,19 @@
   display: none;
 }
 .jira-inbox .jira-detail-sidebar > summary::after {
-  content: "▾";
+  content: "";
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  background-color: currentColor;
+  -webkit-mask: var(--disclosure-chevron) center / contain no-repeat;
+  mask: var(--disclosure-chevron) center / contain no-repeat;
   color: var(--muted);
+  transform: rotate(90deg);
+  transition: transform 120ms ease;
 }
 .jira-inbox .jira-detail-sidebar[open] > summary::after {
-  content: "▴";
+  transform: rotate(-90deg);
 }
 .jira-inbox .jira-detail-sidebar dl {
   display: grid;

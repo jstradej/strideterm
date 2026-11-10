@@ -8,7 +8,7 @@
         :title="expanded ? 'Hide files and quick actions' : 'Show the files in this stash and quick actions'"
         @click.stop="emit('toggle')"
       >
-        {{ expanded ? "▾" : "▸" }}
+        <span :class="['disclosure-chevron', expanded && 'disclosure-chevron--open']" aria-hidden="true" />
       </button>
       <div class="stash-item__main">
         <div class="stash-item__head">
@@ -169,9 +169,9 @@ function run(action: "apply" | "pop" | "drop" | "branch" | "export" | "copy") {
   border: none;
   color: var(--muted);
   cursor: pointer;
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
   padding: 0 2px;
-  line-height: 1.4;
 }
 
 .stash-item__main {

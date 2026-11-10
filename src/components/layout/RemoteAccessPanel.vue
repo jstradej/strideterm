@@ -20,7 +20,7 @@
         "
         @click="toggleQr"
       >
-        <span class="remote-compact__caret-glyph" aria-hidden="true">{{ qrOpen ? "▾" : "▸" }}</span>
+        <span :class="['disclosure-chevron', qrOpen && 'disclosure-chevron--open']" aria-hidden="true" />
       </button>
       <button
         v-if="qrDataUrl"

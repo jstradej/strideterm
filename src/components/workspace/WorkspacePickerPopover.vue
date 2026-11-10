@@ -20,7 +20,10 @@
               :title="collapsed.has(node.id) ? 'Expand' : 'Collapse'"
               @click.stop="toggleCollapse(node.id)"
             >
-              {{ collapsed.has(node.id) ? "▶" : "▼" }}
+              <span
+                :class="['disclosure-chevron', !collapsed.has(node.id) && 'disclosure-chevron--open']"
+                aria-hidden="true"
+              />
             </button>
             <span v-else class="ws-picker__chevron ws-picker__chevron--placeholder"></span>
             <button

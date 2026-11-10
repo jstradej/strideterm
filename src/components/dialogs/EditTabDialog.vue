@@ -1091,7 +1091,13 @@ async function handleSubmit() {
   display: none;
 }
 .advanced-options > summary::after {
-  content: "▸";
+  content: "";
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  background-color: currentColor;
+  -webkit-mask: var(--disclosure-chevron) center / contain no-repeat;
+  mask: var(--disclosure-chevron) center / contain no-repeat;
   margin-left: auto;
   color: var(--muted);
   transition: transform 0.15s ease;

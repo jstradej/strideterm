@@ -8,7 +8,10 @@
     <button type="button" class="workspace-attachments__toggle" :aria-expanded="open" @click="toggle">
       <span>Attachments</span>
       <span v-if="open || attachments.length" class="workspace-attachments__count">{{ attachments.length }}</span>
-      <span aria-hidden="true">{{ open ? "▴" : "▾" }}</span>
+      <span
+        :class="['disclosure-chevron', 'disclosure-chevron--down', open && 'disclosure-chevron--open']"
+        aria-hidden="true"
+      />
     </button>
     <div v-if="open" class="workspace-attachments__body">
       <div class="workspace-attachments__toolbar approvals__toolbar">

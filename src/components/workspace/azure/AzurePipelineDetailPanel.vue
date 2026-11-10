@@ -49,7 +49,10 @@
             title="Show this run's stages and errors."
             @click="toggleRun(run)"
           >
-            <span class="azure-pl-run__caret" aria-hidden="true">{{ isRunOpen(run.id) ? "▾" : "▸" }}</span>
+            <span
+              :class="['azure-pl-run__caret', 'disclosure-chevron', isRunOpen(run.id) && 'disclosure-chevron--open']"
+              aria-hidden="true"
+            />
             <span
               v-if="runVisual(run).cls === 'running'"
               class="azure-pl-spinner"
@@ -469,8 +472,6 @@ function openUrl(url?: string) {
 }
 .azure-pl-run__caret {
   color: var(--text-muted, #888);
-  font-size: 10px;
-  text-align: center;
 }
 .azure-pl-run--open .azure-pl-run__caret {
   color: var(--accent, #3b82f6);
