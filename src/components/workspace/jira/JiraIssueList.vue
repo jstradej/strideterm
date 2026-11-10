@@ -1,6 +1,8 @@
 <template>
+  <!-- A sprint board with an issue open shows only its detail. The Issues view always shows its
+       results, even while the Board tab (which shares this pane's state) has a sprint picked. -->
   <section
-    v-if="!(boardId && boardMode === 'sprints' && selectedSprintId)"
+    v-if="activeView === 'issues' || !(boardId && boardMode === 'sprints' && selectedSprintId)"
     ref="jiraResultsRef"
     class="jira-results"
     tabindex="-1"
@@ -227,6 +229,7 @@ import { useJiraPaneContext } from "./pane/jira-pane-context.js";
 import { useJiraFilterSheetMode } from "./pane/useJiraFilterSheetMode.js";
 
 const {
+  activeView,
   applyIssueSort,
   boardId,
   boardMode,

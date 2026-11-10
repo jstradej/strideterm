@@ -16,6 +16,7 @@ export function useJiraPaneUi(ctx: JiraPaneContext) {
     issuePreviewVisible,
     jiraRootRef,
     jiraViewId,
+    workspaceViewRestoredId,
     loadBoards,
     props,
     store,
@@ -126,12 +127,18 @@ export function useJiraPaneUi(ctx: JiraPaneContext) {
       }
     })();
   }
-  /** The header's Jira search hands its text over here to show every result; it searches what the header searched. */
+  /**
+   * The header's Jira search hands its text over here to show every result; it searches what the header searched.
+   * Only the Issues tab takes it: a saved board tab that happened to be on screen used to consume the request
+   * before the switch to Issues, which then restored its last sub-view (often the board) with no search at all.
+   */
   function runRequestedJiraSearch() {
     const request = store.jiraSearchRequest;
     if (
       !request ||
       request.workspaceId !== props.workspaceId ||
+      jiraViewId.value !== "issues" ||
+      workspaceViewRestoredId.value !== "issues" ||
       ctx.connectionsOnly.value ||
       request.sequence <= vars.lastHandledSearchSequence ||
       !connectionsLoaded.value ||

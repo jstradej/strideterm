@@ -176,6 +176,7 @@ export function useJiraPaneLifecycle(ctx: JiraPaneContext) {
     () => [
       store.jiraSearchRequest?.sequence,
       props.workspaceId,
+      workspaceViewRestoredId.value,
       connectionsLoaded.value,
       connectionsLoading.value,
       ctx.issuesLoading.value,

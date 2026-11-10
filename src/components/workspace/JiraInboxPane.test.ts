@@ -2349,6 +2349,172 @@ describe("JiraInboxPane", () => {
     wrapper.unmount();
   });
 
+  test("a saved board tab leaves the header's search to the Issues tab", async () => {
+    mockStoreState.transportApi = transport;
+    mockStoreState.payload = reactive({
+      appState: {
+        activeProfileId: "default",
+        workspaces: [{ id: "jira:ws", name: "Jira inbox", kind: "jira", profileId: "default" }],
+      },
+    });
+    const savedView = {
+      viewId: "saved-board-42",
+      kind: "board" as const,
+      connectionId: "jira-1",
+      boardId: 42,
+      boardName: "Engineering board",
+      title: "Engineering board",
+      mode: "issues" as const,
+      sprintId: null,
+      quickFilterIds: [],
+      assignee: null,
+      doneWithinDays: 14 as const,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const state = {
+      workspaceId: "jira:ws",
+      profileId: "default",
+      views: [{ viewId: "issues", kind: "issues", title: "Issues" }, savedView],
+      activeViewId: savedView.viewId,
+      syncByViewId: {},
+    };
+    transport.getJiraWorkspaceViews.mockResolvedValue(state);
+    transport.setJiraWorkspaceActiveView.mockResolvedValue(state);
+    transport.getJiraBoardView.mockResolvedValue({
+      issues: [],
+      columns: [{ name: "To Do", statuses: [{ id: "1", name: "Open" }] }],
+      cache: { source: "cache", fetchedAt: Date.now(), stale: false },
+    });
+    const JiraPaneHost = defineComponent({
+      props: {
+        workspaceId: { type: String, required: true },
+        jiraViewId: { type: String, required: true },
+      },
+      setup(props) {
+        return () => h(JiraInboxPane, { workspaceId: props.workspaceId, jiraViewId: props.jiraViewId });
+      },
+    });
+    // The Issues tab last showed its board, after a search of its own.
+    writeJiraViewPreferences("default", "jira:ws", { activeView: "board" }, localStorage);
+    writeLastJiraSearch(
+      "default",
+      "jira:ws",
+      { connectionId: "jira-1", jql: "project = ENG", kind: "jql", label: null, filterId: null },
+      localStorage,
+    );
+    const watcherIssue = {
+      ref: { provider: "jira" as const, connectionId: "jira-1", issueId: "77", issueKey: "ENG-77" },
+      summary: "Watcher alerts are late",
+    };
+    transport.searchJiraIssues.mockImplementation(async ({ jql }: { jql: string }) => ({
+      issues: jql === 'text ~ "watcher" ORDER BY updated DESC' ? [watcherIssue] : [],
+      cache: { source: "network", fetchedAt: Date.now(), stale: false },
+    }));
+    // The header asks while a saved board tab is the one on screen.
+    mockStoreState.jiraSearchRequest = { workspaceId: "jira:ws", text: "watcher", sequence: 1 };
+    const wrapper = mount(JiraPaneHost, { props: { workspaceId: "jira:ws", jiraViewId: savedView.viewId } });
+    await flushPromises();
+    const searchedWatcher = () =>
+      transport.searchJiraIssues.mock.calls.some(
+        ([request]) => (request as { jql?: string } | undefined)?.jql === 'text ~ "watcher" ORDER BY updated DESC',
+      );
+    expect(searchedWatcher()).toBe(false);
+    expect(mockStoreState.jiraSearchRequest).not.toBeNull();
+
+    await wrapper.setProps({ jiraViewId: "issues" });
+    await flushPromises();
+    expect(searchedWatcher()).toBe(true);
+    expect((wrapper.find(".jira-quick-search input").element as HTMLInputElement).value).toBe("watcher");
+    expect(wrapper.text()).toContain("Watcher alerts are late");
+    expect(mockStoreState.jiraSearchRequest).toBeNull();
+    wrapper.unmount();
+  });
+
+  test("the Issues view shows its results while the Board tab has a sprint picked", async () => {
+    mockStoreState.transportApi = transport;
+    mockStoreState.payload = reactive({
+      appState: {
+        activeProfileId: "default",
+        workspaces: [{ id: "jira:ws", name: "Jira inbox", kind: "jira", profileId: "default" }],
+      },
+    });
+    writeJiraViewPreferences(
+      "default",
+      "jira:ws",
+      {
+        connectionId: "jira-1",
+        boardId: "42",
+        boardName: "Engineering board",
+        boardType: "scrum",
+        boardMode: "sprints",
+        selectedSprintId: "7",
+        activeView: "issues",
+      },
+      localStorage,
+    );
+    transport.listJiraBoards.mockResolvedValue([{ id: 42, name: "Engineering board", type: "scrum" }]);
+    transport.searchJiraIssues.mockImplementation(async ({ jql }: { jql: string }) => ({
+      issues:
+        jql === 'text ~ "watcher" ORDER BY updated DESC'
+          ? [
+              {
+                ref: { provider: "jira" as const, connectionId: "jira-1", issueId: "77", issueKey: "ENG-77" },
+                summary: "Watcher alerts are late",
+              },
+            ]
+          : [],
+      cache: { source: "network", fetchedAt: Date.now(), stale: false },
+    }));
+    const wrapper = mount(JiraInboxPane, { props: { workspaceId: "jira:ws", jiraViewId: "issues" } });
+    await flushPromises();
+
+    await wrapper.find(".jira-quick-search input").setValue("watcher");
+    await wrapper.find(".jira-quick-search").trigger("submit");
+    await flushPromises();
+
+    expect(wrapper.find(".jira-results").exists()).toBe(true);
+    expect(wrapper.text()).toContain("Watcher alerts are late");
+    wrapper.unmount();
+  });
+
+  test("with several connections the header's search runs across all of them in the Issues tab", async () => {
+    mockStoreState.transportApi = transport;
+    mockStoreState.payload = reactive({
+      appState: {
+        activeProfileId: "default",
+        workspaces: [{ id: "jira:ws", name: "Jira inbox", kind: "jira", profileId: "default" }],
+      },
+    });
+    transport.listJiraConnections.mockResolvedValue([
+      { id: "jira-1", label: "Engineering", deployment: "cloud", webUrl: "https://one.example" },
+      { id: "jira-2", label: "Operations", deployment: "cloud", webUrl: "https://two.example" },
+    ]);
+    writeJiraViewPreferences("default", "jira:ws", { activeView: "board", connectionId: "jira-1" }, localStorage);
+    transport.searchJiraIssues.mockImplementation(
+      async ({ connectionId, jql }: { connectionId: string; jql: string }) => ({
+        issues:
+          jql === 'text ~ "watcher" ORDER BY updated DESC'
+            ? [
+                {
+                  ref: { provider: "jira" as const, connectionId, issueId: `${connectionId}-7`, issueKey: "OPS-7" },
+                  summary: `Watcher on ${connectionId}`,
+                },
+              ]
+            : [],
+        cache: { source: "network", fetchedAt: Date.now(), stale: false },
+      }),
+    );
+    mockStoreState.jiraSearchRequest = { workspaceId: "jira:ws", text: "watcher", sequence: 1 };
+    const wrapper = mount(JiraInboxPane, { props: { workspaceId: "jira:ws", jiraViewId: "issues" } });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Watcher on jira-1");
+    expect(wrapper.text()).toContain("Watcher on jira-2");
+    expect(mockStoreState.jiraSearchRequest).toBeNull();
+    wrapper.unmount();
+  });
+
   test("restores a saved assignee chip without loading an unfiltered board from Jira", async () => {
     mockStoreState.transportApi = transport;
     mockStoreState.payload = reactive({
