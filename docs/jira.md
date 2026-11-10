@@ -25,6 +25,8 @@ The **Inbox** tab has **Issues**, **Board** and **Settings** views.
 - **Views**: this menu opens **My issues**, recent searches, your Jira favorites and saved queries. Open any of them as its own tab; the tab keeps its filters.
 - **Board**: pick a Jira board to see its columns by status. Switch between **Sprint**, **Backlog** and **All issues**, and choose how far back **Completed issues** go. **Board filters** holds the board's quick filters, **My issues** and a search over any Jira user. A saved view has **Filter by issue status**, and the **My issues** view has **Issue scope** to show open issues only or all of them.
 
+The workspace header also has a Jira search: type an issue key to open it, or words to see the newest matches. Next to it, two counters show your open issues in **To Do** and **In Progress** (the same issues as **My issues**, so your Jira user must be set). Click a counter to list them; the list says how old the numbers are and has **Refresh**.
+
 Select an issue to open its detail with description, comments, attachments, status and linked work.
 
 ## Work on an issue

@@ -55,6 +55,7 @@ import {
   jiraOwnIssuesQueryDtoSchema,
   jiraWriteConfirmationDtoSchema,
   jiraSearchResultDtoSchema,
+  jiraMyIssuesDtoSchema,
   jiraRecentSearchesDtoSchema,
   jiraRecentIssuesDtoSchema,
   jiraWorkspaceProjectScopeDtoSchema,
@@ -500,6 +501,40 @@ export function createJiraHandlers(ctx: any) {
     void operation.catch((error) => {
       if (!viewSyncDisposed) log.warn("jira workspace view sync could not be scheduled", jiraErrorFields(error));
     });
+  };
+  /**
+   * The profile's open issues assigned to its verified Jira identity, per enabled connection: the same
+   * scope as the inbox's My issues. `cache-only` never reaches Jira. A connection that fails reports its
+   * code and leaves the others standing; the failure is logged once per change of code.
+   */
+  const myIssuesForProfile = async (profileId: string, refresh: "cache-only" | "if-stale" | "force") => {
+    const owned = connections().filter((connection) => connection.enabled && connection.profileId === profileId);
+    const rows = await Promise.all(
+      owned.map(async (connection) => {
+        const identity = connection.ownIdentity;
+        if (!identity || (identity.kind === "cloud" ? !identity.accountId : !identity.name)) return null;
+        const base = { connectionId: connection.id, label: connection.label };
+        try {
+          const page = await manager.searchPage(
+            connection,
+            `${ownIssuesJql(identity)} ORDER BY updated DESC`,
+            50,
+            undefined,
+            refresh === "cache-only" ? { cacheOnly: true } : { forceRefresh: refresh === "force" },
+          );
+          if (page?.cache.refreshError) throw refreshFailure(page.cache.refreshError);
+          if (page && refresh !== "cache-only") logJiraRecovered(connection.id, "my-issues");
+          return page
+            ? { ...base, issues: page.issues, hasMore: page.hasMore, cache: page.cache }
+            : { ...base, issues: [], hasMore: false, cache: null };
+        } catch (error) {
+          const failure = jiraErrorFields(error);
+          logJiraFailure({ connectionId: connection.id, scope: "my-issues", code: failure.code }, failure);
+          return { ...base, issues: [], hasMore: false, cache: null, error: { code: failure.code } };
+        }
+      }),
+    );
+    return jiraMyIssuesDtoSchema.parse({ connections: rows.filter((row) => row !== null) });
   };
   // No periodic sync: a view refreshes when somebody opens or switches to it, returns to it, or asks for it.
   const stopJiraWorkspaceViewSync = () => {
@@ -1206,6 +1241,13 @@ export function createJiraHandlers(ctx: any) {
     ) {
       manager.rememberViewedIssue?.(getForProfile(input.ref.connectionId, profileId), input.ref);
       return { ok: true };
+    },
+    async jiraMyIssues(input: { refresh?: "cache-only" | "if-stale" | "force" }, windowId: string) {
+      return myIssuesForProfile(getViewerProfileId(windowId), input.refresh ?? "cache-only");
+    },
+    async jiraRemoteMyIssues(input: { refresh?: "cache-only" | "if-stale" | "force" }, profileId: string) {
+      if (!profileId) throw new Error("Jira remote read requires an authenticated profile.");
+      return myIssuesForProfile(profileId, input.refresh ?? "cache-only");
     },
     async jiraNudgePolling(windowId: string) {
       return { nudged: (await ctx.nudgeJiraPolling?.(getViewerProfileId(windowId))) ?? 0 };

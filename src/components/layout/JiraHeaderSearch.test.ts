@@ -5,6 +5,7 @@ import JiraHeaderSearch from "./JiraHeaderSearch.vue";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { resetJiraNudgeThrottleForTests } from "../../lib/jira-activity.js";
+import { resetJiraMyIssuesForTests } from "../../composables/useJiraMyIssues.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -65,6 +66,7 @@ describe("JiraHeaderSearch", () => {
     setActivePinia(createPinia());
     (window as AnyApi).strideterm = { startupFlags: { windowId: "win-test" } };
     resetJiraNudgeThrottleForTests();
+    resetJiraMyIssuesForTests();
   });
   afterEach(() => {
     document.body.innerHTML = "";
@@ -199,5 +201,117 @@ describe("JiraHeaderSearch", () => {
 
     expect(openExternal).toHaveBeenCalledWith("https://c1.example/browse/MSP-7");
     expect(store.jiraIssueOpenRequest).toBeNull();
+  });
+
+  describe("my issues badges", () => {
+    const mine = (issueId: string, key: string, category: string, updated: string) => ({
+      ...issue("c1", issueId, key, `Summary ${key}`, updated),
+      status: category === "new" ? "To Do" : "In Progress",
+      statusCategory: category,
+    });
+    const answer = (issues: unknown[], extra: Record<string, unknown> = {}) => ({
+      connections: [
+        {
+          connectionId: "c1",
+          label: "Work",
+          issues,
+          hasMore: false,
+          cache: { source: "cache", fetchedAt: Date.now() - 60_000, stale: false },
+          ...extra,
+        },
+      ],
+    });
+    const cached = answer([
+      mine("1", "MSP-1", "new", "2026-11-01T00:00:00Z"),
+      mine("2", "MSP-2", "new", "2026-11-03T00:00:00Z"),
+      mine("3", "MSP-3", "indeterminate", "2026-11-02T00:00:00Z"),
+    ]);
+
+    it("paint from the cache without asking Jira, one request for two mounted headers", async () => {
+      const getJiraMyIssues = vi.fn().mockResolvedValue(cached);
+      const api = { listJiraConnections: vi.fn().mockResolvedValue([connection("c1", "Work")]), getJiraMyIssues };
+      const { wrapper } = setup(api);
+      const second = mount(JiraHeaderSearch, { attachTo: document.body });
+      await flushPromises();
+
+      expect(getJiraMyIssues).toHaveBeenCalledTimes(1);
+      expect(getJiraMyIssues).toHaveBeenCalledWith({ refresh: "cache-only" });
+      const badges = wrapper.findAll(".jira-header-search__badge");
+      expect(badges.map((badge) => [badge.attributes("data-category"), badge.text()])).toEqual([
+        ["new", "2"],
+        ["indeterminate", "1"],
+      ]);
+      expect(badges[0].attributes("title")).toContain("updated 1m ago");
+      expect(second.findAll(".jira-header-search__badge")).toHaveLength(2);
+      second.unmount();
+    });
+
+    it("asks Jira once when nothing is cached yet, shows 50+ when there are more, and hides an empty category", async () => {
+      const getJiraMyIssues = vi
+        .fn()
+        .mockResolvedValueOnce(answer([], { cache: null }))
+        .mockResolvedValueOnce(
+          answer([mine("3", "MSP-3", "indeterminate", "2026-11-02T00:00:00Z")], { hasMore: true }),
+        );
+      const { wrapper } = setup({
+        listJiraConnections: vi.fn().mockResolvedValue([connection("c1", "Work")]),
+        getJiraMyIssues,
+      });
+      await flushPromises();
+
+      expect(getJiraMyIssues.mock.calls.map((call) => call[0])).toEqual([
+        { refresh: "cache-only" },
+        { refresh: "if-stale" },
+      ]);
+      const badges = wrapper.findAll(".jira-header-search__badge");
+      expect(badges.map((badge) => badge.text())).toEqual(["1+"]);
+      expect(badges[0].attributes("data-category")).toBe("indeterminate");
+    });
+
+    it("a badge lists that category newest first without waiting, and opens an issue from it", async () => {
+      const getJiraMyIssues = vi.fn().mockResolvedValue(cached);
+      const { wrapper, store } = setup({
+        listJiraConnections: vi.fn().mockResolvedValue([connection("c1", "Work")]),
+        getJiraMyIssues,
+      });
+      await flushPromises();
+
+      await wrapper.findAll(".jira-header-search__badge")[0].trigger("click");
+      const panel = document.querySelector(".jira-header-search__panel")!;
+      expect(panel.querySelector(".jira-header-search__mine-title")?.textContent).toBe("My To Do");
+      expect([...panel.querySelectorAll(".jira-header-search__key")].map((node) => node.textContent)).toEqual([
+        "MSP-2",
+        "MSP-1",
+      ]);
+      expect(getJiraMyIssues).toHaveBeenLastCalledWith({ refresh: "if-stale" });
+
+      (panel.querySelectorAll(".jira-header-search__result")[0] as HTMLButtonElement).click();
+      await flushPromises();
+      expect(store.jiraIssueOpenRequest).toMatchObject({ ref: { issueKey: "MSP-2" } });
+    });
+
+    it("Refresh always asks Jira and reports a failure as a toast", async () => {
+      const getJiraMyIssues = vi
+        .fn()
+        .mockResolvedValueOnce(cached)
+        .mockResolvedValueOnce(cached)
+        .mockRejectedValueOnce(new Error("Jira is down"));
+      const showError = vi.spyOn(useNotificationStore(), "showError");
+      const { wrapper } = setup({
+        listJiraConnections: vi.fn().mockResolvedValue([connection("c1", "Work")]),
+        getJiraMyIssues,
+      });
+      await flushPromises();
+      await wrapper.findAll(".jira-header-search__badge")[1].trigger("click");
+      await flushPromises();
+
+      (document.querySelector(".jira-header-search__mine-refresh") as HTMLButtonElement).click();
+      await flushPromises();
+      expect(getJiraMyIssues).toHaveBeenLastCalledWith({ refresh: "force" });
+      expect(showError).toHaveBeenCalledWith(
+        "Could not refresh your Jira issues",
+        expect.stringContaining("Jira is down"),
+      );
+    });
   });
 });

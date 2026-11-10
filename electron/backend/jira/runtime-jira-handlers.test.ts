@@ -103,6 +103,64 @@ function setup() {
 }
 
 describe("Jira runtime profile ownership", () => {
+  it("my issues: open issues of the verified identity per connection of this profile only, cache-only unless asked", async () => {
+    const { state, context } = setup();
+    const connections = state.settings.integrations.jira.connections as unknown as Array<Record<string, unknown>>;
+    connections[0].ownIdentity = { kind: "data-center", name: "alice", displayName: "Alice" };
+    connections[1].ownIdentity = { kind: "data-center", name: "bob", displayName: "Bob" };
+    connections.push({ ...connections[0], id: "no-identity", label: "C", ownIdentity: undefined });
+    connections.push({ ...connections[0], id: "broken", label: "D" });
+    const issue = {
+      ref: { provider: "jira", connectionId: "same-host-a", issueId: "1", issueKey: "OPS-1" },
+      summary: "Mine",
+      status: "To Do",
+      statusCategory: "new",
+      issueType: "Task",
+      projectKey: "OPS",
+      updated: "2026-11-10T10:00:00.000Z",
+      url: "https://jira.example.com/browse/OPS-1",
+    };
+    const searchPage = vi.fn(async (connection: { id: string }, ..._rest: unknown[]) => {
+      if (connection.id === "broken") throw Object.assign(new Error("Jira said no"), { code: "auth-expired" });
+      return {
+        issues: [issue],
+        hasMore: true,
+        truncated: false,
+        cache: { source: "cache", fetchedAt: 1, stale: false },
+      };
+    });
+    context.jiraManager = { searchPage, invalidate: vi.fn(), verifyUserIdentity: vi.fn() };
+    const handlers = createJiraHandlers(context);
+
+    const result = await handlers.jiraMyIssues({}, "window-a");
+    expect(result.connections.map((row: { connectionId: string }) => row.connectionId)).toEqual([
+      "same-host-a",
+      "broken",
+    ]);
+    expect(result.connections[0]).toMatchObject({ label: "A", hasMore: true, issues: [{ summary: "Mine" }] });
+    expect(result.connections[1]).toMatchObject({ issues: [], cache: null, error: { code: expect.any(String) } });
+    const [connection, jql, limit, cursor, options] = searchPage.mock.calls[0] as unknown as [
+      { id: string },
+      string,
+      number,
+      undefined,
+      Record<string, unknown>,
+    ];
+    expect(connection.id).toBe("same-host-a");
+    expect(jql).toBe('(statusCategory != Done) AND assignee = "alice" ORDER BY updated DESC');
+    expect([limit, cursor, options]).toEqual([50, undefined, { cacheOnly: true }]);
+
+    searchPage.mockClear();
+    await handlers.jiraMyIssues({ refresh: "if-stale" }, "window-a");
+    expect(searchPage.mock.calls[0][4]).toEqual({ forceRefresh: false });
+    await handlers.jiraMyIssues({ refresh: "force" }, "window-a");
+    expect(searchPage.mock.calls.at(-1)?.[4]).toEqual({ forceRefresh: true });
+
+    const remote = await handlers.jiraRemoteMyIssues({}, "profile-b");
+    expect(remote.connections.map((row: { connectionId: string }) => row.connectionId)).toEqual(["same-host-b"]);
+    await expect(handlers.jiraRemoteMyIssues({}, "")).rejects.toThrow("authenticated profile");
+  });
+
   it("persists per-workspace project scope and applies saved personal scope in the canonical query", async () => {
     const { state, context, fetchImpl } = setup();
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-jira-project-scope-"));

@@ -55,6 +55,7 @@ import {
   jiraCommentAttributionSchema,
   jiraAgentAttachmentLimitsSchema,
   jiraOwnIssuesQuerySchema,
+  jiraMyIssuesRequestSchema,
   jiraRecentListSchema,
   jiraWorkspaceViewsGetSchema,
   jiraWorkspaceProjectScopeGetSchema,
@@ -820,6 +821,12 @@ export function registerIpc(
   handle("jira:own-issues-query", async (event, payload) =>
     runtime.buildJiraOwnIssuesQuery(
       validateIpc(jiraOwnIssuesQuerySchema, payload, "jira:own-issues-query"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("jira:my-issues", async (event, payload) =>
+    runtime.jiraMyIssues(
+      validateIpc(jiraMyIssuesRequestSchema, payload ?? {}, "jira:my-issues"),
       getWindowIdByWebContentsId?.(event.sender.id) ?? "",
     ),
   );

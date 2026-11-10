@@ -16,6 +16,20 @@
       @focus="onFocus"
       @keydown="onKeydown"
     />
+    <button
+      v-for="badge in badges"
+      :key="badge.category"
+      type="button"
+      class="jira-header-search__badge"
+      :data-category="badge.category"
+      :aria-pressed="open && listMode === badge.category ? 'true' : 'false'"
+      :aria-label="badge.label"
+      :title="badge.title"
+      @mousedown.prevent
+      @click="toggleList(badge.category)"
+    >
+      {{ badge.text }}
+    </button>
     <Teleport to="body">
       <div
         v-if="open"
@@ -23,17 +37,36 @@
         class="jira-header-search__panel"
         :style="panelStyle"
         role="listbox"
-        aria-label="Jira search results"
+        :aria-label="listMode ? listTitle : 'Jira search results'"
       >
-        <p v-if="busy" class="jira-header-search__status" role="status">
-          {{ isIssueKey(text.trim()) ? "Looking up the issue…" : "Searching Jira…" }}
-        </p>
-        <p v-else-if="error" class="jira-header-search__status jira-header-search__status--error" role="alert">
-          {{ error }}
-        </p>
-        <p v-else-if="searchedText && !results.length" class="jira-header-search__status">No issues found.</p>
+        <template v-if="listMode">
+          <div class="jira-header-search__mine-head">
+            <span class="jira-header-search__mine-title">{{ listTitle }}</span>
+            <span class="jira-header-search__mine-age">{{ listAgeText }}</span>
+            <button
+              type="button"
+              class="jira-header-search__mine-refresh"
+              :disabled="myIssues.loading.value"
+              title="Ask Jira for your issues now."
+              @mousedown.prevent
+              @click="refreshMine"
+            >
+              Refresh
+            </button>
+          </div>
+          <p v-if="!visibleRows.length" class="jira-header-search__status" role="status">{{ listEmptyText }}</p>
+        </template>
+        <template v-else>
+          <p v-if="busy" class="jira-header-search__status" role="status">
+            {{ isIssueKey(text.trim()) ? "Looking up the issue…" : "Searching Jira…" }}
+          </p>
+          <p v-else-if="error" class="jira-header-search__status jira-header-search__status--error" role="alert">
+            {{ error }}
+          </p>
+          <p v-else-if="searchedText && !results.length" class="jira-header-search__status">No issues found.</p>
+        </template>
         <button
-          v-for="(issue, index) in results"
+          v-for="(issue, index) in visibleRows"
           :key="`${issue.ref.connectionId}:${issue.ref.issueId}`"
           type="button"
           role="option"
@@ -53,7 +86,7 @@
           <span v-if="routes.length > 1" class="jira-header-search__source">{{ sourceLabel(issue) }}</span>
         </button>
         <button
-          v-if="searchedText && !busy && !isIssueKey(searchedText)"
+          v-if="!listMode && searchedText && !busy && !isIssueKey(searchedText)"
           type="button"
           class="jira-header-search__all"
           :class="{ 'jira-header-search__result--active': activeIndex === results.length }"
@@ -64,13 +97,25 @@
           Show all results in the Jira inbox
           <span v-if="truncated" class="jira-header-search__more">(more than {{ results.length }})</span>
         </button>
+        <button
+          v-if="listMode"
+          type="button"
+          class="jira-header-search__all"
+          :class="{ 'jira-header-search__result--active': activeIndex === visibleRows.length }"
+          @mousedown.prevent
+          @mouseenter="activeIndex = visibleRows.length"
+          @click="openInboxIssues"
+        >
+          Open the Jira inbox
+          <span v-if="myIssues.hasMore.value" class="jira-header-search__more">(counts cover your 50 latest)</span>
+        </button>
       </div>
     </Teleport>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 
 import { jiraViewTabId } from "../../app/jira-view-tabs.js";
 import { useJiraIssueLinkRoutes } from "../../composables/useJiraIssueLinkRoutes.js";
@@ -80,6 +125,8 @@ import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { userFacingMessage } from "../../lib/error-message.js";
 import { nudgeJiraPolling } from "../../lib/jira-activity.js";
+import { formatRelativeAge } from "../../app/relative-age.js";
+import { useJiraMyIssues, type JiraMyIssueCategory } from "../../composables/useJiraMyIssues.js";
 
 type HeaderIssue = {
   ref: { connectionId: string; issueId: string; issueKey: string };
@@ -111,6 +158,39 @@ const activeIndex = ref(-1);
 const panelStyle = ref<Record<string, string>>({});
 let generation = 0;
 let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+
+const myIssues = useJiraMyIssues(() => store.getApi(), profileId);
+/** Which of my issue lists the panel shows; null while it shows search results. */
+const listMode = ref<JiraMyIssueCategory | null>(null);
+const clock = ref(Date.now());
+const CATEGORY_LABEL: Record<JiraMyIssueCategory, string> = { new: "To Do", indeterminate: "In Progress" };
+const visibleRows = computed<HeaderIssue[]>(() => (listMode.value ? myIssues.issuesIn(listMode.value) : results.value));
+const ageText = computed(() => {
+  const at = myIssues.fetchedAt.value;
+  if (at === null) return "not loaded yet";
+  const age = formatRelativeAge(new Date(at).toISOString(), clock.value);
+  return age === "now" ? "updated just now" : `updated ${age} ago`;
+});
+const badges = computed(() =>
+  (["new", "indeterminate"] as const).flatMap((category) => {
+    const count = myIssues.issuesIn(category).length;
+    if (!count) return [];
+    const text = `${count}${myIssues.hasMore.value ? "+" : ""}`;
+    const label = `My ${CATEGORY_LABEL[category]} issues: ${text}`;
+    return [{ category, text, label, title: `${label} · ${ageText.value}. Click to list them.` }];
+  }),
+);
+const listTitle = computed(() => (listMode.value ? `My ${CATEGORY_LABEL[listMode.value]}` : ""));
+const listAgeText = computed(() => {
+  if (myIssues.loading.value) return "Refreshing…";
+  const failed = myIssues.failedLabels.value;
+  return failed.length ? `${ageText.value} · ${failed.join(", ")} could not be refreshed` : ageText.value;
+});
+const listEmptyText = computed(() => {
+  if (myIssues.loading.value) return "Loading your issues…";
+  if (myIssues.failedLabels.value.length) return "Your Jira issues could not be loaded.";
+  return "Nothing here.";
+});
 
 function isIssueKey(value: string): boolean {
   return /^[A-Z][A-Z0-9_]{0,19}-[1-9][0-9]*$/i.test(value);
@@ -144,22 +224,72 @@ function positionPanel(): void {
 
 function openPanel(): void {
   positionPanel();
+  clock.value = Date.now();
   open.value = true;
 }
 
 function closePanel(): void {
   open.value = false;
+  listMode.value = null;
   activeIndex.value = -1;
+}
+
+// Background refreshes: the runtime logs a failing request and the list shows its age, there is no action to report.
+function refreshMineInBackground(load: () => Promise<unknown>): void {
+  void load()
+    .catch(() => undefined)
+    .finally(() => {
+      clock.value = Date.now();
+    });
+}
+
+function toggleList(category: JiraMyIssueCategory): void {
+  if (open.value && listMode.value === category) {
+    closePanel();
+    return;
+  }
+  listMode.value = category;
+  activeIndex.value = -1;
+  openPanel();
+  refreshMineInBackground(() => myIssues.load("if-stale"));
+}
+
+async function refreshMine(): Promise<void> {
+  try {
+    const rows = await myIssues.load("force");
+    const failed = (rows || []).filter((row) => row.error).map((row) => row.label);
+    if (failed.length) notifications.showError("Some Jira connections could not be refreshed", failed.join(", "));
+  } catch (cause) {
+    notifications.showError("Could not refresh your Jira issues", userFacingMessage(cause, "Jira did not answer."));
+  } finally {
+    clock.value = Date.now();
+  }
+}
+
+async function openInboxIssues(): Promise<void> {
+  closePanel();
+  try {
+    const workspaceId = await ensureJiraInbox();
+    if (!workspaceId)
+      throw new Error("The Jira inbox does not exist in this profile yet. Create it on the desktop first.");
+    await store.activateWorkspace(workspaceId);
+    await store.activateView(jiraViewTabId(workspaceId, "issues"));
+  } catch (cause) {
+    notifications.showError("Could not open the Jira inbox", userFacingMessage(cause, "Could not open Jira."));
+  }
 }
 
 useDismissable(open, [rootRef, listRef], { onDismiss: closePanel, eventName: "mousedown" });
 
 function onFocus(): void {
+  // Warms the connection and my issues while the user is still deciding what to type.
   nudgeJiraPolling(store.getApi());
+  refreshMineInBackground(() => myIssues.load("if-stale"));
   if (searchedText.value && searchedText.value === text.value.trim()) openPanel();
 }
 
 function onInput(): void {
+  listMode.value = null;
   if (debounceTimer) clearTimeout(debounceTimer);
   const value = text.value.trim();
   if (value.length < 2 || isIssueKey(value)) {
@@ -325,7 +455,8 @@ async function showAllInInbox(): Promise<void> {
 }
 
 function onKeydown(event: KeyboardEvent): void {
-  const optionCount = results.value.length + (searchedText.value && !isIssueKey(searchedText.value) ? 1 : 0);
+  const footer = listMode.value || (searchedText.value && !isIssueKey(searchedText.value)) ? 1 : 0;
+  const optionCount = visibleRows.value.length + footer;
   if (event.key === "Escape") {
     if (open.value) closePanel();
     else inputRef.value?.blur();
@@ -340,6 +471,12 @@ function onKeydown(event: KeyboardEvent): void {
   }
   if (event.key !== "Enter") return;
   event.preventDefault();
+  if (open.value && listMode.value) {
+    if (activeIndex.value >= 0 && activeIndex.value < visibleRows.value.length)
+      void openIssue(visibleRows.value[activeIndex.value]);
+    else if (activeIndex.value === visibleRows.value.length) void openInboxIssues();
+    return;
+  }
   const value = text.value.trim();
   if (!value) return;
   const settled = open.value && !busy.value && value === searchedText.value;
@@ -358,8 +495,17 @@ function onWindowChange(): void {
   if (open.value) void nextTick(positionPanel);
 }
 function onWindowFocus(): void {
-  if (routes.value.length) nudgeJiraPolling(store.getApi());
+  if (!routes.value.length) return;
+  nudgeJiraPolling(store.getApi());
+  refreshMineInBackground(() => myIssues.refreshIfOld());
 }
+watch(
+  () => routes.value.length > 0,
+  (hasRoutes) => {
+    if (hasRoutes) refreshMineInBackground(() => myIssues.ensureLoaded());
+  },
+  { immediate: true },
+);
 window.addEventListener("resize", onWindowChange);
 window.addEventListener("focus", onWindowFocus);
 onBeforeUnmount(() => {
@@ -372,11 +518,72 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .jira-header-search {
-  flex: 0 1 340px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 1 400px;
   min-width: 160px;
   -webkit-app-region: no-drag;
 }
+.jira-header-search__badge {
+  flex: 0 0 auto;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(var(--tint), 0.16);
+  background: rgba(var(--tint), 0.08);
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  cursor: pointer;
+}
+.jira-header-search__badge[data-category="indeterminate"] {
+  border-color: color-mix(in srgb, var(--accent, #4c9aff), transparent 55%);
+  color: var(--text);
+}
+.jira-header-search__badge[aria-pressed="true"],
+.jira-header-search__badge:hover {
+  background: rgba(var(--tint), 0.16);
+}
+.jira-header-search__mine-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 8px 4px;
+  border-bottom: 1px solid rgba(var(--tint), 0.1);
+  margin-bottom: 2px;
+}
+.jira-header-search__mine-title {
+  font-weight: 600;
+}
+.jira-header-search__mine-age {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.jira-header-search__mine-refresh {
+  flex: 0 0 auto;
+  padding: 1px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(var(--tint), 0.16);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.jira-header-search__mine-refresh:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 .jira-header-search__input {
+  flex: 1 1 auto;
+  min-width: 0;
   width: 100%;
   box-sizing: border-box;
   height: 24px;

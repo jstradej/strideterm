@@ -516,6 +516,10 @@ export const jiraAgentAttachmentLimitsSchema = z
     maxMegabytes: z.number().int().min(1).max(500),
   })
   .strict();
+/** `cache-only` never reaches Jira; `if-stale` asks only past the cache TTL; `force` always asks. */
+export const jiraMyIssuesRequestSchema = z
+  .object({ refresh: z.enum(["cache-only", "if-stale", "force"]).optional() })
+  .strict();
 export const jiraOwnIssuesQuerySchema = z.object({
   connectionId: nonEmptyString,
   baseJql: z.string().max(2000).optional(),
@@ -662,6 +666,20 @@ export const jiraSearchResultDtoSchema = z.object({
   nextCursor: z.string().max(2048).optional(),
   truncated: z.boolean(),
   cache: jiraCacheMetadataDtoSchema.optional(),
+});
+export const jiraMyIssuesDtoSchema = z.object({
+  connections: z
+    .array(
+      z.object({
+        connectionId: z.string().max(128),
+        label: z.string().max(80),
+        issues: z.array(jiraIssueDtoSchema).max(100),
+        hasMore: z.boolean(),
+        cache: jiraCacheMetadataDtoSchema.nullable(),
+        error: z.object({ code: z.string().max(64) }).optional(),
+      }),
+    )
+    .max(100),
 });
 export const jiraCommentDtoSchema = z.object({
   id: z.string().max(128),

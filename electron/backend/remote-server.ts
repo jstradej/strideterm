@@ -85,6 +85,7 @@ import {
   jiraBoardQuickFiltersSchema,
   jiraUserSearchSchema,
   jiraOwnIssuesQuerySchema,
+  jiraMyIssuesRequestSchema,
   jiraOwnIdentitySchema,
   jiraRecentListSchema,
   jiraWorkspaceViewsGetSchema,
@@ -1816,6 +1817,11 @@ const API_ROUTES: Record<string, ApiRouteHandler> = {
   "/api/jira/ensure-workspace": (runtime, _body, caller) => runtime.jiraRemoteEnsureWorkspace(caller?.profileId || ""),
   "/api/jira/connections": (runtime, _body, caller) => runtime.jiraRemoteListConnections(caller?.profileId || ""),
   "/api/jira/polling/nudge": (runtime, _body, caller) => runtime.jiraRemoteNudgePolling(caller?.profileId || ""),
+  "/api/jira/my-issues": (runtime, body, caller) =>
+    runtime.jiraRemoteMyIssues(
+      validateIpc(jiraMyIssuesRequestSchema, body ?? {}, "/api/jira/my-issues"),
+      caller?.profileId || "",
+    ),
   "/api/jira/own-issues-query": (runtime, body, caller) =>
     runtime.jiraRemoteBuildOwnIssuesQuery(
       validateIpc(jiraOwnIssuesQuerySchema, body, "/api/jira/own-issues-query"),
