@@ -88,22 +88,16 @@
         </div>
         <JiraHeaderSearch />
         <div class="workspace-meta__stats">
-          <span class="workspace-chip" :title="tabsTitle"
-            ><strong>{{ sessionCount }}</strong> tabs</span
-          >
-          <span class="workspace-chip" :title="runningTitle"
-            ><strong>{{ runningCount }}</strong> running</span
-          >
-          <span
+          <WorkspaceBranchMenu
             v-if="gitSnapshot?.available"
-            class="workspace-chip"
-            :class="gitSnapshot.dirty ? 'workspace-chip--dirty' : 'workspace-chip--clean'"
+            :workspace-id="activeWorkspace.id"
+            :summary="{
+              branch: String(gitSnapshot.branch || ''),
+              dirty: !!gitSnapshot.dirty,
+              dirtyCount: Number(gitSnapshot.dirtyCount) || 0,
+            }"
             :title="branchTitle"
-          >
-            <strong class="workspace-chip__branch">{{ gitSnapshot.branch }}</strong>
-            <span v-if="gitSnapshot.dirty" style="margin-left: 4px">{{ gitSnapshot.dirtyCount }} uncommitted</span>
-            <span v-else style="margin-left: 4px">clean</span>
-          </span>
+          />
           <span v-if="activeWorkspace.kind === 'docker' && dockerAvailable" class="workspace-chip" :title="dockerTitle"
             ><strong>{{ dockerRunning }}</strong
             >/{{ dockerTotal }} containers up</span
@@ -132,6 +126,7 @@ import { apiKey } from "../../types/keys.js";
 import { useAppStore } from "../../stores/app.js";
 import { safeColor, attentionTitle, isFreshAttention } from "../../app/helpers.js";
 import WorkspaceLayoutChip from "./WorkspaceLayoutChip.vue";
+import WorkspaceBranchMenu from "./WorkspaceBranchMenu.vue";
 import NotificationBell from "../layout/NotificationBell.vue";
 import JiraHeaderSearch from "../layout/JiraHeaderSearch.vue";
 import MobileConnectedIndicator from "../layout/MobileConnectedIndicator.vue";
@@ -240,16 +235,6 @@ const attention = computed<Record<string, any> | null>(() =>
     : null,
 );
 const reviewTabCount = computed(() => activeWorkspace.value?.panels?.length || 0);
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: sessions sub-array from server JSON
-const sessionCount = computed(() => (workspace.value?.sessions as any[] | undefined)?.length || 0);
-const runningCount = computed(
-  () =>
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: sessions sub-array from server JSON
-    ((workspace.value?.sessions as any[] | undefined) || []).filter(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: session item from server JSON
-      (s: any) => s.status === "running",
-    ).length,
-);
 // Docker hero shows only counts — read them from the transport-aware accessor
 // (core `counts` on remote, computed from the full list on desktop).
 const dockerCounts = computed(() =>
@@ -264,19 +249,13 @@ const inboxTitle = computed(
     `This workspace is your ${activeWorkspace.value?.kind === "github" ? "GitHub" : "Azure DevOps"} pull request inbox.`,
 );
 const reviewTabsTitle = computed(() => `Tabs open in this inbox: ${reviewTabCount.value}.`);
-const tabsTitle = computed(
-  () => `Terminal sessions in this workspace: ${sessionCount.value}. Views such as Files or Git are not counted.`,
-);
-const runningTitle = computed(
-  () => `Terminal sessions whose program is still running: ${runningCount.value} of ${sessionCount.value}.`,
-);
 const branchTitle = computed(() => {
   const snapshot = gitSnapshot.value;
   if (!snapshot) return "";
   const state = snapshot.dirty
     ? `${snapshot.dirtyCount} uncommitted change${snapshot.dirtyCount === 1 ? "" : "s"} in the working tree.`
     : "No uncommitted changes.";
-  return `Current Git branch: ${snapshot.branch}. ${state} The Git tab has the details.`;
+  return `Current Git branch: ${snapshot.branch}. ${state} Click for branches and Git actions.`;
 });
 const dockerTitle = computed(() => `Containers running: ${dockerRunning.value} of ${dockerTotal.value}.`);
 </script>

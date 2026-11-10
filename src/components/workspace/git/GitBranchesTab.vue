@@ -681,6 +681,7 @@ import GitDiffStat from "./GitDiffStat.vue";
 import { isRemoteRef, resolveBaseRef } from "./base-ref.js";
 import { buildBranchForest, type BranchForestNode } from "./branch-forest.js";
 import { submitPullRequest } from "./pull-request-submit.js";
+import { useBranchActions } from "./branch-actions.js";
 import { clampGitPaneSizes, getGitPaneSizes } from "./git-pane-sizing.js";
 
 const MonacoDiffPanel = defineAsyncComponent({
@@ -1817,6 +1818,11 @@ function onMobileSelectRef(ref: string) {
   if (ref) mobileView.value = "commits";
 }
 
+const branchActions = useBranchActions(
+  () => props.workspaceId,
+  () => refreshAll(true),
+);
+
 function onNewBranchFrom(ref: string) {
   startFrom.value = ref;
   newBranchName.value = "";
@@ -1855,35 +1861,7 @@ function onDeleteLocal(ref: string) {
     return;
   }
   const entry = branchList.value.local.find((b) => b.name === ref);
-  if (!entry) return;
-  // Branch checked out in a worktree can't be deleted via `git branch -d`.
-  // Route through the worktree-aware confirm so the user can wipe the
-  // worktree directory and the branch ref in one step.
-  if (entry.worktreePath) {
-    gitUiStore.confirmRemoveWorktreeDeleteBranch(props.workspaceId, {
-      worktreePath: entry.worktreePath,
-      branch: entry.name,
-      branchMerged: entry.merged,
-    });
-    return;
-  }
-  const force = !entry.merged;
-  const verb = force ? "Force delete" : "Delete";
-  appStore.openDialog("ConfirmDialog", {
-    eyebrow: "Git",
-    title: `${verb} branch?`,
-    message: force
-      ? `Branch '${entry.name}' has unmerged commits — they will be lost.`
-      : `Branch '${entry.name}' will be removed.`,
-    confirmLabel: verb,
-    danger: true,
-    onCancel: () => appStore.closeDialog(),
-    onConfirm: async () => {
-      appStore.closeDialog();
-      await gitUiStore.gitDeleteBranch(props.workspaceId, entry.name, force);
-      refreshAll(true);
-    },
-  });
+  if (entry) branchActions.deleteLocal(entry);
 }
 
 function onBulkDeleteLocal(refs: string[]) {
@@ -1941,41 +1919,11 @@ function onBulkDeleteLocal(refs: string[]) {
 }
 
 function onDeleteRemote(remoteRef: string) {
-  const slash = remoteRef.indexOf("/");
-  const remoteName = slash >= 0 ? remoteRef.slice(0, slash) : "origin";
-  const shortName = slash >= 0 ? remoteRef.slice(slash + 1) : remoteRef;
-  appStore.openDialog("ConfirmDialog", {
-    eyebrow: "Git",
-    title: "Delete remote branch?",
-    message: `Branch '${shortName}' on remote '${remoteName}' will be deleted via git push ${remoteName} :${shortName}. This cannot be undone server-side.`,
-    confirmLabel: "Delete",
-    danger: true,
-    onCancel: () => appStore.closeDialog(),
-    onConfirm: async () => {
-      appStore.closeDialog();
-      await gitUiStore.gitDeleteRemoteBranch(props.workspaceId, shortName, remoteName);
-      refreshAll(true);
-    },
-  });
+  branchActions.deleteRemote(remoteRef);
 }
 
 function onRename(ref: string) {
-  appStore.openDialog("TextInputDialog", {
-    eyebrow: "Git",
-    title: `Rename branch '${ref}'`,
-    label: "New name",
-    value: ref,
-    placeholder: "feature/my-branch",
-    submitLabel: "Rename",
-    onCancel: () => appStore.closeDialog(),
-    onSubmit: async (next: string) => {
-      appStore.closeDialog();
-      const trimmed = next.trim();
-      if (!trimmed || trimmed === ref) return;
-      await gitUiStore.gitRenameBranch(props.workspaceId, ref, trimmed);
-      refreshAll(true);
-    },
-  });
+  branchActions.rename(ref);
 }
 
 // When the target is a remote-tracking ref (e.g. origin/develop), fetch first
