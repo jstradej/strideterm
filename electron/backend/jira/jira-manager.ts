@@ -3,7 +3,10 @@ import type { CredentialStore } from "../shared/credential-store.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createSecureContext } from "node:tls";
 import { readFile } from "node:fs/promises";
-import { Agent } from "undici";
+// Jira requests go through npm undici's own fetch/FormData, never the global
+// ones: the PFX dispatcher is an undici Agent, and Electron's bundled fetch
+// (a different undici major) rejects it and stringifies a foreign FormData.
+import { Agent, fetch as undiciFetch, FormData } from "undici";
 import { getLogger } from "../logger.js";
 import { JIRA_SIGN_IN_CODES } from "../../shared/jira-error-codes.js";
 import { errorCauseCode, JiraRequestError, type JiraRequestErrorCode } from "./jira-request-error.js";
@@ -394,7 +397,7 @@ export class JiraManager {
   private globalCacheEpoch = 0;
   constructor(
     private readonly credentialStore: CredentialStore,
-    private readonly fetchImpl: typeof fetch = fetch,
+    private readonly fetchImpl: typeof fetch = undiciFetch as unknown as typeof fetch,
     private readonly persistentCache?: JiraCache,
   ) {}
 
@@ -1218,7 +1221,7 @@ export class JiraManager {
             redirect: "error",
             signal: controller.signal,
             ...(dispatcher ? { dispatcher } : {}),
-          } as RequestInit),
+          } as unknown as RequestInit),
           deadlineAt,
           () => controller.abort(),
         );

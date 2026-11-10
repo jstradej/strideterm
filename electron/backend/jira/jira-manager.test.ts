@@ -9,7 +9,7 @@ import {
   type JiraConnection,
 } from "./jira-manager.js";
 import type { CredentialStore } from "../shared/credential-store.js";
-import { Agent } from "undici";
+import { Agent, FormData } from "undici";
 import { fileURLToPath } from "node:url";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -530,7 +530,7 @@ describe("JiraManager", () => {
       expect(new Headers(init?.headers).get("X-Atlassian-Token")).toBe("no-check");
       expect((init as RequestInit & { dispatcher?: unknown }).dispatcher).toBeInstanceOf(Agent);
       expect(init?.body).toBeInstanceOf(FormData);
-      const file = (init?.body as FormData).get("file") as File;
+      const file = (init?.body as unknown as FormData).get("file") as File;
       expect(file.name).toBe("report.txt");
       expect(new Uint8Array(await file.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]));
       return new Response("[]");

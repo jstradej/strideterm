@@ -7588,7 +7588,7 @@ export async function createRuntime({
 
   const jiraCache = createJiraCache(path.join(userDataPath, "jira-cache.sqlite"));
   const jiraAttachmentCache = createJiraAttachmentCache(path.join(userDataPath, "jira-attachment-cache"));
-  const jiraManager = new JiraManager(credentialStore, dependencies.fetchImpl || globalThis.fetch, jiraCache);
+  const jiraManager = new JiraManager(credentialStore, dependencies.fetchImpl, jiraCache);
   jiraManager.retainConfiguredScopes((getState().settings.integrations.jira?.connections || []) as JiraConnection[]);
   const providerHandlers = createProviderHandlers({
     log,
