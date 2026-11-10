@@ -359,7 +359,7 @@ function Cleanup {
     }
 
     # Kill any orphaned electron processes
-    $orphanedElectron = Get-Process -Name electron -ErrorAction SilentlyContinue
+    $orphanedElectron = @(Get-Process -Name electron -ErrorAction SilentlyContinue)
     if ($orphanedElectron) {
         Write-Warn "Killing $($orphanedElectron.Count) orphaned electron process(es)..."
         $orphanedElectron | Stop-Process -Force -ErrorAction SilentlyContinue
@@ -429,7 +429,7 @@ Write-Ok "Using isolated data dir: $DataDir (log level: $($env:STRIDETERM_LOG_LE
 # --- Step 1: Kill stale Electron processes ---------------------------------
 
 Write-Step 'Checking for stale Electron processes...'
-$staleElectron = Get-Process -Name electron -ErrorAction SilentlyContinue
+$staleElectron = @(Get-Process -Name electron -ErrorAction SilentlyContinue)
 if ($staleElectron) {
     Write-Warn "Found $($staleElectron.Count) stale electron process(es) - killing..."
     $staleElectron | Stop-Process -Force -ErrorAction SilentlyContinue
