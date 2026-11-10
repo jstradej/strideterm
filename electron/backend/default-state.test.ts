@@ -53,6 +53,32 @@ describe("default state", () => {
     }
   });
 
+  test("Jira poll intervals are kept between 15 minutes and 1 hour", () => {
+    const base = {
+      enabled: true,
+      deployment: "data-center",
+      webUrl: "https://jira.example.test",
+      auth: { kind: "dc-pat", secretRef: "jira:test:pat" },
+    };
+    const state = normalizeState({
+      settings: {
+        integrations: {
+          jira: {
+            connections: [
+              { ...base, id: "fast", label: "Fast", pollSeconds: 120 },
+              { ...base, id: "slow", label: "Slow", pollSeconds: 7200 },
+              { ...base, id: "unset", label: "Unset" },
+            ],
+          },
+        },
+      },
+    });
+    expect(state.settings.integrations.jira.connections.map((connection) => connection.pollSeconds)).toEqual([
+      900, 3600, 900,
+    ]);
+    expect(normalizeState({}).settings.integrations.jira.defaultPollSeconds).toBe(900);
+  });
+
   test("Jira normalization keeps a Cloud API token connection and drops a removed auth kind without throwing", () => {
     const base = {
       profileId: "profile-a",

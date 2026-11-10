@@ -8,7 +8,7 @@ const valid: JiraMetadataDraftInput = {
   issueKeyPrefixesText: "APP, OPS",
   defaultJql: "project = APP",
   projectKeysText: "APP",
-  pollSeconds: 120,
+  pollSeconds: 900,
 };
 
 function schemaAccepts(draft: JiraMetadataDraftInput) {
@@ -42,11 +42,11 @@ describe("validateJiraMetadataDraft", () => {
     ["a bad project key", { ...valid, projectKeysText: "APP, _x" }],
     ["JQL of 2000 characters", { ...valid, defaultJql: "j".repeat(2000) }],
     ["JQL of 2001 characters", { ...valid, defaultJql: "j".repeat(2001) }],
-    ["a poll interval of 59", { ...valid, pollSeconds: 59 }],
-    ["a poll interval of 60", { ...valid, pollSeconds: 60 }],
+    ["a poll interval of 899", { ...valid, pollSeconds: 899 }],
+    ["a poll interval of 900", { ...valid, pollSeconds: 900 }],
     ["a poll interval of 3600", { ...valid, pollSeconds: 3600 }],
     ["a poll interval of 3601", { ...valid, pollSeconds: 3601 }],
-    ["a fractional poll interval", { ...valid, pollSeconds: 90.5 }],
+    ["a fractional poll interval", { ...valid, pollSeconds: 900.5 }],
     ["a cleared poll interval", { ...valid, pollSeconds: "" }],
   ];
 
@@ -67,7 +67,7 @@ describe("validateJiraMetadataDraft", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.errors.issueKeyPrefixes).toContain("9BAD");
-    expect(result.errors.pollSeconds).toContain("60 and 3600");
+    expect(result.errors.pollSeconds).toContain("900 (15 minutes) and 3600");
     expect(result.errors.label).toBeUndefined();
   });
 });

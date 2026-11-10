@@ -12,6 +12,11 @@ import { reviewPrActionSchema, reviewPrActionOptionsSchema } from "../shared/rev
 export { remoteSessionRevokeSchema } from "../shared/remote-access.js";
 
 import type { AccountUiState } from "./account/account-state.js";
+import {
+  JIRA_POLL_DEFAULT_SECONDS,
+  JIRA_POLL_MAX_SECONDS,
+  JIRA_POLL_MIN_SECONDS,
+} from "../shared/jira-poll-interval.js";
 
 /**
  * Zod schemas for IPC payload validation.
@@ -280,7 +285,7 @@ export const jiraConnectionMetadataSchema = z.object({
         .regex(/^[A-Z][A-Z0-9_]{0,19}$/),
     )
     .max(100),
-  pollSeconds: z.number().int().min(60).max(3600),
+  pollSeconds: z.number().int().min(JIRA_POLL_MIN_SECONDS).max(JIRA_POLL_MAX_SECONDS),
 });
 export const jiraRepoBindingPreferenceQuerySchema = z.object({
   connectionId: nonEmptyString,
@@ -730,7 +735,12 @@ export const jiraConnectionDtoSchema = z
       .array(z.string().regex(/^[A-Z][A-Z0-9_]{0,19}$/))
       .max(100)
       .default([]),
-    pollSeconds: z.number().int().min(60).max(3600).default(120),
+    pollSeconds: z
+      .number()
+      .int()
+      .min(JIRA_POLL_MIN_SECONDS)
+      .max(JIRA_POLL_MAX_SECONDS)
+      .default(JIRA_POLL_DEFAULT_SECONDS),
     enabled: z.boolean(),
     deployment: z.enum(["cloud", "data-center"]),
     webUrl: z.string().url().max(2048),

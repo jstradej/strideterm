@@ -823,6 +823,9 @@ export function registerIpc(
       getWindowIdByWebContentsId?.(event.sender.id) ?? "",
     ),
   );
+  handle("jira:polling:nudge", async (event) =>
+    runtime.jiraNudgePolling(getWindowIdByWebContentsId?.(event.sender.id) ?? ""),
+  );
   handle("jira:connections", async (event) =>
     runtime.jiraListConnections(getWindowIdByWebContentsId?.(event.sender.id) ?? ""),
   );

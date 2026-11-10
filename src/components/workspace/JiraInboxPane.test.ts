@@ -6139,7 +6139,8 @@ describe("JiraInboxPane", () => {
       issueKeyPrefixes: ["APP", "OPS"],
       defaultJql: "",
       projectKeys: [],
-      pollSeconds: 120,
+      // A connection saved before the 15-minute floor is offered at the floor, never sent below it.
+      pollSeconds: 900,
     });
     expectEveryCallToMatch(jiraConnectionMetadataSchema, transport.updateJiraConnectionMetadata);
     expect(transport.saveJiraConnection).not.toHaveBeenCalled();

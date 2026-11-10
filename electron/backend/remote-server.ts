@@ -1815,6 +1815,7 @@ const API_ROUTES: Record<string, ApiRouteHandler> = {
   // the authenticated remote client, never from request data.
   "/api/jira/ensure-workspace": (runtime, _body, caller) => runtime.jiraRemoteEnsureWorkspace(caller?.profileId || ""),
   "/api/jira/connections": (runtime, _body, caller) => runtime.jiraRemoteListConnections(caller?.profileId || ""),
+  "/api/jira/polling/nudge": (runtime, _body, caller) => runtime.jiraRemoteNudgePolling(caller?.profileId || ""),
   "/api/jira/own-issues-query": (runtime, body, caller) =>
     runtime.jiraRemoteBuildOwnIssuesQuery(
       validateIpc(jiraOwnIssuesQuerySchema, body, "/api/jira/own-issues-query"),

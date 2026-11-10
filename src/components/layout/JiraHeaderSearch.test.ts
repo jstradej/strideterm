@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from "pinia";
 import JiraHeaderSearch from "./JiraHeaderSearch.vue";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
+import { resetJiraNudgeThrottleForTests } from "../../lib/jira-activity.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -63,6 +64,7 @@ describe("JiraHeaderSearch", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     (window as AnyApi).strideterm = { startupFlags: { windowId: "win-test" } };
+    resetJiraNudgeThrottleForTests();
   });
   afterEach(() => {
     document.body.innerHTML = "";
@@ -74,6 +76,24 @@ describe("JiraHeaderSearch", () => {
     });
     await flushPromises();
     expect(wrapper.find("input").exists()).toBe(false);
+  });
+
+  it("focusing the field or coming back to the window asks the runtime to check alert queries, at most every 2 minutes", async () => {
+    const nudgeJiraPolling = vi.fn().mockResolvedValue({ nudged: 1 });
+    const { wrapper } = setup({
+      listJiraConnections: vi.fn().mockResolvedValue([connection("c1", "Work")]),
+      nudgeJiraPolling,
+    });
+    await flushPromises();
+    await wrapper.find("input").trigger("focus");
+    window.dispatchEvent(new Event("focus"));
+    expect(nudgeJiraPolling).toHaveBeenCalledTimes(1);
+
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now + 2 * 60_000);
+    window.dispatchEvent(new Event("focus"));
+    expect(nudgeJiraPolling).toHaveBeenCalledTimes(2);
+    clock.mockRestore();
   });
 
   it("opens a typed issue key straight in the Jira inbox, asking only the connection that owns the prefix", async () => {

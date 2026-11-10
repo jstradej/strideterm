@@ -251,6 +251,7 @@ export interface StridetermAPI {
 
   // Jira issue provider (read routes plus desktop-only Data Center connection setup).
   listJiraConnections: () => Promise<unknown>;
+  nudgeJiraPolling: () => Promise<{ nudged: number }>;
   getJiraRepoBindingPreference: (payload: { connectionId: string; projectKey: string }) => Promise<unknown>;
   ensureJiraWorkspace: () => Promise<unknown>;
   previewJiraTaskContext: (payload: {

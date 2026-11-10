@@ -1,3 +1,5 @@
+import { JIRA_POLL_MAX_SECONDS, JIRA_POLL_MIN_SECONDS } from "../../../../../electron/shared/jira-poll-interval.js";
+
 /**
  * Client-side mirror of `jiraConnectionMetadataSchema` (electron/backend/ipc-schemas.ts), so a bad value is reported
  * next to its field instead of as an IPC validation error. `jira-metadata-validation.test.ts` pins both to each other.
@@ -55,8 +57,13 @@ export function validateJiraMetadataDraft(
   const defaultJql = draft.defaultJql.trim();
   if (defaultJql.length > 2000) errors.defaultJql = "Keep the default JQL under 2000 characters.";
   const pollSeconds = typeof draft.pollSeconds === "number" ? draft.pollSeconds : Number(draft.pollSeconds);
-  if (draft.pollSeconds === "" || !Number.isInteger(pollSeconds) || pollSeconds < 60 || pollSeconds > 3600)
-    errors.pollSeconds = "Enter a whole number of seconds between 60 and 3600.";
+  if (
+    draft.pollSeconds === "" ||
+    !Number.isInteger(pollSeconds) ||
+    pollSeconds < JIRA_POLL_MIN_SECONDS ||
+    pollSeconds > JIRA_POLL_MAX_SECONDS
+  )
+    errors.pollSeconds = `Enter a whole number of seconds between ${JIRA_POLL_MIN_SECONDS} (15 minutes) and ${JIRA_POLL_MAX_SECONDS} (1 hour).`;
   if (Object.keys(errors).length) return { ok: false, errors };
   return {
     ok: true,

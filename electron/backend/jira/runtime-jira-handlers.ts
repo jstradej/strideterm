@@ -1201,6 +1201,13 @@ export function createJiraHandlers(ctx: any) {
       manager.rememberViewedIssue?.(getForProfile(input.ref.connectionId, profileId), input.ref);
       return { ok: true };
     },
+    async jiraNudgePolling(windowId: string) {
+      return { nudged: (await ctx.nudgeJiraPolling?.(getViewerProfileId(windowId))) ?? 0 };
+    },
+    async jiraRemoteNudgePolling(profileId: string) {
+      if (!profileId) throw new Error("Jira remote read requires an authenticated profile.");
+      return { nudged: (await ctx.nudgeJiraPolling?.(profileId)) ?? 0 };
+    },
     async jiraRemoteListConnections(profileId: string) {
       if (!profileId) throw new Error("Jira remote read requires an authenticated profile.");
       return jiraConnectionDtoSchema

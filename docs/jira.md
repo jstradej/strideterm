@@ -72,7 +72,9 @@ Task workspaces have the same option: enable it when creating the task and its W
 
 ## Background updates and notifications
 
-Saved queries can be checked for changes in the background. Choose the saved queries in the connection's saved query list, turn on **Check for updates in the background** for each one, and set **Default poll interval (seconds)** in the connection's settings. When an issue is added to a checked query, changes or leaves it, an entry with a link to the issue appears in the Notification Center.
+Saved queries can be checked for changes in the background. Choose the saved queries in the connection's saved query list, turn on **Check for updates in the background** for each one, and set **Default poll interval (seconds)** in the connection's settings (15 minutes to 1 hour). Opening the Jira inbox, focusing the Jira search or coming back to the window checks them sooner. When an issue is added to a checked query, changes or leaves it, an entry with a link to the issue appears in the Notification Center.
+
+Nothing else is refreshed on a timer. The inbox loads saved data first and refreshes it when you open it, switch to a view, come back to the window after a few minutes, or press **Refresh**; the line above the list says how old the data is.
 
 ## Remote and mobile access
 

@@ -106,6 +106,7 @@ export const MOBILE_OWN_CHECK_ROUTES: ReadonlySet<string> = new Set([
   "/api/attachment/list",
   "/api/attachment/delete",
   "/api/jira/connections",
+  "/api/jira/polling/nudge",
 ]);
 
 /**

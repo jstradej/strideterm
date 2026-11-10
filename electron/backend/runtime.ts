@@ -347,6 +347,7 @@ import type { SshConnectionTestState, SshKeyTransferState } from "../shared/type
 import { derivePublicKeyLine, installPublicKey } from "./ssh/ssh-key-install.js";
 import type { Client as Ssh2Client, SFTPWrapper } from "ssh2";
 import type { AuthConfig } from "./ssh/ssh-auth.js";
+import { clampJiraPollSeconds } from "../shared/jira-poll-interval.js";
 
 const log = getLogger("runtime");
 const jiraLog = getLogger("jira");
@@ -7637,6 +7638,8 @@ export async function createRuntime({
       await jiraPolling?.removeConnection(profileId, connectionId);
     },
     getJiraPollingStatus: (profileId: string) => jiraPolling?.getWatchStatuses(profileId) ?? {},
+    // A user action in Jira checks the profile's alert queries now, unless one polled in the last 2 minutes.
+    nudgeJiraPolling: async (profileId: string) => (await jiraPolling?.pollProfileSoon(profileId, 2 * 60_000)) ?? 0,
   });
   jiraWorkspaceViewsSnapshot = providerHandlers.getJiraWorkspaceViewsSnapshot;
   const gridHandlers = createGridHandlers({
@@ -7977,16 +7980,10 @@ export async function createRuntime({
           connectionId: query.connectionId,
           queryId: query.id,
           query: query.jql,
-          intervalMs: Math.max(
-            60_000,
-            Math.min(
-              60 * 60_000,
-              (query.pollSeconds ||
-                connection.pollSeconds ||
-                state.settings.integrations.jira.defaultPollSeconds ||
-                120) * 1000,
-            ),
-          ),
+          intervalMs:
+            clampJiraPollSeconds(
+              query.pollSeconds || connection.pollSeconds || state.settings.integrations.jira.defaultPollSeconds,
+            ) * 1000,
           enabled: true,
         })
         .catch((error) =>

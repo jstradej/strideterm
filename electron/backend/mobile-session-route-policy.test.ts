@@ -44,6 +44,7 @@ function decide(pathname: string, body: Record<string, unknown> = {}) {
 const MOBILE_ROUTE_CLASSIFICATION: Record<string, MobileRouteClass> = {
   "/api/jira/ensure-workspace": "deny",
   "/api/jira/connections": "own-check",
+  "/api/jira/polling/nudge": "own-check",
   "/api/jira/queries": "guarded",
   "/api/jira/own-issues-query": "guarded",
   "/api/jira/own-identity/verify": "guarded",

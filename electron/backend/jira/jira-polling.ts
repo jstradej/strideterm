@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { JiraPollingWatchStatus } from "../../shared/types/jira-workspace-views.js";
+import { JIRA_POLL_MAX_SECONDS, JIRA_POLL_MIN_SECONDS } from "../../shared/jira-poll-interval.js";
 
 export type JiraPollKey = { profileId: string; connectionId: string; queryId: string };
 export type JiraPollIssue = { issueId: string; issueKey: string; updatedAt: number };
@@ -97,8 +98,8 @@ export class JiraPollingService {
   constructor(private readonly options: JiraPollingOptions) {
     this.now = options.now ?? Date.now;
     this.limits = {
-      minIntervalMs: 60_000,
-      maxIntervalMs: 60 * 60_000,
+      minIntervalMs: JIRA_POLL_MIN_SECONDS * 1000,
+      maxIntervalMs: JIRA_POLL_MAX_SECONDS * 1000,
       maxIssues: 500,
       maxRequests: 5,
       maxDedupeIds: 5000,
@@ -224,6 +225,28 @@ export class JiraPollingService {
       const latest = this.state?.watches[id];
       if (!this.disposed && latest?.config.enabled) this.schedule(id, Math.max(0, latest.nextPollAt - this.now()));
     }
+  }
+
+  /**
+   * Somebody is using Jira in this profile: check its saved queries now instead of at their next slot.
+   * Skips a watch that polled within `minAgeMs`, is already due or in flight, or is backing off from a
+   * rate limit. Returns how many watches were brought forward.
+   */
+  async pollProfileSoon(profileId: string, minAgeMs: number): Promise<number> {
+    this.assertLive();
+    const state = await this.getState();
+    const now = this.now();
+    let nudged = 0;
+    for (const [id, watch] of Object.entries(state.watches)) {
+      if (watch.config.profileId !== profileId || !watch.config.enabled) continue;
+      if (this.inFlight.has(id) || this.rateLimitStrikes.has(id) || watch.nextPollAt <= now) continue;
+      const lastPolledAt = watch.nextPollAt - watch.config.intervalMs;
+      if (now - lastPolledAt < minAgeMs) continue;
+      watch.nextPollAt = now;
+      this.schedule(id, 0);
+      nudged += 1;
+    }
+    return nudged;
   }
 
   async start(): Promise<void> {

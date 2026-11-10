@@ -79,6 +79,7 @@ import { jiraCandidates, jiraIssueUrl } from "../../lib/jira-issue-links.js";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { userFacingMessage } from "../../lib/error-message.js";
+import { nudgeJiraPolling } from "../../lib/jira-activity.js";
 
 type HeaderIssue = {
   ref: { connectionId: string; issueId: string; issueKey: string };
@@ -154,6 +155,7 @@ function closePanel(): void {
 useDismissable(open, [rootRef, listRef], { onDismiss: closePanel, eventName: "mousedown" });
 
 function onFocus(): void {
+  nudgeJiraPolling(store.getApi());
   if (searchedText.value && searchedText.value === text.value.trim()) openPanel();
 }
 
@@ -355,9 +357,14 @@ function onKeydown(event: KeyboardEvent): void {
 function onWindowChange(): void {
   if (open.value) void nextTick(positionPanel);
 }
+function onWindowFocus(): void {
+  if (routes.value.length) nudgeJiraPolling(store.getApi());
+}
 window.addEventListener("resize", onWindowChange);
+window.addEventListener("focus", onWindowFocus);
 onBeforeUnmount(() => {
   window.removeEventListener("resize", onWindowChange);
+  window.removeEventListener("focus", onWindowFocus);
   if (debounceTimer) clearTimeout(debounceTimer);
   generation++;
 });

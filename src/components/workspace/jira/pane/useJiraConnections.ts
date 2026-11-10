@@ -15,6 +15,7 @@ import {
 } from "./jira-pane-types.js";
 import type { JiraPaneContext } from "./jira-pane-context.js";
 import { LOAD_BUSY_KEYS } from "./useJiraPaneCore.js";
+import { clampJiraPollSeconds, JIRA_POLL_DEFAULT_SECONDS } from "../../../../../electron/shared/jira-poll-interval.js";
 
 const JIRA_API_TOKEN_URL = "https://id.atlassian.com/manage-profile/security/api-tokens";
 
@@ -171,7 +172,7 @@ export function useJiraConnections(ctx: JiraPaneContext) {
     issueKeyPrefixesText: "",
     defaultJql: "",
     projectKeysText: "",
-    pollSeconds: 120,
+    pollSeconds: JIRA_POLL_DEFAULT_SECONDS,
   });
   const accountPurposeOptions = [
     { value: "personal", label: "Personal account" },
@@ -1276,7 +1277,7 @@ export function useJiraConnections(ctx: JiraPaneContext) {
     metadataDraft.issueKeyPrefixesText = (connection.issueKeyPrefixes || []).join(", ");
     metadataDraft.defaultJql = connection.defaultJql || "";
     metadataDraft.projectKeysText = (connection.projectKeys || []).join(", ");
-    metadataDraft.pollSeconds = connection.pollSeconds || 120;
+    metadataDraft.pollSeconds = clampJiraPollSeconds(connection.pollSeconds);
     metadataTouched.value = false;
     metadataError.value = "";
     if (connectionEditTab.value === "connection") resetConnectionDraft();

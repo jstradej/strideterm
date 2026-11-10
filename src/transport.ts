@@ -306,6 +306,7 @@ export interface Transport extends Partial<
   Omit<StridetermAPI, "onConnectionState" | "getState" | "onStateUpdated" | "attachmentList" | "attachmentDelete">
 > {
   listJiraConnections?: () => Promise<unknown>;
+  nudgeJiraPolling?: () => Promise<{ nudged: number }>;
   getJiraRepoBindingPreference?: (payload: { connectionId: string; projectKey: string }) => Promise<unknown>;
   ensureJiraWorkspace?: () => Promise<unknown>;
   previewJiraTaskContext?: (payload: {
@@ -2637,6 +2638,7 @@ export function createRemoteTransport(): Transport {
     getJiraRecentIssues: (payload) => fetchJson("/api/jira/recent-issues", payload),
     rememberJiraIssueViewed: (payload) => fetchJson("/api/jira/recent-issues/viewed", payload),
     listJiraConnections: () => fetchJson("/api/jira/connections", {}),
+    nudgeJiraPolling: () => fetchJson("/api/jira/polling/nudge", {}) as Promise<{ nudged: number }>,
     listJiraProjects: (connectionId) => fetchJson("/api/jira/projects", { connectionId }),
     listJiraQueries: (connectionId) => fetchJson("/api/jira/queries", { connectionId }),
     searchJiraIssues: (payload) => fetchJson("/api/jira/search", payload),

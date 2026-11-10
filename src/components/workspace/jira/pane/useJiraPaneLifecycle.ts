@@ -3,6 +3,7 @@ import { type JiraWorkspaceViewsState } from "../../../../../electron/shared/typ
 
 import type { JiraPaneContext } from "./jira-pane-context.js";
 import { useJiraDetachedLifecycle } from "./useJiraDetachedLifecycle.js";
+import { nudgeJiraPolling } from "../../../../lib/jira-activity.js";
 
 export function useJiraPaneLifecycle(ctx: JiraPaneContext) {
   const {
@@ -96,6 +97,7 @@ export function useJiraPaneLifecycle(ctx: JiraPaneContext) {
   function refreshAfterReturn() {
     updateSyncClock();
     if (!paneIsShown()) return;
+    nudgeJiraPolling(ctx.api);
     const metadata = headCacheMetadata.value;
     if (!metadata) return;
     const now = Date.now();
@@ -135,6 +137,7 @@ export function useJiraPaneLifecycle(ctx: JiraPaneContext) {
   }
   onMounted(() => {
     void loadConnections();
+    nudgeJiraPolling(ctx.api);
     void loadJiraCommentDrafts();
     window.addEventListener("focus", refreshAfterReturn);
     document.addEventListener("visibilitychange", refreshAfterReturn);

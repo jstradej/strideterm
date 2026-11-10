@@ -42,6 +42,42 @@ const limits = {
 };
 
 describe("JiraPollingService", () => {
+  it("pollProfileSoon brings forward only this profile's watches that have not polled recently", async () => {
+    vi.useFakeTimers();
+    try {
+      let clock = 10_000;
+      const polled: string[] = [];
+      const service = new JiraPollingService({
+        store: new MemoryStore(),
+        poller: async (request) => {
+          polled.push(`${request.profileId}/${request.queryId}`);
+          return { kind: "snapshot", supported: true, complete: true, observedAt: clock, issues: [] };
+        },
+        onNotification: () => undefined,
+        now: () => clock,
+        limits: { ...limits, maxConcurrentPolls: 2 },
+      });
+      await service.enable(config("profile-a", "jira-a", "query-a"));
+      await service.enable(config("profile-b", "jira-b", "query-b"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(polled.sort()).toEqual(["profile-a/query-a", "profile-b/query-b"]);
+      polled.length = 0;
+
+      clock += 1000;
+      expect(await service.pollProfileSoon("profile-a", 2000)).toBe(0);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(polled).toEqual([]);
+
+      clock += 2000;
+      expect(await service.pollProfileSoon("profile-a", 2000)).toBe(1);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(polled).toEqual(["profile-a/query-a"]);
+      service.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does not persist or reset a watch when runtime state refresh repeats the same opt-in config", async () => {
     const store = new MemoryStore();
     let saves = 0;

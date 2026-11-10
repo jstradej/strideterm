@@ -64,6 +64,7 @@ contextBridge.exposeInMainWorld("strideterm", {
     return result["payload"] ?? result;
   },
   listJiraConnections: () => invokeJira("jira:connections"),
+  nudgeJiraPolling: () => invokeJira("jira:polling:nudge"),
   getJiraRecentSearches: (payload) => invokeJira("jira:recent-searches:list", payload),
   getJiraWorkspaceViews: (payload) => invokeJira("jira:workspace-views:get", payload),
   saveJiraWorkspaceView: (payload) => invokeJira("jira:workspace-views:save", payload),

@@ -28,6 +28,7 @@ import {
   DEFAULT_JIRA_AGENT_ATTACHMENT_LIMITS,
   normalizeJiraAgentAttachmentLimits,
 } from "../shared/jira-agent-attachments.js";
+import { clampJiraPollSeconds, JIRA_POLL_DEFAULT_SECONDS } from "../shared/jira-poll-interval.js";
 
 const UTF8_DECODER = (() => {
   try {
@@ -703,7 +704,7 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
         },
         jira: {
           enabled: true,
-          defaultPollSeconds: 120,
+          defaultPollSeconds: JIRA_POLL_DEFAULT_SECONDS,
           connections: [],
           queries: [],
           commentAttribution: { ...DEFAULT_JIRA_COMMENT_ATTRIBUTION },
@@ -1699,7 +1700,7 @@ export function normalizeState(
                   ),
                 ].slice(0, 100)
               : [],
-            pollSeconds: Math.max(60, Math.min(3600, Number(connection.pollSeconds) || 120)),
+            pollSeconds: clampJiraPollSeconds(connection.pollSeconds),
             label: String(connection.label || connection.id || `Jira ${index + 1}`).slice(0, 80),
             enabled: connection.enabled !== false,
             deployment: connection.deployment === "cloud" ? "cloud" : "data-center",

@@ -72,8 +72,14 @@
         ><input
           v-model.number="metadataDraft.pollSeconds"
           type="number"
+          :min="JIRA_POLL_MIN_SECONDS"
+          :max="JIRA_POLL_MAX_SECONDS"
+          step="60"
           :aria-invalid="metadataFieldError('pollSeconds') ? 'true' : undefined"
-        /><small class="jira-help">How often saved queries checked in the background are refreshed.</small></label
+        /><small class="jira-help"
+          >How often saved queries checked in the background are refreshed: 15 minutes to 1 hour. Opening the Jira inbox
+          or the Jira search checks them sooner.</small
+        ></label
       >
       <small v-if="metadataFieldError('pollSeconds')" class="jira-field-error" role="alert">{{
         metadataFieldError("pollSeconds")
@@ -166,6 +172,7 @@ import JiraConnectionCredentialsForm from "./JiraConnectionCredentialsForm.vue";
 
 import { useJiraPaneContext } from "./pane/jira-pane-context.js";
 import type { JiraMetadataField } from "./pane/jira-metadata-validation.js";
+import { JIRA_POLL_MAX_SECONDS, JIRA_POLL_MIN_SECONDS } from "../../../../electron/shared/jira-poll-interval.js";
 
 const {
   accountPurposeOptions,
