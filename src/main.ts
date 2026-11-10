@@ -15,6 +15,9 @@ import { bootstrapMobileSessionFromFragment } from "./mobile-session-bootstrap.j
 import { installFormValidationFeedback } from "./lib/form-validation.js";
 import { installVueErrorHandler } from "./lib/vue-error-handler.js";
 import { useNotificationStore } from "./stores/notifications.js";
+import { installCanvasFontShim } from "./lib/canvas-font-shim.js";
+
+installCanvasFontShim();
 
 // Use consistent, field-specific feedback for native form constraints across
 // the main app and dynamically mounted dialogs.
