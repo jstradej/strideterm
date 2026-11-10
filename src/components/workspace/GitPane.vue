@@ -77,7 +77,7 @@
       >
         <span class="git-view__tabs-trigger__label">{{ activeTabInfo.label }}</span>
         <span v-if="activeTabInfo.badge" class="git-tabs__badge">{{ activeTabInfo.badge }}</span>
-        <span class="git-view__tabs-trigger__caret" aria-hidden="true">▼</span>
+        <span class="disclosure-chevron disclosure-chevron--down git-view__tabs-trigger__caret" aria-hidden="true" />
       </button>
       <button
         v-if="isMobile"

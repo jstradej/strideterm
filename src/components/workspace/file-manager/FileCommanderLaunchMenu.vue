@@ -20,7 +20,11 @@
       :disabled="!items.length"
       @click="open = !open"
     >
-      <svg viewBox="0 0 10 6" width="8" height="5" aria-hidden="true"><path d="M1 1l4 4 4-4" /></svg>
+      <span
+        class="disclosure-chevron disclosure-chevron--down"
+        :class="{ 'disclosure-chevron--open': open }"
+        aria-hidden="true"
+      />
     </button>
     <div v-if="open" class="fcl__menu" role="menu">
       <button
@@ -113,19 +117,6 @@ function pick(key: string) {
   padding: 1px 5px;
   color: var(--muted);
   border-left: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
-}
-
-.fcl__caret svg {
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.5;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  transition: transform 0.12s ease;
-}
-
-.fcl--open .fcl__caret svg {
-  transform: rotate(180deg);
 }
 
 .fcl__main:hover:not(:disabled),

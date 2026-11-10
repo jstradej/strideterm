@@ -64,7 +64,7 @@ afterEach(() => {
 describe("HistoryRangePicker", () => {
   test("button reads Branch without a filter and Branch: <name> with one", async () => {
     const picker = mountPicker();
-    expect(picker.get("button").text()).toBe("Branch▾");
+    expect(picker.get("button").text()).toBe("Branch");
     expect(picker.get("button").attributes("aria-haspopup")).toBe("menu");
     await picker.setProps({ modelValue: "feature/x" } as never);
     expect(picker.get("button").text()).toContain("Branch: feature/x");

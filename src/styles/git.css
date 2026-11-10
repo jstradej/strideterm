@@ -641,6 +641,10 @@
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;
 }
+.git-changes-branch__chevron {
+  margin-left: 4px;
+  vertical-align: -2px;
+}
 .git-split-button__caret {
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
@@ -1417,7 +1421,6 @@
     min-width: 0;
   }
   .git-view__tabs-trigger__caret {
-    font-size: 9px;
     opacity: 0.7;
     flex-shrink: 0;
   }

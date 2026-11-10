@@ -29,8 +29,8 @@ describe("GitHistoryFilters", () => {
   test("compact shows short labels when inactive and values when active", async () => {
     const wrapper = mountFilters({ compact: true });
     expect(wrapper.text()).not.toContain("User: All");
-    expect(wrapper.get(".git-branches__paths-button").text()).toBe("Paths▾");
-    expect(wrapper.get(".git-branches__user-button").text()).toBe("User▾");
+    expect(wrapper.get(".git-branches__paths-button").text()).toBe("Paths");
+    expect(wrapper.get(".git-branches__user-button").text()).toBe("User");
     expect(wrapper.findAll("button").some((b) => b.text() === "Clear")).toBe(false);
     await wrapper.setProps({ userFilter: "alice", pathsFilter: ["a", "b"], dateFilter: "week" } as never);
     expect(wrapper.text()).toContain("User: alice");

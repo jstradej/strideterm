@@ -14,7 +14,7 @@
       @keydown="onButtonKeydown"
     >
       <span class="history-range-picker__value">{{ buttonText }}</span>
-      <span class="history-range-picker__arrow" aria-hidden="true">▾</span>
+      <span class="disclosure-chevron disclosure-chevron--down history-range-picker__arrow" aria-hidden="true" />
     </button>
     <Teleport to="body">
       <div v-if="open" ref="menusRef" @keydown="onMenuKeydown">
@@ -679,9 +679,7 @@ onBeforeUnmount(() => {
   color: inherit;
 }
 .history-range-picker__arrow {
-  flex-shrink: 0;
   color: var(--muted);
-  font-size: 10px;
   text-transform: none;
   letter-spacing: normal;
 }

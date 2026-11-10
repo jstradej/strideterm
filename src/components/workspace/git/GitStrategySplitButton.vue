@@ -20,7 +20,7 @@
       :title="caretTitle"
       @click="menuOpen = !menuOpen"
     >
-      ▾
+      <span class="disclosure-chevron disclosure-chevron--down" aria-hidden="true" />
     </button>
     <div v-if="menuOpen" class="git-split-button__menu" role="menu">
       <button

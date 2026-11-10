@@ -38,7 +38,7 @@
       >
         <span class="azure-inbox__tabs-trigger__label">{{ activeTabInfo.label }}</span>
         <span v-if="activeTabInfo.count != null" class="azure-tab__count">{{ activeTabInfo.count }}</span>
-        <span class="azure-inbox__tabs-trigger__caret" aria-hidden="true">▼</span>
+        <span class="disclosure-chevron disclosure-chevron--down azure-inbox__tabs-trigger__caret" aria-hidden="true" />
       </button>
       <button
         v-if="isMobile"

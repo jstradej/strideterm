@@ -2558,7 +2558,6 @@ details[open] > .review-tree-dir__label .review-tree-dir__icon::before {
     min-width: 0;
   }
   .azure-inbox__tabs-trigger__caret {
-    font-size: 9px;
     opacity: 0.7;
     flex-shrink: 0;
   }
@@ -2790,7 +2789,6 @@ details[open] > .review-tree-dir__label .review-tree-dir__icon::before {
     min-width: 0;
   }
   .review-shell__tabs-trigger__caret {
-    font-size: 9px;
     opacity: 0.7;
     flex-shrink: 0;
   }

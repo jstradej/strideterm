@@ -9,7 +9,7 @@
     >
       <span v-if="wsIcon" class="workspace-cell-header__icon">{{ wsIcon }}</span>
       <span class="workspace-cell-header__name">{{ wsName }}</span>
-      <span class="workspace-cell-header__chev" aria-hidden="true">▾</span>
+      <span class="disclosure-chevron disclosure-chevron--down workspace-cell-header__chev" aria-hidden="true" />
     </button>
 
     <!-- Tab strip is injected via slot from WorkspaceCell so the cell's

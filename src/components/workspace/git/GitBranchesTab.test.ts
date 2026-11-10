@@ -836,7 +836,7 @@ describe("GitBranchesTab compact history picker", () => {
     expect(select().value).toBe("feature/b");
     expect(picker.findAll('input[type="date"]')).toHaveLength(0);
     expect(document.body.querySelector(".git-history-menu__row--static")).toBeNull();
-    expect(picker.get(".git-branches__paths-button").text()).toBe("Paths▾");
+    expect(picker.get(".git-branches__paths-button").text()).toBe("Paths");
     expect(picker.text()).toContain("Sort: Date");
     expect(picker.text()).toContain("View: Graph");
     await picker.setProps({ activeRootPath: "/repo/a", profileId: "profile-b" } as never);

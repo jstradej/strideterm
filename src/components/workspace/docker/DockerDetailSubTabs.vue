@@ -30,7 +30,7 @@
       @click="toggle"
     >
       <span class="sub-tabs-mobile__trigger-label">{{ activeLabel }}</span>
-      <span class="sub-tabs-mobile__trigger-caret" aria-hidden="true">▼</span>
+      <span class="disclosure-chevron disclosure-chevron--down sub-tabs-mobile__trigger-caret" aria-hidden="true" />
     </button>
     <template v-if="open">
       <div class="sub-tabs-mobile__backdrop" aria-hidden="true" @click="open = false"></div>
@@ -208,7 +208,6 @@ function onPick(id: SubTabKind): void {
 }
 
 .sub-tabs-mobile__trigger-caret {
-  font-size: 9px;
   opacity: 0.7;
 }
 

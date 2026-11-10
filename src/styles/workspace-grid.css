@@ -241,7 +241,6 @@
 }
 
 .workspace-cell-header__chev {
-  font-size: 8px;
   color: var(--muted);
   flex-shrink: 0;
 }

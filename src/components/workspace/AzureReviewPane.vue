@@ -40,7 +40,10 @@
       >
         <span class="review-shell__tabs-trigger__label">{{ activeReviewTabInfo.label }}</span>
         <span v-if="activeReviewTabInfo.count != null" class="azure-tab__count">{{ activeReviewTabInfo.count }}</span>
-        <span class="review-shell__tabs-trigger__caret" aria-hidden="true">▼</span>
+        <span
+          class="disclosure-chevron disclosure-chevron--down review-shell__tabs-trigger__caret"
+          aria-hidden="true"
+        />
       </button>
       <button
         v-if="isMobile"

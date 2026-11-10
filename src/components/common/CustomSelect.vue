@@ -13,7 +13,7 @@
       <span class="custom-select__value" :class="{ 'custom-select__value--placeholder': !selectedLabel }">
         {{ selectedLabel || placeholder }}
       </span>
-      <span class="custom-select__arrow" aria-hidden="true">▾</span>
+      <span class="disclosure-chevron disclosure-chevron--down custom-select__arrow" aria-hidden="true" />
     </button>
     <Teleport to="body">
       <div v-if="open" ref="listRef" class="custom-select__list" :style="listStyle" @keydown="onListKeydown">
@@ -379,9 +379,7 @@ defineExpose({ focus: () => buttonRef.value?.focus() });
   color: var(--muted);
 }
 .custom-select__arrow {
-  flex-shrink: 0;
   color: var(--muted);
-  font-size: 10px;
   text-transform: none;
   letter-spacing: normal;
 }

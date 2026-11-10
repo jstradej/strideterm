@@ -14,7 +14,7 @@
       <span class="branch-picker__value" :class="{ 'branch-picker__value--placeholder': !buttonText }">
         {{ buttonText || placeholder }}
       </span>
-      <span class="branch-picker__arrow" aria-hidden="true">▾</span>
+      <span class="disclosure-chevron disclosure-chevron--down branch-picker__arrow" aria-hidden="true" />
     </button>
     <Teleport to="body">
       <div v-if="open" ref="listRef" class="branch-picker__popover" :style="popoverStyle">
@@ -580,9 +580,7 @@ defineExpose({ focus: (): void => buttonRef.value?.focus() });
   color: var(--muted);
 }
 .branch-picker__arrow {
-  flex-shrink: 0;
   color: var(--muted);
-  font-size: 10px;
 }
 .branch-picker__popover {
   z-index: 10050;

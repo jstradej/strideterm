@@ -32,7 +32,7 @@
             @click="toggleBranch"
           >
             <span v-if="refsLoading" class="apr-branch__spinner" />
-            <span v-else aria-hidden="true">▾</span>
+            <span v-else class="disclosure-chevron disclosure-chevron--down" aria-hidden="true" />
           </button>
           <div v-if="branchOpen" class="apr-branch__menu">
             <div class="apr-branch__tabs" role="tablist">

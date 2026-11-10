@@ -13,7 +13,7 @@
         @keydown="onButtonKeydown($event, userOpen, openUser)"
       >
         <span class="git-history-menu__value">{{ userButtonText }}</span>
-        <span class="git-history-menu__arrow" aria-hidden="true">▾</span>
+        <span class="disclosure-chevron disclosure-chevron--down git-history-menu__arrow" aria-hidden="true" />
       </button>
       <Teleport to="body">
         <div
@@ -105,7 +105,7 @@
         @keydown="onButtonKeydown($event, pathsOpen, openPaths)"
       >
         <span class="git-history-menu__value">{{ pathsFilter.length ? `Paths: ${pathsFilter.length}` : "Paths" }}</span>
-        <span class="git-history-menu__arrow" aria-hidden="true">▾</span>
+        <span class="disclosure-chevron disclosure-chevron--down git-history-menu__arrow" aria-hidden="true" />
       </button>
       <Teleport to="body">
         <div
@@ -692,9 +692,7 @@ function onClear() {
   white-space: nowrap;
 }
 .git-history-menu__arrow {
-  flex-shrink: 0;
   color: var(--muted);
-  font-size: 10px;
 }
 .git-history-menu__menu {
   position: fixed;

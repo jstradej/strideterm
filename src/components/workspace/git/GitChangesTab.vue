@@ -16,7 +16,8 @@
         :disabled="!!gitUi.busyAction || operation.inProgress"
         @click="gitUiStore.gitSwitchTab(workspaceId, 'branches')"
       >
-        {{ snapshot.branch || "Detached HEAD" }} ▾
+        {{ snapshot.branch || "Detached HEAD" }}
+        <span class="disclosure-chevron disclosure-chevron--down git-changes-branch__chevron" aria-hidden="true" />
       </button>
       <button
         v-if="mobileMode === 'list'"

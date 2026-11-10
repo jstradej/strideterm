@@ -55,7 +55,7 @@
           <span class="docker-mobile-nav__icon">☰</span>
           <span class="docker-mobile-nav__label">{{ activeTabLabel || "Tabs" }}</span>
           <span v-if="tabCount > 0" class="docker-mobile-nav__badge">{{ tabCount }}</span>
-          <span class="docker-mobile-nav__caret" aria-hidden="true">▼</span>
+          <span class="disclosure-chevron disclosure-chevron--down docker-mobile-nav__caret" aria-hidden="true" />
         </button>
       </div>
 
@@ -576,12 +576,11 @@ function onDiskUsageOpen(kind: "images" | "volumes" | "networks" | "cache"): voi
   white-space: nowrap;
 }
 .docker-mobile-nav__caret {
-  font-size: 9px;
   opacity: 0.7;
   margin-left: -2px;
 }
 .docker-mobile-nav__btn--menu-open .docker-mobile-nav__caret {
-  transform: rotate(180deg);
+  transform: rotate(-90deg);
 }
 
 /* Tabs popover: anchored just under the mobile-nav row, full-width on mobile.
