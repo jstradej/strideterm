@@ -144,7 +144,7 @@ async function setupAttached(overrides: any = {}) {
 }
 
 async function cleanup(tmp: string): Promise<void> {
-  await fs.rm(tmp, { recursive: true, force: true });
+  await fs.rm(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 }
 
 // Attached task at "running", round 2, WORK_LOCK present — the state right
