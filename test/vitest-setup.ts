@@ -80,6 +80,12 @@ if (typeof window !== "undefined" && typeof window.matchMedia !== "function") {
   });
 }
 
+// jsdom implements no Element#scrollTo; components call it for a smooth
+// scroll-to-top (NotificationCenter), which every real browser provides.
+if (typeof Element !== "undefined" && typeof Element.prototype.scrollTo !== "function") {
+  Element.prototype.scrollTo = function scrollTo() {};
+}
+
 // Make this a module so `declare global` is valid (TypeScript requires global
 // augmentations to live inside an external or ambient module).
 export {};
