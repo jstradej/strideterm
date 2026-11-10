@@ -433,7 +433,7 @@ describe("GitTreeGraph", () => {
         "Resize Hash column",
       ]);
       expect(handles[0].attributes("role")).toBe("separator");
-      expect(rowColumns(w)).toBe("minmax(0, 1fr) 140px 84px 58px");
+      expect(rowColumns(w)).toBe("minmax(0px, 1fr) 140px 84px 58px");
       expect(mountGraph({ history: false }).find(".git-tree__history-header").exists()).toBe(false);
     });
 
@@ -443,27 +443,27 @@ describe("GitTreeGraph", () => {
       pointer(handle.element, "pointerdown", 500);
       pointer(handle.element, "pointermove", 460);
       await nextTick();
-      expect(rowColumns(w)).toBe("minmax(0, 1fr) 180px 84px 58px");
+      expect(rowColumns(w)).toBe("minmax(0px, 1fr) 180px 84px 58px");
       pointer(handle.element, "pointerup", 460);
       expect(JSON.parse(localStorage.getItem(KEY)!)).toEqual({ author: 180, date: 84, hash: 58 });
       pointer(handle.element, "pointermove", 0);
       await nextTick();
-      expect(rowColumns(w)).toBe("minmax(0, 1fr) 180px 84px 58px");
+      expect(rowColumns(w)).toBe("minmax(0px, 1fr) 180px 84px 58px");
     });
 
     test("keyboard resizes by 8px (ArrowLeft widens, the handle sits on the left edge), Home and double-click reset", async () => {
       const w = mountGraph({ history: true });
       const handle = w.findAll(".git-tree__col-resizer")[1];
       await handle.trigger("keydown", { key: "ArrowLeft" });
-      expect(rowColumns(w)).toBe("minmax(0, 1fr) 140px 92px 58px");
+      expect(rowColumns(w)).toBe("minmax(0px, 1fr) 140px 92px 58px");
       await handle.trigger("keydown", { key: "ArrowRight" });
       await handle.trigger("keydown", { key: "ArrowRight" });
-      expect(rowColumns(w)).toBe("minmax(0, 1fr) 140px 76px 58px");
+      expect(rowColumns(w)).toBe("minmax(0px, 1fr) 140px 76px 58px");
       await handle.trigger("keydown", { key: "Home" });
-      expect(rowColumns(w)).toBe("minmax(0, 1fr) 140px 84px 58px");
+      expect(rowColumns(w)).toBe("minmax(0px, 1fr) 140px 84px 58px");
       await handle.trigger("keydown", { key: "ArrowLeft" });
       await handle.trigger("dblclick");
-      expect(rowColumns(w)).toBe("minmax(0, 1fr) 140px 84px 58px");
+      expect(rowColumns(w)).toBe("minmax(0px, 1fr) 140px 84px 58px");
     });
 
     describe("narrow panes", () => {
@@ -492,7 +492,7 @@ describe("GitTreeGraph", () => {
         await nextTick();
         expect(cells(medium)).toEqual(["date", "hash"]);
         expect(medium.findAll(".git-tree__col-resizer")).toHaveLength(2);
-        expect(rowColumns(medium)).toBe("minmax(0, 1fr) 84px 58px");
+        expect(rowColumns(medium)).toBe("minmax(0px, 1fr) 84px 58px");
         width = 330;
         const narrow = mountGraph({ history: true });
         await nextTick();
@@ -511,13 +511,15 @@ describe("GitTreeGraph", () => {
         expect(w.find(".git-tree__cell--refs").exists()).toBe(false);
         expect(w.find(".git-tree__cell--subject .git-tree__history-refs").exists()).toBe(true);
         expect((w.get(".git-tree__row").element as HTMLElement).style.gridTemplateColumns).toBe(
-          "minmax(0, 1fr) max-content",
+          "minmax(0px, 1fr) max-content",
         );
         width = 250;
         const narrow = mountGraph({ history: false });
         await nextTick();
         expect(cells(narrow)).toEqual([]);
-        expect((narrow.get(".git-tree__row").element as HTMLElement).style.gridTemplateColumns).toBe("minmax(0, 1fr)");
+        expect((narrow.get(".git-tree__row").element as HTMLElement).style.gridTemplateColumns).toBe(
+          "minmax(0px, 1fr)",
+        );
       });
 
       test("a compact graph sizes its gutter to the lanes in view", async () => {
@@ -543,7 +545,7 @@ describe("GitTreeGraph", () => {
 
     test("restores stored widths", () => {
       localStorage.setItem(KEY, JSON.stringify({ author: 200, date: 1, hash: 70 }));
-      expect(rowColumns(mountGraph({ history: true }))).toBe("minmax(0, 1fr) 200px 40px 70px");
+      expect(rowColumns(mountGraph({ history: true }))).toBe("minmax(0px, 1fr) 200px 40px 70px");
     });
   });
 });
