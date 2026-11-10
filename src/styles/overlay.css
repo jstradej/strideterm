@@ -262,9 +262,13 @@
   gap: 8px;
 }
 
+/* align-content: start — a label stretched to a taller grid/flex sibling
+   (two fields side by side, one with a hint below) would otherwise share the
+   extra height between its own rows and grow its input. */
 label {
   display: grid;
   gap: 4px;
+  align-content: start;
 }
 
 label span {
