@@ -117,15 +117,15 @@
               type="button"
               class="button"
               :disabled="
-                !prCanSubmit || !!gitUi.busyAction || snapshot.aheadCount === 0 || !snapshot.upstream || snapshot.dirty
+                !prCanSubmit || !!gitUi.busyAction || snapshot.aheadCount > 0 || !snapshot.upstream || snapshot.dirty
               "
               :title="
                 !snapshot.upstream
                   ? 'Publish the branch first before creating a PR'
                   : snapshot.dirty
                     ? 'Commit or stash changes before creating a PR'
-                    : snapshot.aheadCount === 0
-                      ? 'Nothing to PR — no commits ahead of upstream'
+                    : snapshot.aheadCount > 0
+                      ? 'Push your commits first — the PR is created from the branch on the remote'
                       : ''
               "
               @click="onCreatePr"

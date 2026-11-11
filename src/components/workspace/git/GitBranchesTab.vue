@@ -2190,6 +2190,23 @@ function openCreatePullRequestDialog(sourceBranchOverride = "") {
     void showToast("Cannot create PR — current branch is unknown.", "error");
     return;
   }
+  // The provider opens the PR from the branch on the remote: refuse here instead of letting it answer with
+  // "the source branch no longer exists" (Azure TF401398) or silently leaving unpushed commits out.
+  const local = branchList.value.local.find((branch) => branch.name === sourceBranch);
+  if (local && !branchList.value.remotes.some((branch) => branch.shortName === sourceBranch)) {
+    void showToast(
+      `Publish ${sourceBranch} first — it is not on the remote yet, so no PR can be opened from it.`,
+      "error",
+    );
+    return;
+  }
+  if (local?.upstream && local.ahead > 0) {
+    void showToast(
+      `Push ${sourceBranch} first — ${local.ahead} commit${local.ahead === 1 ? " is" : "s are"} not on the remote yet and would be left out of the PR.`,
+      "error",
+    );
+    return;
+  }
   // Kick off branch list fetch immediately; dialog binds to gitUi.remoteBranches.
   if (!props.gitUi.remoteBranches?.length) {
     void gitUiStore.azureListRemoteBranches(props.workspaceId);

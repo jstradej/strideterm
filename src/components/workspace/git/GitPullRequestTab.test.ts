@@ -48,16 +48,17 @@ import { jiraWriteExecuteSchema, jiraWritePreviewSchema } from "../../../../elec
 import CustomSelect from "../../common/CustomSelect.vue";
 import { rlog } from "../../../lib/renderer-log.js";
 
-function mountTab(gitUi: Record<string, unknown>, withRoutes = false) {
+function mountTab(gitUi: Record<string, unknown>, withRoutes = false, snapshot: Record<string, unknown> = {}) {
   return mount(GitPullRequestTab, {
     props: {
       workspaceId: "ws1",
       snapshot: {
         branch: withRoutes ? "feature/ENG-1" : "feature/x",
-        aheadCount: 1,
+        aheadCount: 0,
         upstream: "origin/feature/x",
         dirty: false,
         branchNames: [],
+        ...snapshot,
       },
       gitUi,
       baseBranch: "main",
@@ -84,6 +85,35 @@ async function fillAndSubmit(wrapper: ReturnType<typeof mountTab>) {
   await wrapper.find(".git-operation-actions button").trigger("click");
   await flushPromises();
 }
+
+describe("GitPullRequestTab — when a PR can be created", () => {
+  // The provider opens the PR from the branch on the remote: a pushed branch (0 ahead of its upstream) is the
+  // ready state, and unpushed commits would silently be left out of the PR.
+  test("a published, fully pushed branch can create a PR", async () => {
+    const wrapper = mountTab(reactive({ lastResult: null }));
+    await wrapper.findAll("input.git-pr-form__input")[1].setValue("My PR title");
+
+    expect(wrapper.find(".git-operation-actions button").attributes("disabled")).toBeUndefined();
+  });
+
+  test("unpushed commits block the PR until they are pushed", async () => {
+    const wrapper = mountTab(reactive({ lastResult: null }), false, { aheadCount: 2 });
+    await wrapper.findAll("input.git-pr-form__input")[1].setValue("My PR title");
+
+    const button = wrapper.find(".git-operation-actions button");
+    expect(button.attributes("disabled")).toBeDefined();
+    expect(button.attributes("title")).toContain("Push your commits first");
+  });
+
+  test("an unpublished branch blocks the PR until it is published", async () => {
+    const wrapper = mountTab(reactive({ lastResult: null }), false, { upstream: "" });
+    await wrapper.findAll("input.git-pr-form__input")[1].setValue("My PR title");
+
+    const button = wrapper.find(".git-operation-actions button");
+    expect(button.attributes("disabled")).toBeDefined();
+    expect(button.attributes("title")).toContain("Publish the branch first");
+  });
+});
 
 describe("GitPullRequestTab — create PR submission", () => {
   beforeEach(() => {

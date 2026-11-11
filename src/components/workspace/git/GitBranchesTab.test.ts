@@ -1767,6 +1767,61 @@ describe("GitBranchesTab — create-pr dialog submission (shared submitPullReque
     expect(closeDialog).not.toHaveBeenCalled();
   });
 
+  function prDialogGitUi(local: Record<string, unknown>, remotes: Array<Record<string, unknown>>) {
+    return {
+      branchList: { current: "main", local: [local], remotes, defaultBranch: "", defaultRemote: "" },
+      graph: { commits: [], head: "", refs: {} },
+      selectedCommit: "",
+      remoteBranches: [],
+      lastResult: null,
+    };
+  }
+
+  test("a local branch that is not on the remote asks to publish it instead of opening the dialog", async () => {
+    const wrapper = mountForPrDialog(prDialogGitUi({ name: "feature/x", upstream: "", ahead: 0 }, []));
+    await flushPromises();
+    wrapper.findComponent({ name: "BranchTreePane" }).vm.$emit("create-pr", "feature/x");
+    await flushPromises();
+
+    expect(openDialog).not.toHaveBeenCalled();
+    expect(showError).toHaveBeenCalledWith(
+      "Pull request failed",
+      expect.stringContaining("Publish feature/x first"),
+      expect.anything(),
+    );
+  });
+
+  test("a published branch with unpushed commits asks to push them first", async () => {
+    const wrapper = mountForPrDialog(
+      prDialogGitUi({ name: "feature/x", upstream: "origin/feature/x", ahead: 2 }, [
+        { name: "origin/feature/x", remote: "origin", shortName: "feature/x" },
+      ]),
+    );
+    await flushPromises();
+    wrapper.findComponent({ name: "BranchTreePane" }).vm.$emit("create-pr", "feature/x");
+    await flushPromises();
+
+    expect(openDialog).not.toHaveBeenCalled();
+    expect(showError).toHaveBeenCalledWith(
+      "Pull request failed",
+      expect.stringContaining("2 commits are not on the remote yet"),
+      expect.anything(),
+    );
+  });
+
+  test("a published, fully pushed branch opens the dialog", async () => {
+    const wrapper = mountForPrDialog(
+      prDialogGitUi({ name: "feature/x", upstream: "origin/feature/x", ahead: 0 }, [
+        { name: "origin/feature/x", remote: "origin", shortName: "feature/x" },
+      ]),
+    );
+    await flushPromises();
+    wrapper.findComponent({ name: "BranchTreePane" }).vm.$emit("create-pr", "feature/x");
+    await flushPromises();
+
+    expect(openDialog).toHaveBeenCalledWith("CreatePullRequestDialog", expect.anything());
+  });
+
   test("the commit search filters the graph and the header count, and range base reaches the graphs", async () => {
     const mk = (hash: string, subject: string) => ({
       hash,
