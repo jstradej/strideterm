@@ -23,7 +23,7 @@ function localBranch(name: string, extra: Record<string, unknown> = {}) {
   };
 }
 
-function setup({ dirty = false } = {}) {
+function setup({ dirty = false, aheadCount = 0 } = {}) {
   setActivePinia(createPinia());
   const appStore = useAppStore();
   const snapshot = {
@@ -32,7 +32,7 @@ function setup({ dirty = false } = {}) {
     dirty,
     dirtyCount: dirty ? 2 : 0,
     upstream: "origin/main",
-    aheadCount: 0,
+    aheadCount,
     behindCount: 1,
     remotes: { origin: "git@example.invalid:repo.git" },
   };
@@ -174,6 +174,61 @@ describe("WorkspaceBranchMenu", () => {
     await flushPromises();
 
     expect(pull).toHaveBeenCalledWith("ws", { stashDirty: true });
+  });
+
+  it("Update keeps the menu open and shows a spinner on its row while it pulls", async () => {
+    const { pull } = setup();
+    const ui = useGitUiStore().get("ws");
+    let finish!: () => void;
+    pull.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          ui.busyAction = "pull";
+          finish = () => {
+            ui.busyAction = "";
+            resolve();
+          };
+        }),
+    );
+    await openMenu();
+
+    rowByLabel("Update").click();
+    await flushPromises();
+    expect(rowByLabel("Update").querySelector(".spinner")).not.toBeNull();
+    expect(document.body.querySelector(".branch-menu__status")).toBeNull();
+
+    finish();
+    await flushPromises();
+    expect(document.body.querySelector(".branch-menu")).not.toBeNull();
+    expect(rowByLabel("Update").querySelector(".spinner")).toBeNull();
+  });
+
+  it("Update of a diverged branch closes the menu and asks in the Git tab", async () => {
+    const { merge, activateView } = setup({ aheadCount: 2 });
+    useAppStore().payload!.appState.settings = { git: { ui: { updateStrategy: "merge" } } } as never;
+    await openMenu();
+
+    rowByLabel("Update").click();
+    await flushPromises();
+
+    expect(merge).toHaveBeenCalledWith("ws", "origin/main", { fetchFirst: true });
+    expect(activateView).toHaveBeenCalledWith("git:ws");
+    expect(document.body.querySelector(".branch-menu")).toBeNull();
+  });
+
+  it("Update closes the menu and opens the Git tab when the pull stops on a conflict", async () => {
+    const { pull, activateView } = setup({ dirty: true });
+    const ui = useGitUiStore().get("ws");
+    pull.mockImplementation(async () => {
+      ui.conflictDialog = { open: true, workspaceId: "ws", rootPath: "", conflicts: [], loading: false, error: "" };
+    });
+    await openMenu();
+
+    rowByLabel("Update").click();
+    await flushPromises();
+
+    expect(activateView).toHaveBeenCalledWith("git:ws");
+    expect(document.body.querySelector(".branch-menu")).toBeNull();
   });
 
   it("Fetch keeps the menu open and shows a spinner on its row while it runs", async () => {

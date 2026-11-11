@@ -297,8 +297,8 @@ const busy = computed(
   () => !!gitUi.value.busyAction || !!gitUi.value.pendingAction || !!appStore.isReviewGitBusy?.(props.workspaceId),
 );
 const busyLabel = computed(() => {
-  // A fetch shows its spinner on its own row instead.
-  if (gitUi.value.busyAction === "fetch") return "";
+  // A fetch or an in-place update shows its spinner on its own row instead.
+  if (gitUi.value.busyAction === "fetch" || gitUi.value.busyAction === "pull") return "";
   if (gitUi.value.busyAction) return String(gitUi.value.busyPhase || "Git action running…");
   if (gitUi.value.pendingAction) return "A Git action is waiting for confirmation in the Git tab.";
   return "";
@@ -339,7 +339,7 @@ const updateAction = computed(() => {
         }. You confirm in the Git tab before anything changes; the strategy is set in the Git tab.`
       : `Downloads new commits from ${upstream} and moves ${currentBranch.value} forward to them, updating your files.${
           dirty.value ? " Your uncommitted changes are put aside first and restored afterwards." : ""
-        } Nothing is sent to the remote.`);
+        } Nothing is sent to the remote. The menu stays open.`);
   return { disabled: !!disabledReason, hint, title, strategy, upstream };
 });
 
@@ -381,6 +381,9 @@ function topActions(): Row[] {
       title: updateAction.value.title,
       disabled: updateAction.value.disabled,
       run: runUpdate,
+      // A fast-forward needs no answer, so the menu stays open like Fetch; a diverged branch is confirmed in the Git tab.
+      keepOpen: !isDiverged.value,
+      running: gitUi.value.busyAction === "pull",
     },
     {
       kind: "action",
@@ -758,15 +761,20 @@ function closeSubmenu(): void {
 
 const branchActions = useBranchActions(
   () => props.workspaceId,
-  () => afterAction(),
+  async () => {
+    await afterAction();
+  },
 );
 
-async function afterAction(): Promise<void> {
+/** True when the action left a question in the Git tab and brought it up. */
+async function afterAction(): Promise<boolean> {
   // Confirmations (merge, rebase, force push, reset to remote) and conflict
   // resolution live in the Git tab — bring it up so the user sees the question.
   const ui = gitUiStore.get(props.workspaceId);
-  if (ui.pendingAction || ui.conflictDialog?.open) await appStore.activateView(`git:${props.workspaceId}`);
+  const needsGitTab = !!(ui.pendingAction || ui.conflictDialog?.open);
+  if (needsGitTab) await appStore.activateView(`git:${props.workspaceId}`);
   void gitUiStore.gitListBranches(props.workspaceId, { force: true });
+  return needsGitTab;
 }
 
 async function run(action: () => unknown): Promise<void> {
@@ -778,7 +786,8 @@ async function run(action: () => unknown): Promise<void> {
 async function runInPlace(action: () => unknown): Promise<void> {
   closeSubmenu();
   await action();
-  await afterAction();
+  // An update that stopped on a conflict asks in the Git tab; the menu must not cover it.
+  if (await afterAction()) close();
 }
 
 function runUpdate(): Promise<void> | void {
