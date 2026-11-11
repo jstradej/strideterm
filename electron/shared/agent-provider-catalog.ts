@@ -38,7 +38,7 @@ export const PROVIDER_CHOICES: ProviderChoice[] = [
     effortLevels: ["low", "medium", "high", "xhigh", "max"],
     models: [
       // Aliases follow Claude Code's own latest per tier (code.claude.com/docs/en/model-config,
-      // checked 2026-11-05: fable = Fable 5.1, opus = Opus 5.5, sonnet = Sonnet 5.5, haiku = Haiku 5.5;
+      // checked 2026-11-11: fable = Fable 5.2, opus = Opus 5.5, sonnet = Sonnet 5.5, haiku = Haiku 5.5;
       // best = Fable where the account has it, else Opus).
       { id: "", name: "Default", suggestedRole: null },
       { id: "sonnet", name: "Sonnet", suggestedRole: "worker" },
@@ -93,11 +93,13 @@ export const PROVIDER_CHOICES: ProviderChoice[] = [
     inspectionIsolation: "permission-gated",
     effortLevels: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
     // Per GitHub's supported-models reference and `copilot help config` (checked 2026-11-05). Fable needs an
-    // enterprise administrator to enable it.
+    // enterprise administrator to enable it. Fable 5.2 (checked 2026-11-11): GitHub names no CLI id; this one
+    // is models.dev's github-copilot entry, in the same form as the others.
     models: [
       { id: "", name: "Default", suggestedRole: null },
       { id: "claude-opus-5.5", name: "Claude Opus 5.5", suggestedRole: "judge" },
       { id: "claude-sonnet-5.5", name: "Claude Sonnet 5.5", suggestedRole: "worker" },
+      { id: "claude-fable-5.2", name: "Claude Fable 5.2", suggestedRole: null },
       { id: "claude-fable-5.1", name: "Claude Fable 5.1", suggestedRole: null },
       { id: "gpt-6.1-sol", name: "GPT-6.1 Sol", suggestedRole: null },
       { id: "gpt-6-astra", name: "GPT-6 Astra", suggestedRole: null },
@@ -114,9 +116,10 @@ export const PROVIDER_CHOICES: ProviderChoice[] = [
     effortLevels: [],
     models: [
       { id: "default", name: "Default", suggestedRole: null },
-      // Ids per models.dev, the catalog OpenCode reads (checked 2026-11-05).
+      // Ids per models.dev, the catalog OpenCode reads (checked 2026-11-11).
       { id: "anthropic/claude-opus-5-5", name: "Claude Opus 5.5", suggestedRole: "judge" },
       { id: "anthropic/claude-sonnet-5-5", name: "Claude Sonnet 5.5", suggestedRole: "worker" },
+      { id: "anthropic/claude-fable-5-2", name: "Claude Fable 5.2", suggestedRole: null },
       { id: "anthropic/claude-fable-5-1", name: "Claude Fable 5.1", suggestedRole: null },
       { id: "openai/gpt-6.1-sol", name: "GPT-6.1 Sol", suggestedRole: null },
       { id: "openai/gpt-6.1-terra", name: "GPT-6.1 Terra", suggestedRole: null },
