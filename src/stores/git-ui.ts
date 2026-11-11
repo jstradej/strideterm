@@ -2676,6 +2676,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     gitFetch,
     gitPull,
     gitPush,
+    resolveLongGitAction,
     bulkFetch,
     bulkPull,
     refreshRoot,

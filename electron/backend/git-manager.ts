@@ -1164,7 +1164,14 @@ export class GitManager extends EventEmitter {
       // TARGET, so use origin/<target> for them. Reviewers keep origin/<source>
       // (their checkout measured against the pushed source branch).
       const isReviewAuthor = workspace.review?.role === "author";
-      const reviewBaseRef = isReviewAuthor ? reviewTargetRef || reviewSourceRef : reviewSourceRef;
+      // A quickfix with no PR yet has no PR target, but it was branched from a known base: measure against
+      // that instead of guessing, so "commits on this branch" is right before the branch is published.
+      const quickfixBaseRef = workspace.review?.pullRequest
+        ? ""
+        : String((workspace.quickfix as { baseBranch?: unknown } | undefined)?.baseBranch || "")
+            .replace(/^refs\/heads\//, "")
+            .trim();
+      const reviewBaseRef = (isReviewAuthor ? reviewTargetRef || reviewSourceRef : reviewSourceRef) || quickfixBaseRef;
       const parsedRemotes = Object.fromEntries(
         Object.entries(parseGitRemotes(remoteResult.stdout)).map(([name, value]) => {
           let safe = value;

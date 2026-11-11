@@ -507,6 +507,59 @@ describe("GitManager", () => {
     expect(snapshot.baseBranch).toBe(`origin/${src}`);
   });
 
+  // An unpublished quickfix branch has no upstream (aheadCount 0) and no PR target: its own commits are only
+  // visible against the base it was branched from, which is recorded — so it is used, not guessed.
+  test("inspectWorkspace bases a quickfix with no PR on its recorded base branch", async () => {
+    const { root } = await createGitFixture();
+    const branch = "jdoe/bump";
+    const execGitImpl = createExecMock({
+      [`${root}::rev-parse --show-toplevel`]: { stdout: `${root}\n`, stderr: "" },
+      [`${root}::rev-parse --abbrev-ref HEAD`]: { stdout: `${branch}\n`, stderr: "" },
+      [`${root}::remote -v`]: { stdout: "", stderr: "" },
+      [`${root}::rev-list --count HEAD`]: { stdout: "5\n", stderr: "" },
+      [`${root}::status --porcelain=v2 --branch --untracked-files=all`]: {
+        stdout: `# branch.head ${branch}\n`,
+        stderr: "",
+      },
+      [`${root}::status --short`]: { stdout: "", stderr: "" },
+      [`${root}::log --date=relative --pretty=format:%h%x09%ad%x09%an%x09%d%x09%s -n 18`]: { stdout: "", stderr: "" },
+      [`${root}::rev-parse --git-dir`]: { stdout: ".git\n", stderr: "" },
+      [`${root}::rev-parse --git-common-dir`]: { stdout: ".git\n", stderr: "" },
+      [`${root}::worktree list --porcelain`]: {
+        stdout: `worktree ${root}\nHEAD abc\nbranch refs/heads/${branch}\n`,
+        stderr: "",
+      },
+      [`${root}::for-each-ref --format=%(refname:short) refs/heads refs/remotes`]: {
+        stdout: `${branch}\norigin/main\norigin/develop\n`,
+        stderr: "",
+      },
+      [`${root}::rev-list --left-right --count HEAD...origin/develop`]: { stdout: "1\t0\n", stderr: "" },
+      [`${root}::log --date=relative --pretty=format:%h%x09%ad%x09%an%x09%d%x09%s -n 18 origin/develop..HEAD`]: {
+        stdout: "",
+        stderr: "",
+      },
+      [`${root}::diff --name-status origin/develop...HEAD`]: { stdout: "", stderr: "" },
+      [`${root}::diff --shortstat origin/develop...HEAD`]: { stdout: "", stderr: "" },
+      [`${root}::diff --cached --shortstat`]: { stdout: "", stderr: "" },
+      [`${root}::diff --shortstat`]: { stdout: "", stderr: "" },
+      [`${root}::diff --name-only --diff-filter=U`]: { stdout: "", stderr: "" },
+    });
+    const manager = new GitManager({ execGitImpl });
+    manager.detectLazygit = async () => ({ available: false, backend: null, error: "missing", launch: null });
+
+    const snapshot = await manager.inspectWorkspace({
+      id: "quickfix",
+      cwd: root,
+      kind: "terminal",
+      review: { role: "author", pullRequest: undefined },
+      quickfix: { baseBranch: "develop", branchName: branch },
+    });
+
+    expect(snapshot.baseBranch).toBe("origin/develop");
+    expect(snapshot.aheadCount).toBe(0);
+    expect((snapshot.compareWithBase as { aheadCount: number }).aheadCount).toBe(1);
+  });
+
   test("mergeIntoCurrent refuses dirty workspace without explicit stash flow", async () => {
     const { root } = await createGitFixture();
     const manager = new GitManager({ execGitImpl: vi.fn() });

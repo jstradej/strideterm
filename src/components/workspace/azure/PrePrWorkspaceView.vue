@@ -61,7 +61,9 @@
                 gitSnapshot?.dirty
                   ? `You have ${gitSnapshot.dirtyCount} uncommitted file(s).`
                   : hasCommits
-                    ? `${gitSnapshot?.aheadCount || 0} commit(s) ready to push.`
+                    ? unpushedCount > 0
+                      ? `${unpushedCount} commit(s) ready to push.`
+                      : `${branchCommitCount} commit(s), all pushed.`
                     : "Working tree is clean. Make some changes first."
               }}
             </p>
@@ -84,11 +86,11 @@
 
       <!-- Commits -->
       <div v-if="hasCommits" style="margin-top: 20px">
-        <p class="eyebrow">Commits ({{ gitSnapshot?.aheadCount || 0 }} ahead of base)</p>
+        <p class="eyebrow">Commits ({{ branchCommitCount }} ahead of base)</p>
         <div class="review-commits-panel">
           <GitCommitLog
             :commits="recentCommits"
-            :ahead-count="gitSnapshot?.aheadCount || 0"
+            :ahead-count="unpushedCount"
             selected-commit=""
             @show-info="onShowCommitInfo"
           />
@@ -167,6 +169,7 @@ import { computed, ref, inject, watch } from "vue";
 import { apiKey } from "../../../types/keys.js";
 import { useAppStore } from "../../../stores/app.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
+import { useGitUiStore } from "../../../stores/git-ui.js";
 import GitCommitLog from "../git/GitCommitLog.vue";
 import CustomSelect from "../../common/CustomSelect.vue";
 import { openPathInFilesTab } from "../../../app/open-in-files-tab.js";
@@ -177,6 +180,7 @@ const props = defineProps<{ workspaceId: string }>();
 
 const appStore = useAppStore();
 const notifications = useNotificationStore();
+const gitUiStore = useGitUiStore();
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const api = inject<any>(apiKey);
@@ -198,16 +202,21 @@ const isPrePrWorkspace = computed(
 const gitSnapshot = computed(() => appStore.getGitSnapshot(props.workspaceId) as Record<string, any> | null);
 const aheadCount = computed(() => gitSnapshot.value?.aheadCount || 0);
 const baseBranch = computed(() => workspace.value?.quickfix?.baseBranch || "");
-const hasDirtyOrCommits = computed(() => !!(gitSnapshot.value?.dirty || (gitSnapshot.value?.aheadCount || 0) > 0));
-const hasCommits = computed(() => (gitSnapshot.value?.aheadCount || 0) > 0);
+// aheadCount is measured against the upstream, which an unpublished branch does not have (it reads 0 there).
+// Commits made on this branch are measured against its base; the unpushed ones against the upstream when there is one.
+const branchCommitCount = computed(() =>
+  Math.max(Number(gitSnapshot.value?.compareWithBase?.aheadCount || 0), aheadCount.value),
+);
+const unpushedCount = computed(() => (gitSnapshot.value?.upstream ? aheadCount.value : branchCommitCount.value));
+const hasDirtyOrCommits = computed(() => !!(gitSnapshot.value?.dirty || branchCommitCount.value > 0));
+const hasCommits = computed(() => branchCommitCount.value > 0);
 const recentCommits = computed(() => {
   const log = gitSnapshot.value?.log || [];
   return log;
 });
 const aheadCommits = computed(() => {
   const log = gitSnapshot.value?.log || [];
-  const ahead = gitSnapshot.value?.aheadCount || 0;
-  return log.slice(0, ahead);
+  return log.slice(0, branchCommitCount.value);
 });
 
 type LinkedIssue = {
@@ -348,7 +357,11 @@ async function handleCreatePr() {
       }
       // No pull request exists yet, so there is no PR source ref to verify
       // against: this is an ordinary push of the branch (publishing it).
-      const pushed = await api.gitPush({ workspaceId: props.workspaceId, rootPath: "" });
+      // gitPush only starts the push and answers with an operation id; the PR needs the branch on the remote.
+      const pushed = await gitUiStore.resolveLongGitAction(
+        appStore,
+        await api.gitPush({ workspaceId: props.workspaceId, rootPath: "" }),
+      );
       if (pushed?.result?.ok === false) {
         throw new Error(String(pushed.result.summary || "Push failed."));
       }

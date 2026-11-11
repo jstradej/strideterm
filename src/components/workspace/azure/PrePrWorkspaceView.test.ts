@@ -22,6 +22,7 @@ function buildPayload(opts: {
   dirty?: boolean;
   log?: Array<Record<string, unknown>>;
   baseBranch?: string;
+  compareAhead?: number;
   workItems?: Array<Record<string, unknown>>;
 }): StatePayload {
   const provider = opts.provider || "azure-devops";
@@ -68,6 +69,7 @@ function buildPayload(opts: {
           dirty: opts.dirty ?? false,
           dirtyCount: 0,
           log: opts.log || [],
+          ...(opts.compareAhead !== undefined ? { compareWithBase: { aheadCount: opts.compareAhead } } : {}),
         },
       },
     },
@@ -91,6 +93,28 @@ function mountWizard(payloadOpts: Parameters<typeof buildPayload>[0], api: Recor
       provide: { [apiKey]: defaultApi },
     },
   });
+}
+
+function finishPushOperation(
+  outcome: { result: Record<string, unknown> } | { error: { code: string; message: string } },
+) {
+  const appStore = useAppStore();
+  appStore.payload = {
+    ...(appStore.payload as StatePayload),
+    operations: {
+      running: [],
+      lastResults: [
+        {
+          operationId: "op-push",
+          kind: "git.push",
+          profileId: "default",
+          workspaceId: "ws-review",
+          finishedAt: "2026-11-11T06:54:11.962Z",
+          ...outcome,
+        },
+      ],
+    },
+  } as unknown as StatePayload;
 }
 
 beforeEach(() => {
@@ -127,6 +151,39 @@ describe("PrePrWorkspaceView — workflow steps reflect git state", () => {
     expect(steps[2].classes()).toContain("nb-step--active");
     expect(wrapper.text()).toContain("2 commit(s) ready to push");
     expect(wrapper.findComponent({ name: "GitCommitLog" }).exists()).toBe(true);
+  });
+});
+
+describe("PrePrWorkspaceView — a branch measured against its base", () => {
+  test("an unpublished branch with a commit counts it from the base, not the missing upstream", async () => {
+    const wrapper = mountWizard({
+      aheadCount: 0,
+      upstream: "",
+      compareAhead: 1,
+      log: [{ subject: "Bump streams", shortHash: "abc123" }],
+    });
+    await flushPromises();
+
+    const steps = wrapper.findAll(".nb-step");
+    expect(steps[1].classes()).toContain("nb-step--done");
+    expect(steps[2].classes()).toContain("nb-step--active");
+    expect(wrapper.text()).toContain("1 commit(s) ready to push");
+    expect(wrapper.text()).not.toContain("Working tree is clean");
+    expect((wrapper.find('input[placeholder="Pull request title"]').element as HTMLInputElement).value).toBe(
+      "Bump streams",
+    );
+  });
+
+  test("a published branch with nothing to push says its commits are pushed", () => {
+    const wrapper = mountWizard({
+      aheadCount: 0,
+      upstream: "origin/feature/x",
+      compareAhead: 2,
+      log: [{ subject: "A" }, { subject: "B" }],
+    });
+
+    expect(wrapper.text()).toContain("2 commit(s), all pushed");
+    expect(wrapper.text()).toContain("Commits (2 ahead of base)");
   });
 });
 
@@ -212,7 +269,7 @@ describe("PrePrWorkspaceView — creating a pull request", () => {
   test("with unpushed commits: confirming the push proceeds to push then create the PR", async () => {
     const appStore = useAppStore();
     const confirmSpy = vi.spyOn(appStore, "confirmInApp").mockResolvedValue(true);
-    const gitPush = vi.fn(() => Promise.resolve({ result: { ok: true, summary: "Pushed." } }));
+    const gitPush = vi.fn(() => Promise.resolve({ started: true, operationId: "op-push" }));
     const azureCreatePullRequest = vi.fn(() =>
       Promise.resolve({ result: { pullRequestId: 42, url: "https://example.test/pr/42" } }),
     );
@@ -223,6 +280,8 @@ describe("PrePrWorkspaceView — creating a pull request", () => {
     await flushPromises();
 
     await wrapper.find("button.button:not(.button--ghost)").trigger("click");
+    await flushPromises();
+    finishPushOperation({ result: { ok: true, summary: "Pushed." } });
     await flushPromises();
 
     expect(confirmSpy).toHaveBeenCalled();
@@ -239,7 +298,7 @@ describe("PrePrWorkspaceView — creating a pull request", () => {
     const calls: string[] = [];
     const gitPush = vi.fn(() => {
       calls.push("push");
-      return Promise.resolve({ result: { ok: true, summary: "Pushed." } });
+      return Promise.resolve({ started: true, operationId: "op-push" });
     });
     const azureCreatePullRequest = vi.fn(() => {
       calls.push("create");
@@ -258,7 +317,33 @@ describe("PrePrWorkspaceView — creating a pull request", () => {
     expect(confirmSpy).toHaveBeenCalledWith(
       expect.objectContaining({ title: "Publish the branch before creating PR?" }),
     );
+    // The push is only started; the provider must not be asked before the branch is on the remote.
+    expect(calls).toEqual(["push"]);
+
+    finishPushOperation({ result: { ok: true, summary: "Pushed." } });
+    await flushPromises();
     expect(calls).toEqual(["push", "create"]);
+  });
+
+  test("a push that fails after it was started does not create the PR and shows why", async () => {
+    const appStore = useAppStore();
+    vi.spyOn(appStore, "confirmInApp").mockResolvedValue(true);
+    const gitPush = vi.fn(() => Promise.resolve({ started: true, operationId: "op-push" }));
+    const azureCreatePullRequest = vi.fn(() => Promise.resolve({ result: { pullRequestId: 1, url: "" } }));
+    const wrapper = mountWizard(
+      { aheadCount: 0, upstream: "", log: [] },
+      { azureListRemoteBranches: () => Promise.resolve({ branches: ["main"] }), azureCreatePullRequest, gitPush },
+    );
+    await flushPromises();
+    await wrapper.find('input[placeholder="Pull request title"]').setValue("Fix the thing");
+
+    await wrapper.find("button.button:not(.button--ghost)").trigger("click");
+    await flushPromises();
+    finishPushOperation({ error: { code: "push-failed", message: "pre-push hook rejected the push" } });
+    await flushPromises();
+
+    expect(azureCreatePullRequest).not.toHaveBeenCalled();
+    expect(wrapper.text()).toContain("pre-push hook rejected the push");
   });
 
   test("declining the push confirmation does not create the PR", async () => {
