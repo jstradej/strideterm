@@ -369,6 +369,21 @@ describe("default state", () => {
     expect(logsPanel!.launch!.args![3]).toContain("docker logs -f api");
   });
 
+  test("normalizeWorkspace keeps an SSH tab's remote directory and drops an unusable one", () => {
+    const workspace = normalizeWorkspace({
+      id: "ws",
+      panels: [
+        { id: "a", title: "A", launch: { kind: "ssh", sshHostId: "h1", remoteCwd: "  ~/projects/app " } },
+        { id: "b", title: "B", launch: { kind: "ssh", sshHostId: "h1", remoteCwd: "/srv\nid" } },
+        { id: "c", title: "C", launch: { kind: "ssh", sshHostId: "h1", remoteCwd: "" } },
+      ],
+    });
+    const [a, b, c] = workspace.panels;
+    expect(a.launch).toEqual({ kind: "ssh", sshHostId: "h1", remoteCwd: "~/projects/app" });
+    expect(b.launch).not.toHaveProperty("remoteCwd");
+    expect(c.launch).not.toHaveProperty("remoteCwd");
+  });
+
   // normalizePanel rebuilds panels from a fixed field list, so anything not
   // named there is dropped on every save. Tab notes went missing exactly that
   // way before the field was added — keep it pinned.

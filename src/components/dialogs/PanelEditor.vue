@@ -18,6 +18,17 @@
         {{ tmpl.icon }} {{ tmpl.title }}
       </button>
       <button
+        v-if="allowSsh"
+        type="button"
+        :class="['button', 'button--ghost', 'template-btn', { 'template-btn--active': sshPickerOpen }]"
+        data-testid="panel-editor-ssh"
+        title="Add a tab that connects to one of your saved SSH hosts. Pick the host in the row that opens below."
+        :aria-expanded="sshPickerOpen"
+        @click="toggleSshPicker"
+      >
+        🔐 SSH…
+      </button>
+      <button
         type="button"
         class="button button--ghost template-btn"
         title="Add a blank tab — pick the title, command, and icon yourself in the editor below."
@@ -25,6 +36,25 @@
       >
         + Custom
       </button>
+    </div>
+    <div v-if="allowSsh && sshPickerOpen" class="ssh-host-picker" data-testid="panel-editor-ssh-hosts">
+      <template v-if="sshHosts.length">
+        <button
+          v-for="host in sshHosts"
+          :key="host.id"
+          type="button"
+          class="button button--ghost template-btn"
+          :title="`Add an SSH tab that connects to ${hostLabel(host)}.`"
+          @click="addSshPanel(host)"
+        >
+          🔐 {{ host.name || host.host }}
+        </button>
+      </template>
+      <span v-else-if="sshHostsLoading" class="ssh-host-picker__note">Loading saved SSH hosts…</span>
+      <span v-else class="ssh-host-picker__note">
+        No saved SSH hosts yet. Add one in Settings → SSH, or add the SSH tab later with + in the tab bar, which also
+        offers Quick connect.
+      </span>
     </div>
     <div class="panel-list">
       <article v-for="(panel, index) in panels" :key="panel.id" class="panel-card">
@@ -66,7 +96,34 @@
           </div>
         </label>
 
-        <WslCommandFields v-model:command="panel.command" compact />
+        <template v-if="panel.launch?.kind === 'ssh'">
+          <p class="panel-card__ssh-host">SSH host: {{ sshPanelHostLabel(panel) }}</p>
+          <label>
+            <span
+              >Remote directory (optional)
+              <HelpTooltip
+                text="The folder on the server where this tab starts, e.g. ~/projects/app. Right after sign-in strIDEterm changes to it and runs the initial command there. Needs a Unix-like shell on the server (Linux or macOS). If the folder does not exist, the terminal shows the error and the initial command does not run."
+                label="Remote directory help"
+            /></span>
+            <input
+              :value="panel.launch.remoteCwd || ''"
+              data-testid="panel-editor-remote-cwd"
+              placeholder="e.g. ~/projects/app"
+              :maxlength="REMOTE_CWD_MAX_LENGTH"
+              @input="setRemoteCwd(panel, ($event.target as HTMLInputElement).value)"
+            />
+          </label>
+          <label>
+            <span
+              >Initial command (optional)
+              <HelpTooltip
+                text="Runs on the server right after sign-in, in the remote directory when one is set, and replaces the host's own startup command for this tab. Leave it blank to use the host's startup command, or a normal shell."
+                label="Initial command help"
+            /></span>
+            <input v-model="panel.command" maxlength="500" placeholder="e.g. claude" />
+          </label>
+        </template>
+        <WslCommandFields v-else v-model:command="panel.command" compact />
 
         <label
           class="panel-card__toggle"
@@ -84,6 +141,10 @@
 import { ref, computed } from "vue";
 import { APP_CONFIG } from "../../../config/app-config.js";
 import { BADGE_ICONS, getTitleIcon, setTitleIcon } from "../../lib/badge-icons.js";
+import type { PanelLaunch } from "../../../electron/shared/types/state.js";
+import { REMOTE_CWD_MAX_LENGTH } from "../../../electron/shared/ssh-remote-cwd.js";
+import { useSshStore } from "../../stores/ssh.js";
+import HelpTooltip from "../common/HelpTooltip.vue";
 import WslCommandFields from "./WslCommandFields.vue";
 
 const DEFAULT_TAB_TEMPLATES = [
@@ -104,6 +165,14 @@ interface PanelEntry {
   shell?: boolean;
   startup?: string;
   alertsForceOn?: boolean;
+  launch?: PanelLaunch | null;
+}
+
+interface SshHostEntry {
+  id: string;
+  host: string;
+  name?: string;
+  username?: string;
 }
 
 interface TabTemplate {
@@ -116,11 +185,13 @@ interface Props {
   panels: PanelEntry[];
   tabTemplates?: TabTemplate[];
   heading?: string;
+  allowSsh?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   tabTemplates: () => [],
   heading: "Terminal tabs",
+  allowSsh: false,
 });
 
 const emit = defineEmits<{
@@ -128,6 +199,52 @@ const emit = defineEmits<{
 }>();
 
 const panelIconPickerOpen = ref(new Set<string>());
+const sshStore = useSshStore();
+const sshPickerOpen = ref(false);
+const sshHostsLoading = ref(false);
+const sshHosts = computed(() => (sshStore.hosts || []) as SshHostEntry[]);
+
+function hostLabel(host: SshHostEntry) {
+  const target = host.username ? `${host.username}@${host.host}` : host.host;
+  return host.name && host.name !== host.host ? `${host.name} (${target})` : target;
+}
+
+function sshPanelHostLabel(panel: PanelEntry) {
+  const launch = panel.launch;
+  if (launch?.sshInline) return launch.sshInline.name || launch.sshInline.host || "Quick connect";
+  const host = sshHosts.value.find((h) => h.id === launch?.sshHostId);
+  return host ? hostLabel(host) : "a saved host that no longer exists";
+}
+
+// Direct nested-prop mutation, like panel.title and panel.command above.
+function setRemoteCwd(panel: PanelEntry, value: string) {
+  if (panel.launch) panel.launch.remoteCwd = value;
+}
+
+function toggleSshPicker() {
+  sshPickerOpen.value = !sshPickerOpen.value;
+  if (!sshPickerOpen.value || sshHosts.value.length > 0) return;
+  sshHostsLoading.value = true;
+  // load() reports its own failure as a toast.
+  void sshStore.load().finally(() => {
+    sshHostsLoading.value = false;
+  });
+}
+
+function addSshPanel(host: SshHostEntry) {
+  sshPickerOpen.value = false;
+  emit("update:panels", [
+    ...props.panels,
+    {
+      id: `panel-${crypto.randomUUID()}`,
+      title: `🔐 ${host.name || host.host}`,
+      command: "",
+      shell: true,
+      startup: APP_CONFIG.ui.manualPanelStartup,
+      launch: { kind: "ssh", sshHostId: host.id },
+    },
+  ]);
+}
 
 const resolvedTemplates = computed(() =>
   Array.isArray(props.tabTemplates) && props.tabTemplates.length ? props.tabTemplates : DEFAULT_TAB_TEMPLATES,
@@ -191,6 +308,27 @@ function removePanel(panelId: string) {
   flex-wrap: wrap;
   gap: 4px;
   margin-bottom: 8px;
+}
+.template-btn--active {
+  border-color: var(--accent);
+}
+.ssh-host-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.ssh-host-picker__note {
+  font-size: 12px;
+  color: var(--muted);
+}
+.panel-card__ssh-host {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
 }
 .template-btn {
   font-size: 12px;

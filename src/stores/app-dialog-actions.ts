@@ -391,20 +391,26 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       workspaceSshMcpEnabled: Boolean(target.workspace.sshMcpEnabled),
       hasCustomLaunch: Boolean(launch),
       sshTab: launch?.kind === "ssh",
+      remoteCwd: launch?.kind === "ssh" ? launch.remoteCwd || "" : "",
       onCancel: closeDialog,
       onSubmit: async ({
         title,
         command,
         sshMcpEnabled,
+        remoteCwd,
       }: {
         title: string;
         command: string;
         sshMcpEnabled?: boolean;
+        remoteCwd?: string;
       }) => {
         const nextTitle = (title || "").trim();
         const nextCommand = (command || "").trim();
+        const nextRemoteCwd = launch?.kind === "ssh" ? (remoteCwd || "").trim() : "";
         const sameTitle = nextTitle === (target.panel.title || "").trim();
-        const sameCommand = nextCommand === (target.panel.command || "").trim();
+        const sameCommand =
+          nextCommand === (target.panel.command || "").trim() &&
+          (launch?.kind !== "ssh" || nextRemoteCwd === (launch.remoteCwd || "").trim());
         const sameSshMcpEnabled = Boolean(sshMcpEnabled) === Boolean(target.panel.sshMcpEnabled);
         if (!nextTitle || (sameTitle && sameCommand && sameSshMcpEnabled)) {
           closeDialog();
@@ -418,6 +424,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
                 title: nextTitle,
                 command: nextCommand,
                 sshMcpEnabled: Boolean(sshMcpEnabled),
+                ...(p.launch?.kind === "ssh" ? { launch: { ...p.launch, remoteCwd: nextRemoteCwd || undefined } } : {}),
               }
             : p,
         );
@@ -428,7 +435,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
             eyebrow: "Tab",
             title: "Reload tab now?",
             message:
-              "The command or SSH tools setting changed. Restart the terminal now to apply it, or apply the change the next time this tab is launched.",
+              "The command, remote directory or SSH tools setting changed. Restart the terminal now to apply it, or apply the change the next time this tab is launched.",
             confirmLabel: "Reload now",
             cancelLabel: "Apply on next launch",
             onCancel: closeDialog,

@@ -18,6 +18,7 @@ import type {
 } from "../shared/types/state.js";
 import { isCompanionPrimaryViewId, parseCompanionPrimaryViewId } from "../shared/companion-primary.js";
 import { isFullSha } from "../shared/review-source-identity.js";
+import { normalizeRemoteCwd } from "../shared/ssh-remote-cwd.js";
 import { sanitizeJiraPollingState } from "./jira/jira-polling.js";
 import { JIRA_CONNECTION_HEALTH_STATES } from "../shared/jira-error-codes.js";
 import {
@@ -142,6 +143,8 @@ function normalizeLaunch(launch: any): Record<string, unknown> | null {
   if (launch.kind === "ssh") {
     const normalized: Record<string, unknown> = { kind: "ssh" };
     if (launch.sshHostId) normalized.sshHostId = String(launch.sshHostId);
+    const remoteCwd = normalizeRemoteCwd(launch.remoteCwd);
+    if (remoteCwd) normalized.remoteCwd = remoteCwd;
     if (launch.sshInline && typeof launch.sshInline === "object") {
       const inline = launch.sshInline;
       const auth = inline.auth || {};

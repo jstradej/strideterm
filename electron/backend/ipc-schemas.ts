@@ -2,6 +2,7 @@ import { z } from "zod";
 import { reviewGitConfirmationSchema, reviewGitOperationKindSchema } from "../shared/review-git-events.js";
 import { EFFORT_LEVELS } from "../shared/agent-provider-catalog.js";
 import { JIRA_SMART_FILTER_IDS } from "../shared/jira-smart-filters.js";
+import { REMOTE_CWD_MAX_LENGTH } from "../shared/ssh-remote-cwd.js";
 import {
   JIRA_CONNECTION_HEALTH_STATES,
   JIRA_REQUEST_ERROR_CODES,
@@ -91,6 +92,7 @@ const panelLaunchSchema = z
     args: z.array(z.string()).optional(),
     sshHostId: z.string().optional(),
     sshInline: sshInlineSchema.optional(),
+    remoteCwd: z.string().max(REMOTE_CWD_MAX_LENGTH).optional(),
   })
   .passthrough()
   .nullable()

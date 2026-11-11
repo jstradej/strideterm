@@ -14008,7 +14008,7 @@ export async function createRuntime({
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async restartSession(sessionId: any) {
+    async restartSession(sessionId: any, options: { sshPasswordSignIn?: boolean } = {}) {
       const descriptor = parseSessionId(sessionId);
       taskRunner.cancelPendingInput(String(sessionId || ""));
       clearTerminalReplay(String(sessionId || ""));
@@ -14028,7 +14028,9 @@ export async function createRuntime({
         workspace.activePanelId = descriptor.panelId;
       });
 
-      await sessions.restartSession(getState(), sessionId);
+      await sessions.restartSession(getState(), sessionId, {
+        sshPasswordSignIn: options?.sshPasswordSignIn === true,
+      });
       if (descriptor) {
         clearProjectAlerts(descriptor.workspaceId, descriptor.panelId);
       }

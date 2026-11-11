@@ -311,6 +311,7 @@
           v-model:panels="draft.panels"
           :tab-templates="tabTemplates"
           :heading="isAzure ? 'Review workspace tabs' : 'Terminal tabs'"
+          :allow-ssh="!isAzure"
         />
         <section
           v-if="isAzure && !isMobileSession"
@@ -542,6 +543,7 @@ import PanelEditor from "./PanelEditor.vue";
 import CustomSelect from "../common/CustomSelect.vue";
 import AgentProviderConfig from "./AgentProviderConfig.vue";
 import { parseAgentCommand } from "../../../electron/shared/agent-ssh.js";
+import type { PanelLaunch } from "../../../electron/shared/types/state.js";
 
 defineOptions({ inheritAttrs: false });
 
@@ -558,7 +560,7 @@ interface PanelEntry {
   command: string;
   shell: boolean;
   startup: string;
-  launch?: unknown;
+  launch?: PanelLaunch | null;
 }
 
 interface GitRootEntry {

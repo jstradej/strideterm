@@ -1017,4 +1017,21 @@ describe("createDialogActions.editTabWithDialog on an SSH tab", () => {
     expect(ctx.overlay.value).toBe("ConfirmDialog");
     expect((ctx.overlayProps.value as AnyApi).title).toBe("Reload tab now?");
   });
+
+  it("saves a changed remote directory on the tab's launch and offers a reload", async () => {
+    const ctx = sshTabCtx([{ sessionId: "ws:p1" }]);
+    const saveWorkspace = vi.fn(async (next: AnyApi) => ({ workspace: next }));
+    ctx.getApi = () => ({ saveWorkspace });
+    createDialogActions(ctx).editTabWithDialog("ws:p1");
+    expect((ctx.overlayProps.value as AnyApi).remoteCwd).toBe("");
+
+    await (ctx.overlayProps.value as AnyApi).onSubmit({ title: "mini", command: "", remoteCwd: " ~/app " });
+
+    expect(saveWorkspace.mock.calls[0][0].panels[0].launch).toEqual({
+      kind: "ssh",
+      sshHostId: "host-1",
+      remoteCwd: "~/app",
+    });
+    expect((ctx.overlayProps.value as AnyApi).title).toBe("Reload tab now?");
+  });
 });

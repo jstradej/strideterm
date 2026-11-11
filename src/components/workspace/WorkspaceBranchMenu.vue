@@ -142,6 +142,7 @@ import { useAppStore } from "../../stores/app.js";
 import { useGitUiStore } from "../../stores/git-ui.js";
 import { useDismissable } from "../../composables/useDismissable.js";
 import { useResourceInterest } from "../../composables/useResourceInterest.js";
+import { useIsNarrow } from "../../composables/useIsNarrow.js";
 import { buildBranchForest, type BranchForestNode } from "./git/branch-forest.js";
 import { useBranchActions } from "./git/branch-actions.js";
 import Spinner from "../common/Spinner.vue";
@@ -249,6 +250,7 @@ const chipRef = ref<HTMLButtonElement | null>(null);
 const popoverRef = ref<HTMLElement | null>(null);
 const submenuRef = ref<HTMLElement | null>(null);
 const searchRef = ref<HTMLInputElement | null>(null);
+const { isMobile, hasCoarsePointer } = useIsNarrow();
 const listRef = ref<HTMLElement | null>(null);
 const popoverStyle = ref<Record<string, string>>({});
 const submenuStyle = ref<Record<string, string>>({});
@@ -866,7 +868,8 @@ function openMenu(): void {
   activeIndex.value = -1;
   closeSubmenu();
   void gitUiStore.gitListBranches(props.workspaceId);
-  nextTick(() => searchRef.value?.focus());
+  // On a phone, focusing the search raises the on-screen keyboard over a list the user came to tap.
+  if (!(isMobile.value && hasCoarsePointer.value)) nextTick(() => searchRef.value?.focus());
 }
 
 function close(): void {
@@ -989,16 +992,27 @@ watch(
   () => close(),
 );
 
-function onViewportChange(): void {
+function onWindowBlur(): void {
   close();
 }
+// A mobile on-screen keyboard resizes the viewport too, so a resize follows the chip instead of closing.
+function onViewportResize(): void {
+  if (!open.value) return;
+  const rect = chipRef.value?.getBoundingClientRect();
+  if (!chipRef.value?.isConnected || !rect || (rect.width === 0 && rect.height === 0)) {
+    close();
+    return;
+  }
+  updatePosition();
+  if (!menuInline.value) closeSubmenu();
+}
 onMounted(() => {
-  window.addEventListener("blur", onViewportChange);
-  window.addEventListener("resize", onViewportChange);
+  window.addEventListener("blur", onWindowBlur);
+  window.addEventListener("resize", onViewportResize);
 });
 onBeforeUnmount(() => {
-  window.removeEventListener("blur", onViewportChange);
-  window.removeEventListener("resize", onViewportChange);
+  window.removeEventListener("blur", onWindowBlur);
+  window.removeEventListener("resize", onViewportResize);
 });
 </script>
 

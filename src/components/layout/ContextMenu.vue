@@ -68,6 +68,15 @@
           </button>
           <button
             type="button"
+            class="context-menu__item"
+            data-testid="ssh-password-sign-in"
+            title="Reconnect once with the account password instead of the SSH key or agent. Use it when the server accepts only a password, for example a Mac with FileVault right after a restart, which needs a password sign-in to unlock the disk before key sign-in works again. Asks for the password unless one is saved for the host. The host's sign-in settings do not change, so the next Reconnect SSH uses the key again."
+            @click="onSshPasswordSignIn"
+          >
+            <span class="context-menu__icon">&#x1F511;</span><span>Reconnect with password</span>
+          </button>
+          <button
+            type="button"
             class="context-menu__item context-menu__item--danger"
             title="Close the SSH session immediately — the tab stays open, but the remote shell ends."
             @click="onDisconnectSsh"
@@ -587,6 +596,14 @@ async function onEditSshHost() {
   const id = viewId.value;
   store.hideContextMenu();
   await store.editSshHostForView(id);
+}
+
+function onSshPasswordSignIn() {
+  const id = viewId.value;
+  store.hideContextMenu();
+  store.restartSession(id, { sshPasswordSignIn: true }).catch((err) => {
+    useNotificationStore().showError("Password sign-in failed", err);
+  });
 }
 
 function onDisconnectSsh() {

@@ -2024,10 +2024,13 @@ export function registerIpc(
       }),
     );
   });
-  handle("terminal:restart", async (event, sessionId) => {
+  handle("terminal:restart", async (event, sessionId, options) => {
     assertSshTestOwner(event, { sessionId });
     if (runtime.sshTestSessionOwner(sessionId)) throw new Error("Use the SSH operation stop action");
-    return withOperationPromise({ opId: "terminal:restart" }, () => runtime.restartSession(sessionId));
+    const sshPasswordSignIn = (options as { sshPasswordSignIn?: unknown } | undefined)?.sshPasswordSignIn === true;
+    return withOperationPromise({ opId: "terminal:restart" }, () =>
+      runtime.restartSession(sessionId, { sshPasswordSignIn }),
+    );
   });
   handle("terminal:close", async (event, sessionId) => {
     assertSshTestOwner(event, { sessionId });

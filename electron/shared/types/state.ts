@@ -531,6 +531,8 @@ export interface PanelLaunch {
   /** Inline ad-hoc SSH host config (quick-connect) */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   sshInline?: Record<string, any>;
+  /** SSH only: directory on the server to change to before the startup command. */
+  remoteCwd?: string;
   skipCommandInjection?: boolean;
 }
 

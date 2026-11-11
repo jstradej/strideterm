@@ -538,7 +538,7 @@ describe("SessionManager", () => {
     expect(spawnCalls[0].options).toMatchObject({ cols: 176, rows: 56 });
   });
 
-  test("does not retain pre-spawn sizes for missing, browser, or SSH panels", async () => {
+  test("does not retain pre-spawn sizes for missing or browser panels", async () => {
     const manager = new SessionManager();
     const state = createState() as Parameters<typeof manager.ensureSession>[0];
     const sessionId = "workspace-a:shell";
@@ -561,9 +561,6 @@ describe("SessionManager", () => {
     state.workspaces[0].panels[0].command = "https://example.test";
     manager.resizeSession(sessionId, 190, 54, state);
     state.workspaces[0].panels[0].command = "";
-    state.workspaces[0].panels[0].launch = { kind: "ssh" };
-    manager.resizeSession(sessionId, 190, 54, state);
-    delete state.workspaces[0].panels[0].launch;
 
     await manager.ensureSession(state, sessionId);
 
@@ -1228,6 +1225,188 @@ describe("SessionManager", () => {
       const args = spawnCalls[0].args;
       expect(args).not.toContain("-t");
       expect(args.slice(args.indexOf("--"))).toEqual(["--", "example.test"]);
+    });
+  });
+
+  describe("remote directory on an SSH tab", () => {
+    function cwdState(launchVia: string, tabCommand: string, hostCommand?: string) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const state: any = createState();
+      state.workspaces[0].activePanelId = "ssh";
+      state.workspaces[0].panels[0] = {
+        id: "ssh",
+        title: "SSH",
+        command: tabCommand,
+        startup: "default",
+        launch: { kind: "ssh", sshHostId: "host-a", remoteCwd: "~/my app" },
+      };
+      const sshManager = {
+        credentialStore: {},
+        getHost: vi.fn(() => ({
+          id: "host-a",
+          host: "example.test",
+          advanced: { launchVia, ...(hostCommand ? { command: hostCommand } : {}) },
+        })),
+        createSession: vi.fn().mockResolvedValue(undefined),
+      };
+      return { state, sshManager };
+    }
+
+    test("ssh2 types the directory change before the tab command", async () => {
+      const { state, sshManager } = cwdState("ssh2", "claude");
+      const manager = new SessionManager({ sshManager: sshManager as never });
+      await manager.ensureSession(state, "workspace-a:ssh");
+      expect(sshManager.createSession.mock.calls[0][0].startupCommand).toBe("cd ~/'my app' && claude");
+    });
+
+    test("ssh2 changes directory before the host's own command when the tab has none", async () => {
+      const { state, sshManager } = cwdState("ssh2", "", "tmux attach");
+      const manager = new SessionManager({ sshManager: sshManager as never });
+      await manager.ensureSession(state, "workspace-a:ssh");
+      expect(sshManager.createSession.mock.calls[0][0].startupCommand).toBe("cd ~/'my app' && tmux attach");
+    });
+
+    test("system-ssh keeps an interactive shell in the directory when there is no command", async () => {
+      const { state, sshManager } = cwdState("system-ssh", "");
+      const manager = new SessionManager({ sshManager: sshManager as never });
+      await manager.ensureSession(state, "workspace-a:ssh");
+      const args = spawnCalls[0].args;
+      expect(args.slice(args.indexOf("--"))).toEqual(["--", "example.test", `cd ~/'my app' && exec "$SHELL" -l`]);
+      expect(args).toContain("-t");
+    });
+  });
+
+  describe("terminal size of an SSH tab", () => {
+    function sizeState(launchVia: string) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const state: any = createState();
+      state.workspaces[0].activePanelId = "ssh";
+      state.workspaces[0].panels[0] = {
+        id: "ssh",
+        title: "SSH",
+        command: "claude",
+        startup: "default",
+        launch: { kind: "ssh", sshHostId: "host-a" },
+      };
+      const sshManager = {
+        credentialStore: {},
+        getHost: vi.fn(() => ({ id: "host-a", host: "example.test", advanced: { launchVia } })),
+        createSession: vi.fn().mockResolvedValue(undefined),
+        resize: vi.fn(),
+        stop: vi.fn().mockResolvedValue(undefined),
+      };
+      return { state, sshManager };
+    }
+
+    test("system-ssh starts at the size the pane reported before it started", async () => {
+      const { state, sshManager } = sizeState("system-ssh");
+      const manager = new SessionManager({ sshManager: sshManager as never });
+      manager.resizeSession("workspace-a:ssh", 210, 61, state);
+      await manager.ensureSession(state, "workspace-a:ssh");
+      expect(spawnCalls[0].options).toMatchObject({ cols: 210, rows: 61 });
+      expect(manager.sessions.get("workspace-a:ssh")).toMatchObject({ cols: 210, rows: 61 });
+    });
+
+    test("Built-in SSH opens the shell at the pane's size, also when it was measured during the connect", async () => {
+      const { state, sshManager } = sizeState("ssh2");
+      const manager = new SessionManager({ sshManager: sshManager as never });
+      manager.resizeSession("workspace-a:ssh", 180, 50, state);
+      sshManager.createSession.mockImplementation(async () => {
+        // The pane is measured again while the handshake or a password prompt is still pending.
+        manager.resizeSession("workspace-a:ssh", 211, 62, state);
+      });
+      await manager.ensureSession(state, "workspace-a:ssh");
+
+      expect(sshManager.createSession.mock.calls[0][0]).toMatchObject({ cols: 180, rows: 50 });
+      expect(sshManager.resize).toHaveBeenCalledWith("workspace-a:ssh", 211, 62);
+      expect(manager.sessions.get("workspace-a:ssh")).toMatchObject({ cols: 211, rows: 62 });
+    });
+
+    test("a reconnect keeps the size the tab already had", async () => {
+      const { state, sshManager } = sizeState("ssh2");
+      const manager = new SessionManager({ sshManager: sshManager as never });
+      manager.resizeSession("workspace-a:ssh", 180, 50, state);
+      await manager.ensureSession(state, "workspace-a:ssh");
+      manager.resizeSession("workspace-a:ssh", 200, 55, state);
+      // Another pane measured last must not win over this tab's own size.
+      (manager as unknown as { lastReportedSize: { cols: number; rows: number } }).lastReportedSize = {
+        cols: 90,
+        rows: 20,
+      };
+
+      await manager.restartSession(state, "workspace-a:ssh");
+
+      expect(sshManager.createSession.mock.calls[1][0]).toMatchObject({ cols: 200, rows: 55 });
+    });
+  });
+
+  describe("one-time password sign-in on an SSH tab", () => {
+    function keyHostState(launchVia: string) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const state: any = createState();
+      state.workspaces[0].activePanelId = "ssh";
+      state.workspaces[0].panels[0] = {
+        id: "ssh",
+        title: "SSH",
+        command: "",
+        startup: "default",
+        launch: { kind: "ssh", sshHostId: "host-a" },
+      };
+      const host = {
+        id: "host-a",
+        host: "mac.test",
+        auth: { methods: ["publickey", "agent"], keyRef: "key-1", agent: "auto", passwordRef: "pw-1" },
+        advanced: { launchVia },
+      };
+      const sshManager = {
+        credentialStore: { getSecret: vi.fn(() => null) },
+        getHost: vi.fn(() => host),
+        createSession: vi.fn().mockResolvedValue(undefined),
+      };
+      return { state, sshManager, host };
+    }
+
+    test("ssh2 overrides the auth with password methods for this connect only", async () => {
+      const { state, sshManager, host } = keyHostState("ssh2");
+      const manager = new SessionManager({ sshManager: sshManager as never });
+      await manager.ensureSession(state, "workspace-a:ssh", { sshPasswordSignIn: true });
+      const args = sshManager.createSession.mock.calls[0][0];
+      expect(args.hostId).toBe("host-a");
+      expect(args.authOverride.methods).toEqual(["password", "keyboard-interactive"]);
+      expect(args.authOverride.keyRef).toBeUndefined();
+      expect(args.authOverride.passwordRef).toBe("pw-1");
+      expect(host.auth.methods).toEqual(["publickey", "agent"]);
+    });
+
+    test("ssh2 keeps the host's auth on a normal connect", async () => {
+      const { state, sshManager } = keyHostState("ssh2");
+      const manager = new SessionManager({ sshManager: sshManager as never });
+      await manager.ensureSession(state, "workspace-a:ssh");
+      expect(sshManager.createSession.mock.calls[0][0]).not.toHaveProperty("authOverride");
+    });
+
+    test("system-ssh turns off key sign-in and passes no managed key", async () => {
+      const { state, sshManager } = keyHostState("system-ssh");
+      const manager = new SessionManager({ sshManager: sshManager as never });
+      await manager.ensureSession(state, "workspace-a:ssh", { sshPasswordSignIn: true });
+      const args = spawnCalls[0].args;
+      const dashDash = args.indexOf("--");
+      const pubkey = args.indexOf("PubkeyAuthentication=no");
+      expect(pubkey).toBeGreaterThan(0);
+      expect(pubkey).toBeLessThan(dashDash);
+      expect(args).toContain("PreferredAuthentications=keyboard-interactive,password");
+      expect(args).not.toContain("-i");
+      expect(sshManager.credentialStore.getSecret).not.toHaveBeenCalled();
+    });
+
+    test("restartSession forwards the option to the new connect", async () => {
+      const { state, sshManager } = keyHostState("ssh2");
+      const manager = new SessionManager({ sshManager: sshManager as never });
+      await manager.restartSession(state, "workspace-a:ssh", { sshPasswordSignIn: true });
+      expect(sshManager.createSession.mock.calls[0][0].authOverride.methods).toEqual([
+        "password",
+        "keyboard-interactive",
+      ]);
     });
   });
 

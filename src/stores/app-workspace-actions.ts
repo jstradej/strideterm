@@ -1216,6 +1216,8 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
       panel.launch = options.sshInline
         ? { kind: "ssh", sshInline: options.sshInline }
         : { kind: "ssh", sshHostId: options.sshHostId };
+      if (typeof options.remoteCwd === "string" && options.remoteCwd.trim())
+        panel.launch.remoteCwd = options.remoteCwd.trim();
     }
     nextWorkspace.panels.push(panel);
     nextWorkspace.activePanelId = panelId;
@@ -1300,9 +1302,9 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
 
   // --- Session / panel ---------------------------------------------------
 
-  async function restartSession(sessionId: string): Promise<void> {
+  async function restartSession(sessionId: string, options: { sshPasswordSignIn?: boolean } = {}): Promise<void> {
     if (!sessionId) return;
-    ctx.adoptPayload((await ctx.getApi().restartTerminal(sessionId)) as StatePayload);
+    ctx.adoptPayload((await ctx.getApi().restartTerminal(sessionId, options)) as StatePayload);
     ctx.activeViewId.value = sessionId;
   }
 

@@ -810,6 +810,8 @@ export class SshSession {
   }
 
   resize(cols: number, rows: number): void {
+    // Before the shell opens, the size is what the shell will be requested with.
+    this.dimensions = { cols, rows };
     if (this.stream) this.stream.setWindow(rows, cols, 0, 0);
   }
 

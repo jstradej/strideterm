@@ -2063,7 +2063,7 @@ const API_ROUTES: Record<string, ApiRouteHandler> = {
   "/api/terminal/restart": (runtime, body) => {
     if (isDesktopPrivateSshSession(runtime, body.sessionId))
       throw new Error("Desktop-only SSH operations cannot be controlled remotely");
-    return runtime.restartSession(body.sessionId);
+    return runtime.restartSession(body.sessionId, { sshPasswordSignIn: body.sshPasswordSignIn === true });
   },
   "/api/terminal/replay": (runtime, body, caller) => {
     const parsed = validateIpc(terminalSessionSchema, body, "/api/terminal/replay");

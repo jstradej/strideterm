@@ -739,7 +739,7 @@ export interface StridetermAPI {
   stopCloudflareTunnel: () => Promise<unknown>;
 
   // Terminal
-  restartTerminal: (sessionId: string) => Promise<unknown>;
+  restartTerminal: (sessionId: string, options?: { sshPasswordSignIn?: boolean }) => Promise<unknown>;
   closeTerminal: (sessionId: string) => Promise<unknown>;
   getTerminalReplay: (sessionId: string) => Promise<TerminalReplayPayload>;
   resizeTerminal: (sessionId: string, size: TerminalSize) => void;

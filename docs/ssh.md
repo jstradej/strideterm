@@ -54,6 +54,10 @@ For Built-in SSH, **Default SSH agent source** in Settings and **Agent source** 
 
 When creating or editing an SSH tab, you can set its own startup command and connection method. The tab command overrides the saved host's startup command for that tab. **Edit tab** changes the tab's title and startup command; **Edit SSH host** changes the connection details. A Quick Connect tab can be saved as a new host from **Edit SSH host**.
 
+**Remote directory** sets the folder on the server where the tab starts, for example `~/projects/app`. After sign-in the tab changes to it and runs the startup command there; if the folder does not exist, the terminal shows the error and the command does not run. It needs a Unix-like shell on the server (Linux or macOS). SSH tabs to saved hosts can also be added directly in the workspace dialog with **🔐 SSH…**.
+
+**Reconnect with password** in an SSH tab's context menu connects once with the account password instead of a key or agent, for example to a Mac with FileVault right after a restart. The host's saved sign-in does not change.
+
 You can optionally enable **SSH tools** for a tab that directly launches Claude Code or Codex. This lets that agent list saved Built-in SSH hosts and run a command on a selected host. The option is off by default, takes effect when the terminal starts, and requires restarting the terminal after a change. It is unavailable for manually launched agents, other tab types, WSL, System SSH, and remote sessions.
 
 To enable it for every such tab of a workspace at once, tick **Allow SSH tools for agents** in the workspace settings, next to the internal MCP option. Tabs that do not directly launch Claude Code or Codex are simply skipped. Like the internal MCP option, it is off by default, can only be changed from the desktop app, and is never available to task workspaces.

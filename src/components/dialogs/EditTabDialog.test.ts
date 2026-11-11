@@ -358,6 +358,25 @@ describe("EditTabDialog", () => {
     expect(wrapper.find(".edit-tab-dialog__form").text()).not.toContain("htop");
   });
 
+  test("a new SSH tab to a saved host starts in the remote directory typed for it", async () => {
+    const ssh = useSshStore();
+    vi.spyOn(ssh, "load").mockResolvedValue(undefined as never);
+    ssh.hosts = [{ id: "host-mini", host: "mini.local", name: "mini" }] as never;
+    const app = useAppStore();
+    app.payload = { workspace: { workspace: { id: "ws", kind: "terminal", profileId: "default" } } } as never;
+    const quickAdd = vi.spyOn(app, "quickAddTemplateTab").mockResolvedValue(undefined);
+    const wrapper = mountDialog({ mode: "new", presetTabType: "ssh", title: "mini", presetSshHostId: "host-mini" });
+    await flushPromises();
+    await wrapper.find('[data-testid="ssh-remote-cwd"]').setValue(" ~/projects/app ");
+    await wrapper.find("form").trigger("submit");
+    await flushPromises();
+    expect(quickAdd).toHaveBeenCalledWith("", "mini", "", {
+      kind: "ssh",
+      sshHostId: "host-mini",
+      remoteCwd: "~/projects/app",
+    });
+  });
+
   describe("editing an SSH tab", () => {
     test("shows the Startup command and no local-only Advanced section, and submits the plain command", async () => {
       const wrapper = mountDialog({ mode: "edit", sshTab: true, title: "mini", command: "claude" });
@@ -371,6 +390,16 @@ describe("EditTabDialog", () => {
       await wrapper.find("input[placeholder='e.g. claude']").setValue("tmux attach");
       await wrapper.find("form").trigger("submit");
       expect(wrapper.emitted("submit")![0][0]).toMatchObject({ title: "mini", command: "tmux attach" });
+    });
+
+    test("edits the tab's remote directory", async () => {
+      const wrapper = mountDialog({ mode: "edit", sshTab: true, title: "mini", command: "", remoteCwd: "~/old" });
+      await flushPromises();
+      const input = wrapper.find('[data-testid="ssh-remote-cwd"]');
+      expect((input.element as HTMLInputElement).value).toBe("~/old");
+      await input.setValue("~/projects/app");
+      await wrapper.find("form").trigger("submit");
+      expect(wrapper.emitted("submit")![0][0]).toMatchObject({ remoteCwd: "~/projects/app" });
     });
 
     test("a command starting with wsl is not unwrapped or wrapped", async () => {

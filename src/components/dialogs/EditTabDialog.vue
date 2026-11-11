@@ -73,6 +73,20 @@
 
       <label v-if="tabType !== 'ssh' && sshTab" class="field">
         <span
+          >Remote directory (optional)
+          <HelpTooltip
+            text="The folder on the server where this tab starts, e.g. ~/projects/app. Right after sign-in strIDEterm changes to it and runs the initial command there. Needs a Unix-like shell on the server (Linux or macOS). If the folder does not exist, the terminal shows the error and the initial command does not run."
+            label="Remote directory help"
+        /></span>
+        <input
+          v-model="remoteCwdInput"
+          data-testid="ssh-remote-cwd"
+          placeholder="e.g. ~/projects/app"
+          :maxlength="REMOTE_CWD_MAX_LENGTH"
+        />
+      </label>
+      <label v-if="tabType !== 'ssh' && sshTab" class="field">
+        <span
           >Startup command
           <HelpTooltip
             text="Runs on the server right after sign-in and replaces the host's own startup command for this tab. Leave it blank to use the host's startup command, or a normal shell. Connection details (address, sign-in, port, jump hosts) are edited with Edit SSH host."
@@ -313,6 +327,20 @@
 
             <label class="field">
               <span
+                >Remote directory (optional)
+                <HelpTooltip
+                  text="The folder on the server where this tab starts, e.g. ~/projects/app. Right after sign-in strIDEterm changes to it and runs the initial command there. Needs a Unix-like shell on the server (Linux or macOS). If the folder does not exist, the terminal shows the error and the initial command does not run."
+                  label="Remote directory help"
+              /></span>
+              <input
+                v-model="remoteCwdInput"
+                data-testid="ssh-remote-cwd"
+                placeholder="e.g. ~/projects/app"
+                :maxlength="REMOTE_CWD_MAX_LENGTH"
+              />
+            </label>
+            <label class="field">
+              <span
                 >Initial command (optional)
                 <HelpTooltip
                   :text="
@@ -408,6 +436,7 @@ import { resolveSshLaunchVia } from "../../../electron/shared/ssh-connection.js"
 import { validateSshConnectionIdentity } from "../../lib/ssh-connection-form.js";
 import { sshAuthenticationHelp, sshDefaultMethodHelp } from "../../lib/ssh-help-text.js";
 import { getAgentSshMcpEligibility } from "../../../electron/shared/agent-ssh.js";
+import { REMOTE_CWD_MAX_LENGTH } from "../../../electron/shared/ssh-remote-cwd.js";
 
 interface SshHostState {
   title: string;
@@ -429,8 +458,9 @@ interface Props {
   /** The workspace-wide opt-in already covers every eligible agent tab, this one included. */
   workspaceSshMcpEnabled?: boolean;
   hasCustomLaunch?: boolean;
-  /** Edit mode for a tab that launches an SSH host: only title/icon/command apply. */
+  /** Edit mode for a tab that launches an SSH host: only title/icon/command/remote directory apply. */
   sshTab?: boolean;
+  remoteCwd?: string;
   onEditSshHost?: ((host: unknown, state: SshHostState) => void) | null;
 }
 
@@ -447,6 +477,7 @@ const props = withDefaults(defineProps<Props>(), {
   workspaceSshMcpEnabled: false,
   hasCustomLaunch: false,
   sshTab: false,
+  remoteCwd: "",
   onEditSshHost: null,
 });
 
@@ -532,6 +563,7 @@ function editSelectedHost() {
 const titleRef = ref<HTMLInputElement | null>(null);
 const titleInput = ref(props.title);
 const commandInput = ref(props.command);
+const remoteCwdInput = ref(props.remoteCwd);
 const showIconPicker = ref(false);
 const submitting = ref(false);
 const confirmingDiscard = ref(false);
@@ -831,6 +863,7 @@ async function createSshTab(title: string, host: Record<string, unknown>, hostId
   await appStore.quickAddTemplateTab(commandInput.value.trim(), title, props.cwdOverride, {
     kind: "ssh",
     ...(hostId ? { sshHostId: hostId } : { sshInline: host }),
+    remoteCwd: remoteCwdInput.value.trim(),
   });
   emit("cancel");
   return true;
@@ -875,6 +908,7 @@ async function handleSubmit() {
       command: effectiveCommand,
       kind: tabType.value === "ssh" ? "ssh" : undefined,
       sshHostId: tabType.value === "ssh" ? selectedSshHostId.value : undefined,
+      ...(props.sshTab ? { remoteCwd: remoteCwdInput.value.trim() } : {}),
       sshMcpEnabled:
         tabType.value !== "local" ? false : appStore.isRemoteTransport ? props.sshMcpEnabled : sshMcpEnabled.value,
     });

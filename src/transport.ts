@@ -558,7 +558,7 @@ export interface Transport extends Partial<
   writeTerminal: (sessionId: string, data: string, originWorkspaceId?: string, pointerArrival?: string) => void;
   submitTerminal: (sessionId: string, text: string, originWorkspaceId?: string) => void;
   activateWorkspace: (workspaceId: string) => Promise<unknown>;
-  restartTerminal: (sessionId: string) => Promise<unknown>;
+  restartTerminal: (sessionId: string, options?: { sshPasswordSignIn?: boolean }) => Promise<unknown>;
   getTerminalReplay: (sessionId: string) => Promise<TerminalReplayPayload>;
   regenerateRemoteToken: () => Promise<unknown>;
   saveProfile: (profile: ProfilePayload) => Promise<unknown>;
@@ -2724,7 +2724,7 @@ export function createRemoteTransport(): Transport {
     refreshTunnel: () => fetchJson("/api/tunnel/refresh", {}),
     createCloudflareTunnel: () => fetchJson("/api/tunnel/create", {}),
     stopCloudflareTunnel: () => fetchJson("/api/tunnel/stop", {}),
-    restartTerminal: (sessionId) => fetchJson("/api/terminal/restart", { sessionId }),
+    restartTerminal: (sessionId, options) => fetchJson("/api/terminal/restart", { sessionId, ...options }),
     refreshDocker: () => fetchJson("/api/docker/refresh", {}),
     refreshGit: (projectId, options) => fetchJson("/api/git/refresh", { projectId, ...options }),
     gitInterest: (payload) => {

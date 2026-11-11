@@ -26,6 +26,7 @@ async function listen(
   forwarding = false,
   onAgentForward?: () => void,
   onShell?: () => void,
+  onPty?: (info: { cols: number; rows: number }) => void,
 ) {
   const connections = new Set<Connection>();
   const server = new Server({ hostKeys: [hostKey] }, (connection) => {
@@ -51,7 +52,10 @@ async function listen(
           onAgentForward?.();
           acceptAgent();
         });
-        session.on("pty", (acceptPty) => acceptPty());
+        session.on("pty", (acceptPty, _rejectPty, info) => {
+          onPty?.({ cols: info.cols, rows: info.rows });
+          acceptPty();
+        });
         session.on("shell", (acceptShell) => {
           onShell?.();
           const stream = acceptShell();
@@ -278,6 +282,32 @@ describe("Built-in SSH over a real loopback connection", () => {
     await session.start();
     expect(session.ready).toBe(true);
     expect(forwardingRequests).toBe(enabled ? 1 : 0);
+  });
+
+  test("a size set while the password prompt is open is the size the shell is requested with", async () => {
+    let requested: { cols: number; rows: number } | undefined;
+    const port = await listen(
+      (context) => {
+        if (context.method === "password" && context.password === "account-secret") context.accept();
+        else context.reject(["password"]);
+      },
+      false,
+      undefined,
+      undefined,
+      (info) => (requested = info),
+    );
+    const session: SshSession = new SshSession({
+      host: { host: "127.0.0.1", port, username: "alice" },
+      auth: { promptPassword: true, methodOrder: ["password"] },
+      dimensions: { cols: 120, rows: 34 },
+      onPasswordPrompt: (finish) => {
+        session.resize(211, 62);
+        finish("account-secret");
+      },
+    });
+    cleanups.push(() => session.stop());
+    await session.start();
+    expect(requested).toEqual({ cols: 211, rows: 62 });
   });
 
   test("queued first-connection trust cannot overwrite a successor generation", async () => {

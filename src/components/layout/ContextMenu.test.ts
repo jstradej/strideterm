@@ -276,6 +276,40 @@ describe("ContextMenu", () => {
     wrapper.unmount();
   });
 
+  function openSshMenu(store: ReturnType<typeof useAppStore>) {
+    store.getPanelByViewId = ((viewId: string) => {
+      if (viewId !== "ws1:ssh") return null;
+      return { workspace: { id: "ws1", kind: "manual" }, panel: { id: "ssh", launch: { kind: "ssh" } } };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any;
+    store.contextMenu = { viewId: "ws1:ssh", x: 0, y: 0 };
+  }
+
+  test("'Reconnect with password' restarts the SSH tab with a one-time password sign-in", async () => {
+    const store = useAppStore();
+    openSshMenu(store);
+    const restart = vi.spyOn(store, "restartSession").mockResolvedValue(undefined);
+    const wrapper = mount(ContextMenu, { attachTo: document.body });
+    const btn = document.querySelector('[data-testid="ssh-password-sign-in"]') as HTMLElement;
+    expect(btn.getAttribute("title")).toContain("FileVault");
+    btn.click();
+    await flushPromises();
+    expect(restart).toHaveBeenCalledWith("ws1:ssh", { sshPasswordSignIn: true });
+    wrapper.unmount();
+  });
+
+  test("'Reconnect with password' reports a failed restart", async () => {
+    const store = useAppStore();
+    openSshMenu(store);
+    vi.spyOn(store, "restartSession").mockRejectedValue(new Error("host not found"));
+    const showError = vi.spyOn(useNotificationStore(), "showError").mockImplementation(() => undefined as never);
+    const wrapper = mount(ContextMenu, { attachTo: document.body });
+    (document.querySelector('[data-testid="ssh-password-sign-in"]') as HTMLElement).click();
+    await flushPromises();
+    expect(showError).toHaveBeenCalledWith("Password sign-in failed", expect.any(Error));
+    wrapper.unmount();
+  });
+
   test("does not offer 'Add companion agent…' inside a task workspace's own panels", () => {
     const store = useAppStore();
     store.getPanelByViewId = ((viewId: string) => {

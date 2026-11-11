@@ -1,12 +1,18 @@
-import { describe, test, expect } from "vitest";
+import { describe, test, expect, beforeEach } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
+import { createPinia, setActivePinia } from "pinia";
 import PanelEditor from "./PanelEditor.vue";
+import { useSshStore } from "../../stores/ssh.js";
 
 function makePanel(overrides: Partial<{ id: string; title: string; command: string }> = {}) {
   return { id: "panel-1", title: "Shell", command: "", shell: true, startup: "default", ...overrides };
 }
 
 describe("PanelEditor", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
   test("adding a template panel emits update:panels with the new entry appended", async () => {
     const wrapper = mount(PanelEditor, { props: { panels: [makePanel()] } });
     await wrapper.find("button.template-btn").trigger("click"); // first built-in template
@@ -50,5 +56,48 @@ describe("PanelEditor", () => {
   test("uses the compact segmented-control sizing (distinct from EditTabDialog's default)", () => {
     const wrapper = mount(PanelEditor, { props: { panels: [makePanel()] } });
     expect(wrapper.find(".segmented").classes()).toContain("segmented--compact");
+  });
+
+  test("offers no SSH button unless the workspace allows SSH tabs", () => {
+    const wrapper = mount(PanelEditor, { props: { panels: [] } });
+    expect(wrapper.find('[data-testid="panel-editor-ssh"]').exists()).toBe(false);
+  });
+
+  test("adds a tab bound to the picked saved SSH host", async () => {
+    useSshStore().hosts = [{ id: "host-mini", host: "mini.local", name: "mini", username: "me" }] as never;
+    const wrapper = mount(PanelEditor, { props: { panels: [], allowSsh: true } });
+    await wrapper.find('[data-testid="panel-editor-ssh"]').trigger("click");
+    const hostButton = wrapper.find('[data-testid="panel-editor-ssh-hosts"] button');
+    expect(hostButton.attributes("title")).toContain("mini (me@mini.local)");
+    await hostButton.trigger("click");
+    const nextPanels = wrapper.emitted("update:panels")![0][0] as Array<Record<string, unknown>>;
+    expect(nextPanels).toHaveLength(1);
+    expect(nextPanels[0]).toMatchObject({
+      title: "🔐 mini",
+      command: "",
+      launch: { kind: "ssh", sshHostId: "host-mini" },
+    });
+    expect(wrapper.find('[data-testid="panel-editor-ssh-hosts"]').exists()).toBe(false);
+  });
+
+  test("says where to add a host when none is saved", async () => {
+    const ssh = useSshStore();
+    ssh.load = async () => {};
+    const wrapper = mount(PanelEditor, { props: { panels: [], allowSsh: true } });
+    await wrapper.find('[data-testid="panel-editor-ssh"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="panel-editor-ssh-hosts"]').text()).toContain("Settings → SSH");
+  });
+
+  test("an SSH tab shows its host and an initial command field instead of the local command fields", async () => {
+    useSshStore().hosts = [{ id: "host-mini", host: "mini.local", name: "mini" }] as never;
+    const panels = [{ ...makePanel(), launch: { kind: "ssh", sshHostId: "host-mini" } }];
+    const wrapper = mount(PanelEditor, { props: { panels, allowSsh: true } });
+    expect(wrapper.find(".panel-card__ssh-host").text()).toContain("mini (mini.local)");
+    expect(wrapper.find(".segmented").exists()).toBe(false);
+    await wrapper.find("input[placeholder='e.g. claude']").setValue("claude");
+    expect(panels[0].command).toBe("claude");
+    await wrapper.find('[data-testid="panel-editor-remote-cwd"]').setValue("~/projects/app");
+    expect(panels[0].launch).toEqual({ kind: "ssh", sshHostId: "host-mini", remoteCwd: "~/projects/app" });
   });
 });

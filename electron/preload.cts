@@ -275,7 +275,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   refreshTunnel: () => ipcRenderer.invoke("tunnel:refresh"),
   createCloudflareTunnel: () => ipcRenderer.invoke("tunnel:create"),
   stopCloudflareTunnel: () => ipcRenderer.invoke("tunnel:stop"),
-  restartTerminal: (sessionId) => ipcRenderer.invoke("terminal:restart", sessionId),
+  restartTerminal: (sessionId, options) => ipcRenderer.invoke("terminal:restart", sessionId, options),
   closeTerminal: (sessionId) => ipcRenderer.invoke("terminal:close", sessionId),
   getTerminalReplay: (sessionId) => ipcRenderer.invoke("terminal:replay", { sessionId }),
   refreshDocker: () => ipcRenderer.invoke("docker:refresh"),

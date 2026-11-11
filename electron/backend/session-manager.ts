@@ -20,6 +20,7 @@ import { tryDirectShellSpawn } from "./direct-shell-spawn.js";
 import { applyShellIntegrationLaunch } from "./shell-integration-launch.js";
 import type { SshManager } from "./ssh/ssh-manager.js";
 import { resolveSshLaunchVia } from "../shared/ssh-connection.js";
+import { normalizeRemoteCwd, remoteStartupCommand } from "../shared/ssh-remote-cwd.js";
 import { DISTRIBUTION_LAUNCHER_ENV } from "../shared/app-distribution.js";
 import { INTERNAL_MCP_ENV_PREFIX } from "../shared/internal-mcp.js";
 import { REVIEW_GIT_ENV_PREFIX } from "../shared/review-git-env.js";
@@ -161,6 +162,26 @@ interface HostRecord {
     [key: string]: any;
   };
   hostKeyPolicy?: string;
+}
+
+export interface SessionStartOptions {
+  /** One connect with the account password instead of keys; the saved host is not changed. */
+  sshPasswordSignIn?: boolean;
+}
+
+// The flag on `advanced` exists only on this per-launch copy, so the system-ssh args builder can see it.
+function withPasswordSignIn(host: HostRecord): HostRecord {
+  return {
+    ...host,
+    auth: {
+      ...host.auth,
+      methods: ["password", "keyboard-interactive"],
+      keyRef: undefined,
+      passphraseRef: undefined,
+      certRef: undefined,
+    },
+    advanced: { ...host.advanced, passwordSignIn: true },
+  };
 }
 
 // ------ Helper functions -------
@@ -386,6 +407,9 @@ async function buildSystemSshArgs(
   if (host.advanced?.compression === false) args.push("-o", "Compression=no");
   else if (host.advanced?.compression === true) args.push("-C");
   if (host.advanced?.agentForward === true) args.push("-A");
+  if (host.advanced?.passwordSignIn === true) {
+    args.push("-o", "PubkeyAuthentication=no", "-o", "PreferredAuthentications=keyboard-interactive,password");
+  }
   // System OpenSSH owns its agent configuration. The app's agentPath is a
   // Built-in ssh2 setting and may point at a Windows socket unavailable to WSL.
 
@@ -781,7 +805,11 @@ export class SessionManager extends EventEmitter {
     return activePanelId ? createSessionId(workspace.id, activePanelId) : null;
   }
 
-  async ensureSession(state: AppState, sessionId: string): Promise<RuntimeSession | null> {
+  async ensureSession(
+    state: AppState,
+    sessionId: string,
+    options: SessionStartOptions = {},
+  ): Promise<RuntimeSession | null> {
     const descriptor = parseSessionId(sessionId);
     if (!descriptor) {
       return null;
@@ -834,11 +862,17 @@ export class SessionManager extends EventEmitter {
         // sign-in instead of the host's own startup command.
         const tabCommand = panel.command?.trim();
         if (tabCommand) host = { ...host, advanced: { ...host.advanced, command: tabCommand } } as HostRecord;
+        if (options.sshPasswordSignIn) host = withPasswordSignIn(host);
         const mode = resolveSshLaunchVia(
           host.advanced?.launchVia,
           state.settings?.ssh?.defaultLaunchVia,
           APP_CONFIG.ssh.defaultLaunchVia as "ssh2" | "system-ssh" | "wsl",
         );
+        const remoteCwd = normalizeRemoteCwd(panel.launch?.remoteCwd);
+        if (remoteCwd) {
+          const command = remoteStartupCommand(remoteCwd, host.advanced?.command || "", { keepShell: mode !== "ssh2" });
+          host = { ...host, advanced: { ...host.advanced, command } };
+        }
         if (mode === "system-ssh") return this.ensureSystemSshSession(state, workspace, panel, key, host);
         if (mode === "wsl") return this.ensureWslSshSession(state, workspace, panel, key, host);
         return this.ensureSshSession(state, workspace, panel, key, host);
@@ -901,15 +935,7 @@ export class SessionManager extends EventEmitter {
     const integrationEnv = integrationLaunch.env;
     const skipTypedSource = integrationLaunch.skipTypedSource;
 
-    const pendingSize = this.pendingInitialSizes.get(key);
-    const initialCols = Math.max(
-      pendingSize?.cols || existing?.cols || this.lastReportedSize?.cols || APP_CONFIG.session.defaultCols,
-      APP_CONFIG.session.minCols,
-    );
-    const initialRows = Math.max(
-      pendingSize?.rows || existing?.rows || this.lastReportedSize?.rows || APP_CONFIG.session.defaultRows,
-      APP_CONFIG.session.minRows,
-    );
+    const { cols: initialCols, rows: initialRows } = this.initialSize(key, existing);
 
     // Validate cwd before handing it to pty.spawn — on Windows an invalid
     // cwd produces a cryptic "Cannot create process, error code: 267"
@@ -1173,7 +1199,33 @@ export class SessionManager extends EventEmitter {
         connected: false,
       });
     }
+    this.applyPendingSize(sessionId);
     return session;
+  }
+
+  /** The size a new terminal starts at: what its pane reported before it started, else the last measured pane. */
+  private initialSize(sessionId: string, existing?: { cols?: number; rows?: number }): { cols: number; rows: number } {
+    const pendingSize = this.pendingInitialSizes.get(sessionId);
+    return {
+      cols: Math.max(
+        pendingSize?.cols || existing?.cols || this.lastReportedSize?.cols || APP_CONFIG.session.defaultCols,
+        APP_CONFIG.session.minCols,
+      ),
+      rows: Math.max(
+        pendingSize?.rows || existing?.rows || this.lastReportedSize?.rows || APP_CONFIG.session.defaultRows,
+        APP_CONFIG.session.minRows,
+      ),
+    };
+  }
+
+  /**
+   * An SSH connect can wait on a handshake or a password prompt for a long time, and a pane that was
+   * measured meanwhile does not report its size again — the size it sent then is applied now.
+   */
+  private applyPendingSize(sessionId: string): void {
+    const pendingSize = this.pendingInitialSizes.get(sessionId);
+    this.pendingInitialSizes.delete(sessionId);
+    if (pendingSize) this.resizeSession(sessionId, pendingSize.cols, pendingSize.rows);
   }
 
   async ensureSystemSshSession(
@@ -1207,6 +1259,7 @@ export class SessionManager extends EventEmitter {
       (process.platform === "win32" ? "ssh.exe" : "ssh");
 
     log.debug("spawning system-ssh session", { sessionId, host: host.host, user: host.username });
+    const size = this.initialSize(sessionId);
 
     // Effect-based spawn — PtySpawnError carries typed context; cleanup runs
     // automatically via the scope created in buildSystemSshArgs.
@@ -1216,8 +1269,8 @@ export class SessionManager extends EventEmitter {
           Promise.resolve(
             this.spawnPty(sshExec, args, {
               name: APP_CONFIG.session.termName,
-              cols: APP_CONFIG.session.defaultCols,
-              rows: APP_CONFIG.session.defaultRows,
+              cols: size.cols,
+              rows: size.rows,
               cwd: os.homedir(),
               env: { ...withoutSessionIdentity(process.env), ...withoutSessionIdentity(host.advanced?.env) },
             }),
@@ -1266,6 +1319,7 @@ export class SessionManager extends EventEmitter {
     if (!spawnResult) return null;
 
     const registered = await this.registerProcessSession(sessionId, workspace, panel, spawnResult, {
+      ...size,
       kind: "ssh-system",
       sshHostId: host.id,
       cleanupFn,
@@ -1345,6 +1399,7 @@ export class SessionManager extends EventEmitter {
     args.push("--", innerExec, ...sshArgs);
 
     log.debug("spawning wsl ssh session", { sessionId, distro, host: host.host });
+    const size = this.initialSize(sessionId);
 
     const spawnResult = await runEffect(
       Effect.tryPromise({
@@ -1352,8 +1407,8 @@ export class SessionManager extends EventEmitter {
           Promise.resolve(
             this.spawnPty("wsl.exe", args, {
               name: APP_CONFIG.session.termName,
-              cols: APP_CONFIG.session.defaultCols,
-              rows: APP_CONFIG.session.defaultRows,
+              cols: size.cols,
+              rows: size.rows,
               cwd: os.homedir(),
               env: { ...withoutSessionIdentity(process.env), WSL_UTF8: "1" },
             }),
@@ -1390,6 +1445,7 @@ export class SessionManager extends EventEmitter {
     if (!spawnResult) return null;
 
     const registered = await this.registerProcessSession(sessionId, workspace, panel, spawnResult, {
+      ...size,
       kind: "ssh-wsl",
       sshHostId: host.id,
       wslDistro: distro,
@@ -1420,8 +1476,7 @@ export class SessionManager extends EventEmitter {
       panelId: panel.id,
       title: panel.title,
       command: panel.command,
-      cols: APP_CONFIG.session.defaultCols,
-      rows: APP_CONFIG.session.defaultRows,
+      ...this.initialSize(sessionId),
       status: "running",
       kind: "ssh",
       processHandle: null,
@@ -1451,8 +1506,11 @@ export class SessionManager extends EventEmitter {
     } else {
       createArgs.hostId = panel.launch?.sshHostId;
     }
-    // SshManager re-resolves the host from id/inlineHost, so the tab's command travels separately.
-    if (panel.command?.trim()) createArgs.startupCommand = panel.command.trim();
+    // SshManager re-resolves the host from id/inlineHost, so the tab's command (and directory) travels separately.
+    if (panel.command?.trim() || normalizeRemoteCwd(panel.launch?.remoteCwd)) {
+      createArgs.startupCommand = host.advanced?.command;
+    }
+    if (host.advanced?.passwordSignIn === true) createArgs.authOverride = host.auth;
 
     // New generation boundary — emitted BEFORE createSession because the
     // onData callback can fire during the await (connection banners) and that
@@ -1474,14 +1532,11 @@ export class SessionManager extends EventEmitter {
       this.failedSpawns.add(sessionId);
       return null;
     }
-    // Quiet the unused-var lint — host is pre-resolved by ensureSession for
-    // logging symmetry with system-ssh/wsl branches; SshManager re-resolves
-    // from id or inlineHost itself.
-    void host;
 
     this.sessions.set(sessionId, session);
     // A live session now owns this id → clear any prior failed-spawn marker.
     this.failedSpawns.delete(sessionId);
+    this.applyPendingSize(sessionId);
     return session;
   }
 
@@ -1494,14 +1549,15 @@ export class SessionManager extends EventEmitter {
       }
       const workspace = findWorkspace(state, descriptor.workspaceId);
       const panel = findPanel(workspace, descriptor.panelId);
-      if (!panel || isBrowserPanel(panel) || panel.launch?.kind === "ssh") {
+      if (!panel || isBrowserPanel(panel)) {
         this.pendingInitialSizes.delete(sessionId);
         return;
       }
-      this.pendingInitialSizes.set(sessionId, {
-        cols: Math.max(cols, APP_CONFIG.session.minCols),
-        rows: Math.max(rows, APP_CONFIG.session.minRows),
-      });
+      const pendingCols = Math.max(cols, APP_CONFIG.session.minCols);
+      const pendingRows = Math.max(rows, APP_CONFIG.session.minRows);
+      this.pendingInitialSizes.set(sessionId, { cols: pendingCols, rows: pendingRows });
+      // A Built-in SSH connect still in progress opens its shell at this size.
+      if (panel.launch?.kind === "ssh") this.sshManager?.resize(sessionId, pendingCols, pendingRows);
       return;
     }
 
@@ -1658,9 +1714,17 @@ export class SessionManager extends EventEmitter {
     ptySession.processHandle.write(data);
   }
 
-  async restartSession(state: AppState, sessionId: string): Promise<RuntimeSession | null> {
+  async restartSession(
+    state: AppState,
+    sessionId: string,
+    options: SessionStartOptions = {},
+  ): Promise<RuntimeSession | null> {
     this.cancelTerminalWrites(sessionId);
     const current = this.sessions.get(sessionId);
+    // The pane keeps its size across a restart and will not report it again.
+    if (current && !this.pendingInitialSizes.has(sessionId)) {
+      this.pendingInitialSizes.set(sessionId, { cols: current.cols, rows: current.rows });
+    }
     if (current?.kind === "ssh") {
       await this.stopSshIntentional(sessionId);
     } else if (current) {
@@ -1696,7 +1760,7 @@ export class SessionManager extends EventEmitter {
     }
 
     this.sessions.delete(sessionId);
-    return this.ensureSession(state, sessionId);
+    return this.ensureSession(state, sessionId, options);
   }
 
   removeSession(sessionId: string): void {

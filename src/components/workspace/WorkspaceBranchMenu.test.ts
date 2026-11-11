@@ -105,6 +105,53 @@ afterEach(() => {
 });
 
 describe("WorkspaceBranchMenu", () => {
+  it("stays open when the viewport resizes, e.g. as a phone keyboard comes up", async () => {
+    setup();
+    await openMenu();
+    const chip = document.body.querySelector<HTMLElement>("[data-role='workspace-branch-chip']")!;
+    vi.spyOn(chip, "getBoundingClientRect").mockReturnValue(DOMRect.fromRect({ x: 10, y: 0, width: 120, height: 24 }));
+    window.dispatchEvent(new Event("resize"));
+    await flushPromises();
+    expect(document.body.querySelector(".branch-menu")).not.toBeNull();
+  });
+
+  it("closes on a resize that hid the branch chip", async () => {
+    setup();
+    await openMenu();
+    window.dispatchEvent(new Event("resize"));
+    await flushPromises();
+    expect(document.body.querySelector(".branch-menu")).toBeNull();
+  });
+
+  it("still closes when the window loses focus", async () => {
+    setup();
+    await openMenu();
+    window.dispatchEvent(new Event("blur"));
+    await flushPromises();
+    expect(document.body.querySelector(".branch-menu")).toBeNull();
+  });
+
+  it("focuses the search on desktop but not on a phone, where it would raise the keyboard", async () => {
+    setup();
+    await openMenu();
+    expect(document.activeElement?.classList).toContain("branch-menu__search");
+    wrapper!.unmount();
+    wrapper = null;
+
+    const original = window.matchMedia;
+    vi.spyOn(window, "matchMedia").mockImplementation((q: string) => {
+      const mql = original(q);
+      if (q === "(any-pointer: coarse)" || q.includes("max-width: 768px")) {
+        Object.defineProperty(mql, "matches", { value: true, configurable: true });
+      }
+      return mql;
+    });
+    setup();
+    await openMenu();
+    expect(document.body.querySelector(".branch-menu")).not.toBeNull();
+    expect(document.activeElement?.classList).not.toContain("branch-menu__search");
+  });
+
   it("opens from the branch chip with the Git actions and the branch tree", async () => {
     const { listBranches } = setup();
     await openMenu();
