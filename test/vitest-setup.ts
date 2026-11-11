@@ -14,8 +14,9 @@
  * (see test/helpers/match-media.ts for the override helper).
  */
 
-import { afterEach, vi } from "vitest";
+import { afterAll, afterEach, vi } from "vitest";
 import { h } from "vue";
+import { resetHeartbeatForTests } from "../src/app/status-heartbeat.js";
 
 /**
  * Drain pending dynamic imports before vitest tears down the jsdom
@@ -30,6 +31,16 @@ import { h } from "vue";
  */
 afterEach(async () => {
   await vi.dynamicImportSettled();
+});
+
+/**
+ * The status heartbeat is a module-level interval that runs while any element
+ * is registered. A test that leaves a pulsing indicator mounted keeps it alive
+ * past the file, and a tick after jsdom teardown throws "requestAnimationFrame
+ * is not defined" — an unhandled error that fails the run on a slow runner.
+ */
+afterAll(() => {
+  resetHeartbeatForTests();
 });
 
 /**

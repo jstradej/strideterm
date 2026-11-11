@@ -102,8 +102,16 @@ describe("Git cache integration", () => {
     const workspace = { id: "watch", cwd: root, kind: "terminal" };
     await manager.refreshWorkspaces([workspace]);
     await manager.setInterestedWorkspaces([workspace]);
-    await fs.writeFile(path.join(root, "tracked.txt"), "first external edit\n");
-    await vi.waitFor(() => expect(manager.getSnapshot(workspace.id)?.dirtyCount).toBe(1), { timeout: 8000 });
+    // macOS starts an FSEvents stream asynchronously: a write right after fs.watch() returns can come
+    // before the stream listens, and the fallback poll is a minute away. Repeat the edit until it is seen.
+    await vi.waitFor(
+      async () => {
+        if (manager.getSnapshot(workspace.id)?.dirtyCount !== 1)
+          await fs.writeFile(path.join(root, "tracked.txt"), "first external edit\n");
+        expect(manager.getSnapshot(workspace.id)?.dirtyCount).toBe(1);
+      },
+      { timeout: 8000, interval: 300 },
+    );
     const revision = manager.getSnapshot(workspace.id)?.dataRevision;
     await fs.writeFile(path.join(root, "tracked.txt"), "second external edit\n");
     await vi.waitFor(() => expect(manager.getSnapshot(workspace.id)?.dataRevision).not.toBe(revision), {
