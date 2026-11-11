@@ -52,7 +52,7 @@ describe("FileTree layout filtering", () => {
     expect(wrapper.text()).not.toContain("main.ts");
     expect(wrapper.text()).not.toContain("deep.ts");
 
-    await wrapper.setProps({ editorLayout: true });
+    await wrapper.setProps({ editorLayout: true } as never);
     expect(wrapper.text()).toContain("readme.md");
     expect(wrapper.text()).toContain("main.ts");
     expect(wrapper.text()).toContain("deep.ts");

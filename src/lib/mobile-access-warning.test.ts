@@ -113,14 +113,13 @@ describe("getMobileAccessWarning", () => {
         now: cancellationAt + 1,
       }),
     ).toBeNull();
-    expect(
-      getMobileAccessDeadline({
-        state: "active",
-        source: "subscription",
-        renewalAt: cancellationAt,
-        notAfter: cancellationAt + 3 * 86_400_000,
-      }),
-    ).toBeNull();
+    const renewingOnly = {
+      state: "active",
+      source: "subscription",
+      renewalAt: cancellationAt,
+      notAfter: cancellationAt + 3 * 86_400_000,
+    };
+    expect(getMobileAccessDeadline(renewingOnly)).toBeNull();
   });
 
   test("uses a 15-minute pulse outside the final day and an hourly pulse inside it", () => {

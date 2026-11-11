@@ -539,7 +539,7 @@ export interface PanelState {
   title: string;
   command: string;
   launch?: PanelLaunch | null;
-  shell?: string;
+  shell?: boolean;
   startup?: string;
   cwd?: string;
   /**

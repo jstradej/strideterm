@@ -119,7 +119,12 @@ const monacoHarness = vi.hoisted(() => {
   };
 });
 
-type Model = ReturnType<(typeof monacoHarness)["createModel"]>;
+type Model = {
+  getValue: () => string;
+  getLanguageId: () => string;
+  getLineCount: () => number;
+  dispose: ReturnType<typeof vi.fn>;
+};
 
 vi.mock("monaco-editor", () => ({
   editor: {
@@ -348,7 +353,7 @@ describe("MonacoDiffPanel first change reveal", () => {
     const wrapper = mount(MonacoDiffPanel, { props: { payload, popoutTitle: "src/a.ts @ abc123" } });
     await flushPromises();
     monacoHarness.getDiffUpdated()?.();
-    await wrapper.setProps({ payload: { ...payload } });
+    await wrapper.setProps({ payload: { ...payload } } as never);
     await flushPromises();
     monacoHarness.getDiffUpdated()?.();
 
@@ -369,7 +374,7 @@ describe("MonacoDiffPanel first change reveal", () => {
     monacoHarness.getDiffUpdated()?.();
     expect(monacoHarness.revealFirstDiff).toHaveBeenCalledOnce();
 
-    await wrapper.setProps({ popoutTitle: "src/b.ts (working)" });
+    await wrapper.setProps({ popoutTitle: "src/b.ts (working)" } as never);
     await flushPromises();
 
     expect(monacoHarness.setModel).toHaveBeenCalledOnce();
@@ -385,7 +390,7 @@ describe("MonacoDiffPanel first change reveal", () => {
       props: { payload: { leftContent: "old", rightContent: "new" } },
     });
     await flushPromises();
-    await wrapper.setProps({ payload: { leftContent, rightContent } });
+    await wrapper.setProps({ payload: { leftContent, rightContent } } as never);
     await flushPromises();
 
     // This may be an event queued by the superseded model pair. The callback

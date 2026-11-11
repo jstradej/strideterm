@@ -292,7 +292,7 @@ describe("GitBranchesTab compact history picker", () => {
 
     await picker.setProps({
       gitUi: {
-        ...picker.props("gitUi"),
+        ...(picker.props() as { gitUi: Record<string, unknown> }).gitUi,
         branchList: {
           current: "main",
           local: [{ name: "feature/a-branch-name-longer-than-before" }],
@@ -301,15 +301,15 @@ describe("GitBranchesTab compact history picker", () => {
           defaultRemote: "origin",
         },
       },
-    });
+    } as never);
     await flushPromises();
     expect(outerPaneSizes()).toEqual([22, 48, 30]);
 
-    await picker.setProps({ compactHistory: true });
+    await picker.setProps({ compactHistory: true } as never);
     await flushPromises();
     const historySplitpanes = picker.getComponent(Splitpanes);
     historySplitpanes.vm.$emit("resize", { panes: [{ size: 35 }, { size: 65 }] });
-    await picker.setProps({ compactHistory: false });
+    await picker.setProps({ compactHistory: false } as never);
     await flushPromises();
     expect(outerPaneSizes()).toEqual([22, 48, 30]);
   });
@@ -1079,7 +1079,7 @@ describe("GitBranchesTab compact history picker", () => {
       picker.findComponent(GitChangeTree).vm.$emit("select", "src/foo.ts");
       await flushPromises();
       expect(picker.find(".git-branches__commits-pane").exists()).toBe(false);
-      expect(picker.get(".mdp-stub").exists()).toBe(true);
+      expect(picker.find(".mdp-stub").exists()).toBe(true);
       expect(picker.findComponent({ name: "MonacoDiffPanel" }).props("initialInline")).toBe(true);
       await picker.get(".git-branches__mobile-back").trigger("click");
       expect(picker.find(".git-branches__commits-pane").exists()).toBe(true);
@@ -1508,12 +1508,12 @@ describe("GitBranchesTab branch tree grouping", () => {
         ?.attributes("aria-expanded"),
     ).toBe("false");
 
-    await picker.setProps({ baseBranch: "release/base" });
+    await picker.setProps({ baseBranch: "release/base" } as never);
     await flushPromises();
     const dynamicBaseRow = picker.findAll(".branch-node__label").find((label) => label.text() === "release/base");
     expect(dynamicBaseRow).toBeTruthy();
     expect(dynamicBaseRow!.element.parentElement?.textContent).toContain("base");
-    await picker.setProps({ baseBranch: "not/a-real-branch" });
+    await picker.setProps({ baseBranch: "not/a-real-branch" } as never);
     await flushPromises();
     expect(picker.findAll(".branch-node__label").map((label) => label.text())).not.toContain("not/a-real-branch");
 
@@ -1584,17 +1584,17 @@ describe("GitBranchesTab branch tree grouping", () => {
     await localRow().trigger("click");
     expect(localRow().attributes("aria-expanded")).toBe("true");
 
-    await wrapper.setProps({ activeRootPath: "/repo/two" });
+    await wrapper.setProps({ activeRootPath: "/repo/two" } as never);
     expect(branchTree().props("stateKey")).toContain("%2Frepo%2Ftwo");
     expect(localRow().attributes("aria-expanded")).toBe("false");
     await localRow().trigger("click");
 
-    await wrapper.setProps({ activeRootPath: "/repo/one" });
+    await wrapper.setProps({ activeRootPath: "/repo/one" } as never);
     expect(localRow().attributes("aria-expanded")).toBe("true");
-    await wrapper.setProps({ profileId: "profile-two" });
+    await wrapper.setProps({ profileId: "profile-two" } as never);
     expect(branchTree().props("stateKey")).toContain("profile-two");
     expect(localRow().attributes("aria-expanded")).toBe("false");
-    await wrapper.setProps({ profileId: "profile-one" });
+    await wrapper.setProps({ profileId: "profile-one" } as never);
     expect(localRow().attributes("aria-expanded")).toBe("true");
     localStorage.removeItem(keyOne);
     localStorage.removeItem(keyRootTwo);

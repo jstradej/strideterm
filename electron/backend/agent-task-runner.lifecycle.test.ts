@@ -113,7 +113,7 @@ function sourceWorkspace(cwd: string): WorkspaceState {
     starred: false,
     review: null,
     quickfix: null,
-    panels: [{ id: "primary", title: "Primary", command: "claude", shell: "true", cwd }],
+    panels: [{ id: "primary", title: "Primary", command: "claude", shell: true, cwd }],
     task: null,
   };
 }

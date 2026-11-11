@@ -9055,35 +9055,37 @@ describe("runtime integration", () => {
     await fs.mkdir(branchDir, { recursive: true });
     await fixture.store.mutate((draft: AppState) => {
       draft.workspaces.push(
-        {
-          id: "duplicate-a",
-          name: "Parent / feature-x",
-          kind: "terminal",
-          profileId: "default",
-          cwd: branchDir,
-          notes: "Worktree of Parent",
-          starred: false,
-          panels: [{ id: "panel-a", title: "Shell", command: "", shell: true, startup: "manual" }],
-        },
-        {
-          id: "duplicate-b",
-          name: "Parent / feature-x",
-          kind: "terminal",
-          profileId: "default",
-          cwd: path.join(parentDir, ".strideterm", "tree", ".", "feature-x"),
-          notes: "Worktree of Parent",
-          starred: true,
-          panels: [{ id: "panel-b", title: "Shell", command: "", shell: true, startup: "manual" }],
-        },
-        {
-          id: "profile-b-worktree",
-          name: "Parent / feature-x",
-          kind: "terminal",
-          profileId: "profile-b",
-          cwd: branchDir,
-          notes: "Worktree of Parent",
-          panels: [{ id: "panel-c", title: "Shell", command: "", shell: true, startup: "manual" }],
-        },
+        ...([
+          {
+            id: "duplicate-a",
+            name: "Parent / feature-x",
+            kind: "terminal",
+            profileId: "default",
+            cwd: branchDir,
+            notes: "Worktree of Parent",
+            starred: false,
+            panels: [{ id: "panel-a", title: "Shell", command: "", shell: true, startup: "manual" }],
+          },
+          {
+            id: "duplicate-b",
+            name: "Parent / feature-x",
+            kind: "terminal",
+            profileId: "default",
+            cwd: path.join(parentDir, ".strideterm", "tree", ".", "feature-x"),
+            notes: "Worktree of Parent",
+            starred: true,
+            panels: [{ id: "panel-b", title: "Shell", command: "", shell: true, startup: "manual" }],
+          },
+          {
+            id: "profile-b-worktree",
+            name: "Parent / feature-x",
+            kind: "terminal",
+            profileId: "profile-b",
+            cwd: branchDir,
+            notes: "Worktree of Parent",
+            panels: [{ id: "panel-c", title: "Shell", command: "", shell: true, startup: "manual" }],
+          },
+        ] as unknown as WorkspaceState[]),
       );
       const defaultProfile = draft.profiles.find((profile) => profile.id === "default");
       if (defaultProfile) {
@@ -9137,7 +9139,7 @@ describe("runtime integration", () => {
           cwd: branchDir,
           notes: "Worktree of Parent",
           panels: [{ id: `${id}-panel`, title: "Shell", command: "", shell: true, startup: "manual" }],
-        });
+        } as unknown as WorkspaceState);
       }
     });
     fixture.sessionManager.sessions.set("duplicate-a:duplicate-a-panel", { workspaceId: "duplicate-a" });

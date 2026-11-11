@@ -192,12 +192,12 @@ describe("BranchTreePane", () => {
       .find((row) => row.text().includes("feature"))!;
     expect(featureRow.attributes("aria-expanded")).toBe("false");
 
-    await wrapper.setProps({ searching: true });
+    await wrapper.setProps({ searching: true } as never);
     expect(featureRow.attributes("aria-expanded")).toBe("true");
     await featureRow.trigger("click");
     expect(featureRow.attributes("aria-expanded")).toBe("false");
     expect(localStorage.getItem(stateKey)).toBe(savedBeforeSearch);
-    await wrapper.setProps({ searching: false });
+    await wrapper.setProps({ searching: false } as never);
     expect(featureRow.attributes("aria-expanded")).toBe("false");
     expect(JSON.parse(localStorage.getItem(stateKey) || "{}").local).toBe(true);
     const refreshedTree = makeTree();
@@ -218,7 +218,7 @@ describe("BranchTreePane", () => {
           },
         ],
       });
-    await wrapper.setProps({ tree: refreshedTree });
+    await wrapper.setProps({ tree: refreshedTree } as never);
     const refreshedLocal = wrapper
       .findAll(".branch-node--section > .branch-node__row")
       .find((row) => row.text().includes("Local"))!;
