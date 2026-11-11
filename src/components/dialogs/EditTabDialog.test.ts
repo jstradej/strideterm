@@ -363,7 +363,9 @@ describe("EditTabDialog", () => {
     vi.spyOn(ssh, "load").mockResolvedValue(undefined as never);
     ssh.hosts = [{ id: "host-mini", host: "mini.local", name: "mini" }] as never;
     const app = useAppStore();
-    app.payload = { workspace: { workspace: { id: "ws", kind: "terminal", profileId: "default" } } } as never;
+    app.payload = {
+      workspace: { workspace: { id: "ws", kind: "terminal", profileId: "default", panels: [] }, sessions: [] },
+    } as never;
     const quickAdd = vi.spyOn(app, "quickAddTemplateTab").mockResolvedValue(undefined);
     const wrapper = mountDialog({ mode: "new", presetTabType: "ssh", title: "mini", presetSshHostId: "host-mini" });
     await flushPromises();
