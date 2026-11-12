@@ -3,6 +3,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type http from "node:http";
 import { z } from "zod";
 import type { createSshCommandService } from "./ssh-command-service.js";
+import { SshFileError } from "./ssh-file-error.js";
+import type { SshFileAgentTools } from "./ssh-file-agent.js";
 import { bearerCapability, listenOnLoopback, readJsonBody, sendJson } from "../loopback-broker-http.js";
 
 const ROUTE = "/ssh-mcp";
@@ -21,7 +23,48 @@ const requestSchema = z.discriminatedUnion("operation", [
       timeoutMs: z.number().int().min(1).max(60_000).optional(),
     })
     .strict(),
+  z
+    .object({
+      operation: z.literal("list-files"),
+      hostId: z.string().trim().min(1).max(200),
+      path: z.string().min(1).max(4096).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("upload"),
+      hostId: z.string().trim().min(1).max(200),
+      localPath: z.string().min(1).max(4096),
+      remoteDir: z.string().min(1).max(4096),
+      overwrite: z.boolean().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("download"),
+      hostId: z.string().trim().min(1).max(200),
+      remotePath: z.string().min(1).max(4096),
+      localDir: z.string().min(1).max(4096),
+      overwrite: z.boolean().optional(),
+    })
+    .strict(),
+  z.object({ operation: z.literal("transfer-status"), transferId: z.string().min(1).max(100) }).strict(),
 ]);
+
+/** How an SFTP failure is told to the agent: its own code and an HTTP status that says whose fault it is. */
+const FILE_ERROR_MAP: Record<SshFileError["code"], { code: string; status: number }> = {
+  "auth-required": { code: "setup_required", status: 502 },
+  "not-connected": { code: "setup_required", status: 502 },
+  "unsupported-host": { code: "unsupported_host", status: 422 },
+  conflict: { code: "conflict", status: 409 },
+  "not-found": { code: "not_found", status: 404 },
+  "permission-denied": { code: "permission_denied", status: 403 },
+  "outside-roots": { code: "outside_roots", status: 403 },
+  "denied-for-mobile": { code: "permission_denied", status: 403 },
+  cancelled: { code: "cancelled", status: 409 },
+  "limit-exceeded": { code: "limit_exceeded", status: 429 },
+  io: { code: "io_error", status: 502 },
+};
 
 export interface SshMcpGrantContext {
   sessionId: string;
@@ -33,6 +76,8 @@ export interface SshMcpGrantContext {
 
 export interface SshMcpBrokerOptions {
   service: Pick<ReturnType<typeof createSshCommandService>, "listHosts" | "runCommand">;
+  /** File tools (list / upload / download / status). Without them those operations answer "unavailable". */
+  files?: SshFileAgentTools;
   isGrantLive: (_grant: Readonly<SshMcpGrantContext>) => boolean | Promise<boolean>;
 }
 
@@ -41,7 +86,7 @@ interface GrantRecord {
   controllers: Set<AbortController>;
 }
 
-export function createSshMcpBroker({ service, isGrantLive }: SshMcpBrokerOptions) {
+export function createSshMcpBroker({ service, files, isGrantLive }: SshMcpBrokerOptions) {
   const grants = new Map<string, GrantRecord>();
   let server: http.Server | null = null;
   let endpoint = "";
@@ -147,15 +192,7 @@ export function createSshMcpBroker({ service, isGrantLive }: SshMcpBrokerOptions
         return;
       }
 
-      const result =
-        parsed.data.operation === "list"
-          ? { hosts: service.listHosts() }
-          : await service.runCommand({
-              hostId: parsed.data.hostId,
-              command: parsed.data.command,
-              timeoutMs: parsed.data.timeoutMs,
-              signal: controller.signal,
-            });
+      const result = await perform(parsed.data, grant.context, controller.signal);
       if (!controller.signal.aborted) sendJson(response, 200, { result });
     } catch (error) {
       if (controller.signal.aborted) {
@@ -169,6 +206,12 @@ export function createSshMcpBroker({ service, isGrantLive }: SshMcpBrokerOptions
         return;
       }
       if (response.destroyed) return;
+      if (error instanceof SshFileError) {
+        const mapped = FILE_ERROR_MAP[error.code];
+        const detail = error.conflicts?.length ? ` Already exist: ${error.conflicts.join(", ")}` : "";
+        sendJson(response, mapped.status, { error: { code: mapped.code, message: `${error.message}${detail}` } });
+        return;
+      }
       const code = typeof error === "object" && error !== null && "code" in error ? String(error.code) : "ssh_error";
       const message = error instanceof Error ? error.message : "SSH tool request failed.";
       const status = code === "invalid_request" ? 400 : code === "busy" ? 429 : code === "unsupported_host" ? 422 : 502;
@@ -177,6 +220,47 @@ export function createSshMcpBroker({ service, isGrantLive }: SshMcpBrokerOptions
       response.off("close", onResponseClose);
       grant.controllers.delete(controller);
       activeRequests = Math.max(0, activeRequests - 1);
+    }
+  }
+
+  async function perform(
+    request: z.infer<typeof requestSchema>,
+    context: SshMcpGrantContext,
+    signal: AbortSignal,
+  ): Promise<unknown> {
+    if (request.operation === "list") return { hosts: service.listHosts() };
+    if (request.operation === "run") {
+      return service.runCommand({
+        hostId: request.hostId,
+        command: request.command,
+        timeoutMs: request.timeoutMs,
+        signal,
+      });
+    }
+    if (!files) {
+      throw Object.assign(new Error("SSH file tools are not available."), { code: "unavailable" });
+    }
+    switch (request.operation) {
+      case "list-files":
+        return files.listFiles(context, { hostId: request.hostId, path: request.path });
+      case "upload":
+        return files.startTransfer(context, {
+          direction: "upload",
+          hostId: request.hostId,
+          source: request.localPath,
+          destinationDir: request.remoteDir,
+          overwrite: request.overwrite,
+        });
+      case "download":
+        return files.startTransfer(context, {
+          direction: "download",
+          hostId: request.hostId,
+          source: request.remotePath,
+          destinationDir: request.localDir,
+          overwrite: request.overwrite,
+        });
+      default:
+        return files.transferStatus(context, request.transferId);
     }
   }
 

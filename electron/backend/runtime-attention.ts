@@ -478,7 +478,11 @@ export function createRuntimeAttentionManager({
   }
 
   function isAutoStartPanel(panel: PanelState): boolean {
-    return panel.startup === APP_CONFIG.ui.defaultPanelStartup && !/^https?:\/\//i.test(panel.command || "");
+    return (
+      panel.startup === APP_CONFIG.ui.defaultPanelStartup &&
+      panel.command !== "__sftp__" &&
+      !/^https?:\/\//i.test(panel.command || "")
+    );
   }
 
   function spawnSession(state: AppState, sessionId: string): void {

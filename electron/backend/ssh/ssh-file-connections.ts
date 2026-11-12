@@ -94,6 +94,19 @@ export function createSshFileConnections({
     if (entry.idleTimer) clearTimeout(entry.idleTimer);
     entry.idleTimer = null;
     if (entries.get(entry.key) === entry) entries.delete(entry.key);
+    // A live tab's connection outlives this entry: give back the channel opened on it.
+    const browse = entry.browse;
+    entry.browse = null;
+    browse?.then(
+      (sftp) => {
+        try {
+          sftp.end();
+        } catch {
+          // already closed
+        }
+      },
+      () => {},
+    );
     entry.closeOwn?.();
   }
 

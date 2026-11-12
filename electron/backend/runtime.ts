@@ -1095,7 +1095,7 @@ export async function createRuntime({
     createSessionId,
     rootsForProfile: (profileId) => fm.allowedRootsForProfile(profileId),
   });
-  const { service: sshFileService, ...sshFileApi } = sshFile;
+  const { service: sshFileService, sshFileAgent, ...sshFileApi } = sshFile;
   const enableAgentSshMcp = dependencies.enableAgentSshMcp === true;
   let sessionsForSshMcp: {
     sessions: Map<string, { status: string; workspaceId?: string; panelId?: string; kind?: string }>;
@@ -1113,6 +1113,7 @@ export async function createRuntime({
     const createBroker = dependencies.createSshMcpBroker || createSshMcpBroker;
     sshMcpBroker = createBroker({
       service: sshMcpCommandService,
+      files: sshFileAgent,
       isGrantLive: (grant) => {
         const state = getState();
         const workspace = state.workspaces.find((item) => item.id === grant.workspaceId);

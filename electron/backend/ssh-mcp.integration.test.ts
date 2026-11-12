@@ -1,4 +1,7 @@
 import { generateKeyPairSync } from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
@@ -13,6 +16,9 @@ import { SSH_MCP_CAPABILITY_ENV, SSH_MCP_URL_ENV } from "../shared/agent-ssh.js"
 import { createSshCommandService } from "./ssh/ssh-command-service.js";
 import { createSshMcpBroker } from "./ssh/ssh-mcp-broker.js";
 import { SshManager } from "./ssh/ssh-manager.js";
+import { createSshFileHandlers } from "./ssh/runtime-ssh-file-handlers.js";
+import { startSftpTestServer } from "./ssh/test-support/sftp-test-server.js";
+import type { AppState } from "../shared/types/state.js";
 
 const { Server } = ssh2;
 const hostKey = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs1", format: "pem" });
@@ -168,7 +174,14 @@ describe("SSH MCP stdio end-to-end", () => {
     cleanups.push(async () => client.close());
 
     const listed = await client.listTools();
-    expect(listed.tools.map((tool) => tool.name).sort()).toEqual(["list_ssh_hosts", "run_ssh_command"]);
+    expect(listed.tools.map((tool) => tool.name).sort()).toEqual([
+      "download_from_ssh_host",
+      "list_ssh_files",
+      "list_ssh_hosts",
+      "run_ssh_command",
+      "ssh_transfer_status",
+      "upload_to_ssh_host",
+    ]);
     const hosts = await client.callTool({ name: "list_ssh_hosts", arguments: {} });
     expect(parseToolText(hosts as never)).toMatchObject({
       hosts: [
@@ -298,4 +311,120 @@ describe("SSH MCP stdio end-to-end", () => {
     expect(missingFlag.code).toBe(1);
     expect(missingFlag.stderr).toContain("Missing --ssh-mcp");
   });
+});
+
+describe("SSH MCP file tools end-to-end", () => {
+  test("lists a host directory, uploads a workspace file and reports the transfer through MCP", async () => {
+    const remoteRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-mcp-remote-"));
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-mcp-workspace-"));
+    cleanups.push(async () => {
+      await fs.rm(remoteRoot, { recursive: true, force: true });
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    });
+    await fs.mkdir(path.join(remoteRoot, "srv"));
+    await fs.writeFile(path.join(workspaceRoot, "note.txt"), "from the agent");
+    const sftp = await startSftpTestServer({ rootDir: remoteRoot });
+    cleanups.push(() => sftp.close());
+
+    const secrets = new Map([["ssh:password:test", sftp.password]]);
+    const credentialStore: CredentialStore = {
+      getSecret: (ref) => secrets.get(ref) || "",
+      hasSecret: (ref) => secrets.has(ref),
+      setSecret: async (ref, value) => void secrets.set(ref, value),
+      deleteSecret: async (ref) => void secrets.delete(ref),
+      listRefs: () => [...secrets.keys()],
+      isEncryptionAvailable: () => true,
+    };
+    const state = {
+      ssh: {
+        hosts: [
+          {
+            id: "mini-host",
+            name: "mini.local",
+            host: "127.0.0.1",
+            port: sftp.port,
+            username: "alice",
+            auth: { methods: ["password"], passwordRef: "ssh:password:test" },
+            advanced: { launchVia: "ssh2" },
+            hostKeyPolicy: "accept-new",
+          },
+        ],
+        keys: [],
+        certificates: [],
+        knownHosts: {},
+        settings: {},
+      },
+      settings: { ssh: {} },
+      workspaces: [{ id: "workspace", name: "W", profileId: "profile-a", cwd: workspaceRoot, panels: [] }],
+    };
+    const store = { getState: () => state, mutate: async (mutator: (_draft: typeof state) => void) => mutator(state) };
+    const sshManager = new SshManager({ store, credentialStore });
+    const handlers = createSshFileHandlers({
+      sshManager,
+      getState: () => state as unknown as AppState,
+      emit: () => {},
+      getWindowProfileId: () => "profile-a",
+      getEffectiveLaunchMode: () => "ssh2",
+      createSessionId: (workspaceId, panelId) => `${workspaceId}:${panelId}`,
+      rootsForProfile: () => [],
+    });
+    const broker = createSshMcpBroker({
+      service: { listHosts: () => [], runCommand: async () => ({}) } as never,
+      files: handlers.sshFileAgent,
+      isGrantLive: () => true,
+    });
+    await broker.start();
+    cleanups.push(async () => {
+      await broker.close();
+      handlers.close();
+      await Promise.all(
+        [...sshManager.activeSessions.keys(), ...sshManager.pendingPrompts.keys()].map((id) => sshManager.stop(id)),
+      );
+    });
+    const grant = broker.mintGrant({
+      sessionId: "workspace:agent-panel",
+      profileId: "profile-a",
+      workspaceId: "workspace",
+      panelId: "agent-panel",
+      command: "claude",
+    });
+    const { client } = await connectClient({
+      [SSH_MCP_URL_ENV]: grant.url,
+      [SSH_MCP_CAPABILITY_ENV]: grant.capability,
+    });
+    cleanups.push(async () => client.close());
+
+    const listing = await client.callTool({ name: "list_ssh_files", arguments: { hostId: "mini-host", path: "/srv" } });
+    expect(parseToolText(listing as never)).toMatchObject({ path: "/srv", entries: [], truncated: false });
+
+    const started = parseToolText(
+      (await client.callTool({
+        name: "upload_to_ssh_host",
+        arguments: { hostId: "mini-host", localPath: "note.txt", remoteDir: "/srv" },
+      })) as never,
+    ) as { transferId: string };
+    expect(started.transferId).toEqual(expect.any(String));
+    await handlers.service.transfers.idle();
+
+    const status = await client.callTool({
+      name: "ssh_transfer_status",
+      arguments: { transferId: started.transferId },
+    });
+    expect(parseToolText(status as never)).toMatchObject({
+      state: "succeeded",
+      result: { files: 1, bytes: 14, skipped: [] },
+    });
+    expect(await fs.readFile(path.join(remoteRoot, "srv", "note.txt"), "utf8")).toBe("from the agent");
+
+    const outside = await client.callTool({
+      name: "upload_to_ssh_host",
+      arguments: {
+        hostId: "mini-host",
+        localPath: path.join(os.tmpdir(), "not-in-the-workspace.txt"),
+        remoteDir: "/srv",
+      },
+    });
+    expect((outside as { isError?: boolean }).isError).toBe(true);
+    expect(JSON.stringify(outside)).toContain("outside");
+  }, 30_000);
 });

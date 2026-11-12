@@ -16,6 +16,7 @@ import {
 import { SshFileError } from "./ssh-file-error.js";
 import type { SshFileConnectOptions, SshFileTarget } from "./ssh-file-connections.js";
 import { createRootsLocalPolicy, desktopLocalPolicy } from "./ssh-file-local-policy.js";
+import { createSshFileAgentTools } from "./ssh-file-agent.js";
 import { createSshFileService } from "./ssh-file-service.js";
 import type { SshFileLocalPolicy } from "./ssh-file-transfers.js";
 import type { SshManager } from "./ssh-manager.js";
@@ -163,8 +164,17 @@ export function createSshFileHandlers(ctx: SshFileHandlersCtx) {
     };
   }
 
+  const agent = createSshFileAgentTools({
+    sshManager: ctx.sshManager,
+    getState: ctx.getState,
+    getEffectiveLaunchMode: ctx.getEffectiveLaunchMode,
+    service,
+  });
+
   return {
     service,
+    /** The file tools of the SSH MCP grant (list, upload, download, status). */
+    sshFileAgent: agent,
 
     /** Which window answers the prompts of an own file connection (undefined once it is connected). */
     sshFileSessionOwner(sessionId: unknown): string | undefined {

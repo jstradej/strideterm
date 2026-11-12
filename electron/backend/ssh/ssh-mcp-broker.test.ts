@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import http from "node:http";
 import { createSshMcpBroker } from "./ssh-mcp-broker.js";
+import { SshFileError } from "./ssh-file-error.js";
 
 const context = {
   sessionId: "workspace:panel",
@@ -13,7 +14,11 @@ const context = {
 const brokers: ReturnType<typeof createSshMcpBroker>[] = [];
 
 async function broker(
-  overrides: { isGrantLive?: (_grant: typeof context) => boolean | Promise<boolean>; service?: object } = {},
+  overrides: {
+    isGrantLive?: (_grant: typeof context) => boolean | Promise<boolean>;
+    service?: object;
+    files?: object;
+  } = {},
 ) {
   const service = overrides.service || {
     listHosts: vi.fn(() => [
@@ -31,6 +36,7 @@ async function broker(
   };
   const instance = createSshMcpBroker({
     service: service as never,
+    files: overrides.files as never,
     isGrantLive: overrides.isGrantLive || (() => true),
   });
   brokers.push(instance);
@@ -341,6 +347,106 @@ describe("SSH MCP loopback broker", () => {
 
     await vi.waitFor(() => expect(operationSignal?.aborted).toBe(true));
     await pending;
+  });
+});
+
+describe("SSH MCP broker file operations", () => {
+  const files = () => ({
+    listFiles: vi.fn(async () => ({ path: "/srv", entries: [], truncated: false })),
+    startTransfer: vi.fn(async () => ({ transferId: "t-1" })),
+    transferStatus: vi.fn(() => ({ transferId: "t-1", state: "running" })),
+  });
+
+  test("hands the file tools the grant's own identity and the request, nothing else", async () => {
+    const tools = files();
+    const { url, grant } = await broker({ files: tools });
+
+    const listed = await post(url, grant.capability, { operation: "list-files", hostId: "h", path: "/srv" });
+    expect(await listed.json()).toEqual({ result: { path: "/srv", entries: [], truncated: false } });
+    expect(tools.listFiles).toHaveBeenCalledWith(context, { hostId: "h", path: "/srv" });
+
+    await post(url, grant.capability, {
+      operation: "upload",
+      hostId: "h",
+      localPath: "dist",
+      remoteDir: "/srv",
+      overwrite: true,
+    });
+    expect(tools.startTransfer).toHaveBeenLastCalledWith(context, {
+      direction: "upload",
+      hostId: "h",
+      source: "dist",
+      destinationDir: "/srv",
+      overwrite: true,
+    });
+
+    await post(url, grant.capability, { operation: "download", hostId: "h", remotePath: "/srv/a", localDir: "out" });
+    expect(tools.startTransfer).toHaveBeenLastCalledWith(context, {
+      direction: "download",
+      hostId: "h",
+      source: "/srv/a",
+      destinationDir: "out",
+      overwrite: undefined,
+    });
+
+    const status = await post(url, grant.capability, { operation: "transfer-status", transferId: "t-1" });
+    expect((await status.json()) as unknown).toEqual({ result: { transferId: "t-1", state: "running" } });
+    expect(tools.transferStatus).toHaveBeenCalledWith(context, "t-1");
+  });
+
+  test("a stale grant never reaches the file tools", async () => {
+    const tools = files();
+    const { url, grant } = await broker({ files: tools, isGrantLive: () => false });
+    const response = await post(url, grant.capability, { operation: "list-files", hostId: "h" });
+    expect(response.status).toBe(403);
+    expect(tools.listFiles).not.toHaveBeenCalled();
+  });
+
+  test("malformed or extended file requests are rejected before they run", async () => {
+    const tools = files();
+    const { url, grant } = await broker({ files: tools });
+    for (const body of [
+      { operation: "list-files" },
+      { operation: "list-files", hostId: "h", path: "/", recurse: true },
+      { operation: "upload", hostId: "h", localPath: "a" },
+      { operation: "upload", hostId: "h", localPath: "a", remoteDir: "/", overwrite: "yes" },
+      { operation: "download", hostId: "h", remotePath: "/a", localDir: "o", extra: 1 },
+      { operation: "transfer-status", transferId: "" },
+    ]) {
+      expect((await post(url, grant.capability, body)).status, JSON.stringify(body)).toBe(400);
+    }
+    expect(tools.listFiles).not.toHaveBeenCalled();
+    expect(tools.startTransfer).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["conflict", 409, "conflict"],
+    ["outside-roots", 403, "outside_roots"],
+    ["not-found", 404, "not_found"],
+    ["permission-denied", 403, "permission_denied"],
+    ["limit-exceeded", 429, "limit_exceeded"],
+    ["auth-required", 502, "setup_required"],
+    ["not-connected", 502, "setup_required"],
+    ["unsupported-host", 422, "unsupported_host"],
+    ["io", 502, "io_error"],
+  ] as const)("an SFTP failure %s is answered as %i %s", async (sshCode, status, code) => {
+    const tools = files();
+    tools.listFiles.mockRejectedValueOnce(
+      new SshFileError(sshCode, "It failed.", sshCode === "conflict" ? ["/a"] : []),
+    );
+    const { url, grant } = await broker({ files: tools });
+    const response = await post(url, grant.capability, { operation: "list-files", hostId: "h" });
+    expect(response.status).toBe(status);
+    const body = (await response.json()) as { error: { code: string; message: string } };
+    expect(body.error.code).toBe(code);
+    expect(body.error.message).toContain(sshCode === "conflict" ? "/a" : "It failed.");
+  });
+
+  test("without file tools the operations say so instead of failing obscurely", async () => {
+    const { url, grant } = await broker();
+    const response = await post(url, grant.capability, { operation: "list-files", hostId: "h" });
+    expect(response.status).toBe(502);
+    expect(await response.json()).toMatchObject({ error: { code: "unavailable" } });
   });
 });
 

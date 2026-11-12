@@ -69,6 +69,24 @@ export function createSshMcpStdioHandlers({
     ): Promise<unknown> {
       return send({ operation: "run", ...input }, signal);
     },
+    async listFiles(input: { hostId: string; path?: string }, signal?: AbortSignal): Promise<unknown> {
+      return send({ operation: "list-files", ...input }, signal);
+    },
+    async upload(
+      input: { hostId: string; localPath: string; remoteDir: string; overwrite?: boolean },
+      signal?: AbortSignal,
+    ): Promise<unknown> {
+      return send({ operation: "upload", ...input }, signal);
+    },
+    async download(
+      input: { hostId: string; remotePath: string; localDir: string; overwrite?: boolean },
+      signal?: AbortSignal,
+    ): Promise<unknown> {
+      return send({ operation: "download", ...input }, signal);
+    },
+    async transferStatus(input: { transferId: string }, signal?: AbortSignal): Promise<unknown> {
+      return send({ operation: "transfer-status", ...input }, signal);
+    },
   };
 }
 
@@ -113,6 +131,60 @@ export async function runSshMcpStdioServer(config = readSshMcpStdioConfig()): Pr
       },
     },
     async (input, extra) => textResult(await handlers.runCommand(input, withDisconnect(extra.signal))),
+  );
+  const hostId = z.string().trim().min(1).max(200).describe("Saved host ID returned by list_ssh_hosts.");
+  server.registerTool(
+    "list_ssh_files",
+    {
+      title: "List a directory on a saved SSH host",
+      description:
+        "List a directory on a saved Built-in SSH host over SFTP (names, types, sizes, modification times, modes). `path` is an absolute POSIX path on the host such as /var/log; omit it for the home directory. At most 5000 entries are returned and `truncated` says when more exist. Symbolic links are reported, not followed.",
+      inputSchema: {
+        hostId,
+        path: z.string().min(1).max(4096).optional().describe("Absolute directory path on the host."),
+      },
+    },
+    async (input, extra) => textResult(await handlers.listFiles(input, withDisconnect(extra.signal))),
+  );
+  server.registerTool(
+    "upload_to_ssh_host",
+    {
+      title: "Upload a file or folder to a saved SSH host",
+      description:
+        "Upload a file or folder from this workspace to a saved Built-in SSH host. `localPath` is relative to the workspace folder or an absolute path inside this workspace's folders; `remoteDir` is an existing absolute directory on the host, and the item keeps its name there. Symbolic links are skipped. Existing remote files are not replaced unless `overwrite` is true; a clash is an error listing the paths. Returns a transferId at once: check it with ssh_transfer_status. At most 2 transfers run at once and one transfer is limited to 5 GiB.",
+      inputSchema: {
+        hostId,
+        localPath: z.string().min(1).max(4096).describe("File or folder in this workspace (relative or absolute)."),
+        remoteDir: z.string().min(1).max(4096).describe("Existing absolute directory on the host."),
+        overwrite: z.boolean().optional().describe("Replace files that already exist (default false)."),
+      },
+    },
+    async (input, extra) => textResult(await handlers.upload(input, withDisconnect(extra.signal))),
+  );
+  server.registerTool(
+    "download_from_ssh_host",
+    {
+      title: "Download a file or folder from a saved SSH host",
+      description:
+        "Download a file or folder from a saved Built-in SSH host into this workspace. `remotePath` is an absolute path on the host; `localDir` is an existing directory relative to the workspace folder or absolute inside this workspace's folders. Nothing is ever written into a .git directory. Symbolic links are skipped. Existing local files are not replaced unless `overwrite` is true; a clash is an error listing the paths. Returns a transferId at once: check it with ssh_transfer_status. At most 2 transfers run at once and one transfer is limited to 5 GiB.",
+      inputSchema: {
+        hostId,
+        remotePath: z.string().min(1).max(4096).describe("Absolute path of the file or folder on the host."),
+        localDir: z.string().min(1).max(4096).describe("Existing directory in this workspace (relative or absolute)."),
+        overwrite: z.boolean().optional().describe("Replace files that already exist (default false)."),
+      },
+    },
+    async (input, extra) => textResult(await handlers.download(input, withDisconnect(extra.signal))),
+  );
+  server.registerTool(
+    "ssh_transfer_status",
+    {
+      title: "Check a file transfer",
+      description:
+        "State (running, succeeded, failed, cancelled), progress and the final result of a transfer started by upload_to_ssh_host or download_from_ssh_host from this tab. A finished transfer stays known for 24 hours.",
+      inputSchema: { transferId: z.string().min(1).max(100).describe("The id returned when the transfer started.") },
+    },
+    async (input, extra) => textResult(await handlers.transferStatus(input, withDisconnect(extra.signal))),
   );
 
   await serveOverStdio(server, disconnected);
