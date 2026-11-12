@@ -64,7 +64,7 @@ test.describe("Visual snapshots @visual", () => {
   test("empty: new workspace template picker", async () => {
     const { page } = empty!;
     await page.locator("button.sidebar__icon-btn[title^='Open the New Workspace picker']").click();
-    await page.getByText("Empty Workspace").waitFor();
+    await page.getByText("Workspace from a folder").waitFor();
     await settleForScreenshot(page);
     await expect(page).toHaveScreenshot("empty-new-workspace.png");
     await page.locator(".overlay").getByRole("button", { name: "Close" }).first().click();

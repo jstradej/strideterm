@@ -173,7 +173,7 @@ test.describe("New workspace picker", () => {
     await openApp(page, mock);
     await page.locator("button[title^='Open the New Workspace picker']").click();
     await expect(page.locator(".overlay")).toBeVisible({ timeout: 3_000 });
-    await expect(page.locator(".overlay").getByText("Empty Workspace")).toBeVisible();
+    await expect(page.locator(".overlay").getByText("Workspace from a folder")).toBeVisible();
     await expect(page.locator(".overlay").getByText("Agent Task Runner")).toBeVisible();
     assertNoErrors(page);
   });

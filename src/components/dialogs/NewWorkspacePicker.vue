@@ -2,8 +2,8 @@
   <div class="dialog new-workspace-picker" style="width: min(540px, 100%)">
     <div class="dialog__header">
       <div>
-        <p class="eyebrow">New Workspace</p>
-        <h2>Choose a template</h2>
+        <p class="eyebrow">Workspace</p>
+        <h2>New workspace</h2>
       </div>
       <button type="button" class="button button--ghost" @click="emit('cancel')">Close</button>
     </div>
@@ -14,7 +14,7 @@
       ref="listRef"
       class="new-workspace-picker__list"
       role="listbox"
-      aria-label="Workspace templates"
+      aria-label="Workspace types"
       @keydown="onListKeydown"
     >
       <button
@@ -22,13 +22,15 @@
         type="button"
         class="project new-workspace-picker__item"
         style="--accent: #ffa424"
-        title="Open the workspace editor with no preset — pick a working directory, name, and tab list manually. The most flexible option."
+        title="Open the workspace editor: pick a project folder, a name and the tabs. A folder with several git repositories can become one workspace or one per repository."
         @click="emit('pick-empty')"
       >
-        <span class="project__badge" style="background: rgba(255, 164, 36, 0.24); font-size: 16px">+</span>
+        <span class="project__badge" style="background: rgba(255, 164, 36, 0.24); font-size: 16px">&#x1F4C1;</span>
         <span class="project__meta">
-          <span class="project__title-row"><strong>Empty Workspace</strong></span>
-          <small style="color: var(--muted)">Start from scratch with a blank terminal workspace.</small>
+          <span class="project__title-row"><strong>Workspace from a folder</strong></span>
+          <small style="color: var(--muted)"
+            >Pick a project folder and its tabs. Several repositories can become one workspace or one each.</small
+          >
         </span>
       </button>
       <button

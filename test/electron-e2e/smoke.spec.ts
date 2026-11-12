@@ -87,8 +87,8 @@ test.describe("Electron shell — empty state", () => {
   test("Add workspace flow opens the template picker", async () => {
     const { page } = launched!;
     await page.locator("button.sidebar__icon-btn[title^='Open the New Workspace picker']").click();
-    await expect(page.locator(".overlay h2")).toContainText("Choose a template");
-    await expect(page.getByText("Empty Workspace")).toBeVisible();
+    await expect(page.locator(".overlay h2")).toContainText("New workspace");
+    await expect(page.getByText("Workspace from a folder")).toBeVisible();
     await captureStep(launched!, "new-workspace-picker-open");
     await page.locator(".overlay").getByRole("button", { name: "Close" }).first().click();
     await expect(page.locator(".overlay")).not.toBeVisible();
