@@ -786,7 +786,7 @@ describe("WorkspaceDialog", () => {
           global: { provide: { [apiKey]: { probeDirectory, checkIsGitRepo } } },
         });
         await wrapper.find('input[name="cwd"]').setValue("/work/gc");
-        await new Promise((r) => setTimeout(r, 400));
+        await vi.waitFor(() => expect(probeDirectory).toHaveBeenCalled(), { timeout: 5000 });
         await flushPromises();
         return wrapper;
       }
