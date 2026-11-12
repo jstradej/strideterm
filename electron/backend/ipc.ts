@@ -319,6 +319,7 @@ export function registerIpc(
       runtime.sshTestSessionOwner(sessionId);
     if (isReviewAgentSetupSession(sessionId) && !ownerWindowId) return;
     if (runtime.isPrivateSshOperationSessionId(sessionId) && !ownerWindowId) return;
+    if (parseRemoteViewerId(ownerWindowId)) return;
     if (ownerWindowId) {
       emitToWindow?.(ownerWindowId, channel, payload);
       return;

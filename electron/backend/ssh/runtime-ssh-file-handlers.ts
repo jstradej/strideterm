@@ -92,8 +92,9 @@ export function createSshFileHandlers(ctx: SshFileHandlersCtx) {
    * The access policy, in one place.
    *  - Desktop window: the live ssh2 session of the source SSH tab when it is connected, else its own connection
    *    to that tab's host (prompts go to this window); any absolute local path.
-   *  - Remote client: ONLY the live session of an SSH tab of its own profile — never an own connection, which
-   *    would let a phone reach every saved host; local paths only inside its profile's workspace roots.
+   *  - Remote client: the live session of an SSH tab of its own profile when connected, else its own connection
+   *    to that same tab's host — never to a host named by the request. Pooled per viewer; prompts go to that
+   *    client only. Local paths only inside its profile's workspace roots.
    */
   function resolve(payload: { workspaceId: string; panelId: string }, caller: SshFileCaller): Resolved {
     const state = ctx.getState();
@@ -140,18 +141,16 @@ export function createSshFileHandlers(ctx: SshFileHandlersCtx) {
       hostId: hostRecord.id,
       hostLabel: label,
       ...(tab ? { liveSessionId: ctx.createSessionId(workspace.id, tab.id) } : {}),
-      ...(caller.remote
-        ? {}
-        : {
-            own: {
-              poolKey: hostRecord.id,
-              ...(inline ? { inlineHost: saved.sshInline } : { hostId: hostRecord.id }),
-            },
-          }),
+      own: {
+        poolKey: hostRecord.id,
+        ...(inline ? { inlineHost: saved.sshInline } : { hostId: hostRecord.id }),
+      },
     };
-    const connect: SshFileConnectOptions = caller.remote
-      ? { allowPrompts: false, ownerKey: `remote:${caller.profileId}` }
-      : { allowPrompts: true, ownerWindowId: caller.viewerId, ownerKey: `window:${caller.viewerId}` };
+    const connect: SshFileConnectOptions = {
+      allowPrompts: true,
+      ownerWindowId: caller.viewerId,
+      ownerKey: caller.remote ? `viewer:${caller.viewerId}` : `window:${caller.viewerId}`,
+    };
     const local = caller.remote
       ? createRootsLocalPolicy({ roots: () => ctx.rootsForProfile(caller.profileId) })
       : desktopLocalPolicy;
@@ -176,7 +175,12 @@ export function createSshFileHandlers(ctx: SshFileHandlersCtx) {
     /** The file tools of the SSH MCP grant (list, upload, download, status). */
     sshFileAgent: agent,
 
-    /** Which window answers the prompts of an own file connection (undefined once it is connected). */
+    /** A remote client's session ended: cancel its pending connects and close its own connections. */
+    sshFileCloseViewer(viewerId: string): void {
+      service.connections.closeViewer(viewerId);
+    },
+
+    /** Which viewer (window or `remote:<id>`) answers the prompts of an own file connection (undefined once connected). */
     sshFileSessionOwner(sessionId: unknown): string | undefined {
       return service.connections.ownerOf(sessionId);
     },

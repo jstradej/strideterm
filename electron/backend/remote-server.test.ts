@@ -2537,6 +2537,85 @@ describe("terminal streaming — subscription routing + backpressure", () => {
     });
   });
 
+  test("an SFTP connection's prompts reach only the remote client that owns it, and only it may answer", async () => {
+    await withServer("tok-sftp-prompt", async ({ port, runtime }) => {
+      const baseUrl = `http://127.0.0.1:${port}`;
+      const bootstrapBrowser = async () => {
+        const response = await fetch(`${baseUrl}/?token=tok-sftp-prompt&profileId=p1`, { redirect: "manual" });
+        return (response.headers.get("set-cookie") || "").split(";")[0]!;
+      };
+      const ownerCookie = await bootstrapBrowser();
+      const otherCookie = await bootstrapBrowser();
+      const ownerSessionId = ownerCookie.split("=")[1]!;
+      const owners = new Map<string, string>();
+      const answered = {
+        answer: vi.fn(async () => ({ ok: true })),
+        cancel: vi.fn(async () => ({ ok: true })),
+        accept: vi.fn(async () => ({ ok: true })),
+        reject: vi.fn(async () => ({ ok: true })),
+      };
+      Object.assign(runtime, {
+        sshFileSessionOwner: (id: unknown) => (typeof id === "string" ? owners.get(id) : undefined),
+        "ssh:auth:answer": answered.answer,
+        "ssh:auth:cancel": answered.cancel,
+        "ssh:host-key:accept": answered.accept,
+        "ssh:host-key:reject": answered.reject,
+      });
+      const remoteOwned = "ssh-file:remote-owned";
+      const desktopOwned = "ssh-file:desktop-owned";
+      owners.set(remoteOwned, `remote:${ownerSessionId}`);
+      owners.set(desktopOwned, "win-1");
+
+      const open = (cookie: string) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: { Cookie: cookie } });
+        const messages: { type: string; payload?: unknown }[] = [];
+        ws.on("message", (raw: Buffer) => messages.push(JSON.parse(raw.toString())));
+        return { ws, messages, opened: new Promise<void>((resolve) => ws.once("open", () => resolve())) };
+      };
+      const ownerWs = open(ownerCookie);
+      const otherWs = open(otherCookie);
+      await Promise.all([ownerWs.opened, otherWs.opened]);
+
+      runtime._emit("ssh:auth-prompt", { sessionId: remoteOwned, promptId: "p1", prompt: "remote-owned-marker" });
+      runtime._emit("ssh:host-key-change", { sessionId: remoteOwned, promptId: "p2", fingerprint: "remote-owned-fp" });
+      runtime._emit("ssh:auth-prompt-cancel", { sessionId: remoteOwned, promptId: "p1" });
+      runtime._emit("ssh:auth-prompt", { sessionId: desktopOwned, promptId: "p3", prompt: "desktop-owned-marker" });
+      runtime._emit("ssh:host-key-change", { sessionId: desktopOwned, promptId: "p4", fingerprint: "desktop-fp" });
+      expect(
+        await waitUntil(() => ownerWs.messages.filter((m) => JSON.stringify(m).includes(remoteOwned)).length === 3),
+      ).toBe(true);
+      await delay(60);
+      expect(otherWs.messages.some((m) => JSON.stringify(m).includes(remoteOwned))).toBe(false);
+      for (const client of [ownerWs, otherWs]) {
+        expect(client.messages.some((m) => JSON.stringify(m).includes(desktopOwned))).toBe(false);
+      }
+
+      const post = (path: string, cookie: string, sessionId: string) =>
+        fetch(`${baseUrl}${path}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Cookie: cookie },
+          body: JSON.stringify({ sessionId, promptId: "p1", answers: ["pw"], mode: "once" }),
+        });
+      const routes = [
+        "/api/ssh/auth/answer",
+        "/api/ssh/auth/cancel",
+        "/api/ssh/host-key/accept",
+        "/api/ssh/host-key/reject",
+      ];
+      for (const path of routes) {
+        expect((await post(path, otherCookie, remoteOwned)).status).not.toBe(200);
+        expect((await post(path, ownerCookie, desktopOwned)).status).not.toBe(200);
+        expect((await post(path, ownerCookie, "ssh-file:gone")).status).not.toBe(200);
+      }
+      for (const fn of Object.values(answered)) expect(fn).not.toHaveBeenCalled();
+      for (const path of routes) expect((await post(path, ownerCookie, remoteOwned)).status).toBe(200);
+      for (const fn of Object.values(answered)) expect(fn).toHaveBeenCalledTimes(1);
+
+      ownerWs.ws.close();
+      otherWs.ws.close();
+    });
+  });
+
   test("review setup replay and PTY control require the exact authenticated browser session", async () => {
     await withServer("tok-review-setup", async ({ port, runtime }) => {
       const sessionId = "review-agent-setup-123e4567-e89b-12d3-a456-426614174000:agent";

@@ -551,6 +551,17 @@ describe("mobile session route policy", () => {
     expect(decide("/api/task/create", { workspaceId: "workspace-new-uuid" })).toEqual({ allow: true });
   });
 
+  test("a phone may answer the prompt of its own SFTP connection; the runtime decides whose it is", () => {
+    for (const route of [
+      "/api/ssh/auth/answer",
+      "/api/ssh/auth/cancel",
+      "/api/ssh/host-key/accept",
+      "/api/ssh/host-key/reject",
+    ]) {
+      expect(decide(route, { sessionId: "ssh-file:0b1c2d3e", promptId: "p1" })).toEqual({ allow: true });
+    }
+  });
+
   test("review start requires its explicit capability grant", () => {
     const common = {
       pathname: "/api/review/start",

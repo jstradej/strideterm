@@ -651,6 +651,20 @@ function isDesktopPrivateSshSession(runtime: Runtime, sessionId: unknown): boole
   return typeof sessionId === "string" && /^(ssh-test:|ssh-transfer:|ssh-file:)/.test(sessionId);
 }
 
+/** Viewer id answering the prompts of an own SFTP connection owned by a remote client; null for every other session. */
+function remoteSshFilePromptOwner(runtime: Runtime, sessionId: unknown): string | null {
+  if (typeof sessionId !== "string" || !sessionId.startsWith("ssh-file:")) return null;
+  const owner = runtime.sshFileSessionOwner?.(sessionId);
+  return typeof owner === "string" && parseRemoteViewerId(owner) ? owner : null;
+}
+
+/** True when this caller may NOT answer or cancel a prompt of `sessionId`. */
+function isSshPromptRefused(runtime: Runtime, sessionId: unknown, callerSessionId: string | undefined): boolean {
+  const owner = remoteSshFilePromptOwner(runtime, sessionId);
+  if (owner) return !callerSessionId || owner !== remoteViewerId(callerSessionId);
+  return isDesktopPrivateSshSession(runtime, sessionId);
+}
+
 /**
  * Defence-in-depth response headers applied to every HTTP response.
  *
@@ -2244,23 +2258,23 @@ const API_ROUTES: Record<string, ApiRouteHandler> = {
   // Remote sessions are allowed to respond to active prompts only — they
   // can't create/edit credentials. This mirrors how the user is already
   // attached to a session created locally.
-  "/api/ssh/auth/answer": (runtime, body) => {
-    if (isDesktopPrivateSshSession(runtime, body.sessionId))
+  "/api/ssh/auth/answer": (runtime, body, caller) => {
+    if (isSshPromptRefused(runtime, body.sessionId, caller?.sessionId))
       throw new Error("Desktop-only SSH operations cannot be controlled remotely");
     return runtime["ssh:auth:answer"](body);
   },
-  "/api/ssh/auth/cancel": (runtime, body) => {
-    if (isDesktopPrivateSshSession(runtime, body.sessionId))
+  "/api/ssh/auth/cancel": (runtime, body, caller) => {
+    if (isSshPromptRefused(runtime, body.sessionId, caller?.sessionId))
       throw new Error("Desktop-only SSH operations cannot be controlled remotely");
     return runtime["ssh:auth:cancel"](body);
   },
-  "/api/ssh/host-key/accept": (runtime, body) => {
-    if (isDesktopPrivateSshSession(runtime, body.sessionId))
+  "/api/ssh/host-key/accept": (runtime, body, caller) => {
+    if (isSshPromptRefused(runtime, body.sessionId, caller?.sessionId))
       throw new Error("Desktop-only SSH operations cannot be controlled remotely");
     return runtime["ssh:host-key:accept"](body);
   },
-  "/api/ssh/host-key/reject": (runtime, body) => {
-    if (isDesktopPrivateSshSession(runtime, body.sessionId))
+  "/api/ssh/host-key/reject": (runtime, body, caller) => {
+    if (isSshPromptRefused(runtime, body.sessionId, caller?.sessionId))
       throw new Error("Desktop-only SSH operations cannot be controlled remotely");
     return runtime["ssh:host-key:reject"](body);
   },
@@ -3518,6 +3532,7 @@ export async function startRemoteServer({
     auditMobileSessionEnded(record, reason);
     closeSessionSockets(sessionId, reason);
     registry.remove(sessionId);
+    runtime.sshFileCloseViewer?.(remoteViewerId(sessionId));
     if (record?.deviceId) publishMobileSessions();
     audit.info(record?.origin === "token" || record?.origin === "ticket" ? "session ended" : "mobile session ended", {
       sessionRef: remoteSessionRef(sessionId),
@@ -5383,6 +5398,24 @@ export async function startRemoteServer({
    * separate broadcast would only duplicate that, and would leak exit metadata
    * (plus grow a renderer buffer) on sockets that don't render the session.
    */
+  /**
+   * An SSH prompt event is broadcast, except for a private session: an `ssh-file:` session owned by a remote
+   * client goes to the sockets of THAT client's session only, every other private session to nobody.
+   */
+  function routeSshPromptEvent(type: string, payload: unknown): void {
+    const sessionId = (payload as { sessionId?: unknown })?.sessionId;
+    const owner = remoteSshFilePromptOwner(runtime, sessionId);
+    if (owner) {
+      const serialized = JSON.stringify({ type, payload });
+      for (const socket of sockets) {
+        const clientSessionId = socketSession.get(socket);
+        if (clientSessionId && remoteViewerId(clientSessionId) === owner) checkedSend(socket, serialized);
+      }
+      return;
+    }
+    if (!isDesktopPrivateSshSession(runtime, sessionId)) broadcast({ type, payload });
+  }
+
   function routeTerminalFrame(type: "terminal:data" | "terminal:exit", payload: unknown): void {
     const sessionId = String((payload as { sessionId?: unknown })?.sessionId || "");
     if (isDesktopPrivateSshSession(runtime, sessionId)) return;
@@ -5762,18 +5795,9 @@ export async function startRemoteServer({
     // to all authed sockets like ssh:*/docker:* — the git state it mirrors is
     // already pushed to every client via state:updated.
     runtime.on("git:push-progress", (payload: unknown) => broadcast({ type: "git:push-progress", payload })),
-    runtime.on("ssh:auth-prompt", (payload: unknown) => {
-      if (!isDesktopPrivateSshSession(runtime, (payload as { sessionId?: unknown })?.sessionId))
-        broadcast({ type: "ssh:auth-prompt", payload });
-    }),
-    runtime.on("ssh:auth-prompt-cancel", (payload: unknown) => {
-      if (!isDesktopPrivateSshSession(runtime, (payload as { sessionId?: unknown })?.sessionId))
-        broadcast({ type: "ssh:auth-prompt-cancel", payload });
-    }),
-    runtime.on("ssh:host-key-change", (payload: unknown) => {
-      if (!isDesktopPrivateSshSession(runtime, (payload as { sessionId?: unknown })?.sessionId))
-        broadcast({ type: "ssh:host-key-change", payload });
-    }),
+    runtime.on("ssh:auth-prompt", (payload: unknown) => routeSshPromptEvent("ssh:auth-prompt", payload)),
+    runtime.on("ssh:auth-prompt-cancel", (payload: unknown) => routeSshPromptEvent("ssh:auth-prompt-cancel", payload)),
+    runtime.on("ssh:host-key-change", (payload: unknown) => routeSshPromptEvent("ssh:host-key-change", payload)),
     runtime.on("ssh:state", (payload: unknown) => broadcast({ type: "ssh:state", payload })),
     runtime.on("ssh:connection-state", (payload: unknown) => {
       if (!isDesktopPrivateSshSession(runtime, (payload as { sessionId?: unknown })?.sessionId))

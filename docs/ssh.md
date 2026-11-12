@@ -61,7 +61,7 @@ For a Built-in SSH tab, choose **Browse files (SFTP)** in the tab's context menu
 
 The browser uses the tab's open connection when it is connected, so it needs no extra sign-in; otherwise the desktop app connects on its own and asks for any password or host-key confirmation. System SSH and WSL tabs are not supported. Files cannot be dropped onto an SSH terminal to upload them; dropping still types the path.
 
-In a remote browser the browser tab works only while the SSH tab is connected on the desktop. Uploads accept files dragged from the Files tab, and downloads are saved into one of the profile's workspace folders. A paired phone can browse and upload files from the profile's workspace folders but cannot download them to the computer. An agent with **SSH tools** can also list, upload and download files, only inside its own workspace folders, never into a `.git` folder, and without ever being asked for a password.
+In a remote browser or on a phone the browser tab uses the SSH tab's open connection when there is one; otherwise it opens its own connection to that tab's host and asks you, on that device, for any password or host-key confirmation. It never connects to any other host. Uploads accept files dragged from the Files tab, and downloads are saved into one of the profile's workspace folders. A paired phone can browse and upload files from the profile's workspace folders but cannot download them to the computer. An agent with **SSH tools** can also list, upload and download files, only inside its own workspace folders, never into a `.git` folder, and without ever being asked for a password.
 
 ## SSH tabs and AI tools
 

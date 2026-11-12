@@ -136,7 +136,7 @@ async function setup() {
   }
 
   const tabRef = { workspaceId: "ws-1", panelId: "tab-ssh" };
-  return { server, remoteRoot, workspaceRoot, outsideRoot, handlers, state, connectTab, tabRef, events };
+  return { server, remoteRoot, workspaceRoot, outsideRoot, handlers, state, connectTab, tabRef, events, sshManager };
 }
 
 async function write(file: string, content: string): Promise<void> {
@@ -203,18 +203,90 @@ describe("SSH file access policy", () => {
     expect(server.stats.connections).toBe(1);
   });
 
-  test("remote client: never opens a connection of its own, even to a saved host", async () => {
+  test("remote client: opens its own connection to the tab's saved host when the tab is not connected", async () => {
     const { server, handlers, tabRef } = await setup();
 
+    const listing = await handlers.sshFileList({ ...tabRef, path: "/docs" }, REMOTE);
+    expect(listing.path).toBe("/docs");
+    expect(server.stats.connections).toBe(1);
+
+    await handlers.sshFileList({ workspaceId: "ws-1", panelId: "tab-sftp-orphan", path: "/docs" }, REMOTE);
+  });
+
+  test("remote client: own connections are pooled per viewer, never shared with another viewer or a window", async () => {
+    const { server, handlers, tabRef } = await setup();
+    profiles["remote:s3"] = "default";
+    try {
+      await handlers.sshFileList({ ...tabRef, path: "/docs" }, REMOTE);
+      await handlers.sshFileList({ ...tabRef, path: "/" }, REMOTE);
+      expect(server.stats.connections).toBe(1);
+
+      await handlers.sshFileList({ ...tabRef, path: "/docs" }, "remote:s3");
+      expect(server.stats.connections).toBe(2);
+
+      await handlers.sshFileList({ ...tabRef, path: "/docs" }, DESKTOP);
+      expect(server.stats.connections).toBe(3);
+
+      handlers.sshFileCloseViewer("remote:s3");
+      await handlers.sshFileList({ ...tabRef, path: "/docs" }, "remote:s3");
+      expect(server.stats.connections).toBe(4);
+    } finally {
+      delete profiles["remote:s3"];
+    }
+  });
+
+  test("remote client: cannot name a host, and a tab without a usable SSH host reaches none", async () => {
+    const { server, handlers, tabRef } = await setup();
+
+    await expect(
+      handlers.sshFileList({ ...tabRef, path: "/docs", hostId: "host-system" }, REMOTE),
+    ).rejects.toBeTruthy();
+    await expect(handlers.sshFileList({ workspaceId: "ws-1", panelId: "tab-shell" }, REMOTE)).rejects.toMatchObject({
+      code: "io",
+    });
+    await expect(handlers.sshFileList({ workspaceId: "ws-1", panelId: "tab-system" }, REMOTE)).rejects.toMatchObject({
+      code: "unsupported-host",
+    });
+    expect(server.stats.connections).toBe(0);
+  });
+
+  test("remote client: a password prompt is owned by that viewer and answering it completes the connect", async () => {
+    const { server, handlers, state, tabRef, sshManager } = await setup();
+    (state.ssh.hosts[0] as { auth: unknown }).auth = { methods: ["password"] };
+    const prompted: Array<{ sessionId: string; owner: string | undefined }> = [];
+    sshManager.on("ssh:auth-prompt", (event: { sessionId: string; promptId: string }) => {
+      prompted.push({ sessionId: event.sessionId, owner: handlers.sshFileSessionOwner(event.sessionId) });
+      sshManager.answerAuthPrompt(event.sessionId, [server.password], event.promptId);
+    });
+
+    const listing = await handlers.sshFileList({ ...tabRef, path: "/docs" }, REMOTE);
+
+    expect(listing.path).toBe("/docs");
+    expect(prompted).toHaveLength(1);
+    expect(prompted[0]!.sessionId).toMatch(/^ssh-file:/);
+    expect(prompted[0]!.owner).toBe(REMOTE);
+    expect(handlers.sshFileSessionOwner(prompted[0]!.sessionId)).toBeUndefined();
+  });
+
+  test("remote client: cancelling the prompt, or the viewer going away, fails the request without a hang", async () => {
+    const { handlers, state, tabRef, sshManager } = await setup();
+    (state.ssh.hosts[0] as { auth: unknown }).auth = { methods: ["password"] };
+    sshManager.once("ssh:auth-prompt", (event: { sessionId: string; promptId: string }) =>
+      sshManager.cancelAuthPrompt(event.sessionId, event.promptId),
+    );
     await expect(handlers.sshFileList({ ...tabRef, path: "/docs" }, REMOTE)).rejects.toMatchObject({
       code: "not-connected",
-      message: "Connect the SSH tab first.",
     });
-    await expect(
-      handlers.sshFileList({ workspaceId: "ws-1", panelId: "tab-sftp-orphan", path: "/docs" }, REMOTE),
-    ).rejects.toMatchObject({ code: "not-connected" });
 
-    expect(server.stats.connections).toBe(0);
+    const waiting = new Promise<string>((resolve) =>
+      sshManager.once("ssh:auth-prompt", (event: { sessionId: string }) => resolve(event.sessionId)),
+    );
+    const rejected = expect(handlers.sshFileList({ ...tabRef, path: "/docs" }, REMOTE)).rejects.toMatchObject({
+      code: "not-connected",
+    });
+    expect(handlers.sshFileSessionOwner(await waiting)).toBe(REMOTE);
+    handlers.sshFileCloseViewer(REMOTE);
+    await rejected;
   });
 
   test("remote client: another profile's workspace is refused", async () => {

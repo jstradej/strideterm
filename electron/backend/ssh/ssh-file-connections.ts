@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Client, SFTPWrapper } from "ssh2";
 import { getLogger } from "../logger.js";
+import { parseRemoteViewerId } from "../viewer-id.js";
 import { SshFileError } from "./ssh-file-error.js";
 import { openSftpChannel } from "./sftp-promises.js";
 import type { SshManager } from "./ssh-manager.js";
@@ -11,6 +12,8 @@ export const SSH_FILE_SESSION_PREFIX = "ssh-file:";
 /** Agent file tools share the private prefix of the other agent SSH operations (never forwarded to a UI). */
 export const SSH_FILE_AGENT_SESSION_PREFIX = "ssh-mcp:";
 export const SSH_FILE_IDLE_CLOSE_MS = 5 * 60 * 1000;
+/** A prompt of a remote client's own connection that nobody answers this long ends the connect. */
+export const SSH_FILE_REMOTE_PROMPT_TIMEOUT_MS = 3 * 60 * 1000;
 
 type HostRecord = NonNullable<ReturnType<SshManager["getHost"]>>;
 
@@ -25,9 +28,9 @@ export interface SshFileTarget {
 }
 
 export interface SshFileConnectOptions {
-  /** False for remote clients and agents: any password / passphrase / host-key prompt aborts the connect. */
+  /** False for agents: any password / passphrase / host-key prompt aborts the connect. */
   allowPrompts: boolean;
-  /** Window that answers prompts of an own connection (routing like the SSH connection test). */
+  /** Viewer (desktop window id or `remote:<sessionId>`) that answers prompts of an own connection. */
   ownerWindowId?: string;
   /** Pool owner: connections are shared per (owner, host), never across owners. */
   ownerKey: string;
@@ -57,22 +60,42 @@ export interface SshFileConnectionsOptions {
   sshManager: SshManager;
   getEffectiveLaunchMode: (host: HostRecord) => "ssh2" | "system-ssh" | "wsl";
   idleCloseMs?: number;
+  remotePromptTimeoutMs?: number;
 }
 
 export function createSshFileConnections({
   sshManager,
   getEffectiveLaunchMode,
   idleCloseMs = SSH_FILE_IDLE_CLOSE_MS,
+  remotePromptTimeoutMs = SSH_FILE_REMOTE_PROMPT_TIMEOUT_MS,
 }: SshFileConnectionsOptions) {
   const entries = new Map<string, Entry>();
   const connecting = new Map<string, Promise<Entry>>();
   const owners = new Map<string, string>();
   const refuseOnPrompt = new Map<string, (error: SshFileError) => void>();
+  const promptTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  const armPromptTimeout = (sessionId: string): void => {
+    const owner = owners.get(sessionId);
+    if (!owner || !parseRemoteViewerId(owner)) return;
+    const previous = promptTimers.get(sessionId);
+    if (previous) clearTimeout(previous);
+    const timer = setTimeout(() => {
+      promptTimers.delete(sessionId);
+      log.warn("ssh file prompt unanswered, connection cancelled", { owner });
+      void sshManager.stop(sessionId).catch(() => {});
+    }, remotePromptTimeoutMs);
+    timer.unref?.();
+    promptTimers.set(sessionId, timer);
+  };
 
   const onPrompt = (kind: "auth" | "host-key") => (event: { sessionId?: unknown }) => {
     const sessionId = typeof event?.sessionId === "string" ? event.sessionId : "";
     const refuse = refuseOnPrompt.get(sessionId);
-    if (!refuse) return;
+    if (!refuse) {
+      armPromptTimeout(sessionId);
+      return;
+    }
     refuse(
       new SshFileError(
         "auth-required",
@@ -221,6 +244,9 @@ export function createSshFileConnections({
     } finally {
       refuseOnPrompt.delete(sessionId);
       owners.delete(sessionId);
+      const timer = promptTimers.get(sessionId);
+      if (timer) clearTimeout(timer);
+      promptTimers.delete(sessionId);
     }
   }
 
@@ -262,10 +288,21 @@ export function createSshFileConnections({
       return makeLease(await pending);
     },
 
+    /** A viewer went away: cancel its connects (and their prompts) and close its pooled own connections. */
+    closeViewer(viewerId: string): void {
+      for (const [sessionId, owner] of [...owners]) {
+        if (owner === viewerId) void sshManager.stop(sessionId).catch(() => {});
+      }
+      const prefix = `own:viewer:${viewerId}|`;
+      for (const entry of [...entries.values()]) if (entry.key.startsWith(prefix)) drop(entry);
+    },
+
     closeAll(): void {
       sshManager.off("ssh:auth-prompt", onAuthPrompt);
       sshManager.off("ssh:host-key-change", onHostKey);
       for (const entry of [...entries.values()]) drop(entry);
+      for (const timer of promptTimers.values()) clearTimeout(timer);
+      promptTimers.clear();
     },
 
     /** For tests: how many pooled connections exist. */
