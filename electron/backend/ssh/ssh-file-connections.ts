@@ -288,13 +288,18 @@ export function createSshFileConnections({
       return makeLease(await pending);
     },
 
-    /** A viewer went away: cancel its connects (and their prompts) and close its pooled own connections. */
+    /**
+     * A viewer went away: cancel its connects (and their prompts) and close its idle own connections. One a
+     * transfer still holds stays until that transfer ends — a started transfer never depends on its caller.
+     */
     closeViewer(viewerId: string): void {
       for (const [sessionId, owner] of [...owners]) {
         if (owner === viewerId) void sshManager.stop(sessionId).catch(() => {});
       }
       const prefix = `own:viewer:${viewerId}|`;
-      for (const entry of [...entries.values()]) if (entry.key.startsWith(prefix)) drop(entry);
+      for (const entry of [...entries.values()]) {
+        if (entry.key.startsWith(prefix) && entry.leases === 0) drop(entry);
+      }
     },
 
     closeAll(): void {

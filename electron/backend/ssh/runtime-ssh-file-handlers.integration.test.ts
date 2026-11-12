@@ -29,12 +29,12 @@ async function tempDir(label: string): Promise<string> {
   return dir;
 }
 
-async function setup() {
+async function setup(options: { writeDelayMs?: number } = {}) {
   const remoteRoot = await tempDir("remote");
   const workspaceRoot = await tempDir("workspace");
   const outsideRoot = await tempDir("outside");
   await fs.mkdir(path.join(remoteRoot, "docs"));
-  const server = await startSftpTestServer({ rootDir: remoteRoot });
+  const server = await startSftpTestServer({ rootDir: remoteRoot, writeDelayMs: options.writeDelayMs });
   cleanups.push(() => server.close());
   const secrets = new Map([["ssh:password:test", server.password]]);
   const credentials: CredentialStore = {
@@ -287,6 +287,21 @@ describe("SSH file access policy", () => {
     expect(handlers.sshFileSessionOwner(await waiting)).toBe(REMOTE);
     handlers.sshFileCloseViewer(REMOTE);
     await rejected;
+  });
+
+  test("remote client: a transfer it started finishes after its session ends", async () => {
+    const { handlers, tabRef, workspaceRoot, remoteRoot } = await setup({ writeDelayMs: 300 });
+    await fs.writeFile(path.join(workspaceRoot, "big.txt"), "payload");
+    const { transferId } = await handlers.sshFileUpload(
+      { ...tabRef, localPaths: [path.join(workspaceRoot, "big.txt")], remoteDir: "/docs" },
+      REMOTE,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    handlers.sshFileCloseViewer(REMOTE);
+    await handlers.service.transfers.idle();
+
+    expect(handlers.service.transfers.get(transferId)?.state).toBe("succeeded");
+    expect(await fs.readFile(path.join(remoteRoot, "docs", "big.txt"), "utf8")).toBe("payload");
   });
 
   test("remote client: another profile's workspace is refused", async () => {
