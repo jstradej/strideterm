@@ -50,6 +50,19 @@ The host editor's **Advanced** options include:
 
 For Built-in SSH, **Default SSH agent source** in Settings and **Agent source** on an individual host let you choose how strIDEterm reaches an agent. Depending on your computer, the choices include automatic detection, Pageant, the Windows OpenSSH agent pipe, a Unix socket, or no agent. A custom agent path is available for setups that need one. System SSH and WSL ignore these Built-in settings and use their own OpenSSH agent configuration.
 
+## Transfer files over SSH
+
+For a Built-in SSH tab, choose **Browse files (SFTP)** in the tab's context menu to open a file browser for that host in a tab of its own. You can browse folders, create a folder, rename and delete items, and copy a path.
+
+- **Upload:** choose **Upload files…** or **Upload folder…**, or drag files from your computer (or from the Files tab) onto the list. The items go into the folder you are viewing.
+- **Download:** select items and choose **Download…**, then pick a folder on your computer.
+- **Existing items:** if a target already exists, strIDEterm asks whether to overwrite it or skip the existing items. Symbolic links are skipped and listed in the result.
+- **Progress:** each transfer shows its progress and can be cancelled. A transfer keeps running if you switch tabs, and its result also appears in the Notification Center.
+
+The browser uses the tab's open connection when it is connected, so it needs no extra sign-in; otherwise the desktop app connects on its own and asks for any password or host-key confirmation. System SSH and WSL tabs are not supported. Files cannot be dropped onto an SSH terminal to upload them; dropping still types the path.
+
+In a remote browser the browser tab works only while the SSH tab is connected on the desktop. Uploads accept files dragged from the Files tab, and downloads are saved into one of the profile's workspace folders. A paired phone can browse and upload files from the profile's workspace folders but cannot download them to the computer. An agent with **SSH tools** can also list, upload and download files, only inside its own workspace folders, never into a `.git` folder, and without ever being asked for a password.
+
 ## SSH tabs and AI tools
 
 When creating or editing an SSH tab, you can set its own startup command and connection method. The tab command overrides the saved host's startup command for that tab. **Edit tab** changes the tab's title and startup command; **Edit SSH host** changes the connection details. A Quick Connect tab can be saved as a new host from **Edit SSH host**.
@@ -58,7 +71,7 @@ When creating or editing an SSH tab, you can set its own startup command and con
 
 **Reconnect with password** in an SSH tab's context menu connects once with the account password instead of a key or agent, for example to a Mac with FileVault right after a restart. The host's saved sign-in does not change.
 
-You can optionally enable **SSH tools** for a tab that directly launches Claude Code or Codex. This lets that agent list saved Built-in SSH hosts and run a command on a selected host. The option is off by default, takes effect when the terminal starts, and requires restarting the terminal after a change. It is unavailable for manually launched agents, other tab types, WSL, System SSH, and remote sessions.
+You can optionally enable **SSH tools** for a tab that directly launches Claude Code or Codex. This lets that agent list saved Built-in SSH hosts, run a command on a selected host, and list, upload and download files on it (see "Transfer files over SSH"). The option is off by default, takes effect when the terminal starts, and requires restarting the terminal after a change. It is unavailable for manually launched agents, other tab types, WSL, System SSH, and remote sessions.
 
 To enable it for every such tab of a workspace at once, tick **Allow SSH tools for agents** in the workspace settings, next to the internal MCP option. Tabs that do not directly launch Claude Code or Codex are simply skipped. Like the internal MCP option, it is off by default, can only be changed from the desktop app, and is never available to task workspaces.
 
