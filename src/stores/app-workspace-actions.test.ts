@@ -737,6 +737,56 @@ describe("quickAddTemplateTab SSH target scope", () => {
   });
 });
 
+describe("openSftpTab", () => {
+  const sshPanel = { id: "ssh1", title: "box", command: "", launch: { kind: "ssh", sshHostId: "h1" } };
+  const make = (panels: AnyApi[]) => {
+    const ws = { id: "ws-a", name: "A", kind: "terminal", profileId: "profile-a", panels, activePanelId: "ssh1" };
+    const saveWorkspace = vi.fn(async (next: AnyApi) => ({ workspace: { workspace: next } }));
+    const harness = makeCtx(
+      { workspace: { workspace: ws }, appState: { activeWorkspaceId: ws.id, workspaces: [ws] } },
+      { saveWorkspace },
+    );
+    return { ...harness, actions: createWorkspaceActions(harness.ctx), saveWorkspace };
+  };
+
+  it("adds a browser tab that remembers its SSH tab and host, and activates it", async () => {
+    const { actions, saveWorkspace, ctx } = make([sshPanel]);
+    await actions.openSftpTab("ssh1");
+
+    const saved = saveWorkspace.mock.calls[0][0];
+    const created = saved.panels.at(-1);
+    expect(created).toMatchObject({
+      command: "__sftp__",
+      title: "Files · box",
+      shell: false,
+      startup: "none",
+      sftp: { sourcePanelId: "ssh1", sshHostId: "h1" },
+    });
+    expect(ctx.activeViewId.value).toBe(`sftp:${created.id}`);
+  });
+
+  it("copies an inline host so the tab can reconnect after its SSH tab is closed", async () => {
+    const inline = { host: "h.example", username: "me" };
+    const { actions, saveWorkspace } = make([{ ...sshPanel, launch: { kind: "ssh", sshInline: inline } }]);
+    await actions.openSftpTab("ssh1");
+    expect(saveWorkspace.mock.calls[0][0].panels.at(-1).sftp).toEqual({ sourcePanelId: "ssh1", sshInline: inline });
+  });
+
+  it("focuses the browser tab that already exists instead of adding a second one", async () => {
+    const existing = { id: "sftp1", title: "Files · box", command: "__sftp__", sftp: { sourcePanelId: "ssh1" } };
+    const { actions, saveWorkspace, ctx } = make([sshPanel, existing]);
+    await actions.openSftpTab("ssh1");
+    expect(saveWorkspace).not.toHaveBeenCalled();
+    expect(ctx.activeViewId.value).toBe("sftp:sftp1");
+  });
+
+  it("refuses a tab that is not an SSH tab", async () => {
+    const { actions, saveWorkspace } = make([{ id: "sh", title: "Shell", command: "" }]);
+    await expect(actions.openSftpTab("sh")).rejects.toThrow("SSH tab");
+    expect(saveWorkspace).not.toHaveBeenCalled();
+  });
+});
+
 describe("hosted terminals", () => {
   const filesPanel = { id: "files1", title: "Files", command: "__files__" };
   const workspace = (panels: AnyApi[]) => ({

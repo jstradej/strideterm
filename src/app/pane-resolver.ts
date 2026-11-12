@@ -14,6 +14,7 @@ const JiraInboxPane = lazyPane(() => import("../components/workspace/JiraInboxPa
 const AzureReviewPane = lazyPane(() => import("../components/workspace/AzureReviewPane.vue"));
 const BrowserPane = lazyPane(() => import("../components/workspace/BrowserPane.vue"));
 const FileManagerPane = lazyPane(() => import("../components/workspace/FileManagerPane.vue"));
+const SftpBrowserPane = lazyPane(() => import("../components/workspace/SftpBrowserPane.vue"));
 const TaskDashboardPane = lazyPane(() => import("../components/workspace/TaskDashboardPane.vue"));
 const HeadlessJudgePane = lazyPane(() => import("../components/workspace/HeadlessJudgePane.vue"));
 
@@ -26,6 +27,7 @@ const PANE_COMPONENTS: Record<string, unknown> = {
   jira: JiraInboxPane,
   browser: BrowserPane,
   files: FileManagerPane,
+  sftp: SftpBrowserPane,
   "task-dashboard": TaskDashboardPane,
   "headless-judge": HeadlessJudgePane,
 };
@@ -45,6 +47,7 @@ export function resolvePaneProps(type: string, viewId: string, workspaceId: stri
   }
   if (type === "review") return { workspaceId: viewId.replace(/^review:/, "") };
   if (type === "files") return { workspaceId: viewId.replace(/^files:/, "") };
+  if (type === "sftp") return { workspaceId, panelId: viewId.replace(/^sftp:/, "") };
   if (type === "task-dashboard") return { workspaceId: viewId.replace(/^task-dashboard:/, "") };
   if (type === "headless-judge") return { sessionId: viewId };
   return {};

@@ -1168,6 +1168,43 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     ctx.activeViewId.value = `${nextWorkspace.id}:${panelId}`;
   }
 
+  /**
+   * Opens the SFTP browser of an SSH tab: the existing browser tab of that SSH tab when there is one, else a new
+   * `__sftp__` tab that remembers which tab (and host) it browses.
+   */
+  async function openSftpTab(sourcePanelId: string): Promise<void> {
+    const workspace = (ctx.payload.value as AnyApi)?.workspace;
+    const activeWs = workspace?.workspace || workspace?.project;
+    if (!activeWs) throw new Error("Choose a workspace first.");
+    const source = (activeWs.panels || []).find((p: AnyApi) => p.id === sourcePanelId);
+    if (!source || source.launch?.kind !== "ssh") throw new Error("Open the file browser from an SSH tab.");
+    const existing = (activeWs.panels || []).find(
+      (p: AnyApi) => p.command === "__sftp__" && p.sftp?.sourcePanelId === sourcePanelId,
+    );
+    if (existing) {
+      ctx.activeViewId.value = `sftp:${existing.id}`;
+      return;
+    }
+    const nextWorkspace = cloneWorkspace(activeWs as AnyApi);
+    const panelId = `panel-${crypto.randomUUID()}`;
+    const sftp: AnyApi = { sourcePanelId };
+    if (source.launch.sshHostId) sftp.sshHostId = source.launch.sshHostId;
+    if (source.launch.sshInline) sftp.sshInline = source.launch.sshInline;
+    nextWorkspace.panels.push({
+      id: panelId,
+      title: `Files · ${source.title || "SSH"}`,
+      command: "__sftp__",
+      shell: false,
+      startup: "none",
+      sftp,
+    });
+    nextWorkspace.activePanelId = panelId;
+    await ctx.withSuppressedBroadcast(async () => {
+      ctx.adoptPayload((await (ctx.getApi() as CallableTransport).saveWorkspace(nextWorkspace)) as StatePayload);
+    });
+    ctx.activeViewId.value = `sftp:${panelId}`;
+  }
+
   async function quickAddTemplateTab(
     command: string,
     title: string,
@@ -1638,6 +1675,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     closeTab,
     quickAddTab,
     quickAddTemplateTab,
+    openSftpTab,
     openHostedTerminal,
     moveHostedTerminalToTab,
     pickLayout,

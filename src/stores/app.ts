@@ -32,8 +32,10 @@ import {
   isReviewViewId,
   isBrowserViewId,
   isFilesViewId,
+  isSftpViewId,
   isTaskDashboardViewId,
 } from "../app/helpers.js";
+import { useSshFileTransfersStore } from "./ssh-file-transfers.js";
 import { createDialogActions } from "./app-dialog-actions.js";
 import { createWorkspaceActions } from "./app-workspace-actions.js";
 import { createApiActions } from "./app-api-actions.js";
@@ -1021,7 +1023,13 @@ export const useAppStore = defineStore("app", () => {
       isJiraViewId(viewId)
     )
       return false;
-    if (isReviewViewId(viewId) || isBrowserViewId(viewId) || isFilesViewId(viewId) || isTaskDashboardViewId(viewId))
+    if (
+      isReviewViewId(viewId) ||
+      isBrowserViewId(viewId) ||
+      isFilesViewId(viewId) ||
+      isSftpViewId(viewId) ||
+      isTaskDashboardViewId(viewId)
+    )
       return false;
     return viewId.startsWith(`${workspaceId}:`);
   }
@@ -1636,6 +1644,7 @@ export const useAppStore = defineStore("app", () => {
       isReviewViewId(viewId) ||
       isBrowserViewId(viewId) ||
       isFilesViewId(viewId) ||
+      isSftpViewId(viewId) ||
       isTaskDashboardViewId(viewId)
     ) {
       pendingViewActivationId.value = "";
@@ -2064,6 +2073,17 @@ export const useAppStore = defineStore("app", () => {
       watch(
         () => [(payload.value as AnyApi)?.reviewGit, myActiveProfileId.value],
         ([state]) => reviewGit.reconcilePayload(state),
+        { immediate: true },
+      );
+      // SSH file transfers: the same two paths (live events, and the payload's runs for a client that missed them).
+      const sshFileTransfers = useSshFileTransfersStore();
+      sshFileTransfers.init(api, () => myActiveProfileId.value);
+      watch(
+        () => [(payload.value as AnyApi)?.sshFileTransfers, myActiveProfileId.value] as const,
+        ([state, profile]) => {
+          sshFileTransfers.setProfile(profile);
+          sshFileTransfers.reconcile(state);
+        },
         { immediate: true },
       );
       watch(

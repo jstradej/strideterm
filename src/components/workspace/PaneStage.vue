@@ -73,6 +73,7 @@ import {
   isGitHubViewId,
   isReviewViewId,
   isFilesViewId,
+  isSftpViewId,
 } from "../../app/helpers.js";
 import PaneShell from "../layout/PaneShell.vue";
 import TerminalPane from "./TerminalPane.vue";
@@ -362,7 +363,7 @@ function nonTerminalPaneBaseActions(tab: Tab) {
       },
     ];
   }
-  if (isFilesViewId(tab.id)) {
+  if (isFilesViewId(tab.id) || isSftpViewId(tab.id)) {
     return [
       {
         className: "workspace-pane__icon-btn",
@@ -478,7 +479,13 @@ function liveTerminalSessionIds(): Set<string> {
     if (profileFilter && (workspace.profileId || "default") !== profileFilter) continue;
     for (const panel of workspace.panels || []) {
       const command = String(panel.command || "");
-      if (/^https?:\/\//i.test(command) || command === "__files__" || command === "__task-dashboard__") continue;
+      if (
+        /^https?:\/\//i.test(command) ||
+        command === "__files__" ||
+        command === "__sftp__" ||
+        command === "__task-dashboard__"
+      )
+        continue;
       ids.add(`${workspace.id}:${panel.id}`);
     }
   }

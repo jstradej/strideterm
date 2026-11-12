@@ -34,6 +34,20 @@
           <span class="context-menu__icon">&#x1F310;</span><span>Edit SSH host</span>
         </button>
         <button
+          v-if="isSshPanel"
+          type="button"
+          class="context-menu__item"
+          data-testid="ssh-browse-files"
+          :disabled="Boolean(sftpUnsupportedReason)"
+          :title="
+            sftpUnsupportedReason ||
+            'Browse this host’s files over SFTP in a tab of its own: upload, download, rename and delete.'
+          "
+          @click="onBrowseFiles"
+        >
+          <span class="context-menu__icon">&#x1F4C2;</span><span>Browse files (SFTP)</span>
+        </button>
+        <button
           type="button"
           class="context-menu__item"
           title="Open the search bar to find text in this terminal's scrollback (Ctrl/Cmd+F)."
@@ -245,6 +259,8 @@ import { useTerminalStore } from "../../stores/terminal.js";
 import { useContextMenu } from "../../composables/useContextMenu.js";
 import { LAYOUTS } from "../../app/layout-geometry.js";
 import { useNotificationStore } from "../../stores/notifications.js";
+import { useSshStore } from "../../stores/ssh.js";
+import { resolveSshLaunchVia } from "../../../electron/shared/ssh-connection.js";
 import {
   isGitViewId,
   isDockerViewId,
@@ -253,12 +269,14 @@ import {
   isJiraViewId,
   isReviewViewId,
   isFilesViewId,
+  isSftpViewId,
   isBrowserViewId,
   isTaskDashboardViewId,
 } from "../../app/helpers.js";
 import { jiraViewIdFromTab } from "../../app/jira-view-tabs.js";
 
 const store = useAppStore();
+const sshStore = useSshStore();
 const termStore = useTerminalStore();
 const menuRef = ref<HTMLElement | null>(null);
 
@@ -277,6 +295,7 @@ const isTerminal = computed(() => {
     !isJiraViewId(id) &&
     !isReviewViewId(id) &&
     !isFilesViewId(id) &&
+    !isSftpViewId(id) &&
     !isBrowserViewId(id) &&
     !isTaskDashboardViewId(id)
   );
@@ -319,6 +338,27 @@ const hasPersistentPanel = computed(() => {
 const isSshPanel = computed(() => {
   const target = store.getPanelByViewId(viewId.value) as { panel?: { launch?: { kind?: string } } } | undefined;
   return target?.panel?.launch?.kind === "ssh";
+});
+
+// SFTP needs ssh2: System SSH and WSL tabs have no client of ours to open a file channel on.
+const sftpUnsupportedReason = computed(() => {
+  const launch = (
+    store.getPanelByViewId(viewId.value) as
+      | {
+          panel?: {
+            launch?: { kind?: string; sshHostId?: string; sshInline?: { advanced?: { launchVia?: string } } };
+          };
+        }
+      | undefined
+  )?.panel?.launch;
+  if (launch?.kind !== "ssh") return "";
+  const host = launch.sshInline ?? sshStore.hosts.find((candidate) => candidate.id === launch.sshHostId);
+  if (!host) return "";
+  const mode = resolveSshLaunchVia(
+    (host as { advanced?: { launchVia?: string } }).advanced?.launchVia,
+    store.payload?.appState?.settings?.ssh?.defaultLaunchVia,
+  );
+  return mode === "ssh2" ? "" : "File browsing needs Built-in SSH. This tab uses System SSH or WSL.";
 });
 
 const hasNotes = computed(() => {
@@ -596,6 +636,14 @@ async function onEditSshHost() {
   const id = viewId.value;
   store.hideContextMenu();
   await store.editSshHostForView(id);
+}
+
+function onBrowseFiles() {
+  const target = store.getPanelByViewId(viewId.value) as { panel?: { id?: string } } | undefined;
+  const panelId = target?.panel?.id;
+  store.hideContextMenu();
+  if (!panelId) return;
+  void useNotificationStore().runWithToast("Couldn't open the file browser", () => store.openSftpTab(panelId));
 }
 
 function onSshPasswordSignIn() {

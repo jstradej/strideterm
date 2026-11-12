@@ -1350,3 +1350,27 @@ describe("terminals hosted by a Files commander", () => {
     expect(hostedPanelIds(panels({ hostedBy: "files:gone" })).size).toBe(0);
   });
 });
+
+describe("SFTP browser tabs", () => {
+  test("a __sftp__ panel is a virtual sftp tab, never a terminal", () => {
+    const list = [
+      { id: "ssh1", title: "box", command: "", launch: { kind: "ssh", sshHostId: "h1" } },
+      { id: "sftp1", title: "Files · box", command: "__sftp__", sftp: { sourcePanelId: "ssh1" } },
+    ] as unknown as WorkspaceState["panels"];
+    const tabs = getWorkspaceTabs({
+      workspace: {
+        workspace: { id: "ws", kind: "terminal", panels: list } as unknown as WorkspaceState,
+        sessions: [{ sessionId: "ws:ssh1", panelId: "ssh1", title: "box", status: "running" }],
+      },
+      payload: null,
+      hiddenViewIds: new Set(),
+      isContainerRunning: () => false,
+    });
+
+    expect(tabs.map((tab) => [tab.id, tab.type])).toEqual([
+      ["ws:ssh1", "terminal"],
+      ["sftp:sftp1", "sftp"],
+    ]);
+    expect(tabs.find((tab) => tab.type === "sftp")).toMatchObject({ title: "Files · box", closable: true });
+  });
+});

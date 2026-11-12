@@ -298,6 +298,54 @@ describe("ContextMenu", () => {
     wrapper.unmount();
   });
 
+  function openSshMenuFor(store: ReturnType<typeof useAppStore>, launch: Record<string, unknown>) {
+    store.getPanelByViewId = ((viewId: string) => {
+      if (viewId !== "ws1:ssh") return null;
+      return { workspace: { id: "ws1", kind: "manual" }, panel: { id: "ssh", launch: { kind: "ssh", ...launch } } };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any;
+    store.contextMenu = { viewId: "ws1:ssh", x: 0, y: 0 };
+  }
+
+  test("'Browse files (SFTP)' opens the file browser of a Built-in SSH tab", async () => {
+    const store = useAppStore();
+    openSshMenuFor(store, { sshInline: { host: "h", advanced: { launchVia: "ssh2" } } });
+    const open = vi.spyOn(store, "openSftpTab").mockResolvedValue(undefined);
+    const wrapper = mount(ContextMenu, { attachTo: document.body });
+    const btn = document.querySelector('[data-testid="ssh-browse-files"]') as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
+    btn.click();
+    await flushPromises();
+    expect(open).toHaveBeenCalledWith("ssh");
+    wrapper.unmount();
+  });
+
+  test("'Browse files (SFTP)' is disabled, with a reason, for System SSH and WSL tabs", () => {
+    const store = useAppStore();
+    openSshMenuFor(store, { sshInline: { host: "h", advanced: { launchVia: "system-ssh" } } });
+    const wrapper = mount(ContextMenu, { attachTo: document.body });
+    const btn = document.querySelector('[data-testid="ssh-browse-files"]') as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+    expect(btn.getAttribute("title")).toContain("Built-in SSH");
+    wrapper.unmount();
+  });
+
+  test("'Browse files (SFTP)' reports a failure to open the browser", async () => {
+    const store = useAppStore();
+    openSshMenuFor(store, { sshInline: { host: "h", advanced: { launchVia: "ssh2" } } });
+    vi.spyOn(store, "openSftpTab").mockRejectedValue(new Error("save failed"));
+    // runWithToast is the one place a rejected action becomes a toast and a log line.
+    const runWithToast = vi.spyOn(useNotificationStore(), "runWithToast");
+    const showError = vi.spyOn(useNotificationStore(), "showError").mockImplementation(() => undefined as never);
+    const wrapper = mount(ContextMenu, { attachTo: document.body });
+    (document.querySelector('[data-testid="ssh-browse-files"]') as HTMLElement).click();
+    await flushPromises();
+    expect(runWithToast).toHaveBeenCalledWith("Couldn't open the file browser", expect.any(Function));
+    await expect(runWithToast.mock.results[0]!.value).resolves.toBe(false);
+    expect(showError).not.toHaveBeenCalledWith("Password sign-in failed", expect.anything());
+    wrapper.unmount();
+  });
+
   test("'Reconnect with password' reports a failed restart", async () => {
     const store = useAppStore();
     openSshMenu(store);

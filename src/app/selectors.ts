@@ -541,8 +541,14 @@ export function getWorkspaceTabs({
   // Identify browser panels (URL commands), files panels, and task-dashboard panels — these get virtual tabs, not terminal sessions
   const browserPanelIds = new Set(panels.filter((p) => /^https?:\/\//i.test(p.command || "")).map((p) => p.id));
   const filesPanelIds = new Set(panels.filter((p) => p.command === "__files__").map((p) => p.id));
+  const sftpPanelIds = new Set(panels.filter((p) => p.command === "__sftp__").map((p) => p.id));
   const taskDashboardPanelIds = new Set(panels.filter((p) => p.command === "__task-dashboard__").map((p) => p.id));
-  const nonTerminalPanelIds = new Set([...browserPanelIds, ...filesPanelIds, ...taskDashboardPanelIds]);
+  const nonTerminalPanelIds = new Set([
+    ...browserPanelIds,
+    ...filesPanelIds,
+    ...sftpPanelIds,
+    ...taskDashboardPanelIds,
+  ]);
 
   // Panels of THIS workspace whose tab is currently presented inside a
   // companion task workspace — hidden here, still fully owned here.
@@ -632,6 +638,21 @@ export function getWorkspaceTabs({
         type: "files",
         title: panel.title || "Files",
         status: "browse",
+        tone: "running",
+        persistent: true,
+        closable: true,
+      });
+    }
+  }
+
+  // SFTP browser tabs from panels with __sftp__ command
+  for (const panel of panels) {
+    if (sftpPanelIds.has(panel.id)) {
+      tabs.push({
+        id: `sftp:${panel.id}`,
+        type: "sftp",
+        title: panel.title || "SFTP",
+        status: "sftp",
         tone: "running",
         persistent: true,
         closable: true,
