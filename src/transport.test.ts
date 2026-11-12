@@ -2830,6 +2830,8 @@ describe("remote transport API parity — no method silently missing its remote 
     "showSystemNotification",
     "checkForUpdates",
     "browseDirectory",
+    // Native picker of upload sources on the desktop's own disk.
+    "browsePaths",
     "browseFile",
     "saveFile",
     "getNotificationMetrics",

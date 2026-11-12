@@ -86,6 +86,7 @@ import {
   reviewBridgeSyncSchema,
   reviewGitStartSchema,
   reviewPrActionConfirmSchema,
+  browsePathsSchema,
   agentPromptSaveSchema,
   agentPromptDeleteSchema,
   fileListSchema,
@@ -219,6 +220,9 @@ import { AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL } from "../shared/azure-closed
 import { OPERATION_FINISHED_CHANNEL } from "../shared/operation-events.js";
 import { REVIEW_GIT_OPERATION_CHANNEL } from "../shared/review-git-events.js";
 import { errorMessage } from "../shared/error-message.js";
+import { SSH_FILE_TRANSFER_FINISHED_CHANNEL, SSH_FILE_TRANSFER_PROGRESS_CHANNEL } from "../shared/ssh-file-events.js";
+import { toSshFileIpcFailure } from "../shared/ssh-file-error-codes.js";
+import { SshFileError } from "./ssh/ssh-file-error.js";
 import { toJiraIpcFailure } from "../shared/jira-ipc-failure.js";
 import { JiraRequestError } from "./jira/jira-manager.js";
 import { jiraErrorFields } from "./jira/jira-request-error.js";
@@ -380,6 +384,13 @@ export function registerIpc(
     runtime.on(REVIEW_GIT_OPERATION_CHANNEL, (payload: unknown) =>
       emitToRenderer(REVIEW_GIT_OPERATION_CHANNEL, payload),
     ),
+    // Same for SSH file transfers: the renderer keeps only the runs of the profile it is viewing.
+    runtime.on(SSH_FILE_TRANSFER_PROGRESS_CHANNEL, (payload: unknown) =>
+      emitToRenderer(SSH_FILE_TRANSFER_PROGRESS_CHANNEL, payload),
+    ),
+    runtime.on(SSH_FILE_TRANSFER_FINISHED_CHANNEL, (payload: unknown) =>
+      emitToRenderer(SSH_FILE_TRANSFER_FINISHED_CHANNEL, payload),
+    ),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     runtime.on("mobile:status", (payload: any) => emitToRenderer("mobile:status", payload)),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -439,6 +450,7 @@ export function registerIpc(
       } catch (err) {
         logIpcFailure(channel, err);
         if (usesJiraFailureEnvelope(channel) && err instanceof JiraRequestError) return toJiraIpcFailure(err);
+        if (channel.startsWith("ssh-file:") && err instanceof SshFileError) return toSshFileIpcFailure(err);
         throw normalizeIpcFailure(err);
       }
     });
@@ -1404,6 +1416,35 @@ export function registerIpc(
       runtime.startReviewGitOperation(validateIpc(reviewGitStartSchema, payload, "review-git:start"), windowId),
     );
   });
+  // SSH file browser and transfers. A transfer start answers at once; the outcome arrives as
+  // `ssh-file:transfer-finished` (and in the payload's `sshFileTransfers`). A failure crosses IPC as a coded value.
+  const sshFileViewerId = (event: Electron.IpcMainInvokeEvent) => getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+  handle("ssh-file:realpath", async (event, payload) =>
+    withOperationPromise({ opId: "ssh-file:realpath" }, () => runtime.sshFileRealpath(payload, sshFileViewerId(event))),
+  );
+  handle("ssh-file:list", async (event, payload) =>
+    withOperationPromise({ opId: "ssh-file:list" }, () => runtime.sshFileList(payload, sshFileViewerId(event))),
+  );
+  handle("ssh-file:mkdir", async (event, payload) =>
+    withOperationPromise({ opId: "ssh-file:mkdir" }, () => runtime.sshFileMkdir(payload, sshFileViewerId(event))),
+  );
+  handle("ssh-file:rename", async (event, payload) =>
+    withOperationPromise({ opId: "ssh-file:rename" }, () => runtime.sshFileRename(payload, sshFileViewerId(event))),
+  );
+  handle("ssh-file:delete", async (event, payload) =>
+    withOperationPromise({ opId: "ssh-file:delete" }, () => runtime.sshFileDelete(payload, sshFileViewerId(event))),
+  );
+  handle("ssh-file:upload", async (event, payload) =>
+    withOperationPromise({ opId: "ssh-file:upload" }, () => runtime.sshFileUpload(payload, sshFileViewerId(event))),
+  );
+  handle("ssh-file:download", async (event, payload) =>
+    withOperationPromise({ opId: "ssh-file:download" }, () => runtime.sshFileDownload(payload, sshFileViewerId(event))),
+  );
+  handle("ssh-file:transfer-cancel", async (event, payload) =>
+    withOperationPromise({ opId: "ssh-file:transfer-cancel" }, () =>
+      runtime.sshFileTransferCancel(payload, sshFileViewerId(event)),
+    ),
+  );
   handle("review-pr-action:confirm", async (event, payload) => {
     const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
     return withOperationPromise({ opId: "review-pr-action:confirm" }, () =>
@@ -3225,6 +3266,25 @@ export function registerIpc(
         defaultPath: defaultPath || undefined,
       });
       return result.canceled ? null : result.filePaths[0] || null;
+    }),
+  );
+
+  // Native picker for upload sources (files and / or folders, several at once). Desktop only: the user chose
+  // the paths themselves, so they are not subject to the workspace-root allow-list.
+  handle("dialog:browse-paths", async (event, options) =>
+    withOperationPromise({ opId: "dialog:browse-paths" }, async () => {
+      const input = validateIpc(browsePathsSchema, options ?? {}, "dialog:browse-paths");
+      const win = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getFocusedWindow();
+      const properties: Array<"openFile" | "openDirectory" | "multiSelections"> = ["multiSelections"];
+      if (input.files !== false) properties.push("openFile");
+      if (input.directories === true) properties.push("openDirectory");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = await dialog.showOpenDialog(win as any, {
+        title: input.title,
+        properties,
+        defaultPath: input.defaultPath || undefined,
+      });
+      return result.canceled ? [] : result.filePaths;
     }),
   );
 

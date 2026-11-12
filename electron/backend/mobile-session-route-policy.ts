@@ -57,6 +57,8 @@ export const MOBILE_DENIED_ROUTES: ReadonlySet<string> = new Set([
   "/api/file/git-ignore",
   "/api/file/move",
   "/api/file/copy",
+  // Writes the desktop's disk, like the file writes above; upload (read from the profile's roots) stays available.
+  "/api/ssh-file/download",
 ]);
 
 /** Route families that are never available. */

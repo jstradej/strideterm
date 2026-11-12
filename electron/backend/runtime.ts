@@ -233,6 +233,7 @@ import { createTaskHandlers } from "./runtime-task-handlers.js";
 import { createProviderLifecycle } from "./runtime-provider-lifecycle.js";
 import { insertWorkspace } from "./workspace-order.js";
 import { createSshHandlers } from "./ssh/runtime-ssh-handlers.js";
+import { createSshFileHandlers } from "./ssh/runtime-ssh-file-handlers.js";
 import { SshManager } from "./ssh/ssh-manager.js";
 import { createSshCommandService } from "./ssh/ssh-command-service.js";
 import { createSshMcpBroker } from "./ssh/ssh-mcp-broker.js";
@@ -1080,6 +1081,21 @@ export async function createRuntime({
 
   const SshManagerImpl = dependencies.SshManager || SshManager;
   const sshManager = new SshManagerImpl({ store, credentialStore, logger: log });
+  const sshFile = createSshFileHandlers({
+    sshManager,
+    getState,
+    emit: (channel, payload) => events.emit(channel, payload),
+    getWindowProfileId,
+    getEffectiveLaunchMode: (host) =>
+      resolveSshLaunchVia(
+        host.advanced?.launchVia,
+        getState().settings?.ssh?.defaultLaunchVia,
+        APP_CONFIG.ssh.defaultLaunchVia as "ssh2" | "system-ssh" | "wsl",
+      ),
+    createSessionId,
+    rootsForProfile: (profileId) => fm.allowedRootsForProfile(profileId),
+  });
+  const { service: sshFileService, ...sshFileApi } = sshFile;
   const enableAgentSshMcp = dependencies.enableAgentSshMcp === true;
   let sessionsForSshMcp: {
     sessions: Map<string, { status: string; workspaceId?: string; panelId?: string; kind?: string }>;
@@ -1521,14 +1537,20 @@ export async function createRuntime({
     typeof sessionId === "string" && sessionId.startsWith("ssh-transfer:");
   const isSshMcpSessionId = (sessionId: unknown): sessionId is string =>
     typeof sessionId === "string" && sessionId.startsWith("ssh-mcp:");
+  const isSshFileSessionId = (sessionId: unknown): sessionId is string =>
+    typeof sessionId === "string" && sessionId.startsWith("ssh-file:");
   const isPrivateSshOperationSessionId = (sessionId: unknown): sessionId is string =>
-    isSshTestSessionId(sessionId) || isSshKeyTransferSessionId(sessionId) || isSshMcpSessionId(sessionId);
+    isSshTestSessionId(sessionId) ||
+    isSshKeyTransferSessionId(sessionId) ||
+    isSshMcpSessionId(sessionId) ||
+    isSshFileSessionId(sessionId);
   const isSshTestSession = (sessionId: unknown): sessionId is string =>
     isSshTestSessionId(sessionId) && sshTestSessions.has(sessionId);
   const isPrivateSshOperationSession = (sessionId: unknown): boolean =>
     isSshTestSession(sessionId) ||
     (isSshKeyTransferSessionId(sessionId) && sshTransferSessionOwners.has(sessionId)) ||
-    (typeof sessionId === "string" && sessionId.startsWith("ssh-mcp:"));
+    (typeof sessionId === "string" && sessionId.startsWith("ssh-mcp:")) ||
+    isSshFileSessionId(sessionId);
   const emitSshTestState = (sessionId: string, status: SshTestRecord["status"], error?: string) => {
     const record = sshTestSessions.get(sessionId);
     if (!record || record.status === "cancelled") return;
@@ -1657,6 +1679,8 @@ export async function createRuntime({
           : {};
       const sessionId = event.sessionId;
       if (isSshMcpSessionId(sessionId)) return;
+      // A file connection's prompts go to its owner window; its connection state is nobody's business.
+      if (isSshFileSessionId(sessionId) && channel === "ssh:connection-state") return;
       const testRecord = sessionId ? sshTestSessions.get(sessionId) : undefined;
       if (testRecord && sessionId && channel === "ssh:connection-state") {
         if (event.status === "connected") emitSshTestState(sessionId, "authenticated");
@@ -3408,7 +3432,10 @@ export async function createRuntime({
     const panel = project?.panels.find((p) => p.id === descriptor.panelId) || null;
     if (
       panel &&
-      (panel.command === "__files__" || panel.command === "__task-dashboard__" || /^https?:\/\//i.test(panel.command))
+      (panel.command === "__files__" ||
+        panel.command === "__sftp__" ||
+        panel.command === "__task-dashboard__" ||
+        /^https?:\/\//i.test(panel.command))
     ) {
       log.debug("hook ignored: target is not a terminal panel", { sessionId, workspaceKind: project?.kind });
       return;
@@ -4272,6 +4299,7 @@ export async function createRuntime({
             workspace &&
             panel &&
             panel.command !== "__files__" &&
+            panel.command !== "__sftp__" &&
             panel.command !== "__task-dashboard__" &&
             !/^https?:\/\//i.test(panel.command),
           );
@@ -4919,6 +4947,7 @@ export async function createRuntime({
         };
       })(),
       reviewGit: reviewGitService.stateFor(),
+      sshFileTransfers: sshFileService.transfers.getPayload(),
       reviewPrActions: reviewPrActionService?.stateFor() || { pending: [] },
       azureClosedPrCleanup: {
         parentWorkspaceIds: [...azureClosedPrCleanupInFlight],
@@ -10103,13 +10132,19 @@ export async function createRuntime({
     ...gitHandlers,
     _gitInterestGenerationCountForTest: () => gitInterestGenerations.size,
     ...sshHandlers,
+    ...sshFileApi,
+    sshFileService,
     ...dockerHandlers,
     ...gridHandlers,
     ...taskHandlers,
     ...typedHookProviderHandlers,
     sshTestSessionOwner(sessionId: unknown): string | undefined {
       if (typeof sessionId !== "string") return undefined;
-      return sshTestSessions.get(sessionId)?.ownerWindowId || sshTransferOwnerForSession(sessionId);
+      return (
+        sshTestSessions.get(sessionId)?.ownerWindowId ||
+        sshTransferOwnerForSession(sessionId) ||
+        sshFile.sshFileSessionOwner(sessionId)
+      );
     },
     /** The profile a Jira issue pop-out belongs to: the caller's own, and only for one of its Jira workspaces. */
     resolveJiraIssuePopoutProfile(workspaceId: string, windowId: string): string {
@@ -14534,6 +14569,7 @@ export async function createRuntime({
       await internalMcpBroker?.close();
       await reviewGitBroker?.close();
       sshMcpCommandService?.close();
+      sshFile.close();
       for (const signal of sessionSignals.values()) {
         cancelPromptTimer(signal);
       }

@@ -17,6 +17,18 @@ import type {
   JiraWritePreviewPayload,
   StartReviewAgentPreparation,
 } from "../backend/ipc-schemas.js";
+import type {
+  BrowsePaths,
+  SshFileDelete,
+  SshFileDownload,
+  SshFileList,
+  SshFileMkdir,
+  SshFileRealpath,
+  SshFileRename,
+  SshFileTransferCancel,
+  SshFileUpload,
+} from "../backend/ipc-schemas.js";
+import type { SshFileListing, SshFileTransferStarted } from "./ssh-file-events.js";
 import type { MobileConnectedDevice } from "./mobile-session-events.js";
 import type { RemoteBrowserSession } from "./remote-access.js";
 import type {
@@ -1031,6 +1043,21 @@ export interface StridetermAPI {
   fileCommitFiles: (p: FileCommitFiles) => Promise<unknown>;
   fileCommitDiff: (p: FileCommitDiff) => Promise<unknown>;
   browseDirectory: (defaultPath?: string) => Promise<unknown>;
+  /** Desktop only: native picker for upload sources; resolves with the chosen absolute paths ([] when cancelled). */
+  browsePaths: (options?: BrowsePaths) => Promise<string[]>;
+  // SSH file browser and transfers. A failure rejects with an Error carrying `code` (and `conflicts`).
+  sshFileRealpath: (payload: SshFileRealpath) => Promise<{ path: string }>;
+  sshFileList: (payload: SshFileList) => Promise<SshFileListing>;
+  sshFileMkdir: (payload: SshFileMkdir) => Promise<{ ok: true }>;
+  sshFileRename: (payload: SshFileRename) => Promise<{ ok: true }>;
+  sshFileDelete: (payload: SshFileDelete) => Promise<{ deleted: number }>;
+  /** Starts an upload and resolves at once; the outcome arrives via `onSshFileTransferFinished`. */
+  sshFileUpload: (payload: SshFileUpload) => Promise<SshFileTransferStarted>;
+  /** Starts a download to the desktop's disk (never available to a mobile session). */
+  sshFileDownload: (payload: SshFileDownload) => Promise<SshFileTransferStarted>;
+  sshFileTransferCancel: (payload: SshFileTransferCancel) => Promise<{ ok: true }>;
+  onSshFileTransferProgress: (handler: (payload: unknown) => void) => void;
+  onSshFileTransferFinished: (handler: (payload: unknown) => void) => void;
   browseFile: (options?: Record<string, unknown>) => Promise<unknown>;
   saveFile: (options?: Record<string, unknown>) => Promise<unknown>;
 

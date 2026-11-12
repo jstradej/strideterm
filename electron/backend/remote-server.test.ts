@@ -8,6 +8,7 @@ import { WebSocket } from "ws";
 import { getLogDir } from "./logger.js";
 import { ClientRequestError } from "./shared/client-request-error.js";
 import { JiraRequestError } from "./jira/jira-manager.js";
+import { SshFileError } from "./ssh/ssh-file-error.js";
 import {
   AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL,
   azureClosedPrCleanupFinishedSchema,
@@ -6261,10 +6262,13 @@ describe("a mobile session's activity is audited (metadata only)", () => {
     const lists: { sessions: unknown[]; source?: string }[] = [];
     const written: { sessionId: string; data: string; pointerArrival?: string }[] = [];
     const tickets = new Map<string, { deviceId: string; pairId: string; profileId: string }>();
+    const sshFileCalls: { op: string; body: unknown; mobile: boolean | undefined }[] = [];
+    type SshFileCallOptions = { mobile?: boolean; onResolved?: (info: { hostLabel: string }) => void };
     return {
       rows,
       lists,
       written,
+      sshFileCalls,
       seedTicket(ticketId: string, secret: string, deviceId: string) {
         tickets.set(`${ticketId}:${secret}`, { deviceId, pairId: `pair-${deviceId}`, profileId: "default" });
       },
@@ -6275,6 +6279,20 @@ describe("a mobile session's activity is audited (metadata only)", () => {
         listRemoteUrls: () => [],
         listMobileTicketOrigins: () => ["https://example.trycloudflare.com"],
         on: () => () => undefined,
+        sshFileList: async (body: unknown, _viewerId: string, options: SshFileCallOptions) => {
+          options.onResolved?.({ hostLabel: "Test host" });
+          sshFileCalls.push({ op: "list", body, mobile: options.mobile });
+          return { path: "/docs", entries: [], truncated: false };
+        },
+        sshFileDownload: async (body: unknown, _viewerId: string, options: SshFileCallOptions) => {
+          sshFileCalls.push({ op: "download", body, mobile: options.mobile });
+          return { started: true, transferId: "t-1" };
+        },
+        sshFileUpload: async (body: unknown, _viewerId: string, options: SshFileCallOptions) => {
+          options.onResolved?.({ hostLabel: "Test host" });
+          sshFileCalls.push({ op: "upload", body, mobile: options.mobile });
+          throw new SshFileError("conflict", "1 item already exists.", ["/docs/a.txt"]);
+        },
         writeToSession: (
           sessionId: string,
           data: string,
@@ -6350,6 +6368,7 @@ describe("a mobile session's activity is audited (metadata only)", () => {
       rows: AuditRow[];
       lists: { sessions: unknown[]; source?: string }[];
       written: { sessionId: string; data: string }[];
+      sshFileCalls: { op: string; body: unknown; mobile: boolean | undefined }[];
       seedTicket: (ticketId: string, secret: string, deviceId: string) => void;
       server: Awaited<ReturnType<typeof startRemoteServer>>;
     }) => Promise<void>,
@@ -6357,7 +6376,7 @@ describe("a mobile session's activity is audited (metadata only)", () => {
     // realpath: on macOS os.tmpdir() is under /var, which the file manager refuses as a system path.
     const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-mobile-audit-")));
     const port = await getFreePort();
-    const { runtime, rows, lists, written, seedTicket } = makeAuditedRuntime(port, dir, options);
+    const { runtime, rows, lists, written, seedTicket, sshFileCalls } = makeAuditedRuntime(port, dir, options);
     fm.setAllowedRootsResolver(() => [dir]);
     const server = await startRemoteServer({
       runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
@@ -6365,7 +6384,17 @@ describe("a mobile session's activity is audited (metadata only)", () => {
       ...options.server,
     });
     try {
-      await body({ baseUrl: `http://127.0.0.1:${port}`, port, dir, rows, lists, written, seedTicket, server });
+      await body({
+        baseUrl: `http://127.0.0.1:${port}`,
+        port,
+        dir,
+        rows,
+        lists,
+        written,
+        sshFileCalls,
+        seedTicket,
+        server,
+      });
     } finally {
       await server.close();
       await fs.rm(dir, { recursive: true, force: true });
@@ -6788,6 +6817,71 @@ describe("a mobile session's activity is audited (metadata only)", () => {
       ]);
       expect(fileRows[0]).toMatchObject({ deviceId: "dev-1", pairId: "pair-dev-1" });
       expect(JSON.stringify(rows)).not.toContain("file-body-must-not-be-logged");
+    });
+  });
+
+  test("SSH file actions of a mobile session are audited with the host and the path, never content", async () => {
+    await withAuditedServer({}, async ({ baseUrl, rows, sshFileCalls, seedTicket }) => {
+      seedTicket("t1", "s1", "dev-1");
+      const cookie = await bootstrap(baseUrl, "t1", "s1");
+      const post = (route: string, body: unknown) =>
+        fetch(`${baseUrl}${route}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Cookie: cookie },
+          body: JSON.stringify(body),
+        });
+
+      const listed = await post("/api/ssh-file/list", { workspaceId: "ws1", panelId: "tab", path: "/docs" });
+      expect(listed.status).toBe(200);
+      expect(sshFileCalls).toEqual([{ op: "list", body: expect.anything(), mobile: true }]);
+      expect(
+        rows.filter((r) => r.action === "session.file").map((r) => ({ status: r.status, detail: r.detail })),
+      ).toEqual([{ status: "success", detail: 'op=sftp-list root="Test host" path="/docs"' }]);
+    });
+  });
+
+  test("a mobile session cannot download over SSH: refused before the runtime, nothing recorded as done", async () => {
+    await withAuditedServer({}, async ({ baseUrl, sshFileCalls, seedTicket }) => {
+      seedTicket("t1", "s1", "dev-1");
+      const cookie = await bootstrap(baseUrl, "t1", "s1");
+      const res = await fetch(`${baseUrl}/api/ssh-file/download`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Cookie: cookie },
+        body: JSON.stringify({ workspaceId: "ws1", panelId: "tab", remotePaths: ["/a"], localDir: "/tmp" }),
+      });
+      expect(res.status).toBe(403);
+      expect(sshFileCalls).toEqual([]);
+    });
+  });
+
+  test("an SSH file failure keeps its code and conflicts, and is never a 401", async () => {
+    await withAuditedServer({}, async ({ baseUrl, rows, seedTicket }) => {
+      seedTicket("t1", "s1", "dev-1");
+      const cookie = await bootstrap(baseUrl, "t1", "s1");
+      const res = await fetch(`${baseUrl}/api/ssh-file/upload`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Cookie: cookie },
+        body: JSON.stringify({ workspaceId: "ws1", panelId: "tab", localPaths: ["/x"], remoteDir: "/docs" }),
+      });
+      expect(res.status, await res.clone().text()).toBe(409);
+      expect(await res.json()).toEqual({
+        error: "1 item already exists.",
+        sshFileError: { code: "conflict", conflicts: ["/docs/a.txt"] },
+      });
+      expect(rows.filter((r) => r.action === "session.file").map((r) => r.status)).toEqual(["failure"]);
+    });
+  });
+
+  test("a master-token client (not a phone) reaches the SSH download route and leaves no audit row", async () => {
+    await withAuditedServer({}, async ({ baseUrl, rows, sshFileCalls }) => {
+      const res = await fetch(`${baseUrl}/api/ssh-file/download?token=unused-master-token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Strideterm-Client-Id": "client-abcdef12" },
+        body: JSON.stringify({ workspaceId: "ws1", panelId: "tab", remotePaths: ["/a"], localDir: "/tmp" }),
+      });
+      expect(res.status).toBe(200);
+      expect(sshFileCalls).toEqual([{ op: "download", body: expect.anything(), mobile: false }]);
+      expect(rows).toEqual([]);
     });
   });
 

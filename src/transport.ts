@@ -7,6 +7,7 @@ import type {
   TerminalExitPayload,
   GitPushProgressPayload,
 } from "../electron/shared/ipc-bridge.js";
+import type { SshFileListing, SshFileTransferStarted } from "../electron/shared/ssh-file-events.js";
 import type { RemoteStateV2, RecoveryResult } from "../electron/shared/types/state.js";
 import type { JiraWorkspaceViewsState } from "../electron/shared/types/jira-workspace-views.js";
 import type {
@@ -14,6 +15,14 @@ import type {
   ReviewGitStarted,
   ReviewPrActionConfirmationResult,
 } from "../electron/shared/types/ipc-results.js";
+import {
+  SSH_FILE_TRANSFER_FINISHED_CHANNEL,
+  SSH_FILE_TRANSFER_PROGRESS_CHANNEL,
+  sshFileTransferFinishedSchema,
+  sshFileTransferProgressSchema,
+  type SshFileTransferFinished,
+  type SshFileTransferProgress,
+} from "../electron/shared/ssh-file-events.js";
 import {
   REVIEW_GIT_OPERATION_CHANNEL,
   reviewGitOperationEventSchema,
@@ -294,6 +303,8 @@ interface EventHub {
   azureClosedPrCleanupFinished: Set<Handler<AzureClosedPrCleanupFinished>>;
   operationFinished: Set<Handler<OperationFinished>>;
   reviewGitOperation: Set<Handler<ReviewGitOperationEvent>>;
+  sshFileTransferProgress: Set<Handler<SshFileTransferProgress>>;
+  sshFileTransferFinished: Set<Handler<SshFileTransferFinished>>;
   requestIssue: Set<Handler<RemoteRequestIssue>>;
 }
 
@@ -577,6 +588,10 @@ export interface Transport extends Partial<
   onOperationFinished: (handler: Handler<OperationFinished>) => () => void;
   /** A review Git operation ended (result or error). Validated at this boundary. */
   onReviewGitOperation: (handler: Handler<ReviewGitOperationEvent>) => void;
+  /** Throttled progress of an SSH file transfer. Validated at this boundary. */
+  onSshFileTransferProgress: (handler: Handler<SshFileTransferProgress>) => void;
+  /** An SSH file transfer ended (succeeded, failed or cancelled). Validated at this boundary. */
+  onSshFileTransferFinished: (handler: Handler<SshFileTransferFinished>) => void;
   /** A paired phone opened a session (desktop only). Validated at this boundary. */
   onMobileSessionStarted?: (handler: Handler<MobileSessionStarted>) => void;
   onRemoteAuthFailures?: (handler: Handler<RemoteAuthFailures>) => void;
@@ -627,6 +642,8 @@ function createEventHub(): EventHub {
     azureClosedPrCleanupFinished: new Set(),
     operationFinished: new Set(),
     reviewGitOperation: new Set(),
+    sshFileTransferProgress: new Set(),
+    sshFileTransferFinished: new Set(),
     requestIssue: new Set(),
   };
 }
@@ -766,6 +783,26 @@ function bindElectronTransport(): Transport {
         const parsed = reviewGitOperationEventSchema.safeParse(payload);
         if (!parsed.success) {
           rlog("warn", "review-git:operation ignored: malformed payload");
+          return;
+        }
+        handler(parsed.data);
+      });
+    },
+    onSshFileTransferProgress: (handler: Handler<SshFileTransferProgress>) => {
+      window.strideterm.onSshFileTransferProgress?.((payload: unknown) => {
+        const parsed = sshFileTransferProgressSchema.safeParse(payload);
+        if (!parsed.success) {
+          rlog("warn", "ssh-file:transfer-progress ignored: malformed payload");
+          return;
+        }
+        handler(parsed.data);
+      });
+    },
+    onSshFileTransferFinished: (handler: Handler<SshFileTransferFinished>) => {
+      window.strideterm.onSshFileTransferFinished?.((payload: unknown) => {
+        const parsed = sshFileTransferFinishedSchema.safeParse(payload);
+        if (!parsed.success) {
+          rlog("warn", "ssh-file:transfer-finished ignored: malformed payload");
           return;
         }
         handler(parsed.data);
@@ -1405,6 +1442,22 @@ export function createRemoteTransport(): Transport {
         safeDispatch(listeners.reviewGitOperation, parsed.data, "reviewGitOperation");
       } else {
         rlog("warn", "review-git:operation ignored: malformed payload");
+      }
+    }
+    if (message.type === SSH_FILE_TRANSFER_PROGRESS_CHANNEL) {
+      const parsed = sshFileTransferProgressSchema.safeParse(message.payload);
+      if (parsed.success) {
+        safeDispatch(listeners.sshFileTransferProgress, parsed.data, "sshFileTransferProgress");
+      } else {
+        rlog("warn", "ssh-file:transfer-progress ignored: malformed payload");
+      }
+    }
+    if (message.type === SSH_FILE_TRANSFER_FINISHED_CHANNEL) {
+      const parsed = sshFileTransferFinishedSchema.safeParse(message.payload);
+      if (parsed.success) {
+        safeDispatch(listeners.sshFileTransferFinished, parsed.data, "sshFileTransferFinished");
+      } else {
+        rlog("warn", "ssh-file:transfer-finished ignored: malformed payload");
       }
     }
     if (message.type === "ssh:auth-prompt") {
@@ -2296,6 +2349,29 @@ export function createRemoteTransport(): Transport {
           if (error instanceof Error && "jiraError" in error) throw error;
         }
       }
+      if (rawMessage.includes('"sshFileError"')) {
+        try {
+          const parsed = JSON.parse(rawMessage) as {
+            error?: unknown;
+            sshFileError?: { code?: unknown; conflicts?: unknown };
+          };
+          if (parsed.sshFileError && typeof parsed.sshFileError.code === "string") {
+            const code = parsed.sshFileError.code;
+            const conflicts = Array.isArray(parsed.sshFileError.conflicts)
+              ? parsed.sshFileError.conflicts.filter((item): item is string => typeof item === "string")
+              : undefined;
+            throw Object.assign(
+              new Error(typeof parsed.error === "string" ? parsed.error : "SSH file request failed."),
+              {
+                code,
+                sshFileError: { code, ...(conflicts?.length ? { conflicts } : {}) },
+              },
+            );
+          }
+        } catch (error) {
+          if (error instanceof Error && "sshFileError" in error) throw error;
+        }
+      }
       const error = createRemoteIssue({
         kind: "http",
         statusCode: response.status,
@@ -2581,6 +2657,14 @@ export function createRemoteTransport(): Transport {
       }) as Promise<AzureClosedPrCleanupStarted>,
     startReviewGitOperation: (payload: ReviewGitStart) =>
       fetchJson("/api/review-git/start", payload) as Promise<ReviewGitStarted>,
+    sshFileRealpath: (payload) => fetchJson("/api/ssh-file/realpath", payload) as Promise<{ path: string }>,
+    sshFileList: (payload) => fetchJson("/api/ssh-file/list", payload) as Promise<SshFileListing>,
+    sshFileMkdir: (payload) => fetchJson("/api/ssh-file/mkdir", payload) as Promise<{ ok: true }>,
+    sshFileRename: (payload) => fetchJson("/api/ssh-file/rename", payload) as Promise<{ ok: true }>,
+    sshFileDelete: (payload) => fetchJson("/api/ssh-file/delete", payload) as Promise<{ deleted: number }>,
+    sshFileUpload: (payload) => fetchJson("/api/ssh-file/upload", payload) as Promise<SshFileTransferStarted>,
+    sshFileDownload: (payload) => fetchJson("/api/ssh-file/download", payload) as Promise<SshFileTransferStarted>,
+    sshFileTransferCancel: (payload) => fetchJson("/api/ssh-file/transfer-cancel", payload) as Promise<{ ok: true }>,
     confirmReviewPrAction: (payload: { proposalId: string; approved: boolean }) =>
       fetchJson("/api/review-pr-action/confirm", payload) as Promise<ReviewPrActionConfirmationResult>,
     startPullRequestReview: (payload: StartPullRequestReviewInput) =>
@@ -3038,6 +3122,12 @@ export function createRemoteTransport(): Transport {
     },
     onReviewGitOperation: (handler: Handler<ReviewGitOperationEvent>) => {
       listeners.reviewGitOperation.add(handler);
+    },
+    onSshFileTransferProgress: (handler: Handler<SshFileTransferProgress>) => {
+      listeners.sshFileTransferProgress.add(handler);
+    },
+    onSshFileTransferFinished: (handler: Handler<SshFileTransferFinished>) => {
+      listeners.sshFileTransferFinished.add(handler);
     },
     getRemoteToken: () => token,
     setRemoteToken: (nextToken: string) => {

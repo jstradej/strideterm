@@ -116,6 +116,14 @@ const MOBILE_ROUTE_CLASSIFICATION: Record<string, MobileRouteClass> = {
   "/api/file/move": "deny",
   "/api/file/rename": "deny",
   "/api/file/write": "deny",
+  "/api/ssh-file/realpath": "guarded",
+  "/api/ssh-file/list": "guarded",
+  "/api/ssh-file/mkdir": "guarded",
+  "/api/ssh-file/rename": "guarded",
+  "/api/ssh-file/delete": "guarded",
+  "/api/ssh-file/upload": "guarded",
+  "/api/ssh-file/download": "deny",
+  "/api/ssh-file/transfer-cancel": "guarded",
   "/api/gemini-hook/configure": "deny",
   "/api/gemini-hook/remove": "deny",
   "/api/gemini-hook/status": "deny",
@@ -441,8 +449,25 @@ describe("mobile session route policy", () => {
     "/api/file/move",
     "/api/file/copy",
     "/api/file/git-ignore",
+    "/api/ssh-file/download",
   ])("%s is never available to a mobile session", (route) => {
     expect(decide(route, { workspaceId: "ws-home" })).toMatchObject({ allow: false });
+  });
+
+  test("SSH file routes are guarded by the workspace named in the body; download is never available", () => {
+    for (const route of ["list", "mkdir", "rename", "delete", "upload", "realpath"]) {
+      expect(decide(`/api/ssh-file/${route}`, { workspaceId: "ws-home", panelId: "p" }), route).toEqual({
+        allow: true,
+      });
+      expect(decide(`/api/ssh-file/${route}`, { workspaceId: "ws-work", panelId: "p" }), route).toMatchObject({
+        allow: false,
+        reason: "target-outside-profile",
+      });
+    }
+    expect(decide("/api/ssh-file/download", { workspaceId: "ws-home", panelId: "p" })).toMatchObject({
+      allow: false,
+      reason: "route-not-available-to-mobile",
+    });
   });
 
   test("the docker family is denied except for routes that only look", () => {

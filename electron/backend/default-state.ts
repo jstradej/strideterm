@@ -192,6 +192,30 @@ function normalizeLaunch(launch: any): Record<string, unknown> | null {
   };
 }
 
+/** The persisted state of an SFTP browser tab: which SSH tab / host it browses and where it was last. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function normalizeSftp(sftp: any): Record<string, unknown> {
+  const normalized: Record<string, unknown> = {};
+  if (!sftp || typeof sftp !== "object") return normalized;
+  if (typeof sftp.sourcePanelId === "string" && sftp.sourcePanelId)
+    normalized.sourcePanelId = sftp.sourcePanelId.slice(0, 200);
+  if (typeof sftp.sshHostId === "string" && sftp.sshHostId) normalized.sshHostId = sftp.sshHostId.slice(0, 200);
+  if (sftp.sshInline && typeof sftp.sshInline === "object") {
+    const inline = (normalizeLaunch({ kind: "ssh", sshInline: sftp.sshInline }) as { sshInline?: unknown } | null)
+      ?.sshInline;
+    if (inline) normalized.sshInline = inline;
+  }
+  if (
+    typeof sftp.path === "string" &&
+    sftp.path.startsWith("/") &&
+    sftp.path.length <= 4096 &&
+    !sftp.path.includes("\0")
+  ) {
+    normalized.path = sftp.path;
+  }
+  return normalized;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function normalizePanel(panel: any, panelIndex = 0): any {
   return {
@@ -206,6 +230,7 @@ function normalizePanel(panel: any, panelIndex = 0): any {
     sshMcpEnabled: panel.sshMcpEnabled === true,
     notes: typeof panel.notes === "string" ? panel.notes : "",
     hostedBy: typeof panel.hostedBy === "string" ? panel.hostedBy : "",
+    ...(panel.command === "__sftp__" ? { sftp: normalizeSftp(panel.sftp) } : {}),
   };
 }
 
@@ -216,6 +241,7 @@ const KNOWN_VIEW_PREFIXES = [
   "github:",
   "review:",
   "files:",
+  "sftp:",
   "browser:",
   "task-dashboard:",
 ];
@@ -263,6 +289,7 @@ function panelViewId(panel: { id: string; command?: string } | null | undefined,
   if (!panel) return null;
   if (panel.command === "__task-dashboard__") return `task-dashboard:${panel.id}`;
   if (panel.command === "__files__") return `files:${panel.id}`;
+  if (panel.command === "__sftp__") return `sftp:${panel.id}`;
   if (/^https?:\/\//i.test(panel.command || "")) return `browser:${panel.id}`;
   return `${workspaceId}:${panel.id}`;
 }

@@ -5,6 +5,7 @@ import type { Alert } from "./notifications.js";
 import type { AzureClosedPrCleanupFinished } from "../azure-closed-pr-cleanup-events.js";
 import type { OperationsState } from "../operation-events.js";
 import type { ReviewGitState } from "../review-git-events.js";
+import type { SshFileTransfersState } from "../ssh-file-events.js";
 import type { ReviewPrActionsState } from "../review-pr-actions.js";
 import type { AppDistribution, MicrosoftStoreUpdateStatus } from "../app-distribution.js";
 import type { JiraWorkspaceViewsSnapshot } from "./jira-workspace-views.js";
@@ -536,6 +537,19 @@ export interface PanelLaunch {
   skipCommandInjection?: boolean;
 }
 
+/** What an SFTP browser tab (`command: "__sftp__"`) browses; persisted so the view survives a restart. */
+export interface PanelSftp {
+  /** The SSH tab (same workspace) whose live connection is preferred. */
+  sourcePanelId?: string;
+  /** Saved host to reconnect to when that tab is gone (desktop only). */
+  sshHostId?: string;
+  /** Inline host of the source tab, kept for the same reason. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sshInline?: Record<string, any>;
+  /** Last browsed absolute remote directory. */
+  path?: string;
+}
+
 export interface PanelState {
   id: string;
   title: string;
@@ -560,6 +574,8 @@ export interface PanelState {
   notes?: string;
   /** `files:<panelId>` of the Files tab showing this terminal inside its commander; empty for an ordinary tab. */
   hostedBy?: string;
+  /** SFTP browser tabs only (`command: "__sftp__"`). */
+  sftp?: PanelSftp;
 }
 
 export interface ReviewPrInfo {
@@ -1290,6 +1306,8 @@ export interface StatePayload {
   operations: OperationsState;
   /** Review Git operations running now and finished within 24 h (runtime-only, never persisted). */
   reviewGit: ReviewGitState;
+  /** SSH file transfers running now and finished within 24 h (runtime-only, never persisted). */
+  sshFileTransfers: SshFileTransfersState;
   /** Pending MCP PR actions awaiting an explicit application decision. */
   reviewPrActions: ReviewPrActionsState;
   /** Per-remote-client context — only set when the payload is composed for a specific remote session. */
@@ -1386,6 +1404,8 @@ export interface RemoteStateV2 {
   operations: OperationsState;
   /** Only the client's profile's operations. */
   reviewGit: ReviewGitState;
+  /** Only the client's profile's SSH file transfers. */
+  sshFileTransfers: SshFileTransfersState;
   /** Pending MCP PR actions in the remote client's active profile only. */
   reviewPrActions: ReviewPrActionsState;
   plugins: unknown[];

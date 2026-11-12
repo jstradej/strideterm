@@ -418,6 +418,42 @@ describe("default state", () => {
     expect(hostedBy("t3")).toBe("");
   });
 
+  test("an SFTP browser tab keeps what it browses, and nothing else gets an sftp field", () => {
+    const workspace = normalizeWorkspace({
+      id: "ws-sftp",
+      panels: [
+        {
+          id: "sftp1",
+          title: "Files · box",
+          command: "__sftp__",
+          sftp: { sourcePanelId: "ssh1", sshHostId: "h1", path: "/srv/app", junk: true },
+        },
+        { id: "sftp2", title: "Bad", command: "__sftp__", sftp: { sourcePanelId: 7, path: "relative", sshInline: 3 } },
+        { id: "sftp3", title: "None", command: "__sftp__" },
+        { id: "ssh1", title: "box", command: "", sftp: { path: "/x" } },
+      ],
+    });
+
+    const panel = (id: string) => workspace.panels.find((item) => item.id === id) as { sftp?: unknown };
+    expect(panel("sftp1").sftp).toEqual({ sourcePanelId: "ssh1", sshHostId: "h1", path: "/srv/app" });
+    expect(panel("sftp2").sftp).toEqual({});
+    expect(panel("sftp3").sftp).toEqual({});
+    expect(panel("ssh1").sftp).toBeUndefined();
+  });
+
+  test("an SFTP view id survives a layout normalize like the other virtual tabs", () => {
+    const workspace = normalizeWorkspace({
+      id: "ws-sftp-layout",
+      panels: [
+        { id: "t1", title: "Shell", command: "" },
+        { id: "sftp1", title: "Files", command: "__sftp__" },
+      ],
+      splitLayout: "cols",
+      splitViewIds: ["ws-sftp-layout:t1", "ws-sftp-layout:sftp1"],
+    });
+    expect(workspace.splitViewIds).toEqual(["ws-sftp-layout:t1", "sftp:sftp1"]);
+  });
+
   test("normalizes per-tab SSH MCP opt-in to false and preserves an explicit opt-in", () => {
     const workspace = normalizeWorkspace({
       id: "ws-ssh-mcp",

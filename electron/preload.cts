@@ -33,6 +33,25 @@ async function invokeJira(channel: string, ...args: unknown[]): Promise<any> {
   return result;
 }
 
+// Mirrors electron/shared/ssh-file-error-codes.ts: an SSH file failure crosses IPC as a value (a rejected call loses
+// `code`), and the renderer gets the Error shape the remote transport throws (`code`, `conflicts`).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- each bridge method declares its own result type
+async function invokeSshFile(channel: string, ...args: unknown[]): Promise<any> {
+  const result = await ipcRenderer.invoke(channel, ...args);
+  if (result && typeof result === "object" && (result as Record<string, unknown>)["__strideSshFileFailure"] === 1) {
+    const failure = result as { message?: unknown; code?: unknown; conflicts?: unknown };
+    const code = typeof failure.code === "string" ? failure.code : "io";
+    const conflicts = Array.isArray(failure.conflicts)
+      ? failure.conflicts.filter((item): item is string => typeof item === "string")
+      : undefined;
+    throw Object.assign(new Error(typeof failure.message === "string" ? failure.message : "SSH file request failed."), {
+      code,
+      sshFileError: { code, ...(conflicts?.length ? { conflicts } : {}) },
+    });
+  }
+  return result;
+}
+
 contextBridge.exposeInMainWorld("strideterm", {
   openExternal: (url) => ipcRenderer.invoke("shell:open-external", url),
   openTerminalPath: (request) => ipcRenderer.invoke("terminal:open-path", request),
@@ -418,6 +437,19 @@ contextBridge.exposeInMainWorld("strideterm", {
   fileCommitFiles: (p) => ipcRenderer.invoke("file:commit-files", p),
   fileCommitDiff: (p) => ipcRenderer.invoke("file:commit-diff", p),
   browseDirectory: (defaultPath) => ipcRenderer.invoke("dialog:browse-directory", defaultPath),
+  browsePaths: (options) => ipcRenderer.invoke("dialog:browse-paths", options),
+  sshFileRealpath: (payload) => invokeSshFile("ssh-file:realpath", payload),
+  sshFileList: (payload) => invokeSshFile("ssh-file:list", payload),
+  sshFileMkdir: (payload) => invokeSshFile("ssh-file:mkdir", payload),
+  sshFileRename: (payload) => invokeSshFile("ssh-file:rename", payload),
+  sshFileDelete: (payload) => invokeSshFile("ssh-file:delete", payload),
+  sshFileUpload: (payload) => invokeSshFile("ssh-file:upload", payload),
+  sshFileDownload: (payload) => invokeSshFile("ssh-file:download", payload),
+  sshFileTransferCancel: (payload) => invokeSshFile("ssh-file:transfer-cancel", payload),
+  onSshFileTransferProgress: (handler) =>
+    ipcRenderer.on("ssh-file:transfer-progress", (_event, payload) => handler(payload)),
+  onSshFileTransferFinished: (handler) =>
+    ipcRenderer.on("ssh-file:transfer-finished", (_event, payload) => handler(payload)),
   browseFile: (options) => ipcRenderer.invoke("dialog:browse-file", options),
   saveFile: (options) => ipcRenderer.invoke("dialog:save-file", options),
   resizeTerminal: (sessionId, size) => ipcRenderer.send("terminal:resize", sessionId, size),

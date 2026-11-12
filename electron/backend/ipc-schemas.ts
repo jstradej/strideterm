@@ -2562,6 +2562,74 @@ export const sshRejectHostKeySchema = z.object({
 });
 export type SshRejectHostKey = z.infer<typeof sshRejectHostKeySchema>;
 
+// ---- SSH file transfer ----
+//
+// Every request names the SSH tab (or SFTP browser tab) of a workspace; the runtime resolves the connection from it
+// and applies the caller's access policy. Remote paths are absolute POSIX paths; local paths are absolute native paths.
+
+const sshFileRemotePath = z.string().min(1).max(4096);
+const sshFileLocalPath = z.string().min(1).max(4096);
+const sshFileConflictSchema = z.enum(["fail", "overwrite", "skip"]);
+
+const sshFileTargetShape = { workspaceId: nonEmptyString, panelId: nonEmptyString };
+
+export const sshFileRealpathSchema = z.object({ ...sshFileTargetShape, path: sshFileRemotePath.optional() }).strict();
+export type SshFileRealpath = z.infer<typeof sshFileRealpathSchema>;
+
+export const sshFileListSchema = z.object({ ...sshFileTargetShape, path: sshFileRemotePath.optional() }).strict();
+export type SshFileList = z.infer<typeof sshFileListSchema>;
+
+export const sshFileMkdirSchema = z.object({ ...sshFileTargetShape, path: sshFileRemotePath }).strict();
+export type SshFileMkdir = z.infer<typeof sshFileMkdirSchema>;
+
+export const sshFileRenameSchema = z
+  .object({ ...sshFileTargetShape, from: sshFileRemotePath, to: sshFileRemotePath })
+  .strict();
+export type SshFileRename = z.infer<typeof sshFileRenameSchema>;
+
+export const sshFileDeleteSchema = z
+  .object({
+    ...sshFileTargetShape,
+    paths: z.array(sshFileRemotePath).min(1).max(1000),
+    recursive: z.boolean().optional(),
+  })
+  .strict();
+export type SshFileDelete = z.infer<typeof sshFileDeleteSchema>;
+
+export const sshFileUploadSchema = z
+  .object({
+    ...sshFileTargetShape,
+    localPaths: z.array(sshFileLocalPath).min(1).max(1000),
+    remoteDir: sshFileRemotePath,
+    conflict: sshFileConflictSchema.default("fail"),
+  })
+  .strict();
+export type SshFileUpload = z.input<typeof sshFileUploadSchema>;
+
+export const sshFileDownloadSchema = z
+  .object({
+    ...sshFileTargetShape,
+    remotePaths: z.array(sshFileRemotePath).min(1).max(1000),
+    localDir: sshFileLocalPath,
+    conflict: sshFileConflictSchema.default("fail"),
+  })
+  .strict();
+export type SshFileDownload = z.input<typeof sshFileDownloadSchema>;
+
+export const sshFileTransferCancelSchema = z.object({ transferId: nonEmptyString }).strict();
+export type SshFileTransferCancel = z.infer<typeof sshFileTransferCancelSchema>;
+
+/** `dialog:browse-paths` — desktop-only native picker for upload sources. */
+export const browsePathsSchema = z
+  .object({
+    title: z.string().max(200).optional(),
+    defaultPath: z.string().max(4096).optional(),
+    files: z.boolean().optional(),
+    directories: z.boolean().optional(),
+  })
+  .strict();
+export type BrowsePaths = z.infer<typeof browsePathsSchema>;
+
 export const sshConfigImportSchema = z.object({
   path: z.string().optional(),
   hostIds: z.array(z.string()).optional(),

@@ -752,6 +752,14 @@ export function buildRemoteCore(
         matchesProfile(run, scope),
       ) as RemoteStateV2["reviewGit"]["lastRuns"],
     },
+    sshFileTransfers: {
+      running: ((composed.sshFileTransfers?.running || []) as AnyRecord[]).filter((run) =>
+        matchesProfile(run, scope),
+      ) as RemoteStateV2["sshFileTransfers"]["running"],
+      lastRuns: ((composed.sshFileTransfers?.lastRuns || []) as AnyRecord[]).filter((run) =>
+        matchesProfile(run, scope),
+      ) as RemoteStateV2["sshFileTransfers"]["lastRuns"],
+    },
     reviewPrActions: {
       pending: ((composed.reviewPrActions?.pending || []) as AnyRecord[]).filter((proposal) =>
         matchesProfile(proposal, scope),
@@ -817,6 +825,7 @@ export const STATE_PAYLOAD_KEYS: ReadonlySet<string> = new Set([
   "azureClosedPrCleanup",
   "operations",
   "reviewGit",
+  "sshFileTransfers",
   "reviewPrActions",
   "secureStorage",
   "remoteClient",

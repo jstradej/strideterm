@@ -144,6 +144,9 @@ import type { RemoteBrowserSession, RemoteSessionRevoke } from "../shared/remote
 import { APPROVAL_RECORDED_CHANNEL } from "../shared/approval-events.js";
 import { AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL } from "../shared/azure-closed-pr-cleanup-events.js";
 import { OPERATION_FINISHED_CHANNEL } from "../shared/operation-events.js";
+import { SshFileError } from "./ssh/ssh-file-error.js";
+import type { SshFileErrorCode } from "../shared/ssh-file-error-codes.js";
+import { SSH_FILE_TRANSFER_FINISHED_CHANNEL, SSH_FILE_TRANSFER_PROGRESS_CHANNEL } from "../shared/ssh-file-events.js";
 import { REVIEW_GIT_OPERATION_CHANNEL } from "../shared/review-git-events.js";
 import { MOBILE_FOREGROUND_PRESENCE_FRESH_MS } from "../shared/mobile-session-events.js";
 import {
@@ -645,7 +648,7 @@ interface Runtime {
 function isDesktopPrivateSshSession(runtime: Runtime, sessionId: unknown): boolean {
   if (runtime.isPrivateSshOperationSessionId?.(sessionId)) return true;
   if (runtime.isSshTestSessionId?.(sessionId)) return true;
-  return typeof sessionId === "string" && /^(ssh-test:|ssh-transfer:)/.test(sessionId);
+  return typeof sessionId === "string" && /^(ssh-test:|ssh-transfer:|ssh-file:)/.test(sessionId);
 }
 
 /**
@@ -2497,13 +2500,34 @@ async function handleMobileAttachmentRequest(
  * A Jira failure is never answered with Jira's own status: a 401 from Jira would end the caller's strIDEterm session.
  */
 const JIRA_UPSTREAM_FAILURE_STATUS = 424;
+/** An SSH file failure is the caller's to fix, never a 401 (which would end the session) and never a gateway status. */
+const SSH_FILE_ERROR_STATUS: Record<SshFileErrorCode, number> = {
+  "auth-required": 409,
+  "unsupported-host": 422,
+  "not-connected": 409,
+  conflict: 409,
+  "not-found": 404,
+  "permission-denied": 403,
+  "outside-roots": 403,
+  "denied-for-mobile": 403,
+  cancelled: 409,
+  "limit-exceeded": 413,
+  io: 400,
+};
 function refusalStatus(error: unknown, message: string): number {
   if (error instanceof ClientRequestError) return error.status;
   if (error instanceof JiraRequestError) return JIRA_UPSTREAM_FAILURE_STATUS;
+  if (error instanceof SshFileError) return SSH_FILE_ERROR_STATUS[error.code];
   return message.startsWith("IPC validation failed") ? 400 : 500;
 }
 
 function refusalBody(error: unknown, message: string): Record<string, unknown> {
+  if (error instanceof SshFileError) {
+    return {
+      error: message,
+      sshFileError: { code: error.code, ...(error.conflicts?.length ? { conflicts: error.conflicts } : {}) },
+    };
+  }
   if (!(error instanceof JiraRequestError)) return { error: message };
   return {
     error: message,
@@ -3662,11 +3686,99 @@ export async function startRemoteServer({
         );
     };
 
+  // SSH file routes: the runtime applies the access policy (own profile only, the live SSH tab only, local paths
+  // inside the profile's roots, no download for a phone). Every action of a MOBILE session leaves a `session.file`
+  // audit row — the host label and the paths named, never a byte of content.
+  const sshFileRoute =
+    (
+      op: string,
+      run: (
+        body: unknown,
+        viewerId: string,
+        options: { mobile: boolean; onResolved: (info: { hostLabel: string }) => void },
+      ) => Promise<unknown>,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      describe: (body: any, q: (value: unknown) => string) => string = () => "",
+    ) =>
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async (body: any, windowId: string) => {
+      const clientSessionId = parseRemoteViewerId(windowId);
+      const profileId = clientSessionId ? registry.get(clientSessionId)?.profileId : undefined;
+      if (!profileId) throw new ClientRequestError("SSH file access requires a session bound to a profile.");
+      const session = clientSessionId ? activeSessions.get(clientSessionId) : undefined;
+      const mobile = Boolean(session?.deviceId);
+      let hostLabel = "";
+      const audit = (status: "success" | "failure"): void => {
+        if (!mobile) return;
+        let detail: string;
+        try {
+          detail =
+            `op=sftp-${op} root=${auditDetailValue(hostLabel)} ${describe(body ?? {}, auditDetailValue)}`.trimEnd();
+        } catch {
+          detail = `op=sftp-${op}`;
+        }
+        recordMobileSessionAudit(session, "session.file", status, detail);
+      };
+      try {
+        const result = await run(body, windowId, {
+          mobile,
+          onResolved: (info) => {
+            hostLabel = info.hostLabel;
+          },
+        });
+        audit("success");
+        return result;
+      } catch (error) {
+        audit("failure");
+        throw error;
+      }
+    };
+
   const slotAwareRoute: Record<
     string,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (body: any, windowId: string) => Promise<unknown>
   > = {
+    "/api/ssh-file/realpath": sshFileRoute(
+      "realpath",
+      (body, viewerId, options) => runtime.sshFileRealpath(body, viewerId, options),
+      (b, q) => `path=${q(b.path)}`,
+    ),
+    "/api/ssh-file/list": sshFileRoute(
+      "list",
+      (body, viewerId, options) => runtime.sshFileList(body, viewerId, options),
+      (b, q) => `path=${q(b.path)}`,
+    ),
+    "/api/ssh-file/mkdir": sshFileRoute(
+      "mkdir",
+      (body, viewerId, options) => runtime.sshFileMkdir(body, viewerId, options),
+      (b, q) => `path=${q(b.path)}`,
+    ),
+    "/api/ssh-file/rename": sshFileRoute(
+      "rename",
+      (body, viewerId, options) => runtime.sshFileRename(body, viewerId, options),
+      (b, q) => `path=${q(b.from)} target=${q(b.to)}`,
+    ),
+    "/api/ssh-file/delete": sshFileRoute(
+      "delete",
+      (body, viewerId, options) => runtime.sshFileDelete(body, viewerId, options),
+      (b, q) => `path=${q(Array.isArray(b.paths) ? b.paths.join("\n") : "")}`,
+    ),
+    "/api/ssh-file/upload": sshFileRoute(
+      "upload",
+      (body, viewerId, options) => runtime.sshFileUpload(body, viewerId, options),
+      (b, q) => `path=${q(b.remoteDir)} local=${q(Array.isArray(b.localPaths) ? b.localPaths.join("\n") : "")}`,
+    ),
+    "/api/ssh-file/download": sshFileRoute(
+      "download",
+      (body, viewerId, options) => runtime.sshFileDownload(body, viewerId, options),
+      (b, q) => `path=${q(Array.isArray(b.remotePaths) ? b.remotePaths.join("\n") : "")} local=${q(b.localDir)}`,
+    ),
+    "/api/ssh-file/transfer-cancel": sshFileRoute(
+      "transfer-cancel",
+      (body, viewerId, options) => runtime.sshFileTransferCancel(body, viewerId, options),
+      (b, q) => `transfer=${q(b.transferId)}`,
+    ),
     "/api/azure/workspace/cleanup-closed-prs": (body, windowId) => {
       const parsed = validateIpc(azureClosedPrCleanupSchema, body, "POST /api/azure/workspace/cleanup-closed-prs");
       return runtime.cleanupAzureClosedPullRequests(parsed.parentWorkspaceId, windowId);
@@ -5739,6 +5851,20 @@ export async function startRemoteServer({
         checkedSend(socket, serialized);
       }
     }),
+    // SSH file transfer progress and outcome: only to clients bound to the profile the transfer belongs to.
+    ...[SSH_FILE_TRANSFER_PROGRESS_CHANNEL, SSH_FILE_TRANSFER_FINISHED_CHANNEL].map((channel) =>
+      runtime.on(channel, (payload: unknown) => {
+        const eventProfileId = String((payload as { profileId?: unknown })?.profileId || "");
+        if (!eventProfileId) return;
+        const serialized = JSON.stringify({ type: channel, payload });
+        for (const socket of sockets) {
+          const clientSessionId = socketSession.get(socket);
+          if (!clientSessionId) continue;
+          if (registry.get(clientSessionId)?.profileId !== eventProfileId) continue;
+          checkedSend(socket, serialized);
+        }
+      }),
+    ),
   ];
 
   server.on("upgrade", (request, socket, head) => {

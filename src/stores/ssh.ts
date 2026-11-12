@@ -353,7 +353,12 @@ export const useSshStore = defineStore("ssh", {
 
       t().onSshConnectionState((payload: SshConnectionState) => {
         const { sessionId, status } = payload;
-        if (sessionId.startsWith("ssh-test:") || sessionId.startsWith("ssh-transfer:")) return;
+        if (
+          sessionId.startsWith("ssh-test:") ||
+          sessionId.startsWith("ssh-transfer:") ||
+          sessionId.startsWith("ssh-file:")
+        )
+          return;
         const newMap = new Map(this.pendingConnections);
         newMap.set(sessionId, status);
         this.pendingConnections = newMap;
