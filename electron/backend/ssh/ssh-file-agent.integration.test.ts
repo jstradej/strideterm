@@ -128,7 +128,7 @@ async function setup(options: { writeDelayMs?: number } = {}) {
     return {
       status: response.status,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      body: (await response.json()) as { result?: Record<string, any>; error?: { code: string; message: string } },
+      body: (await response.json()) as { result: Record<string, any>; error?: { code: string; message: string } },
     };
   }
 
@@ -322,6 +322,23 @@ describe("agent SSH file tools", () => {
       { path: "/srv/tree/.git", reason: "Downloads never create a .git directory." },
     ]);
     expect(await fs.readdir(path.join(workspaceRoot, "out", "tree"))).toEqual(["keep.txt"]);
+  });
+
+  test("a download target that reaches .git through a link is refused", async () => {
+    const { workspaceRoot, remoteRoot, call, tokenA } = await setup();
+    await write(path.join(remoteRoot, "srv", "hook.sh"), "#!/bin/sh");
+    await fs.mkdir(path.join(workspaceRoot, ".git", "hooks"), { recursive: true });
+    await fs.symlink(path.join(workspaceRoot, ".git", "hooks"), path.join(workspaceRoot, "hooks-link"), "junction");
+
+    const result = await call(tokenA, {
+      operation: "download",
+      hostId: "box",
+      remotePath: "/srv/hook.sh",
+      localDir: "hooks-link",
+    });
+
+    expect(result.status).toBe(403);
+    expect(await fs.readdir(path.join(workspaceRoot, ".git", "hooks"))).toEqual([]);
   });
 
   test("a transfer is only known to the tab that started it", async () => {

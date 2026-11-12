@@ -74,12 +74,14 @@ export function createRootsLocalPolicy({
     },
     async assertWritableDir(absDir) {
       await assertInside(absDir);
-      if (protectGit && hasGitSegment(absDir)) {
+      // The real path too: a link or a Windows 8.3 alias (GIT~1) reaches .git under another name.
+      if (protectGit && (hasGitSegment(absDir) || hasGitSegment(await realpathOfPossiblyMissing(absDir)))) {
         throw new SshFileError("outside-roots", "Downloads never write into a .git directory.");
       }
     },
     rejectsName: protectGit
-      ? (name) => (name.toLowerCase() === ".git" ? "Downloads never create a .git directory." : null)
+      ? (name) =>
+          name.replace(/[. ]+$/, "").toLowerCase() === ".git" ? "Downloads never create a .git directory." : null
       : undefined,
   };
 }

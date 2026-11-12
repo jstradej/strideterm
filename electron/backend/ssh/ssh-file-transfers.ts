@@ -109,8 +109,20 @@ function remoteBase(remotePath: string): string {
   return path.posix.basename(remotePath);
 }
 
-function isSafeName(name: string): boolean {
-  return Boolean(name) && name !== "." && name !== ".." && !/[\\/\0]/.test(name);
+const WINDOWS_DEVICE_NAME = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])$/i;
+
+/**
+ * Whether a name read from the remote host can become a local file name as-is. On Windows a `:` would write an
+ * NTFS alternate data stream of another file, a device name opens the device, and a trailing dot or space is
+ * silently dropped (so `.git.` is `.git`).
+ */
+export function isSafeLocalName(name: string, platform: NodeJS.Platform = process.platform): boolean {
+  if (!name || name === "." || name === ".." || /[\\/\0]/.test(name)) return false;
+  if (platform !== "win32") return true;
+
+  return (
+    !/[<>:"|?*\x00-\x1f]/.test(name) && !/[. ]$/.test(name) && !WINDOWS_DEVICE_NAME.test(name.split(".")[0]!.trimEnd())
+  );
 }
 
 function partName(name: string): string {
@@ -369,7 +381,7 @@ export function createSshFileTransfers({
         });
         if (stats.isSymbolicLink()) throw new SshFileError("io", `Symbolic links are not transferred: ${source}`);
         const name = remoteBase(source);
-        if (!isSafeName(name)) throw new SshFileError("io", `Cannot download "${source}".`);
+        if (!isSafeLocalName(name)) throw new SshFileError("io", `Cannot download "${source}".`);
         const refused = request.local.rejectsName?.(name);
         if (refused) throw new SshFileError("outside-roots", refused);
         if (seen.has(name)) throw new SshFileError("conflict", `Two items are named "${name}".`, [name]);
@@ -538,7 +550,7 @@ class TransferExecutor {
       );
       entries.sort((a, b) => a.filename.localeCompare(b.filename));
       for (const entry of entries) {
-        if (!isSafeName(entry.filename)) {
+        if (!isSafeLocalName(entry.filename)) {
           this.skip(path.posix.join(src, entry.filename), "unsafe file name");
           continue;
         }
@@ -579,6 +591,7 @@ class TransferExecutor {
           this.skip(item.dst, "symbolic link in destination");
           return false;
         }
+        return this.localDirectoryAllowed(item.dst);
       }
       return true;
     }
@@ -588,10 +601,22 @@ class TransferExecutor {
     }
     if (this.request.direction === "upload") {
       await sftpMkdir(this.channel, item.dst, item.mode || 0o755);
-    } else {
-      await fs.mkdir(item.dst, { mode: item.mode || 0o755 });
+      return true;
     }
-    return true;
+    await fs.mkdir(item.dst, { mode: item.mode || 0o755 });
+    return this.localDirectoryAllowed(item.dst);
+  }
+
+  /** The policy judges the real directory: an existing name can be an alias of one it refuses (e.g. `GIT~1`). */
+  private async localDirectoryAllowed(dir: string): Promise<boolean> {
+    try {
+      await this.request.local.assertWritableDir(dir);
+      return true;
+    } catch (error) {
+      if (!(error instanceof SshFileError)) throw error;
+      this.skip(dir, error.message);
+      return false;
+    }
   }
 
   private async transferFile(item: PlanItem): Promise<void> {
