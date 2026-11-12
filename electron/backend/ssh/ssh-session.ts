@@ -227,14 +227,17 @@ export class SshSession {
               return;
             }
             let actionSettled = false;
-            const actionTimer = setTimeout(() => {
-              rejectAuthenticatedAction?.(new Error("SSH post-authentication operation timed out."));
-              client.destroy();
-            }, this.authenticatedActionTimeoutMs);
+            const actionTimer =
+              this.authenticatedActionTimeoutMs > 0
+                ? setTimeout(() => {
+                    rejectAuthenticatedAction?.(new Error("SSH post-authentication operation timed out."));
+                    client.destroy();
+                  }, this.authenticatedActionTimeoutMs)
+                : null;
             rejectAuthenticatedAction = (error) => {
               if (actionSettled) return;
               actionSettled = true;
-              clearTimeout(actionTimer);
+              if (actionTimer) clearTimeout(actionTimer);
               rejectAuthenticatedAction = undefined;
               this.cancelAuthenticatedAction = undefined;
               finish(reject, this.withAuthDiagnostics(error));
@@ -249,7 +252,7 @@ export class SshSession {
                 await this.onAuthenticated?.(client);
                 if (actionSettled) return;
                 actionSettled = true;
-                clearTimeout(actionTimer);
+                if (actionTimer) clearTimeout(actionTimer);
                 rejectAuthenticatedAction = undefined;
                 this.cancelAuthenticatedAction = undefined;
                 finish(resolve);

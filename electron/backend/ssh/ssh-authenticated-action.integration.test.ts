@@ -73,7 +73,13 @@ function connected(manager: SshManager, sessionId: string): Promise<void> {
   });
 }
 
-function connect(manager: SshManager, port: number, sessionId: string, authenticatedActionTimeoutMs?: number) {
+function connect(
+  manager: SshManager,
+  port: number,
+  sessionId: string,
+  authenticatedActionTimeoutMs?: number,
+  onAuthenticated: () => Promise<void> = () => new Promise<void>(() => {}),
+) {
   return manager.createSession({
     sessionId,
     inlineHost: {
@@ -87,7 +93,7 @@ function connect(manager: SshManager, port: number, sessionId: string, authentic
     rows: 24,
     authOnly: true,
     authenticatedActionTimeoutMs,
-    onAuthenticated: () => new Promise<void>(() => {}),
+    onAuthenticated,
   });
 }
 
@@ -102,6 +108,20 @@ describe("SSH authenticated follow-up actions", () => {
     await expect(sessionStart).rejects.toThrow("SSH post-authentication operation timed out");
     expect(manager.activeSessions.has(sessionId)).toBe(false);
     expect(manager.pendingPrompts.has(sessionId)).toBe(false);
+  });
+
+  test("authenticatedActionTimeoutMs of 0 disables the deadline", async () => {
+    const server = await startServer();
+    const manager = createManager();
+    const sessionId = "follow-up-no-timeout";
+    const sessionStart = connect(
+      manager,
+      server.port,
+      sessionId,
+      0,
+      () => new Promise<void>((resolve) => setTimeout(resolve, 250)),
+    );
+    await expect(sessionStart).resolves.toBeDefined();
   });
 
   test("stop rejects a pending post-authentication action without waiting for its deadline", async () => {

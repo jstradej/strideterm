@@ -183,6 +183,11 @@ export function withCallerProfile<T>(profileId: string | undefined, fn: () => T)
   return profileId ? callerProfile.run(profileId, fn) : fn();
 }
 
+/** The workspace roots a caller bound to `profileId` may name (empty before the runtime installs the resolver). */
+export function allowedRootsForProfile(profileId: string): string[] {
+  return allowedRootsResolver ? allowedRootsResolver(profileId) : [];
+}
+
 function allowedRootsForCaller(): string[] {
   return allowedRootsResolver ? allowedRootsResolver(callerProfile.getStore()) : [];
 }
@@ -217,7 +222,7 @@ function normalizePathForCompare(p: string): string {
 // — point the user at a real editor instead. This is defense in depth so
 // a careless workspace cwd can't turn into an arbitrary-fs primitive,
 // especially when reached via the remote LAN endpoint.
-function isSensitivePath(p: string): boolean {
+export function isSensitivePath(p: string): boolean {
   if (!p) return true;
   const stripped = stripWindowsNamespacePrefix(p);
   const resolved = path.resolve(stripped);
