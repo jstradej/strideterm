@@ -36,10 +36,11 @@
     "measure:remote": "tsx scripts/measure-remote-payload.mts",
     "package:ui": "tsx scripts/package-ui.ts",
     "smoke:remote-tunnel": "tsx scripts/remote-tunnel-smoke.mts",
-    "test": "npm run test:ui && npm run test:backend && npm run test:store-appx-config && npm run test:dev-readiness",
+    "test": "npm run test:ui && npm run test:backend && npm run test:store-appx-config && npm run test:app-icons && npm run test:dev-readiness",
     "test:ui": "vitest run --config vite.config.ts",
     "test:backend": "vitest run --config vitest.backend.config.ts",
     "test:store-appx-config": "node --test test/store-appx-config.test.mjs test/store-appx-icons.test.mjs",
+    "test:app-icons": "node --test test/app-icons.test.mjs",
     "test:dev-readiness": "node --test scripts/dev-readiness.test.mjs",
     "test:e2e": "npx playwright test",
     "test:e2e:electron": "npm run build && npx playwright test --config playwright.config.electron.js",
@@ -133,7 +134,7 @@
       ],
       "artifactName": "${productName}-${version}-mac-${arch}.${ext}",
       "category": "public.app-category.developer-tools",
-      "icon": "assets/icon.icns",
+      "icon": "assets/icon-mac.png",
       "identity": null
     },
     "linux": {
