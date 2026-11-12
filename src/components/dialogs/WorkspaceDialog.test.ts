@@ -775,6 +775,111 @@ describe("WorkspaceDialog", () => {
       expect(wrapper.find(".multi-repo-section").exists()).toBe(false);
     });
 
+    describe("a separate workspace for each repository", () => {
+      const repos = ["/work/gc/admin", "/work/gc/admin-cli", "/work/gc/ops"];
+
+      async function mountPerRepo(props: Record<string, unknown> = {}, workspace = buildProjectDraft({ cwd: "" })) {
+        const probeDirectory = vi.fn().mockResolvedValue({ childRepos: repos, truncated: false, isGitRepo: false });
+        const checkIsGitRepo = vi.fn().mockResolvedValue({ isGitRepo: false });
+        const wrapper = mount(WorkspaceDialog, {
+          props: { onCancel: vi.fn(), onSubmit: vi.fn(), workspace, ...props },
+          global: { provide: { [apiKey]: { probeDirectory, checkIsGitRepo } } },
+        });
+        await wrapper.find('input[name="cwd"]').setValue("/work/gc");
+        await new Promise((r) => setTimeout(r, 400));
+        await flushPromises();
+        return wrapper;
+      }
+
+      async function choosePerRepo(wrapper: Awaited<ReturnType<typeof mountPerRepo>>) {
+        await wrapper.get('input[type="radio"][value="per-repo"]').trigger("change");
+        await nextTick();
+      }
+
+      test("creates one workspace per selected repository with the dialog's tabs and settings", async () => {
+        const onSubmit = vi.fn();
+        const onSubmitMany = vi.fn(async (drafts: Record<string, unknown>[], onCreated: (d: unknown) => void) => {
+          drafts.forEach((d) => onCreated(d));
+        });
+        const workspace = buildProjectDraft({
+          cwd: "",
+          icon: "GC",
+          activePanelId: "panel-2",
+          panels: [
+            { id: "panel-1", title: "Terminal", command: "", shell: true, startup: "default", cwd: "/work/gc" },
+            { id: "panel-2", title: "Codex", command: "codex --yolo", shell: true, startup: "default" },
+          ],
+        });
+        const wrapper = await mountPerRepo({ onSubmit, onSubmitMany }, workspace);
+        await choosePerRepo(wrapper);
+        const items = wrapper.findAll(".multi-repo-list .multi-repo-repo-item input");
+        expect(items).toHaveLength(3);
+        await items[1].setValue(false);
+        expect(wrapper.find('button[type="submit"]').text()).toBe("Create 2 workspaces");
+
+        await wrapper.find("form").trigger("submit");
+        await flushPromises();
+
+        expect(onSubmit).not.toHaveBeenCalled();
+        const drafts = onSubmitMany.mock.calls[0][0];
+        expect(drafts.map((d) => [d.name, d.cwd, d.gitRoots, d.icon])).toEqual([
+          ["admin", "/work/gc/admin", [], "GC"],
+          ["ops", "/work/gc/ops", [], "GC"],
+        ]);
+        expect(new Set(drafts.map((d) => d.id)).size).toBe(2);
+        expect(drafts.every((d) => d.id !== "workspace-project")).toBe(true);
+        const panels = drafts.flatMap((d) => d.panels as Record<string, unknown>[]);
+        expect(new Set(panels.map((p) => p.id)).size).toBe(4);
+        expect(panels.every((p) => p.id !== "panel-1" && p.id !== "panel-2")).toBe(true);
+        // The tab pinned to the parent directory would otherwise open outside the repository.
+        expect(panels.some((p) => "cwd" in p)).toBe(false);
+        for (const d of drafts) {
+          const ps = d.panels as { id: string; title: string }[];
+          expect(ps.find((p) => p.id === d.activePanelId)?.title).toBe("Codex");
+        }
+      });
+
+      test("repositories that already have a workspace in this profile are marked and not preselected", async () => {
+        const store = useAppStore();
+        store.payload = {
+          appState: { workspaces: [{ id: "ws-ops", kind: "terminal", profileId: "default", cwd: "/work/gc/ops/" }] },
+        } as never;
+        const wrapper = await mountPerRepo();
+        await choosePerRepo(wrapper);
+
+        const rows = wrapper.findAll(".multi-repo-list .multi-repo-repo-item");
+        expect(rows[2].text()).toContain("has a workspace");
+        expect((rows[2].find("input").element as HTMLInputElement).checked).toBe(false);
+        expect((rows[0].find("input").element as HTMLInputElement).checked).toBe(true);
+        expect(wrapper.find('button[type="submit"]').text()).toBe("Create 2 workspaces");
+      });
+
+      test("a failure part-way keeps the dialog open with only the repositories that were not created", async () => {
+        const onSubmitMany = vi.fn(async (drafts: Record<string, unknown>[], onCreated: (d: unknown) => void) => {
+          onCreated(drafts[0]);
+          throw new Error("disk full");
+        });
+        const wrapper = await mountPerRepo({ onSubmitMany });
+        await choosePerRepo(wrapper);
+        await wrapper.find("form").trigger("submit");
+        await flushPromises();
+
+        const error = wrapper.find(".dialog__error").text();
+        expect(error).toContain("Created 1 of 3 workspaces");
+        expect(error).toContain("admin-cli: disk full");
+        expect(wrapper.find('button[type="submit"]').text()).toBe("Create 2 workspaces");
+      });
+
+      test("is not offered when editing an existing workspace", async () => {
+        const workspace = buildProjectDraft({ cwd: "" });
+        const store = useAppStore();
+        store.payload = { appState: { workspaces: [workspace] } } as never;
+        const wrapper = await mountPerRepo({}, workspace);
+        expect(wrapper.find('input[type="radio"][value="per-repo"]').exists()).toBe(false);
+        expect(wrapper.text()).toContain("Treat as multi-repo workspace");
+      });
+    });
+
     test("repo picker select appears when creating task + parentIsMultiRepo + useWorktree", () => {
       // Mount with a task draft where useWorktree is true; supply store workspaces
       // via a parentWorkspace with gitRoots so parentIsMultiRepo computes true.

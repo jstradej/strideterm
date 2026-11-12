@@ -35,7 +35,12 @@
 
   <template v-if="launchMode === 'shell'">
     <label class="field">
-      <span>Command</span>
+      <span
+        >Command
+        <HelpTooltip
+          text="Runs in the tab's shell when the tab starts, e.g. claude or npm run dev. Leave it empty for a plain shell."
+          label="Command help"
+      /></span>
       <input v-model="localCommand" placeholder="optional boot command" maxlength="500" />
     </label>
   </template>
@@ -95,6 +100,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
 import { buildWslCommand, parseWslCommand, type WslState } from "./wsl-launcher.js";
+import HelpTooltip from "../common/HelpTooltip.vue";
 
 interface Props {
   command: string;

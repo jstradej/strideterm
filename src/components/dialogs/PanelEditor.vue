@@ -12,7 +12,7 @@
         :key="tmpl.title"
         type="button"
         class="button button--ghost template-btn"
-        :title="`Add a new ${tmpl.title} tab to this workspace${tmpl.command ? ` — runs '${tmpl.command}' on startup.` : '.'}`"
+        :title="templateTitle(tmpl)"
         @click="addPanelFromTemplate(tmpl)"
       >
         {{ tmpl.icon }} {{ tmpl.title }}
@@ -63,7 +63,7 @@
           <button
             type="button"
             class="button button--ghost"
-            title="Remove this tab from the workspace template — its PTY session is killed when the workspace is saved."
+            title="Remove this tab from the workspace. If it is running, its terminal closes when you save."
             @click="removePanel(panel.id)"
           >
             Remove
@@ -123,9 +123,27 @@
             <input v-model="panel.command" maxlength="500" placeholder="e.g. claude" />
           </label>
         </template>
-        <WslCommandFields v-else v-model:command="panel.command" compact />
+        <p v-else-if="panel.command === FILES_COMMAND" class="panel-card__ssh-host">
+          Files tab — browses this workspace's folder. It runs no command.
+        </p>
+        <label v-else-if="isBrowserCommand(panel.command)">
+          <span
+            >Address
+            <HelpTooltip
+              text="The web page this tab opens in strIDEterm's built-in browser, for example a local dev server."
+              label="Address help"
+          /></span>
+          <input v-model="panel.command" maxlength="500" placeholder="https://" />
+        </label>
+        <WslCommandFields
+          v-else
+          v-model:command="panel.command"
+          compact
+          :show-launch-mode="showWslToggle(panel.command)"
+        />
 
         <label
+          v-if="panel.command !== FILES_COMMAND && !isBrowserCommand(panel.command)"
           class="panel-card__toggle"
           title="Force notifications on for this panel even when 'Notify only from AI agents' is enabled globally. Useful for shell tabs where you do want the 'command finished' ping (e.g. long-running build scripts)."
         >
@@ -144,10 +162,14 @@ import { BADGE_ICONS, getTitleIcon, setTitleIcon } from "../../lib/badge-icons.j
 import type { PanelLaunch } from "../../../electron/shared/types/state.js";
 import { REMOTE_CWD_MAX_LENGTH } from "../../../electron/shared/ssh-remote-cwd.js";
 import { useSshStore } from "../../stores/ssh.js";
+import { useAppStore } from "../../stores/app.js";
 import HelpTooltip from "../common/HelpTooltip.vue";
 import WslCommandFields from "./WslCommandFields.vue";
+import { parseWslCommand } from "./wsl-launcher.js";
 
-const DEFAULT_TAB_TEMPLATES = [
+const FILES_COMMAND = "__files__";
+
+const DEFAULT_TAB_TEMPLATES: TabTemplate[] = [
   { title: "Shell", command: "", icon: "\u{1F4BB}" },
   { title: "Claude Code", command: "claude", icon: "\u{1F916}" },
   { title: "Codex", command: "codex", icon: "\u{1F9E0}" },
@@ -179,6 +201,7 @@ interface TabTemplate {
   title: string;
   command: string;
   icon?: string;
+  platforms?: string[];
 }
 
 interface Props {
@@ -246,9 +269,29 @@ function addSshPanel(host: SshHostEntry) {
   ]);
 }
 
+const appStore = useAppStore();
+const platform = computed(() => String(appStore.payload?.meta?.platform || ""));
 const resolvedTemplates = computed(() =>
-  Array.isArray(props.tabTemplates) && props.tabTemplates.length ? props.tabTemplates : DEFAULT_TAB_TEMPLATES,
+  (Array.isArray(props.tabTemplates) && props.tabTemplates.length ? props.tabTemplates : DEFAULT_TAB_TEMPLATES).filter(
+    (tmpl) => !Array.isArray(tmpl.platforms) || !platform.value || tmpl.platforms.includes(platform.value),
+  ),
 );
+
+function isBrowserCommand(command: string) {
+  return /^https?:\/\//i.test((command || "").trim());
+}
+
+// WSL exists only on Windows; elsewhere the toggle stays only so an imported WSL command can be switched back.
+function showWslToggle(command: string) {
+  return !platform.value || platform.value === "win32" || parseWslCommand(command || "") !== null;
+}
+
+function templateTitle(tmpl: { title: string; command: string }) {
+  if (tmpl.command === FILES_COMMAND) return "Add a Files tab that browses this workspace's folder.";
+  if (isBrowserCommand(tmpl.command)) return "Add a tab with strIDEterm's built-in browser.";
+  if (!tmpl.command) return `Add a ${tmpl.title} tab with a plain shell.`;
+  return `Add a ${tmpl.title} tab that runs '${tmpl.command}' when it starts.`;
+}
 
 function panelIconValue(title: string) {
   return getTitleIcon(title);

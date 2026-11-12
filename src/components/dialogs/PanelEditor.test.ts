@@ -3,6 +3,7 @@ import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import PanelEditor from "./PanelEditor.vue";
 import { useSshStore } from "../../stores/ssh.js";
+import { useAppStore } from "../../stores/app.js";
 
 function makePanel(overrides: Partial<{ id: string; title: string; command: string }> = {}) {
   return { id: "panel-1", title: "Shell", command: "", shell: true, startup: "default", ...overrides };
@@ -99,5 +100,72 @@ describe("PanelEditor", () => {
     expect(panels[0].command).toBe("claude");
     await wrapper.find('[data-testid="panel-editor-remote-cwd"]').setValue("~/projects/app");
     expect(panels[0].launch).toEqual({ kind: "ssh", sshHostId: "host-mini", remoteCwd: "~/projects/app" });
+  });
+
+  function setPlatform(platform: string) {
+    useAppStore().payload = { meta: { platform } } as never;
+  }
+
+  test("the WSL launch mode is offered only on Windows", async () => {
+    setPlatform("darwin");
+    const mac = mount(PanelEditor, { props: { panels: [makePanel()] } });
+    expect(mac.find('[aria-label="Launch mode"]').exists()).toBe(false);
+
+    setActivePinia(createPinia());
+    setPlatform("win32");
+    const win = mount(PanelEditor, { props: { panels: [makePanel()] } });
+    expect(win.find('[aria-label="Launch mode"]').exists()).toBe(true);
+  });
+
+  test("outside Windows a tab that already holds a WSL command keeps the switch back to Shell", async () => {
+    setPlatform("linux");
+    const wrapper = mount(PanelEditor, {
+      props: { panels: [makePanel({ command: 'wsl -- bash -lic "claude; exec bash"' })] },
+    });
+    expect(wrapper.find('[aria-label="Launch mode"]').exists()).toBe(true);
+  });
+
+  test("a Files tab explains itself instead of showing its internal command", async () => {
+    setPlatform("darwin");
+    const wrapper = mount(PanelEditor, { props: { panels: [makePanel({ title: "Files", command: "__files__" })] } });
+    expect(wrapper.text()).toContain("Files tab");
+    expect(wrapper.text()).not.toContain("Always notify");
+    expect(wrapper.findAll("input").some((i) => (i.element as HTMLInputElement).value === "__files__")).toBe(false);
+  });
+
+  test("a browser tab edits its address, not a shell command", async () => {
+    const panels = [makePanel({ title: "Browser", command: "https://example.test" })];
+    const wrapper = mount(PanelEditor, { props: { panels } });
+    expect(wrapper.find('[aria-label="Launch mode"]').exists()).toBe(false);
+    const address = wrapper.find('input[placeholder="https://"]');
+    await address.setValue("http://localhost:5173");
+    expect(panels[0].command).toBe("http://localhost:5173");
+  });
+
+  test("template buttons describe what the added tab does", () => {
+    const wrapper = mount(PanelEditor, { props: { panels: [] } });
+    const titles = Object.fromEntries(
+      wrapper.findAll("button.template-btn").map((b) => [b.text().replace(/^\S+\s/, ""), b.attributes("title")]),
+    );
+    expect(titles["Shell"]).toBe("Add a Shell tab with a plain shell.");
+    expect(titles["Codex"]).toBe("Add a Codex tab that runs 'codex' when it starts.");
+    expect(titles["Files"]).toBe("Add a Files tab that browses this workspace's folder.");
+    expect(titles["Browser"]).toBe("Add a tab with strIDEterm's built-in browser.");
+  });
+
+  test("configured templates for another platform are not offered", () => {
+    setPlatform("darwin");
+    const wrapper = mount(PanelEditor, {
+      props: {
+        panels: [],
+        tabTemplates: [
+          { title: "PowerShell", command: "powershell", platforms: ["win32"] },
+          { title: "Zsh", command: "zsh", platforms: ["darwin", "linux"] },
+        ],
+      },
+    });
+    const labels = wrapper.findAll("button.template-btn").map((b) => b.text());
+    expect(labels.some((l) => l.includes("PowerShell"))).toBe(false);
+    expect(labels.some((l) => l.includes("Zsh"))).toBe(true);
   });
 });

@@ -1035,3 +1035,65 @@ describe("createDialogActions.editTabWithDialog on an SSH tab", () => {
     expect((ctx.overlayProps.value as AnyApi).title).toBe("Reload tab now?");
   });
 });
+
+describe("createDialogActions.openWorkspaceDialog per-repository create", () => {
+  it("saves each draft in order, reports each success, activates only the first and closes", async () => {
+    const ctx = makeCtx({ appState: { workspaces: [] } });
+    const saved: AnyApi[] = [];
+    const saveWorkspace = vi.fn(async (draft: AnyApi) => {
+      saved.push(draft);
+      return { appState: { workspaces: [...saved] } };
+    });
+    const activateWorkspace = vi.fn(async () => ({ appState: { workspaces: saved } }));
+    ctx.getApi = () => ({ saveWorkspace, activateWorkspace });
+    const actions = createDialogActions(ctx);
+    actions.openWorkspaceDialog();
+    const props = ctx.overlayProps.value as AnyApi;
+    const onCreated = vi.fn();
+
+    await props.onSubmitMany(
+      [
+        { id: "ws-a", cwd: "/r/a", panels: [{ id: "pa", command: "" }] },
+        { id: "ws-b", cwd: "/r/b", panels: [{ id: "pb", command: "" }] },
+      ],
+      onCreated,
+    );
+
+    expect(saveWorkspace.mock.calls.map(([d]) => d.id)).toEqual(["ws-a", "ws-b"]);
+    expect(saved.every((d) => d.profileId)).toBe(true);
+    expect(onCreated.mock.calls.map(([d]) => d.id)).toEqual(["ws-a", "ws-b"]);
+    expect(activateWorkspace).toHaveBeenCalledTimes(1);
+    expect(activateWorkspace).toHaveBeenCalledWith("ws-a");
+    expect(ctx.activeViewId.value).toBe("ws-a:pa");
+    expect(ctx.overlay.value).toBeNull();
+  });
+
+  it("stops at the first failure, keeps the dialog open and has reported only what was saved", async () => {
+    const ctx = makeCtx({ appState: { workspaces: [] } });
+    const saveWorkspace = vi
+      .fn()
+      .mockResolvedValueOnce({ appState: { workspaces: [] } })
+      .mockRejectedValueOnce(new Error("disk full"));
+    const activateWorkspace = vi.fn();
+    ctx.getApi = () => ({ saveWorkspace, activateWorkspace });
+    const actions = createDialogActions(ctx);
+    actions.openWorkspaceDialog();
+    const props = ctx.overlayProps.value as AnyApi;
+    const onCreated = vi.fn();
+
+    await expect(
+      props.onSubmitMany(
+        [
+          { id: "ws-a", cwd: "/r/a", panels: [] },
+          { id: "ws-b", cwd: "/r/b", panels: [] },
+          { id: "ws-c", cwd: "/r/c", panels: [] },
+        ],
+        onCreated,
+      ),
+    ).rejects.toThrow("disk full");
+    expect(saveWorkspace).toHaveBeenCalledTimes(2);
+    expect(onCreated.mock.calls.map(([d]) => d.id)).toEqual(["ws-a"]);
+    expect(activateWorkspace).not.toHaveBeenCalled();
+    expect(ctx.overlay.value).toBe("WorkspaceDialog");
+  });
+});

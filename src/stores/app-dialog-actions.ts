@@ -553,6 +553,8 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       tabTemplates,
       onCancel: closeDialog,
       onSubmit: async (draft: AnyApi) => saveWorkspaceDialogDraft(draft, workspace, true),
+      onSubmitMany: async (drafts: AnyApi[], onCreated: (draft: AnyApi) => void) =>
+        saveWorkspaceDialogDrafts(drafts, onCreated),
       onPrepareAgent: async (request: {
         workspace: AnyApi;
         selections: { repositoryName: string; selection: ReviewAgentPreparationSelection }[];
@@ -617,6 +619,30 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     });
     if (closeOnSuccess) closeDialog();
     return plain;
+  }
+
+  // Saves one by one and reports each success, so a failure part-way leaves the dialog knowing exactly which
+  // workspaces exist and a retry cannot create duplicates. Activates only the first, as a single create would.
+  async function saveWorkspaceDialogDrafts(drafts: AnyApi[], onCreated: (draft: AnyApi) => void): Promise<void> {
+    const api = ctx.getApi() as CallableTransport;
+    let first: AnyApi = null;
+    for (const draft of drafts) {
+      const plain = JSON.parse(JSON.stringify({ ...draft, profileId: draft.profileId || currentProfileId() }));
+      await ctx.withSuppressedBroadcast(async () => {
+        ctx.adoptPayload((await api.saveWorkspace(plain)) as StatePayload);
+      });
+      first ??= plain;
+      onCreated(plain);
+    }
+    if (!first) return;
+    const firstPanel = first.panels?.[0];
+    if (firstPanel) {
+      ctx.activeViewId.value = isBrowserPanel(firstPanel) ? `browser:${firstPanel.id}` : `${first.id}:${firstPanel.id}`;
+    }
+    await ctx.withSuppressedBroadcast(async () => {
+      ctx.adoptPayload((await api.activateWorkspace(first.id)) as StatePayload);
+    });
+    closeDialog();
   }
 
   function openNewWorkspaceFlow(): void {

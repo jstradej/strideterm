@@ -18,8 +18,8 @@
               : isCreatingTask && draft.useWorktree
                 ? "Base repository"
                 : "Working directory"
-          }}{{ isCreatingTask ? " *" : "" }}</span
-        >
+          }}{{ isCreatingTask ? " *" : "" }} <HelpTooltip v-if="cwdHelp" :text="cwdHelp" label="Working directory help"
+        /></span>
         <div class="input-with-action">
           <input
             v-model="draft.cwd"
@@ -45,7 +45,7 @@
         <input
           v-model="draft.name"
           name="name"
-          required
+          :required="repoMode !== 'per-repo'"
           data-validation-required="Enter a name for this workspace."
           maxlength="60"
         />
@@ -58,7 +58,12 @@
         <div class="appearance-content">
           <div class="grid">
             <label>
-              <span>Badge</span>
+              <span
+                >Badge
+                <HelpTooltip
+                  text="A short label or emoji (up to 4 characters) that marks this workspace in the sidebar."
+                  label="Badge help"
+              /></span>
               <input v-model="draft.icon" name="icon" maxlength="4" />
               <div class="icon-picker">
                 <button
@@ -66,6 +71,7 @@
                   :key="icon"
                   type="button"
                   class="button button--ghost icon-picker__btn"
+                  :title="`Use ${icon} as the badge.`"
                   @click="draft.icon = icon"
                 >
                   {{ icon }}
@@ -73,7 +79,9 @@
               </div>
             </label>
             <label>
-              <span>Accent</span>
+              <span
+                >Accent <HelpTooltip text="The colour that marks this workspace in the sidebar." label="Accent help"
+              /></span>
               <div class="accent-row">
                 <input v-model="draft.color" name="color" type="color" class="color-input" />
                 <span class="color-preview" :style="{ background: draft.color }"></span>
@@ -81,7 +89,12 @@
             </label>
           </div>
           <label>
-            <span>Notes</span>
+            <span
+              >Notes
+              <HelpTooltip
+                text="A note for yourself about what this workspace is for. strIDEterm only shows it here."
+                label="Notes help"
+            /></span>
             <textarea
               v-model="draft.notes"
               name="notes"
@@ -452,13 +465,59 @@
             type="button"
             class="button button--ghost multi-repo-rescan-btn"
             :disabled="rescanning"
+            title="Search this folder for git repositories again, e.g. after cloning another one."
             @click="rescanDirectory"
           >
             {{ rescanning ? "Scanning\u2026" : "Re-scan" }}
           </button>
         </div>
         <p v-if="rescanError" class="multi-repo-hint" style="color: var(--danger, #e53935)">{{ rescanError }}</p>
-        <label class="multi-repo-toggle">
+        <div v-if="canCreatePerRepo" class="multi-repo-modes" role="radiogroup" aria-label="Open the repositories as">
+          <label
+            class="multi-repo-toggle"
+            title="Open the whole folder as one ordinary workspace. The Git pane shows only a repository at the folder itself, if there is one."
+          >
+            <input
+              type="radio"
+              name="multi-repo-mode"
+              value="single"
+              :checked="repoMode === 'single'"
+              @change="repoMode = 'single'"
+            />
+            One workspace for this directory
+          </label>
+          <label
+            class="multi-repo-toggle"
+            title="One workspace for the whole folder that treats the selected repositories as a set: the Git pane gets a switcher between them, and new tabs can start in any of them."
+          >
+            <input
+              type="radio"
+              name="multi-repo-mode"
+              value="multi"
+              :checked="repoMode === 'multi'"
+              @change="repoMode = 'multi'"
+            />
+            One multi-repo workspace
+          </label>
+          <label
+            class="multi-repo-toggle"
+            title="Create a separate workspace for each selected repository, each with the tabs and settings from this dialog."
+          >
+            <input
+              type="radio"
+              name="multi-repo-mode"
+              value="per-repo"
+              :checked="repoMode === 'per-repo'"
+              @change="repoMode = 'per-repo'"
+            />
+            A separate workspace for each repository
+          </label>
+        </div>
+        <label
+          v-else
+          class="multi-repo-toggle"
+          title="One workspace for the whole folder that treats the selected repositories as a set: the Git pane gets a switcher between them, and new tabs can start in any of them."
+        >
           <input
             type="checkbox"
             :checked="enableMultiRepo"
@@ -466,8 +525,59 @@
           />
           Treat as multi-repo workspace
         </label>
+        <template v-if="repoMode === 'per-repo'">
+          <div class="multi-repo-list-head">
+            <span>{{ perRepoSelection.length }} of {{ childRepoCount }} selected</span>
+            <button
+              type="button"
+              class="button button--ghost multi-repo-rescan-btn"
+              title="Select every repository, including those that already have a workspace."
+              @click="selectAllPerRepo(true)"
+            >
+              All
+            </button>
+            <button
+              type="button"
+              class="button button--ghost multi-repo-rescan-btn"
+              title="Clear the selection."
+              @click="selectAllPerRepo(false)"
+            >
+              None
+            </button>
+          </div>
+          <div class="multi-repo-list">
+            <label
+              v-for="repo in cwdProbeResult?.childRepos || []"
+              :key="repo"
+              class="multi-repo-repo-item"
+              :title="repo"
+            >
+              <input
+                type="checkbox"
+                :checked="perRepoSelection.includes(repo)"
+                @change="togglePerRepo(repo, ($event.target as HTMLInputElement).checked)"
+              />
+              <span class="repo-name">{{ repoBaseName(repo) }}</span>
+              <span
+                v-if="existingWorkspaceCwds.has(normalizeCwdKey(repo))"
+                class="repo-badge"
+                title="This profile already has a workspace for this repository, so it is not selected by default."
+                >has a workspace</span
+              >
+              <span class="repo-path">{{ repo }}</span>
+            </label>
+          </div>
+          <p class="multi-repo-hint">
+            Creates one workspace per selected repository, named after its folder, with the tabs and settings above.
+            <span v-if="cwdProbeResult?.truncated"> Scan was truncated — some repositories may be missing. </span>
+          </p>
+        </template>
         <template v-if="enableMultiRepo">
-          <label v-if="cwdIsGitRepo" class="multi-repo-parent-toggle">
+          <label
+            v-if="cwdIsGitRepo"
+            class="multi-repo-parent-toggle"
+            title="The folder itself is a git repository too. Tick to include it in the Git pane's switcher next to the repositories inside it."
+          >
             <input
               type="checkbox"
               :checked="includeParentAsRepo"
@@ -476,9 +586,16 @@
             Include parent directory as a repository
           </label>
           <details class="multi-repo-edit">
-            <summary>Edit list ({{ draft.gitRoots?.length || 0 }} selected)</summary>
-            <div v-for="repo in cwdProbeResult?.childRepos || []" :key="repo" class="multi-repo-repo-item">
-              <label>
+            <summary title="Choose which repositories the Git pane's switcher offers.">
+              Edit list ({{ draft.gitRoots?.length || 0 }} selected)
+            </summary>
+            <div class="multi-repo-list">
+              <label
+                v-for="repo in cwdProbeResult?.childRepos || []"
+                :key="repo"
+                class="multi-repo-repo-item"
+                :title="repo"
+              >
                 <input
                   type="checkbox"
                   :checked="draft.gitRoots?.includes(repo)"
@@ -494,14 +611,13 @@
                     }
                   "
                 />
-                {{ repo.split(/[\\/]/).at(-1) }}
+                <span class="repo-name">{{ repoBaseName(repo) }}</span>
                 <span class="repo-path">{{ repo }}</span>
               </label>
             </div>
           </details>
           <p class="multi-repo-hint">
-            Selecting this treats each detected repository as a peer — the Git pane shows a repo switcher, and new tabs
-            can target any child cwd.
+            The Git pane gets a switcher between the selected repositories, and new tabs can start in any of them.
             <span v-if="cwdProbeResult?.truncated"> Scan was truncated — add more repos manually if missing. </span>
           </p>
         </template>
@@ -516,8 +632,20 @@
         <button type="button" class="button button--ghost" :disabled="submitting" @click="emit('cancel')">
           Cancel
         </button>
-        <button type="submit" class="button" :disabled="!canSubmit || submitting">
-          {{ submitting ? "Creating\u2026" : isCreatingTask ? "Create workspace" : "Save workspace" }}
+        <button
+          type="submit"
+          class="button"
+          :disabled="!canSubmit || submitting || (repoMode === 'per-repo' && perRepoSelection.length === 0)"
+        >
+          {{
+            submitting
+              ? "Creating\u2026"
+              : repoMode === "per-repo"
+                ? `Create ${perRepoSelection.length} workspace${perRepoSelection.length === 1 ? "" : "s"}`
+                : isCreatingTask
+                  ? "Create workspace"
+                  : "Save workspace"
+          }}
         </button>
       </footer>
     </form>
@@ -538,6 +666,7 @@ import { useNotificationStore } from "../../stores/notifications.js";
 import { pickPath } from "../../lib/pick-path.js";
 import { rlog } from "../../lib/renderer-log.js";
 import { BADGE_ICONS } from "../../lib/badge-icons.js";
+import HelpTooltip from "../common/HelpTooltip.vue";
 import { PROVIDER_CHOICES, type ProviderConfig } from "../../lib/agent-providers.js";
 import PanelEditor from "./PanelEditor.vue";
 import CustomSelect from "../common/CustomSelect.vue";
@@ -561,6 +690,7 @@ interface PanelEntry {
   shell: boolean;
   startup: string;
   launch?: PanelLaunch | null;
+  cwd?: string;
 }
 
 interface GitRootEntry {
@@ -971,6 +1101,66 @@ const includeParentAsRepo = computed({
   },
 });
 
+const cwdHelp = computed(() => {
+  if (isTask.value) return "";
+  if (isAzure.value) return "The folder under which strIDEterm creates the checkouts for pull-request reviews.";
+  return "The folder this workspace works in. New tabs start here unless a tab sets its own folder, and the Git and Files panes show this folder.";
+});
+
+function repoBaseName(repo: string): string {
+  return repo.split(/[\\/]/).filter(Boolean).at(-1) || repo;
+}
+function normalizeCwdKey(cwd: string): string {
+  return (cwd || "")
+    .replace(/[\\/]+$/, "")
+    .replace(/\\/g, "/")
+    .toLowerCase();
+}
+
+// Creating one workspace per child repository only makes sense for a new workspace — an edit has one identity.
+const isExistingWorkspace = computed(() => {
+  const id = (props.workspace as { id?: string } | null)?.id;
+  return !!id && (store.payload?.appState?.workspaces || []).some((ws) => ws.id === id);
+});
+const canCreatePerRepo = computed(() => !isExistingWorkspace.value && !isDocker.value);
+const perRepoMode = ref(false);
+const perRepoSelection = ref<string[]>([]);
+const existingWorkspaceCwds = computed(() => {
+  const profileId = String(draft.profileId || store.myActiveProfileId || "default");
+  return new Set(
+    (store.payload?.appState?.workspaces || [])
+      .filter((ws) => ws.kind !== "task" && String(ws.profileId || "default") === profileId)
+      .map((ws) => normalizeCwdKey(String(ws.cwd || ""))),
+  );
+});
+function defaultPerRepoSelection(): string[] {
+  return (cwdProbeResult.value?.childRepos || []).filter(
+    (repo) => !existingWorkspaceCwds.value.has(normalizeCwdKey(repo)),
+  );
+}
+const repoMode = computed<"single" | "multi" | "per-repo">({
+  get: () =>
+    perRepoMode.value && showMultiRepoSection.value ? "per-repo" : enableMultiRepo.value ? "multi" : "single",
+  set: (mode) => {
+    perRepoMode.value = mode === "per-repo";
+    enableMultiRepo.value = mode === "multi";
+    if (mode === "per-repo") perRepoSelection.value = defaultPerRepoSelection();
+  },
+});
+watch(
+  () => cwdProbeResult.value?.childRepos,
+  () => {
+    if (perRepoMode.value) perRepoSelection.value = defaultPerRepoSelection();
+  },
+);
+function togglePerRepo(repo: string, checked: boolean): void {
+  const rest = perRepoSelection.value.filter((r) => r !== repo);
+  perRepoSelection.value = checked ? [...rest, repo] : rest;
+}
+function selectAllPerRepo(all: boolean): void {
+  perRepoSelection.value = all ? [...(cwdProbeResult.value?.childRepos || [])] : [];
+}
+
 // Provider availability — populated asynchronously from checkProviders()
 const providerAvailability = ref<Record<string, { available?: boolean }>>({});
 
@@ -1322,6 +1512,11 @@ async function handleSubmit() {
     }
   }
 
+  if (repoMode.value === "per-repo") {
+    await submitPerRepo(result);
+    return;
+  }
+
   submitting.value = true;
   errorMessage.value = "";
   try {
@@ -1332,6 +1527,62 @@ async function handleSubmit() {
     await (attrs.onSubmit as ((result: unknown) => Promise<void>) | undefined)?.(result);
   } catch (err) {
     errorMessage.value = extractErrorMessage(err);
+  } finally {
+    submitting.value = false;
+  }
+}
+
+function buildPerRepoDrafts(template: WorkspaceDraft): WorkspaceDraft[] {
+  const childRepos = cwdProbeResult.value?.childRepos || [];
+  return childRepos
+    .filter((repo) => perRepoSelection.value.includes(repo))
+    .map((repo) => {
+      const repoKey = normalizeCwdKey(repo);
+      const panels = (template.panels || []).map((panel) => {
+        const copy: PanelEntry = { ...panel, id: `panel-${crypto.randomUUID()}` };
+        // A tab pinned to the parent directory (or a sibling repo) would open outside this repository.
+        const panelKey = normalizeCwdKey(String(copy.cwd || ""));
+        if (copy.cwd && panelKey !== repoKey && !panelKey.startsWith(`${repoKey}/`)) delete copy.cwd;
+        return copy;
+      });
+      const activeIndex = Math.max(
+        0,
+        (template.panels || []).findIndex((panel) => panel.id === template.activePanelId),
+      );
+      return {
+        ...JSON.parse(JSON.stringify(template)),
+        id: `workspace-${crypto.randomUUID()}`,
+        name: repoBaseName(repo).slice(0, 60),
+        cwd: repo,
+        gitRoots: [],
+        panels,
+        activePanelId: panels[activeIndex]?.id || "",
+      } as WorkspaceDraft;
+    });
+}
+
+async function submitPerRepo(template: WorkspaceDraft): Promise<void> {
+  const drafts = buildPerRepoDrafts(template);
+  const submitMany = attrs.onSubmitMany as
+    ((drafts: WorkspaceDraft[], onCreated: (draft: WorkspaceDraft) => void) => Promise<void>) | undefined;
+  if (!submitMany) {
+    errorMessage.value = "Creating several workspaces is not available here.";
+    return;
+  }
+  submitting.value = true;
+  errorMessage.value = "";
+  const created: string[] = [];
+  try {
+    await submitMany(drafts, (saved) => {
+      created.push(saved.cwd);
+      perRepoSelection.value = perRepoSelection.value.filter((repo) => repo !== saved.cwd);
+    });
+  } catch (err) {
+    const failedOn = drafts.find((d) => !created.includes(d.cwd));
+    const prefix = created.length
+      ? `Created ${created.length} of ${drafts.length} workspaces; the rest are still selected. `
+      : "";
+    errorMessage.value = `${prefix}${failedOn ? `${failedOn.name}: ` : ""}${extractErrorMessage(err)}`;
   } finally {
     submitting.value = false;
   }
@@ -1616,7 +1867,27 @@ function extractErrorMessage(err: unknown): string {
   cursor: pointer;
   font-size: 13px;
 }
+.multi-repo-modes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.multi-repo-list-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.multi-repo-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 260px;
+  overflow-y: auto;
+}
 .multi-repo-toggle input[type="checkbox"],
+.multi-repo-toggle input[type="radio"],
+.multi-repo-repo-item input[type="checkbox"],
 .multi-repo-parent-toggle input[type="checkbox"] {
   width: auto;
   flex: none;
@@ -1639,23 +1910,43 @@ function extractErrorMessage(err: unknown): string {
   color: var(--muted);
   padding: 2px 0;
 }
+/* The global form rule renders every <label> as a grid and every <label> span as an uppercase caption. */
 .multi-repo-repo-item {
-  padding: 3px 0 3px 16px;
-}
-.multi-repo-repo-item label {
   display: flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
   flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0 3px 4px;
+  cursor: pointer;
+  min-width: 0;
 }
-.repo-path {
+.multi-repo-repo-item span {
+  text-transform: none;
+  letter-spacing: normal;
+}
+.repo-name {
+  flex: none;
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+}
+.repo-badge {
+  flex: none;
   font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.multi-repo-repo-item .repo-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 300px;
 }
 .multi-repo-hint {
   font-size: 11px;
