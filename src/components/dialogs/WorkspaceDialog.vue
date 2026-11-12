@@ -273,7 +273,7 @@
           :title="
             isAzure
               ? 'Sets the default for newly created New Branch and manual PR workspaces. Existing workspaces keep their own setting. Restart open agent sessions after changing it.'
-              : 'Controls whether agents in this workspace can run commands on your saved Built-in SSH hosts. Restart open agent sessions after changing it.'
+              : 'Controls whether agents in this workspace can run commands and transfer files on your saved Built-in SSH hosts. Restart open agent sessions after changing it.'
           "
         >
           <input
@@ -284,10 +284,10 @@
           />
           Allow SSH tools for agents
           <span class="internal-mcp-hint">
-            Lets directly launched local Claude Code or Codex agents list your saved Built-in SSH hosts and run commands
-            on them with each host's saved sign-in. Shell, WSL, SSH and custom-launcher tabs are not affected, and hosts
-            using System SSH or WSL are not offered. To enable it for one tab only, use "SSH tools for this tab" in Edit
-            tab instead.
+            Lets directly launched local Claude Code or Codex agents list your saved Built-in SSH hosts, run commands on
+            them and upload or download files between them and this workspace's folders, with each host's saved sign-in.
+            Shell, WSL, SSH and custom-launcher tabs are not affected, and hosts using System SSH or WSL are not
+            offered. To enable it for one tab only, use "SSH tools for this tab" in Edit tab instead.
             <template v-if="internalMcpLocked"> Desktop only — change it in the desktop app.</template>
             <template v-if="isAzure">
               Applies to new workspaces created with New Branch or opened manually for a PR. Existing workspaces keep

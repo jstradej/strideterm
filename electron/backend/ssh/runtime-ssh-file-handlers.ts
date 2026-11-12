@@ -7,6 +7,7 @@ import {
   sshFileDownloadSchema,
   sshFileListSchema,
   sshFileMkdirSchema,
+  sshFilePasteImageSchema,
   sshFileRealpathSchema,
   sshFileRenameSchema,
   sshFileTransferCancelSchema,
@@ -220,6 +221,23 @@ export function createSshFileHandlers(ctx: SshFileHandlersCtx) {
       const { resolved } = prepare(input, viewerId, options);
       await service.mkdir(resolved.target, resolved.connect, input.path);
       return { ok: true as const };
+    },
+
+    /** Desktop only: uploads a pasted screenshot over the SSH tab's live connection (never a prompt, never an own one). */
+    async sshFilePasteImage(payload: unknown, viewerId?: string): Promise<{ path: string; bytes: number }> {
+      const input = validateIpc(sshFilePasteImageSchema, payload, "ssh-file:paste-image");
+      const caller = callerOf(viewerId, false);
+      if (caller.remote) {
+        throw new SshFileError(
+          "permission-denied",
+          "Pasting an image into an SSH tab is available in the desktop app only.",
+        );
+      }
+      if (!path.isAbsolute(input.localPath)) throw new SshFileError("io", "The pasted image path must be absolute.");
+      const resolved = resolve(input, caller);
+      const panel = resolved.workspace.panels?.find((item) => item.id === input.panelId);
+      if (panel?.launch?.kind !== "ssh") throw new SshFileError("io", "This tab is not an SSH tab.");
+      return service.pasteImage({ ...resolved.target, own: undefined }, resolved.connect, input.localPath);
     },
 
     async sshFileRename(payload: unknown, viewerId?: string, options: CallOptions = {}) {

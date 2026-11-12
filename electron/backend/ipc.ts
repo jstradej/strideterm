@@ -449,7 +449,13 @@ export function registerIpc(
       try {
         return await listener(event, ...args);
       } catch (err) {
-        logIpcFailure(channel, err);
+        // Not failures: a conflict is answered with an Overwrite / Skip dialog, and a pasted image in a System SSH
+        // or WSL tab falls back to the local path.
+        const expectedSshFileRefusal =
+          channel.startsWith("ssh-file:") &&
+          err instanceof SshFileError &&
+          (err.code === "conflict" || (channel === "ssh-file:paste-image" && err.code === "unsupported-host"));
+        if (!expectedSshFileRefusal) logIpcFailure(channel, err);
         if (usesJiraFailureEnvelope(channel) && err instanceof JiraRequestError) return toJiraIpcFailure(err);
         if (channel.startsWith("ssh-file:") && err instanceof SshFileError) return toSshFileIpcFailure(err);
         throw normalizeIpcFailure(err);
@@ -1428,6 +1434,11 @@ export function registerIpc(
   );
   handle("ssh-file:mkdir", async (event, payload) =>
     withOperationPromise({ opId: "ssh-file:mkdir" }, () => runtime.sshFileMkdir(payload, sshFileViewerId(event))),
+  );
+  handle("ssh-file:paste-image", async (event, payload) =>
+    withOperationPromise({ opId: "ssh-file:paste-image" }, () =>
+      runtime.sshFilePasteImage(payload, sshFileViewerId(event)),
+    ),
   );
   handle("ssh-file:rename", async (event, payload) =>
     withOperationPromise({ opId: "ssh-file:rename" }, () => runtime.sshFileRename(payload, sshFileViewerId(event))),

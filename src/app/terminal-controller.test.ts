@@ -5,8 +5,10 @@ import { createTerminalController } from "./terminal-controller.js";
 // Backing spy for the path-link providers' shared error-reporting helper
 // (reportOpenPathError). Declared via vi.hoisted so it's safe to reference
 // from the vi.mock factories below.
-const { mockShowError, webglMockState, internalViewer } = vi.hoisted(() => ({
+const { mockShowError, mockPushToast, mockDismissToast, webglMockState, internalViewer } = vi.hoisted(() => ({
   mockShowError: vi.fn(),
+  mockPushToast: vi.fn(() => "toast-1"),
+  mockDismissToast: vi.fn(),
   webglMockState: {
     failLoad: false,
     instances: [] as Array<{
@@ -25,7 +27,11 @@ const { mockShowError, webglMockState, internalViewer } = vi.hoisted(() => ({
   },
 }));
 vi.mock("../stores/notifications.js", () => ({
-  useNotificationStore: () => ({ showError: mockShowError }),
+  useNotificationStore: () => ({
+    showError: mockShowError,
+    pushEphemeralToast: mockPushToast,
+    dismissPersistentToast: mockDismissToast,
+  }),
 }));
 vi.mock("../stores/app.js", () => ({
   useAppStore: () => ({
@@ -2245,6 +2251,108 @@ describe("terminal clipboard interoperability", () => {
       );
     } finally {
       Object.defineProperty(navigator, "clipboard", { value: previousClipboard, configurable: true });
+    }
+  });
+});
+
+describe("image paste into an SSH tab", () => {
+  const sessionId = "workspace-1:ssh-1";
+  const target = { workspaceId: "workspace-1", panelId: "ssh-1" };
+  const localPath = "/tmp/shots/strideterm-1.png";
+
+  function paste(apiOverrides: Record<string, unknown>) {
+    const built = buildAttachController({
+      isRemote: false,
+      pasteClipboardImageForTerminal: vi.fn(async () => ({ ok: true, path: localPath, source: "saved" })),
+      getSshPasteTarget: vi.fn(() => target),
+      ...apiOverrides,
+    });
+    built.controller.ensureTerminal(sessionId);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (built.views.value as any).get(sessionId);
+    const fire = async () => {
+      view.mount.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+      await flushPromises();
+    };
+    return { ...built, fire };
+  }
+
+  beforeEach(() => {
+    mockShowError.mockClear();
+    mockPushToast.mockClear();
+    mockDismissToast.mockClear();
+  });
+
+  test("uploads the screenshot and types the remote path", async () => {
+    const sshFilePasteImage = vi.fn(async () => ({ path: "/home/a/.strideterm/paste/strideterm-1.png" }));
+    const { api, fire } = paste({ sshFilePasteImage });
+
+    await fire();
+
+    expect(sshFilePasteImage).toHaveBeenCalledWith({ ...target, localPath });
+    expect(api.writeTerminal).toHaveBeenCalledWith(sessionId, '"/home/a/.strideterm/paste/strideterm-1.png"');
+    expect(mockPushToast).not.toHaveBeenCalled();
+  });
+
+  test("falls back to the local path for a host without SFTP", async () => {
+    const sshFilePasteImage = vi.fn(() =>
+      Promise.reject(Object.assign(new Error("no sftp"), { code: "unsupported-host" })),
+    );
+    const { api, fire } = paste({ sshFilePasteImage });
+
+    await fire();
+
+    expect(api.writeTerminal).toHaveBeenCalledWith(sessionId, `"${localPath}"`);
+    expect(mockShowError).not.toHaveBeenCalled();
+  });
+
+  test("types nothing and reports an upload failure", async () => {
+    const sshFilePasteImage = vi.fn(() =>
+      Promise.reject(Object.assign(new Error("Connect the SSH tab first."), { code: "not-connected" })),
+    );
+    const { api, fire } = paste({ sshFilePasteImage });
+
+    await fire();
+
+    expect(api.writeTerminal).not.toHaveBeenCalled();
+    expect(mockShowError).toHaveBeenCalledWith(
+      "Paste image failed",
+      "Couldn't upload the screenshot to the SSH host: Connect the SSH tab first.",
+      expect.anything(),
+    );
+  });
+
+  test("a terminal that is not an SSH tab keeps typing the local path", async () => {
+    const sshFilePasteImage = vi.fn();
+    const { api, fire } = paste({ sshFilePasteImage, getSshPasteTarget: vi.fn(() => null) });
+
+    await fire();
+
+    expect(sshFilePasteImage).not.toHaveBeenCalled();
+    expect(api.writeTerminal).toHaveBeenCalledWith(sessionId, `"${localPath}"`);
+  });
+
+  test("a slow upload shows a toast that is removed when it settles, and a second paste is ignored", async () => {
+    vi.useFakeTimers();
+    try {
+      let finish!: (value: { path: string }) => void;
+      const sshFilePasteImage = vi.fn(() => new Promise<{ path: string }>((resolve) => (finish = resolve)));
+      const { api, fire } = paste({ sshFilePasteImage });
+
+      await fire();
+      await vi.advanceTimersByTimeAsync(400);
+      await fire();
+
+      expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ durationMs: 0 }));
+      expect(sshFilePasteImage).toHaveBeenCalledTimes(1);
+
+      finish({ path: "/r/p.png" });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(mockDismissToast).toHaveBeenCalledWith("toast-1");
+      expect(api.writeTerminal).toHaveBeenCalledWith(sessionId, '"/r/p.png"');
+    } finally {
+      vi.useRealTimers();
     }
   });
 });

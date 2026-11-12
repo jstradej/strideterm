@@ -18,7 +18,9 @@ const SFTP_PERMISSION_DENIED = 3;
 /** Maps whatever an SFTP / fs call threw onto a coded failure; an `SshFileError` passes through. */
 export function toSshFileError(error: unknown, fallback = "SSH file operation failed."): SshFileError {
   if (error instanceof SshFileError) return error;
-  const message = error instanceof Error && error.message ? error.message : fallback;
+  const raw = error instanceof Error && error.message ? error.message : fallback;
+  // ssh2 reports SFTP status 4 (generic failure) as the bare text "Failure"; that is not a message for a user.
+  const message = raw === "Failure" ? "The server refused the operation without giving a reason." : raw;
   const code = (error as { code?: unknown } | null)?.code;
   if (code === SFTP_NO_SUCH_FILE || code === "ENOENT") return new SshFileError("not-found", message);
   if (code === SFTP_PERMISSION_DENIED || code === "EACCES" || code === "EPERM") {

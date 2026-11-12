@@ -441,6 +441,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   sshFileRealpath: (payload) => invokeSshFile("ssh-file:realpath", payload),
   sshFileList: (payload) => invokeSshFile("ssh-file:list", payload),
   sshFileMkdir: (payload) => invokeSshFile("ssh-file:mkdir", payload),
+  sshFilePasteImage: (payload) => invokeSshFile("ssh-file:paste-image", payload),
   sshFileRename: (payload) => invokeSshFile("ssh-file:rename", payload),
   sshFileDelete: (payload) => invokeSshFile("ssh-file:delete", payload),
   sshFileUpload: (payload) => invokeSshFile("ssh-file:upload", payload),

@@ -169,6 +169,12 @@ interface TerminalControllerApi {
   pasteClipboardImageForTerminal?: () => Promise<
     { ok: true; path: string; source?: string } | { ok: false; reason?: string }
   >;
+  /** Optional — desktop only. The SSH tab (Built-in or not) a session belongs to, null for any other terminal. */
+  getSshPasteTarget?: (sessionId: string) => { workspaceId: string; panelId: string } | null;
+  /** Optional — desktop only. Uploads a saved screenshot to the SSH host; rejects with `code: "unsupported-host"` without SFTP. */
+  sshFilePasteImage?: (payload: { workspaceId: string; panelId: string; localPath: string }) => Promise<{
+    path: string;
+  }>;
   isRemote?: boolean;
   startupFlags?: {
     disableWebgl?: boolean;
@@ -1127,9 +1133,52 @@ export function createTerminalController({
         // logged via api.logRenderer, so swallow to avoid recursing.
       }
     }
+    let sshPasteInFlight = false;
+    // A slow link would otherwise leave the user staring at an unchanged terminal.
+    async function uploadScreenshot(
+      target: { workspaceId: string; panelId: string },
+      localPath: string,
+    ): Promise<string> {
+      let settled = false;
+      let dismissToast: (() => void) | null = null;
+      const timer = window.setTimeout(() => {
+        void import("../stores/notifications.js")
+          .then(({ useNotificationStore }) => {
+            if (settled) return;
+            const store = useNotificationStore();
+            const id = store.pushEphemeralToast({
+              title: "Paste image",
+              body: "Uploading screenshot to the SSH host…",
+              durationMs: 0,
+            });
+            dismissToast = () => store.dismissPersistentToast(id);
+          })
+          .catch(() => {});
+      }, 400);
+      try {
+        return (await api.sshFilePasteImage!({ ...target, localPath })).path;
+      } finally {
+        settled = true;
+        window.clearTimeout(timer);
+        (dismissToast as (() => void) | null)?.();
+      }
+    }
     async function tryImagePasteToTerminal(): Promise<boolean> {
       if (!canPasteImage || !pasteImage) return false;
       if (!isImagePasteEnabled()) return false;
+      const sshTarget = api.sshFilePasteImage ? (api.getSshPasteTarget?.(sessionId) ?? null) : null;
+      if (!sshTarget) return pasteImageInto(null);
+      // A second paste while one is saving or uploading is ignored, not queued.
+      if (sshPasteInFlight) return true;
+      sshPasteInFlight = true;
+      try {
+        return await pasteImageInto(sshTarget);
+      } finally {
+        sshPasteInFlight = false;
+      }
+    }
+    async function pasteImageInto(sshTarget: { workspaceId: string; panelId: string } | null): Promise<boolean> {
+      if (!pasteImage) return false;
       let result: Awaited<ReturnType<typeof pasteImage>>;
       try {
         result = await pasteImage();
@@ -1155,10 +1204,24 @@ export function createTerminalController({
         }
         return false;
       }
+      let typedPath = result.path;
+      if (sshTarget) {
+        try {
+          typedPath = await uploadScreenshot(sshTarget, result.path);
+        } catch (err) {
+          // System SSH / WSL tabs have no SFTP: the local path is all there is, as before.
+          if ((err as { code?: unknown } | null)?.code !== "unsupported-host") {
+            const msg = userFacingMessage(err, "Unknown error");
+            api.logRenderer?.("error", "[clipboard-paste] SSH upload failed", { error: msg });
+            void reportImagePasteError(`Couldn't upload the screenshot to the SSH host: ${msg}`);
+            return true;
+          }
+        }
+      }
       // Quote the path so spaces survive; double quotes inside a
       // path are illegal on Windows and rare elsewhere, but escape
       // them defensively.
-      const quoted = `"${result.path.replace(/"/g, '\\"')}"`;
+      const quoted = `"${typedPath.replace(/"/g, '\\"')}"`;
       api.writeTerminal(sessionId, quoted);
       return true;
     }

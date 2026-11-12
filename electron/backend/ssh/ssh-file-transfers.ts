@@ -14,7 +14,7 @@ import {
 } from "../../shared/ssh-file-events.js";
 import { getLogger } from "../logger.js";
 import { SshFileError, toSshFileError } from "./ssh-file-error.js";
-import type { SshFileLease } from "./ssh-file-connections.js";
+import { ownerForLog, type SshFileLease } from "./ssh-file-connections.js";
 import {
   sftpLstat,
   sftpMkdir,
@@ -223,6 +223,8 @@ export function createSshFileTransfers({
     records.set(transferId, record);
     log.info("ssh file transfer started", {
       transferId,
+      profileId: request.profileId,
+      owner: ownerForLog(request.ownerKey),
       hostId: request.hostId,
       direction: request.direction,
       sources: request.sources.length,

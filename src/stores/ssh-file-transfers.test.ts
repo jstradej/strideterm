@@ -18,7 +18,14 @@ vi.mock("./notifications.js", () => ({
 }));
 vi.mock("../composables/useNotificationSound.js", () => ({ fireNotificationAlert: vi.fn() }));
 
-import { SshFileConflictError, describeTransfer, formatBytes, useSshFileTransfersStore } from "./ssh-file-transfers.js";
+import {
+  SshFileConflictError,
+  describeTransfer,
+  formatBytes,
+  formatEta,
+  formatSpeed,
+  useSshFileTransfersStore,
+} from "./ssh-file-transfers.js";
 
 type Handler = (payload: unknown) => void;
 
@@ -299,5 +306,81 @@ describe("ssh file transfers store", () => {
         finished({ direction: "download", result: { files: 1, bytes: 1, skipped: [{ path: "a", reason: "x" }] } }),
       ),
     ).toBe("Downloaded 1 file (1 B) from box. 1 skipped.");
+  });
+
+  test("speed is the growth over the sampled window, and is dropped when the transfer ends", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+      const { store, handlers } = setup();
+      const progress = (bytesDone: number) => ({
+        transferId: "t-1",
+        profileId: "default",
+        bytesDone,
+        bytesTotal: 10000,
+        filesDone: 0,
+        filesTotal: 1,
+        currentPath: "/x",
+      });
+      store.reconcile({ running: [run({ transferId: "t-1", bytesDone: 0, bytesTotal: 10000 })], lastRuns: [] });
+      handlers.progress!(progress(0));
+      expect(store.speeds["t-1"]).toBeUndefined();
+
+      vi.setSystemTime(new Date("2026-01-01T00:00:01.000Z"));
+      handlers.progress!(progress(2048));
+      expect(store.speeds["t-1"]).toBe(2048);
+
+      handlers.finished!(finished({ transferId: "t-1" }));
+      expect(store.speeds["t-1"]).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("no speed is shown from a window shorter than half a second", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+      const { store, handlers } = setup();
+      store.reconcile({ running: [run({ transferId: "t-1", bytesDone: 0, bytesTotal: 10000 })], lastRuns: [] });
+      const progress = (bytesDone: number) => ({
+        transferId: "t-1",
+        profileId: "default",
+        bytesDone,
+        bytesTotal: 10000,
+        filesDone: 0,
+        filesTotal: 1,
+        currentPath: "",
+      });
+      handlers.progress!(progress(0));
+      vi.setSystemTime(new Date("2026-01-01T00:00:00.100Z"));
+      handlers.progress!(progress(500));
+      expect(store.speeds["t-1"]).toBeUndefined();
+      vi.setSystemTime(new Date("2026-01-01T00:00:01.000Z"));
+      handlers.progress!(progress(1000));
+      expect(store.speeds["t-1"]).toBe(1000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("formats speed", () => {
+    expect(formatSpeed(0)).toBe("0 B/s");
+    expect(formatSpeed(2048)).toBe("2.0 KB/s");
+    expect(formatSpeed(5 * 1024 * 1024)).toBe("5.0 MB/s");
+  });
+
+  test("formats time left", () => {
+    expect(formatEta(0)).toBe("");
+    expect(formatEta(-3)).toBe("");
+    expect(formatEta(Number.NaN)).toBe("");
+    expect(formatEta(Number.POSITIVE_INFINITY)).toBe("");
+    expect(formatEta(0.2)).toBe("1 s left");
+    expect(formatEta(42)).toBe("42 s left");
+    expect(formatEta(59.5)).toBe("1 min left");
+    expect(formatEta(61)).toBe("2 min left");
+    expect(formatEta(600)).toBe("10 min left");
+    expect(formatEta(3600)).toBe("1 h 0 min left");
+    expect(formatEta(3725)).toBe("1 h 3 min left");
   });
 });

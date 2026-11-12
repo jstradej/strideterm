@@ -24,6 +24,8 @@ export const sftpRealpath = (sftp: SFTPWrapper, path: string) => call<string>((c
 export const sftpReadlink = (sftp: SFTPWrapper, path: string) => call<string>((cb) => sftp.readlink(path, cb));
 export const sftpMkdir = (sftp: SFTPWrapper, path: string, mode?: number) =>
   call<void>((cb) => sftp.mkdir(path, mode === undefined ? {} : { mode }, cb));
+export const sftpWriteFile = (sftp: SFTPWrapper, path: string, data: Buffer, mode: number) =>
+  call<void>((cb) => sftp.writeFile(path, data, { mode }, cb));
 export const sftpRmdir = (sftp: SFTPWrapper, path: string) => call<void>((cb) => sftp.rmdir(path, cb));
 export const sftpUnlink = (sftp: SFTPWrapper, path: string) => call<void>((cb) => sftp.unlink(path, cb));
 export const sftpRename = (sftp: SFTPWrapper, from: string, to: string) =>

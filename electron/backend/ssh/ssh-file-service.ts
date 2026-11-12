@@ -1,9 +1,12 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import type { SFTPWrapper } from "ssh2";
 import type { SshFileEntry, SshFileListing } from "../../shared/ssh-file-events.js";
+import { getLogger } from "../logger.js";
 import { SshFileError, toSshFileError } from "./ssh-file-error.js";
 import {
   createSshFileConnections,
+  ownerForLog,
   type SshFileConnectOptions,
   type SshFileConnections,
   type SshFileTarget,
@@ -18,13 +21,24 @@ import {
   sftpRename,
   sftpRmdir,
   sftpUnlink,
+  sftpWriteFile,
 } from "./sftp-promises.js";
 import type { SshManager } from "./ssh-manager.js";
+
+const log = getLogger("ssh-file");
 
 export const SSH_FILE_MAX_LIST_ENTRIES = 5000;
 export const SSH_FILE_MAX_DELETE_ENTRIES = 100_000;
 const MAX_LINK_TARGETS = 200;
 const MAX_REMOTE_PATH = 4096;
+/** Windows OpenSSH names a drive path `/C:/Users/x` over SFTP; a shell there wants `C:/Users/x`. */
+export function shellPathOf(sftpPath: string): string {
+  return /^\/[A-Za-z]:\//.test(sftpPath) ? sftpPath.slice(1) : sftpPath;
+}
+
+export const SSH_FILE_PASTE_IMAGE_MAX_BYTES = 20 * 1024 * 1024;
+const PASTE_IMAGE_NAME = /^[A-Za-z0-9._-]{1,200}$/;
+const PASTE_IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"]);
 
 type HostRecord = NonNullable<ReturnType<SshManager["getHost"]>>;
 
@@ -121,7 +135,15 @@ export function createSshFileService({
 
     async mkdir(target: SshFileTarget, options: SshFileConnectOptions, remotePath: string): Promise<void> {
       const normalized = normalizeRemotePath(remotePath);
-      return withBrowse(target, options, (sftp) => sftpMkdir(sftp, normalized));
+      return withBrowse(target, options, async (sftp) => {
+        const taken = await sftpLstat(sftp, normalized).then(
+          () => true,
+          () => false,
+        );
+        if (taken) throw new SshFileError("conflict", `${normalized} already exists.`, [normalized]);
+        await sftpMkdir(sftp, normalized);
+        log.info("ssh file folder created", { hostId: target.hostId, owner: ownerForLog(options.ownerKey) });
+      });
     },
 
     async rename(target: SshFileTarget, options: SshFileConnectOptions, from: string, to: string): Promise<void> {
@@ -134,6 +156,7 @@ export function createSshFileService({
         );
         if (taken) throw new SshFileError("conflict", `${destination} already exists.`, [destination]);
         await sftpRename(sftp, source, destination);
+        log.info("ssh file item renamed", { hostId: target.hostId, owner: ownerForLog(options.ownerKey) });
       });
     },
 
@@ -174,7 +197,55 @@ export function createSshFileService({
           }
         };
         for (const remote of normalized) await removeTree(remote);
+        log.info("ssh file items deleted", {
+          hostId: target.hostId,
+          owner: ownerForLog(options.ownerKey),
+          requested: normalized.length,
+          deleted,
+          recursive,
+        });
         return { deleted };
+      });
+    },
+
+    /** Uploads a pasted screenshot to `~/.strideterm/paste/<name>` over the tab's connection; resolves with the remote path. */
+    async pasteImage(
+      target: SshFileTarget,
+      options: SshFileConnectOptions,
+      localPath: string,
+      maxBytes = SSH_FILE_PASTE_IMAGE_MAX_BYTES,
+    ): Promise<{ path: string; bytes: number }> {
+      const localName = path.basename(localPath);
+      const extension = path.extname(localName).toLowerCase();
+      if (!PASTE_IMAGE_EXTENSIONS.has(extension)) throw new SshFileError("io", "The pasted file is not an image.");
+      // A file the clipboard named itself (spaces, non-ASCII) gets a plain name: the path is typed into a shell.
+      const name = PASTE_IMAGE_NAME.test(localName)
+        ? localName
+        : `paste-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}${extension}`;
+      return withBrowse(target, options, async (sftp) => {
+        const stats = await fs.stat(localPath);
+        if (!stats.isFile()) throw new SshFileError("io", "The pasted image is not a file.");
+        if (stats.size > maxBytes) {
+          throw new SshFileError(
+            "limit-exceeded",
+            `The screenshot is larger than ${Math.round(maxBytes / (1024 * 1024))} MiB.`,
+          );
+        }
+        const bytes = await fs.readFile(localPath);
+        const home = await sftpRealpath(sftp, ".");
+        let dir = home;
+        for (const segment of [".strideterm", "paste"]) {
+          dir = path.posix.join(dir, segment);
+          const existing = await sftpLstat(sftp, dir).catch(() => null);
+          if (!existing) await sftpMkdir(sftp, dir, 0o700);
+          else if (!existing.isDirectory()) {
+            throw new SshFileError("io", `${dir} exists on the host and is not a folder.`);
+          }
+        }
+        const remotePath = path.posix.join(dir, name);
+        await sftpWriteFile(sftp, remotePath, bytes, 0o600);
+        log.info("ssh file pasted image uploaded", { hostId: target.hostId, bytes: bytes.length });
+        return { path: shellPathOf(remotePath), bytes: bytes.length };
       });
     },
 

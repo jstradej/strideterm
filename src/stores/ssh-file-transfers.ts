@@ -21,6 +21,8 @@ import { useNotificationStore } from "./notifications.js";
 const NOTIFIED_KEY = "strideterm-ssh-file-notified-transfers";
 const NOTIFIED_MAX = 100;
 const RUNS_MEMORY = 100;
+const SPEED_WINDOW_MS = 5000;
+const SPEED_MIN_SPAN_MS = 500;
 
 function loadNotified(): string[] {
   try {
@@ -63,6 +65,19 @@ export function describeTransfer(run: SshFileTransferRun | SshFileTransferFinish
   return `${verb} ${files} file${files === 1 ? "" : "s"} (${formatBytes(run.result?.bytes ?? 0)}) ${preposition} ${run.hostLabel}.${tail}`;
 }
 
+export function formatSpeed(bytesPerSecond: number): string {
+  return `${formatBytes(bytesPerSecond)}/s`;
+}
+
+export function formatEta(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "";
+  const wholeSeconds = Math.ceil(seconds);
+  if (wholeSeconds < 60) return `${wholeSeconds} s left`;
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes < 60) return `${minutes} min left`;
+  return `${Math.floor(minutes / 60)} h ${minutes % 60} min left`;
+}
+
 /** A conflict is not a failure: the caller asked what to do and restarts with the answer. */
 export class SshFileConflictError extends Error {
   readonly conflicts: string[];
@@ -76,6 +91,7 @@ export class SshFileConflictError extends Error {
 export const useSshFileTransfersStore = defineStore("ssh-file-transfers", () => {
   const runs = ref<Record<string, SshFileTransferRun>>({});
   const dismissed = ref<string[]>([]);
+  const speeds = ref<Record<string, number>>({});
   const profileId = ref<string | null>(null);
   let api: Transport | null = null;
   let bound = false;
@@ -85,6 +101,7 @@ export const useSshFileTransfersStore = defineStore("ssh-file-transfers", () => 
   /** A quick transfer's finished event can beat the start call's response; judge those once it is in. */
   let startsInFlight = 0;
   const deferred: SshFileTransferRun[] = [];
+  const samples = new Map<string, Array<{ at: number; bytes: number }>>();
 
   function remember(run: SshFileTransferRun): void {
     runs.value = { ...runs.value, [run.transferId]: run };
@@ -156,6 +173,28 @@ export const useSshFileTransfersStore = defineStore("ssh-file-transfers", () => 
     });
   }
 
+  /** Speed is the growth over the last few seconds; a window too short or flat keeps the previous value. */
+  function measureSpeed(transferId: string, bytes: number): void {
+    const now = Date.now();
+    const list = samples.get(transferId) ?? [];
+    list.push({ at: now, bytes });
+    const cutoff = now - SPEED_WINDOW_MS;
+    while (list.length > 1 && list[1]!.at <= cutoff) list.shift();
+    samples.set(transferId, list);
+    const oldest = list[0]!;
+    const span = now - oldest.at;
+    if (span < SPEED_MIN_SPAN_MS || bytes <= oldest.bytes) return;
+    speeds.value = { ...speeds.value, [transferId]: (bytes - oldest.bytes) / (span / 1000) };
+  }
+
+  function forgetSpeed(transferId: string): void {
+    samples.delete(transferId);
+    if (speeds.value[transferId] === undefined) return;
+    const next = { ...speeds.value };
+    delete next[transferId];
+    speeds.value = next;
+  }
+
   function onProgress(raw: unknown): void {
     const parsed = sshFileTransferProgressSchema.safeParse(raw);
     if (!parsed.success) return;
@@ -173,6 +212,7 @@ export const useSshFileTransfersStore = defineStore("ssh-file-transfers", () => 
         currentPath: progress.currentPath,
       },
     };
+    measureSpeed(progress.transferId, progress.bytesDone);
   }
 
   function onFinished(raw: unknown): void {
@@ -198,6 +238,7 @@ export const useSshFileTransfersStore = defineStore("ssh-file-transfers", () => 
       ...(event.result ? { result: event.result } : {}),
       ...(event.error ? { error: event.error } : {}),
     };
+    forgetSpeed(event.transferId);
     remember(run);
     announce(run);
   }
@@ -215,7 +256,10 @@ export const useSshFileTransfersStore = defineStore("ssh-file-transfers", () => 
         if (known && known.state !== "running") continue;
         if (run.state === "running" && known && known.bytesDone >= run.bytesDone) continue;
         remember(run);
-        if (run.state !== "running") announce(run);
+        if (run.state !== "running") {
+          forgetSpeed(run.transferId);
+          announce(run);
+        }
       }
     }
   }
@@ -310,5 +354,5 @@ export const useSshFileTransfersStore = defineStore("ssh-file-transfers", () => 
       });
   }
 
-  return { runs, init, setProfile, reconcile, start, cancel, dismiss, forWorkspace };
+  return { runs, speeds, init, setProfile, reconcile, start, cancel, dismiss, forWorkspace };
 });

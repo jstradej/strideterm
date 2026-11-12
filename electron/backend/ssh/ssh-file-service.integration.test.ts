@@ -11,7 +11,7 @@ import {
 } from "../../shared/ssh-file-events.js";
 import { SshFileError } from "./ssh-file-error.js";
 import type { SshFileConnectOptions, SshFileTarget } from "./ssh-file-connections.js";
-import { createSshFileService, SSH_FILE_MAX_LIST_ENTRIES } from "./ssh-file-service.js";
+import { createSshFileService, shellPathOf, SSH_FILE_MAX_LIST_ENTRIES } from "./ssh-file-service.js";
 import { createProgressThrottle, type SshFileLocalPolicy } from "./ssh-file-transfers.js";
 import { SshManager } from "./ssh-manager.js";
 import { startSftpTestServer } from "./test-support/sftp-test-server.js";
@@ -217,6 +217,17 @@ describe("SSH file service: browsing", () => {
     expect(await fs.readdir(remoteRoot)).toEqual([]);
   });
 
+  test("mkdir refuses an existing name with a conflict instead of the server's bare failure", async () => {
+    const { remoteRoot, service, target, connect } = await setup();
+    await write(path.join(remoteRoot, "taken"), "t");
+
+    await expect(service.mkdir(target(), connect, "/taken")).rejects.toMatchObject({
+      code: "conflict",
+      conflicts: ["/taken"],
+    });
+    expect((await fs.stat(path.join(remoteRoot, "taken"))).isFile()).toBe(true);
+  });
+
   test("refuses to delete the root and relative paths", async () => {
     const { service, target, connect } = await setup();
     await expect(service.remove(target(), connect, ["/"], { recursive: true })).rejects.toMatchObject({
@@ -237,6 +248,68 @@ describe("SSH file service: browsing", () => {
     await service.mkdir(target(), connect, "/x");
     expect(server.stats.connections).toBe(1);
     expect(server.stats.sftpChannels).toBe(1);
+  });
+});
+
+describe("SSH file service: pasted images", () => {
+  test("a Windows drive path loses its SFTP leading slash, a POSIX path is unchanged", () => {
+    expect(shellPathOf("/C:/Users/me/.strideterm/paste/a.png")).toBe("C:/Users/me/.strideterm/paste/a.png");
+    expect(shellPathOf("/home/me/.strideterm/paste/a.png")).toBe("/home/me/.strideterm/paste/a.png");
+  });
+
+  test("creates ~/.strideterm/paste and writes the bytes; a second paste reuses the folder", async () => {
+    const { remoteRoot, localRoot, service, target, connect } = await setup();
+    const first = path.join(localRoot, "strideterm-1.png");
+    const second = path.join(localRoot, "strideterm-2.png");
+    await fs.writeFile(first, Buffer.from([1, 2, 3]));
+    await fs.writeFile(second, Buffer.from([4, 5]));
+
+    expect(await service.pasteImage(target(), connect, first)).toEqual({
+      path: "/.strideterm/paste/strideterm-1.png",
+      bytes: 3,
+    });
+    expect(await service.pasteImage(target(), connect, second)).toEqual({
+      path: "/.strideterm/paste/strideterm-2.png",
+      bytes: 2,
+    });
+
+    const dir = path.join(remoteRoot, ".strideterm", "paste");
+    expect([...(await fs.readFile(path.join(dir, "strideterm-1.png")))]).toEqual([1, 2, 3]);
+    expect([...(await fs.readFile(path.join(dir, "strideterm-2.png")))]).toEqual([4, 5]);
+  });
+
+  test("uploads an unusual file name under a plain one and refuses a non-image extension", async () => {
+    const { localRoot, service, target, connect } = await setup();
+    const spaced = path.join(localRoot, "my shot.png");
+    const text = path.join(localRoot, "notes.txt");
+    await fs.writeFile(spaced, "x");
+    await fs.writeFile(text, "x");
+
+    const pasted = await service.pasteImage(target(), connect, spaced);
+    expect(pasted.path).toMatch(/\/\.strideterm\/paste\/paste-[0-9T-]+\.png$/);
+    await expect(service.pasteImage(target(), connect, text)).rejects.toMatchObject({ code: "io" });
+  });
+
+  test("refuses a file over the size limit and a folder", async () => {
+    const { remoteRoot, localRoot, service, target, connect } = await setup();
+    const big = path.join(localRoot, "big.png");
+    await fs.writeFile(big, Buffer.alloc(11));
+    await fs.mkdir(path.join(localRoot, "dir.png"));
+
+    await expect(service.pasteImage(target(), connect, big, 10)).rejects.toMatchObject({ code: "limit-exceeded" });
+    await expect(service.pasteImage(target(), connect, path.join(localRoot, "dir.png"))).rejects.toMatchObject({
+      code: "io",
+    });
+    await expect(fs.stat(path.join(remoteRoot, ".strideterm"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  test("refuses when ~/.strideterm is a file", async () => {
+    const { remoteRoot, localRoot, service, target, connect } = await setup();
+    await fs.writeFile(path.join(remoteRoot, ".strideterm"), "x");
+    const shot = path.join(localRoot, "shot.png");
+    await fs.writeFile(shot, "x");
+
+    await expect(service.pasteImage(target(), connect, shot)).rejects.toMatchObject({ code: "io" });
   });
 });
 

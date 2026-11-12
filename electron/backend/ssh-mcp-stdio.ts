@@ -138,7 +138,7 @@ export async function runSshMcpStdioServer(config = readSshMcpStdioConfig()): Pr
     {
       title: "List a directory on a saved SSH host",
       description:
-        "List a directory on a saved Built-in SSH host over SFTP (names, types, sizes, modification times, modes). `path` is an absolute POSIX path on the host such as /var/log; omit it for the home directory. At most 5000 entries are returned and `truncated` says when more exist. Symbolic links are reported, not followed.",
+        "List a directory on a saved Built-in SSH host over SFTP (names, types, sizes, modification times, modes). `path` is an absolute POSIX path on the host such as /var/log; omit it for the home directory. At most 5000 entries are returned and `truncated` says when more exist. Symbolic links are reported, not followed. The host must already pass its SSH host-key and credential checks without a prompt; otherwise the call fails with setup_required and the user has to connect to the host once in strIDEterm.",
       inputSchema: {
         hostId,
         path: z.string().min(1).max(4096).optional().describe("Absolute directory path on the host."),
@@ -151,7 +151,7 @@ export async function runSshMcpStdioServer(config = readSshMcpStdioConfig()): Pr
     {
       title: "Upload a file or folder to a saved SSH host",
       description:
-        "Upload a file or folder from this workspace to a saved Built-in SSH host. `localPath` is relative to the workspace folder or an absolute path inside this workspace's folders; `remoteDir` is an existing absolute directory on the host, and the item keeps its name there. Symbolic links are skipped. Existing remote files are not replaced unless `overwrite` is true; a clash is an error listing the paths. Returns a transferId at once: check it with ssh_transfer_status. At most 2 transfers run at once and one transfer is limited to 5 GiB.",
+        "Upload a file or folder from this workspace to a saved Built-in SSH host. `localPath` is relative to the workspace folder or an absolute path inside this workspace's folders; `remoteDir` is an existing absolute directory on the host, and the item keeps its name there. Symbolic links are never transferred: one inside a folder is skipped and listed in the result, and a `localPath` that is itself a link is an error. Existing remote files are not replaced unless `overwrite` is true; a clash is an error listing the paths. Returns a transferId at once: check it with ssh_transfer_status. At most 2 transfers run at once and one transfer is limited to 5 GiB. The host must already pass its SSH host-key and credential checks without a prompt; otherwise the call fails with setup_required and the user has to connect to the host once in strIDEterm.",
       inputSchema: {
         hostId,
         localPath: z.string().min(1).max(4096).describe("File or folder in this workspace (relative or absolute)."),
@@ -166,7 +166,7 @@ export async function runSshMcpStdioServer(config = readSshMcpStdioConfig()): Pr
     {
       title: "Download a file or folder from a saved SSH host",
       description:
-        "Download a file or folder from a saved Built-in SSH host into this workspace. `remotePath` is an absolute path on the host; `localDir` is an existing directory relative to the workspace folder or absolute inside this workspace's folders. Nothing is ever written into a .git directory. Symbolic links are skipped. Existing local files are not replaced unless `overwrite` is true; a clash is an error listing the paths. Returns a transferId at once: check it with ssh_transfer_status. At most 2 transfers run at once and one transfer is limited to 5 GiB.",
+        "Download a file or folder from a saved Built-in SSH host into this workspace. `remotePath` is an absolute path on the host; `localDir` is an existing directory relative to the workspace folder or absolute inside this workspace's folders. Nothing is ever written into a .git directory. Symbolic links are never transferred: one inside a folder is skipped and listed in the result, and a `remotePath` that is itself a link is an error. Existing local files are not replaced unless `overwrite` is true; a clash is an error listing the paths. Returns a transferId at once: check it with ssh_transfer_status. At most 2 transfers run at once and one transfer is limited to 5 GiB. The host must already pass its SSH host-key and credential checks without a prompt; otherwise the call fails with setup_required and the user has to connect to the host once in strIDEterm.",
       inputSchema: {
         hostId,
         remotePath: z.string().min(1).max(4096).describe("Absolute path of the file or folder on the host."),
@@ -181,7 +181,7 @@ export async function runSshMcpStdioServer(config = readSshMcpStdioConfig()): Pr
     {
       title: "Check a file transfer",
       description:
-        "State (running, succeeded, failed, cancelled), progress and the final result of a transfer started by upload_to_ssh_host or download_from_ssh_host from this tab. A finished transfer stays known for 24 hours.",
+        "State (running, succeeded, failed, cancelled), progress and the final result of a transfer started by upload_to_ssh_host or download_from_ssh_host from this tab. A finished transfer stays known for up to 24 hours (only the 50 most recent finished transfers are kept).",
       inputSchema: { transferId: z.string().min(1).max(100).describe("The id returned when the transfer started.") },
     },
     async (input, extra) => textResult(await handlers.transferStatus(input, withDisconnect(extra.signal))),

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { mount, flushPromises, type VueWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
+import { nextTick } from "vue";
 import {
   sshFileDeleteSchema,
   sshFileDownloadSchema,
@@ -353,6 +354,18 @@ describe("SftpBrowserPane", () => {
     expect(fakeApi.sshFileList.mock.calls.length).toBeGreaterThan(1);
   });
 
+  test("a refused folder name keeps the New folder dialog open and reports why", async () => {
+    const { wrapper } = await mountPane();
+    fakeApi.sshFileMkdir.mockRejectedValueOnce(new Error("A folder named fresh already exists."));
+    await wrapper.find('[data-testid="sftp-new-folder"]').trigger("click");
+    const props = openDialog.mock.calls[0]![1] as { onSubmit: (name: string) => Promise<void> };
+    await props.onSubmit("fresh");
+    await flushPromises();
+
+    expect(showError).toHaveBeenCalledWith("Couldn't create the folder", expect.any(Error));
+    expect(closeDialog).not.toHaveBeenCalled();
+  });
+
   test("Delete asks first, and a folder in the selection is deleted recursively", async () => {
     const { wrapper } = await mountPane();
     await wrapper.find('[data-testid="sftp-row-docs"]').trigger("click");
@@ -373,6 +386,37 @@ describe("SftpBrowserPane", () => {
     await wrapper.trigger("keydown", { key: "Delete" });
     await flushPromises();
     expect(fakeApi.sshFileDelete).not.toHaveBeenCalled();
+  });
+
+  test("a folder being created shows a busy indicator until the server answers", async () => {
+    const { wrapper } = await mountPane();
+    let answer!: (value: unknown) => void;
+    fakeApi.sshFileMkdir = vi.fn(() => new Promise((resolve) => (answer = resolve)));
+    await wrapper.find('[data-testid="sftp-new-folder"]').trigger("click");
+    const props = openDialog.mock.calls[0]![1] as { onSubmit: (name: string) => Promise<void> };
+    const submitted = props.onSubmit("fresh");
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="sftp-busy"]').text()).toContain("Creating folder…");
+    expect(wrapper.find('[data-testid="sftp-new-folder"]').attributes("disabled")).toBeDefined();
+
+    answer({ ok: true });
+    await submitted;
+    await flushPromises();
+    expect(wrapper.find('[data-testid="sftp-busy"]').exists()).toBe(false);
+  });
+
+  test("the first load says it is connecting, before the folder is known", async () => {
+    setActivePinia(createPinia());
+    window.localStorage.clear();
+    resetApi();
+    fakeApi.sshFileRealpath = vi.fn(() => new Promise(() => {}));
+    useSshFileTransfersStore().init(fakeApi as never, () => "default");
+    const wrapper = mount(SftpBrowserPane, { props: { workspaceId: "ws-1", panelId: "panel-sftp" } });
+    wrappers.push(wrapper);
+    await nextTick();
+
+    expect(wrapper.find('[data-testid="sftp-loading"]').text()).toContain("Connecting…");
   });
 });
 

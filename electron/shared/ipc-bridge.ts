@@ -23,6 +23,7 @@ import type {
   SshFileDownload,
   SshFileList,
   SshFileMkdir,
+  SshFilePasteImage,
   SshFileRealpath,
   SshFileRename,
   SshFileTransferCancel,
@@ -1049,6 +1050,8 @@ export interface StridetermAPI {
   sshFileRealpath: (payload: SshFileRealpath) => Promise<{ path: string }>;
   sshFileList: (payload: SshFileList) => Promise<SshFileListing>;
   sshFileMkdir: (payload: SshFileMkdir) => Promise<{ ok: true }>;
+  /** Desktop only: uploads a pasted screenshot to ~/.strideterm/paste on the tab's host; resolves with the remote path. */
+  sshFilePasteImage: (payload: SshFilePasteImage) => Promise<{ path: string; bytes: number }>;
   sshFileRename: (payload: SshFileRename) => Promise<{ ok: true }>;
   sshFileDelete: (payload: SshFileDelete) => Promise<{ deleted: number }>;
   /** Starts an upload and resolves at once; the outcome arrives via `onSshFileTransferFinished`. */

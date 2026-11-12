@@ -10,7 +10,7 @@
     <PaneShell
       v-if="showHeader"
       :title="'SFTP'"
-      :status="path || 'connecting…'"
+      :status="path || (error ? 'not connected' : 'connecting…')"
       :actions="headerActions"
       @action="onHeaderAction"
     />
@@ -31,27 +31,33 @@
         class="button button--sm button--ghost"
         :disabled="loading"
         title="Read the folder again"
+        aria-label="Refresh"
         data-testid="sftp-refresh"
         @click="load(path || undefined)"
       >
         ↻
       </button>
+      <Spinner v-if="loading" size="sm" label="Loading…" data-testid="sftp-loading-spinner" />
       <form class="sftp-toolbar__path" @submit.prevent="load(pathInput)">
         <input
           v-model="pathInput"
           name="sftp-path"
           data-testid="sftp-path"
           aria-label="Remote path"
+          title="Type a remote path and press Enter"
           spellcheck="false"
           autocomplete="off"
         />
       </form>
+      <span v-if="busy" class="sftp-busy" role="status" data-testid="sftp-busy"
+        ><Spinner size="sm" :label="busy" /> {{ busy }}</span
+      >
       <span class="sftp-toolbar__spacer" />
       <template v-if="canPickLocal">
         <button
           type="button"
           class="button button--sm"
-          :disabled="!path"
+          :disabled="!path || !!busy"
           title="Choose files on this computer and upload them to this folder"
           data-testid="sftp-upload-files"
           @click="uploadFiles"
@@ -61,7 +67,7 @@
         <button
           type="button"
           class="button button--sm"
-          :disabled="!path"
+          :disabled="!path || !!busy"
           title="Choose a folder on this computer and upload it to this folder"
           data-testid="sftp-upload-folder"
           @click="uploadFolder"
@@ -73,8 +79,8 @@
         v-if="!isMobile"
         type="button"
         class="button button--sm"
-        :disabled="!selectedEntries.length"
-        title="Download the selected items to the desktop"
+        :disabled="!selectedEntries.length || !!busy"
+        :title="downloadTitle"
         data-testid="sftp-download"
         @click="download(selectedEntries)"
       >
@@ -83,12 +89,12 @@
       <button
         type="button"
         class="button button--sm"
-        :disabled="!path"
-        title="Create a folder here"
+        :disabled="!path || !!busy"
+        title="Create a folder in this remote folder"
         data-testid="sftp-new-folder"
         @click="newFolder"
       >
-        New folder
+        New folder…
       </button>
     </div>
 
@@ -134,7 +140,9 @@
         <p>{{ error }}</p>
         <button type="button" class="button button--sm" @click="load(path || undefined)">Retry</button>
       </div>
-      <div v-else-if="loading && !entries.length" class="sftp-state" data-testid="sftp-loading">Loading…</div>
+      <div v-else-if="loading && !entries.length" class="sftp-state sftp-state--loading" data-testid="sftp-loading">
+        <Spinner :label="path ? 'Loading…' : 'Connecting…'" /> {{ path ? "Loading…" : "Connecting…" }}
+      </div>
       <div v-else-if="!entries.length" class="sftp-state" data-testid="sftp-empty">This folder is empty.</div>
 
       <div
@@ -162,7 +170,12 @@
       </p>
     </div>
 
-    <SftpTransfersStrip :runs="runs" @cancel="cancelTransfer" @dismiss="transfers.dismiss($event)" />
+    <SftpTransfersStrip
+      :runs="runs"
+      :speeds="transfers.speeds"
+      @cancel="cancelTransfer"
+      @dismiss="transfers.dismiss($event)"
+    />
 
     <div
       v-if="menu"
@@ -225,6 +238,7 @@ import { userFacingMessage } from "../../lib/error-message.js";
 import { PATHS_MIME, readDragPaths } from "../../lib/terminal-path-drop.js";
 import type { CallableTransport } from "../../transport.js";
 import PaneShell from "../layout/PaneShell.vue";
+import Spinner from "../common/Spinner.vue";
 import SftpTransfersStrip from "./sftp/SftpTransfersStrip.vue";
 import {
   breadcrumbs,
@@ -257,8 +271,18 @@ const selected = ref<Set<string>>(new Set());
 const sort = ref<SftpSort>({ key: "name", dir: "asc" });
 const dragOver = ref(false);
 const menu = ref<{ x: number; y: number; names: string[] } | null>(null);
+const busy = ref("");
 let anchorName = "";
 let loadSeq = 0;
+
+async function whileBusy<T>(label: string, work: () => Promise<T>): Promise<T> {
+  busy.value = label;
+  try {
+    return await work();
+  } finally {
+    busy.value = "";
+  }
+}
 
 const api = () => appStore.getApi() as CallableTransport;
 const isRemote = computed(() => appStore.isRemoteTransport);
@@ -286,6 +310,12 @@ const columns: Array<{ key: SftpSortKey; label: string }> = [
 const crumbs = computed(() => breadcrumbs(path.value || "/"));
 const sortedEntries = computed(() => sortEntries(entries.value, sort.value));
 const selectedEntries = computed(() => sortedEntries.value.filter((entry) => selected.value.has(entry.name)));
+const downloadTitle = computed(() => {
+  if (!selectedEntries.value.length) return "Select one or more items to download";
+  return isRemote.value
+    ? "Download the selected items into a workspace folder on the desktop"
+    : "Download the selected items to a folder on this computer";
+});
 const menuTargets = computed(() => entries.value.filter((entry) => menu.value?.names.includes(entry.name)));
 const runs = computed(() => transfers.forWorkspace(props.workspaceId));
 const runningCount = computed(() => runs.value.filter((run) => run.state === "running").length);
@@ -446,19 +476,19 @@ type TransferBase =
 
 async function runTransfer(base: TransferBase, conflict: "fail" | "overwrite" | "skip" = "fail"): Promise<void> {
   try {
-    if (base.direction === "upload") {
-      await transfers.start(
-        "upload",
-        { ...target(), localPaths: base.localPaths, remoteDir: base.remoteDir, conflict },
-        { hostLabel: hostLabel.value },
-      );
-    } else {
-      await transfers.start(
-        "download",
-        { ...target(), remotePaths: base.remotePaths, localDir: base.localDir, conflict },
-        { hostLabel: hostLabel.value },
-      );
-    }
+    await whileBusy(base.direction === "upload" ? "Starting upload…" : "Starting download…", () =>
+      base.direction === "upload"
+        ? transfers.start(
+            "upload",
+            { ...target(), localPaths: base.localPaths, remoteDir: base.remoteDir, conflict },
+            { hostLabel: hostLabel.value },
+          )
+        : transfers.start(
+            "download",
+            { ...target(), remotePaths: base.remotePaths, localDir: base.localDir, conflict },
+            { hostLabel: hostLabel.value },
+          ),
+    );
   } catch (failure) {
     if (failure instanceof SshFileConflictError) {
       const choice = await askConflict(failure.conflicts);
@@ -589,7 +619,7 @@ function onDrop(event: DragEvent): void {
 // ---- remote-side changes ----------------------------------------------------
 
 function newFolder(): void {
-  if (!path.value) return;
+  if (!path.value || busy.value) return;
   appStore.openDialog("PromptDialog", {
     eyebrow: "SFTP",
     title: "New folder",
@@ -601,18 +631,23 @@ function newFolder(): void {
     invalidHint: "A folder name cannot contain /.",
     onCancel: () => appStore.closeDialog(),
     onSubmit: async (name: string) => {
-      appStore.closeDialog();
-      const ok = await notifications.runWithToast(
-        "Couldn't create the folder",
-        () => api().sshFileMkdir({ ...target(), path: joinRemote(path.value, name) }),
-        { workspaceId: props.workspaceId },
+      if (busy.value) return;
+      const ok = await whileBusy("Creating folder…", () =>
+        notifications.runWithToast(
+          "Couldn't create the folder",
+          () => api().sshFileMkdir({ ...target(), path: joinRemote(path.value, name) }),
+          { workspaceId: props.workspaceId },
+        ),
       );
-      if (ok) await load(path.value);
+      if (!ok) return;
+      appStore.closeDialog();
+      await load(path.value);
     },
   });
 }
 
 function rename(entry: SshFileEntry): void {
+  if (busy.value) return;
   appStore.openDialog("PromptDialog", {
     eyebrow: "SFTP",
     title: "Rename",
@@ -624,25 +659,32 @@ function rename(entry: SshFileEntry): void {
     invalidHint: "A name cannot contain /.",
     onCancel: () => appStore.closeDialog(),
     onSubmit: async (name: string) => {
-      appStore.closeDialog();
-      if (name === entry.name) return;
-      const ok = await notifications.runWithToast(
-        "Couldn't rename the item",
-        () =>
-          api().sshFileRename({
-            ...target(),
-            from: joinRemote(path.value, entry.name),
-            to: joinRemote(path.value, name),
-          }),
-        { workspaceId: props.workspaceId },
+      if (busy.value) return;
+      if (name === entry.name) {
+        appStore.closeDialog();
+        return;
+      }
+      const ok = await whileBusy("Renaming…", () =>
+        notifications.runWithToast(
+          "Couldn't rename the item",
+          () =>
+            api().sshFileRename({
+              ...target(),
+              from: joinRemote(path.value, entry.name),
+              to: joinRemote(path.value, name),
+            }),
+          { workspaceId: props.workspaceId },
+        ),
       );
-      if (ok) await load(path.value);
+      if (!ok) return;
+      appStore.closeDialog();
+      await load(path.value);
     },
   });
 }
 
 async function remove(items: SshFileEntry[]): Promise<void> {
-  if (!items.length) return;
+  if (!items.length || busy.value) return;
   const folders = items.filter((entry) => entry.type === "dir").length;
   const names = items
     .slice(0, 5)
@@ -659,15 +701,17 @@ async function remove(items: SshFileEntry[]): Promise<void> {
     danger: true,
   });
   if (!confirmed) return;
-  await notifications.runWithToast(
-    "Couldn't delete the items",
-    () =>
-      api().sshFileDelete({
-        ...target(),
-        paths: items.map((entry) => joinRemote(path.value, entry.name)),
-        recursive: folders > 0,
-      }),
-    { workspaceId: props.workspaceId },
+  await whileBusy("Deleting…", () =>
+    notifications.runWithToast(
+      "Couldn't delete the items",
+      () =>
+        api().sshFileDelete({
+          ...target(),
+          paths: items.map((entry) => joinRemote(path.value, entry.name)),
+          recursive: folders > 0,
+        }),
+      { workspaceId: props.workspaceId },
+    ),
   );
   await load(path.value);
 }
@@ -727,6 +771,16 @@ onBeforeUnmount(() => {
 
 .sftp-toolbar__spacer {
   flex: 0 0 4px;
+}
+
+.sftp-busy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .sftp-crumbs {
@@ -833,6 +887,12 @@ onBeforeUnmount(() => {
   padding: 16px 10px;
   color: var(--muted);
   font-size: 13px;
+}
+
+.sftp-state--loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .sftp-state--error {

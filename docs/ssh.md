@@ -52,16 +52,32 @@ For Built-in SSH, **Default SSH agent source** in Settings and **Agent source** 
 
 ## Transfer files over SSH
 
-For a Built-in SSH tab, choose **Browse files (SFTP)** in the tab's context menu to open a file browser for that host in a tab of its own. You can browse folders, create a folder, rename and delete items, and copy a path.
+For a Built-in SSH tab, choose **Browse files (SFTP)** in the tab's context menu to open a file browser for that host in a tab of its own. You can browse folders, create a folder, rename and delete items, and copy a path. System SSH and WSL tabs are not supported.
 
 - **Upload:** choose **Upload files…** or **Upload folder…**, or drag files from your computer (or from the Files tab) onto the list. The items go into the folder you are viewing.
 - **Download:** select items and choose **Download…**, then pick a folder on your computer.
-- **Existing items:** if a target already exists, strIDEterm asks whether to overwrite it or skip the existing items. Symbolic links are skipped and listed in the result.
-- **Progress:** each transfer shows its progress and can be cancelled. A transfer keeps running if you switch tabs, and its result also appears in the Notification Center.
+- **Existing items:** if a target already exists, strIDEterm asks whether to overwrite it or skip the existing items.
+- **Symbolic links:** links are not transferred. A link inside a folder is skipped; the result shows how many items were skipped, and hovering it lists them. A link you select directly is refused.
+- **Progress:** each transfer shows its progress, speed and estimated time left, and can be cancelled. A transfer keeps running if you switch tabs, and its result also appears in the Notification Center.
 
-The browser uses the tab's open connection when it is connected, so it needs no extra sign-in; otherwise the desktop app connects on its own and asks for any password or host-key confirmation. System SSH and WSL tabs are not supported. Files cannot be dropped onto an SSH terminal to upload them; dropping still types the path.
+If the SSH tab is connected, the file browser needs no extra sign-in. Otherwise it connects on its own and asks for any password or host-key confirmation.
 
-In a remote browser or on a phone the browser tab uses the SSH tab's open connection when there is one; otherwise it opens its own connection to that tab's host and asks you, on that device, for any password or host-key confirmation. It never connects to any other host. Uploads accept files dragged from the Files tab, and downloads are saved into one of the profile's workspace folders. A paired phone can browse and upload files from the profile's workspace folders but cannot download them to the computer. An agent with **SSH tools** can also list, upload and download files, only inside its own workspace folders, never into a `.git` folder, and without ever being asked for a password.
+Dropping a file onto an SSH terminal does not upload it; it types the file's path, as in any terminal.
+
+### Paste a screenshot into an SSH tab
+
+When you paste an image into a Built-in SSH tab (Ctrl/Cmd+V or right-click), strIDEterm uploads it to `~/.strideterm/paste` on the server and types that path into the terminal, so a tool running there, such as Claude Code, can open it. On a slow connection a short "Uploading screenshot…" message appears until the path is typed. If the upload fails, nothing is typed and a message says why.
+
+This works in the desktop app while the tab is connected, and follows the **Clipboard image paste** setting in Settings → General. Uploaded images stay on the server until you delete them. System SSH and WSL tabs type the path of the image on your computer, as other terminals do.
+
+### From a remote browser or a phone
+
+The file browser also works over remote access, with these differences:
+
+- Sign-in and host-key questions appear on the device you are using.
+- **Upload:** drag files from the Files tab onto the list. Files stored on the remote device itself cannot be uploaded.
+- **Download:** files are saved on the computer running strIDEterm, into a workspace folder you choose, not onto the remote device.
+- **Phone:** a paired phone can browse the host's files, but uploading and downloading are not available.
 
 ## SSH tabs and AI tools
 
@@ -71,9 +87,11 @@ When creating or editing an SSH tab, you can set its own startup command and con
 
 **Reconnect with password** in an SSH tab's context menu connects once with the account password instead of a key or agent, for example to a Mac with FileVault right after a restart. The host's saved sign-in does not change.
 
-You can optionally enable **SSH tools** for a tab that directly launches Claude Code or Codex. This lets that agent list saved Built-in SSH hosts, run a command on a selected host, and list, upload and download files on it (see "Transfer files over SSH"). The option is off by default, takes effect when the terminal starts, and requires restarting the terminal after a change. It is unavailable for manually launched agents, other tab types, WSL, System SSH, and remote sessions.
+You can optionally enable **SSH tools** for a tab that directly launches Claude Code or Codex. This lets that agent list saved Built-in SSH hosts, run a command on a selected host, and list, upload and download files on it. The option is off by default, takes effect when the terminal starts, and requires restarting the terminal after a change. It is unavailable for manually launched agents, other tab types, WSL, System SSH, and remote sessions.
 
-To enable it for every such tab of a workspace at once, tick **Allow SSH tools for agents** in the workspace settings, next to the internal MCP option. Tabs that do not directly launch Claude Code or Codex are simply skipped. Like the internal MCP option, it is off by default, can only be changed from the desktop app, and is never available to task workspaces.
+An agent is never asked for a password or a host-key confirmation: it can only use a host that already signs in on its own, with saved credentials and a trusted host key. It transfers files only between the host and its own workspace's folders, never into a `.git` folder, and replaces an existing file only when it asks to overwrite.
+
+To enable it for every such tab of a workspace at once, tick **Allow SSH tools for agents** in the workspace settings, next to **Allow internal MCP for agents**. Tabs that do not directly launch Claude Code or Codex are simply skipped. It is off by default, can only be changed from the desktop app, and is never available to task workspaces.
 
 ## Use SSH over remote access
 

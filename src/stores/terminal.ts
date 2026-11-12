@@ -13,7 +13,11 @@ import {
 import { resolveRemoteSelection, type TerminalReadyReason, type Transport } from "../transport.js";
 import type { StatePayload } from "../../electron/shared/types/state.js";
 import { useAppStore } from "./app.js";
-import { resolveInputOriginWorkspaceId, resolveTerminalTextSelectionTarget } from "../app/selectors.js";
+import {
+  resolveInputOriginWorkspaceId,
+  resolveSshPasteTarget,
+  resolveTerminalTextSelectionTarget,
+} from "../app/selectors.js";
 import type { TerminalTextSnapshot, TerminalTextSnapshotOptions } from "../app/terminal-text-snapshot.js";
 import type { CompanionPrimaryTaskRunner } from "../../electron/shared/companion-primary.js";
 import { useNotificationStore } from "./notifications.js";
@@ -175,6 +179,10 @@ export const useTerminalStore = defineStore("terminal", () => {
         api.writeTerminal(sessionId, data, inputOriginWorkspaceId(sessionId)),
       clickTerminal: (sessionId: string, click: string, arrival: string) =>
         api.writeTerminal(sessionId, click, inputOriginWorkspaceId(sessionId), arrival),
+      getSshPasteTarget: (sessionId: string) => {
+        const app = useAppStore();
+        return resolveSshPasteTarget(app.payload?.appState?.workspaces, app.myActiveProfileId ?? "default", sessionId);
+      },
       onSearchRequested: (sessionId: string) => {
         window.dispatchEvent(new CustomEvent("strideterm:terminal-search", { detail: { sessionId } }));
       },

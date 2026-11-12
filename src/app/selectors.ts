@@ -115,6 +115,22 @@ export function resolveInputOriginWorkspaceId(
   return host?.taskWorkspaceId || sourceWorkspaceId;
 }
 
+/** The SSH tab a terminal session belongs to, within one profile; null for any other terminal. */
+export function resolveSshPasteTarget(
+  workspaces: readonly WorkspaceState[] | null | undefined,
+  profileId: string,
+  sessionId: string,
+): { workspaceId: string; panelId: string } | null {
+  const separator = String(sessionId || "").indexOf(":");
+  if (separator <= 0) return null;
+  const workspaceId = sessionId.slice(0, separator);
+  const panelId = sessionId.slice(separator + 1);
+  const workspace = workspaces?.find((item) => item.id === workspaceId);
+  if (!workspace || (workspace.profileId || "default") !== profileId) return null;
+  const panel = workspace.panels?.find((item) => item.id === panelId);
+  return panel?.launch?.kind === "ssh" ? { workspaceId, panelId } : null;
+}
+
 export function tabSessionId(tab: { id: string; sessionId?: string } | null | undefined): string {
   return tab ? tab.sessionId || tab.id : "";
 }

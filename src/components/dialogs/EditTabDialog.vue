@@ -384,7 +384,7 @@
             <span>
               SSH tools for this tab
               <HelpTooltip
-                text="Enable SSH tools for Claude Code or Codex launched as this tab's direct command. They can run commands on saved Built-in SSH hosts only; other tabs and manually launched agents are unaffected. Applies when the terminal starts. Restart the terminal after changing this setting. Not available for WSL or remote sessions."
+                text="Enable SSH tools for Claude Code or Codex launched as this tab's direct command. They can run commands and list, upload and download files on saved Built-in SSH hosts only; other tabs and manually launched agents are unaffected. Applies when the terminal starts. Restart the terminal after changing this setting. Not available for WSL or remote sessions."
                 label="SSH tools for this tab help"
               />
               <small class="ssh-tools-toggle__summary">{{ sshToolsHint }}</small>

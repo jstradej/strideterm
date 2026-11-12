@@ -2582,6 +2582,9 @@ export type SshFileList = z.infer<typeof sshFileListSchema>;
 export const sshFileMkdirSchema = z.object({ ...sshFileTargetShape, path: sshFileRemotePath }).strict();
 export type SshFileMkdir = z.infer<typeof sshFileMkdirSchema>;
 
+export const sshFilePasteImageSchema = z.object({ ...sshFileTargetShape, localPath: sshFileLocalPath }).strict();
+export type SshFilePasteImage = z.infer<typeof sshFilePasteImageSchema>;
+
 export const sshFileRenameSchema = z
   .object({ ...sshFileTargetShape, from: sshFileRemotePath, to: sshFileRemotePath })
   .strict();

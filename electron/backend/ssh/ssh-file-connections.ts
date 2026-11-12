@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Client, SFTPWrapper } from "ssh2";
 import { getLogger } from "../logger.js";
 import { parseRemoteViewerId } from "../viewer-id.js";
@@ -16,6 +16,30 @@ export const SSH_FILE_IDLE_CLOSE_MS = 5 * 60 * 1000;
 export const SSH_FILE_REMOTE_PROMPT_TIMEOUT_MS = 3 * 60 * 1000;
 
 type HostRecord = NonNullable<ReturnType<SshManager["getHost"]>>;
+
+/**
+ * The owner as it may appear in strideterm.log. A remote client's owner key embeds its session cookie, a bearer
+ * secret, so only a short digest of it is written.
+ */
+export function ownerForLog(ownerKey: string | undefined): string {
+  if (!ownerKey) return "";
+  const marker = "remote:";
+  const index = ownerKey.indexOf(marker);
+  if (index < 0) return ownerKey;
+  const digest = createHash("sha256")
+    .update(ownerKey.slice(index + marker.length))
+    .digest("hex")
+    .slice(0, 8);
+  return `${ownerKey.slice(0, index + marker.length)}#${digest}`;
+}
+
+function promptTimeoutError(timeoutMs: number): SshFileError {
+  const when = timeoutMs >= 60_000 ? `within ${Math.round(timeoutMs / 60_000)} minutes` : "in time";
+  return new SshFileError(
+    "auth-required",
+    `Nobody answered the sign-in prompt ${when}, so the connection was cancelled. Try again.`,
+  );
+}
 
 /** Where a file operation connects: the live session of an SSH tab, else (when permitted) a connection of its own. */
 export interface SshFileTarget {
@@ -54,6 +78,8 @@ interface Entry {
   /** Own connections only: ends the held `onAuthenticated` callback, which closes the connection. */
   closeOwn?: () => void;
   dead: boolean;
+  hostId?: string;
+  logOwner?: string;
 }
 
 export interface SshFileConnectionsOptions {
@@ -74,6 +100,7 @@ export function createSshFileConnections({
   const owners = new Map<string, string>();
   const refuseOnPrompt = new Map<string, (error: SshFileError) => void>();
   const promptTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const promptTimedOut = new Set<string>();
 
   const armPromptTimeout = (sessionId: string): void => {
     const owner = owners.get(sessionId);
@@ -82,7 +109,8 @@ export function createSshFileConnections({
     if (previous) clearTimeout(previous);
     const timer = setTimeout(() => {
       promptTimers.delete(sessionId);
-      log.warn("ssh file prompt unanswered, connection cancelled", { owner });
+      promptTimedOut.add(sessionId);
+      log.warn("ssh file prompt unanswered, connection cancelled", { owner: ownerForLog(owner) });
       void sshManager.stop(sessionId).catch(() => {});
     }, remotePromptTimeoutMs);
     timer.unref?.();
@@ -114,6 +142,9 @@ export function createSshFileConnections({
   function drop(entry: Entry): void {
     if (entry.dead) return;
     entry.dead = true;
+    if (entry.key.startsWith("own:")) {
+      log.info("ssh file connection closed", { hostId: entry.hostId, owner: entry.logOwner });
+    }
     if (entry.idleTimer) clearTimeout(entry.idleTimer);
     entry.idleTimer = null;
     if (entries.get(entry.key) === entry) entries.delete(entry.key);
@@ -203,6 +234,7 @@ export function createSshFileConnections({
   async function connectOwn(target: SshFileTarget, key: string, options: SshFileConnectOptions): Promise<Entry> {
     const own = target.own!;
     const sessionId = `${options.sessionPrefix ?? SSH_FILE_SESSION_PREFIX}${randomUUID()}`;
+    const logOwner = ownerForLog(options.ownerKey);
     if (options.ownerWindowId) owners.set(sessionId, options.ownerWindowId);
     let closeHold!: () => void;
     const hold = new Promise<void>((resolve) => (closeHold = resolve));
@@ -220,22 +252,44 @@ export function createSshFileConnections({
         authenticatedActionTimeoutMs: 0,
         skipLastConnectedAt: true,
         onAuthenticated: async (client: Client) => {
-          entry = { key, client, leases: 0, idleTimer: null, browse: null, closeOwn: closeHold, dead: false };
+          entry = {
+            key,
+            client,
+            leases: 0,
+            idleTimer: null,
+            browse: null,
+            closeOwn: closeHold,
+            dead: false,
+            hostId: target.hostId,
+            logOwner,
+          };
           entries.set(key, entry);
           resolve(entry);
+          log.info("ssh file connection ready", { hostId: target.hostId, owner: logOwner });
           await hold;
         },
       });
       session.then(
         () => {
           if (entry) drop(entry);
+          else
+            rejectReady(
+              promptTimedOut.has(sessionId)
+                ? promptTimeoutError(remotePromptTimeoutMs)
+                : new SshFileError("not-connected", "The SSH connection ended before sign-in completed."),
+            );
           void sshManager.stop(sessionId).catch(() => {});
         },
         (error: unknown) => {
           if (entry) drop(entry);
           void sshManager.stop(sessionId).catch(() => {});
           const message = error instanceof Error ? error.message : String(error);
-          rejectReady(new SshFileError("not-connected", `SSH connection failed: ${message}`));
+          log.warn("ssh file connection failed", { hostId: target.hostId, owner: logOwner, err: message });
+          rejectReady(
+            promptTimedOut.has(sessionId)
+              ? promptTimeoutError(remotePromptTimeoutMs)
+              : new SshFileError("not-connected", `SSH connection failed: ${message}`),
+          );
         },
       );
     });
@@ -247,6 +301,7 @@ export function createSshFileConnections({
       const timer = promptTimers.get(sessionId);
       if (timer) clearTimeout(timer);
       promptTimers.delete(sessionId);
+      promptTimedOut.delete(sessionId);
     }
   }
 
@@ -283,7 +338,7 @@ export function createSshFileConnections({
       if (!pending) {
         pending = connectOwn(target, key, options).finally(() => connecting.delete(key));
         connecting.set(key, pending);
-        log.info("ssh file connection opening", { hostId: target.hostId, owner: options.ownerKey });
+        log.info("ssh file connection opening", { hostId: target.hostId, owner: ownerForLog(options.ownerKey) });
       }
       return makeLease(await pending);
     },

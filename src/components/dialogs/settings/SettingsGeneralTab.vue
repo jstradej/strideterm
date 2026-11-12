@@ -142,7 +142,9 @@
           When you press Ctrl/Cmd+V (or right-click paste) and the clipboard holds a screenshot, the image is saved as
           <code>strideterm-&lt;timestamp&gt;.png</code> and the path is typed into the terminal — so CLIs like Claude
           Code or Codex can read it off disk. Files already on disk that are also present in the clipboard (Snipping
-          Tool, ShareX, Greenshot) are used in place — no duplicate save. Turn this off for plain xterm paste behaviour.
+          Tool, ShareX, Greenshot) are used in place — no duplicate save. In a Built-in SSH tab the image is also
+          uploaded to ~/.strideterm/paste on the server, and that path is pasted instead. Turn this off for plain xterm
+          paste behaviour.
         </small>
       </div>
       <div class="clipboard-paste-dir" :class="{ 'clipboard-paste-dir--dim': !form.clipboardImagePasteEnabled }">

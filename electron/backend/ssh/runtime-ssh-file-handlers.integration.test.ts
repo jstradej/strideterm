@@ -437,6 +437,49 @@ describe("SSH file access policy", () => {
     expect(await fs.readdir(workspaceRoot)).toEqual(["from-phone.txt"]);
   });
 
+  test("pasting an image: a remote viewer is refused", async () => {
+    const { handlers, connectTab, tabRef, workspaceRoot } = await setup();
+    await connectTab();
+    const localPath = path.join(workspaceRoot, "shot.png");
+    await write(localPath, "x");
+
+    await expect(handlers.sshFilePasteImage({ ...tabRef, localPath }, REMOTE)).rejects.toMatchObject({
+      code: "permission-denied",
+    });
+  });
+
+  test("pasting an image: a tab that is not connected answers not-connected and opens no connection", async () => {
+    const { server, handlers, tabRef, workspaceRoot } = await setup();
+    const localPath = path.join(workspaceRoot, "shot.png");
+    await write(localPath, "x");
+
+    await expect(handlers.sshFilePasteImage({ ...tabRef, localPath }, DESKTOP)).rejects.toMatchObject({
+      code: "not-connected",
+      message: "Connect the SSH tab first.",
+    });
+    expect(server.stats.connections).toBe(0);
+  });
+
+  test("pasting an image: uploads through the live tab; an SFTP tab and a relative path are refused", async () => {
+    const { server, handlers, connectTab, tabRef, workspaceRoot, remoteRoot } = await setup();
+    await connectTab();
+    const localPath = path.join(workspaceRoot, "shot.png");
+    await write(localPath, "png");
+
+    expect(await handlers.sshFilePasteImage({ ...tabRef, localPath }, DESKTOP)).toEqual({
+      path: "/.strideterm/paste/shot.png",
+      bytes: 3,
+    });
+    expect(await fs.readFile(path.join(remoteRoot, ".strideterm", "paste", "shot.png"), "utf8")).toBe("png");
+    expect(server.stats.connections).toBe(1);
+    await expect(
+      handlers.sshFilePasteImage({ workspaceId: "ws-1", panelId: "tab-sftp", localPath }, DESKTOP),
+    ).rejects.toMatchObject({ code: "io" });
+    await expect(handlers.sshFilePasteImage({ ...tabRef, localPath: "shot.png" }, DESKTOP)).rejects.toMatchObject({
+      code: "io",
+    });
+  });
+
   test("remote-side mutations act through the live tab for a remote client", async () => {
     const { handlers, connectTab, remoteRoot, tabRef } = await setup();
     await connectTab();

@@ -2827,6 +2827,8 @@ describe("remote transport API parity — no method silently missing its remote 
     // Native OS integration with no remote-browser equivalent.
     "openTerminalPath",
     "pasteClipboardImageForTerminal",
+    // Uploads the desktop's clipboard screenshot; a remote client has no such file.
+    "sshFilePasteImage",
     "showSystemNotification",
     "checkForUpdates",
     "browseDirectory",

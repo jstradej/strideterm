@@ -9,6 +9,7 @@ import {
   getWorkspacePanelByViewId,
   getWorkspaceTabs,
   resolveInputOriginWorkspaceId,
+  resolveSshPasteTarget,
   resolveTerminalTextSelectionTarget,
   runningAgentElapsedMs,
   summarizeAttention,
@@ -1372,5 +1373,25 @@ describe("SFTP browser tabs", () => {
       ["sftp:sftp1", "sftp"],
     ]);
     expect(tabs.find((tab) => tab.type === "sftp")).toMatchObject({ title: "Files · box", closable: true });
+  });
+});
+
+describe("resolveSshPasteTarget", () => {
+  const workspaces = [
+    {
+      id: "w1",
+      profileId: "p1",
+      panels: [
+        { id: "ssh", launch: { kind: "ssh" } },
+        { id: "shell", command: "" },
+      ],
+    },
+  ] as unknown as Parameters<typeof resolveSshPasteTarget>[0];
+
+  test("names an SSH tab of the profile and nothing else", () => {
+    expect(resolveSshPasteTarget(workspaces, "p1", "w1:ssh")).toEqual({ workspaceId: "w1", panelId: "ssh" });
+    expect(resolveSshPasteTarget(workspaces, "p1", "w1:shell")).toBeNull();
+    expect(resolveSshPasteTarget(workspaces, "p2", "w1:ssh")).toBeNull();
+    expect(resolveSshPasteTarget(workspaces, "p1", "nope")).toBeNull();
   });
 });
