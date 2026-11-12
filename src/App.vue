@@ -104,7 +104,7 @@
         @edit-workspace="onEditWorkspace($event)"
         @delete-workspace="store.deleteWorkspace($event)"
         @force-remove-workspace="store.forceRemoveWorkspace($event)"
-        @add-plugin-workspace="store.openNewWorkspaceFlow()"
+        @add-plugin-workspace="store.openPluginWorkspaceDialog($event)"
         @create-task="store.openTaskWorkspaceDialog($event)"
       />
 

@@ -1097,3 +1097,42 @@ describe("createDialogActions.openWorkspaceDialog per-repository create", () => 
     expect(ctx.overlay.value).toBe("WorkspaceDialog");
   });
 });
+
+describe("createDialogActions.openPluginWorkspaceDialog", () => {
+  it("opens the workspace dialog prefilled from the plugin instead of asking for a template again", () => {
+    const ctx = makeCtx({
+      appState: { workspaces: [], tabTemplates: [] },
+      plugins: [
+        {
+          id: "azure-devops",
+          name: "Azure DevOps",
+          icon: "AZ",
+          color: "#0078d4",
+          workspaceDefaults: { name: "Azure DevOps", kind: "azure", notes: "Azure DevOps inbox", panels: [] },
+        },
+      ],
+    });
+    const actions = createDialogActions(ctx);
+
+    actions.openPluginWorkspaceDialog("azure-devops");
+
+    expect(ctx.overlay.value).toBe("WorkspaceDialog");
+    const workspace = (ctx.overlayProps.value as AnyApi).workspace;
+    expect(workspace).toMatchObject({
+      kind: "azure",
+      pluginId: "azure-devops",
+      source: "plugin",
+      name: "Azure DevOps",
+    });
+  });
+
+  it("falls back to an empty workspace dialog for a plugin without workspace defaults", () => {
+    const ctx = makeCtx({ appState: { workspaces: [] }, plugins: [{ id: "bare", name: "Bare" }] });
+    const actions = createDialogActions(ctx);
+
+    actions.openPluginWorkspaceDialog("bare");
+
+    expect(ctx.overlay.value).toBe("WorkspaceDialog");
+    expect((ctx.overlayProps.value as AnyApi).workspace).toBeNull();
+  });
+});

@@ -661,28 +661,35 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       },
       onPickPlugin: (pluginId: string) => {
         closeDialog();
-        const plugin = plugins.find((p: AnyApi) => p.id === pluginId);
-        if (!plugin?.workspaceDefaults) {
-          openWorkspaceDialog();
-          return;
-        }
-        const tpl = plugin.workspaceDefaults;
-        const draft: AnyApi = {
-          id: `workspace-${crypto.randomUUID()}`,
-          name: tpl.name || plugin.name,
-          icon: tpl.icon || plugin.icon || "PL",
-          color: tpl.color || plugin.color || "#ffa424",
-          kind: tpl.kind || "terminal",
-          source: "plugin",
-          pluginId,
-          cwd: "",
-          notes: tpl.notes || "",
-          activePanelId: tpl.panels?.[0]?.id || "",
-          panels: (tpl.panels || []).map((panel: AnyApi) => ({ ...panel })),
-        };
-        openWorkspaceDialog(draft);
+        openPluginWorkspaceDialog(pluginId);
       },
     });
+  }
+
+  // The sidebar's "Available plugins" tile has already chosen the plugin, so it opens this directly rather than
+  // the template picker.
+  function openPluginWorkspaceDialog(pluginId: string): void {
+    const plugins = (ctx.payload.value as AnyApi)?.plugins || [];
+    const plugin = plugins.find((p: AnyApi) => p.id === pluginId);
+    if (!plugin?.workspaceDefaults) {
+      openWorkspaceDialog();
+      return;
+    }
+    const tpl = plugin.workspaceDefaults;
+    const draft: AnyApi = {
+      id: `workspace-${crypto.randomUUID()}`,
+      name: tpl.name || plugin.name,
+      icon: tpl.icon || plugin.icon || "PL",
+      color: tpl.color || plugin.color || "#ffa424",
+      kind: tpl.kind || "terminal",
+      source: "plugin",
+      pluginId,
+      cwd: "",
+      notes: tpl.notes || "",
+      activePanelId: tpl.panels?.[0]?.id || "",
+      panels: (tpl.panels || []).map((panel: AnyApi) => ({ ...panel })),
+    };
+    openWorkspaceDialog(draft);
   }
 
   // --- Settings / help / profiles / azure connection dialogs -------------
@@ -1312,6 +1319,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     openNewTabDialog,
     openWorkspaceDialog,
     openNewWorkspaceFlow,
+    openPluginWorkspaceDialog,
     openSettingsDialog,
     openHelpDialog,
     openRemoteAccessDialog,
