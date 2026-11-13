@@ -1,7 +1,8 @@
 /**
  * How an MCP server is handed to an agent CLI at launch, shared by the review bridge and the
  * per-session grants (Built-in SSH, internal task MCP): Claude `--mcp-config`, Codex
- * `-c mcp_servers.*` (with `env_vars` naming — never carrying — the grant variables) and
+ * `-c mcp_servers.*` (with `env_vars` naming — never carrying — the grant variables, and `env`
+ * carrying only the spec's constant variables) and
  * Copilot `--additional-mcp-config`. Existing servers and the user's own config are kept.
  */
 
@@ -18,8 +19,24 @@ export interface AgentMcpInstall {
   grantEnvVars: string[];
 }
 
-export function installEnvVars(install: AgentMcpInstall): string[] {
-  return [...new Set([...Object.keys(install.spec.env || {}), ...install.grantEnvVars])];
+/**
+ * Codex `-c` values are TOML. `env` carries the spec's constant variables by value
+ * (ELECTRON_RUN_AS_NODE): forwarding them by name through `env_vars` reads Codex's own
+ * environment, which outside Windows does not have them, and the packaged binary then
+ * starts as a full Electron app — on macOS one Dock icon per MCP server.
+ */
+export function codexMcpServerConfig(name: string, spec: AgentMcpServerSpec, forwardedEnvVars: string[]): string[] {
+  const env = spec.env || {};
+  const config = ["-c", `mcp_servers.${name}.command=${JSON.stringify(spec.command)}`];
+  const entries = Object.entries(env);
+  if (entries.length) {
+    const table = entries.map(([key, value]) => `${JSON.stringify(key)}=${JSON.stringify(value)}`).join(",");
+    config.push("-c", `mcp_servers.${name}.env={${table}}`);
+  }
+  const forwarded = [...new Set(forwardedEnvVars)].filter((key) => !(key in env));
+  if (forwarded.length) config.push("-c", `mcp_servers.${name}.env_vars=${JSON.stringify(forwarded)}`);
+  config.push("-c", `mcp_servers.${name}.args=${JSON.stringify(spec.args)}`);
+  return config;
 }
 
 export function installsEnv(installs: AgentMcpInstall[]): Record<string, string> {
@@ -82,14 +99,7 @@ export function appendClaudeMcpServers(args: string[], additions: Record<string,
 
 export function pushCodexMcpInstalls(args: string[], installs: AgentMcpInstall[]): void {
   for (const install of installs) {
-    args.push(
-      "-c",
-      `mcp_servers.${install.name}.command=${JSON.stringify(install.spec.command)}`,
-      "-c",
-      `mcp_servers.${install.name}.args=${JSON.stringify(install.spec.args)}`,
-      "-c",
-      `mcp_servers.${install.name}.env_vars=${JSON.stringify(installEnvVars(install))}`,
-    );
+    args.push(...codexMcpServerConfig(install.name, install.spec, install.grantEnvVars));
   }
 }
 

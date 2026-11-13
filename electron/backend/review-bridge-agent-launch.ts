@@ -13,6 +13,7 @@ import {
 import {
   appendClaudeMcpServers,
   claudeMcpServerEntries,
+  codexMcpServerConfig,
   copilotMcpConfigArgs,
   installsEnv,
   pushCodexMcpInstalls,
@@ -550,17 +551,10 @@ function buildCodexLaunch({
   if (!automaticReview) pushWorkspaceScope(args, workspace?.cwd);
   if (codexNoDaemon && !automaticReview) args.unshift(CODEX_NO_DAEMON_FLAG);
   if (automaticReview) args.push("exec");
-  args.push(
-    "-c",
-    `mcp_servers.review.command=${JSON.stringify(mcp.command)}`,
-    // Codex starts MCP servers with a scrubbed environment: name the spec's own env
-    // keys and the per-tab Git capability variables so they are forwarded from the
-    // tab's PTY (the values never appear on the command line).
-    "-c",
-    `mcp_servers.review.env_vars=${JSON.stringify([...new Set([...Object.keys(mcp.env || {}), REVIEW_GIT_URL_ENV, REVIEW_GIT_CAPABILITY_ENV])])}`,
-    "-c",
-    `mcp_servers.review.args=${JSON.stringify(mcp.args)}`,
-  );
+  // Codex starts MCP servers with a scrubbed environment: the per-tab Git capability
+  // variables are forwarded from the tab's PTY by name (the values never appear on the
+  // command line); the spec's constant env goes by value.
+  args.push(...codexMcpServerConfig("review", mcp, [REVIEW_GIT_URL_ENV, REVIEW_GIT_CAPABILITY_ENV]));
   pushCodexMcpInstalls(args, installs);
   if (automaticReview) args.push(initialPrompt!.trim());
   else if (initialPrompt?.trim()) args.push(initialPrompt.trim());

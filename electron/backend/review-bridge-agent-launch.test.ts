@@ -239,6 +239,27 @@ describe("review bridge agent launch", () => {
     expect(launch.args.join(" ")).not.toContain("capability-value");
   });
 
+  test("gives a packaged macOS Codex its MCP servers' ELECTRON_RUN_AS_NODE by value, not by name", () => {
+    const processInfo = {
+      execPath: "/Applications/strIDEterm.app/Contents/MacOS/strIDEterm",
+      platform: "darwin",
+      isElectron: true,
+    };
+    const launch = buildAgentMcpLaunch({
+      workspace: createWorkspace(),
+      panel: { id: "codex", command: "codex" },
+      processInfo,
+      sshMcp: buildAgentSshMcpServerSpec(processInfo),
+    })!;
+
+    // The PTY env outside Windows carries no ELECTRON_RUN_AS_NODE, so naming it in env_vars forwards nothing.
+    expect(launch.env).toBeUndefined();
+    expect(launch.args).toContain('mcp_servers.strideterm_ssh.env={"ELECTRON_RUN_AS_NODE"="1"}');
+    expect(launch.args).toContain(
+      'mcp_servers.strideterm_ssh.env_vars=["STRIDETERM_SSH_MCP_URL","STRIDETERM_SSH_MCP_CAPABILITY"]',
+    );
+  });
+
   test("builds the packaged Windows SSH MCP entry as Electron-as-Node", () => {
     const spec = buildAgentSshMcpServerSpec({
       execPath: "C:/Program Files/strIDEterm/strIDEterm.exe",
@@ -309,10 +330,13 @@ describe("review bridge agent launch", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const argsConfig = configValues.find((value: any) => value.startsWith("mcp_servers.review.args="));
     expect(commandConfig).toBe('mcp_servers.review.command="C:/Program Files/strIDEterm/strIDEterm.exe"');
-    // The spec's own env key and the per-tab Git capability are forwarded from the PTY by NAME — never by value.
+    // The per-tab Git capability is forwarded from the PTY by NAME — never by value. ELECTRON_RUN_AS_NODE goes by
+    // value: the PTY outside Windows has no copy to forward, and without it the packaged binary starts as a full
+    // Electron app (a Dock icon per MCP server on macOS).
     expect(configValues).toContain(
-      'mcp_servers.review.env_vars=["ELECTRON_RUN_AS_NODE","STRIDETERM_REVIEW_GIT_URL","STRIDETERM_REVIEW_GIT_CAPABILITY"]',
+      'mcp_servers.review.env_vars=["STRIDETERM_REVIEW_GIT_URL","STRIDETERM_REVIEW_GIT_CAPABILITY"]',
     );
+    expect(configValues).toContain('mcp_servers.review.env={"ELECTRON_RUN_AS_NODE"="1"}');
     expect(argsConfig).toContain("mcp_servers.review.args=");
     expect(argsConfig).toContain("--review-bridge-mcp");
     // No trailing [PROMPT] positional: codex submits it immediately, which would

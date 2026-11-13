@@ -56,7 +56,7 @@
     "verify:live-account-client": "tsx scripts/verify-live-account-client.mts",
     "check:licences": "tsx scripts/check-licences.mts",
     "prepare": "husky",
-    "postinstall": "patch-package --error-on-fail"
+    "postinstall": "node scripts/node-pty-spawn-helper.mjs && patch-package --error-on-fail"
   },
   "build": {
     "appId": "com.strideterm.app",
