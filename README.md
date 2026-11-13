@@ -73,7 +73,7 @@ Nightly builds from the latest `master` are also published on the [Releases page
 > xattr -dr com.apple.quarantine /Applications/strIDEterm.app
 > ```
 
-> **Code signing:** Windows Authenticode signing depends on release signing credentials. The Store AppX is built unsigned; Microsoft signs packages accepted through Store submission. macOS DMGs and Linux artifacts are not currently signed/notarized — on first launch macOS Gatekeeper will require **System Settings → Privacy & Security → Open Anyway** (or `xattr -dr com.apple.quarantine /Applications/strIDEterm.app`, see above), and Linux package managers may warn about the unsigned `.deb`.
+> **Code signing:** Windows Authenticode signing depends on release signing credentials. The Store AppX is built unsigned; Microsoft signs packages accepted through Store submission. macOS apps are only ad-hoc signed (no Developer ID, not notarized) and Linux artifacts are unsigned — on first launch macOS Gatekeeper will require **System Settings → Privacy & Security → Open Anyway** (or `xattr -dr com.apple.quarantine /Applications/strIDEterm.app`, see above), and Linux package managers may warn about the unsigned `.deb`.
 
 ### Quick install
 
