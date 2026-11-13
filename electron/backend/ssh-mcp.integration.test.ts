@@ -315,8 +315,8 @@ describe("SSH MCP stdio end-to-end", () => {
 
 describe("SSH MCP file tools end-to-end", () => {
   test("lists a host directory, uploads a workspace file and reports the transfer through MCP", async () => {
-    const remoteRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-mcp-remote-"));
-    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-mcp-workspace-"));
+    const remoteRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-mcp-remote-")));
+    const workspaceRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-mcp-workspace-")));
     cleanups.push(async () => {
       await fs.rm(remoteRoot, { recursive: true, force: true });
       await fs.rm(workspaceRoot, { recursive: true, force: true });

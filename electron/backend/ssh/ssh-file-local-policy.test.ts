@@ -29,7 +29,7 @@ describe("isSafeLocalName", () => {
 
 describe("createRootsLocalPolicy with protectGit", () => {
   async function workspace() {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-sshfile-policy-"));
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-sshfile-policy-")));
     cleanups.push(root);
     await fs.mkdir(path.join(root, ".git", "hooks"), { recursive: true });
     await fs.mkdir(path.join(root, "out"));

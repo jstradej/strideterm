@@ -24,7 +24,7 @@ const profiles: Record<string, string> = {
 };
 
 async function tempDir(label: string): Promise<string> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), `strideterm-sshfile-h-${label}-`));
+  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), `strideterm-sshfile-h-${label}-`)));
   cleanups.push(() => fs.rm(dir, { recursive: true, force: true }));
   return dir;
 }

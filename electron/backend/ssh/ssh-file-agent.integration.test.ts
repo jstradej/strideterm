@@ -16,7 +16,7 @@ afterEach(async () => {
 });
 
 async function tempDir(label: string): Promise<string> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), `strideterm-sshfile-agent-${label}-`));
+  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), `strideterm-sshfile-agent-${label}-`)));
   cleanups.push(() => fs.rm(dir, { recursive: true, force: true }));
   return dir;
 }
