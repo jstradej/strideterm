@@ -67,7 +67,13 @@ Nightly builds from the latest `master` are also published on the [Releases page
 
 > **macOS — pick the right architecture:** Apple Silicon Macs (M1, M2, M3, M4) need the `-mac-arm64.dmg`; Intel Macs need the `-mac-x64.dmg`. The arm64 binary runs natively on Apple Silicon; the x64 binary runs through Rosetta 2 translation, which adds noticeable latency to the WebGL terminal renderer (laggy scroll, sluggish redraws). If you're not sure which Mac you have: **Apple menu → About This Mac → "Chip"** says "Apple M…" for arm64 or "Intel" for x64. To verify a running install: open Activity Monitor, find `strIDEterm`, and check the **Kind** column — `Apple` means native, `Intel` means Rosetta.
 
-> **Code signing:** Windows Authenticode signing depends on release signing credentials. The Store AppX is built unsigned; Microsoft signs packages accepted through Store submission. macOS DMGs and Linux artifacts are not currently signed/notarized — on first launch macOS Gatekeeper will require **System Settings → Privacy & Security → Open Anyway** (or `xattr -dr com.apple.quarantine strIDEterm.app`), and Linux package managers may warn about the unsigned `.deb`.
+> **macOS — "strIDEterm is damaged and can't be opened" or "Apple could not verify…":** the app is not signed or notarized, and a DMG downloaded in a browser (Chrome, Safari, …) is quarantined by macOS. After dragging strIDEterm to Applications, clear the quarantine flag once and launch it again:
+>
+> ```bash
+> xattr -dr com.apple.quarantine /Applications/strIDEterm.app
+> ```
+
+> **Code signing:** Windows Authenticode signing depends on release signing credentials. The Store AppX is built unsigned; Microsoft signs packages accepted through Store submission. macOS DMGs and Linux artifacts are not currently signed/notarized — on first launch macOS Gatekeeper will require **System Settings → Privacy & Security → Open Anyway** (or `xattr -dr com.apple.quarantine /Applications/strIDEterm.app`, see above), and Linux package managers may warn about the unsigned `.deb`.
 
 ### Quick install
 
