@@ -22,6 +22,8 @@ npm ci
 
 `npm ci` installs the exact dependency versions recorded in the lockfile. If installation of `node-pty` fails, install the native build tools for your platform and rerun `npm ci`.
 
+On macOS, node-pty starts terminals through its `spawn-helper` binary, which must be executable. The `postinstall` script sets that bit; if you install with `--ignore-scripts` (or terminals fail with `posix_spawnp failed.`), run `chmod +x node_modules/node-pty/prebuilds/*/spawn-helper`. `./dev.sh` refuses to start while it is not executable.
+
 ## Start the development app
 
 ### Windows
@@ -36,17 +38,17 @@ The launcher uses a separate `~/.strideterm-dev` data directory, so your develop
 
 ### macOS and Linux
 
-Run the app from a terminal with local development mode and a separate data directory:
+Run the launcher from a terminal:
 
 ```bash
-STRIDETERM_ENV=local STRIDETERM_DATA_DIR="$HOME/.strideterm-dev" npm run dev
+./dev.sh
 ```
 
-Stop the development session with Ctrl+C. Setting a separate data directory keeps development state apart from a normal installation.
+The launcher uses `~/.strideterm-dev`, starts Vite and the backend, preload, and frontend build watchers, and restarts Electron after successful backend rebuilds. Stop all child processes with Ctrl+C. Paths are derived from the launcher location, so it can also be invoked from another directory. Run `./dev.sh --help` for options, including `--data-dir`, `--port`, `--timeout-seconds`, `--no-auto-restart`, and `--mobile-firebase-config-path`.
 
 ### Local account and mobile features
 
-The Windows launcher selects local development mode by default. It looks for the local demo Firebase client configuration in a companion `strideterm-mobile` checkout beside strIDEterm. If it is not present, the desktop app can still start and be developed normally, but account and mobile commands that need that configuration are unavailable. Passwordless sign-in also needs the companion project's local authentication emulator setup; it is not enabled by the basic desktop checkout. Do not point a local build at a production account or service.
+Both launchers select local development mode by default. It looks for the local demo Firebase client configuration in a companion `strideterm-mobile` checkout beside strIDEterm. If it is not present, the desktop app can still start and be developed normally, but account and mobile commands that need that configuration are unavailable. Passwordless sign-in also needs the companion project's local authentication emulator setup; it is not enabled by the basic desktop checkout. Do not point a local build at a production account or service.
 
 ## Checks and tests
 
