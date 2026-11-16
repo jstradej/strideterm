@@ -382,8 +382,7 @@
       <div class="fm-dialog">
         <h3>Delete {{ deleteDialog.entry.kind === "directory" ? "folder" : "file" }}?</h3>
         <p class="fm-dialog__text">
-          Are you sure you want to delete <strong>{{ deleteDialog.entry.name }}</strong
-          >?
+          Are you sure you want to delete <strong>{{ deleteDialog.entry.name }}</strong>?
         </p>
         <p v-if="store.error" class="fm-dialog__error">{{ store.error }}</p>
         <div class="fm-dialog__actions">

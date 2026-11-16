@@ -206,9 +206,9 @@
           <p class="empty-state__title">No certificates imported.</p>
           <p class="empty-state__note">
             OpenSSH certificates (files typically named <code>&lt;key&gt;-cert.pub</code> in
-            <code>{{ sshDirPath }}</code
-            >) extend a private key with CA-signed metadata — principals, validity window, critical options. They're
-            only needed if your infrastructure uses a certificate authority; most setups do not.
+            <code>{{ sshDirPath }}</code>) extend a private key with CA-signed metadata — principals, validity window,
+            critical options. They're only needed if your infrastructure uses a certificate authority; most setups do
+            not.
           </p>
           <p class="empty-state__note">
             Built-in SSH does not authenticate with these certificates. Importing certificate metadata here does not

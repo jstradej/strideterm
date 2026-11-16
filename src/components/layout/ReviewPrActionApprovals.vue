@@ -85,8 +85,7 @@
         aria-label="Pull request checks"
       >
         <li v-for="check in proposal.snapshot.checks.items" :key="`${check.name}:${check.state}`">
-          <span>{{ check.name }}</span
-          ><span>{{ check.state }}</span>
+          <span>{{ check.name }}</span><span>{{ check.state }}</span>
         </li>
       </ul>
 

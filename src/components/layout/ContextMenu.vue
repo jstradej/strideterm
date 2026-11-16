@@ -215,8 +215,7 @@
             :title="`Swap this tab with '${target.title}' so it occupies the slot in that direction.`"
             @click="onSwapWith(target.viewId)"
           >
-            <span class="context-menu__icon">{{ target.arrow }}</span
-            ><span>{{ target.title }}</span>
+            <span class="context-menu__icon">{{ target.arrow }}</span><span>{{ target.title }}</span>
           </button>
         </template>
         <div class="context-menu__divider"></div>

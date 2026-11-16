@@ -76,9 +76,8 @@
         appended as the last argument (no shell). <code>code --wait</code> becomes
         <code>spawn("code", ["--wait", &lt;path&gt;])</code>. Quote binaries with spaces:
         <code>"C:\Program Files\App\app.exe"</code>. Directory clicks always use the OS default. For
-        <code>{{ "${path}:${line}" }}</code
-        >-style placeholders use "Terminal path links" → Custom command below. Leave empty to fall through to "Terminal
-        path links".
+        <code>{{ "${path}:${line}" }}</code>-style placeholders use "Terminal path links" → Custom command below. Leave
+        empty to fall through to "Terminal path links".
       </small>
     </div>
 

@@ -147,8 +147,7 @@
         </span>
         <textarea v-model="branchTask" rows="12" spellcheck="false" />
         <small
-          >Saved as <code>{{ taskPath }}</code
-          >; the agent's first message tells it to read that file.</small
+          >Saved as <code>{{ taskPath }}</code>; the agent's first message tells it to read that file.</small
         >
       </label>
     </div>

@@ -88,9 +88,8 @@
       <div v-if="reviewLink" class="git-info-banner" data-testid="review-link-note">
         <strong>Linked to PR #{{ reviewLink.pullRequestId }}</strong>
         <p>
-          Push targets <code>{{ reviewLink.sourceBranch }}</code
-          >; update targets <code>{{ reviewLink.targetBranch }}</code
-          >. Updating never pushes.
+          Push targets <code>{{ reviewLink.sourceBranch }}</code>; update targets
+          <code>{{ reviewLink.targetBranch }}</code>. Updating never pushes.
         </p>
         <div class="git-diverged-banner__actions">
           <button
@@ -129,8 +128,7 @@
               Up to date with {{ opRef }}.
             </template>
             <template v-else>
-              Compared with <code>{{ opRef }}</code
-              >:
+              Compared with <code>{{ opRef }}</code>:
               <strong v-if="baseCompare.aheadCount">{{ baseCompare.aheadCount }} ahead</strong>
               <template v-if="baseCompare.aheadCount && baseCompare.behindCount"> · </template>
               <strong v-if="baseCompare.behindCount">{{ baseCompare.behindCount }} behind</strong>
@@ -141,8 +139,7 @@
               >Update fetches <code>{{ opRef }}</code> first.</template
             >
             <template v-else
-              >No remote fetch; updating from local <code>{{ opRef }}</code
-              >.</template
+              >No remote fetch; updating from local <code>{{ opRef }}</code>.</template
             >
           </p>
           <details v-if="hasLocalAndRemote" class="git-overview__advanced">

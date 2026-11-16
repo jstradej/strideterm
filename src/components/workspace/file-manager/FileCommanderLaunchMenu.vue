@@ -36,8 +36,7 @@
         role="menuitem"
         @click="pick(item.key)"
       >
-        <span class="fcl__icon" aria-hidden="true">{{ item.icon }}</span
-        >{{ item.label }}
+        <span class="fcl__icon" aria-hidden="true">{{ item.icon }}</span>{{ item.label }}
       </button>
     </div>
   </div>

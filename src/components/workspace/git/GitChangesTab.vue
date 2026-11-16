@@ -143,8 +143,11 @@
                 />
                 <div v-if="newView && snapshot.dirty" class="git-commit-form" style="margin-top: 12px">
                   <label v-if="jiraIssuePrefix" class="git-jira-prefix"
-                    >Jira issue prefix <code>{{ jiraIssuePrefix }}</code
-                    ><button type="button" class="button button--ghost button--small" @click="addJiraPrefix('staged')">
+                    >Jira issue prefix <code>{{ jiraIssuePrefix }}</code><button
+                      type="button"
+                      class="button button--ghost button--small"
+                      @click="addJiraPrefix('staged')"
+                    >
                       Add prefix
                     </button></label
                   >
@@ -176,8 +179,11 @@
                   style="margin-top: 12px"
                 >
                   <label v-if="jiraIssuePrefix" class="git-jira-prefix"
-                    >Jira issue prefix <code>{{ jiraIssuePrefix }}</code
-                    ><button type="button" class="button button--ghost button--small" @click="addJiraPrefix('classic')">
+                    >Jira issue prefix <code>{{ jiraIssuePrefix }}</code><button
+                      type="button"
+                      class="button button--ghost button--small"
+                      @click="addJiraPrefix('classic')"
+                    >
                       Add prefix
                     </button></label
                   >

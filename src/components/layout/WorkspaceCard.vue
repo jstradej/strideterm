@@ -20,8 +20,12 @@
     @drop="$emit('drop', $event)"
   >
     <span class="workspace-card__badge">
-      <span class="workspace-card__index">{{ workspace.index }}</span
-      ><svg v-if="workspace.badgeGlyph" class="workspace-card__glyph" viewBox="0 0 24 24" aria-hidden="true">
+      <span class="workspace-card__index">{{ workspace.index }}</span><svg
+        v-if="workspace.badgeGlyph"
+        class="workspace-card__glyph"
+        viewBox="0 0 24 24"
+        aria-hidden="true"
+      >
         <path v-for="d in BADGE_GLYPHS[workspace.badgeGlyph]" :key="d" :d="d" /></svg
       ><template v-else>{{ workspace.icon }}</template>
       <span
@@ -103,8 +107,7 @@
           :title="`${item.ref.issueKey}${item.status ? ` · ${item.status}` : ''}${item.summary ? ` — ${item.summary}` : ''}`"
           @click.stop.prevent="openJira(item)"
         >
-          <strong>{{ item.ref.issueKey }}</strong
-          ><span v-if="item.status">{{ item.status }}</span>
+          <strong>{{ item.ref.issueKey }}</strong><span v-if="item.status">{{ item.status }}</span>
         </a>
         <span v-if="workspace.workItems.length > 3" class="workspace-card__jira-more"
           >+{{ workspace.workItems.length - 3 }}</span

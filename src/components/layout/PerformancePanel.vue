@@ -222,29 +222,33 @@
             class="perf__mini"
             title="terminal:data chunks received per second across every terminal in this window."
           >
-            <span class="perf__mini-value">{{ fmtRate(termDiag.dataChunks) }}</span
-            ><span class="perf__mini-label">chunks/s</span>
+            <span class="perf__mini-value">{{ fmtRate(termDiag.dataChunks) }}</span><span class="perf__mini-label"
+              >chunks/s</span
+            >
           </div>
           <div
             class="perf__mini"
             title="Bytes of terminal output received per second (approximated from chunk length). High here + low renders/s = a lot of data the terminal is coalescing efficiently."
           >
-            <span class="perf__mini-value">{{ fmtByteRate(termDiag.dataBytes) }}</span
-            ><span class="perf__mini-label">data/s</span>
+            <span class="perf__mini-value">{{ fmtByteRate(termDiag.dataBytes) }}</span><span class="perf__mini-label"
+              >data/s</span
+            >
           </div>
           <div
             class="perf__mini"
             title="xterm render events per second — how often the terminal actually repaints. High renders/s at modest data/s means the output is thrashing the renderer."
           >
-            <span class="perf__mini-value">{{ fmtRate(termDiag.renderEvents) }}</span
-            ><span class="perf__mini-label">renders/s</span>
+            <span class="perf__mini-value">{{ fmtRate(termDiag.renderEvents) }}</span><span class="perf__mini-label"
+              >renders/s</span
+            >
           </div>
           <div
             class="perf__mini"
             title="Terminal rows repainted per second (summed across every render event). A proxy for how much screen area is being redrawn."
           >
-            <span class="perf__mini-value">{{ fmtRate(termDiag.renderedRows) }}</span
-            ><span class="perf__mini-label">rows/s</span>
+            <span class="perf__mini-value">{{ fmtRate(termDiag.renderedRows) }}</span><span class="perf__mini-label"
+              >rows/s</span
+            >
           </div>
           <div
             class="perf__mini"
@@ -257,12 +261,14 @@
             class="perf__mini"
             title="Forced full terminal redraws this interval (after attach or a forced resize). Should be rare while idle."
           >
-            <span class="perf__mini-value">{{ termDiag.fullRefreshes }}</span
-            ><span class="perf__mini-label">full refreshes</span>
+            <span class="perf__mini-value">{{ termDiag.fullRefreshes }}</span><span class="perf__mini-label"
+              >full refreshes</span
+            >
           </div>
           <div class="perf__mini" title="Number of live terminal views currently mounted in this window.">
-            <span class="perf__mini-value">{{ termDiag.liveViews }}</span
-            ><span class="perf__mini-label">live terminals</span>
+            <span class="perf__mini-value">{{ termDiag.liveViews }}</span><span class="perf__mini-label"
+              >live terminals</span
+            >
           </div>
           <div
             class="perf__mini"
@@ -275,8 +281,7 @@
             class="perf__mini"
             title="Live terminals not currently on screen. They keep their scrollback but paint nothing and hold no GPU context, so they cost nothing per frame."
           >
-            <span class="perf__mini-value">{{ termDiag.parkedViews }}</span
-            ><span class="perf__mini-label">parked</span>
+            <span class="perf__mini-value">{{ termDiag.parkedViews }}</span><span class="perf__mini-label">parked</span>
           </div>
           <div
             class="perf__mini"
