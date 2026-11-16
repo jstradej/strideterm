@@ -4,12 +4,28 @@
  * `-c mcp_servers.*` (with `env_vars` naming — never carrying — the grant variables, and `env`
  * carrying only the spec's constant variables) and
  * Copilot `--additional-mcp-config`. Existing servers and the user's own config are kept.
+ * Gemini CLI has no inline flag: a per-launch settings file named by `GEMINI_CLI_SYSTEM_SETTINGS_PATH` carries `mcpServers`
+ * (merged shallowly over the user's own), and its `env` values are `${VAR}` placeholders expanded from the tab's environment.
  */
+
+/** The variable that points Gemini CLI at a settings file merged over the user's and the project's. */
+export const GEMINI_SETTINGS_PATH_ENV = "GEMINI_CLI_SYSTEM_SETTINGS_PATH";
 
 export interface AgentMcpServerSpec {
   command: string;
   args: string[];
   env?: Record<string, string>;
+  /**
+   * Names of variables the server must inherit from the tab although its CLI scrubs the environment it
+   * starts servers with (the sandbox proxy, which a server inside the sandbox needs to reach the host gateway).
+   * Forwarded by name, never by value: Codex `env_vars`, Copilot `${VAR}`, OpenCode `{env:VAR}`.
+   */
+  forwardEnv?: string[];
+}
+
+/** OpenCode's `environment` entries for the variables a server inherits from the tab. */
+export function opencodeForwardedEnv(spec: { forwardEnv?: string[] }): Record<string, string> {
+  return Object.fromEntries((spec.forwardEnv || []).map((name) => [name, `{env:${name}}`]));
 }
 
 /** A server to install for one launch, plus the names of the per-session grant variables it reads. */
@@ -33,7 +49,7 @@ export function codexMcpServerConfig(name: string, spec: AgentMcpServerSpec, for
     const table = entries.map(([key, value]) => `${JSON.stringify(key)}=${JSON.stringify(value)}`).join(",");
     config.push("-c", `mcp_servers.${name}.env={${table}}`);
   }
-  const forwarded = [...new Set(forwardedEnvVars)].filter((key) => !(key in env));
+  const forwarded = [...new Set([...forwardedEnvVars, ...(spec.forwardEnv || [])])].filter((key) => !(key in env));
   if (forwarded.length) config.push("-c", `mcp_servers.${name}.env_vars=${JSON.stringify(forwarded)}`);
   config.push("-c", `mcp_servers.${name}.args=${JSON.stringify(spec.args)}`);
   return config;
@@ -101,6 +117,26 @@ export function pushCodexMcpInstalls(args: string[], installs: AgentMcpInstall[]
   for (const install of installs) {
     args.push(...codexMcpServerConfig(install.name, install.spec, install.grantEnvVars));
   }
+}
+
+/**
+ * The Gemini settings document for one launch. Constant variables go by value; the per-session grant variables and the
+ * forwarded proxy variables go by NAME as `${VAR}` — Gemini expands them from the tab's environment, so no capability
+ * is ever written to the file.
+ */
+export function geminiMcpSettings(servers: Array<{ name: string; spec: AgentMcpServerSpec; envNames: string[] }>): {
+  mcpServers: Record<string, unknown>;
+} {
+  const mcpServers: Record<string, unknown> = {};
+  for (const { name, spec, envNames } of servers) {
+    const names = [...new Set([...envNames, ...(spec.forwardEnv || [])])].filter((key) => !(key in (spec.env || {})));
+    mcpServers[name] = {
+      command: spec.command,
+      args: spec.args,
+      env: { ...(spec.env || {}), ...Object.fromEntries(names.map((key) => [key, `\${${key}}`])) },
+    };
+  }
+  return { mcpServers };
 }
 
 export function copilotMcpConfigArgs(servers: Record<string, unknown>): string[] {

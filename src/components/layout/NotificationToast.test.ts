@@ -126,6 +126,41 @@ describe("NotificationToast — sticky question lifecycle", () => {
   });
 });
 
+describe("NotificationToast — isolated tab waiting", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    window.localStorage.removeItem("strideterm-notifications-v2");
+    window.localStorage.removeItem("strideterm-notifications-pinned");
+  });
+
+  it("stays sticky and a click opens its Notification Center entry", async () => {
+    const store = useNotificationStore();
+    const open = vi.spyOn(store, "openPanelOnSession");
+    const wrapper = await mountWithToast(
+      questionToast({
+        category: "sandbox",
+        sourceAlertId: undefined,
+        viewId: "sandbox-network:ws-a",
+        meta: { threadId: "ws-a:sandbox-network:ws-a" },
+      }),
+    );
+    store.addAlertEvent({
+      title: "An isolated tab is waiting for your answer",
+      kind: "question",
+      workspaceId: "ws-a",
+      viewId: "sandbox-network:ws-a",
+      category: "sandbox",
+      sourceAlertId: "sandbox:req-1",
+      occurredAt: new Date().toISOString(),
+    });
+    await nextTick();
+    expect(wrapper.find(".notification-toast").exists()).toBe(true);
+
+    await wrapper.get(".notification-toast").trigger("click");
+    expect(open).toHaveBeenCalledWith("ws-a:sandbox-network:ws-a");
+  });
+});
+
 describe("NotificationToast — pull request", () => {
   beforeEach(() => {
     setActivePinia(createPinia());

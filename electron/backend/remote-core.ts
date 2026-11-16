@@ -526,9 +526,14 @@ function scopeAttention(attention: AnyRecord | undefined, inProfile: Set<string>
   for (const [k, v] of Object.entries((attention.sessions || {}) as AnyRecord)) {
     if (inProfile.has(String((v as AnyRecord)?.workspaceId))) sessions[k] = v;
   }
+  const isolation: Record<string, boolean> = {};
+  for (const [id, value] of Object.entries((attention.isolation || {}) as Record<string, boolean>)) {
+    if (inProfile.has(id.slice(0, Math.max(0, id.lastIndexOf(":"))))) isolation[id] = value;
+  }
   return {
     ...attention,
     sessions,
+    isolation,
     ...(attention.byWorkspace
       ? { byWorkspace: filterByWorkspaceId(attention.byWorkspace as AnyRecord, inProfile) }
       : {}),
@@ -586,6 +591,8 @@ export function slimRemoteSettings(settings: AnyRecord | undefined): AnyRecord {
   const telegram = integrations.telegram as AnyRecord | undefined;
   const remoteIntegrations = { ...integrations };
   delete remoteIntegrations.mobile;
+  // Registry connections name internal package hosts; they are desktop-managed and never leave it.
+  if (Object.hasOwn(remoteIntegrations, "registry")) remoteIntegrations.registry = { connections: [] };
   // Jira connection/auth management is desktop-only until dedicated profile-scoped remote read routes exist.
   if (Object.hasOwn(remoteIntegrations, "jira")) {
     const jira = remoteIntegrations.jira as AnyRecord | undefined;

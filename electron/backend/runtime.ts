@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { watch, existsSync } from "node:fs";
+import { watch, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import type { FSWatcher } from "node:fs";
 import { readFile, writeFile, mkdir, readdir, access, rm, rename, lstat, stat, realpath, cp } from "node:fs/promises";
 import { EventEmitter } from "node:events";
@@ -61,6 +61,7 @@ import { sharedReviewGitLocks } from "./review-git/locks.js";
 import { CloudflareTunnelManager, canReconnectTunnel } from "./tunnel-manager.js";
 import { createPluginManager } from "./plugin-loader.js";
 import { createCredentialStore } from "./credential-store.js";
+import { createRuntimeCredentials } from "./runtime-credentials.js";
 import { createAzureReviewStore } from "./azure-review-store.js";
 import { createReviewBridgeStore } from "./review-bridge-store.js";
 import { createAzureAuditLogStore } from "./azure-audit-log-store.js";
@@ -249,6 +250,7 @@ import {
   INTERNAL_MCP_URL_ENV,
 } from "../shared/internal-mcp.js";
 import { OPERATION_FINISHED_CHANNEL, OPERATION_KIND_REVIEW_AGENT_PREPARE } from "../shared/operation-events.js";
+import { createRuntimeSandbox } from "./runtime-sandbox.js";
 import {
   OPERATION_KIND_REVIEW_START,
   type StartPullRequestReviewInput,
@@ -612,6 +614,13 @@ interface RuntimeDependencies {
 
   /** Enables local desktop-only, per-panel Built-in SSH MCP launches. */
   enableAgentSshMcp?: boolean;
+  /** Test seams for the agent sandbox: the OS to probe, how commands run, how a registry is fetched, where the gateway socket goes. */
+  sandbox?: {
+    platform?: NodeJS.Platform;
+    run?: import("./sandbox/sandbox-environment.js").CommandRunner;
+    fetchImpl?: typeof fetch;
+    tmpDir?: string;
+  };
   /** Enables the per-workspace internal MCP (task creation and status) for Claude Code / Codex terminals. */
   enableInternalMcp?: boolean;
   /** How long an internal-MCP task start waits for the Worker's freshly spawned agent to stop drawing. */
@@ -777,11 +786,15 @@ export async function createRuntime({
   const createPluginManagerImpl = dependencies.createPluginManager || createPluginManager;
   const execFileTextImpl = dependencies.execFileText || execFileText;
   const codexVersionProbe = createCodexVersionProbe({ exec: (file, args, opts) => execFileTextImpl(file, args, opts) });
-  const codexNoDaemonFor = (command: unknown): boolean => {
+  // A sandboxed tab runs the sandbox host's own Codex (in WSL on Windows), so its version comes from the sandbox probe.
+  const codexNoDaemonFor = (command: unknown, sessionId: string): boolean => {
     const parsed = parseAgentCommand(command);
-    return (
-      parsed?.provider === "codex" && shouldAddCodexNoDaemon(parsed.args, codexVersionProbe.get(parsed.executable))
-    );
+    if (parsed?.provider !== "codex") return false;
+    const sandboxEnvironment = runtimeSandbox.service.environmentOf(sessionId);
+    const version = sandboxEnvironment
+      ? (sandboxEnvironment.codexVersion ?? null)
+      : codexVersionProbe.get(parsed.executable);
+    return shouldAddCodexNoDaemon(parsed.args, version);
   };
   const rmPathImpl = dependencies.rmPath ?? null;
 
@@ -1152,7 +1165,25 @@ export async function createRuntime({
   // consumed by the session's first launch, never persisted. Unlike the review launch it changes nothing else about
   // the session — the agent stays an ordinary interactive one.
   const pendingAgentInitialPrompt = new Map<string, { prompt: string; agentName: string; executable: string }>();
+  // Agent isolation: the sandbox service, the host gateway it reaches through, and their audit trail.
+  const runtimeSandbox = createRuntimeSandbox({
+    dataDir: userDataPath,
+    auditDir: reviewBridgeRoot,
+    getState: () => getState(),
+    mutate: (fn) => store.mutate(fn),
+    credentialStore,
+    getWindowProfileId,
+    emit: (channel, payload) => events.emit(channel, payload),
+    broadcastState: () => broadcastState(),
+    ...(dependencies.sandbox || {}),
+  });
+  const runtimeCredentials = createRuntimeCredentials({
+    getState: () => getState(),
+    credentialStore,
+    broadcastState: () => broadcastState(),
+  });
   const sessions = new SessionManagerImpl({
+    sandbox: runtimeSandbox.hooks,
     sshManager,
     spawnPty: dependencies.sshTestPtySpawn,
     isBracketedPasteEnabled: (sessionId: string) => terminalReplay.isBracketedPasteEnabled(sessionId),
@@ -1249,17 +1280,33 @@ export async function createRuntime({
       sessionId: string;
     }) => {
       const panelState = panel as import("../shared/types/state.js").PanelState;
+      // Gemini CLI takes its MCP servers from a settings file named by an environment variable: one per session,
+      // rewritten at every launch. It names variables, never values.
+      const geminiSettingsPath = path.join(
+        userDataPath,
+        "gemini-mcp",
+        `${Buffer.from(sessionId).toString("base64url")}.json`,
+      );
+      const writeLaunchFiles = <T extends { files?: Array<{ path: string; content: string }> }>(launch: T): T => {
+        for (const file of launch.files ?? []) {
+          mkdirSync(path.dirname(file.path), { recursive: true });
+          writeFileSync(file.path, file.content, "utf8");
+        }
+        return launch;
+      };
+      // A sandboxed tab starts its MCP bridges inside the sandbox: plain node, the bridge entry as the sandbox sees it.
+      const sessionProcessInfo = runtimeSandbox.processInfoFor(sessionId, processInfo);
       const pendingReview = pendingPullRequestReviewLaunch.get(sessionId);
       const pendingPrompt = pendingReview ? undefined : pendingAgentInitialPrompt.get(sessionId);
       const promptProcessInfo = pendingPrompt
         ? {
-            ...processInfo,
+            ...sessionProcessInfo,
             commandLookup: {
-              ...(processInfo.commandLookup || {}),
+              ...(sessionProcessInfo.commandLookup || {}),
               [pendingPrompt.agentName]: pendingPrompt.executable,
             },
           }
-        : processInfo;
+        : sessionProcessInfo;
       sshMcpBroker?.revokeSession(sessionId);
       internalMcpBroker?.revokeSession(sessionId);
       // Workspace-wide feature opt-ins: each agent tab receives only the selected tool family.
@@ -1273,7 +1320,7 @@ export async function createRuntime({
         !panelState.launch &&
         getInternalMcpEligibility(panelState.command).supported
       ) {
-        internalMcpSpec = buildInternalMcpServerSpec(processInfo);
+        internalMcpSpec = buildInternalMcpServerSpec(sessionProcessInfo);
         const grant = internalMcpBroker.mintGrant({
           sessionId,
           profileId: String(workspace.profileId || "default"),
@@ -1310,7 +1357,7 @@ export async function createRuntime({
           const profileId = String(workspace?.profileId || "default");
           const profileExists = getState().profiles.some((profile) => profile.id === profileId);
           if (!workspace || !profileExists) throw new Error("The tab profile is no longer available for SSH tools.");
-          sshMcpSpec = buildAgentSshMcpServerSpec(processInfo);
+          sshMcpSpec = buildAgentSshMcpServerSpec(sessionProcessInfo);
           const grant = sshMcpBroker!.mintGrant({
             sessionId,
             profileId,
@@ -1361,9 +1408,9 @@ export async function createRuntime({
           if (pendingReview) pendingPullRequestReviewLaunch.delete(sessionId);
           const launchProcessInfo = pendingReview
             ? {
-                ...processInfo,
+                ...sessionProcessInfo,
                 commandLookup: {
-                  ...(processInfo.commandLookup || {}),
+                  ...(sessionProcessInfo.commandLookup || {}),
                   [pendingReview.agentName]: pendingReview.executable,
                 },
               }
@@ -1378,7 +1425,8 @@ export async function createRuntime({
             internalMcp: pendingReview ? undefined : internalMcpSpec,
             internalMcpEnv: pendingReview ? undefined : internalMcpEnv,
             reviewGitEnv: pendingReview ? undefined : reviewGitEnv,
-            codexNoDaemon: !panelState.launch && codexNoDaemonFor(panelState.command),
+            codexNoDaemon: !panelState.launch && codexNoDaemonFor(panelState.command, sessionId),
+            geminiSettingsPath,
             ...(pendingReview
               ? { initialPrompt: pendingReview.prompt, draftOnlyReview: true }
               : pendingPrompt
@@ -1390,6 +1438,7 @@ export async function createRuntime({
       }
 
       if (reviewLaunch) {
+        writeLaunchFiles(reviewLaunch);
         const launchEnv = pendingReview
           ? {}
           : { ...(sshMcpEnv || {}), ...(reviewGitEnv || {}), ...(internalMcpEnv || {}) };
@@ -1406,7 +1455,8 @@ export async function createRuntime({
           sshMcp: sshMcpSpec,
           internalMcp: internalMcpSpec,
           internalMcpEnv,
-          codexNoDaemon: codexNoDaemonFor(panelState.command),
+          codexNoDaemon: codexNoDaemonFor(panelState.command, sessionId),
+          geminiSettingsPath,
           ...(pendingPrompt ? { initialPrompt: pendingPrompt.prompt } : {}),
         });
         if (!launch)
@@ -1416,9 +1466,10 @@ export async function createRuntime({
               : "This tab's agent command could not be started with its first message.",
           );
         if (pendingPrompt) pendingAgentInitialPrompt.delete(sessionId);
+        writeLaunchFiles(launch);
         return { ...launch, env: { ...(launch.env || {}), ...sshMcpEnv, ...internalMcpEnv } };
       }
-      if (!panelState.launch && codexNoDaemonFor(panelState.command)) {
+      if (!panelState.launch && codexNoDaemonFor(panelState.command, sessionId)) {
         return { command: insertCodexNoDaemon(panelState.command) };
       }
       return null;
@@ -4898,7 +4949,11 @@ export async function createRuntime({
         }
         return ws;
       })(),
-      attention: getAttentionSnapshot(),
+      // A session manager test double may not know about isolation; the real one always does.
+      attention: {
+        ...getAttentionSnapshot(),
+        isolation: typeof sessions.getIsolationMap === "function" ? sessions.getIsolationMap() : {},
+      },
       jiraWorkspaceViews: jiraWorkspaceViewsSnapshot(),
       docker: docker.getSnapshot(),
       git: {
@@ -5691,6 +5746,9 @@ export async function createRuntime({
     taskRunner.cancelPendingInput(String(payload.sessionId || ""));
     codexTerminalNotifications.delete(String(payload.sessionId || ""));
     clearTerminalReplay(String(payload.sessionId || ""));
+    // The sandbox prepares asynchronously, after the broadcast that showed the tab; without a push of its own the
+    // "isolated" badge (payload.attention.isolation) waited for an unrelated state change.
+    if (payload.sandboxed === true) broadcastState();
   });
 
   // A panel removed from state (e.g. saveWorkspace → sessions.syncWithState)
@@ -12281,16 +12339,22 @@ export async function createRuntime({
           normalized.internalMcpEnabled = priorWorkspace?.internalMcpEnabled === true;
           normalized.sshMcpEnabled = priorWorkspace?.sshMcpEnabled === true;
           normalized.jiraMcpEnabled = priorWorkspace?.jiraMcpEnabled === true;
+          // Isolation is turned on, and its allowlist widened, only at the machine that runs the agents.
+          normalized.sandboxEnabled = priorWorkspace?.sandboxEnabled === true;
+          normalized.sandboxAllowedDomains = [...(priorWorkspace?.sandboxAllowedDomains ?? [])];
           const savedOptIns = new Map(
-            ((priorWorkspace?.panels || []) as Array<{ id: string; sshMcpEnabled?: boolean }>).map((panel) => [
-              panel.id,
-              panel.sshMcpEnabled === true,
-            ]),
+            (
+              (priorWorkspace?.panels || []) as Array<{ id: string; sshMcpEnabled?: boolean; sandboxShell?: boolean }>
+            ).map((panel) => [panel.id, { ssh: panel.sshMcpEnabled === true, shell: panel.sandboxShell === true }]),
           );
-          normalized.panels = normalized.panels.map((panel) => ({
-            ...panel,
-            sshMcpEnabled: savedOptIns.get(panel.id) === true,
-          }));
+          normalized.panels = normalized.panels.map((panel) => {
+            const { sandboxShell: _clientShell, ...rest } = panel;
+            return {
+              ...rest,
+              sshMcpEnabled: savedOptIns.get(panel.id)?.ssh === true,
+              ...(savedOptIns.get(panel.id)?.shell ? { sandboxShell: true } : {}),
+            };
+          });
         }
         log.debug("saveWorkspace: normalized", {
           workspaceId: normalized.id,
@@ -12346,6 +12410,8 @@ export async function createRuntime({
           if (priorStored?.jiraMcpCommentDrafts?.length)
             normalized.jiraMcpCommentDrafts = priorStored.jiraMcpCommentDrafts;
           else delete normalized.jiraMcpCommentDrafts;
+          // A task that runs isolated stays isolated: a save carrying a stale or hostile copy cannot lift it.
+          if (normalized.kind === "task" && priorStored?.sandboxEnabled === true) normalized.sandboxEnabled = true;
           if (normalized.task) {
             if (priorStored?.task?.jiraPreparedSnapshot)
               normalized.task.jiraPreparedSnapshot = priorStored.task.jiraPreparedSnapshot;
@@ -12376,6 +12442,24 @@ export async function createRuntime({
           insertWorkspace(draft.workspaces, normalized, getViewerActiveWorkspaceId(windowId));
           // Creating a workspace IS work (V2 plan allowlist).
           markWorkspaceWorked(draft, normalized.id);
+        }
+
+        // An isolated workspace forces isolation on the tasks (and companions) below it, today's and not the
+        // one it had when they were created. Isolation only narrows: a workspace that is not isolated leaves
+        // a task that was created isolated as it is.
+        if (normalized.sandboxEnabled === true) {
+          const isolated = new Set<string>([normalized.id]);
+          for (let grew = true; grew;) {
+            grew = false;
+            for (const child of draft.workspaces) {
+              if (child.kind !== "task" || isolated.has(child.id) || !isolated.has(child.task?.parentWorkspaceId || ""))
+                continue;
+              isolated.add(child.id);
+              grew = true;
+              child.sandboxEnabled = true;
+              child.sandboxAllowedDomains = [...(normalized.sandboxAllowedDomains ?? [])];
+            }
+          }
         }
 
         if (!draft.activeWorkspaceId) {
@@ -13419,7 +13503,12 @@ export async function createRuntime({
         delete settingsToSave.git.ui.newView;
       }
       // Jira settings (connections, secret refs, polling) have their own channels and are never saved here.
-      const { jira: _ignoredJiraSettings, ...integrationsToSave } = settings.integrations || {};
+      // Registry connections (and their stored secrets) likewise change only through their own desktop channels.
+      const {
+        jira: _ignoredJiraSettings,
+        registry: _ignoredRegistrySettings,
+        ...integrationsToSave
+      } = settings.integrations || {};
       const previousConfig = getState().settings.remoteAccess;
       let autoApproveDisarmed = false;
       await store.mutate((draft: AppState) => {
@@ -14322,6 +14411,8 @@ export async function createRuntime({
             pluginId: liveProject.pluginId,
             internalMcpEnabled: liveProject.internalMcpEnabled === true,
             sshMcpEnabled: liveProject.sshMcpEnabled === true,
+            sandboxEnabled: liveProject.sandboxEnabled === true,
+            sandboxAllowedDomains: liveProject.sandboxAllowedDomains ?? [],
             profileId: liveProject.profileId,
             connectionId: liveProject.connectionId || "",
             cwd: treePath,
@@ -14629,6 +14720,7 @@ export async function createRuntime({
       await stopAllSshTests();
       taskRunner.dispose();
       sessions.stopAll();
+      await runtimeSandbox.shutdown();
       await reviewBridgeStore.close?.();
       await gitCacheStore.close();
       auditLogStore.close?.();
@@ -14660,6 +14752,22 @@ export async function createRuntime({
       }
       return undefined;
     },
+    // Agent isolation and registry connections. Reached only through desktop IPC: the remote server
+    // registers no counterpart, so a browser or phone can neither arm isolation nor widen what it reaches.
+    sandboxGetStatus: (request: { force?: boolean; distro?: string } = {}) => runtimeSandbox.getStatus(request),
+    sandboxInstallPrerequisites: (request: { distro?: string } = {}) => runtimeSandbox.installPrerequisites(request),
+    sandboxListPending: () => runtimeSandbox.listPending(),
+    sandboxDecide: (request: { requestId: string; allow: boolean; remember?: boolean }) =>
+      runtimeSandbox.decide(request),
+    registrySave: (input: Parameters<typeof runtimeSandbox.saveRegistry>[0], windowId?: string) =>
+      runtimeSandbox.saveRegistry(input, windowId),
+    registryDelete: (connectionId: string, windowId?: string) => runtimeSandbox.deleteRegistry(connectionId, windowId),
+    registryTest: (request: { connectionId: string; probePath?: string }, windowId?: string) =>
+      runtimeSandbox.testRegistry(request, windowId),
+    credentialsList: () => runtimeCredentials.list(),
+    credentialsRemove: (ref: string) => runtimeCredentials.remove(ref),
+    credentialsRemoveOrphans: () => runtimeCredentials.removeOrphans(),
+
     listRemoteUrls() {
       return remoteInfo?.urls || [];
     },

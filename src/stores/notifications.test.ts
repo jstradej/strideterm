@@ -253,11 +253,35 @@ describe("notification store (session-grouped)", () => {
       store.showError("Stop failed", "EBUSY: resource busy", { workspaceId: "ws-1", profileId: "p1" });
 
       expect(store.persistentToasts).toHaveLength(2);
-      expect(store.sessions).toHaveLength(1);
-      expect(store.sessions[0].events).toHaveLength(2);
+      // One thread per failure: a repeat refreshes its own entry and moves it to the top.
+      expect(store.sessions).toHaveLength(2);
+      expect(store.sessions[0].events).toHaveLength(1);
       expect(store.sessions[0].events[0].title).toBe("Stop failed");
       expect(store.sessions[0].events[0].body).toBe("EBUSY: resource busy");
       expect(store.sessions[0].events[0].details?.rawError).toBe("EBUSY: resource busy");
+      expect(store.sessions[1].events[0].title).toBe("Start failed");
+    });
+
+    it("unrelated failures with no tab do not share a thread, nor take its name", () => {
+      const store = useNotificationStore();
+      store.addAlertEvent({
+        title: "Failed remote sign-in attempts",
+        body: "3 attempts",
+        kind: "error",
+        workspaceName: "Remote access",
+        category: "remote-auth",
+        threadKey: "remote-auth",
+        sourceAlertId: "remote-auth:1.2.3.4:1",
+        occurredAt: new Date().toISOString(),
+      });
+      store.showError("Could not save the registry", "Enter the registry URL.");
+      store.showError("Could not test the registry", "unreachable");
+
+      expect(store.sessions).toHaveLength(3);
+      const registry = store.sessions.find((s) => s.events[0].title === "Could not save the registry")!;
+      expect(registry.events).toHaveLength(1);
+      expect(registry.workspaceName).toBe("");
+      expect(store.sessions.find((s) => s.category === "remote-auth")!.events).toHaveLength(1);
     });
   });
 

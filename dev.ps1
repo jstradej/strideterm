@@ -447,6 +447,27 @@ foreach ($cacheName in @('Cache', 'GPUCache', 'DawnGraphiteCache', 'DawnWebGPUCa
     }
 }
 
+# --- Step 1b: Bundle the sandbox runtime ----------------------------------
+# Packaged builds ship it; dev finds it in dist-electron\sandbox-runtime (bundled-runtime.ts).
+# Not fatal: without it only workspace isolation reports the runtime missing.
+
+Write-Step 'Bundling the sandbox runtime...'
+# 'Stop' would turn the script's stderr (redirected below) into a terminating error on Windows PowerShell 5.1.
+$previousPreference = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    $bundleOutput = & node (Join-Path $PSScriptRoot 'node_modules\tsx\dist\cli.mjs') (Join-Path $PSScriptRoot 'scripts\bundle-sandbox-runtime.mts') 2>&1
+    $bundleExit = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $previousPreference
+}
+if ($bundleExit -eq 0) {
+    Write-Ok 'Sandbox runtime bundled into dist-electron\sandbox-runtime.'
+} else {
+    $bundleError = ($bundleOutput | ForEach-Object { "$_" } | Select-String -Pattern 'Error: ' | Select-Object -First 1)
+    Write-Warn "Sandbox runtime not bundled ($bundleError). Workspace isolation will report it missing; run npm ci."
+}
+
 # --- Step 2: Free port ----------------------------------------------------
 
 Write-Step "Checking port $Port..."

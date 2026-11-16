@@ -15,7 +15,10 @@ import {
   claudeMcpServerEntries,
   codexMcpServerConfig,
   copilotMcpConfigArgs,
+  GEMINI_SETTINGS_PATH_ENV,
+  geminiMcpSettings,
   installsEnv,
+  opencodeForwardedEnv,
   pushCodexMcpInstalls,
   type AgentMcpInstall,
   type AgentMcpServerSpec,
@@ -25,7 +28,7 @@ import { buildReviewGitPolicy } from "../shared/review-git-policy.js";
 import { buildBasicReviewAgentPolicy } from "./basic-review-agent-policy.js";
 import { CODEX_NO_DAEMON_FLAG } from "./codex-no-daemon.js";
 
-const SUPPORTED_REVIEW_AGENTS = new Set(["claude", "codex", "copilot", "opencode"]);
+const SUPPORTED_REVIEW_AGENTS = new Set(["claude", "codex", "copilot", "opencode", "gemini"]);
 const REVIEW_BRIDGE_STDIO_ENTRY = fileURLToPath(new URL("./review-bridge-mcp-stdio.js", import.meta.url));
 const SSH_MCP_STDIO_ENTRY = fileURLToPath(new URL("./ssh-mcp-stdio-entry.js", import.meta.url));
 const INTERNAL_MCP_STDIO_ENTRY = fileURLToPath(new URL("./internal-mcp-stdio-entry.js", import.meta.url));
@@ -41,7 +44,13 @@ interface GrantMcpServers {
 function grantMcpInstalls({ sshMcp, internalMcp }: GrantMcpServers): AgentMcpInstall[] {
   return [
     ...(sshMcp
-      ? [{ name: "strideterm_ssh", spec: sshMcp, grantEnvVars: [SSH_MCP_URL_ENV, SSH_MCP_CAPABILITY_ENV] }]
+      ? [
+          {
+            name: "strideterm_ssh",
+            spec: sshMcp,
+            grantEnvVars: [SSH_MCP_URL_ENV, SSH_MCP_CAPABILITY_ENV, ...(sshMcp.forwardEnv || [])],
+          },
+        ]
       : []),
     ...(internalMcp
       ? [
@@ -53,6 +62,7 @@ function grantMcpInstalls({ sshMcp, internalMcp }: GrantMcpServers): AgentMcpIns
               INTERNAL_MCP_CAPABILITY_ENV,
               INTERNAL_MCP_TASKS_ENABLED_ENV,
               INTERNAL_MCP_JIRA_ENABLED_ENV,
+              ...(internalMcp.forwardEnv || []),
             ],
           },
         ]
@@ -91,7 +101,23 @@ interface ReviewContext {
   pullRequest?: ReviewPullRequest;
 }
 
+/**
+ * Where an MCP bridge runs when the tab is sandboxed: plain `node` of the sandbox host, with the bridge's entry
+ * script as that host sees it. `mapPath` returns null for an entry the sandbox host cannot read (inside an asar).
+ */
+export interface SandboxMcpTarget {
+  /** Plain `node` of the sandbox host (WSL). Null on a native host: the app's own executable runs the bridge as node. */
+  nodePath: string | null;
+  mapPath: (hostPath: string) => string | null;
+  forwardEnv: string[];
+}
+
+function runsInWslSandbox(processInfo: ProcessInfo | undefined): boolean {
+  return Boolean(processInfo?.sandbox?.nodePath);
+}
+
 interface ProcessInfo {
+  sandbox?: SandboxMcpTarget;
   execPath?: string;
   argv?: string[];
   defaultApp?: boolean;
@@ -106,6 +132,7 @@ interface McpServerSpec {
   command: string;
   args: string[];
   env?: Record<string, string>;
+  forwardEnv?: string[];
 }
 
 interface AgentLaunch {
@@ -114,6 +141,8 @@ interface AgentLaunch {
   cwd: string;
   env?: Record<string, string>;
   skipCommandInjection: boolean;
+  /** Files the launch names (Gemini's settings): the runtime writes them before the process starts. Never a secret. */
+  files?: Array<{ path: string; content: string }>;
 }
 
 interface BuildLaunchInput extends GrantMcpServers {
@@ -134,6 +163,8 @@ interface BuildLaunchInput extends GrantMcpServers {
   initialPrompt?: string;
   /** Constrains the bridge to local draft tools for automated basic reviews. */
   draftOnlyReview?: boolean;
+  /** Where Gemini's per-launch settings file goes; its MCP servers are configured there and nowhere else. */
+  geminiSettingsPath?: string;
 }
 
 function normalizeText(value: unknown): string {
@@ -362,6 +393,7 @@ interface FinishLaunchInput {
   // for providers whose win32 resolution needs more than one binary (Codex
   // resolves both `node` and `codex` and rewrites `args` around them).
   resolveWin32?: () => { file: string; args: string[] } | null;
+  files?: AgentLaunch["files"];
 }
 
 // Shared win32 binary-resolution-with-fallback tail used by every
@@ -380,43 +412,49 @@ function finishLaunch({
   win32Env,
   nonWin32Env,
   resolveWin32,
+  files,
 }: FinishLaunchInput): AgentLaunch {
   const cwd = panel?.cwd || workspace?.cwd || "";
+  const withFiles = (launch: AgentLaunch): AgentLaunch => (files?.length ? { ...launch, files } : launch);
 
   if (platform === "win32") {
-    const resolved = resolveWin32
-      ? resolveWin32()
-      : (() => {
-          const resolvedPath = resolveWindowsCommandPath(commandName, processInfo, preferredExtensions);
-          return resolvedPath ? { file: resolvedPath, args } : null;
-        })();
+    // A tab isolated in WSL runs the distro's own CLI: a resolved Windows shim (or node + codex.js under /mnt/c) is
+    // unreachable from the sandbox.
+    const resolved = runsInWslSandbox(processInfo)
+      ? null
+      : resolveWin32
+        ? resolveWin32()
+        : (() => {
+            const resolvedPath = resolveWindowsCommandPath(commandName, processInfo, preferredExtensions);
+            return resolvedPath ? { file: resolvedPath, args } : null;
+          })();
 
     if (resolved) {
-      return {
+      return withFiles({
         file: resolved.file,
         args: resolved.args,
         cwd,
         env: win32Env || {},
         skipCommandInjection: true,
-      };
+      });
     }
 
-    return {
+    return withFiles({
       file: commandName,
       args,
       cwd,
       env: win32Env || {},
       skipCommandInjection: true,
-    };
+    });
   }
 
-  return {
+  return withFiles({
     file: commandName,
     args,
     cwd,
     ...(nonWin32Env !== undefined ? { env: nonWin32Env } : {}),
     skipCommandInjection: true,
-  };
+  });
 }
 
 function buildMcpServerSpec({
@@ -456,18 +494,28 @@ function buildMcpServerSpec({
   }
   if (draftOnlyReview) args.push("--review-draft-only");
 
+  const sandboxed = sandboxMcpSpec(REVIEW_BRIDGE_STDIO_ENTRY, args, processInfo);
+  if (sandboxed) return sandboxed;
   const platform = processInfo?.platform || process.platform;
   if (platform === "win32" || processInfo?.isElectron || processInfo?.defaultApp) {
-    return {
-      command,
-      args: [REVIEW_BRIDGE_STDIO_ENTRY, ...args],
-      env: {
-        ELECTRON_RUN_AS_NODE: "1",
+    return nativeSandboxSpec(
+      {
+        command,
+        args: [REVIEW_BRIDGE_STDIO_ENTRY, ...args],
+        env: {
+          ELECTRON_RUN_AS_NODE: "1",
+        },
       },
-    };
+      REVIEW_BRIDGE_STDIO_ENTRY,
+      processInfo,
+    );
   }
 
-  return { command, args: [REVIEW_BRIDGE_STDIO_ENTRY, ...args] };
+  return nativeSandboxSpec(
+    { command, args: [REVIEW_BRIDGE_STDIO_ENTRY, ...args] },
+    REVIEW_BRIDGE_STDIO_ENTRY,
+    processInfo,
+  );
 }
 
 function buildClaudeLaunch({
@@ -625,6 +673,8 @@ function buildCopilotLaunch({
   const reviewGitPlaceholders = Object.fromEntries(
     Object.keys(reviewGitEnv || {}).map((name) => [name, `\${${name}}`]),
   );
+  const forwardedPlaceholders = (spec: { forwardEnv?: string[] }) =>
+    Object.fromEntries((spec.forwardEnv || []).map((name) => [name, `\${${name}}`]));
   const internalMcpPlaceholders = Object.fromEntries(
     installs.flatMap((install) => install.grantEnvVars.map((name) => [name, `\${${name}}`] as const)),
   );
@@ -635,7 +685,7 @@ function buildCopilotLaunch({
       review: {
         command: mcp.command,
         args: mcp.args,
-        env: { ...(mcp.env || {}), ...reviewGitPlaceholders },
+        env: { ...(mcp.env || {}), ...reviewGitPlaceholders, ...forwardedPlaceholders(mcp) },
       },
       ...Object.fromEntries(
         installs.map((install) => [
@@ -709,7 +759,7 @@ function buildOpencodeLaunch({
       review: {
         type: "local",
         command: [mcp.command, ...mcp.args],
-        environment: { ...(mcp.env || {}), ...(reviewGitEnv || {}) },
+        environment: { ...(mcp.env || {}), ...(reviewGitEnv || {}), ...opencodeForwardedEnv(mcp) },
         enabled: true,
       },
       ...Object.fromEntries(
@@ -718,7 +768,11 @@ function buildOpencodeLaunch({
           {
             type: "local",
             command: [install.spec.command, ...install.spec.args],
-            environment: { ...(install.spec.env || {}), ...(internalMcpEnv || {}) },
+            environment: {
+              ...(install.spec.env || {}),
+              ...(internalMcpEnv || {}),
+              ...opencodeForwardedEnv(install.spec),
+            },
             enabled: true,
           },
         ]),
@@ -749,6 +803,50 @@ function buildOpencodeLaunch({
     // (its MCP config is delivered via OPENCODE_CONFIG_CONTENT, not a CLI
     // flag), so it's the only provider passing a non-win32 env too.
     nonWin32Env: env,
+  });
+}
+
+function geminiSettingsFile(settingsPath: string, servers: Parameters<typeof geminiMcpSettings>[0]) {
+  return {
+    env: { [GEMINI_SETTINGS_PATH_ENV]: settingsPath },
+    files: [{ path: settingsPath, content: JSON.stringify(geminiMcpSettings(servers), null, 2) }],
+  };
+}
+
+function buildGeminiLaunch({
+  workspace,
+  panel,
+  context,
+  processInfo,
+  reviewGitEnv,
+  internalMcp,
+  initialPrompt,
+  geminiSettingsPath,
+}: BuildLaunchInput): AgentLaunch {
+  if (!geminiSettingsPath) throw new Error("The Gemini MCP launch is missing its settings file path.");
+  const installs = grantMcpInstalls({ internalMcp });
+  const mcp = buildMcpServerSpec({ context, processInfo });
+  const platform = processInfo?.platform || process.platform;
+  const args = [...inheritedPanelArgs(panel)];
+  if (initialPrompt?.trim()) args.push("-i", initialPrompt.trim());
+  // Gemini starts a server with the tab's environment plus the `env` its settings name, expanding ${VAR} from the tab:
+  // the per-tab Git capability and the grants are named here by variable, never written into the file.
+  const settings = geminiSettingsFile(geminiSettingsPath, [
+    { name: "review", spec: mcp, envNames: Object.keys(reviewGitEnv || {}) },
+    ...installs.map((install) => ({ name: install.name, spec: install.spec, envNames: install.grantEnvVars })),
+  ]);
+
+  return finishLaunch({
+    platform,
+    commandName: processInfo?.commandLookup?.gemini || "gemini",
+    preferredExtensions: [".cmd", ".bat", ".exe", ".ps1"],
+    args,
+    workspace,
+    panel,
+    processInfo,
+    win32Env: settings.env,
+    nonWin32Env: settings.env,
+    files: settings.files,
   });
 }
 
@@ -783,6 +881,9 @@ export function detectReviewAgentPanel(panel: ReviewPanel = {}): string | null {
   if (title.includes("opencode")) {
     return "opencode";
   }
+  if (title.includes("gemini")) {
+    return "gemini";
+  }
 
   return null;
 }
@@ -801,6 +902,7 @@ export function buildReviewAgentLaunch({
   codexNoDaemon,
   initialPrompt,
   draftOnlyReview,
+  geminiSettingsPath,
 }: BuildLaunchInput): AgentLaunch | null {
   if (!context?.rootPath) {
     return null;
@@ -859,22 +961,75 @@ export function buildReviewAgentLaunch({
       draftOnlyReview,
     });
   }
+  if (agent === "gemini" && !draftOnlyReview) {
+    // The automatic one-shot review needs a read-only tool policy this CLI's settings cannot be verified to give.
+    return buildGeminiLaunch({
+      workspace,
+      panel,
+      context,
+      processInfo,
+      reviewGitEnv,
+      internalMcp,
+      initialPrompt,
+      geminiSettingsPath,
+    });
+  }
   return null;
 }
 
+/**
+ * A packaged build keeps the bridge entries inside app.asar, which the plain `node` of a WSL distro cannot read.
+ * A self-contained copy of each ships beside it (`resources/mcp-bridges/<name>.mjs`, built by
+ * scripts/bundle-mcp-bridges.mts); an entry outside an archive is returned as it is.
+ */
+export function sandboxBridgeEntry(entry: string, resourcesPath: string | undefined = process.resourcesPath): string {
+  if (!/\.asar(?:[\\/]|$)/iu.test(entry) || !resourcesPath) return entry;
+  const bundled = path.join(resourcesPath, "mcp-bridges", `${path.basename(entry, ".js")}.mjs`);
+  return fs.existsSync(bundled) ? bundled : entry;
+}
+
+/** The bridge as it runs inside the sandbox, or null when this tab is not sandboxed. */
+function sandboxMcpSpec(entry: string, leading: string[], processInfo?: ProcessInfo): McpServerSpec | null {
+  const target = processInfo?.sandbox;
+  if (!target?.nodePath) return null;
+  const mapped = target.mapPath(sandboxBridgeEntry(entry));
+  if (!mapped) throw new Error("This installation's MCP bridge cannot run inside the sandbox.");
+  // Windows paths the bridge is told about (the review checkout and store) are read by a process in WSL.
+  const args = leading.map((arg) => (/^[A-Za-z]:[\\/]/u.test(arg) ? (target.mapPath(arg) ?? arg) : arg));
+  return { command: target.nodePath, args: [mapped, ...args], forwardEnv: target.forwardEnv };
+}
+
+/**
+ * On a native host the bridge keeps running as the app's own executable (it can read an asar, system node cannot);
+ * the sandbox only needs to read that executable's folder and the entry, and to hand the proxy variables on.
+ */
+function nativeSandboxSpec<T extends McpServerSpec>(spec: T, entry: string, processInfo?: ProcessInfo): T {
+  const target = processInfo?.sandbox;
+  if (!target || target.nodePath) return spec;
+  target.mapPath(entry);
+  if (processInfo?.execPath) target.mapPath(path.dirname(processInfo.execPath));
+  return { ...spec, forwardEnv: target.forwardEnv };
+}
+
 function buildStdioMcpServerSpec(entry: string, flag: string, processInfo: ProcessInfo): AgentMcpServerSpec {
+  const sandboxed = sandboxMcpSpec(entry, [flag], processInfo);
+  if (sandboxed) return sandboxed;
   const command = String(processInfo.execPath || process.execPath || "").trim();
   if (!command) throw new Error("MCP launch is missing an executable path.");
 
   const platform = processInfo.platform || process.platform;
   if (platform === "win32" || processInfo.defaultApp || processInfo.isElectron) {
-    return {
-      command,
-      args: [entry, flag],
-      ...(processInfo.isElectron || processInfo.defaultApp ? { env: { ELECTRON_RUN_AS_NODE: "1" } } : {}),
-    };
+    return nativeSandboxSpec(
+      {
+        command,
+        args: [entry, flag],
+        ...(processInfo.isElectron || processInfo.defaultApp ? { env: { ELECTRON_RUN_AS_NODE: "1" } } : {}),
+      },
+      entry,
+      processInfo,
+    );
   }
-  return { command, args: [entry, flag] };
+  return nativeSandboxSpec({ command, args: [entry, flag] }, entry, processInfo);
 }
 
 export function buildAgentSshMcpServerSpec(processInfo: ProcessInfo = {}): AgentSshMcpServerSpec {
@@ -894,6 +1049,7 @@ export function buildAgentMcpLaunch({
   internalMcpEnv,
   codexNoDaemon,
   initialPrompt,
+  geminiSettingsPath,
 }: GrantMcpServers & {
   workspace?: { cwd?: string };
   codexNoDaemon?: boolean;
@@ -903,6 +1059,8 @@ export function buildAgentMcpLaunch({
   internalMcpEnv?: Record<string, string>;
   /** First message of an interactive session a backend action started; the session stays interactive. */
   initialPrompt?: string;
+  /** Where Gemini's per-launch settings file goes (required for a Gemini tab with MCP tools). */
+  geminiSettingsPath?: string;
 }): AgentLaunch | null {
   const installs = grantMcpInstalls({ sshMcp, internalMcp });
   let env = installsEnv(installs);
@@ -915,6 +1073,7 @@ export function buildAgentMcpLaunch({
   // goes first (its CLI accepts options after the prompt). The others take it last, like the review launch.
   if (prompt && parsed.provider === "claude") args.unshift(prompt);
   let envOnEveryPlatform = false;
+  let files: AgentLaunch["files"];
   if (!installs.length) {
     if (parsed.provider === "codex" && codexNoDaemon) args.unshift(CODEX_NO_DAEMON_FLAG);
   } else if (parsed.provider === "claude") {
@@ -924,7 +1083,16 @@ export function buildAgentMcpLaunch({
     pushCodexMcpInstalls(args, installs);
   } else {
     if (sshMcp) throw new Error("SSH tools are available only for Claude Code and Codex tabs.");
-    if (parsed.provider === "copilot") {
+    if (parsed.provider === "gemini") {
+      if (!geminiSettingsPath) throw new Error("The Gemini MCP launch is missing its settings file path.");
+      const settings = geminiSettingsFile(
+        geminiSettingsPath,
+        installs.map(({ name, spec, grantEnvVars }) => ({ name, spec, envNames: grantEnvVars })),
+      );
+      env = { ...env, ...settings.env };
+      files = settings.files;
+      envOnEveryPlatform = true;
+    } else if (parsed.provider === "copilot") {
       // Copilot starts MCP servers with only the env their config names and expands
       // ${VAR} from the tab's own environment, so the grant is named, never written out.
       const servers = Object.fromEntries(
@@ -947,7 +1115,7 @@ export function buildAgentMcpLaunch({
           {
             type: "local",
             command: [spec.command, ...spec.args],
-            environment: { ...(spec.env || {}), ...(internalMcpEnv || {}) },
+            environment: { ...(spec.env || {}), ...(internalMcpEnv || {}), ...opencodeForwardedEnv(spec) },
             enabled: true,
           },
         ]),
@@ -959,10 +1127,16 @@ export function buildAgentMcpLaunch({
   if (prompt && parsed.provider === "codex") args.push(prompt);
   else if (prompt && parsed.provider === "copilot") args.push("-i", prompt);
   else if (prompt && parsed.provider === "opencode") args.push("--prompt", prompt);
+  else if (prompt && parsed.provider === "gemini") args.push("-i", prompt);
 
   const explicitPath = /[\\/]/u.test(parsed.executable);
   if (explicitPath) {
-    if (platform === "win32" && parsed.provider === "codex" && /\.(?:cmd|bat)$/iu.test(parsed.executable)) {
+    if (
+      platform === "win32" &&
+      parsed.provider === "codex" &&
+      /\.(?:cmd|bat)$/iu.test(parsed.executable) &&
+      !runsInWslSandbox(processInfo)
+    ) {
       const nodePath = resolveWindowsCommandPath("node", processInfo, [".exe", ".cmd", ".bat"]);
       const codexEntry = path.join(
         path.dirname(parsed.executable),
@@ -989,6 +1163,7 @@ export function buildAgentMcpLaunch({
       cwd: panel?.cwd || workspace?.cwd || "",
       ...((platform === "win32" && Object.keys(env).length) || envOnEveryPlatform ? { env } : {}),
       skipCommandInjection: true,
+      ...(files ? { files } : {}),
     };
   }
 
@@ -1015,7 +1190,7 @@ export function buildAgentMcpLaunch({
     preferredExtensions:
       parsed.provider === "claude"
         ? [".exe", ".cmd", ".bat"]
-        : parsed.provider === "copilot" || parsed.provider === "opencode"
+        : parsed.provider === "copilot" || parsed.provider === "opencode" || parsed.provider === "gemini"
           ? [".cmd", ".bat", ".exe", ".ps1"]
           : [".cmd", ".bat", ".exe"],
     args,
@@ -1025,5 +1200,6 @@ export function buildAgentMcpLaunch({
     win32Env: env,
     ...(envOnEveryPlatform ? { nonWin32Env: env } : {}),
     resolveWin32,
+    files,
   });
 }

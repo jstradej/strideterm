@@ -116,6 +116,16 @@ contextBridge.exposeInMainWorld("strideterm", {
   setJiraOwnIdentity: (payload) => invokeJira("jira:own-identity:set", payload),
   setJiraCommentAttribution: (payload) => invokeJira("jira:settings:comment-attribution:set", payload),
   setJiraAgentAttachmentLimits: (payload) => invokeJira("jira:settings:agent-attachments:set", payload),
+  getSandboxStatus: (payload) => ipcRenderer.invoke("sandbox:status", payload ?? {}),
+  installSandboxPrerequisites: (payload) => ipcRenderer.invoke("sandbox:install", payload ?? {}),
+  listSandboxRequests: () => ipcRenderer.invoke("sandbox:requests"),
+  decideSandboxRequest: (payload) => ipcRenderer.invoke("sandbox:decide", payload),
+  saveRegistryConnection: (payload) => ipcRenderer.invoke("registry:save", payload),
+  deleteRegistryConnection: (connectionId) => ipcRenderer.invoke("registry:delete", connectionId),
+  testRegistryConnection: (payload) => ipcRenderer.invoke("registry:test", payload),
+  listCredentials: () => ipcRenderer.invoke("credentials:list"),
+  removeCredential: (ref) => ipcRenderer.invoke("credentials:remove", { ref }),
+  removeOrphanCredentials: () => ipcRenderer.invoke("credentials:remove-orphans"),
   buildJiraOwnIssuesQuery: (payload) => invokeJira("jira:own-issues-query", payload),
   listJiraQueries: (connectionId) => invokeJira("jira:queries", connectionId),
   listJiraFavoriteFilters: (connectionId) => invokeJira("jira:filters:favourite", connectionId),
@@ -488,6 +498,16 @@ contextBridge.exposeInMainWorld("strideterm", {
   stopReviewAgentPreparation: (payload) => ipcRenderer.invoke("review:agent-prepare:stop", payload),
   onAzureClosedPrCleanupFinished: (handler) =>
     ipcRenderer.on("azure:closed-pr-cleanup:finished", (_event, payload) => handler(payload)),
+  onSandboxDenied: (handler) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(payload);
+    ipcRenderer.on("sandbox:denied", listener);
+    return () => ipcRenderer.removeListener("sandbox:denied", listener);
+  },
+  onSandboxDeniedSettled: (handler) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(payload);
+    ipcRenderer.on("sandbox:denied-settled", listener);
+    return () => ipcRenderer.removeListener("sandbox:denied-settled", listener);
+  },
   onOperationFinished: (handler) => {
     const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(payload);
     ipcRenderer.on("operation:finished", listener);

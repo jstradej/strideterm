@@ -174,6 +174,23 @@
       </div>
     </div>
 
+    <div v-if="!api?.isRemote">
+      <span class="section-label">Agent isolation</span>
+      <div
+        class="settings-check"
+        title="New workspaces start with Work in isolation switched on. Existing workspaces are not changed."
+      >
+        <label class="settings-check__row">
+          <input v-model="form.isolateNewWorkspaces" type="checkbox" data-testid="isolate-new-workspaces" />
+          <span>Run agents of new workspaces in isolation</span>
+        </label>
+        <small class="settings-check__help">
+          Only the starting value for a new workspace; you can still change it in the workspace settings. Existing
+          workspaces keep theirs.
+        </small>
+      </div>
+    </div>
+
     <div>
       <span class="section-label">Cloudflared binary</span>
       <div class="input-with-action">

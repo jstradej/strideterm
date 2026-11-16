@@ -286,6 +286,7 @@ export function buildWorkspaceCards({
       gitAvailable: !!gitSnapshot?.available,
       depth,
       checksState,
+      isolated: workspace.sandboxEnabled === true,
       prStatus,
       taskState: taskState || null,
       agentActivityState: workspaceAgentState,

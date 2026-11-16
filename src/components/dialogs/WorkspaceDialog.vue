@@ -218,6 +218,16 @@
           </span>
         </label>
 
+        <WorkspaceSandboxSection
+          v-if="isCreatingTask"
+          v-model:enabled="taskIsolated"
+          task
+          :forced="parentIsolated"
+          :locked="internalMcpLocked"
+          :workspace-path="draft.cwd"
+          @update:workspace-path="draft.cwd = $event"
+        />
+
         <p v-if="isCreatingTask && !claudeAvailable && workerNeedsClaudeWarning" class="warning-box">
           Claude Code CLI (claude) was not found on your PATH. The selected provider requires it.
         </p>
@@ -320,6 +330,14 @@
             <template v-else>Applies to agent sessions started after saving.</template>
           </span>
         </label>
+        <WorkspaceSandboxSection
+          v-if="showSandboxOption"
+          v-model:enabled="draft.sandboxEnabled"
+          v-model:allowed-domains="draft.sandboxAllowedDomains"
+          :locked="internalMcpLocked"
+          :workspace-path="draft.cwd"
+          @update:workspace-path="draft.cwd = $event"
+        />
         <PanelEditor
           v-model:panels="draft.panels"
           :tab-templates="tabTemplates"
@@ -669,6 +687,7 @@ import { BADGE_ICONS } from "../../lib/badge-icons.js";
 import HelpTooltip from "../common/HelpTooltip.vue";
 import { PROVIDER_CHOICES, type ProviderConfig } from "../../lib/agent-providers.js";
 import PanelEditor from "./PanelEditor.vue";
+import WorkspaceSandboxSection from "./WorkspaceSandboxSection.vue";
 import CustomSelect from "../common/CustomSelect.vue";
 import AgentProviderConfig from "./AgentProviderConfig.vue";
 import { parseAgentCommand } from "../../../electron/shared/agent-ssh.js";
@@ -737,6 +756,9 @@ interface WorkspaceDraft {
   sshMcpEnabled?: boolean;
   // Jira issue access is a separate per-workspace grant.
   jiraMcpEnabled?: boolean;
+  // Agent isolation (workspace level, desktop-only to change) and the destinations the user allowed it.
+  sandboxEnabled?: boolean;
+  sandboxAllowedDomains?: string[];
   // multi-repo
   gitRoots?: string[];
   // review workspace
@@ -813,10 +835,30 @@ if (rawDraft.kind === "task") {
 if (rawDraft.kind === "docker" || rawDraft.kind === "azure" || rawDraft.kind === "github") {
   delete rawDraft.jiraMcpEnabled;
 } else rawDraft.jiraMcpEnabled = rawDraft.jiraMcpEnabled === true;
+if (rawDraft.kind === "docker") {
+  delete rawDraft.sandboxEnabled;
+  delete rawDraft.sandboxAllowedDomains;
+} else {
+  rawDraft.sandboxEnabled = rawDraft.sandboxEnabled === true;
+  rawDraft.sandboxAllowedDomains = Array.isArray(rawDraft.sandboxAllowedDomains)
+    ? [...rawDraft.sandboxAllowedDomains]
+    : [];
+}
 const draft = reactive(rawDraft);
 
 const store = useAppStore();
 const isMobileSession = computed(() => store.isMobileSession());
+// A new workspace starts from the desktop's default for isolation. A remote client never applies it: the
+// runtime starts what a remote client creates off, whatever this box says.
+if (
+  !props.workspace &&
+  !props.creating &&
+  rawDraft.kind !== "docker" &&
+  !store.isRemoteTransport &&
+  store.payload?.appState?.settings?.isolateNewWorkspaces === true
+) {
+  draft.sandboxEnabled = true;
+}
 
 const preparationConnections = computed(() => {
   if (draft.kind !== "azure" && draft.kind !== "github") return [];
@@ -899,6 +941,7 @@ const isAzure = computed(() => draft.kind === "azure" || draft.kind === "github"
 const isTask = computed(() => draft.kind === "task");
 const isCreatingTask = computed(() => isTask.value && props.creating);
 const showInternalMcpOption = computed(() => !isTask.value && !isDocker.value);
+const showSandboxOption = computed(() => !isTask.value && !isDocker.value);
 const showJiraMcpOption = computed(() => !isDocker.value && !isAzure.value && !draft.quickfix);
 const internalMcpLocked = computed(() => store.isRemoteTransport);
 const taskDescriptionLength = computed(() => (draft.task?.description || "").length);
@@ -1034,6 +1077,21 @@ const parentWorkspace = computed(() => {
           .toLowerCase() === normCwd,
     ) || null
   );
+});
+// Read from the payload, not from `filteredWorkspaces`, whose cache key does not change when isolation does.
+const parentIsolated = computed(() => {
+  const parentId = parentWorkspace.value?.id;
+  if (!parentId) return false;
+  return (store.payload?.appState?.workspaces || []).some(
+    (workspace) => workspace.id === parentId && workspace.sandboxEnabled === true,
+  );
+});
+// A task starts from its parent's isolation and can only add to it.
+const taskIsolated = computed({
+  get: () => parentIsolated.value || draft.sandboxEnabled === true,
+  set: (value: boolean) => {
+    draft.sandboxEnabled = value;
+  },
 });
 const parentIsMultiRepo = computed(
   () => Array.isArray(parentWorkspace.value?.gitRoots) && parentWorkspace.value.gitRoots.length >= 2,
@@ -1478,6 +1536,7 @@ async function handleSubmit() {
     if (draft.useWorktree && parentIsMultiRepo.value && draft.repositoryForWorktree) {
       result.cwd = draft.repositoryForWorktree;
     }
+    result.sandboxEnabled = taskIsolated.value;
     // Propagate the known parent workspace ID so the handler doesn't need to re-detect it.
     if (parentWorkspace.value) {
       result.parentWorkspaceId = parentWorkspace.value.id;

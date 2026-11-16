@@ -32,6 +32,7 @@ import {
   type InternalMcpRequest,
 } from "../../shared/internal-mcp.js";
 import { serveOverStdio } from "../mcp-stdio-lifecycle.js";
+import { sandboxAwareFetch } from "../../shared/sandbox-fetch.js";
 
 export interface InternalMcpStdioConfig {
   url: string;
@@ -75,7 +76,7 @@ interface BrokerBody {
 
 export function createInternalMcpStdioHandlers({
   config,
-  fetchImpl = globalThis.fetch,
+  fetchImpl = sandboxAwareFetch,
 }: {
   config: InternalMcpStdioConfig;
   fetchImpl?: typeof fetch;
@@ -136,7 +137,7 @@ export async function runInternalMcpStdioServer(config = readInternalMcpStdioCon
       {
         title: "Prepare a Worker + Judge task",
         description:
-          "Validate a task assignment and its settings and return what is still missing, the choices, and an exact summary with an inputHash. Creates nothing and starts nothing. Pass the user's assignment verbatim and never add or widen requirements. Show the user the whole summary (assignment, sources, roles/models, checkout) for one common approval before task_start. Source files are read by you with your own tools and passed as content plus their original path. Ask the user for every missing choice instead of filling it in: provider and model for Worker and Judge, and where the task runs (the current directory, or a new worktree — recommend a new worktree when other work happens in parallel). The user's uncommitted changes do not carry into a new worktree. A role's effort is optional: pass one of that provider's effortLevels only when the user named one (a model's suggestedEffort is a fair default to offer), otherwise leave it out.",
+          "Validate a task assignment and its settings and return what is still missing, the choices, and an exact summary with an inputHash. Creates nothing and starts nothing. Pass the user's assignment verbatim and never add or widen requirements. Show the user the whole summary (assignment, sources, roles/models, checkout) for one common approval before task_start. Source files are read by you with your own tools and passed as content plus their original path. Ask the user for every missing choice instead of filling it in: provider and model for Worker and Judge, and where the task runs (the current directory, or a new worktree — recommend a new worktree when other work happens in parallel). The user's uncommitted changes do not carry into a new worktree. A role's effort is optional: pass one of that provider's effortLevels only when the user named one (a model's suggestedEffort is a fair default to offer), otherwise leave it out. Pass isolated: true only when the user asks for the Worker and Judge to run isolated; it can never turn off the isolation of an isolated workspace, and summary.isolation tells you what applies.",
         inputSchema: internalMcpPrepareInputSchema.shape,
       },
       async (input, extra) => send({ operation: "prepare", input }, withDisconnect(extra.signal)),

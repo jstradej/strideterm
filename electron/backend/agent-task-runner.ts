@@ -491,11 +491,17 @@ function quoteShellArg(value: unknown, platform: string = process.platform): str
   return `'${text.replace(/'/g, `'\\''`)}'`;
 }
 
+/**
+ * The programmatic Judge runs the Copilot CLI directly on the host, outside any sandbox, so an isolated
+ * workspace never uses it: its Judge is the interactive tab, which the session manager launches inside the
+ * sandbox (and fails closed when it cannot).
+ */
 export function shouldUseProgrammaticCopilotJudge(
   providerConfig: { providerId?: string } | null | undefined,
   platform: string = process.platform,
+  sandboxEnabled = false,
 ): boolean {
-  return platform === "win32" && providerConfig?.providerId === "copilot";
+  return !sandboxEnabled && platform === "win32" && providerConfig?.providerId === "copilot";
 }
 
 export function buildProgrammaticCopilotJudgeCommand({
@@ -792,6 +798,7 @@ export class AgentTaskRunner {
     judgeProvider,
     callerProfileId = "",
     jiraMcpEnabled = false,
+    isolated = false,
     reservedIds,
   }: {
     state: Partial<Pick<AppState, "workspaces" | "windowSlots">>;
@@ -812,6 +819,8 @@ export class AgentTaskRunner {
      * on the wrong profile in multi-window setups. */
     callerProfileId?: string;
     jiraMcpEnabled?: boolean;
+    /** Isolation can only be asked for: the parent workspace's own isolation always applies. */
+    isolated?: boolean;
     /** Ids an orchestrator reserved (and persisted) before creating anything, so a restart can
      * find what a half-finished run made. Never accepted from a client. */
     reservedIds?: { workspaceId: string; taskId: string };
@@ -846,6 +855,9 @@ export class AgentTaskRunner {
     // this for now (rare; benign visual collision; not data loss); moving
     // the assignment into store.mutate would close the race but expands the
     // diff materially.
+    const parentWorkspace = parentWorkspaceId
+      ? (state.workspaces || []).find((w) => w.id === parentWorkspaceId)
+      : undefined;
     const siblings = (state.workspaces || []).filter(
       (w) => w.kind === "task" && (w.task?.parentWorkspaceId || "") === (parentWorkspaceId || ""),
     );
@@ -931,6 +943,9 @@ export class AgentTaskRunner {
       splitViewIds: [],
       starred: false,
       jiraMcpEnabled: jiraMcpEnabled === true,
+      // The Worker and Judge run isolated when the workspace the task came from is, or when the creator asked for it.
+      sandboxEnabled: parentWorkspace?.sandboxEnabled === true || isolated === true,
+      sandboxAllowedDomains: [...(parentWorkspace?.sandboxAllowedDomains ?? [])],
       review: null,
       quickfix: null,
 
@@ -3879,7 +3894,11 @@ export class AgentTaskRunner {
         lastShowerRound: task.lastShowerRound || 0,
         workerProviderConfig: task.workerProviderConfig || null,
         judgeProviderConfig: task.judgeProviderConfig || null,
-        judgeExecutionMode: shouldUseProgrammaticCopilotJudge(task.judgeProviderConfig)
+        judgeExecutionMode: shouldUseProgrammaticCopilotJudge(
+          task.judgeProviderConfig,
+          process.platform,
+          workspace.sandboxEnabled === true,
+        )
           ? "headless-copilot"
           : "interactive",
         judgeProgrammaticRunning: this.#programmaticJudges.has(workspace.id),
@@ -4197,7 +4216,9 @@ export class AgentTaskRunner {
       task.useWorkerFile ??= useWorkerFile;
       const judgePrompt = await buildJudgePrompt(task, round, gitContext, workspace.cwd);
       if (!refresh(new Set(["evaluating"]))) return;
-      if (shouldUseProgrammaticCopilotJudge(task.judgeProviderConfig)) {
+      if (
+        shouldUseProgrammaticCopilotJudge(task.judgeProviderConfig, process.platform, workspace.sandboxEnabled === true)
+      ) {
         this.#setTaskState(task, "judge-evaluating");
         this.#programmaticJudges.add(workspaceId);
         this.#broadcastState!();
@@ -4671,6 +4692,9 @@ export class AgentTaskRunner {
       splitLayout: null,
       splitViewIds: [],
       starred: false,
+      // A Companion reads the same checkout as its Primary, so it runs inside the same sandbox.
+      sandboxEnabled: sourceWorkspace.sandboxEnabled === true,
+      sandboxAllowedDomains: [...(sourceWorkspace.sandboxAllowedDomains ?? [])],
       review: null,
       quickfix: null,
 
@@ -5977,6 +6001,14 @@ Write the corrected file, then stop.`;
 
   async #runProgrammaticCopilotJudge(workspace: TaskWorkspaceState, prompt: string): Promise<ExecResult> {
     const task = workspace.task;
+    if (workspace.sandboxEnabled === true) {
+      log.error("refused to run the programmatic Copilot judge outside the sandbox", { workspaceId: workspace.id });
+      return {
+        exitCode: -1,
+        stdout: "",
+        stderr: "This workspace works in isolation; the programmatic judge would run outside it.",
+      };
+    }
     const operation = this.#captureTaskOperation(workspace, "programmatic-copilot-judge", { round: true });
     const promptPath = path.join(taskDir(workspace.cwd, task.taskId), COPILOT_PROGRAMMATIC_JUDGE_PROMPT_FILE);
     await writeFile(promptPath, prompt, "utf8");

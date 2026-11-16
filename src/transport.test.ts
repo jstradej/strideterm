@@ -2829,6 +2829,21 @@ describe("remote transport API parity — no method silently missing its remote 
     "pasteClipboardImageForTerminal",
     // Uploads the desktop's clipboard screenshot; a remote client has no such file.
     "sshFilePasteImage",
+    // Agent isolation and private registries: arming isolation, installing its prerequisites, answering for a sandbox
+    // and connecting a registry are decisions for the machine that runs the agents, never for a browser or phone.
+    "getSandboxStatus",
+    "installSandboxPrerequisites",
+    "listSandboxRequests",
+    "decideSandboxRequest",
+    "saveRegistryConnection",
+    "deleteRegistryConnection",
+    "testRegistryConnection",
+    // Credentials held for external systems: listing and removing them is a decision for the desktop user only.
+    "listCredentials",
+    "removeCredential",
+    "removeOrphanCredentials",
+    "onSandboxDenied",
+    "onSandboxDeniedSettled",
     "showSystemNotification",
     "checkForUpdates",
     "browseDirectory",
@@ -3021,6 +3036,26 @@ describe("remote transport API parity — no method silently missing its remote 
     const remoteKeys = new Set(Object.keys(transport));
     const stale = [...KNOWN_DESKTOP_ONLY_METHODS].filter((key) => remoteKeys.has(key));
     expect(stale).toEqual([]);
+  });
+});
+
+describe("remote transport — agent isolation and registries", () => {
+  it("has no method to arm isolation, answer for a sandbox or connect a registry", () => {
+    const transport = makeRemoteTransport() as unknown as Record<string, unknown>;
+    for (const method of [
+      "getSandboxStatus",
+      "installSandboxPrerequisites",
+      "listSandboxRequests",
+      "decideSandboxRequest",
+      "saveRegistryConnection",
+      "deleteRegistryConnection",
+      "testRegistryConnection",
+      "listCredentials",
+      "removeCredential",
+      "removeOrphanCredentials",
+    ]) {
+      expect(transport[method], method).toBeUndefined();
+    }
   });
 });
 

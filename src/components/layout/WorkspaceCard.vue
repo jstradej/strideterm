@@ -66,6 +66,20 @@
     <span class="workspace-card__meta" :class="{ 'workspace-card__meta--inline-items': workspace.inlineWorkItems }">
       <span class="workspace-card__title-row">
         <strong>{{ workspace.name }}</strong>
+        <svg
+          v-if="workspace.isolated"
+          class="workspace-card__isolated"
+          viewBox="0 0 24 24"
+          role="img"
+          aria-label="Works in isolation"
+          data-testid="workspace-isolated"
+        >
+          <title>Agents of this workspace run isolated. Each agent tab shows whether it really does.</title>
+          <!-- Lucide "shield" (ISC) -->
+          <path
+            d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"
+          />
+        </svg>
         <span
           v-if="workspace.checksState"
           v-heartbeat="workspace.checksState === 'pending'"
@@ -179,6 +193,7 @@ interface WorkspaceCardData {
   taskState?: string;
   starred?: boolean;
   checksState?: string;
+  isolated?: boolean;
   agentActivityState?: string | null;
   agentActivityLabel?: string;
   name: string;

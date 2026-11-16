@@ -1664,6 +1664,7 @@ describe("resumeTask - late prompt delivery", () => {
     expect(shouldUseProgrammaticCopilotJudge({ providerId: "copilot" }, "win32")).toBe(true);
     expect(shouldUseProgrammaticCopilotJudge({ providerId: "copilot" }, "linux")).toBe(false);
     expect(shouldUseProgrammaticCopilotJudge({ providerId: "claude" }, "win32")).toBe(false);
+    expect(shouldUseProgrammaticCopilotJudge({ providerId: "copilot" }, "win32", true)).toBe(false);
 
     const command = buildProgrammaticCopilotJudgeCommand({
       promptPath: "C:\\temp\\judge prompt.md",

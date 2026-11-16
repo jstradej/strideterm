@@ -1,11 +1,14 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import {
   buildAgentMcpLaunch,
   buildAgentSshMcpServerSpec,
   buildInternalMcpServerSpec,
   buildReviewAgentLaunch as _buildReviewAgentLaunch,
   detectReviewAgentPanel,
+  sandboxBridgeEntry,
 } from "./review-bridge-agent-launch.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -918,7 +921,7 @@ describe("internal MCP launch composition", () => {
       "claude mcp list",
       "codex login",
       "claude | tee out.txt",
-      "gemini",
+      "gemini mcp list",
       "copilot login",
       "opencode serve",
     ]) {
@@ -1217,5 +1220,37 @@ describe("an interactive agent started with its first message", () => {
     expect(launch.args[0]).toBe(prompt);
     const configIndex = launch.args.indexOf("--mcp-config");
     expect(launch.args.slice(configIndex + 1)).not.toContain(prompt);
+  });
+});
+
+describe("sandboxBridgeEntry", () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function resources(withBundle: boolean): string {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "bridge-res-"));
+    dirs.push(dir);
+    if (withBundle) {
+      mkdirSync(path.join(dir, "mcp-bridges"));
+      writeFileSync(path.join(dir, "mcp-bridges", "internal-mcp-stdio-entry.mjs"), "// bundle");
+    }
+    return dir;
+  }
+
+  test("replaces an entry inside app.asar with the self-contained copy shipped beside it", () => {
+    const dir = resources(true);
+    const entry =
+      "C:/Program Files/strIDEterm/resources/app.asar/dist-electron/electron/backend/internal-mcp-stdio-entry.js";
+    expect(sandboxBridgeEntry(entry, dir)).toBe(path.join(dir, "mcp-bridges", "internal-mcp-stdio-entry.mjs"));
+  });
+
+  test("leaves a development entry, and an asar entry with no shipped copy, as they are", () => {
+    const dev = "/work/strideterm/dist-electron/electron/backend/internal-mcp-stdio-entry.js";
+    expect(sandboxBridgeEntry(dev, resources(true))).toBe(dev);
+    const packaged = "/opt/app/resources/app.asar/dist-electron/electron/backend/internal-mcp-stdio-entry.js";
+    expect(sandboxBridgeEntry(packaged, resources(false))).toBe(packaged);
+    expect(sandboxBridgeEntry(packaged, undefined)).toBe(packaged);
   });
 });

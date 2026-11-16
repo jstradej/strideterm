@@ -392,6 +392,24 @@ process.stdin.on("end", () => {
       headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(outgoing) },
       timeout: timeoutMs,
     };
+    // Inside a sandbox the notify server is reached as the gateway host THROUGH the sandbox proxy.
+    if (p.hostname === "gateway.strideterm.internal") {
+      let proxy = null;
+      try { proxy = new URL(process.env.HTTP_PROXY || process.env.http_proxy || ""); } catch {}
+      if (!proxy || proxy.protocol !== "http:") {
+        log("WARN", "sandbox proxy is not available to the hook (hook=" + parsed.hook + ")");
+        callback(new Error("no sandbox proxy"), null, false);
+        return;
+      }
+      options.hostname = proxy.hostname;
+      options.port = proxy.port || 80;
+      options.path = u;
+      options.headers.Host = p.host;
+      if (proxy.username) {
+        options.headers["Proxy-Authorization"] =
+          "Basic " + Buffer.from(decodeURIComponent(proxy.username) + ":" + decodeURIComponent(proxy.password)).toString("base64");
+      }
+    }
     let settled = false;
     const fail = (msg) => {
       if (settled) return;

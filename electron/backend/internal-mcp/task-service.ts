@@ -121,6 +121,7 @@ interface Evaluation {
     worker: RoleConfig;
     judge: RoleConfig;
     maxRounds: number;
+    isolated: boolean;
     checkout: CheckoutPlan;
     parentWorkspaceId: string;
   } | null;
@@ -635,6 +636,8 @@ export function createTaskService(deps: TaskServiceDeps) {
     }
 
     const maxRounds = input.maxRounds ?? DEFAULT_MAX_ROUNDS;
+    const parentIsolated = parent.sandboxEnabled === true;
+    const isolated = parentIsolated || input.isolated === true;
     const providerAvailability = await Promise.all(
       getProviderChoices().map(async (choice) => ({ choice, availability: await providerAvailable(choice.id) })),
     );
@@ -679,6 +682,15 @@ export function createTaskService(deps: TaskServiceDeps) {
       worker: roles.worker ? { ...roles.worker, command: commandFor(roles.worker, "worker") } : null,
       judge: roles.judge ? { ...roles.judge, command: commandFor(roles.judge, "judge") } : null,
       maxRounds,
+      isolation: {
+        isolated,
+        reason: parentIsolated ? "workspace" : isolated ? "requested" : "off",
+        note: parentIsolated
+          ? "This workspace is isolated, so the Worker and Judge are too; isolated: false has no effect."
+          : isolated
+            ? "The Worker and Judge run isolated because isolated: true was requested."
+            : "The Worker and Judge run without isolation. Pass isolated: true to run them isolated.",
+      },
       checkout: checkout
         ? {
             mode: checkout.mode,
@@ -726,6 +738,7 @@ export function createTaskService(deps: TaskServiceDeps) {
             worker: roles.worker,
             judge: roles.judge,
             maxRounds,
+            isolated,
             checkout,
             parentWorkspaceId: parent.id,
           }
@@ -746,6 +759,7 @@ export function createTaskService(deps: TaskServiceDeps) {
         worker: roles.worker,
         judge: roles.judge,
         maxRounds,
+        isolated,
         checkout: checkout
           ? {
               mode: checkout.mode,
@@ -763,7 +777,7 @@ export function createTaskService(deps: TaskServiceDeps) {
       missingInputs,
       errors,
       choices,
-      defaults: { ...configuredDefaults(), maxRounds: DEFAULT_MAX_ROUNDS },
+      defaults: { ...configuredDefaults(), maxRounds: DEFAULT_MAX_ROUNDS, isolated: parentIsolated },
       summary,
       inputHash,
       ready: plan !== null,
@@ -869,6 +883,7 @@ export function createTaskService(deps: TaskServiceDeps) {
       description,
       parentWorkspaceId: plan.parentWorkspaceId,
       maxRounds: plan.maxRounds,
+      isolated: plan.isolated,
       useWorktree: checkout.mode === "worktree",
       worktreeBranch: checkout.mode === "worktree" ? checkout.branch : undefined,
       gitRoots: checkout.mode === "here" ? checkout.gitRoots : undefined,
@@ -1134,6 +1149,7 @@ export function createTaskService(deps: TaskServiceDeps) {
                 worker: plan.worker,
                 judge: plan.judge,
                 maxRounds: plan.maxRounds,
+                isolated: plan.isolated,
                 assignmentSha256: sha256Hex(plan.assignment),
                 sources: plan.sources.map((source) => ({
                   path: source.path,

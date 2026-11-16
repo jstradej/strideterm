@@ -107,6 +107,8 @@ export const workspaceSchema = z
     kind: z.string().optional(),
     internalMcpEnabled: z.boolean().optional(),
     sshMcpEnabled: z.boolean().optional(),
+    sandboxEnabled: z.boolean().optional(),
+    sandboxAllowedDomains: z.array(z.string().max(260)).max(200).optional(),
     jiraMcpEnabled: z.boolean().optional(),
     jiraMcpCommentDrafts: z
       .array(
@@ -141,6 +143,7 @@ export const workspaceSchema = z
             shell: z.boolean().optional(),
             startup: z.string().optional(),
             sshMcpEnabled: z.boolean().optional(),
+            sandboxShell: z.boolean().optional(),
             hostedBy: z.string().optional(),
             launch: panelLaunchSchema,
           })
@@ -512,6 +515,41 @@ export const jiraCommentAttributionSchema = z
     position: z.enum(["before", "after"]),
   })
   .strict();
+/** Sandbox status query: the distro is only meaningful on Windows. */
+export const sandboxStatusRequestSchema = z
+  .object({ force: z.boolean().optional(), distro: z.string().max(128).optional() })
+  .strict();
+export const sandboxInstallRequestSchema = z.object({ distro: z.string().max(128).optional() }).strict();
+export const sandboxDecisionSchema = z
+  .object({
+    requestId: nonEmptyString.max(128),
+    allow: z.boolean(),
+    /** Remember the destination for the workspace the request came from. */
+    remember: z.boolean().optional(),
+  })
+  .strict();
+export const registrySaveSchema = z
+  .object({
+    id: nonEmptyString.max(128),
+    label: z.string().max(120),
+    kind: z.enum(["maven", "npm", "pip", "gradle"]),
+    url: z.string().max(2048),
+    mode: z.enum(["mirror", "additional"]),
+    authKind: z.enum(["none", "basic", "bearer"]),
+    username: z.string().max(256),
+    npmScope: z.string().max(214),
+    /** The secret to store; omitted to keep the stored one. Never echoed back. */
+    secret: z.string().max(8192).optional(),
+  })
+  .strict();
+export const registryIdSchema = nonEmptyString.max(128);
+export const registryTestSchema = z
+  .object({ connectionId: nonEmptyString.max(128), probePath: z.string().max(512).optional() })
+  .strict();
+
+/** `credentials:remove` payload: the credential-store reference only; the runtime re-classifies it. */
+export const credentialRemoveSchema = z.object({ ref: nonEmptyString.max(512) }).strict();
+
 export const jiraAgentAttachmentLimitsSchema = z
   .object({
     maxFiles: z.number().int().min(1).max(500),
@@ -1997,6 +2035,7 @@ export const TASK_BRIEF_MAX_CHARS = 20000;
 export const taskWorkspaceCreateSchema = z.object({
   cwd: nonEmptyString,
   jiraMcpEnabled: z.boolean().optional().default(false),
+  isolated: z.boolean().optional().default(false),
   description: z.string().max(TASK_BRIEF_MAX_CHARS).optional().default(""),
   parentWorkspaceId: z.string().optional(),
   maxRounds: z.number().int().min(1).max(100).optional(),

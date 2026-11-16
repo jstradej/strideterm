@@ -1525,6 +1525,9 @@ export class BaseProviderManager extends EventEmitter {
       panels,
       internalMcpEnabled: !isolated && parentWorkspace?.internalMcpEnabled === true,
       sshMcpEnabled: !isolated && parentWorkspace?.sshMcpEnabled === true,
+      // Isolation only narrows what an agent can do, so even the one-shot review inherits it.
+      sandboxEnabled: parentWorkspace?.sandboxEnabled === true,
+      sandboxAllowedDomains: parentWorkspace?.sandboxAllowedDomains ?? [],
       review: hooks.buildReviewMetadata(summary, checkout, { parentWorkspaceId: parentWorkspaceId || "" }),
     };
     await this.reviewStore.upsertTrackedPullRequest(prKey, {
@@ -1681,6 +1684,8 @@ export class BaseProviderManager extends EventEmitter {
       panels,
       internalMcpEnabled: parentWorkspace?.internalMcpEnabled === true,
       sshMcpEnabled: parentWorkspace?.sshMcpEnabled === true,
+      sandboxEnabled: parentWorkspace?.sandboxEnabled === true,
+      sandboxAllowedDomains: parentWorkspace?.sandboxAllowedDomains ?? [],
       review,
       quickfix,
     };

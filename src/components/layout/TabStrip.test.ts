@@ -559,3 +559,56 @@ describe("TabStrip — relocated Companion Primary", () => {
     expect(compact.findAll(".tab").map((t) => t.find("span").text())).toEqual(["Claude", "Shell"]);
   });
 });
+
+describe("TabStrip — isolated agent tabs", () => {
+  function isolatedPayload(sandboxEnabled: boolean, launched: Record<string, boolean> = { "ws1:agent": true }) {
+    const payload = makePayload([
+      { id: "ws1:agent", panelId: "agent", title: "Claude" },
+      { id: "ws1:shell", panelId: "shell", title: "Shell" },
+    ]);
+    const workspace = (payload.workspace as unknown as { workspace: Record<string, unknown> }).workspace;
+    workspace.sandboxEnabled = sandboxEnabled;
+    (payload as unknown as { attention: unknown }).attention = { sessions: {}, byWorkspace: {}, isolation: launched };
+    workspace.panels = [
+      { id: "agent", title: "Claude", command: "claude --model opus" },
+      { id: "shell", title: "Shell", command: "" },
+    ];
+    return payload;
+  }
+
+  test("labels the agent tab of an isolated workspace, and only that tab", () => {
+    useAppStore().payload = isolatedPayload(true);
+    const wrapper = mount(TabStrip);
+    const badges = wrapper.findAll('[data-testid="tab-isolated"]');
+    expect(badges).toHaveLength(1);
+    expect(wrapper.get('[data-view-id="ws1:agent"]').find('[data-testid="tab-isolated"]').text()).toBe("isolated");
+    expect(wrapper.get('[data-view-id="ws1:shell"]').find('[data-testid="tab-isolated"]').exists()).toBe(false);
+  });
+
+  test("says what the label means and does not claim the tab is safe", () => {
+    useAppStore().payload = isolatedPayload(true);
+    const title = mount(TabStrip).get('[data-testid="tab-isolated"]').attributes("title") || "";
+    expect(title).toContain("sandbox");
+    expect(title).toContain("does not protect");
+    expect(title.toLowerCase()).not.toMatch(/\bsafe\b|\bsecure\b/u);
+  });
+
+  test("does not call a tab isolated that was started before isolation was turned on", () => {
+    useAppStore().payload = isolatedPayload(true, { "ws1:agent": false });
+    const wrapper = mount(TabStrip);
+    expect(wrapper.find('[data-testid="tab-isolated"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="tab-restart-to-isolate"]').text()).toBe("restart to isolate");
+  });
+
+  test("labels nothing for a tab that has not been launched yet", () => {
+    useAppStore().payload = isolatedPayload(true, {});
+    const wrapper = mount(TabStrip);
+    expect(wrapper.find('[data-testid="tab-isolated"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="tab-restart-to-isolate"]').exists()).toBe(false);
+  });
+
+  test("shows no label in a workspace that did not opt in", () => {
+    useAppStore().payload = isolatedPayload(false);
+    expect(mount(TabStrip).find('[data-testid="tab-isolated"]').exists()).toBe(false);
+  });
+});

@@ -1700,6 +1700,17 @@ a.workspace-card__jira-chip:hover {
   font-size: 12px;
 }
 
+.workspace-card__isolated {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
+  margin-left: 2px;
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+
 .workspace-card__checks-dot {
   width: 7px;
   height: 7px;

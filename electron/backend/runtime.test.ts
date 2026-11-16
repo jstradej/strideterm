@@ -2427,6 +2427,21 @@ describe("runtime integration", () => {
     expect(fixture.runtime.getTerminalReplay("backend:shell")).toEqual({ data: "" });
   });
 
+  test("a sandboxed spawn publishes state at once, so the tab's isolated badge does not wait for another change", async () => {
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+    let broadcasts = 0;
+    fixture.runtime.on("state:updated", () => broadcasts++);
+
+    fixture.sessionManager.emit("terminal:spawned", { sessionId: "backend:shell" });
+    await Promise.resolve();
+    expect(broadcasts).toBe(0);
+
+    fixture.sessionManager.emit("terminal:spawned", { sessionId: "backend:shell", sandboxed: true });
+    await Promise.resolve();
+    expect(broadcasts).toBe(1);
+  });
+
   test("implicit respawn (terminal:spawned) clears the dead generation's replay but keeps seq", async () => {
     // Review F6: ensureSession respawns an exited session under the SAME id
     // without going through restartSession — the spawn event is the clear
@@ -6075,6 +6090,8 @@ describe("runtime integration", () => {
             kind: "terminal",
             internalMcpEnabled: true,
             sshMcpEnabled: true,
+            sandboxEnabled: true,
+            sandboxAllowedDomains: ["api.example.com"],
             cwd: projectRoot,
             activePanelId: "dev",
             panels: [
@@ -6105,6 +6122,9 @@ describe("runtime integration", () => {
     expect(projectWorkspaces[1].cwd).toBe(path.join(projectRoot, ".strideterm", "tree", "feature-x"));
     expect(projectWorkspaces[1].internalMcpEnabled).toBe(true);
     expect(projectWorkspaces[1].sshMcpEnabled).toBe(true);
+    // A worktree of an isolated workspace is isolated, with the same allowlist.
+    expect(projectWorkspaces[1].sandboxEnabled).toBe(true);
+    expect(projectWorkspaces[1].sandboxAllowedDomains).toEqual(["api.example.com"]);
     expect(fixture.git.auditEntries).toHaveLength(1);
     expect(fixture.git.auditEntries[0]).toMatchObject({
       type: "create-worktree",
@@ -20277,7 +20297,7 @@ describe("internal MCP: creating and watching task agents", () => {
     await expect(fs.access(quickfixPath)).rejects.toThrow();
   });
 
-  test("an OpenCode terminal gets the grant in its env and config, a Copilot one by placeholder, and Gemini none", async () => {
+  test("an OpenCode terminal gets the grant in its env and config, a Copilot one by placeholder, and Gemini one by a settings file naming variables", async () => {
     const repo = await createRepo();
     const fixture = await createMcpFixture({
       workspaces: [
@@ -20313,13 +20333,22 @@ describe("internal MCP: creating and watching task agents", () => {
     expect(copilot.args.join(" ")).not.toContain(copilotCapability);
 
     const workspace = fixture.store.getState().workspaces.find((item: any) => item.id === "parent")!;
-    expect(
-      fixture.sessionManager.getSessionLaunch({
-        workspace,
-        panel: workspace.panels[2],
-        sessionId: createSessionId("parent", "gemini"),
-      }),
-    ).toBeNull();
+    const gemini = fixture.sessionManager.getSessionLaunch({
+      workspace,
+      panel: workspace.panels[2],
+      sessionId: createSessionId("parent", "gemini"),
+    });
+    expect(gemini.file).toMatch(/gemini(.cmd)?$/u);
+    const settingsPath = gemini.env.GEMINI_CLI_SYSTEM_SETTINGS_PATH;
+    expect(settingsPath).toMatch(/gemini-mcp/u);
+    const geminiCapability = gemini.env.STRIDETERM_INTERNAL_MCP_CAPABILITY;
+    expect(geminiCapability).toBeTruthy();
+    const written = await fs.readFile(settingsPath, "utf8");
+    expect(JSON.parse(written).mcpServers.strideterm.env.STRIDETERM_INTERNAL_MCP_CAPABILITY).toBe(
+      "${STRIDETERM_INTERNAL_MCP_CAPABILITY}",
+    );
+    expect(written).not.toContain(geminiCapability);
+    expect(gemini.args.join(" ")).not.toContain(geminiCapability);
   });
 
   test("prepare reports what is missing and creates nothing", async () => {
@@ -20365,6 +20394,7 @@ describe("internal MCP: creating and watching task agents", () => {
       worker: { providerId: "codex", model: "gpt-5.1" },
       judge: { providerId: "gemini", model: "" },
       maxRounds: 10,
+      isolated: false,
     });
   });
 
@@ -21303,6 +21333,187 @@ describe("internal MCP: creating and watching task agents", () => {
     expect(byId("plain").sshMcpEnabled).toBe(true);
     await fixture.runtime.saveWorkspace({ ...byId("plain"), jiraMcpEnabled: false });
     expect(byId("plain").jiraMcpEnabled).toBe(false);
+  });
+
+  test("only the desktop turns isolation on and widens its allowlist; a remote viewer keeps what is stored", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({
+      workspaces: [
+        parentWorkspace(repo, { sandboxEnabled: true, sandboxAllowedDomains: ["api.example.com"] }),
+        parentWorkspace(repo, { id: "plain", name: "Plain" }),
+      ],
+    });
+    const byId = (id: string) => fixture.store.getState().workspaces.find((w: any) => w.id === id)!;
+    expect(byId("plain").sandboxEnabled).toBe(false);
+
+    // a remote viewer can neither arm isolation nor change what it may reach ...
+    await fixture.runtime.saveWorkspace(
+      { ...byId("plain"), sandboxEnabled: true, sandboxAllowedDomains: ["evil.example.com"] },
+      "remote:sess-1",
+    );
+    expect(byId("plain").sandboxEnabled).toBe(false);
+    expect(byId("plain").sandboxAllowedDomains).toEqual([]);
+    // ... nor switch it off or empty the list
+    await fixture.runtime.saveWorkspace(
+      { ...byId("parent"), sandboxEnabled: false, sandboxAllowedDomains: [] },
+      "remote:sess-1",
+    );
+    expect(byId("parent").sandboxEnabled).toBe(true);
+    expect(byId("parent").sandboxAllowedDomains).toEqual(["api.example.com"]);
+    // a workspace a remote viewer creates starts without it
+    await fixture.runtime.saveWorkspace(
+      {
+        id: "fresh",
+        name: "Fresh",
+        kind: "terminal",
+        cwd: repo,
+        profileId: "default",
+        sandboxEnabled: true,
+        sandboxAllowedDomains: ["evil.example.com"],
+        panels: [{ id: "p", title: "Shell", command: "" }],
+      },
+      "remote:sess-1",
+    );
+    expect(byId("fresh").sandboxEnabled).toBe(false);
+    expect(byId("fresh").sandboxAllowedDomains).toEqual([]);
+
+    // the desktop can turn it on, widen the list (invalid entries dropped) and turn it off
+    await fixture.runtime.saveWorkspace({
+      ...byId("plain"),
+      sandboxEnabled: true,
+      sandboxAllowedDomains: ["ok.example.com", "10.0.0.1"],
+    });
+    expect(byId("plain").sandboxEnabled).toBe(true);
+    expect(byId("plain").sandboxAllowedDomains).toEqual(["ok.example.com"]);
+    await fixture.runtime.saveWorkspace({ ...byId("plain"), sandboxEnabled: false });
+    expect(byId("plain").sandboxEnabled).toBe(false);
+  });
+
+  test("a task that already exists follows its parent's isolation when the desktop changes it", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({
+      workspaces: [
+        parentWorkspace(repo, { id: "plain", name: "Plain" }),
+        parentWorkspace(repo, { id: "task-a", name: "Task A", kind: "task", task: { parentWorkspaceId: "plain" } }),
+        parentWorkspace(repo, { id: "task-b", name: "Companion", kind: "task", task: { parentWorkspaceId: "task-a" } }),
+        parentWorkspace(repo, {
+          id: "other-task",
+          name: "Other",
+          kind: "task",
+          task: { parentWorkspaceId: "elsewhere" },
+        }),
+      ],
+    });
+    const byId = (id: string) => fixture.store.getState().workspaces.find((w: any) => w.id === id)!;
+    expect(byId("task-a").task?.parentWorkspaceId).toBe("plain");
+
+    await fixture.runtime.saveWorkspace({
+      ...byId("plain"),
+      sandboxEnabled: true,
+      sandboxAllowedDomains: ["ok.example.com"],
+    });
+    for (const id of ["task-a", "task-b"]) {
+      expect(byId(id).sandboxEnabled).toBe(true);
+      expect(byId(id).sandboxAllowedDomains).toEqual(["ok.example.com"]);
+    }
+    expect(byId("other-task").sandboxEnabled).toBe(false);
+
+    // isolation only narrows: a workspace that stops being isolated does not lift it from its tasks
+    await fixture.runtime.saveWorkspace({ ...byId("plain"), sandboxEnabled: false, sandboxAllowedDomains: [] });
+    expect(byId("plain").sandboxEnabled).toBe(false);
+    expect(byId("task-a").sandboxEnabled).toBe(true);
+    expect(byId("task-b").sandboxEnabled).toBe(true);
+  });
+
+  test("a tab's isolated-shell choice is desktop-only: a remote viewer keeps what is stored", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({
+      workspaces: [
+        parentWorkspace(repo, {
+          id: "iso",
+          name: "Isolated",
+          sandboxEnabled: true,
+          panels: [
+            { id: "shell", title: "Shell", command: "" },
+            { id: "other", title: "Other", command: "" },
+          ],
+        }),
+      ],
+    });
+    const byId = (id: string) => fixture.store.getState().workspaces.find((w: any) => w.id === id)!;
+    const shellOf = (workspace: any, id: string) => workspace.panels.find((panel: any) => panel.id === id);
+    const withShell = (shell: boolean, other: boolean) => ({
+      ...byId("iso"),
+      panels: byId("iso").panels.map((panel: any) => ({
+        ...panel,
+        sandboxShell: panel.id === "shell" ? shell : other,
+      })),
+    });
+
+    await fixture.runtime.saveWorkspace(withShell(true, false));
+    expect(shellOf(byId("iso"), "shell").sandboxShell).toBe(true);
+    await fixture.runtime.saveWorkspace(withShell(false, true), "remote:sess-1");
+    expect(shellOf(byId("iso"), "shell").sandboxShell).toBe(true);
+    expect(shellOf(byId("iso"), "other")).not.toHaveProperty("sandboxShell");
+    await fixture.runtime.saveWorkspace(withShell(false, false));
+    expect(shellOf(byId("iso"), "shell")).not.toHaveProperty("sandboxShell");
+  });
+
+  test("a task created isolated under a workspace that is not stays isolated through later saves", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({
+      workspaces: [
+        parentWorkspace(repo, { id: "plain", name: "Plain" }),
+        parentWorkspace(repo, {
+          id: "task-a",
+          name: "Task A",
+          kind: "task",
+          sandboxEnabled: true,
+          task: { parentWorkspaceId: "plain" },
+        }),
+        parentWorkspace(repo, { id: "task-b", name: "Task B", kind: "task", task: { parentWorkspaceId: "plain" } }),
+      ],
+    });
+    const byId = (id: string) => fixture.store.getState().workspaces.find((w: any) => w.id === id)!;
+    expect(byId("task-a").sandboxEnabled).toBe(true);
+
+    await fixture.runtime.saveWorkspace({ ...byId("plain"), name: "Plain renamed" });
+    expect(byId("task-a").sandboxEnabled).toBe(true);
+    expect(byId("task-b").sandboxEnabled).toBe(false);
+    // neither a stale copy of the task from the desktop nor a remote viewer can lift it
+    await fixture.runtime.saveWorkspace({ ...byId("task-a"), sandboxEnabled: false });
+    expect(byId("task-a").sandboxEnabled).toBe(true);
+    await fixture.runtime.saveWorkspace({ ...byId("task-a"), sandboxEnabled: false }, "remote:sess-1");
+    expect(byId("task-a").sandboxEnabled).toBe(true);
+    // an isolated parent forces its tasks on
+    await fixture.runtime.saveWorkspace({ ...byId("plain"), sandboxEnabled: true });
+    expect(byId("task-b").sandboxEnabled).toBe(true);
+  });
+
+  test("createTaskWorkspace takes isolation from the parent and from the request, and no caller can drop the parent's", async () => {
+    const repo = await createRepo();
+    await fs.mkdir(path.join(repo, "sub"), { recursive: true });
+    const fixture = await createMcpFixture({
+      workspaces: [
+        parentWorkspace(repo, { id: "plain", name: "Plain" }),
+        parentWorkspace(repo, { id: "iso", name: "Isolated", sandboxEnabled: true, cwd: path.join(repo, "sub") }),
+      ],
+    });
+    const byId = (id: string) => fixture.store.getState().workspaces.find((w: any) => w.id === id)!;
+    const create = async (parentWorkspaceId: string, cwd: string, isolated: unknown, windowId?: string) => {
+      const created = await fixture.runtime.createTaskWorkspace(
+        { cwd, parentWorkspaceId, description: "t", activate: false, ...(isolated === undefined ? {} : { isolated }) },
+        windowId,
+      );
+      return byId(created.workspaceId).sandboxEnabled;
+    };
+
+    expect(await create("plain", repo, undefined)).toBe(false);
+    expect(await create("plain", repo, true)).toBe(true);
+    expect(await create("iso", path.join(repo, "sub"), false)).toBe(true);
+    // a remote caller can turn it on, never off
+    expect(await create("plain", repo, true, "remote:sess-1")).toBe(true);
+    expect(await create("iso", path.join(repo, "sub"), false, "remote:sess-1")).toBe(true);
   });
 
   test("Jira-only workspace grants expose safe connection discovery and revoke when Jira opt-in is removed", async () => {

@@ -19,6 +19,7 @@
 - **Azure DevOps PR Review** - browse pull requests, review changes with AI agents, and publish updates — see the [Azure DevOps review guide](docs/azure-devops-review.md)
 - **GitHub PR Review** - browse pull requests, review changes with AI agents, and publish updates — see the [GitHub review guide](docs/github-pr-review.md)
 - **Jira** - search issues and boards in Jira Cloud or Data Center, comment and change status, and start development on an issue in a new branch workspace with an AI agent — see the [Jira guide](docs/jira.md)
+- **Working in isolation** - run a workspace's AI agents in a sandbox that cannot read your home folder or reach the network except through strIDEterm — see the [isolation guide](docs/agent-isolation.md)
 - **Agent Task Runner** - supervise coding tasks with Worker and Judge agents from supported AI coding tools — see the [Agent Task Runner guide](docs/agent-task-runner.md)
 - **Task agents from a planning terminal (internal MCP)** - supported AI agents can prepare and monitor a task, then wait for your approval before starting
 - **Docker Manager** - list containers, run actions, open shells, and stream logs

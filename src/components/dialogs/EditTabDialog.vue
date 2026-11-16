@@ -390,6 +390,26 @@
               <small class="ssh-tools-toggle__summary">{{ sshToolsHint }}</small>
             </span>
           </label>
+
+          <label v-if="showSandboxShellOption" class="ssh-tools-toggle" data-testid="sandbox-shell-option">
+            <input v-model="sandboxShell" type="checkbox" data-testid="sandbox-shell-checkbox" />
+            <span>
+              Run this shell isolated
+              <small class="ssh-tools-toggle__summary"
+                >For builds and scripts: starts in the workspace's isolated environment when the terminal starts. Agents
+                started here have no sign-in or settings; open an agent tab to run an agent isolated.</small
+              >
+            </span>
+          </label>
+          <p
+            v-if="isolationHint"
+            class="field-help"
+            :class="{ 'warning-box': isolationHint.warning }"
+            :role="isolationHint.warning ? 'alert' : undefined"
+            data-testid="isolation-hint"
+          >
+            {{ isolationHint.text }}
+          </p>
         </div>
       </component>
 
@@ -422,7 +442,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
+import { computed, inject, nextTick, onMounted, reactive, ref, watch } from "vue";
+import { apiKey } from "../../types/keys.js";
+import type { Transport } from "../../transport.js";
+import { detectSandboxAgent } from "../../../electron/shared/sandbox-eligibility.js";
+import { windowsPathToWsl } from "../../../electron/shared/wsl-paths.js";
+import type { SandboxStatus } from "../../../electron/shared/sandbox.js";
 import { useSshStore } from "../../stores/ssh.js";
 import { useAppStore } from "../../stores/app.js";
 import CustomSelect from "../common/CustomSelect.vue";
@@ -458,6 +483,10 @@ interface Props {
   /** The workspace-wide opt-in already covers every eligible agent tab, this one included. */
   workspaceSshMcpEnabled?: boolean;
   hasCustomLaunch?: boolean;
+  /** The workspace's isolation, for the hints: "n/a" for kinds where a tab's isolation is not this dialog's business. */
+  workspaceIsolation?: "isolated" | "plain" | "n/a";
+  workspaceCwd?: string;
+  sandboxShell?: boolean;
   /** Edit mode for a tab that launches an SSH host: only title/icon/command/remote directory apply. */
   sshTab?: boolean;
   remoteCwd?: string;
@@ -476,6 +505,9 @@ const props = withDefaults(defineProps<Props>(), {
   sshMcpEnabled: false,
   workspaceSshMcpEnabled: false,
   hasCustomLaunch: false,
+  workspaceIsolation: "n/a",
+  workspaceCwd: "",
+  sandboxShell: false,
   sshTab: false,
   remoteCwd: "",
   onEditSshHost: null,
@@ -685,6 +717,7 @@ function currentDraft() {
     saveToBook: saveToBook.value,
     savedHostName: savedHostName.value,
     sshMcpEnabled: sshMcpEnabled.value,
+    sandboxShell: sandboxShell.value,
   });
 }
 const initialDraft = ref("");
@@ -743,6 +776,56 @@ function autofillTitle() {
 }
 
 const currentIcon = computed(() => getTitleIcon(titleInput.value));
+const api = inject<Transport | undefined>(apiKey, undefined);
+const sandboxShell = ref(Boolean(props.sandboxShell));
+const sandboxStatus = ref<SandboxStatus | null>(null);
+const localDesktopTab = computed(() => !appStore.isRemoteTransport && tabType.value === "local" && !props.sshTab);
+const isolationApplies = computed(() => localDesktopTab.value && props.workspaceIsolation !== "n/a");
+const tabAgent = computed(() => detectSandboxAgent(commandInput.value));
+const tabOwnLauncher = computed(() => runInWsl.value || isRawWslCommand.value || props.hasCustomLaunch);
+const showSandboxShellOption = computed(() => {
+  const command = commandInput.value.trim();
+  return (
+    isolationApplies.value &&
+    props.workspaceIsolation === "isolated" &&
+    !tabAgent.value &&
+    !tabOwnLauncher.value &&
+    !/^https?:\/\//iu.test(command) &&
+    !command.startsWith("__")
+  );
+});
+const isolationHint = computed<{ text: string; warning: boolean } | null>(() => {
+  const agent = tabAgent.value;
+  if (!isolationApplies.value || !agent) return null;
+  if (props.workspaceIsolation === "plain") {
+    return tabOwnLauncher.value ? null : { text: "Agents in this workspace run without isolation.", warning: false };
+  }
+  if (tabOwnLauncher.value) {
+    return {
+      text: `This tab will run WITHOUT isolation: a tab started through WSL or with its own launcher is never isolated, even in an isolated workspace.`,
+      warning: true,
+    };
+  }
+  const missing = sandboxStatus.value?.agents?.find((item) => item.id === agent && !item.ok);
+  if (missing) {
+    const where = sandboxStatus.value?.platform === "win32" ? "inside WSL" : "on this machine";
+    return {
+      text: `The ${agent} CLI was not found where the sandbox runs (${where}). Install it there, or this tab will not start.`,
+      warning: true,
+    };
+  }
+  return { text: "Runs isolated (workspace setting).", warning: false };
+});
+
+async function loadSandboxStatus() {
+  if (props.workspaceIsolation !== "isolated" || !localDesktopTab.value || !api?.getSandboxStatus) return;
+  const distro = windowsPathToWsl(props.workspaceCwd || "")?.distro;
+  try {
+    sandboxStatus.value = await api.getSandboxStatus(distro ? { distro } : {});
+  } catch {
+    sandboxStatus.value = null;
+  }
+}
 const showSshToolsOption = computed(() => !appStore.isRemoteTransport && tabType.value === "local");
 const canEnableSshTools = computed(
   () => showSshToolsOption.value && !props.hasCustomLaunch && !runInWsl.value && agentSshEligibility.value.supported,
@@ -774,6 +857,7 @@ watch(capabilities, applyAuthDefault);
 
 onMounted(async () => {
   initialDraft.value = currentDraft();
+  void loadSandboxStatus();
   if (sshHosts.value.length === 0) await sshStore.load();
   const untouched = currentDraft() === initialDraft.value;
   if (untouched && tabType.value === "ssh") {
@@ -911,6 +995,10 @@ async function handleSubmit() {
       ...(props.sshTab ? { remoteCwd: remoteCwdInput.value.trim() } : {}),
       sshMcpEnabled:
         tabType.value !== "local" ? false : appStore.isRemoteTransport ? props.sshMcpEnabled : sshMcpEnabled.value,
+      sandboxShell:
+        appStore.isRemoteTransport || props.workspaceIsolation !== "isolated"
+          ? props.sandboxShell
+          : showSandboxShellOption.value && sandboxShell.value,
     });
     return;
   }

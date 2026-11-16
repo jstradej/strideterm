@@ -38,6 +38,8 @@ export interface CredentialStore {
   deleteSecret(ref: string): Promise<void>;
   updateSecrets?(changes: Record<string, string | null>): Promise<void>;
   listRefs(): string[];
+  /** How one stored entry is kept on disk: `safe:` is encrypted, `plain:` is base64 only. Null when there is no entry. */
+  storageKind?(ref: string): "encrypted" | "plain" | null;
   /**
    * Reports whether the OS keychain (Electron `safeStorage`) is available
    * for actual encryption. When false, secrets are persisted as base64
@@ -311,6 +313,11 @@ export async function createCredentialStore(
     },
     listRefs(): string[] {
       return Object.keys(state.secrets);
+    },
+    storageKind(ref: string): "encrypted" | "plain" | null {
+      const raw = ref && state.secrets[ref] ? String(state.secrets[ref].value || "") : "";
+      if (raw.startsWith("safe:")) return "encrypted";
+      return raw.startsWith("plain:") ? "plain" : null;
     },
     isEncryptionAvailable(): boolean {
       return canEncrypt(safeStorage);

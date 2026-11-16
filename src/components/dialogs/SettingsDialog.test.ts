@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import SettingsDialog from "./SettingsDialog.vue";
 import { apiKey } from "../../types/keys.js";
+import { useAppStore } from "../../stores/app.js";
 
 type AnySettings = Record<string, unknown>;
 
@@ -385,6 +386,30 @@ describe("SettingsDialog — terminalFontSize", () => {
   });
 });
 
+describe("SettingsDialog — isolateNewWorkspaces", () => {
+  const box = '[data-testid="isolate-new-workspaces"]';
+
+  test("desktop: shows the stored value and saves a change", async () => {
+    const wrapper = await mountWithTransport({ isolateNewWorkspaces: true }, false);
+    expect((wrapper.get(box).element as HTMLInputElement).checked).toBe(true);
+    await wrapper.get(box).setValue(false);
+    await clickSave(wrapper);
+    expect(lastSavedPayload(wrapper)).toHaveProperty("isolateNewWorkspaces", false);
+  });
+
+  test("desktop: defaults to off", async () => {
+    const wrapper = await mountWithTransport({}, false);
+    expect((wrapper.get(box).element as HTMLInputElement).checked).toBe(false);
+  });
+
+  test("remote: no checkbox, and a save never carries the key", async () => {
+    const wrapper = await mountWithTransport({ isolateNewWorkspaces: true }, true);
+    expect(wrapper.find(box).exists()).toBe(false);
+    await clickSave(wrapper);
+    expect(lastSavedPayload(wrapper)).not.toHaveProperty("isolateNewWorkspaces");
+  });
+});
+
 describe("SettingsDialog — notifications.autoApprovePermissions", () => {
   // The checkbox only does anything when the notify listener is on AND the
   // Claude Code hooks are actually registered, so an "available" mount has to
@@ -468,5 +493,49 @@ describe("SettingsDialog — auto-approve is desktop-only in the UI too", () => 
     const checkbox = label!.find('input[type="checkbox"]');
     expect((checkbox.element as HTMLInputElement).disabled).toBe(true);
     expect(wrapper.text()).toContain("Desktop only");
+  });
+});
+
+describe("SettingsDialog — credentials tab", () => {
+  const tabLabels = (wrapper: VueWrapper) => wrapper.findAll(".settings-tab-btn").map((tab) => tab.text().trim());
+
+  test("appears only when the transport can list credentials, so a remote client never sees it", async () => {
+    expect(tabLabels(await mountDialog({}, {}))).not.toContain("Credentials");
+    expect(
+      tabLabels(
+        await mountDialog({}, { listCredentials: vi.fn(async () => ({ rows: [], encryptionAvailable: true })) }),
+      ),
+    ).toContain("Credentials");
+  });
+
+  test("Change on a Jira credential switches to the Jira tab", async () => {
+    const wrapper = await mountDialog(
+      {},
+      { listCredentials: vi.fn(async () => ({ rows: [], encryptionAvailable: true })) },
+      { initialTab: "credentials" },
+    );
+    wrapper.findComponent({ name: "SettingsCredentialsTab" }).vm.$emit("change", { system: "jira", ownerId: "j1" });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="jira-settings-connections"]').exists()).toBe(true);
+  });
+
+  test("Change on an Azure connection opens its dialog, unless Settings has unsaved changes", async () => {
+    const wrapper = await mountDialog(
+      {},
+      { listCredentials: vi.fn(async () => ({ rows: [], encryptionAvailable: true })) },
+      { initialTab: "credentials" },
+    );
+    const app = useAppStore();
+    const open = vi.spyOn(app, "openAzureConnectionDialog").mockImplementation(() => undefined);
+    const tab = wrapper.findComponent({ name: "SettingsCredentialsTab" });
+    tab.vm.$emit("change", { system: "azure", ownerId: "ado-1" });
+    await flushPromises();
+    expect(open).toHaveBeenCalledWith("ado-1");
+
+    open.mockClear();
+    (wrapper.vm as unknown as { $: { setupState: { form: { theme: string } } } }).$.setupState.form.theme = "light";
+    tab.vm.$emit("change", { system: "azure", ownerId: "ado-1" });
+    await flushPromises();
+    expect(open).not.toHaveBeenCalled();
   });
 });

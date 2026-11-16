@@ -36,6 +36,8 @@ The key manager can also import OpenSSH certificate metadata alongside a managed
 
 **Settings → SSH → Require encrypted storage** is enabled by default. When the computer's secure storage is unavailable, strIDEterm will not save a managed key or passphrase while this option is on. Turning it off may allow credentials to be saved without encryption; leave it enabled unless you understand that risk. This setting applies to keys saved by strIDEterm, not the keys or agents maintained by OpenSSH or WSL.
 
+**Settings → Credentials** (desktop only) lists everything strIDEterm stores for other systems, across all profiles: SSH passwords, keys, passphrases and certificates, and the tokens of Azure DevOps, GitHub, Jira, package registries and Telegram. It never shows a value; it shows what the credential is, what it belongs to and whether it is stored encrypted. You can remove credentials one at a time, or remove the unused ones in one step. Removing a credential deletes strIDEterm's copy only: it is not revoked at the provider, and the connection or host stays and asks for it again.
+
 ## Host verification and advanced options
 
 On a first Built-in SSH connection, check the server's host-key fingerprint before trusting it. You can trust it once or save that fingerprint for future connections. If a previously trusted server presents a different fingerprint, strIDEterm asks whether to reject it, trust it once, or replace the saved fingerprint. System SSH and WSL follow their OpenSSH `known_hosts` and host-key settings; those entries are separate from Built-in SSH's records.

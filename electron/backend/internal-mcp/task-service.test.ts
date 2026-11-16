@@ -66,6 +66,7 @@ describe("remapAssignment", () => {
 async function createManagedReviewFixture(
   options: {
     providerAvailable?: boolean;
+    createTaskWorkspace?: (config: Record<string, unknown>) => Promise<{ workspaceId: string; taskId: string }>;
     createCompanion?: (args: {
       sourceSessionId: string;
       companionRole: string;
@@ -142,7 +143,8 @@ async function createManagedReviewFixture(
       return target;
     },
     assertNoConflictingActiveTask: () => {},
-    createTaskWorkspace: async () => ({ workspaceId: "", taskId: "" }),
+    createTaskWorkspace: async (config) =>
+      options.createTaskWorkspace ? options.createTaskWorkspace(config) : { workspaceId: "", taskId: "" },
     startTask: async () => ({ ok: true }),
     getAwaitingUserRoles: () => [],
     checkProviderAvailable: async () => ({ available: options.providerAvailable !== false }),
@@ -327,6 +329,69 @@ describe("managed review task checkouts", () => {
       expect(prepared.choices.checkout.modes).toEqual(["here", "worktree"]);
       expect(prepared.errors).toEqual([]);
       expect(prepared.summary.checkout).toMatchObject({ mode: "here", cwd: fixture.source });
+    } finally {
+      await fs.rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  test("isolation can be asked for but never dropped, is part of the approved hash and is re-checked at start", async () => {
+    const created: Array<Record<string, unknown>> = [];
+    const fixture = await createManagedReviewFixture({
+      createTaskWorkspace: async (config) => {
+        created.push(config);
+        return { workspaceId: "ws-new", taskId: "task-new" };
+      },
+    });
+    try {
+      fixture.parent.review!.checkout!.mode = "linked-existing-workspace";
+      fixture.parent.review!.checkout!.cacheRepoPath = "";
+      const scope = { profileId: "profile-a", workspaceId: "review-child" };
+      const base = {
+        assignment: "Fix it",
+        worker: { providerId: "claude", model: "sonnet" },
+        judge: { providerId: "claude", model: "opus" },
+        checkout: { mode: "here" as const },
+      };
+      const plain = await fixture.service.prepare(scope, base);
+      expect(plain.defaults.isolated).toBe(false);
+      expect(plain.summary.isolation).toMatchObject({ isolated: false, reason: "off" });
+
+      const asked = await fixture.service.prepare(scope, { ...base, isolated: true });
+      expect(asked.summary.isolation).toMatchObject({ isolated: true, reason: "requested" });
+      expect(asked.inputHash).not.toBe(plain.inputHash);
+      expect((await fixture.service.prepare(scope, { ...base, isolated: false })).inputHash).toBe(plain.inputHash);
+
+      const accepted = await fixture.service.start(scope, {
+        preparationId: asked.preparationId,
+        approvedInputHash: asked.inputHash,
+        idempotencyKey: "isolated-start-1",
+      });
+      for (let attempt = 0; attempt < 100 && fixture.operations.isRunning(String(accepted.operationId)); attempt += 1)
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(created).toHaveLength(1);
+      expect(created[0]).toMatchObject({ isolated: true });
+
+      // an isolated workspace stays isolated whatever the request says, and the hash follows the effective value
+      fixture.parent.sandboxEnabled = true;
+      const off = await fixture.service.prepare(scope, { ...base, isolated: false });
+      expect(off.defaults.isolated).toBe(true);
+      expect(off.summary.isolation).toMatchObject({ isolated: true, reason: "workspace" });
+      expect(off.errors).toEqual([]);
+      expect(off.inputHash).toBe((await fixture.service.prepare(scope, { ...base, isolated: true })).inputHash);
+      expect(off.inputHash).not.toBe(plain.inputHash);
+
+      // a preparation approved before the workspace changed is refused at start
+      fixture.parent.sandboxEnabled = false;
+      const stale = await fixture.service.prepare(scope, { ...base, isolated: false });
+      fixture.parent.sandboxEnabled = true;
+      await expect(
+        fixture.service.start(scope, {
+          preparationId: stale.preparationId,
+          approvedInputHash: stale.inputHash,
+          idempotencyKey: "isolated-start-2",
+        }),
+      ).rejects.toMatchObject({ code: "needs_reprepare" });
+      expect(created).toHaveLength(1);
     } finally {
       await fs.rm(fixture.root, { recursive: true, force: true });
     }

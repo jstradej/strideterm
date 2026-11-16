@@ -329,12 +329,18 @@ export interface MobileIntegrationSettings {
   relay: MobileRelaySettings;
 }
 
+/** Private package registries the host reaches for sandboxed agents. Desktop-only, like the Jira connections. */
+export interface RegistryIntegrationSettings {
+  connections: import("../registry.js").RegistryConnection[];
+}
+
 export interface IntegrationSettings {
   azureDevops: AzureIntegrationSettings;
   github: GitHubIntegrationSettings;
   jira: JiraIntegrationSettings;
   telegram: TelegramIntegrationSettings;
   mobile: MobileIntegrationSettings;
+  registry: RegistryIntegrationSettings;
 }
 
 export interface GitUiSettings {
@@ -406,6 +412,11 @@ export interface Settings {
   terminalFontSizeLocal: number;
   /** Terminal font size for remote/mobile web clients. Range 8–32, default 13. */
   terminalFontSizeRemote: number;
+  /**
+   * New workspaces start with "Work in isolation" on. Default false. Desktop-only to change:
+   * `sanitizeSettingsFromRemote` drops it, and a workspace a remote client creates starts off regardless.
+   */
+  isolateNewWorkspaces: boolean;
   /**
    * Master switch for the image-aware terminal paste. When false, Ctrl+V
    * / Shift+Insert / right-click in a terminal behave like vanilla xterm
@@ -568,6 +579,11 @@ export interface PanelState {
   /** Exposes saved Built-in SSH hosts as tools to this Claude/Codex tab only. */
   sshMcpEnabled?: boolean;
   /**
+   * Runs this shell tab inside the sandbox of an isolated workspace. Narrowing only, desktop-only to change:
+   * a remote client keeps the stored value, and it does nothing where the workspace is not isolated.
+   */
+  sandboxShell?: boolean;
+  /**
    * Free-text scratchpad for this tab. Purely a note to self — nothing reads
    * it but the notes dialog, and an empty string is stored as absent.
    */
@@ -712,6 +728,13 @@ export interface WorkspaceState {
    */
   sshMcpEnabled?: boolean;
   /**
+   * Runs the agent tabs of this workspace (and the Worker/Judge of its tasks) inside the sandbox.
+   * Off by default, desktop-only to change, inherited by the workspaces created from it.
+   */
+  sandboxEnabled?: boolean;
+  /** Destinations the user allowed this workspace's sandbox to reach (beyond its agent and toolchain defaults). */
+  sandboxAllowedDomains?: string[];
+  /**
    * ISO timestamp of the last CONFIRMED, workspace-scoped piece of user work
    * — meaningful terminal input that the backend accepted, creating this
    * workspace, a task lifecycle action, or a successful git/review mutation
@@ -836,6 +859,8 @@ export interface AttentionState {
       lastCommandFinishedAt?: number;
     }
   >;
+  /** Running local terminals: true = launched inside the sandbox, false = running outside it. Runtime-only. */
+  isolation?: Record<string, boolean>;
   byWorkspace?: Record<string, AttentionBucket>;
   byProject?: Record<string, AttentionBucket>;
   activeWorkspace?: AttentionBucket | null;

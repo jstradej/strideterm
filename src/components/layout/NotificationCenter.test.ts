@@ -398,7 +398,7 @@ describe("NotificationCenter — sessionProfileLabel render", () => {
     expect(wrapper.text()).toContain("EBUSY: resource busy or locked");
     expect(wrapper.text()).toContain("Copy path");
     expect(notifStore.persistentToasts).toHaveLength(0);
-    notifStore.openPanelOnSession("ws-a:");
+    notifStore.openPanelOnSession(notifStore.sessions.find((s) => s.workspaceId === "ws-a")!.id);
     await nextTick();
     await nextTick();
     expect((wrapper.get(".notification-item__details").element as HTMLDetailsElement).open).toBe(true);

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   validateIpc,
+  credentialRemoveSchema,
   workspaceSchema,
   reviewBridgeQueueSchema,
   reviewGitStartSchema,
@@ -1358,5 +1359,16 @@ describe("ipc-schemas", () => {
         validateIpc(schema, { ...payload, jiraIssueRef: { ...jiraIssueRef, issueKey: "" } }, "test"),
       ).toThrow();
     });
+  });
+});
+
+describe("credentialRemoveSchema", () => {
+  test("takes a reference and nothing else", () => {
+    expect(validateIpc(credentialRemoveSchema, { ref: "cred:ado-1" }, "credentials:remove")).toEqual({
+      ref: "cred:ado-1",
+    });
+    for (const bad of [{}, { ref: "" }, { ref: 1 }, { ref: "cred:a", all: true }, "cred:a", null]) {
+      expect(() => validateIpc(credentialRemoveSchema, bad, "credentials:remove")).toThrow();
+    }
   });
 });

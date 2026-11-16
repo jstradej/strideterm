@@ -78,6 +78,8 @@ interface PtySession extends SessionBase {
   wslDistro?: string | null;
   sshHostId?: string;
   intentionalExit?: boolean;
+  /** Launched inside the sandbox. Fixed at spawn: turning isolation on later does not change a running process. */
+  sandboxed?: boolean;
 }
 
 interface SshSession extends SessionBase {
@@ -108,9 +110,27 @@ interface SessionLaunchOverride {
   skipCommandInjection?: boolean;
 }
 
+/**
+ * Runs a tab's process inside the sandbox. `prepare` proves the sandbox can start (a throw fails the
+ * tab visibly — it is never started unisolated) and says whether this tab is sandboxed at all; `wrap`
+ * turns the process the manager was about to spawn into the sandbox's; `release` runs when it is gone.
+ */
+export interface SessionSandboxHooks {
+  prepare(ctx: SessionEnvContext): Promise<boolean>;
+  wrap(
+    ctx: SessionEnvContext & {
+      launcher: { file: string; args: string[] };
+      cwd: string;
+      env: Record<string, string>;
+    },
+  ): { file: string; args: string[]; env: Record<string, string>; cwd: string };
+  release(sessionId: string): void;
+}
+
 interface SessionManagerOpts {
   getSessionEnv?: ((ctx: SessionEnvContext) => Record<string, string>) | null;
   getSessionLaunch?: ((ctx: SessionEnvContext) => SessionLaunchOverride | null) | null;
+  sandbox?: SessionSandboxHooks | null;
   isBracketedPasteEnabled?: ((sessionId: string) => boolean) | null;
   sshManager?: SshManager | null;
   spawnPty?: typeof pty.spawn;
@@ -566,15 +586,18 @@ export class SessionManager extends EventEmitter {
   isBracketedPasteEnabled: ((sessionId: string) => boolean) | null;
   sshManager: SshManager | null;
   spawnPty: typeof pty.spawn;
+  sandbox: SessionSandboxHooks | null;
 
   constructor({
     getSessionEnv = null,
     getSessionLaunch = null,
+    sandbox = null,
     isBracketedPasteEnabled = null,
     sshManager = null,
     spawnPty = pty.spawn,
   }: SessionManagerOpts = {}) {
     super();
+    this.sandbox = sandbox;
     this.sessions = new Map();
     this.startingSessions = new Map();
     this.failedSpawns = new Set();
@@ -789,6 +812,16 @@ export class SessionManager extends EventEmitter {
     };
   }
 
+  /** Whether each running local terminal was actually launched inside the sandbox (true) or not (false). */
+  getIsolationMap(): Record<string, boolean> {
+    const map: Record<string, boolean> = {};
+    for (const [id, session] of this.sessions) {
+      if (session.status !== "running" || session.kind === "ssh") continue;
+      map[id] = (session as PtySession).sandboxed === true;
+    }
+    return map;
+  }
+
   resolveDefaultSessionId(
     state: AppState,
     workspaceId: string = state.activeWorkspaceId || state.activeProjectId || "",
@@ -877,6 +910,30 @@ export class SessionManager extends EventEmitter {
         if (mode === "wsl") return this.ensureWslSshSession(state, workspace, panel, key, host);
         return this.ensureSshSession(state, workspace, panel, key, host);
       });
+    }
+
+    // Isolation fails closed: when the sandbox cannot start, the tab says so and nothing runs unisolated.
+    const failSandboxLaunch = (error: unknown): null => {
+      const message = error instanceof Error ? error.message : String(error);
+      log.error("sandbox launch refused", { sessionId: key, err: message });
+      this.sessions.delete(key);
+      this.failedSpawns.add(key);
+      this.emit("terminal:data", {
+        sessionId: key,
+        data: `\r\n\x1b[31mIsolated tab not started: ${message}\x1b[0m\r\n`,
+      });
+      return null;
+    };
+    let sandboxActive = false;
+    if (this.sandbox) {
+      try {
+        sandboxActive = await this.sandbox.prepare({ state, workspace, panel, sessionId: key });
+      } catch (error) {
+        return failSandboxLaunch(error);
+      }
+      // The check above ran before this await; another start may have won in the meantime.
+      const raced = this.sessions.get(key);
+      if (sandboxActive && raced && raced.status === "running") return raced;
     }
 
     let launchOverride: SessionLaunchOverride | null;
@@ -983,26 +1040,52 @@ export class SessionManager extends EventEmitter {
       // Same for the launcher variables this launch's build detection read: a strIDEterm started
       // from the shell would take them for its own.
       for (const name of DISTRIBUTION_LAUNCHER_ENV) delete inheritedEnv[name];
-      processHandle = this.spawnPty(launcher.file, launcher.args, {
-        name: APP_CONFIG.session.termName,
-        cols: initialCols,
-        rows: initialRows,
-        cwd: effectiveCwd,
-        env: {
-          ...inheritedEnv,
-          ...integrationEnv,
-          TERM_PROGRAM: APP_CONFIG.session.termProgram,
-          FORCE_COLOR: APP_CONFIG.session.forceColor,
-          ...(this.getSessionEnv?.({
+      const spawnEnv = {
+        ...inheritedEnv,
+        ...integrationEnv,
+        TERM_PROGRAM: APP_CONFIG.session.termProgram,
+        FORCE_COLOR: APP_CONFIG.session.forceColor,
+        ...(this.getSessionEnv?.({
+          state,
+          workspace,
+          panel,
+          sessionId: key,
+        }) || {}),
+        ...withoutSessionIdentity(launchOverride?.env),
+      } as Record<string, string>;
+      let spawnFile = launcher.file;
+      let spawnArgs = launcher.args;
+      let spawnCwd = effectiveCwd;
+      let finalEnv = spawnEnv;
+      if (sandboxActive && this.sandbox) {
+        try {
+          const wrapped = this.sandbox.wrap({
             state,
             workspace,
             panel,
             sessionId: key,
-          }) || {}),
-          ...withoutSessionIdentity(launchOverride?.env),
-        },
+            launcher,
+            cwd: effectiveCwd,
+            env: spawnEnv,
+          });
+          spawnFile = wrapped.file;
+          spawnArgs = wrapped.args;
+          spawnCwd = wrapped.cwd;
+          finalEnv = wrapped.env;
+        } catch (error) {
+          this.sandbox.release(key);
+          return failSandboxLaunch(error);
+        }
+      }
+      processHandle = this.spawnPty(spawnFile, spawnArgs, {
+        name: APP_CONFIG.session.termName,
+        cols: initialCols,
+        rows: initialRows,
+        cwd: spawnCwd,
+        env: finalEnv,
       });
     } catch (error: unknown) {
+      if (sandboxActive) this.sandbox?.release(key);
       const message = (error as Error)?.message || String(error);
       // Logged at error level: a failed spawn leaves the panel showing "0 running"
       // with an empty terminal viewport — visible to the user, so they deserve
@@ -1029,6 +1112,7 @@ export class SessionManager extends EventEmitter {
       rows: initialRows,
       status: "running",
       processHandle,
+      sandboxed: sandboxActive,
     };
 
     processHandle.onData((data) => {
@@ -1043,6 +1127,7 @@ export class SessionManager extends EventEmitter {
       session.processHandle = null;
       const intentional = session.intentionalExit === true;
       if (current && current !== session) return;
+      if (sandboxActive) this.sandbox?.release(session.id);
       if (current === session) this.cancelTerminalWrites(session.id);
       log.debug("session exited", { sessionId: session.id, exitCode, intentional });
       this.emit("terminal:exit", {
@@ -1062,7 +1147,8 @@ export class SessionManager extends EventEmitter {
     // activation). The runtime clears the previous generation's replay on
     // this event — data events dispatch async, so this always precedes the
     // first output of the new process.
-    this.emit("terminal:spawned", { sessionId: key });
+    // `sandboxed` tells the runtime to publish the isolation map now: the tab's "isolated" badge reads it from the payload.
+    this.emit("terminal:spawned", { sessionId: key, ...(sandboxActive ? { sandboxed: true } : {}) });
 
     if (cwdMissing) {
       // Surface the fallback in the terminal viewport so the user sees why
@@ -1090,7 +1176,13 @@ export class SessionManager extends EventEmitter {
     // ZDOTDIR loader, nor pwsh via -Command). applyShellIntegrationLaunch
     // returns skipTypedSource=false only in that defensive case.
     const integrationScript = integrationEnv.STRIDETERM_SHELL_INTEGRATION_SCRIPT;
-    if (!skipTypedSource && integrationScript && session.status === "running" && session.processHandle) {
+    if (
+      !sandboxActive &&
+      !skipTypedSource &&
+      integrationScript &&
+      session.status === "running" &&
+      session.processHandle
+    ) {
       const base = shellBasename(launcher.file);
       let sourceCmd = "";
       if (base === "zsh") {

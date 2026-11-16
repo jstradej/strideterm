@@ -36,9 +36,12 @@
           <rect x="3" y="11" width="14" height="5.5" rx="1" />
           <path d="M6 6.2h.1M6 13.8h.1M9 6.2h5M9 13.8h5" />
         </svg>
-        <svg v-else viewBox="0 0 20 20" aria-hidden="true">
-          <circle cx="7" cy="8" r="3" />
-          <path d="m9.3 10.3 6.2 6.2m-2.5-2.5 1.6-1.6m-3.3-.1 1.6-1.6" />
+        <!-- Lucide "key-round" (ISC), on its 24 grid; the stroke is scaled to match the 20-grid icons beside it. -->
+        <svg v-else viewBox="0 0 24 24" style="stroke-width: 1.9" aria-hidden="true">
+          <path
+            d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"
+          />
+          <circle cx="16.5" cy="7.5" r=".5" style="fill: currentColor" />
         </svg>
         {{ tab.label }}
       </button>

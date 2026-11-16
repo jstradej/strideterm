@@ -244,6 +244,55 @@ describe("createDialogActions.openNewTabDialog SSH-tools forwarding", () => {
   });
 });
 
+describe("createDialogActions isolation wiring for tabs", () => {
+  it("tells the new-tab dialog whether the active workspace is isolated and forwards the isolated-shell choice", async () => {
+    const ctx = makeCtx({
+      appState: { workspaces: [] },
+      workspace: { workspace: { id: "w", kind: "terminal", cwd: "/x", sandboxEnabled: true } },
+    });
+    const quickAddTemplateTab = vi.fn(async () => undefined);
+    ctx.quickAddTemplateTab = quickAddTemplateTab;
+    const actions = createDialogActions(ctx);
+
+    actions.openNewTabDialog();
+    const props = ctx.overlayProps.value as AnyApi;
+    expect(props).toMatchObject({ workspaceIsolation: "isolated", workspaceCwd: "/x" });
+    await props.onSubmit({ title: "Shell", command: "", sandboxShell: true });
+    expect(quickAddTemplateTab).toHaveBeenCalledWith("", "Shell", "", expect.objectContaining({ sandboxShell: true }));
+  });
+
+  it.each([
+    [{ kind: "terminal" }, "plain"],
+    [{ kind: "task", sandboxEnabled: true }, "n/a"],
+    [{ kind: "docker" }, "n/a"],
+  ])("labels %j as %s", (workspace, expected) => {
+    const ctx = makeCtx({ appState: { workspaces: [] }, workspace: { workspace } });
+    createDialogActions(ctx).openNewTabDialog();
+    expect((ctx.overlayProps.value as AnyApi).workspaceIsolation).toBe(expected);
+  });
+
+  it("saves the isolated-shell choice on the tab and drops it when switched off", async () => {
+    const saveWorkspace = vi.fn(async (workspace: AnyApi) => ({ appState: { workspaces: [workspace] } }));
+    const workspace = {
+      id: "w",
+      kind: "terminal",
+      cwd: "/x",
+      sandboxEnabled: true,
+      panels: [{ id: "p", title: "Shell", command: "", sandboxShell: true }],
+    };
+    const ctx = makeCtx({ appState: { workspaces: [workspace] } });
+    ctx.getApi = () => ({ saveWorkspace });
+    ctx.getPanelByViewId = () => ({ workspace, panel: workspace.panels[0] });
+    const actions = createDialogActions(ctx);
+
+    actions.editTabWithDialog("w:p");
+    const props = ctx.overlayProps.value as AnyApi;
+    expect(props).toMatchObject({ workspaceIsolation: "isolated", sandboxShell: true });
+    await props.onSubmit({ title: "Shell", command: "", sandboxShell: false });
+    expect(saveWorkspace.mock.calls[0][0].panels[0]).not.toHaveProperty("sandboxShell");
+  });
+});
+
 describe("createDialogActions profile-aware saves", () => {
   beforeEach(() => {
     (window as AnyApi).strideterm = { startupFlags: { windowId: "win-b" } };

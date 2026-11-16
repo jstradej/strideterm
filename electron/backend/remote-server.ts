@@ -929,6 +929,9 @@ export const REMOTE_BLOCKED_TOP_LEVEL_FIELDS: ReadonlyArray<string> = [
   "externalPathOpener",
   "externalEditor",
   "terminalFontSizeLocal",
+  // `isolateNewWorkspaces` is the default of the isolation switch: a remote client must never move it,
+  // in either direction, because the consequences land on the desktop that runs the agents.
+  "isolateNewWorkspaces",
   // `clipboardImagePasteDir` decides where the desktop main process
   // writes PNGs on Ctrl+V of a screenshot. A remote caller repointing
   // it (e.g. to `C:\\Users\\<me>\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\`)
@@ -966,6 +969,14 @@ function sanitizeJiraFromRemote(settings: Record<string, unknown>): string[] {
   if (!integrations || typeof integrations !== "object" || !("jira" in integrations)) return [];
   delete integrations.jira;
   return ["integrations.jira"];
+}
+
+/** Registry connections point the host's gateway at private package hosts: desktop-only, like Jira's. */
+function sanitizeRegistryFromRemote(settings: Record<string, unknown>): string[] {
+  const integrations = settings.integrations as Record<string, unknown> | undefined;
+  if (!integrations || typeof integrations !== "object" || !("registry" in integrations)) return [];
+  delete integrations.registry;
+  return ["integrations.registry"];
 }
 
 /**
@@ -1006,6 +1017,7 @@ export function sanitizeSettingsFromRemote(settings: Record<string, unknown>): s
   }
   removed.push(...sanitizeIntegrationsMobileFromRemote(settings));
   removed.push(...sanitizeJiraFromRemote(settings));
+  removed.push(...sanitizeRegistryFromRemote(settings));
   return removed;
 }
 

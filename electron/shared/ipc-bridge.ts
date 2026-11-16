@@ -353,6 +353,24 @@ export interface StridetermAPI {
     position: "before" | "after";
   }) => Promise<unknown>;
   setJiraAgentAttachmentLimits: (payload: { maxFiles: number; maxMegabytes: number }) => Promise<unknown>;
+  /** Agent sandbox (desktop only): what is installed, install what is missing, and the user's answer to "sandbox wanted X". */
+  getSandboxStatus: (payload?: { force?: boolean; distro?: string }) => Promise<import("./sandbox.js").SandboxStatus>;
+  installSandboxPrerequisites: (payload?: { distro?: string }) => Promise<import("./sandbox.js").SandboxInstallResult>;
+  listSandboxRequests: () => Promise<import("./sandbox.js").SandboxDeniedRequest[]>;
+  decideSandboxRequest: (
+    payload: import("./sandbox.js").SandboxDecisionPayload,
+  ) => Promise<import("./sandbox.js").SandboxDecisionResult>;
+  /** Private registry connections the host gateway reads for sandboxed agents (desktop only). */
+  saveRegistryConnection: (payload: import("./registry.js").RegistrySavePayload) => Promise<{ ok: boolean }>;
+  deleteRegistryConnection: (connectionId: string) => Promise<{ ok: boolean }>;
+  testRegistryConnection: (payload: {
+    connectionId: string;
+    probePath?: string;
+  }) => Promise<import("./registry.js").RegistryTestResult>;
+  /** Credentials held for external systems (desktop only): metadata only, removed one by one or as orphans. */
+  listCredentials: () => Promise<import("./credential-overview.js").CredentialOverview>;
+  removeCredential: (ref: string) => Promise<import("./credential-overview.js").CredentialRemoveResult>;
+  removeOrphanCredentials: () => Promise<import("./credential-overview.js").CredentialRemoveResult>;
   buildJiraOwnIssuesQuery: (payload: {
     connectionId: string;
     baseJql?: string;
@@ -1134,6 +1152,9 @@ export interface StridetermAPI {
   /** A long-running runtime operation finished. UNVALIDATED here; parsed at the transport boundary. */
   onOperationFinished: (handler: (payload: unknown) => void) => () => void;
   onReviewGitOperation: (handler: (payload: unknown) => void) => void;
+  /** A sandbox is waiting on a destination (desktop windows only). UNVALIDATED here; parsed at the transport boundary. */
+  onSandboxDenied: (handler: (payload: unknown) => void) => () => void;
+  onSandboxDeniedSettled: (handler: (payload: unknown) => void) => () => void;
   onMobileStatus: (
     handler: (
       payload:

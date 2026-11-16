@@ -193,6 +193,21 @@ try {
     );
   }
   importFirebase();
+  // Packaged builds ship the sandbox runtime; dev finds it in dist-electron/sandbox-runtime (bundled-runtime.ts).
+  try {
+    execFileSync(
+      process.execPath,
+      [join(root, "node_modules/tsx/dist/cli.mjs"), "scripts/bundle-sandbox-runtime.mts"],
+      {
+        cwd: root,
+        stdio: ["ignore", "ignore", "pipe"],
+      },
+    );
+    log("Bundled the sandbox runtime into dist-electron/sandbox-runtime.");
+  } catch (error) {
+    const detail = String(error.stderr ?? error.message).match(/Error: .*/)?.[0] ?? error.message;
+    log(`Sandbox runtime not bundled (${detail}) Workspace isolation will report it missing; run npm ci.`);
+  }
   mkdirSync(env.STRIDETERM_DATA_DIR, { recursive: true });
   log(`Using isolated data directory: ${env.STRIDETERM_DATA_DIR} (environment: ${env.STRIDETERM_ENV})`);
   for (const name of ["Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache", "Code Cache"]) {

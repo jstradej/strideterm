@@ -26,6 +26,7 @@ interface CardWorkspace {
   starred?: boolean;
   lastActivity?: string;
   lastActivityTitle?: string;
+  isolated?: boolean;
   workItems?: Array<{
     ref: { provider: "jira"; connectionId: string; issueId: string; issueKey: string };
     summary?: string;
@@ -54,6 +55,15 @@ describe("WorkspaceCard — shared heartbeat targets", () => {
 
   afterEach(() => {
     resetHeartbeatForTests();
+  });
+
+  test("marks a workspace that works in isolation, and only that one", () => {
+    const isolated = mount(WorkspaceCard, { props: props({ isolated: true }) });
+    expect(isolated.find('[data-testid="workspace-isolated"]').exists()).toBe(true);
+    isolated.unmount();
+    const plain = mount(WorkspaceCard, { props: props() });
+    expect(plain.find('[data-testid="workspace-isolated"]').exists()).toBe(false);
+    plain.unmount();
   });
 
   test("shows linked Jira issue keys and status chips", () => {

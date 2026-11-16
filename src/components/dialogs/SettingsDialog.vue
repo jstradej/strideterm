@@ -63,15 +63,48 @@
           <path d="m10 2.5 7 7.5-7 7.5L3 10l7-7.5Z" />
           <path d="M7.5 8.5h5m-4 3h4" />
         </svg>
+        <!-- Lucide "square-terminal" (ISC), on its 24 grid like the key below. -->
         <svg
           v-else-if="tab.id === 'ssh'"
           class="settings-tab-btn__icon"
-          viewBox="0 0 20 20"
+          style="stroke-width: 1.9"
+          viewBox="0 0 24 24"
           aria-hidden="true"
           focusable="false"
         >
-          <circle cx="7" cy="8" r="4" />
-          <path d="m10 11 6 6m-2-2 2-2m-4 0 2-2" />
+          <path d="m7 11 2-2-2-2" />
+          <path d="M11 13h4" />
+          <rect width="18" height="18" x="3" y="3" rx="2" ry="2" />
+        </svg>
+        <!-- Lucide "key-round" (ISC). Drawn on a 24 grid: the stroke is scaled to match the 20-grid icons beside it. -->
+        <svg
+          v-else-if="tab.id === 'credentials'"
+          class="settings-tab-btn__icon"
+          style="stroke-width: 1.9"
+          viewBox="0 0 24 24"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <path
+            d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"
+          />
+          <circle cx="16.5" cy="7.5" r=".5" style="fill: currentColor" />
+        </svg>
+        <!-- Lucide "package" (ISC). -->
+        <svg
+          v-else-if="tab.id === 'registry'"
+          class="settings-tab-btn__icon"
+          style="stroke-width: 1.9"
+          viewBox="0 0 24 24"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <path
+            d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"
+          />
+          <path d="M12 22V12" />
+          <path d="m3.3 7 7.703 4.734a2 2 0 0 0 1.994 0L20.7 7" />
+          <path d="m7.5 4.27 9 5.15" />
         </svg>
         <svg
           v-else-if="tab.id === 'telegram'"
@@ -135,6 +168,14 @@
       <SettingsJiraAgentAttachments :value="settings.integrations?.jira?.agentAttachments" />
       <JiraInboxPane connections-only />
     </section>
+
+    <div v-else-if="activeTab === 'registry'" class="settings-tab-content">
+      <SettingsRegistryTab :connections="settings.integrations?.registry?.connections" />
+    </div>
+
+    <div v-else-if="activeTab === 'credentials'" class="settings-tab-content">
+      <SettingsCredentialsTab @change="changeCredential" />
+    </div>
 
     <div v-else-if="activeTab === 'ssh'" class="settings-tab-content">
       <SettingsSshTab ref="sshSettingsTab" />
@@ -261,6 +302,11 @@ import type { Transport } from "../../transport.js";
 import SettingsAboutTab from "./settings/SettingsAboutTab.vue";
 import SettingsGeneralTab from "./settings/SettingsGeneralTab.vue";
 import SettingsGitTab from "./settings/SettingsGitTab.vue";
+import SettingsRegistryTab from "./settings/SettingsRegistryTab.vue";
+import SettingsCredentialsTab from "./settings/SettingsCredentialsTab.vue";
+import { useAppStore } from "../../stores/app.js";
+import type { CredentialRow } from "../../../electron/shared/credential-overview.js";
+import type { RegistryConnection } from "../../../electron/shared/registry.js";
 import SettingsSshTab from "./settings/SettingsSshTab.vue";
 import SettingsTelegramTab from "./settings/SettingsTelegramTab.vue";
 import SettingsMobileTab from "./settings/SettingsMobileTab.vue";
@@ -292,6 +338,18 @@ const MOBILE_TAB = {
   title:
     "Account and subscription for the hosted control plane, plus pairing strIDEterm Mobile for push notifications and typed remote actions.",
 };
+// Registry connections hold a sign-in the host presents for sandboxed agents: desktop only, like Mobile.
+const REGISTRY_TAB = {
+  id: "registry",
+  label: "Registries",
+  title: "Private Maven, npm, pip and Gradle registries that isolated agents may read through strIDEterm.",
+};
+// The credentials overview lists secrets held for other systems across all profiles: desktop only, like the registries.
+const CREDENTIALS_TAB = {
+  id: "credentials",
+  label: "Credentials",
+  title: "Tokens, passwords and keys strIDEterm stores for other systems. Review and remove them.",
+};
 const ABOUT_TAB = { id: "about", label: "About", title: "Version, repository link, and update check." };
 const REMOTE_TAB = { id: "remote", label: "Remote access", title: "Browser session expiry." };
 
@@ -322,6 +380,7 @@ interface SettingsObj {
   externalEditor?: string;
   clipboardImagePasteEnabled?: boolean;
   clipboardImagePasteDir?: string;
+  isolateNewWorkspaces?: boolean;
   remoteAccess?: { cloudflaredPath?: string; sessionIdleTtlMinutes?: number; sessionAbsoluteTtlMinutes?: number };
   notifications?: {
     promptQuietMs?: number;
@@ -349,6 +408,7 @@ interface SettingsObj {
     requireEncryptedStorage?: boolean;
   };
   integrations?: {
+    registry?: { connections?: RegistryConnection[] };
     jira?: {
       commentAttribution?: { enabled: boolean; text: string; position: "before" | "after" };
       agentAttachments?: { maxFiles: number; maxMegabytes: number };
@@ -417,6 +477,8 @@ const hookSettings = reactive(useAgentHookSettings(api));
 // same v-if-on-bridge-method precedent as WorkspaceDialog's browseDirectory.
 const TABS = computed(() => [
   ...BASE_TABS,
+  ...(api?.saveRegistryConnection ? [REGISTRY_TAB] : []),
+  ...(api?.listCredentials ? [CREDENTIALS_TAB] : []),
   ...(api?.listRemoteSessions ? [REMOTE_TAB] : []),
   ...(api?.createMobilePairingInvitation ? [MOBILE_TAB] : []),
   ABOUT_TAB,
@@ -471,6 +533,7 @@ const form = reactive({
   externalEditor: props.settings.externalEditor || "",
   clipboardImagePasteEnabled: props.settings.clipboardImagePasteEnabled !== false,
   clipboardImagePasteDir: props.settings.clipboardImagePasteDir || "",
+  isolateNewWorkspaces: props.settings.isolateNewWorkspaces === true,
   remoteAccess: {
     cloudflaredPath: props.settings.remoteAccess?.cloudflaredPath || "",
     sessionIdleTtlMinutes: props.settings.remoteAccess?.sessionIdleTtlMinutes ?? 1440,
@@ -631,6 +694,36 @@ async function switchTab(tabId: string) {
   activeTab.value = tabId;
 }
 
+const CREDENTIAL_CHANGE_TABS: Partial<Record<CredentialRow["system"], string>> = {
+  jira: "jira",
+  registry: "registry",
+  ssh: "ssh",
+  telegram: "telegram",
+};
+
+// A secret is changed where its connection is edited. Azure DevOps and GitHub connections have no Settings tab:
+// their dialog replaces this one, so it only opens when no unsaved Settings change would be thrown away.
+async function changeCredential(row: CredentialRow) {
+  const tab = CREDENTIAL_CHANGE_TABS[row.system];
+  if (tab) {
+    await switchTab(tab);
+    return;
+  }
+  if (row.system !== "azure" && row.system !== "github") return;
+  // Read fresh: `hasUnsavedChanges` is a computed over toRaw() and caches the answer of its first read.
+  if (JSON.stringify({ form: toRaw(form), templates: toRaw(templates) }) !== initialSnapshot) {
+    notifications.value.pushEphemeralToast({
+      title: "Save your settings first",
+      body: "Opening the connection replaces this dialog. Save or discard the pending settings changes, then try again.",
+      durationMs: 6000,
+    });
+    return;
+  }
+  const app = useAppStore();
+  if (row.system === "azure") app.openAzureConnectionDialog(row.ownerId);
+  else app.openGitHubConnectionDialog(row.ownerId);
+}
+
 async function handleSave() {
   if (saving.value) return;
   if (!api?.isRemote && sessionTtlError.value) {
@@ -646,6 +739,7 @@ async function handleSave() {
     externalEditor: form.externalEditor,
     clipboardImagePasteEnabled: form.clipboardImagePasteEnabled,
     clipboardImagePasteDir: form.clipboardImagePasteDir,
+    ...(!api?.isRemote ? { isolateNewWorkspaces: form.isolateNewWorkspaces } : {}),
     remoteAccess: {
       cloudflaredPath: form.remoteAccess.cloudflaredPath,
       ...(!api?.isRemote

@@ -1,4 +1,4 @@
-export type AgentCliProvider = "claude" | "codex" | "copilot" | "opencode";
+export type AgentCliProvider = "claude" | "codex" | "copilot" | "opencode" | "gemini";
 export type AgentSshMcpProvider = "claude" | "codex";
 export const SSH_MCP_URL_ENV = "STRIDETERM_SSH_MCP_URL";
 export const SSH_MCP_CAPABILITY_ENV = "STRIDETERM_SSH_MCP_CAPABILITY";
@@ -64,7 +64,7 @@ export function tokenizeCommand(command: string): string[] {
   return tokens;
 }
 
-const AGENT_CLI_PROVIDERS: readonly string[] = ["claude", "codex", "copilot", "opencode"];
+const AGENT_CLI_PROVIDERS: readonly string[] = ["claude", "codex", "copilot", "opencode", "gemini"];
 
 function commandProvider(executable: string): AgentCliProvider | null {
   const basename = executable.split(/[\\/]/u).pop()?.toLowerCase() || "";
@@ -112,7 +112,9 @@ export function parseAgentCommand(command: unknown): ParsedAgentCommand | null {
     (provider === "claude" && ["auth", "mcp", "plugin", "plugins", "install", "update", "doctor"].includes(firstArg)) ||
     (provider === "codex" && ["mcp", "login", "logout", "completion", "debug"].includes(firstArg)) ||
     (provider === "copilot" && ["help", "login", "logout", "version"].includes(firstArg)) ||
-    (provider === "opencode" && ["auth", "upgrade", "models", "mcp", "serve", "web"].includes(firstArg))
+    (provider === "opencode" && ["auth", "upgrade", "models", "mcp", "serve", "web"].includes(firstArg)) ||
+    (provider === "gemini" &&
+      ["mcp", "extensions", "extension", "skills", "skill", "hooks", "hook", "gemma"].includes(firstArg))
   ) {
     return null;
   }

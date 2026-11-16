@@ -5,6 +5,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { REVIEW_GIT_CAPABILITY_ENV, REVIEW_GIT_URL_ENV } from "../shared/review-git-env.js";
 import { reviewPrActionSchema, reviewPrActionOptionsSchema } from "../shared/review-pr-actions.js";
+import { sandboxAwareFetch } from "../shared/sandbox-fetch.js";
 
 export interface ReviewGitStdioConfig {
   url: string;
@@ -53,7 +54,7 @@ interface OperationLookup {
 
 export function createReviewGitClient({
   config,
-  fetchImpl = globalThis.fetch,
+  fetchImpl = sandboxAwareFetch,
   retryDelayMs = 400,
 }: {
   config: ReviewGitStdioConfig | null;

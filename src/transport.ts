@@ -33,6 +33,16 @@ import {
   azureClosedPrCleanupFinishedSchema,
   type AzureClosedPrCleanupFinished,
 } from "../electron/shared/azure-closed-pr-cleanup-events.js";
+import { sandboxDeniedRequestSchema } from "../electron/shared/sandbox-events.js";
+import type {
+  SandboxDecisionPayload,
+  SandboxDecisionResult,
+  SandboxDeniedRequest,
+  SandboxInstallResult,
+  SandboxStatus,
+} from "../electron/shared/sandbox.js";
+import type { RegistrySavePayload, RegistryTestResult } from "../electron/shared/registry.js";
+import type { CredentialOverview, CredentialRemoveResult } from "../electron/shared/credential-overview.js";
 import {
   OPERATION_FINISHED_CHANNEL,
   operationFinishedSchema,
@@ -406,6 +416,22 @@ export interface Transport extends Partial<
     position: "before" | "after";
   }) => Promise<unknown>;
   setJiraAgentAttachmentLimits?: (payload: { maxFiles: number; maxMegabytes: number }) => Promise<unknown>;
+  /**
+   * Agent isolation and private registries. Desktop only: the remote transport has no counterpart, so a
+   * browser or phone can neither turn isolation on nor widen what a sandbox may reach.
+   */
+  getSandboxStatus?: (payload?: { force?: boolean; distro?: string }) => Promise<SandboxStatus>;
+  installSandboxPrerequisites?: (payload?: { distro?: string }) => Promise<SandboxInstallResult>;
+  listSandboxRequests?: () => Promise<SandboxDeniedRequest[]>;
+  decideSandboxRequest?: (payload: SandboxDecisionPayload) => Promise<SandboxDecisionResult>;
+  saveRegistryConnection?: (payload: RegistrySavePayload) => Promise<{ ok: boolean }>;
+  deleteRegistryConnection?: (connectionId: string) => Promise<{ ok: boolean }>;
+  testRegistryConnection?: (payload: { connectionId: string; probePath?: string }) => Promise<RegistryTestResult>;
+  listCredentials?: () => Promise<CredentialOverview>;
+  removeCredential?: (ref: string) => Promise<CredentialRemoveResult>;
+  removeOrphanCredentials?: () => Promise<CredentialRemoveResult>;
+  onSandboxDenied?: (handler: Handler<SandboxDeniedRequest>) => () => void;
+  onSandboxDeniedSettled?: (handler: Handler<SandboxDeniedRequest>) => () => void;
   buildJiraOwnIssuesQuery?: (payload: {
     connectionId: string;
     baseJql?: string;
@@ -774,6 +800,25 @@ function bindElectronTransport(): Transport {
           rlog("warn", "operation:finished ignored: malformed payload");
           return;
         }
+        handler(parsed.data);
+      });
+      return () => unsubscribe?.();
+    },
+    onSandboxDenied: (handler: Handler<SandboxDeniedRequest>) => {
+      const unsubscribe = window.strideterm.onSandboxDenied?.((payload: unknown) => {
+        const parsed = sandboxDeniedRequestSchema.safeParse(payload);
+        if (!parsed.success) {
+          rlog("warn", "sandbox:denied ignored: malformed payload");
+          return;
+        }
+        handler(parsed.data);
+      });
+      return () => unsubscribe?.();
+    },
+    onSandboxDeniedSettled: (handler: Handler<SandboxDeniedRequest>) => {
+      const unsubscribe = window.strideterm.onSandboxDeniedSettled?.((payload: unknown) => {
+        const parsed = sandboxDeniedRequestSchema.safeParse(payload);
+        if (!parsed.success) return;
         handler(parsed.data);
       });
       return () => unsubscribe?.();

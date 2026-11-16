@@ -767,6 +767,7 @@ export function useNotificationCapture(
         urgency: "normal",
         workspaceName: "Remote access",
         category: "remote-auth",
+        threadKey: "remote-auth",
         meta: { address: event.address, blockedUntil: event.blockedUntil },
         sourceAlertId: `remote-auth:${event.address}:${event.blockedUntil}`,
         occurredAt: new Date().toISOString(),

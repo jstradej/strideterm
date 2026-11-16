@@ -48,8 +48,8 @@ export const APP_CONFIG = {
     minWindowWidth: envNumber("STRIDETERM_MIN_WINDOW_WIDTH", 1100),
     minWindowHeight: envNumber("STRIDETERM_MIN_WINDOW_HEIGHT", 720),
     smokeReadyExitMs: envNumber("STRIDETERM_SMOKE_READY_EXIT_MS", 1200),
-    smokeHardExitMs: envNumber("STRIDETERM_SMOKE_HARD_EXIT_MS", 5000),
-    smokeAliveMs: envNumber("STRIDETERM_SMOKE_ALIVE_MS", 8000),
+    smokeHardExitMs: envNumber("STRIDETERM_SMOKE_HARD_EXIT_MS", 15000),
+    smokeAliveMs: envNumber("STRIDETERM_SMOKE_ALIVE_MS", 20000),
   },
   app: {
     repositoryUrl: envString("STRIDETERM_REPOSITORY_URL", "https://github.com/jstradej/strideterm"),

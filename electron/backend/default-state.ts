@@ -20,6 +20,8 @@ import { isCompanionPrimaryViewId, parseCompanionPrimaryViewId } from "../shared
 import { isFullSha } from "../shared/review-source-identity.js";
 import { normalizeRemoteCwd } from "../shared/ssh-remote-cwd.js";
 import { sanitizeJiraPollingState } from "./jira/jira-polling.js";
+import { normalizeSandboxDomains } from "../shared/sandbox.js";
+import { normalizeRegistryConnections } from "./sandbox/registry-connections.js";
 import { JIRA_CONNECTION_HEALTH_STATES } from "../shared/jira-error-codes.js";
 import {
   DEFAULT_JIRA_COMMENT_ATTRIBUTION,
@@ -228,6 +230,7 @@ function normalizePanel(panel: any, panelIndex = 0): any {
     cwd: panel.cwd || "",
     alertsForceOn: panel.alertsForceOn === true,
     sshMcpEnabled: panel.sshMcpEnabled === true,
+    ...(panel.sandboxShell === true ? { sandboxShell: true } : {}),
     notes: typeof panel.notes === "string" ? panel.notes : "",
     hostedBy: typeof panel.hostedBy === "string" ? panel.hostedBy : "",
     ...(panel.command === "__sftp__" ? { sftp: normalizeSftp(panel.sftp) } : {}),
@@ -607,6 +610,9 @@ export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
     // Never on a task workspace: the Worker/Judge pair must not inherit the right to create tasks.
     internalMcpEnabled: workspace.kind !== "task" && !isJiraBoardWorkspace && workspace.internalMcpEnabled === true,
     sshMcpEnabled: workspace.kind !== "task" && !isJiraBoardWorkspace && workspace.sshMcpEnabled === true,
+    // A task workspace carries it: its Worker and Judge run inside the sandbox of the workspace it came from.
+    sandboxEnabled: !isJiraBoardWorkspace && workspace.sandboxEnabled === true,
+    sandboxAllowedDomains: isJiraBoardWorkspace ? [] : normalizeSandboxDomains(workspace.sandboxAllowedDomains),
     jiraMcpEnabled: !isJiraBoardWorkspace && workspace.jiraMcpEnabled === true,
     jiraMcpCommentDrafts:
       !isJiraBoardWorkspace && Array.isArray(workspace.jiraMcpCommentDrafts)
@@ -747,6 +753,7 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
           defaultPollSeconds: 5,
           connections: [],
         },
+        registry: { connections: [] },
         mobile: {
           enabled: false,
           devices: [],
@@ -768,6 +775,7 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
       },
       terminalFontSizeLocal: 13,
       terminalFontSizeRemote: 13,
+      isolateNewWorkspaces: false,
       clipboardImagePasteEnabled: true,
       clipboardImagePasteDir: "",
       appliedMigrations: [] as string[],
@@ -1798,6 +1806,9 @@ export function normalizeState(
           forwardKinds: migrateForwardKinds(connection.forwardKinds),
         })),
       },
+      registry: {
+        connections: normalizeRegistryConnections(rawIntegrations.registry?.connections),
+      },
       mobile: {
         ...defaults.settings.integrations.mobile,
         ...rawMobile,
@@ -1862,6 +1873,7 @@ export function normalizeState(
       const raw = rawSettings.terminalFontSizeRemote;
       return typeof raw === "number" && isFinite(raw) ? Math.min(32, Math.max(8, Math.round(raw))) : 13;
     })(),
+    isolateNewWorkspaces: rawSettings.isolateNewWorkspaces === true,
     clipboardImagePasteEnabled: (() => {
       const raw = rawSettings.clipboardImagePasteEnabled;
       return typeof raw === "boolean" ? raw : true;

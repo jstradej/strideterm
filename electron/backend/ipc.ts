@@ -54,6 +54,13 @@ import {
   jiraOwnIdentitySchema,
   jiraCommentAttributionSchema,
   jiraAgentAttachmentLimitsSchema,
+  registryIdSchema,
+  registrySaveSchema,
+  registryTestSchema,
+  credentialRemoveSchema,
+  sandboxDecisionSchema,
+  sandboxInstallRequestSchema,
+  sandboxStatusRequestSchema,
   jiraOwnIssuesQuerySchema,
   jiraMyIssuesRequestSchema,
   jiraRecentListSchema,
@@ -219,6 +226,7 @@ import { APPROVAL_RECORDED_CHANNEL } from "../shared/approval-events.js";
 import { AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL } from "../shared/azure-closed-pr-cleanup-events.js";
 import { OPERATION_FINISHED_CHANNEL } from "../shared/operation-events.js";
 import { REVIEW_GIT_OPERATION_CHANNEL } from "../shared/review-git-events.js";
+import { SANDBOX_DENIED_CHANNEL, SANDBOX_DENIED_SETTLED_CHANNEL } from "../shared/sandbox-events.js";
 import { errorMessage } from "../shared/error-message.js";
 import { SSH_FILE_TRANSFER_FINISHED_CHANNEL, SSH_FILE_TRANSFER_PROGRESS_CHANNEL } from "../shared/ssh-file-events.js";
 import { toSshFileIpcFailure } from "../shared/ssh-file-error-codes.js";
@@ -381,6 +389,11 @@ export function registerIpc(
     // Every window, each filtering by the profile it is viewing: the result of a long operation
     // belongs to the profile it was accepted in, not to the window that happened to ask.
     runtime.on(OPERATION_FINISHED_CHANNEL, (payload: unknown) => emitToRenderer(OPERATION_FINISHED_CHANNEL, payload)),
+    // Desktop windows only (never the remote server): a sandbox waiting on a destination is the local user's to answer.
+    runtime.on(SANDBOX_DENIED_CHANNEL, (payload: unknown) => emitToRenderer(SANDBOX_DENIED_CHANNEL, payload)),
+    runtime.on(SANDBOX_DENIED_SETTLED_CHANNEL, (payload: unknown) =>
+      emitToRenderer(SANDBOX_DENIED_SETTLED_CHANNEL, payload),
+    ),
     // Every window: each renderer shows an operation only while viewing its profile.
     runtime.on(REVIEW_GIT_OPERATION_CHANNEL, (payload: unknown) =>
       emitToRenderer(REVIEW_GIT_OPERATION_CHANNEL, payload),
@@ -837,6 +850,42 @@ export function registerIpc(
       getWindowIdByWebContentsId?.(event.sender.id) ?? "",
     ),
   );
+  // Agent isolation and private registries: desktop only. The remote server registers no counterpart, so a browser
+  // or phone can neither turn isolation on, install its prerequisites, answer for a sandbox nor connect a registry.
+  handle("sandbox:status", async (_event, payload) =>
+    runtime.sandboxGetStatus(validateIpc(sandboxStatusRequestSchema, payload ?? {}, "sandbox:status")),
+  );
+  handle("sandbox:install", async (_event, payload) =>
+    runtime.sandboxInstallPrerequisites(validateIpc(sandboxInstallRequestSchema, payload ?? {}, "sandbox:install")),
+  );
+  handle("sandbox:requests", async () => runtime.sandboxListPending());
+  handle("sandbox:decide", async (_event, payload) =>
+    runtime.sandboxDecide(validateIpc(sandboxDecisionSchema, payload, "sandbox:decide")),
+  );
+  handle("registry:save", async (event, payload) =>
+    runtime.registrySave(
+      validateIpc(registrySaveSchema, payload, "registry:save"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("registry:delete", async (event, connectionId) =>
+    runtime.registryDelete(
+      validateIpc(registryIdSchema, connectionId, "registry:delete"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("registry:test", async (event, payload) =>
+    runtime.registryTest(
+      validateIpc(registryTestSchema, payload, "registry:test"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  // Credentials held for external systems: desktop only, like the registry above. No remote counterpart exists.
+  handle("credentials:list", async () => runtime.credentialsList());
+  handle("credentials:remove", async (_event, payload) =>
+    runtime.credentialsRemove(validateIpc(credentialRemoveSchema, payload, "credentials:remove").ref),
+  );
+  handle("credentials:remove-orphans", async () => runtime.credentialsRemoveOrphans());
   handle("jira:own-issues-query", async (event, payload) =>
     runtime.buildJiraOwnIssuesQuery(
       validateIpc(jiraOwnIssuesQuerySchema, payload, "jira:own-issues-query"),

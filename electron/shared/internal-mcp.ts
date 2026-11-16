@@ -84,6 +84,8 @@ export const internalMcpPrepareInputSchema = z
     worker: roleInputSchema.optional(),
     judge: roleInputSchema.optional(),
     maxRounds: z.number().int().min(1).max(100).optional(),
+    /** Asks for an isolated Worker and Judge. It can only turn isolation on: `false` never lifts a workspace's own. */
+    isolated: z.boolean().optional(),
     checkout: z
       .object({
         mode: z.enum(["here", "worktree"]).optional(),
@@ -304,7 +306,7 @@ export interface InternalMcpPrepareResult {
       suggestedBranch: string;
     };
   };
-  defaults: { worker: InternalMcpRoleRef; judge: InternalMcpRoleRef; maxRounds: number };
+  defaults: { worker: InternalMcpRoleRef; judge: InternalMcpRoleRef; maxRounds: number; isolated: boolean };
   summary: Record<string, unknown>;
   inputHash: string;
   expiresAt: string;
@@ -334,7 +336,7 @@ export interface InternalMcpEligibility {
 }
 
 const INTERNAL_MCP_UNSUPPORTED_REASON =
-  "The internal MCP is available only when this tab directly launches Claude Code, Codex, GitHub Copilot or OpenCode.";
+  "The internal MCP is available only when this tab directly launches Claude Code, Codex, GitHub Copilot, OpenCode or Gemini CLI.";
 
 export function getInternalMcpEligibility(command: unknown): InternalMcpEligibility {
   const parsed = parseAgentCommand(command);

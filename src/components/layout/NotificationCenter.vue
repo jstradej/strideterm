@@ -435,6 +435,11 @@
                     {{ pullRequestText(row.session)?.detail }}
                   </p>
                 </template>
+                <SandboxRequestList
+                  v-else-if="row.session.category === 'sandbox'"
+                  :workspace-id="row.session.workspaceId"
+                  :fallback="sessionBody(row.session)"
+                />
                 <p v-else class="notification-item__body" :title="sessionBody(row.session)">
                   {{ sessionBody(row.session) }}
                 </p>
@@ -475,7 +480,10 @@
                     {{ copiedPathId === row.session.id ? "Copied" : "Copy path" }}
                   </button>
                 </details>
-                <div v-if="row.session.state === 'waiting'" class="notification-item__quick-actions">
+                <div
+                  v-if="row.session.state === 'waiting' && row.session.category !== 'sandbox'"
+                  class="notification-item__quick-actions"
+                >
                   <button
                     class="quick-action"
                     title="Switch to the workspace and tab that produced this alert and focus its terminal so you can reply to the agent (keyboard shortcut: Enter)."
@@ -615,6 +623,8 @@ import type { StatePayload, WorkspaceState } from "../../../electron/shared/type
 import type { OperationFinished } from "../../../electron/shared/operation-events.js";
 import PerformancePanel from "./PerformancePanel.vue";
 import ApprovalsPanel from "./ApprovalsPanel.vue";
+import SandboxRequestList from "./SandboxRequestList.vue";
+import { useSandboxRequestsStore } from "../../stores/sandbox-requests.js";
 import WorkspaceAttachments from "../workspace/WorkspaceAttachments.vue";
 import MobileDeviceList from "../mobile/MobileDeviceList.vue";
 import { dayBandKey, dayBandLabel } from "../../app/helpers.js";
@@ -650,6 +660,7 @@ interface NotificationSession {
 
 const notifStore = useNotificationStore();
 const appStore = useAppStore();
+const sandboxRequests = useSandboxRequestsStore();
 const { sessionInActiveProfile, activeProfileId } = useNotificationProfileScope();
 const copiedPathId = ref("");
 const profileUnreadCount = computed(() => notifStore.unreadCountFor(sessionInActiveProfile));
@@ -1632,7 +1643,18 @@ watch(
   { immediate: true },
 );
 
+async function jumpToSandboxRequest(s: NotificationSession): Promise<void> {
+  const record = sandboxRequests.records.find((item) => item.workspaceId === s.workspaceId);
+  await navigateToTarget({ workspaceId: s.workspaceId, viewId: record?.sessionId || "" });
+}
+
 async function jump(s: NotificationSession): Promise<void> {
+  // The entry is the question itself: opening the tab that asked neither answers nor resolves it, and the dock
+  // stays open so the buttons are still in reach.
+  if (s.category === "sandbox") {
+    await jumpToSandboxRequest(s);
+    return;
+  }
   const target = resolveJumpTarget(s);
   if (!target.workspaceId || !appStore.payload) {
     if (!notifStore.pinned) notifStore.closePanel();
@@ -1698,7 +1720,7 @@ async function dismiss(s: NotificationSession): Promise<void> {
   // Dismiss = user silenced the alert WITHOUT engaging → dismissed=true.
   // Feeds adaptive suppression for terminal alerts; review events don't
   // use adaptive suppression, so skip the backend call.
-  if (s.category !== "review") {
+  if (s.category !== "review" && s.category !== "sandbox") {
     await notifStore.runWithToast("Clear notification failed", () =>
       notifStore.clearOnBackend(backendSessionId(s), { dismissed: true }),
     );

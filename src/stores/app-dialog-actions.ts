@@ -368,6 +368,12 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     });
   }
 
+  function workspaceIsolationOf(workspace: AnyApi | null | undefined): "isolated" | "plain" | "n/a" {
+    if (!workspace || ["task", "docker", "azure", "github", "jira-board"].includes(String(workspace.kind)))
+      return "n/a";
+    return workspace.sandboxEnabled === true ? "isolated" : "plain";
+  }
+
   function editTabWithDialog(viewId: string): void {
     const target = ctx.getPanelByViewId(viewId);
     if (!target) return;
@@ -390,6 +396,9 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       sshMcpEnabled: Boolean(target.panel.sshMcpEnabled),
       workspaceSshMcpEnabled: Boolean(target.workspace.sshMcpEnabled),
       hasCustomLaunch: Boolean(launch),
+      workspaceIsolation: workspaceIsolationOf(target.workspace),
+      workspaceCwd: target.workspace.cwd || "",
+      sandboxShell: target.panel.sandboxShell === true,
       sshTab: launch?.kind === "ssh",
       remoteCwd: launch?.kind === "ssh" ? launch.remoteCwd || "" : "",
       onCancel: closeDialog,
@@ -397,11 +406,13 @@ export function createDialogActions(ctx: DialogActionsCtx) {
         title,
         command,
         sshMcpEnabled,
+        sandboxShell,
         remoteCwd,
       }: {
         title: string;
         command: string;
         sshMcpEnabled?: boolean;
+        sandboxShell?: boolean;
         remoteCwd?: string;
       }) => {
         const nextTitle = (title || "").trim();
@@ -412,30 +423,32 @@ export function createDialogActions(ctx: DialogActionsCtx) {
           nextCommand === (target.panel.command || "").trim() &&
           (launch?.kind !== "ssh" || nextRemoteCwd === (launch.remoteCwd || "").trim());
         const sameSshMcpEnabled = Boolean(sshMcpEnabled) === Boolean(target.panel.sshMcpEnabled);
-        if (!nextTitle || (sameTitle && sameCommand && sameSshMcpEnabled)) {
+        const sameSandboxShell = Boolean(sandboxShell) === Boolean(target.panel.sandboxShell);
+        if (!nextTitle || (sameTitle && sameCommand && sameSshMcpEnabled && sameSandboxShell)) {
           closeDialog();
           return;
         }
         const nextWorkspace = cloneWorkspace(target.workspace);
-        nextWorkspace.panels = nextWorkspace.panels.map((p: AnyApi) =>
-          p.id === target.panel.id
-            ? {
-                ...p,
-                title: nextTitle,
-                command: nextCommand,
-                sshMcpEnabled: Boolean(sshMcpEnabled),
-                ...(p.launch?.kind === "ssh" ? { launch: { ...p.launch, remoteCwd: nextRemoteCwd || undefined } } : {}),
-              }
-            : p,
-        );
+        nextWorkspace.panels = nextWorkspace.panels.map((p: AnyApi) => {
+          if (p.id !== target.panel.id) return p;
+          const { sandboxShell: _previousShell, ...rest } = p;
+          return {
+            ...rest,
+            title: nextTitle,
+            command: nextCommand,
+            sshMcpEnabled: Boolean(sshMcpEnabled),
+            ...(sandboxShell ? { sandboxShell: true } : {}),
+            ...(p.launch?.kind === "ssh" ? { launch: { ...p.launch, remoteCwd: nextRemoteCwd || undefined } } : {}),
+          };
+        });
         ctx.adoptPayload((await (ctx.getApi() as CallableTransport).saveWorkspace(nextWorkspace)) as StatePayload);
-        // The command and per-tab tools setting only affect a newly started PTY.
-        if ((!sameCommand || !sameSshMcpEnabled) && hasLiveSession) {
+        // The command and per-tab settings only affect a newly started PTY.
+        if ((!sameCommand || !sameSshMcpEnabled || !sameSandboxShell) && hasLiveSession) {
           openDialog("ConfirmDialog", {
             eyebrow: "Tab",
             title: "Reload tab now?",
             message:
-              "The command, remote directory or SSH tools setting changed. Restart the terminal now to apply it, or apply the change the next time this tab is launched.",
+              "The command, remote directory, SSH tools or isolation setting changed. Restart the terminal now to apply it, or apply the change the next time this tab is launched.",
             confirmLabel: "Reload now",
             cancelLabel: "Apply on next launch",
             onCancel: closeDialog,
@@ -504,9 +517,13 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     const defaultTitle = presetTabType === "ssh" ? "" : "\u{1F4BB} Shell";
     const presetSshMode = options.sshMode === "quick" ? "quick" : "saved";
     const presetSshHostId = options.sshHostId || "";
+    const activeWorkspace = ((ctx.payload.value as AnyApi)?.workspace?.workspace ??
+      (ctx.payload.value as AnyApi)?.workspace?.project) as AnyApi | undefined;
     openDialog("EditTabDialog", {
       eyebrow: "Workspace",
       mode: "new",
+      workspaceIsolation: workspaceIsolationOf(activeWorkspace),
+      workspaceCwd: activeWorkspace?.cwd || "",
       title: presetTitle || defaultTitle,
       command: presetCommand || "",
       presetTabType,
@@ -523,7 +540,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       },
       onCancel: closeDialog,
       onSubmit: async (payload: AnyApi) => {
-        const { title, command, kind, sshHostId, sshInline, sshMcpEnabled } = payload;
+        const { title, command, kind, sshHostId, sshInline, sshMcpEnabled, sandboxShell } = payload;
         const nextTitle = (title || "").trim();
         if (!nextTitle) {
           closeDialog();
@@ -535,6 +552,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
           sshHostId,
           sshInline,
           sshMcpEnabled,
+          sandboxShell,
         });
       },
     });
@@ -1013,6 +1031,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
             color: draft.color || "",
             notes: draft.notes || "",
             jiraMcpEnabled: draft.jiraMcpEnabled === true,
+            isolated: draft.sandboxEnabled === true,
           };
 
           // Extract worker/judge config: provider dropdown or raw command override

@@ -1318,6 +1318,7 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
           workerProvider: config.workerProvider,
           judgeProvider: config.judgeProvider,
           jiraMcpEnabled: config.jiraMcpEnabled === true && Boolean(windowId) && !parseRemoteViewerId(windowId),
+          isolated: config.isolated === true,
           callerProfileId,
           reservedIds: internal?.reservedIds,
         });

@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AddressInfo } from "node:net";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import ssh2 from "ssh2";
 import type { AuthContext, Connection, Prompt } from "ssh2";
 import { createDefaultState, normalizeState } from "../default-state.js";
@@ -393,7 +393,8 @@ describe("runtime SSH connection tests against a real loopback server", () => {
     expect(server.counts.pty).toBe(0);
     expect(store.getState().ssh.hosts).toEqual(hostsBefore);
     expect(store.getState().workspaces).toEqual(workspacesBefore);
-    expect(sshManager.activeSessions.has(started.sessionId)).toBe(false);
+    // The server sees the socket close before the manager's own close handler has dropped the session: wait for it.
+    await vi.waitFor(() => expect(sshManager.activeSessions.has(started.sessionId)).toBe(false), { timeout: 5000 });
     expect(sshManager.pendingPrompts.has(started.sessionId)).toBe(false);
     await expect(runtime.sshTestStop({ sessionId: started.sessionId }, windowId)).resolves.toEqual({ ok: true });
     await expect(runtime.sshTestStop({ sessionId: started.sessionId }, windowId)).resolves.toEqual({ ok: true });
@@ -605,7 +606,9 @@ describe("runtime SSH connection tests against a real loopback server", () => {
     // loses its ConPTY: the server receives and answers its command, yet the PTY delivers neither
     // output nor an exit, so the test waits out its 20 s. It never reproduces locally and the
     // product logic is not involved, so retry there instead of letting it fail unrelated changes.
-    { retry: process.platform === "win32" ? 2 : 0 },
+    // A full parallel run on a loaded Windows machine makes it likelier (it failed three attempts in a row
+    // once), so the budget is larger; a single attempt still passes in about 4 s when the machine is idle.
+    { retry: process.platform === "win32" ? 5 : 0 },
     async () => {
       const pair = generateKeyPairSync("rsa", { modulusLength: 2048 });
       const privateKey = pair.privateKey.export({ type: "pkcs1", format: "pem" }).toString();
@@ -669,7 +672,7 @@ describe("runtime SSH connection tests against a real loopback server", () => {
         runtime,
         "ssh:test:state",
         (event) => event.status === "authenticated" || event.status === "error",
-        20000,
+        45000,
       ).then(
         (event) => ({ event }),
         (error: Error) => ({ error }),
@@ -741,7 +744,7 @@ describe("runtime SSH connection tests against a real loopback server", () => {
         runtime,
         "ssh:test:state",
         (event) => event.status === "error",
-        20000,
+        45000,
       ).then(
         (event) => ({ event }),
         (error: Error) => ({ error }),
@@ -791,7 +794,7 @@ describe("runtime SSH connection tests against a real loopback server", () => {
         runtime,
         "ssh:test:state",
         (event) => event.status === "error",
-        20000,
+        45000,
       ).then(
         (event) => ({ event }),
         (error: Error) => ({ error }),

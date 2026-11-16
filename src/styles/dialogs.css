@@ -572,6 +572,19 @@
   white-space: nowrap;
 }
 
+/* A tab whose agent runs in the sandbox. Says "isolated", never "safe": the tooltip lists what is not protected. */
+.tab__isolated {
+  background: rgba(var(--tint), 0.12);
+  color: var(--text-secondary, #aaa);
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 3px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  border: 1px solid rgba(var(--tint), 0.28);
+}
+
 /* Companion loop badge on the source Primary's tab doubles as "Back to
    <Role> loop" (plan §9.1) — underline on hover signals it's clickable,
    distinct from the plain informational badge above. */

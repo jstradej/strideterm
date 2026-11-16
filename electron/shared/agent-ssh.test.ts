@@ -59,6 +59,9 @@ describe("internal MCP eligibility", () => {
     ["codex -s workspace-write", "codex"],
     ["copilot --model gpt-5", "copilot"],
     ["opencode --model anthropic/sonnet", "opencode"],
+    ["gemini", "gemini"],
+    ["gemini --model gemini-2.5-pro", "gemini"],
+    ["C:\\tools\\gemini.cmd", "gemini"],
     ['"C:\\Program Files\\nodejs\\copilot.cmd"', "copilot"],
     ["C:\\tools\\opencode.exe", "opencode"],
   ])("accepts %s", (command, provider) => {
@@ -66,7 +69,11 @@ describe("internal MCP eligibility", () => {
   });
 
   test.each([
-    "gemini",
+    "gemini mcp add x",
+    "gemini extensions list",
+    "gemini skills list",
+    "gemini hooks list",
+    "gemini | tee out.txt",
     "bash",
     "copilot login",
     "copilot logout",
@@ -84,7 +91,7 @@ describe("internal MCP eligibility", () => {
     expect(getInternalMcpEligibility(command)).toMatchObject({ supported: false, provider: null });
   });
 
-  test.each(["copilot", "copilot --model gpt-5", "opencode", "opencode --model anthropic/sonnet"])(
+  test.each(["copilot", "copilot --model gpt-5", "opencode", "opencode --model anthropic/sonnet", "gemini"])(
     "SSH tools still refuse %s",
     (command) => {
       expect(getAgentSshMcpEligibility(command)).toMatchObject({ supported: false, provider: null });

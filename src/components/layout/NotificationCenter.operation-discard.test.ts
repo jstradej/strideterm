@@ -42,6 +42,7 @@ function mountDock(api: AnyApi, entry: { kind: "error" | "completed"; workspaceI
 }
 
 beforeEach(() => {
+  localStorage.clear();
   setActivePinia(createPinia());
   vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener: () => {}, removeEventListener: () => {} }));
 });

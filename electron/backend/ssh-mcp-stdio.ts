@@ -4,6 +4,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { SSH_MCP_CAPABILITY_ENV, SSH_MCP_URL_ENV } from "../shared/agent-ssh.js";
 import { serveOverStdio } from "./mcp-stdio-lifecycle.js";
+import { sandboxAwareFetch } from "../shared/sandbox-fetch.js";
 
 export { SSH_MCP_CAPABILITY_ENV, SSH_MCP_URL_ENV };
 
@@ -39,7 +40,7 @@ export function readSshMcpStdioConfig(env: NodeJS.ProcessEnv = process.env): Ssh
 
 export function createSshMcpStdioHandlers({
   config,
-  fetchImpl = globalThis.fetch,
+  fetchImpl = sandboxAwareFetch,
 }: {
   config: SshMcpStdioConfig;
   fetchImpl?: typeof fetch;

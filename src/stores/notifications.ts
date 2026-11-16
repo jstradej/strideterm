@@ -139,6 +139,8 @@ interface AddEventPayload {
    * the 20-event and 200-session caps — evicted the genuinely newest entries.
    */
   historical?: boolean;
+  /** Names the event's own thread when it belongs to no tab — see `threadId`. */
+  threadKey?: string;
   /** Source order for tie-breaking — see NotificationEvent.historyRank. */
   historyRank?: number;
 }
@@ -173,8 +175,13 @@ type NotificationSyncMessage =
   | { type: "remove-by-workspace"; workspaceId: string }
   | { type: "clear-sessions"; sessionIds: string[] };
 
-function threadId(workspaceId: string, viewId: string): string {
-  return `${workspaceId || ""}:${viewId || ""}`;
+/**
+ * A thread is one tab of one workspace. An event that belongs to no tab (an app error, a sign-in alert) names its own
+ * thread with `threadKey`: they used to share one per workspace, so unrelated failures piled into a single entry
+ * whose header kept the name of whatever arrived first.
+ */
+export function threadId(workspaceId: string, viewId: string, threadKey = ""): string {
+  return `${workspaceId || ""}:${viewId || ""}${threadKey ? `#${threadKey}` : ""}`;
 }
 
 function loadFromStorage(): NotificationSession[] {
@@ -488,8 +495,8 @@ export const useNotificationStore = defineStore("notifications", () => {
   const finishedSessions = computed(() => sessions.value.filter((s) => s.state === "finished"));
   const resolvedSessions = computed(() => sessions.value.filter((s) => s.state === "resolved"));
 
-  function findSession(workspaceId: string, viewId: string): NotificationSession | undefined {
-    const id = threadId(workspaceId, viewId);
+  function findSession(workspaceId: string, viewId: string, threadKey = ""): NotificationSession | undefined {
+    const id = threadId(workspaceId, viewId, threadKey);
     return sessions.value.find((s) => s.id === id);
   }
 
@@ -548,8 +555,9 @@ export const useNotificationStore = defineStore("notifications", () => {
     sourceAlertId = "",
     historical = false,
     historyRank,
+    threadKey = "",
   }: AddEventPayload): { event: NotificationEvent; retained: boolean } {
-    const id = threadId(workspaceId, viewId);
+    const id = threadId(workspaceId, viewId, threadKey);
     const eventEntry: NotificationEvent = {
       id: crypto.randomUUID(),
       title,
@@ -564,7 +572,7 @@ export const useNotificationStore = defineStore("notifications", () => {
       ...(typeof historyRank === "number" ? { historyRank } : {}),
     };
 
-    const existing = findSession(workspaceId, viewId);
+    const existing = findSession(workspaceId, viewId, threadKey);
     // Does this event speak for the session as a whole? Every live event
     // does; a replayed one only when it landed at the head of the thread.
     let projectsSession = true;
@@ -711,6 +719,21 @@ export const useNotificationStore = defineStore("notifications", () => {
     if (duplicate) return { event: duplicate, inserted: false };
     const { event, retained } = insertEvent(payload);
     return { event, inserted: retained };
+  }
+
+  /**
+   * Rewrites what an entry says once its outcome is known (a request that was waiting got an answer). Only the
+   * text and kind change: the entry keeps its place in the thread, and the thread's state stays the caller's call.
+   */
+  function rewriteEventBySourceAlertId(
+    sourceAlertId: string,
+    patch: { title: string; body: string; kind: NotificationKind },
+  ): void {
+    const event = findEventBySourceAlertId(sourceAlertId);
+    if (!event) return;
+    Object.assign(event, patch);
+    sessions.value = [...sessions.value];
+    saveToStorage(sessions.value);
   }
 
   function setState(sessionRef: string | NotificationSession, newState: NotificationState): void {
@@ -1028,6 +1051,7 @@ export const useNotificationStore = defineStore("notifications", () => {
         workspaceName,
         category: "error",
         meta: { profileId: effectiveProfileId },
+        threadKey: dedupeKey,
       });
     pushPersistentToast({
       title,
@@ -1117,6 +1141,7 @@ export const useNotificationStore = defineStore("notifications", () => {
         workspaceId,
         category: "error",
         meta: toastProfileId ? { profileId: toastProfileId } : null,
+        threadKey: dedupeKey || title,
       });
     }
     const toastSessionId =
@@ -1142,7 +1167,7 @@ export const useNotificationStore = defineStore("notifications", () => {
       : [...persistentToasts.value, toast];
     const view = notificationCenterView.value;
     const sameProfile = Boolean(toastProfileId) && toastProfileId === view.profileId;
-    const sessionId = threadId(workspaceId, "");
+    const sessionId = toastSessionId || threadId(workspaceId, "", dedupeKey || title);
     const visible = view.visible && view.alertsActive && sameProfile && view.sessionIds.includes(sessionId);
     if (visible) dismissPersistentToast(id);
     return id;
@@ -1235,6 +1260,7 @@ export const useNotificationStore = defineStore("notifications", () => {
     addEvent,
     addAlertEvent,
     findEventBySourceAlertId,
+    rewriteEventBySourceAlertId,
     setState,
     snooze,
     markAllRead,

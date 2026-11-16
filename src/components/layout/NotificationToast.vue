@@ -81,6 +81,8 @@ interface Toast {
     profileId?: string;
     headSha?: string;
     pullRequestTitle?: string;
+    /** Notification Center thread a toast opens when clicked (sandbox requests). */
+    threadId?: string;
   } | null;
   title?: string;
   body?: string;
@@ -196,7 +198,10 @@ function dismiss() {
 }
 
 function onClickToast() {
-  notifStore.togglePanel();
+  const threadId = props.toast?.category === "sandbox" ? props.toast.meta?.threadId : "";
+  // A request that is waiting for an answer has to be in front of the user, not behind a toggle.
+  if (threadId) notifStore.openPanelOnSession(threadId);
+  else notifStore.togglePanel();
   dismiss();
 }
 

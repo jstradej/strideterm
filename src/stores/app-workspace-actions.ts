@@ -1246,6 +1246,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
       startup: isVirtual ? "none" : APP_CONFIG.ui.defaultPanelStartup,
     };
     if (options.sshMcpEnabled === true && options.kind !== "ssh") panel.sshMcpEnabled = true;
+    if (options.sandboxShell === true && options.kind !== "ssh") panel.sandboxShell = true;
     if (cwdOverride) panel.cwd = cwdOverride;
     if (options.kind === "ssh") {
       // Two valid shapes: saved host reference, or inline ad-hoc definition.
