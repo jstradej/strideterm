@@ -389,8 +389,7 @@
                 <span style="font-size: 1.2em; color: #6edfb6">✓</span>
                 <p style="margin: 0">
                   <strong>{{ stripRef(pullRequest.sourceRefName) }}</strong> can be merged without conflicts into
-                  <strong>{{ stripRef(pullRequest.targetRefName) }}</strong
-                  >.
+                  <strong>{{ stripRef(pullRequest.targetRefName) }}</strong>.
                 </p>
               </div>
             </article>

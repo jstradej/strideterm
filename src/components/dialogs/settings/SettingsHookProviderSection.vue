@@ -69,13 +69,11 @@
         </p>
         <p v-else-if="provider.manual.type === 'double-path'">
           If auto-configure fails, (1) add <code>[features]<br />hooks = true</code> to
-          <code>{{ provider.manual.firstPath }}</code
-          >, then (2) add this to <code>{{ provider.manual.secondPath }}</code
-          >:
+          <code>{{ provider.manual.firstPath }}</code>, then (2) add this to
+          <code>{{ provider.manual.secondPath }}</code>:
         </p>
         <p v-else>
-          {{ provider.manual.before }} <code>{{ provider.manual.path }}</code
-          >{{ provider.manual.after }}
+          {{ provider.manual.before }} <code>{{ provider.manual.path }}</code>{{ provider.manual.after }}
         </p>
 
         <pre class="hook-setup-code">{{ provider.configJson }}</pre>

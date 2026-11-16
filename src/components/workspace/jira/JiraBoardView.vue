@@ -196,8 +196,7 @@
             @blur="dismissIssuePreview"
             @keydown.esc="dismissIssuePreview"
           >
-            <span class="jira-issue__key">{{ issue.ref.issueKey }}</span
-            ><strong>{{ issue.summary }}</strong
+            <span class="jira-issue__key">{{ issue.ref.issueKey }}</span><strong>{{ issue.summary }}</strong
             ><small>{{ issue.status }}</small>
           </button>
         </template>
@@ -225,8 +224,7 @@
             @blur="dismissIssuePreview"
             @keydown.esc="dismissIssuePreview"
           >
-            <span class="jira-issue__key">{{ issue.ref.issueKey }}</span
-            ><strong>{{ issue.summary }}</strong
+            <span class="jira-issue__key">{{ issue.ref.issueKey }}</span><strong>{{ issue.summary }}</strong
             ><small>{{ issue.status }}</small>
           </button>
         </div>

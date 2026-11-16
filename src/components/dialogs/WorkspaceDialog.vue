@@ -223,8 +223,8 @@
         </p>
 
         <p v-if="isCreatingTask && draft.useWorktree" class="info-box">
-          The agent will work in <code>{{ worktreePreviewPath }}</code
-          >. Control files, git commits, and all changes stay isolated in this worktree.
+          The agent will work in <code>{{ worktreePreviewPath }}</code>. Control files, git commits, and all changes
+          stay isolated in this worktree.
         </p>
         <p v-else class="info-box">
           Control files are managed automatically. Refine the Task brief or Judge instructions any time from the

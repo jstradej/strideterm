@@ -77,8 +77,7 @@
       <summary class="crs__heading">Plan coverage &amp; decisions</summary>
       <ul class="crs__checklist">
         <li v-for="(c, i) in analysis.coverageAudit" :key="i" :class="`crs__checklist-item--${c.status}`">
-          <strong>{{ c.area }}</strong
-          >: {{ c.status }} — {{ c.evidence }}
+          <strong>{{ c.area }}</strong>: {{ c.status }} — {{ c.evidence }}
         </li>
       </ul>
       <div v-if="analysis.decisions.length" class="crs__planner-block">

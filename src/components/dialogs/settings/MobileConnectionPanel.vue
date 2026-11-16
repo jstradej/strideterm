@@ -453,8 +453,8 @@
                   This pairing code expired. Generate a new one to continue.
                 </p>
                 <p class="pairing-section__label">
-                  The new phone gets <strong>{{ pairingGrantSummary }}</strong
-                  >. You can change that per device afterwards, with <em>Edit access</em>.
+                  The new phone gets <strong>{{ pairingGrantSummary }}</strong>. You can change that per device
+                  afterwards, with <em>Edit access</em>.
                 </p>
                 <button
                   type="button"
@@ -538,8 +538,7 @@
         another one.
       -->
           <p v-if="accountUsageAvailable && !activePairing && !pairingSas" class="mobile-tab__account-link">
-            Phones on this account: <strong>{{ accountPhoneUsage }}</strong
-            >.
+            Phones on this account: <strong>{{ accountPhoneUsage }}</strong>.
             <button type="button" class="mobile-tab__inline-action" @click="activeView = 'account'">
               View account limits
             </button>

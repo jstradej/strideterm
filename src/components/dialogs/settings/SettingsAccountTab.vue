@@ -989,12 +989,12 @@ async function closeDelete(): Promise<void> {
     >
       <h4>Nothing to restore for {{ account.state.recoveryRefused.email }}</h4>
       <p class="account-note">
-        This computer was never enrolled on the account for <strong>{{ account.state.recoveryRefused.email }}</strong
-        >. Maybe the address is different, or the registration never happened.
+        This computer was never enrolled on the account for <strong>{{ account.state.recoveryRefused.email }}</strong>.
+        Maybe the address is different, or the registration never happened.
       </p>
       <p class="account-note">
-        Do you want to register this computer to <strong>{{ account.state.recoveryRefused.email }}</strong
-        >? We will send a new sign-in link; nothing is registered until you open it. No trial is started.
+        Do you want to register this computer to <strong>{{ account.state.recoveryRefused.email }}</strong>? We will
+        send a new sign-in link; nothing is registered until you open it. No trial is started.
       </p>
       <div class="account-actions">
         <button
@@ -1246,8 +1246,7 @@ async function closeDelete(): Promise<void> {
       </template>
       <template v-else-if="phase === 'enrolling'">
         <p class="account-note">
-          Signed in as <strong>{{ account.state.ownerEmail }}</strong
-          >. Finish adding this desktop.
+          Signed in as <strong>{{ account.state.ownerEmail }}</strong>. Finish adding this desktop.
         </p>
         <div class="account-actions">
           <button type="button" class="button" :disabled="busy" @click="act('enrol', () => account.enrol('register'))">
@@ -1419,8 +1418,8 @@ async function closeDelete(): Promise<void> {
           <template v-else-if="auth.phase === 'awaiting-confirmation'">
             <h4>Email confirmed — finish on this computer</h4>
             <p class="account-note">
-              You opened the link sent to <strong>{{ auth.email }}</strong
-              >, so that address is confirmed. Nothing has happened on this computer yet.
+              You opened the link sent to <strong>{{ auth.email }}</strong>, so that address is confirmed. Nothing has
+              happened on this computer yet.
             </p>
             <p class="account-note">{{ confirmNextStepCopy }}</p>
             <p class="account-note account-note--muted">
@@ -1462,9 +1461,8 @@ async function closeDelete(): Promise<void> {
               for another link if nothing is there: a new one stops the older link working.
             </p>
             <p v-else class="account-note">
-              A sign-in link was sent to <strong>{{ auth.email }}</strong
-              >. Open it on this computer or on your phone — either finishes the sign-in here. If it is not there, check
-              the spam folder.
+              A sign-in link was sent to <strong>{{ auth.email }}</strong>. Open it on this computer or on your phone —
+              either finishes the sign-in here. If it is not there, check the spam folder.
             </p>
             <p v-if="signInNextStepCopy" class="account-note">{{ signInNextStepCopy }}</p>
             <p class="account-note account-note--muted">
@@ -1586,8 +1584,7 @@ async function closeDelete(): Promise<void> {
         <template v-else-if="props.view === 'account' && phase === 'enrolling'">
           <h4>Add this desktop</h4>
           <p class="account-note">
-            Signed in as <strong>{{ account.state.ownerEmail }}</strong
-            >. This machine is not part of the account yet.
+            Signed in as <strong>{{ account.state.ownerEmail }}</strong>. This machine is not part of the account yet.
           </p>
           <div class="account-actions">
             <button

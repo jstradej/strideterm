@@ -182,8 +182,7 @@
                 :href="jiraIssueUrlFor(snapshot.ref) || undefined"
                 target="_blank"
                 rel="noopener noreferrer"
-                >{{ snapshot.ref.issueKey }}</a
-              ><strong v-else>{{ snapshot.ref.issueKey }}</strong>
+                >{{ snapshot.ref.issueKey }}</a><strong v-else>{{ snapshot.ref.issueKey }}</strong>
               <span class="td__jira-summary">· {{ snapshot.fields.summary }}</span>
             </div>
             <span class="td__jira-meta"

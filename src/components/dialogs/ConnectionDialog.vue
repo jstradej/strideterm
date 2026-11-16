@@ -179,8 +179,9 @@
         <strong>Connection verified</strong>
         <template v-if="isGitHub">
           <small style="color: var(--muted)"
-            >Authenticated as <strong>{{ verification.login }}</strong
-            >{{ verification.name && verification.name !== verification.login ? ` (${verification.name})` : "" }}</small
+            >Authenticated as <strong>{{ verification.login }}</strong>{{
+              verification.name && verification.name !== verification.login ? ` (${verification.name})` : ""
+            }}</small
           >
         </template>
         <template v-else>

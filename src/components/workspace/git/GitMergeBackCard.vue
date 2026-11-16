@@ -35,8 +35,8 @@
       <div class="git-info-banner" style="margin-bottom: 8px">
         <strong>Branch merged</strong>
         <p>
-          Branch <code>{{ snapshot.branch }}</code> has been merged into <code>{{ resolvedBaseBranch }}</code
-          >. Ready to clean up.
+          Branch <code>{{ snapshot.branch }}</code> has been merged into <code>{{ resolvedBaseBranch }}</code>. Ready to
+          clean up.
         </p>
       </div>
       <div class="git-operation-actions">
