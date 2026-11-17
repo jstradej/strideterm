@@ -380,7 +380,12 @@
           </template>
 
           <label v-if="showSshToolsOption" class="ssh-tools-toggle">
-            <input v-model="sshMcpEnabled" type="checkbox" :disabled="!canEnableSshTools && !sshMcpEnabled" />
+            <input
+              type="checkbox"
+              :checked="sshMcpEnabled || sshToolsFromWorkspace"
+              :disabled="sshToolsFromWorkspace || (!canEnableSshTools && !sshMcpEnabled)"
+              @change="sshMcpEnabled = ($event.target as HTMLInputElement).checked"
+            />
             <span>
               SSH tools for this tab
               <HelpTooltip
@@ -830,12 +835,13 @@ const showSshToolsOption = computed(() => !appStore.isRemoteTransport && tabType
 const canEnableSshTools = computed(
   () => showSshToolsOption.value && !props.hasCustomLaunch && !runInWsl.value && agentSshEligibility.value.supported,
 );
+const sshToolsFromWorkspace = computed(() => props.workspaceSshMcpEnabled && canEnableSshTools.value);
 const sshToolsHint = computed(() => {
   if (runInWsl.value) return "Available for local Claude Code / Codex tabs; WSL is not supported yet.";
   if (props.hasCustomLaunch) return "Custom launch settings are not supported. Use the tab's direct Command field.";
   if (!agentSshEligibility.value.supported) return "Set Command to claude or codex to enable SSH tools.";
   if (props.workspaceSshMcpEnabled)
-    return "Already on for every agent tab through the workspace setting; this tab-only setting changes nothing.";
+    return "On for every agent tab through the workspace setting. Turn it off there to choose per tab.";
   return "Built-in SSH only. Enabled when this terminal starts.";
 });
 

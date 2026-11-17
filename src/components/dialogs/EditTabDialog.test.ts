@@ -111,7 +111,12 @@ describe("EditTabDialog", () => {
       workspaceSshMcpEnabled: true,
     });
     await flushPromises();
-    expect(wrapper.text()).toContain("Already on for every agent tab through the workspace setting");
+    expect(wrapper.text()).toContain("On for every agent tab through the workspace setting");
+    const input = wrapper.get(".ssh-tools-toggle input").element as HTMLInputElement;
+    expect(input.checked).toBe(true);
+    expect(input.disabled).toBe(true);
+    await wrapper.get("form").trigger("submit");
+    expect(wrapper.emitted("submit")?.[0]?.[0]).toMatchObject({ sshMcpEnabled: false });
   });
 
   test("SSH tools explain and disable the option for WSL and hide it in remote sessions", async () => {
