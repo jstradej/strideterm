@@ -5096,7 +5096,9 @@ describe("runtime integration", () => {
               { id: "owner", title: "Owner agent", command: "", shell: true, startup: "default" },
               { id: "sibling", title: "Sibling agent", command: "claude", shell: true, startup: "default" },
               { id: "files", title: "Files", command: "__files__", shell: false, startup: "none" },
-              { id: "closed", title: "Closed agent", command: "claude", shell: true, startup: "default" },
+              // Manual start: an auto-start tab is re-spawned by the deferred spawner, which on a slow machine
+              // ran after the session was deleted below and made the hook answer 200.
+              { id: "closed", title: "Closed agent", command: "claude", shell: true, startup: "manual" },
             ],
           },
         ],
