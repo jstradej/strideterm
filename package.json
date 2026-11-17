@@ -49,7 +49,7 @@
     "lint": "eslint . && prettier --check .",
     "lint:fix": "eslint --fix . && prettier --write .",
     "typecheck": "vue-tsc --noEmit -p tsconfig.frontend.json && tsc --noEmit -p tsconfig.backend.json && tsc --noEmit -p tsconfig.preload.json && tsc --noEmit -p tsconfig.tests.json && tsc --noEmit -p tsconfig.scripts.json",
-    "audit:security": "npm audit --omit=dev --audit-level=high",
+    "audit:security": "tsx scripts/audit-gate.mts",
     "audit:package-age": "tsx scripts/check-package-age.mts",
     "check:mobile-schema-drift": "tsx scripts/check-mobile-schema-drift.mts",
     "check:production-bootstrap": "tsx scripts/check-production-bootstrap.mts",

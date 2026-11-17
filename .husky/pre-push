@@ -1,1 +1,1 @@
-npm audit --omit=dev --audit-level=high
+npx tsx scripts/audit-gate.mts
