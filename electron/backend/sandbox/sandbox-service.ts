@@ -457,7 +457,9 @@ export class SandboxService {
     const workspaceHomes: string[] = [];
     // Tools need an existing writable temp folder: the host's macOS temp tree is outside the grant,
     // and srt's default /tmp/claude may not exist. Give them a workspace-owned folder.
-    const tempHome = path.posix.join(path.posix.dirname(this.sandboxHome(environment, ctx.workspace.id)), "tmp");
+    // Same notation as the home beside it: POSIX inside WSL, the host's own otherwise.
+    const pathApi = environment.platform === "win32" ? path.posix : path;
+    const tempHome = pathApi.join(pathApi.dirname(this.sandboxHome(environment, ctx.workspace.id)), "tmp");
     workspaceHomes.push(tempHome);
     env.TMPDIR = `${tempHome}/`;
     env.TMP = tempHome;
