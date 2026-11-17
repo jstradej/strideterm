@@ -287,7 +287,8 @@ describe("sandbox launcher config writer", () => {
     });
     expect(result.status).toBe(125);
     expect(lstatSync(`${sandboxHome}/.codex`).isSymbolicLink()).toBe(true);
-    expect(readlinkSync(`${sandboxHome}/.codex`)).toBe(target);
+    // Windows answers with backslashes whatever the link was created with.
+    expect(slash(readlinkSync(`${sandboxHome}/.codex`))).toBe(target);
     expect(existsSync(own)).toBe(false);
   });
 
