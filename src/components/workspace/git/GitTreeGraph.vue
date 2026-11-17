@@ -139,6 +139,7 @@
               {
                 'git-tree__row--selected': isSelected(node.hash),
                 'git-tree__row--local': isLocalOnly(node.hash),
+                'git-tree__row--incoming': incomingHashes.has(node.hash),
                 'git-tree__row--push-boundary': pushBoundaryHashes.has(node.hash),
                 'git-tree__row--on-base': onBaseHashes.has(node.hash),
               },
@@ -767,6 +768,19 @@ const historyReach = computed(() => {
 const onBaseHashes = computed(() => historyReach.value.base);
 const pushBoundaryHashes = computed(() => historyReach.value.boundary);
 
+// Compare topology with the checked-out HEAD, even when the visible list is
+// filtered or sorted. Never infer incoming commits from row positions.
+const incomingHashes = computed(() => {
+  const remote = historyReach.value.remote;
+  if (!remote) return new Set<string>();
+  const commits = props.reachCommits?.length ? props.reachCommits : props.commits || [];
+  const parentsOf = new Map(commits.map((c) => [c.hash, c.parents || []] as const));
+  const head = props.head || commits.find((c) => (c.refs || []).includes("HEAD"))?.hash;
+  if (!head || !parentsOf.has(head)) return new Set<string>();
+  const local = reachableFrom([head], parentsOf);
+  return new Set([...remote].filter((hash) => !local.has(hash)));
+});
+
 function isLocalOnly(hash: string): boolean {
   const remote = historyReach.value.remote;
   return !!remote && !remote.has(hash);
@@ -960,6 +974,7 @@ function rowTooltip(node: GraphNode): string {
     node.refs.length ? `\n${node.refs.map((r) => r.label).join(", ")}` : ""
   }`;
   if (isLocalOnly(node.hash)) tip += "\nNot on any remote yet";
+  if (incomingHashes.value.has(node.hash)) tip += "\nOn remote, not in local HEAD yet";
   if (onBaseHashes.value.has(node.hash)) tip += `\nAlready on ${props.rangeBase}`;
   return tip;
 }
@@ -1365,6 +1380,10 @@ watch(
 .git-tree--history .git-tree__ref--filled .git-tree__ref-default {
   color: inherit;
   opacity: 0.7;
+}
+
+.git-tree--history .git-tree__row--incoming .git-tree__subject {
+  color: color-mix(in srgb, var(--text) 75%, #79b8ed);
 }
 
 .git-tree--history .git-tree__row--push-boundary {

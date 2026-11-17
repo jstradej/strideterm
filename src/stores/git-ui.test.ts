@@ -1602,6 +1602,26 @@ describe("gitLoadGraph progressive paging", () => {
 });
 
 describe("git-ui history refresh token", () => {
+  test.each(["refresh", "fetch"] as const)("%s invalidates History after the response is adopted", async (action) => {
+    const store = useGitUiStore();
+    let finish!: (value: unknown) => void;
+    const request = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    store.init({ refreshGit: request, gitFetch: request } as unknown as Transport);
+    store.setActiveRoot("ws1", "/repo");
+    const pending = action === "refresh" ? store.refreshGit("ws1") : store.gitFetch("ws1");
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+    expect(store.get("ws1").historyRefreshToken).toBeUndefined();
+    finish({ payload: { appState: { workspaces: [] } }, result: { ok: true } });
+    await pending;
+    expect(adoptPayload).toHaveBeenCalled();
+    expect(store.get("ws1").historyRefreshToken).toBe(1);
+  });
+
   test("bumpHistoryRefresh increments per workspace", () => {
     const store = useGitUiStore();
     expect(store.get("wa").historyRefreshToken).toBeUndefined();

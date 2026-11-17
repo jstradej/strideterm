@@ -516,7 +516,6 @@ const refreshError = computed(() =>
 const gitUi = computed(() => gitUiStore.get(props.workspaceId));
 
 function onRefresh() {
-  gitUiStore.bumpHistoryRefresh(props.workspaceId);
   return gitUiStore.refreshGit(props.workspaceId);
 }
 const workspaces = computed(() => appStore.filteredWorkspaces);

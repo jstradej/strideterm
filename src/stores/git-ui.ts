@@ -719,6 +719,16 @@ export const useGitUiStore = defineStore("git-ui", () => {
           }
         }
       }
+      // Reload History only after the operation and snapshot adoption finish.
+      // Its graph/branch caches are independent of the workspace snapshot.
+      if (
+        response &&
+        response.result?.ok !== false &&
+        ["refresh", "fetch", "pull", "push", "force-push"].includes(busyAction) &&
+        getActiveRoot(workspaceId) === actionRootPath
+      ) {
+        bumpHistoryRefresh(workspaceId);
+      }
       const result = response?.result;
       // Success path: surface a transient toast and drop any prior banner.
       // Failure (or success with warnings/conflicts the user must read) keeps

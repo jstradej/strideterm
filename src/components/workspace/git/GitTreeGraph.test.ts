@@ -256,6 +256,27 @@ describe("GitTreeGraph", () => {
     expect(wrapper.find(".git-tree__row--on-base").exists()).toBe(false);
   });
 
+  test("marks remote commits absent from HEAD using unfiltered ancestry", () => {
+    const incoming = {
+      ...linearCommits[0],
+      hash: "remote-tip",
+      parents: [linearCommits[0].hash],
+      refs: ["origin/main"],
+    };
+    const full = [incoming, ...linearCommits];
+    const w = mountGraph({
+      history: true,
+      commits: [incoming, linearCommits[1]],
+      reachCommits: full,
+      head: linearCommits[0].hash,
+    });
+    const rows = w.findAll(".git-tree__row");
+    expect(rows[0].classes()).toContain("git-tree__row--incoming");
+    expect(rows[0].attributes("title")).toContain("On remote, not in local HEAD yet");
+    expect(rows[1].classes()).not.toContain("git-tree__row--incoming");
+    w.unmount();
+  });
+
   describe("history markers", () => {
     const mk = (n: number, parents: string[], refs: string[] = []) => ({
       hash: `h${n}`,

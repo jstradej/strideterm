@@ -954,17 +954,18 @@ describe("GitPane push target", () => {
 });
 
 describe("GitPane header Refresh", () => {
-  test("also asks the History view to reload", async () => {
+  test("delegates refresh and History invalidation to the store", async () => {
     const ws = buildWorkspace({ id: "ws-refresh-token" });
     const wrapper = mountPane("ws-refresh-token", [ws], { deep: true });
     const store = useGitUiStore();
     const bump = vi.spyOn(store, "bumpHistoryRefresh");
-    vi.spyOn(store, "refreshGit").mockResolvedValue(undefined);
+    const refresh = vi.spyOn(store, "refreshGit").mockResolvedValue(undefined);
     await flushPromises();
     const button = wrapper.findAll("button").find((b) => b.text() === "Refresh")!;
     expect(button.attributes("title")).toContain("reloads the commit history");
     await button.trigger("click");
-    expect(bump).toHaveBeenCalledWith("ws-refresh-token");
+    expect(refresh).toHaveBeenCalledWith("ws-refresh-token");
+    expect(bump).not.toHaveBeenCalled();
     wrapper.unmount();
   });
 });
