@@ -15,7 +15,6 @@
 
 .workspace-meta {
   padding: 5px 10px;
-  padding-right: 140px;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -23,6 +22,14 @@
   font-size: 13px;
   min-height: 0;
   -webkit-app-region: drag;
+}
+
+/* Room for Electron's titleBarOverlay caption buttons, which sit top-right only on
+   Windows/Linux. macOS keeps its traffic lights on the left and remote/mobile clients
+   have no overlay (no platform-* class), so there the chips run to the right edge. */
+body.platform-win32 .workspace-meta,
+body.platform-linux .workspace-meta {
+  padding-right: 140px;
 }
 
 .workspace-meta button,
