@@ -88,14 +88,18 @@ jobs:
 
       - run: npm ci
 
-      # Block the workflow on high-severity CVEs (same threshold as CI).
-      - name: Audit — high severity (blocking)
-        run: npm audit --audit-level=high
+      # Block the workflow on high-severity CVEs in the dependencies the app
+      # ships (same threshold as CI). Dev-only tooling is reported by the
+      # informational step below: a high advisory there with no patched
+      # release (picomatch, GHSA-fc5q-39xc-vjpf) otherwise blocks every PR.
+      - name: Audit — high severity, shipped dependencies (blocking)
+        run: npm audit --omit=dev --audit-level=high
 
-      # Surface moderate-severity findings as informational. These are often
-      # transitive dependencies where no fix is available yet; tracking them
-      # here keeps them visible without breaking CI on every PR.
-      - name: Audit — moderate severity (informational)
+      # Surface everything else as informational: dev dependencies at any
+      # severity and moderate findings. These are often transitive
+      # dependencies where no fix is available yet; tracking them here keeps
+      # them visible without breaking CI on every PR.
+      - name: Audit — all dependencies, moderate and up (informational)
         run: npm audit --audit-level=moderate
         continue-on-error: true
 

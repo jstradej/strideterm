@@ -65,7 +65,7 @@ I aim for coordinated disclosure: once a fix is published in a release, a corres
 
 For context — this informs what's likely to be a duplicate vs. a novel issue:
 
-- **Automated:** Dependabot version-bump PRs, Dependabot security alerts, secret scanning + push protection, CodeQL, weekly `npm audit` (high-severity blocking), package signature verification, `eslint-plugin-security` on every PR.
+- **Automated:** Dependabot version-bump PRs, Dependabot security alerts, secret scanning + push protection, CodeQL, weekly `npm audit` (high severity in shipped dependencies blocking, dev dependencies informational), package signature verification, `eslint-plugin-security` on every PR.
 - **Architectural:** `contextIsolation: true` and `nodeIntegration: false` for all renderer windows, Zod-validated IPC payloads, Electron `safeStorage`-encrypted credentials, TOFU host-key verification, chat-ID allowlist on every Telegram update, path containment for plugin entry points and Get-file requests.
 
 Thanks again for helping keep strIDEterm secure.

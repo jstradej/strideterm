@@ -1,1 +1,1 @@
-npm audit --audit-level=high
+npm audit --omit=dev --audit-level=high
