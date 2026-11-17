@@ -283,6 +283,15 @@ contextBridge.exposeInMainWorld("strideterm", {
   getOpencodeHookStatus: () => ipcRenderer.invoke("opencode-hook:status"),
   testOpencodeHook: () => ipcRenderer.invoke("opencode-hook:test"),
   getNotificationMetrics: () => ipcRenderer.invoke("notifications:metrics"),
+  createAutomation: (payload) => ipcRenderer.invoke("automation:create", payload),
+  updateAutomation: (payload) => ipcRenderer.invoke("automation:update", payload),
+  setAutomationEnabled: (payload) => ipcRenderer.invoke("automation:set-enabled", payload),
+  runAutomationNow: (payload) => ipcRenderer.invoke("automation:run-now", payload),
+  stopAutomationRun: (payload) => ipcRenderer.invoke("automation:stop-run", payload),
+  listAutomationRuns: (payload) => ipcRenderer.invoke("automation:runs", payload),
+  deleteAutomationRuns: (payload) => ipcRenderer.invoke("automation:delete-runs", payload),
+  getAutomationRunResult: (payload) => ipcRenderer.invoke("automation:run-result", payload),
+  setAutomationsPaused: (payload) => ipcRenderer.invoke("automation:set-paused", payload),
   // Task runner
   recheckClaude: () => ipcRenderer.invoke("task:recheck-claude"),
   checkProviders: () => ipcRenderer.invoke("task:check-providers"),
@@ -507,6 +516,11 @@ contextBridge.exposeInMainWorld("strideterm", {
     const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(payload);
     ipcRenderer.on("sandbox:denied-settled", listener);
     return () => ipcRenderer.removeListener("sandbox:denied-settled", listener);
+  },
+  onAutomationRunFinished: (handler) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(payload);
+    ipcRenderer.on("automation:run-finished", listener);
+    return () => ipcRenderer.removeListener("automation:run-finished", listener);
   },
   onOperationFinished: (handler) => {
     const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(payload);

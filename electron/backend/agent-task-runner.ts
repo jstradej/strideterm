@@ -481,6 +481,7 @@ interface RuntimeDeps {
    * stray `exit`) without the PTY itself dying. Used to detect a mid-task
    * dropout and restart the agent. Optional — absent means "can't tell". */
   isAgentDroppedToShell?: (sessionId: string) => boolean;
+  onTaskStateChanged?: (workspaceId: string, state: TaskStateKind) => void;
 }
 
 // ------ Module-level pure helpers -------
@@ -618,6 +619,7 @@ export class AgentTaskRunner {
   #isSessionBusy: RuntimeDeps["isSessionBusy"] | null = null;
   #isSessionHookCapable: RuntimeDeps["isSessionHookCapable"] | null = null;
   #isAgentDroppedToShell: RuntimeDeps["isAgentDroppedToShell"] | null = null;
+  #onTaskStateChanged: RuntimeDeps["onTaskStateChanged"] | null = null;
 
   /** Last prompt text injected into each session (keyed by sessionId), captured
    * by #injectPrompt. Powers the manual "Resend" buttons and the auto-restart
@@ -675,6 +677,7 @@ export class AgentTaskRunner {
     isSessionBusy,
     isSessionHookCapable,
     isAgentDroppedToShell,
+    onTaskStateChanged,
   }: RuntimeDeps): void {
     this.#writeToSession = writeToSession;
     this.#getState = getState;
@@ -685,6 +688,7 @@ export class AgentTaskRunner {
     this.#isSessionBusy = isSessionBusy ?? null;
     this.#isSessionHookCapable = isSessionHookCapable ?? null;
     this.#isAgentDroppedToShell = isAgentDroppedToShell ?? null;
+    this.#onTaskStateChanged = onTaskStateChanged ?? null;
 
     // Crash-recovery sweep on startup. See #reconcileOnStartup for the full
     // story; the short version is: tasks whose state on disk says they were
@@ -1803,12 +1807,13 @@ export class AgentTaskRunner {
    * Reset a task to idle state — clears round history, recreates WORK_LOCK,
    * and returns to a clean starting point. Used for "Reset & Retry".
    */
-  async resetTask(workspaceId: string): Promise<boolean> {
+  async resetTask(workspaceId: string, { includeIdle = false }: { includeIdle?: boolean } = {}): Promise<boolean> {
     let workspace = this.#findTaskWorkspace(workspaceId);
     if (!workspace) return false;
     // "brief-ready" is attached-only (never produced for standard tasks) —
     // plan §4.13 allows resetting+recreating from that paused-equivalent state.
     const resettable = new Set(["paused", "completed", "failed", "brief-ready"]);
+    if (includeIdle) resettable.add("idle");
     if (!resettable.has(workspace.task.state)) return false;
 
     let task = workspace.task;
@@ -3775,6 +3780,14 @@ export class AgentTaskRunner {
         if (ws) void this.#startTaskDirWatcher(ws);
       } else {
         this.#stopTaskDirWatcher(wsId);
+      }
+    }
+
+    if (wsId && prev !== newState) {
+      try {
+        this.#onTaskStateChanged?.(wsId, newState);
+      } catch (error) {
+        log.warn("task state listener failed", { workspaceId: wsId, error: (error as Error)?.name });
       }
     }
 

@@ -33,6 +33,8 @@ function normalizeEventId(eventId: string): string {
 
 export interface BuildExternalNotificationEventInput {
   eventId: string;
+  /** Distinct events without a terminal session may supply a stable source identity. */
+  dedupeKey?: string;
   profileId: string;
   workspaceId: string;
   sessionId?: string | null;
@@ -193,13 +195,15 @@ export function buildExternalNotificationEvent(input: BuildExternalNotificationE
   const commentTarget = normalizeCommentTarget(input.provider, input.commentTarget);
   const canRouteToComment =
     kind === "review" && Boolean(input.provider && connectionId && input.prKey && reviewWorkspaceId && commentTarget);
-  const dedupeKey = input.operationId
-    ? `${workspaceId}:review-start:${input.operationId}`
-    : kind === "jira" && canRouteToJira
-      ? `${workspaceId}:jira:${connectionId}:${issueId}:${kind}`
-      : input.prKey
-        ? `${workspaceId}:review:${input.provider || "unknown"}:${input.prKey}:${kind}`
-        : `${workspaceId}:${sessionId || panelId || ""}:${kind}`;
+  const dedupeKey =
+    boundedId(input.dedupeKey) ||
+    (input.operationId
+      ? `${workspaceId}:review-start:${input.operationId}`
+      : kind === "jira" && canRouteToJira
+        ? `${workspaceId}:jira:${connectionId}:${issueId}:${kind}`
+        : input.prKey
+          ? `${workspaceId}:review:${input.provider || "unknown"}:${input.prKey}:${kind}`
+          : `${workspaceId}:${sessionId || panelId || ""}:${kind}`);
 
   return {
     eventId: normalizeEventId(input.eventId),

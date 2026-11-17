@@ -1565,7 +1565,7 @@ useContextMenu({
   .git-changes--mobile[data-layout="split"]:not([data-mode="commit"]) {
     display: grid;
     grid-template-columns: minmax(300px, 46%) minmax(0, 1fr);
-    grid-template-rows: 34px minmax(0, 1fr) auto;
+    grid-template-rows: 30px minmax(0, 1fr) auto;
   }
 
   .git-changes--mobile[data-layout="split"]:not([data-mode="commit"]) .git-changes__mobile-head {

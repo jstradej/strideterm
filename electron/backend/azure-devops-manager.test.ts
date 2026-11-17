@@ -271,6 +271,14 @@ function createManager({
     syncPullRequest: vi.fn(),
     markPullRequestSeen: vi.fn(),
   },
+  wantsAutomationChecks = undefined as ((summary: Record<string, unknown>) => boolean) | undefined,
+  onAutomationChecks = undefined as ((summary: Record<string, unknown>, detectedAt: string) => void) | undefined,
+  wantsAutomationClosure = undefined as NonNullable<
+    ConstructorParameters<typeof AzureDevOpsManager>[0]
+  >["wantsAutomationClosure"],
+  onAutomationClosure = undefined as NonNullable<
+    ConstructorParameters<typeof AzureDevOpsManager>[0]
+  >["onAutomationClosure"],
 } = {}) {
   const reviewStore = createReviewStore({ trackedPullRequests });
   const fetchImpl = createFetchStub();
@@ -284,6 +292,10 @@ function createManager({
     fetchImpl: fetchImpl as unknown as typeof fetch,
     execFileTextImpl,
     auditLogStore,
+    wantsAutomationChecks,
+    onAutomationChecks,
+    wantsAutomationClosure,
+    onAutomationClosure,
     now: () => new Date("2026-03-17T10:00:00.000Z").getTime(),
   });
   manager.supportsGitConfigEnv = async () => true;
@@ -304,6 +316,64 @@ const connection = {
 };
 
 describe("AzureDevOpsManager", () => {
+  test.each([
+    ["abandoned", "pr-closed"],
+    ["completed", "pr-merged"],
+  ])("emits a %s PR event without a review workspace and does not repeat it", async (status, kind) => {
+    const onAutomationClosure = vi.fn().mockResolvedValue(undefined);
+    const { manager } = createManager({ wantsAutomationClosure: () => true, onAutomationClosure });
+    await manager.sync({ connections: [connection] });
+    vi.spyOn(manager.azureApi, "listPullRequestsByProject").mockResolvedValue([]);
+    vi.spyOn(manager.azureApi, "getPullRequestById").mockResolvedValue({
+      status,
+      closedDate: "2026-03-17T10:00:00Z",
+    });
+    await manager.sync({ connections: [connection] });
+    await manager.sync({ connections: [connection] });
+    expect(onAutomationClosure).toHaveBeenCalledOnce();
+    expect(onAutomationClosure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind,
+        source: "azure-devops",
+        pr: expect.objectContaining({ pullRequestNumber: 123, repositoryName: "web-app" }),
+      }),
+    );
+  });
+  test("polls check metadata only for PRs matching automation rules", async () => {
+    const onAutomationChecks = vi.fn();
+    const { manager, fetchImpl } = createManager({ wantsAutomationChecks: () => true, onAutomationChecks });
+    await manager.sync({ connections: [connection] });
+    expect(fetchImpl.mock.calls.some(([url]) => String(url).includes("/statuses?"))).toBe(true);
+    expect(onAutomationChecks).toHaveBeenCalledWith(
+      expect.objectContaining({
+        checks: expect.objectContaining({
+          items: expect.arrayContaining([
+            expect.objectContaining({ id: "status:501:Build:Core JUnit Tests", state: "failed" }),
+          ]),
+        }),
+      }),
+      expect.any(String),
+    );
+    const regular = createManager();
+    await regular.manager.sync({ connections: [connection] });
+    expect(regular.fetchImpl.mock.calls.some(([url]) => String(url).includes("/statuses?"))).toBe(false);
+  });
+  test("rotates the 20 PR check budget over successive syncs", async () => {
+    const { manager, fetchImpl } = createManager({ wantsAutomationChecks: () => true });
+    const original = manager.azureApi.listPullRequestsByProject.bind(manager.azureApi);
+    vi.spyOn(manager.azureApi, "listPullRequestsByProject").mockImplementation(async (...args) => {
+      const prs = await original(...args);
+      return Array.from({ length: 22 }, (_, index) => ({
+        ...(prs[0] as Record<string, unknown>),
+        pullRequestId: index + 1,
+      }));
+    });
+    await manager.sync({ connections: [connection] });
+    expect(fetchImpl.mock.calls.filter(([url]) => String(url).includes("/statuses?"))).toHaveLength(20);
+    fetchImpl.mockClear();
+    await manager.sync({ connections: [connection] });
+    expect(fetchImpl.mock.calls.filter(([url]) => String(url).includes("/statuses?"))).toHaveLength(2);
+  });
   test("fetches one PR status directly without loading its threads", async () => {
     const { manager, fetchImpl } = createManager();
     manager.setSnapshot({

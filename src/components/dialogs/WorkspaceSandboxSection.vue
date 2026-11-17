@@ -3,15 +3,22 @@
     <label
       class="sandbox-option"
       :title="
-        task
-          ? 'Runs the Worker and Judge of this task in an isolated environment.'
-          : 'Runs this workspace\'s agent tabs, and the Worker and Judge of its tasks, in an isolated environment.'
+        automation
+          ? 'Runs this automation’s agents in an isolated environment.'
+          : task
+            ? 'Runs the Worker and Judge of this task in an isolated environment.'
+            : 'Runs this workspace\'s agent tabs, and the Worker and Judge of its tasks, in an isolated environment.'
       "
     >
       <input v-model="enabled" type="checkbox" data-testid="sandbox-checkbox" :disabled="locked || forced" />
-      {{ task ? "Run in isolation" : "Work in isolation" }}
+      {{ task || automation ? "Run in isolation" : "Work in isolation" }}
       <span class="sandbox-hint">
-        <template v-if="task">
+        <template v-if="automation">
+          Agents cannot read your home folder or other drives, and reach the network only through strIDEterm. A run that
+          cannot start isolated does not start.
+          <template v-if="forced"> Isolation is required for this workspace.</template>
+        </template>
+        <template v-else-if="task">
           The Worker and Judge run isolated: they cannot read your home folder or other drives, and reach the network
           only through strIDEterm. A task that cannot start isolated does not start at all.
           <template v-if="forced"> The workspace is isolated, so its tasks always are.</template>
@@ -25,7 +32,22 @@
       </span>
     </label>
 
-    <template v-if="enabled">
+    <component
+      :is="compact ? 'details' : 'div'"
+      v-if="enabled"
+      class="sandbox-section__details"
+      :class="{ 'sandbox-section__details--compact': compact }"
+      :open="compact && status?.ready === false"
+    >
+      <summary v-if="compact" class="sandbox-section__summary">
+        Isolation details
+        <span
+          class="sandbox-section__readiness"
+          :class="{ 'sandbox-section__readiness--missing': status?.ready === false }"
+        >
+          {{ loading ? "Checking…" : status?.ready ? "Ready" : status ? "Setup required" : "" }}
+        </span>
+      </summary>
       <div class="sandbox-section__not-protected" data-testid="sandbox-not-protected">
         <strong>Not protected by isolation</strong>
         <ul>
@@ -125,7 +147,7 @@
           </li>
         </ul>
       </div>
-    </template>
+    </component>
   </section>
 </template>
 
@@ -143,6 +165,10 @@ const props = defineProps<{
   workspacePath?: string;
   /** The switch belongs to a new task: it can add isolation but never remove its workspace's. */
   task?: boolean;
+  /** Uses automation-specific copy for single agents and Worker + Judge runs. */
+  automation?: boolean;
+  /** Keeps machine diagnostics in a disclosure, expanded when setup is required. */
+  compact?: boolean;
   /** The switch is on and cannot be turned off. */
   forced?: boolean;
 }>();
@@ -237,6 +263,34 @@ onMounted(() => {
 .sandbox-section {
   display: grid;
   gap: 8px;
+}
+.sandbox-section__details {
+  display: grid;
+  gap: 8px;
+}
+.sandbox-section__details--compact {
+  display: block;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.sandbox-section__summary {
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.sandbox-section__readiness {
+  margin-left: 8px;
+  color: var(--text);
+}
+.sandbox-section__readiness--missing {
+  color: var(--danger);
+}
+.sandbox-section__details--compact > div {
+  margin: 12px 0 0;
+}
+.sandbox-section__details--compact .button {
+  padding: 4px 8px;
+  font-size: 12px;
 }
 .sandbox-option {
   display: flex;

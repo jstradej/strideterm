@@ -146,7 +146,15 @@ vi.mock("@xterm/addon-search", () => ({
   },
 }));
 
-function buildController({ getOverlay, isRemote = false }: { getOverlay: () => unknown; isRemote?: boolean }) {
+function buildController({
+  getOverlay,
+  isRemote = false,
+  getActiveSessionId,
+}: {
+  getOverlay: () => unknown;
+  isRemote?: boolean;
+  getActiveSessionId?: () => string | null;
+}) {
   const focus = vi.fn();
   const sessionId = "workspace-1:panel-1";
   const views = {
@@ -166,7 +174,7 @@ function buildController({ getOverlay, isRemote = false }: { getOverlay: () => u
     views: views as any,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     buffers: { value: new Map() } as any,
-    getActiveSessionId: () => sessionId,
+    getActiveSessionId: getActiveSessionId || (() => sessionId),
     getOverlay,
     getPayload: () => null,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -180,7 +188,7 @@ function buildController({ getOverlay, isRemote = false }: { getOverlay: () => u
     safeFilenamePart: (value: unknown) => String(value),
   });
 
-  return { controller, focus };
+  return { controller, focus, views };
 }
 
 afterEach(() => {
@@ -198,6 +206,33 @@ afterEach(() => {
 });
 
 describe("createTerminalController", () => {
+  test("focuses a terminal attached after the focus request, before the next frame", () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    const { controller, focus, views } = buildController({ getOverlay: () => null });
+    const entry = views.value.get("workspace-1:panel-1")!;
+    views.value.clear();
+    controller.focusActiveTerminal();
+    views.value.set("workspace-1:panel-1", entry);
+    for (const frame of frames) frame(0);
+    expect(focus).toHaveBeenCalledOnce();
+  });
+  test("does not focus the previous terminal after navigating elsewhere", () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    let active: string | null = "workspace-1:panel-1";
+    const { controller, focus } = buildController({ getOverlay: () => null, getActiveSessionId: () => active });
+    controller.focusActiveTerminal();
+    active = null;
+    for (const frame of frames) frame(0);
+    expect(focus).not.toHaveBeenCalled();
+  });
   test("does not steal focus if an overlay opens before delayed terminal focus runs", () => {
     let overlay: unknown = null;
     let queuedFrame: FrameRequestCallback | null = null;

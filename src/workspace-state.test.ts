@@ -26,6 +26,12 @@ describe("workspace state helpers", () => {
 // both were migrated to — it drives both drag-drop reparenting rules and the
 // workspace-tree indent depth.
 describe("getParentWorkspaceId", () => {
+  test("resolves an automation parent", () => {
+    const workspace = { kind: "automation", automation: { parentWorkspaceId: "root" } } as unknown as Parameters<
+      typeof getParentWorkspaceId
+    >[0];
+    expect(getParentWorkspaceId(workspace)).toBe("root");
+  });
   test("resolves a managed-worktree review child's parent", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const ws = { review: { checkout: { mode: "managed-worktree" }, parentWorkspaceId: "parent-1" } } as any;

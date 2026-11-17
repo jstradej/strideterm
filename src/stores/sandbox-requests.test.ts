@@ -92,6 +92,15 @@ describe("sandbox requests in the Notification Center", () => {
     };
   });
 
+  test("replays an expired request silently so it can be allowed for the next run", async () => {
+    const { store, api } = await started({ listSandboxRequests: vi.fn(async () => [request({ state: "expired" })]) });
+    expect(store.records[0]?.outcome).toBe("expired");
+    expect(fireNotificationAlert).not.toHaveBeenCalled();
+    await store.allowForWorkspace(api as never, store.records[0]!.key);
+    expect(api.decideSandboxRequest).toHaveBeenCalledWith({ requestId: "req-1", allow: true, remember: true });
+    expect(store.records[0]?.outcome).toBe("added");
+  });
+
   test("a pending request is one entry that names the tab and workspace, with a toast and an alert", async () => {
     const { handlers, notifications } = await started();
     handlers.denied!(request());

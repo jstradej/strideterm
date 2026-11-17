@@ -21,6 +21,7 @@
 - **Jira** - search issues and boards in Jira Cloud or Data Center, comment and change status, and start development on an issue in a new branch workspace with an AI agent — see the [Jira guide](docs/jira.md)
 - **Working in isolation** - run a workspace's AI agents in a sandbox that cannot read your home folder or reach the network except through strIDEterm — see the [isolation guide](docs/agent-isolation.md)
 - **Agent Task Runner** - supervise coding tasks with Worker and Judge agents from supported AI coding tools — see the [Agent Task Runner guide](docs/agent-task-runner.md)
+- **Automations** - run agents or tasks on a schedule or integration event — see the [automations guide](docs/automations.md)
 - **Task agents from a planning terminal (internal MCP)** - supported AI agents can prepare and monitor a task, then wait for your approval before starting
 - **Docker Manager** - list containers, run actions, open shells, and stream logs
 - **SSH Support** - connect to remote machines using saved hosts or by entering a connection directly — see the [SSH guide](docs/ssh.md)
@@ -240,6 +241,7 @@ Use any supported AI coding tool installed on your computer to run Worker and Ju
 strIDEterm's built-in MCP servers give supported AI agents access to app capabilities:
 
 - **Task orchestration** — supported AI agents can prepare and monitor coding tasks; strIDEterm asks you to approve the task before it starts.
+- **Automations** — agents with task tools enabled can manage automations belonging to their current workspace; their changes appear in Notification Center.
 - **Pull-request review** — AI agents can help inspect and respond to pull requests in Azure DevOps and GitHub review workspaces.
 - **SSH commands** — supported AI agents can run commands on saved SSH hosts from a terminal.
 - **Jira** — in workspaces where you allow it, AI agents can read Jira issues and boards and propose comments for you to post.

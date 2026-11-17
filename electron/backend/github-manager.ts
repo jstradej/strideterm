@@ -1,5 +1,7 @@
 import path from "node:path";
 import { createHash } from "node:crypto";
+import type { AutomationPrReference } from "./automations/automation-pr-closure.js";
+import type { AutomationEvent } from "../shared/automation-events.js";
 import { execFileText } from "./process-utils.js";
 import { createGitHubApi } from "./github-api.js";
 import { BaseProviderManager } from "./shared/base-manager.js";
@@ -186,6 +188,11 @@ interface AuthenticatedGitHubUserCacheEntry {
 export class GitHubManager extends BaseProviderManager {
   declare reviewStore: GitHubReviewStore;
   private readonly authenticatedUserCache = new Map<string, AuthenticatedGitHubUserCacheEntry>();
+  private readonly wantsAutomationChecks: (summary: Record<string, unknown>) => boolean;
+  private readonly onAutomationChecks?: (summary: Record<string, unknown>, detectedAt: string) => void;
+  private readonly wantsAutomationClosure?: (reference: AutomationPrReference) => boolean;
+  private readonly onAutomationClosure?: (event: AutomationEvent) => Promise<void>;
+  private automationChecksVisited = new Set<string>();
   constructor(
     {
       credentialStore,
@@ -195,6 +202,11 @@ export class GitHubManager extends BaseProviderManager {
       fetchImpl = globalThis.fetch,
       execFileTextImpl = execFileText,
       now = () => Date.now(),
+      onReviewActivity,
+      wantsAutomationChecks = () => false,
+      onAutomationChecks,
+      wantsAutomationClosure,
+      onAutomationClosure,
     }: {
       credentialStore: ConstructorParameters<typeof BaseProviderManager>[0]["credentialStore"];
       reviewStore: GitHubReviewStore;
@@ -203,6 +215,11 @@ export class GitHubManager extends BaseProviderManager {
       fetchImpl?: typeof globalThis.fetch;
       execFileTextImpl?: typeof execFileText;
       now?: () => number;
+      onReviewActivity?: ConstructorParameters<typeof BaseProviderManager>[0]["onReviewActivity"];
+      wantsAutomationChecks?: (summary: Record<string, unknown>) => boolean;
+      onAutomationChecks?: (summary: Record<string, unknown>, detectedAt: string) => void;
+      wantsAutomationClosure?: (reference: AutomationPrReference) => boolean;
+      onAutomationClosure?: (event: AutomationEvent) => Promise<void>;
     } = {} as never,
   ) {
     super({
@@ -213,9 +230,14 @@ export class GitHubManager extends BaseProviderManager {
       fetchImpl,
       execFileTextImpl,
       now,
+      onReviewActivity,
       createApi: createGitHubApi,
     });
     this.providerLabel = "github";
+    this.wantsAutomationChecks = wantsAutomationChecks;
+    this.onAutomationChecks = onAutomationChecks;
+    this.wantsAutomationClosure = wantsAutomationClosure;
+    this.onAutomationClosure = onAutomationClosure;
     this.defaultGitLogin = "x-access-token";
     this.connectionNotFoundMessage = "GitHub connection was not found.";
     this.syncErrorFallbackMessage = "GitHub sync failed.";
@@ -352,21 +374,37 @@ export class GitHubManager extends BaseProviderManager {
     gitSnapshots = {},
     activeProfileId = "default",
   }: SyncOptions = {}): Promise<Record<string, unknown>> {
+    let remainingAutomationCheckFetches = 20;
+    const seenAutomationCheckKeys = new Set<string>();
     const activeIdentityCacheSlots = new Set(
       connections.map((connection) => `${connection.profileId || "default"}\0${connection.id}`),
     );
     for (const slot of this.authenticatedUserCache.keys()) {
       if (!activeIdentityCacheSlots.has(slot)) this.authenticatedUserCache.delete(slot);
     }
-    return this.syncCore(
+    const snapshot = await this.syncCore(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       { connections: connections as any, workspaces, gitSnapshots, activeProfileId },
       {
+        wantsAutomationClosure: this.wantsAutomationClosure,
+        onAutomationClosure: this.onAutomationClosure,
         createConnectionSnapshot: (connection, persistedState) =>
           createConnectionSnapshot(connection as unknown as SyncConnection, persistedState),
         fetchConnectionPrs: (connection, token, ctx) =>
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          this._fetchGitHubConnectionPrs(connection as unknown as SyncConnection, token, ctx as any),
+          this._fetchGitHubConnectionPrs(connection as unknown as SyncConnection, token, {
+            ...ctx,
+            takeAutomationChecks: (summary: Record<string, unknown>) => {
+              if (!this.wantsAutomationChecks(summary)) return false;
+              const key = String(summary.prKey || "");
+              seenAutomationCheckKeys.add(key);
+              if (this.automationChecksVisited.has(key)) return false;
+              if (remainingAutomationCheckFetches <= 0) return false;
+              remainingAutomationCheckFetches -= 1;
+              this.automationChecksVisited.add(key);
+              return true;
+            },
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          } as any),
         isPrResolved: (existing) => (existing?.pullRequest as Record<string, unknown> | undefined)?.state !== "open",
         resolveStalePr: (ws, existing, conn, token) =>
           this._resolveStaleGitHubPr(
@@ -376,7 +414,12 @@ export class GitHubManager extends BaseProviderManager {
             token,
           ),
       },
-    ) as Promise<Record<string, unknown>>;
+    );
+    if (remainingAutomationCheckFetches > 0) this.automationChecksVisited.clear();
+    else
+      for (const key of this.automationChecksVisited)
+        if (!seenAutomationCheckKeys.has(key)) this.automationChecksVisited.delete(key);
+    return snapshot as unknown as Record<string, unknown>;
   }
 
   /**
@@ -398,6 +441,7 @@ export class GitHubManager extends BaseProviderManager {
       trackedPullRequests: Record<string, Record<string, unknown>>;
       detailMap: Record<string, Record<string, unknown>>;
       newActivityEvents: unknown[];
+      takeAutomationChecks?: (summary: Record<string, unknown>) => boolean;
     },
   ): Promise<void> {
     const {
@@ -474,7 +518,7 @@ export class GitHubManager extends BaseProviderManager {
         ]);
 
         const tracked: Record<string, unknown> = this.reviewStore.getTrackedPullRequest(prKey) || {};
-        const { summary, internals } = buildPullRequestSummary({
+        const summaryInput = {
           connection: summaryConnection,
           pr,
           reviews,
@@ -486,7 +530,26 @@ export class GitHubManager extends BaseProviderManager {
           gitSnapshots,
           activeProfileId,
           now: this.now,
-        });
+        };
+        let { summary, internals } = buildPullRequestSummary(summaryInput);
+        let checksLoaded = false;
+        const headSha = String((pr.head as { sha?: unknown } | undefined)?.sha || "");
+        if (headSha && ctx.takeAutomationChecks?.(summary)) {
+          try {
+            const [checkRuns, combinedStatus] = await Promise.all([
+              api.listCheckRuns(connection, token, prOwner, prRepo, headSha),
+              api.getCombinedStatus(connection, token, prOwner, prRepo, headSha),
+            ]);
+            ({ summary, internals } = buildPullRequestSummary({ ...summaryInput, checkRuns, combinedStatus }));
+            checksLoaded = true;
+            this.onAutomationChecks?.(summary, new Date(this.now()).toISOString());
+          } catch (error) {
+            this.log.warn("automation check polling failed", { prKey, err: (error as Error).message || String(error) });
+          }
+        }
+        // A PR outside this poll's budget, or a failed API request, must not replace
+        // a real check baseline with the empty placeholder from the summary.
+        if (!checksLoaded && tracked.lastChecksSignature) internals.checksSignature = tracked.lastChecksSignature;
         const assignedToMe =
           Array.isArray(item.assignees) &&
           item.assignees.some(
@@ -531,7 +594,7 @@ export class GitHubManager extends BaseProviderManager {
           lastHeadSha: internals.headSha,
           lastDraftState:
             (summary.pullRequest as Record<string, unknown> | undefined)?.draft === true ? "draft" : "ready",
-          lastChecksSignature: internals.checksSignature,
+          lastChecksSignature: checksLoaded ? internals.checksSignature : tracked.lastChecksSignature,
           lastSeenActivityAt: tracked.lastSeenActivityAt || null,
           lastNotifiedActivityAt,
         };
@@ -611,11 +674,11 @@ export class GitHubManager extends BaseProviderManager {
    * contract, GitHub-specific identity and vote logic.
    */
   _detectGitHubReviewActivityDeltas({ tracked, summary, internals, seedingConnection }: DetectDeltasOptions): {
-    events: unknown[];
+    events: import("./shared/review-activity.js").ReviewActivityEvent[];
     lastNotifiedActivityAt: string;
   } {
     const nowIso = new Date(this.now()).toISOString();
-    const events: unknown[] = [];
+    const events: import("./shared/review-activity.js").ReviewActivityEvent[] = [];
     const myLogin = String(internals.myLogin || "").toLowerCase();
     const isSelfLogin = (login: unknown): boolean => Boolean(myLogin) && String(login || "").toLowerCase() === myLogin;
 
@@ -920,6 +983,8 @@ export class GitHubManager extends BaseProviderManager {
           ? (workspace as SyncWorkspace).id
           : currentRec.reviewWorkspaceId || "",
     };
+
+    this.onAutomationChecks?.(next, new Date(this.now()).toISOString());
 
     this.setSnapshot({
       ...this.snapshot,

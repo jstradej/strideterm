@@ -1,5 +1,7 @@
 # Agent Task Runner
 
+An [automation](automations.md) can start a Worker and Judge task on a schedule or integration event. Its task inherits the automation's isolation and permitted Jira tools.
+
 The Agent Task Runner pairs a **Worker**, which makes changes, with an independent **Judge**, which reviews the result. You describe the goal and acceptance criteria; the agents work through rounds until the Judge approves the work or the configured round limit is reached.
 
 ## Create and start a task

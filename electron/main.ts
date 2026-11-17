@@ -9,6 +9,7 @@ import {
   shell,
   Menu,
   screen,
+  powerMonitor,
 } from "electron";
 import os from "node:os";
 import path from "node:path";
@@ -1723,6 +1724,10 @@ async function startServices(): Promise<void> {
     deferInitialRefresh: true,
     dependencies: {
       safeStorage,
+      onSystemResume: (listener) => {
+        powerMonitor.on("resume", listener);
+        return () => powerMonitor.removeListener("resume", listener);
+      },
       enableAgentSshMcp: true,
       enableInternalMcp: true,
       distribution: appDistribution,

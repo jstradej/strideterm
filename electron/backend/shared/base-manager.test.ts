@@ -6,6 +6,7 @@ import { describe, expect, test, vi, afterEach } from "vitest";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { BaseProviderManager } from "./base-manager.js";
+import { buildReviewActivityEvent } from "./review-activity.js";
 import { shortPathKey } from "./provider-utils.js";
 
 const reviewRoot = path.join(os.tmpdir(), "strideterm-base-manager-tests");
@@ -991,6 +992,34 @@ describe("BaseProviderManager.syncCore", () => {
       ...overrides,
     };
   }
+
+  test("publishes newly detected activity to the subscriber after sync", async () => {
+    const manager = createSyncManager({ secrets: { "tok-1": "secret" } });
+    const subscriber = vi.fn();
+    manager.onReviewActivity = subscriber;
+    const event = buildReviewActivityEvent({
+      provider: "github",
+      summary: { prKey: "pr-1", connectionId: "conn-1", profileId: "work" },
+      kind: "pr-new",
+      at: "2026-01-01T00:00:00Z",
+      title: "PR",
+      body: "",
+    });
+    await manager.syncCore(
+      { connections: [{ id: "conn-1", tokenRef: "tok-1" }] },
+      baseHooks({
+        fetchConnectionPrs: async (
+          _connection: unknown,
+          _token: unknown,
+          context: { newActivityEvents: unknown[] },
+        ) => {
+          context.newActivityEvents.push(event);
+        },
+      }),
+    );
+    expect(subscriber).toHaveBeenCalledOnce();
+    expect(subscriber).toHaveBeenCalledWith([event], expect.any(String));
+  });
 
   test("marks a connection ok and persists its state when fetchConnectionPrs succeeds", async () => {
     const upsertConnectionState = vi.fn(async () => {});

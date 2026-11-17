@@ -30,7 +30,11 @@
         @click="onActivate(node)"
       >
         <span class="activity-row__badge" aria-hidden="true">
-          <svg v-if="node.badgeGlyph" class="activity-row__glyph" viewBox="0 0 24 24">
+          <svg
+            v-if="node.badgeGlyph"
+            class="activity-row__glyph"
+            :viewBox="node.badgeGlyph === 'automation' ? '0 0 330 330' : '0 0 24 24'"
+          >
             <path v-for="d in BADGE_GLYPHS[node.badgeGlyph]" :key="d" :d="d" />
           </svg>
           <template v-else>{{ node.icon }}</template>

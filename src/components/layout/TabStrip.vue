@@ -39,36 +39,43 @@
       "
     >
       <span>{{ tab.title }}</span>
-      <small v-if="tab.isolated" class="tab__isolated" :title="ISOLATED_TOOLTIP" data-testid="tab-isolated"
-        >isolated</small
-      >
-      <small
-        v-else-if="tab.needsIsolationRestart"
-        class="tab__isolated tab__isolated--pending"
-        :title="RESTART_TOOLTIP"
-        data-testid="tab-restart-to-isolate"
-        >restart to isolate</small
-      >
-      <small
-        v-if="tab.taskBadge && tab.companionWorkspaceId"
-        class="tab__task-badge tab__task-badge--linked"
-        :title="tab.taskTooltip"
-        @click.stop="goToCompanionLoop(tab.companionWorkspaceId)"
-        >{{ tab.taskBadge }}</small
-      >
-      <small v-else-if="tab.taskBadge" class="tab__task-badge" :title="tab.taskTooltip">{{ tab.taskBadge }}</small>
-      <small v-else-if="tab.type === 'jira'" :title="tab.refreshing ? tab.refreshTooltip : undefined"
-        ><span
-          class="tab__spinner"
-          :class="{ 'tab__spinner--idle': !tab.refreshing }"
-          :aria-hidden="tab.refreshing ? undefined : 'true'"
-          :aria-label="tab.refreshing ? (tab.loading ? 'Loading' : 'Refreshing') : undefined"
-        />{{ tab.status }}</small
-      >
-      <small v-else-if="tab.refreshing" :title="tab.refreshTooltip"
-        ><span class="tab__spinner" :aria-label="tab.loading ? 'Loading' : 'Refreshing'" />{{ tab.status }}</small
-      >
-      <small v-else>{{ tab.status }}</small>
+      <small class="tab__status">
+        <span v-if="tab.isolated" class="tab__isolated" :title="ISOLATED_TOOLTIP" data-testid="tab-isolated"
+          >isolated</span
+        >
+        <span
+          v-else-if="tab.needsIsolationRestart"
+          class="tab__isolated tab__isolated--pending"
+          :title="RESTART_TOOLTIP"
+          data-testid="tab-restart-to-isolate"
+          >restart to isolate</span
+        >
+        <span
+          v-if="tab.taskBadge && tab.companionWorkspaceId"
+          class="tab__status-text tab__task-badge tab__task-badge--linked"
+          :title="tab.taskTooltip"
+          @click.stop="goToCompanionLoop(tab.companionWorkspaceId)"
+          >{{ tab.taskBadge }}</span
+        >
+        <span v-else-if="tab.taskBadge" class="tab__status-text tab__task-badge" :title="tab.taskTooltip">{{
+          tab.taskBadge
+        }}</span>
+        <span
+          v-else-if="tab.type === 'jira'"
+          class="tab__status-text"
+          :title="tab.refreshing ? tab.refreshTooltip : undefined"
+          ><span
+            class="tab__spinner"
+            :class="{ 'tab__spinner--idle': !tab.refreshing }"
+            :aria-hidden="tab.refreshing ? undefined : 'true'"
+            :aria-label="tab.refreshing ? (tab.loading ? 'Loading' : 'Refreshing') : undefined"
+          />{{ tab.status }}</span
+        >
+        <span v-else-if="tab.refreshing" class="tab__status-text" :title="tab.refreshTooltip"
+          ><span class="tab__spinner" :aria-label="tab.loading ? 'Loading' : 'Refreshing'" />{{ tab.status }}</span
+        >
+        <span v-else class="tab__status-text">{{ tab.status }}</span>
+      </small>
       <span v-if="tab.attention" class="tab__attention" :title="tab.attentionTooltip">🔔</span>
       <span v-if="tab.notes" class="tab__notes" :title="tab.notes">📝</span>
       <span
@@ -225,7 +232,7 @@ function isolationOf(
     workspace?.panels?.find((panel: { id: string }) => panel.id === panelId),
   );
   const launched = (store.payload as AnyApi)?.attention?.isolation?.[sessionId];
-  return { isolated: eligible && launched === true, needsIsolationRestart: eligible && launched === false };
+  return { isolated: launched === true, needsIsolationRestart: eligible && launched === false };
 }
 
 const RESTART_TOOLTIP =
@@ -292,11 +299,18 @@ const compactTabModels = computed(() => {
   const commanderHosted = hostedPanelIds(panels);
   const models = panels
     .filter((p: AnyApi) => !hostedElsewhere.has(p.id) && !commanderHosted.has(p.id))
+    .sort((a: AnyApi, b: AnyApi) =>
+      wsEntry.kind === "automation"
+        ? Number(b.command === "__automation-dashboard__") - Number(a.command === "__automation-dashboard__")
+        : 0,
+    )
     .map((p: AnyApi) => {
-      const viewId = `${wsId}:${p.id}`;
+      const automationDashboard = p.command === "__automation-dashboard__";
+      const viewId = automationDashboard ? `automation-dashboard:${p.id}` : `${wsId}:${p.id}`;
       return {
         id: viewId,
-        sessionId: viewId,
+        sessionId: automationDashboard ? undefined : viewId,
+        type: automationDashboard ? "automation-dashboard" : "terminal",
         title: p.title || p.id,
         status: "",
         tone: "idle",
@@ -306,7 +320,7 @@ const compactTabModels = computed(() => {
         active: viewId === activeViewId,
         grouped: false,
         persistent: true,
-        closable: true,
+        closable: !automationDashboard,
         borrowed: false,
         attention: false,
         attentionFresh: false,
@@ -325,6 +339,7 @@ const compactTabModels = computed(() => {
     models.splice(panels[0]?.command === "__task-dashboard__" ? 1 : 0, 0, {
       id: binding.viewId,
       sessionId: binding.sourceSessionId,
+      type: "terminal",
       title: "Primary",
       status: "",
       tone: "idle",

@@ -17,7 +17,8 @@ import { GitHubManager } from "./github-manager.js";
 import { execFileText } from "./process-utils.js";
 import { createSessionId, normalizeState } from "./default-state.js";
 import { RemoteClientRegistry } from "./remote-client-registry.js";
-import { sanitizeSettingsFromRemote } from "./remote-server.js";
+import { sanitizeSettingsFromRemote, startRemoteServer } from "./remote-server.js";
+import net from "node:net";
 import { buildRemoteCore, strayStatePayloadKeys } from "./remote-core.js";
 import {
   AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL,
@@ -322,6 +323,1490 @@ describe("native workspace and scratchpad lifecycle", () => {
       true,
     );
   });
+});
+
+describe("automation runtime wiring", () => {
+  test("reconciles a completed automation worktree after interruption", async () => {
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-auto-recovery-"));
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-auto-repo-"));
+    tempPaths.push(cwd);
+    const worktree = path.join(cwd, ".strideterm", "tree", "auto-job");
+    await fs.mkdir(worktree, { recursive: true });
+    await fs.mkdir(path.join(dataDir, "operations"), { recursive: true });
+    const now = new Date().toISOString();
+    await fs.writeFile(
+      path.join(dataDir, "operations", "op-recovery.json"),
+      JSON.stringify({
+        operationId: "op-recovery",
+        kind: "automation.provision",
+        profileId: "default",
+        originWorkspaceId: "root",
+        idempotencyKey: "recover-request",
+        inputHash: "hash",
+        status: "running",
+        step: "creating-workspace",
+        intent: { parentWorkspaceId: "root", workspaceId: "auto", repository: cwd, branch: "auto/job" },
+        artifacts: { worktree },
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+    const automation = {
+      parentWorkspaceId: "root",
+      enabled: false,
+      enabledAt: null,
+      trigger: { type: "schedule", kind: "interval", everyMinutes: 5, anchor: now },
+      executor: { type: "agent", agent: { providerId: "claude", model: "", skipPermissions: false } },
+      prompt: "work",
+      location: "automation",
+      policy: { maxRunMinutes: 60, catchUp: "skip", maxRunsPerHour: 6, subjectCooldownMinutes: 10 },
+      createdBy: { kind: "desktop" },
+      createdAt: now,
+      updatedAt: now,
+      disabledReason: "user",
+    };
+    const fixture = await createFixture({
+      dataDir,
+      initialState: {
+        workspaces: [
+          {
+            id: "root",
+            name: "Project",
+            kind: "manual",
+            cwd,
+            profileId: "default",
+            panels: [{ id: "shell", title: "Shell", command: "" }],
+          },
+          {
+            id: "auto",
+            name: "Job",
+            kind: "automation",
+            cwd: worktree,
+            profileId: "default",
+            automation,
+            panels: [{ id: "dash", title: "Dashboard", command: "__automation-dashboard__" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    expect(fixture.runtime.getPayload().operations.lastResults).toContainEqual(
+      expect.objectContaining({
+        operationId: "op-recovery",
+        workspaceId: "auto",
+        result: expect.objectContaining({ workspaceId: "auto", reconciled: true }),
+      }),
+    );
+  });
+  test("provisions a real worktree once and replays the idempotent operation", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-automation-tree-"));
+    const git = (...args: string[]) => execFileText("git", args, { cwd });
+    await git("init", "-q");
+    await fs.writeFile(path.join(cwd, "tracked.txt"), "initial");
+    await git("add", "tracked.txt");
+    await git(
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.com",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "-qm",
+      "initial",
+    );
+    let afterWorktree: (() => Promise<void>) | undefined;
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [
+          {
+            id: "root",
+            name: "Project",
+            kind: "manual",
+            cwd,
+            profileId: "default",
+            panels: [{ id: "shell", title: "Shell", command: "" }],
+          },
+        ],
+      },
+      execFileTextImpl: async (file: string, args: string[], options: Parameters<typeof execFileText>[2]) => {
+        if (file !== "git") return { stdout: "", stderr: "" };
+        const result = await execFileText(file, args, options);
+        if (args[0] === "worktree" && args[1] === "add") await afterWorktree?.();
+        return result;
+      },
+    });
+    fixtures.push(fixture);
+    try {
+      const events: OperationFinished[] = [];
+      fixture.runtime.on(OPERATION_FINISHED_CHANNEL, (event: OperationFinished) => events.push(event));
+      const input = {
+        parentWorkspaceId: "root",
+        name: "Worktree job",
+        checkout: { mode: "worktree" as const, branch: "auto/job" },
+        idempotencyKey: "automation-request-1",
+        definition: {
+          enabled: false,
+          trigger: { type: "schedule", kind: "interval", everyMinutes: 5, anchor: "2026-01-01T00:00:00Z" },
+          executor: { type: "agent", agent: { providerId: "claude", model: "", skipPermissions: false } },
+          prompt: "work",
+          location: "automation",
+          policy: { maxRunMinutes: 60, catchUp: "skip", maxRunsPerHour: 6, subjectCooldownMinutes: 10 },
+        },
+      };
+      const plainDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-not-git-"));
+      try {
+        await fixture.store.mutate((draft: { workspaces: WorkspaceState[] }) => {
+          draft.workspaces.find((item) => item.id === "root")!.cwd = plainDirectory;
+        });
+        await expect(fixture.runtime.createAutomation(input)).rejects.toThrow(
+          /not a Git working tree.*Use parent workspace/u,
+        );
+        expect(fixture.runtime.getPayload().operations.running).toHaveLength(0);
+        expect(fixture.runtime.getPayload().operations.lastResults).toHaveLength(0);
+        expect(fixture.store.getState().workspaces).toHaveLength(1);
+        await expect(fs.stat(path.join(plainDirectory, ".strideterm"))).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        await fixture.store.mutate((draft: { workspaces: WorkspaceState[] }) => {
+          draft.workspaces.find((item) => item.id === "root")!.cwd = cwd;
+        });
+        await fs.rm(plainDirectory, { recursive: true, force: true });
+      }
+      await expect(
+        fixture.runtime.createAutomation({
+          ...input,
+          checkout: { mode: "worktree", branch: "auto/foreign", repository: path.dirname(cwd) },
+        }),
+      ).rejects.toThrow(/not part of this workspace/i);
+      const first = await fixture.runtime.createAutomation(input);
+      if (!("operationId" in first)) throw new Error("Expected operation");
+      await vi.waitFor(() => expect(events.some((event) => event.operationId === first.operationId)).toBe(true), {
+        timeout: 5000,
+      });
+      const completed = events.find((event) => event.operationId === first.operationId)!;
+      if (!("result" in completed)) throw new Error(completed.error.message);
+      const workspace = fixture.store
+        .getState()
+        .workspaces.find((item: WorkspaceState) => item.id === completed.workspaceId)!;
+      expect(workspace).toMatchObject({
+        kind: "automation",
+        cwd: path.join(cwd, ".strideterm", "tree", "auto-job"),
+        automation: { parentWorkspaceId: "root" },
+      });
+      expect((await execFileText("git", ["branch", "--show-current"], { cwd: workspace.cwd })).stdout.trim()).toBe(
+        "auto/job",
+      );
+      await fixture.runtime.syncWorktrees();
+      expect(
+        fixture.store.getState().workspaces.filter((item: WorkspaceState) => item.cwd === workspace.cwd),
+      ).toHaveLength(1);
+      expect(await fixture.runtime.createAutomation(input)).toMatchObject({
+        operationId: first.operationId,
+        replayed: true,
+      });
+      await expect(fixture.runtime.createAutomation({ ...input, name: "Different job" })).rejects.toThrow(
+        /idempotency key/i,
+      );
+      afterWorktree = async () => {
+        await fixture.store.mutate((draft: { workspaces: WorkspaceState[] }) => {
+          draft.workspaces.find((item) => item.id === "root")!.cwd = path.join(cwd, "moved");
+        });
+      };
+      const racing = await fixture.runtime.createAutomation({
+        ...input,
+        idempotencyKey: "automation-request-2",
+        checkout: { mode: "worktree", branch: "auto/race" },
+      });
+      if (!("operationId" in racing)) throw new Error("Expected operation");
+      await vi.waitFor(() => expect(events.some((event) => event.operationId === racing.operationId)).toBe(true), {
+        timeout: 5000,
+      });
+      const failed = events.find((event) => event.operationId === racing.operationId)!;
+      expect(failed).toMatchObject({
+        error: {
+          classification: "partial",
+          message: expect.stringContaining(path.join(cwd, ".strideterm", "tree", "auto-race")),
+        },
+      });
+      expect(
+        fixture.store.getState().workspaces.filter((item: WorkspaceState) => item.kind === "automation"),
+      ).toHaveLength(1);
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  }, 12000);
+  test("creates and protects a definition, and preserves a global pause", async () => {
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [
+          {
+            id: "automation-parent",
+            name: "Project",
+            kind: "manual",
+            cwd: process.cwd(),
+            profileId: "default",
+            panels: [{ id: "shell", title: "Shell", command: "" }],
+            jiraMcpEnabled: true,
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    const definition = {
+      enabled: false,
+      trigger: { type: "schedule", kind: "interval", everyMinutes: 5, anchor: "2026-01-01T00:00:00Z" },
+      executor: { type: "agent", agent: { providerId: "claude", model: "", skipPermissions: false } },
+      prompt: "original prompt",
+      location: "automation",
+      policy: { maxRunMinutes: 60, catchUp: "skip", maxRunsPerHour: 6, subjectCooldownMinutes: 10 },
+    };
+    const { workspaceId } = await fixture.runtime.createAutomation({
+      parentWorkspaceId: "automation-parent",
+      name: "Job",
+      definition,
+    });
+    const saved = fixture.store.getState().workspaces.find((item: WorkspaceState) => item.id === workspaceId)!;
+    expect(saved).toMatchObject({
+      kind: "automation",
+      jiraMcpEnabled: true,
+      automation: { prompt: "original prompt", enabled: false },
+    });
+    const forged = structuredClone(saved);
+    forged.kind = "manual";
+    forged.automation!.prompt = "forged";
+    forged.panels[0].command = "evil";
+    await fixture.runtime.saveWorkspace(forged);
+    const after = fixture.store.getState().workspaces.find((item: WorkspaceState) => item.id === workspaceId)!;
+    expect(after).toMatchObject({ kind: "automation", automation: { prompt: "original prompt" } });
+    expect(after.panels[0].command).toBe("__automation-dashboard__");
+    await fixture.runtime.setAutomationsPaused({ paused: true });
+    expect(fixture.runtime.getPayload().appState.settings.automations.paused).toBe(true);
+  });
+});
+
+describe("automation scheduled agent", () => {
+  test("failure disable advances the definition version after a clock rollback", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-auto-failure-version-"));
+    tempPaths.push(cwd);
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [
+          {
+            id: "root",
+            name: "Project",
+            kind: "manual",
+            cwd,
+            profileId: "default",
+            panels: [{ id: "shell", title: "Shell", command: "" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    try {
+      const { workspaceId } = await fixture.runtime.createAutomation({
+        parentWorkspaceId: "root",
+        name: "Job",
+        definition: {
+          enabled: true,
+          trigger: { type: "schedule", kind: "interval", everyMinutes: 5, anchor: new Date().toISOString() },
+          executor: { type: "agent", agent: { providerId: "claude", model: "", skipPermissions: false } },
+          prompt: "work",
+          location: "automation",
+          policy: { maxRunMinutes: 60, catchUp: "skip", maxRunsPerHour: 6, subjectCooldownMinutes: 10 },
+        },
+      });
+      if (!workspaceId) throw new Error("Expected an automation workspace");
+      // Definition versions may be ahead of the wall clock after the clock moves backwards.
+      await fixture.store.mutate((draft: AppState) => {
+        draft.workspaces.find((item) => item.id === workspaceId)!.automation!.updatedAt = new Date(
+          Date.now() + 60_000,
+        ).toISOString();
+      });
+      const version = fixture.store.getState().workspaces.find((item: WorkspaceState) => item.id === workspaceId)!
+        .automation!.updatedAt;
+      const journalPath = path.join(fixture.userDataPath, "automations", `${workspaceId}.json`);
+      for (let failure = 0; failure < 5; failure++) {
+        const { runId } = await fixture.runtime.runAutomationNow({ workspaceId, idempotencyKey: `failure-${failure}` });
+        let sessionId = "";
+        await vi.waitFor(async () => {
+          const journal = JSON.parse(await fs.readFile(journalPath, "utf8"));
+          const run = journal.runs.find((item: { runId: string }) => item.runId === runId);
+          expect(run?.state).toBe("running");
+          sessionId = run.sessionId;
+        });
+        fixture.sessionManager.emit("terminal:exit", { sessionId, exitCode: 1, intentional: false });
+        await vi.waitFor(async () => {
+          const journal = JSON.parse(await fs.readFile(journalPath, "utf8"));
+          expect(journal.runs.find((item: { runId: string }) => item.runId === runId)?.state).toBe("failed");
+        });
+      }
+      await vi.waitFor(() => {
+        const definition = fixture.store
+          .getState()
+          .workspaces.find((item: WorkspaceState) => item.id === workspaceId)!.automation!;
+        expect(definition.disabledReason).toBe("failures");
+      });
+      await expect(
+        fixture.runtime.setAutomationEnabled({ workspaceId, enabled: true, expectedUpdatedAt: version }),
+      ).rejects.toThrow(/changed elsewhere/);
+      const disabled = fixture.store
+        .getState()
+        .workspaces.find((item: WorkspaceState) => item.id === workspaceId)!.automation!;
+      expect(disabled.enabled).toBe(false);
+      expect(Date.parse(disabled.updatedAt)).toBeGreaterThan(Date.parse(version));
+      await fixture.runtime.setAutomationEnabled({ workspaceId, enabled: true, expectedUpdatedAt: disabled.updatedAt });
+      expect(JSON.parse(await fs.readFile(journalPath, "utf8")).consecutiveFailures).toBe(0);
+      const retry = await fixture.runtime.runAutomationNow({ workspaceId, idempotencyKey: "after-reenable" });
+      let retrySession = "";
+      await vi.waitFor(async () => {
+        const run = JSON.parse(await fs.readFile(journalPath, "utf8")).runs.find(
+          (item: { runId: string }) => item.runId === retry.runId,
+        );
+        expect(run?.state).toBe("running");
+        retrySession = run.sessionId;
+      });
+      fixture.sessionManager.emit("terminal:exit", { sessionId: retrySession, exitCode: 1, intentional: false });
+      await vi.waitFor(async () =>
+        expect(JSON.parse(await fs.readFile(journalPath, "utf8")).consecutiveFailures).toBe(1),
+      );
+      const reenabled = fixture.store
+        .getState()
+        .workspaces.find((item: WorkspaceState) => item.id === workspaceId)!.automation!;
+      expect(reenabled.enabled).toBe(true);
+      await fixture.runtime.updateAutomation({
+        workspaceId,
+        expectedUpdatedAt: reenabled.updatedAt,
+        definition: {
+          enabled: true,
+          trigger: reenabled.trigger,
+          executor: reenabled.executor,
+          prompt: "Fixed prompt",
+          location: reenabled.location,
+          policy: reenabled.policy,
+        },
+      });
+      expect(JSON.parse(await fs.readFile(journalPath, "utf8")).consecutiveFailures).toBe(0);
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+  test("sends a failed run through the mobile error notification channel", async () => {
+    const logCalls: LogCall[] = [];
+    logCallCapture.current = logCalls;
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-auto-failure-"));
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [
+          {
+            id: "root",
+            name: "Project",
+            kind: "manual",
+            cwd,
+            profileId: "default",
+            panels: [{ id: "shell", title: "Shell", command: "" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    const externalEvents = vi.fn();
+    fixture.runtime._externalNotificationEventsForTest().on("event", externalEvents);
+    const telegram = vi.spyOn(fixture.runtime._telegramManagerForTest(), "forwardAlert").mockResolvedValue(undefined);
+    try {
+      const { workspaceId } = await fixture.runtime.createAutomation({
+        parentWorkspaceId: "root",
+        name: "Job",
+        definition: {
+          enabled: true,
+          trigger: { type: "schedule", kind: "interval", everyMinutes: 5, anchor: new Date().toISOString() },
+          executor: { type: "agent", agent: { providerId: "claude", model: "", skipPermissions: false } },
+          prompt: "work",
+          location: "automation",
+          policy: { maxRunMinutes: 60, catchUp: "skip", maxRunsPerHour: 6, subjectCooldownMinutes: 10 },
+        },
+      });
+      if (!workspaceId) throw new Error("Expected an automation workspace");
+      const { runId } = await fixture.runtime.runAutomationNow({ workspaceId, idempotencyKey: "manual-run-1" });
+      const journalPath = path.join(fixture.userDataPath, "automations", `${workspaceId}.json`);
+      let sessionId = "";
+      await vi.waitFor(
+        async () => {
+          const run = JSON.parse(await fs.readFile(journalPath, "utf8")).runs.find(
+            (item: { runId: string }) => item.runId === runId,
+          );
+          expect(run?.state).toBe("running");
+          sessionId = run.sessionId;
+        },
+        { timeout: 5000 },
+      );
+      fixture.sessionManager.emit("terminal:data", {
+        sessionId,
+        data: "\u001b[31mError: authentication missing\u001b[0m\r\n",
+      });
+      fixture.sessionManager.emit("terminal:exit", { sessionId, exitCode: 1, intentional: false });
+      await vi.waitFor(
+        () =>
+          expect(externalEvents).toHaveBeenCalledWith(
+            expect.objectContaining({
+              kind: "error",
+              profileId: "default",
+              workspaceId,
+              dedupeKey: `automation:${runId}`,
+            }),
+          ),
+        { timeout: 5000 },
+      );
+      expect(telegram).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "automation",
+          workspaceId,
+          workspaceProfileId: "default",
+          alertId: `automation:${runId}`,
+        }),
+      );
+      expect(await fixture.runtime.getAutomationRunResult({ workspaceId, runId })).toMatchObject({
+        result: null,
+        output: expect.stringContaining("Error: authentication missing"),
+        exitCode: 1,
+      });
+      const history = await fixture.runtime.listAutomationRuns({ workspaceId });
+      expect(history.runs[0]).toMatchObject({ runId, exitCode: 1 });
+      expect(history.runs[0]).not.toHaveProperty("output");
+      const transitions = logCalls.filter(
+        (call) => call.message === "automation run transition" && call.meta?.runId === runId,
+      );
+      expect(transitions.map((call) => call.meta?.state)).toEqual(["starting", "running", "failed"]);
+      expect(transitions.at(-1)?.meta).toMatchObject({
+        workspaceId,
+        runId,
+        trigger: "manual",
+        state: "failed",
+        reason: "terminal-exit",
+        exitCode: 1,
+      });
+      expect(JSON.stringify(transitions)).not.toContain("authentication missing");
+      const second = await fixture.runtime.runAutomationNow({ workspaceId, idempotencyKey: "manual-run-2" });
+      await vi.waitFor(async () => {
+        const run = JSON.parse(await fs.readFile(journalPath, "utf8")).runs.find(
+          (item: { runId: string }) => item.runId === second.runId,
+        );
+        expect(run?.state).toBe("running");
+        sessionId = run.sessionId;
+      });
+      fixture.sessionManager.emit("terminal:data", { sessionId, data: "Different output for the next run\r\n" });
+      expect((await fixture.runtime.getAutomationRunResult({ workspaceId, runId })).output).not.toContain(
+        "Different output",
+      );
+      await fs.writeFile(
+        path.join(cwd, ".strideterm", "automations", workspaceId, "runs", second.runId, "RESULT.md"),
+        "Second run complete",
+      );
+      fixture.sessionManager.emit("terminal:data", { sessionId, data: "\u001b]133;D\u0007" });
+      await vi.waitFor(async () => {
+        const run = JSON.parse(await fs.readFile(journalPath, "utf8")).runs.find(
+          (item: { runId: string }) => item.runId === second.runId,
+        );
+        expect(run?.state).toBe("succeeded");
+      });
+      await expect(fixture.runtime.deleteAutomationRuns({ workspaceId, runIds: [second.runId] })).resolves.toEqual({
+        deleted: 1,
+      });
+      const afterDelete = await fixture.runtime.listAutomationRuns({ workspaceId });
+      expect(afterDelete.runs).toHaveLength(1);
+      expect(afterDelete.runs[0]).toMatchObject({ runId, canOpenAgent: false });
+      await expect(
+        fs.readFile(
+          path.join(cwd, ".strideterm", "automations", workspaceId, "runs", second.runId, "RESULT.md"),
+          "utf8",
+        ),
+      ).resolves.toBe("Second run complete");
+      const third = await fixture.runtime.runAutomationNow({ workspaceId, idempotencyKey: "manual-run-3" });
+      await vi.waitFor(async () =>
+        expect((await fixture.runtime.listAutomationRuns({ workspaceId })).runs[0]).toMatchObject({
+          runId: third.runId,
+          state: "running",
+        }),
+      );
+      await expect(
+        fixture.runtime.deleteAutomationRuns({ workspaceId, runIds: [runId, third.runId] }),
+      ).resolves.toEqual({ deleted: 1 });
+      expect((await fixture.runtime.listAutomationRuns({ workspaceId })).runs).toEqual([
+        expect.objectContaining({ runId: third.runId, state: "running" }),
+      ]);
+      await fixture.runtime.stopAutomationRun({ workspaceId, runId: third.runId });
+    } finally {
+      logCallCapture.current = null;
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  }, 12000);
+  test.each([false, true])(
+    "automation silence with prior hooks=%s waits for a result and recovers a lost Stop hook",
+    async (priorHooks) => {
+      const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-auto-silence-"));
+      const fixture = await createFixture({
+        initialState: {
+          workspaces: [
+            {
+              id: "root",
+              name: "Project",
+              kind: "manual",
+              cwd,
+              profileId: "default",
+              panels: [{ id: "shell", title: "Shell", command: "" }],
+            },
+          ],
+          settings: {
+            notifications: { agentHook: false, agentQuietMs: 100, agentQuietFastMs: 100, alertCooldownMs: 1 },
+          },
+        },
+      });
+      fixtures.push(fixture);
+      try {
+        const { workspaceId } = await fixture.runtime.createAutomation({
+          parentWorkspaceId: "root",
+          name: "Job",
+          definition: {
+            enabled: true,
+            trigger: { type: "schedule", kind: "interval", everyMinutes: 5, anchor: new Date().toISOString() },
+            executor: { type: "agent", agent: { providerId: "claude", model: "", skipPermissions: false } },
+            prompt: "work",
+            location: "automation",
+            policy: { maxRunMinutes: 60, catchUp: "skip", maxRunsPerHour: 6, subjectCooldownMinutes: 10 },
+          },
+        });
+        if (!workspaceId) throw new Error("Expected an automation workspace");
+        const { runId } = await fixture.runtime.runAutomationNow({ workspaceId, idempotencyKey: "silence-run-1" });
+        const journalPath = path.join(fixture.userDataPath, "automations", `${workspaceId}.json`);
+        let sessionId = "";
+        await vi.waitFor(async () => {
+          const journal = JSON.parse(await fs.readFile(journalPath, "utf8"));
+          const run = journal.runs.find((item: { runId: string }) => item.runId === runId);
+          expect(run?.state).toBe("running");
+          sessionId = run.sessionId;
+        });
+        if (priorHooks) {
+          fixture.runtime.notifyAgentHook(sessionId, "idle_prompt", "Notification");
+          await vi.waitFor(() =>
+            expect(fixture.runtime._sessionSignalsForTest().get(sessionId)?.completionHookCapable).toBe(true),
+          );
+        }
+        fixture.sessionManager.emit("terminal:data", {
+          sessionId,
+          data: "Do you trust this folder?\r\nEnter to confirm",
+        });
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect(
+          JSON.parse(await fs.readFile(journalPath, "utf8")).runs.find(
+            (item: { runId: string }) => item.runId === runId,
+          )?.state,
+        ).toBe("running");
+        await fs.writeFile(
+          path.join(cwd, ".strideterm", "automations", workspaceId, "runs", runId, "RESULT.md"),
+          "Work finished",
+        );
+        fixture.sessionManager.emit("terminal:data", { sessionId, data: "Work finished\r\n> " });
+        await vi.waitFor(
+          async () => {
+            const journal = JSON.parse(await fs.readFile(journalPath, "utf8"));
+            expect(journal.runs.find((item: { runId: string }) => item.runId === runId)?.state).toBe("succeeded");
+          },
+          { timeout: 5000 },
+        );
+      } finally {
+        await fs.rm(cwd, { recursive: true, force: true });
+      }
+    },
+    10000,
+  );
+  test("a scheduled run in an unviewed profile completes without changing focus", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-auto-unviewed-"));
+    const ensureWindowForProfile = vi.fn(async () => null);
+    const fixture = await createFixture({
+      dependencies: { ensureWindowForProfile },
+      initialState: {
+        profiles: [
+          { id: "default", name: "Default", workspaceIds: [] },
+          { id: "other", name: "Other", workspaceIds: [] },
+        ],
+        activeWorkspaceId: "front",
+        workspaces: [
+          {
+            id: "front",
+            name: "Front",
+            kind: "manual",
+            cwd,
+            profileId: "default",
+            panels: [{ id: "shell", title: "Shell", command: "" }],
+          },
+          {
+            id: "root",
+            name: "Background",
+            kind: "manual",
+            cwd,
+            profileId: "other",
+            panels: [{ id: "shell", title: "Shell", command: "" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    try {
+      const before = fixture.runtime.getPayload().appState.activeWorkspaceId;
+      const { workspaceId } = await fixture.runtime.createAutomation({
+        parentWorkspaceId: "root",
+        name: "Job",
+        definition: {
+          enabled: true,
+          trigger: { type: "schedule", kind: "once", at: new Date(Date.now() + 1200).toISOString() },
+          executor: { type: "agent", agent: { providerId: "claude", model: "", skipPermissions: false } },
+          prompt: "work",
+          location: "automation",
+          policy: { maxRunMinutes: 60, catchUp: "skip", maxRunsPerHour: 6, subjectCooldownMinutes: 10 },
+        },
+      });
+      if (!workspaceId) throw new Error("Expected an automation workspace");
+      const journalPath = path.join(fixture.userDataPath, "automations", `${workspaceId}.json`);
+      let sessionId = "";
+      await vi.waitFor(
+        async () => {
+          const journal = JSON.parse(await fs.readFile(journalPath, "utf8"));
+          expect(journal.runs[0]?.state).toBe("running");
+          sessionId = journal.runs[0].sessionId;
+        },
+        { timeout: 5000 },
+      );
+      expect(fixture.runtime.getPayload().appState.activeWorkspaceId).toBe(before);
+      expect(fixture.runtime._sessionSignalsForTest().get(sessionId)?.hasUserInput).toBe(true);
+      expect(
+        fixture.runtime.getPayload().appState.windowSlots.filter((slot) => slot.profileId === "other"),
+      ).toHaveLength(0);
+      fixture.runtime.notifyAgentHook(sessionId, "agent_needs_input", "Notification");
+      await vi.waitFor(async () => {
+        const journal = JSON.parse(await fs.readFile(journalPath, "utf8"));
+        expect(journal.runs[0].state).toBe("awaiting-user");
+      });
+      await vi.waitFor(() =>
+        expect(fixture.runtime.getPayload().attention.byWorkspace[workspaceId]?.alerts).toContainEqual(
+          expect.objectContaining({ kind: "question" }),
+        ),
+      );
+      fixture.runtime.notifyAgentHook(sessionId, "", "Stop");
+      await vi.waitFor(async () => {
+        const journal = JSON.parse(await fs.readFile(journalPath, "utf8"));
+        expect(journal.runs[0].state).toBe("succeeded");
+      });
+      expect(fixture.runtime.getPayload().appState.activeWorkspaceId).toBe(before);
+      expect(ensureWindowForProfile).not.toHaveBeenCalled();
+      expect(fixture.runtime.getPayload().automations.recentRuns).toContainEqual(
+        expect.objectContaining({ workspaceId, profileId: "other", state: "succeeded" }),
+      );
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  }, 10000);
+  test("concurrent runtime edits with the same version accept exactly one caller", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-auto-edits-"));
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [
+          {
+            id: "root",
+            name: "Project",
+            kind: "manual",
+            cwd,
+            profileId: "default",
+            panels: [{ id: "shell", title: "Shell", command: "" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    try {
+      const definition = {
+        enabled: false,
+        trigger: { type: "schedule", kind: "interval", everyMinutes: 5, anchor: new Date().toISOString() },
+        executor: { type: "agent", agent: { providerId: "claude", model: "", skipPermissions: false } },
+        prompt: "work",
+        location: "automation",
+        policy: { maxRunMinutes: 60, catchUp: "skip", maxRunsPerHour: 6, subjectCooldownMinutes: 10 },
+      };
+      const { workspaceId } = await fixture.runtime.createAutomation({
+        parentWorkspaceId: "root",
+        name: "Job",
+        definition,
+      });
+      if (!workspaceId) throw new Error("Expected an automation workspace");
+      const version = fixture.store.getState().workspaces.find((ws: WorkspaceState) => ws.id === workspaceId)!
+        .automation!.updatedAt;
+      const results = await Promise.allSettled([
+        fixture.runtime.updateAutomation({
+          workspaceId,
+          expectedUpdatedAt: version,
+          definition: { ...definition, prompt: "desktop" },
+        }),
+        fixture.runtime.updateAutomation(
+          { workspaceId, expectedUpdatedAt: version, definition: { ...definition, prompt: "remote" } },
+          "remote:sess-1",
+        ),
+      ]);
+      expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+      expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+      expect(["desktop", "remote"]).toContain(
+        fixture.store.getState().workspaces.find((ws: WorkspaceState) => ws.id === workspaceId)!.automation!.prompt,
+      );
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+  test("re-enabling an event automation drains every retained rate-limited subject", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-auto-enable-"));
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [
+          {
+            id: "root",
+            name: "Project",
+            kind: "manual",
+            cwd,
+            profileId: "default",
+            panels: [{ id: "shell", title: "Shell", command: "" }],
+          },
+        ],
+        settings: {
+          integrations: {
+            github: { connections: [{ id: "gh", label: "GitHub", profileId: "default", enabled: true }] },
+          },
+        },
+      },
+    });
+    fixtures.push(fixture);
+    try {
+      const { workspaceId } = await fixture.runtime.createAutomation({
+        parentWorkspaceId: "root",
+        name: "Event job",
+        definition: {
+          enabled: false,
+          trigger: { type: "event", source: "github", kinds: ["pr-new"], connectionId: "gh" },
+          executor: { type: "agent", agent: { providerId: "claude", model: "", skipPermissions: false } },
+          prompt: "work",
+          location: "automation",
+          policy: { maxRunMinutes: 60, catchUp: "skip", maxRunsPerHour: 1, subjectCooldownMinutes: 10 },
+        },
+      });
+      if (!workspaceId) throw new Error("Expected an automation workspace");
+      const directory = path.join(fixture.userDataPath, "automations");
+      const journalPath = path.join(directory, `${workspaceId}.json`);
+      await fs.mkdir(directory, { recursive: true });
+      const now = new Date().toISOString();
+      await fs.writeFile(
+        journalPath,
+        JSON.stringify({
+          v: 1,
+          nextRunAt: null,
+          lastFiredSlot: null,
+          consecutiveFailures: 0,
+          runs: [
+            { runId: "previous", trigger: { type: "manual" }, state: "succeeded", startedAt: now, finishedAt: now },
+          ],
+          pendingEvents: [
+            { subject: "first", events: [{ id: "first-event" }] },
+            { subject: "second", events: [{ id: "second-event" }] },
+          ],
+          seenEventIds: [],
+        }),
+      );
+      const definition = fixture.store
+        .getState()
+        .workspaces.find((ws: WorkspaceState) => ws.id === workspaceId)!.automation!;
+      await fixture.runtime.setAutomationEnabled({
+        workspaceId,
+        expectedUpdatedAt: definition.updatedAt,
+        enabled: true,
+      });
+      await vi.waitFor(async () => {
+        const journal = JSON.parse(await fs.readFile(journalPath, "utf8"));
+        expect(journal.pendingEvents).toEqual([]);
+        expect(journal.runs.filter((run: { reason?: string }) => run.reason === "rate-limited")).toHaveLength(2);
+      });
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+  test("system resume rechecks missed automation schedules", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-auto-resume-"));
+    let resume: (() => void) | undefined;
+    const fixture = await createFixture({
+      dependencies: {
+        onSystemResume: (listener: () => void) => {
+          resume = listener;
+          return () => {};
+        },
+      },
+      initialState: {
+        workspaces: [
+          {
+            id: "root",
+            name: "Project",
+            kind: "manual",
+            cwd,
+            profileId: "default",
+            panels: [{ id: "shell", title: "Shell", command: "" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    try {
+      const { workspaceId } = await fixture.runtime.createAutomation({
+        parentWorkspaceId: "root",
+        name: "Job",
+        definition: {
+          enabled: true,
+          trigger: { type: "schedule", kind: "interval", everyMinutes: 1440, anchor: new Date().toISOString() },
+          executor: { type: "agent", agent: { providerId: "claude", model: "", skipPermissions: false } },
+          prompt: "work",
+          location: "automation",
+          policy: { maxRunMinutes: 60, catchUp: "skip", maxRunsPerHour: 6, subjectCooldownMinutes: 10 },
+        },
+      });
+      if (!workspaceId || !resume) throw new Error("Expected an automation and resume listener");
+      const journalPath = path.join(fixture.userDataPath, "automations", `${workspaceId}.json`);
+      let journal: Record<string, unknown> = {};
+      await vi.waitFor(async () => {
+        journal = JSON.parse(await fs.readFile(journalPath, "utf8"));
+        expect(journal.nextRunAt).toBeTruthy();
+      });
+      const missed = new Date(Date.now() - 60_000).toISOString();
+      await fs.writeFile(journalPath, JSON.stringify({ ...journal, nextRunAt: missed }));
+      resume();
+      await vi.waitFor(async () => {
+        const refreshed = JSON.parse(await fs.readFile(journalPath, "utf8"));
+        expect(refreshed.lastFiredSlot).toBe(missed);
+        expect(refreshed.runs.at(-1)).toMatchObject({ state: "skipped", reason: "missed" });
+      });
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+  test("deleting the last scheduled automation's parent clears its idle timer", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-auto-parent-timer-"));
+    tempPaths.push(cwd);
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [
+          {
+            id: "root",
+            name: "Project",
+            kind: "manual",
+            cwd,
+            profileId: "default",
+            panels: [{ id: "shell", title: "Shell", command: "" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
+    try {
+      await fixture.runtime.createAutomation({
+        parentWorkspaceId: "root",
+        name: "Job",
+        definition: {
+          enabled: true,
+          trigger: { type: "schedule", kind: "once", at: new Date(Date.now() + 300_000).toISOString() },
+          executor: { type: "agent", agent: { providerId: "claude", model: "", skipPermissions: false } },
+          prompt: "work",
+          location: "automation",
+          policy: { maxRunMinutes: 60, catchUp: "skip", maxRunsPerHour: 6, subjectCooldownMinutes: 10 },
+        },
+      });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await vi.waitFor(() => {
+        const index = setTimeoutSpy.mock.calls.findIndex(
+          ([, delay]) => Number(delay) > 240_000 && Number(delay) <= 300_000,
+        );
+        expect(index).toBeGreaterThanOrEqual(0);
+        timer = setTimeoutSpy.mock.results[index].value;
+      });
+      await fixture.runtime.deleteWorkspace("root");
+      expect(clearTimeoutSpy).toHaveBeenCalledWith(timer);
+    } finally {
+      setTimeoutSpy.mockRestore();
+      clearTimeoutSpy.mockRestore();
+    }
+  });
+  test.each(["parent", "automation"] as const)(
+    "pruning a missing %s disables the automation and stops its run",
+    async (missing) => {
+      const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-auto-prune-parent-"));
+      const automationCwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-auto-prune-worktree-"));
+      tempPaths.push(cwd, automationCwd);
+      const fixture = await createFixture({
+        initialState: {
+          workspaces: [
+            {
+              id: "root",
+              name: "Project",
+              kind: "manual",
+              cwd,
+              profileId: "default",
+              panels: [{ id: "shell", title: "Shell", command: "" }],
+            },
+          ],
+        },
+      });
+      fixtures.push(fixture);
+      const { workspaceId } = await fixture.runtime.createAutomation({
+        parentWorkspaceId: "root",
+        name: "Job",
+        definition: {
+          enabled: true,
+          trigger: { type: "schedule", kind: "interval", everyMinutes: 5, anchor: new Date().toISOString() },
+          executor: { type: "agent", agent: { providerId: "claude", model: "", skipPermissions: false } },
+          prompt: "work",
+          location: "automation",
+          policy: { maxRunMinutes: 60, catchUp: "skip", maxRunsPerHour: 6, subjectCooldownMinutes: 10 },
+        },
+      });
+      if (!workspaceId) throw new Error("Expected an automation workspace");
+      await fixture.store.mutate((draft: AppState) => {
+        draft.workspaces.find((workspace) => workspace.id === workspaceId)!.cwd = automationCwd;
+      });
+      const version = fixture.store
+        .getState()
+        .workspaces.find((workspace: WorkspaceState) => workspace.id === workspaceId)!.automation!.updatedAt;
+      const { runId } = await fixture.runtime.runAutomationNow({ workspaceId, idempotencyKey: "prune-active-run" });
+      const journalPath = path.join(fixture.userDataPath, "automations", `${workspaceId}.json`);
+      let sessionId = "";
+      await vi.waitFor(async () => {
+        const journal = JSON.parse(await fs.readFile(journalPath, "utf8"));
+        const run = journal.runs.find((item: { runId: string }) => item.runId === runId);
+        expect(run?.state).toBe("running");
+        sessionId = run.sessionId;
+      });
+      await fs.rm(missing === "parent" ? cwd : automationCwd, { recursive: true, force: true });
+      await fixture.runtime.pruneOrphanedWorkspaces();
+      const definition = fixture.store
+        .getState()
+        .workspaces.find((workspace: WorkspaceState) => workspace.id === workspaceId)!.automation!;
+      expect(definition).toMatchObject({
+        enabled: false,
+        disabledReason: missing === "parent" ? "parent-removed" : "cwd-missing",
+      });
+      expect(Date.parse(definition.updatedAt)).toBeGreaterThan(Date.parse(version));
+      const journal = JSON.parse(await fs.readFile(journalPath, "utf8"));
+      expect(journal.runs.find((run: { runId: string }) => run.runId === runId)?.state).toBe("stopped");
+      expect(fixture.sessionManager.sessions.has(sessionId)).toBe(false);
+    },
+  );
+  test("deleting a parent disables its automation and stops its active run", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-auto-parent-"));
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [
+          {
+            id: "root",
+            name: "Project",
+            kind: "manual",
+            cwd,
+            profileId: "default",
+            panels: [{ id: "shell", title: "Shell", command: "" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    try {
+      const { workspaceId } = await fixture.runtime.createAutomation({
+        parentWorkspaceId: "root",
+        name: "Job",
+        definition: {
+          enabled: true,
+          trigger: { type: "schedule", kind: "interval", everyMinutes: 5, anchor: new Date().toISOString() },
+          executor: { type: "agent", agent: { providerId: "claude", model: "", skipPermissions: false } },
+          prompt: "work",
+          location: "automation",
+          policy: { maxRunMinutes: 60, catchUp: "skip", maxRunsPerHour: 6, subjectCooldownMinutes: 10 },
+        },
+      });
+      if (!workspaceId) throw new Error("Expected an automation workspace");
+      const { runId } = await fixture.runtime.runAutomationNow({ workspaceId, idempotencyKey: "parent-delete-run" });
+      const journalPath = path.join(fixture.userDataPath, "automations", `${workspaceId}.json`);
+      await vi.waitFor(async () => {
+        const journal = JSON.parse(await fs.readFile(journalPath, "utf8"));
+        expect(journal.runs.find((run: { runId: string }) => run.runId === runId)?.state).toBe("running");
+      });
+      await fixture.runtime.deleteWorkspace("root");
+      const automation = fixture.store
+        .getState()
+        .workspaces.find((ws: WorkspaceState) => ws.id === workspaceId)?.automation;
+      expect(automation).toMatchObject({ enabled: false, disabledReason: "parent-removed" });
+      const journal = JSON.parse(await fs.readFile(journalPath, "utf8"));
+      expect(journal.runs.find((run: { runId: string }) => run.runId === runId)?.state).toBe("stopped");
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+  test("deleting an unviewed profile disables its automation and stops its active run", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-auto-profile-"));
+    const fixture = await createFixture({
+      initialState: {
+        profiles: [
+          { id: "default", name: "Default", workspaceIds: [] },
+          { id: "other", name: "Other", workspaceIds: [] },
+        ],
+        workspaces: [
+          {
+            id: "root",
+            name: "Project",
+            kind: "manual",
+            cwd,
+            profileId: "other",
+            panels: [{ id: "shell", title: "Shell", command: "" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    try {
+      const { workspaceId } = await fixture.runtime.createAutomation({
+        parentWorkspaceId: "root",
+        name: "Job",
+        definition: {
+          enabled: true,
+          trigger: { type: "schedule", kind: "interval", everyMinutes: 5, anchor: new Date().toISOString() },
+          executor: { type: "agent", agent: { providerId: "claude", model: "", skipPermissions: false } },
+          prompt: "work",
+          location: "automation",
+          policy: { maxRunMinutes: 60, catchUp: "skip", maxRunsPerHour: 6, subjectCooldownMinutes: 10 },
+        },
+      });
+      if (!workspaceId) throw new Error("Expected an automation workspace");
+      const { runId } = await fixture.runtime.runAutomationNow({ workspaceId, idempotencyKey: "parent-delete-run" });
+      const journalPath = path.join(fixture.userDataPath, "automations", `${workspaceId}.json`);
+      await vi.waitFor(async () => {
+        const journal = JSON.parse(await fs.readFile(journalPath, "utf8"));
+        expect(journal.runs.find((run: { runId: string }) => run.runId === runId)?.state).toBe("running");
+      });
+      await fixture.runtime.deleteProfile("other");
+      const automation = fixture.store
+        .getState()
+        .workspaces.find((ws: WorkspaceState) => ws.id === workspaceId)?.automation;
+      expect(automation).toMatchObject({ enabled: false, disabledReason: "profile-removed" });
+      const journal = JSON.parse(await fs.readFile(journalPath, "utf8"));
+      expect(journal.runs.find((run: { runId: string }) => run.runId === runId)?.state).toBe("stopped");
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+  test("starts a fresh agent, records its result and disables a one-time schedule", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-auto-work-"));
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [
+          {
+            id: "root",
+            name: "Project",
+            kind: "manual",
+            cwd,
+            profileId: "default",
+            panels: [{ id: "shell", title: "Shell", command: "" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    const externalEvents = vi.fn();
+    fixture.runtime._externalNotificationEventsForTest().on("event", externalEvents);
+    try {
+      const definition = {
+        enabled: true,
+        trigger: { type: "schedule", kind: "once", at: new Date(Date.now() + 1500).toISOString() },
+        executor: { type: "agent", agent: { providerId: "claude", model: "", skipPermissions: false } },
+        prompt: "literal prompt",
+        location: "automation",
+        policy: { maxRunMinutes: 60, catchUp: "skip", maxRunsPerHour: 6, subjectCooldownMinutes: 10 },
+      };
+      const { workspaceId } = await fixture.runtime.createAutomation({
+        parentWorkspaceId: "root",
+        name: "Job",
+        definition,
+      });
+      if (!workspaceId) throw new Error("Expected an automation workspace");
+      const journalPath = path.join(fixture.userDataPath, "automations", `${workspaceId}.json`);
+      let run: { runId: string; state: string; sessionId?: string } | undefined;
+      await vi.waitFor(
+        async () => {
+          const journal = JSON.parse(await fs.readFile(journalPath, "utf8"));
+          run = journal.runs[0];
+          expect(run?.state).toBe("running");
+        },
+        { timeout: 8000, interval: 50 },
+      );
+      const runDir = path.join(cwd, ".strideterm", "automations", workspaceId, "runs", run!.runId);
+      expect(await fs.readFile(path.join(runDir, "PROMPT.md"), "utf8")).toContain("literal prompt");
+      const automationWorkspace = fixture.store
+        .getState()
+        .workspaces.find((item: WorkspaceState) => item.id === workspaceId)!;
+      const agentPanel = automationWorkspace.panels.find(
+        (panel: { command: string }) => panel.command !== "__automation-dashboard__",
+      )!;
+      const laterLaunch = fixture.sessionManager.getSessionLaunch({
+        workspace: automationWorkspace,
+        panel: agentPanel,
+        sessionId: run!.sessionId,
+      });
+      expect(JSON.stringify(laterLaunch) || "").not.toContain(`/runs/${run!.runId}/PROMPT.md`);
+      await fs.writeFile(path.join(runDir, "RESULT.md"), "completed summary");
+      fixture.runtime.notifyAgentHook(run!.sessionId, "permission_prompt", "Notification");
+      await vi.waitFor(async () => {
+        const journal = JSON.parse(await fs.readFile(journalPath, "utf8"));
+        expect(journal.runs[0].state).toBe("awaiting-user");
+      });
+      fixture.runtime.notifyAgentHook(run!.sessionId, "", "PostToolUse");
+      await vi.waitFor(async () => {
+        const journal = JSON.parse(await fs.readFile(journalPath, "utf8"));
+        expect(journal.runs[0].state).toBe("running");
+      });
+      // A definitive Stop ends the turn after the permission response.
+      fixture.runtime.notifyAgentHook(run!.sessionId, "", "Stop");
+      await vi.waitFor(
+        async () => {
+          const journal = JSON.parse(await fs.readFile(journalPath, "utf8"));
+          expect(journal.runs[0]).toMatchObject({ state: "succeeded", resultExcerpt: "completed summary" });
+          expect(
+            fixture.store.getState().workspaces.find((item: WorkspaceState) => item.id === workspaceId)?.automation,
+          ).toMatchObject({ enabled: false, disabledReason: "once-fired" });
+        },
+        { timeout: 5000 },
+      );
+      expect(externalEvents).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "completed",
+          profileId: "default",
+          workspaceId,
+          detail: "completed summary",
+          dedupeKey: `automation:${run!.runId}`,
+        }),
+      );
+      expect(externalEvents).not.toHaveBeenCalledWith(
+        expect.objectContaining({ title: "Automation disabled", kind: "error" }),
+      );
+      await fixture.runtime.deleteWorkspace(workspaceId);
+      await expect(fs.stat(journalPath)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(fs.stat(runDir)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  }, 12000);
+});
+
+describe("automation task executor", () => {
+  test("clamps Jira access if the parent revokes it while a task is being created", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-auto-grant-race-"));
+    const fixture = await createFixture({
+      dependencies: { taskAgentReadiness: { quietMs: 1, timeoutMs: 20 } },
+      initialState: {
+        workspaces: [
+          {
+            id: "root",
+            name: "Project",
+            kind: "manual",
+            cwd,
+            profileId: "default",
+            jiraMcpEnabled: true,
+            panels: [{ id: "shell", title: "Shell", command: "" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    try {
+      const role = { providerId: "claude", model: "", skipPermissions: false };
+      const { workspaceId } = await fixture.runtime.createAutomation({
+        parentWorkspaceId: "root",
+        name: "Job",
+        definition: {
+          enabled: true,
+          trigger: { type: "schedule", kind: "interval", everyMinutes: 5, anchor: new Date().toISOString() },
+          executor: { type: "task", worker: role, judge: role, maxRounds: 2 },
+          prompt: "work",
+          location: "automation",
+          policy: { maxRunMinutes: 60, catchUp: "skip", maxRunsPerHour: 6, subjectCooldownMinutes: 10 },
+        },
+      });
+      if (!workspaceId) throw new Error("Expected automation workspace");
+      const original = fixture.runtime.createTaskWorkspace.bind(fixture.runtime);
+      vi.spyOn(fixture.runtime, "createTaskWorkspace").mockImplementationOnce(async (config, viewer, internal) =>
+        original(config, viewer, {
+          ...internal!,
+          afterFilesWritten: async () => {
+            const parent = structuredClone(
+              fixture.store.getState().workspaces.find((item: WorkspaceState) => item.id === "root")!,
+            );
+            parent.jiraMcpEnabled = false;
+            parent.sandboxEnabled = true;
+            await fixture.runtime.saveWorkspace(parent);
+          },
+        }),
+      );
+      await fixture.runtime.runAutomationNow({ workspaceId, idempotencyKey: "grant-race-1" });
+      await vi.waitFor(
+        () => {
+          const task = fixture.store
+            .getState()
+            .workspaces.find(
+              (item: WorkspaceState) => item.kind === "task" && item.task?.parentWorkspaceId === workspaceId,
+            );
+          expect(task).toMatchObject({ jiraMcpEnabled: false, sandboxEnabled: true });
+        },
+        { timeout: 5000 },
+      );
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  }, 12000);
+  test("reuses an isolated task workspace with fresh prompts and sessions", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-auto-isolated-task-"));
+    const fixture = await createFixture({
+      dependencies: { taskAgentReadiness: { quietMs: 1, timeoutMs: 20 } },
+      initialState: {
+        workspaces: [
+          {
+            id: "root",
+            name: "Project",
+            kind: "manual",
+            cwd,
+            profileId: "default",
+            sandboxEnabled: true,
+            jiraMcpEnabled: true,
+            panels: [{ id: "shell", title: "Shell", command: "" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    try {
+      const role = { providerId: "claude", model: "", skipPermissions: false };
+      const definition = {
+        enabled: true,
+        trigger: { type: "schedule", kind: "interval", everyMinutes: 5, anchor: new Date().toISOString() },
+        executor: { type: "task", worker: role, judge: role, maxRounds: 2 },
+        prompt: "work",
+        location: "automation",
+        policy: { maxRunMinutes: 60, catchUp: "skip", maxRunsPerHour: 6, subjectCooldownMinutes: 10 },
+      };
+      const { workspaceId } = await fixture.runtime.createAutomation({
+        parentWorkspaceId: "root",
+        name: "Job",
+        definition,
+      });
+      if (!workspaceId) throw new Error("Expected automation workspace");
+      const journalPath = path.join(fixture.userDataPath, "automations", `${workspaceId}.json`);
+      const originalCreateTask = fixture.runtime.createTaskWorkspace.bind(fixture.runtime);
+      let announceTask!: (id: string) => void;
+      let releaseCreation!: () => void;
+      const taskCreated = new Promise<string>((resolve) => {
+        announceTask = resolve;
+      });
+      const creationReleased = new Promise<void>((resolve) => {
+        releaseCreation = resolve;
+      });
+      vi.spyOn(fixture.runtime, "createTaskWorkspace").mockImplementationOnce(async (...args) => {
+        const result = await originalCreateTask(...args);
+        announceTask(result.workspaceId);
+        await creationReleased;
+        return result;
+      });
+      const first = await fixture.runtime.runAutomationNow({ workspaceId, idempotencyKey: "isolated-run-1" });
+      const reservedTaskId = await taskCreated;
+      const starting = JSON.parse(await fs.readFile(journalPath, "utf8")).runs.find(
+        (item: { runId: string }) => item.runId === first.runId,
+      );
+      expect(starting).toMatchObject({ state: "starting", taskWorkspaceId: reservedTaskId });
+      releaseCreation();
+      let taskId = "";
+      await vi.waitFor(
+        async () => {
+          const run = JSON.parse(await fs.readFile(journalPath, "utf8")).runs.find(
+            (item: { runId: string }) => item.runId === first.runId,
+          );
+          expect(run?.state).toBe("running");
+          taskId = run.taskWorkspaceId;
+          expect(
+            fixture.store.getState().workspaces.find((item: WorkspaceState) => item.id === taskId)?.task?.state,
+          ).toBe("running");
+        },
+        { timeout: 5000 },
+      );
+      await fixture.runtime.stopAutomationRun({ workspaceId, runId: first.runId });
+      await vi.waitFor(
+        () =>
+          expect(
+            fixture.store.getState().workspaces.find((item: WorkspaceState) => item.id === taskId)?.task?.state,
+          ).toBe("paused"),
+        { timeout: 5000 },
+      );
+      await fixture.store.mutate((draft: { workspaces: WorkspaceState[] }) => {
+        const task = draft.workspaces.find((item) => item.id === taskId)!;
+        task.panels.find((panel) => panel.id === task.task!.workerPanelId)!.launch = { file: "unrelated", args: [] };
+      });
+      const current = fixture.store.getState().workspaces.find((item: WorkspaceState) => item.id === workspaceId)!;
+      await fixture.runtime.updateAutomation({
+        workspaceId,
+        expectedUpdatedAt: current.automation!.updatedAt,
+        definition: {
+          ...definition,
+          executor: {
+            ...definition.executor,
+            worker: { ...role, providerId: "codex", model: "model-test" },
+            maxRounds: 3,
+          },
+        },
+      });
+      const restarted = vi.spyOn(fixture.sessionManager, "restartSession");
+      const second = await fixture.runtime.runAutomationNow({ workspaceId, idempotencyKey: "isolated-run-2" });
+      await vi.waitFor(
+        async () => {
+          const run = JSON.parse(await fs.readFile(journalPath, "utf8")).runs.find(
+            (item: { runId: string }) => item.runId === second.runId,
+          );
+          expect(run).toMatchObject({ state: "running", taskWorkspaceId: taskId });
+          expect(
+            fixture.store.getState().workspaces.find((item: WorkspaceState) => item.id === taskId)?.task?.state,
+          ).toBe("running");
+        },
+        { timeout: 5000 },
+      );
+      const task = fixture.store.getState().workspaces.find((item: WorkspaceState) => item.id === taskId)!;
+      expect(restarted).toHaveBeenCalledTimes(2);
+      expect(task.task).toMatchObject({
+        maxRounds: 3,
+        workerProviderConfig: { providerId: "codex", model: "model-test" },
+      });
+      expect(task.jiraMcpEnabled).toBe(true);
+      expect(task.panels.find((panel) => panel.id === task.task!.workerPanelId)?.command).toContain("codex");
+      expect(task.panels.find((panel) => panel.id === task.task!.workerPanelId)?.launch).toBeFalsy();
+      const brief = await fs.readFile(path.join(cwd, ".strideterm", "tasks", task.task!.taskId, "TASK.md"), "utf8");
+      expect(brief).toContain(second.runId);
+      expect(brief).not.toContain(first.runId);
+      expect(
+        fixture.store
+          .getState()
+          .workspaces.filter(
+            (item: WorkspaceState) => item.kind === "task" && item.task?.parentWorkspaceId === workspaceId,
+          ),
+      ).toHaveLength(1);
+      const parent = structuredClone(
+        fixture.store.getState().workspaces.find((item: WorkspaceState) => item.id === "root")!,
+      );
+      parent.jiraMcpEnabled = false;
+      await fixture.runtime.saveWorkspace(parent);
+      expect(
+        fixture.store.getState().workspaces.find((item: WorkspaceState) => item.id === taskId)?.jiraMcpEnabled,
+      ).toBe(false);
+      expect(
+        fixture.store.getState().workspaces.find((item: WorkspaceState) => item.id === workspaceId)?.jiraMcpEnabled,
+      ).toBe(false);
+      await fixture.runtime.stopAutomationRun({ workspaceId, runId: second.runId });
+      await vi.waitFor(() =>
+        expect(
+          fixture.store.getState().workspaces.find((item: WorkspaceState) => item.id === taskId)?.task?.state,
+        ).toBe("paused"),
+      );
+      const originalRestart = fixture.sessionManager.restartSession.bind(fixture.sessionManager);
+      let releaseRestart!: () => void;
+      let enteredRestart!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        enteredRestart = resolve;
+      });
+      const release = new Promise<void>((resolve) => {
+        releaseRestart = resolve;
+      });
+      restarted.mockImplementationOnce(async (state: unknown, sessionId: string) => {
+        enteredRestart();
+        await release;
+        return originalRestart(state, sessionId);
+      });
+      const third = await fixture.runtime.runAutomationNow({ workspaceId, idempotencyKey: "isolated-run-3" });
+      await entered;
+      await fixture.runtime.stopAutomationRun({ workspaceId, runId: third.runId });
+      releaseRestart();
+      await vi.waitFor(
+        () => expect(fixture.sessionManager.closedSessions).toContain(`${taskId}:${task.task!.workerPanelId}`),
+        { timeout: 5000 },
+      );
+      const lock = path.join(cwd, ".strideterm", "tasks", task.task!.taskId, "WORK_LOCK");
+      await fs.rm(lock, { force: true });
+      const fourth = await fixture.runtime.runAutomationNow({ workspaceId, idempotencyKey: "isolated-run-4" });
+      await vi.waitFor(
+        async () => {
+          const run = JSON.parse(await fs.readFile(journalPath, "utf8")).runs.find(
+            (item: { runId: string }) => item.runId === fourth.runId,
+          );
+          expect(run).toMatchObject({ state: "running", taskWorkspaceId: taskId });
+          await expect(fs.stat(lock)).resolves.toBeTruthy();
+        },
+        { timeout: 5000 },
+      );
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  }, 15000);
+  test("creates a task in the automation cwd without changing the active workspace", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-auto-task-"));
+    const fixture = await createFixture({
+      dependencies: { taskAgentReadiness: { quietMs: 1, timeoutMs: 50 } },
+      initialState: {
+        activeWorkspaceId: "root",
+        workspaces: [
+          {
+            id: "root",
+            name: "Project",
+            kind: "manual",
+            cwd,
+            profileId: "default",
+            jiraMcpEnabled: true,
+            panels: [{ id: "shell", title: "Shell", command: "" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    try {
+      const role = { providerId: "claude", model: "", skipPermissions: false };
+      const definition = {
+        enabled: true,
+        trigger: { type: "schedule", kind: "once", at: new Date(Date.now() + 1500).toISOString() },
+        executor: { type: "task", worker: role, judge: role, maxRounds: 2 },
+        prompt: "implement the task",
+        location: "automation",
+        policy: { maxRunMinutes: 60, catchUp: "skip", maxRunsPerHour: 6, subjectCooldownMinutes: 10 },
+      };
+      const { workspaceId } = await fixture.runtime.createAutomation({
+        parentWorkspaceId: "root",
+        name: "Job",
+        definition,
+      });
+      await vi.waitFor(
+        () => {
+          const task = fixture.store
+            .getState()
+            .workspaces.find(
+              (item: WorkspaceState) => item.kind === "task" && item.task?.parentWorkspaceId === workspaceId,
+            );
+          expect(task).toMatchObject({ cwd, jiraMcpEnabled: true, task: { state: "running", maxRounds: 2 } });
+        },
+        { timeout: 9000, interval: 50 },
+      );
+      expect(fixture.store.getState().activeWorkspaceId).toBe("root");
+      await fixture.runtime.deleteWorkspace(workspaceId);
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  }, 12000);
 });
 
 describe("Git interest owner union", () => {
@@ -2020,8 +3505,10 @@ describe("runtime integration", () => {
       },
     });
     fixtures.push(fixture);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (fixture.reviewBridgeStore.getPullRequestContext as any).mockReturnValue({
+
+    (
+      fixture.reviewBridgeStore.getPullRequestContext as unknown as { mockReturnValue: (value: unknown) => void }
+    ).mockReturnValue({
       prKey: "ado-main:repo-1:123",
       rootPath: "/tmp/review-root",
       repository: { id: "repo-1", name: "web-app" },
@@ -2568,8 +4055,10 @@ describe("runtime integration", () => {
       },
     });
     fixtures.push(fixture);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (fixture.reviewBridgeStore.getPullRequestContext as any).mockReturnValue({
+
+    (
+      fixture.reviewBridgeStore.getPullRequestContext as unknown as { mockReturnValue: (value: unknown) => void }
+    ).mockReturnValue({
       prKey: "ado-main:repo-1:123",
       briefMarkdownPath: "/tmp/review/agent-brief.md",
       databasePath: "/tmp/review/review-bridge.db",
@@ -13987,10 +15476,18 @@ describe("multiple windows per profile — viewer model", () => {
 
       await save({ id: "tg-notifications", botToken: "offline-token", chatId: "12345", notificationsEnabled: false });
       expect(fixture.store.getState().settings.integrations.telegram.connections[0].notificationsEnabled).toBe(false);
+      expect(fixture.store.getState().settings.integrations.telegram.connections[0].forwardKinds).toEqual([
+        "*",
+        "automation",
+      ]);
       expect(fixture.runtime._telegramManagerForTest().getSnapshot().connections[0].notificationsEnabled).toBe(false);
 
       await save({ id: "tg-notifications", chatId: "12345" });
       expect(fixture.store.getState().settings.integrations.telegram.connections[0].notificationsEnabled).toBe(false);
+      expect(fixture.store.getState().settings.integrations.telegram.connections[0].forwardKinds).toEqual([
+        "*",
+        "automation",
+      ]);
 
       await save({ id: "tg-notifications", chatId: "12345", notificationsEnabled: true });
       expect(fixture.store.getState().settings.integrations.telegram.connections[0].notificationsEnabled).toBe(true);
@@ -14893,6 +16390,9 @@ describe("provider connections — profile ownership across viewers", () => {
 
 describe("headless pull request review start", () => {
   test("launches one fresh MCP review session without activating a desktop workspace", async () => {
+    const checkoutDir = await fs.mkdtemp(path.join(os.tmpdir(), "automation-review-checkout-"));
+    const parentDir = await fs.mkdtemp(path.join(os.tmpdir(), "automation-review-parent-"));
+    tempPaths.push(checkoutDir, parentDir);
     const prKey = "gh-1:acme:web:123";
     const reviewHead = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const summary = {
@@ -14914,7 +16414,12 @@ describe("headless pull request review start", () => {
       },
     };
     let checkoutMutation: (() => Promise<void>) | null = null;
+    let emitActivity: ((events: unknown[], at: string) => void) | undefined;
     class ReviewManager extends EventEmitter {
+      constructor(options: { onReviewActivity?: (events: unknown[], at: string) => void }) {
+        super();
+        emitActivity = options.onReviewActivity;
+      }
       getSnapshot() {
         return {
           connections: [{ id: "gh-1", profileId: "profile-a", enabled: true }],
@@ -14942,11 +16447,11 @@ describe("headless pull request review start", () => {
             id: "isolated-review",
             name: "acme/web PR #123",
             kind: "terminal",
-            cwd: process.cwd(),
+            cwd: checkoutDir,
             profileId: "profile-a",
             activePanelId: "shell",
             panels: [{ id: "shell", title: "Shell", command: "", startup: "default" }],
-            review: { ...summary, provider: "github", checkout: { mode: "managed-worktree", rootPath: process.cwd() } },
+            review: { ...summary, provider: "github", checkout: { mode: "managed-worktree", rootPath: checkoutDir } },
           },
           created: true,
           attached: false,
@@ -14999,6 +16504,14 @@ describe("headless pull request review start", () => {
             profileId: "default",
             cwd: "C:/work",
             panels: [{ id: "shell", title: "Shell", command: "", startup: "default" }],
+          },
+          {
+            id: "review-parent",
+            name: "Review parent",
+            kind: "terminal",
+            profileId: "profile-a",
+            cwd: parentDir,
+            panels: [],
           },
         ],
         windowSlots: [
@@ -15212,6 +16725,74 @@ describe("headless pull request review start", () => {
     expect(
       sessions.launches.filter((entry) => entry.launch?.args?.join(" ").includes("Perform a basic code review")),
     ).toHaveLength(2);
+    const created = await fixture.runtime.createAutomation({
+      parentWorkspaceId: "review-parent",
+      name: "Automated review",
+      definition: {
+        enabled: true,
+        trigger: { type: "event", source: "github", kinds: ["pr-new"], connectionId: "gh-1" },
+        executor: { type: "agent", agent: { providerId: "claude", model: "", skipPermissions: false } },
+        prompt: "PRIVATE REVIEW INSTRUCTIONS",
+        location: "pr-review",
+        policy: { maxRunMinutes: 60, catchUp: "skip", maxRunsPerHour: 6, subjectCooldownMinutes: 0 },
+      },
+    });
+    expect("workspaceId" in created).toBe(true);
+    const autoId = (created as { workspaceId: string }).workspaceId;
+    const detectedAt = new Date(Date.now() + 100).toISOString();
+    emitActivity?.(
+      [
+        {
+          id: "auto-event",
+          prKey,
+          provider: "github",
+          connectionId: "gh-1",
+          profileId: "profile-a",
+          kind: "pr-new",
+          role: "reviewer",
+          repositoryName: "acme/web",
+          pullRequestNumber: 123,
+          pullRequestTitle: "Fix parser",
+          webUrl: "",
+          headSha: reviewHead,
+          draftState: "ready",
+        },
+      ],
+      detectedAt,
+    );
+    await vi.waitFor(() => {
+      const run = fixture.runtime.getPayload().automations.byWorkspaceId[autoId] as { currentRun?: { state: string } };
+      if (run?.currentRun?.state !== "running") throw new Error(JSON.stringify(run));
+    });
+    const autoLaunch = sessions.launches.at(-1)!;
+    expect(autoLaunch.launch?.args.join(" ")).toContain("--review-draft-only");
+    expect(autoLaunch.launch?.args.join(" ")).not.toContain("PRIVATE REVIEW INSTRUCTIONS");
+    expect(autoLaunch.workspace?.review?.automationRun?.workspaceId).toBe(autoId);
+    const runId = autoLaunch.workspace!.review!.automationRun!.runId;
+    expect(autoLaunch.launch?.args.join(" ")).toContain("--review-automation-run-id");
+    expect(autoLaunch.launch?.args.join(" ")).toContain(runId);
+    expect(
+      await fs.readFile(
+        path.join(checkoutDir, ".strideterm", "automations", autoId, "runs", runId, "PROMPT.md"),
+        "utf8",
+      ),
+    ).toContain("PRIVATE REVIEW INSTRUCTIONS");
+    (
+      fixture.reviewBridgeStore.getPullRequestContext as unknown as { mockReturnValue: (value: unknown) => void }
+    ).mockReturnValue({
+      drafts: [
+        { draftId: "own", status: "draft", authorAgent: `automation:${runId}` },
+        { draftId: "other", status: "draft", authorAgent: "automation:other-run" },
+      ],
+    });
+    const sessionId = `${autoLaunch.workspace!.id}:${autoLaunch.panel!.id}`;
+    sessions.emit("terminal:exit", { sessionId, exitCode: 0 });
+    await vi.waitFor(() => {
+      const run = fixture.runtime.getPayload().automations.byWorkspaceId[autoId] as {
+        lastRun?: { state: string; resultExcerpt?: string };
+      };
+      expect(run?.lastRun).toMatchObject({ state: "succeeded", resultExcerpt: "1 review draft created." });
+    });
   });
 });
 
@@ -19964,6 +21545,7 @@ describe("internal MCP: creating and watching task agents", () => {
     dataDir,
     execFileTextImpl,
     taskAgentReadiness = { quietMs: 0, timeoutMs: 0 },
+    enableAgentSshMcp = false,
   }: {
     workspaces: Array<Record<string, unknown>>;
     profiles?: Array<Record<string, unknown>>;
@@ -19971,12 +21553,13 @@ describe("internal MCP: creating and watching task agents", () => {
     dataDir?: string;
     execFileTextImpl?: unknown;
     taskAgentReadiness?: { quietMs: number; timeoutMs: number };
+    enableAgentSshMcp?: boolean;
   }) {
     const fixture = await createFixture({
       initialState: { workspaces, ...(profiles ? { profiles } : {}), ...(settings ? { settings } : {}) },
       execFileTextImpl: execFileTextImpl ?? execFileText,
       dataDir,
-      dependencies: { enableInternalMcp: true, taskAgentReadiness },
+      dependencies: { enableInternalMcp: true, enableAgentSshMcp, taskAgentReadiness },
     });
     fixtures.push(fixture);
     // The real SessionManager stamps its sessions with the workspace id; the fake only knows projectId.
@@ -20067,6 +21650,244 @@ describe("internal MCP: creating and watching task agents", () => {
     });
     return { prepared: prepared.result, started };
   }
+
+  test("internal MCP creates and updates an automation idempotently within its grant", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });
+    const { launch, sessionId } = launchAgent(fixture);
+    const call = brokerClient(launch);
+    const definition = {
+      enabled: false,
+      trigger: { type: "schedule", kind: "interval", everyMinutes: 30, anchor: "2026-01-01T00:00:00Z" },
+      executor: { type: "agent", agent: { providerId: "claude", model: "", skipPermissions: true } },
+      prompt: "private instruction",
+      location: "automation",
+      policy: { maxRunMinutes: 60, catchUp: "skip", maxRunsPerHour: 6, subjectCooldownMinutes: 10 },
+    };
+    const input = { name: "Daily", definition, idempotencyKey: "auto-create-001" };
+    const first = await call("automation_create", input);
+    expect(first.status).toBe(200);
+    const retry = await call("automation_create", input);
+    expect(retry.result.workspaceId).toBe(first.result.workspaceId);
+    const conflicting = await call("automation_create", { ...input, name: "Different" });
+    expect(conflicting).toMatchObject({ status: 409, error: { code: "idempotency_conflict" } });
+    const workspace = fixture.store.getState().workspaces.find((item: any) => item.id === first.result.workspaceId)!;
+    expect(workspace.automation).toMatchObject({
+      createdBy: { kind: "agent", sessionId },
+      executor: { agent: { skipPermissions: false } },
+    });
+    const changed = await call("automation_update", {
+      workspaceId: workspace.id,
+      expectedUpdatedAt: workspace.automation!.updatedAt,
+      definition: { ...definition, prompt: "updated instruction" },
+    });
+    expect(changed.status).toBe(200);
+    const state = fixture.runtime.getPayload().automations;
+    expect(state.recentAgentChanges?.map((item) => item.action)).toEqual(["created", "updated"]);
+    expect(JSON.stringify(state.recentAgentChanges)).not.toContain("instruction");
+    const mobile = vi.fn();
+    fixture.runtime._externalNotificationEventsForTest().on("event", mobile);
+    const current = () => fixture.store.getState().workspaces.find((item: any) => item.id === workspace.id)!;
+    expect(
+      (
+        await call("automation_set_enabled", {
+          workspaceId: workspace.id,
+          expectedUpdatedAt: current().automation!.updatedAt,
+          enabled: true,
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await call("automation_set_enabled", {
+          workspaceId: workspace.id,
+          expectedUpdatedAt: current().automation!.updatedAt,
+          enabled: false,
+        })
+      ).status,
+    ).toBe(200);
+    expect(mobile).not.toHaveBeenCalledWith(expect.objectContaining({ title: "Automation disabled", kind: "error" }));
+    expect(fixture.runtime.getPayload().automations.recentAgentChanges?.at(-1)).toMatchObject({
+      workspaceId: workspace.id,
+      action: "disabled",
+    });
+    const deleted = await call("automation_delete", { workspaceId: workspace.id });
+    expect(deleted.status).toBe(200);
+    expect(fixture.store.getState().workspaces.some((item: any) => item.id === workspace.id)).toBe(false);
+    expect(fixture.runtime.getPayload().automations.recentAgentChanges?.at(-1)?.action).toBe("deleted");
+  });
+
+  test("an automation agent inherits Jira and SSH access and loses both real broker grants when its parent revokes them", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({
+      workspaces: [parentWorkspace(repo, { jiraMcpEnabled: true, sshMcpEnabled: true })],
+      enableAgentSshMcp: true,
+    });
+    const definition = {
+      enabled: true,
+      trigger: { type: "schedule", kind: "interval", everyMinutes: 30, anchor: "2026-01-01T00:00:00Z" },
+      executor: { type: "agent", agent: { providerId: "claude", model: "", skipPermissions: false } },
+      prompt: "work",
+      location: "automation",
+      policy: { maxRunMinutes: 60, catchUp: "skip", maxRunsPerHour: 6, subjectCooldownMinutes: 10 },
+    };
+    const parentCall = brokerClient(launchAgent(fixture).launch);
+    const agentCreated = await parentCall("automation_create", {
+      name: "Agent job",
+      definition,
+      idempotencyKey: "agent-inheritance-1",
+    });
+    expect(agentCreated.status).toBe(200);
+    const agentWorkspace = fixture.store
+      .getState()
+      .workspaces.find((item: any) => item.id === agentCreated.result.workspaceId)!;
+    expect(agentWorkspace).toMatchObject({ jiraMcpEnabled: true, sshMcpEnabled: true });
+    const { workspaceId } = await fixture.runtime.createAutomation(
+      { parentWorkspaceId: "parent", name: "Job", definition },
+      "remote:sess-1",
+    );
+    if (!workspaceId) throw new Error("Expected an automation workspace");
+    const workspace = fixture.store.getState().workspaces.find((item: any) => item.id === workspaceId)!;
+    expect(workspace).toMatchObject({ jiraMcpEnabled: true, sshMcpEnabled: true });
+    const panel = workspace.panels.find((item: any) => item.command !== "__automation-dashboard__")!;
+    const { runId } = await fixture.runtime.runAutomationNow({ workspaceId, idempotencyKey: "broker-running-test" });
+    const journalPath = path.join(fixture.userDataPath, "automations", `${workspaceId}.json`);
+    await vi.waitFor(async () => {
+      const journal = JSON.parse(await fs.readFile(journalPath, "utf8"));
+      expect(journal.runs.find((item: { runId: string }) => item.runId === runId)?.state).toBe("running");
+    });
+    const { launch } = launchAgent(fixture, workspaceId, panel.id);
+    expect(launch.env).toMatchObject({
+      STRIDETERM_INTERNAL_MCP_TASKS_ENABLED: "0",
+      STRIDETERM_INTERNAL_MCP_JIRA_ENABLED: "1",
+    });
+    const call = brokerClient(launch);
+    const sshRequest = () =>
+      fetch(launch.env!.STRIDETERM_SSH_MCP_URL, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${launch.env!.STRIDETERM_SSH_MCP_CAPABILITY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ operation: "list" }),
+      });
+    expect((await sshRequest()).status).toBe(200);
+    expect((await call("jira_list_connections", {})).status).toBe(200);
+    expect((await call("task_list", {})).status).toBe(403);
+    const parent = fixture.store.getState().workspaces.find((item: any) => item.id === "parent")!;
+    await fixture.runtime.saveWorkspace({ ...parent, jiraMcpEnabled: false, sshMcpEnabled: false });
+    expect((await call("jira_list_connections", {})).status).toBe(401);
+    expect((await sshRequest()).status).toBe(401);
+    const current = fixture.store.getState().workspaces.find((item: any) => item.id === workspaceId)!;
+    expect(current).toMatchObject({ jiraMcpEnabled: false, sshMcpEnabled: false });
+    await expect(
+      fixture.runtime.updateAutomation(
+        { workspaceId, expectedUpdatedAt: current.automation!.updatedAt, definition, jiraMcpEnabled: true },
+        "remote:sess-1",
+      ),
+    ).rejects.toThrow("Parent has not enabled Jira");
+    await fixture.runtime.stopAutomationRun({ workspaceId, runId });
+  });
+
+  test("remote HTTP automation creation inherits parent grants and cannot re-enable revoked grants", async () => {
+    const repo = await createRepo();
+    const port = await new Promise<number>((resolve, reject) => {
+      const socket = net.createServer();
+      socket.once("error", reject);
+      socket.listen(0, "127.0.0.1", () => {
+        const address = socket.address();
+        if (!address || typeof address === "string") return reject(new Error("Expected TCP address"));
+        const value = address.port;
+        socket.close(() => resolve(value));
+      });
+    });
+    const token = "automation-http-test-token";
+    const fixture = await createMcpFixture({
+      workspaces: [parentWorkspace(repo, { jiraMcpEnabled: true, sshMcpEnabled: true })],
+      settings: { remoteAccess: { enabled: true, host: "127.0.0.1", port, token } },
+    });
+    const server = await startRemoteServer({
+      runtime: fixture.runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    const definition = {
+      enabled: false,
+      trigger: { type: "schedule", kind: "interval", everyMinutes: 30, anchor: "2026-01-01T00:00:00Z" },
+      executor: { type: "agent", agent: { providerId: "claude", model: "", skipPermissions: false } },
+      prompt: "work",
+      location: "automation",
+      policy: { maxRunMinutes: 60, catchUp: "skip", maxRunsPerHour: 6, subjectCooldownMinutes: 10 },
+    };
+    const post = (route: string, body: unknown) =>
+      fetch(`http://127.0.0.1:${port}${route}`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "X-Strideterm-Client-Id": "automation-http-client",
+        },
+        body: JSON.stringify(body),
+      });
+    try {
+      const response = await post("/api/automation/create", {
+        parentWorkspaceId: "parent",
+        name: "Remote",
+        definition,
+      });
+      expect(response.status).toBe(200);
+      const { workspaceId } = (await response.json()) as { workspaceId: string };
+      const current = () => fixture.store.getState().workspaces.find((item: any) => item.id === workspaceId)!;
+      expect(current()).toMatchObject({ jiraMcpEnabled: true, sshMcpEnabled: true });
+      const parent = fixture.store.getState().workspaces.find((item: any) => item.id === "parent")!;
+      await fixture.runtime.saveWorkspace({ ...parent, jiraMcpEnabled: false, sshMcpEnabled: false });
+      const denied = await post("/api/automation/update", {
+        workspaceId,
+        expectedUpdatedAt: current().automation!.updatedAt,
+        definition,
+        jiraMcpEnabled: true,
+        sshMcpEnabled: true,
+      });
+      expect(denied.status).toBeGreaterThanOrEqual(400);
+      expect(current()).toMatchObject({ jiraMcpEnabled: false, sshMcpEnabled: false });
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("internal MCP provisions an automation worktree using the agent grant", async () => {
+    const repo = await createRepo();
+    const fixture = await createMcpFixture({ workspaces: [parentWorkspace(repo)] });
+    const { launch, sessionId } = launchAgent(fixture);
+    const call = brokerClient(launch);
+    const request = {
+      name: "Isolated checkout",
+      idempotencyKey: "worktree-create-001",
+      checkout: { mode: "worktree", branch: "automation-test" },
+      definition: {
+        enabled: false,
+        trigger: { type: "schedule", kind: "interval", everyMinutes: 30, anchor: "2026-01-01T00:00:00Z" },
+        executor: { type: "agent", agent: { providerId: "claude", model: "", skipPermissions: true } },
+        prompt: "work",
+        location: "automation",
+        policy: { maxRunMinutes: 60, catchUp: "skip", maxRunsPerHour: 6, subjectCooldownMinutes: 10 },
+      },
+    };
+    const accepted = await call("automation_create", request);
+    expect(accepted.status).toBe(200);
+    const retry = await call("automation_create", request);
+    expect(retry.result.operationId).toBe(accepted.result.operationId);
+    const operation = await waitForOperation(call, accepted.result.operationId);
+    expect(operation.status).toBe("succeeded");
+    const workspace = fixture.store
+      .getState()
+      .workspaces.find((item: any) => item.id === operation.result.workspaceId)!;
+    expect(workspace.automation).toMatchObject({
+      createdBy: { kind: "agent", sessionId },
+      executor: { agent: { skipPermissions: false } },
+    });
+    expect(workspace.cwd).not.toBe(repo);
+    expect(await fs.realpath(workspace.cwd)).toBe(workspace.cwd);
+  });
 
   test("internal MCP creates and controls a companion attached to its granted source panel", async () => {
     const repo = await createRepo();

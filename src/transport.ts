@@ -1,3 +1,8 @@
+import {
+  AUTOMATION_RUN_FINISHED_CHANNEL,
+  automationRunFinishedSchema,
+  type AutomationRunFinished,
+} from "../electron/shared/automation-events-channel.js";
 import type {
   StridetermAPI,
   StatePayload,
@@ -312,6 +317,7 @@ interface EventHub {
   approvalRecorded: Set<Handler<ApprovalRecorded>>;
   azureClosedPrCleanupFinished: Set<Handler<AzureClosedPrCleanupFinished>>;
   operationFinished: Set<Handler<OperationFinished>>;
+  automationRunFinished: Set<Handler<AutomationRunFinished>>;
   reviewGitOperation: Set<Handler<ReviewGitOperationEvent>>;
   sshFileTransferProgress: Set<Handler<SshFileTransferProgress>>;
   sshFileTransferFinished: Set<Handler<SshFileTransferFinished>>;
@@ -612,6 +618,7 @@ export interface Transport extends Partial<
   onAzureClosedPrCleanupFinished: (handler: Handler<AzureClosedPrCleanupFinished>) => void;
   /** A long-running runtime operation finished (result or error). Validated at this boundary. */
   onOperationFinished: (handler: Handler<OperationFinished>) => () => void;
+  onAutomationRunFinished: (handler: Handler<AutomationRunFinished>) => () => void;
   /** A review Git operation ended (result or error). Validated at this boundary. */
   onReviewGitOperation: (handler: Handler<ReviewGitOperationEvent>) => void;
   /** Throttled progress of an SSH file transfer. Validated at this boundary. */
@@ -667,6 +674,7 @@ function createEventHub(): EventHub {
     approvalRecorded: new Set(),
     azureClosedPrCleanupFinished: new Set(),
     operationFinished: new Set(),
+    automationRunFinished: new Set(),
     reviewGitOperation: new Set(),
     sshFileTransferProgress: new Set(),
     sshFileTransferFinished: new Set(),
@@ -791,6 +799,12 @@ function bindElectronTransport(): Transport {
           return;
         }
         handler(parsed.data);
+      });
+    },
+    onAutomationRunFinished: (handler: Handler<AutomationRunFinished>) => {
+      return window.strideterm.onAutomationRunFinished((payload) => {
+        const parsed = automationRunFinishedSchema.safeParse(payload);
+        if (parsed.success) handler(parsed.data);
       });
     },
     onOperationFinished: (handler: Handler<OperationFinished>) => {
@@ -1472,6 +1486,10 @@ export function createRemoteTransport(): Transport {
       } else {
         rlog("warn", "azure:closed-pr-cleanup:finished ignored: malformed payload");
       }
+    }
+    if (message.type === AUTOMATION_RUN_FINISHED_CHANNEL) {
+      const parsed = automationRunFinishedSchema.safeParse(message.payload);
+      if (parsed.success) safeDispatch(listeners.automationRunFinished, parsed.data, "automationRunFinished");
     }
     if (message.type === OPERATION_FINISHED_CHANNEL) {
       const parsed = operationFinishedSchema.safeParse(message.payload);
@@ -2671,6 +2689,16 @@ export function createRemoteTransport(): Transport {
     getOpencodeHookStatus: () => fetchJson("/api/opencode-hook/status", {}),
     testOpencodeHook: () => fetchJson("/api/opencode-hook/test", {}),
     checkCommand: (command) => fetchJson("/api/check-command", { command }),
+    createAutomation: (payload) => fetchJson("/api/automation/create", payload),
+    updateAutomation: (payload) => fetchJson("/api/automation/update", payload),
+    setAutomationEnabled: (payload) => fetchJson("/api/automation/set-enabled", payload),
+    runAutomationNow: (payload) => fetchJson("/api/automation/run-now", payload),
+    stopAutomationRun: (payload) => fetchJson("/api/automation/stop-run", payload),
+    listAutomationRuns: (payload) => fetchJson("/api/automation/runs", payload),
+    deleteAutomationRuns: (payload) =>
+      fetchJson("/api/automation/delete-runs", payload) as Promise<{ deleted: number }>,
+    getAutomationRunResult: (payload) => fetchJson("/api/automation/run-result", payload),
+    setAutomationsPaused: (payload) => fetchJson("/api/automation/set-paused", payload),
     // Task runner
     recheckClaude: () => fetchJson("/api/task/recheck-claude", {}),
     checkProviders: () => fetchJson("/api/task/check-providers", {}),
@@ -3158,6 +3186,12 @@ export function createRemoteTransport(): Transport {
     },
     onAzureClosedPrCleanupFinished: (handler: Handler<AzureClosedPrCleanupFinished>) => {
       listeners.azureClosedPrCleanupFinished.add(handler);
+    },
+    onAutomationRunFinished: (handler: Handler<AutomationRunFinished>) => {
+      listeners.automationRunFinished.add(handler);
+      return () => {
+        listeners.automationRunFinished.delete(handler);
+      };
     },
     onOperationFinished: (handler: Handler<OperationFinished>) => {
       listeners.operationFinished.add(handler);

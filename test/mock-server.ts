@@ -377,7 +377,21 @@ export async function startMockServer({
           broadcastState();
         }
 
-        // Settings update — merge into settings
+        // Session activation — preserve the requested agent view in the returned snapshot.
+        if (url.pathname.endsWith("/session/activate") && body.workspaceId && body.sessionId) {
+          const workspace = findWorkspace(payload, String(body.workspaceId));
+          const panel = workspace?.panels?.find(
+            (item: { id: string }) => `${workspace.id}:${item.id}` === body.sessionId,
+          );
+          if (panel) {
+            workspace.activePanelId = panel.id;
+            workspace.activeViewId = body.sessionId;
+            setActiveWorkspace(payload, workspace.id);
+            if (payload.remoteClient) payload.remoteClient.activeSessionId = body.sessionId;
+            broadcastState();
+          }
+        }
+
         // Workspace save — replace the stored workspace and rebuild the active view's sessions
         if (url.pathname.endsWith("/workspace/save") && body.workspace?.id) {
           const list = payload.appState.workspaces;

@@ -80,6 +80,7 @@ function baseProps(overrides: Record<string, any> = {}) {
 }
 
 beforeEach(() => {
+  window.localStorage.clear();
   setActivePinia(createPinia());
   // The notification store persists its threads; each no-tab error has its own thread, so a previous test's
   // failure would otherwise still be listed here.

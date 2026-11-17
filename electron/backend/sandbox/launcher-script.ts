@@ -157,8 +157,17 @@ for (const item of cfg.confinedMirrors || []) {
     }
     if (!stat) fs.mkdirSync(dir, { mode: 0o700 });
     else if (!stat.isDirectory()) throw new Error(dir + " is not a plain folder");
+    // A linked SQLite DB resolves WAL/SHM beside the host DB, outside the grant.
+    // Leave these databases sandbox-owned; migrate only old links, never host or local data.
+    const localSqlite = (name) => item.localSqlite && /\.sqlite(?:-(?:wal|shm|journal))?$/.test(name);
+    for (const name of fs.readdirSync(dir)) {
+      if (!localSqlite(name)) continue;
+      const entry = path.join(dir, name);
+      if (fs.lstatSync(entry).isSymbolicLink()) fs.unlinkSync(entry);
+    }
     for (const name of fs.readdirSync(source)) {
       if ((item.exclude || []).includes(name)) continue;
+      if (localSqlite(name)) continue;
       const real = path.join(source, name);
       if (fs.lstatSync(real).isSymbolicLink()) continue;
       const link = path.join(dir, name);
@@ -243,6 +252,13 @@ const TRUSTED_HOOK_COMMAND = /^node "([^"\x60$;&|<>\n\r]*\/hooks\/notify\.mjs)" 
 function isTrustedHookCommand(value) {
   return typeof value === "string" && TRUSTED_HOOK_COMMAND.test(value.replace(/\\/g, "/"));
 }
+function currentHookCommand(value) {
+  const match = TRUSTED_HOOK_COMMAND.exec(value.replace(/\\/g, "/"));
+  if (!match || !cfg.notifyScript) return value;
+  const current = 'node "' + cfg.notifyScript + '" ' + match[2];
+  if (!isTrustedHookCommand(current)) throw new Error("invalid notification script path");
+  return current;
+}
 function filterTrustedHooks(hooks) {
   if (!hooks || typeof hooks !== "object" || Array.isArray(hooks)) return null;
   const out = {};
@@ -270,7 +286,8 @@ function pickHook(hook) {
   for (const key of ["type", "command", "bash", "powershell", "timeout", "timeoutSec", "name"]) {
     if (hook[key] === undefined) continue;
     if (["command", "bash", "powershell"].includes(key) && !isTrustedHookCommand(hook[key])) continue;
-    if (typeof hook[key] === "string" || typeof hook[key] === "number") out[key] = hook[key];
+    if (typeof hook[key] === "string" || typeof hook[key] === "number")
+      out[key] = ["command", "bash", "powershell"].includes(key) ? currentHookCommand(hook[key]) : hook[key];
   }
   return out;
 }

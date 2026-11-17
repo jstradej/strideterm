@@ -24,6 +24,8 @@ To isolate every new workspace, turn on **Settings → General → Agent isolati
 
 A task created in an isolated workspace is isolated too. In a workspace that is not, tick **Run in isolation** when you create the task.
 
+[Automations](automations.md) inherit isolation from their parent and can add isolation. Their unattended agents can encounter the same one-time directory trust and network permission prompts as other isolated agents.
+
 ### Shell tabs
 
 A shell tab in an isolated workspace can run isolated as well: tick **Run this shell isolated** in the tab's settings. Use it for builds and scripts; start agents in their own agent tabs.

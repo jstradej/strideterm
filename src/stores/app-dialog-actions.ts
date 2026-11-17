@@ -1076,6 +1076,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
             const parent = workspaces.find(
               (ws: AnyApi) =>
                 ws.kind !== "task" &&
+                ws.kind !== "automation" &&
                 (ws.profileId || "default") === activeProfileId &&
                 (ws.cwd || "")
                   .replace(/[\\/]+$/, "")

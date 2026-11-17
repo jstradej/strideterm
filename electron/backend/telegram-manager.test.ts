@@ -1060,6 +1060,25 @@ describe("forwardAlert", () => {
     expect(calledWith).toEqual(["tg-1", "tg-2"]);
   });
 
+  test("requires an explicit automation opt-in while new all-alert connections receive it", async () => {
+    const cred = makeCredentialStore({ "cred:old": "tok1", "cred:new": "tok2" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([
+      makeConnection({ id: "old", botTokenRef: "cred:old", forwardKinds: [] }),
+      makeConnection({ id: "new", botTokenRef: "cred:new", forwardKinds: ["*", "automation"] }),
+    ]);
+    const delivered: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._sendAlertToConnection = async (conn: TelegramConnectionConfig) => {
+      delivered.push(conn.id);
+    };
+    await manager.forwardAlert({ workspaceId: "ws", panelId: "", kind: "automation", title: "Done" });
+    expect(delivered).toEqual(["new"]);
+    delivered.length = 0;
+    await manager.forwardAlert({ workspaceId: "ws", panelId: "", kind: "info", title: "Info" });
+    expect(delivered).toEqual(["old", "new"]);
+  });
+
   test("skips connection when no connections configured", async () => {
     const cred = makeCredentialStore({});
     const manager = new TelegramManager({ credentialStore: cred });

@@ -227,11 +227,13 @@ export function createReviewBridgeMcpHandlers({
   prKey,
   workspaceId,
   draftOnly = false,
+  automationRunId = "",
 }: {
   store: ReviewBridgeStore;
   prKey?: string;
   workspaceId?: string;
   draftOnly?: boolean;
+  automationRunId?: string;
 }) {
   const keySpec: KeySpec = { prKey, workspaceId };
   return {
@@ -276,7 +278,7 @@ export function createReviewBridgeMcpHandlers({
         filePath,
         lineNumber,
         priority,
-        authorAgent,
+        authorAgent: automationRunId ? `automation:${automationRunId}` : authorAgent,
         autoQueue: !draftOnly,
       });
       const latestComment =
@@ -454,6 +456,7 @@ export interface ReviewBridgeMcpMode {
   checkoutPath?: string;
   expectedHead?: string;
   baseCommit?: string;
+  automationRunId?: string;
 }
 
 export function registerBasicReviewChangesTool(
@@ -591,6 +594,7 @@ export function parseReviewBridgeMcpArgs(argv: string[] = process.argv.slice(1))
     checkoutPath: readFlag("--review-checkout"),
     expectedHead: readFlag("--review-head"),
     baseCommit: readFlag("--review-base"),
+    ...(readFlag("--review-automation-run-id") ? { automationRunId: readFlag("--review-automation-run-id") } : {}),
   };
 }
 
@@ -602,6 +606,7 @@ export async function runReviewBridgeMcpServer({
   checkoutPath,
   expectedHead,
   baseCommit,
+  automationRunId,
 }: ReviewBridgeMcpMode): Promise<void> {
   if (!rootPath) {
     throw new Error("Missing --review-root for review bridge MCP mode.");
@@ -609,6 +614,8 @@ export async function runReviewBridgeMcpServer({
   if (!prKey && !workspaceId) {
     throw new Error("Missing --review-pr-key or --review-workspace-id for review bridge MCP mode.");
   }
+  if (automationRunId && (!draftOnly || !/^[0-9a-f-]{36}$/iu.test(automationRunId)))
+    throw new Error("Invalid automation review identity.");
   if (
     draftOnly &&
     (!checkoutPath ||
@@ -622,7 +629,7 @@ export async function runReviewBridgeMcpServer({
 
   const store = await createReviewBridgeStore(rootPath);
   const keySpec: KeySpec = { prKey, workspaceId };
-  const handlers = createReviewBridgeMcpHandlers({ store, prKey, workspaceId, draftOnly });
+  const handlers = createReviewBridgeMcpHandlers({ store, prKey, workspaceId, draftOnly, automationRunId });
   const server = new McpServer(
     {
       name: "strideterm-review-bridge",

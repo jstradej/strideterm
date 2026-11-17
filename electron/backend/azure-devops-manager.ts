@@ -26,6 +26,8 @@ import type {
 } from "../shared/review-pr-actions.js";
 import { classifyAzureRequest, parseAzureUrl } from "./azure-audit-log-store.js";
 import { buildPullRequestSummary, findWorkspaceForPullRequest } from "./azure-devops-pr-summary.js";
+import type { AutomationPrReference } from "./automations/automation-pr-closure.js";
+import type { AutomationEvent } from "../shared/automation-events.js";
 import type { AzureAttentionReason, AzureMyReviewStatus, AzureReviewerVia } from "./azure-devops-attention.js";
 import type { PipelineRunFacts } from "./pipeline-agent-files.js";
 import { isAzureCommentByCurrentUser } from "./azure-comment-identity.js";
@@ -316,6 +318,11 @@ interface AzureManagerOptions {
   fetchImpl?: typeof globalThis.fetch;
   execFileTextImpl?: typeof execFileText;
   now?: () => number;
+  onReviewActivity?: ConstructorParameters<typeof BaseProviderManager>[0]["onReviewActivity"];
+  onAutomationChecks?: (summary: Record<string, unknown>, detectedAt: string) => void;
+  wantsAutomationChecks?: (summary: Record<string, unknown>) => boolean;
+  wantsAutomationClosure?: (reference: AutomationPrReference) => boolean;
+  onAutomationClosure?: (event: AutomationEvent) => Promise<void>;
 }
 
 interface AuditRaw {
@@ -339,6 +346,11 @@ interface GroupMembershipCacheEntry {
 type AzureApi = ReturnType<typeof createAzureApi>;
 
 export class AzureDevOpsManager extends BaseProviderManager {
+  private readonly onAutomationChecks?: AzureManagerOptions["onAutomationChecks"];
+  private readonly wantsAutomationChecks: NonNullable<AzureManagerOptions["wantsAutomationChecks"]>;
+  private automationCheckCursor = "";
+  private readonly wantsAutomationClosure?: AzureManagerOptions["wantsAutomationClosure"];
+  private readonly onAutomationClosure?: AzureManagerOptions["onAutomationClosure"];
   declare reviewStore: AzureReviewStore;
   declare reviewBridgeStore: AzureReviewBridgeStore | null;
   declare auditLogStore: AzureAuditLogStore | null;
@@ -778,6 +790,11 @@ export class AzureDevOpsManager extends BaseProviderManager {
       fetchImpl = globalThis.fetch,
       execFileTextImpl = execFileText,
       now = () => Date.now(),
+      onReviewActivity,
+      onAutomationChecks,
+      wantsAutomationChecks = () => false,
+      wantsAutomationClosure,
+      onAutomationClosure,
     }: AzureManagerOptions = {} as AzureManagerOptions,
   ) {
     super({
@@ -788,10 +805,15 @@ export class AzureDevOpsManager extends BaseProviderManager {
       fetchImpl,
       execFileTextImpl,
       now,
+      onReviewActivity,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       createApi: createAzureApi as any,
     });
     this.providerLabel = "azure-devops";
+    this.onAutomationChecks = onAutomationChecks;
+    this.wantsAutomationChecks = wantsAutomationChecks;
+    this.wantsAutomationClosure = wantsAutomationClosure;
+    this.onAutomationClosure = onAutomationClosure;
     this.defaultGitLogin = "";
     this.connectionNotFoundMessage = "Azure DevOps connection was not found.";
     this.syncErrorFallbackMessage = "Azure sync failed.";
@@ -1677,15 +1699,34 @@ export class AzureDevOpsManager extends BaseProviderManager {
     gitSnapshots = {} as Record<string, unknown>,
     activeProfileId = "default",
   } = {}) {
-    return this.syncCore(
+    let remainingAutomationCheckFetches = 20;
+    let skipThroughCursor = Boolean(this.automationCheckCursor);
+    let lastCheckedKey = "";
+    const snapshot = await this.syncCore(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       { connections: connections as any, workspaces, gitSnapshots, activeProfileId },
       {
+        wantsAutomationClosure: this.wantsAutomationClosure,
+        onAutomationClosure: this.onAutomationClosure,
         createConnectionSnapshot: (connection, persistedState) =>
           createConnectionSnapshot(connection as unknown as AzureConnection, persistedState),
         fetchConnectionPrs: (connection, token, ctx) =>
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          this._fetchAzureConnectionPrs(connection as unknown as AzureConnection, token, ctx as any),
+          this._fetchAzureConnectionPrs(connection as unknown as AzureConnection, token, {
+            ...ctx,
+            takeAutomationChecks: (summary: Record<string, unknown>) => {
+              if (!this.wantsAutomationChecks(summary)) return false;
+              const key = String(summary.prKey || "");
+              if (skipThroughCursor) {
+                if (key === this.automationCheckCursor) skipThroughCursor = false;
+                return false;
+              }
+              if (remainingAutomationCheckFetches <= 0) return false;
+              remainingAutomationCheckFetches -= 1;
+              lastCheckedKey = key;
+              return true;
+            },
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          } as any),
         isPrResolved: (existing) => (existing as AzurePrSummary | undefined)?.pullRequest?.status !== "active",
         resolveStalePr: (ws, existing, conn, token) =>
           this._resolveStaleAzurePr(
@@ -1697,6 +1738,8 @@ export class AzureDevOpsManager extends BaseProviderManager {
           ),
       },
     );
+    this.automationCheckCursor = remainingAutomationCheckFetches === 0 ? lastCheckedKey : "";
+    return snapshot;
   }
 
   /**
@@ -1719,6 +1762,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
       detailMap: Record<string, AzurePrSummary>;
       newActivityEvents: unknown[];
       connectionSnapshot?: Record<string, unknown>;
+      takeAutomationChecks?: (summary: Record<string, unknown>) => boolean;
     },
   ): Promise<void> {
     const {
@@ -1784,6 +1828,32 @@ export class AzureDevOpsManager extends BaseProviderManager {
           now: this.now,
         });
         const typedSummary = summary as AzurePrSummary;
+        if (ctx.takeAutomationChecks?.(typedSummary as unknown as Record<string, unknown>)) {
+          try {
+            const [statuses, policyEvaluations] = await Promise.all([
+              this.azureApi.listPullRequestStatuses(
+                connection,
+                token,
+                project.name,
+                pr.repository.id,
+                pr.pullRequestId,
+              ),
+              this.azureApi.listPolicyEvaluations(connection, token, project.name, project.id, pr.pullRequestId),
+            ]);
+            typedSummary.checks = buildCheckSummary({
+              statuses: statuses as NonNullable<Parameters<typeof buildCheckSummary>[0]>["statuses"],
+              policyEvaluations: policyEvaluations as NonNullable<
+                Parameters<typeof buildCheckSummary>[0]
+              >["policyEvaluations"],
+            }) as AzurePrSummary["checks"];
+            this.onAutomationChecks?.(
+              typedSummary as unknown as Record<string, unknown>,
+              new Date(this.now()).toISOString(),
+            );
+          } catch (error) {
+            this.log.warn("automation check polling failed", { prKey, err: (error as Error).message || String(error) });
+          }
+        }
         const typedInternals = internals as Record<string, unknown>;
         visibleSummaries.push(typedSummary);
 
@@ -1893,7 +1963,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
         pullRequest: {
           ...((existing?.pullRequest || ws.review!.pullRequest || {}) as AzurePrSummary["pullRequest"]),
           id: existing?.pullRequest?.id || ws.review!.pullRequest?.id || "",
-          status: "completed",
+          status: (ws.review as { automationProbe?: boolean }).automationProbe ? "abandoned" : "completed",
         },
       };
     }
@@ -1923,12 +1993,12 @@ export class AzureDevOpsManager extends BaseProviderManager {
     internals: Record<string, unknown>;
     currentUserId: string | null;
     seedingConnection: boolean;
-  }): { events: unknown[]; lastNotifiedActivityAt: string | null } {
+  }): { events: import("./shared/review-activity.js").ReviewActivityEvent[]; lastNotifiedActivityAt: string | null } {
     // Cast to the ReviewSummaryRef shape expected by buildReviewActivityEvent
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const summary = summaryIn as any;
     const nowIso = new Date(this.now()).toISOString();
-    const events: unknown[] = [];
+    const events: import("./shared/review-activity.js").ReviewActivityEvent[] = [];
 
     if (seedingConnection) {
       return {
@@ -2280,6 +2350,8 @@ export class AzureDevOpsManager extends BaseProviderManager {
           ? (workspace as ReviewWorkspace).id
           : current.reviewWorkspaceId || "",
     };
+
+    this.onAutomationChecks?.(next as unknown as Record<string, unknown>, new Date(this.now()).toISOString());
 
     this.setSnapshot({
       ...this.snapshot,

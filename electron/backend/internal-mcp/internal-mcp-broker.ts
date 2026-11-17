@@ -2,10 +2,17 @@ import { randomBytes } from "node:crypto";
 import type http from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { bearerCapability, listenOnLoopback, readJsonBody, sendJson } from "../loopback-broker-http.js";
-import { INTERNAL_MCP_ROUTE, internalMcpRequestSchema, type InternalMcpErrorCode } from "../../shared/internal-mcp.js";
+import {
+  INTERNAL_MCP_ROUTE,
+  internalMcpRequestSchema,
+  type InternalMcpErrorCode,
+  type InternalMcpAutomationCreateInput,
+} from "../../shared/internal-mcp.js";
 import { InternalMcpError } from "./errors.js";
 import { jiraMcpCallSucceeded, jiraUnavailableError } from "./jira-mcp-errors.js";
 import type { InternalMcpScope, TaskService } from "./task-service.js";
+import type { AutomationSetEnabledInput, AutomationUpdateInput } from "../../shared/automation-api.js";
+import { scheduleTriggerSchema } from "../../shared/automation.js";
 
 const MAX_BODY_BYTES = 6 * 1024 * 1024;
 const BODY_TIMEOUT_MS = 10_000;
@@ -34,8 +41,37 @@ export interface InternalMcpBrokerOptions {
     | "companionAnswer"
   >;
   jira?: JiraInternalMcpApi;
+  automation?: AutomationInternalMcpApi;
   isGrantLive: (_grant: Readonly<InternalMcpGrantContext>) => boolean | Promise<boolean>;
   onError?: (message: string, details: Record<string, unknown>) => void;
+}
+
+export interface AutomationInternalMcpApi {
+  catalog(scope: InternalMcpScope): Promise<unknown>;
+  list(scope: InternalMcpScope): Promise<unknown>;
+  get(scope: InternalMcpScope, workspaceId: string): Promise<unknown>;
+  create(
+    grant: InternalMcpGrantContext,
+    input: InternalMcpAutomationCreateInput,
+    assertGrant: () => void,
+  ): Promise<unknown>;
+  delete(grant: InternalMcpGrantContext, workspaceId: string, assertGrant: () => void): Promise<unknown>;
+  update(grant: InternalMcpGrantContext, input: AutomationUpdateInput, assertGrant: () => void): Promise<unknown>;
+  setEnabled(
+    grant: InternalMcpGrantContext,
+    input: AutomationSetEnabledInput,
+    assertGrant: () => void,
+  ): Promise<unknown>;
+  runNow(
+    scope: InternalMcpScope,
+    input: { workspaceId: string; idempotencyKey: string },
+    assertGrant: () => void,
+  ): Promise<unknown>;
+  stopRun(
+    scope: InternalMcpScope,
+    input: { workspaceId: string; runId: string },
+    assertGrant: () => void,
+  ): Promise<unknown>;
 }
 
 export interface JiraInternalMcpApi {
@@ -84,6 +120,9 @@ const STATUS_BY_CODE: Record<InternalMcpErrorCode, number> = {
   scope_denied: 403,
   workspace_not_found: 404,
   task_not_found: 404,
+  automation_not_found: 404,
+  automation_limit_reached: 409,
+  invalid_schedule: 422,
   operation_not_found: 404,
   preparation_not_found: 404,
   checkout_conflict: 409,
@@ -113,7 +152,13 @@ const GRANT_EXPIRED = {
   },
 };
 
-export function createInternalMcpBroker({ service, jira: jiraApi, isGrantLive, onError }: InternalMcpBrokerOptions) {
+export function createInternalMcpBroker({
+  service,
+  jira: jiraApi,
+  automation,
+  isGrantLive,
+  onError,
+}: InternalMcpBrokerOptions) {
   const grants = new Map<string, GrantRecord>();
   let server: http.Server | null = null;
   let endpoint = "";
@@ -141,7 +186,17 @@ export function createInternalMcpBroker({ service, jira: jiraApi, isGrantLive, o
 
   async function dispatch(grant: GrantRecord, raw: unknown): Promise<unknown> {
     const parsed = internalMcpRequestSchema.safeParse(raw);
-    if (!parsed.success) throw new InternalMcpError("invalid_request", "Invalid internal MCP request.");
+    if (!parsed.success) {
+      const request = raw as { operation?: unknown; input?: { definition?: { trigger?: { type?: unknown } } } } | null;
+      const trigger = request?.input?.definition?.trigger;
+      if (
+        (request?.operation === "automation_create" || request?.operation === "automation_update") &&
+        trigger?.type === "schedule" &&
+        !scheduleTriggerSchema.safeParse(trigger).success
+      )
+        throw new InternalMcpError("invalid_schedule", "The automation schedule is invalid.");
+      throw new InternalMcpError("invalid_request", "Invalid internal MCP request.");
+    }
     // The profile and workspace come from the grant. Nothing in the request can change them.
     const scope: InternalMcpScope = { profileId: grant.context.profileId, workspaceId: grant.context.workspaceId };
     const request = parsed.data;
@@ -183,6 +238,47 @@ export function createInternalMcpBroker({ service, jira: jiraApi, isGrantLive, o
         if (!grant.context.tasksEnabled)
           throw new InternalMcpError("scope_denied", "Task tools are not enabled for this workspace.");
         return service.taskGet(scope, request.input);
+      case "automation_event_catalog":
+      case "automation_list":
+      case "automation_get":
+      case "automation_create":
+      case "automation_delete":
+      case "automation_update":
+      case "automation_set_enabled":
+      case "automation_run_now":
+      case "automation_stop_run":
+        if (!grant.context.tasksEnabled)
+          throw new InternalMcpError("scope_denied", "Automation tools are not enabled for this workspace.");
+        if (!automation) throw new InternalMcpError("internal_error", "Automation tools are unavailable.");
+        if (request.operation === "automation_event_catalog") return automation.catalog(scope);
+        if (request.operation === "automation_list") return automation.list(scope);
+        if (
+          [
+            "automation_run_now",
+            "automation_stop_run",
+            "automation_update",
+            "automation_set_enabled",
+            "automation_create",
+            "automation_delete",
+          ].includes(request.operation)
+        ) {
+          const assertGrant = () => {
+            if (![...grants.values()].includes(grant))
+              throw new InternalMcpError("scope_denied", "Automation grant has expired.");
+          };
+          if (request.operation === "automation_run_now") return automation.runNow(scope, request.input, assertGrant);
+          if (request.operation === "automation_stop_run") return automation.stopRun(scope, request.input, assertGrant);
+          if (request.operation === "automation_update")
+            return automation.update(grant.context, request.input, assertGrant);
+          if (request.operation === "automation_set_enabled")
+            return automation.setEnabled(grant.context, request.input, assertGrant);
+          if (request.operation === "automation_create")
+            return automation.create(grant.context, request.input, assertGrant);
+          if (request.operation === "automation_delete")
+            return automation.delete(grant.context, request.input.workspaceId, assertGrant);
+        }
+        if (request.operation === "automation_get") return automation.get(scope, request.input.workspaceId);
+        throw new InternalMcpError("invalid_request", "Invalid automation request.");
       case "companion_create":
         if (!grant.context.tasksEnabled)
           throw new InternalMcpError("scope_denied", "Task tools are not enabled for this workspace.");

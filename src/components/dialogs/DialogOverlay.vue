@@ -34,6 +34,7 @@ import { useSshStore } from "../../stores/ssh.js";
 
 const DIALOGS = {
   TextInputDialog: defineAsyncComponent(() => import("./TextInputDialog.vue")),
+  AutomationDialog: defineAsyncComponent(() => import("./AutomationDialog.vue")),
   WorktreeDialog: defineAsyncComponent(() => import("./WorktreeDialog.vue")),
   TextAreaDialog: defineAsyncComponent(() => import("./TextAreaDialog.vue")),
   EditTabDialog: defineAsyncComponent(() => import("./EditTabDialog.vue")),

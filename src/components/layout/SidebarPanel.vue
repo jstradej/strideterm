@@ -227,7 +227,7 @@
         &#x1FA84; New branch
       </button>
       <button
-        v-if="wsMenu.ws.gitAvailable"
+        v-if="wsMenu.ws.gitAvailable && wsMenu.ws.kind !== 'automation'"
         type="button"
         class="context-menu__item"
         title="Create a git worktree for this repository on a new or existing branch and open it as its own workspace, leaving the main checkout untouched."
@@ -236,13 +236,23 @@
         &#x1F33F; New worktree
       </button>
       <button
-        v-if="wsMenu.ws.kind !== 'task' && wsMenu.ws.kind !== 'docker'"
+        v-if="wsMenu.ws.kind !== 'task' && wsMenu.ws.kind !== 'automation' && wsMenu.ws.kind !== 'docker'"
         type="button"
         class="context-menu__item"
         title="Spawn a task workspace bound to this project — runs a supervised Worker + Judge AI loop with auto-detected verification commands."
         @click="onMenuAction('create-task')"
       >
         &#x1F916; Create task agent
+      </button>
+      <button
+        v-if="
+          !['task', 'automation', 'docker', 'azure', 'github', 'jira', 'jira-board'].includes(String(wsMenu.ws.kind))
+        "
+        type="button"
+        class="context-menu__item"
+        @click="onMenuAction('create-automation')"
+      >
+        <AutomationIcon /> Create automation
       </button>
       <button
         v-if="wsMenuHasChildren"
@@ -310,6 +320,7 @@
 import { computed, ref, inject, watch, nextTick, onMounted, onUnmounted } from "vue";
 import { apiKey } from "../../types/keys.js";
 import { useAppStore } from "../../stores/app.js";
+import { useAutomationsStore } from "../../stores/automations.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { userFacingMessage } from "../../lib/error-message.js";
 import { useWorkspaceDragDrop } from "../../composables/useDragDrop.js";
@@ -331,6 +342,7 @@ import {
 } from "../../app/sidebar-presented-rows.js";
 import { useSidebarInteractionLock } from "../../composables/useSidebarInteractionLock.js";
 import WorkspaceCard from "./WorkspaceCard.vue";
+import AutomationIcon from "../common/AutomationIcon.vue";
 import WorkspaceActivityCluster from "./WorkspaceActivityCluster.vue";
 import RunningAgentsPanel from "./RunningAgentsPanel.vue";
 import { useJiraIssueLinkRoutes } from "../../composables/useJiraIssueLinkRoutes.js";
@@ -404,6 +416,7 @@ const props = defineProps<{
 }>();
 
 const store = useAppStore();
+const automations = useAutomationsStore();
 const jiraRoutes = useJiraIssueLinkRoutes(
   store.getApi(),
   computed(() => String(store.myActiveProfileId || "default")),
@@ -463,10 +476,35 @@ const workspaceCards = computed((): WorkspaceCardData[] => {
       return null;
     },
   }) as WorkspaceCardData[];
-  return cards.map((card) => ({
-    ...card,
-    cleanupBusy: card.kind === "azure" && store.isAzureClosedPrCleanupBusy(card.id),
-  }));
+  return cards.map((card) => {
+    const status = payload.automations?.byWorkspaceId[card.id] as
+      { state?: string; nextRunAt?: string | null } | undefined;
+    const definition = store.filteredWorkspaces.find((workspace) => workspace.id === card.id)?.automation;
+    const automationSummary =
+      card.kind === "automation"
+        ? status?.state === "awaiting-user"
+          ? "Waiting for you"
+          : status?.state === "running" || status?.state === "starting"
+            ? "Running"
+            : !definition?.enabled
+              ? `Disabled${definition?.disabledReason ? ` · ${definition.disabledReason}` : ""}`
+              : status?.nextRunAt
+                ? `Next · ${new Date(status.nextRunAt).toLocaleString()}`
+                : "Enabled"
+        : undefined;
+    return {
+      ...card,
+      ...(automationSummary
+        ? {
+            summary: automationSummary,
+            automationState: status?.state || (definition?.enabled ? "idle" : "disabled"),
+            automationNextRunAt: status?.nextRunAt,
+            automationDisabledReason: definition?.disabledReason,
+          }
+        : {}),
+      cleanupBusy: card.kind === "azure" && store.isAzureClosedPrCleanupBusy(card.id),
+    };
+  });
 });
 
 const hasAnyStarred = computed(() => store.filteredWorkspaces.some((ws) => ws.starred));
@@ -1494,6 +1532,9 @@ function onMenuAction(action: string): void {
     else store.openQuickFixWizard();
   } else if (action === "create-worktree") {
     emit("create-worktree", ws.id as string);
+  } else if (action === "create-automation") {
+    const parent = store.payload?.appState?.workspaces.find((workspace) => workspace.id === ws.id);
+    if (parent) automations.openEditor(parent);
   } else if (action === "create-task") {
     emit("create-task", ws.id as string);
   } else if (action === "edit") {

@@ -41,9 +41,11 @@ export interface SandboxSpec extends Omit<SandboxPolicyInput, "toolConfigDir" | 
    * Folders of the agent that hold a credential-bearing config file: the launcher makes a real folder below `root`,
    * links every entry of the first existing source into it except the `exclude`d names, and grants exactly those entries.
    */
-  confinedMirrors?: Array<{ dir: string; sources: string[]; exclude: string[]; root: string }>;
+  confinedMirrors?: Array<{ dir: string; sources: string[]; exclude: string[]; root: string; localSqlite?: boolean }>;
   /** Home folder the agent is told to use (a folder of links), when the sandbox cannot bind the real one's entries. */
   homeOverride?: string;
+  /** Current installation's notification script, readable inside the sandbox; replaces stale kept hook paths. */
+  notifyScript?: string;
   /** How the sandbox reaches the host gateway; absent when it cannot. */
   gateway?: { socketPath: string; relay?: { tcpHost: string; tcpPort: number } };
 }

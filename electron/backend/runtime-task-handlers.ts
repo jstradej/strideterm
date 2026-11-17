@@ -84,6 +84,9 @@ export interface InternalTaskCreate {
   reservedIds: { workspaceId: string; taskId: string };
   /** The worktree already exists; only record it on the task instead of creating it. */
   worktreeCreated?: boolean;
+  /** Runtime-only Jira opt-in inherited from an automation parent. */
+  jiraMcpEnabled?: boolean;
+  automationParent?: { id: string; profileId: string; cwd: string; updatedAt: string };
   /** Runs once TASK.md is on disk and before the workspace is saved (e.g. source snapshots). */
   afterFilesWritten?: (workspace: { cwd: string; task: { taskId: string } }) => Promise<void>;
 }
@@ -1317,7 +1320,9 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
           judgeCommand: config.judgeCommand,
           workerProvider: config.workerProvider,
           judgeProvider: config.judgeProvider,
-          jiraMcpEnabled: config.jiraMcpEnabled === true && Boolean(windowId) && !parseRemoteViewerId(windowId),
+          jiraMcpEnabled:
+            internal?.jiraMcpEnabled === true ||
+            (config.jiraMcpEnabled === true && Boolean(windowId) && !parseRemoteViewerId(windowId)),
           isolated: config.isolated === true,
           callerProfileId,
           reservedIds: internal?.reservedIds,
@@ -1357,7 +1362,10 @@ export function createTaskHandlers<Payload>(ctx: TaskHandlerCtx<Payload>) {
         // workspace, stamps `lastWorkedAt` (V2 plan allowlist: "creating a task
         // workspace"). No second stamp is needed here.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await (this as any).saveWorkspace(workspace, undefined, { runtimeOwned: true });
+        await (this as any).saveWorkspace(workspace, undefined, {
+          runtimeOwned: true,
+          automationTaskGuard: internal?.automationParent,
+        });
         if (config.repoBinding && jiraIssueRefs?.length && resolvedJiraIssues.length === jiraIssueRefs.length) {
           const binding = config.repoBinding;
           const preferences = new Map<string, { connectionId: string; projectKey: string }>();

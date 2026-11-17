@@ -76,6 +76,23 @@ function createContext() {
 }
 
 describe("review bridge mcp handlers", () => {
+  test("attributes automated review drafts to their run even if the agent supplies another label", async () => {
+    const context = createContext();
+    const store = {
+      getPullRequestContext: vi.fn(() => context),
+      createDraftComment: vi.fn().mockResolvedValue(context),
+    };
+    const handlers = createReviewBridgeMcpHandlers({
+      store: store as never,
+      prKey: context.prKey,
+      draftOnly: true,
+      automationRunId: "run-id",
+    });
+    await handlers.createDraftComment({ body: "Defect", authorAgent: "other" });
+    expect(store.createDraftComment).toHaveBeenCalledWith(
+      expect.objectContaining({ authorAgent: "automation:run-id", autoQueue: false }),
+    );
+  });
   test("draft-only mode stores comments and replies locally without queueing", async () => {
     const context = createContext();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

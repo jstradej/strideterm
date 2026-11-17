@@ -72,7 +72,7 @@ export const useSandboxRequestsStore = defineStore("sandbox-requests", () => {
     }
   }
 
-  function upsert(request: SandboxDeniedRequest): void {
+  function upsert(request: SandboxDeniedRequest, silent = false): void {
     if (request.state !== "pending") {
       settle(request);
       return;
@@ -138,16 +138,17 @@ export const useSandboxRequestsStore = defineStore("sandbox-requests", () => {
     if (!inserted) return;
     // No sourceAlertId on the toast: a question toast with one is dismissed as soon as the backend's attention
     // alerts do not list it, and this request is not one of them. Without it the toast follows its thread instead.
-    if (!notifications.pinned) {
+    if (!silent && !notifications.pinned) {
       notifications.pushToast({ ...event, category: "sandbox", viewId, sourceAlertId: undefined, meta });
     }
-    fireNotificationAlert(event.title, event.body, {
-      tier: 1,
-      urgency: "normal",
-      kind: "question",
-      sessionKey: `sandbox:${request.workspaceId}`,
-      dedupeKey: record.alertId,
-    });
+    if (!silent)
+      fireNotificationAlert(event.title, event.body, {
+        tier: 1,
+        urgency: "normal",
+        kind: "question",
+        sessionKey: `sandbox:${request.workspaceId}`,
+        dedupeKey: record.alertId,
+      });
   }
 
   function settle(request: Pick<SandboxDeniedRequest, "id" | "state">): void {
@@ -178,7 +179,12 @@ export const useSandboxRequestsStore = defineStore("sandbox-requests", () => {
     api.onSandboxDenied(upsert);
     api.onSandboxDeniedSettled(settle);
     try {
-      for (const request of (await api.listSandboxRequests?.()) ?? []) upsert(request);
+      for (const request of (await api.listSandboxRequests?.()) ?? []) {
+        if (request.state === "expired" || request.state === "denied") {
+          upsert({ ...request, state: "pending" }, true);
+          settle(request);
+        } else upsert(request);
+      }
     } catch (error) {
       useNotificationStore().showError("Could not load the destinations isolated tabs are waiting on", error);
     }

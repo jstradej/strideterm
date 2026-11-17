@@ -314,7 +314,11 @@ test.describe("Keyboard shortcuts", () => {
 test.describe("Visual regression @visual", () => {
   let mock: Awaited<ReturnType<typeof startMockServer>>;
   test.beforeAll(async () => {
-    mock = await startMockServer({ fixture: "multi-workspace" });
+    // Simulate the first harmless PTY byte so screenshots capture ready panes, not startup spinners.
+    mock = await startMockServer({
+      fixture: "multi-workspace",
+      terminalOutput: { "ws-frontend:panel-shell": "\r", "ws-frontend:panel-claude": "\r" },
+    });
   });
   test.afterAll(async () => {
     await mock?.close();

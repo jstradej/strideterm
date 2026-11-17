@@ -27,6 +27,7 @@ interface MinimalWorkspace {
   review?: { parentWorkspaceId?: string } | null;
   quickfix?: { parentWorkspaceId?: string } | null;
   task?: { parentWorkspaceId?: string } | null;
+  automation?: { parentWorkspaceId?: string } | null;
 }
 
 export interface ResolveTaskTargetInput<W extends MinimalWorkspace> {
@@ -54,14 +55,21 @@ export interface ResolveTaskTargetResult<W extends MinimalWorkspace> {
 
 function isProperRoot<W extends MinimalWorkspace>(w: W | null | undefined): boolean {
   if (!w || !w.cwd) return false;
-  if (w.kind === "azure" || w.kind === "github" || w.kind === "docker" || w.kind === "task") return false;
+  if (w.kind === "azure" || w.kind === "github" || w.kind === "docker" || w.kind === "task" || w.kind === "automation")
+    return false;
   if (w.review || w.quickfix || w.task) return false;
   return true;
 }
 
 function getParentId<W extends MinimalWorkspace>(w: W | null | undefined): string {
   if (!w) return "";
-  return w.task?.parentWorkspaceId || w.review?.parentWorkspaceId || w.quickfix?.parentWorkspaceId || "";
+  return (
+    w.task?.parentWorkspaceId ||
+    w.automation?.parentWorkspaceId ||
+    w.review?.parentWorkspaceId ||
+    w.quickfix?.parentWorkspaceId ||
+    ""
+  );
 }
 
 function trim(value: string | null | undefined): string {
@@ -105,7 +113,7 @@ export function resolveTelegramTaskTarget<W extends MinimalWorkspace>(
       resolved = walker;
     }
   }
-  const parentWorkspace: W | null = resolved || (source?.cwd ? source : null);
+  const parentWorkspace: W | null = resolved || (source?.cwd && source.kind !== "automation" ? source : null);
   if (!parentWorkspace) {
     return { parentWorkspace: null, taskCwd: "", source, cwdReason: "none" };
   }

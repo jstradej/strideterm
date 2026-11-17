@@ -197,7 +197,7 @@ function makeBlankDraft() {
     notificationsEnabled: true,
     pollSeconds: props.telegramSettings?.defaultPollSeconds ?? 5,
     profileId: "",
-    forwardKinds: [] as string[],
+    forwardKinds: ["*", "automation"] as string[],
   });
 }
 
@@ -460,6 +460,7 @@ export const TELEGRAM_FORWARD_KINDS: ReadonlyArray<{ value: string; label: strin
   { value: "subagent_done", label: "🤖 Subagent done", hint: "A sub-agent finished inside a turn." },
   { value: "review", label: "🔍 Review", hint: "Pull-request review activity." },
   { value: "pipeline", label: "🔧 Pipeline", hint: "CI / pipeline state changes." },
+  { value: "automation", label: "🤖 Automation", hint: "An automation run finished." },
   { value: "error", label: "❌ Error", hint: "Something failed." },
 ];
 
@@ -647,7 +648,7 @@ export const ConnectionForm = defineComponent({
           {
             class: "form-label",
             title:
-              "Which alert kinds this bot delivers. With nothing ticked the bot forwards EVERY kind — that is the default and what most setups want. Tick specific kinds to narrow it.",
+              "Choose which alerts this bot delivers. With nothing ticked it forwards standard kinds; automation runs require an explicit opt-in.",
           },
           [
             h("span", "Forward filter"),
@@ -658,11 +659,22 @@ export const ConnectionForm = defineComponent({
                 h("label", { class: "forward-kinds__item", title: kind.hint, key: kind.value }, [
                   h("input", {
                     type: "checkbox",
-                    checked: Array.isArray(d.forwardKinds) && (d.forwardKinds as string[]).includes(kind.value),
+                    checked:
+                      Array.isArray(d.forwardKinds) &&
+                      ((d.forwardKinds as string[]).includes(kind.value) ||
+                        ((d.forwardKinds as string[]).includes("*") && kind.value !== "automation")),
                     disabled: d.notificationsEnabled === false,
                     onChange: (e: Event) => {
                       const on = (e.target as HTMLInputElement).checked;
-                      const current = Array.isArray(d.forwardKinds) ? [...(d.forwardKinds as string[])] : [];
+                      let current = Array.isArray(d.forwardKinds) ? [...(d.forwardKinds as string[])] : [];
+                      if (on && kind.value === "automation" && current.length === 0) {
+                        d.forwardKinds = ["*", "automation"];
+                        return;
+                      }
+                      if (current.includes("*"))
+                        current = TELEGRAM_FORWARD_KINDS.filter(
+                          (item) => item.value !== "automation" || current.includes("automation"),
+                        ).map((item) => item.value);
                       d.forwardKinds = on
                         ? current.includes(kind.value)
                           ? current
@@ -680,8 +692,8 @@ export const ConnectionForm = defineComponent({
               d.notificationsEnabled === false
                 ? "Automatic notifications are off. Your selected filter will apply when forwarding is enabled."
                 : Array.isArray(d.forwardKinds) && (d.forwardKinds as string[]).length > 0
-                  ? "Only the ticked kinds are delivered. Untick everything to receive all of them."
-                  : "Nothing ticked = every kind is delivered.",
+                  ? "Only the ticked kinds are delivered. Untick everything to receive the standard kinds."
+                  : "Nothing ticked = standard kinds are delivered. Tick Automation to receive automation runs.",
             ),
           ],
         ),

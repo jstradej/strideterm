@@ -213,6 +213,8 @@ export function createRuntimeSandbox(deps: RuntimeSandboxDeps) {
     installPrerequisites: (request: { distro?: string } = {}) => service.installPrerequisites(request.distro),
 
     listPending: (): SandboxDeniedRequest[] => service.listPending(),
+    listAutomationRequests: (workspaceIds: Set<string>): SandboxDeniedRequest[] =>
+      service.listAutomationRequests(workspaceIds),
 
     /**
      * The user's answer to "sandbox wanted X". Allowing with `remember` adds the destination to the

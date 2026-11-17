@@ -9,6 +9,52 @@ describe("SettingsTelegramTab", () => {
     setActivePinia(createPinia());
   });
 
+  test("enables automation for a new connection while preserving the old empty filter", async () => {
+    const wrapper = mount(SettingsTelegramTab, {
+      props: {
+        profiles: [],
+        telegramSettings: {
+          defaultPollSeconds: 5,
+          connections: [
+            {
+              id: "old",
+              label: "Old",
+              botTokenRef: "cred:old",
+              chatId: "123",
+              enabled: true,
+              pollSeconds: 5,
+              profileId: "",
+              forwardKinds: [],
+            },
+          ],
+        },
+      },
+      global: { provide: { [apiKey]: { saveTelegramConnection: vi.fn(), refreshTelegram: vi.fn() } } },
+    });
+    await wrapper.find(".connection-item__header").trigger("click");
+    const automationInputs = () =>
+      wrapper
+        .findAll(".forward-kinds__item")
+        .filter((label) => label.text().includes("Automation"))
+        .map((label) => label.find("input").element as HTMLInputElement);
+    expect(automationInputs()[0].checked).toBe(false);
+    await wrapper
+      .findAll(".forward-kinds__item")
+      .find((label) => label.text().includes("Automation"))!
+      .find("input")
+      .setValue(true);
+    const waiting = wrapper
+      .findAll(".forward-kinds__item")
+      .find((label) => label.text().includes("Waiting"))!
+      .find("input");
+    expect((waiting.element as HTMLInputElement).checked).toBe(true);
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("Add connection"))!
+      .trigger("click");
+    expect(automationInputs().map((input) => input.checked)).toEqual([true]);
+  });
+
   test("saves the selected profile id with a Telegram connection", async () => {
     const saveTelegramConnection = vi.fn(async () => ({
       payload: {

@@ -455,6 +455,15 @@ export class SandboxService {
     const gradle = toolchains.find((profile) => profile.id === "gradle");
     const confinedLinks: NonNullable<SandboxSpec["confinedLinks"]> = [];
     const workspaceHomes: string[] = [];
+    // Tools need an existing writable temp folder: the host's macOS temp tree is outside the grant,
+    // and srt's default /tmp/claude may not exist. Give them a workspace-owned folder.
+    const tempHome = path.posix.join(path.posix.dirname(this.sandboxHome(environment, ctx.workspace.id)), "tmp");
+    workspaceHomes.push(tempHome);
+    env.TMPDIR = `${tempHome}/`;
+    env.TMP = tempHome;
+    env.TEMP = tempHome;
+    // srt generates its own TMPDIR assignment from this supported override.
+    env.CLAUDE_CODE_TMPDIR = tempHome;
     const gradleHome = this.gradleHome(environment, ctx.workspace.id);
     if (gradle || this.gradleRegistryConfigured(ctx, gatewayInfo.active)) {
       env.GRADLE_USER_HOME = gradleHome;
@@ -499,6 +508,8 @@ export class SandboxService {
     const hookDirs = [path.join(this.options.dataDir, "hooks"), path.join(os.homedir(), ".strideterm-hooks")].filter(
       (dir) => existsSync(dir),
     );
+    const ownNotifyScript = path.join(this.options.dataDir, "hooks", "notify.mjs");
+    const notifyScript = existsSync(ownNotifyScript) ? this.mapToSandbox(environment, ownNotifyScript) : undefined;
     const readPaths = [
       ...read,
       ...hookDirs,
@@ -528,6 +539,7 @@ export class SandboxService {
             sources: windows ? [own, windows] : [own],
             exclude: mirrorExclusions(agent, relative),
             root: homeOverride,
+            ...(agent?.localSqlite ? { localSqlite: true } : {}),
           });
           continue;
         }
@@ -567,6 +579,7 @@ export class SandboxService {
       gitPointerFiles,
       loginLinks,
       homeOverride,
+      notifyScript,
       readPaths: readPaths
         .map((p) => (environment.platform === "win32" ? this.tryMap(environment, p) : p))
         .filter(Boolean),
@@ -894,6 +907,20 @@ export class SandboxService {
   listPending(workspaceId?: string): SandboxDeniedRequest[] {
     return [...this.requests.values()]
       .filter((request) => request.state === "pending" && (!workspaceId || request.workspaceId === workspaceId))
+      .map((request) => this.publicRequest(request));
+  }
+
+  /** Pending requests plus recent unanswered automation requests that may still be allowed for future runs. */
+  listAutomationRequests(workspaceIds: Set<string>): SandboxDeniedRequest[] {
+    const cutoff = this.now() - 24 * 60 * 60_000;
+    return [...this.requests.values()]
+      .filter(
+        (request) =>
+          workspaceIds.has(request.workspaceId) &&
+          request.at >= cutoff &&
+          (request.state === "pending" || request.state === "expired" || request.state === "denied") &&
+          !matchesSandboxDomain(request.host, request.port, this.options.getWorkspaceDomains(request.workspaceId)),
+      )
       .map((request) => this.publicRequest(request));
   }
 

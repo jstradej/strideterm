@@ -23,7 +23,7 @@
       <span class="workspace-card__index">{{ workspace.index }}</span><svg
         v-if="workspace.badgeGlyph"
         class="workspace-card__glyph"
-        viewBox="0 0 24 24"
+        :viewBox="workspace.badgeGlyph === 'automation' ? '0 0 330 330' : '0 0 24 24'"
         aria-hidden="true"
       >
         <path v-for="d in BADGE_GLYPHS[workspace.badgeGlyph]" :key="d" :d="d" /></svg
@@ -191,6 +191,9 @@ interface WorkspaceCardData {
   icon?: string;
   kind?: string;
   taskState?: string;
+  automationState?: string;
+  automationNextRunAt?: string | null;
+  automationDisabledReason?: string | null;
   starred?: boolean;
   checksState?: string;
   isolated?: boolean;

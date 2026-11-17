@@ -348,6 +348,35 @@ describe("default state", () => {
     expect(custom?.platforms).toEqual(["win32"]);
   });
 
+  test("automation pause defaults to false and survives normalization", () => {
+    expect(normalizeState({}).settings.automations.paused).toBe(false);
+    expect(normalizeState({ settings: { automations: { paused: true } } }).settings.automations.paused).toBe(true);
+    expect(normalizeState({ settings: { automations: { paused: false } } }).settings.automations.paused).toBe(false);
+  });
+
+  test("invalid automation definitions remain visible and disabled", () => {
+    const workspace = normalizeWorkspace({
+      id: "automation-1",
+      kind: "automation",
+      automation: { parentWorkspaceId: "parent", enabled: true, prompt: "preserve me" },
+      internalMcpEnabled: true,
+      jiraMcpEnabled: true,
+      sshMcpEnabled: true,
+      sandboxEnabled: true,
+    });
+    expect(workspace.kind).toBe("automation");
+    expect(workspace.automation).toMatchObject({
+      parentWorkspaceId: "parent",
+      prompt: "preserve me",
+      enabled: false,
+      disabledReason: "invalid-definition",
+    });
+    expect(workspace.internalMcpEnabled).toBe(false);
+    expect(workspace.jiraMcpEnabled).toBe(true);
+    expect(workspace.sshMcpEnabled).toBe(true);
+    expect(workspace.sandboxEnabled).toBe(true);
+  });
+
   test("normalizeWorkspace preserves explicit launch config", () => {
     const workspace = normalizeWorkspace({
       id: "docker",
@@ -626,6 +655,7 @@ describe("default state", () => {
         connectionId: "ado-main",
         orgUrl: "https://dev.azure.com/acme",
         parentWorkspaceId: "azure-root",
+        automationRun: { workspaceId: "automation-1", runId: "run-1" },
         project: { id: "project-1", name: "Platform" },
         repository: { id: "repo-1", name: "web-app", remoteUrl: "https://dev.azure.com/acme/Platform/_git/web-app" },
         pullRequest: {
@@ -642,6 +672,7 @@ describe("default state", () => {
     expect(workspace.review!.parentWorkspaceId).toBe("azure-root");
     expect(workspace.review!.checkout!.cacheRepoPath).toBe("C:/cache/repo");
     expect(workspace.review!.sourceBaselineSha).toBeUndefined();
+    expect(workspace.review!.automationRun).toEqual({ workspaceId: "automation-1", runId: "run-1" });
     expect(workspace.review).not.toHaveProperty("writable");
   });
 

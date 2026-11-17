@@ -34,7 +34,9 @@ import {
   isFilesViewId,
   isSftpViewId,
   isTaskDashboardViewId,
+  isAutomationDashboardViewId,
 } from "../app/helpers.js";
+import { useAutomationsStore } from "./automations.js";
 import { useSshFileTransfersStore } from "./ssh-file-transfers.js";
 import { createDialogActions } from "./app-dialog-actions.js";
 import { createWorkspaceActions } from "./app-workspace-actions.js";
@@ -431,7 +433,6 @@ export const useAppStore = defineStore("app", () => {
     resolveViewerProfileId(payload.value, { isRemote: isRemoteTransport.value, windowId: myWindowId }),
   );
 
-  let _prevFilteredWsKey = "";
   let _prevFilteredWs: AnyApi[] = [];
   const filteredWorkspaces = computed(() => {
     const workspaces = payload.value?.appState?.workspaces || [];
@@ -441,19 +442,13 @@ export const useAppStore = defineStore("app", () => {
       ((payload.value?.appState?.profiles as AnyApi[] | undefined)?.[0] as AnyApi)?.id ??
       "default";
     const result = workspaces.filter((ws: AnyApi) => (ws.profileId || "default") === activeProfileId);
-    // Include names, panel counts, and badge/accent — these change on
-    // rename/add-tab/remove-tab and on editing the workspace icon/color.
-    // `lastWorkedAt` belongs here too: the sidebar's "Recently worked" list
-    // sorts by it, so leaving it out would keep every work stamp invisible and
-    // freeze the list for the rest of the session.
-    const key = result
-      .map(
-        (ws: AnyApi) =>
-          `${ws.id}:${ws.name}:${(ws.panels || []).length}:${ws.connectionId || ""}:${ws.starred ? 1 : 0}:${ws.icon || ""}:${ws.color || ""}:${ws.lastWorkedAt || ""}`,
-      )
-      .join(",");
-    if (key === _prevFilteredWsKey) return _prevFilteredWs;
-    _prevFilteredWsKey = key;
+    // Reuse only unchanged objects. A partial field fingerprint kept old
+    // workspaces after edits to isolation, permissions or automation settings.
+    if (
+      result.length === _prevFilteredWs.length &&
+      result.every((workspace, index) => workspace === _prevFilteredWs[index])
+    )
+      return _prevFilteredWs;
     _prevFilteredWs = result;
     return result;
   });
@@ -1028,7 +1023,8 @@ export const useAppStore = defineStore("app", () => {
       isBrowserViewId(viewId) ||
       isFilesViewId(viewId) ||
       isSftpViewId(viewId) ||
-      isTaskDashboardViewId(viewId)
+      isTaskDashboardViewId(viewId) ||
+      isAutomationDashboardViewId(viewId)
     )
       return false;
     return viewId.startsWith(`${workspaceId}:`);
@@ -1266,6 +1262,10 @@ export const useAppStore = defineStore("app", () => {
     // Skipped during optimisticOnly because the task-dashboard tab is not
     // in the workspaceTabs list yet (selectors fill it in once the real
     // payload arrives).
+    if (!optimisticOnly && isMobileViewport.value && wsEntry?.kind === "automation") {
+      const dashboard = (wsEntry?.panels || []).find((panel: AnyApi) => panel?.command === "__automation-dashboard__");
+      if (dashboard?.id) nextViewId = `automation-dashboard:${dashboard.id}`;
+    }
     if (!optimisticOnly && isMobileViewport.value && wsEntry?.kind === "task") {
       const dashPanel = (wsEntry?.panels || []).find((p: AnyApi) => p?.command === "__task-dashboard__");
       if (dashPanel?.id) {
@@ -1645,7 +1645,8 @@ export const useAppStore = defineStore("app", () => {
       isBrowserViewId(viewId) ||
       isFilesViewId(viewId) ||
       isSftpViewId(viewId) ||
-      isTaskDashboardViewId(viewId)
+      isTaskDashboardViewId(viewId) ||
+      isAutomationDashboardViewId(viewId)
     ) {
       pendingViewActivationId.value = "";
       activeSessionId.value = null;
@@ -2092,6 +2093,24 @@ export const useAppStore = defineStore("app", () => {
         { immediate: true },
       );
       api.onOperationFinished?.((event) => workspaceActions.reportOperationFinished(event));
+      const automations = useAutomationsStore();
+      api.onAutomationRunFinished?.((event) => {
+        automations.acceptRun(event);
+        workspaceActions.reportAutomationRun(event);
+      });
+      watch(
+        () => [(payload.value as AnyApi)?.automations?.recentRuns, myActiveProfileId.value],
+        ([runs]) => {
+          automations.reconcileRuns(runs);
+          workspaceActions.reportAutomationRuns(runs);
+        },
+        { immediate: true },
+      );
+      watch(
+        () => [(payload.value as AnyApi)?.automations?.recentAgentChanges, myActiveProfileId.value],
+        ([changes]) => workspaceActions.reportAutomationAgentChanges(changes),
+        { immediate: true },
+      );
       watch(
         () => [(payload.value as AnyApi)?.operations?.lastResults, myActiveProfileId.value],
         ([results]) => workspaceActions.reportOperationRuns(results),

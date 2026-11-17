@@ -4914,6 +4914,64 @@ describe("mobile session bootstrap (POST /api/mobile/session/bootstrap)", () => 
     };
   }
 
+  test("passes mobile provenance only from an authenticated mobile session", async () => {
+    const port = await getFreePort();
+    const runtime = makeMobileRuntime(port, () => ({
+      deviceId: "dev-1",
+      pairId: "pair-1",
+      profileId: "default",
+      allowedOrigin: "https://example.trycloudflare.com",
+      transport: "legacy" as const,
+      requiredCapability: "remote.webSession" as const,
+      expiresAt: Date.now() + 60_000,
+    }));
+    const createAutomation = vi.fn(async () => ({ workspaceId: "created" }));
+    const deleteAutomationRuns = vi.fn(async () => ({ deleted: 1 }));
+    Object.assign(runtime, { createAutomation, deleteAutomationRuns });
+    const server = await startRemoteServer({
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    const base = `http://127.0.0.1:${port}`;
+    try {
+      const bootstrap = await fetch(`${base}/api/mobile/session/bootstrap`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticketId: "ticket", secret: "secret" }),
+      });
+      expect(bootstrap.status).toBe(204);
+      const cookie = (bootstrap.headers.get("set-cookie") || "").split(";")[0]!;
+      const response = await fetch(`${base}/api/automation/create`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Cookie: cookie },
+        body: JSON.stringify({
+          parentWorkspaceId: "parent",
+          name: "Job",
+          definition: {
+            enabled: true,
+            trigger: { type: "schedule", kind: "interval", everyMinutes: 5, anchor: "2026-01-01T00:00:00Z" },
+            executor: { type: "agent", agent: { providerId: "claude", model: "", skipPermissions: false } },
+            prompt: "hello",
+            location: "automation",
+            policy: { maxRunMinutes: 60, catchUp: "skip", maxRunsPerHour: 6, subjectCooldownMinutes: 10 },
+          },
+        }),
+      });
+      expect(response.status).toBe(200);
+      expect(createAutomation).toHaveBeenCalledWith(expect.anything(), expect.any(String), undefined, "mobile");
+      const deleteInput = { workspaceId: "ws", runIds: ["d10a3220-1505-4c4c-a19a-92aa6726e911"] };
+      const removed = await fetch(`${base}/api/automation/delete-runs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Cookie: cookie },
+        body: JSON.stringify(deleteInput),
+      });
+      expect(removed.status).toBe(200);
+      expect(deleteAutomationRuns).toHaveBeenCalledWith(deleteInput, expect.stringMatching(/^remote:/u));
+    } finally {
+      await server.close();
+    }
+  });
+
   test("a valid ticket mints a session cookie with a clean no-content response", async () => {
     const port = await getFreePort();
     const runtime = makeMobileRuntime(port, (ticketId, secret) => {

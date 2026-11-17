@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 import {
   existsSync,
   lstatSync,
@@ -358,14 +359,19 @@ describe("WSL node wrapper for hook commands that name Windows paths", () => {
 describe("sandbox launcher sanitized config views", () => {
   const SECRET = "INERT_NON_MODEL_MCP_SECRET";
 
-  function seed(filter: string, content: string, extra: Record<string, unknown> = {}) {
+  function seed(
+    filter: string,
+    content: string,
+    extra: Record<string, unknown> = {},
+    launch: Record<string, unknown> = {},
+  ) {
     const base = temp();
     const host = path.join(base, "host-config");
     writeFileSync(host, content);
     const root = path.join(base, "home");
     const dest = path.join(root, ".agent", "config");
     const run = () =>
-      runLauncher([], { seededFiles: [{ sources: [host], dest, root, filter, refresh: true, ...extra }] });
+      runLauncher([], { seededFiles: [{ sources: [host], dest, root, filter, refresh: true, ...extra }], ...launch });
     run();
     return { host, dest, run, copy: () => readFileSync(dest, "utf8") };
   }
@@ -537,6 +543,38 @@ describe("sandbox launcher sanitized config views", () => {
         { matcher: "Agent|Task", hooks: [{ type: "command", command: 'node "/d/hooks/notify.mjs" PreToolUse' }] },
       ],
     });
+  });
+
+  it("rebinds kept notification hooks to the current installation without changing the host settings", () => {
+    const notifyScript = "/current installation/hooks/notify.mjs";
+    const source = JSON.stringify({
+      hooks: {
+        Stop: [
+          {
+            matcher: "",
+            hooks: [
+              { type: "command", command: 'node "/old-install/hooks/notify.mjs" Stop' },
+              { type: "command", command: 'node "/old-install/hooks/notify.mjs" Stop; echo INERT_SECRET' },
+            ],
+          },
+        ],
+        sessionEnd: [
+          {
+            type: "command",
+            bash: 'node "C:/old/hooks/notify.mjs" Stop',
+            powershell: 'node "C:/old/hooks/notify.mjs" Stop',
+          },
+        ],
+      },
+    });
+    const { copy, host } = seed("json", source, {}, { notifyScript });
+    const command = `node "${notifyScript}" Stop`;
+    expect(JSON.parse(copy()).hooks).toEqual({
+      Stop: [{ matcher: "", hooks: [{ type: "command", command }] }],
+      sessionEnd: [{ type: "command", bash: command, powershell: command }],
+    });
+    expect(copy()).not.toContain("INERT_SECRET");
+    expect(readFileSync(host, "utf8")).toBe(source);
   });
 
   it("filters every command field independently in flat Copilot hooks", () => {
@@ -837,5 +875,41 @@ export const SandboxManager = {
     const dir = path.join(root, ".codex");
     mirrorRun(base, { dir, sources: [path.join(base, "none")], exclude: [], root });
     expect(existsSync(dir)).toBe(false);
+  });
+  it("migrates linked Codex SQLite state to local databases without sharing host data or grants", () => {
+    if (process.platform === "win32") return;
+    const base = temp();
+    const source = hostFolder(base);
+    const root = path.join(base, "home");
+    const dir = path.join(root, ".codex");
+    mkdirSync(dir, { recursive: true });
+    const hostFile = path.join(source, "goals_1.sqlite");
+    const host = new DatabaseSync(hostFile);
+    host.exec("CREATE TABLE host_only(value TEXT); INSERT INTO host_only VALUES ('preserved')");
+    host.close();
+    const original = readFileSync(hostFile);
+    symlinkSync(hostFile, path.join(dir, "goals_1.sqlite"));
+    symlinkSync(`${hostFile}-wal`, path.join(dir, "goals_1.sqlite-wal"));
+    symlinkSync(`${hostFile}-shm`, path.join(dir, "goals_1.sqlite-shm"));
+    writeFileSync(path.join(dir, "state_5.sqlite"), "existing local state");
+    const { config } = mirrorRun(base, { dir, sources: [source], exclude: ["config.toml"], root, localSqlite: true });
+    expect(config).not.toBeNull();
+    expect(existsSync(path.join(dir, "goals_1.sqlite"))).toBe(false);
+    expect(() => lstatSync(path.join(dir, "goals_1.sqlite-wal"))).toThrow();
+    expect(() => lstatSync(path.join(dir, "goals_1.sqlite-shm"))).toThrow();
+    expect(readFileSync(path.join(dir, "state_5.sqlite"), "utf8")).toBe("existing local state");
+    for (const grants of [config.filesystem.allowRead, config.filesystem.allowWrite]) {
+      expect(grants).not.toContain(hostFile);
+      expect(grants).not.toContain(source);
+    }
+    const local = new DatabaseSync(path.join(dir, "goals_1.sqlite"));
+    local.exec(
+      "PRAGMA journal_mode=WAL; CREATE TABLE sandbox_only(value TEXT); INSERT INTO sandbox_only VALUES ('local')",
+    );
+    expect(local.prepare("SELECT value FROM sandbox_only").get()).toEqual({ value: "local" });
+    expect(local.prepare("SELECT name FROM sqlite_master WHERE name = 'host_only'").get()).toBeUndefined();
+    local.close();
+    expect(readFileSync(hostFile)).toEqual(original);
+    expect(readlinkSync(path.join(dir, "auth.json"))).toBe(path.join(source, "auth.json"));
   });
 });

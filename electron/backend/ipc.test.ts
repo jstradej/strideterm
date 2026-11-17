@@ -203,6 +203,30 @@ describe("registerIpc teardown", () => {
     dispose();
   });
 
+  test("automation IPC validates payload and forwards the caller window", async () => {
+    const runtime = makeRuntimeStub();
+    runtime.runAutomationNow = vi.fn(async () => ({ runId: "run" }));
+    const dispose = registerIpc(runtime, () => {}, { getWindowIdByWebContentsId: () => "window-a" });
+    const event = { sender: { id: 1 } } as unknown as import("electron").IpcMainInvokeEvent;
+    const call = handleRegistry.get("automation:run-now") as (event: unknown, payload: unknown) => Promise<unknown>;
+    await expect(call(event, { workspaceId: "ws", idempotencyKey: "request-123" })).resolves.toEqual({ runId: "run" });
+    expect(runtime.runAutomationNow).toHaveBeenCalledWith(
+      { workspaceId: "ws", idempotencyKey: "request-123" },
+      "window-a",
+    );
+    await expect(call(event, { workspaceId: "ws", idempotencyKey: "bad" })).rejects.toThrow();
+    runtime.deleteAutomationRuns = vi.fn(async () => ({ deleted: 1 }));
+    const remove = handleRegistry.get("automation:delete-runs") as (
+      event: unknown,
+      payload: unknown,
+    ) => Promise<unknown>;
+    const payload = { workspaceId: "ws", runIds: ["d10a3220-1505-4c4c-a19a-92aa6726e911"] };
+    await expect(remove(event, payload)).resolves.toEqual({ deleted: 1 });
+    expect(runtime.deleteAutomationRuns).toHaveBeenCalledWith(payload, "window-a");
+    await expect(remove(event, { workspaceId: "ws", runIds: [] })).rejects.toThrow();
+    dispose();
+  });
+
   test("a Jira failure crosses IPC as an envelope that keeps its code; other failures still reject", async () => {
     const runtime = makeRuntimeStub();
     runtime.jiraGetIssue = vi.fn(async () => {

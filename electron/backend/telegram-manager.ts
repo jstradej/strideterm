@@ -1184,7 +1184,10 @@ export class TelegramManager extends EventEmitter {
         }
       }
       const forwardKinds = conn.forwardKinds;
-      if (forwardKinds.length > 0 && !forwardKinds.includes(payload.kind)) {
+      if (
+        (payload.kind === "automation" && !forwardKinds.includes("automation")) ||
+        (forwardKinds.length > 0 && !forwardKinds.includes("*") && !forwardKinds.includes(payload.kind))
+      ) {
         log.trace("telegram alert filtered out by forwardKinds", {
           connectionId: conn.id,
           kind: payload.kind,
@@ -1418,6 +1421,8 @@ export class TelegramManager extends EventEmitter {
         return "🔍";
       case "pipeline":
         return "🔧";
+      case "automation":
+        return "🤖";
       case "error":
         return "❌";
       case "warning":
@@ -2343,6 +2348,7 @@ export class TelegramManager extends EventEmitter {
           w.kind !== "github" &&
           w.kind !== "docker" &&
           w.kind !== "task" &&
+          w.kind !== "automation" &&
           !!w.cwd &&
           (w.profileId || "default") === activeProfile,
       ),

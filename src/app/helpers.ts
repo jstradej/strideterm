@@ -195,6 +195,10 @@ export function isSftpViewId(value: unknown): boolean {
   return String(value || "").startsWith("sftp:");
 }
 
+export function isAutomationDashboardViewId(value: unknown): boolean {
+  return String(value || "").startsWith("automation-dashboard:");
+}
+
 export function isTaskDashboardViewId(value: unknown): boolean {
   return String(value || "").startsWith("task-dashboard:");
 }
@@ -223,6 +227,7 @@ export function classifyViewType(
   if (isFilesViewId(viewId)) return "files";
   if (isSftpViewId(viewId)) return "sftp";
   if (isTaskDashboardViewId(viewId)) return "task-dashboard";
+  if (isAutomationDashboardViewId(viewId)) return "automation-dashboard";
   if (isBrowserViewId(viewId)) return "browser";
   // The relocated Companion Primary is a real terminal rendered under a
   // virtual view id. Classified before the headless-judge probe below, whose

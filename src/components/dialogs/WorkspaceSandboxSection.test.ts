@@ -52,6 +52,23 @@ describe("WorkspaceSandboxSection", () => {
     expect(wrapper.find('[data-testid="sandbox-install"]').exists()).toBe(true);
   });
 
+  test("keeps ready automation diagnostics collapsed with their status visible", async () => {
+    const wrapper = mountSection({ getSandboxStatus: vi.fn(async () => ready) }, { compact: true, automation: true });
+    await flushPromises();
+    expect(wrapper.get("summary").text()).toContain("Ready");
+    expect(wrapper.get("details").attributes("open")).toBeUndefined();
+    expect(wrapper.get(".sandbox-option").text()).toContain("Run in isolation");
+    expect(wrapper.get(".sandbox-option").text()).not.toContain("Worker and Judge");
+  });
+
+  test("expands compact diagnostics when isolation needs setup", async () => {
+    const wrapper = mountSection({ getSandboxStatus: vi.fn(async () => missing) }, { compact: true });
+    await flushPromises();
+    expect(wrapper.get("summary").text()).toContain("Setup required");
+    expect(wrapper.get("details").attributes("open")).toBeDefined();
+    expect(wrapper.find('[data-testid="sandbox-install"]').exists()).toBe(true);
+  });
+
   test("installs only when the user presses the button, then shows the new status, the log and the manual commands", async () => {
     const installSandboxPrerequisites = vi.fn(async () => ({
       status: ready,

@@ -1,6 +1,14 @@
 import { z } from "zod";
 import { EFFORT_LEVELS, PROVIDER_CHOICES } from "./agent-provider-catalog.js";
 import { parseAgentCommand, type AgentCliProvider } from "./agent-ssh.js";
+import {
+  automationRunNowSchema,
+  automationRunRefSchema,
+  automationUpdateSchema,
+  automationSetEnabledSchema,
+  automationDefinitionInputSchema,
+  checkoutSchema,
+} from "./automation-api.js";
 
 export const INTERNAL_MCP_URL_ENV = "STRIDETERM_INTERNAL_MCP_URL";
 export const INTERNAL_MCP_CAPABILITY_ENV = "STRIDETERM_INTERNAL_MCP_CAPABILITY";
@@ -34,6 +42,9 @@ export const INTERNAL_MCP_ERROR_CODES = [
   "jira_draft_not_saved",
   "operation_not_found",
   "task_not_found",
+  "automation_not_found",
+  "automation_limit_reached",
+  "invalid_schedule",
   "busy",
   "start_refused",
   "internal_error",
@@ -131,6 +142,23 @@ export const internalMcpTaskGetInputSchema = z
     logCursor: z.string().trim().max(50).optional(),
     logLimit: z.number().int().min(1).max(INTERNAL_MCP_LOG_MAX_ENTRIES).optional(),
   })
+  .strict();
+
+export const internalMcpAutomationEmptyInputSchema = z.object({}).strict();
+export const internalMcpAutomationCreateInputSchema = z
+  .object({
+    name: z.string().trim().min(1).max(200),
+    definition: automationDefinitionInputSchema,
+    isolated: z.boolean().optional(),
+    jiraMcpEnabled: z.boolean().optional(),
+    sshMcpEnabled: z.boolean().optional(),
+    checkout: checkoutSchema.optional(),
+    idempotencyKey: z.string().regex(/^[A-Za-z0-9._:-]{8,200}$/u),
+  })
+  .strict();
+export type InternalMcpAutomationCreateInput = z.infer<typeof internalMcpAutomationCreateInputSchema>;
+export const internalMcpAutomationGetInputSchema = z
+  .object({ workspaceId: z.string().trim().min(1).max(200) })
   .strict();
 
 export const internalMcpCompanionCreateInputSchema = z
@@ -251,6 +279,15 @@ export const internalMcpRequestSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("operation_get"), input: internalMcpOperationGetInputSchema }).strict(),
   z.object({ operation: z.literal("task_list"), input: internalMcpTaskListInputSchema }).strict(),
   z.object({ operation: z.literal("task_get"), input: internalMcpTaskGetInputSchema }).strict(),
+  z.object({ operation: z.literal("automation_event_catalog"), input: internalMcpAutomationEmptyInputSchema }).strict(),
+  z.object({ operation: z.literal("automation_list"), input: internalMcpAutomationEmptyInputSchema }).strict(),
+  z.object({ operation: z.literal("automation_get"), input: internalMcpAutomationGetInputSchema }).strict(),
+  z.object({ operation: z.literal("automation_create"), input: internalMcpAutomationCreateInputSchema }).strict(),
+  z.object({ operation: z.literal("automation_delete"), input: internalMcpAutomationGetInputSchema }).strict(),
+  z.object({ operation: z.literal("automation_update"), input: automationUpdateSchema }).strict(),
+  z.object({ operation: z.literal("automation_set_enabled"), input: automationSetEnabledSchema }).strict(),
+  z.object({ operation: z.literal("automation_run_now"), input: automationRunNowSchema }).strict(),
+  z.object({ operation: z.literal("automation_stop_run"), input: automationRunRefSchema }).strict(),
   z.object({ operation: z.literal("companion_create"), input: internalMcpCompanionCreateInputSchema }).strict(),
   z.object({ operation: z.literal("companion_start"), input: internalMcpCompanionControlInputSchema }).strict(),
   z.object({ operation: z.literal("companion_pause"), input: internalMcpCompanionControlInputSchema }).strict(),

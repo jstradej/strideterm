@@ -225,6 +225,7 @@
     [data-view-id^="files:"],
     [data-view-id^="browser:"],
     [data-view-id^="task-dashboard:"],
+    [data-view-id^="automation-dashboard:"],
     [data-view-id^="jira:"]
   ) {
     background: var(--surface-pane);

@@ -20,6 +20,34 @@ import type { StatePayload, WorkspaceState } from "../../electron/shared/types/s
 import type { JiraWorkspaceViewsState } from "../../electron/shared/types/jira-workspace-views.js";
 
 describe("workspace selectors", () => {
+  test("renders the automation dashboard as a virtual tab rather than a terminal", () => {
+    const workspace = {
+      id: "auto",
+      kind: "automation",
+      panels: [
+        { id: "dashboard", title: "Dashboard", command: "__automation-dashboard__", startup: "none" },
+        { id: "agent", title: "Agent", command: "claude" },
+      ],
+    } as unknown as WorkspaceState;
+    const tabs = getWorkspaceTabs({
+      workspace: {
+        workspace,
+        sessions: [
+          { sessionId: "auto:dashboard", panelId: "dashboard", title: "Dashboard", status: "running" },
+          { sessionId: "auto:agent", panelId: "agent", title: "Agent", status: "running" },
+        ],
+      } as never,
+      payload: {} as StatePayload,
+      hiddenViewIds: new Set(),
+      isContainerRunning: () => false,
+    });
+    expect(tabs).toContainEqual(
+      expect.objectContaining({ id: "automation-dashboard:dashboard", type: "automation-dashboard", closable: false }),
+    );
+    expect(tabs.some((tab) => tab.id === "auto:dashboard")).toBe(false);
+    expect(tabs.map((tab) => tab.id)).toEqual(["automation-dashboard:dashboard", "auto:agent"]);
+  });
+
   test("returns a discoverable virtual Jira inbox tab for Jira workspaces", () => {
     const tabs = getWorkspaceTabs({
       workspace: { workspace: { id: "jira-ws", kind: "jira", panels: [] } as unknown as WorkspaceState, sessions: [] },

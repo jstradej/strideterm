@@ -506,15 +506,18 @@ watch(
   },
 );
 
-// Auto-focus the active terminal when the active session changes (workspace switch,
-// tab change, notification click) so the user can start typing immediately. nextTick
-// waits for the pane to mount; focusActiveTerminal already skips when an overlay is open.
+// Opening a terminal (including the first pane and hosted-agent reveals) puts
+// keyboard input in it after mount. The controller protects overlays and mobile
+// composers and rechecks the target when its animation frame runs.
 watch(
-  () => store.activeSessionId,
-  async (sessionId) => {
-    if (!sessionId) return;
+  () => [store.activeSessionId, store.activeViewId, store.hostedTerminalReveal?.nonce],
+  async () => {
     await nextTick();
+    const sessionId = store.activeSessionId;
+    if (!sessionId || !visibleTabs.value.some((tab) => tab.type === "terminal" && sessionIdOf(tab) === sessionId))
+      return;
     termStore.focusActiveTerminal();
   },
+  { immediate: true, flush: "post" },
 );
 </script>

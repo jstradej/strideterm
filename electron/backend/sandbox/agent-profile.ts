@@ -30,6 +30,8 @@ export interface AgentSandboxProfile {
    * without them and a sanitized copy of each, regenerated from the host's file on every launch.
    */
   configFiles?: AgentConfigFile[];
+  /** SQLite databases and their WAL/SHM files belong to the sandbox home, never linked to host databases. */
+  localSqlite?: boolean;
   /**
    * Environment variable names kept from the host. This is the single exception to "no token in
    * the sandbox": the agent's own sign-in to its model.
@@ -68,6 +70,7 @@ const AGENT_PROFILES: Record<string, AgentSandboxProfile> = {
   },
   codex: {
     id: "codex",
+    localSqlite: true,
     domains: ["api.openai.com", "auth.openai.com", "chatgpt.com", "*.chatgpt.com"],
     readHome: [".codex"],
     writeHome: [".codex"],

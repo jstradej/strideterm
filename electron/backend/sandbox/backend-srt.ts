@@ -111,6 +111,7 @@ export class SrtBackend implements SandboxBackend {
         : undefined,
       optional: policy.optional,
       homeOverride: spec.homeOverride,
+      notifyScript: spec.notifyScript,
       unsetEnv: LAUNCHER_ONLY_ENV,
       keepEnv: Object.keys(spec.env).filter((name) => !LAUNCHER_ONLY_ENV.includes(name)),
       command: spec.command,

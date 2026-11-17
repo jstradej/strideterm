@@ -1070,6 +1070,7 @@ const parentWorkspace = computed(() => {
     (store.filteredWorkspaces || []).find(
       (ws) =>
         ws.kind !== "task" &&
+        ws.kind !== "automation" &&
         (ws.profileId || "default") === activeProfileId &&
         (ws.cwd || "")
           .replace(/[\\/]+$/, "")

@@ -46,6 +46,7 @@ export function resolveParentId(ws: WsLike, allWs: WsLike[]): string | null {
   }
   if (ws.quickfix?.parentWorkspaceId) return ws.quickfix.parentWorkspaceId;
   if (ws.task?.parentWorkspaceId) return ws.task.parentWorkspaceId;
+  if (ws.automation?.parentWorkspaceId) return ws.automation.parentWorkspaceId;
   if ((ws.notes || "").startsWith("Worktree of ")) {
     const parentName = String(ws.name || "").split(" / ")[0];
     const wsProfile = ws.profileId || "default";

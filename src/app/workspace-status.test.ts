@@ -10,6 +10,32 @@ import { isTaskRunningState, resolveWorkspaceStatusCue } from "./workspace-statu
  * so a second copy cannot quietly reappear somewhere with a different answer.
  */
 describe("resolveWorkspaceStatusCue", () => {
+  it("shows automation running and waiting states", () => {
+    expect(resolveWorkspaceStatusCue({ kind: "automation", automationState: "running" })).toMatchObject({
+      state: "running",
+      heartbeat: true,
+    });
+    expect(resolveWorkspaceStatusCue({ kind: "automation", automationState: "awaiting-user" })).toMatchObject({
+      state: "paused",
+      label: "Waiting for you",
+    });
+  });
+  it("describes a disabled automation and its next scheduled run", () => {
+    expect(
+      resolveWorkspaceStatusCue({
+        kind: "automation",
+        automationState: "disabled",
+        automationDisabledReason: "failures",
+      })?.label,
+    ).toBe("Disabled: failures");
+    expect(
+      resolveWorkspaceStatusCue({
+        kind: "automation",
+        automationState: "idle",
+        automationNextRunAt: "2026-01-01T00:00:00Z",
+      })?.label,
+    ).toMatch(/^Next run:/);
+  });
   it("has no cue for a workspace with no state at all", () => {
     expect(resolveWorkspaceStatusCue({ kind: "terminal" })).toBeNull();
     expect(resolveWorkspaceStatusCue(null)).toBeNull();

@@ -242,6 +242,30 @@ describe("SidebarPanel — ghost rendering for grid workspaces", () => {
     const cards = wrapper.findAll("[data-workspace-id]");
     expect(cards.length).toBe(4);
   });
+  it("updates workspace isolation immediately even when an existing agent is still isolated", async () => {
+    const store = useAppStore();
+    const payload = makePayload({
+      workspaces: BASE_WORKSPACES.map((workspace) => ({ ...workspace, sandboxEnabled: true })),
+    });
+    (payload as AnyApi).attention = { isolation: { "ws-A:agent": true } };
+    store.payload = payload;
+    const wrapper = mount(SidebarPanel);
+    const card = () => wrapper.get('[data-workspace-id="ws-A"]');
+    expect(card().find('[data-testid="workspace-isolated"]').exists()).toBe(true);
+    store.payload = {
+      ...payload,
+      appState: {
+        ...payload.appState,
+        workspaces: payload.appState.workspaces.map((workspace) =>
+          workspace.id === "ws-A" ? { ...workspace, sandboxEnabled: false } : workspace,
+        ),
+      },
+    };
+    await nextTick();
+    expect(card().find('[data-testid="workspace-isolated"]').exists()).toBe(false);
+    expect((store.payload as AnyApi).attention.isolation["ws-A:agent"]).toBe(true);
+    wrapper.unmount();
+  });
 
   it("keeps a grid workspace visible in the tree as a dimmed ghost (preserves parent/child)", () => {
     const store = useAppStore();

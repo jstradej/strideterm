@@ -101,6 +101,24 @@
             >
           </button>
           <button
+            type="button"
+            class="notification-center__tab"
+            :class="{ 'notification-center__tab--active': activeTab === 'automations' }"
+            aria-label="Automations"
+            title="Automations — status, upcoming runs, and pause controls."
+            @click="activeTab = 'automations'"
+          >
+            <span class="notification-center__tab-icon" aria-hidden="true"><AutomationIcon /></span>
+            <span class="notification-center__tab-label">Automations</span>
+            <span
+              v-if="appStore.payload?.automations?.paused"
+              class="notification-center__title-badge"
+              title="All automations are paused"
+              aria-label="All automations are paused"
+              >Ⅱ</span
+            >
+          </button>
+          <button
             v-if="showApprovals"
             type="button"
             class="notification-center__tab"
@@ -132,7 +150,7 @@
             :class="{ 'notification-center__tabmenu-toggle--open': tabMenuOpen }"
             :aria-expanded="tabMenuOpen ? 'true' : 'false'"
             aria-haspopup="menu"
-            title="Switch section (Alerts · Attachments · Agents · Connections · Performance)"
+            title="Switch section (Alerts · Attachments · Agents · Automations · Connections · Performance)"
             @click="tabMenuOpen = !tabMenuOpen"
           >
             <span class="notification-center__tabmenu-hamburger" aria-hidden="true">☰</span>
@@ -148,6 +166,12 @@
               class="notification-center__title-badge"
               :title="`${runningAgents.length} agents running`"
               >{{ runningAgents.length }}</span
+            >
+            <span
+              v-else-if="activeTab === 'automations' && appStore.payload?.automations?.paused"
+              class="notification-center__title-badge"
+              title="All automations are paused"
+              >Ⅱ</span
             >
           </button>
           <div v-if="tabMenuOpen" class="notification-center__tabmenu-list" role="menu">
@@ -169,12 +193,18 @@
                 class="notification-center__title-badge"
                 >{{ runningAgents.length }}</span
               >
+              <span
+                v-else-if="t.id === 'automations' && appStore.payload?.automations?.paused"
+                class="notification-center__title-badge"
+                title="All automations are paused"
+                >Ⅱ</span
+              >
             </button>
           </div>
         </div>
         <div class="notification-center__actions">
           <button
-            v-if="profileUnreadCount > 0 || hasFinishedInProfile"
+            v-if="activeTab === 'alerts' && (profileUnreadCount > 0 || hasFinishedInProfile)"
             type="button"
             class="notification-center__action"
             title="Mark every unread / finished notification in this profile as read so the unread badge clears. Notifications stay in the history list — use Clear all to delete them."
@@ -184,7 +214,7 @@
             <span class="notification-center__action-label">Ack finished</span>
           </button>
           <button
-            v-if="hasSessionsInProfile"
+            v-if="activeTab === 'alerts' && hasSessionsInProfile"
             type="button"
             class="notification-center__action notification-center__action--danger"
             title="Permanently remove every notification in this profile from the history list (read and unread). This cannot be undone."
@@ -220,7 +250,7 @@
 
       <Transition name="notif-pill">
         <button
-          v-if="unseenCount > 0"
+          v-if="activeTab === 'alerts' && unseenCount > 0"
           type="button"
           class="notification-center__new-pill"
           title="Scroll the list back to the top to reveal the latest unseen notifications and clear the new-counter pill."
@@ -599,6 +629,10 @@
         />
       </div>
 
+      <div v-if="activeTab === 'automations'" class="notification-center__body">
+        <AutomationsPanel @open="openAutomation" />
+      </div>
+
       <!-- Performance diagnostics tab -->
       <div v-if="activeTab === 'performance'" class="notification-center__body notification-center__body--perf">
         <PerformancePanel />
@@ -623,6 +657,8 @@ import type { StatePayload, WorkspaceState } from "../../../electron/shared/type
 import type { OperationFinished } from "../../../electron/shared/operation-events.js";
 import PerformancePanel from "./PerformancePanel.vue";
 import ApprovalsPanel from "./ApprovalsPanel.vue";
+import AutomationsPanel from "./AutomationsPanel.vue";
+import AutomationIcon from "../common/AutomationIcon.vue";
 import SandboxRequestList from "./SandboxRequestList.vue";
 import { useSandboxRequestsStore } from "../../stores/sandbox-requests.js";
 import WorkspaceAttachments from "../workspace/WorkspaceAttachments.vue";
@@ -676,7 +712,7 @@ function clearAllInProfile(): void {
 const bodyRef = ref<HTMLElement | null>(null);
 const panelRef = ref<HTMLElement | null>(null);
 const selectedIndex = ref(0);
-type TabId = "alerts" | "attachments" | "agents" | "telegram" | "approvals" | "performance";
+type TabId = "alerts" | "attachments" | "agents" | "automations" | "telegram" | "approvals" | "performance";
 const activeTab = ref<TabId>("alerts");
 const activeWorkspaceId = computed(() => appStore.myActiveWorkspaceId);
 const activeWorkspaceRoot = computed(() => {
@@ -788,6 +824,7 @@ const menuTabs = computed<{ id: TabId; label: string }[]>(() => {
     { id: "alerts", label: "Alerts" },
     { id: "attachments", label: "Attachments" },
     { id: "agents", label: "Agents" },
+    { id: "automations", label: "Automations" },
     { id: "telegram", label: "Connections" },
   ];
   if (showApprovals.value) tabs.push({ id: "approvals", label: "Approvals" });
@@ -850,15 +887,20 @@ const mobileProfiles = computed(() =>
 // array means "forward everything" — surface that explicitly so users
 // don't think the chip is broken.
 function forwardKindsLabel(kinds: string[] | undefined): string {
-  if (!kinds || kinds.length === 0) return "all alerts";
+  if (!kinds || kinds.length === 0) return "standard alerts";
+  if (kinds.includes("*")) return kinds.includes("automation") ? "all alerts + automation" : "all alerts";
   if (kinds.length <= 3) return kinds.join(", ");
   return `${kinds.slice(0, 2).join(", ")} +${kinds.length - 2}`;
 }
 
 function forwardKindsTooltip(kinds: string[] | undefined): string {
   if (!kinds || kinds.length === 0) {
-    return "All alert kinds (completed, waiting, review, error, info, …) are forwarded to this chat.";
+    return "Standard alert kinds are forwarded to this chat. Automation runs require an explicit opt-in.";
   }
+  if (kinds.includes("*"))
+    return kinds.includes("automation")
+      ? "All alert kinds, including automation runs, are forwarded to this chat."
+      : "Standard alert kinds are forwarded to this chat.";
   return `Forwarding only: ${kinds.join(", ")}. Other alert kinds are filtered out for this chat.`;
 }
 
@@ -1437,6 +1479,12 @@ function resolveJumpTarget(s: NotificationSession): {
   reviewCommentFocus?: ReviewCommentFocus;
 } {
   if (s.category !== "review") {
+    if (s.category === "automation") {
+      const workspaceId = s.workspaceId || "";
+      const workspace = appStore.payload?.appState?.workspaces?.find((item) => item.id === workspaceId);
+      const dashboard = workspace?.panels?.find((panel) => panel.command === "__automation-dashboard__");
+      return { workspaceId, viewId: dashboard ? `automation-dashboard:${dashboard.id}` : "" };
+    }
     if (s.category === "jira") {
       const workspaceId = s.workspaceId || "";
       return { workspaceId, viewId: workspaceId ? `jira:${workspaceId}` : "" };
@@ -1572,6 +1620,19 @@ async function navigateToTarget(target: { workspaceId: string; viewId: string })
     if (!opened) return false;
   }
   return true;
+}
+
+async function openAutomation(workspaceId: string): Promise<void> {
+  const workspace = (appStore.filteredWorkspaces as WorkspaceState[]).find(
+    (item) => item.id === workspaceId && item.kind === "automation",
+  );
+  if (!workspace) return;
+  const dashboard = workspace.panels?.find((panel) => panel.command === "__automation-dashboard__");
+  const opened = await navigateToTarget({
+    workspaceId,
+    viewId: dashboard ? `automation-dashboard:${dashboard.id}` : "",
+  });
+  if (opened && !notifStore.pinned) notifStore.closePanel();
 }
 
 const reviewNavigationInFlight = new Set<string>();

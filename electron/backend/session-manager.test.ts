@@ -75,6 +75,20 @@ describe("SessionManager", () => {
     spawnError = null;
   });
 
+  test("opening an exited automation agent preserves its terminal until an explicit restart", async () => {
+    const manager = new SessionManager();
+    const state = createState() as unknown as Parameters<SessionManager["ensureSession"]>[0];
+    state.workspaces[0]!.kind = "automation";
+    const first = await manager.ensureSession(state, "workspace-a:shell");
+    handles[0]!.kill(17);
+    await Promise.resolve();
+    expect(first?.status).toBe("exited");
+    expect(await manager.ensureSession(state, "workspace-a:shell")).toBe(first);
+    expect(spawnCalls).toHaveLength(1);
+    expect((await manager.restartSession(state, "workspace-a:shell"))?.status).toBe("running");
+    expect(spawnCalls).toHaveLength(2);
+  });
+
   test("strips parent hook identity from ordinary PTYs when the notify listener is off", async () => {
     const prior = { ...process.env };
     process.env.STRIDETERM_NOTIFY_URL = "http://old/notify?sid=parent";

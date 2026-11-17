@@ -56,6 +56,21 @@ const taskInMain: TestWs = {
 };
 
 describe("resolveTelegramTaskTarget", () => {
+  test("uses the project as parent for an automation while retaining its worktree", () => {
+    const automation = {
+      id: "auto",
+      name: "Automation",
+      cwd: "/proj/automation-tree",
+      kind: "automation",
+      automation: { parentWorkspaceId: main.id },
+    };
+    const result = resolveTelegramTaskTarget({ workspaces: [main, automation], sourceWorkspaceId: "auto" });
+    expect(result.parentWorkspace?.id).toBe(main.id);
+    expect(result.taskCwd).toBe(automation.cwd);
+    expect(
+      resolveTelegramTaskTarget({ workspaces: [automation], sourceWorkspaceId: "auto" }).parentWorkspace,
+    ).toBeNull();
+  });
   test("explicit targetCwd always wins (user picked Existing worktree via /task)", () => {
     const result = resolveTelegramTaskTarget({
       workspaces: [main, worktree],

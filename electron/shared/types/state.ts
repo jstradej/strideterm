@@ -396,6 +396,8 @@ export interface Settings {
   ssh: SshConnectionSettings;
   remoteAccess: RemoteAccessSettings;
   taskDefaults: TaskDefaults;
+  /** Installation-wide automation pause. */
+  automations: { paused: boolean };
   integrations: IntegrationSettings;
   git: GitSettings;
   /**
@@ -637,6 +639,8 @@ export interface ReviewSourceRepository {
 }
 
 export interface ReviewInfo {
+  /** Automation and run that created this isolated review, if any. */
+  automationRun?: { workspaceId: string; runId: string };
   provider: string;
   prKey: string;
   connectionId: string;
@@ -707,6 +711,8 @@ export interface WorkspaceState {
   quickfix: QuickfixInfo | null;
   starred: boolean;
   task: TaskState | null;
+  /** Runtime-owned automation definition; its identity is this workspace id. */
+  automation?: import("../automation.js").AutomationState;
   /** Profile-scoped Jira work items linked to this workspace (no auth data). */
   workItems?: Array<{ ref: import("./task.js").JiraIssueRef; summary: string; status: string }>;
   /** Profile-scoped saved Jira board view; only used by `kind: "jira-board"` workspaces. */
@@ -1311,6 +1317,15 @@ export interface AzureClosedPrCleanupState {
 
 // ------- Full payload broadcast to frontend -------
 
+export interface AutomationUiState {
+  paused: boolean;
+  byWorkspaceId: Record<string, unknown>;
+  recentRuns: Array<Record<string, unknown>>;
+  recentAgentChanges?: import("../automation-agent-change.js").AutomationAgentChange[];
+  connections?: Array<{ id: string; label: string; profileId: string; source: "github" | "azure-devops" | "jira" }>;
+  queries?: Array<{ id: string; name: string; connectionId: string; profileId: string }>;
+}
+
 export interface StatePayload {
   meta: MetaState;
   appState: AppState;
@@ -1325,6 +1340,7 @@ export interface StatePayload {
   environment: Record<string, unknown>;
   remoteAccess: RemoteAccessState;
   taskRunner: Record<string, unknown>;
+  automations?: AutomationUiState;
   jiraWorkspaceViews?: JiraWorkspaceViewsSnapshot;
   azureClosedPrCleanup: AzureClosedPrCleanupState;
   /** Runtime-only: running long operations and their last results (24 h). */
@@ -1422,6 +1438,7 @@ export interface RemoteStateV2 {
   workspace: WorkspaceState | null;
   attention: AttentionState;
   taskRunner: Record<string, unknown>;
+  automations?: AutomationUiState;
   jiraWorkspaceViews?: JiraWorkspaceViewsSnapshot;
   /** Only the client's profile's parents and runs. */
   azureClosedPrCleanup: AzureClosedPrCleanupState;

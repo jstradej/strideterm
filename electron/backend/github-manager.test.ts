@@ -150,12 +150,22 @@ function createManager({
   trackedPullRequests = {},
   fetchOverrides = {},
   auditLogStore,
+  wantsAutomationChecks,
+  onReviewActivity,
+  onAutomationChecks,
+  wantsAutomationClosure,
+  onAutomationClosure,
   now = () => new Date("2026-03-17T10:00:00.000Z").getTime(),
 }: {
   secrets?: Record<string, string>;
   trackedPullRequests?: Record<string, unknown>;
   fetchOverrides?: Parameters<typeof createFetchStub>[0];
   auditLogStore?: { logEntry(entry: Record<string, unknown>): void };
+  wantsAutomationChecks?: (summary: Record<string, unknown>) => boolean;
+  onReviewActivity?: NonNullable<ConstructorParameters<typeof GitHubManager>[0]>["onReviewActivity"];
+  onAutomationChecks?: NonNullable<ConstructorParameters<typeof GitHubManager>[0]>["onAutomationChecks"];
+  wantsAutomationClosure?: NonNullable<ConstructorParameters<typeof GitHubManager>[0]>["wantsAutomationClosure"];
+  onAutomationClosure?: NonNullable<ConstructorParameters<typeof GitHubManager>[0]>["onAutomationClosure"];
   now?: () => number;
 } = {}) {
   const reviewStore = createReviewStore({ trackedPullRequests });
@@ -168,6 +178,11 @@ function createManager({
     fetchImpl: fetchImpl as unknown as typeof fetch,
     execFileTextImpl: vi.fn().mockResolvedValue({ stdout: "", stderr: "" }),
     auditLogStore,
+    wantsAutomationChecks,
+    onReviewActivity,
+    onAutomationChecks,
+    wantsAutomationClosure,
+    onAutomationClosure,
     now,
   });
   manager.supportsGitConfigEnv = async () => true;
@@ -182,6 +197,228 @@ const connection = {
   tokenRef: "cred:gh-main",
   enabled: true,
 };
+
+describe("automation check polling", () => {
+  test("fetches checks for matching rules and reports a newly failing author PR", async () => {
+    const prKey = createPullRequestKey("gh-main", "acme", "web", 42);
+    const onReviewActivity = vi.fn();
+    const { manager, fetchImpl, reviewStore } = createManager({
+      trackedPullRequests: {
+        [prKey]: { lastChecksSignature: "0:1:0", lastNotifiedActivityAt: "2026-03-17T09:00:00.000Z" },
+      },
+      fetchOverrides: {
+        searchItems: [searchItem("acme", "web", 42)],
+        prsByNumber: { 42: defaultPr("acme", "web", 42) },
+        checkRunsByRef: { "sha-1": [{ id: 5, name: "CI", status: "completed", conclusion: "failure" }] },
+      },
+      wantsAutomationChecks: () => true,
+      onReviewActivity,
+    });
+    await reviewStore.upsertConnectionState("gh-main", { status: "ok", lastSuccessAt: "2026-03-17T09:00:00.000Z" });
+    await manager.sync({ connections: [connection] });
+    expect(fetchImpl.mock.calls.some(([url]) => String(url).includes("/commits/sha-1/check-runs"))).toBe(true);
+    expect(
+      onReviewActivity.mock.calls.flatMap(([events]) => events).some((event) => event.kind === "pr-checks-failed"),
+    ).toBe(true);
+  });
+
+  test("does not request checks without a matching rule and retains the existing baseline", async () => {
+    const prKey = createPullRequestKey("gh-main", "acme", "web", 42);
+    const { manager, fetchImpl, reviewStore } = createManager({
+      trackedPullRequests: { [prKey]: { lastChecksSignature: "1:0:0" } },
+      fetchOverrides: {
+        searchItems: [searchItem("acme", "web", 42)],
+        prsByNumber: { 42: defaultPr("acme", "web", 42) },
+      },
+    });
+    await manager.sync({ connections: [connection] });
+    expect(fetchImpl.mock.calls.some(([url]) => String(url).includes("/check-runs"))).toBe(false);
+    expect(reviewStore.getTrackedPullRequest(prKey)?.lastChecksSignature).toBe("1:0:0");
+  });
+
+  test("passes freshly polled check details to the automation observer", async () => {
+    const onAutomationChecks = vi.fn();
+    const { manager } = createManager({
+      fetchOverrides: {
+        searchItems: [searchItem("acme", "web", 42)],
+        prsByNumber: { 42: defaultPr("acme", "web", 42) },
+        checkRunsByRef: { "sha-1": [{ id: 5, name: "CI", status: "in_progress" }] },
+      },
+      wantsAutomationChecks: () => true,
+      onAutomationChecks,
+    });
+    await manager.sync({ connections: [connection] });
+    expect(onAutomationChecks).toHaveBeenCalledWith(
+      expect.objectContaining({
+        checks: expect.objectContaining({ items: [expect.objectContaining({ id: "check:5", state: "pending" })] }),
+      }),
+      expect.any(String),
+    );
+  });
+
+  test("keeps the prior check baseline when the provider request fails", async () => {
+    const prKey = createPullRequestKey("gh-main", "acme", "web", 42);
+    const { manager, fetchImpl, reviewStore } = createManager({
+      trackedPullRequests: { [prKey]: { lastChecksSignature: "0:1:0" } },
+      fetchOverrides: {
+        searchItems: [searchItem("acme", "web", 42)],
+        prsByNumber: { 42: defaultPr("acme", "web", 42) },
+      },
+      wantsAutomationChecks: () => true,
+    });
+    const original = fetchImpl.getMockImplementation()!;
+    fetchImpl.mockImplementation(async (url, options) => {
+      if (String(url).includes("/check-runs")) throw new Error("offline");
+      return original(url, options);
+    });
+    await manager.sync({ connections: [connection] });
+    expect(reviewStore.getTrackedPullRequest(prKey)?.lastChecksSignature).toBe("0:1:0");
+  });
+
+  test("limits additional check fetches to 20 PRs per sync", async () => {
+    const numbers = Array.from({ length: 22 }, (_, index) => index + 1);
+    const { manager, fetchImpl } = createManager({
+      fetchOverrides: {
+        searchItems: numbers.map((number) => searchItem("acme", "web", number)),
+        prsByNumber: Object.fromEntries(numbers.map((number) => [number, defaultPr("acme", "web", number)])),
+      },
+      wantsAutomationChecks: () => true,
+    });
+    await manager.sync({ connections: [connection] });
+    expect(fetchImpl.mock.calls.filter(([url]) => String(url).includes("/check-runs"))).toHaveLength(20);
+    fetchImpl.mockClear();
+    await manager.sync({ connections: [connection] });
+    expect(fetchImpl.mock.calls.filter(([url]) => String(url).includes("/check-runs"))).toHaveLength(2);
+  });
+  test("continues polling unchecked PRs when the last checked PR disappears", async () => {
+    const numbers = Array.from({ length: 22 }, (_, index) => index + 1);
+    const searchItems = numbers.map((number) => searchItem("acme", "web", number));
+    const { manager, fetchImpl } = createManager({
+      fetchOverrides: {
+        searchItems,
+        prsByNumber: Object.fromEntries(numbers.map((number) => [number, defaultPr("acme", "web", number)])),
+      },
+      wantsAutomationChecks: () => true,
+    });
+    await manager.sync({ connections: [connection] });
+    searchItems.splice(19, 1);
+    fetchImpl.mockClear();
+    await manager.sync({ connections: [connection] });
+    expect(fetchImpl.mock.calls.filter(([url]) => String(url).includes("/check-runs"))).toHaveLength(2);
+  });
+});
+
+describe("automation PR closure polling", () => {
+  test("finds a merged PR without a review workspace once, retaining metadata across restart", async () => {
+    const searchItems = [searchItem("acme", "web", 42)];
+    const prsByNumber = { 42: defaultPr("acme", "web", 42, { body: "private text" }) };
+    const onAutomationClosure = vi.fn().mockResolvedValue(undefined);
+    const { manager, reviewStore, fetchImpl } = createManager({
+      fetchOverrides: { searchItems, prsByNumber },
+      wantsAutomationClosure: () => true,
+      onAutomationClosure,
+    });
+    await manager.sync({ connections: [connection] });
+    const prKey = createPullRequestKey("gh-main", "acme", "web", 42);
+    expect(JSON.stringify(reviewStore.getTrackedPullRequest(prKey)?.automationPrReference)).not.toContain(
+      "private text",
+    );
+    searchItems.length = 0;
+    prsByNumber[42] = defaultPr("acme", "web", 42, { state: "closed", merged_at: "2026-03-17T10:00:00Z" });
+    // A fresh manager has no in-memory PR snapshot; it uses the persisted reference.
+    const restarted = new GitHubManager({
+      credentialStore: createCredentialStore({ "cred:gh-main": "token" }) as never,
+      reviewStore: reviewStore as never,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      wantsAutomationClosure: () => true,
+      onAutomationClosure,
+    });
+    await restarted.sync({ connections: [connection] });
+    await restarted.sync({ connections: [connection] });
+    expect(onAutomationClosure).toHaveBeenCalledOnce();
+    expect(onAutomationClosure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "pr-merged",
+        profileId: "default",
+        pr: expect.objectContaining({ pullRequestNumber: 42, headSha: "sha-1" }),
+      }),
+    );
+  });
+  test("retries a closure if durable delivery fails", async () => {
+    const searchItems = [searchItem("acme", "web", 42)];
+    const prsByNumber = { 42: defaultPr("acme", "web", 42) };
+    const onAutomationClosure = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("journal unavailable"))
+      .mockResolvedValue(undefined);
+    const { manager } = createManager({
+      fetchOverrides: { searchItems, prsByNumber },
+      wantsAutomationClosure: () => true,
+      onAutomationClosure,
+    });
+    await manager.sync({ connections: [connection] });
+    searchItems.length = 0;
+    prsByNumber[42] = defaultPr("acme", "web", 42, { state: "closed", closed_at: "2026-03-17T10:00:00Z" });
+    await manager.sync({ connections: [connection] });
+    await manager.sync({ connections: [connection] });
+    expect(onAutomationClosure).toHaveBeenCalledTimes(2);
+    expect(onAutomationClosure.mock.calls[0]?.[0].id).toBe(onAutomationClosure.mock.calls[1]?.[0].id);
+  });
+  test("does not resolve a reference after its connection moves to another profile", async () => {
+    const searchItems = [searchItem("acme", "web", 42)];
+    const prsByNumber = { 42: defaultPr("acme", "web", 42) };
+    const onAutomationClosure = vi.fn().mockResolvedValue(undefined);
+    const { manager, fetchImpl } = createManager({
+      fetchOverrides: { searchItems, prsByNumber },
+      wantsAutomationClosure: () => true,
+      onAutomationClosure,
+    });
+    await manager.sync({ connections: [connection] });
+    searchItems.length = 0;
+    fetchImpl.mockClear();
+    await manager.sync({ connections: [{ ...connection, profileId: "other" }] });
+    expect(onAutomationClosure).not.toHaveBeenCalled();
+    expect(fetchImpl.mock.calls.some(([url]) => String(url).includes("/pulls/42"))).toBe(false);
+  });
+  test("does not interpret a failed inbox poll as a closed PR", async () => {
+    const searchItems = [searchItem("acme", "web", 42)];
+    const prsByNumber = { 42: defaultPr("acme", "web", 42) };
+    const onAutomationClosure = vi.fn().mockResolvedValue(undefined);
+    const { manager, fetchImpl } = createManager({
+      fetchOverrides: { searchItems, prsByNumber },
+      wantsAutomationClosure: () => true,
+      onAutomationClosure,
+    });
+    await manager.sync({ connections: [connection] });
+    const original = fetchImpl.getMockImplementation()!;
+    fetchImpl.mockImplementation(async (url, options) => {
+      if (String(url).includes("/search/issues")) throw new Error("offline");
+      return original(url, options);
+    });
+    fetchImpl.mockClear();
+    await manager.sync({ connections: [connection] });
+    expect(onAutomationClosure).not.toHaveBeenCalled();
+    expect(fetchImpl.mock.calls.some(([url]) => String(url).includes("/pulls/42"))).toBe(false);
+  });
+  test("does not probe vanished PRs when no enabled rule needs closure events", async () => {
+    const searchItems = [searchItem("acme", "web", 42)];
+    const prsByNumber = { 42: defaultPr("acme", "web", 42) };
+    let enabled = true;
+    const onAutomationClosure = vi.fn().mockResolvedValue(undefined);
+    const { manager, fetchImpl } = createManager({
+      fetchOverrides: { searchItems, prsByNumber },
+      wantsAutomationClosure: () => enabled,
+      onAutomationClosure,
+    });
+    await manager.sync({ connections: [connection] });
+    searchItems.length = 0;
+    enabled = false;
+    fetchImpl.mockClear();
+    await manager.sync({ connections: [connection] });
+    expect(onAutomationClosure).not.toHaveBeenCalled();
+    expect(fetchImpl.mock.calls.some(([url]) => String(url).includes("/pulls/42"))).toBe(false);
+  });
+});
 
 describe("GitHubManager createPullRequestForWorkspace audit", () => {
   test("records one successful user-initiated PR creation", async () => {

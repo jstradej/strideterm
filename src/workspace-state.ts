@@ -67,6 +67,7 @@ export function getParentWorkspaceId(ws: WorkspaceWithParentRefs): string | null
   if (ws.kind === "jira-board" && ws.jiraBoard?.parentWorkspaceId) return ws.jiraBoard.parentWorkspaceId;
   if (ws.quickfix?.parentWorkspaceId) return ws.quickfix.parentWorkspaceId;
   if (ws.task?.parentWorkspaceId) return ws.task.parentWorkspaceId ?? null;
+  if (ws.automation?.parentWorkspaceId) return ws.automation.parentWorkspaceId;
   return null;
 }
 

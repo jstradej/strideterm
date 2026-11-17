@@ -1,3 +1,13 @@
+import type {
+  AutomationCreateInput,
+  AutomationUpdateInput,
+  AutomationSetEnabledInput,
+  AutomationRunNowInput,
+  AutomationRunRefInput,
+  AutomationRunsInput,
+  AutomationDeleteRunsInput,
+  AutomationSetPausedInput,
+} from "./automation-api.js";
 import type { StatePayload, RecoveryResult } from "./types/state.js";
 import type { JiraWorkspaceViewInput, JiraWorkspaceViewsState } from "./types/jira-workspace-views.js";
 import type { JiraSmartFilterId } from "./jira-smart-filters.js";
@@ -738,6 +748,15 @@ export interface StridetermAPI {
   testOpencodeHook: () => Promise<unknown>;
   getNotificationMetrics: () => Promise<unknown>;
 
+  createAutomation: (payload: AutomationCreateInput) => Promise<unknown>;
+  updateAutomation: (payload: AutomationUpdateInput) => Promise<unknown>;
+  setAutomationEnabled: (payload: AutomationSetEnabledInput) => Promise<unknown>;
+  runAutomationNow: (payload: AutomationRunNowInput) => Promise<unknown>;
+  stopAutomationRun: (payload: AutomationRunRefInput) => Promise<unknown>;
+  listAutomationRuns: (payload: AutomationRunsInput) => Promise<unknown>;
+  deleteAutomationRuns: (payload: AutomationDeleteRunsInput) => Promise<{ deleted: number }>;
+  getAutomationRunResult: (payload: AutomationRunRefInput) => Promise<unknown>;
+  setAutomationsPaused: (payload: AutomationSetPausedInput) => Promise<unknown>;
   // Task runner
   recheckClaude: () => Promise<unknown>;
   checkProviders: () => Promise<unknown>;
@@ -1151,6 +1170,7 @@ export interface StridetermAPI {
   onAzureClosedPrCleanupFinished: (handler: (payload: unknown) => void) => void;
   /** A long-running runtime operation finished. UNVALIDATED here; parsed at the transport boundary. */
   onOperationFinished: (handler: (payload: unknown) => void) => () => void;
+  onAutomationRunFinished: (handler: (payload: unknown) => void) => () => void;
   onReviewGitOperation: (handler: (payload: unknown) => void) => void;
   /** A sandbox is waiting on a destination (desktop windows only). UNVALIDATED here; parsed at the transport boundary. */
   onSandboxDenied: (handler: (payload: unknown) => void) => () => void;

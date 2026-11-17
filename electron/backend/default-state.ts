@@ -1,5 +1,7 @@
 /// <reference types="node" />
 import os from "node:os";
+import { automationStateSchema } from "../shared/automation.js";
+import type { AutomationState } from "../shared/automation.js";
 import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { APP_CONFIG } from "../../config/app-config.js";
@@ -247,6 +249,7 @@ const KNOWN_VIEW_PREFIXES = [
   "sftp:",
   "browser:",
   "task-dashboard:",
+  "automation-dashboard:",
 ];
 const JIRA_AUTH_KINDS = new Set(["cloud-api-token", "dc-pat", "dc-apim"]);
 const VALID_SPLIT_LAYOUTS = new Set(["cols", "rows", "top-split", "left-split", "grid"]);
@@ -291,6 +294,7 @@ function isValidWorkspaceViewId(viewId: unknown, workspaceId: string, panels: Ar
 function panelViewId(panel: { id: string; command?: string } | null | undefined, workspaceId: string): string | null {
   if (!panel) return null;
   if (panel.command === "__task-dashboard__") return `task-dashboard:${panel.id}`;
+  if (panel.command === "__automation-dashboard__") return `automation-dashboard:${panel.id}`;
   if (panel.command === "__files__") return `files:${panel.id}`;
   if (panel.command === "__sftp__") return `sftp:${panel.id}`;
   if (/^https?:\/\//i.test(panel.command || "")) return `browser:${panel.id}`;
@@ -443,6 +447,17 @@ export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
   const isAzureWorkspace = workspace.kind === "azure";
   const isGitHubWorkspace = workspace.kind === "github";
   const isTaskWorkspace = workspace.kind === "task";
+  const isAutomationWorkspace = workspace.kind === "automation";
+  const parsedAutomation = isAutomationWorkspace ? automationStateSchema.safeParse(workspace.automation) : null;
+  const automation = isAutomationWorkspace
+    ? parsedAutomation?.success
+      ? parsedAutomation.data
+      : ({
+          ...(workspace.automation && typeof workspace.automation === "object" ? workspace.automation : {}),
+          enabled: false,
+          disabledReason: "invalid-definition",
+        } as AutomationState)
+    : undefined;
   const isJiraBoardWorkspace = workspace.kind === "jira-board";
   const rawJiraBoardProjectKeys: unknown = workspace.jiraBoard?.projectKeys;
   const jiraBoardProjectKeys =
@@ -584,6 +599,15 @@ export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
           role: workspace.review.role || "",
           sourceRepository: normalizeReviewSourceRepository(workspace.review.sourceRepository),
           sourceBaselineSha: normalizeSourceBaselineSha(workspace.review.sourceBaselineSha),
+          ...(typeof workspace.review.automationRun?.workspaceId === "string" &&
+          typeof workspace.review.automationRun?.runId === "string"
+            ? {
+                automationRun: {
+                  workspaceId: workspace.review.automationRun.workspaceId,
+                  runId: workspace.review.automationRun.runId,
+                },
+              }
+            : {}),
           checkout: workspace.review.checkout
             ? {
                 mode: workspace.review.checkout.mode || "",
@@ -607,8 +631,13 @@ export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
         }
       : null,
     starred: Boolean(workspace.starred),
+    ...(automation ? { automation } : {}),
     // Never on a task workspace: the Worker/Judge pair must not inherit the right to create tasks.
-    internalMcpEnabled: workspace.kind !== "task" && !isJiraBoardWorkspace && workspace.internalMcpEnabled === true,
+    internalMcpEnabled:
+      workspace.kind !== "task" &&
+      !isAutomationWorkspace &&
+      !isJiraBoardWorkspace &&
+      workspace.internalMcpEnabled === true,
     sshMcpEnabled: workspace.kind !== "task" && !isJiraBoardWorkspace && workspace.sshMcpEnabled === true,
     // A task workspace carries it: its Worker and Judge run inside the sandbox of the workspace it came from.
     sandboxEnabled: !isJiraBoardWorkspace && workspace.sandboxEnabled === true,
@@ -723,6 +752,7 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
         sessionIdleTtlMinutes: 1440,
         sessionAbsoluteTtlMinutes: 10080,
       },
+      automations: { paused: false },
       taskDefaults: {
         workerProvider: { providerId: "claude", model: "sonnet" },
         judgeProvider: { providerId: "claude", model: "opus" },
@@ -1042,7 +1072,10 @@ function groupChildWorkspaces(workspaces: WorkspaceState[]): WorkspaceState[] {
     const childProfile = workspace.profileId || "default";
     // Exclude task workspaces and other worktree children — only real root workspaces can be parents.
     const isEligibleParent = (c: WorkspaceState) =>
-      c.id !== workspace.id && c.kind !== "task" && !(c.notes || "").startsWith("Worktree of ");
+      c.id !== workspace.id &&
+      c.kind !== "task" &&
+      c.kind !== "automation" &&
+      !(c.notes || "").startsWith("Worktree of ");
     return (
       candidates.find((c) => isEligibleParent(c) && (c.profileId || "default") === childProfile) ||
       candidates.find((c) => isEligibleParent(c)) ||
@@ -1560,6 +1593,7 @@ export function normalizeState(
   const normalizedSettings = {
     ...defaults.settings,
     ...rawSettings,
+    automations: { paused: rawSettings.automations?.paused === true },
     logLevel: VALID_LOG_LEVELS.includes(rawLogLevel) ? rawLogLevel : defaults.settings.logLevel,
     externalEditor: typeof rawExternalEditor === "string" ? rawExternalEditor : defaults.settings.externalEditor,
     notifications: {

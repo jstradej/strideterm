@@ -44,6 +44,26 @@ function stateWith(panels: ReturnType<typeof panel>[], activePanelId: string, ki
 }
 
 describe("ensureVisibleSession deferred spawning", () => {
+  it("tracks automation agent output but not its dashboard", () => {
+    const { manager } = makeManager(stateWith([], "", "automation"));
+    const workspace = { id: "w", kind: "automation" } as never;
+    expect(manager.shouldTrackProjectAlert(workspace, { id: "agent", command: "claude", shell: false } as never)).toBe(
+      true,
+    );
+    expect(
+      manager.shouldTrackProjectAlert(workspace, {
+        id: "dash",
+        command: "__automation-dashboard__",
+        shell: false,
+      } as never),
+    ).toBe(false);
+    expect(
+      manager.shouldTrackProjectAlert(
+        { id: "w", kind: "terminal" } as never,
+        { id: "other", command: "other", shell: false } as never,
+      ),
+    ).toBe(false);
+  });
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 

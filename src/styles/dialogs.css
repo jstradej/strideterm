@@ -420,10 +420,17 @@ button.workspace-chip--alert:hover {
   min-width: 0;
 }
 
-.tab > small:empty::before {
-  /* Preserve vertical space when the status chip is hidden so tab height
-     does not jitter on command start/finish transitions. */
-  content: "\00a0";
+.tab > .tab__status {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 16px;
+}
+
+.tab__status-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .tab:hover {
@@ -465,6 +472,7 @@ button.workspace-chip--alert:hover {
   [data-view-id^="files:"],
   [data-view-id^="browser:"],
   [data-view-id^="task-dashboard:"],
+  [data-view-id^="automation-dashboard:"],
   [data-view-id^="jira:"]
 ) {
   background: var(--surface-pane);
@@ -593,8 +601,13 @@ button.workspace-chip--alert:hover {
 
 /* A tab whose agent runs in the sandbox. Says "isolated", never "safe": the tooltip lists what is not protected. */
 .tab__isolated {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   background: rgba(var(--tint), 0.12);
-  color: var(--text-secondary, #aaa);
+  color: var(--muted);
   font-size: 9px;
   font-weight: 700;
   padding: 1px 4px;

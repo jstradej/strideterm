@@ -271,6 +271,7 @@ import {
   isSftpViewId,
   isBrowserViewId,
   isTaskDashboardViewId,
+  isAutomationDashboardViewId,
 } from "../../app/helpers.js";
 import { jiraViewIdFromTab } from "../../app/jira-view-tabs.js";
 
@@ -296,7 +297,8 @@ const isTerminal = computed(() => {
     !isFilesViewId(id) &&
     !isSftpViewId(id) &&
     !isBrowserViewId(id) &&
-    !isTaskDashboardViewId(id)
+    !isTaskDashboardViewId(id) &&
+    !isAutomationDashboardViewId(id)
   );
 });
 

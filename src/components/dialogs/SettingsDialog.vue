@@ -146,6 +146,30 @@
 
     <div v-if="activeTab === 'general'" class="settings-tab-content">
       <SettingsGeneralTab :api="api" :themes="THEMES" :log-levels="LOG_LEVELS" :hook-settings="hookSettings" />
+      <section class="automation-settings">
+        <h3>
+          Automations
+          <HelpTooltip
+            label="Global automation pause help"
+            text="Pause blocks new scheduled, event and manual starts across all profiles. Active runs continue. Pending events remain queued, and schedules follow Missed runs after resume."
+          />
+        </h3>
+        <p>Pause scheduled and event-driven starts across all profiles.</p>
+        <button
+          type="button"
+          class="button button--ghost"
+          :disabled="automationPauseBusy"
+          :aria-pressed="automationPaused"
+          :title="
+            automationPaused
+              ? 'Resume starts in all profiles and process queued work.'
+              : 'Pause new starts in all profiles; active runs continue.'
+          "
+          @click="toggleAutomationPause"
+        >
+          {{ automationPaused ? "Resume automations" : "Pause automations" }}
+        </button>
+      </section>
     </div>
 
     <div v-else-if="activeTab === 'templates'" class="form settings-tab-content">
@@ -296,6 +320,7 @@
 </template>
 
 <script setup lang="ts">
+import HelpTooltip from "../common/HelpTooltip.vue";
 import { computed, inject, provide, reactive, ref, toRaw, watch } from "vue";
 import { apiKey } from "../../types/keys.js";
 import type { Transport } from "../../transport.js";
@@ -375,6 +400,7 @@ interface ProfileSetting {
 }
 
 interface SettingsObj {
+  automations?: { paused?: boolean };
   theme?: string;
   logLevel?: string;
   externalEditor?: string;
@@ -469,6 +495,29 @@ const emit = defineEmits<{
 
 const api = inject<Transport>(apiKey);
 const hookSettings = reactive(useAgentHookSettings(api));
+const automationPaused = ref(props.settings?.automations?.paused === true);
+watch(
+  () => props.settings?.automations?.paused,
+  (value) => {
+    if (typeof value === "boolean") automationPaused.value = value;
+  },
+);
+const automationPauseBusy = ref(false);
+async function toggleAutomationPause() {
+  if (!api?.setAutomationsPaused || automationPauseBusy.value) return;
+  automationPauseBusy.value = true;
+  try {
+    const paused = !automationPaused.value;
+    const result = await api.setAutomationsPaused({ paused });
+    automationPaused.value = paused;
+    if (result && typeof result === "object" && "appState" in result)
+      useAppStore().handleBroadcastPayload(result as never);
+  } catch (error) {
+    useNotificationStore().showError("Could not change automation pause", error);
+  } finally {
+    automationPauseBusy.value = false;
+  }
+}
 
 // Mobile pairing/device management is Electron/desktop-only (plan §10.5) —
 // the remote-HTTP transport never implements createMobilePairingInvitation

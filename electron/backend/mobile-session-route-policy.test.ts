@@ -354,6 +354,15 @@ const MOBILE_ROUTE_CLASSIFICATION: Record<string, MobileRouteClass> = {
   "/api/task/answer-companion": "guarded",
   "/api/task/check-git-repo": "guarded",
   "/api/task/check-providers": "guarded",
+  "/api/automation/create": "guarded",
+  "/api/automation/update": "guarded",
+  "/api/automation/set-enabled": "guarded",
+  "/api/automation/run-now": "guarded",
+  "/api/automation/stop-run": "guarded",
+  "/api/automation/runs": "guarded",
+  "/api/automation/delete-runs": "guarded",
+  "/api/automation/run-result": "guarded",
+  "/api/automation/set-paused": "guarded",
   "/api/task/create": "guarded",
   "/api/task/create-companion": "guarded",
   "/api/task/pause": "guarded",
@@ -512,6 +521,27 @@ describe("mobile session route policy", () => {
       expect(decide("/api/settings/update", body), JSON.stringify(body)).toMatchObject({
         allow: false,
         reason: "route-not-available-to-mobile",
+      });
+    }
+  });
+
+  test("automation actions are profile guarded, including their parent on create", () => {
+    expect(decide("/api/automation/create", { parentWorkspaceId: "ws-work" })).toMatchObject({
+      allow: false,
+      reason: "target-outside-profile",
+    });
+    for (const route of [
+      "/api/automation/update",
+      "/api/automation/set-enabled",
+      "/api/automation/run-now",
+      "/api/automation/stop-run",
+      "/api/automation/runs",
+      "/api/automation/delete-runs",
+      "/api/automation/run-result",
+    ]) {
+      expect(decide(route, { workspaceId: "ws-work" }), route).toMatchObject({
+        allow: false,
+        reason: "target-outside-profile",
       });
     }
   });

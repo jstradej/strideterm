@@ -39,6 +39,7 @@ interface ReviewSummaryRef {
     isDraft?: boolean;
     headSha?: string;
     sourceCommitId?: string;
+    targetRefName?: string;
   };
   reviewWorkspaceId?: string;
   existingWorkspaceId?: string;
@@ -114,6 +115,7 @@ export function buildReviewActivityEvent({
   actor: unknown;
   draftState: "draft" | "ready";
   headSha: string;
+  targetBranch: string;
   commentTarget?: ReviewNotificationCommentTarget;
 } {
   const pullRequest = summary.pullRequest || {};
@@ -142,6 +144,7 @@ export function buildReviewActivityEvent({
     actor,
     draftState: pullRequest.draft || pullRequest.isDraft ? "draft" : "ready",
     headSha: pullRequest.headSha || pullRequest.sourceCommitId || "",
+    targetBranch: pullRequest.targetRefName || "",
     ...(commentTarget ? { commentTarget } : {}),
   };
 }
@@ -335,3 +338,7 @@ export function buildConnectionErrorEvent({
     actor: null,
   };
 }
+
+/** The two event shapes returned by the provider activity detectors. */
+export type ReviewActivityEvent =
+  ReturnType<typeof buildReviewActivityEvent> | NonNullable<ReturnType<typeof buildConnectionErrorEvent>>;

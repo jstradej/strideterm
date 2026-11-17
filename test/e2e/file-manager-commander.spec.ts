@@ -293,6 +293,10 @@ test("Commander layout browses two panels, previews a file and fits every size a
     await expect.poll(() => copyBody).toMatchObject({ fromPath: "package.json", toPath: "docs/package.json" });
     await expect(page.locator(".confirm-dialog")).toHaveCount(0);
 
+    // Put the cursor at the first row so ArrowDown has a row to move to after returning.
+    await page.locator(".fc").focus();
+    await page.keyboard.press("Home");
+    await expect(left.locator(".fcp__row--cursor")).toHaveCount(1);
     // Coming back to the Files tab puts the keyboard straight into the active panel.
     const cursorBefore = await left.locator(".fcp__row--cursor .fcp__name").textContent();
     await page.locator(".tab", { hasText: "Shell" }).first().click();
@@ -300,6 +304,9 @@ test("Commander layout browses two panels, previews a file and fits every size a
     await page.locator(".tab", { hasText: "Files" }).first().click();
     await expect(panels).toHaveCount(2);
     await expect(page.locator(".fc")).toBeFocused();
+    await expect(left).toHaveClass(/fcp--active/);
+    await expect(left.locator(".fcp__name", { hasText: "package.json" })).toBeVisible();
+    await expect(left.locator(".fcp__row--cursor .fcp__name")).toHaveText(cursorBefore ?? "");
     await page.keyboard.press("ArrowDown");
     await expect(left.locator(".fcp__row--cursor .fcp__name")).not.toHaveText(cursorBefore ?? "");
     await page.keyboard.press("ArrowUp");

@@ -73,6 +73,9 @@ export interface WorkspaceStatusCue {
 export interface WorkspaceStatusSource {
   kind?: string;
   taskState?: string | null;
+  automationState?: string | null;
+  automationNextRunAt?: string | null;
+  automationDisabledReason?: string | null;
   prStatus?: string | null;
   agentActivityState?: string | null;
   agentActivityLabel?: string;
@@ -90,7 +93,24 @@ export interface WorkspaceStatusSource {
  */
 export function resolveWorkspaceStatusCue(source: WorkspaceStatusSource | null | undefined): WorkspaceStatusCue | null {
   if (!source) return null;
-  const { kind, taskState, prStatus, agentActivityState, agentActivityLabel } = source;
+  const { kind, taskState, automationState, prStatus, agentActivityState, agentActivityLabel } = source;
+  if (kind === "automation") {
+    if (automationState === "running" || automationState === "starting")
+      return { state: "running", label: "Running", heartbeat: true };
+    if (automationState === "awaiting-user") return { state: "paused", label: "Waiting for you", heartbeat: false };
+    if (automationState === "disabled")
+      return {
+        state: "paused",
+        label: `Disabled${source.automationDisabledReason ? `: ${source.automationDisabledReason}` : ""}`,
+        heartbeat: false,
+      };
+    if (source.automationNextRunAt)
+      return {
+        state: "completed",
+        label: `Next run: ${new Date(source.automationNextRunAt).toLocaleString()}`,
+        heartbeat: false,
+      };
+  }
 
   if (kind === "task" && taskState) {
     if (isTaskRunningState(taskState)) return { state: "running", label: "Running…", heartbeat: true };

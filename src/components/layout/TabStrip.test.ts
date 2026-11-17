@@ -55,6 +55,30 @@ function makePayload(sessions: SessionInput[]): StatePayload {
 }
 
 describe("TabStrip", () => {
+  test("keeps an inactive automation grid cell's dashboard first and opens its canonical view", async () => {
+    const store = useAppStore();
+    const payload = makePayload([]);
+    payload.appState.workspaces.push({
+      id: "auto",
+      kind: "automation",
+      activeViewId: "automation-dashboard:dash",
+      panels: [
+        { id: "agent", title: "Agent", command: "claude" },
+        { id: "dash", title: "Dashboard", command: "__automation-dashboard__" },
+      ],
+    } as never);
+    store.payload = payload;
+    vi.spyOn(store, "activateWorkspace").mockResolvedValue(undefined);
+    const activate = vi.spyOn(store, "activateView").mockResolvedValue(undefined);
+    const wrapper = mount(TabStrip, { props: { compact: true, workspaceId: "auto" } });
+    const tabs = wrapper.findAll(".tab");
+    expect(tabs.map((tab) => tab.attributes("data-view-id"))).toEqual(["automation-dashboard:dash", "auto:agent"]);
+    expect(tabs[0]!.classes()).toContain("tab--active");
+    await tabs[0]!.trigger("click");
+    await flushPromises();
+    expect(activate).toHaveBeenCalledWith("automation-dashboard:dash");
+    wrapper.unmount();
+  });
   test("renders tab title and leaves status chip empty while session is idle", () => {
     const store = useAppStore();
     store.payload = makePayload([{ id: "ws1:shell", title: "Shell", status: "running" }]);
@@ -63,7 +87,7 @@ describe("TabStrip", () => {
     expect(tab.exists()).toBe(true);
     expect(tab.find("span").text()).toBe("Shell");
     // A live PTY with no active command shows no chip text — the old always-on
-    // "running" label was misleading. CSS preserves vertical space via ::before.
+    // "running" label was misleading. CSS preserves the status row's height.
     expect(tab.find("small").text()).toBe("");
   });
 
@@ -150,7 +174,7 @@ describe("TabStrip", () => {
     const gitTab = () => wrapper.get('[data-view-id="git:ws1"]');
     expect(gitTab().find(".tab__spinner").exists()).toBe(true);
     expect(gitTab().find("small").text()).toBe("2 dirty");
-    expect(gitTab().find("small").attributes("title")).toContain("last known Git data");
+    expect(gitTab().find(".tab__status-text").attributes("title")).toContain("last known Git data");
 
     store.payload = {
       ...base,
@@ -608,7 +632,14 @@ describe("TabStrip — isolated agent tabs", () => {
   });
 
   test("shows no label in a workspace that did not opt in", () => {
-    useAppStore().payload = isolatedPayload(false);
+    useAppStore().payload = isolatedPayload(false, { "ws1:agent": false });
     expect(mount(TabStrip).find('[data-testid="tab-isolated"]').exists()).toBe(false);
+  });
+  test("keeps the actual process label when isolation is disabled for future launches", () => {
+    useAppStore().payload = isolatedPayload(false, { "ws1:agent": true });
+    const wrapper = mount(TabStrip);
+    expect(wrapper.get('[data-testid="tab-isolated"]').text()).toBe("isolated");
+    expect(wrapper.find('[data-testid="tab-restart-to-isolate"]').exists()).toBe(false);
+    wrapper.unmount();
   });
 });

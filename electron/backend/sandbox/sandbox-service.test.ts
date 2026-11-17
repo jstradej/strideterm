@@ -160,6 +160,30 @@ describe("SandboxService", () => {
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 
+  it("uses a writable workspace temp folder and the current installation's readable hook script", async () => {
+    const hooks = path.join(dataDir, "hooks");
+    mkdirSync(hooks);
+    const script = path.join(hooks, "notify.mjs");
+    writeFileSync(script, "// installed hook");
+    await service.prepare(baseContext());
+    const launch = service.wrap(
+      wrapContext({ TMPDIR: "/var/folders/host-only/T/", TMP: "/private/host-temp", TEMP: "/private/host-temp" }),
+    );
+    const config = launchConfig();
+    const tempHome = path.join(dataDir, "sandbox", "workspace-homes", "w1", "tmp");
+    expect(launch.env).toMatchObject({
+      TMPDIR: `${tempHome}/`,
+      TMP: tempHome,
+      TEMP: tempHome,
+      CLAUDE_CODE_TMPDIR: tempHome,
+    });
+    expect(config.ensureDirs).toContain(tempHome);
+    expect(config.runtime.filesystem.allowWrite).toContain(tempHome);
+    expect(config.runtime.filesystem.allowRead).toContain(hooks);
+    expect(config.notifyScript).toBe(script);
+    expect(config.runtime.filesystem.allowWrite).not.toContain("/var/folders/host-only/T/");
+  });
+
   it("gives each workspace its own Gradle home outside the shared cache and shares only the downloaded artifacts", async () => {
     writeFileSync(path.join(workspaceDir, "build.gradle"), "");
     const launches: Array<ReturnType<typeof launchConfig>> = [];
@@ -457,6 +481,10 @@ describe("SandboxService", () => {
       (item: { dir: string }) => item.dir === `${config.homeOverride}/${folder}`,
     );
     expect(mirror.exclude).toEqual(expect.arrayContaining(excluded));
+    if (provider === "codex") {
+      expect(mirror.localSqlite).toBe(true);
+      expect(config.runtime.filesystem.allowWrite).toContain(config.homeOverride);
+    }
     expect(config.seededFiles).toEqual(
       expect.arrayContaining(
         excluded.map((name) =>
@@ -698,6 +726,10 @@ describe("SandboxService", () => {
         service.pollDenials();
         expect(settled.some((item) => item.id === "r-5" && item.state === "expired")).toBe(true);
         expect(service.decide("r-5", true)).toBe(false);
+        expect(service.listAutomationRequests(new Set(["other"]))).toEqual([]);
+        expect(service.listAutomationRequests(new Set(["w1"]))).toMatchObject([{ id: "r-5", state: "expired" }]);
+        workspaceDomains = ["slow.example.org"];
+        expect(service.listAutomationRequests(new Set(["w1"]))).toEqual([]);
       } finally {
         vi.useRealTimers();
       }

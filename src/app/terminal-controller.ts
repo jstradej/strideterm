@@ -569,13 +569,12 @@ export function createTerminalController({
     if (api.isRemote) return;
     if (getOverlay()) return;
     const activeSessionId = getActiveSessionId();
-    const activeView = activeSessionId ? views.value.get(activeSessionId) : null;
-    if (!activeView) {
-      return;
-    }
+    if (!activeSessionId) return;
     window.requestAnimationFrame(() => {
-      if (getOverlay()) return;
-      activeView.term.focus();
+      if (getOverlay() || getActiveSessionId() !== activeSessionId) return;
+      // A newly selected pane mounts on Vue's next tick. Looking up the view
+      // before the frame can miss its first attachment and lose focus entirely.
+      views.value.get(activeSessionId)?.term.focus();
     });
   }
 

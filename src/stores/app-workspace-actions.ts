@@ -31,6 +31,7 @@ import {
 } from "../../electron/shared/azure-closed-pr-cleanup-events.js";
 import {
   OPERATION_KIND_TASK_PROVISION,
+  OPERATION_KIND_AUTOMATION_PROVISION,
   operationFinishedSchema,
   type OperationFinished,
 } from "../../electron/shared/operation-events.js";
@@ -39,6 +40,11 @@ import { OPERATION_KIND_PIPELINE_AGENT, pipelineRunRelativeDir } from "../../ele
 import { OPERATION_KIND_JIRA_DEVELOPMENT } from "../../electron/shared/jira-development.js";
 import { useNotificationStore } from "./notifications.js";
 import { fireNotificationAlert } from "../composables/useNotificationSound.js";
+import { automationAgentChangeSchema } from "../../electron/shared/automation-agent-change.js";
+import {
+  automationRunFinishedSchema,
+  type AutomationRunFinished,
+} from "../../electron/shared/automation-events-channel.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -159,6 +165,16 @@ function rememberNotifiedOperation(operationId: string): void {
 
 /** Title and body of a finished operation's Notification Center entry. */
 function describeOperationFinished(operation: OperationFinished): { title: string; body: string; failed: boolean } {
+  if (operation.kind === OPERATION_KIND_AUTOMATION_PROVISION) {
+    if ("error" in operation)
+      return { title: "Automation could not be created", body: operation.error.message, failed: true };
+    const name = String(operation.result.name || "Automation");
+    return {
+      title: "Automation created",
+      body: `${name} is ready. The first run may ask you to trust its new checkout.`,
+      failed: false,
+    };
+  }
   if (operation.kind === OPERATION_KIND_TASK_PROVISION) {
     if ("error" in operation) {
       return { title: "Task agents could not be started", body: operation.error.message, failed: true };
@@ -589,6 +605,113 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     for (const result of results) {
       const parsed = operationFinishedSchema.safeParse(result);
       if (parsed.success) reportOperationFinished(parsed.data, { late: true });
+    }
+  }
+
+  const reportedAutomationIds = new Set<string>();
+  function reportAutomationRun(
+    run: AutomationRunFinished,
+    { late = false, finishedAt = new Date().toISOString() } = {},
+  ): void {
+    if (run.profileId !== ctx.myActiveProfileId.value || reportedAutomationIds.has(run.runId)) return;
+    reportedAutomationIds.add(run.runId);
+    const sourceAlertId = `automation:${run.runId}`;
+    if (late && loadNotifiedOperationIds().includes(sourceAlertId)) return;
+    rememberNotifiedOperation(sourceAlertId);
+    const notifications = useNotificationStore();
+    const workspace = ctx.payload.value?.appState?.workspaces?.find((ws) => ws.id === run.workspaceId);
+    const failed = ["failed", "timed-out", "interrupted"].includes(run.state);
+    const title = run.state === "succeeded" ? "Automation completed" : `Automation ${run.state}`;
+    const body = run.resultExcerpt || run.reason || workspace?.name || "Automation run finished";
+    const urgency = failed ? "urgent" : "normal";
+    const { event, inserted } = notifications.addAlertEvent({
+      title,
+      body,
+      kind: failed ? "error" : "completed",
+      tier: 2,
+      urgency,
+      workspaceId: run.workspaceId,
+      workspaceName: workspace?.name || "Automation",
+      viewId: `automation:${run.workspaceId}`,
+      category: "automation",
+      meta: { profileId: run.profileId, runId: run.runId },
+      sourceAlertId,
+      occurredAt: finishedAt,
+    });
+    if (!inserted) return;
+    if (run.disabledReason === "failures") {
+      notifications.addAlertEvent({
+        title: "Automation disabled",
+        body: "Disabled after repeated failures.",
+        kind: "error",
+        tier: 2,
+        urgency: "urgent",
+        workspaceId: run.workspaceId,
+        workspaceName: workspace?.name || "Automation",
+        viewId: `automation:${run.workspaceId}`,
+        category: "automation",
+        meta: { profileId: run.profileId, runId: run.runId },
+        sourceAlertId: `automation-disabled:${run.runId}`,
+        occurredAt: finishedAt,
+      });
+    }
+    if (!notifications.pinned) notifications.pushToast({ ...event, category: "automation" });
+    fireNotificationAlert(event.title, event.body, {
+      tier: 2,
+      urgency,
+      sessionKey: sourceAlertId,
+      dedupeKey: sourceAlertId,
+    });
+  }
+
+  function reportAutomationRuns(results: unknown): void {
+    if (!Array.isArray(results)) return;
+    for (const item of results) {
+      if (!item || typeof item !== "object") continue;
+      const { finishedAt, ...value } = item as Record<string, unknown>;
+      const parsed = automationRunFinishedSchema.safeParse(value);
+      if (parsed.success && typeof finishedAt === "string" && Number.isFinite(Date.parse(finishedAt))) {
+        reportAutomationRun(parsed.data, { late: true, finishedAt });
+      }
+    }
+  }
+
+  function reportAutomationAgentChanges(results: unknown): void {
+    if (!Array.isArray(results)) return;
+    for (const item of results) {
+      const parsed = automationAgentChangeSchema.safeParse(item);
+      if (!parsed.success || parsed.data.profileId !== ctx.myActiveProfileId.value) continue;
+      const change = parsed.data;
+      const sourceAlertId = `automation-change:${change.changeId}`;
+      if (loadNotifiedOperationIds().includes(sourceAlertId)) continue;
+      rememberNotifiedOperation(sourceAlertId);
+      const notifications = useNotificationStore();
+      const title =
+        change.source === "system"
+          ? `Automation ${change.workspaceName} disabled`
+          : `Agent ${change.action} automation ${change.workspaceName}`;
+      const { event, inserted } = notifications.addAlertEvent({
+        title,
+        body: change.summary,
+        kind: "completed",
+        tier: 2,
+        urgency: "normal",
+        workspaceId: change.workspaceId,
+        workspaceName: change.workspaceName,
+        ...(change.action === "deleted" ? {} : { viewId: `automation:${change.workspaceId}` }),
+        category: "automation",
+        meta: { profileId: change.profileId },
+        sourceAlertId,
+        occurredAt: change.at,
+      });
+      if (!inserted) continue;
+      if (!notifications.pinned) notifications.pushToast({ ...event, category: "automation" });
+      fireNotificationAlert(event.title, event.body, {
+        tier: 2,
+        urgency: "normal",
+        sessionKey: sourceAlertId,
+        dedupeKey: sourceAlertId,
+      });
     }
   }
 
@@ -1666,6 +1789,9 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     reportAzureClosedPrCleanupRuns,
     reportOperationFinished,
     reportOperationRuns,
+    reportAutomationRun,
+    reportAutomationRuns,
+    reportAutomationAgentChanges,
     subscribeReviewAgentPreparation,
     getReviewAgentPreparationResult,
     saveWorkspace,

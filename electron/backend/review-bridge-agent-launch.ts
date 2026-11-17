@@ -90,6 +90,7 @@ interface ReviewPullRequest {
 }
 
 interface ReviewContext {
+  automationRunId?: string;
   rootPath?: string;
   prKey?: string;
   workspaceId?: string;
@@ -493,6 +494,7 @@ function buildMcpServerSpec({
     );
   }
   if (draftOnlyReview) args.push("--review-draft-only");
+  if (draftOnlyReview && context?.automationRunId) args.push("--review-automation-run-id", context.automationRunId);
 
   const sandboxed = sandboxMcpSpec(REVIEW_BRIDGE_STDIO_ENTRY, args, processInfo);
   if (sandboxed) return sandboxed;

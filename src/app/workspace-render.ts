@@ -186,13 +186,15 @@ export function buildWorkspaceCards({
     const jiraBranch = newBranch && workItems.length > 0;
     const parentIcon = byId.get(getParentWorkspaceId(workspace) || "")?.icon;
     const badgeGlyph =
-      isReviewChild && (!workspace.icon || workspace.icon === parentIcon)
-        ? jiraBranch
-          ? "jira-branch"
-          : newBranch
-            ? "new-branch"
-            : "review"
-        : null;
+      workspace.kind === "automation"
+        ? "automation"
+        : isReviewChild && (!workspace.icon || workspace.icon === parentIcon)
+          ? jiraBranch
+            ? "jira-branch"
+            : newBranch
+              ? "new-branch"
+              : "review"
+          : null;
     const liveTask = taskRunnerSnapshot?.[workspace.id];
     const taskState = liveTask?.state || workspace.task?.state;
     const agentActivity = agentActivityByWorkspace.get(workspace.id);

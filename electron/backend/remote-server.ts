@@ -1,3 +1,14 @@
+import { AUTOMATION_RUN_FINISHED_CHANNEL } from "../shared/automation-events-channel.js";
+import {
+  automationCreateSchema,
+  automationUpdateSchema,
+  automationSetEnabledSchema,
+  automationRunNowSchema,
+  automationRunRefSchema,
+  automationRunsSchema,
+  automationDeleteRunsSchema,
+  automationSetPausedSchema,
+} from "../shared/automation-api.js";
 /// <reference types="node" />
 import os from "node:os";
 import path from "node:path";
@@ -3989,6 +4000,33 @@ export async function startRemoteServer({
         validateIpc(githubQuickFixCreateSchema, body, "POST /api/github/quickfix/create"),
         windowId,
       ),
+    "/api/automation/create": (body, windowId) =>
+      runtime.createAutomation(validateIpc(automationCreateSchema, body, "POST /api/automation/create"), windowId),
+    "/api/automation/update": (body, windowId) =>
+      runtime.updateAutomation(validateIpc(automationUpdateSchema, body, "POST /api/automation/update"), windowId),
+    "/api/automation/set-enabled": (body, windowId) =>
+      runtime.setAutomationEnabled(
+        validateIpc(automationSetEnabledSchema, body, "POST /api/automation/set-enabled"),
+        windowId,
+      ),
+    "/api/automation/run-now": (body, windowId) =>
+      runtime.runAutomationNow(validateIpc(automationRunNowSchema, body, "POST /api/automation/run-now"), windowId),
+    "/api/automation/stop-run": (body, windowId) =>
+      runtime.stopAutomationRun(validateIpc(automationRunRefSchema, body, "POST /api/automation/stop-run"), windowId),
+    "/api/automation/runs": (body, windowId) =>
+      runtime.listAutomationRuns(validateIpc(automationRunsSchema, body, "POST /api/automation/runs"), windowId),
+    "/api/automation/delete-runs": (body, windowId) =>
+      runtime.deleteAutomationRuns(
+        validateIpc(automationDeleteRunsSchema, body, "POST /api/automation/delete-runs"),
+        windowId,
+      ),
+    "/api/automation/run-result": (body, windowId) =>
+      runtime.getAutomationRunResult(
+        validateIpc(automationRunRefSchema, body, "POST /api/automation/run-result"),
+        windowId,
+      ),
+    "/api/automation/set-paused": (body, windowId) =>
+      runtime.setAutomationsPaused(validateIpc(automationSetPausedSchema, body, "POST /api/automation/set-paused")),
     "/api/task/create": (body, windowId) =>
       runtime.createTaskWorkspace(validateIpc(taskWorkspaceCreateSchema, body, "POST /api/task/create"), windowId),
     "/api/git/create-worktree": (body, windowId) => runtime.createWorktree(body, windowId),
@@ -4746,9 +4784,50 @@ export async function startRemoteServer({
             });
             return;
           }
+          const automationOperation = (
+            {
+              "/api/automation/create": "create",
+              "/api/automation/update": "update",
+              "/api/automation/set-enabled": body.enabled === true ? "enable" : "disable",
+              "/api/automation/run-now": "run",
+              "/api/automation/stop-run": "stop",
+              "/api/automation/delete-runs": "delete-history",
+            } as Record<string, string>
+          )[url.pathname];
+          const auditedSession = apiSessionId ? activeSessions.get(apiSessionId) : undefined;
+          const auditAutomation = (status: "success" | "failure", result?: unknown) => {
+            if (!automationOperation) return;
+            const createdId =
+              result && typeof result === "object" ? (result as { workspaceId?: unknown }).workspaceId : undefined;
+            const target = createdId || body.workspaceId || body.parentWorkspaceId || "";
+            recordMobileSessionAudit(
+              auditedSession,
+              "session.automation",
+              status,
+              `op=${automationOperation} workspace=${auditDetailValue(target)}`,
+            );
+          };
           try {
-            json(response, 200, await slotAwareHandler(body, viewerId));
+            const mobile = auditedSession?.origin === "mobile";
+            const result =
+              mobile && url.pathname === "/api/automation/create"
+                ? await runtime.createAutomation(
+                    validateIpc(automationCreateSchema, body, "POST /api/automation/create"),
+                    viewerId,
+                    undefined,
+                    "mobile",
+                  )
+                : mobile && url.pathname === "/api/automation/update"
+                  ? await runtime.updateAutomation(
+                      validateIpc(automationUpdateSchema, body, "POST /api/automation/update"),
+                      viewerId,
+                      "mobile",
+                    )
+                  : await slotAwareHandler(body, viewerId);
+            auditAutomation("success", result);
+            json(response, 200, result);
           } catch (err) {
+            auditAutomation("failure");
             const msg = errorMessage(err, "Slot operation failed");
             json(response, refusalStatus(err, msg), refusalBody(err, msg));
           }
@@ -5861,6 +5940,15 @@ export async function startRemoteServer({
     }),
     // The result of a long runtime operation: to every client bound to the profile it was accepted
     // in and to no other, so a mobile session never learns another profile's task.
+    runtime.on(AUTOMATION_RUN_FINISHED_CHANNEL, (payload: unknown) => {
+      const profileId = String((payload as { profileId?: unknown })?.profileId || "");
+      if (!profileId) return;
+      const serialized = JSON.stringify({ type: AUTOMATION_RUN_FINISHED_CHANNEL, payload });
+      for (const socket of sockets) {
+        const clientSessionId = socketSession.get(socket);
+        if (clientSessionId && registry.get(clientSessionId)?.profileId === profileId) checkedSend(socket, serialized);
+      }
+    }),
     runtime.on(OPERATION_FINISHED_CHANNEL, (payload: unknown) => {
       const eventProfileId = String((payload as { profileId?: unknown })?.profileId || "");
       if (!eventProfileId) return;

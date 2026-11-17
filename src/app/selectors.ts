@@ -559,11 +559,15 @@ export function getWorkspaceTabs({
   const filesPanelIds = new Set(panels.filter((p) => p.command === "__files__").map((p) => p.id));
   const sftpPanelIds = new Set(panels.filter((p) => p.command === "__sftp__").map((p) => p.id));
   const taskDashboardPanelIds = new Set(panels.filter((p) => p.command === "__task-dashboard__").map((p) => p.id));
+  const automationDashboardPanelIds = new Set(
+    panels.filter((p) => p.command === "__automation-dashboard__").map((p) => p.id),
+  );
   const nonTerminalPanelIds = new Set([
     ...browserPanelIds,
     ...filesPanelIds,
     ...sftpPanelIds,
     ...taskDashboardPanelIds,
+    ...automationDashboardPanelIds,
   ]);
 
   // Panels of THIS workspace whose tab is currently presented inside a
@@ -691,6 +695,19 @@ export function getWorkspaceTabs({
     }
   }
 
+  for (const panel of panels) {
+    if (automationDashboardPanelIds.has(panel.id))
+      tabs.push({
+        id: `automation-dashboard:${panel.id}`,
+        type: "automation-dashboard",
+        title: panel.title || "Dashboard",
+        status: "dashboard",
+        tone: "running",
+        persistent: true,
+        closable: false,
+      });
+  }
+
   if (activeWorkspace.kind === "docker") {
     let total: number;
     let runningCount: number;
@@ -753,6 +770,11 @@ export function getWorkspaceTabs({
     });
   }
 
+  // Terminal sessions are collected before virtual panels. Keep an automation's
+  // dashboard first even when an existing workspace has older panel ordering.
+  if (activeWorkspace.kind === "automation") {
+    tabs.sort((a, b) => Number(b.type === "automation-dashboard") - Number(a.type === "automation-dashboard"));
+  }
   return applyCompanionPrimaryProjection(tabs, activeWorkspace, payload).filter((tab) => !hiddenViewIds.has(tab.id));
 }
 

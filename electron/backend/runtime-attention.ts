@@ -550,11 +550,12 @@ export function createRuntimeAttentionManager({
     return Boolean(
       project &&
       panel &&
-      (project.kind === "terminal" || project.kind === "task") &&
+      (project.kind === "terminal" || project.kind === "task" || project.kind === "automation") &&
       !isKnownPluginProject(project) &&
       !panel.launch?.file &&
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (panel as any).shell !== false,
+      ((panel as any).shell !== false ||
+        (project.kind === "automation" && panel.command !== "__automation-dashboard__")),
     );
   }
 

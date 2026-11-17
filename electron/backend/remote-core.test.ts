@@ -222,6 +222,68 @@ function fullPayload() {
 }
 
 describe("buildRemoteCore", () => {
+  test("scopes automation summaries and recent runs to the remote profile", () => {
+    const payload = {
+      ...fullPayload(),
+      automations: {
+        paused: true,
+        byWorkspaceId: { ws1: { state: "running" }, ws2: { state: "failed", resultExcerpt: "private" } },
+        connections: [
+          { id: "c1", label: "One", source: "jira", profileId: "p1" },
+          { id: "c2", label: "private", source: "jira", profileId: "p2" },
+        ],
+        queries: [
+          { id: "q1", name: "One", connectionId: "c1", profileId: "p1" },
+          { id: "q2", name: "private", connectionId: "c2", profileId: "p2" },
+        ],
+        recentRuns: [
+          { workspaceId: "ws1", profileId: "p1", runId: "a" },
+          { workspaceId: "ws2", profileId: "p2", runId: "b", resultExcerpt: "private" },
+        ],
+        recentAgentChanges: [
+          {
+            changeId: "a",
+            workspaceId: "ws1",
+            profileId: "p1",
+            workspaceName: "One",
+            action: "created",
+            summary: "Daily",
+            at: "2026-01-01T00:00:00Z",
+          },
+          {
+            changeId: "b",
+            workspaceId: "ws2",
+            profileId: "p2",
+            workspaceName: "private",
+            action: "created",
+            summary: "private",
+            at: "2026-01-01T00:00:00Z",
+          },
+        ],
+      },
+    };
+    const core = buildRemoteCore(payload);
+    expect(core.automations).toEqual({
+      paused: true,
+      byWorkspaceId: { ws1: { state: "running" } },
+      connections: [{ id: "c1", label: "One", source: "jira", profileId: "p1" }],
+      queries: [{ id: "q1", name: "One", connectionId: "c1", profileId: "p1" }],
+      recentRuns: [{ workspaceId: "ws1", profileId: "p1", runId: "a" }],
+      recentAgentChanges: [
+        {
+          changeId: "a",
+          workspaceId: "ws1",
+          profileId: "p1",
+          workspaceName: "One",
+          action: "created",
+          summary: "Daily",
+          at: "2026-01-01T00:00:00Z",
+        },
+      ],
+    });
+    expect(JSON.stringify(core.automations)).not.toContain("private");
+  });
+
   test("advertises the protocol and keeps navigation/badge core", () => {
     const core = buildRemoteCore(fullPayload());
     expect(core.stateProtocol).toBe(REMOTE_STATE_PROTOCOL);

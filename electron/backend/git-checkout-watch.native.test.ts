@@ -32,6 +32,18 @@ it("observes native recursive create, repeated edits, rename and delete without 
   try {
     service.setTargets([{ key: root, root, gitDir, commonDir: gitDir }]);
     expect(service.getStats().watchers).toBe(2);
+    // Recursive native watches may register asynchronously (notably FSEvents).
+    // Establish delivery before testing the target file's create/change sequence.
+    const probe = path.join(directory, ".watch-ready");
+    await vi.waitFor(
+      async () => {
+        await fs.writeFile(probe, String(Date.now()));
+        expect(invalidations).toContain("watch");
+      },
+      { timeout: 5000, interval: 100 },
+    );
+    await fs.rm(probe);
+    invalidations.length = 0;
     await fs.writeFile(original, "first edit");
     await vi.waitFor(() => expect(observed).toBe("first edit"), { timeout: 5000 });
     await fs.writeFile(original, "second edit");

@@ -386,7 +386,11 @@ test.describe("Visual regression — split and task @visual", () => {
   let mockMulti: Awaited<ReturnType<typeof startMockServer>>;
   let mockTask: Awaited<ReturnType<typeof startMockServer>>;
   test.beforeAll(async () => {
-    mockMulti = await startMockServer({ fixture: "multi-workspace" });
+    // Simulate the first harmless PTY byte so screenshots capture ready panes, not startup spinners.
+    mockMulti = await startMockServer({
+      fixture: "multi-workspace",
+      terminalOutput: { "ws-frontend:panel-shell": "\r", "ws-frontend:panel-claude": "\r" },
+    });
     mockTask = await startMockServer({ fixture: "task-workspace" });
   });
   test.afterAll(async () => {

@@ -91,6 +91,15 @@ describe("internal MCP stdio end-to-end", () => {
 
     const listed = await client.listTools();
     expect(listed.tools.map((tool) => tool.name).sort()).toEqual([
+      "automation_create",
+      "automation_delete",
+      "automation_event_catalog",
+      "automation_get",
+      "automation_list",
+      "automation_run_now",
+      "automation_set_enabled",
+      "automation_stop_run",
+      "automation_update",
       "companion_answer",
       "companion_create",
       "companion_pause",

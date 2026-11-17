@@ -9,7 +9,12 @@ function explicitParentId(workspace: WorkspaceState): string {
   if (workspace.review?.checkout?.mode === "managed-worktree") {
     return workspace.review.parentWorkspaceId || "";
   }
-  return workspace.quickfix?.parentWorkspaceId || workspace.task?.parentWorkspaceId || "";
+  return (
+    workspace.quickfix?.parentWorkspaceId ||
+    workspace.task?.parentWorkspaceId ||
+    workspace.automation?.parentWorkspaceId ||
+    ""
+  );
 }
 
 function resolveParentId(workspace: WorkspaceState, workspaces: WorkspaceState[]): string {
@@ -28,6 +33,7 @@ function resolveParentId(workspace: WorkspaceState, workspaces: WorkspaceState[]
     (candidate) =>
       candidate.id !== workspace.id &&
       profileId(candidate) === ownerProfileId &&
+      candidate.kind !== "automation" &&
       !explicitParentId(candidate) &&
       !(candidate.notes || "").startsWith("Worktree of "),
   );

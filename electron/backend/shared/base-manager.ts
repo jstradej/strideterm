@@ -35,6 +35,12 @@ import {
 } from "../../shared/review-source-identity.js";
 import { parseMergeTreeConflicts, type LocalMergeCheck } from "../../shared/review-merge-check.js";
 import { errorMessage } from "../../shared/error-message.js";
+import {
+  automationPrReference,
+  automationPrTerminalEvent,
+  parseAutomationPrReference,
+  type AutomationPrReference,
+} from "../automations/automation-pr-closure.js";
 import type { ReviewInfo, ReviewSourceRepository } from "../../shared/types/state.js";
 import { createReviewGitEngine, type ReviewGitEngine } from "../review-git/engine.js";
 import { sharedReviewGitLocks, type ReviewGitLocks } from "../review-git/locks.js";
@@ -146,7 +152,7 @@ interface ReviewStore {
     data: any,
   ): Promise<void>;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  getState(): { connections?: Record<string, any> };
+  getState(): { connections?: Record<string, any>; trackedPullRequests?: Record<string, Record<string, unknown>> };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   getTrackedPullRequest(prKey: string): Record<string, any> | null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -183,7 +189,7 @@ interface SyncConnectionCtx {
   visibleSummaries: PrSummaryItem[];
   trackedPullRequests: Record<string, Record<string, unknown>>;
   detailMap: Record<string, PrSummaryItem>;
-  newActivityEvents: unknown[];
+  newActivityEvents: import("./review-activity.js").ReviewActivityEvent[];
   connectionSnapshot?: ConnectionSnapshotLike;
 }
 
@@ -196,6 +202,8 @@ interface ConnectionSnapshotLike {
 }
 
 interface SyncHooks {
+  wantsAutomationClosure?: (reference: AutomationPrReference) => boolean;
+  onAutomationClosure?: (event: import("../../shared/automation-events.js").AutomationEvent) => Promise<void>;
   /** Provider-specific connection snapshot shape (azure-devops-utils.ts /
    *  github-utils.ts each have their own createConnectionSnapshot). */
   createConnectionSnapshot(
@@ -349,6 +357,10 @@ interface BaseProviderManagerOptions {
   // does not show up as one of the git calls a test is counting.
   gitVersionImpl?: () => Promise<string>;
   now?: () => number;
+  onReviewActivity?: (
+    events: readonly import("./review-activity.js").ReviewActivityEvent[],
+    detectedAt: string,
+  ) => void;
   createApi: ApiFactory;
 }
 
@@ -394,6 +406,7 @@ export class BaseProviderManager extends EventEmitter {
   // Memoized "git >= 2.31" (GIT_CONFIG_* support); see runGit.
   supportsGitConfigEnv: () => Promise<boolean>;
   now: () => number;
+  onReviewActivity?: BaseProviderManagerOptions["onReviewActivity"];
   _auditConnectionId: string;
   _auditUserInitiated: boolean;
   api: Record<string, unknown>;
@@ -423,6 +436,7 @@ export class BaseProviderManager extends EventEmitter {
     execFileTextImpl = defaultExecFileText,
     gitVersionImpl = async () => (await defaultExecFileText("git", ["--version"])).stdout,
     now = () => Date.now(),
+    onReviewActivity,
     createApi,
   }: BaseProviderManagerOptions) {
     super();
@@ -434,6 +448,7 @@ export class BaseProviderManager extends EventEmitter {
     this.execFileText = execFileTextImpl;
     this.supportsGitConfigEnv = createGitConfigEnvProbe(gitVersionImpl);
     this.now = now;
+    this.onReviewActivity = onReviewActivity;
 
     this._auditConnectionId = "";
     this._auditUserInitiated = false;
@@ -526,7 +541,8 @@ export class BaseProviderManager extends EventEmitter {
     const visibleSummaries: PrSummaryItem[] = [];
     const detailMap: Record<string, PrSummaryItem> = { ...this.snapshot.pullRequests };
     const trackedPullRequests: Record<string, Record<string, unknown>> = {};
-    const newActivityEvents: unknown[] = [];
+    const newActivityEvents: import("./review-activity.js").ReviewActivityEvent[] = [];
+    const successfulConnections = new Set<string>();
 
     for (const connection of connections.filter((entry) => entry.enabled !== false)) {
       this.setAuditContext({ connectionId: connection.id, userInitiated: false });
@@ -568,6 +584,7 @@ export class BaseProviderManager extends EventEmitter {
           lastSyncAt: connectionSnapshot.lastSyncAt,
           lastSuccessAt: connectionSnapshot.lastSuccessAt,
         });
+        successfulConnections.add(connection.id);
       } catch (error) {
         connectionSnapshot.status = "error";
         connectionSnapshot.lastError = (error as Error).message || this.syncErrorFallbackMessage;
@@ -597,6 +614,21 @@ export class BaseProviderManager extends EventEmitter {
 
     // Resolve actual status for PRs with open workspaces that are no longer in the active poll.
     // Only fetches once — resolved status is persisted in detailMap so subsequent polls skip them.
+    if (hooks.wantsAutomationClosure && (this.providerLabel === "github" || this.providerLabel === "azure-devops")) {
+      for (const summary of visibleSummaries) {
+        const reference = automationPrReference(this.providerLabel, summary);
+        if (
+          reference &&
+          successfulConnections.has(reference.connectionId) &&
+          hooks.wantsAutomationClosure(reference) &&
+          trackedPullRequests[reference.prKey]
+        ) {
+          trackedPullRequests[reference.prKey].automationPrReference = reference;
+          trackedPullRequests[reference.prKey].automationPrResolved = false;
+        }
+      }
+    }
+    const staleResults = new Map<string, PrSummaryItem | null | undefined>();
     for (const ws of workspaces) {
       if (ws.review?.provider !== this.providerLabel || !ws.review?.prKey) continue;
       const key = ws.review.prKey;
@@ -607,7 +639,89 @@ export class BaseProviderManager extends EventEmitter {
       const token = conn && this.credentialStore.getSecret(conn.tokenRef || "");
       if (!conn || !token) continue;
       const resolved = await hooks.resolveStalePr(ws, existing, conn, token);
+      staleResults.set(key, resolved);
       if (resolved) detailMap[key] = resolved;
+    }
+
+    if (hooks.wantsAutomationClosure && hooks.onAutomationClosure) {
+      for (const [key, tracked] of Object.entries(reviewState.trackedPullRequests || {})) {
+        if (trackedPullRequests[key] || tracked.automationPrResolved === true) continue;
+        const reference = parseAutomationPrReference(tracked.automationPrReference);
+        if (
+          !reference ||
+          reference.source !== this.providerLabel ||
+          reference.prKey !== key ||
+          !successfulConnections.has(reference.connectionId) ||
+          !hooks.wantsAutomationClosure(reference)
+        )
+          continue;
+        const conn = connections.find((item) => item.id === reference.connectionId && item.enabled !== false);
+        if (conn && String(conn.profileId || "default") !== reference.profileId) continue;
+        const token = conn && this.credentialStore.getSecret(conn.tokenRef || "");
+        if (!conn || !token) continue;
+        let resolved: PrSummaryItem | undefined = detailMap[key];
+        if (!resolved || !hooks.isPrResolved(resolved)) {
+          if (staleResults.has(key)) resolved = staleResults.get(key) || undefined;
+          else {
+            const ws = {
+              review: {
+                provider: reference.source,
+                prKey: key,
+                connectionId: reference.connectionId,
+                repository: {
+                  id: reference.repositoryId,
+                  name: reference.repositoryName,
+                  fullName: reference.repositoryName,
+                },
+                project: { id: reference.projectId, name: reference.projectName },
+                pullRequest: { id: reference.pullRequestNumber, number: reference.pullRequestNumber },
+                automationProbe: true,
+              },
+            };
+            resolved = (await hooks.resolveStalePr(ws, resolved, conn, token)) || undefined;
+          }
+        }
+        if (!resolved || !hooks.isPrResolved(resolved)) continue;
+        if (!hooks.wantsAutomationClosure(reference)) continue;
+        const pr = resolved.pullRequest as
+          | {
+              state?: string;
+              status?: string;
+              mergedAt?: string | null;
+              closedAt?: string | null;
+              closedDate?: string | null;
+            }
+          | undefined;
+        if (
+          reference.source === "github"
+            ? pr?.state !== "closed"
+            : !["completed", "abandoned"].includes(pr?.status || "")
+        )
+          continue;
+        const kind =
+          reference.source === "github"
+            ? pr?.mergedAt
+              ? "pr-merged"
+              : "pr-closed"
+            : pr?.status === "completed"
+              ? "pr-merged"
+              : "pr-closed";
+        const detectedAt = new Date(this.now()).toISOString();
+        try {
+          await hooks.onAutomationClosure(
+            automationPrTerminalEvent(
+              reference,
+              kind,
+              detectedAt,
+              pr?.mergedAt || pr?.closedAt || pr?.closedDate || "",
+            ),
+          );
+          await this.reviewStore.upsertTrackedPullRequest(key, { automationPrResolved: true });
+          detailMap[key] = resolved;
+        } catch (error) {
+          this._log?.warn("automation PR closure delivery failed", { prKey: key, err: (error as Error).message });
+        }
+      }
     }
 
     for (const [key, tracked] of Object.entries(trackedPullRequests)) {
@@ -633,6 +747,13 @@ export class BaseProviderManager extends EventEmitter {
       },
     };
     this.setSnapshot(snapshot);
+    if (newActivityEvents.length && this.onReviewActivity) {
+      try {
+        this.onReviewActivity(newActivityEvents, new Date(this.now()).toISOString());
+      } catch (error) {
+        this._log?.warn("review activity subscriber failed", { err: (error as Error).message });
+      }
+    }
     return this.getSnapshot();
   }
 

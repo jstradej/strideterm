@@ -867,6 +867,9 @@ export class SessionManager extends EventEmitter {
     if (existing && existing.status === "running") {
       return existing;
     }
+    // Opening an automation's failed agent is inspection. A new supervised run
+    // explicitly uses restartSession, which removes the old generation first.
+    if (workspace.kind === "automation" && existing?.status === "exited") return existing;
 
     if (panel.launch?.kind === "ssh") {
       return this.trackSessionStart(key, async () => {

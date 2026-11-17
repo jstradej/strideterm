@@ -52,23 +52,27 @@ export function resolveExternalGitDirs(root: string, options: ResolveGitDirsOpti
     const match = /^gitdir:\s*(.+?)\s*$/mu.exec(readText(dotGit));
     if (!match) return NONE;
     const gitDir = hostPath(match[1], root);
-    const worktrees = path.dirname(gitDir);
-    if (path.basename(worktrees) !== "worktrees" || !path.basename(gitDir)) return NONE;
-    const backReference = readText(path.join(gitDir, "gitdir")).trim();
-    if (!backReference || !same(hostPath(backReference, gitDir), dotGit)) {
+    const gitPath = gitDir.startsWith("\\\\") ? path.win32 : path;
+    const worktrees = gitPath.dirname(gitDir);
+    if (gitPath.basename(worktrees) !== "worktrees" || !gitPath.basename(gitDir)) return NONE;
+    const backReference = readText(gitPath.join(gitDir, "gitdir")).trim();
+    // An absolute host path may already name this checkout (including when a
+    // WSL path adapter is injected on a non-Windows host for verification).
+    const backPath = backReference === dotGit ? backReference : hostPath(backReference, gitDir);
+    if (!backReference || !same(backPath, dotGit)) {
       // The back-reference may name the checkout through a link; compare real locations too.
       let sameReal = false;
       try {
-        sameReal = same(realPath(hostPath(backReference, gitDir)), realPath(dotGit));
+        sameReal = same(realPath(backPath), realPath(dotGit));
       } catch {
         sameReal = false;
       }
       if (!sameReal) return NONE;
     }
-    const common = path.dirname(worktrees);
+    const common = gitPath.dirname(worktrees);
     return {
       dirs: [gitDir, common],
-      pointerFiles: [dotGit, path.join(gitDir, "gitdir"), path.join(gitDir, "commondir")],
+      pointerFiles: [dotGit, gitPath.join(gitDir, "gitdir"), gitPath.join(gitDir, "commondir")],
     };
   } catch {
     return NONE;

@@ -762,11 +762,24 @@ function updatePaneConstraints(width: number) {
   paneSizes.value = clamped;
   manualPaneSizes.set(paneStateKey.value, clamped);
 }
-function onGitPaneResize(event: { panes?: Array<{ size: number }> }) {
+function onGitPaneResize(event: {
+  panes?: Array<{ size: number }>;
+  index?: number;
+  prevPane?: { size: number };
+  nextPane?: { size: number };
+}) {
   const sizes = event.panes?.map((pane) => pane.size);
   if (!sizes?.length) return;
-  paneSizes.value = sizes;
-  manualPaneSizes.set(paneStateKey.value, sizes);
+  const clamped = clampGitPaneSizes(sizes, paneMinSizes.value);
+  // Splitpanes can leave a gap at its combined minimum. Its event exposes the
+  // active pane records; keep those in sync even when the corrected prop is
+  // unchanged and Vue therefore would not notify the pane's prop watcher.
+  if (event.index !== undefined && event.prevPane && event.nextPane) {
+    event.prevPane.size = clamped[event.index] ?? event.prevPane.size;
+    event.nextPane.size = clamped[event.index + 1] ?? event.nextPane.size;
+  }
+  paneSizes.value = clamped;
+  manualPaneSizes.set(paneStateKey.value, clamped);
 }
 function measureTreeIntrinsicWidth(): number {
   const rows = gitPanesRoot.value?.querySelectorAll(".branch-node__row");

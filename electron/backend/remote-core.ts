@@ -720,6 +720,26 @@ export function buildRemoteCore(
     ) as RemoteStateV2["workspace"],
     attention: scopeAttention(composed.attention as AnyRecord | undefined, inProfile) as RemoteStateV2["attention"],
     taskRunner: filterByWorkspaceId(composed.taskRunner as Record<string, unknown> | undefined, inProfile),
+    automations: {
+      paused: composed.automations?.paused === true,
+      byWorkspaceId: filterByWorkspaceId(composed.automations?.byWorkspaceId, inProfile),
+      connections: ((composed.automations?.connections || []) as AnyRecord[]).filter((item) =>
+        matchesProfile(item, scope),
+      ) as NonNullable<RemoteStateV2["automations"]>["connections"],
+      queries: ((composed.automations?.queries || []) as AnyRecord[]).filter((item) =>
+        matchesProfile(item, scope),
+      ) as NonNullable<RemoteStateV2["automations"]>["queries"],
+      recentRuns: ((composed.automations?.recentRuns || []) as AnyRecord[]).filter(
+        (run) => matchesProfile(run, scope) && inProfile.has(String(run.workspaceId || "")),
+      ),
+      ...(composed.automations?.recentAgentChanges?.length
+        ? {
+            recentAgentChanges: composed.automations.recentAgentChanges.filter((change: AnyRecord) =>
+              matchesProfile(change, scope),
+            ),
+          }
+        : {}),
+    },
     ...(composed.jiraWorkspaceViews
       ? {
           jiraWorkspaceViews: filterByWorkspaceId(
@@ -828,6 +848,7 @@ export const STATE_PAYLOAD_KEYS: ReadonlySet<string> = new Set([
   "environment",
   "remoteAccess",
   "taskRunner",
+  "automations",
   "jiraWorkspaceViews",
   "azureClosedPrCleanup",
   "operations",

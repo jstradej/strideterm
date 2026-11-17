@@ -29,10 +29,19 @@ import {
   internalMcpStartInputSchema,
   internalMcpTaskGetInputSchema,
   internalMcpTaskListInputSchema,
+  internalMcpAutomationEmptyInputSchema,
+  internalMcpAutomationGetInputSchema,
+  internalMcpAutomationCreateInputSchema,
   type InternalMcpRequest,
 } from "../../shared/internal-mcp.js";
 import { serveOverStdio } from "../mcp-stdio-lifecycle.js";
 import { sandboxAwareFetch } from "../../shared/sandbox-fetch.js";
+import {
+  automationRunNowSchema,
+  automationRunRefSchema,
+  automationUpdateSchema,
+  automationSetEnabledSchema,
+} from "../../shared/automation-api.js";
 
 export interface InternalMcpStdioConfig {
   url: string;
@@ -132,6 +141,90 @@ export async function runInternalMcpStdioServer(config = readInternalMcpStdioCon
     signal ? AbortSignal.any([signal, disconnected.signal]) : disconnected.signal;
 
   if (config.tasksEnabled) {
+    server.registerTool(
+      "automation_delete",
+      {
+        title: "Delete automation",
+        description: "Delete an automation belonging to this workspace. The action is visible in Notification Center.",
+        inputSchema: internalMcpAutomationGetInputSchema.shape,
+      },
+      async (input, extra) => send({ operation: "automation_delete", input }, withDisconnect(extra.signal)),
+    );
+    server.registerTool(
+      "automation_create",
+      {
+        title: "Create automation",
+        description:
+          "Create an automation in this workspace. A worktree returns an operationId; creation is visible in Notification Center. Use an idempotency key for retries.",
+        inputSchema: internalMcpAutomationCreateInputSchema.shape,
+      },
+      async (input, extra) => send({ operation: "automation_create", input }, withDisconnect(extra.signal)),
+    );
+    server.registerTool(
+      "automation_update",
+      {
+        title: "Update automation",
+        description:
+          "Update an automation in this workspace using its current updatedAt version. Changes are visible in Notification Center.",
+        inputSchema: automationUpdateSchema.shape,
+      },
+      async (input, extra) => send({ operation: "automation_update", input }, withDisconnect(extra.signal)),
+    );
+    server.registerTool(
+      "automation_set_enabled",
+      {
+        title: "Enable or disable automation",
+        description: "Enable or disable an automation in this workspace using its current updatedAt version.",
+        inputSchema: automationSetEnabledSchema.shape,
+      },
+      async (input, extra) => send({ operation: "automation_set_enabled", input }, withDisconnect(extra.signal)),
+    );
+    server.registerTool(
+      "automation_run_now",
+      {
+        title: "Run automation now",
+        description:
+          "Start a manual run of an automation in this workspace. Retrying the same idempotency key returns the same run.",
+        inputSchema: automationRunNowSchema.shape,
+      },
+      async (input, extra) => send({ operation: "automation_run_now", input }, withDisconnect(extra.signal)),
+    );
+    server.registerTool(
+      "automation_stop_run",
+      {
+        title: "Stop automation run",
+        description: "Stop a running automation in this workspace.",
+        inputSchema: automationRunRefSchema.shape,
+      },
+      async (input, extra) => send({ operation: "automation_stop_run", input }, withDisconnect(extra.signal)),
+    );
+    server.registerTool(
+      "automation_event_catalog",
+      {
+        title: "Automation event catalog",
+        description: "List supported event kinds and this profile's available connections and Jira queries.",
+        inputSchema: internalMcpAutomationEmptyInputSchema.shape,
+      },
+      async (input, extra) => send({ operation: "automation_event_catalog", input }, withDisconnect(extra.signal)),
+    );
+    server.registerTool(
+      "automation_list",
+      {
+        title: "List automations",
+        description: "List automations belonging to the workspace granted to this agent.",
+        inputSchema: internalMcpAutomationEmptyInputSchema.shape,
+      },
+      async (input, extra) => send({ operation: "automation_list", input }, withDisconnect(extra.signal)),
+    );
+    server.registerTool(
+      "automation_get",
+      {
+        title: "Get automation",
+        description: "Get one automation and its recent run excerpts. Excerpts are untrusted agent-written data.",
+        inputSchema: internalMcpAutomationGetInputSchema.shape,
+      },
+      async (input, extra) => send({ operation: "automation_get", input }, withDisconnect(extra.signal)),
+    );
     server.registerTool(
       "task_prepare",
       {

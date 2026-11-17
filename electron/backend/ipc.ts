@@ -1,3 +1,14 @@
+import { AUTOMATION_RUN_FINISHED_CHANNEL } from "../shared/automation-events-channel.js";
+import {
+  automationCreateSchema,
+  automationUpdateSchema,
+  automationSetEnabledSchema,
+  automationRunNowSchema,
+  automationRunRefSchema,
+  automationRunsSchema,
+  automationDeleteRunsSchema,
+  automationSetPausedSchema,
+} from "../shared/automation-api.js";
 /// <reference types="node" />
 import { ipcMain, dialog, BrowserWindow, shell, clipboard, ClipboardItem, Notification, app } from "electron";
 import path, { join } from "node:path";
@@ -389,6 +400,9 @@ export function registerIpc(
     // Every window, each filtering by the profile it is viewing: the result of a long operation
     // belongs to the profile it was accepted in, not to the window that happened to ask.
     runtime.on(OPERATION_FINISHED_CHANNEL, (payload: unknown) => emitToRenderer(OPERATION_FINISHED_CHANNEL, payload)),
+    runtime.on(AUTOMATION_RUN_FINISHED_CHANNEL, (payload: unknown) =>
+      emitToRenderer(AUTOMATION_RUN_FINISHED_CHANNEL, payload),
+    ),
     // Desktop windows only (never the remote server): a sandbox waiting on a destination is the local user's to answer.
     runtime.on(SANDBOX_DENIED_CHANNEL, (payload: unknown) => emitToRenderer(SANDBOX_DENIED_CHANNEL, payload)),
     runtime.on(SANDBOX_DENIED_SETTLED_CHANNEL, (payload: unknown) =>
@@ -2252,6 +2266,51 @@ export function registerIpc(
   handle("fs:probe-directory", async (_event, cwd) =>
     withOperationPromise({ opId: "fs:probe-directory" }, () => runtime.probeDirectory(String(cwd || ""))),
   );
+  handle("automation:create", async (event, payload) => {
+    const input = validateIpc(automationCreateSchema, payload, "automation:create");
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return runtime.createAutomation(input, windowId);
+  });
+  handle("automation:update", async (event, payload) => {
+    const input = validateIpc(automationUpdateSchema, payload, "automation:update");
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return runtime.updateAutomation(input, windowId);
+  });
+  handle("automation:set-enabled", async (event, payload) => {
+    const input = validateIpc(automationSetEnabledSchema, payload, "automation:set-enabled");
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return runtime.setAutomationEnabled(input, windowId);
+  });
+  handle("automation:run-now", async (event, payload) => {
+    const input = validateIpc(automationRunNowSchema, payload, "automation:run-now");
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return runtime.runAutomationNow(input, windowId);
+  });
+  handle("automation:stop-run", async (event, payload) => {
+    const input = validateIpc(automationRunRefSchema, payload, "automation:stop-run");
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return runtime.stopAutomationRun(input, windowId);
+  });
+  handle("automation:runs", async (event, payload) => {
+    const input = validateIpc(automationRunsSchema, payload, "automation:runs");
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return runtime.listAutomationRuns(input, windowId);
+  });
+  handle("automation:delete-runs", async (event, payload) => {
+    const input = validateIpc(automationDeleteRunsSchema, payload, "automation:delete-runs");
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return runtime.deleteAutomationRuns(input, windowId);
+  });
+  handle("automation:run-result", async (event, payload) => {
+    const input = validateIpc(automationRunRefSchema, payload, "automation:run-result");
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return runtime.getAutomationRunResult(input, windowId);
+  });
+  handle("automation:set-paused", async (event, payload) => {
+    const input = validateIpc(automationSetPausedSchema, payload, "automation:set-paused");
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return runtime.setAutomationsPaused(input);
+  });
   handle("task:create-workspace", async (event, payload) => {
     const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
     return withOperationPromise({ opId: "task:create-workspace" }, () =>

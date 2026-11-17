@@ -1973,6 +1973,11 @@ a.workspace-card__jira-chip:hover {
 .workspace-card__action--menu:focus-visible {
   opacity: 1;
 }
+@media (hover: none), (max-width: 768px) {
+  .workspace-card__action--menu {
+    opacity: 1;
+  }
+}
 
 /* Star toggle on workspace card */
 .workspace-card__star {
