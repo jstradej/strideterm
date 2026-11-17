@@ -56,6 +56,9 @@ function mountTab() {
 
 beforeEach(() => {
   setActivePinia(createPinia());
+  // The notification store persists its threads; each no-tab error has its own thread, so a previous test's
+  // failure would otherwise still be listed here.
+  localStorage.clear();
   confirmInApp.mockClear();
   openDialog.mockClear();
   closeDialog.mockClear();

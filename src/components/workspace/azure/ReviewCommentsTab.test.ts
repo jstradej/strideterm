@@ -81,6 +81,9 @@ function baseProps(overrides: Record<string, any> = {}) {
 
 beforeEach(() => {
   setActivePinia(createPinia());
+  // The notification store persists its threads; each no-tab error has its own thread, so a previous test's
+  // failure would otherwise still be listed here.
+  localStorage.clear();
   reviewBridgeDeleteAllDrafts.mockClear();
   deleteReviewBridgeDraft.mockClear();
   azureResolveThread.mockClear();

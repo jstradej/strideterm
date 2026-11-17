@@ -164,24 +164,29 @@ describe("resolveExternalGitDirs", () => {
     expect(resolveExternalGitDirs(planted).dirs).toEqual([]);
   });
 
-  it("reads a Linux gitdir of a WSL checkout as a \\\\wsl$ path and checks its back-reference through it", () => {
-    const linked = temp();
-    const pointer = "gitdir: /home/me/repo/.git/worktrees/wt\n";
-    writeFileSync(path.join(linked, ".git"), pointer);
-    const refused = resolveExternalGitDirs(linked, {
-      wslDistro: "Ubuntu",
-      readText: (file) => (file.startsWith(linked) ? pointer : "/home/me/other/.git\n"),
-      realPath: (file) => file,
-    });
-    expect(refused.dirs).toEqual([]);
+  // A \\wsl$ path only means something on a Windows host: elsewhere `path` does not split on backslashes and
+  // the checkout's own absolute path starts with "/", which the resolver reads as a path inside the distro.
+  it.skipIf(process.platform !== "win32")(
+    "reads a Linux gitdir of a WSL checkout as a \\\\wsl$ path and checks its back-reference through it",
+    () => {
+      const linked = temp();
+      const pointer = "gitdir: /home/me/repo/.git/worktrees/wt\n";
+      writeFileSync(path.join(linked, ".git"), pointer);
+      const refused = resolveExternalGitDirs(linked, {
+        wslDistro: "Ubuntu",
+        readText: (file) => (file.startsWith(linked) ? pointer : "/home/me/other/.git\n"),
+        realPath: (file) => file,
+      });
+      expect(refused.dirs).toEqual([]);
 
-    const accepted = resolveExternalGitDirs(linked, {
-      wslDistro: "Ubuntu",
-      readText: (file) => (file.startsWith(linked) ? pointer : `${linked}${path.sep}.git\n`),
-      realPath: (file) => file,
-    });
-    expect(accepted.dirs[0]).toBe("\\\\wsl$\\Ubuntu\\home\\me\\repo\\.git\\worktrees\\wt");
-  });
+      const accepted = resolveExternalGitDirs(linked, {
+        wslDistro: "Ubuntu",
+        readText: (file) => (file.startsWith(linked) ? pointer : `${linked}${path.sep}.git\n`),
+        realPath: (file) => file,
+      });
+      expect(accepted.dirs[0]).toBe("\\\\wsl$\\Ubuntu\\home\\me\\repo\\.git\\worktrees\\wt");
+    },
+  );
 });
 
 function connection(overrides: Partial<RegistryConnection>): RegistryConnection {
