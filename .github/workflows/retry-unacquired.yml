@@ -1,0 +1,57 @@
+name: Retry jobs that got no runner
+
+# GitHub sometimes never hands a queued job to a hosted runner: after about
+# 15 minutes it cancels the job with no step run and the annotation "The job
+# was not acquired by Runner of type hosted even after multiple attempts".
+# In practice these are macOS arm64 jobs ("Due to capacity constraints, jobs
+# targeting macOS arm64 runners may experience longer queue times"). Nothing
+# was tested, yet the pull request shows a red cross.
+#
+# This workflow re-runs such a run by itself. It looks for exactly that
+# annotation, so a job that ran and failed, a job cancelled by fail-fast and a
+# run somebody cancelled are all left alone. The re-run covers the run's failed
+# and cancelled jobs, at most twice per run.
+#
+# It checks out nothing and runs no code from the triggering branch: the token
+# with `actions: write` only ever calls the GitHub API with the run's own ids.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  actions: write
+  checks: read
+
+jobs:
+  retry:
+    if: github.event.workflow_run.conclusion != 'success' && github.event.workflow_run.run_attempt < 3
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Re-run when a job was never given a runner
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: |
+          set -euo pipefail
+          # Candidates: cancelled before any step, with no runner assigned.
+          candidates=$(gh api "repos/$REPO/actions/runs/$RUN_ID/attempts/$ATTEMPT/jobs?per_page=100" \
+            --jq '.jobs[] | select(.conclusion == "cancelled" and (.steps | length) == 0 and ((.runner_name // "") == "")) | "\(.id)\t\(.name)"')
+          unacquired=""
+          while IFS=$'\t' read -r id name; do
+            [ -n "$id" ] || continue
+            # A job's id is also the id of its check run, which carries GitHub's own reason.
+            if gh api "repos/$REPO/check-runs/$id/annotations" --jq '.[].message' | grep -q "was not acquired by Runner"; then
+              unacquired="$unacquired $name;"
+            fi
+          done <<< "$candidates"
+          if [ -z "$unacquired" ]; then
+            echo "Run $RUN_ID attempt $ATTEMPT: no job was refused a runner. Nothing to retry."
+            exit 0
+          fi
+          echo "::notice title=Re-running run $RUN_ID (attempt $ATTEMPT)::No runner was assigned to:$unacquired"
+          gh run rerun "$RUN_ID" --repo "$REPO" --failed
