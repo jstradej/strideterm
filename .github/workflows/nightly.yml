@@ -42,10 +42,10 @@ jobs:
       - name: Lint (includes security static analysis)
         run: npm run lint
         # Same heap headroom as ci.yml. eslint's type-aware + security static
-        # analysis exceeds Node's default ~2GB old-space and aborts with
+        # analysis needs more than 4 GB of old-space and aborts with
         # exit 134; without this the nightly fails while CI stays green.
         env:
-          NODE_OPTIONS: --max-old-space-size=4096
+          NODE_OPTIONS: --max-old-space-size=6144
       - run: npm test
       - run: npm run build
 

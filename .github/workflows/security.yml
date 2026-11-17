@@ -123,6 +123,9 @@ jobs:
       # issues: eval injection, unsafe regex (ReDoS), prototype pollution, etc.
       - name: Lint with security rules
         run: npm run lint
+        # Same heap headroom as ci.yml: the default heap is too small (exit 134).
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
 
   sbom:
     name: Generate Software Bill of Materials
