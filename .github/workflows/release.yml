@@ -97,7 +97,7 @@ jobs:
 
       - run: npm ci
       - name: Security audit
-        run: npm audit --omit=dev --audit-level=high
+        run: npx tsx scripts/audit-gate.mts
       - run: npm test
       - run: npm run build
 
