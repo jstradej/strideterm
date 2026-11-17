@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SANDBOX_GATEWAY_HOST, SANDBOX_SRT_VERSION, type SandboxDeniedRequest } from "../../shared/sandbox.js";
 import type { RegistryConnection } from "../../shared/registry.js";
@@ -117,7 +118,12 @@ describe("SandboxService", () => {
     );
 
   beforeEach(() => {
-    dataDir = temp("data");
+    // Not under the system temp folder: on Linux that is /tmp, which the sandbox grants for writing, and the
+    // tests below assert that nothing strIDEterm owns sits under a folder the agent may write.
+    const dataRoot = fileURLToPath(new URL("../../../node_modules/.tmp/sbx-svc", import.meta.url));
+    mkdirSync(dataRoot, { recursive: true });
+    dataDir = mkdtempSync(path.join(dataRoot, "data-"));
+    dirs.push(dataDir);
     workspaceDir = temp("ws");
     writeFileSync(path.join(workspaceDir, "package.json"), "{}");
     writeFileSync(path.join(workspaceDir, "pom.xml"), "<project/>");
