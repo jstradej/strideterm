@@ -428,6 +428,23 @@ const VALID_CONTEXT =
 const VALID_HANDOFF =
   "# Current state\nX\n\n# Work already completed\nX\n\n# Work in progress\nX\n\n# Files and commits touched\nX\n\n# Verification already run\nX\n\n# External or destructive side effects already performed\nX\n\n# Known blockers\nX\n\n# Recommended next step\nX\n";
 
+/**
+ * The Primary writes its capture. The files are dated in task time: the runner stamps the capture start from the
+ * faked clock, while a real write is dated by the file system — on Linux from a coarser clock that can lag a few
+ * milliseconds, which made a capture written right after the stamp look older than it and never count.
+ */
+async function writeCapture(dir: string): Promise<void> {
+  for (const [name, content] of [
+    [CONTEXT_FILE, VALID_CONTEXT],
+    [HANDOFF_FILE, VALID_HANDOFF],
+  ]) {
+    const file = path.join(dir, name);
+    await fs.writeFile(file, content);
+    const now = new Date();
+    await fs.utimes(file, now, now);
+  }
+}
+
 async function harness(workspaces: WorkspaceState[], cwd: string, hooks: boolean) {
   const store = await createStore(path.join(cwd, `.state-${randomUUID()}.json`));
   await store.mutate((draft) => {
@@ -903,8 +920,7 @@ describe("former pause-on-input cases: the task carries on", () => {
       if (text.includes("API limits")) return; // the user's own question
       captureTurns += 1; // the capture prompt, then the reminder
       if (captureTurns >= 2) {
-        await fs.writeFile(path.join(dir, CONTEXT_FILE), VALID_CONTEXT);
-        await fs.writeFile(path.join(dir, HANDOFF_FILE), VALID_HANDOFF);
+        await writeCapture(dir);
       }
     };
 
@@ -1402,8 +1418,7 @@ describe("the runner never answers, accepts, selects or confirms anything for th
     const dir = taskDir(cwd, companion.task.taskId);
     primary.onTurn = async (text) => {
       if (!text.startsWith("Read ")) return; // the user's own messages
-      await fs.writeFile(path.join(dir, CONTEXT_FILE), VALID_CONTEXT);
-      await fs.writeFile(path.join(dir, HANDOFF_FILE), VALID_HANDOFF);
+      await writeCapture(dir);
     };
     reviewer.onTurn = async (text) => {
       if (!text.startsWith("Read ")) return;
