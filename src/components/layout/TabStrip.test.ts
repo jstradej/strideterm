@@ -5,7 +5,7 @@ import TabStrip from "./TabStrip.vue";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { isMobileViewport } from "../../composables/useIsNarrow.js";
-import type { StatePayload } from "../../../electron/shared/types/state.js";
+import type { PanelLaunch, StatePayload } from "../../../electron/shared/types/state.js";
 
 beforeEach(() => {
   setActivePinia(createPinia());
@@ -24,6 +24,7 @@ interface SessionInput {
   lastCommandFinishedAt?: number;
   persistent?: boolean;
   closable?: boolean;
+  launch?: PanelLaunch;
 }
 
 function makePayload(sessions: SessionInput[]): StatePayload {
@@ -32,7 +33,7 @@ function makePayload(sessions: SessionInput[]): StatePayload {
       workspace: {
         id: "ws1",
         kind: "terminal",
-        panels: sessions.map((s) => ({ id: s.panelId || s.id, title: s.title, command: "" })),
+        panels: sessions.map((s) => ({ id: s.panelId || s.id, title: s.title, command: "", launch: s.launch })),
       },
       sessions: sessions.map((s) => ({
         sessionId: s.id,
@@ -89,6 +90,21 @@ describe("TabStrip", () => {
     // A live PTY with no active command shows no chip text — the old always-on
     // "running" label was misleading. CSS preserves the status row's height.
     expect(tab.find("small").text()).toBe("");
+  });
+
+  test("identifies the saved tmux target and access mode on its tab", () => {
+    useAppStore().payload = makePayload([
+      {
+        id: "ws1:build",
+        panelId: "build",
+        title: "Build",
+        launch: { kind: "ssh", sshHostId: "host-1", tmux: { name: "build jobs", readOnly: true } },
+      },
+    ]);
+    const wrapper = mount(TabStrip);
+    expect(wrapper.get(".tab__tmux").text()).toBe("tmux");
+    expect(wrapper.get(".tab").attributes("title")).toContain("build jobs · Read-only on connect");
+    wrapper.unmount();
   });
 
   test("shows 'running' chip while a command is active", () => {

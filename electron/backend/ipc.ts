@@ -1410,6 +1410,20 @@ export function registerIpc(
     const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
     return withOperationPromise({ opId: "ssh:test:stop" }, () => runtime.sshTestStop(payload, windowId));
   });
+  handle("ssh:tmux:list", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    registerSshOwnerWindowClose(event, windowId);
+    return withOperationPromise({ opId: "ssh:tmux:list" }, () => runtime.sshTmuxList(payload, windowId));
+  });
+  handle("ssh:tmux:preview", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    registerSshOwnerWindowClose(event, windowId);
+    return withOperationPromise({ opId: "ssh:tmux:preview" }, () => runtime.sshTmuxPreview(payload, windowId));
+  });
+  handle("ssh:tmux:cancel", (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return runtime.sshTmuxCancel(payload, windowId);
+  });
   handle("ssh:keys:list", async () =>
     withOperationPromise({ opId: "ssh:keys:list" }, () => runtime["ssh:keys:list"]()),
   );

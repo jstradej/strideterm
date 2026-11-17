@@ -588,7 +588,8 @@ button.workspace-chip--alert:hover {
   transform-origin: 68% 12%;
 }
 
-.tab__task-badge {
+.tab__task-badge,
+.tab__tmux {
   background: rgba(var(--tint), 0.12);
   color: var(--text-secondary, #aaa);
   font-size: 9px;

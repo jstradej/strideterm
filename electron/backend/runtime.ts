@@ -47,7 +47,7 @@ import { automationPollIntervalMs } from "./automations/automation-poll-interval
 import { automationPrTerminalEvent, type AutomationPrReference } from "./automations/automation-pr-closure.js";
 import type { AutomationEvent } from "../shared/automation-events.js";
 import * as fm from "./file-manager.js";
-import { SessionManager, type SshTestPtySpawn } from "./session-manager.js";
+import { prepareSystemSshProbe, SessionManager, type SshTestPtySpawn } from "./session-manager.js";
 import { TerminalReplayStore } from "./terminal-replay-buffer.js";
 import { TerminalFocusArbiter, focusReportOf } from "./terminal-focus.js";
 import {
@@ -267,6 +267,7 @@ import { createSshHandlers } from "./ssh/runtime-ssh-handlers.js";
 import { createSshFileHandlers } from "./ssh/runtime-ssh-file-handlers.js";
 import { SshManager } from "./ssh/ssh-manager.js";
 import { createSshCommandService } from "./ssh/ssh-command-service.js";
+import { createSshTmuxService, isSshTmuxSessionId } from "./ssh/ssh-tmux-service.js";
 import { createSshMcpBroker } from "./ssh/ssh-mcp-broker.js";
 import { InternalMcpError } from "./internal-mcp/errors.js";
 import { createInternalMcpBroker } from "./internal-mcp/internal-mcp-broker.js";
@@ -1134,6 +1135,17 @@ export async function createRuntime({
 
   const SshManagerImpl = dependencies.SshManager || SshManager;
   const sshManager = new SshManagerImpl({ store, credentialStore, logger: log });
+  const sshTmux = createSshTmuxService({
+    sshManager,
+    getEffectiveLaunchMode: (host) =>
+      resolveSshLaunchVia(
+        host.advanced?.launchVia,
+        getState().settings?.ssh?.defaultLaunchVia,
+        APP_CONFIG.ssh.defaultLaunchVia,
+      ),
+    prepareExternalProbe: (host, command, mode) =>
+      prepareSystemSshProbe(host, sshManager, getState().settings?.ssh, command, mode),
+  });
   const sshFile = createSshFileHandlers({
     sshManager,
     getState,
@@ -1747,14 +1759,16 @@ export async function createRuntime({
     isSshTestSessionId(sessionId) ||
     isSshKeyTransferSessionId(sessionId) ||
     isSshMcpSessionId(sessionId) ||
-    isSshFileSessionId(sessionId);
+    isSshFileSessionId(sessionId) ||
+    isSshTmuxSessionId(sessionId);
   const isSshTestSession = (sessionId: unknown): sessionId is string =>
     isSshTestSessionId(sessionId) && sshTestSessions.has(sessionId);
   const isPrivateSshOperationSession = (sessionId: unknown): boolean =>
     isSshTestSession(sessionId) ||
     (isSshKeyTransferSessionId(sessionId) && sshTransferSessionOwners.has(sessionId)) ||
     (typeof sessionId === "string" && sessionId.startsWith("ssh-mcp:")) ||
-    isSshFileSessionId(sessionId);
+    isSshFileSessionId(sessionId) ||
+    isSshTmuxSessionId(sessionId);
   const emitSshTestState = (sessionId: string, status: SshTestRecord["status"], error?: string) => {
     const record = sshTestSessions.get(sessionId);
     if (!record || record.status === "cancelled") return;
@@ -1833,6 +1847,7 @@ export async function createRuntime({
   }
   async function stopAllSshTests(): Promise<void> {
     sshTestShuttingDown = true;
+    sshTmux.close();
     await Promise.all(
       [...sshTestSessions.entries()].map(([sessionId, record]) => stopOwnedSshTest(sessionId, record.ownerWindowId)),
     );
@@ -1883,8 +1898,9 @@ export async function createRuntime({
           : {};
       const sessionId = event.sessionId;
       if (isSshMcpSessionId(sessionId)) return;
-      // A file connection's prompts go to its owner window; its connection state is nobody's business.
-      if (isSshFileSessionId(sessionId) && channel === "ssh:connection-state") return;
+      // Private operations forward prompts to the owner only and keep connection status out of the terminal UI.
+      if ((isSshFileSessionId(sessionId) || isSshTmuxSessionId(sessionId)) && channel === "ssh:connection-state")
+        return;
       const testRecord = sessionId ? sshTestSessions.get(sessionId) : undefined;
       if (testRecord && sessionId && channel === "ssh:connection-state") {
         if (event.status === "connected") emitSshTestState(sessionId, "authenticated");
@@ -1913,6 +1929,7 @@ export async function createRuntime({
     events.emit("ssh:connection-state", payload);
   });
   events.on("state:updated", () => {
+    sshTmux.closeStaleWindows(getWindowProfileId);
     void sshMcpBroker?.revokeInvalid();
     void internalMcpBroker?.revokeInvalid();
     void reviewGitBroker?.revokeInvalid();
@@ -9464,6 +9481,11 @@ export async function createRuntime({
     return slot ? slot.profileId : null;
   }
 
+  function sshTmuxOwner(windowId: string) {
+    const profileId = parseRemoteViewerId(windowId) ? "" : getWindowProfileId(windowId) || "";
+    return { windowId, profileId };
+  }
+
   const pullRequestReviewFlights = new Map<string, Promise<StartPullRequestReviewResult>>();
   interface PullRequestReviewSummary {
     profileId?: string;
@@ -11835,8 +11857,18 @@ export async function createRuntime({
       return (
         sshTestSessions.get(sessionId)?.ownerWindowId ||
         sshTransferOwnerForSession(sessionId) ||
-        sshFile.sshFileSessionOwner(sessionId)
+        sshFile.sshFileSessionOwner(sessionId) ||
+        sshTmux.ownerOf(sessionId)
       );
+    },
+    sshTmuxList(payload: unknown, windowId: string) {
+      return sshTmux.list(payload, sshTmuxOwner(windowId));
+    },
+    sshTmuxPreview(payload: unknown, windowId: string) {
+      return sshTmux.preview(payload, sshTmuxOwner(windowId));
+    },
+    sshTmuxCancel(payload: unknown, windowId: string) {
+      return sshTmux.cancel(payload, sshTmuxOwner(windowId));
     },
     /** The profile a Jira issue pop-out belongs to: the caller's own, and only for one of its Jira workspaces. */
     resolveJiraIssuePopoutProfile(workspaceId: string, windowId: string): string {
@@ -12072,6 +12104,7 @@ export async function createRuntime({
       return true;
     },
     async sshTestStopOwner(ownerWindowId: string) {
+      sshTmux.closeWindow(ownerWindowId);
       const pending: Promise<void>[] = [];
       for (const [sessionId, record] of sshTestSessions) {
         if (record.ownerWindowId === ownerWindowId) pending.push(stopOwnedSshTest(sessionId, ownerWindowId));

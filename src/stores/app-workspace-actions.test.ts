@@ -690,6 +690,21 @@ describe("createWorkspaceActions.cleanupAzureClosedPullRequests", () => {
 });
 
 describe("quickAddTemplateTab SSH target scope", () => {
+  it("persists a structured SSH tmux launch on the new panel", async () => {
+    const workspace = { id: "ws-a", kind: "terminal", profileId: "profile-a", panels: [] };
+    const saveWorkspace = vi.fn(async (next: AnyApi) => ({ workspace: { workspace: next } }));
+    const { ctx } = makeCtx({ workspace: { workspace } }, { saveWorkspace });
+    const tmux = { name: " shared ", readOnly: true };
+
+    await createWorkspaceActions(ctx).quickAddTemplateTab("", "Build", "", { kind: "ssh", sshHostId: "h1", tmux });
+
+    expect(saveWorkspace.mock.calls[0][0].panels[0]).toMatchObject({
+      title: "Build",
+      command: "",
+      launch: { kind: "ssh", sshHostId: "h1", tmux },
+    });
+  });
+
   it("persists SSH tools opt-in on the new local panel only when explicitly enabled", async () => {
     const workspace = {
       id: "ws-a",

@@ -21,6 +21,7 @@ import { applyShellIntegrationLaunch } from "./shell-integration-launch.js";
 import type { SshManager } from "./ssh/ssh-manager.js";
 import { resolveSshLaunchVia } from "../shared/ssh-connection.js";
 import { normalizeRemoteCwd, remoteStartupCommand } from "../shared/ssh-remote-cwd.js";
+import { buildSshTmuxAttachCommand, normalizeSshTmuxTarget } from "../shared/ssh-tmux.js";
 import { DISTRIBUTION_LAUNCHER_ENV } from "../shared/app-distribution.js";
 import { INTERNAL_MCP_ENV_PREFIX } from "../shared/internal-mcp.js";
 import { REVIEW_GIT_ENV_PREFIX } from "../shared/review-git-env.js";
@@ -160,7 +161,7 @@ interface HostRecord {
   auth?: {
     methods?: string[];
     keyRef?: string;
-    agent?: string;
+    agent?: string | null;
     [key: string]: unknown;
   };
   advanced?: {
@@ -172,10 +173,10 @@ interface HostRecord {
     compression?: boolean | null;
     agentForward?: boolean;
     sshPath?: string;
-    env?: Record<string, string>;
+    env?: Record<string, string> | null;
     wsl?: {
-      distro?: string;
-      user?: string;
+      distro?: string | null;
+      user?: string | null;
       exec?: string;
     };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -232,7 +233,7 @@ function isHookSessionIdentityKey(key: string): boolean {
   return candidate === "STRIDETERM_NOTIFY_URL" || candidate.startsWith("STRIDETERM_SESSION_");
 }
 
-function withoutSessionIdentity(env: Record<string, string | undefined> | undefined): Record<string, string> {
+function withoutSessionIdentity(env: Record<string, string | undefined> | null | undefined): Record<string, string> {
   if (!env) return {};
   return Object.fromEntries(
     Object.entries(env).filter(([key, value]) => !isHookSessionIdentityKey(key) && value !== undefined),
@@ -297,12 +298,15 @@ function isBrowserPanel(panel: PanelState | null): boolean {
   return panel != null && /^https?:\/\//i.test(panel.command || "");
 }
 
+type SshSettings = Partial<AppState["settings"]["ssh"]>;
+
 interface BuildSshArgsOpts {
   distro?: string | null;
   wslUser?: string | null;
   sshManager?: SshManager | null;
-  settings?: Partial<AppState["settings"]["ssh"]>;
   probeMarker?: string;
+  terminalCommand?: string;
+  nonInteractiveCommand?: string;
 }
 
 interface BuildSshArgsResult {
@@ -413,9 +417,50 @@ function runWslCommand(distro: string, args: string[], input?: string, user?: st
 async function buildSystemSshArgs(
   host: HostRecord,
   credentialStore: SshManager["credentialStore"],
-  { distro = null, wslUser = null, sshManager = null, settings, probeMarker }: BuildSshArgsOpts = {},
+  {
+    distro = null,
+    wslUser = null,
+    sshManager = null,
+    probeMarker,
+    terminalCommand,
+    nonInteractiveCommand,
+  }: BuildSshArgsOpts = {},
 ): Promise<BuildSshArgsResult> {
   const args: string[] = [];
+  if (terminalCommand || nonInteractiveCommand) {
+    // These invocations own their remote command and need a foreground session.
+    args.push(
+      "-o",
+      "IgnoreUnknown=SessionType,StdinNull,ForkAfterAuthentication",
+      "-o",
+      "SessionType=default",
+      "-o",
+      terminalCommand ? "StdinNull=no" : "StdinNull=yes",
+      "-o",
+      "ForkAfterAuthentication=no",
+      "-o",
+      "RemoteCommand=none",
+    );
+  }
+  if (terminalCommand) args.push("-tt");
+  if (nonInteractiveCommand) {
+    args.push(
+      "-n",
+      "-T",
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "StrictHostKeyChecking=yes",
+      "-o",
+      "PermitLocalCommand=no",
+      "-o",
+      "ClearAllForwardings=yes",
+      "-o",
+      "ControlPath=none",
+      "-o",
+      "ForwardAgent=no",
+    );
+  }
   if (host.port && host.advanced?.portOverride !== false) args.push("-p", String(host.port));
   if (host.username) args.push("-l", host.username);
   if (host.advanced?.keepaliveIntervalMs != null) {
@@ -426,16 +471,16 @@ async function buildSystemSshArgs(
   }
   if (host.advanced?.compression === false) args.push("-o", "Compression=no");
   else if (host.advanced?.compression === true) args.push("-C");
-  if (host.advanced?.agentForward === true) args.push("-A");
+  if (host.advanced?.agentForward === true && !nonInteractiveCommand) args.push("-A");
   if (host.advanced?.passwordSignIn === true) {
     args.push("-o", "PubkeyAuthentication=no", "-o", "PreferredAuthentications=keyboard-interactive,password");
   }
   // System OpenSSH owns its agent configuration. The app's agentPath is a
   // Built-in ssh2 setting and may point at a Windows socket unavailable to WSL.
 
-  if (host.hostKeyPolicy === "strict") {
+  if (!nonInteractiveCommand && host.hostKeyPolicy === "strict") {
     args.push("-o", "StrictHostKeyChecking=yes");
-  } else if (host.hostKeyPolicy === "accept-new") {
+  } else if (!nonInteractiveCommand && host.hostKeyPolicy === "accept-new") {
     args.push("-o", "StrictHostKeyChecking=accept-new");
   }
 
@@ -520,12 +565,73 @@ async function buildSystemSshArgs(
 
   // A remote command gets no terminal from ssh unless asked: without -t, interactive programs
   // (claude, tmux) fail. It must precede the destination.
-  const remoteCommand = !probeMarker ? host.advanced?.command : undefined;
-  if (remoteCommand) args.push("-t");
+  const remoteCommand = !probeMarker ? (terminalCommand ?? nonInteractiveCommand ?? host.advanced?.command) : undefined;
+  if (remoteCommand && !terminalCommand && !nonInteractiveCommand) args.push("-t");
   args.push("--", host.host);
   if (remoteCommand) args.push(remoteCommand);
 
   return { args, cleanupFn };
+}
+
+function systemSshExecutable(host: HostRecord, settings?: SshSettings): string {
+  // node-pty resolves a relative name literally, without checking PATHEXT.
+  return (
+    host.advanced?.sshPath ||
+    settings?.systemSshPath ||
+    APP_CONFIG.ssh.systemSshPath ||
+    (process.platform === "win32" ? "ssh.exe" : "ssh")
+  );
+}
+
+async function resolveWslSshLaunch(host: HostRecord, settings?: SshSettings) {
+  if (process.platform !== "win32") return null;
+  const caps = await detectWslDistros();
+  const distro =
+    host.advanced?.wsl?.distro || settings?.wslDefaultDistro || APP_CONFIG.ssh.wslDefaultDistro || caps?.default;
+  if (!caps?.installed || !distro) return null;
+  const wslUser = host.advanced?.wsl?.user;
+  const innerExec = host.advanced?.wsl?.exec || settings?.wslSshExec || APP_CONFIG.ssh.wslSshExec || "ssh";
+  return { distro, wslUser, prefix: ["-d", distro, ...(wslUser ? ["-u", wslUser] : []), "--", innerExec] };
+}
+
+export async function prepareSystemSshProbe(
+  host: HostRecord,
+  sshManager: SshManager,
+  settings: SshSettings | undefined,
+  command: string,
+  mode: "system-ssh" | "wsl",
+): Promise<BuildSshArgsResult & { file: string; env: Record<string, string> }> {
+  const env = withoutSessionIdentity(process.env);
+  if (mode === "wsl") {
+    const launch = await resolveWslSshLaunch(host, settings);
+    if (!launch) throw new Error("No usable WSL distribution is available for SSH");
+    const { args, cleanupFn } = await buildSystemSshArgs(host, sshManager.credentialStore, {
+      distro: launch.distro,
+      wslUser: launch.wslUser,
+      sshManager,
+      nonInteractiveCommand: command,
+    });
+    return {
+      file: "wsl.exe",
+      args: [...launch.prefix, ...args],
+      env: {
+        ...env,
+        WSL_UTF8: "1",
+        SSH_ASKPASS_REQUIRE: "never",
+        WSLENV: [env.WSLENV, "SSH_ASKPASS_REQUIRE/u"].filter(Boolean).join(":"),
+      },
+      cleanupFn,
+    };
+  }
+  const result = await buildSystemSshArgs(host, sshManager.credentialStore, {
+    sshManager,
+    nonInteractiveCommand: command,
+  });
+  return {
+    ...result,
+    file: systemSshExecutable(host, settings),
+    env: { ...env, ...withoutSessionIdentity(host.advanced?.env), SSH_ASKPASS_REQUIRE: "never" },
+  };
 }
 
 // ------ SessionManager -------
@@ -610,7 +716,7 @@ export class SessionManager extends EventEmitter {
 
   async trackSessionStart(
     sessionId: string,
-    start: () => Promise<RuntimeSession | null>,
+    start: (_shouldContinue: () => boolean) => Promise<RuntimeSession | null>,
   ): Promise<RuntimeSession | null> {
     const pending = this.startingSessions.get(sessionId);
     if (pending) {
@@ -668,13 +774,13 @@ export class SessionManager extends EventEmitter {
 
   private beginSessionStart(
     sessionId: string,
-    start: () => Promise<RuntimeSession | null>,
+    start: (_shouldContinue: () => boolean) => Promise<RuntimeSession | null>,
   ): Promise<RuntimeSession | null> {
-    const started = start();
     const record: StartRecord = {
       canceledReason: null,
       promise: undefined as unknown as Promise<RuntimeSession | null>,
     };
+    const started = start(() => record.canceledReason === null);
     record.promise = (async () => {
       try {
         const session = await started;
@@ -872,7 +978,7 @@ export class SessionManager extends EventEmitter {
     if (workspace.kind === "automation" && existing?.status === "exited") return existing;
 
     if (panel.launch?.kind === "ssh") {
-      return this.trackSessionStart(key, async () => {
+      return this.trackSessionStart(key, async (shouldContinue) => {
         if (!this.sshManager) {
           log.warn("SSH panel launched but sshManager is not wired", { sessionId: key });
           return null;
@@ -894,24 +1000,62 @@ export class SessionManager extends EventEmitter {
           return null;
         }
 
-        // A command set on the tab (e.g. a Claude Code template switched to SSH) runs after
-        // sign-in instead of the host's own startup command.
-        const tabCommand = panel.command?.trim();
-        if (tabCommand) host = { ...host, advanced: { ...host.advanced, command: tabCommand } } as HostRecord;
+        let terminalCommand: string | undefined;
+        if (panel.launch?.tmux !== undefined) {
+          const target = normalizeSshTmuxTarget(panel.launch.tmux);
+          if (!target) {
+            this.failedSpawns.add(key);
+            this.emit("terminal:data", {
+              sessionId: key,
+              data: "\r\n\x1b[31mInvalid tmux session name. Edit this tab to select a tmux session.\x1b[0m\r\n",
+            });
+            return null;
+          }
+          terminalCommand = buildSshTmuxAttachCommand(target);
+        }
         if (options.sshPasswordSignIn) host = withPasswordSignIn(host);
         const mode = resolveSshLaunchVia(
           host.advanced?.launchVia,
           state.settings?.ssh?.defaultLaunchVia,
           APP_CONFIG.ssh.defaultLaunchVia as "ssh2" | "system-ssh" | "wsl",
         );
-        const remoteCwd = normalizeRemoteCwd(panel.launch?.remoteCwd);
-        if (remoteCwd) {
-          const command = remoteStartupCommand(remoteCwd, host.advanced?.command || "", { keepShell: mode !== "ssh2" });
-          host = { ...host, advanced: { ...host.advanced, command } };
+        if (!terminalCommand) {
+          // A tab command takes precedence over the host's own startup command.
+          const tabCommand = panel.command?.trim();
+          if (tabCommand) host = { ...host, advanced: { ...host.advanced, command: tabCommand } };
+          const remoteCwd = normalizeRemoteCwd(panel.launch?.remoteCwd);
+          if (remoteCwd) {
+            const command = remoteStartupCommand(remoteCwd, host.advanced?.command || "", {
+              keepShell: mode !== "ssh2",
+            });
+            host = { ...host, advanced: { ...host.advanced, command } };
+          }
         }
-        if (mode === "system-ssh") return this.ensureSystemSshSession(state, workspace, panel, key, host);
-        if (mode === "wsl") return this.ensureWslSshSession(state, workspace, panel, key, host);
-        return this.ensureSshSession(state, workspace, panel, key, host);
+        if (mode === "system-ssh") {
+          return this.ensureSystemSshSession(
+            state,
+            workspace,
+            panel,
+            key,
+            host,
+            shouldContinue,
+            undefined,
+            terminalCommand,
+          );
+        }
+        if (mode === "wsl") {
+          return this.ensureWslSshSession(
+            state,
+            workspace,
+            panel,
+            key,
+            host,
+            shouldContinue,
+            undefined,
+            terminalCommand,
+          );
+        }
+        return this.ensureSshSession(state, workspace, panel, key, host, terminalCommand);
       });
     }
 
@@ -1331,27 +1475,21 @@ export class SessionManager extends EventEmitter {
     host: HostRecord,
     shouldContinue: () => boolean = () => true,
     probeMarker?: string,
+    terminalCommand?: string,
   ): Promise<RuntimeSession | null> {
     const existing = this.sessions.get(sessionId);
     if (existing && existing.status === "running") return existing;
 
     const { args, cleanupFn } = await buildSystemSshArgs(host, this.sshManager!.credentialStore, {
       sshManager: this.sshManager,
-      settings: _state.settings?.ssh,
       probeMarker,
+      terminalCommand,
     });
     if (!shouldContinue()) {
       await cleanupFn();
       return null;
     }
-    // node-pty resolves a relative name against PATH literally (no PATHEXT), so
-    // a bare "ssh" is never found on Windows — spell the extension out, as the
-    // WSL path does with "wsl.exe".
-    const sshExec =
-      host.advanced?.sshPath ||
-      _state.settings?.ssh?.systemSshPath ||
-      APP_CONFIG.ssh.systemSshPath ||
-      (process.platform === "win32" ? "ssh.exe" : "ssh");
+    const sshExec = systemSshExecutable(host, _state.settings?.ssh);
 
     log.debug("spawning system-ssh session", { sessionId, host: host.host, user: host.username });
     const size = this.initialSize(sessionId);
@@ -1412,6 +1550,14 @@ export class SessionManager extends EventEmitter {
     });
 
     if (!spawnResult) return null;
+    if (!shouldContinue()) {
+      try {
+        spawnResult.kill();
+      } finally {
+        await cleanupFn();
+      }
+      return null;
+    }
 
     const registered = await this.registerProcessSession(sessionId, workspace, panel, spawnResult, {
       ...size,
@@ -1420,7 +1566,7 @@ export class SessionManager extends EventEmitter {
       cleanupFn,
     });
     if (!shouldContinue()) {
-      this.removeSession(sessionId);
+      if (this.sessions.get(sessionId) === registered) this.removeSession(sessionId);
       return null;
     }
     return registered;
@@ -1434,6 +1580,7 @@ export class SessionManager extends EventEmitter {
     host: HostRecord,
     shouldContinue: () => boolean = () => true,
     probeMarker?: string,
+    terminalCommand?: string,
   ): Promise<RuntimeSession | null> {
     const existing = this.sessions.get(sessionId);
     if (existing && existing.status === "running") return existing;
@@ -1449,15 +1596,9 @@ export class SessionManager extends EventEmitter {
       return null;
     }
 
-    const wslCaps = await detectWslDistros();
+    const wsl = await resolveWslSshLaunch(host, _state.settings?.ssh);
     if (!shouldContinue()) return null;
-    const distro =
-      host.advanced?.wsl?.distro ||
-      _state.settings?.ssh?.wslDefaultDistro ||
-      APP_CONFIG.ssh.wslDefaultDistro ||
-      wslCaps?.default ||
-      null;
-    if (!distro || !wslCaps?.installed) {
+    if (!wsl) {
       this.failedSpawns.add(sessionId);
       this.emit("ssh:connection-state", {
         sessionId,
@@ -1472,26 +1613,20 @@ export class SessionManager extends EventEmitter {
       });
       return null;
     }
-    const wslUser = host.advanced?.wsl?.user;
-    const innerExec =
-      host.advanced?.wsl?.exec || _state.settings?.ssh?.wslSshExec || APP_CONFIG.ssh.wslSshExec || "ssh";
-
+    const { distro, wslUser, prefix } = wsl;
     const { args: sshArgs, cleanupFn } = await buildSystemSshArgs(host, this.sshManager!.credentialStore, {
       distro,
       wslUser,
       sshManager: this.sshManager,
-      settings: _state.settings?.ssh,
       probeMarker,
+      terminalCommand,
     });
     if (!shouldContinue()) {
       await cleanupFn();
       return null;
     }
 
-    const args: string[] = [];
-    if (distro) args.push("-d", distro);
-    if (wslUser) args.push("-u", wslUser);
-    args.push("--", innerExec, ...sshArgs);
+    const args = [...prefix, ...sshArgs];
 
     log.debug("spawning wsl ssh session", { sessionId, distro, host: host.host });
     const size = this.initialSize(sessionId);
@@ -1538,6 +1673,14 @@ export class SessionManager extends EventEmitter {
     });
 
     if (!spawnResult) return null;
+    if (!shouldContinue()) {
+      try {
+        spawnResult.kill();
+      } finally {
+        await cleanupFn();
+      }
+      return null;
+    }
 
     const registered = await this.registerProcessSession(sessionId, workspace, panel, spawnResult, {
       ...size,
@@ -1547,7 +1690,7 @@ export class SessionManager extends EventEmitter {
       cleanupFn,
     });
     if (!shouldContinue()) {
-      this.removeSession(sessionId);
+      if (this.sessions.get(sessionId) === registered) this.removeSession(sessionId);
       return null;
     }
     return registered;
@@ -1559,6 +1702,7 @@ export class SessionManager extends EventEmitter {
     panel: PanelState,
     sessionId: string,
     host: HostRecord,
+    terminalCommand?: string,
   ): Promise<RuntimeSession | null> {
     const existing = this.sessions.get(sessionId);
     if (existing && existing.status === "running") {
@@ -1581,13 +1725,12 @@ export class SessionManager extends EventEmitter {
 
     // Pick the right argument shape for SshManager: saved host by id, or
     // caller-provided host object for inline ad-hoc.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const createArgs: any = {
+    const createArgs: Parameters<SshManager["createSession"]>[0] = {
       sessionId,
       cols: session.cols,
       rows: session.rows,
-      onData: (data: string) => this.emit("terminal:data", { sessionId, data }),
-      onExit: ({ exitCode }: { exitCode: number }) => {
+      onData: (data) => this.emit("terminal:data", { sessionId, data }),
+      onExit: ({ exitCode }) => {
         if (this.sessions.get(sessionId) === session) this.cancelTerminalWrites(sessionId);
         session.status = "exited";
         // Pure ssh2 sessions have no PTY handle and are torn down via
@@ -1602,7 +1745,9 @@ export class SessionManager extends EventEmitter {
       createArgs.hostId = panel.launch?.sshHostId;
     }
     // SshManager re-resolves the host from id/inlineHost, so the tab's command (and directory) travels separately.
-    if (panel.command?.trim() || normalizeRemoteCwd(panel.launch?.remoteCwd)) {
+    if (terminalCommand) {
+      createArgs.terminalCommand = terminalCommand;
+    } else if (panel.command?.trim() || normalizeRemoteCwd(panel.launch?.remoteCwd)) {
       createArgs.startupCommand = host.advanced?.command;
     }
     if (host.advanced?.passwordSignIn === true) createArgs.authOverride = host.auth;

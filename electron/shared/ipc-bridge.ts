@@ -40,6 +40,13 @@ import type {
   SshFileUpload,
 } from "../backend/ipc-schemas.js";
 import type { SshFileListing, SshFileTransferStarted } from "./ssh-file-events.js";
+import type {
+  SshTmuxCancelInput,
+  SshTmuxListInput,
+  SshTmuxListResult,
+  SshTmuxPreviewInput,
+  SshTmuxPreviewResult,
+} from "./ssh-tmux.js";
 import type { MobileConnectedDevice } from "./mobile-session-events.js";
 import type { RemoteBrowserSession } from "./remote-access.js";
 import type {
@@ -1116,6 +1123,9 @@ export interface StridetermAPI {
     status: SshConnectionTestState["status"];
   }>;
   sshTestStop: (payload: { sessionId: string }) => Promise<{ ok: boolean }>;
+  sshTmuxList: (payload: SshTmuxListInput) => Promise<SshTmuxListResult>;
+  sshTmuxPreview: (payload: SshTmuxPreviewInput) => Promise<SshTmuxPreviewResult>;
+  sshTmuxCancel: (payload: SshTmuxCancelInput) => Promise<boolean>;
   onSshTestState: (handler: (payload: SshConnectionTestState) => void) => void;
   sshKeysRename: (payload: SshKeyRename) => Promise<SshKey | null>;
   sshKeysTransferStart: (payload: SshKeyTransferStart) => Promise<{ operationId: string; status: "connecting" }>;

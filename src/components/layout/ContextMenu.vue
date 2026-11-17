@@ -75,10 +75,15 @@
           <button
             type="button"
             class="context-menu__item"
-            title="Re-establish the SSH connection — kills the current session if alive and starts a fresh one."
+            :title="
+              tmuxTarget
+                ? `Reconnect SSH and attach to ${tmuxTarget.name}${tmuxTarget.readOnly ? ' in read-only mode' : ''}.`
+                : 'Re-establish the SSH connection — kills the current session if alive and starts a fresh one.'
+            "
             @click="onRestart"
           >
-            <span class="context-menu__icon">&#x21BB;</span><span>Reconnect SSH</span>
+            <span class="context-menu__icon">&#x21BB;</span
+            ><span>{{ tmuxTarget ? "Reattach to tmux" : "Reconnect SSH" }}</span>
           </button>
           <button
             type="button"
@@ -92,10 +97,15 @@
           <button
             type="button"
             class="context-menu__item context-menu__item--danger"
-            title="Close the SSH session immediately — the tab stays open, but the remote shell ends."
+            :title="
+              tmuxTarget
+                ? 'Disconnect this SSH client and keep the tmux session running on the host.'
+                : 'Close the SSH session immediately — the tab stays open, but the remote shell ends.'
+            "
             @click="onDisconnectSsh"
           >
-            <span class="context-menu__icon">&#x274C;</span><span>Disconnect SSH</span>
+            <span class="context-menu__icon">&#x274C;</span
+            ><span>{{ tmuxTarget ? "Detach from tmux" : "Disconnect SSH" }}</span>
           </button>
         </template>
         <button
@@ -260,6 +270,7 @@ import { LAYOUTS } from "../../app/layout-geometry.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { useSshStore } from "../../stores/ssh.js";
 import { resolveSshLaunchVia } from "../../../electron/shared/ssh-connection.js";
+import type { PanelLaunch } from "../../../electron/shared/types/state.js";
 import {
   isGitViewId,
   isDockerViewId,
@@ -336,23 +347,18 @@ const hasPersistentPanel = computed(() => {
   return Boolean(target);
 });
 
-const isSshPanel = computed(() => {
-  const target = store.getPanelByViewId(viewId.value) as { panel?: { launch?: { kind?: string } } } | undefined;
-  return target?.panel?.launch?.kind === "ssh";
+const sshPanelLaunch = computed(() => {
+  const target = store.getPanelByViewId(viewId.value) as { panel?: { launch?: PanelLaunch } } | undefined;
+  const launch = target?.panel?.launch;
+  return launch?.kind === "ssh" ? launch : undefined;
 });
+const isSshPanel = computed(() => Boolean(sshPanelLaunch.value));
+const tmuxTarget = computed(() => sshPanelLaunch.value?.tmux);
 
 // SFTP needs ssh2: System SSH and WSL tabs have no client of ours to open a file channel on.
 const sftpUnsupportedReason = computed(() => {
-  const launch = (
-    store.getPanelByViewId(viewId.value) as
-      | {
-          panel?: {
-            launch?: { kind?: string; sshHostId?: string; sshInline?: { advanced?: { launchVia?: string } } };
-          };
-        }
-      | undefined
-  )?.panel?.launch;
-  if (launch?.kind !== "ssh") return "";
+  const launch = sshPanelLaunch.value;
+  if (!launch) return "";
   const host = launch.sshInline ?? sshStore.hosts.find((candidate) => candidate.id === launch.sshHostId);
   if (!host) return "";
   const mode = resolveSshLaunchVia(

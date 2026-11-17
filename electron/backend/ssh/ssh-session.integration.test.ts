@@ -1,10 +1,11 @@
 import { generateKeyPairSync } from "node:crypto";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import type { AddressInfo } from "node:net";
 import { connect as connectSocket } from "node:net";
 import { afterEach, describe, expect, test } from "vitest";
 import ssh2 from "ssh2";
-import type { AuthContext, BaseAgent as BaseAgentType, Connection } from "ssh2";
+import type { AuthContext, BaseAgent as BaseAgentType, Connection, ServerChannel } from "ssh2";
+import { buildSshTmuxAttachCommand } from "../../shared/ssh-tmux.js";
 import { SshManager } from "./ssh-manager.js";
 import { SshSession } from "./ssh-session.js";
 import type { CredentialStore } from "../shared/credential-store.js";
@@ -27,6 +28,10 @@ async function listen(
   onAgentForward?: () => void,
   onShell?: () => void,
   onPty?: (info: { cols: number; rows: number }) => void,
+  terminal?: {
+    onExec: (command: string, stream: ServerChannel) => void;
+    onResize: (size: { cols: number; rows: number }) => void;
+  },
 ) {
   const connections = new Set<Connection>();
   const server = new Server({ hostKeys: [hostKey] }, (connection) => {
@@ -62,6 +67,12 @@ async function listen(
           stream.on("error", () => {});
           stream.on("data", (data: Buffer) => stream.write(data));
         });
+        if (terminal) {
+          session.on("exec", (acceptExec, _rejectExec, info) => {
+            terminal.onExec(info.command, acceptExec());
+          });
+          session.on("window-change", (_accept, _reject, info) => terminal.onResize(info));
+        }
       });
     });
   });
@@ -308,6 +319,80 @@ describe("Built-in SSH over a real loopback connection", () => {
     cleanups.push(() => session.stop());
     await session.start();
     expect(requested).toEqual({ cols: 211, rows: 62 });
+  });
+
+  test.each([false, true])("runs tmux through an SSH exec PTY (immediate exit: %s)", async (immediateExit) => {
+    const command = buildSshTmuxAttachCommand({ name: " project's session " });
+    const ptySizes: Array<{ cols: number; rows: number }> = [];
+    const commands: string[] = [];
+    const receivedInput: string[] = [];
+    let shellRequests = 0;
+    const port = await listen(
+      (context) => {
+        if (context.method === "password" && context.password === "account-secret") context.accept();
+        else context.reject(["password"]);
+      },
+      false,
+      undefined,
+      () => shellRequests++,
+      (info) => ptySizes.push(info),
+      {
+        onExec: (request, stream) => {
+          commands.push(request);
+          if (immediateExit) {
+            stream.write("tmux session no longer exists");
+            stream.exit(44);
+            stream.end();
+            return;
+          }
+          stream.write("attached");
+          stream.on("data", (data: Buffer) => {
+            receivedInput.push(data.toString());
+            stream.exit(0);
+            stream.end();
+          });
+        },
+        onResize: ({ cols, rows }) => ptySizes.push({ cols, rows }),
+      },
+    );
+    const instance = manager({ "ssh:password:test": "account-secret" });
+    const output: string[] = [];
+    const events = new EventEmitter();
+    const exited = once(events, "exit");
+    const session = await instance.createSession({
+      sessionId: "tmux",
+      inlineHost: {
+        host: "127.0.0.1",
+        port,
+        username: "alice",
+        auth: { methods: ["password"], passwordRef: "ssh:password:test" },
+        advanced: { command: "host-startup" },
+      },
+      cols: 124,
+      rows: 40,
+      terminalCommand: command,
+      onData: (data) => output.push(data),
+      onExit: ({ exitCode }) => events.emit("exit", exitCode),
+    });
+    if (!immediateExit) {
+      instance.resize("tmux", 143, 53);
+      instance.write("tmux", "detach");
+    }
+
+    await expect(exited).resolves.toEqual([immediateExit ? 44 : 0]);
+    expect(session.ended).toBe(true);
+    expect(commands).toEqual([command]);
+    expect(shellRequests).toBe(0);
+    expect(ptySizes[0]).toEqual({ cols: 124, rows: 40 });
+    if (immediateExit) {
+      expect(receivedInput).toHaveLength(0);
+      expect(output).toContain("tmux session no longer exists");
+    } else {
+      expect(ptySizes[1]).toEqual({ cols: 143, rows: 53 });
+      expect(receivedInput).toEqual(["detach"]);
+      expect(output).toContain("attached");
+    }
+    expect(instance.activeSessions.size).toBe(0);
   });
 
   test("queued first-connection trust cannot overwrite a successor generation", async () => {

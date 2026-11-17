@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeEach } from "vitest";
+import { describe, expect, test, beforeEach, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import TabPickerDropdown from "./TabPickerDropdown.vue";
@@ -30,12 +30,25 @@ describe("TabPickerDropdown", () => {
     expect(dropdown).not.toBeNull();
     const buttons = (dropdown as Element).querySelectorAll("button");
     // Without meta.platform set, platform-specific templates are NOT filtered out
-    // (11 fallback + 1 SSH + 1 custom).
-    expect(buttons.length).toBe(13);
+    // (11 fallback + SSH and tmux + 1 custom).
+    expect(buttons.length).toBe(14);
     const texts = Array.from(buttons).map((b) => b.textContent!.trim());
     expect(texts.some((t) => t.includes("Shell"))).toBe(true);
     expect(texts.some((t) => t.includes("SSH"))).toBe(true);
+    expect(texts).toContain("🔐 Attach to tmux…");
     expect(texts.some((t) => t.includes("Custom"))).toBe(true);
+    wrapper.unmount();
+  });
+
+  test("opens a new SSH tab with tmux attachment selected", () => {
+    const openNewTab = vi.spyOn(useAppStore(), "openNewTabDialog");
+    const wrapper = mount(TabPickerDropdown, { props: { anchorRect: ANCHOR }, attachTo: document.body });
+    Array.from(document.querySelectorAll<HTMLButtonElement>(".tab-picker-dropdown button"))
+      .find((button) => button.textContent?.includes("Attach to tmux"))!
+      .click();
+
+    expect(openNewTab).toHaveBeenCalledWith("", "", "", { tabType: "ssh", sshTmux: true });
+    expect(wrapper.emitted("close")).toHaveLength(1);
     wrapper.unmount();
   });
 

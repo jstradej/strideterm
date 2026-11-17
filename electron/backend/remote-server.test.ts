@@ -2457,12 +2457,17 @@ describe("terminal streaming — subscription routing + backpressure", () => {
     });
   });
 
-  test("SSH test and key-transfer terminal, state, and authentication events never reach remote clients", async () => {
+  test("private SSH terminal, state, and authentication events never reach remote clients", async () => {
     await withServer("tok-ssh-test", async ({ port, runtime }) => {
       const c = connectWs(port, "tok-ssh-test", "ssh-test-remote");
       await c.opened;
       const marker = "private-test-marker-89df0";
-      const privateIds = ["ssh-test:private", "ssh-transfer:private", "ssh-transfer:private:verify"];
+      const privateIds = [
+        "ssh-test:private",
+        "ssh-transfer:private",
+        "ssh-transfer:private:verify",
+        "ssh-tmux:private",
+      ];
       for (const sessionId of privateIds) {
         runtime._emit("terminal:data", { sessionId, data: marker, seq: 1 });
         runtime._emit("terminal:exit", { sessionId, exitCode: 0 });
@@ -2484,7 +2489,7 @@ describe("terminal streaming — subscription routing + backpressure", () => {
     });
   });
 
-  test("remote clients cannot start or stop key transfer, answer its prompts, replay it, or attach terminal input", async () => {
+  test("remote clients cannot operate key transfers or access private SSH sessions", async () => {
     await withServer("tok-ssh-transfer-private", async ({ port, runtime }) => {
       const transferId = "ssh-transfer:private-http-ws";
       const verifyId = `${transferId}:verify`;
@@ -2502,7 +2507,7 @@ describe("terminal streaming — subscription routing + backpressure", () => {
       expect(resizes).not.toHaveBeenCalled();
       expect(c.messages.some((message) => JSON.stringify(message).includes("private-output"))).toBe(false);
 
-      for (const sessionId of [transferId, verifyId]) {
+      for (const sessionId of [transferId, verifyId, "ssh-tmux:private-http-ws"]) {
         const replay = await fetch(`http://127.0.0.1:${port}/api/terminal/replay`, {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: "Bearer tok-ssh-transfer-private" },
@@ -2533,6 +2538,12 @@ describe("terminal streaming — subscription routing + backpressure", () => {
         });
         expect(response.status).toBe(403);
       }
+      const cancelTmux = await fetch(`http://127.0.0.1:${port}/api/ssh/tmux/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer tok-ssh-transfer-private" },
+        body: JSON.stringify({ requestId: "desktop-request" }),
+      });
+      expect(cancelTmux.status).toBe(404);
       c.ws.close();
     });
   });

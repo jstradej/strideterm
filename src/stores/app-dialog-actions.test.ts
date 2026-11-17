@@ -961,10 +961,10 @@ describe("createDialogActions.editSshHostForView", () => {
   });
 
   const inline = { host: "mini.local", username: "js", advanced: { launchVia: "ssh2" }, auth: { methods: ["agent"] } };
-  function quickConnectCtx() {
+  function quickConnectCtx(extraLaunch = {}) {
     const workspace = {
       id: "ws",
-      panels: [{ id: "p1", title: "@mini.local", launch: { kind: "ssh", sshInline: inline } }],
+      panels: [{ id: "p1", title: "@mini.local", launch: { kind: "ssh", sshInline: inline, ...extraLaunch } }],
     };
     const ctx = makeCtx({ appState: { ssh: { hosts: [] } }, workspace });
     ctx.getPanelByViewId = () => ({ workspace, panel: workspace.panels[0] });
@@ -1007,6 +1007,17 @@ describe("createDialogActions.editSshHostForView", () => {
     expect(event?.body).toBe("disk full");
   });
 
+  it("keeps the tmux target when the inline host becomes a saved host", async () => {
+    const tmux = { name: "build", readOnly: true };
+    const ctx = quickConnectCtx({ tmux });
+    const saveWorkspace = vi.fn(async (next: AnyApi) => ({ workspace: next }));
+    ctx.getApi = () => ({ saveWorkspace });
+    await createDialogActions(ctx).editSshHostForView("ws:p1");
+    await (ctx.overlayProps.value as AnyApi).onSaved({ ...inline, id: "host-1" });
+
+    expect(saveWorkspace.mock.calls[0][0].panels[0].launch).toEqual({ kind: "ssh", sshHostId: "host-1", tmux });
+  });
+
   it("reports a saved-host tab whose host was deleted instead of doing nothing", async () => {
     const workspace = { id: "ws", panels: [{ id: "p1", launch: { kind: "ssh", sshHostId: "gone" } }] };
     const ctx = makeCtx({ appState: { ssh: { hosts: [] } }, workspace });
@@ -1025,9 +1036,14 @@ describe("createDialogActions.editTabWithDialog on an SSH tab", () => {
     setActivePinia(createPinia());
   });
 
-  function sshTabCtx(launchedSessions: AnyApi[] = []) {
+  function sshTabCtx(launchedSessions: AnyApi[] = [], extraLaunch = {}) {
     const host = { id: "host-1", host: "mini.local", username: "js" };
-    const panel = { id: "p1", title: "mini", command: "", launch: { kind: "ssh", sshHostId: "host-1" } };
+    const panel = {
+      id: "p1",
+      title: "mini",
+      command: "",
+      launch: { kind: "ssh", sshHostId: "host-1", ...extraLaunch },
+    };
     const workspace = { id: "ws", panels: [panel], sessions: launchedSessions };
     const ctx = makeCtx({ appState: { ssh: { hosts: [host] } }, workspace });
     ctx.getPanelByViewId = () => ({ workspace, panel });
@@ -1082,6 +1098,22 @@ describe("createDialogActions.editTabWithDialog on an SSH tab", () => {
       remoteCwd: "~/app",
     });
     expect((ctx.overlayProps.value as AnyApi).title).toBe("Reload tab now?");
+  });
+
+  it("persists changed tmux access and offers to reconnect the live tab", async () => {
+    const ctx = sshTabCtx([{ sessionId: "ws:p1" }], { tmux: { name: "dev", readOnly: true } });
+    const saveWorkspace = vi.fn(async (next: AnyApi) => ({ workspace: next }));
+    const restartTerminal = vi.fn(async () => ({}));
+    ctx.getApi = () => ({ saveWorkspace, restartTerminal });
+    createDialogActions(ctx).editTabWithDialog("ws:p1");
+    expect(ctx.overlayProps.value).toMatchObject({ tmux: { name: "dev", readOnly: true }, sshTabHostId: "host-1" });
+
+    await (ctx.overlayProps.value as AnyApi).onSubmit({ title: "mini", command: "", tmux: { name: "dev" } });
+
+    expect(saveWorkspace.mock.calls[0][0].panels[0].launch.tmux).toEqual({ name: "dev" });
+    expect((ctx.overlayProps.value as AnyApi).message).toContain("tmux attachment changed");
+    await (ctx.overlayProps.value as AnyApi).onConfirm();
+    expect(restartTerminal).toHaveBeenCalledWith("ws:p1");
   });
 });
 

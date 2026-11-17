@@ -659,7 +659,7 @@ interface Runtime {
 function isDesktopPrivateSshSession(runtime: Runtime, sessionId: unknown): boolean {
   if (runtime.isPrivateSshOperationSessionId?.(sessionId)) return true;
   if (runtime.isSshTestSessionId?.(sessionId)) return true;
-  return typeof sessionId === "string" && /^(ssh-test:|ssh-transfer:|ssh-file:)/.test(sessionId);
+  return typeof sessionId === "string" && /^(ssh-test:|ssh-transfer:|ssh-file:|ssh-tmux:)/.test(sessionId);
 }
 
 /** Viewer id answering the prompts of an own SFTP connection owned by a remote client; null for every other session. */

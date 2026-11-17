@@ -1377,7 +1377,8 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
       panel.launch = options.sshInline
         ? { kind: "ssh", sshInline: options.sshInline }
         : { kind: "ssh", sshHostId: options.sshHostId };
-      if (typeof options.remoteCwd === "string" && options.remoteCwd.trim())
+      if (options.tmux) panel.launch.tmux = options.tmux;
+      else if (typeof options.remoteCwd === "string" && options.remoteCwd.trim())
         panel.launch.remoteCwd = options.remoteCwd.trim();
     }
     nextWorkspace.panels.push(panel);

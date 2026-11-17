@@ -26,7 +26,7 @@ describe("EditTabDialog", () => {
     const sshButton = wrapper.findAll(".new-tab-kind button").find((b) => b.text().includes("SSH"));
     await sshButton!.trigger("click");
     await flushPromises();
-    const commandField = wrapper.find("input[placeholder='e.g. tmux attach'], input[placeholder='e.g. hostname']");
+    const commandField = wrapper.find("input[placeholder='e.g. claude'], input[placeholder='e.g. hostname']");
     expect((commandField.element as HTMLInputElement).value).toBe("claude --dangerously-skip-permissions");
     expect((wrapper.find(".title-input").element as HTMLInputElement).value).toBe("🤖 Claude Code");
   });
@@ -384,7 +384,92 @@ describe("EditTabDialog", () => {
     });
   });
 
+  test("creates a saved-host tmux tab with an exact read-only target and no startup command", async () => {
+    useSshStore().hosts = [{ id: "host-mini", host: "mini.local", name: "mini" }] as never;
+    const app = useAppStore();
+    app.payload = {
+      workspace: { workspace: { id: "ws", kind: "terminal", profileId: "default", panels: [] }, sessions: [] },
+    } as never;
+    const quickAdd = vi.spyOn(app, "quickAddTemplateTab").mockResolvedValue(undefined);
+    const wrapper = mountDialog({
+      mode: "new",
+      presetTabType: "ssh",
+      presetSshTmux: true,
+      title: "Build session",
+      command: "claude",
+      remoteCwd: "~/project",
+    });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="ssh-remote-cwd"]').exists()).toBe(false);
+    await wrapper.get('[data-testid="tmux-session-name"]').setValue(" shared session ");
+    await wrapper.get(".tmux-fields select").setValue("read-only");
+    await wrapper.get("form").trigger("submit");
+    await flushPromises();
+
+    expect(quickAdd).toHaveBeenCalledWith("", "Build session", "", {
+      kind: "ssh",
+      sshHostId: "host-mini",
+      tmux: { name: " shared session ", readOnly: true },
+    });
+    expect(wrapper.emitted("cancel")).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  test("offers manual tmux attachment from Quick connect", async () => {
+    const app = useAppStore();
+    app.payload = {
+      workspace: { workspace: { id: "ws", kind: "terminal", profileId: "default", panels: [] }, sessions: [] },
+    } as never;
+    const quickAdd = vi.spyOn(app, "quickAddTemplateTab").mockResolvedValue(undefined);
+    const wrapper = mountDialog({ mode: "new", presetTabType: "ssh", presetSshMode: "quick" });
+    await flushPromises();
+    await wrapper.get('input[placeholder="bastion.example.com"]').setValue("my-alias");
+    await wrapper.get('[data-testid="tmux-attach"]').setValue(true);
+    await wrapper.get('[data-testid="tmux-session-name"]').setValue("development");
+    await wrapper.get("form").trigger("submit");
+    await flushPromises();
+
+    expect(quickAdd).toHaveBeenCalledWith("", "development", "", {
+      kind: "ssh",
+      sshInline: expect.objectContaining({ host: "my-alias" }),
+      tmux: { name: "development" },
+    });
+    wrapper.unmount();
+  });
+
+  test("updates a suggested title when the session changes and preserves the user's title", async () => {
+    useSshStore().hosts = [{ id: "host-mini", host: "mini.local", name: "mini" }] as never;
+    const wrapper = mountDialog({ mode: "new", presetTabType: "ssh", presetSshTmux: true });
+    await flushPromises();
+    const title = wrapper.get<HTMLInputElement>(".title-input");
+    const sessionName = wrapper.get('[data-testid="tmux-session-name"]');
+    expect(title.element.value).toBe("🌐 mini");
+    await sessionName.setValue(" first session ");
+    expect(title.element.value).toBe("first session");
+    await sessionName.setValue("second session");
+    expect(title.element.value).toBe("second session");
+
+    await title.setValue("🌐 My named tab");
+    await sessionName.setValue("third session");
+    expect(title.element.value).toBe("🌐 My named tab");
+    wrapper.unmount();
+  });
+
   describe("editing an SSH tab", () => {
+    test("preloads the tmux attachment and lets the user switch the tab back to a shell", async () => {
+      const wrapper = mountDialog({ sshTab: true, title: "Build", tmux: { name: "build", readOnly: true } });
+      await flushPromises();
+      expect(wrapper.get<HTMLInputElement>('[data-testid="tmux-session-name"]').element.value).toBe("build");
+      expect(wrapper.get<HTMLSelectElement>(".tmux-fields select").element.value).toBe("read-only");
+      await wrapper.get('[data-testid="tmux-attach"]').setValue(false);
+      await wrapper.get("input[placeholder='e.g. claude']").setValue("hostname");
+      await wrapper.get("form").trigger("submit");
+      const payload = wrapper.emitted("submit")?.[0][0];
+      expect(payload).toMatchObject({ command: "hostname" });
+      expect(payload).not.toHaveProperty("tmux");
+      wrapper.unmount();
+    });
+
     test("shows the Startup command and no local-only Advanced section, and submits the plain command", async () => {
       const wrapper = mountDialog({ mode: "edit", sshTab: true, title: "mini", command: "claude" });
       await flushPromises();

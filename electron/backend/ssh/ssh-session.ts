@@ -87,6 +87,7 @@ interface SshSessionOpts {
   authOnly?: boolean;
   readyTimeoutMs?: number;
   authenticatedActionTimeoutMs?: number;
+  terminalCommand?: string;
 }
 
 interface AuthFailureDiagnostic {
@@ -159,6 +160,7 @@ export class SshSession {
   verifiedHostKey: HostKeyInfo | null;
   private authFailureDiagnostic: AuthFailureDiagnostic | null;
   private readyDeadlines: Set<ReadyDeadline>;
+  private readonly terminalCommand?: string;
   private cancelAuthenticatedAction?: () => void;
 
   constructor(opts: SshSessionOpts) {
@@ -177,6 +179,7 @@ export class SshSession {
     this.authOnly = opts.authOnly === true;
     this.readyTimeoutMs = opts.readyTimeoutMs ?? READY_TIMEOUT;
     this.authenticatedActionTimeoutMs = opts.authenticatedActionTimeoutMs ?? 30000;
+    this.terminalCommand = opts.terminalCommand;
     this.client = null;
     this.stream = null;
     this.jumpClients = [];
@@ -264,36 +267,40 @@ export class SshSession {
             })();
             return;
           }
-          client.shell(
-            {
-              term: "xterm-256color",
-              cols: this.dimensions.cols || 80,
-              rows: this.dimensions.rows || 24,
-            },
-            (err, stream) => {
-              if (err) {
-                finish(reject, this.withAuthDiagnostics(err));
-                return;
-              }
-              this.stream = stream;
-              stream.on("data", (buf: Buffer) => this.onData?.(buf.toString("utf-8")));
-              stream.stderr.on("data", (buf: Buffer) => this.onData?.(buf.toString("utf-8")));
-              stream.on("close", (code: number | null, signal: string | null) => {
-                if (this.ended) return;
-                this.ended = true;
-                this.onExit?.({ exitCode: typeof code === "number" ? code : 0, signal: signal || null });
-              });
-              try {
-                this.onReady?.();
-              } catch {
-                // reporting failure should never break the shell
-              }
-              if (this.host.advanced?.command) {
-                stream.write(this.host.advanced.command + "\r");
-              }
-              finish(resolve);
-            },
-          );
+          const pty = {
+            term: "xterm-256color",
+            cols: this.dimensions.cols || 80,
+            rows: this.dimensions.rows || 24,
+          };
+          const openTerminal = (err: Error | undefined, stream: ClientChannel) => {
+            if (err) {
+              finish(reject, this.withAuthDiagnostics(err));
+              return;
+            }
+            this.stream = stream;
+            if (pty.cols !== this.dimensions.cols || pty.rows !== this.dimensions.rows) {
+              stream.setWindow(this.dimensions.rows, this.dimensions.cols, 0, 0);
+            }
+            stream.on("data", (buf: Buffer) => this.onData?.(buf.toString("utf-8")));
+            stream.stderr.on("data", (buf: Buffer) => this.onData?.(buf.toString("utf-8")));
+            stream.on("close", (code: number | null, signal: string | null) => {
+              if (this.ended) return;
+              this.ended = true;
+              if (this.terminalCommand) void this.stop();
+              this.onExit?.({ exitCode: typeof code === "number" ? code : 0, signal: signal || null });
+            });
+            try {
+              this.onReady?.();
+            } catch {
+              // A failure while reporting readiness must not close the terminal.
+            }
+            if (!this.terminalCommand && this.host.advanced?.command) {
+              stream.write(this.host.advanced.command + "\r");
+            }
+            finish(resolve);
+          };
+          if (this.terminalCommand) client.exec(this.terminalCommand, { pty }, openTerminal);
+          else client.shell(pty, openTerminal);
         })
         .on(
           "keyboard-interactive",
@@ -335,11 +342,12 @@ export class SshSession {
         .on("banner", (msg: string) => this.onData?.(msg))
         .on("error", (err: Error) => {
           readyDeadline.clear();
-          if (this.ready) {
+          if (this.ready && (this.authOnly || this.stream)) {
             rejectAuthenticatedAction?.(err);
             // Post-ready errors: treat as exit with nonzero code, not as start() reject.
             if (this.ended) return;
             this.ended = true;
+            if (this.terminalCommand) void this.stop();
             this.onExit?.({ exitCode: 1, signal: null, error: err.message });
             return;
           }
@@ -348,12 +356,13 @@ export class SshSession {
         .on("close", () => {
           readyDeadline.clear();
           rejectAuthenticatedAction?.(new Error("SSH connection closed during the post-authentication operation."));
-          if (!this.ready) {
+          if (!this.ready || (!this.authOnly && !this.stream)) {
             finish(reject, new Error("Connection closed before ready"));
             return;
           }
           if (this.ended) return;
           this.ended = true;
+          if (this.terminalCommand) void this.stop();
           this.onExit?.({ exitCode: 0, signal: null });
         });
 

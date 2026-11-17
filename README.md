@@ -24,7 +24,7 @@
 - **Automations** - run agents or tasks on a schedule or integration event — see the [automations guide](docs/automations.md)
 - **Task agents from a planning terminal (internal MCP)** - supported AI agents can prepare and monitor a task, then wait for your approval before starting
 - **Docker Manager** - list containers, run actions, open shells, and stream logs
-- **SSH Support** - connect to remote machines using saved hosts or by entering a connection directly — see the [SSH guide](docs/ssh.md)
+- **SSH Support** - connect to remote machines, browse and preview running tmux sessions, and resume them in a workspace tab — see the [SSH guide](docs/ssh.md)
 - **Remote Access** - access your workspace from any device via LAN or Cloudflare tunnel with QR code; browser sessions expire after 24 hours idle or 7 days total by default and can be revoked in Settings
 - **Telegram Bot** - receive alerts and control selected app features from a Telegram chat — see the [Telegram guide](docs/telegram.md)
 - **Plugins** - extend functionality with plugins (Docker Ops and System Monitor built-in)

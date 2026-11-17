@@ -8,6 +8,7 @@ import { rlog } from "../lib/renderer-log.js";
 import { adoptRestoredSession } from "./app-session-restore.js";
 import { ref, watch } from "vue";
 import { effortArgs } from "../../electron/shared/agent-provider-catalog.js";
+import type { SshTmuxTarget } from "../../electron/shared/ssh-tmux.js";
 
 type ReviewAgentPreparationSelection = StartReviewAgentPreparation extends infer Request
   ? Request extends object
@@ -357,9 +358,13 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       try {
         const current = ctx.getPanelByViewId(viewId);
         if (!current) return;
+        const currentLaunch = current.panel.launch;
+        if (currentLaunch?.kind !== "ssh" || !currentLaunch.sshInline) return;
+        const savedLaunch = { ...currentLaunch, sshHostId: saved.id };
+        delete savedLaunch.sshInline;
         const nextWorkspace = cloneWorkspace(current.workspace);
         nextWorkspace.panels = nextWorkspace.panels.map((p: AnyApi) =>
-          p.id === current.panel.id ? { ...p, launch: { kind: "ssh", sshHostId: saved.id } } : p,
+          p.id === current.panel.id ? { ...p, launch: savedLaunch } : p,
         );
         ctx.adoptPayload((await (ctx.getApi() as CallableTransport).saveWorkspace(nextWorkspace)) as StatePayload);
       } catch (err) {
@@ -377,8 +382,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
   function editTabWithDialog(viewId: string): void {
     const target = ctx.getPanelByViewId(viewId);
     if (!target) return;
-    // An SSH tab edits only what is the tab's own (title, icon, startup command); the connection
-    // belongs to the host (editSshHostForView).
+    // An SSH tab edits its own launch settings. Connection details belong to the host.
     const launch = target.panel.launch;
     // Snapshot whether the tab has a live PTY *before* opening the dialog —
     // saveWorkspace could in theory mutate the session list, so we capture the
@@ -400,6 +404,8 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       workspaceCwd: target.workspace.cwd || "",
       sandboxShell: target.panel.sandboxShell === true,
       sshTab: launch?.kind === "ssh",
+      sshTabHostId: launch?.kind === "ssh" ? launch.sshHostId : undefined,
+      tmux: launch?.kind === "ssh" ? launch.tmux : undefined,
       remoteCwd: launch?.kind === "ssh" ? launch.remoteCwd || "" : "",
       onCancel: closeDialog,
       onSubmit: async ({
@@ -408,23 +414,29 @@ export function createDialogActions(ctx: DialogActionsCtx) {
         sshMcpEnabled,
         sandboxShell,
         remoteCwd,
+        tmux,
       }: {
         title: string;
         command: string;
         sshMcpEnabled?: boolean;
         sandboxShell?: boolean;
         remoteCwd?: string;
+        tmux?: SshTmuxTarget;
       }) => {
         const nextTitle = (title || "").trim();
         const nextCommand = (command || "").trim();
         const nextRemoteCwd = launch?.kind === "ssh" ? (remoteCwd || "").trim() : "";
+        const previousTmux: SshTmuxTarget | undefined = launch?.kind === "ssh" ? launch.tmux : undefined;
+        const sameTmux =
+          previousTmux?.name === tmux?.name && Boolean(previousTmux?.readOnly) === Boolean(tmux?.readOnly);
         const sameTitle = nextTitle === (target.panel.title || "").trim();
         const sameCommand =
           nextCommand === (target.panel.command || "").trim() &&
           (launch?.kind !== "ssh" || nextRemoteCwd === (launch.remoteCwd || "").trim());
         const sameSshMcpEnabled = Boolean(sshMcpEnabled) === Boolean(target.panel.sshMcpEnabled);
         const sameSandboxShell = Boolean(sandboxShell) === Boolean(target.panel.sandboxShell);
-        if (!nextTitle || (sameTitle && sameCommand && sameSshMcpEnabled && sameSandboxShell)) {
+        const sameStartup = sameCommand && sameSshMcpEnabled && sameSandboxShell && sameTmux;
+        if (!nextTitle || (sameTitle && sameStartup)) {
           closeDialog();
           return;
         }
@@ -438,17 +450,20 @@ export function createDialogActions(ctx: DialogActionsCtx) {
             command: nextCommand,
             sshMcpEnabled: Boolean(sshMcpEnabled),
             ...(sandboxShell ? { sandboxShell: true } : {}),
-            ...(p.launch?.kind === "ssh" ? { launch: { ...p.launch, remoteCwd: nextRemoteCwd || undefined } } : {}),
+            ...(p.launch?.kind === "ssh"
+              ? { launch: { ...p.launch, remoteCwd: nextRemoteCwd || undefined, tmux } }
+              : {}),
           };
         });
         ctx.adoptPayload((await (ctx.getApi() as CallableTransport).saveWorkspace(nextWorkspace)) as StatePayload);
         // The command and per-tab settings only affect a newly started PTY.
-        if ((!sameCommand || !sameSshMcpEnabled || !sameSandboxShell) && hasLiveSession) {
+        if (!sameStartup && hasLiveSession) {
           openDialog("ConfirmDialog", {
             eyebrow: "Tab",
             title: "Reload tab now?",
-            message:
-              "The command, remote directory, SSH tools or isolation setting changed. Restart the terminal now to apply it, or apply the change the next time this tab is launched.",
+            message: sameTmux
+              ? "The command, remote directory, SSH tools or isolation setting changed. Restart the terminal now to apply it, or apply the change the next time this tab is launched."
+              : "The tmux attachment changed. Reconnect now to apply it, or apply the change the next time this tab is launched.",
             confirmLabel: "Reload now",
             cancelLabel: "Apply on next launch",
             onCancel: closeDialog,
@@ -511,7 +526,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     cwdOverride = "",
     presetTitle = "",
     presetCommand = "",
-    options: { tabType?: string; sshMode?: string; sshHostId?: string } = {},
+    options: { tabType?: string; sshMode?: string; sshHostId?: string; sshTmux?: boolean } = {},
   ): void {
     const presetTabType = options.tabType === "ssh" ? "ssh" : "local";
     const defaultTitle = presetTabType === "ssh" ? "" : "\u{1F4BB} Shell";
@@ -529,6 +544,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       presetTabType,
       presetSshMode,
       presetSshHostId,
+      presetSshTmux: options.sshTmux === true,
       cwdOverride,
       onEditSshHost: (host: AnyApi, currentState: AnyApi) => {
         openSubDialog("SshHostEditor", {
@@ -540,7 +556,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       },
       onCancel: closeDialog,
       onSubmit: async (payload: AnyApi) => {
-        const { title, command, kind, sshHostId, sshInline, sshMcpEnabled, sandboxShell } = payload;
+        const { title, command, kind, sshHostId, sshInline, sshMcpEnabled, sandboxShell, tmux } = payload;
         const nextTitle = (title || "").trim();
         if (!nextTitle) {
           closeDialog();
@@ -553,6 +569,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
           sshInline,
           sshMcpEnabled,
           sandboxShell,
+          ...(tmux ? { tmux } : {}),
         });
       },
     });

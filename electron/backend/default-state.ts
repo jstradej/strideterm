@@ -21,6 +21,7 @@ import type {
 import { isCompanionPrimaryViewId, parseCompanionPrimaryViewId } from "../shared/companion-primary.js";
 import { isFullSha } from "../shared/review-source-identity.js";
 import { normalizeRemoteCwd } from "../shared/ssh-remote-cwd.js";
+import { normalizeSshTmuxTarget } from "../shared/ssh-tmux.js";
 import { sanitizeJiraPollingState } from "./jira/jira-polling.js";
 import { normalizeSandboxDomains } from "../shared/sandbox.js";
 import { normalizeRegistryConnections } from "./sandbox/registry-connections.js";
@@ -149,6 +150,10 @@ function normalizeLaunch(launch: any): Record<string, unknown> | null {
     if (launch.sshHostId) normalized.sshHostId = String(launch.sshHostId);
     const remoteCwd = normalizeRemoteCwd(launch.remoteCwd);
     if (remoteCwd) normalized.remoteCwd = remoteCwd;
+    if (launch.tmux !== undefined) {
+      // Keep the launch intent so a damaged target cannot open a login shell on restore.
+      normalized.tmux = normalizeSshTmuxTarget(launch.tmux) ?? { name: "" };
+    }
     if (launch.sshInline && typeof launch.sshInline === "object") {
       const inline = launch.sshInline;
       const auth = inline.auth || {};

@@ -3,6 +3,7 @@ import { reviewGitConfirmationSchema, reviewGitOperationKindSchema } from "../sh
 import { EFFORT_LEVELS } from "../shared/agent-provider-catalog.js";
 import { JIRA_SMART_FILTER_IDS } from "../shared/jira-smart-filters.js";
 import { REMOTE_CWD_MAX_LENGTH } from "../shared/ssh-remote-cwd.js";
+import { normalizeSshTmuxName } from "../shared/ssh-tmux.js";
 import {
   JIRA_CONNECTION_HEALTH_STATES,
   JIRA_REQUEST_ERROR_CODES,
@@ -93,8 +94,19 @@ const panelLaunchSchema = z
     sshHostId: z.string().optional(),
     sshInline: sshInlineSchema.optional(),
     remoteCwd: z.string().max(REMOTE_CWD_MAX_LENGTH).optional(),
+    tmux: z
+      .object({
+        name: z.string().refine((name) => normalizeSshTmuxName(name) !== null, "Invalid tmux session name"),
+        readOnly: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
   })
   .passthrough()
+  .refine((launch) => launch.tmux === undefined || launch.kind === "ssh", {
+    path: ["tmux"],
+    message: "A tmux target requires an SSH launch",
+  })
   .nullable()
   .optional();
 

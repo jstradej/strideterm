@@ -87,6 +87,16 @@ When creating or editing an SSH tab, you can set its own startup command and con
 
 **Remote directory** sets the folder on the server where the tab starts, for example `~/projects/app`. After sign-in the tab changes to it and runs the startup command there; if the folder does not exist, the terminal shows the error and the command does not run. It needs a Unix-like shell on the server (Linux or macOS). SSH tabs to saved hosts can also be added directly in the workspace dialog with **🔐 SSH…**.
 
+## Attach to a running tmux session
+
+Open **+ Tab → Attach to tmux…** and choose the SSH host. Use the account that owns the session, with `tmux` on the remote command's `PATH`.
+
+1. Select **Find sessions** to see the running sessions, their window count, attachment state and last activity. Choose a session and select **Preview recent output** to read the active pane. In Quick connect, enter the exact session name shown by `tmux list-sessions` on the host.
+2. Choose **Interactive** to use the terminal or **Read-only** to watch it, then select **Attach to tmux**. The tab remembers the SSH connection and the session name.
+3. Use **Detach from tmux** in the tab menu to disconnect. The session keeps running on the host. Use **Reattach to tmux** to return to it. To switch sessions or change access, open **Edit tab** and reconnect.
+
+Find and preview are available in the desktop app for saved hosts. Built-in SSH uses the usual authentication prompts. With System SSH or SSH in WSL, discovery uses the client's trusted host keys and non-interactive sign-in. For a host that needs an interactive sign-in, enter the exact session name and complete sign-in when attaching. An existing tmux tab can also be opened over remote access.
+
 **Reconnect with password** in an SSH tab's context menu connects once with the account password instead of a key or agent, for example to a Mac with FileVault right after a restart. The host's saved sign-in does not change.
 
 You can optionally enable **SSH tools** for a tab that directly launches Claude Code or Codex. This lets that agent list saved Built-in SSH hosts, run a command on a selected host, and list, upload and download files on it. The option is off by default, takes effect when the terminal starts, and requires restarting the terminal after a change. It is unavailable for manually launched agents, other tab types, WSL, System SSH, and remote sessions.

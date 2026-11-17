@@ -40,6 +40,7 @@
     >
       <span>{{ tab.title }}</span>
       <small class="tab__status">
+        <span v-if="tab.tmuxLabel" class="tab__tmux" :title="tab.tmuxLabel" :aria-label="tab.tmuxLabel">tmux</span>
         <span v-if="tab.isolated" class="tab__isolated" :title="ISOLATED_TOOLTIP" data-testid="tab-isolated"
           >isolated</span
         >
@@ -114,7 +115,10 @@
           :title="tab.titleTooltip"
           @click="activateTabFromCompactPicker(tab.id)"
         >
-          <span class="tab-strip-compact-picker__item-title">{{ tab.title }}</span>
+          <span class="tab-strip-compact-picker__item-title">
+            {{ tab.title }}
+            <small v-if="tab.tmuxLabel" :title="tab.tmuxLabel" :aria-label="tab.tmuxLabel">tmux</small>
+          </span>
           <small
             v-if="tab.taskBadge && tab.companionWorkspaceId"
             class="tab-strip-compact-picker__item-status tab__task-badge--linked"
@@ -147,6 +151,7 @@ import { useTabDragDrop } from "../../composables/useDragDrop.js";
 import { isFreshAlert, isGitViewId, tabAttentionTitle } from "../../app/helpers.js";
 import { hostedPanelIds, tabSessionId } from "../../app/selectors.js";
 import { isSandboxedPanel } from "../../../electron/shared/sandbox-eligibility.js";
+import type { PanelLaunch } from "../../../electron/shared/types/state.js";
 import {
   companionPrimaryHostedPanelIds,
   resolveCompanionPrimaryBinding,
@@ -211,6 +216,12 @@ interface TabStripTabModel {
   jiraSavedView?: boolean;
   isolated?: boolean;
   needsIsolationRestart?: boolean;
+  tmuxLabel?: string;
+}
+
+function describeTmuxLaunch(launch?: PanelLaunch): string {
+  const target = launch?.kind === "ssh" ? launch.tmux : undefined;
+  return target ? `tmux session: ${target.name} · ${target.readOnly ? "Read-only" : "Interactive"} on connect` : "";
 }
 
 const ISOLATED_TOOLTIP =
@@ -307,6 +318,7 @@ const compactTabModels = computed(() => {
     .map((p: AnyApi) => {
       const automationDashboard = p.command === "__automation-dashboard__";
       const viewId = automationDashboard ? `automation-dashboard:${p.id}` : `${wsId}:${p.id}`;
+      const tmuxLabel = describeTmuxLaunch(p.launch);
       return {
         id: viewId,
         sessionId: automationDashboard ? undefined : viewId,
@@ -330,7 +342,8 @@ const compactTabModels = computed(() => {
         companionWorkspaceId: "",
         companionRoleLabel: "",
         notes: (p.notes as string) || "",
-        titleTooltip: p.title || p.id,
+        tmuxLabel,
+        titleTooltip: tmuxLabel || p.title || p.id,
       };
     });
 
@@ -360,6 +373,7 @@ const compactTabModels = computed(() => {
       companionRoleLabel: "",
       notes: "",
       titleTooltip: `Primary conversation — ${binding.sourcePanelTitle} in ${binding.sourceWorkspaceName}.`,
+      tmuxLabel: "",
     });
   }
   return models;
@@ -446,6 +460,9 @@ const tabModels = computed<TabStripTabModel[]>(() => {
     // contradicts that — suppress the chip so the bell speaks alone.
     const suppressStatus = !!tabAttention;
     const jiraViewId = String((tab as AnyApi).jiraViewId || "");
+    const panel = (store.getPanelByViewId(tab.id) as { panel?: { notes?: string; launch?: PanelLaunch } } | undefined)
+      ?.panel;
+    const tmuxLabel = describeTmuxLaunch(panel?.launch);
     return {
       id: tab.id,
       sessionId,
@@ -478,11 +495,12 @@ const tabModels = computed<TabStripTabModel[]>(() => {
       // Free-text scratchpad from the tab's context menu. Surfaced as a 📝
       // marker so a workspace full of tabs shows which ones carry a note
       // without opening each one.
-      notes:
-        ((store.getPanelByViewId(tab.id) as { panel?: { notes?: string } } | undefined)?.panel?.notes as string) || "",
+      notes: panel?.notes || "",
+      tmuxLabel,
       titleTooltip:
         taskTooltip ||
         tabAttentionTitle(tabAttention) ||
+        tmuxLabel ||
         tab.tooltip ||
         (tab.persistent || (tab.type === "jira" && workspace?.kind === "jira" && jiraViewId !== "issues")
           ? "Double click to edit. Drag to reorder."

@@ -71,30 +71,7 @@
         </div>
       </label>
 
-      <label v-if="tabType !== 'ssh' && sshTab" class="field">
-        <span
-          >Remote directory (optional)
-          <HelpTooltip
-            text="The folder on the server where this tab starts, e.g. ~/projects/app. Right after sign-in strIDEterm changes to it and runs the initial command there. Needs a Unix-like shell on the server (Linux or macOS). If the folder does not exist, the terminal shows the error and the initial command does not run."
-            label="Remote directory help"
-        /></span>
-        <input
-          v-model="remoteCwdInput"
-          data-testid="ssh-remote-cwd"
-          placeholder="e.g. ~/projects/app"
-          :maxlength="REMOTE_CWD_MAX_LENGTH"
-        />
-      </label>
-      <label v-if="tabType !== 'ssh' && sshTab" class="field">
-        <span
-          >Startup command
-          <HelpTooltip
-            text="Runs on the server right after sign-in and replaces the host's own startup command for this tab. Leave it blank to use the host's startup command, or a normal shell. Connection details (address, sign-in, port, jump hosts) are edited with Edit SSH host."
-            label="Startup command help"
-        /></span>
-        <input v-model="commandInput" placeholder="e.g. claude" maxlength="500" />
-      </label>
-      <label v-else-if="tabType !== 'ssh'" class="field">
+      <label v-if="tabType !== 'ssh' && !sshTab" class="field">
         <span>Command</span>
         <input v-model="commandInput" placeholder="optional boot command" maxlength="500" />
       </label>
@@ -149,7 +126,6 @@
                     class="saved-host-row__select"
                     placeholder="Select a host…"
                     :options="hostOptions"
-                    @change="onHostSelected"
                   />
                   <button
                     type="button"
@@ -174,7 +150,7 @@
                     :require-username="quickMode === 'ssh2'"
                     host-help="Enter a server address. With SSH on this computer or SSH in WSL, use an alias from that environment's SSH config. Built-in SSH needs a server address."
                     username-help="This is the account on the remote server. Built-in SSH requires it; with SSH on this computer or in WSL, leave it empty to use that environment's SSH config."
-                    @host-input="autofillTitle"
+                    @host-input="autofillSshTitle"
                   />
                   <label class="field">
                     <span
@@ -324,38 +300,6 @@
                 <span v-if="!canTestSsh" class="field-help">{{ testSshDisabledReason }}</span>
               </div>
             </template>
-
-            <label class="field">
-              <span
-                >Remote directory (optional)
-                <HelpTooltip
-                  text="The folder on the server where this tab starts, e.g. ~/projects/app. Right after sign-in strIDEterm changes to it and runs the initial command there. Needs a Unix-like shell on the server (Linux or macOS). If the folder does not exist, the terminal shows the error and the initial command does not run."
-                  label="Remote directory help"
-              /></span>
-              <input
-                v-model="remoteCwdInput"
-                data-testid="ssh-remote-cwd"
-                placeholder="e.g. ~/projects/app"
-                :maxlength="REMOTE_CWD_MAX_LENGTH"
-              />
-            </label>
-            <label class="field">
-              <span
-                >Initial command (optional)
-                <HelpTooltip
-                  :text="
-                    quickMode === 'ssh2'
-                      ? 'Runs on the server right after sign-in: it is typed into the terminal, so interactive programs such as claude or tmux work. It replaces the startup command of a saved host. Leave it blank for a normal shell.'
-                      : 'Runs on the server right after sign-in and replaces the startup command of a saved host. A terminal is requested, so interactive programs such as claude or tmux work. Leave it blank for a normal shell; a one-shot command such as hostname prints its output and ends the session.'
-                  "
-                  label="Initial command help"
-              /></span>
-              <input
-                v-model="commandInput"
-                :placeholder="quickMode === 'ssh2' ? 'e.g. tmux attach' : 'e.g. hostname'"
-                maxlength="500"
-              />
-            </label>
           </template>
 
           <template v-else>
@@ -418,6 +362,49 @@
         </div>
       </component>
 
+      <template v-if="showSshLaunch">
+        <label class="tmux-toggle">
+          <input v-model="tmuxEnabled" type="checkbox" data-testid="tmux-attach" />
+          <span>Attach to an existing tmux session</span>
+        </label>
+        <SshTmuxSessionFields
+          v-if="tmuxEnabled"
+          v-model:name="tmuxName"
+          v-model:read-only="tmuxReadOnly"
+          :host-id="tmuxDiscoveryHostId"
+          :remote="appStore.isRemoteTransport"
+          :manual-hint="tmuxManualHint"
+        />
+        <template v-else>
+          <label class="field">
+            <span>
+              Remote directory (optional)
+              <HelpTooltip
+                text="The folder on the server where this tab starts, e.g. ~/projects/app. Right after sign-in strIDEterm changes to it and runs the initial command there. Needs a Unix-like shell on the server (Linux or macOS). If the folder does not exist, the terminal shows the error and the initial command does not run."
+                label="Remote directory help"
+              />
+            </span>
+            <input
+              v-model="remoteCwdInput"
+              data-testid="ssh-remote-cwd"
+              placeholder="e.g. ~/projects/app"
+              :maxlength="REMOTE_CWD_MAX_LENGTH"
+            />
+          </label>
+          <label class="field">
+            <span>
+              {{ sshTab ? "Startup command" : "Initial command (optional)" }}
+              <HelpTooltip :text="sshCommandHelp" :label="sshTab ? 'Startup command help' : 'Initial command help'" />
+            </span>
+            <input
+              v-model="commandInput"
+              :placeholder="sshTab || quickMode === 'ssh2' ? 'e.g. claude' : 'e.g. hostname'"
+              maxlength="500"
+            />
+          </label>
+        </template>
+      </template>
+
       <p v-if="connectionError" class="error-msg" role="alert">{{ connectionError }}</p>
       <footer class="dialog__footer edit-tab-dialog__footer">
         <button
@@ -429,17 +416,16 @@
         >
           Cancel
         </button>
-        <button
-          type="submit"
-          class="button"
-          :title="
-            mode === 'new'
-              ? 'Create a tab with this name and command.'
-              : 'Save this tab name, command, and SSH tools setting.'
-          "
-          :disabled="submitting || transferBusy"
-        >
-          {{ submitting ? "Saving…" : mode === "new" ? "Create tab" : "Save" }}
+        <button type="submit" class="button" :disabled="submitting || transferBusy">
+          {{
+            submitting
+              ? "Saving…"
+              : mode !== "new"
+                ? "Save"
+                : showSshLaunch && tmuxEnabled
+                  ? "Attach to tmux"
+                  : "Create tab"
+          }}
         </button>
       </footer>
     </form>
@@ -461,12 +447,14 @@ import { buildWslCommand, parseWslCommand, type WslState } from "./wsl-launcher.
 import HelpTooltip from "../common/HelpTooltip.vue";
 import SshConnectionIdentityFields from "../ssh/SshConnectionIdentityFields.vue";
 import SshKeyTransferDialog from "../ssh/SshKeyTransferDialog.vue";
+import SshTmuxSessionFields from "../ssh/SshTmuxSessionFields.vue";
 import type { SshKeyTransferStart } from "../../../electron/backend/ipc-schemas.js";
 import { resolveSshLaunchVia } from "../../../electron/shared/ssh-connection.js";
 import { validateSshConnectionIdentity } from "../../lib/ssh-connection-form.js";
 import { sshAuthenticationHelp, sshDefaultMethodHelp } from "../../lib/ssh-help-text.js";
 import { getAgentSshMcpEligibility } from "../../../electron/shared/agent-ssh.js";
 import { REMOTE_CWD_MAX_LENGTH } from "../../../electron/shared/ssh-remote-cwd.js";
+import { normalizeSshTmuxName, type SshTmuxTarget } from "../../../electron/shared/ssh-tmux.js";
 
 interface SshHostState {
   title: string;
@@ -483,6 +471,7 @@ interface Props {
   presetTabType?: string;
   presetSshMode?: string;
   presetSshHostId?: string;
+  presetSshTmux?: boolean;
   cwdOverride?: string;
   sshMcpEnabled?: boolean;
   /** The workspace-wide opt-in already covers every eligible agent tab, this one included. */
@@ -492,8 +481,10 @@ interface Props {
   workspaceIsolation?: "isolated" | "plain" | "n/a";
   workspaceCwd?: string;
   sandboxShell?: boolean;
-  /** Edit mode for a tab that launches an SSH host: only title/icon/command/remote directory apply. */
+  /** In edit mode, SSH connection details are edited separately from the tab. */
   sshTab?: boolean;
+  sshTabHostId?: string;
+  tmux?: SshTmuxTarget;
   remoteCwd?: string;
   onEditSshHost?: ((host: unknown, state: SshHostState) => void) | null;
 }
@@ -599,8 +590,14 @@ function editSelectedHost() {
 
 const titleRef = ref<HTMLInputElement | null>(null);
 const titleInput = ref(props.title);
+let suggestedTitle = ["", "Shell", "\u{1F4BB} Shell", "\u{1F310}"].includes(props.title.trim())
+  ? props.title
+  : undefined;
 const commandInput = ref(props.command);
 const remoteCwdInput = ref(props.remoteCwd);
+const tmuxEnabled = ref(props.presetSshTmux === true || !!props.tmux);
+const tmuxName = ref(props.tmux?.name ?? "");
+const tmuxReadOnly = ref(props.tmux?.readOnly === true);
 const showIconPicker = ref(false);
 const submitting = ref(false);
 const confirmingDiscard = ref(false);
@@ -623,6 +620,34 @@ function quickLabel(mode: string) {
 
 const sshMode = ref(props.presetSshMode === "quick" ? "quick" : "saved");
 const selectedSshHostId = ref(props.presetSshHostId || "");
+const showSshLaunch = computed(() => props.sshTab || tabType.value === "ssh");
+const tmuxDiscoveryHostId = computed(() =>
+  props.sshTab ? props.sshTabHostId || "" : sshMode.value === "saved" ? selectedSshHostId.value : "",
+);
+const tmuxManualHint = computed(() => {
+  if (appStore.isRemoteTransport) return "Enter the session name. To browse sessions, use the desktop app.";
+  if (!props.sshTab && sshMode.value === "saved" && !selectedSshHostId.value)
+    return "Choose a saved SSH host to find its sessions.";
+  if (!tmuxDiscoveryHostId.value)
+    return "Enter the session name. To browse sessions, connect through a saved SSH host.";
+  return "Enter the session name as shown by tmux list-sessions on the host.";
+});
+const sshCommandHelp = computed(() => {
+  if (props.sshTab)
+    return "Runs on the server right after sign-in and replaces the host's startup command for this tab. Leave it blank to use the host's startup command or a normal shell. Use Edit SSH host for connection details.";
+  if (sshMode.value === "quick" && quickMode.value === "ssh2")
+    return "Typed into the remote terminal right after sign-in. Leave it blank to open the remote shell.";
+  return "Runs on the server right after sign-in. Leave it blank to use the host's startup command or a normal shell.";
+});
+watch(
+  [sshMode, selectedSshHostId],
+  () => {
+    tmuxName.value = "";
+    autofillSshTitle();
+  },
+  { flush: "sync" },
+);
+watch([tmuxEnabled, tmuxName], autofillSshTitle);
 const advancedSummary = computed(() => {
   if (tabType.value === "ssh") return "SSH";
   return runInWsl.value ? "WSL" : "";
@@ -713,6 +738,10 @@ function currentDraft() {
   return JSON.stringify({
     titleInput: titleInput.value,
     commandInput: commandInput.value,
+    remoteCwdInput: remoteCwdInput.value,
+    tmuxEnabled: tmuxEnabled.value,
+    tmuxName: tmuxEnabled.value ? tmuxName.value : "",
+    tmuxReadOnly: tmuxEnabled.value && tmuxReadOnly.value,
     tabType: tabType.value,
     runInWsl: runInWsl.value,
     wsl,
@@ -753,31 +782,33 @@ watch(tabType, (next, prev) => {
   if (next === prev) return;
   if (next === "ssh") {
     if (sshHosts.value.length === 0) sshMode.value = "quick";
-    else if (!selectedSshHostId.value) {
-      selectedSshHostId.value = sshHosts.value[0].id;
-      onHostSelected();
-    }
-  } else if (!titleInput.value) {
-    titleInput.value = "Shell";
+    else if (!selectedSshHostId.value) selectedSshHostId.value = sshHosts.value[0].id;
+    autofillSshTitle();
+  } else {
+    suggestTitle("Shell");
   }
 });
 
-function onHostSelected() {
-  const host = sshHosts.value.find((h) => h.id === selectedSshHostId.value);
-  if (host && isDefaultTitle()) titleInput.value = `\u{1F310} ${host.name ?? host.host}`;
+function suggestTitle(title: string) {
+  if (titleInput.value !== suggestedTitle) return;
+  titleInput.value = title;
+  suggestedTitle = title;
 }
 
-// A title is the dialog's own default (empty, "Shell", or one derived from a host) until the user
-// or a tab template set something else; only a default one follows the chosen host.
-function isDefaultTitle() {
-  const trimmed = titleInput.value.trim();
-  return ["", "Shell", "\u{1F4BB} Shell", "\u{1F310}"].includes(trimmed) || /^\u{1F310}\s/u.test(trimmed);
-}
-
-function autofillTitle() {
-  if (isDefaultTitle() && quick.host.trim()) {
-    titleInput.value = `\u{1F310} ${quick.username || ""}@${quick.host}`.trim();
+function autofillSshTitle() {
+  if (props.mode !== "new" || tabType.value !== "ssh") return;
+  const sessionName = tmuxEnabled.value ? normalizeSshTmuxName(tmuxName.value)?.trim() : undefined;
+  if (sessionName) {
+    // Leave the attachment name intact and fit the visual title to its input's limit.
+    suggestTitle(sessionName.slice(0, 60).replace(/[\uD800-\uDBFF]$/u, ""));
+    return;
   }
+  const savedHost = sshHosts.value.find((host) => host.id === selectedSshHostId.value);
+  const hostLabel =
+    sshMode.value === "saved"
+      ? (savedHost?.name ?? savedHost?.host)
+      : quick.host.trim() && `${quick.username ? `${quick.username}@` : ""}${quick.host.trim()}`;
+  suggestTitle(hostLabel ? `\u{1F310} ${hostLabel}` : "");
 }
 
 const currentIcon = computed(() => getTitleIcon(titleInput.value));
@@ -868,10 +899,8 @@ onMounted(async () => {
   const untouched = currentDraft() === initialDraft.value;
   if (untouched && tabType.value === "ssh") {
     if (sshHosts.value.length === 0) sshMode.value = "quick";
-    else if (!selectedSshHostId.value) {
-      selectedSshHostId.value = sshHosts.value[0].id;
-      onHostSelected();
-    }
+    else if (!selectedSshHostId.value) selectedSshHostId.value = sshHosts.value[0].id;
+    autofillSshTitle();
   }
   if (untouched) initialDraft.value = currentDraft();
   applyAuthDefault();
@@ -945,15 +974,20 @@ function canConnectHere(): boolean {
   return true;
 }
 
-async function createSshTab(title: string, host: Record<string, unknown>, hostId?: string) {
+async function createSshTab(
+  title: string,
+  host: Record<string, unknown>,
+  hostId: string | undefined,
+  tmux: SshTmuxTarget | undefined,
+) {
   if (!canConnectHere()) {
     connectionError.value = "Choose a terminal workspace in the active profile before connecting.";
     return false;
   }
-  await appStore.quickAddTemplateTab(commandInput.value.trim(), title, props.cwdOverride, {
+  await appStore.quickAddTemplateTab(tmux ? "" : commandInput.value.trim(), title, props.cwdOverride, {
     kind: "ssh",
     ...(hostId ? { sshHostId: hostId } : { sshInline: host }),
-    remoteCwd: remoteCwdInput.value.trim(),
+    ...(tmux ? { tmux } : { remoteCwd: remoteCwdInput.value.trim() }),
   });
   emit("cancel");
   return true;
@@ -964,13 +998,25 @@ async function handleSubmit() {
   if (!nextTitle) return;
   if (!(await closeTransferSetup())) return;
   connectionError.value = "";
+  let tmux: SshTmuxTarget | undefined;
+  if (showSshLaunch.value && tmuxEnabled.value) {
+    const name = normalizeSshTmuxName(tmuxName.value);
+    if (!name) {
+      connectionError.value = "Enter a valid, exact tmux session name.";
+      return;
+    }
+    tmux = { name, ...(tmuxReadOnly.value ? { readOnly: true } : {}) };
+  }
 
   // Classic local shell or saved SSH host — simple payload.
   if (tabType.value !== "ssh" || sshMode.value === "saved") {
     // CustomSelect has no native `required`, so guard the saved-host path
     // explicitly — we don't want to submit a saved-host tab with no host id.
-    if (tabType.value === "ssh" && sshMode.value === "saved" && !selectedSshHostId.value) return;
-    const plainCommand = commandInput.value.trim();
+    if (tabType.value === "ssh" && sshMode.value === "saved" && !selectedSshHostId.value) {
+      connectionError.value = "Choose a saved SSH host.";
+      return;
+    }
+    const plainCommand = tmux ? "" : commandInput.value.trim();
     const effectiveCommand =
       tabType.value === "local" && runInWsl.value
         ? isRawWslCommand.value
@@ -980,7 +1026,7 @@ async function handleSubmit() {
     if (props.mode === "new" && tabType.value === "ssh") {
       submitting.value = true;
       try {
-        await createSshTab(nextTitle, {}, selectedSshHostId.value);
+        await createSshTab(nextTitle, {}, selectedSshHostId.value, tmux);
       } catch (err) {
         connectionError.value = (err as Error).message || "Failed to create SSH tab.";
       } finally {
@@ -998,7 +1044,7 @@ async function handleSubmit() {
       command: effectiveCommand,
       kind: tabType.value === "ssh" ? "ssh" : undefined,
       sshHostId: tabType.value === "ssh" ? selectedSshHostId.value : undefined,
-      ...(props.sshTab ? { remoteCwd: remoteCwdInput.value.trim() } : {}),
+      ...(props.sshTab ? { remoteCwd: tmux ? "" : remoteCwdInput.value.trim(), ...(tmux ? { tmux } : {}) } : {}),
       sshMcpEnabled:
         tabType.value !== "local" ? false : appStore.isRemoteTransport ? props.sshMcpEnabled : sshMcpEnabled.value,
       sandboxShell:
@@ -1095,11 +1141,11 @@ async function handleSubmit() {
         quick.error = "Failed to save host to book.";
         return;
       }
-      await createSshTab(nextTitle, {}, saved.id);
+      await createSshTab(nextTitle, {}, saved.id, tmux);
       return;
     }
 
-    await createSshTab(nextTitle, buildInlineHost());
+    await createSshTab(nextTitle, buildInlineHost(), undefined, tmux);
   } catch (err) {
     quick.error = (err as Error).message || "Failed to create tab";
   } finally {
@@ -1110,15 +1156,23 @@ async function handleSubmit() {
 
 <style scoped>
 .edit-tab-dialog {
+  --edit-tab-inset: 20px;
   width: min(520px, 100%);
   min-width: 0;
   max-width: 100%;
+  overflow-x: hidden;
+  scroll-padding-block-end: 72px;
 }
 .edit-tab-dialog__form {
   display: flex;
   flex-direction: column;
   gap: 14px;
   min-width: 0;
+}
+.tmux-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .new-tab-kind {
   display: flex;
@@ -1553,13 +1607,24 @@ async function handleSubmit() {
 }
 
 .edit-tab-dialog__footer {
+  position: sticky;
+  bottom: calc(-1 * var(--edit-tab-inset));
+  z-index: 1;
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
   margin-top: 8px;
-  padding-top: 14px;
+  margin-bottom: calc(-1 * var(--edit-tab-inset));
+  padding: 12px 0 var(--edit-tab-inset);
   border-top: 1px solid var(--border);
+  background: var(--surface-dialog);
+}
+
+@media (max-width: 768px), (max-height: 500px) {
+  .edit-tab-dialog {
+    --edit-tab-inset: 14px;
+  }
 }
 
 @media (max-width: 560px) {

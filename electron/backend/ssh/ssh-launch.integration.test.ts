@@ -4,6 +4,7 @@ import { execFile } from "node:child_process";
 import { access, readFile, rm, stat } from "node:fs/promises";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { buildSshTmuxAttachCommand } from "../../shared/ssh-tmux.js";
 
 const spawnCalls: Array<{ file: string; args: string[] }> = [];
 let spawnError: Error | null = null;
@@ -33,6 +34,10 @@ vi.mock("node-pty", () => ({
   },
 }));
 
+vi.mock("./ssh-wsl.js", () => ({
+  detectWslDistros: async () => ({ installed: true, distros: ["Ubuntu"], default: "Ubuntu" }),
+}));
+
 import { SessionManager } from "../session-manager.js";
 
 const tempFiles: string[] = [];
@@ -48,9 +53,11 @@ afterEach(async () => {
 function createSetup({
   hostPatch = {},
   settingsSsh = {},
+  launch = { kind: "ssh", sshHostId: "host-a" },
 }: {
   hostPatch?: Record<string, unknown>;
   settingsSsh?: Record<string, unknown>;
+  launch?: Record<string, unknown>;
 } = {}) {
   const host = {
     id: "host-a",
@@ -60,6 +67,8 @@ function createSetup({
   };
   const sshManager = {
     getHost: vi.fn(() => host),
+    createSession: vi.fn(),
+    stop: vi.fn(async () => {}),
     credentialStore: {
       getSecret: vi.fn((ref: string) => (ref === "ssh:key:test" ? "test private key material\n" : "")),
     },
@@ -80,13 +89,13 @@ function createSetup({
             title: "Remote",
             command: "ssh",
             startup: "default",
-            launch: { kind: "ssh", sshHostId: "host-a" },
+            launch,
           },
         ],
       },
     ],
   };
-  return { manager, state, sessionId };
+  return { manager, sshManager, state, sessionId };
 }
 
 function identityFile(args: string[]): string {
@@ -141,6 +150,86 @@ async function inspectPrivateKeyPermissions(file: string): Promise<void> {
 }
 
 describe("SessionManager real System SSH launch lifecycle", () => {
+  test.each(["system-ssh", "wsl"] as const)("reattaches the same exact tmux session over %s", async (mode) => {
+    const platform = process.platform;
+    if (mode === "wsl") Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      const target = { name: " work ' %h ", readOnly: true };
+      const advanced = {
+        launchVia: mode,
+        command: "host-startup",
+        wsl: { distro: "Ubuntu", user: "alice", exec: "/usr/bin/ssh" },
+      };
+      const { manager, state, sessionId } = createSetup({
+        hostPatch: { advanced },
+        launch:
+          mode === "wsl"
+            ? { kind: "ssh", sshInline: { host: "inline-alias", advanced }, tmux: target, remoteCwd: "/remote/cwd" }
+            : { kind: "ssh", sshHostId: "host-a", tmux: target, remoteCwd: "/remote/cwd" },
+      });
+
+      const attached = await manager.ensureSession(state as never, sessionId, { sshPasswordSignIn: true });
+      expect(attached?.kind).toBe(mode === "wsl" ? "ssh-wsl" : "ssh-system");
+      const first = spawnCalls[0]!;
+      expect(first.args).toContain("-tt");
+      expect(first.args).toContain("RemoteCommand=none");
+      expect(first.args).toContain("PubkeyAuthentication=no");
+      expect(first.args.slice(-3)).toEqual([
+        "--",
+        mode === "wsl" ? "inline-alias" : "prod-alias",
+        buildSshTmuxAttachCommand(target),
+      ]);
+      expect(first.args.at(-1)).not.toMatch(/host-startup|remote\/cwd/);
+      if (mode === "wsl") {
+        expect(first.file).toBe("wsl.exe");
+        expect(first.args.slice(0, 6)).toEqual(["-d", "Ubuntu", "-u", "alice", "--", "/usr/bin/ssh"]);
+      }
+
+      manager.removeSession(sessionId);
+      await manager.ensureSession(state as never, sessionId, { sshPasswordSignIn: true });
+      expect(spawnCalls).toEqual([first, first]);
+    } finally {
+      Object.defineProperty(process, "platform", { value: platform, configurable: true });
+    }
+  });
+
+  test("passes a dedicated tmux command to Built-in SSH for an inline host", async () => {
+    const sshInline = { host: "inline-alias", advanced: { launchVia: "ssh2", command: "host-startup" } };
+    const tmux = { name: "ops" };
+    const { manager, sshManager, state, sessionId } = createSetup({
+      launch: { kind: "ssh", sshInline, tmux, remoteCwd: "/remote/cwd" },
+    });
+
+    expect((await manager.ensureSession(state as never, sessionId))?.kind).toBe("ssh");
+    const [options] = sshManager.createSession.mock.calls[0] as unknown as [Record<string, unknown>];
+    expect(options).toMatchObject({ inlineHost: sshInline, terminalCommand: buildSshTmuxAttachCommand(tmux) });
+    expect(options).not.toHaveProperty("startupCommand");
+  });
+
+  test("reports an invalid target without starting an SSH shell or startup command", async () => {
+    const { manager, state, sessionId } = createSetup({
+      hostPatch: { advanced: { launchVia: "system-ssh", command: "host-startup" } },
+      launch: { kind: "ssh", sshHostId: "host-a", tmux: { name: "" } },
+    });
+    const output = vi.fn();
+    manager.on("terminal:data", output);
+    await expect(manager.ensureSession(state as never, sessionId)).resolves.toBeNull();
+    expect(spawnCalls).toHaveLength(0);
+    expect(output).toHaveBeenCalledWith({ sessionId, data: expect.stringContaining("Invalid tmux session name") });
+  });
+
+  test("a canceled tmux launch cannot spawn a PTY or cancel its queued reconnect", async () => {
+    const { manager, state, sessionId } = createSetup({
+      hostPatch: { advanced: { launchVia: "system-ssh" } },
+      launch: { kind: "ssh", sshHostId: "host-a", tmux: { name: "ops" } },
+    });
+    const initial = manager.ensureSession(state as never, sessionId);
+    manager.removeSession(sessionId);
+    const reconnect = manager.ensureSession(state as never, sessionId);
+    await expect(initial).resolves.toBeNull();
+    expect((await reconnect)?.kind).toBe("ssh-system");
+    expect(spawnCalls).toHaveLength(1);
+  });
   test("uses the stored System default, inherits absent user/port/config, and honors a custom binary path", async () => {
     const customBinary = path.join(os.tmpdir(), "ssh custom binary.exe");
     const { manager, state, sessionId } = createSetup({

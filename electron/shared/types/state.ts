@@ -1,6 +1,7 @@
 import type { TaskState } from "./task.js";
 import type { SshHost, SshKey, SshCert } from "./ssh.js";
 import type { SshConnectionSettings } from "../ssh-connection.js";
+import type { SshTmuxTarget } from "../ssh-tmux.js";
 import type { Alert } from "./notifications.js";
 import type { AzureClosedPrCleanupFinished } from "../azure-closed-pr-cleanup-events.js";
 import type { OperationsState } from "../operation-events.js";
@@ -547,6 +548,8 @@ export interface PanelLaunch {
   sshInline?: Record<string, any>;
   /** SSH only: directory on the server to change to before the startup command. */
   remoteCwd?: string;
+  /** SSH only: attach to an existing remote tmux session. */
+  tmux?: SshTmuxTarget;
   skipCommandInjection?: boolean;
 }
 

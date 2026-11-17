@@ -2829,6 +2829,10 @@ describe("remote transport API parity — no method silently missing its remote 
     "pasteClipboardImageForTerminal",
     // Uploads the desktop's clipboard screenshot; a remote client has no such file.
     "sshFilePasteImage",
+    // The saved host book is a desktop resource, and discovery can require a desktop SSH prompt.
+    "sshTmuxList",
+    "sshTmuxPreview",
+    "sshTmuxCancel",
     // Agent isolation and private registries: arming isolation, installing its prerequisites, answering for a sandbox
     // and connecting a registry are decisions for the machine that runs the agents, never for a browser or phone.
     "getSandboxStatus",

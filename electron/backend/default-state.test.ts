@@ -413,6 +413,29 @@ describe("default state", () => {
     expect(c.launch).not.toHaveProperty("remoteCwd");
   });
 
+  test("normalizeWorkspace preserves exact tmux targets and retains damaged attachment intent", () => {
+    const workspace = normalizeWorkspace({
+      id: "ws",
+      panels: [
+        {
+          id: "saved",
+          title: "Saved",
+          launch: { kind: "ssh", sshHostId: "h1", tmux: { name: " l'été ", readOnly: true } },
+        },
+        {
+          id: "inline",
+          title: "Inline",
+          launch: { kind: "ssh", sshInline: { host: "example.test" }, tmux: { name: "$7" } },
+        },
+        { id: "damaged", title: "Damaged", launch: { kind: "ssh", sshHostId: "h1", tmux: { name: "broken\n" } } },
+      ],
+    });
+    const [saved, inline, damaged] = JSON.parse(JSON.stringify(workspace)).panels;
+    expect(saved.launch).toEqual({ kind: "ssh", sshHostId: "h1", tmux: { name: " l'été ", readOnly: true } });
+    expect(inline.launch).toMatchObject({ kind: "ssh", sshInline: { host: "example.test" }, tmux: { name: "$7" } });
+    expect(damaged.launch.tmux).toEqual({ name: "" });
+  });
+
   // normalizePanel rebuilds panels from a fixed field list, so anything not
   // named there is dropped on every save. Tab notes went missing exactly that
   // way before the field was added — keep it pinned.

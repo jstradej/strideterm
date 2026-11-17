@@ -625,6 +625,18 @@ describe("ipc-schemas", () => {
       expect(() => validateIpc(workspaceSchema, { id: "", name: "test" }, "test")).toThrow();
     });
 
+    test("accepts only a valid tmux target on an SSH launch", () => {
+      const target = { name: " l'été ", readOnly: false };
+      const parse = (launch: unknown) =>
+        workspaceSchema.safeParse({ id: "ws", name: "Workspace", panels: [{ id: "p", title: "tmux", launch }] });
+
+      const valid = parse({ kind: "ssh", sshHostId: "h1", tmux: target });
+      expect(valid.data?.panels?.[0]?.launch?.tmux).toEqual(target);
+      expect(parse({ kind: "ssh", sshHostId: "h1", tmux: { name: "line\nbreak" } }).success).toBe(false);
+      expect(parse({ kind: "ssh", sshHostId: "h1", tmux: { name: "session", readOnly: "yes" } }).success).toBe(false);
+      expect(parse({ file: "sh", tmux: target }).success).toBe(false);
+    });
+
     test("passes through extra fields", () => {
       const result = validateIpc(
         workspaceSchema,

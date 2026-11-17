@@ -14,7 +14,8 @@
       >
         {{ tmpl.icon || "" }} {{ tmpl.title || "Shell" }}
       </button>
-      <button type="button" class="tab-picker-dropdown__item" @click="addSshTab">🔐 SSH…</button>
+      <button type="button" class="tab-picker-dropdown__item" @click="addSshTab()">🔐 SSH…</button>
+      <button type="button" class="tab-picker-dropdown__item" @click="addSshTab(true)">🔐 Attach to tmux…</button>
       <button type="button" class="tab-picker-dropdown__item" @click="addCustomTab">+ Custom</button>
     </div>
   </Teleport>
@@ -97,9 +98,9 @@ function addCustomTab() {
   store.openNewTabDialog(selectedCwd.value);
 }
 
-function addSshTab() {
+function addSshTab(tmux = false) {
   emit("close");
-  store.openNewTabDialog(selectedCwd.value, "", "", { tabType: "ssh" });
+  store.openNewTabDialog(selectedCwd.value, "", "", { tabType: "ssh", ...(tmux ? { sshTmux: true } : {}) });
 }
 
 useDismissable(visible, dropdownRef, { onDismiss: () => emit("close"), deferAttach: true });

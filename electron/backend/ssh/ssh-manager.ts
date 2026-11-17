@@ -112,6 +112,8 @@ interface CreateSessionOpts {
   authenticatedActionTimeoutMs?: number;
   /** The tab's own startup command; replaces the host's `advanced.command` for this session. */
   startupCommand?: string;
+  /** Open this command directly in a remote PTY. */
+  terminalCommand?: string;
 }
 
 interface SshManagerOpts {
@@ -320,6 +322,7 @@ export class SshManager extends EventEmitter {
     validatePrivateKeyBeforeConnect,
     authenticatedActionTimeoutMs,
     startupCommand,
+    terminalCommand,
   }: CreateSessionOpts): Promise<SshSession> {
     let host: HostRecord;
     if (inlineHost) {
@@ -454,6 +457,7 @@ export class SshManager extends EventEmitter {
       );
     }
 
+    let terminalExited = false;
     const session = new SshSession({
       host,
       auth,
@@ -469,6 +473,7 @@ export class SshManager extends EventEmitter {
         // delete the live session/prompt and (via terminal:exit) clear the new
         // generation's replay.
         if (this.pendingPrompts.get(sessionId) !== pending) return;
+        terminalExited = true;
         if (pending.activePromptId) this.emitPromptDismiss(sessionId, pending.activePromptId);
         this.activeSessions.delete(sessionId);
         this.pendingPrompts.delete(sessionId);
@@ -520,6 +525,7 @@ export class SshManager extends EventEmitter {
       onAuthenticated: onAuthenticated ? (client) => onAuthenticated(client, auth) : undefined,
       authOnly,
       authenticatedActionTimeoutMs,
+      terminalCommand,
     });
 
     this.activeSessions.set(sessionId, session);
@@ -533,6 +539,15 @@ export class SshManager extends EventEmitter {
       // emitting under the shared id (racing the current owner). Tear it down
       // quietly instead — the current owner drives the UI.
       if (this.activeSessions.get(sessionId) !== session) {
+        // A short-lived exec may deliver its exit before the start promise resumes.
+        if (
+          terminalCommand &&
+          terminalExited &&
+          !this.activeSessions.has(sessionId) &&
+          !this.pendingPrompts.has(sessionId)
+        ) {
+          return session;
+        }
         await session.stop().catch(() => {});
         throw new Error("SSH connect superseded");
       }

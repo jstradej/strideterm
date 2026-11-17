@@ -307,6 +307,23 @@ describe("ContextMenu", () => {
     store.contextMenu = { viewId: "ws1:ssh", x: 0, y: 0 };
   }
 
+  test("reattaches a tmux tab through the normal terminal restart", async () => {
+    const store = useAppStore();
+    openSshMenuFor(store, { tmux: { name: "build", readOnly: true } });
+    const restart = vi.spyOn(store, "restartSession").mockResolvedValue(undefined);
+    const wrapper = mount(ContextMenu, { attachTo: document.body });
+    const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>(".context-menu button"));
+    const reattach = buttons.find((button) => button.textContent?.includes("Reattach to tmux"));
+    expect(reattach?.title).toContain("build in read-only mode");
+    expect(buttons.find((button) => button.textContent?.includes("Detach from tmux"))?.title).toContain(
+      "keep the tmux session running",
+    );
+    reattach!.click();
+    await flushPromises();
+    expect(restart).toHaveBeenCalledWith("ws1:ssh");
+    wrapper.unmount();
+  });
+
   test("'Browse files (SFTP)' opens the file browser of a Built-in SSH tab", async () => {
     const store = useAppStore();
     openSshMenuFor(store, { sshInline: { host: "h", advanced: { launchVia: "ssh2" } } });
