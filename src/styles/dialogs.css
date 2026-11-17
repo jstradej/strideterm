@@ -243,6 +243,18 @@ body.platform-linux .workspace-meta {
   color: #ffd7df;
 }
 
+/* A <button>: opens the notification center on Alerts. */
+button.workspace-chip--alert {
+  font: inherit;
+  font-size: 11px;
+  line-height: inherit;
+  cursor: pointer;
+}
+
+button.workspace-chip--alert:hover {
+  border-color: rgba(255, 111, 141, 0.55);
+}
+
 .workspace-chip--alert-fresh {
   animation: workspace-alert-pulse 0.9s ease-out 4;
 }

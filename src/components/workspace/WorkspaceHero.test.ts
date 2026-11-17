@@ -278,3 +278,34 @@ describe("WorkspaceHero — running-agent chip placement", () => {
     wrapper.unmount();
   });
 });
+
+describe("WorkspaceHero attention chip", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).strideterm = { startupFlags: { windowId: "win-test" } };
+  });
+
+  it("is a button that opens the notification center on Alerts", async () => {
+    const { useNotificationStore } = await import("../../stores/notifications.js");
+    const appStore = useAppStore();
+    const payload = buildPayload() as unknown as Record<string, unknown>;
+    payload.attention = {
+      byWorkspace: { "ws-a": { count: 1, alerts: [{ title: "Claude Code", kind: "done" }] } },
+    };
+    appStore.payload = payload as unknown as StatePayload;
+    const notifications = useNotificationStore();
+    const openSpy = vi.spyOn(notifications, "openPanelOnTab");
+
+    const wrapper = mount(WorkspaceHero, {
+      global: { stubs: { WorkspaceLayoutChip: true, NotificationBell: true } },
+    });
+    const chip = wrapper.get('[data-role="workspace-attention-chip"]');
+    expect(chip.element.tagName).toBe("BUTTON");
+    expect(chip.attributes("title")).toContain("Latest: Claude Code");
+
+    await chip.trigger("click");
+    expect(openSpy).toHaveBeenCalledWith("alerts");
+    wrapper.unmount();
+  });
+});

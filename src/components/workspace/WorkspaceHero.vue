@@ -52,14 +52,17 @@
           <span class="workspace-chip" :title="reviewTabsTitle"
             ><strong>{{ reviewTabCount }}</strong> review tabs</span
           >
-          <span
+          <button
             v-if="attention?.count"
+            type="button"
             class="workspace-chip workspace-chip--alert"
             :class="{ 'workspace-chip--alert-fresh': isFreshAttention(attention) }"
             :title="attentionTitle(attention)"
+            data-role="workspace-attention-chip"
+            @click="openAttention"
           >
             <strong>{{ attention.count }}</strong> attention
-          </span>
+          </button>
           <WorkspaceLayoutChip />
         </div>
         <AgentRunChip />
@@ -102,14 +105,17 @@
             ><strong>{{ dockerRunning }}</strong
             >/{{ dockerTotal }} containers up</span
           >
-          <span
+          <button
             v-if="attention?.count"
+            type="button"
             class="workspace-chip workspace-chip--alert"
             :class="{ 'workspace-chip--alert-fresh': isFreshAttention(attention) }"
             :title="attentionTitle(attention)"
+            data-role="workspace-attention-chip"
+            @click="openAttention"
           >
             <strong>{{ attention.count }}</strong> attention
-          </span>
+          </button>
           <WorkspaceLayoutChip />
         </div>
         <AgentRunChip />
@@ -124,6 +130,7 @@
 import { computed, inject, ref, watch } from "vue";
 import { apiKey } from "../../types/keys.js";
 import { useAppStore } from "../../stores/app.js";
+import { useNotificationStore } from "../../stores/notifications.js";
 import { safeColor, attentionTitle, isFreshAttention } from "../../app/helpers.js";
 import WorkspaceLayoutChip from "./WorkspaceLayoutChip.vue";
 import WorkspaceBranchMenu from "./WorkspaceBranchMenu.vue";
@@ -135,6 +142,7 @@ import AgentRunChip from "../layout/AgentRunChip.vue";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const api = inject<any>(apiKey);
 const store = useAppStore();
+const notifications = useNotificationStore();
 
 const pathCopied = ref(false);
 const pathCopyFailed = ref(false);
@@ -234,6 +242,11 @@ const attention = computed<Record<string, any> | null>(() =>
     ? (store.getWorkspaceAttentionForId(activeWorkspace.value.id) as Record<string, any> | null) // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT
     : null,
 );
+// The chip is the visible end of a terminal alert; it leads to where the alert can be
+// read and acted on (Jump / Dismiss) instead of being a dead label.
+function openAttention(): void {
+  notifications.openPanelOnTab("alerts");
+}
 const reviewTabCount = computed(() => activeWorkspace.value?.panels?.length || 0);
 // Docker hero shows only counts — read them from the transport-aware accessor
 // (core `counts` on remote, computed from the full list on desktop).
