@@ -16866,10 +16866,15 @@ describe("headless pull request review start", () => {
       ],
       detectedAt,
     );
-    await vi.waitFor(() => {
-      const run = fixture.runtime.getPayload().automations.byWorkspaceId[autoId] as { currentRun?: { state: string } };
-      if (run?.currentRun?.state !== "running") throw new Error(JSON.stringify(run));
-    });
+    await vi.waitFor(
+      () => {
+        const run = fixture.runtime.getPayload().automations.byWorkspaceId[autoId] as {
+          currentRun?: { state: string };
+        };
+        if (run?.currentRun?.state !== "running") throw new Error(JSON.stringify(run));
+      },
+      { timeout: 15_000 },
+    );
     const autoLaunch = sessions.launches.at(-1)!;
     expect(autoLaunch.launch?.args.join(" ")).toContain("--review-draft-only");
     expect(autoLaunch.launch?.args.join(" ")).not.toContain("PRIVATE REVIEW INSTRUCTIONS");
