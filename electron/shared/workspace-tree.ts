@@ -159,6 +159,8 @@ export function buildWorkspaceTree(workspaces: readonly WorkspaceTreeNode[]): Wo
         candidate = ws.quickfix.parentWorkspaceId;
       } else if (ws.task?.parentWorkspaceId) {
         candidate = ws.task.parentWorkspaceId;
+      } else if (ws.automation?.parentWorkspaceId) {
+        candidate = ws.automation.parentWorkspaceId;
       } else if ((ws.notes || "").startsWith("Worktree of ")) {
         const parentName = String(ws.name || "").split(" / ")[0];
         candidate =

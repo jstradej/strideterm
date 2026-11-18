@@ -76,6 +76,13 @@ describe("buildWorkspaceTree", () => {
     expect(tree.depthOf("leaf")).toBe(2);
   });
 
+  it("places an automation under the workspace it belongs to, as resolveParentId does", () => {
+    const automation = ws("auto", { kind: "automation", automation: { parentWorkspaceId: "root" } });
+    const tree = buildWorkspaceTree([ws("root"), automation]);
+    expect(tree.parentOf("auto")).toBe(resolveParentId(automation, []));
+    expect(tree.ancestorsOf("auto")).toEqual(["root"]);
+  });
+
   it("treats a parent that is missing from the list as no parent", () => {
     const tree = buildWorkspaceTree([ws("orphan", { task: { parentWorkspaceId: "gone" } })]);
     expect(tree.parentOf("orphan")).toBeNull();
