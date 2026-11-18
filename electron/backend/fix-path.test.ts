@@ -173,7 +173,8 @@ describe("inheritShellPath", () => {
     process.env.PATH = "/usr/bin";
     behaviors = [{ stdout: marked("/opt/homebrew/bin:/Users/u/.local/bin") }];
     await inheritShellPath({ cacheFile, attemptTimeoutsMs: [1000] });
-    if (process.platform !== "win32") expect(fs.statSync(cacheFile).mode & 0o777).toBe(0o600);
+    // The real OS, not the mocked one: Windows has no POSIX file modes.
+    if (ORIGINAL_PLATFORM !== "win32") expect(fs.statSync(cacheFile).mode & 0o777).toBe(0o600);
 
     // Next run: first attempt fails, the cache is applied at once, a later attempt replaces it.
     spawnCalls.length = 0;
