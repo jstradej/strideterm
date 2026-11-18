@@ -225,7 +225,11 @@ test("cancels only the matching request for the requesting window and profile", 
 });
 
 test("stops a timed-out request and rejects requests above the per-window limit", async () => {
-  const { service, sshManager } = fixture(22, { timeoutMs: 200 }, false);
+  // A local server that asks for a password nobody gives: the request waits on that prompt until it times out.
+  // Never the machine's own port 22 — a real sshd there (CI's Ubuntu runner) answers before the 200 ms run out
+  // and the request ends as "authentication" instead.
+  const port = await listen(() => {});
+  const { service, sshManager } = fixture(port, { timeoutMs: 200 }, false);
   const first = service.list({ hostId: target.hostId }, owner);
   const second = service.preview(target, owner);
   await expect(service.preview(target, owner)).resolves.toMatchObject({ ok: false, error: "busy" });
