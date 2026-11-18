@@ -5545,7 +5545,7 @@ export async function createRuntime({
       sshMcpBroker?.revokeSession(String(sessionId || ""));
       internalMcpBroker?.revokeSession(String(sessionId || ""));
       reviewGitBroker?.revokeSession(String(sessionId || ""));
-      await sessions.restartSession(getState(), sessionId);
+      await sessions.restartSession(getState, sessionId);
       resetSessionSignal(sessionId);
     },
     // Debounced persistence trigger. taskRunner mutates state in-memory and
@@ -5853,7 +5853,7 @@ export async function createRuntime({
       }
     });
   };
-  const automationRestartingSessions = new Set<string>();
+  const automationRestartingSessions = new Map<string, object>();
   const reusedAutomationTasks = new Set<string>();
   const automationTaskVersions = new Map<string, string>();
   automationRunner = new AutomationRunner({
@@ -5869,20 +5869,21 @@ export async function createRuntime({
       const parsed = panel && !panel.launch ? parseAgentCommand(panel.command) : null;
       if (!workspace || !panel || !parsed) throw new Error("Automation agent panel is unavailable");
       const sessionId = createSessionId(workspaceId, panel.id);
-      pendingAgentInitialPrompt.set(sessionId, {
+      const pendingPrompt = {
         prompt: initialPrompt,
         agentName: parsed.provider,
         executable: parsed.executable,
-      });
+      };
       try {
         await registerSession(sessionId);
+        pendingAgentInitialPrompt.set(sessionId, pendingPrompt);
         sessions.syncWithState(getState());
         // A background profile may never have created an attention signal through a window.
         // Establish it after synchronizing sessions and before spawn so an immediate question can be delivered.
         getSessionSignal(sessionId, workspace, panel);
         markSessionPromptInjected(sessionId);
-        automationRestartingSessions.add(sessionId);
-        const session = await sessions.restartSession(getState(), sessionId);
+        automationRestartingSessions.set(sessionId, pendingPrompt);
+        const session = await sessions.restartSession(getState, sessionId);
         if (!session || session.status !== "running") throw new Error("Automation agent failed to start");
         if (automationRunner?.ownsSession(sessionId)) {
           getSessionSignal(sessionId, workspace, panel);
@@ -5890,8 +5891,9 @@ export async function createRuntime({
         }
         return sessionId;
       } finally {
-        automationRestartingSessions.delete(sessionId);
-        pendingAgentInitialPrompt.delete(sessionId);
+        if (automationRestartingSessions.get(sessionId) === pendingPrompt)
+          automationRestartingSessions.delete(sessionId);
+        if (pendingAgentInitialPrompt.get(sessionId) === pendingPrompt) pendingAgentInitialPrompt.delete(sessionId);
       }
     },
     stopSession: async (sessionId) => {
@@ -6115,7 +6117,7 @@ export async function createRuntime({
             for (const panelId of [task.task.workerPanelId, task.task.judgePanelId]) {
               if (!(await shouldStart())) throw new Error("Automation task was stopped");
               const sessionId = createSessionId(taskWorkspaceId, panelId);
-              const session = await sessions.restartSession(getState(), sessionId);
+              const session = await sessions.restartSession(getState, sessionId);
               restartedSessions.push(sessionId);
               if (!session || session.status !== "running") throw new Error("Automation task agent could not start");
               if (!(await shouldStart())) throw new Error("Automation task was stopped");
@@ -6251,12 +6253,21 @@ export async function createRuntime({
           : [];
       }),
     }),
-    fire: async (workspaceId, slot) => {
-      await automationRunner!.fire(workspaceId, { type: "schedule", slot });
+    fire: async (workspaceId, slot, assertCurrent) => {
+      const runId = await automationRunner!.fire(
+        workspaceId,
+        { type: "schedule", slot },
+        undefined,
+        undefined,
+        assertCurrent,
+      );
+      const run = automationJournal.peek(workspaceId)?.runs.find((item) => item.runId === runId);
+      if (run?.state === "skipped") await disableCompletedOnce(workspaceId, slot);
     },
-    missed: async (workspaceId, slot) => {
+    missed: async (workspaceId, slot, assertCurrent) => {
       const at = new Date().toISOString();
       await automationJournal.update(workspaceId, (state) => {
+        assertCurrent?.();
         state.runs.push({
           runId: randomUUID(),
           trigger: { type: "schedule", slot },
@@ -6266,6 +6277,10 @@ export async function createRuntime({
           finishedAt: at,
         });
       });
+      await disableCompletedOnce(workspaceId, slot);
+      broadcastState();
+    },
+    handledOnce: async (workspaceId, slot) => {
       await disableCompletedOnce(workspaceId, slot);
       broadcastState();
     },
@@ -10535,7 +10550,7 @@ export async function createRuntime({
         syncSessionSignalsWithState();
         broadcastState();
         // The quick-fix workspace may already run this agent tab; only a fresh start reads the first message.
-        const startedSession = await sessions.restartSession(getState(), sessionId);
+        const startedSession = await sessions.restartSession(getState, sessionId);
         if (!startedSession || startedSession.status !== "running")
           throw new Error(
             `The ${agentName} session did not start. Check its CLI installation and sign-in state, then start it in the branch workspace and point it at ${written.relativeDir}/TASK.md.`,
@@ -15961,7 +15976,7 @@ export async function createRuntime({
         workspace.activePanelId = descriptor.panelId;
       });
 
-      await sessions.restartSession(getState(), sessionId, {
+      await sessions.restartSession(getState, sessionId, {
         sshPasswordSignIn: options?.sshPasswordSignIn === true,
       });
       if (descriptor) {

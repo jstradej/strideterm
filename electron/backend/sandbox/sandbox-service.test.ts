@@ -8,7 +8,12 @@ import type { RegistryConnection } from "../../shared/registry.js";
 import { SandboxGateway } from "./gateway.js";
 import type { RegistryAudit } from "./registry-audit.js";
 import type { CommandRunner } from "./sandbox-environment.js";
-import { matchesSandboxDomain, SandboxService, type SandboxWorkspaceView } from "./sandbox-service.js";
+import {
+  matchesSandboxDomain,
+  SandboxService,
+  workspacePathContains,
+  type SandboxWorkspaceView,
+} from "./sandbox-service.js";
 import { SandboxUnavailableError } from "./types.js";
 
 const READY = `home=/home/dev
@@ -49,6 +54,14 @@ describe("matchesSandboxDomain", () => {
     expect(matchesSandboxDomain("a.example.com", 443, ["a.example.com:8443"])).toBe(false);
     expect(matchesSandboxDomain("a.example.com", null, ["a.example.com:8443"])).toBe(false);
   });
+});
+
+it("resolves working directories across WSL aliases and keeps distributions and case distinct", () => {
+  const root = String.raw`\\wsl$\Ubuntu\home\user\project`;
+  expect(workspacePathContains("win32", root, String.raw`\\wsl.localhost\ubuntu\home\user\project\src`)).toBe(true);
+  expect(workspacePathContains("win32", root, String.raw`\\wsl.localhost\Debian\home\user\project\src`)).toBe(false);
+  expect(workspacePathContains("win32", root, String.raw`\\wsl$\Ubuntu\home\user\Project\src`)).toBe(false);
+  expect(workspacePathContains("win32", String.raw`C:\Project`, String.raw`c:\project\src`)).toBe(true);
 });
 
 /** Unix sockets cannot be created in every test environment (a Windows runner refuses them); the path is all the service needs. */
@@ -221,6 +234,56 @@ describe("SandboxService", () => {
     probe = "home=/home/dev\nnode=/usr/bin/node\npm=apt-get\n";
     await expect(service.prepare(baseContext())).rejects.toThrow(SandboxUnavailableError);
     await expect(service.prepare(baseContext())).rejects.toThrow(/bubblewrap/);
+    expect(service.isSandboxed("w1:p1")).toBe(false);
+  });
+
+  it("accepts a project inside the home but refuses a workspace that includes the entire home", async () => {
+    const home = temp("home");
+    const project = path.join(home, "project");
+    mkdirSync(project);
+    probe = READY.replace("home=/home/dev", `home=${home}`);
+    const contextAt = (cwd: string) => baseContext({ workspace: workspace({ cwd }), cwd });
+
+    await service.prepare(contextAt(home));
+    expect(() => service.wrap({ ...wrapContext(), ...contextAt(home) })).toThrow(/excludes your home/u);
+    expect(gateway.hasSession("w1:p1")).toBe(false);
+
+    await service.prepare(contextAt(project));
+    expect(service.wrap({ ...wrapContext(), ...contextAt(project) }).cwd).toBe(project);
+  });
+
+  it("refuses a workspace that includes the application's data directory", async () => {
+    const cwd = path.dirname(dataDir);
+    const context = baseContext({ workspace: workspace({ cwd }), cwd });
+    await service.prepare(context);
+
+    expect(() => service.wrap({ ...wrapContext(), ...context })).toThrow(/strIDEterm data directories/u);
+    expect(gateway.hasSession("w1:p1")).toBe(false);
+  });
+
+  it("closes the gateway after a pending startup and rejects the canceled preparation", async () => {
+    let finishListen!: () => void;
+    const pendingListen = new Promise<void>((resolve) => {
+      finishListen = resolve;
+    });
+    const calls: string[] = [];
+    const listen = vi.spyOn(gateway, "listenUnix").mockImplementation(async () => {
+      await pendingListen;
+      calls.push("listen");
+    });
+    vi.spyOn(gateway, "close").mockImplementation(async () => {
+      calls.push("close");
+    });
+
+    const preparation = service.prepare(baseContext());
+    await vi.waitFor(() => expect(listen).toHaveBeenCalledTimes(1));
+    const prepared = expect(preparation).rejects.toThrow(/shutting down/u);
+    const shutdown = service.shutdown();
+    finishListen();
+
+    await prepared;
+    await shutdown;
+    expect(calls).toEqual(["listen", "close"]);
     expect(service.isSandboxed("w1:p1")).toBe(false);
   });
 

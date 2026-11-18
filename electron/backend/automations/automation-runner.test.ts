@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AutomationState } from "../../shared/automation.js";
 import { AutomationJournal } from "./automation-journal.js";
-import { AutomationRunner } from "./automation-runner.js";
+import { AutomationRunner, type AutomationRunnerOptions } from "./automation-runner.js";
 import { drainAutomationEventQueue } from "./automation-event-router.js";
 
 const dirs: string[] = [];
@@ -28,7 +28,7 @@ async function setup() {
     updatedAt: "2026-01-01T00:00:00Z",
     enabledAt: "2026-01-01T00:00:00Z",
   };
-  const restartAgent = vi.fn(async () => "session");
+  const restartAgent = vi.fn<AutomationRunnerOptions["restartAgent"]>(async () => "session");
   const stopSession = vi.fn(async () => {});
   const sessionOutput = vi.fn(() => "");
   const finished = vi.fn();
@@ -139,6 +139,39 @@ describe("automation agent runner", () => {
     expect(x.finished).toHaveBeenCalledWith("auto", expect.objectContaining({ runId, state: "stopped" }));
     expect(x.runner.ownsSession("session")).toBe(false);
   });
+  it("keeps the executor reserved until the stopped run releases its session", async () => {
+    const x = await setup();
+    const runId = await x.runner.fire("auto", { type: "manual" });
+    await vi.waitFor(async () => expect((await x.journal.read("auto")).runs[0]?.state).toBe("running"));
+    let releaseSession!: () => void;
+    const stopping = new Promise<void>((resolve) => {
+      releaseSession = resolve;
+    });
+    x.stopSession.mockReturnValueOnce(stopping);
+    const stop = x.runner.stop("auto", runId);
+    try {
+      await vi.waitFor(() => expect(x.stopSession).toHaveBeenCalledWith("session"));
+      await x.journal.update("auto", (state) => state.pendingEvents.push({ subject: "next", events: [{ id: "e" }] }));
+      const skippedId = await x.runner.fire("auto", { type: "manual" });
+      await expect(x.runner.fire("auto", { type: "event" }, "next")).rejects.toThrow("event remains queued");
+      const journal = await x.journal.read("auto");
+      expect(journal.runs).toMatchObject([
+        { runId, state: "stopped" },
+        { runId: skippedId, reason: "overlap" },
+      ]);
+      expect(journal.pendingEvents).toHaveLength(1);
+      expect(x.restartAgent).toHaveBeenCalledOnce();
+    } finally {
+      releaseSession();
+      await stop;
+    }
+    const nextId = await x.runner.fire("auto", { type: "event" }, "next");
+    await vi.waitFor(async () => {
+      expect((await x.journal.read("auto")).runs.at(-1)).toMatchObject({ runId: nextId, state: "running" });
+    });
+    expect(x.runner.ownsSession("session")).toBe(true);
+    x.runner.dispose();
+  });
   it("announces a failed run even when disabling the automation fails", async () => {
     const x = await setup();
     await x.journal.update("auto", (state) => {
@@ -150,6 +183,46 @@ describe("automation agent runner", () => {
     await expect(x.runner.exit("session", 1)).rejects.toThrow("Could not disable automation");
     expect(x.finished).toHaveBeenCalledWith("auto", expect.objectContaining({ runId, state: "failed" }));
   });
+
+  it.each([false, true])(
+    "keeps the new run's agent when a stopped launch returns late (finished: %s)",
+    async (finished) => {
+      const x = await setup();
+      let registered!: () => void;
+      const firstRegistered = new Promise<void>((resolve) => {
+        registered = resolve;
+      });
+      let resumeRestart!: (sessionId: string) => void;
+      const firstRestart = new Promise<string>((resolve) => {
+        resumeRestart = resolve;
+      });
+      x.restartAgent.mockImplementationOnce(async (_id, _prompt, registerSession) => {
+        await registerSession("session");
+        registered();
+        return firstRestart;
+      });
+      const firstId = await x.runner.fire("auto", { type: "manual" });
+      try {
+        await firstRegistered;
+        await x.runner.stop("auto", firstId);
+        const secondId = await x.runner.fire("auto", { type: "manual" });
+        await vi.waitFor(async () => {
+          expect((await x.journal.read("auto")).runs.at(-1)).toMatchObject({ runId: secondId, state: "running" });
+        });
+        if (finished) expect(await x.runner.idle("session")).toBe(true);
+
+        const read = vi.spyOn(x.journal, "read");
+        resumeRestart("session");
+        await vi.waitFor(() => expect(read).toHaveBeenCalledWith("auto"));
+        await x.journal.read("auto");
+        expect(x.stopSession).toHaveBeenCalledExactlyOnceWith("session");
+        expect(x.runner.ownsSession("session")).toBe(!finished);
+      } finally {
+        resumeRestart("session");
+        x.runner.dispose();
+      }
+    },
+  );
   it("owns a session before launch resolves and retains an early permission dialog", async () => {
     const x = await setup();
     let release!: () => void;

@@ -81,6 +81,8 @@ interface PtySession extends SessionBase {
   intentionalExit?: boolean;
   /** Launched inside the sandbox. Fixed at spawn: turning isolation on later does not change a running process. */
   sandboxed?: boolean;
+  /** Revokes this process's sandbox once, including when its exit arrives after a restart. */
+  releaseSandbox?: () => void;
 }
 
 interface SshSession extends SessionBase {
@@ -114,7 +116,7 @@ interface SessionLaunchOverride {
 /**
  * Runs a tab's process inside the sandbox. `prepare` proves the sandbox can start (a throw fails the
  * tab visibly — it is never started unisolated) and says whether this tab is sandboxed at all; `wrap`
- * turns the process the manager was about to spawn into the sandbox's; `release` runs when it is gone.
+ * turns the process the manager was about to spawn into the sandbox's; `release` cleans up a failed, stopped or exited launch.
  */
 export interface SessionSandboxHooks {
   prepare(ctx: SessionEnvContext): Promise<boolean>;
@@ -814,20 +816,16 @@ export class SessionManager extends EventEmitter {
    */
   private discardCanceledStart(sessionId: string, session: RuntimeSession | null, reason: StartCancelReason): void {
     this.cancelTerminalWrites(sessionId);
-    const live = session ?? this.sessions.get(sessionId) ?? null;
+    const live = this.sessions.get(sessionId);
+    // Teardown already handled a start that published its session before it returned.
+    if (session && live !== session) return;
     if (live) {
       if (live.kind === "ssh") {
         // Discarding a start we asked to tear down → its onExit is intentional,
         // same as any other user-driven stop (see stopSshIntentional).
         (live as SshSession).intentionalExit = true;
         this.sshManager?.stop(sessionId).catch(() => {});
-      } else {
-        const ptySession = live as PtySession;
-        if (ptySession.processHandle) {
-          ptySession.intentionalExit = true;
-          ptySession.processHandle.kill();
-        }
-      }
+      } else this.stopPtyIntentionally(live as PtySession);
       this.sessions.delete(sessionId);
     }
     if (reason === "removed") {
@@ -869,6 +867,12 @@ export class SessionManager extends EventEmitter {
     const session = this.sessions.get(sessionId);
     if (session?.kind === "ssh") (session as SshSession).intentionalExit = true;
     return this.sshManager?.stop(sessionId).catch(() => {}) ?? Promise.resolve();
+  }
+
+  private stopPtyIntentionally(session: PtySession): void {
+    session.intentionalExit = true;
+    session.releaseSandbox?.();
+    session.processHandle?.kill();
   }
 
   // NOTE (multi-window audit): the state.activeWorkspaceId default below is
@@ -1059,6 +1063,17 @@ export class SessionManager extends EventEmitter {
       });
     }
 
+    return this.trackSessionStart(key, (shouldContinue) =>
+      this.ensureLocalSession({ state, workspace, panel, sessionId: key }, shouldContinue),
+    );
+  }
+
+  private async ensureLocalSession(
+    context: SessionEnvContext,
+    shouldContinue: () => boolean,
+  ): Promise<RuntimeSession | null> {
+    const { state, workspace, panel, sessionId: key } = context;
+    const existing = this.sessions.get(key);
     // Isolation fails closed: when the sandbox cannot start, the tab says so and nothing runs unisolated.
     const failSandboxLaunch = (error: unknown): null => {
       const message = error instanceof Error ? error.message : String(error);
@@ -1071,28 +1086,25 @@ export class SessionManager extends EventEmitter {
       });
       return null;
     };
+    const sandbox = this.sandbox;
     let sandboxActive = false;
-    if (this.sandbox) {
+    if (sandbox) {
       try {
-        sandboxActive = await this.sandbox.prepare({ state, workspace, panel, sessionId: key });
+        sandboxActive = await sandbox.prepare(context);
       } catch (error) {
-        return failSandboxLaunch(error);
+        return shouldContinue() ? failSandboxLaunch(error) : null;
       }
-      // The check above ran before this await; another start may have won in the meantime.
-      const raced = this.sessions.get(key);
-      if (sandboxActive && raced && raced.status === "running") return raced;
+      if (!shouldContinue()) {
+        if (sandboxActive) sandbox.release(key);
+        return null;
+      }
     }
 
     let launchOverride: SessionLaunchOverride | null;
     try {
-      launchOverride =
-        this.getSessionLaunch?.({
-          state,
-          workspace,
-          panel,
-          sessionId: key,
-        }) || null;
+      launchOverride = this.getSessionLaunch?.(context) || null;
     } catch (error) {
+      if (sandboxActive) sandbox?.release(key);
       const sshTools = Boolean(panel.sshMcpEnabled);
       if (!sshTools && workspace.internalMcpEnabled !== true && workspace.sshMcpEnabled !== true) throw error;
       this.sessions.delete(key);
@@ -1127,7 +1139,7 @@ export class SessionManager extends EventEmitter {
           }
         : (directShellLauncher ?? shellConfig());
 
-    const shellIntEnabled = state.settings?.notifications?.shellIntegration !== false;
+    const shellIntEnabled = !sandboxActive && state.settings?.notifications?.shellIntegration !== false;
     const baseIntegrationEnv = shellIntegrationEnv(launcher.file, shellIntEnabled);
     // Wire shell-integration into the launcher in the cleanest per-shell way:
     //  - bash/sh: BASH_ENV already invisible, no change
@@ -1144,18 +1156,18 @@ export class SessionManager extends EventEmitter {
     // Validate cwd before handing it to pty.spawn — on Windows an invalid
     // cwd produces a cryptic "Cannot create process, error code: 267"
     // (ERROR_DIRECTORY) and the panel stays empty with no obvious hint why.
-    // Fallback to the user's home so the shell at least opens; the warning
-    // banner below tells the user which dir was missing.
+    // Ordinary shells can fall back to the user's home. An isolated launch
+    // resolves this against its configured roots in sandbox.wrap().
     const requestedCwd = launchOverride?.cwd || panel.cwd || workspace.cwd || "";
     const cwdMissing = requestedCwd && !existsSync(requestedCwd);
+    const effectiveCwd = cwdMissing && !sandboxActive ? os.homedir() : requestedCwd;
     if (cwdMissing) {
-      log.error("session cwd missing — falling back to home", {
+      log.error("session cwd missing", {
         sessionId: key,
         requestedCwd,
-        fallbackCwd: os.homedir(),
+        ...(sandboxActive ? {} : { fallbackCwd: effectiveCwd }),
       });
     }
-    const effectiveCwd = cwdMissing ? os.homedir() : requestedCwd;
 
     log.debug("spawning session", {
       sessionId: key,
@@ -1192,25 +1204,17 @@ export class SessionManager extends EventEmitter {
         ...integrationEnv,
         TERM_PROGRAM: APP_CONFIG.session.termProgram,
         FORCE_COLOR: APP_CONFIG.session.forceColor,
-        ...(this.getSessionEnv?.({
-          state,
-          workspace,
-          panel,
-          sessionId: key,
-        }) || {}),
+        ...(this.getSessionEnv?.(context) || {}),
         ...withoutSessionIdentity(launchOverride?.env),
       } as Record<string, string>;
       let spawnFile = launcher.file;
       let spawnArgs = launcher.args;
       let spawnCwd = effectiveCwd;
       let finalEnv = spawnEnv;
-      if (sandboxActive && this.sandbox) {
+      if (sandboxActive && sandbox) {
         try {
-          const wrapped = this.sandbox.wrap({
-            state,
-            workspace,
-            panel,
-            sessionId: key,
+          const wrapped = sandbox.wrap({
+            ...context,
             launcher,
             cwd: effectiveCwd,
             env: spawnEnv,
@@ -1220,7 +1224,7 @@ export class SessionManager extends EventEmitter {
           spawnCwd = wrapped.cwd;
           finalEnv = wrapped.env;
         } catch (error) {
-          this.sandbox.release(key);
+          sandbox.release(key);
           return failSandboxLaunch(error);
         }
       }
@@ -1232,7 +1236,7 @@ export class SessionManager extends EventEmitter {
         env: finalEnv,
       });
     } catch (error: unknown) {
-      if (sandboxActive) this.sandbox?.release(key);
+      if (sandboxActive) sandbox?.release(key);
       const message = (error as Error)?.message || String(error);
       // Logged at error level: a failed spawn leaves the panel showing "0 running"
       // with an empty terminal viewport — visible to the user, so they deserve
@@ -1261,6 +1265,12 @@ export class SessionManager extends EventEmitter {
       processHandle,
       sandboxed: sandboxActive,
     };
+    if (sandboxActive && sandbox) {
+      session.releaseSandbox = () => {
+        delete session.releaseSandbox;
+        sandbox.release(key);
+      };
+    }
 
     processHandle.onData((data) => {
       const current = this.sessions.get(session.id);
@@ -1274,7 +1284,7 @@ export class SessionManager extends EventEmitter {
       session.processHandle = null;
       const intentional = session.intentionalExit === true;
       if (current && current !== session) return;
-      if (sandboxActive) this.sandbox?.release(session.id);
+      session.releaseSandbox?.();
       if (current === session) this.cancelTerminalWrites(session.id);
       log.debug("session exited", { sessionId: session.id, exitCode, intentional });
       this.emit("terminal:exit", {
@@ -1298,13 +1308,12 @@ export class SessionManager extends EventEmitter {
     this.emit("terminal:spawned", { sessionId: key, ...(sandboxActive ? { sandboxed: true } : {}) });
 
     if (cwdMissing) {
-      // Surface the fallback in the terminal viewport so the user sees why
-      // their prompt opened in $HOME instead of the workspace's cwd.
+      const fallback = sandboxActive ? "a workspace folder" : effectiveCwd;
       setTimeout(
         () => {
           this.emit("terminal:data", {
             sessionId: key,
-            data: `\r\n\x1b[33mWarning: workspace cwd "${requestedCwd}" does not exist — opened in ${effectiveCwd}.\x1b[0m\r\n`,
+            data: `\r\n\x1b[33mWarning: workspace cwd "${requestedCwd}" does not exist — opened in ${fallback}.\x1b[0m\r\n`,
           });
         },
         Math.max(APP_CONFIG.session.shellLaunchDelayMs - 10, 10),
@@ -1955,52 +1964,49 @@ export class SessionManager extends EventEmitter {
   }
 
   async restartSession(
-    state: AppState,
+    getState: () => AppState,
     sessionId: string,
     options: SessionStartOptions = {},
   ): Promise<RuntimeSession | null> {
     this.cancelTerminalWrites(sessionId);
-    const current = this.sessions.get(sessionId);
-    // The pane keeps its size across a restart and will not report it again.
-    if (current && !this.pendingInitialSizes.has(sessionId)) {
-      this.pendingInitialSizes.set(sessionId, { cols: current.cols, rows: current.rows });
+    const pending = this.startingSessions.get(sessionId);
+    if (pending?.canceledReason === "removed") return null;
+    let abortConnect: Promise<void> | undefined;
+    if (pending) {
+      pending.canceledReason = "disconnected";
+      if (!this.sessions.has(sessionId)) abortConnect = this.sshManager?.stop(sessionId).catch(() => {});
     }
-    if (current?.kind === "ssh") {
-      await this.stopSshIntentional(sessionId);
-    } else if (current) {
-      const ptySession = current as PtySession;
-      if (ptySession.processHandle) {
-        const processHandle = ptySession.processHandle;
-        ptySession.intentionalExit = true;
-        // IPty does not extend EventEmitter so we can't use `once()`.
-        // Register an onExit listener and wait; fall back on a 5 s timeout.
+
+    // Track the restart while it waits for the previous process to exit, so
+    // closing the pane or shutting down also cancels the replacement.
+    return this.trackSessionStart(sessionId, async (shouldContinue) => {
+      await abortConnect;
+      if (!shouldContinue()) return null;
+      const current = this.sessions.get(sessionId);
+      // The pane keeps its size across a restart and will not report it again.
+      if (current && !this.pendingInitialSizes.has(sessionId)) {
+        this.pendingInitialSizes.set(sessionId, { cols: current.cols, rows: current.rows });
+      }
+      if (current?.kind === "ssh") {
+        await this.stopSshIntentional(sessionId);
+      } else if (current?.processHandle) {
+        const processHandle = current.processHandle;
+        // IPty has onExit(), with a fallback if the process does not exit in time.
         await new Promise<void>((resolve) => {
           const timeout = setTimeout(resolve, 5000);
           processHandle.onExit(() => {
             clearTimeout(timeout);
             resolve();
           });
-          processHandle.kill();
+          this.stopPtyIntentionally(current);
         }).catch(() => {});
       }
-    } else {
-      // No live session yet — the connect is still in flight (an SSH handshake,
-      // or a connect parked on a password / MFA / host-key prompt), so it lives
-      // in startingSessions, not `sessions`. Without aborting it the ensureSession
-      // below merely coalesces into the SAME pending connect and the restart is a
-      // silent no-op. Mark the in-flight record "disconnected" (the panel stays)
-      // and stop() so a hung prompt is released; trackSessionStart then serializes
-      // a FRESH connect behind the aborted one. Never downgrade a "removed"
-      // record — a restart racing a panel/workspace prune must not resurrect it.
-      const record = this.startingSessions.get(sessionId);
-      if (record && record.canceledReason !== "removed") {
-        record.canceledReason = "disconnected";
-        await (this.sshManager?.stop(sessionId).catch(() => {}) ?? Promise.resolve());
-      }
-    }
-
-    this.sessions.delete(sessionId);
-    return this.ensureSession(state, sessionId, options);
+      if (!shouldContinue()) return null;
+      this.sessions.delete(sessionId);
+      // ensureSession takes ownership of tracking the new process synchronously.
+      this.startingSessions.delete(sessionId);
+      return this.ensureSession(getState(), sessionId, options);
+    });
   }
 
   removeSession(sessionId: string): void {
@@ -2043,13 +2049,7 @@ export class SessionManager extends EventEmitter {
         sessionId,
         data: "\r\n\x1b[90m── Disconnected by user\x1b[0m\r\n",
       });
-    } else {
-      const ptySession = session as PtySession;
-      if (ptySession.processHandle) {
-        ptySession.intentionalExit = true;
-        ptySession.processHandle.kill();
-      }
-    }
+    } else this.stopPtyIntentionally(session as PtySession);
     this.sessions.delete(sessionId);
   }
 
@@ -2070,7 +2070,6 @@ export class SessionManager extends EventEmitter {
       } else {
         const ptySession = session as PtySession;
         if (ptySession.processHandle) {
-          ptySession.intentionalExit = true;
           const handle = ptySession.processHandle;
           exitPromises.push(
             new Promise<void>((resolve) => {
@@ -2081,7 +2080,7 @@ export class SessionManager extends EventEmitter {
               });
             }),
           );
-          handle.kill();
+          this.stopPtyIntentionally(ptySession);
         }
       }
       this.sessions.delete(sessionId);
@@ -2131,13 +2130,7 @@ export class SessionManager extends EventEmitter {
 
       if (session.kind === "ssh") {
         void this.stopSshIntentional(sessionId);
-      } else {
-        const ptySession = session as PtySession;
-        if (ptySession.processHandle) {
-          ptySession.intentionalExit = true;
-          ptySession.processHandle.kill();
-        }
-      }
+      } else this.stopPtyIntentionally(session as PtySession);
       this.sessions.delete(sessionId);
       // The panel is gone from state entirely (not a restart) → let the runtime
       // drop its replay so removed panels don't leak replay memory and their
@@ -2166,7 +2159,12 @@ export class SessionManager extends EventEmitter {
     // actively cancel them — a connect hung on an SSH prompt never resolves to
     // trigger the tombstone discard, so it would otherwise leak past the prune.
     for (const [sessionId, record] of this.startingSessions) {
-      if (validSessionIds.has(sessionId)) continue;
+      if (
+        validSessionIds.has(sessionId) ||
+        sessionId.startsWith("ssh-test:") ||
+        this.temporarySessionIds.has(sessionId)
+      )
+        continue;
       record.canceledReason = "removed";
       this.sshManager?.stop(sessionId).catch(() => {});
     }
@@ -2178,13 +2176,7 @@ export class SessionManager extends EventEmitter {
     for (const [sessionId, session] of this.sessions.entries()) {
       if (session.kind === "ssh") {
         void this.stopSshIntentional(sessionId);
-      } else {
-        const ptySession = session as PtySession;
-        if (ptySession.processHandle) {
-          ptySession.intentionalExit = true;
-          ptySession.processHandle.kill();
-        }
-      }
+      } else this.stopPtyIntentionally(session as PtySession);
     }
     // In-flight SSH connects live in startingSessions, not yet in `sessions`, so
     // the loop above misses them. At shutdown an unfinished handshake / open

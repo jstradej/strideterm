@@ -186,15 +186,17 @@
             >
               <span class="mobile-tab-picker__text">
                 <span class="mobile-tab-picker__label">{{ activeTabLabel || "Tabs" }}</span>
-                <small
-                  v-if="activeTabModel"
-                  class="mobile-tab-picker__trigger-status"
-                  :class="`mobile-tab-picker__trigger-status--${activeTabModel.tone}`"
-                >
-                  <span v-if="activeTabModel.loading" class="tab__spinner" aria-hidden="true" />{{
-                    activeTabModel.loading ? "Syncing…" : activeTabModel.status
-                  }}
-                </small>
+                <span v-if="activeTabModel" class="mobile-tab-picker__meta">
+                  <TabIsolationBadge :isolation="activeTabModel.isolation" />
+                  <small
+                    class="mobile-tab-picker__trigger-status"
+                    :class="`mobile-tab-picker__trigger-status--${activeTabModel.tone}`"
+                  >
+                    <span v-if="activeTabModel.loading" class="tab__spinner" aria-hidden="true" />{{
+                      activeTabModel.loading ? "Syncing…" : activeTabModel.status
+                    }}
+                  </small>
+                </span>
               </span>
               <svg class="mobile-tab-picker__chevron" viewBox="0 0 12 12" aria-hidden="true">
                 <path d="M2.5 4.5 6 8l3.5-3.5" />
@@ -215,7 +217,7 @@
                 <button
                   type="button"
                   class="mobile-tab-picker__item"
-                  :aria-label="`${tab.title}${tab.loading ? ', syncing' : ''}`"
+                  :aria-label="`${tab.title}${tab.isolation ? ` ${tab.isolation}` : ''}${tab.loading ? ', syncing' : ''}`"
                   :aria-current="tab.id === store.activeViewId ? 'page' : undefined"
                   @click="
                     store.activateView(tab.id);
@@ -223,10 +225,13 @@
                   "
                 >
                   <span class="mobile-tab-picker__name">{{ tab.title }}</span>
-                  <small class="mobile-tab-picker__status">
-                    <span v-if="tab.loading" class="tab__spinner" aria-hidden="true" />
-                    {{ tab.loading ? "Syncing…" : tab.status }}
-                  </small>
+                  <span class="mobile-tab-picker__meta">
+                    <TabIsolationBadge :isolation="tab.isolation" />
+                    <small class="mobile-tab-picker__status">
+                      <span v-if="tab.loading" class="tab__spinner" aria-hidden="true" />
+                      {{ tab.loading ? "Syncing…" : tab.status }}
+                    </small>
+                  </span>
                 </button>
                 <button
                   type="button"
@@ -369,6 +374,7 @@ import { writeSidebarCollapsed, readSidebarWidth, readNotificationDockWidth } fr
 import ProfileBar from "./components/layout/ProfileBar.vue";
 import SidebarPanel from "./components/layout/SidebarPanel.vue";
 import TabStrip from "./components/layout/TabStrip.vue";
+import TabIsolationBadge from "./components/layout/TabIsolationBadge.vue";
 import TabActions from "./components/layout/TabActions.vue";
 import MobileInputBar from "./components/layout/MobileInputBar.vue";
 import WorkspaceHero from "./components/workspace/WorkspaceHero.vue";

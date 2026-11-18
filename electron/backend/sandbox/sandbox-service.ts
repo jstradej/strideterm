@@ -1,5 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { SANDBOX_GATEWAY_HOST, type SandboxDeniedRequest, type SandboxStatus } from "../../shared/sandbox.js";
@@ -159,6 +168,7 @@ export class SandboxService {
   private readonly probes = new Map<string, Promise<HostDescription>>();
   private readonly runtimeCopyAttempted = new Set<string>();
   private poller: ReturnType<typeof setInterval> | null = null;
+  private shuttingDown = false;
   private gatewayReady: Promise<void> | null = null;
   private gatewayRelayPort = 0;
   private readonly now: () => number;
@@ -232,7 +242,7 @@ export class SandboxService {
     description: HostDescription,
   ): Promise<boolean> {
     const dir = this.options.bundledRuntimeDir;
-    if (!dir || !reachable || this.runtimeCopyAttempted.has(key)) return false;
+    if (!dir || !reachable || this.shuttingDown || this.runtimeCopyAttempted.has(key)) return false;
     const ok = (id: string) => description.status.prerequisites.find((item) => item.id === id)?.ok ?? true;
     if (!ok("wsl") || !ok("node") || ok("srt")) return false;
     const step = bundledRuntimeCopyStep(this.platform, distro, dir);
@@ -284,6 +294,7 @@ export class SandboxService {
    * fails visibly instead of starting unisolated — and starts the gateway the sandbox reaches the host through.
    */
   async prepare(ctx: Omit<SandboxWrapContext, "launcher" | "env">): Promise<void> {
+    this.assertRunning();
     const hostRoots = this.workspaceRoots(ctx.workspace, ctx.cwd);
     let distro: string | undefined;
     try {
@@ -323,6 +334,7 @@ export class SandboxService {
           gatewayError = undefined;
           break;
         } catch (error) {
+          if (this.shuttingDown) throw error;
           gatewayError = (error as Error).message;
           log.warn("sandbox gateway did not start", { err: gatewayError, attempt });
           if (attempt < GATEWAY_START_ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, GATEWAY_RETRY_MS));
@@ -331,6 +343,7 @@ export class SandboxService {
     } else {
       gatewayError = "the gateway is not reachable from the sandbox host";
     }
+    this.assertRunning();
     const files = this.backend.sessionFiles(ctx.sessionId);
     this.sessions.set(ctx.sessionId, {
       workspaceId: ctx.workspace.id,
@@ -345,6 +358,7 @@ export class SandboxService {
   }
 
   private async ensureGateway(environment: SandboxEnvironment): Promise<void> {
+    this.assertRunning();
     if (this.gatewayReady) return this.gatewayReady;
     this.gatewayReady = (async () => {
       const gateway = this.options.gateway;
@@ -361,6 +375,10 @@ export class SandboxService {
     return this.gatewayReady;
   }
 
+  private assertRunning(): void {
+    if (this.shuttingDown) throw new SandboxUnavailableError("The sandbox service is shutting down.");
+  }
+
   private workspaceRoots(workspace: SandboxWorkspaceView, cwd: string): string[] {
     const candidates = [workspace.cwd, ...(workspace.gitRoots ?? []), workspace.review?.checkout?.rootPath].filter(
       (value): value is string => typeof value === "string" && value.trim().length > 0,
@@ -375,6 +393,22 @@ export class SandboxService {
     const mapped = windowsPathToWsl(hostPath);
     if (!mapped) throw new SandboxUnavailableError(`The folder ${hostPath} cannot be reached from WSL.`);
     return mapped.path;
+  }
+
+  private assertWorkspacePaths(environment: SandboxEnvironment, hostPaths: string[], sandboxPaths: string[]): void {
+    const privatePaths = [this.options.dataDir, this.options.windowsHome ?? os.homedir()];
+    if (environment.platform !== "win32") privatePaths.push(environment.home);
+    const protectedPaths = privatePaths.map(canonicalPath);
+    const includesHostPaths = hostPaths
+      .map(canonicalPath)
+      .some((root) => protectedPaths.some((privatePath) => pathContains(path, root, privatePath)));
+    const includesWslHome =
+      environment.platform === "win32" && sandboxPaths.some((root) => pathContains(path.posix, root, environment.home));
+    if (includesHostPaths || includesWslHome) {
+      throw new SandboxUnavailableError(
+        "Choose a workspace folder that excludes your home and strIDEterm data directories.",
+      );
+    }
   }
 
   /** The command that runs inside the sandbox in place of what the session manager would have spawned. */
@@ -419,7 +453,7 @@ export class SandboxService {
     const session = this.sessions.get(ctx.sessionId);
     if (!session) throw new SandboxUnavailableError("The sandbox was not prepared for this tab.");
     const environment = session.environment;
-    const hostRoots = this.workspaceRoots(ctx.workspace, ctx.cwd).filter((root) => existsSync(root));
+    const hostRoots = this.workspaceRoots(ctx.workspace, ctx.cwd).filter(statIsDirectory);
     if (!hostRoots.length) throw new SandboxUnavailableError("The workspace folder does not exist.");
 
     const distro = environment.distro;
@@ -429,6 +463,7 @@ export class SandboxService {
     const agent = getAgentSandboxProfile(detectSandboxAgent(ctx.panel.command) ?? "");
     const roots = hostRoots.map((root) => this.mapToSandbox(environment, root));
     const gitDirs = hostGitDirs.map((dir) => this.mapToSandbox(environment, dir));
+    this.assertWorkspacePaths(environment, [...hostRoots, ...hostGitDirs], [...roots, ...gitDirs]);
     const gitPointerFiles = hostGit
       .flatMap((entry) => entry.pointerFiles)
       .map((file) => this.mapToSandbox(environment, file));
@@ -667,12 +702,11 @@ export class SandboxService {
   }
 
   private pickCwd(environment: SandboxEnvironment, hostRoots: string[], requested: string): string {
-    const inside = (candidate: string) =>
-      hostRoots.some((root) => {
-        const relative = path.relative(root, candidate);
-        return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-      });
-    const chosen = requested && existsSync(requested) && inside(requested) ? requested : hostRoots[0];
+    const chosen =
+      statIsDirectory(requested) &&
+      hostRoots.some((root) => workspacePathContains(environment.platform, root, requested))
+        ? requested
+        : hostRoots[0];
     return this.mapToSandbox(environment, chosen);
   }
 
@@ -980,11 +1014,40 @@ export class SandboxService {
   }
 
   async shutdown(): Promise<void> {
+    this.shuttingDown = true;
     if (this.poller) clearInterval(this.poller);
     this.poller = null;
-    this.sessions.clear();
+    for (const sessionId of this.sessions.keys()) this.release(sessionId);
+    await this.gatewayReady?.catch(() => undefined);
     await this.options.gateway.close();
   }
+}
+
+function canonicalPath(target: string): string {
+  try {
+    return realpathSync(target);
+  } catch {
+    return path.resolve(target);
+  }
+}
+
+function pathContains(pathApi: typeof path, root: string, target: string): boolean {
+  const relative = pathApi.relative(root, target);
+  return relative !== ".." && !relative.startsWith(`..${pathApi.sep}`) && !pathApi.isAbsolute(relative);
+}
+
+/** WSL UNC aliases share a namespace within the same distribution. */
+export function workspacePathContains(platform: NodeJS.Platform, root: string, target: string): boolean {
+  if (platform !== "win32") return pathContains(path, root, target);
+  const rootInWsl = windowsPathToWsl(root);
+  const targetInWsl = windowsPathToWsl(target);
+  if (rootInWsl?.distro && targetInWsl?.distro) {
+    return (
+      rootInWsl.distro.toLowerCase() === targetInWsl.distro.toLowerCase() &&
+      pathContains(path.posix, rootInWsl.path, targetInWsl.path)
+    );
+  }
+  return pathContains(path.win32, root, target);
 }
 
 function statIsDirectory(target: string | undefined): boolean {

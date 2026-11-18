@@ -15,6 +15,7 @@ import {
 } from "../../electron/shared/companion-primary.js";
 import { TASK_ACTIVE_STATES, sessionIdFor } from "../../electron/shared/task-states.js";
 import { isInputBlockingKind } from "../../electron/shared/attention-kinds.js";
+import { isSandboxedPanel } from "../../electron/shared/sandbox-eligibility.js";
 import { ancestorIdentities, buildWorkspaceTree, type WorkspaceAncestorIdentity } from "./workspace-tree.js";
 import { jiraViewTabId } from "./jira-view-tabs.js";
 
@@ -54,6 +55,8 @@ interface SplitGroup {
   [key: string]: unknown;
 }
 
+export type TabIsolation = "isolated" | "restart to isolate";
+
 export interface WorkspaceTab {
   /** Presentation view id — where the tab lives in the UI. */
   id: string;
@@ -63,6 +66,7 @@ export interface WorkspaceTab {
   tone: string;
   /** Terminal tab only: the PTY exists (as opposed to a tab nobody started). */
   processRunning?: boolean;
+  isolation?: TabIsolation;
   persistent?: boolean;
   closable?: boolean;
   /** Opaque SQLite-backed view id for native Jira tabs. */
@@ -610,6 +614,12 @@ export function getWorkspaceTabs({
       .map((session) => {
         const headlessJudge = getHeadlessJudgeTabMeta(activeWorkspace, payload, session.panelId);
         const disp = terminalStatusDisplay(session);
+        const launchedIsolated = payload?.attention?.isolation?.[session.sessionId];
+        const panel = panelMap.get(session.panelId);
+        let isolation: TabIsolation | undefined;
+        if (launchedIsolated === true) isolation = "isolated";
+        else if (launchedIsolated === false && isSandboxedPanel(activeWorkspace, panel))
+          isolation = "restart to isolate";
         return {
           id: session.sessionId,
           type: headlessJudge?.type || "terminal",
@@ -617,8 +627,9 @@ export function getWorkspaceTabs({
           status: headlessJudge?.status ?? disp.status,
           tone: headlessJudge?.tone ?? disp.tone,
           processRunning: session.status === "running",
-          persistent: panelMap.has(session.panelId),
+          persistent: Boolean(panel),
           closable: true,
+          ...(isolation ? { isolation } : {}),
         };
       }),
   ];

@@ -1,4 +1,8 @@
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const handles: FakePtyHandle[] = [];
 const spawnCalls: Array<{ file: string; args: string[]; options: Record<string, unknown> }> = [];
@@ -48,6 +52,7 @@ function state() {
 }
 
 function hooks(overrides: Partial<SessionSandboxHooks> = {}): SessionSandboxHooks & {
+  prepare: ReturnType<typeof vi.fn>;
   wrap: ReturnType<typeof vi.fn>;
   release: ReturnType<typeof vi.fn>;
 } {
@@ -64,10 +69,27 @@ function hooks(overrides: Partial<SessionSandboxHooks> = {}): SessionSandboxHook
   } as never;
 }
 
+function deferredPreparation() {
+  let resolve!: (isolated: boolean) => void;
+  const promise = new Promise<boolean>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 describe("SessionManager sandbox hooks", () => {
+  let testDataDir: string;
+
   beforeEach(() => {
     handles.length = 0;
     spawnCalls.length = 0;
+    testDataDir = mkdtempSync(path.join(tmpdir(), "session-sandbox-"));
+    vi.stubEnv("STRIDETERM_DATA_DIR", testDataDir);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    rmSync(testDataDir, { recursive: true, force: true });
   });
 
   test("spawns the sandbox's launcher in place of the shell and gives it the wrapped environment", async () => {
@@ -89,6 +111,16 @@ describe("SessionManager sandbox hooks", () => {
     await manager.ensureSession(state() as never, "w:agent");
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(handles[0].writes.filter((line) => /source|^\. /u.test(line))).toEqual([]);
+  });
+
+  test("keeps the host's PowerShell integration script out of the isolated launch command", async () => {
+    const sandbox = hooks();
+    const launcher = { file: "pwsh", args: ["-NoLogo"] };
+    const manager = new SessionManager({ sandbox, getSessionLaunch: () => launcher });
+
+    await manager.ensureSession(state() as never, "w:agent");
+
+    expect(sandbox.wrap.mock.calls[0]?.[0].launcher).toEqual(launcher);
   });
 
   test("fails closed and visibly when the sandbox cannot start: nothing is spawned", async () => {
@@ -116,6 +148,34 @@ describe("SessionManager sandbox hooks", () => {
     expect(sandbox.release).toHaveBeenCalledWith("w:agent");
   });
 
+  test("an isolated launch leaves a missing folder for the sandbox to resolve", async () => {
+    const sandbox = hooks();
+    const missing = path.join(tmpdir(), randomUUID());
+    const manager = new SessionManager({ sandbox, getSessionLaunch: () => ({ cwd: missing }) });
+    const withoutWorkspaceRoot = state();
+    withoutWorkspaceRoot.workspaces[0].cwd = "";
+
+    await manager.ensureSession(withoutWorkspaceRoot as never, "w:agent");
+
+    expect(sandbox.wrap.mock.calls[0]?.[0].cwd).toBe(missing);
+  });
+
+  test("releases preparation when building the agent launch fails", async () => {
+    const sandbox = hooks();
+    const manager = new SessionManager({
+      sandbox,
+      getSessionLaunch() {
+        throw new Error("could not build the agent launch");
+      },
+    });
+
+    await expect(manager.ensureSession(state() as never, "w:agent")).rejects.toThrow(
+      "could not build the agent launch",
+    );
+    expect(spawnCalls).toHaveLength(0);
+    expect(sandbox.release).toHaveBeenCalledExactlyOnceWith("w:agent");
+  });
+
   test("releases the sandbox when the process exits", async () => {
     const sandbox = hooks();
     const manager = new SessionManager({ sandbox });
@@ -123,6 +183,24 @@ describe("SessionManager sandbox hooks", () => {
     handles[0].kill(0);
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(sandbox.release).toHaveBeenCalledWith("w:agent");
+  });
+
+  test("releases a stopped session even if its exit arrives after a replacement starts", async () => {
+    const prepare = vi.fn<SessionSandboxHooks["prepare"]>().mockResolvedValueOnce(true).mockResolvedValue(false);
+    const sandbox = hooks({ prepare });
+    const manager = new SessionManager({ sandbox });
+    await manager.ensureSession(state() as never, "w:agent");
+    const original = handles[0];
+    vi.spyOn(original, "kill").mockImplementationOnce(() => {});
+
+    manager.removeSession("w:agent");
+    expect(sandbox.release).toHaveBeenCalledExactlyOnceWith("w:agent");
+    await manager.ensureSession(state() as never, "w:agent");
+
+    original.kill();
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    expect(sandbox.release).toHaveBeenCalledTimes(1);
+    expect(manager.getIsolationMap()).toEqual({ "w:agent": false });
   });
 
   test("leaves a tab the sandbox does not claim exactly as it was", async () => {
@@ -155,13 +233,91 @@ describe("SessionManager sandbox hooks", () => {
     expect(manager.getIsolationMap()).toEqual({ "w:agent": true });
   });
 
-  test("a second start that raced the first returns the running session instead of spawning again", async () => {
-    const manager = new SessionManager({ sandbox: hooks() });
+  test.each([true, false])("shares concurrent starts when sandbox eligibility is %s", async (isolated) => {
+    const sandbox = hooks({ prepare: vi.fn(async () => isolated) });
+    const manager = new SessionManager({ sandbox });
     const [first, second] = await Promise.all([
       manager.ensureSession(state() as never, "w:agent"),
       manager.ensureSession(state() as never, "w:agent"),
     ]);
+    expect(first?.status).toBe("running");
     expect(first).toBe(second);
+    expect(sandbox.prepare).toHaveBeenCalledTimes(1);
     expect(spawnCalls).toHaveLength(1);
+  });
+
+  test("deleting a workspace during sandbox preparation cancels the launch", async () => {
+    const preparation = deferredPreparation();
+    const sandbox = hooks({ prepare: vi.fn(() => preparation.promise) });
+    const manager = new SessionManager({ sandbox });
+    const start = manager.ensureSession(state() as never, "w:agent");
+
+    await manager.removeWorkspaceSessions("w");
+    preparation.resolve(true);
+
+    await expect(start).resolves.toBeNull();
+    expect(spawnCalls).toHaveLength(0);
+    expect(sandbox.wrap).not.toHaveBeenCalled();
+    expect(sandbox.release).toHaveBeenCalledExactlyOnceWith("w:agent");
+  });
+
+  test("a restart waits for canceled sandbox preparation before launching a fresh session", async () => {
+    const preparation = deferredPreparation();
+    const prepare = vi
+      .fn<SessionSandboxHooks["prepare"]>()
+      .mockReturnValueOnce(preparation.promise)
+      .mockResolvedValue(true);
+    const sandbox = hooks({ prepare });
+    const manager = new SessionManager({ sandbox });
+    const start = manager.ensureSession(state() as never, "w:agent");
+    const restart = manager.restartSession(() => state() as never, "w:agent");
+
+    preparation.resolve(true);
+
+    await expect(start).resolves.toBeNull();
+    await expect(restart).resolves.toMatchObject({ status: "running", sandboxed: true });
+    expect(prepare).toHaveBeenCalledTimes(2);
+    expect(spawnCalls).toHaveLength(1);
+    expect(sandbox.release).toHaveBeenCalledExactlyOnceWith("w:agent");
+  });
+
+  test.each(["panel removal", "shutdown"])("%s cancels a restart waiting for the old process", async (action) => {
+    const sandbox = hooks();
+    const manager = new SessionManager({ sandbox });
+    await manager.ensureSession(state() as never, "w:agent");
+    const original = handles[0];
+    const kill = vi.spyOn(original, "kill").mockImplementation(() => {});
+
+    const restart = manager.restartSession(() => state() as never, "w:agent");
+    await vi.waitFor(() => expect(kill).toHaveBeenCalled());
+    if (action === "panel removal") {
+      manager.syncWithState({ ...state(), workspaces: [] } as never);
+    } else {
+      manager.stopAll();
+    }
+    kill.mockRestore();
+    original.kill();
+
+    await expect(restart).resolves.toBeNull();
+    expect(manager.hasSession("w:agent")).toBe(false);
+    expect(spawnCalls).toHaveLength(1);
+  });
+
+  test("a restart honors isolation enabled while the old process is exiting", async () => {
+    const sandbox = hooks({ prepare: async ({ workspace }) => workspace.sandboxEnabled === true });
+    const manager = new SessionManager({ sandbox });
+    let live = state();
+    live.workspaces[0].sandboxEnabled = false;
+    await manager.ensureSession(live as never, "w:agent");
+    const original = handles[0];
+    const kill = vi.spyOn(original, "kill").mockImplementationOnce(() => {});
+
+    const restart = manager.restartSession(() => live as never, "w:agent");
+    await vi.waitFor(() => expect(kill).toHaveBeenCalledTimes(1));
+    live = state();
+    original.kill();
+
+    await expect(restart).resolves.toMatchObject({ status: "running", sandboxed: true });
+    expect(sandbox.wrap).toHaveBeenCalledTimes(1);
   });
 });

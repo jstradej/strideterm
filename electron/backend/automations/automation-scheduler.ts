@@ -13,13 +13,14 @@ export interface ScheduledAutomation {
 export interface AutomationSchedulerOptions {
   journal: AutomationJournal;
   schedules: () => { paused: boolean; entries: ScheduledAutomation[] };
-  fire: (workspaceId: string, slot: string) => Promise<void>;
-  missed: (workspaceId: string, slot: string) => Promise<void>;
+  fire: (workspaceId: string, slot: string, assertCurrent?: () => void) => Promise<void>;
+  missed: (workspaceId: string, slot: string, assertCurrent?: () => void) => Promise<void>;
+  handledOnce?: (workspaceId: string, slot: string) => Promise<void>;
   error: (workspaceId: string, error: unknown) => void;
   now?: () => number;
 }
 
-/** One timer for all schedules; journal writes precede the execution callback. */
+/** One timer for all schedules, with durable slot tracking in the journal. */
 export class AutomationScheduler {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private queue: Promise<void> = Promise.resolve();
@@ -70,21 +71,46 @@ export class AutomationScheduler {
           (this.timezoneChanged && entry.trigger.kind === "cron" && !entry.trigger.timezone)
             ? null
             : journal.nextRunAt;
-        if (!slot) slot = nextAutomationSlot(entry.trigger, new Date(now))?.toISOString() ?? null;
+        const once = entry.trigger.kind === "once" ? new Date(entry.trigger.at).toISOString() : null;
+        let recoveredOnceSlot: string | null = null;
+        if (once) {
+          const run = journal.runs.find((item) => item.trigger.type === "schedule" && item.trigger.slot === once);
+          if (run && journal.lastFiredSlot !== once) recoveredOnceSlot = once;
+          const handled = run || journal.lastFiredSlot === once;
+          if (handled && (!run || run.finishedAt)) await this.options.handledOnce?.(entry.workspaceId, once);
+          slot = handled ? null : once;
+        } else if (!slot) {
+          slot = nextAutomationSlot(entry.trigger, new Date(now))?.toISOString() ?? null;
+        }
         let persisted = false;
         if (slot && Date.parse(slot) <= now) {
           if (journal.lastFiredSlot !== slot) {
-            const live = this.options.schedules();
-            if (
-              live.paused ||
-              !live.entries.some(
-                (candidate) =>
-                  candidate.workspaceId === entry.workspaceId && JSON.stringify(candidate.trigger) === definition,
-              )
-            )
-              continue;
+            const isCurrent = () => {
+              const live = this.options.schedules();
+              return (
+                !this.stopped &&
+                !live.paused &&
+                live.entries.some(
+                  (candidate) =>
+                    candidate.workspaceId === entry.workspaceId &&
+                    JSON.stringify(candidate.trigger) === definition &&
+                    (!once || candidate.catchUp === entry.catchUp),
+                )
+              );
+            };
+            if (!isCurrent()) continue;
             const firedSlot = slot;
             const nextSlot = nextAutomationSlot(entry.trigger, new Date(now))?.toISOString() ?? null;
+            const dispatch =
+              (recoverMissed || now - Date.parse(firedSlot) >= TIMER_GRACE_MS) && entry.catchUp === "skip"
+                ? this.options.missed
+                : this.options.fire;
+            if (once) {
+              // The callback records the run before launch. Leave this slot available if it cannot reserve a run.
+              await dispatch(entry.workspaceId, firedSlot, () => {
+                if (!isCurrent()) throw new Error("Automation schedule changed or paused");
+              });
+            }
             await this.options.journal.update(entry.workspaceId, (state) => {
               state.lastFiredSlot = firedSlot;
               state.nextRunAt = nextSlot;
@@ -92,17 +118,16 @@ export class AutomationScheduler {
             persisted = true;
             // The next durable slot still needs a timer if starting or recording this slot fails.
             if (nextSlot) next.set(entry.workspaceId, nextSlot);
-            if ((recoverMissed || now - Date.parse(firedSlot) >= TIMER_GRACE_MS) && entry.catchUp === "skip")
-              await this.options.missed(entry.workspaceId, firedSlot);
-            else await this.options.fire(entry.workspaceId, firedSlot);
+            if (!once) await dispatch(entry.workspaceId, firedSlot);
             slot = nextSlot;
           } else {
             slot = nextAutomationSlot(entry.trigger, new Date(now))?.toISOString() ?? null;
           }
         }
-        if (!persisted && slot !== journal.nextRunAt) {
+        if (!persisted && (slot !== journal.nextRunAt || recoveredOnceSlot)) {
           await this.options.journal.update(entry.workspaceId, (state) => {
             state.nextRunAt = slot;
+            if (recoveredOnceSlot) state.lastFiredSlot = recoveredOnceSlot;
           });
         }
         if (slot) next.set(entry.workspaceId, slot);

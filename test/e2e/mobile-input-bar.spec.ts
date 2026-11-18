@@ -43,7 +43,12 @@ test.describe("Mobile composer input bar", () => {
   test.afterAll(async () => {
     await mock?.close();
   });
-  test.beforeEach(() => {
+  test.beforeEach(async ({ request }) => {
+    // The mock persists session activation across page loads.
+    const response = await request.post(`${mock.url}/api/session/activate`, {
+      data: { workspaceId: "ws-frontend", sessionId: ACTIVE_SESSION_ID },
+    });
+    await expect(response).toBeOK();
     mock.terminalInputs.length = 0;
     mock.terminalSubmits.length = 0;
   });

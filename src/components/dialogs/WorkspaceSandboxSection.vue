@@ -361,4 +361,10 @@ onMounted(() => {
   align-items: center;
   gap: 8px;
 }
+.sandbox-section__domains code {
+  overflow-wrap: anywhere;
+}
+.sandbox-section__domains .button {
+  flex-shrink: 0;
+}
 </style>

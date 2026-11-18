@@ -54,6 +54,7 @@ export interface AutomationRunnerOptions {
 /** Owns the lifecycle of agent runs; runtime adapters supply session operations. */
 export class AutomationRunner {
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
+  private cleaningUp = new Set<string>();
   private sessions = new Map<string, { workspaceId: string; runId: string }>();
   private tasks = new Map<string, { workspaceId: string; runId: string }>();
   private reviewSessions = new Set<string>();
@@ -152,7 +153,7 @@ export class AutomationRunner {
         throw new Error("Automation is unavailable or paused");
       const maxRunMinutes = current.automation.policy.maxRunMinutes;
       const maxRunsPerHour = current.automation.policy.maxRunsPerHour;
-      const busy = state.runs.some((run) => ACTIVE.has(run.state));
+      const busy = this.cleaningUp.has(workspaceId) || state.runs.some((run) => ACTIVE.has(run.state));
       if (busy && trigger.type === "event") throw new Error("Automation is busy; event remains queued");
       if (busy) {
         state.runs.push({
@@ -318,6 +319,14 @@ export class AutomationRunner {
       );
       if (!registeredSession) await registerSession(sessionId);
       if (registeredSession !== sessionId) throw new Error("Automation session identity changed");
+      const clearOwnRegistration = () => {
+        const owner = this.sessions.get(sessionId);
+        const latestRunId = this.options.journal.peek(workspaceId)?.latestSessionRuns[sessionId];
+        if ((owner && owner.runId !== runId) || (latestRunId && latestRunId !== runId)) return false;
+        this.sessions.delete(sessionId);
+        this.dialogs.delete(sessionId);
+        return true;
+      };
       let accepted: boolean;
       try {
         accepted = await this.options.journal.update(workspaceId, (state) => {
@@ -328,18 +337,14 @@ export class AutomationRunner {
           return true;
         });
       } catch (error) {
-        this.sessions.delete(sessionId);
-        this.dialogs.delete(sessionId);
-        await this.options.stopSession(sessionId);
+        if (clearOwnRegistration()) await this.options.stopSession(sessionId);
         throw error;
       }
       if (!accepted) {
-        this.sessions.delete(sessionId);
-        this.dialogs.delete(sessionId);
         // An early Stop can complete the turn before restartSession resolves.
         // Preserve the successful interactive session, as for ordinary completion.
         const run = (await this.options.journal.read(workspaceId)).runs.find((item) => item.runId === runId);
-        if (run?.state !== "succeeded") await this.options.stopSession(sessionId);
+        if (clearOwnRegistration() && run?.state !== "succeeded") await this.options.stopSession(sessionId);
         return;
       }
       this.options.sessionRegistered?.(sessionId);
@@ -474,26 +479,35 @@ export class AutomationRunner {
           this.options.sessionSize?.(beforeFinish.sessionId),
         )
       : "";
-    const finished = await this.options.journal.update(workspaceId, (state) => {
-      assertCurrent?.();
-      const run = state.runs.find((item) => item.runId === runId);
-      if (!run || !ACTIVE.has(run.state)) return null;
-      run.state =
-        requested === "failed" && result !== undefined && reason === "terminal-exit" ? "succeeded" : requested;
-      run.finishedAt = new Date().toISOString();
-      if (exitCode !== undefined) run.exitCode = exitCode;
-      if (output) {
-        run.output = output;
-        run.outputFormat = "screen";
-      }
-      if (reason && run.state !== "succeeded") run.reason = reason;
-      if (run.state === "succeeded") {
-        run.resultMissing = result === undefined;
-        if (result !== undefined) run.resultExcerpt = result.slice(0, 2000);
-        state.consecutiveFailures = 0;
-      } else if (run.state === "failed" || run.state === "timed-out") state.consecutiveFailures++;
-      return { run: { ...run }, disable: state.consecutiveFailures >= 5 };
-    });
+    let ownsCleanup = false;
+    const finished = await this.options.journal
+      .update(workspaceId, (state) => {
+        assertCurrent?.();
+        const run = state.runs.find((item) => item.runId === runId);
+        if (!run || !ACTIVE.has(run.state)) return null;
+        // Reserve the executor until cleanup finishes, even after the terminal state is visible.
+        this.cleaningUp.add(workspaceId);
+        ownsCleanup = true;
+        run.state =
+          requested === "failed" && result !== undefined && reason === "terminal-exit" ? "succeeded" : requested;
+        run.finishedAt = new Date().toISOString();
+        if (exitCode !== undefined) run.exitCode = exitCode;
+        if (output) {
+          run.output = output;
+          run.outputFormat = "screen";
+        }
+        if (reason && run.state !== "succeeded") run.reason = reason;
+        if (run.state === "succeeded") {
+          run.resultMissing = result === undefined;
+          if (result !== undefined) run.resultExcerpt = result.slice(0, 2000);
+          state.consecutiveFailures = 0;
+        } else if (run.state === "failed" || run.state === "timed-out") state.consecutiveFailures++;
+        return { run: { ...run }, disable: state.consecutiveFailures >= 5 };
+      })
+      .catch((error: unknown) => {
+        if (ownsCleanup) this.cleaningUp.delete(workspaceId);
+        throw error;
+      });
     if (!finished) return;
     const timer = this.timers.get(runId);
     if (timer) clearTimeout(timer);
@@ -527,6 +541,7 @@ export class AutomationRunner {
         await complete(() => this.options.stopSession(finished.run.sessionId!));
     }
     if (finished.disable) await complete(() => this.options.disableForFailures(workspaceId));
+    this.cleaningUp.delete(workspaceId);
     this.options.finished(workspaceId, finished.run);
     if (errors.length === 1) throw errors[0];
     if (errors.length > 1) throw new AggregateError(errors, "Automation completion failed");

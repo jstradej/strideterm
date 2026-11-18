@@ -1,3 +1,4 @@
+import { constants } from "node:fs";
 import { open, realpath } from "node:fs/promises";
 import path from "node:path";
 
@@ -16,8 +17,10 @@ export async function readAutomationResult(
     const relative = path.relative(root, filePath);
     if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
       throw new Error("Automation result is outside the workspace");
-    const file = await open(filePath, "r");
+    const flags = process.platform === "win32" ? "r" : constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW;
+    const file = await open(filePath, flags);
     try {
+      if (!(await file.stat()).isFile()) throw new Error("Automation result must be a regular file");
       const buffer = Buffer.alloc(maxBytes);
       const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
       return buffer.subarray(0, bytesRead).toString("utf8");

@@ -41,16 +41,7 @@
       <span>{{ tab.title }}</span>
       <small class="tab__status">
         <span v-if="tab.tmuxLabel" class="tab__tmux" :title="tab.tmuxLabel" :aria-label="tab.tmuxLabel">tmux</span>
-        <span v-if="tab.isolated" class="tab__isolated" :title="ISOLATED_TOOLTIP" data-testid="tab-isolated"
-          >isolated</span
-        >
-        <span
-          v-else-if="tab.needsIsolationRestart"
-          class="tab__isolated tab__isolated--pending"
-          :title="RESTART_TOOLTIP"
-          data-testid="tab-restart-to-isolate"
-          >restart to isolate</span
-        >
+        <TabIsolationBadge :isolation="tab.isolation" />
         <span
           v-if="tab.taskBadge && tab.companionWorkspaceId"
           class="tab__status-text tab__task-badge tab__task-badge--linked"
@@ -149,8 +140,8 @@ import { useNotificationStore } from "../../stores/notifications.js";
 import { useGitUiStore } from "../../stores/git-ui.js";
 import { useTabDragDrop } from "../../composables/useDragDrop.js";
 import { isFreshAlert, isGitViewId, tabAttentionTitle } from "../../app/helpers.js";
-import { hostedPanelIds, tabSessionId } from "../../app/selectors.js";
-import { isSandboxedPanel } from "../../../electron/shared/sandbox-eligibility.js";
+import { hostedPanelIds, tabSessionId, type TabIsolation } from "../../app/selectors.js";
+import TabIsolationBadge from "./TabIsolationBadge.vue";
 import type { PanelLaunch } from "../../../electron/shared/types/state.js";
 import {
   companionPrimaryHostedPanelIds,
@@ -214,8 +205,7 @@ interface TabStripTabModel {
   type?: string;
   jiraViewId?: string;
   jiraSavedView?: boolean;
-  isolated?: boolean;
-  needsIsolationRestart?: boolean;
+  isolation?: TabIsolation;
   tmuxLabel?: string;
 }
 
@@ -223,31 +213,6 @@ function describeTmuxLaunch(launch?: PanelLaunch): string {
   const target = launch?.kind === "ssh" ? launch.tmux : undefined;
   return target ? `tmux session: ${target.name} · ${target.readOnly ? "Read-only" : "Interactive"} on connect` : "";
 }
-
-const ISOLATED_TOOLTIP =
-  "This agent runs in a sandbox: it cannot read your home folder or reach the network except through strIDEterm. It does not protect the workspace contents, the agent's own sign-in, or traffic to its model.";
-
-/**
- * Whether a tab's agent REALLY runs in the sandbox, read from what the runtime launched, not from the
- * workspace setting: a tab started before the setting was turned on keeps running outside it.
- */
-function isolationOf(
-  workspace: AnyApi | null | undefined,
-  tab: { id: string; borrowed?: boolean },
-  sessionId: string,
-): { isolated: boolean; needsIsolationRestart: boolean } {
-  if (tab.borrowed) return { isolated: false, needsIsolationRestart: false };
-  const panelId = tab.id.includes(":") ? tab.id.split(":").pop() : tab.id;
-  const eligible = isSandboxedPanel(
-    workspace,
-    workspace?.panels?.find((panel: { id: string }) => panel.id === panelId),
-  );
-  const launched = (store.payload as AnyApi)?.attention?.isolation?.[sessionId];
-  return { isolated: launched === true, needsIsolationRestart: eligible && launched === false };
-}
-
-const RESTART_TOOLTIP =
-  "This workspace works in isolation, but this agent was started before that and still runs outside the sandbox. Restart the tab to isolate it.";
 
 const props = withDefaults(
   defineProps<{
@@ -481,7 +446,7 @@ const tabModels = computed<TabStripTabModel[]>(() => {
       grouped: splitVisible && tab.id !== activeViewId && (splitGroup?.viewIds.includes(tab.id) || false),
       persistent: !!tab.persistent,
       jiraViewId,
-      ...isolationOf(workspace, tab, sessionId),
+      isolation: tab.isolation,
       jiraSavedView: tab.type === "jira" && workspace?.kind === "jira" && !!jiraViewId && jiraViewId !== "issues",
       closable: tab.closable !== false,
       borrowed: !!tab.borrowed,

@@ -85,7 +85,7 @@ describe("SessionManager", () => {
     expect(first?.status).toBe("exited");
     expect(await manager.ensureSession(state, "workspace-a:shell")).toBe(first);
     expect(spawnCalls).toHaveLength(1);
-    expect((await manager.restartSession(state, "workspace-a:shell"))?.status).toBe("running");
+    expect((await manager.restartSession(() => state, "workspace-a:shell"))?.status).toBe("running");
     expect(spawnCalls).toHaveLength(2);
   });
 
@@ -164,7 +164,7 @@ describe("SessionManager", () => {
 
     manager.ensureSession(createState() as Parameters<typeof manager.ensureSession>[0], "workspace-a:shell");
     const restarted = await manager.restartSession(
-      createState() as Parameters<typeof manager.ensureSession>[0],
+      () => createState() as Parameters<typeof manager.ensureSession>[0],
       "workspace-a:shell",
     );
 
@@ -191,7 +191,7 @@ describe("SessionManager", () => {
       const oldHandle = handles[0]!;
       oldHandle.kill = () => {};
 
-      const restart = manager.restartSession(state, "workspace-a:shell");
+      const restart = manager.restartSession(() => state, "workspace-a:shell");
       await vi.advanceTimersByTimeAsync(5000);
       const replacement = await restart;
       expect(replacement).toBe(manager.sessions.get("workspace-a:shell"));
@@ -268,7 +268,7 @@ describe("SessionManager", () => {
       expect(handles[0]!.writes).toEqual(["prompt", "\r", "manual"]);
 
       manager.submitToSession("workspace-a:shell", "stale");
-      await manager.restartSession(state, "workspace-a:shell");
+      await manager.restartSession(() => state, "workspace-a:shell");
       await vi.advanceTimersByTimeAsync(200);
       expect(handles[1]!.writes).not.toContain("\r");
     } finally {
@@ -297,7 +297,7 @@ describe("SessionManager", () => {
       expect(handles[0]!.writes).toEqual(["focus", "arrive", "click", "typed"]);
 
       manager.writeSequenceToSession("workspace-a:shell", [{ data: "arrive", pauseAfterMs: 100 }, { data: "stale" }]);
-      await manager.restartSession(state, "workspace-a:shell");
+      await manager.restartSession(() => state, "workspace-a:shell");
       await vi.advanceTimersByTimeAsync(100);
       expect(handles[1]!.writes).not.toContain("stale");
     } finally {
@@ -323,7 +323,7 @@ describe("SessionManager", () => {
       expect(wire.slice(pasteEnd + "\u001b[201~".length)).toBe("\rlater");
 
       manager.submitToSession("workspace-a:shell", "stale");
-      await manager.restartSession(state, "workspace-a:shell");
+      await manager.restartSession(() => state, "workspace-a:shell");
       await vi.advanceTimersByTimeAsync(200);
       expect(handles[0]!.writes.slice(-1)).toEqual(["\u001b[200~stale\u001b[201~"]);
       expect(handles[1]!.writes).toEqual([]);
@@ -1348,7 +1348,7 @@ describe("SessionManager", () => {
         rows: 20,
       };
 
-      await manager.restartSession(state, "workspace-a:ssh");
+      await manager.restartSession(() => state, "workspace-a:ssh");
 
       expect(sshManager.createSession.mock.calls[1][0]).toMatchObject({ cols: 200, rows: 55 });
     });
@@ -1416,7 +1416,7 @@ describe("SessionManager", () => {
     test("restartSession forwards the option to the new connect", async () => {
       const { state, sshManager } = keyHostState("ssh2");
       const manager = new SessionManager({ sshManager: sshManager as never });
-      await manager.restartSession(state, "workspace-a:ssh", { sshPasswordSignIn: true });
+      await manager.restartSession(() => state, "workspace-a:ssh", { sshPasswordSignIn: true });
       expect(sshManager.createSession.mock.calls[0][0].authOverride.methods).toEqual([
         "password",
         "keyboard-interactive",
@@ -1746,7 +1746,7 @@ describe("SessionManager", () => {
     expect(sshManager.createSession).toHaveBeenCalledTimes(1);
 
     // 2. Restart while still connecting → aborts the in-flight connect.
-    const restarted = manager.restartSession(state, "workspace-a:ssh");
+    const restarted = manager.restartSession(() => state, "workspace-a:ssh");
     expect(sshManager.stop).toHaveBeenCalledWith("workspace-a:ssh");
 
     // 3. The aborted connect settles → a FRESH connect begins (proving the

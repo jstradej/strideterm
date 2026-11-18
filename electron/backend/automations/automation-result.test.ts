@@ -12,6 +12,7 @@ describe("automation result reading", () => {
       const dir = path.join(cwd, ".strideterm", "automations", "auto", "runs", "run");
       await mkdir(dir, { recursive: true });
       const result = path.join(dir, "RESULT.md");
+      expect(await readAutomationResult(cwd, "auto", "run", 4)).toBeUndefined();
       await writeFile(result, "abcdefgh");
       expect(await readAutomationResult(cwd, "auto", "run", 4)).toBe("abcd");
       await rm(result);
@@ -21,6 +22,17 @@ describe("automation result reading", () => {
       await expect(readAutomationResult(cwd, "auto", "run", 100)).rejects.toThrow("outside the workspace");
     } finally {
       await rm(base, { recursive: true, force: true });
+    }
+  });
+  it.skipIf(process.platform === "win32")("requires a regular result file", async () => {
+    const cwd = await mkdtemp(path.join(os.tmpdir(), "automation-result-type-"));
+    try {
+      await mkdir(path.join(cwd, ".strideterm", "automations", "auto", "runs", "run", "RESULT.md"), {
+        recursive: true,
+      });
+      await expect(readAutomationResult(cwd, "auto", "run", 4)).rejects.toThrow("must be a regular file");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
     }
   });
 });

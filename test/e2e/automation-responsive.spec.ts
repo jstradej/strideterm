@@ -15,16 +15,19 @@ test.describe("Automation dialog responsive layout", () => {
     { width: 390, height: 844 },
     { width: 320, height: 568 },
     { width: 667, height: 375 },
+    { width: 844, height: 390 },
   ]) {
     test(`dialog fits at ${viewport.width}px`, async ({ page }, testInfo) => {
       await page.setViewportSize(viewport);
       await openApp(page, mock);
-      if (viewport.width < 768) await page.locator(".mobile-hamburger").click();
+      const hamburger = page.locator(".mobile-hamburger");
+      const compact = await hamburger.isVisible();
+      if (compact) await hamburger.click();
       const card = page.locator('[data-workspace-id="ws-repo"]').last();
       const menu = card.locator(".workspace-card__action--menu");
       await card.scrollIntoViewIfNeeded();
       await expect(menu).toBeInViewport();
-      if (viewport.width >= 768) await card.hover();
+      if (!compact) await card.hover();
       await expect(menu).toHaveCSS("opacity", "1");
       await menu.click();
       await page.getByRole("button", { name: /Create automation/i }).click();
@@ -266,8 +269,10 @@ test.describe("Automation dashboard responsive layout", () => {
     { width: 390, height: 844 },
     { width: 320, height: 568 },
     { width: 667, height: 375 },
+    { width: 844, height: 390 },
   ]) {
     test(`dashboard fits at ${viewport.width}px`, async ({ page }, testInfo) => {
+      const desktop = viewport.width > 768 && viewport.height > 500;
       await page.clock.setFixedTime(new Date("2026-11-17T12:00:00Z"));
       const deletedRuns = new Set<string>();
       await page.route("**/api/automation/delete-runs", (route) => {
@@ -415,7 +420,7 @@ test.describe("Automation dashboard responsive layout", () => {
               id: "network-request",
               workspaceId: "auto-view",
               sessionId: "auto-view:auto-agent",
-              host: "http-intake.logs.us5.datadoghq.com",
+              host: `${"logs".repeat(15)}.${"region".repeat(10)}.${"service".repeat(8)}.example.com`,
               port: 443,
               at: Date.now(),
               state: "pending",
@@ -425,7 +430,17 @@ test.describe("Automation dashboard responsive layout", () => {
       });
       const attention = dashboard.locator(".dashboard-section--attention");
       await expect(attention.getByText("Action required · Network access")).toBeVisible();
-      await expect(attention.getByTestId("sandbox-request")).toBeVisible();
+      const request = attention.getByTestId("sandbox-request");
+      await expect(request).toBeVisible();
+      const requestSize = await request.evaluate((element) => ({
+        client: element.clientWidth,
+        scroll: element.scrollWidth,
+        right: element.getBoundingClientRect().right,
+      }));
+      expect(requestSize.scroll).toBeLessThanOrEqual(requestSize.client + 1);
+      expect(requestSize.right).toBeLessThanOrEqual(viewport.width);
+      await request.getByRole("button", { name: "Deny", exact: true }).scrollIntoViewIfNeeded();
+      await expect(request.getByRole("button", { name: "Deny", exact: true })).toBeInViewport({ ratio: 1 });
       const toastClose = page.locator(".notification-toast__close");
       if (await toastClose.isVisible()) await toastClose.click();
       await expect(page.locator(".notification-toast")).toBeHidden();
@@ -471,7 +486,7 @@ test.describe("Automation dashboard responsive layout", () => {
       await expect(page.locator(".automation-pause")).toHaveCount(0);
       await page.locator('[data-role="notification-bell"]:visible').click();
       const center = page.locator(".notification-center");
-      if (viewport.width >= 768)
+      if (desktop)
         await center.evaluate((element) => {
           (element as HTMLElement).style.width = "600px";
         });
@@ -528,7 +543,7 @@ test.describe("Automation dashboard responsive layout", () => {
         element.scrollTop = 0;
       });
       await page.screenshot({ path: testInfo.outputPath("dashboard-empty-light.png") });
-      if (viewport.width >= 768) {
+      if (desktop) {
         // Exercise desktop focus with the real xterm, while keeping the test
         // transport connected to the local mock instead of Electron IPC.
         await page.evaluate(async () => {
@@ -549,7 +564,7 @@ test.describe("Automation dashboard responsive layout", () => {
       await dashboard.locator(".dashboard-header").getByRole("button", { name: "Open agent", exact: true }).click();
       await expect(page.locator('.terminal-host[data-session-id="auto-view:auto-agent"]')).toBeVisible();
       await expect(dashboard).not.toBeVisible();
-      if (viewport.width >= 768) {
+      if (desktop) {
         const input = page.locator('.terminal-host[data-session-id="auto-view:auto-agent"] .xterm-helper-textarea');
         await expect(input).toBeFocused();
         // Store-driven navigation (e.g. another opener/notification) must also
@@ -599,4 +614,39 @@ test.describe("Automation dashboard responsive layout", () => {
       assertNoErrors(page);
     });
   }
+
+  test.describe("Touch controls", () => {
+    test.use({ hasTouch: true });
+    test("shows actual agent isolation when opening and rotating a mobile tab", async ({ page }) => {
+      const trigger = page.locator('[data-role="mobile-tab-picker-trigger"]');
+      const picker = page.locator(".mobile-tab-picker__dropdown");
+      await page.setViewportSize({ width: 390, height: 844 });
+      await openApp(page, mock);
+
+      await trigger.tap();
+      const agent = picker.getByRole("button", { name: "Agent isolated", exact: true });
+      await expect(agent.getByTestId("tab-isolated")).toBeVisible();
+      await expect(
+        picker.getByRole("button", { name: "Dashboard", exact: true }).getByTestId("tab-isolated"),
+      ).toHaveCount(0);
+      await agent.tap();
+      await expect(trigger.getByTestId("tab-isolated")).toBeVisible();
+
+      await page.setViewportSize({ width: 844, height: 390 });
+      await expect(trigger.getByTestId("tab-isolated")).toBeInViewport({ ratio: 1 });
+      await page.evaluate(async () => {
+        const appPath = "/stores/app.ts";
+        const app = (await import(appPath)).useAppStore();
+        app.payload = {
+          ...app.payload,
+          attention: { ...app.payload.attention, isolation: { "auto-view:auto-agent": false } },
+        };
+      });
+      await expect(trigger.getByTestId("tab-isolated")).toHaveCount(0);
+      await expect(trigger.getByTestId("tab-restart-to-isolate")).toBeInViewport({ ratio: 1 });
+      await trigger.tap();
+      await expect(picker.getByRole("button", { name: "Agent restart to isolate", exact: true })).toBeVisible();
+      assertNoErrors(page);
+    });
+  });
 });

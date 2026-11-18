@@ -79,10 +79,12 @@ function formatRootLabel(rootPath: string): string {
 const dropdownStyle = computed((): CSSProperties => {
   if (!props.anchorRect) return {};
   const anchor = props.anchorRect;
+  const top = anchor.bottom + 4;
   return {
     position: "fixed",
-    top: `${anchor.bottom + 4}px`,
+    top: `${top}px`,
     right: `${window.innerWidth - anchor.right}px`,
+    maxHeight: `calc(100dvh - ${top + 8}px)`,
     zIndex: 9999,
   };
 });

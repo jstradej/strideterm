@@ -238,10 +238,23 @@
   }
 
   .mobile-tab-picker__label,
-  .mobile-tab-picker__trigger-status {
+  .mobile-tab-picker__trigger-status,
+  .mobile-tab-picker__name,
+  .mobile-tab-picker__status {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .mobile-tab-picker__meta {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .mobile-tab-picker__meta .tab__isolated {
+    flex-shrink: 0;
   }
 
   .mobile-tab-picker__trigger-status {
@@ -602,11 +615,14 @@
     border-left: 3px solid var(--accent);
   }
 
+  .mobile-tab-picker__item .mobile-tab-picker__meta {
+    margin-left: auto;
+  }
+
   .mobile-tab-picker__status {
     color: var(--muted);
     font-size: 11px;
     font-weight: 400;
-    margin-left: auto;
   }
 
   .mobile-tab-picker__menu {

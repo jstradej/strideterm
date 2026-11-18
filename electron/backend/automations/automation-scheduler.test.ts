@@ -3,7 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AutomationJournal } from "./automation-journal.js";
-import { AutomationScheduler, type ScheduledAutomation } from "./automation-scheduler.js";
+import {
+  AutomationScheduler,
+  type AutomationSchedulerOptions,
+  type ScheduledAutomation,
+} from "./automation-scheduler.js";
 
 const dirs: string[] = [];
 afterEach(async () => {
@@ -14,8 +18,9 @@ async function setup(catchUp: "skip" | "run-once" = "skip") {
   const dir = await mkdtemp(path.join(os.tmpdir(), "automation-scheduler-"));
   dirs.push(dir);
   const journal = new AutomationJournal(dir, () => {});
-  const fire = vi.fn(async () => {});
-  const missed = vi.fn(async () => {});
+  const fire = vi.fn<AutomationSchedulerOptions["fire"]>(async () => {});
+  const missed = vi.fn<AutomationSchedulerOptions["missed"]>(async () => {});
+  const handledOnce = vi.fn(async () => {});
   let now = Date.parse("2026-01-01T00:00:00Z");
   let paused = false;
   const entries: ScheduledAutomation[] = [
@@ -29,6 +34,7 @@ async function setup(catchUp: "skip" | "run-once" = "skip") {
     journal,
     fire,
     missed,
+    handledOnce,
     now: () => now,
     schedules: () => ({ paused, entries }),
     error: (_id, error) => {
@@ -41,6 +47,7 @@ async function setup(catchUp: "skip" | "run-once" = "skip") {
     entries,
     fire,
     missed,
+    handledOnce,
     setNow: (value: string) => {
       now = Date.parse(value);
     },
@@ -85,6 +92,77 @@ describe("automation scheduler", () => {
     expect(x.fire).not.toHaveBeenCalled();
     expect((await x.journal.read("one")).nextRunAt).toBe("2026-01-01T00:25:00.000Z");
     x.scheduler.stop();
+  });
+  it.each(["skip", "run-once"] as const)(
+    "handles a one-time schedule first seen after a pause with %s",
+    async (policy) => {
+      const x = await setup(policy);
+      const slot = "2026-01-01T00:05:00.000Z";
+      x.entries[0]!.trigger = { type: "schedule", kind: "once", at: slot };
+      try {
+        x.setPaused(true);
+        await x.scheduler.refresh();
+        x.setNow("2026-01-01T00:10:00Z");
+        x.setPaused(false);
+        await x.scheduler.refresh(true);
+        await x.scheduler.refresh(true);
+        expect(x[policy === "skip" ? "missed" : "fire"]).toHaveBeenCalledExactlyOnceWith(
+          "one",
+          slot,
+          expect.any(Function),
+        );
+        expect(x[policy === "skip" ? "fire" : "missed"]).not.toHaveBeenCalled();
+        expect(await x.journal.read("one")).toMatchObject({ lastFiredSlot: slot, nextRunAt: null });
+      } finally {
+        x.scheduler.stop();
+      }
+    },
+  );
+  it("keeps a one-time slot available when a pause prevents reserving a run", async () => {
+    const x = await setup("run-once");
+    const slot = "2026-01-01T00:05:00.000Z";
+    x.entries[0]!.trigger = { type: "schedule", kind: "once", at: slot };
+    x.fire.mockImplementationOnce(async (_workspaceId, _slot, assertCurrent) => {
+      x.setPaused(true);
+      assertCurrent?.();
+    });
+    try {
+      await x.scheduler.refresh();
+      x.setNow(slot);
+      await expect(x.scheduler.refresh()).rejects.toThrow("Automation schedule changed or paused");
+      expect(await x.journal.read("one")).toMatchObject({ lastFiredSlot: null, nextRunAt: slot });
+      x.setPaused(false);
+      await x.scheduler.refresh(true);
+      expect(x.fire).toHaveBeenCalledTimes(2);
+      expect(await x.journal.read("one")).toMatchObject({ lastFiredSlot: slot, nextRunAt: null });
+    } finally {
+      x.scheduler.stop();
+    }
+  });
+  it("reconciles an interrupted one-time run recorded before its slot marker", async () => {
+    const x = await setup("run-once");
+    const slot = "2026-01-01T00:05:00.000Z";
+    x.entries[0]!.trigger = { type: "schedule", kind: "once", at: slot };
+    x.setNow("2026-01-01T00:10:00Z");
+    await x.journal.update("one", (state) => {
+      state.nextRunAt = slot;
+      state.runs.push({
+        runId: "interrupted",
+        trigger: { type: "schedule", slot },
+        state: "interrupted",
+        startedAt: slot,
+        finishedAt: "2026-01-01T00:10:00.000Z",
+      });
+    });
+    try {
+      await x.scheduler.refresh(true);
+      expect(x.handledOnce).toHaveBeenCalledExactlyOnceWith("one", slot);
+      expect(x.missed).not.toHaveBeenCalled();
+      expect(x.fire).not.toHaveBeenCalled();
+      expect(await x.journal.read("one")).toMatchObject({ lastFiredSlot: slot, nextRunAt: null });
+    } finally {
+      x.scheduler.stop();
+    }
   });
   it("skips a delayed timer without a resume callback", async () => {
     const callbacks: Array<() => void> = [];

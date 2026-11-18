@@ -12,6 +12,7 @@ import {
 } from "./runtime.js";
 import { isValidNativeDirectoryName } from "./runtime.js";
 import { AgentTaskRunner } from "./agent-task-runner.js";
+import { AutomationJournal } from "./automations/automation-journal.js";
 import { AzureDevOpsManager } from "./azure-devops-manager.js";
 import { GitHubManager } from "./github-manager.js";
 import { execFileText } from "./process-utils.js";
@@ -585,6 +586,110 @@ describe("automation runtime wiring", () => {
 });
 
 describe("automation scheduled agent", () => {
+  test("disables a one-time schedule when its slot overlaps a manual run", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-auto-once-overlap-"));
+    tempPaths.push(cwd);
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [
+          {
+            id: "root",
+            name: "Project",
+            kind: "manual",
+            cwd,
+            profileId: "default",
+            panels: [{ id: "shell", title: "Shell", command: "" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    const slot = new Date(Date.now() + 1000).toISOString();
+    const { workspaceId } = await fixture.runtime.createAutomation({
+      parentWorkspaceId: "root",
+      name: "Job",
+      definition: {
+        enabled: true,
+        trigger: { type: "schedule", kind: "once", at: slot },
+        executor: { type: "agent", agent: { providerId: "claude", model: "", skipPermissions: false } },
+        prompt: "work",
+        location: "automation",
+        policy: { maxRunMinutes: 60, catchUp: "run-once", maxRunsPerHour: 6, subjectCooldownMinutes: 10 },
+      },
+    });
+    if (!workspaceId) throw new Error("Expected an automation workspace");
+    const { runId } = await fixture.runtime.runAutomationNow({ workspaceId, idempotencyKey: "manual-overlap" });
+    const journalPath = path.join(fixture.userDataPath, "automations", `${workspaceId}.json`);
+    await vi.waitFor(
+      async () => {
+        const journal = JSON.parse(await fs.readFile(journalPath, "utf8"));
+        expect(journal.runs).toMatchObject([
+          { runId, state: "running", trigger: { type: "manual" } },
+          { state: "skipped", reason: "overlap", trigger: { type: "schedule", slot } },
+        ]);
+        expect(
+          fixture.store.getState().workspaces.find((item: WorkspaceState) => item.id === workspaceId)?.automation,
+        ).toMatchObject({ enabled: false, disabledReason: "once-fired" });
+      },
+      { timeout: 5000 },
+    );
+  });
+
+  test("finishes one-time recovery when the journal contains a starting run without its slot marker", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-auto-once-restart-"));
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-auto-once-journal-"));
+    tempPaths.push(cwd, dataDir);
+    const workspaceId = "once";
+    const slot = new Date(Date.now() - 60_000).toISOString();
+    const createdAt = new Date(Date.parse(slot) - 60_000).toISOString();
+    const journal = new AutomationJournal(path.join(dataDir, "automations"), () => {});
+    await journal.update(workspaceId, (state) => {
+      state.nextRunAt = slot;
+      state.runs.push({
+        runId: "before-restart",
+        trigger: { type: "schedule", slot },
+        state: "starting",
+        startedAt: slot,
+      });
+    });
+    const fixture = await createFixture({
+      dataDir,
+      initialState: {
+        workspaces: [
+          { id: "root", name: "Project", kind: "manual", cwd, profileId: "default", panels: [] },
+          {
+            id: workspaceId,
+            name: "Job",
+            kind: "automation",
+            cwd,
+            profileId: "default",
+            panels: [{ id: "dash", title: "Dashboard", command: "__automation-dashboard__" }],
+            automation: {
+              parentWorkspaceId: "root",
+              enabled: true,
+              trigger: { type: "schedule", kind: "once", at: slot },
+              executor: { type: "agent", agent: { providerId: "claude", model: "", skipPermissions: false } },
+              prompt: "work",
+              location: "automation",
+              policy: { maxRunMinutes: 60, catchUp: "run-once", maxRunsPerHour: 6, subjectCooldownMinutes: 10 },
+              createdBy: { kind: "desktop" },
+              createdAt,
+              updatedAt: createdAt,
+              enabledAt: createdAt,
+            },
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    expect(await journal.read(workspaceId)).toMatchObject({
+      runs: [{ runId: "before-restart", state: "interrupted" }],
+    });
+    expect(
+      fixture.store.getState().workspaces.find((item: WorkspaceState) => item.id === workspaceId)?.automation,
+    ).toMatchObject({ enabled: false, disabledReason: "once-fired" });
+  });
+
   test("failure disable advances the definition version after a clock rollback", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-auto-failure-version-"));
     tempPaths.push(cwd);
@@ -1725,10 +1830,10 @@ describe("automation task executor", () => {
       const release = new Promise<void>((resolve) => {
         releaseRestart = resolve;
       });
-      restarted.mockImplementationOnce(async (state: unknown, sessionId: string) => {
+      restarted.mockImplementationOnce(async (getState, sessionId) => {
         enteredRestart();
         await release;
-        return originalRestart(state, sessionId);
+        return originalRestart(getState, sessionId);
       });
       const third = await fixture.runtime.runAutomationNow({ workspaceId, idempotencyKey: "isolated-run-3" });
       await entered;
@@ -2234,11 +2339,10 @@ class FakeSessionManager extends EventEmitter {
     return this.sessions.has(sessionId);
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async restartSession(state: any, sessionId: any) {
+  async restartSession(getState: () => AppState, sessionId: string) {
     this.sessions.delete(sessionId);
     this.emit("terminal:exit", { sessionId, exitCode: 0, intentional: true });
-    return this.ensureSession(state, sessionId);
+    return this.ensureSession(getState(), sessionId);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

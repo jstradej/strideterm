@@ -113,6 +113,7 @@
   display: grid;
   gap: 2px;
   min-width: 160px;
+  overflow-y: auto;
 }
 
 .tab-picker-dropdown__item {

@@ -20,6 +20,8 @@ Use it when you let an agent work on its own, for example with permission prompt
 
 To isolate every new workspace, turn on **Settings → General → Agent isolation**.
 
+A workspace in isolation needs a project folder that excludes your home directory and the strIDEterm data directory.
+
 ### Tasks
 
 A task created in an isolated workspace is isolated too. In a workspace that is not, tick **Run in isolation** when you create the task.

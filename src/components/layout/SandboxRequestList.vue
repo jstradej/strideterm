@@ -98,14 +98,21 @@ function split(record: SandboxRequestRecord): { prefix: string; domain: string }
 <style scoped>
 .sandbox-requests {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 8px;
 }
 .sandbox-request {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 2px;
 }
 .sandbox-request p {
   margin: 0;
+  overflow-wrap: anywhere;
+}
+.sandbox-request .notification-item__quick-actions {
+  flex-wrap: wrap;
 }
 .sandbox-request__source,
 .sandbox-request__hint {

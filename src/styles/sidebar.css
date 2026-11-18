@@ -1973,7 +1973,7 @@ a.workspace-card__jira-chip:hover {
 .workspace-card__action--menu:focus-visible {
   opacity: 1;
 }
-@media (hover: none), (max-width: 768px) {
+@media (hover: none), (max-width: 768px), (max-height: 500px) {
   .workspace-card__action--menu {
     opacity: 1;
   }
