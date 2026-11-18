@@ -186,7 +186,7 @@ export const useSandboxRequestsStore = defineStore("sandbox-requests", () => {
         } else upsert(request);
       }
     } catch (error) {
-      useNotificationStore().showError("Could not load the destinations isolated tabs are waiting on", error);
+      useNotificationStore().showError("Could not load the network requests of isolated tabs", error);
     }
   }
 

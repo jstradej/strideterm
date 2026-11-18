@@ -1611,6 +1611,9 @@ function registerBootstrapIpcHandlers(): void {
   // restored-window startup. Defer ordinary SSH requests until runtimeReady;
   // owner-bound test, transfer, auth, and host-key handlers stay in registerIpc.
   disposeDeferredSshIpcHandlers = registerDeferredSshIpcHandlers(ipcMain, invokeRuntimeMethod);
+  // The renderer asks which isolated tabs are waiting for a network decision as soon as it mounts, which on a slow
+  // start is before createRuntime() has finished. Answer once the runtime is there instead of "No handler registered".
+  ipcMain.handle("sandbox:requests", () => invokeRuntimeMethod("sandboxListPending"));
 }
 
 function unregisterBootstrapIpcHandlers(): void {
@@ -1619,6 +1622,7 @@ function unregisterBootstrapIpcHandlers(): void {
   ipcMain.removeHandler("project:activate");
   ipcMain.removeHandler("session:activate");
   ipcMain.removeHandler("attention:sync");
+  ipcMain.removeHandler("sandbox:requests");
   disposeDeferredSshIpcHandlers?.();
   disposeDeferredSshIpcHandlers = null;
 }
