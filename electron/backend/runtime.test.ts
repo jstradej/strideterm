@@ -16872,10 +16872,16 @@ describe("headless pull request review start", () => {
           currentRun?: { state: string };
         };
         if (run?.currentRun?.state !== "running") throw new Error(JSON.stringify(run));
+        if (!sessions.launches.some((entry) => entry.workspace?.review?.automationRun?.workspaceId === autoId)) {
+          throw new Error("automation review launch not recorded yet");
+        }
       },
       { timeout: 15_000 },
     );
-    const autoLaunch = sessions.launches.at(-1)!;
+    // Not `.at(-1)`: on a slow runner another session may be launched after this one.
+    const autoLaunch = sessions.launches.findLast(
+      (entry) => entry.workspace?.review?.automationRun?.workspaceId === autoId,
+    )!;
     expect(autoLaunch.launch?.args.join(" ")).toContain("--review-draft-only");
     expect(autoLaunch.launch?.args.join(" ")).not.toContain("PRIVATE REVIEW INSTRUCTIONS");
     expect(autoLaunch.workspace?.review?.automationRun?.workspaceId).toBe(autoId);
