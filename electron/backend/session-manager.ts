@@ -26,6 +26,7 @@ import { DISTRIBUTION_LAUNCHER_ENV } from "../shared/app-distribution.js";
 import { INTERNAL_MCP_ENV_PREFIX } from "../shared/internal-mcp.js";
 import { REVIEW_GIT_ENV_PREFIX } from "../shared/review-git-env.js";
 import { detectWslDistros } from "./ssh/ssh-wsl.js";
+import { resolveLoginShell } from "./fix-path.js";
 
 const log = getLogger("session-mgr");
 
@@ -137,6 +138,8 @@ interface SessionManagerOpts {
   isBracketedPasteEnabled?: ((sessionId: string) => boolean) | null;
   sshManager?: SshManager | null;
   spawnPty?: typeof pty.spawn;
+  /** The user's login shell for `viaLoginShell`; null starts programs directly. */
+  loginShell?: (() => string) | null;
 }
 
 function prepareBracketedPaste(text: string): string {
@@ -221,6 +224,46 @@ function shellConfig(): { file: string; args: string[] } {
     file: process.env.SHELL || APP_CONFIG.session.posixShellFile,
     args: [...APP_CONFIG.session.posixShellArgs],
   };
+}
+
+// Shells whose `-c` takes `$0 "$@"` after the script and that accept `-i -l`.
+const POSIX_LOGIN_SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "mksh"]);
+// Programs that ARE shells: a tab launching one gets it directly, never inside another shell.
+const SHELL_PROGRAMS = new Set([
+  ...POSIX_LOGIN_SHELLS,
+  "fish",
+  "tcsh",
+  "csh",
+  "nu",
+  "xonsh",
+  "elvish",
+  "pwsh",
+  "powershell",
+  "cmd",
+  "wsl",
+]);
+
+/**
+ * Starts a tab's program the way a terminal does: through the user's login
+ * shell, so it gets the PATH (and the rest of the environment) the user's
+ * rc files set up at the moment the tab opens — not the PATH strIDEterm read
+ * once at startup, which is the reduced GUI PATH when that read failed — and a
+ * missing program is reported by the shell itself (`command not found`, exit
+ * 127). `exec` replaces the shell, so the PTY's process IS the program
+ * (signals, resize, exit code). The program and its arguments are passed as
+ * `$0` and `"$@"`, never inside the script text, so nothing in them is parsed
+ * by the shell. Null on Windows, and for a login shell that is not
+ * POSIX-compatible (fish, nu, …: those keep the direct start).
+ */
+export function viaLoginShell(
+  launcher: { file: string; args: string[] },
+  loginShell: string,
+  platform: NodeJS.Platform = process.platform,
+): { file: string; args: string[] } | null {
+  if (platform === "win32" || !loginShell || !path.isAbsolute(loginShell)) return null;
+  if (!POSIX_LOGIN_SHELLS.has(shellBasename(loginShell))) return null;
+  if (!launcher.file || SHELL_PROGRAMS.has(shellBasename(launcher.file))) return null;
+  return { file: loginShell, args: ["-ilc", 'exec "$0" "$@"', launcher.file, ...launcher.args] };
 }
 
 function shellBasename(filePath: string): string {
@@ -695,6 +738,7 @@ export class SessionManager extends EventEmitter {
   sshManager: SshManager | null;
   spawnPty: typeof pty.spawn;
   sandbox: SessionSandboxHooks | null;
+  loginShell: (() => string) | null;
 
   constructor({
     getSessionEnv = null,
@@ -703,6 +747,7 @@ export class SessionManager extends EventEmitter {
     isBracketedPasteEnabled = null,
     sshManager = null,
     spawnPty = pty.spawn,
+    loginShell = resolveLoginShell,
   }: SessionManagerOpts = {}) {
     super();
     this.sandbox = sandbox;
@@ -714,6 +759,7 @@ export class SessionManager extends EventEmitter {
     this.isBracketedPasteEnabled = typeof isBracketedPasteEnabled === "function" ? isBracketedPasteEnabled : null;
     this.sshManager = sshManager || null;
     this.spawnPty = spawnPty;
+    this.loginShell = loginShell;
   }
 
   async trackSessionStart(
@@ -1151,6 +1197,15 @@ export class SessionManager extends EventEmitter {
     const integrationEnv = integrationLaunch.env;
     const skipTypedSource = integrationLaunch.skipTypedSource;
 
+    // A program launch (agent CLI, custom launch) goes through the login shell like in a terminal; the tab's own
+    // shell, a bare-shell command and an isolated launch (the sandbox has its own launcher) are spawned as they are.
+    const launchedProgram = launcher.file;
+    const shellWrapped =
+      (launchOverride?.file || panel.launch?.file) && !sandboxActive && this.loginShell
+        ? viaLoginShell(launcher, this.loginShell())
+        : null;
+    if (shellWrapped) launcher = shellWrapped;
+
     const { cols: initialCols, rows: initialRows } = this.initialSize(key, existing);
 
     // Validate cwd before handing it to pty.spawn — on Windows an invalid
@@ -1172,6 +1227,7 @@ export class SessionManager extends EventEmitter {
     log.debug("spawning session", {
       sessionId: key,
       file: launcher.file,
+      ...(shellWrapped ? { program: launchedProgram } : {}),
       args: launcher.args,
       cwd: effectiveCwd,
       cols: initialCols,
@@ -1287,6 +1343,14 @@ export class SessionManager extends EventEmitter {
       session.releaseSandbox?.();
       if (current === session) this.cancelTerminalWrites(session.id);
       log.debug("session exited", { sessionId: session.id, exitCode, intentional });
+      // The tab shows the shell's "command not found"; the log gets it too.
+      if (shellWrapped && exitCode === 127 && !intentional) {
+        log.warn("tab program not found by the login shell", {
+          sessionId: session.id,
+          program: launchedProgram,
+          shell: shellWrapped.file,
+        });
+      }
       this.emit("terminal:exit", {
         sessionId: session.id,
         exitCode,

@@ -44,7 +44,7 @@ vi.mock("node-pty", () => ({
   },
 }));
 
-import { SessionManager, shellIntegrationEnv } from "./session-manager.js";
+import { SessionManager, shellIntegrationEnv, viaLoginShell } from "./session-manager.js";
 import { APP_CONFIG } from "../../config/app-config.js";
 
 function createState() {
@@ -1062,6 +1062,8 @@ describe("SessionManager", () => {
       return os.tmpdir();
     })();
     const manager = new SessionManager({
+      // The launch override itself is under test here, not the login-shell start.
+      loginShell: null,
       getSessionLaunch: () => ({
         file: "claude",
         args: ["--mcp-config", '{"mcpServers":{}}'],
@@ -1080,6 +1082,75 @@ describe("SessionManager", () => {
     expect(spawnCalls[0].args).toEqual(["--mcp-config", '{"mcpServers":{}}']);
     expect(spawnCalls[0].options.cwd).toBe(reviewCwd);
     expect((spawnCalls[0].options.env as Record<string, string>).STRIDETERM_REVIEW_MCP).toBe("1");
+  });
+
+  describe("program tabs start through the login shell", () => {
+    const launch = { file: "claude", args: ["--mcp-config", '{"a":"b c"}', "; echo INJECTED", "$HOME"] };
+
+    test.skipIf(process.platform === "win32")(
+      "an agent launch runs as `exec` in the login shell, with its arguments passed verbatim",
+      async () => {
+        const manager = new SessionManager({
+          loginShell: () => "/bin/zsh",
+          getSessionLaunch: () => ({ ...launch, skipCommandInjection: true }),
+        });
+
+        await manager.ensureSession(createState() as Parameters<typeof manager.ensureSession>[0], "workspace-a:shell");
+
+        expect(spawnCalls[0].file).toBe("/bin/zsh");
+        expect(spawnCalls[0].args).toEqual(["-ilc", 'exec "$0" "$@"', ...[launch.file, ...launch.args]]);
+        // Nothing is typed into the PTY: the program is the shell's `exec`.
+        expect(handles[0].writes).toEqual([]);
+      },
+    );
+
+    test.skipIf(process.platform === "win32")("the tab's own shell is started as it is", async () => {
+      const manager = new SessionManager({ loginShell: () => "/bin/zsh" });
+
+      await manager.ensureSession(createState() as Parameters<typeof manager.ensureSession>[0], "workspace-a:shell");
+
+      expect(spawnCalls[0].args).not.toContain('exec "$0" "$@"');
+    });
+
+    test.skipIf(process.platform === "win32")(
+      "the shell's 127 (command not found) reaches the tab as its exit code",
+      async () => {
+        const manager = new SessionManager({
+          loginShell: () => "/bin/zsh",
+          getSessionLaunch: () => ({ ...launch, skipCommandInjection: true }),
+        });
+        const exits: unknown[] = [];
+        manager.on("terminal:exit", (payload) => exits.push(payload));
+
+        await manager.ensureSession(createState() as Parameters<typeof manager.ensureSession>[0], "workspace-a:shell");
+        handles[0].kill(127);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(exits).toEqual([{ sessionId: "workspace-a:shell", exitCode: 127, intentional: false }]);
+      },
+    );
+
+    test("viaLoginShell wraps a program, never a shell, and only in a POSIX login shell", () => {
+      const program = { file: "codex", args: ["--no-daemon"] };
+      expect(viaLoginShell(program, "/bin/zsh", "darwin")).toEqual({
+        file: "/bin/zsh",
+        args: ["-ilc", 'exec "$0" "$@"', "codex", "--no-daemon"],
+      });
+      expect(viaLoginShell(program, "/usr/bin/bash", "linux")?.file).toBe("/usr/bin/bash");
+      expect(viaLoginShell({ file: "/opt/tools/agent", args: [] }, "/bin/sh", "linux")?.args.slice(2)).toEqual([
+        "/opt/tools/agent",
+      ]);
+      // Not wrapped: Windows, a non-POSIX or relative login shell, a launch that is itself a shell.
+      expect(viaLoginShell(program, "/bin/zsh", "win32")).toBeNull();
+      expect(viaLoginShell(program, "/opt/homebrew/bin/fish", "darwin")).toBeNull();
+      expect(viaLoginShell(program, "/usr/bin/nu", "linux")).toBeNull();
+      expect(viaLoginShell(program, "zsh", "darwin")).toBeNull();
+      for (const shell of ["bash", "/bin/zsh", "fish", "pwsh", "tmux-not-a-shell"]) {
+        const wrapped = viaLoginShell({ file: shell, args: [] }, "/bin/zsh", "darwin");
+        if (shell === "tmux-not-a-shell") expect(wrapped).not.toBeNull();
+        else expect(wrapped).toBeNull();
+      }
+    });
   });
 
   test("falls back to $HOME when workspace cwd is missing on disk", async () => {

@@ -2022,7 +2022,7 @@ if (mcpMode) {
     // this, GUI launches from Finder/Dock get a degraded PATH that misses
     // brew, mise, nvm, pnpm, ~/.local/bin, etc. — every "is X installed"
     // probe then returns false even when the binary is right there.
-    await inheritShellPath();
+    await inheritShellPath({ cacheFile: path.join(userDataPath, "shell-path.json") });
     runtimeState.runtimeReady = startServices();
     void runtimeState.runtimeReady.catch((error: unknown) => {
       log.error("Startup services failed", {
