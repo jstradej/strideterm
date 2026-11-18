@@ -215,7 +215,7 @@
     "@types/ws": "8.18.2",
     "@types/yauzl": "3.4.0",
     "@vitejs/plugin-vue": "^6",
-    "@vue/test-utils": "^2.5",
+    "@vue/test-utils": "^2.6",
     "concurrently": "^10.0.7",
     "electron": "^45.3.2",
     "electron-builder": "^26.18.0",
