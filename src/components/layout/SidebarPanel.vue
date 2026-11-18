@@ -1078,8 +1078,10 @@ function onActivateRecentRow(node: ActivityRowView): void {
 }
 
 function onOpenRecentMenu({ event, node }: { event: MouseEvent; node: ActivityRowView }): void {
-  const ws = store.filteredWorkspaces.find((workspace) => workspace.id === node.workspaceId);
-  if (ws) onOpenMenu(event, ws as unknown as Record<string, unknown>);
+  // The same card the tree opens its menu with: the menu reads card fields (`gitAvailable` decides
+  // "New worktree") that the raw workspace does not carry, so a raw one showed a shorter menu.
+  const card = workspaceCards.value.find((c) => c.id === node.workspaceId);
+  if (card) onOpenMenu(event, card as unknown as Record<string, unknown>);
 }
 
 /** `Show more` changes which ACTIVITIES are selected, so the forest is rebuilt

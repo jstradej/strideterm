@@ -1232,6 +1232,31 @@ describe("SidebarPanel — recently worked shortcuts", () => {
     wrapper.unmount();
   });
 
+  it("offers the same menu from a recent row as from the tree card (New worktree included)", async () => {
+    const store = useAppStore();
+    store.payload = recentPayload({ workspaces: workedWorkspaces(2) });
+    vi.spyOn(store, "getGitSummary").mockImplementation((id: string) =>
+      id === "ws-A" ? ({ available: true } as AnyApi) : null,
+    );
+    const menuItems = () =>
+      [...document.querySelectorAll(".context-menu .context-menu__item")].map((el) => el.textContent?.trim());
+
+    const wrapper = mount(SidebarPanel, { attachTo: document.body });
+    await wrapper.get('.recent-shortcuts [data-role="activity-node-row"] + .activity-row__menu').trigger("click");
+    await flushPromises();
+    const fromRecent = menuItems();
+    document.body.click();
+    await flushPromises();
+
+    await wrapper.get('[data-workspace-id="ws-A"] .workspace-card__action--menu').trigger("click");
+    await flushPromises();
+    const fromTree = menuItems();
+
+    expect(fromRecent.some((t) => t?.includes("New worktree"))).toBe(true);
+    expect(fromRecent).toEqual(fromTree);
+    wrapper.unmount();
+  });
+
   it("offers the menu for a real context workspace in the recent hierarchy", async () => {
     const store = useAppStore();
     const now = Date.now();
