@@ -337,6 +337,9 @@ describe("JiraInboxPane", () => {
   enableAutoUnmount(afterEach);
   afterEach(() => {
     vi.useRealTimers();
+    // The remote-transport tests create a real transport whose socket keeps reconnecting on timers; one
+    // that fires after the jsdom environment is gone throws "window is not defined" as an unhandled error.
+    (window as unknown as Record<string, { suspend?: () => void } | undefined>).__stridetermRemote?.suspend?.();
   });
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -6363,13 +6366,20 @@ describe("JiraInboxPane", () => {
     );
     let active = 0;
     let maxActive = 0;
-    transport.searchJiraIssues.mockImplementation(async ({ connectionId }: { connectionId: string }) => {
-      active++;
-      maxActive = Math.max(maxActive, active);
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      active--;
-      return [{ ref: { provider: "jira", connectionId, issueId: connectionId, issueKey: "OPS-1" }, summary: "Row" }];
-    });
+    // Only the all-connections search is bounded; the mount's own cached "My issues" read can still be in
+    // flight on a slow machine and must not count towards the limit.
+    transport.searchJiraIssues.mockImplementation(
+      async ({ connectionId, jql }: { connectionId: string; jql: string }) => {
+        const counted = jql.includes('"parallel"');
+        if (counted) {
+          active++;
+          maxActive = Math.max(maxActive, active);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        if (counted) active--;
+        return [{ ref: { provider: "jira", connectionId, issueId: connectionId, issueKey: "OPS-1" }, summary: "Row" }];
+      },
+    );
     const wrapper = mount(JiraInboxPane, { props: { workspaceId: "jira:ws" } });
     await flushPromises();
     transport.searchJiraIssues.mockClear();
