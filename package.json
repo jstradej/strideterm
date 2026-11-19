@@ -219,7 +219,7 @@
     "@vitejs/plugin-vue": "^6",
     "@vue/test-utils": "^2.6",
     "concurrently": "^10.0.7",
-    "electron": "^45.3.2",
+    "electron": "^45.3.3",
     "electron-builder": "^26.18.0",
     "eslint": "^10.15.0",
     "eslint-config-prettier": "^10.1.8",
