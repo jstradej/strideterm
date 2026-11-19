@@ -584,6 +584,7 @@ onUnmounted(() => {
   window.visualViewport?.removeEventListener("resize", resizeInput);
   window.visualViewport?.removeEventListener("scroll", updateRailMetrics);
   window.removeEventListener("strideterm:attachment-compose-open", requestAttachmentCompose);
+  window.removeEventListener("strideterm:attachment-targets", reportAttachmentTargets);
   window.removeEventListener("strideterm:attachment-compose-result", handleAttachmentCompose);
   window.removeEventListener("strideterm:attachment-compose-cancel", handleAttachmentComposeCancel);
   window.removeEventListener("strideterm:voice-dictation-result", handleVoiceDictationResult);
@@ -611,6 +612,7 @@ onMounted(() => {
     attributeFilter: ["class", "style"],
   });
   window.addEventListener("strideterm:attachment-compose-open", requestAttachmentCompose);
+  window.addEventListener("strideterm:attachment-targets", reportAttachmentTargets);
   window.addEventListener("strideterm:attachment-compose-result", handleAttachmentCompose);
   window.addEventListener("strideterm:attachment-compose-cancel", handleAttachmentComposeCancel);
   window.addEventListener("strideterm:voice-dictation-result", handleVoiceDictationResult);
@@ -1099,10 +1101,39 @@ function requestId(): string {
 function currentProfileId(): string {
   return store.myActiveProfileId || "default";
 }
-function requestAttachmentCompose(): void {
+function reportAttachmentTargets(event: Event): void {
+  const detail = (event as CustomEvent).detail;
+  if (!detail || typeof detail !== "object" || !api?.isRemote) return;
+  const tabs = store.workspaceTabs as Array<{ id: string; type: string; title?: string; borrowed?: boolean }>;
+  const workspace = store.payload?.workspace as {
+    workspace?: { id: string };
+    sessions?: Array<{ sessionId: string }>;
+  } | null;
+  const workspaceId = workspace?.workspace?.id;
+  if (!workspaceId) {
+    detail.targets = [];
+    return;
+  }
+  const prefix = `${workspaceId}:`;
+  const sessions = new Set(workspace?.sessions?.map((session) => session.sessionId));
+  detail.targets = tabs
+    .filter(
+      (tab) =>
+        tab.type === "terminal" &&
+        !tab.borrowed &&
+        sessions.has(tab.id) &&
+        tab.id.startsWith(prefix) &&
+        tab.id.length > prefix.length &&
+        originWorkspaceIdFor(tab.id) === workspaceId,
+    )
+    .map((tab) => ({ panelId: tab.id.slice(prefix.length), title: tab.title, workspaceId }));
+}
+function requestAttachmentCompose(event?: Event): void {
   menuOpen.value = false;
   if (composing.value || attachmentPending.value) return;
   const sessionId = targetSessionId.value;
+  const requestedSession = (event as CustomEvent | undefined)?.detail?.sessionId;
+  if (requestedSession !== undefined && requestedSession !== sessionId) return;
   const host = getHost();
   if (!sessionId || typeof host?.postMessage !== "function") return;
   const workspaceId = originWorkspaceIdFor(sessionId);

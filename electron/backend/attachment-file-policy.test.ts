@@ -2,6 +2,19 @@ import { describe, expect, test } from "vitest";
 import { validateAttachmentContent, validateAttachmentName } from "./attachment-file-policy.js";
 import { crc32, deflateRawSync } from "node:zlib";
 
+function mp4Box(type: string, ...parts: Buffer[]) {
+  const header = Buffer.alloc(8);
+  header.writeUInt32BE(8 + parts.reduce((size, part) => size + part.length, 0));
+  header.write(type, 4);
+  return Buffer.concat([header, ...parts]);
+}
+
+function mp4Track(handlerType: string) {
+  const handler = Buffer.alloc(24);
+  handler.write(handlerType, 8);
+  return mp4Box("trak", mp4Box("mdia", mp4Box("hdlr", handler)));
+}
+
 function zip(
   entries: Array<{ name: string; data?: Buffer; flags?: number; attrs?: number; madeBy?: number; corrupt?: boolean }>,
 ) {
@@ -64,6 +77,49 @@ describe("attachment file policy", () => {
       code: "attachment-content-mismatch",
     });
   });
+  test.each([
+    ["tagged.MP3", "49443304000000000003000000fffb9064"],
+    ["untagged.mp3", "fffb9064"],
+    ["recording.wav", "524946462400000057415645"],
+    ["recording.aac", "fff15080011ffc00"],
+    ["recording.flac", "664c614380000022" + "00".repeat(34)],
+    ["vorbis.ogg", "4f6767530002" + "00".repeat(20) + "011e01766f72626973" + "00".repeat(23)],
+    ["recording.opus", "4f6767530002" + "00".repeat(20) + "01134f707573486561640102" + "00".repeat(9)],
+    ["opus.ogg", "4f6767530002" + "00".repeat(20) + "01134f707573486561640102" + "00".repeat(9)],
+  ])("accepts audio content for %s", async (name, hex) => {
+    await expect(validateAttachmentContent(name, Buffer.from(hex, "hex"))).resolves.toBeUndefined();
+  });
+  test.each([
+    ["recording.mp3", "fff15080011ffc00"],
+    ["recording.mp3", "494433"],
+    ["recording.mp3", "49443304000000000001"],
+    ["recording.mp3", "49443304000000000000"],
+    ["recording.mp3", "49443304000000000000fff15080011ffc00"],
+    ["recording.mp3", "fffd9064"],
+    ["recording.wav", "524946462400000057454250"],
+    ["recording.m4a", "000000146674797069736f6d000000006d703432"],
+    ["recording.aac", "fffb9064"],
+    ["recording.aac", "fff15080021ffc00"],
+    ["recording.flac", "664c6143"],
+    ["recording.ogg", "4f6767530002" + "00".repeat(20) + "0107807468656f7261"],
+    ["recording.opus", "4f6767530002" + "00".repeat(20) + "011e01766f72626973" + "00".repeat(23)],
+  ])("rejects mismatched or truncated audio for %s", async (name, hex) => {
+    await expect(validateAttachmentContent(name, Buffer.from(hex, "hex"))).rejects.toMatchObject({
+      code: "attachment-content-mismatch",
+    });
+  });
+  test.each(["M4A ", "mp42"])("accepts an audio-only M4A with brand %s", async (brand) => {
+    const ftyp = mp4Box("ftyp", Buffer.from(brand + "\0\0\0\0isom"));
+    const file = Buffer.concat([ftyp, mp4Box("moov", mp4Track("soun"))]);
+    await expect(validateAttachmentContent("recording.m4a", file)).resolves.toBeUndefined();
+  });
+  test("rejects video tracks in an M4A even if it also contains audio", async () => {
+    const ftyp = mp4Box("ftyp", Buffer.from("mp42\0\0\0\0isom"));
+    const file = Buffer.concat([ftyp, mp4Box("moov", mp4Track("soun"), mp4Track("vide"))]);
+    await expect(validateAttachmentContent("recording.m4a", file)).rejects.toMatchObject({
+      code: "attachment-content-mismatch",
+    });
+  });
   test("rejects malformed and unsafe archives", async () => {
     await expect(validateAttachmentContent("bad.zip", Buffer.from("PK\x03\x04"))).rejects.toMatchObject({
       code: "attachment-unsafe-archive",
@@ -72,7 +128,7 @@ describe("attachment file policy", () => {
       code: "attachment-content-mismatch",
     });
   });
-  test("accepts a real ZIP with text, image, and directory", async () => {
+  test("accepts a real ZIP with text, image, audio, and directory", async () => {
     await expect(
       validateAttachmentContent(
         "bundle.zip",
@@ -80,6 +136,7 @@ describe("attachment file policy", () => {
           { name: "docs/", data: Buffer.alloc(0) },
           { name: "docs/readme.txt", data: Buffer.from("hello") },
           { name: "image.png", data: Buffer.from("89504e470d0a1a0a", "hex") },
+          { name: "recording.mp3", data: Buffer.from("fffb9064", "hex") },
         ]),
       ),
     ).resolves.toBeUndefined();
@@ -94,6 +151,9 @@ describe("attachment file policy", () => {
     await expect(
       validateAttachmentContent("bundle.zip", zip([{ name: "../../escape.txt", data: Buffer.from("x") }])),
     ).rejects.toMatchObject({ code: "attachment-unsafe-archive" });
+    await expect(
+      validateAttachmentContent("bundle.zip", zip([{ name: "recording.mp3", data: Buffer.from("MZpayload") }])),
+    ).rejects.toMatchObject({ code: "attachment-content-mismatch" });
   });
   test("rejects encrypted, nested, symlink, and ratio bomb entries", async () => {
     await expect(

@@ -1093,6 +1093,54 @@ describe("MobileInputBar", () => {
       wrapper.unmount();
     });
 
+    it("reports writable workspace tabs and binds a shared compose request to its session", async () => {
+      const postMessage = vi.fn();
+      (window as AnyApi).StridetermHost = { postMessage };
+      const store = useAppStore();
+      const payload = store.payload as AnyApi;
+      store.payload = {
+        ...payload,
+        workspace: {
+          ...payload.workspace,
+          workspace: {
+            id: ORIGIN_WS,
+            kind: "terminal",
+            panels: [
+              { id: "panel-shell", title: "Shell" },
+              { id: "panel-other", title: "Other" },
+            ],
+          },
+          sessions: [
+            ...payload.workspace.sessions,
+            { sessionId: "other-workspace:panel-foreign", panelId: "panel-foreign", title: "Foreign" },
+          ],
+        },
+      };
+      const { wrapper } = mountBar();
+      try {
+        const detail: { targets?: unknown } = {};
+        window.dispatchEvent(new CustomEvent("strideterm:attachment-targets", { detail }));
+        expect(detail.targets).toEqual([
+          { panelId: "panel-shell", title: "Shell", workspaceId: ORIGIN_WS },
+          { panelId: "panel-other", title: "Other", workspaceId: ORIGIN_WS },
+        ]);
+        postMessage.mockClear();
+        window.dispatchEvent(
+          new CustomEvent("strideterm:attachment-compose-open", { detail: { sessionId: "ws-a:panel-other" } }),
+        );
+        expect(postMessage).not.toHaveBeenCalled();
+        window.dispatchEvent(
+          new CustomEvent("strideterm:attachment-compose-open", { detail: { sessionId: SESSION_ID } }),
+        );
+        expect(JSON.parse(postMessage.mock.calls.at(-1)![0])).toMatchObject({
+          type: "attachment-compose",
+          sessionId: SESSION_ID,
+        });
+      } finally {
+        wrapper.unmount();
+      }
+    });
+
     it("expands a collapsed bar after a native insert without sending", async () => {
       window.localStorage.setItem(COLLAPSED_KEY, "true");
       const postMessage = vi.fn();
