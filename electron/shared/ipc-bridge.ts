@@ -9,6 +9,7 @@ import type {
   AutomationSetPausedInput,
 } from "./automation-api.js";
 import type { StatePayload, RecoveryResult } from "./types/state.js";
+import type { AppUpdateStatus } from "./app-update.js";
 import type { JiraWorkspaceViewInput, JiraWorkspaceViewsState } from "./types/jira-workspace-views.js";
 import type { JiraSmartFilterId } from "./jira-smart-filters.js";
 import type {
@@ -221,6 +222,13 @@ export interface TerminalExitPayload {
   intentional?: boolean;
 }
 
+export interface ConfirmCloseRequest {
+  workspaceCount: number;
+  runningTaskCount: number;
+  runningTaskWorkspaceNames: string[];
+  reason?: "install-update";
+}
+
 export interface StridetermAPI {
   // Core app
   openExternal: (url: string) => Promise<unknown>;
@@ -255,6 +263,11 @@ export interface StridetermAPI {
   >;
   showSystemNotification: (payload: NotificationShow) => Promise<unknown>;
   checkForUpdates: () => Promise<unknown>;
+  getAppUpdateStatus: () => Promise<AppUpdateStatus>;
+  downloadAppUpdate: () => Promise<void>;
+  openAppUpdateRelease: () => Promise<void>;
+  restartForAppUpdate: () => Promise<void>;
+  onAppUpdateStatus: (handler: (status: AppUpdateStatus) => void) => () => void;
   checkCommand: (command: string) => Promise<unknown>;
   getState: () => Promise<StatePayload>;
 
@@ -1025,13 +1038,7 @@ export interface StridetermAPI {
    * workspaces / running task agents would be lost. The renderer must reply
    * via {@link respondConfirmClose}; until it does, the window stays open.
    */
-  onConfirmCloseRequest: (
-    handler: (payload: {
-      workspaceCount: number;
-      runningTaskCount: number;
-      runningTaskWorkspaceNames: string[];
-    }) => void,
-  ) => void;
+  onConfirmCloseRequest: (handler: (payload: ConfirmCloseRequest) => void) => void;
 
   // Diff popout — open the current MonacoDiffPanel payload in its own Electron
   // window so it can live on a second monitor independent of the host view.

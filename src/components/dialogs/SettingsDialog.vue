@@ -270,7 +270,11 @@
         :checking-update="checkingUpdate"
         :can-check-updates="canCheckForUpdates"
         :update-info="updateInfo"
+        :app-update="appUpdate"
+        :has-newer-version="Boolean(versionCheck?.versionsBehind)"
         @check-updates="handleCheckForUpdates"
+        @download-update="downloadAppUpdate"
+        @restart-for-update="restartForAppUpdate"
       />
     </div>
 
@@ -322,7 +326,7 @@
 <script setup lang="ts">
 import HelpTooltip from "../common/HelpTooltip.vue";
 import { computed, inject, provide, reactive, ref, toRaw, watch } from "vue";
-import { apiKey } from "../../types/keys.js";
+import { apiKey, appUpdateStatusKey } from "../../types/keys.js";
 import type { Transport } from "../../transport.js";
 import SettingsAboutTab from "./settings/SettingsAboutTab.vue";
 import SettingsGeneralTab from "./settings/SettingsGeneralTab.vue";
@@ -494,6 +498,7 @@ const emit = defineEmits<{
 }>();
 
 const api = inject<Transport>(apiKey);
+const appUpdate = inject(appUpdateStatusKey, undefined);
 const hookSettings = reactive(useAgentHookSettings(api));
 const automationPaused = ref(props.settings?.automations?.paused === true);
 watch(
@@ -684,6 +689,22 @@ async function handleCheckForUpdates() {
     notifications.value.showError("Update check failed", err);
   } finally {
     checkingUpdate.value = false;
+  }
+}
+
+async function downloadAppUpdate(): Promise<void> {
+  try {
+    await api?.downloadAppUpdate?.();
+  } catch (error) {
+    notifications.value.showError("Could not start the update", error);
+  }
+}
+
+async function restartForAppUpdate(): Promise<void> {
+  try {
+    await api?.restartForAppUpdate?.();
+  } catch (error) {
+    notifications.value.showError("Could not restart for the update", error);
   }
 }
 const templates = reactive((Array.isArray(props.tabTemplates) ? props.tabTemplates : []).map((t) => ({ ...t })));

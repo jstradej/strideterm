@@ -75,6 +75,18 @@ npm run test:e2e
 
 `npm run dist` packages for the current platform. Packaging requires the native build tools listed above; Windows, macOS, and Linux packages are built on their respective platforms. The first build can take several minutes while dependencies compile.
 
+### Stable release updates
+
+For the desktop update steps and supported installations, see the [user guide](updating.md).
+
+The release workflow builds a draft GitHub release. Tags in the form `vMAJOR.MINOR.PATCH` must match the version in `package.json`. Release CI verifies the update manifests and their asset checksums before uploading. Publishing the draft makes the signed NSIS installer, macOS ZIPs for both architectures, and Linux AppImage available to supported copies of the app. Keep each manifest and its referenced assets together when publishing the release.
+
+- Windows requires the existing `CSC_LINK` and `CSC_KEY_PASSWORD` Authenticode signing secrets to include `latest.yml`.
+- macOS requires `MAC_CSC_LINK` and `MAC_CSC_KEY_PASSWORD` for a Developer ID Application certificate, plus `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, and `APPLE_TEAM_ID` for notarization. CI adds the two architecture-specific ZIPs and `latest-mac.yml` alongside the DMGs. Without these secrets it builds the ad-hoc signed DMGs for manual installation.
+- Linux generates `latest-linux.yml` for the x64 AppImage. Local, nightly, Store, and Snap builds use their normal packaging configurations.
+
+Before announcing in-app updates for a platform, test with two consecutive updater-enabled builds on a disposable machine for that platform. Verify the initial install, check and download, cancelling and confirming restart with a workspace open, the new version after restart, and restored windows. Exercise Intel and Apple Silicon separately for macOS, and verify the AppImage restarts from the same path on Linux.
+
 ## Contributing
 
 Run the relevant checks before opening a pull request. Keep changes focused, describe their purpose, and include any user-visible behavior or limitations. See [Contributing](../CONTRIBUTING.md) for the project's pull-request conventions.

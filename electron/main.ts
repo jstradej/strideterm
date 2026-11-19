@@ -10,13 +10,15 @@ import {
   Menu,
   screen,
   powerMonitor,
+  type IpcMainInvokeEvent,
 } from "electron";
 import os from "node:os";
 import path from "node:path";
 import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
+import { inspect } from "node:util";
 import { createRuntime } from "./backend/runtime.js";
 import { registerIpc, type JiraIssuePopoutTarget } from "./backend/ipc.js";
 import { startRemoteServer } from "./backend/remote-server.js";
@@ -35,8 +37,11 @@ import { getLogger, getLogDir, setLogDir, shutdownLogger } from "./backend/logge
 import { applySystemCaTrust } from "./backend/net/system-ca.js";
 import { SMOKE_READY_MARKER } from "./shared/smoke-protocol.js";
 import { detectAppDistribution } from "./shared/app-distribution.js";
+import { AppUpdateFailure, createAppUpdateController, supportsAppUpdates } from "./backend/app-update-controller.js";
+import { createDesktopUpdater } from "./backend/desktop-updater.js";
+import { APP_UPDATE_RELEASES_URL, type AppUpdateStatus } from "./shared/app-update.js";
 import { createPerformanceSampler } from "./performance-metrics.js";
-import type { FilePopoutPayload } from "./shared/ipc-bridge.js";
+import type { ConfirmCloseRequest, FilePopoutPayload } from "./shared/ipc-bridge.js";
 import type { WindowSlot, WorkspaceState } from "./shared/types/state.js";
 import type { TaskExecutionState } from "./shared/types/task.js";
 import type { CpuProfileCaptureResult, RevealResult } from "./shared/performance.js";
@@ -171,6 +176,30 @@ const appDistribution = detectAppDistribution({
   windowsStore: process.windowsStore === true,
   env: process.env,
 });
+let desktopUpdater: ReturnType<typeof createDesktopUpdater> | undefined;
+const appUpdates = createAppUpdateController({
+  enabled: supportsAppUpdates({
+    distribution: appDistribution,
+    version: packageVersion,
+    hasFeed:
+      app.isPackaged &&
+      !process.env.SNAP &&
+      (appDistribution !== "appimage" || !existsSync(path.join(resourcesDir, "package-type"))) &&
+      existsSync(path.join(resourcesDir, "app-update.yml")),
+  }),
+  currentVersion: packageVersion,
+  loadDriver: () => (desktopUpdater ??= createDesktopUpdater(appDistribution)),
+  publishStatus: (status) => {
+    for (const windowId of windowRegistry.keys()) {
+      try {
+        emitToWindow(windowId, "app:update-status-changed", status);
+      } catch (error) {
+        log.warn("Could not send update status to the renderer", { windowId, error });
+      }
+    }
+  },
+  logFailure: (phase, error) => log.error("Desktop update failed", { phase, error: inspect(error, { depth: 2 }) }),
+});
 const rendererUrl = getRendererDevUrl();
 const isSmokeTest = process.env.STRIDETERM_SMOKE_TEST === "1";
 const forceDist = process.env.STRIDETERM_FORCE_DIST === "1" || isSmokeTest;
@@ -188,7 +217,7 @@ const windowAttentionCount = new Map<string, number>();
 // --- Close-confirmation flow ---
 // Global gate: once the user has approved closing/quitting via the in-app
 // ConfirmDialog, every subsequent close/quit path short-circuits to allow.
-// Stays true for the rest of the process lifetime — there's no "undo quit."
+// An update that fails before shutdown clears the confirmation so future quits ask again.
 let closeFlowConfirmed = false;
 // In-flight confirmation. Coalesces concurrent close paths (last-window close
 // races with Cmd+Q before-quit) onto a single dialog.
@@ -204,6 +233,9 @@ let shutdownCleanupComplete = false;
 // fires multiple times (it does — the second re-entry after app.quit() from
 // the dialog callback would otherwise tear the runtime down twice).
 let shutdownCleanupPromise: Promise<void> | null = null;
+let shutdownFinalizationPromise: Promise<void> | null = null;
+let preparingUpdateInstall = false;
+const SHUTDOWN_TIMEOUT_MS = 10000;
 // `closingWindows` tracks windows whose `close` event has already fired in
 // the current quit cascade. We need this because Electron's app.quit() loops
 // over BrowserWindow.getAllWindows() calling .close() on each, and the
@@ -218,12 +250,6 @@ const closingWindows = new Set<string>();
 // it's about to await it).
 const pendingCloseConfirmations = new Map<string, (confirmed: boolean) => void>();
 
-type CloseConfirmSummary = {
-  workspaceCount: number;
-  runningTaskCount: number;
-  runningTaskWorkspaceNames: string[];
-};
-
 // Task states that mean an agent is actively doing work and would be killed
 // by a runtime shutdown. Keep in sync with TaskExecutionState — the union is
 // open-ended so we enumerate the "live" states explicitly rather than
@@ -236,7 +262,7 @@ const RUNNING_TASK_STATES: ReadonlySet<TaskExecutionState> = new Set([
   "showering",
 ]);
 
-function summarizeCloseRisk(): CloseConfirmSummary | null {
+function summarizeCloseRisk(): ConfirmCloseRequest | null {
   const payload = runtimeState.runtime?.getPayload?.() as Record<string, unknown> | undefined;
   const appState = payload?.appState as AppState | undefined;
   const workspaces = (appState?.workspaces ?? []) as WorkspaceState[];
@@ -249,7 +275,7 @@ function summarizeCloseRisk(): CloseConfirmSummary | null {
   return { workspaceCount, runningTaskCount, runningTaskWorkspaceNames };
 }
 
-function requestConfirmClose(windowId: string, win: BrowserWindow, summary: CloseConfirmSummary): Promise<boolean> {
+function requestConfirmClose(windowId: string, win: BrowserWindow, summary: ConfirmCloseRequest): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     // Defensive: if a stale resolver lingers, reject it as "cancel" so we
     // never leak.
@@ -284,7 +310,7 @@ function findWindowId(win: BrowserWindow): string | null {
  * once confirmed, future calls short-circuit to true; concurrent calls
  * share the same in-flight promise.
  */
-function confirmCloseFlow(): Promise<boolean> {
+function confirmCloseFlow(reason?: "install-update", requestingWindow?: BrowserWindow): Promise<boolean> {
   if (closeFlowConfirmed) return Promise.resolve(true);
   if (closeFlowConfirmation) return closeFlowConfirmation;
 
@@ -301,7 +327,7 @@ function confirmCloseFlow(): Promise<boolean> {
     closeFlowConfirmed = true;
     return Promise.resolve(true);
   }
-  const win = getPrimaryWindow();
+  const win = requestingWindow && !requestingWindow.isDestroyed() ? requestingWindow : getPrimaryWindow();
   const windowId = win ? findWindowId(win) : null;
   if (!win || !windowId) {
     // No window to host the dialog. Don't deadlock the app — let it close.
@@ -310,7 +336,7 @@ function confirmCloseFlow(): Promise<boolean> {
     return Promise.resolve(true);
   }
 
-  closeFlowConfirmation = requestConfirmClose(windowId, win, summary).then((confirmed) => {
+  closeFlowConfirmation = requestConfirmClose(windowId, win, { ...summary, reason }).then((confirmed) => {
     closeFlowConfirmation = null;
     if (confirmed) closeFlowConfirmed = true;
     return confirmed;
@@ -328,9 +354,93 @@ async function runShutdownCleanupOnce(): Promise<void> {
     runtimeState.disposeIpc?.();
     await runtimeState.remoteServer?.close?.();
     (await runtimeState.runtime?.stop?.()) as Promise<void>;
-    await shutdownLogger();
   })();
   return shutdownCleanupPromise;
+}
+
+function finishShutdownOnce(): Promise<void> {
+  return (shutdownFinalizationPromise ??= runShutdownCleanupOnce().finally(shutdownLogger));
+}
+
+function registerAppUpdateIpc(): void {
+  function handle(channel: string, action: (win: BrowserWindow) => AppUpdateStatus | Promise<void>): void {
+    ipcMain.handle(channel, async (event: IpcMainInvokeEvent, ...args: unknown[]) => {
+      const windowId = webContentsToWindowId.get(event.sender.id);
+      const win = windowId ? windowRegistry.get(windowId) : undefined;
+      if (
+        args.length ||
+        !win ||
+        win.isDestroyed() ||
+        event.sender !== win.webContents ||
+        !event.senderFrame ||
+        event.senderFrame !== event.sender.mainFrame ||
+        (app.isPackaged
+          ? event.senderFrame.url.split(/[?#]/, 1)[0] !== distIndexUrl
+          : !isRendererOrigin(event.senderFrame.url))
+      ) {
+        log.warn("Rejected update IPC call outside the main desktop renderer", { channel, windowId });
+        throw new Error("Desktop update request is unavailable.");
+      }
+      return await action(win);
+    });
+  }
+
+  handle("app:update-status", () => appUpdates.getStatus());
+  handle("app:download-update", () => appUpdates.checkAndDownload());
+  handle("app:open-update-release", async () => {
+    try {
+      await shell.openExternal(APP_UPDATE_RELEASES_URL);
+    } catch (error) {
+      log.error("Could not open the update release page", { error: inspect(error) });
+      throw new Error("Could not open the GitHub release page.", { cause: error });
+    }
+  });
+  handle("app:restart-for-update", (win) =>
+    appUpdates.restart(async (downloadedFile) => {
+      if (shutdownCleanupPromise || !runtimeState.runtimeInteractive || !desktopUpdater) {
+        throw new Error("The desktop runtime is not ready to restart");
+      }
+      await desktopUpdater.preflight(downloadedFile);
+      if (!(await confirmCloseFlow("install-update", win))) return false;
+      preparingUpdateInstall = true;
+      try {
+        await desktopUpdater.prepareInstall();
+        // Squirrel can close windows before before-quit and the NSIS installer
+        // can terminate a still-running app. Flush slots and stop first.
+        // AppImage replaces the binary atomically and relaunches after quit.
+        if (appDistribution !== "appimage") {
+          for (const [id, window] of windowRegistry) flushPersistWindowSlot(id, window);
+          runtimeState.runtimeInteractive = false;
+          let timeout: NodeJS.Timeout | undefined;
+          try {
+            await Promise.race([
+              runShutdownCleanupOnce(),
+              new Promise<never>((_resolve, reject) => {
+                timeout = setTimeout(() => reject(new Error("Timed out stopping the runtime")), SHUTDOWN_TIMEOUT_MS);
+              }),
+            ]);
+          } finally {
+            clearTimeout(timeout);
+          }
+        }
+        preparingUpdateInstall = false;
+        await desktopUpdater.quitAndInstall();
+        return true;
+      } catch (error) {
+        if (shutdownCleanupPromise) {
+          throw new AppUpdateFailure(
+            "Could not finish the update. Close strIDEterm and download it from GitHub, or reopen strIDEterm and try again.",
+            false,
+            { cause: error },
+          );
+        }
+        closeFlowConfirmed = false;
+        throw error;
+      } finally {
+        preparingUpdateInstall = false;
+      }
+    }),
+  );
 }
 
 // --- Diff popout windows ---
@@ -709,8 +819,7 @@ function syncTitleBarTheme(): void {
   }
 }
 
-const distFileUrl = (file: string) =>
-  new URL(`file://${path.join(app.getAppPath(), "dist", file).replace(/\\/g, "/")}`).href;
+const distFileUrl = (file: string) => pathToFileURL(path.join(app.getAppPath(), "dist", file)).href;
 const distIndexUrl = distFileUrl("index.html");
 const distPopoutUrl = distFileUrl("popout.html");
 const distJiraPopoutUrl = distFileUrl("jira-popout.html");
@@ -951,6 +1060,10 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
   // lost on app shutdown. Closing a non-last window is always safe (other
   // windows + the shared runtime stay alive), so we let those through.
   win.on("close", (event) => {
+    if (preparingUpdateInstall) {
+      event.preventDefault();
+      return;
+    }
     // A debounced bounds update may still be pending — persist it while the
     // window is alive so the final position isn't lost. Harmless when the
     // close ends up cancelled below.
@@ -1849,6 +1962,7 @@ if (mcpMode) {
   stopFreezeWatchdog = startFreezeWatchdog();
 
   registerBootstrapIpcHandlers();
+  registerAppUpdateIpc();
 
   // IPC: renderer requests its own windowId
   ipcMain.handle("window:get-id", (event) => {
@@ -2150,6 +2264,10 @@ app.on("quit", (_event, exitCode) => {
 });
 
 app.on("before-quit", (event) => {
+  if (preparingUpdateInstall) {
+    event.preventDefault();
+    return;
+  }
   // Cmd+Q / menubar Quit / OS shutdown all funnel through before-quit. If
   // the user hasn't approved the close flow yet, gate cleanup behind the
   // ConfirmDialog so a "Keep open" reply doesn't leave the app with a
@@ -2172,11 +2290,11 @@ app.on("before-quit", (event) => {
   // Time-capped so a hung cleanup can't make the app unquittable.
   if (!shutdownCleanupComplete) {
     event.preventDefault();
-    void Promise.race([runShutdownCleanupOnce(), new Promise<void>((resolve) => setTimeout(resolve, 10000))]).finally(
-      () => {
+    void Promise.race([finishShutdownOnce(), new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_TIMEOUT_MS))])
+      .catch((error: unknown) => log.error("Shutdown cleanup failed", { error }))
+      .finally(() => {
         shutdownCleanupComplete = true;
         app.quit();
-      },
-    );
+      });
   }
 });

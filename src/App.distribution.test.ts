@@ -4,15 +4,18 @@ import fs from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
+import { ref } from "vue";
 import App from "./App.vue";
 import SettingsDialog from "./components/dialogs/SettingsDialog.vue";
 import { useAppStore } from "./stores/app.js";
 import { useNotificationStore } from "./stores/notifications.js";
-import { apiKey } from "./types/keys.js";
+import { apiKey, appUpdateStatusKey } from "./types/keys.js";
 import { APP_CONFIG } from "../config/app-config.js";
 import { createUpdateCheckerForDistribution } from "../electron/backend/version-checker.js";
 import type { AppDistribution } from "../electron/shared/app-distribution.js";
+import type { AppUpdateStatus } from "../electron/shared/app-update.js";
 import type { MetaState } from "../electron/shared/types/state.js";
+import type { Transport } from "./transport.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -94,8 +97,8 @@ afterEach(async () => {
 });
 
 describe("sidebar footer — the distribution and where its updates come from", () => {
-  function stubApi(openExternal: ReturnType<typeof vi.fn>): AnyApi {
-    return new Proxy({ isRemote: false, openExternal } as AnyApi, {
+  function stubApi(openExternal: ReturnType<typeof vi.fn>, overrides?: Partial<Transport>): AnyApi {
+    return new Proxy({ isRemote: false, openExternal, ...overrides } as AnyApi, {
       get(target, prop) {
         if (prop in target) return target[prop as keyof typeof target];
         return () => undefined;
@@ -105,7 +108,7 @@ describe("sidebar footer — the distribution and where its updates come from", 
   }
 
   /** Mount on the bootstrap payload (no version check yet), then deliver the runtime's payload. */
-  async function mountFooter(meta: MetaState) {
+  async function mountFooter(meta: MetaState, overrides?: Partial<Transport>) {
     const openExternal = vi.fn();
     const store = useAppStore();
     // main.ts loadBootstrapPayload()'s meta: everything but the version check.
@@ -118,7 +121,10 @@ describe("sidebar footer — the distribution and where its updates come from", 
       platform: meta.platform,
     };
     store.payload = { meta: bootstrapMeta, appState: APP_STATE } as AnyApi;
-    const wrapper = mount(App, { shallow: true, global: { provide: { [apiKey as symbol]: stubApi(openExternal) } } });
+    const wrapper = mount(App, {
+      shallow: true,
+      global: { provide: { [apiKey as symbol]: stubApi(openExternal, overrides) } },
+    });
     store.payload = { meta, appState: APP_STATE } as AnyApi;
     await flushPromises();
     const footer = wrapper.get("[data-role='sidebar-footer']");
@@ -169,6 +175,37 @@ describe("sidebar footer — the distribution and where its updates come from", 
     expect(button("Microsoft Store")).toBeUndefined();
     expect(button("GitHub repo")).toBeDefined();
   });
+
+  test("an updater-enabled installer opens About and keeps a ready download visible in the sidebar", async () => {
+    const { checker } = await realUpdateChecker("windows-installer");
+    const unsubscribe = vi.fn();
+    let changeStatus: ((status: AppUpdateStatus) => void) | undefined;
+    const { wrapper, footer, openExternal } = await mountFooter(
+      payloadMeta("windows-installer", checker.getCachedResult()),
+      {
+        getAppUpdateStatus: async () => ({ phase: "idle" }),
+        onAppUpdateStatus: (handler) => {
+          changeStatus = handler;
+          return unsubscribe;
+        },
+      },
+    );
+
+    const hint = footer.get(".sidebar-footer__update-hint");
+    await hint.trigger("click");
+    expect(openExternal).not.toHaveBeenCalled();
+    expect(useAppStore().dialogLayers.at(-1)?.props.initialTab).toBe("about");
+
+    useAppStore().closeDialog();
+    changeStatus?.({ phase: "ready", version: "3.0.8" });
+    await flushPromises();
+    expect(hint.text()).toBe("Update ready");
+    await hint.trigger("click");
+    expect(useAppStore().dialogLayers.at(-1)?.props.initialTab).toBe("about");
+
+    wrapper.unmount();
+    expect(unsubscribe).toHaveBeenCalledOnce();
+  });
 });
 
 describe("Settings → About — update status by distribution", () => {
@@ -176,7 +213,11 @@ describe("Settings → About — update status by distribution", () => {
    * SettingsDialog with the props openSettingsDialog() builds from the payload, on the About tab.
    * Without `checkForUpdates` the transport is the remote one, which has no such method.
    */
-  async function mountAbout(meta: MetaState, checkForUpdates?: () => Promise<unknown>) {
+  async function mountAbout(
+    meta: MetaState,
+    checkForUpdates?: () => Promise<unknown>,
+    inApp?: { status: ReturnType<typeof ref<AppUpdateStatus>>; actions: Partial<Transport> },
+  ) {
     const logRenderer = vi.fn();
     (window as AnyApi).strideterm = { startupFlags: { windowId: "win-test" }, logRenderer };
     const store = useAppStore();
@@ -194,7 +235,9 @@ describe("Settings → About — update status by distribution", () => {
             getAgentNotifyHookMetrics: async () => null,
             openExternal,
             ...(checkForUpdates ? { checkForUpdates } : {}),
+            ...inApp?.actions,
           },
+          ...(inApp ? { [appUpdateStatusKey as symbol]: inApp.status } : {}),
         },
         stubs: { SettingsHookProviderSection: true, CustomSelect: true },
       },
@@ -210,6 +253,41 @@ describe("Settings → About — update status by distribution", () => {
     "Updates are delivered through the Microsoft Store, automatically unless app updates are turned off in the Store's settings.";
   const STORE_ANSWER_TEXT =
     "Updates for this copy come only through the Microsoft Store, which strIDEterm cannot query. Open its Store page to see whether one is waiting.";
+
+  test("supported copies show the download, progress, restart and release fallback", async () => {
+    const { checker } = await realUpdateChecker("appimage");
+    const status = ref<AppUpdateStatus>({ phase: "idle" });
+    const actions = {
+      downloadAppUpdate: vi.fn(async () => {}),
+      restartForAppUpdate: vi.fn(async () => {}),
+      openAppUpdateRelease: vi.fn(async () => {}),
+    };
+    const { wrapper, banner } = await mountAbout(payloadMeta("appimage", checker.getCachedResult()), vi.fn(), {
+      status,
+      actions,
+    });
+
+    const button = (label: string) => wrapper.findAll("button").find((candidate) => candidate.text() === label);
+    await button("Download update")!.trigger("click");
+    expect(actions.downloadAppUpdate).toHaveBeenCalledOnce();
+
+    status.value = { phase: "downloading", version: "3.0.8", percent: 42 };
+    await flushPromises();
+    expect(banner().get("progress").attributes("value")).toBe("42");
+    expect(button("Restart and install")).toBeUndefined();
+
+    status.value = { phase: "ready", version: "3.0.8" };
+    await flushPromises();
+    await button("Restart and install")!.trigger("click");
+    expect(actions.restartForAppUpdate).toHaveBeenCalledOnce();
+
+    status.value = { phase: "failed", message: "Download failed. Try again.", retryable: true };
+    await flushPromises();
+    expect(banner().text()).toContain(status.value.message);
+    await banner().get("a").trigger("click");
+    expect(actions.openAppUpdateRelease).toHaveBeenCalledOnce();
+    expect(button("Try again")).toBeDefined();
+  });
 
   test("Microsoft Store: Check for updates answers that the Store delivers them, with the link, never asking GitHub", async () => {
     const { checker, githubRequests } = await realUpdateChecker("microsoft-store");

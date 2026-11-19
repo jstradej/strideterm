@@ -69,13 +69,15 @@ Nightly builds from the latest `master` are also published on the [Releases page
 
 > **macOS — pick the right architecture:** Apple Silicon Macs (M1, M2, M3, M4) need the `-mac-arm64.dmg`; Intel Macs need the `-mac-x64.dmg`. The arm64 binary runs natively on Apple Silicon; the x64 binary runs through Rosetta 2 translation, which adds noticeable latency to the WebGL terminal renderer (laggy scroll, sluggish redraws). If you're not sure which Mac you have: **Apple menu → About This Mac → "Chip"** says "Apple M…" for arm64 or "Intel" for x64. To verify a running install: open Activity Monitor, find `strIDEterm`, and check the **Kind** column — `Apple` means native, `Intel` means Rosetta.
 
-> **macOS — "strIDEterm is damaged and can't be opened" or "Apple could not verify…":** the app is not signed or notarized, and a DMG downloaded in a browser (Chrome, Safari, …) is quarantined by macOS. After dragging strIDEterm to Applications, clear the quarantine flag once and launch it again:
+> **macOS — "strIDEterm is damaged and can't be opened" or "Apple could not verify…":** ad-hoc signed builds, including nightlies, can trigger a Gatekeeper warning. For a GitHub build you trust, drag strIDEterm to Applications, allow it in **System Settings → Privacy & Security → Open Anyway**, or clear the quarantine flag and launch it again:
 >
 > ```bash
 > xattr -dr com.apple.quarantine /Applications/strIDEterm.app
 > ```
 
-> **Code signing:** Windows Authenticode signing depends on release signing credentials. The Store AppX is built unsigned; Microsoft signs packages accepted through Store submission. macOS apps are only ad-hoc signed (no Developer ID, not notarized) and Linux artifacts are unsigned — on first launch macOS Gatekeeper will require **System Settings → Privacy & Security → Open Anyway** (or `xattr -dr com.apple.quarantine /Applications/strIDEterm.app`, see above), and Linux package managers may warn about the unsigned `.deb`.
+### Updating
+
+On supported desktop installations, open **Settings → About** to download a stable update. When it is ready, choose **Restart and install**. For supported package formats and what happens during the restart, see the [update guide](docs/updating.md).
 
 ### Quick install
 
@@ -165,7 +167,7 @@ All state is stored in `~/.strideterm/`:
 - `logs/` - structured application logs (winston, configurable level)
 - `plugins/` - user plugins directory
 
-Settings are accessible via the gear icon in the sidebar (General, Tab Templates, Git, SSH, Telegram, About). Notification timing and agent-hook setup live inside the **General** tab. strIDEterm checks GitHub for new releases on startup and shows them in the About tab; a Microsoft Store install gets its updates from the Store instead.
+Settings are accessible via the gear icon in the sidebar (General, Tab Templates, Git, SSH, Telegram, About). Notification timing and agent-hook setup live inside the **General** tab. For GitHub builds, strIDEterm checks for new releases on startup and shows a sidebar notification when one is available.
 
 ### Multiple Instances (Custom Data Directory)
 

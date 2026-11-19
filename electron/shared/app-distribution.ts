@@ -1,6 +1,7 @@
 /**
  * Which build of strIDEterm is running. It decides where updates come from: a Microsoft Store install
- * is updated by the Store, every other packaged build by a new download from GitHub releases.
+ * is updated by the Store. GitHub builds can check releases, and stable builds with an update
+ * feed can download and install them through the desktop updater.
  *
  * Decided once in the Electron main process (`electron/main.ts`) and handed to the runtime, which
  * cannot import Electron; it reaches every client — desktop and remote — as `meta.distribution`.

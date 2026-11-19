@@ -72,15 +72,12 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            args: --win
           # Pinned to a fixed image (not macos-latest) so the build
           # environment doesn't shift under us when GitHub migrates the
           # `latest` label to a newer macOS/SDK. macos-15 = Apple Silicon,
           # stable, broad runtime compatibility for the produced app.
           - os: macos-15
-            args: --mac
           - os: ubuntu-latest
-            args: --linux
     runs-on: ${{ matrix.os }}
     steps:
       # Third-party / first-party actions pinned to a full commit SHA. Tags
@@ -115,18 +112,33 @@ jobs:
 
       - name: Build Windows distributables
         if: matrix.os == 'windows-latest'
-        run: npx electron-builder ${{ matrix.args }} --publish never
+        run: npx electron-builder --win --config electron-builder.release.mjs --publish never && node scripts/verify-release-updates.mjs
         env:
           # GH_TOKEN deliberately *not* exposed to electron-builder here:
           # `--publish never` doesn't talk to GitHub, so handing it the
           # token would only widen the blast radius if the build step
-          # were compromised. Code-signing secrets are required.
+          # were compromised. Signing credentials enable in-app updates.
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
 
-      - name: Build distributables
-        if: matrix.os != 'windows-latest'
-        run: npx electron-builder ${{ matrix.args }} --publish never
+      - name: Build macOS distributables
+        if: matrix.os == 'macos-15'
+        run: npx electron-builder --mac --config electron-builder.release.mjs --publish never && node scripts/verify-release-updates.mjs
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Build Linux distributables
+        if: matrix.os == 'ubuntu-latest'
+        # Build separately so electron-builder cannot write package-type or an
+        # AppImage feed into resources shared with the Debian package.
+        run: |
+          npx electron-builder --linux AppImage --config electron-builder.release.mjs --publish never
+          node scripts/verify-release-updates.mjs
+          npx electron-builder --linux deb --publish never
 
       - name: Upload artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -137,8 +149,11 @@ jobs:
             release/*.dmg
             release/*.AppImage
             release/*.deb
-            release/*.yml
-            release/*.yaml
+            release/*.zip
+            release/*.blockmap
+            release/latest.yml
+            release/latest-mac.yml
+            release/latest-linux.yml
           if-no-files-found: warn
 
   sbom:
@@ -186,6 +201,7 @@ jobs:
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           draft: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
           # SBOM ships alongside the binaries so downstream users can map
           # every release back to its dependency graph without rebuilding.

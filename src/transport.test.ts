@@ -2850,6 +2850,12 @@ describe("remote transport API parity — no method silently missing its remote 
     "onSandboxDeniedSettled",
     "showSystemNotification",
     "checkForUpdates",
+    // The host's installed copy can only be updated from its desktop renderer.
+    "getAppUpdateStatus",
+    "downloadAppUpdate",
+    "openAppUpdateRelease",
+    "restartForAppUpdate",
+    "onAppUpdateStatus",
     "browseDirectory",
     // Native picker of upload sources on the desktop's own disk.
     "browsePaths",

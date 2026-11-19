@@ -58,6 +58,15 @@ contextBridge.exposeInMainWorld("strideterm", {
   pasteClipboardImageForTerminal: () => ipcRenderer.invoke("clipboard:paste-image"),
   showSystemNotification: (payload) => ipcRenderer.invoke("notification:show-system", payload),
   checkForUpdates: () => ipcRenderer.invoke("app:check-for-updates"),
+  getAppUpdateStatus: () => ipcRenderer.invoke("app:update-status"),
+  downloadAppUpdate: () => ipcRenderer.invoke("app:download-update"),
+  openAppUpdateRelease: () => ipcRenderer.invoke("app:open-update-release"),
+  restartForAppUpdate: () => ipcRenderer.invoke("app:restart-for-update"),
+  onAppUpdateStatus: (handler) => {
+    const listener = (_event: Electron.IpcRendererEvent, status: Parameters<typeof handler>[0]) => handler(status);
+    ipcRenderer.on("app:update-status-changed", listener);
+    return () => ipcRenderer.removeListener("app:update-status-changed", listener);
+  },
   checkCommand: (command) => ipcRenderer.invoke("app:check-command", command),
   getState: () => ipcRenderer.invoke("state:get"),
   activateWorkspace: (workspaceId) => ipcRenderer.invoke("workspace:activate", workspaceId),

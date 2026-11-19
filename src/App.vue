@@ -120,13 +120,13 @@
               <span v-if="distributionInfo" class="sidebar-footer__distribution">· {{ distributionInfo.label }}</span>
             </strong>
             <button
-              v-if="versionsBehind > 0"
+              v-if="sidebarUpdateLabel"
               type="button"
               class="sidebar-footer__update-hint"
-              :title="`Open the latest release page on GitHub in your default web browser so you can download the new build (current latest: v${latestVersionLabel}).`"
-              @click="api?.openExternal?.(latestReleaseUrl)"
+              :title="sidebarUpdateTitle"
+              @click="openUpdate"
             >
-              {{ versionsBehind }} {{ versionsBehind === 1 ? "update" : "updates" }} behind
+              {{ sidebarUpdateLabel }}
             </button>
           </div>
           <button
@@ -359,11 +359,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, inject, onErrorCaptured, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, inject, onErrorCaptured, onMounted, onUnmounted, provide, ref, watch } from "vue";
 import type { ComponentPublicInstance } from "vue";
 import type { Transport } from "./transport.js";
 import type { AppDistribution } from "../electron/shared/app-distribution.js";
-import { apiKey } from "./types/keys.js";
+import type { AppUpdateStatus } from "../electron/shared/app-update.js";
+import type { ConfirmCloseRequest } from "../electron/shared/ipc-bridge.js";
+import { apiKey, appUpdateStatusKey } from "./types/keys.js";
 import { useAppStore } from "./stores/app.js";
 import { useGlobalEvents } from "./composables/useGlobalEvents.js";
 import { useAttentionSync } from "./composables/useAttentionSync.js";
@@ -518,6 +520,30 @@ const versionCheck = computed(() => {
 });
 const versionsBehind = computed(() => versionCheck.value?.versionsBehind || 0);
 const latestVersionLabel = computed(() => versionCheck.value?.latestVersion || "");
+const appUpdate = ref<AppUpdateStatus>({ phase: "unsupported" });
+provide(appUpdateStatusKey, appUpdate);
+const canUpdateInApp = computed(() => appUpdate.value.phase !== "unsupported");
+const sidebarUpdateLabel = computed(() => {
+  switch (appUpdate.value.phase) {
+    case "current":
+      return "";
+    case "downloading":
+      return "Downloading update";
+    case "ready":
+      return "Update ready";
+    case "restarting":
+      return "Installing update";
+    case "failed":
+      return "Update failed";
+  }
+  const count = versionsBehind.value;
+  return count ? `${count} ${count === 1 ? "update" : "updates"} behind` : "";
+});
+const sidebarUpdateTitle = computed(() =>
+  canUpdateInApp.value
+    ? "Open Settings → About for the update."
+    : `Open the latest release page on GitHub in your default web browser so you can download the new build (current latest: v${latestVersionLabel.value}).`,
+);
 // Always use GitHub's /releases/latest redirect rather than the cached
 // html_url of a specific tag. The cache can lag behind the live releases
 // list (24h throttle, plus the user can sit on a stale cache between fetch
@@ -528,6 +554,32 @@ const latestVersionLabel = computed(() => versionCheck.value?.latestVersion || "
 const latestReleaseUrl = computed(() =>
   repositoryUrl.value ? `${repositoryUrl.value.replace(/\/+$/, "")}/releases/latest` : "",
 );
+
+function openUpdate(): void {
+  if (canUpdateInApp.value) {
+    store.openSettingsDialog({ initialTab: "about" });
+  } else {
+    void api?.openExternal?.(latestReleaseUrl.value);
+  }
+}
+
+let unsubscribeAppUpdate: (() => void) | undefined;
+let unmounted = false;
+onMounted(async () => {
+  if (api?.isRemote || !api?.getAppUpdateStatus) return;
+  let receivedStatus = false;
+  unsubscribeAppUpdate = api.onAppUpdateStatus?.((status) => {
+    receivedStatus = true;
+    appUpdate.value = status;
+    if (status.phase === "failed") notifStore.showError("App update failed", status.message);
+  });
+  try {
+    const status = await api.getAppUpdateStatus();
+    if (!unmounted && !receivedStatus && status) appUpdate.value = status;
+  } catch (error) {
+    if (!unmounted) notifStore.showError("Could not read app update status", error);
+  }
+});
 
 const versionToastShown = ref(false);
 watch(versionCheck, (check) => {
@@ -772,46 +824,49 @@ onMounted(() => {
   // until we respond, the close stays prevented in main.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const api = (window as any).strideterm;
-  api?.onConfirmCloseRequest?.(
-    (payload: { workspaceCount: number; runningTaskCount: number; runningTaskWorkspaceNames: string[] }) => {
-      const lines: string[] = [];
-      if (payload.runningTaskCount > 0) {
-        const names = payload.runningTaskWorkspaceNames.slice(0, 5).join(", ");
-        const extra =
-          payload.runningTaskWorkspaceNames.length > 5 ? `, +${payload.runningTaskWorkspaceNames.length - 5} more` : "";
-        lines.push(
-          `${payload.runningTaskCount} task agent${payload.runningTaskCount === 1 ? "" : "s"} still running: ${names}${extra}.`,
-        );
+  api?.onConfirmCloseRequest?.((payload: ConfirmCloseRequest) => {
+    const installingUpdate = payload.reason === "install-update";
+    const lines: string[] = [];
+    if (payload.runningTaskCount > 0) {
+      const names = payload.runningTaskWorkspaceNames.slice(0, 5).join(", ");
+      const extra =
+        payload.runningTaskWorkspaceNames.length > 5 ? `, +${payload.runningTaskWorkspaceNames.length - 5} more` : "";
+      lines.push(
+        `${payload.runningTaskCount} task agent${payload.runningTaskCount === 1 ? "" : "s"} still running: ${names}${extra}.`,
+      );
+    }
+    if (payload.workspaceCount > 0) {
+      lines.push(
+        `${payload.workspaceCount} workspace${payload.workspaceCount === 1 ? "" : "s"} will be closed and any running terminals killed.`,
+      );
+    }
+    lines.push(
+      installingUpdate ? "Restart strIDEterm to install the update?" : "Are you sure you want to quit strIDEterm?",
+    );
+    const respond = (confirmed: boolean) => {
+      store.closeDialog();
+      try {
+        void api?.respondConfirmClose?.(confirmed);
+      } catch {
+        // Best-effort — if IPC is torn down we drop silently.
       }
-      if (payload.workspaceCount > 0) {
-        lines.push(
-          `${payload.workspaceCount} workspace${payload.workspaceCount === 1 ? "" : "s"} will be closed and any running terminals killed.`,
-        );
-      }
-      lines.push("Are you sure you want to quit strIDEterm?");
-      const respond = (confirmed: boolean) => {
-        store.closeDialog();
-        try {
-          void api?.respondConfirmClose?.(confirmed);
-        } catch {
-          // Best-effort — if IPC is torn down we drop silently.
-        }
-      };
-      store.openDialog("ConfirmDialog", {
-        eyebrow: "Quit",
-        title: "Close strIDEterm?",
-        message: lines.join("\n\n"),
-        confirmLabel: "Quit anyway",
-        cancelLabel: "Keep open",
-        danger: true,
-        onConfirm: () => respond(true),
-        onCancel: () => respond(false),
-      });
-    },
-  );
+    };
+    store.openDialog("ConfirmDialog", {
+      eyebrow: installingUpdate ? "Update" : "Quit",
+      title: installingUpdate ? "Restart strIDEterm?" : "Close strIDEterm?",
+      message: lines.join("\n\n"),
+      confirmLabel: installingUpdate ? "Restart and install" : "Quit anyway",
+      cancelLabel: installingUpdate ? "Keep working" : "Keep open",
+      danger: true,
+      onConfirm: () => respond(true),
+      onCancel: () => respond(false),
+    });
+  });
 });
 
 onUnmounted(() => {
+  unmounted = true;
+  unsubscribeAppUpdate?.();
   mobileKeyboardObserver?.disconnect();
   window.removeEventListener("focusin", onMobileKeyboardFocusIn);
   window.removeEventListener("focusout", onMobileKeyboardFocusOut);

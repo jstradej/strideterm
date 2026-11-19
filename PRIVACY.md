@@ -74,12 +74,13 @@ of its author.
 
 ## Data that leaves your computer
 
-### Version check (always on)
+### Release checks and app updates
 
-About 10 seconds after start, and at most once every 24 hours, the app asks GitHub
-(`api.github.com`) for the list of strIDEterm releases. The request does not include your account
-details; GitHub receives your IP address and the app's version, as with any web request. The app
-does not update itself — it only tells you that a new version exists.
+A GitHub build checks for strIDEterm releases about 10 seconds after startup and reuses a
+successful result for up to 24 hours. On supported desktop installations, the download button
+checks the current stable release and downloads the matching update from GitHub. These requests
+use public endpoints and GitHub receives your IP address and normal request headers. Installation
+starts when you choose **Restart and install**. See the [update guide](docs/updating.md).
 
 ### strIDEterm account and hosted services (only if you sign in)
 
@@ -167,7 +168,7 @@ Independent controllers, under their own privacy policies:
 
 - **Paddle** ([privacy policy](https://www.paddle.com/legal/privacy)): payments and subscription
   management.
-- **GitHub**: the version check, and the GitHub integration if you use it.
+- **GitHub**: release checks, update downloads, and the GitHub integration if you use it.
 - **Microsoft**: if you install strIDEterm from the Microsoft Store, Microsoft processes data about
   the purchase and installation under the
   [Microsoft Privacy Statement](https://privacy.microsoft.com/privacystatement).
