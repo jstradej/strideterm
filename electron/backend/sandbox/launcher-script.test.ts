@@ -6,7 +6,9 @@ import {
   readlinkSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -39,7 +41,7 @@ function temp(): string {
   return dir;
 }
 
-function runLauncher(toolFiles: unknown[], extra: Record<string, unknown> = {}) {
+function runLauncher(toolFiles: unknown[], extra: Record<string, unknown> = {}, env: NodeJS.ProcessEnv = process.env) {
   const work = temp();
   const launcher = path.join(work, "launcher.mjs");
   const config = path.join(work, "launch.json");
@@ -56,10 +58,11 @@ function runLauncher(toolFiles: unknown[], extra: Record<string, unknown> = {}) 
       toolFiles,
       runtime: { filesystem: { allowRead: [], allowWrite: [], denyWrite: [], denyRead: [] }, network: {} },
       command: ["true"],
+      runtimeBase: temp(),
       ...extra,
     }),
   );
-  return spawnSync(process.execPath, [launcher, config], { encoding: "utf8", env: { ...process.env } });
+  return spawnSync(process.execPath, [launcher, config], { encoding: "utf8", env: { ...env } });
 }
 
 describe("sandbox launcher seeded state file", () => {
@@ -646,6 +649,141 @@ describe("sandbox launcher sanitized config views", () => {
   });
 });
 
+describe.skipIf(process.platform === "win32")("sandbox launcher srt work folder", () => {
+  const SPEC_TMP = "/spec/agent-tmp";
+
+  function privateRoot(base: string): string {
+    return path.join(realpathSync(base), `strideterm-${process.getuid?.()}`);
+  }
+
+  /** A fake srt that records what the runtime would see; `initializeBody` runs inside `initialize(config)`. */
+  function fakeSrt(base: string, initializeBody = "") {
+    const seen = path.join(base, "seen.json");
+    const envFile = path.join(base, "command-env.json");
+    const script = path.join(base, "agent.mjs");
+    writeFileSync(
+      script,
+      `import fs from "node:fs"; fs.writeFileSync(${JSON.stringify(envFile)}, JSON.stringify({ TMPDIR: process.env.TMPDIR, TMP: process.env.TMP, TEMP: process.env.TEMP }));`,
+    );
+    const runtime = path.join(base, "fake-srt.mjs");
+    writeFileSync(
+      runtime,
+      `import fs from "node:fs"; import os from "node:os";
+const seen = {};
+const save = () => fs.writeFileSync(${JSON.stringify(seen)}, JSON.stringify(seen));
+export const SandboxManager = {
+  async initialize(config) { seen.initializeTmp = os.tmpdir(); seen.config = config; save(); ${initializeBody} },
+  async wrapWithSandbox() { seen.wrapTmp = os.tmpdir(); save(); return ${JSON.stringify(`"${process.execPath}" "${script}"`)}; },
+  cleanupAfterCommand() {},
+};
+`,
+    );
+    return {
+      runtime,
+      seen: () => JSON.parse(readFileSync(seen, "utf8")),
+      commandEnv: () => JSON.parse(readFileSync(envFile, "utf8")),
+    };
+  }
+
+  const specEnv = { ...process.env, TMPDIR: SPEC_TMP, TMP: SPEC_TMP, TEMP: SPEC_TMP };
+
+  it("gives srt a work folder under the private root and hands the command the spec's temp folder", () => {
+    const base = temp();
+    const runtimeBase = temp();
+    const srt = fakeSrt(base);
+    const result = runLauncher([], { srtModule: srt.runtime, runtimeBase, keepEnv: ["TMP", "TEMP"] }, specEnv);
+    expect(result.status, result.stderr).toBe(0);
+    const { initializeTmp, wrapTmp } = srt.seen();
+    expect(path.dirname(initializeTmp)).toBe(privateRoot(runtimeBase));
+    expect(path.basename(initializeTmp)).toMatch(/^srt-\d+-/u);
+    expect(wrapTmp).toBe(initializeTmp);
+    expect(initializeTmp).not.toBe(SPEC_TMP);
+    expect(srt.commandEnv()).toEqual({ TMPDIR: SPEC_TMP, TMP: SPEC_TMP, TEMP: SPEC_TMP });
+    expect(lstatSync(privateRoot(runtimeBase)).mode & 0o777).toBe(0o700);
+  });
+
+  it("removes the work folder after the command exits and after initialize fails", () => {
+    const okBase = temp();
+    const okBaseRuntime = temp();
+    const ok = fakeSrt(okBase);
+    expect(runLauncher([], { srtModule: ok.runtime, runtimeBase: okBaseRuntime }, specEnv).status).toBe(0);
+    expect(existsSync(ok.seen().initializeTmp)).toBe(false);
+
+    const failBase = temp();
+    const failRuntime = temp();
+    const failing = fakeSrt(failBase, 'throw new Error("no bridge");');
+    const result = runLauncher([], { srtModule: failing.runtime, runtimeBase: failRuntime }, specEnv);
+    expect(result.status).toBe(125);
+    expect(result.stderr).toContain("no bridge");
+    expect(existsSync(failing.seen().initializeTmp)).toBe(false);
+  });
+
+  it("refuses to start when the private root is a link", () => {
+    const base = temp();
+    const runtimeBase = temp();
+    const elsewhere = temp();
+    symlinkSync(elsewhere, privateRoot(runtimeBase));
+    const result = runLauncher([], { srtModule: fakeSrt(base).runtime, runtimeBase }, specEnv);
+    expect(result.status).toBe(125);
+    expect(result.stderr).toContain("not a plain folder");
+    expect(readdirSync(elsewhere)).toEqual([]);
+  });
+
+  it("sweeps the folder of a process that is gone and leaves a running one's alone", () => {
+    const base = temp();
+    const runtimeBase = temp();
+    const root = privateRoot(runtimeBase);
+    mkdirSync(root, { mode: 0o700 });
+    const gone = spawnSync(process.execPath, ["-e", ""]).pid;
+    const deadDir = path.join(root, `srt-${gone}-abc123`);
+    const liveDir = path.join(root, `srt-${process.pid}-abc123`);
+    const otherDir = path.join(root, "unrelated");
+    for (const dir of [deadDir, liveDir, otherDir]) mkdirSync(dir);
+    const result = runLauncher([], { srtModule: fakeSrt(base).runtime, runtimeBase }, specEnv);
+    expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(deadDir)).toBe(false);
+    expect(existsSync(liveDir)).toBe(true);
+    expect(existsSync(otherDir)).toBe(true);
+  });
+
+  it("refuses a relay that has no proxy route to fill, or one that already names a socket", () => {
+    const relay = { tcpHost: "127.0.0.1", tcpPort: 1 };
+    const network = (mitmProxy?: unknown) => ({ allowedDomains: [], ...(mitmProxy ? { mitmProxy } : {}) });
+    const base = { filesystem: { allowRead: [], allowWrite: [], denyWrite: [], denyRead: [] } };
+    for (const mitmProxy of [undefined, { socketPath: "/tmp/other.sock", domains: ["gw"] }]) {
+      const result = runLauncher([], { relay, runtime: { ...base, network: network(mitmProxy) } }, specEnv);
+      expect(result.status).toBe(125);
+      expect(result.stderr).toContain("gateway relay needs");
+    }
+  });
+
+  it.skipIf(spawnSync("socat", ["-V"]).error !== undefined)(
+    "puts the gateway relay's socket in the work folder and routes the proxy to it",
+    () => {
+      const base = temp();
+      const runtimeBase = temp();
+      const srt = fakeSrt(base);
+      const result = runLauncher(
+        [],
+        {
+          srtModule: srt.runtime,
+          runtimeBase,
+          relay: { tcpHost: "127.0.0.1", tcpPort: 9 },
+          runtime: {
+            filesystem: { allowRead: [], allowWrite: [], denyWrite: [], denyRead: [] },
+            network: { allowedDomains: [], mitmProxy: { domains: ["gateway.strideterm.internal"] } },
+          },
+        },
+        specEnv,
+      );
+      expect(result.status, result.stderr).toBe(0);
+      const { initializeTmp, config } = srt.seen();
+      expect(config.network.mitmProxy.socketPath).toBe(path.join(initializeTmp, "gateway.sock"));
+      expect(config.network.mitmProxy.domains).toEqual(["gateway.strideterm.internal"]);
+    },
+  );
+});
+
 describe("sandbox launcher terminal resize relay", () => {
   function wrappedCommand(stdinIsTty: boolean) {
     const base = temp();
@@ -677,6 +815,7 @@ describe("sandbox launcher terminal resize relay", () => {
         toolFiles: [],
         runtime: { filesystem: { allowRead: [], allowWrite: [], denyWrite: [], denyRead: [] }, network: {} },
         command: ["claude", "--flag"],
+        runtimeBase: temp(),
       }),
     );
     const result = spawnSync(process.execPath, [launcher, config], { encoding: "utf8", env: { ...process.env } });

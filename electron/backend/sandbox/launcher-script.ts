@@ -35,6 +35,8 @@ try {
 } catch (error) {
   fail("the launch config cannot be read: " + error.message);
 }
+// The command's environment comes from this snapshot: below, TMPDIR is pointed at srt's own work folder.
+const inheritedEnv = { ...process.env };
 
 function exists(candidate) {
   try {
@@ -525,6 +527,69 @@ for (const item of cfg.seededFiles || []) {
   }
 }
 
+// srt keeps the sockets that carry the sandbox's network (and a relay's gateway socket) in os.tmpdir(). That must be
+// neither a folder the agent may write (it could delete the sockets) nor a long path (sun_path holds ~104 characters),
+// so each launch gets a folder under a private root in /var/tmp, outside every write grant. The agent can see it but
+// not change it. Hiding it is not possible: srt binds the socket before it covers the folder.
+function makeWorkDir() {
+  let base;
+  try {
+    base = fs.realpathSync(cfg.runtimeBase || "/var/tmp");
+  } catch (error) {
+    fail("cannot resolve " + (cfg.runtimeBase || "/var/tmp") + ": " + error.message);
+  }
+  const uid = typeof process.getuid === "function" ? process.getuid() : null;
+  const root = path.join(base, "strideterm-" + (uid === null ? "user" : uid));
+  try {
+    fs.mkdirSync(root, { mode: 0o700 });
+  } catch (error) {
+    if (error.code !== "EEXIST") fail("cannot create " + root + ": " + error.message);
+  }
+  let stat;
+  try {
+    stat = fs.lstatSync(root);
+  } catch (error) {
+    fail("cannot inspect " + root + ": " + error.message);
+  }
+  if (!stat.isDirectory()) fail(root + " is not a plain folder (a link or a file took its name).");
+  if (uid !== null && stat.uid !== uid) fail(root + " belongs to another user.");
+  try {
+    fs.chmodSync(root, 0o700);
+  } catch (error) {
+    fail("cannot restrict " + root + ": " + error.message);
+  }
+  try {
+    for (const name of fs.readdirSync(root)) {
+      const match = /^srt-(\d+)-/.exec(name);
+      if (!match || Number(match[1]) === process.pid) continue;
+      try {
+        process.kill(Number(match[1]), 0);
+        continue;
+      } catch (error) {
+        if (error.code !== "ESRCH") continue;
+      }
+      fs.rmSync(path.join(root, name), { recursive: true, force: true });
+    }
+  } catch {}
+  try {
+    return fs.mkdtempSync(path.join(root, "srt-" + process.pid + "-"));
+  } catch (error) {
+    fail("cannot create a work folder in " + root + ": " + error.message);
+  }
+}
+const workDir = makeWorkDir();
+process.on("exit", () => {
+  try {
+    fs.rmSync(workDir, { recursive: true, force: true });
+  } catch {}
+});
+process.env.TMPDIR = workDir;
+process.env.TMP = workDir;
+process.env.TEMP = workDir;
+
+let relay = null;
+let relaySocket = null;
+
 function cleanup() {
   for (const file of writtenFiles) {
     try {
@@ -535,28 +600,25 @@ function cleanup() {
     try {
       relay.kill();
     } catch {}
-    try {
-      fs.unlinkSync(cfg.relay.unixSocket);
-    } catch {}
   }
 }
 
-let relay = null;
 if (cfg.relay) {
-  try {
-    fs.unlinkSync(cfg.relay.unixSocket);
-  } catch {}
+  const route = cfg.runtime.network.mitmProxy;
+  if (!route || route.socketPath) fail("the gateway relay needs a sandbox proxy route without a socket of its own.");
+  relaySocket = path.join(workDir, "gateway.sock");
+  route.socketPath = relaySocket;
   relay = spawn(
     "socat",
-    ["UNIX-LISTEN:" + cfg.relay.unixSocket + ",fork,mode=0600", "TCP:" + cfg.relay.tcpHost + ":" + cfg.relay.tcpPort],
+    ["UNIX-LISTEN:" + relaySocket + ",fork,mode=0600", "TCP:" + cfg.relay.tcpHost + ":" + cfg.relay.tcpPort],
     { stdio: "ignore" },
   );
   relay.on("error", (error) => fail("the gateway relay did not start: " + error.message));
   const deadline = Date.now() + 4000;
-  while (!exists(cfg.relay.unixSocket) && Date.now() < deadline) {
+  while (!exists(relaySocket) && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  if (!exists(cfg.relay.unixSocket)) fail("the gateway relay did not come up.");
+  if (!exists(relaySocket)) fail("the gateway relay did not come up.");
 }
 
 const optional = cfg.optional || {};
@@ -647,7 +709,10 @@ try {
   fail("the sandbox could not start: " + (error && error.message ? error.message : String(error)));
 }
 
-if (!(cfg.command || []).length) fail("no command to run.");
+if (!(cfg.command || []).length) {
+  cleanup();
+  fail("no command to run.");
+}
 // srt starts the sandbox with --new-session, so the command is not in the terminal's foreground group and the kernel
 // never sends it SIGWINCH. A poller inside the sandbox watches the terminal size and signals the command's group.
 // The terminal is kept on fd 3: a background list's stdin is /dev/null.
@@ -691,7 +756,7 @@ wrapped = readOnlyDenyCovers(wrapped);
 const baseline = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LANGUAGE", "TERM", "COLORTERM", "TMPDIR"];
 const keep = new Set([...baseline, ...(cfg.keepEnv || [])]);
 const env = {};
-for (const [name, value] of Object.entries(process.env)) {
+for (const [name, value] of Object.entries(inheritedEnv)) {
   if (keep.has(name) || name.startsWith("LC_")) env[name] = value;
 }
 env.STRIDETERM_SANDBOX = "1";

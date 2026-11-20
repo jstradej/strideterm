@@ -47,8 +47,11 @@ export interface SandboxPolicyInput {
   workspaceDomains: string[];
   /** Registry or broker destinations beyond the gateway's host (none by default). */
   extraDomains?: string[];
-  /** Unix socket of the host gateway; its host name is routed there by the sandbox proxy. */
-  gatewaySocket?: string;
+  /**
+   * The host gateway; its host name is routed to a unix socket by the sandbox proxy. Without `socketPath` the
+   * launcher chooses the socket (a relay's) and fills it in.
+   */
+  gateway?: { socketPath?: string };
   /** Folder the launcher writes per-launch tool config into; the sandbox reads it. */
   toolConfigDir: string;
 }
@@ -57,7 +60,7 @@ export interface SandboxRuntimeConfigLike {
   network: {
     allowedDomains: string[];
     deniedDomains: string[];
-    mitmProxy?: { socketPath: string; domains: string[] };
+    mitmProxy?: { socketPath?: string; domains: string[] };
   };
   filesystem: {
     denyRead: string[];
@@ -157,7 +160,7 @@ export function buildSandboxPolicy(input: SandboxPolicyInput): SandboxPolicy {
     ...input.toolchains.flatMap((profile) => profile.domains),
     ...normalizeSandboxDomains(input.workspaceDomains),
     ...(input.extraDomains ?? []),
-    ...(input.gatewaySocket ? [SANDBOX_GATEWAY_HOST] : []),
+    ...(input.gateway ? [SANDBOX_GATEWAY_HOST] : []),
   ]);
 
   // A folder with a credential-bearing config file (an MCP server's env, a hook) is never granted whole: the launcher
@@ -221,8 +224,11 @@ export function buildSandboxPolicy(input: SandboxPolicyInput): SandboxPolicy {
       .filter((folder) => !linkedNames.has(folder)),
   ]);
 
-  const mitmProxy = input.gatewaySocket
-    ? { socketPath: input.gatewaySocket, domains: [SANDBOX_GATEWAY_HOST] }
+  const mitmProxy = input.gateway
+    ? {
+        ...(input.gateway.socketPath ? { socketPath: input.gateway.socketPath } : {}),
+        domains: [SANDBOX_GATEWAY_HOST],
+      }
     : undefined;
 
   return {

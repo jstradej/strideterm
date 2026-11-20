@@ -156,12 +156,18 @@ describe("buildSandboxPolicy", () => {
   });
 
   it("routes the gateway host to the host's gateway socket only when there is one", () => {
-    const withGateway = buildSandboxPolicy(input({ gatewaySocket: "/tmp/gw.sock" }));
+    const withGateway = buildSandboxPolicy(input({ gateway: { socketPath: "/tmp/gw.sock" } }));
     expect(withGateway.runtime.network.allowedDomains).toContain(SANDBOX_GATEWAY_HOST);
     expect(withGateway.runtime.network.mitmProxy).toEqual({
       socketPath: "/tmp/gw.sock",
       domains: [SANDBOX_GATEWAY_HOST],
     });
+  });
+
+  it("leaves the socket to the launcher when the gateway is relayed", () => {
+    const relayed = buildSandboxPolicy(input({ gateway: {} }));
+    expect(relayed.runtime.network.allowedDomains).toContain(SANDBOX_GATEWAY_HOST);
+    expect(relayed.runtime.network.mitmProxy).toEqual({ domains: [SANDBOX_GATEWAY_HOST] });
   });
 
   it("lets an interactive agent use pseudo-terminals on macOS only", () => {

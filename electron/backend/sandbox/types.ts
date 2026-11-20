@@ -6,7 +6,7 @@ import type { SandboxPolicyInput } from "./sandbox-policy.js";
  * into the `file` / `args` / `env` of the PTY. Paths are in the notation of the machine that runs the
  * sandbox (see `SandboxEnvironment.os`).
  */
-export interface SandboxSpec extends Omit<SandboxPolicyInput, "toolConfigDir" | "gatewaySocket"> {
+export interface SandboxSpec extends Omit<SandboxPolicyInput, "toolConfigDir" | "gateway"> {
   sessionId: string;
   workspaceId: string;
   profileId: string;
@@ -46,8 +46,12 @@ export interface SandboxSpec extends Omit<SandboxPolicyInput, "toolConfigDir" | 
   homeOverride?: string;
   /** Current installation's notification script, readable inside the sandbox; replaces stale kept hook paths. */
   notifyScript?: string;
-  /** How the sandbox reaches the host gateway; absent when it cannot. */
-  gateway?: { socketPath: string; relay?: { tcpHost: string; tcpPort: number } };
+  /**
+   * How the sandbox reaches the host gateway; absent when it cannot. A relay's unix socket is placed by the launcher
+   * in its own work folder, so only a direct gateway names a socket path.
+   */
+  gateway?:
+    { socketPath: string; relay?: undefined } | { socketPath?: undefined; relay: { tcpHost: string; tcpPort: number } };
 }
 
 export interface SandboxLaunch {

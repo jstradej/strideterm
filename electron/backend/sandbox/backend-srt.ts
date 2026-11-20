@@ -85,7 +85,6 @@ export class SrtBackend implements SandboxBackend {
     const policy = buildSandboxPolicy({
       ...spec,
       toolConfigDir: this.toolDir(spec.sessionId, environment),
-      gatewaySocket: spec.gateway?.socketPath,
     });
 
     const launchConfig = {
@@ -103,11 +102,7 @@ export class SrtBackend implements SandboxBackend {
       pathPrepend: spec.pathPrepend ?? [],
       pathAppend: spec.pathAppend ?? [],
       relay: spec.gateway?.relay
-        ? {
-            unixSocket: spec.gateway.socketPath,
-            tcpHost: spec.gateway.relay.tcpHost,
-            tcpPort: spec.gateway.relay.tcpPort,
-          }
+        ? { tcpHost: spec.gateway.relay.tcpHost, tcpPort: spec.gateway.relay.tcpPort }
         : undefined,
       optional: policy.optional,
       homeOverride: spec.homeOverride,

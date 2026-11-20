@@ -730,8 +730,9 @@ export class SandboxService {
     env: Record<string, string>,
   ): { env: Record<string, string>; active: boolean; gateway: SandboxSpec["gateway"] } {
     const gateway = this.options.gateway;
-    const socketPath = this.platform === "win32" ? this.relaySocketPath(ctx.sessionId) : gateway.socketPath;
-    if (!socketPath || (this.platform === "win32" && !this.gatewayRelayPort)) {
+    const relayed = this.platform === "win32";
+    const socketPath = relayed ? "" : gateway.socketPath;
+    if (relayed ? !this.gatewayRelayPort : !socketPath) {
       return { env, active: false, gateway: undefined };
     }
     const brokers: Partial<Record<BrokerRouteName, string>> = {};
@@ -764,11 +765,10 @@ export class SandboxService {
       }
       rewritten[name] = next;
     }
-    const relay =
-      this.platform === "win32"
-        ? { tcpHost: session.environment.hostAddress || "127.0.0.1", tcpPort: this.gatewayRelayPort }
-        : undefined;
-    return { env: rewritten, active: true, gateway: { socketPath, ...(relay ? { relay } : {}) } };
+    const target: SandboxSpec["gateway"] = relayed
+      ? { relay: { tcpHost: session.environment.hostAddress || "127.0.0.1", tcpPort: this.gatewayRelayPort } }
+      : { socketPath };
+    return { env: rewritten, active: true, gateway: target };
   }
 
   /** A launch that configured brokers or private registries must not start without the gateway that carries them. */
@@ -788,10 +788,6 @@ export class SandboxService {
     throw new SandboxUnavailableError(
       `The sandbox gateway is not running${session.gatewayError ? ` (${session.gatewayError})` : ""}, so ${needs} would be unreachable. Restart the tab to retry, or turn isolation off.`,
     );
-  }
-
-  private relaySocketPath(sessionId: string): string {
-    return `/tmp/strideterm-gw-${sessionId.replace(/[^A-Za-z0-9._-]/gu, "_").slice(0, 40)}.sock`;
   }
 
   private addRegistryConfig(input: {

@@ -115,12 +115,18 @@ describe("SrtBackend", () => {
   it("passes the gateway relay to the launcher only when the sandbox needs one", () => {
     const sessionsDir = temp();
     const backend = new SrtBackend({ sessionsDir, launcherPath: path.join(sessionsDir, "l.mjs") });
-    const launch = backend.buildLaunch(
-      spec({ gateway: { socketPath: "/tmp/gw.sock", relay: { tcpHost: "172.20.0.1", tcpPort: 4000 } } }),
-      linux,
-    );
+    const launch = backend.buildLaunch(spec({ gateway: { relay: { tcpHost: "172.20.0.1", tcpPort: 4000 } } }), linux);
     const config = JSON.parse(readFileSync(launch.args[1], "utf8"));
-    expect(config.relay).toEqual({ unixSocket: "/tmp/gw.sock", tcpHost: "172.20.0.1", tcpPort: 4000 });
+    expect(config.relay).toEqual({ tcpHost: "172.20.0.1", tcpPort: 4000 });
+    expect(config.runtime.network.mitmProxy).toEqual({ domains: ["gateway.strideterm.internal"] });
+  });
+
+  it("names the gateway socket itself when there is no relay", () => {
+    const sessionsDir = temp();
+    const backend = new SrtBackend({ sessionsDir, launcherPath: path.join(sessionsDir, "l.mjs") });
+    const launch = backend.buildLaunch(spec({ gateway: { socketPath: "/tmp/gw.sock" } }), linux);
+    const config = JSON.parse(readFileSync(launch.args[1], "utf8"));
+    expect(config.relay).toBeUndefined();
     expect(config.runtime.network.mitmProxy).toEqual({
       socketPath: "/tmp/gw.sock",
       domains: ["gateway.strideterm.internal"],
@@ -165,6 +171,7 @@ describe("launcher script", () => {
         toolFiles: [],
         optional: {},
         command: ["echo", "hi"],
+        runtimeBase: temp(),
         runtime: {
           network: { allowedDomains: [], deniedDomains: [] },
           filesystem: { denyRead: [], allowRead: [], allowWrite: [], denyWrite: [] },

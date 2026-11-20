@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
@@ -30,6 +31,8 @@ const enabled = process.platform === "win32" && process.env.STRIDETERM_SANDBOX_E
 const NUL = String.fromCharCode(0);
 const REGISTRY_SECRET = "registry-secret";
 const REGISTRY_USER = "svc";
+/** The shape of a real workspace id: its folders under the data dir (and srt's work folder) must work with it. */
+const WORKSPACE_ID = `workspace-${randomUUID()}`;
 
 /** When the runtime under test sits in the home folder, that one entry is visible by design (it is read-only). */
 const srtHomeEntry = /^\/home\/[^/]+\/([^/]+)/u.exec(process.env.STRIDETERM_SANDBOX_SRT_MODULE || "")?.[1] ?? "-none-";
@@ -103,7 +106,7 @@ describe.runIf(enabled)("sandbox in WSL2 (end to end)", () => {
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 
-  function context(sessionId: string, cwd = workspaceDir, workspaceId = "e2e") {
+  function context(sessionId: string, cwd = workspaceDir, workspaceId = WORKSPACE_ID) {
     return {
       sessionId,
       workspace: { id: workspaceId, profileId: "default", kind: "terminal", cwd, sandboxEnabled: true },
@@ -119,7 +122,7 @@ describe.runIf(enabled)("sandbox in WSL2 (end to end)", () => {
     onTick?: () => void,
     env: Record<string, string> = {},
     cwd = workspaceDir,
-    workspaceId = "e2e",
+    workspaceId = WORKSPACE_ID,
   ) {
     const ctx = context(sessionId, cwd, workspaceId);
     await service.prepare(ctx);
@@ -172,8 +175,48 @@ describe.runIf(enabled)("sandbox in WSL2 (end to end)", () => {
     expect(readFileSync(path.join(workspaceDir, "b.txt"), "utf8").trim()).toBe("wrote");
     // The destination the sandbox was refused is recorded for the user to decide on.
     service.pollDenials();
-    expect(service.listPending("e2e").map((request) => request.host)).toContain("example.com");
+    expect(service.listPending(WORKSPACE_ID).map((request) => request.host)).toContain("example.com");
     expect(existsSync(path.join(dataDir, "sandbox", "sessions"))).toBe(true);
+  }, 120_000);
+
+  it("keeps srt's work folder out of the agent's reach while the network and the workspace temp folder keep working", async () => {
+    const afUnix = [
+      "import socket",
+      "try:",
+      "    socket.socket(socket.AF_UNIX)",
+      "except OSError:",
+      "    print('af-unix-refused')",
+      "else:",
+      "    print('af-unix-created')",
+    ].join("\n");
+    const script = [
+      "d=$(ls -d /var/tmp/strideterm-$(id -u)/srt-* 2>/dev/null | head -1)",
+      'echo "srtdir=[$d]"',
+      '[ -n "$d" ] && ls "$d"/*.sock >/dev/null 2>&1 && echo sockets-present',
+      'touch "$d/planted" 2>/dev/null && echo planted-ok || echo planted-refused',
+      'rm -f "$d"/*.sock 2>/dev/null; ls "$d"/*.sock >/dev/null 2>&1 && echo sockets-kept || echo sockets-gone',
+      'mv "$d" "$d-moved" 2>/dev/null && echo move-ok || echo move-refused',
+      `python3 -c "${afUnix}"`,
+      'echo "tmpdir=[$TMPDIR]"',
+      'touch "$TMPDIR/probe" && echo tmp-writable || echo tmp-readonly',
+      "curl -s -m 20 -o /dev/null -w 'example=%{http_code}\\n' https://example.com 2>&1",
+    ].join("\n");
+    const output = await runShell("e2e:srtdir", script, () => {
+      service.pollDenials();
+      for (const request of service.listPending(WORKSPACE_ID)) service.decide(request.id, true);
+    });
+    expect(output).toMatch(/srtdir=\[\/var\/tmp\/strideterm-\d+\/srt-\d+-\w+\]/u);
+    expect(output).toContain("sockets-present");
+    expect(output).toContain("planted-refused");
+    expect(output).toContain("sockets-kept");
+    expect(output).toContain("move-refused");
+    expect(output).toContain("af-unix-refused");
+    expect(output).toContain(`/${WORKSPACE_ID}/tmp]`);
+    expect(output).toContain("tmp-writable");
+    expect(output).toMatch(/example=[1-5][0-9][0-9]/u);
+    expect(output).not.toContain("example=000");
+    const left = wslShell("ls -d /var/tmp/strideterm-$(id -u)/srt-* 2>/dev/null | wc -l");
+    expect(left.stdout.trim()).toBe("0");
   }, 120_000);
 
   it("waits for the user on a destination nothing decides and lets the connection through when they allow it", async () => {
@@ -182,7 +225,7 @@ describe.runIf(enabled)("sandbox in WSL2 (end to end)", () => {
       "curl -s -m 20 -o /dev/null -w 'example=%{http_code}\\n' https://example.com 2>&1",
       () => {
         service.pollDenials();
-        for (const request of service.listPending("e2e")) service.decide(request.id, true);
+        for (const request of service.listPending(WORKSPACE_ID)) service.decide(request.id, true);
       },
     );
     expect(output).toMatch(/example=[1-5][0-9][0-9]/u);
