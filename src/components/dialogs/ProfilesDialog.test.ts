@@ -21,6 +21,35 @@ describe("ProfilesDialog", () => {
     expect(wrapper.find(".dialog").attributes("data-no-autofocus")).toBe("");
   });
 
+  it("says so when a new profile's name is already taken, and creates nothing", async () => {
+    const logRenderer = vi.fn();
+    (window as unknown as { strideterm?: unknown }).strideterm = { logRenderer };
+    const onSave = vi.fn();
+    try {
+      const wrapper = mount(ProfilesDialog, {
+        props: {
+          profiles: [{ id: "default", name: "MHUB", color: "#fff" }],
+          activeProfileId: "default",
+          workspaces: [],
+          windowSlots: [],
+        },
+        attrs: { onSave },
+      });
+      await wrapper.find(".add-profile-input").setValue("  mhub ");
+      await wrapper
+        .findAll("button")
+        .find((button) => button.text() === "+ Add")!
+        .trigger("click");
+      await flushPromises();
+      expect(onSave).not.toHaveBeenCalled();
+      expect(wrapper.find('[role="alert"]').text()).toContain("A profile named “MHUB” already exists.");
+      expect(logRenderer).toHaveBeenCalledWith("warn", expect.stringContaining("already exists"), {});
+      expect(wrapper.findAll(".profile-card")).toHaveLength(1);
+    } finally {
+      delete (window as unknown as { strideterm?: unknown }).strideterm;
+    }
+  });
+
   it("uses the supplied count map when workspaces is profile-scoped (remote)", () => {
     // Remote slim-core sends every profile but scopes `workspaces` to the viewer's
     // one profile (here empty). The count must come from the map — counting the

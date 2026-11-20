@@ -272,6 +272,7 @@ import { makeNewProfile } from "../../app/helpers.js";
 import PeerHostGroup from "../peers/PeerHostGroup.vue";
 import Spinner from "../common/Spinner.vue";
 import { useDelayedFlag } from "../../composables/useDelayedFlag.js";
+import { rlog } from "../../lib/renderer-log.js";
 import { peersBridgeAvailable, usePeersStore } from "../../stores/peers.js";
 import { isPeerWindow, windowBackend } from "../../window-backend.js";
 
@@ -506,7 +507,12 @@ function cancelDeleteWithTasks() {
 async function addProfile() {
   const name = newProfileName.value.trim().substring(0, 40);
   if (!name) return;
-  if (localProfiles.some((p) => p.name.toLowerCase() === name.toLowerCase())) return;
+  const taken = localProfiles.find((p) => p.name.toLowerCase() === name.toLowerCase());
+  if (taken) {
+    errorMessage.value = `A profile named “${taken.name}” already exists. Choose another name.`;
+    rlog("warn", "[dialog] new profile refused: the name already exists");
+    return;
+  }
   const newProfile = makeNewProfile(name);
   errorMessage.value = "";
   try {
