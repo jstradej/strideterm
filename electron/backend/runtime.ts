@@ -9618,7 +9618,10 @@ export async function createRuntime({
     expectedHead?: string,
   ): PullRequestReviewSummary {
     const pr = currentPullRequest(provider, prKey);
-    if (!pr) throw new Error("Pull request is no longer available in this profile.");
+    if (!pr)
+      throw new Error(
+        "The pull request is no longer in the synced list: it may have been closed or completed, or strIDEterm no longer syncs it in this profile. Refresh the review inbox and try again.",
+      );
     const draft = provider === "github" ? pr.pullRequest?.draft === true : pr.pullRequest?.isDraft === true;
     const state = String(pr.pullRequest?.state || pr.pullRequest?.status || "").toLowerCase();
     if (draft || !["open", "active"].includes(state))
@@ -9705,7 +9708,10 @@ export async function createRuntime({
     if (viewerProfileId && internalProfileId && viewerProfileId !== internalProfileId)
       throw new Error("Cross-profile refused.");
     const pr = currentPullRequest(input.provider, input.prKey);
-    if (!pr) throw new Error("Pull request is no longer available in this profile.");
+    if (!pr)
+      throw new Error(
+        "The pull request is no longer in the synced list: it may have been closed or completed, or strIDEterm no longer syncs it in this profile. Refresh the review inbox and try again.",
+      );
     const profileId = viewerProfileId || internalProfileId || String(pr.profileId || "default");
     if (String(pr.profileId || "default") !== profileId) throw new Error("Cross-profile refused.");
     assertProfileExists(getState(), profileId);

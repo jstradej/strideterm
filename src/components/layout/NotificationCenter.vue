@@ -1475,8 +1475,12 @@ async function startBasicReview(s: NotificationSession): Promise<void> {
     if (record?.outcome) await reconcileReviewOperationResults([record.outcome]);
     else await reconcileReviewOperationResults(appStore.payload?.operations?.lastResults);
   } catch (error) {
+    // A click on the error opens the pull request the review was for, like its own notification does.
+    const target = resolveJumpTarget(s);
     notifStore.showError("Could not start review", error, {
       profileId: String(s.meta?.profileId || ""),
+      workspaceId: target.workspaceId,
+      viewId: target.viewId,
     });
   }
 }

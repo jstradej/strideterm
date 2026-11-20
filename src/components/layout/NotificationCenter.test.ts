@@ -297,6 +297,57 @@ describe("NotificationCenter — sessionProfileLabel render", () => {
     });
   });
 
+  it("lets a failed basic review start lead to the pull request it was for", async () => {
+    const appStore = useAppStore();
+    const notifStore = useNotificationStore();
+    appStore.payload = makePayload({
+      appState: {
+        profiles: [{ id: "p1", name: "Profile Alpha", color: "#fff", workspaceIds: ["rev-ws"] }],
+        windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "", activeSessionId: "" }],
+        workspaces: [
+          {
+            id: "rev-ws",
+            name: "repo #17",
+            kind: "terminal",
+            profileId: "p1",
+            panels: [],
+            review: { provider: "github", connectionId: "gh-1", prKey: "repo:17" },
+          },
+        ],
+      },
+    }) as AnyApi;
+    notifStore.panelOpen = true;
+    const startPullRequestReview = vi.fn(async () => {
+      throw new Error("The pull request is no longer in the synced list.");
+    });
+    notifStore.add({
+      title: "New pull request in repo #17",
+      body: "Improve startup",
+      kind: "review",
+      category: "review",
+      workspaceId: "",
+      viewId: "repo:17",
+      meta: {
+        provider: "github",
+        connectionId: "gh-1",
+        kind: "pr-new",
+        reviewActionKind: "pr-new",
+        prKey: "repo:17",
+        profileId: "p1",
+        draftState: "ready",
+        headSha: "head-2",
+      },
+    });
+    const wrapper = mount(NotificationCenter, {
+      global: { provide: { [apiKey]: { startPullRequestReview } as AnyApi } },
+    });
+    await nextTick();
+    await wrapper.find(".notification-item__start-review").trigger("click");
+    await flushPromises();
+    const failure = notifStore.sessions.find((session) => session.events[0]?.title === "Could not start review");
+    expect(failure?.workspaceId).toBe("rev-ws");
+  });
+
   it("reconciles a replayed terminal result once even while its workspace is not in the payload", async () => {
     const appStore = useAppStore();
     const notifStore = useNotificationStore();

@@ -1030,7 +1030,8 @@ export const useNotificationStore = defineStore("notifications", () => {
       workspaceId = "",
       workspaceName = "",
       profileId = "",
-    }: { workspaceId?: string; workspaceName?: string; profileId?: string } = {},
+      viewId = "",
+    }: { workspaceId?: string; workspaceName?: string; profileId?: string; viewId?: string } = {},
   ): NotificationEvent {
     const rawMessage = errorMessage(error, "Action failed");
     const body = userFacingMessage(rawMessage, "Action failed");
@@ -1049,6 +1050,8 @@ export const useNotificationStore = defineStore("notifications", () => {
         urgency: "normal",
         workspaceId,
         workspaceName,
+        // Where a click on the error leads: the thing that failed, when the caller knows it.
+        ...(viewId ? { viewId } : {}),
         category: "error",
         meta: { profileId: effectiveProfileId },
         threadKey: dedupeKey,
