@@ -9698,7 +9698,14 @@ export async function createRuntime({
               409,
             );
           }
-          notes.unshift({ id: input.id, text: input.text, owner, ownerId, revision: 1 });
+          notes.unshift({
+            id: input.id,
+            text: input.text,
+            owner,
+            ownerId,
+            revision: 1,
+            updatedAt: new Date().toISOString(),
+          });
           changed = true;
           return;
         }
@@ -9714,6 +9721,7 @@ export async function createRuntime({
         delete note.previousText;
       }
       note.revision++;
+      note.updatedAt = new Date().toISOString();
       changed = true;
     });
     if (changed) {

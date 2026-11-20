@@ -34,6 +34,8 @@ export interface SidebarNote {
   text: string;
   revision: number;
   canUndo: boolean;
+  /** ISO time the text last changed; absent on notes saved before it was recorded. */
+  updatedAt?: string;
 }
 
 export interface SidebarNotes {

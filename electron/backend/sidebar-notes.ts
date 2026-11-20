@@ -8,6 +8,8 @@ const recordSchema = saveSidebarNoteSchema.pick({ id: true, text: true }).extend
   ownerId: z.string().min(1),
   revision: z.int().positive(),
   previousText: saveSidebarNoteSchema.shape.text.optional(),
+  // A bad timestamp loses only the timestamp, never the note.
+  updatedAt: z.iso.datetime({ offset: true }).optional().catch(undefined),
 });
 
 export function normalizeSidebarNotes(
@@ -29,11 +31,18 @@ export function normalizeSidebarNotes(
     const key = JSON.stringify([note.owner, note.ownerId, note.id]);
     if (seen.has(key)) continue;
     seen.add(key);
-    notes.push(note);
+    const { updatedAt, ...rest } = note;
+    notes.push(updatedAt ? { ...rest, updatedAt } : rest);
   }
   return notes;
 }
 
 export function toSidebarNote(note: SidebarNoteRecord): SidebarNote {
-  return { id: note.id, text: note.text, revision: note.revision, canUndo: note.previousText !== undefined };
+  return {
+    id: note.id,
+    text: note.text,
+    revision: note.revision,
+    canUndo: note.previousText !== undefined,
+    ...(note.updatedAt ? { updatedAt: note.updatedAt } : {}),
+  };
 }

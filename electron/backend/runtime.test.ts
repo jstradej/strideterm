@@ -22150,13 +22150,15 @@ describe("sidebar notes", () => {
     const { runtime } = fixture;
     const scope = { profileId: "default", workspaceId: null };
     const id = "note";
+    const updatedAt = expect.any(String);
     await expect(runtime.saveSidebarNote({ ...scope, id, text: "", expectedRevision: 0 })).resolves.toEqual({
       id,
       text: "",
       revision: 1,
       canUndo: false,
+      updatedAt,
     });
-    const updated = { id, text: "New text\r\n  including whitespace ", revision: 2, canUndo: true };
+    const updated = { id, text: "New text\r\n  including whitespace ", revision: 2, canUndo: true, updatedAt };
     const saves = await Promise.allSettled([
       runtime.saveSidebarNote({ ...scope, id, text: updated.text, expectedRevision: 1 }),
       runtime.saveSidebarNote({ ...scope, id, text: "stale write", expectedRevision: 1 }),
@@ -22170,7 +22172,7 @@ describe("sidebar notes", () => {
     const statePath = path.join(fixture.userDataPath, "strideterm-state.json");
     const reloadedStore = await createStore(statePath);
     expect(reloadedStore.getState().sidebarNotes).toEqual([
-      { id, owner: "profile", ownerId: "default", text: updated.text, revision: 2, previousText: "" },
+      { id, owner: "profile", ownerId: "default", text: updated.text, revision: 2, previousText: "", updatedAt },
     ]);
 
     await expect(runtime.undoSidebarNote({ ...scope, id, expectedRevision: 2 })).resolves.toEqual({
@@ -22178,10 +22180,53 @@ describe("sidebar notes", () => {
       text: "",
       revision: 3,
       canUndo: false,
+      updatedAt,
     });
     await expect(runtime.undoSidebarNote({ ...scope, id, expectedRevision: 3 })).rejects.toThrow(/no previous/);
     expect((await createStore(statePath)).getState().sidebarNotes).toEqual([
-      { id, owner: "profile", ownerId: "default", text: "", revision: 3 },
+      { id, owner: "profile", ownerId: "default", text: "", revision: 3, updatedAt },
+    ]);
+  });
+
+  test("records when the text last changed, and not when a save changes nothing", async () => {
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+    const { runtime } = fixture;
+    const note = { profileId: "default", workspaceId: null, id: "n" };
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-11-20T10:00:00.000Z"));
+      await runtime.saveSidebarNote({ ...note, text: "a", expectedRevision: 0 });
+      vi.setSystemTime(new Date("2026-11-20T10:05:00.000Z"));
+      await expect(runtime.saveSidebarNote({ ...note, text: "a", expectedRevision: 1 })).resolves.toMatchObject({
+        updatedAt: "2026-11-20T10:00:00.000Z",
+      });
+      await expect(runtime.saveSidebarNote({ ...note, text: "b", expectedRevision: 1 })).resolves.toMatchObject({
+        updatedAt: "2026-11-20T10:05:00.000Z",
+      });
+      vi.setSystemTime(new Date("2026-11-20T11:00:00.000Z"));
+      await expect(runtime.undoSidebarNote({ ...note, expectedRevision: 2 })).resolves.toMatchObject({
+        text: "a",
+        updatedAt: "2026-11-20T11:00:00.000Z",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("keeps a stored note whose timestamp is missing or unreadable, without the timestamp", () => {
+    const record = { owner: "profile", ownerId: "default", text: "t", revision: 1 };
+    const state = normalizeState({
+      sidebarNotes: [
+        { ...record, id: "old" },
+        { ...record, id: "bad", updatedAt: "yesterday" },
+        { ...record, id: "good", updatedAt: "2026-11-20T10:00:00.000Z" },
+      ],
+    });
+    expect(state.sidebarNotes).toEqual([
+      { ...record, id: "old" },
+      { ...record, id: "bad" },
+      { ...record, id: "good", updatedAt: "2026-11-20T10:00:00.000Z" },
     ]);
   });
 

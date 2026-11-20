@@ -162,15 +162,15 @@
                   v-for="note in section.collection.notes"
                   :key="note.id"
                   class="sidebar-notes__note"
-                  :class="{ 'sidebar-notes__note--open': section.collection.activeId === note.id }"
+                  :class="{ 'sidebar-notes__note--open': isOpen(section.collection, note) }"
                 >
                   <button
                     class="sidebar-notes__note-title"
                     type="button"
                     :data-note-toggle="note.id"
-                    :aria-expanded="section.collection.activeId === note.id"
+                    :aria-expanded="isOpen(section.collection, note)"
                     :title="
-                      section.collection.activeId === note.id
+                      isOpen(section.collection, note)
                         ? 'Collapse this note'
                         : 'Open this note to read or edit it. Changes save automatically.'
                     "
@@ -182,11 +182,14 @@
                     <span class="sidebar-notes__note-text">
                       <span class="sidebar-notes__note-name">{{ titleOf(note.text) }}</span>
                       <span
-                        v-if="section.collection.activeId !== note.id && previewOf(note.text)"
+                        v-if="!isOpen(section.collection, note) && previewOf(note.text)"
                         class="sidebar-notes__note-preview"
                         >{{ previewOf(note.text) }}</span
                       >
                     </span>
+                    <span v-if="ageOf(note)" class="sidebar-notes__age" :title="editedTitle(note)">{{
+                      ageOf(note)
+                    }}</span>
                     <span
                       v-if="note.failed || note.text !== note.storedText"
                       class="sidebar-notes__unsaved"
@@ -198,7 +201,7 @@
                       "
                     ></span>
                   </button>
-                  <div v-if="section.collection.activeId === note.id" class="sidebar-notes__editor">
+                  <div v-if="isOpen(section.collection, note)" class="sidebar-notes__editor">
                     <textarea
                       :data-note-editor="note.id"
                       :aria-label="section.label + ' note text'"
@@ -312,6 +315,7 @@
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { SIDEBAR_NOTE_MAX_LENGTH } from "../../../electron/shared/sidebar-notes.js";
 import type { SidebarNote, SidebarNotesScope } from "../../../electron/shared/sidebar-notes.js";
+import { formatRelativeAge } from "../../app/relative-age.js";
 import type { getWorkspacePanelByViewId } from "../../app/selectors.js";
 import { userFacingMessage } from "../../lib/error-message.js";
 import { apiKey } from "../../types/keys.js";
@@ -341,7 +345,6 @@ interface Draft extends SidebarNote {
 interface Collection {
   scope: SidebarNotesScope;
   notes: Draft[];
-  activeId: string;
 }
 
 const collections = reactive(new Map<string, Collection>());
@@ -356,11 +359,57 @@ function collectionFor(profileId: string, workspaceId: string | null): Collectio
   const key = JSON.stringify([profileId, workspaceId]);
   let collection = collections.get(key);
   if (!collection) {
-    collection = reactive({ scope: { profileId, workspaceId }, notes: [] as Draft[], activeId: "" });
+    collection = reactive({ scope: { profileId, workspaceId }, notes: [] as Draft[] });
     collections.set(key, collection);
   }
   return collection;
 }
+
+const OPEN_NOTES_KEY = "strideterm.sidebarNotes.open";
+const OPEN_NOTES_LIMIT = 200;
+
+function readOpenNotes(): string[] {
+  try {
+    const stored: unknown = JSON.parse(localStorage.getItem(OPEN_NOTES_KEY) ?? "[]");
+    return Array.isArray(stored) ? stored.filter((key) => typeof key === "string").slice(-OPEN_NOTES_LIMIT) : [];
+  } catch {
+    return [];
+  }
+}
+
+const openNotes = reactive(new Set<string>(readOpenNotes()));
+const openKey = (collection: Collection, note: Draft) =>
+  JSON.stringify([collection.scope.profileId, collection.scope.workspaceId, note.id]);
+const isOpen = (collection: Collection, note: Draft) => openNotes.has(openKey(collection, note));
+
+function setOpen(collection: Collection, note: Draft, open: boolean) {
+  const key = openKey(collection, note);
+  openNotes.delete(key);
+  if (open) openNotes.add(key);
+  while (openNotes.size > OPEN_NOTES_LIMIT) openNotes.delete(openNotes.values().next().value as string);
+  try {
+    localStorage.setItem(OPEN_NOTES_KEY, JSON.stringify([...openNotes]));
+  } catch {
+    // Remembering which notes are open is a convenience; the panel works without it.
+  }
+}
+
+const now = ref(Date.now());
+let clock: ReturnType<typeof setInterval> | undefined;
+watch(
+  () => props.host,
+  (host) => {
+    clearInterval(clock);
+    clock = undefined;
+    if (!host) return;
+    now.value = Date.now();
+    clock = setInterval(() => (now.value = Date.now()), 30_000);
+  },
+  { immediate: true },
+);
+
+const ageOf = (note: Draft) => formatRelativeAge(note.updatedAt, now.value);
+const editedTitle = (note: Draft) => `Last edited ${new Date(note.updatedAt ?? "").toLocaleString()}`;
 
 const workspace = computed(() => (props.workspaceId ? collectionFor(props.profileId, props.workspaceId) : null));
 const global = computed(() => collectionFor(props.profileId, null));
@@ -507,6 +556,8 @@ function leaveTabNote(event: FocusEvent) {
   const card = event.currentTarget as HTMLElement;
   if (event.relatedTarget instanceof Node && card.contains(event.relatedTarget)) return;
   if (!document.hasFocus()) return;
+  // Opening the editor replaces the focused button, and Chromium reports removing a focused element as a focusout.
+  if ((event.target as Element).classList.contains("sidebar-notes__tab-body")) return;
   if (tabDraft.value?.editing) closeTabNote();
 }
 
@@ -621,6 +672,7 @@ function updateStored(note: Draft, stored: SidebarNote) {
   note.storedText = stored.text;
   note.revision = stored.revision;
   note.canUndo = stored.canUndo;
+  note.updatedAt = stored.updatedAt;
 }
 
 function merge(collection: Collection, stored: SidebarNote[]) {
@@ -712,7 +764,7 @@ const previewOf = (text: string) =>
 function closeEditor(collection: Collection, note: Draft, event: KeyboardEvent) {
   event.stopPropagation();
   flushSave(collection, note);
-  collection.activeId = "";
+  setOpen(collection, note, false);
   void nextTick(() => {
     const toggles = split.value?.querySelectorAll<HTMLElement>("[data-note-toggle]") || [];
     Array.from(toggles)
@@ -739,18 +791,19 @@ function createNote(collection: Collection) {
     note = makeDraft({ id, text: "", revision: 0, canUndo: false });
     collection.notes.unshift(note);
   }
-  collection.activeId = note.id;
+  setOpen(collection, note, true);
   focusEditor(note);
 }
 
 function discardEmpty(collection: Collection, note: Draft) {
   collection.notes = collection.notes.filter((draft) => draft !== note);
-  collection.activeId = "";
+  setOpen(collection, note, false);
 }
 
 function toggleEditor(collection: Collection, note: Draft) {
-  collection.activeId = collection.activeId === note.id ? "" : note.id;
-  if (collection.activeId) focusEditor(note);
+  const open = !isOpen(collection, note);
+  setOpen(collection, note, open);
+  if (open) focusEditor(note);
 }
 
 function editNote(collection: Collection, note: Draft, text: string) {
@@ -913,6 +966,7 @@ onBeforeUnmount(() => {
   document.removeEventListener("visibilitychange", onVisibilityChange);
   for (const timer of saveTimers.values()) clearTimeout(timer);
   clearTimeout(tabSaveTimer);
+  clearInterval(clock);
 });
 </script>
 
@@ -1247,6 +1301,13 @@ button:not(:disabled):hover {
 .sidebar-notes__note-preview {
   color: var(--muted);
   font-size: 11px;
+}
+.sidebar-notes__age {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
 }
 .sidebar-notes__unsaved {
   flex: 0 0 auto;

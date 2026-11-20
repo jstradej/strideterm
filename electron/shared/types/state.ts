@@ -834,6 +834,8 @@ export interface SidebarNoteRecord {
   text: string;
   revision: number;
   previousText?: string;
+  /** ISO time the text last changed; absent on notes saved before it was recorded. */
+  updatedAt?: string;
 }
 
 export interface AppState {

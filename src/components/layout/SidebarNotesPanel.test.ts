@@ -44,18 +44,23 @@ async function edit(value: string) {
   await flushPromises();
 }
 
+function mountPanel(workspaceId = "workspace-a") {
+  return mount(NotesPanel, {
+    props: { host, profileId: "profile-a", workspaceId },
+    global: { provide: { [apiKey]: { listSidebarNotes, saveSidebarNote, undoSidebarNote } } },
+  });
+}
+
 beforeEach(() => {
   vi.useFakeTimers();
+  localStorage.removeItem("strideterm.sidebarNotes.open");
   setActivePinia(createPinia());
   host = document.createElement("div");
   document.body.append(host);
   listSidebarNotes.mockReset().mockResolvedValue(fixture);
   saveSidebarNote.mockReset();
   undoSidebarNote.mockReset();
-  wrapper = mount(NotesPanel, {
-    props: { host, profileId: "profile-a", workspaceId: "workspace-a" },
-    global: { provide: { [apiKey]: { listSidebarNotes, saveSidebarNote, undoSidebarNote } } },
-  });
+  wrapper = mountPanel();
 });
 
 afterEach(() => {
@@ -270,6 +275,51 @@ describe("SidebarNotesPanel", () => {
     expect(document.activeElement).toBe(query(".sidebar-notes__note-title"));
   });
 
+  it("keeps several notes open at once and remembers them after the panel is mounted again", async () => {
+    listSidebarNotes.mockResolvedValue({
+      global: [],
+      workspace: [workspaceNote, { id: "note-b", text: "Second", revision: 1, canUndo: false }],
+    });
+    await wrapper.setProps({ workspaceId: "workspace-c" });
+    await flushPromises();
+    const [first, second] = host.querySelectorAll<HTMLButtonElement>(".sidebar-notes__note-title");
+    first.click();
+    second.click();
+    await flushPromises();
+    expect(host.querySelectorAll("[data-note-editor]")).toHaveLength(2);
+    query('[data-note-editor="note-a"]').dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await flushPromises();
+    expect(Array.from(host.querySelectorAll<HTMLElement>("[data-note-editor]"), (el) => el.dataset.noteEditor)).toEqual(
+      ["note-b"],
+    );
+
+    wrapper.unmount();
+    wrapper = mountPanel("workspace-c");
+    await flushPromises();
+    expect(Array.from(host.querySelectorAll<HTMLElement>("[data-note-editor]"), (el) => el.dataset.noteEditor)).toEqual(
+      ["note-b"],
+    );
+    await wrapper.setProps({ workspaceId: "workspace-a" });
+    await flushPromises();
+    expect(host.querySelector("[data-note-editor]")).toBeNull();
+  });
+
+  it("shows how long ago each note was last edited, and keeps the age current", async () => {
+    const updatedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+    listSidebarNotes.mockResolvedValue({
+      global: [],
+      workspace: [workspaceNote, { ...workspaceNote, id: "b", updatedAt }],
+    });
+    await wrapper.setProps({ workspaceId: "workspace-c" });
+    await flushPromises();
+    const ages = host.querySelectorAll<HTMLElement>(".sidebar-notes__age");
+    expect(ages).toHaveLength(1);
+    expect(ages[0].textContent).toBe("5m");
+    expect(ages[0].title).toBe(`Last edited ${new Date(updatedAt).toLocaleString()}`);
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    expect(query(".sidebar-notes__age").textContent).toBe("1h");
+  });
+
   it("resizes the tab note editor with its grip, keeps editing, and remembers the height", async () => {
     localStorage.removeItem("strideterm.sidebarNotes.editorHeight.tab");
     const appStore = useAppStore();
@@ -377,6 +427,22 @@ describe("SidebarNotesPanel", () => {
     await flushPromises();
     expect(host.querySelector("[data-tab-note-editor]")).toBeNull();
     expect(saveTabNote).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens the tab note editor although the clicked button loses focus as it is replaced", async () => {
+    const appStore = useAppStore();
+    vi.spyOn(appStore, "getPanelByViewId").mockReturnValue({
+      workspace: { id: "workspace-a", profileId: "profile-a" },
+      panel: { title: "Shell", notes: "" },
+    });
+    appStore.activeViewId = "workspace-a:terminal";
+    await flushPromises();
+    const button = query(".sidebar-notes__tab-body");
+    button.click();
+    // Chromium fires focusout from a focused element that is being removed, with no relatedTarget.
+    button.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    await flushPromises();
+    expect(document.activeElement).toBe(query("[data-tab-note-editor]"));
   });
 
   it("keeps a tab note draft that failed to save and retries it", async () => {
