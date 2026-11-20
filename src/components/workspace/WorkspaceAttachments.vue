@@ -213,67 +213,71 @@
                 ⋯
               </button>
             </div>
-            <div
-              v-if="openMenuId === attachment.transferId"
-              :ref="setMenuRef"
-              class="workspace-attachments__menu"
-              role="menu"
-              :aria-label="`Actions for ${attachment.name}`"
-              @click.stop
-              @keydown.esc.stop.prevent="closeMenu"
-            >
-              <button
-                type="button"
-                role="menuitem"
-                :disabled="!props.workspaceRoot"
-                :title="`Copy the path on ${pathOwner}`"
-                @click="copyAbsolutePath(attachment.path)"
+            <Teleport to="body">
+              <div
+                v-if="openMenuId === attachment.transferId"
+                :ref="setMenuRef"
+                class="workspace-attachments__menu"
+                role="menu"
+                :aria-label="`Actions for ${attachment.name}`"
+                :style="menuStyle"
+                @click.stop
+                @keydown.esc.stop.prevent="closeMenu"
+                @keydown.tab.prevent="closeMenu"
               >
-                Copy absolute path
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                @click="
-                  copyRelativePath(attachment.path);
-                  closeMenu();
-                "
-              >
-                Copy path
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                :disabled="!nativeClipboardAvailable"
-                :title="
-                  nativeClipboardAvailable
-                    ? 'Copy the file so it can be pasted in Explorer or Finder'
-                    : 'Available on the desktop only'
-                "
-                @click="copyFileIntoClipboard(attachment.path)"
-              >
-                Copy into clipboard
-              </button>
-              <button
-                v-if="canSave"
-                type="button"
-                role="menuitem"
-                data-role="attachment-save"
-                title="Download the file to this computer"
-                @click="saveAttachment(attachment)"
-              >
-                Save to this computer
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                class="workspace-attachments__menu-delete"
-                :disabled="deletingId === attachment.transferId"
-                @click="deleteAttachment(attachment)"
-              >
-                {{ deletingId === attachment.transferId ? "Deleting…" : "Delete" }}
-              </button>
-            </div>
+                <button
+                  type="button"
+                  role="menuitem"
+                  :disabled="!props.workspaceRoot"
+                  :title="`Copy the path on ${pathOwner}`"
+                  @click="copyAbsolutePath(attachment.path)"
+                >
+                  Copy absolute path
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  @click="
+                    copyRelativePath(attachment.path);
+                    closeMenu();
+                  "
+                >
+                  Copy path
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  :disabled="!nativeClipboardAvailable"
+                  :title="
+                    nativeClipboardAvailable
+                      ? 'Copy the file so it can be pasted in Explorer or Finder'
+                      : 'Available on the desktop only'
+                  "
+                  @click="copyFileIntoClipboard(attachment.path)"
+                >
+                  Copy into clipboard
+                </button>
+                <button
+                  v-if="canSave"
+                  type="button"
+                  role="menuitem"
+                  data-role="attachment-save"
+                  title="Download the file to this computer"
+                  @click="saveAttachment(attachment)"
+                >
+                  Save to this computer
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  class="workspace-attachments__menu-delete"
+                  :disabled="deletingId === attachment.transferId"
+                  @click="deleteAttachment(attachment)"
+                >
+                  {{ deletingId === attachment.transferId ? "Deleting…" : "Delete" }}
+                </button>
+              </div>
+            </Teleport>
           </li>
         </template>
       </ul>
@@ -675,9 +679,52 @@ function onRowKeydown(event: KeyboardEvent, path: string): void {
 function toggleMenu(transferId: string, event: MouseEvent): void {
   lastTrigger.value = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
   openMenuId.value = openMenuId.value === transferId ? null : transferId;
-  if (openMenuId.value)
-    void nextTick(() => menuRef.value?.querySelector<HTMLButtonElement>("[role='menuitem']:not(:disabled)")?.focus());
+  if (!openMenuId.value) return;
+  menuStyle.value = {};
+  void nextTick(() => {
+    placeMenu();
+    menuRef.value?.querySelector<HTMLButtonElement>("[role='menuitem']:not(:disabled)")?.focus();
+  });
 }
+
+const MENU_GAP = 4;
+const MENU_MARGIN = 8;
+const menuStyle = ref<Record<string, string>>({});
+
+// The menu is teleported to the body: inside the list it either pushed the row apart or was clipped by the
+// scrolling list and the dock. It opens below its button, or above when there is more room there.
+function placeMenu(): void {
+  const menu = menuRef.value;
+  const trigger = lastTrigger.value;
+  if (!menu || !trigger) return;
+  const anchor = trigger.getBoundingClientRect();
+  const below = window.innerHeight - anchor.bottom - MENU_GAP - MENU_MARGIN;
+  const above = anchor.top - MENU_GAP - MENU_MARGIN;
+  const upwards = menu.offsetHeight > below && above > below;
+  menuStyle.value = {
+    right: `${Math.max(MENU_MARGIN, window.innerWidth - anchor.right)}px`,
+    ...(upwards
+      ? { bottom: `${window.innerHeight - anchor.top + MENU_GAP}px` }
+      : { top: `${anchor.bottom + MENU_GAP}px` }),
+    maxHeight: `${Math.max(0, upwards ? above : below)}px`,
+  };
+}
+
+// A fixed menu does not follow its row, so scrolling the list or resizing the window closes it.
+function closeMenuOnViewportChange(event: Event): void {
+  if (event.target instanceof Node && menuRef.value?.contains(event.target)) return;
+  closeMenu();
+}
+
+watch(openMenuId, (id) => {
+  if (id) {
+    window.addEventListener("scroll", closeMenuOnViewportChange, true);
+    window.addEventListener("resize", closeMenuOnViewportChange);
+  } else {
+    window.removeEventListener("scroll", closeMenuOnViewportChange, true);
+    window.removeEventListener("resize", closeMenuOnViewportChange);
+  }
+});
 
 function setMenuRef(element: Element | ComponentPublicInstance | null): void {
   menuRef.value = element instanceof HTMLElement ? element : null;
@@ -775,6 +822,8 @@ onUnmounted(() => {
   requestEpoch += 1;
   stopPolling();
   if (feedbackTimer) clearTimeout(feedbackTimer);
+  window.removeEventListener("scroll", closeMenuOnViewportChange, true);
+  window.removeEventListener("resize", closeMenuOnViewportChange);
 });
 </script>
 
@@ -1084,14 +1133,15 @@ onUnmounted(() => {
   stroke-linejoin: round;
 }
 .workspace-attachments__menu {
-  z-index: 5;
+  position: fixed;
+  /* Above the notification dock (9000). */
+  z-index: 9100;
   display: grid;
-  grid-column: 1 / -1;
-  justify-self: end;
   width: max-content;
   min-width: 180px;
-  margin: 4px 0 0 auto;
+  overflow-y: auto;
   padding: 4px;
+  color: var(--text);
   border: 1px solid var(--border-color, rgba(255, 255, 255, 0.18));
   border-radius: 5px;
   background: var(--panel-elevated, var(--panel));

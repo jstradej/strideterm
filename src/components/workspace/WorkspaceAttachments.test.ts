@@ -34,7 +34,7 @@ function mountPanel(
 ): VueWrapper<ComponentPublicInstance<WorkspaceAttachmentsProps>> {
   return mount(WorkspaceAttachments, {
     props: { workspaceId: "workspace-a", ...props },
-    global: { provide: { [apiKey as symbol]: api } },
+    global: { provide: { [apiKey as symbol]: api }, stubs: { teleport: true } },
   }) as unknown as VueWrapper<ComponentPublicInstance<WorkspaceAttachmentsProps>>;
 }
 
@@ -210,6 +210,49 @@ describe("WorkspaceAttachments", () => {
     const nativeCopy = wrapper.findAll("[role='menuitem']").find((button) => button.text() === "Copy into clipboard")!;
     expect(nativeCopy.attributes("disabled")).toBeDefined();
     expect(fileClipboardCopy).not.toHaveBeenCalled();
+  });
+
+  it("opens the row menu above the list beside its button, not inside the row, and upwards near the bottom", async () => {
+    const wrapper = mount(WorkspaceAttachments, {
+      props: { workspaceId: "workspace-a", openByDefault: true, panel: true },
+      global: { provide: { [apiKey as symbol]: { attachmentList: vi.fn().mockResolvedValue([attachment]) } } },
+    });
+    try {
+      await flushPromises();
+      const trigger = wrapper.get("[data-role='attachment-menu-trigger']");
+      const box = (top: number) =>
+        vi.spyOn(trigger.element, "getBoundingClientRect").mockReturnValue({
+          top,
+          bottom: top + 20,
+          right: 300,
+          left: 280,
+        } as DOMRect);
+      vi.spyOn(window, "innerHeight", "get").mockReturnValue(800);
+      vi.spyOn(window, "innerWidth", "get").mockReturnValue(1000);
+      vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(150);
+
+      box(100);
+      await trigger.trigger("click");
+      const menu = document.body.querySelector<HTMLElement>("[role='menu']")!;
+      expect(menu).not.toBeNull();
+      expect(wrapper.element.contains(menu)).toBe(false);
+      expect(menu.style.top).toBe("124px");
+      expect(menu.style.right).toBe("700px");
+      expect(menu.style.bottom).toBe("");
+
+      await trigger.trigger("click");
+      box(700);
+      await trigger.trigger("click");
+      const raised = document.body.querySelector<HTMLElement>("[role='menu']")!;
+      expect(raised.style.top).toBe("");
+      expect(raised.style.bottom).toBe("104px");
+
+      window.dispatchEvent(new Event("scroll"));
+      await flushPromises();
+      expect(document.body.querySelector("[role='menu']")).toBeNull();
+    } finally {
+      wrapper.unmount();
+    }
   });
 
   it("ignores a stale list response after switching workspace", async () => {

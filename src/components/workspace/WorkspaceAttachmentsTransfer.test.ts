@@ -50,7 +50,7 @@ let showError: ReturnType<typeof vi.fn>;
 function mountPanel(api: Record<string, unknown>, props: Record<string, unknown> = {}) {
   return mount(WorkspaceAttachments, {
     props: { workspaceId: "ws-a", workspaceRoot: "/srv/proj", openByDefault: true, panel: true, ...props },
-    global: { provide: { [apiKey as symbol]: api } },
+    global: { provide: { [apiKey as symbol]: api }, stubs: { teleport: true } },
   });
 }
 

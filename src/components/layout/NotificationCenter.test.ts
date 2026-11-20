@@ -1228,7 +1228,7 @@ describe("NotificationCenter — Attachments tab", () => {
 
     vi.spyOn(window, "confirm").mockReturnValueOnce(true);
     await wrapper.get("[data-role='attachment-menu-trigger']").trigger("click");
-    await wrapper.get(".workspace-attachments__menu-delete").trigger("click");
+    document.body.querySelector<HTMLButtonElement>(".workspace-attachments__menu-delete")!.click();
     await flushPromises();
     expect(attachmentDelete).toHaveBeenCalledWith({
       workspaceId: "ws-a",
