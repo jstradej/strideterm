@@ -105,10 +105,15 @@
             class="notification-center__tab"
             :class="{ 'notification-center__tab--active': activeTab === 'automations' }"
             aria-label="Automations"
-            title="Automations — status, upcoming runs, and pause controls."
+            :title="automationTabTitle"
             @click="activeTab = 'automations'"
           >
-            <span class="notification-center__tab-icon" aria-hidden="true"><AutomationIcon /></span>
+            <span
+              class="notification-center__tab-icon notification-center__automation-icon"
+              :class="automationIconClass"
+              aria-hidden="true"
+              ><AutomationIcon
+            /></span>
             <span class="notification-center__tab-label">Automations</span>
             <span
               v-if="appStore.payload?.automations?.paused"
@@ -116,6 +121,14 @@
               title="All automations are paused"
               aria-label="All automations are paused"
               >Ⅱ</span
+            >
+            <span
+              v-if="automationActivity.unseenCount > 0"
+              :key="automationActivity.unseenCount"
+              class="notification-center__title-badge notification-center__automation-badge"
+              :class="{ 'notification-center__automation-badge--failed': automationActivity.unseenFailedCount > 0 }"
+              :aria-label="automationUnseenLabel"
+              >{{ automationUnseenBadge }}</span
             >
           </button>
           <button
@@ -178,12 +191,28 @@
               :title="`${runningAgents.length} agents running`"
               >{{ runningAgents.length }}</span
             >
-            <span
-              v-else-if="activeTab === 'automations' && appStore.payload?.automations?.paused"
-              class="notification-center__title-badge"
-              title="All automations are paused"
-              >Ⅱ</span
-            >
+            <span v-else-if="activeTab === 'automations'" class="notification-center__automation-extras">
+              <span
+                v-if="automationLive"
+                class="notification-center__automation-icon"
+                :class="automationIconClass"
+                aria-hidden="true"
+                ><AutomationIcon
+              /></span>
+              <span
+                v-if="appStore.payload?.automations?.paused"
+                class="notification-center__title-badge"
+                title="All automations are paused"
+                >Ⅱ</span
+              >
+              <span
+                v-if="automationActivity.unseenCount > 0"
+                class="notification-center__title-badge notification-center__automation-badge"
+                :class="{ 'notification-center__automation-badge--failed': automationActivity.unseenFailedCount > 0 }"
+                :title="automationUnseenLabel"
+                >{{ automationUnseenBadge }}</span
+              >
+            </span>
           </button>
           <div v-if="tabMenuOpen" class="notification-center__tabmenu-list" role="menu">
             <button
@@ -204,12 +233,28 @@
                 class="notification-center__title-badge"
                 >{{ runningAgents.length }}</span
               >
-              <span
-                v-else-if="t.id === 'automations' && appStore.payload?.automations?.paused"
-                class="notification-center__title-badge"
-                title="All automations are paused"
-                >Ⅱ</span
-              >
+              <span v-else-if="t.id === 'automations'" class="notification-center__automation-extras">
+                <span
+                  v-if="automationLive"
+                  class="notification-center__automation-icon"
+                  :class="automationIconClass"
+                  aria-hidden="true"
+                  ><AutomationIcon
+                /></span>
+                <span
+                  v-if="appStore.payload?.automations?.paused"
+                  class="notification-center__title-badge"
+                  title="All automations are paused"
+                  >Ⅱ</span
+                >
+                <span
+                  v-if="automationActivity.unseenCount > 0"
+                  class="notification-center__title-badge notification-center__automation-badge"
+                  :class="{ 'notification-center__automation-badge--failed': automationActivity.unseenFailedCount > 0 }"
+                  :title="automationUnseenLabel"
+                  >{{ automationUnseenBadge }}</span
+                >
+              </span>
             </button>
           </div>
         </div>
@@ -685,6 +730,7 @@ import AutomationsPanel from "./AutomationsPanel.vue";
 import AutomationIcon from "../common/AutomationIcon.vue";
 import SandboxRequestList from "./SandboxRequestList.vue";
 import { useSandboxRequestsStore } from "../../stores/sandbox-requests.js";
+import { useAutomationActivityStore } from "../../stores/automation-activity.js";
 import WorkspaceAttachments from "../workspace/WorkspaceAttachments.vue";
 import MobileDeviceList from "../mobile/MobileDeviceList.vue";
 import { dayBandKey, dayBandLabel } from "../../app/helpers.js";
@@ -877,6 +923,33 @@ const runningAgents = computed((): RunningAgentRow[] => {
     taskRunnerSnapshot: ((payload as any).taskRunner as Record<string, { state?: string }>) || null,
     workspaceGrid: appStore.workspaceGrid,
   });
+});
+
+// --- Automation activity ------------------------------------------------------
+// Spins while a run works, blinks while one waits for the user, and counts the
+// finished runs nobody has opened the dashboard for yet.
+const automationActivity = useAutomationActivityStore();
+const automationLive = computed(() => automationActivity.runningCount > 0 || automationActivity.awaitingCount > 0);
+const automationIconClass = computed(() => ({
+  "notification-center__automation-icon--live": automationLive.value,
+  "notification-center__automation-icon--running": automationActivity.runningCount > 0,
+  "notification-center__automation-icon--awaiting": automationActivity.awaitingCount > 0,
+}));
+const automationUnseenBadge = computed(() =>
+  automationActivity.unseenCount > 99 ? "99+" : String(automationActivity.unseenCount),
+);
+const automationUnseenLabel = computed(() => {
+  const count = automationActivity.unseenCount;
+  const failed = automationActivity.unseenFailedCount;
+  return `${count} finished ${count === 1 ? "run" : "runs"} not checked yet${failed ? ` (${failed} failed)` : ""}`;
+});
+const automationTabTitle = computed(() => {
+  const lines = ["Automations — status, upcoming runs, and pause controls."];
+  const { runningCount, awaitingCount, unseenCount } = automationActivity;
+  if (runningCount) lines.push(`${runningCount} running`);
+  if (awaitingCount) lines.push(`${awaitingCount} waiting for your answer`);
+  if (unseenCount) lines.push(`${automationUnseenLabel.value} — open its dashboard to clear`);
+  return lines.join("\n");
 });
 
 // One shared minute clock for the elapsed column — the panel's own 30s tick

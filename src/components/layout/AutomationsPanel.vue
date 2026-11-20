@@ -66,9 +66,20 @@
           <option value="failed">Last run failed</option>
         </select>
       </div>
-      <p class="automations-panel__count" aria-live="polite">
-        {{ filteredRows.length }} of {{ rows.length }} in this profile
-      </p>
+      <div class="automations-panel__count-row">
+        <p class="automations-panel__count" aria-live="polite">
+          {{ filteredRows.length }} of {{ rows.length }} in this profile
+        </p>
+        <button
+          v-if="activity.unseenCount > 0"
+          type="button"
+          class="automations-panel__mark-seen"
+          title="Clear the new-run badge for every automation in this profile without opening the dashboards."
+          @click="activity.markSeen()"
+        >
+          Mark all checked
+        </button>
+      </div>
       <div v-if="!filteredRows.length" class="automations-panel__no-results">
         <p>No automations match these filters.</p>
         <button
@@ -86,12 +97,24 @@
           :key="row.workspace.id"
           type="button"
           class="automation-overview"
+          :class="{
+            'automation-overview--unseen': row.unseen > 0,
+            'automation-overview--unseen-failed': row.unseenFailed,
+          }"
           :data-workspace-id="row.workspace.id"
           :title="`Open ${row.workspace.name} automation dashboard`"
           @click="$emit('open', row.workspace.id)"
         >
           <span class="automation-overview__heading">
-            <strong><AutomationIcon class="automation-overview__icon" /> {{ row.workspace.name }}</strong>
+            <strong
+              ><AutomationIcon class="automation-overview__icon" /> {{ row.workspace.name }}
+              <span
+                v-if="row.unseen > 0"
+                class="automation-overview__new"
+                :title="`${row.unseen} finished ${row.unseen === 1 ? 'run' : 'runs'} not checked yet — open the dashboard to clear`"
+                >{{ row.unseen }} new</span
+              ></strong
+            >
             <AutomationStatusBadge class="automation-overview__state" :state="row.state">{{
               stateLabel(row.state)
             }}</AutomationStatusBadge>
@@ -126,6 +149,7 @@ import AutomationStatusBadge from "../common/AutomationStatusBadge.vue";
 import { computed, inject, ref, watch } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
+import { useAutomationActivityStore } from "../../stores/automation-activity.js";
 import { apiKey } from "../../types/keys.js";
 import type { Transport } from "../../transport.js";
 import type { WorkspaceState } from "../../../electron/shared/types/state.js";
@@ -141,6 +165,7 @@ interface Summary {
 defineEmits<{ open: [workspaceId: string] }>();
 const app = useAppStore();
 const notifications = useNotificationStore();
+const activity = useAutomationActivityStore();
 const api = inject<Transport>(apiKey) ?? app.getApi();
 const canPause = computed(() => !!api?.setAutomationsPaused);
 const paused = computed(() => app.payload?.automations?.paused === true);
@@ -182,6 +207,8 @@ const rows = computed(() => {
         nextRunAt: definition.enabled && !paused.value ? summary?.nextRunAt : null,
         lastRun: summary?.lastRun,
         lastRunFailed: !!summary?.lastRun && ["failed", "timed-out", "interrupted"].includes(summary.lastRun.state),
+        unseen: activity.unseenCountFor(workspace.id),
+        unseenFailed: activity.unseenRuns.some((run) => run.workspaceId === workspace.id && run.failed),
       };
     });
 });
@@ -306,7 +333,44 @@ async function togglePause(): Promise<void> {
   cursor: default;
 }
 .automations-panel__count {
+  margin: 0;
+}
+.automations-panel__count-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   margin: 10px 0 8px;
+}
+.automations-panel__mark-seen {
+  padding: 2px 6px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.automations-panel__mark-seen:hover {
+  background: rgba(var(--tint), 0.08);
+}
+.automation-overview--unseen {
+  border-left: 3px solid var(--success);
+}
+.automation-overview--unseen-failed {
+  border-left-color: var(--danger);
+}
+.automation-overview__new {
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: var(--success);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+}
+.automation-overview--unseen-failed .automation-overview__new {
+  background: var(--danger);
 }
 .automations-panel__filters {
   display: grid;

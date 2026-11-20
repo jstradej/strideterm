@@ -218,6 +218,55 @@ describe("NotificationCenter — Automations tab", () => {
     wrapper.unmount();
   });
 
+  it("animates the tab icon while runs work or wait and badges finished runs nobody checked", async () => {
+    window.localStorage.setItem(
+      "strideterm-automation-seen-runs",
+      JSON.stringify({ since: "2026-11-17T00:00:00Z", seen: [] }),
+    );
+    const { wrapper, app } = await mountPanel();
+    const icon = () => wrapper.get(".notification-center__tab .notification-center__automation-icon");
+    expect(icon().classes()).not.toContain("notification-center__automation-icon--live");
+    expect(wrapper.find(".notification-center__tab .notification-center__automation-badge").exists()).toBe(false);
+
+    const busy = makePayload();
+    busy.automations!.byWorkspaceId.auto = { currentRun: { runId: "now", state: "running" } };
+    app.payload = busy;
+    await flushPromises();
+    expect(icon().classes()).toEqual(
+      expect.arrayContaining([
+        "notification-center__automation-icon--live",
+        "notification-center__automation-icon--running",
+      ]),
+    );
+    busy.automations!.byWorkspaceId.auto = { currentRun: { runId: "now", state: "awaiting-user" } };
+    app.payload = { ...busy };
+    await flushPromises();
+    expect(icon().classes()).toContain("notification-center__automation-icon--awaiting");
+    expect(icon().classes()).not.toContain("notification-center__automation-icon--running");
+
+    const finished = makePayload();
+    finished.automations!.recentRuns = [
+      { workspaceId: "auto", runId: "r1", state: "succeeded", finishedAt: "2026-11-18T07:00:00Z" },
+      { workspaceId: "auto", runId: "r2", state: "failed", finishedAt: "2026-11-18T08:00:00Z" },
+      { workspaceId: "foreign", runId: "r3", state: "failed", finishedAt: "2026-11-18T08:00:00Z" },
+    ];
+    app.payload = finished;
+    await flushPromises();
+    expect(icon().classes()).not.toContain("notification-center__automation-icon--live");
+    const badge = wrapper.get(".notification-center__tab .notification-center__automation-badge");
+    expect(badge.text()).toBe("2");
+    expect(badge.classes()).toContain("notification-center__automation-badge--failed");
+    expect(wrapper.get(".automation-overview__new").text()).toBe("2 new");
+
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Mark all checked")!
+      .trigger("click");
+    expect(wrapper.find(".notification-center__tab .notification-center__automation-badge").exists()).toBe(false);
+    expect(wrapper.find(".automation-overview__new").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
   it("shows an empty state when the profile has no automations", async () => {
     const { wrapper, app } = await mountPanel();
     const empty = makePayload();

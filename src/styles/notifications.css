@@ -1114,6 +1114,65 @@
   line-height: 1;
 }
 
+/* Automations tab: the gear turns while a run works and glows orange while one
+   waits for the user. Shown even in label mode so activity is never hidden. */
+.notification-center__automation-extras,
+.notification-center__automation-extras .notification-center__automation-icon,
+.notification-center__tab-icon.notification-center__automation-icon--live {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.notification-center__automation-icon svg {
+  transform-origin: 50% 50%;
+}
+.notification-center__automation-icon--live {
+  color: var(--accent);
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--accent) 55%, transparent));
+}
+.notification-center__automation-icon--running svg {
+  animation: notif-automation-spin 2.4s linear infinite;
+}
+.notification-center__automation-icon--awaiting {
+  animation: notif-automation-blink 1.1s ease-in-out infinite;
+}
+@keyframes notif-automation-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes notif-automation-blink {
+  50% {
+    opacity: 0.35;
+    filter: drop-shadow(0 0 6px var(--accent));
+  }
+}
+
+/* Finished runs not checked yet: green, red when one of them failed. Keyed on
+   the count, so every newly finished run pops the badge once. */
+.notification-center__automation-badge {
+  background: var(--success);
+  color: #fff;
+  animation: notif-automation-badge-pop 0.45s cubic-bezier(0.3, 1.6, 0.5, 1);
+}
+.notification-center__automation-badge--failed {
+  background: var(--danger);
+}
+@keyframes notif-automation-badge-pop {
+  from {
+    transform: scale(0.3);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .notification-center__automation-icon--running svg,
+  .notification-center__automation-badge {
+    animation: none;
+  }
+  .notification-center__automation-icon--awaiting {
+    animation-duration: 2.4s;
+  }
+}
+
 /* Hamburger tab switcher — hidden until the panel is too narrow for even the
    icon tabs (revealed by the ≤520px container query below). */
 .notification-center__tabmenu {
