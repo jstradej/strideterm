@@ -2,7 +2,10 @@ import { z } from "zod";
 
 export const SIDEBAR_NOTE_MAX_LENGTH = 65_536;
 
-const noteId = z.string().min(1);
+export const SIDEBAR_NOTE_ID_MAX_LENGTH = 200;
+export const SIDEBAR_NOTES_MAX_PER_OWNER = 500;
+
+const noteId = z.string().min(1).max(SIDEBAR_NOTE_ID_MAX_LENGTH);
 const noteText = z.string().max(SIDEBAR_NOTE_MAX_LENGTH);
 const revision = z.int();
 

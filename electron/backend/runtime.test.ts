@@ -30,6 +30,11 @@ import {
 } from "../shared/azure-closed-pr-cleanup-events.js";
 import type { AzureClosedPrCleanupResult } from "../shared/types/ipc-results.js";
 import { reviewPrActionSnapshotSchema } from "../shared/review-pr-actions.js";
+import {
+  SIDEBAR_NOTE_ID_MAX_LENGTH,
+  SIDEBAR_NOTES_MAX_PER_OWNER,
+  saveSidebarNoteSchema,
+} from "../shared/sidebar-notes.js";
 import { normalizeCwd } from "./notify-url-registry.js";
 import { createStore } from "./store.js";
 import { createCredentialStore } from "./shared/credential-store.js";
@@ -22214,6 +22219,47 @@ describe("sidebar notes", () => {
     expect(counters().default).toBe(first + 2);
     expect(counters().other).toBeGreaterThan(0);
     expect(JSON.stringify(runtime.getPayload())).not.toContain("secret note text");
+  });
+
+  test("the schema refuses an over-long note, profile or workspace id", () => {
+    const valid = { profileId: "default", workspaceId: null, id: "n", text: "", expectedRevision: 0 };
+    const long = "x".repeat(SIDEBAR_NOTE_ID_MAX_LENGTH + 1);
+    expect(saveSidebarNoteSchema.safeParse(valid).success).toBe(true);
+    expect(saveSidebarNoteSchema.safeParse({ ...valid, id: "x".repeat(SIDEBAR_NOTE_ID_MAX_LENGTH) }).success).toBe(
+      true,
+    );
+    expect(saveSidebarNoteSchema.safeParse({ ...valid, id: long }).success).toBe(false);
+    expect(saveSidebarNoteSchema.safeParse({ ...valid, profileId: long }).success).toBe(false);
+    expect(saveSidebarNoteSchema.safeParse({ ...valid, workspaceId: long }).success).toBe(false);
+  });
+
+  test("refuses a new note past the per-owner cap, but still edits existing ones", async () => {
+    const fixture = await createFixture({
+      initialState: {
+        profiles: [{ id: "default" }],
+        workspaces: [{ id: "mine", profileId: "default", name: "Mine", cwd: "/tmp/mine" }],
+        windowSlots: [{ id: "win-local", profileId: "default", activeWorkspaceId: "mine" }],
+      },
+    });
+    fixtures.push(fixture);
+    const { runtime } = fixture;
+    const global = { profileId: "default", workspaceId: null };
+    for (let index = 0; index < SIDEBAR_NOTES_MAX_PER_OWNER; index++) {
+      await runtime.saveSidebarNote({ ...global, id: `n${index}`, text: "x", expectedRevision: 0 }, "win-local");
+    }
+    await expect(
+      runtime.saveSidebarNote({ ...global, id: "one-too-many", text: "x", expectedRevision: 0 }, "win-local"),
+    ).rejects.toThrow(new RegExp(`at most ${SIDEBAR_NOTES_MAX_PER_OWNER} notes`));
+    await expect(
+      runtime.saveSidebarNote({ ...global, id: "n0", text: "edited", expectedRevision: 1 }, "win-local"),
+    ).resolves.toMatchObject({ id: "n0", text: "edited", revision: 2 });
+    await expect(
+      runtime.saveSidebarNote(
+        { profileId: "default", workspaceId: "mine", id: "w0", text: "x", expectedRevision: 0 },
+        "win-local",
+      ),
+    ).resolves.toMatchObject({ id: "w0" });
+    expect(runtime.listSidebarNotes({ ...global }, "win-local").global).toHaveLength(SIDEBAR_NOTES_MAX_PER_OWNER);
   });
 
   test("scopes profile and workspace notes to the window's profile", async () => {

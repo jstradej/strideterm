@@ -19,6 +19,7 @@ import {
 } from "../shared/azure-closed-pr-cleanup-events.js";
 import { createStore } from "./store.js";
 import { toSidebarNote } from "./sidebar-notes.js";
+import { SIDEBAR_NOTES_MAX_PER_OWNER } from "../shared/sidebar-notes.js";
 import type {
   SaveSidebarNote,
   SidebarNote,
@@ -9688,6 +9689,15 @@ export async function createRuntime({
       }
       if ("text" in input) {
         if (!note) {
+          if (
+            notes.filter((entry) => entry.owner === owner && entry.ownerId === ownerId).length >=
+            SIDEBAR_NOTES_MAX_PER_OWNER
+          ) {
+            throw new ClientRequestError(
+              `A profile or workspace holds at most ${SIDEBAR_NOTES_MAX_PER_OWNER} notes. Reuse an existing note.`,
+              409,
+            );
+          }
           notes.unshift({ id: input.id, text: input.text, owner, ownerId, revision: 1 });
           changed = true;
           return;
