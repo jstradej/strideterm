@@ -787,6 +787,11 @@ export function buildRemoteCore(
         matchesProfile(run, scope),
       ) as RemoteStateV2["sshFileTransfers"]["lastRuns"],
     },
+    reviewTrust: {
+      waiting: ((composed.reviewTrust?.waiting || []) as AnyRecord[]).filter((entry) =>
+        matchesProfile(entry, scope),
+      ) as RemoteStateV2["reviewTrust"]["waiting"],
+    },
     reviewPrActions: {
       pending: ((composed.reviewPrActions?.pending || []) as AnyRecord[]).filter((proposal) =>
         matchesProfile(proposal, scope),
@@ -854,6 +859,7 @@ export const STATE_PAYLOAD_KEYS: ReadonlySet<string> = new Set([
   "operations",
   "reviewGit",
   "sshFileTransfers",
+  "reviewTrust",
   "reviewPrActions",
   "secureStorage",
   "remoteClient",

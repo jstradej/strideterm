@@ -566,6 +566,12 @@
                   :workspace-id="row.session.workspaceId"
                   :fallback="sessionBody(row.session)"
                 />
+                <ReviewTrustActions
+                  v-else-if="row.session.category === 'review-trust'"
+                  :view-id="row.session.viewId"
+                  :fallback="sessionBody(row.session)"
+                  @open="openReviewTrustTerminal(row.session)"
+                />
                 <p v-else class="notification-item__body" :title="sessionBody(row.session)">
                   {{ sessionBody(row.session) }}
                 </p>
@@ -607,7 +613,11 @@
                   </button>
                 </details>
                 <div
-                  v-if="row.session.state === 'waiting' && row.session.category !== 'sandbox'"
+                  v-if="
+                    row.session.state === 'waiting' &&
+                    row.session.category !== 'sandbox' &&
+                    row.session.category !== 'review-trust'
+                  "
                   class="notification-item__quick-actions"
                 >
                   <button
@@ -759,6 +769,7 @@ import ApprovalsPanel from "./ApprovalsPanel.vue";
 import AutomationsPanel from "./AutomationsPanel.vue";
 import AutomationIcon from "../common/AutomationIcon.vue";
 import SandboxRequestList from "./SandboxRequestList.vue";
+import ReviewTrustActions from "./ReviewTrustActions.vue";
 import { useSandboxRequestsStore } from "../../stores/sandbox-requests.js";
 import { useAutomationActivityStore } from "../../stores/automation-activity.js";
 import WorkspaceAttachments from "../workspace/WorkspaceAttachments.vue";
@@ -1837,11 +1848,20 @@ async function jumpToSandboxRequest(s: NotificationSession): Promise<void> {
   await navigateToTarget({ workspaceId: s.workspaceId, viewId: record?.sessionId || "" });
 }
 
+/** The review agent's own terminal; the entry stays, it is the question and its button. */
+async function openReviewTrustTerminal(s: NotificationSession): Promise<void> {
+  await navigateToTarget({ workspaceId: s.workspaceId, viewId: s.viewId.replace(/^review-trust:/u, "") });
+}
+
 async function jump(s: NotificationSession): Promise<void> {
   // The entry is the question itself: opening the tab that asked neither answers nor resolves it, and the dock
   // stays open so the buttons are still in reach.
   if (s.category === "sandbox") {
     await jumpToSandboxRequest(s);
+    return;
+  }
+  if (s.category === "review-trust") {
+    await openReviewTrustTerminal(s);
     return;
   }
   const target = resolveJumpTarget(s);
@@ -1909,7 +1929,7 @@ async function dismiss(s: NotificationSession): Promise<void> {
   // Dismiss = user silenced the alert WITHOUT engaging → dismissed=true.
   // Feeds adaptive suppression for terminal alerts; review events don't
   // use adaptive suppression, so skip the backend call.
-  if (s.category !== "review" && s.category !== "sandbox") {
+  if (s.category !== "review" && s.category !== "sandbox" && s.category !== "review-trust") {
     await notifStore.runWithToast("Clear notification failed", () =>
       notifStore.clearOnBackend(backendSessionId(s), { dismissed: true }),
     );

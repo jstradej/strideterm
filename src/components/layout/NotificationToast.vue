@@ -198,7 +198,8 @@ function dismiss() {
 }
 
 function onClickToast() {
-  const threadId = props.toast?.category === "sandbox" ? props.toast.meta?.threadId : "";
+  const threadId =
+    props.toast?.category === "sandbox" || props.toast?.category === "review-trust" ? props.toast.meta?.threadId : "";
   // A request that is waiting for an answer has to be in front of the user, not behind a toggle.
   if (threadId) notifStore.openPanelOnSession(threadId);
   else notifStore.togglePanel();

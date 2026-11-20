@@ -26,7 +26,12 @@ import * as attachments from "./attachments.js";
 import { AttachmentPolicyError } from "./attachment-file-policy.js";
 import { deriveSessionKey, openEnvelope, publicKeyFromRaw, sealEnvelope } from "./mobile/mobile-crypto.js";
 import { decodeCanonicalPublicKey } from "./mobile/mobile-crypto.js";
-import { START_PULL_REQUEST_REVIEW_ROUTE, startPullRequestReviewSchema } from "../shared/pull-request-review.js";
+import {
+  START_PULL_REQUEST_REVIEW_ROUTE,
+  startPullRequestReviewSchema,
+  TRUST_REVIEW_FOLDER_ROUTE,
+  trustReviewFolderSchema,
+} from "../shared/pull-request-review.js";
 import { START_PIPELINE_AGENT_ROUTE, startPipelineAgentSchema } from "../shared/pipeline-agent.js";
 import { START_JIRA_DEVELOPMENT_ROUTE, startJiraDevelopmentSchema } from "../shared/jira-development.js";
 import {
@@ -3857,6 +3862,12 @@ export async function startRemoteServer({
     "/api/review/start": (body, windowId) =>
       runtime.startPullRequestReview(
         validateIpc(startPullRequestReviewSchema, body, `POST ${START_PULL_REQUEST_REVIEW_ROUTE}`),
+        windowId,
+      ),
+    // The user's answer to a review agent's folder-trust question; scoped to the caller's profile by the runtime.
+    "/api/review/trust-folder": (body, windowId) =>
+      runtime.trustReviewFolder(
+        validateIpc(trustReviewFolderSchema, body, `POST ${TRUST_REVIEW_FOLDER_ROUTE}`),
         windowId,
       ),
     // Starts an agent on a pipeline run (a checkout plus its logs) and answers at once with an operation id; the

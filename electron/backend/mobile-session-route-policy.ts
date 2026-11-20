@@ -181,6 +181,8 @@ export const MOBILE_PROBE_ROUTES: ReadonlySet<string> = new Set([
 /** Routes that need an explicit paired-device grant in addition to profile scoping. */
 export const MOBILE_REQUIRED_CAPABILITIES: Readonly<Record<string, string>> = {
   "/api/review/start": "review.start",
+  // Answers the folder-trust question of a review that grant started; the session it names is profile-guarded.
+  "/api/review/trust-folder": "review.start",
 };
 
 /** Families that carry their own authorization (`/api/mobile/workspaces/*`, `/api/remote-client/*`). */

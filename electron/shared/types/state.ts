@@ -7,6 +7,7 @@ import type { AzureClosedPrCleanupFinished } from "../azure-closed-pr-cleanup-ev
 import type { OperationsState } from "../operation-events.js";
 import type { ReviewGitState } from "../review-git-events.js";
 import type { SshFileTransfersState } from "../ssh-file-events.js";
+import type { ReviewTrustState } from "../pull-request-review.js";
 import type { ReviewPrActionsState } from "../review-pr-actions.js";
 import type { AppDistribution, MicrosoftStoreUpdateStatus } from "../app-distribution.js";
 import type { JiraWorkspaceViewsSnapshot } from "./jira-workspace-views.js";
@@ -1362,6 +1363,8 @@ export interface StatePayload {
   reviewGit: ReviewGitState;
   /** SSH file transfers running now and finished within 24 h (runtime-only, never persisted). */
   sshFileTransfers: SshFileTransfersState;
+  /** Review agents waiting in their terminal for the user to trust their checkout (runtime-only). */
+  reviewTrust: ReviewTrustState;
   /** Pending MCP PR actions awaiting an explicit application decision. */
   reviewPrActions: ReviewPrActionsState;
   /** Per-remote-client context — only set when the payload is composed for a specific remote session. */
@@ -1461,6 +1464,8 @@ export interface RemoteStateV2 {
   reviewGit: ReviewGitState;
   /** Only the client's profile's SSH file transfers. */
   sshFileTransfers: SshFileTransfersState;
+  /** Only the client's profile's review agents waiting for folder trust. */
+  reviewTrust: ReviewTrustState;
   /** Pending MCP PR actions in the remote client's active profile only. */
   reviewPrActions: ReviewPrActionsState;
   plugins: unknown[];

@@ -24,7 +24,11 @@ import type {
   ReviewGitStarted,
   ReviewPrActionConfirmationResult,
 } from "./types/ipc-results.js";
-import type { StartPullRequestReviewInput, StartPullRequestReviewResult } from "./pull-request-review.js";
+import type {
+  StartPullRequestReviewInput,
+  StartPullRequestReviewResult,
+  TrustReviewFolderInput,
+} from "./pull-request-review.js";
 import type { StartPipelineAgentInput, StartPipelineAgentResult } from "./pipeline-agent.js";
 import type { StartJiraDevelopmentInput, StartJiraDevelopmentResult } from "./jira-development.js";
 import type {
@@ -546,6 +550,7 @@ export interface StridetermAPI {
     approved: boolean;
   }) => Promise<ReviewPrActionConfirmationResult>;
   startPullRequestReview: (payload: StartPullRequestReviewInput) => Promise<StartPullRequestReviewResult>;
+  trustReviewFolder: (payload: TrustReviewFolderInput) => Promise<{ trusted: true }>;
   startReviewAgentPreparation: (payload: StartReviewAgentPreparation) => Promise<{ operationId: string }>;
   stopReviewAgentPreparation: (payload: { operationId?: string; sessionId?: string }) => Promise<{ ok: boolean }>;
   queryAzureAuditLog: (filters: AzureAuditLogQuery) => Promise<unknown>;

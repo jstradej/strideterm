@@ -96,6 +96,83 @@ describe("review bridge agent launch", () => {
     expect(detectReviewAgentPanel({ title: "Reviewer", command })).toBe(provider);
   });
 
+  test("never loads the checkout's own Claude settings for a draft-only review, automatic or interactive", () => {
+    for (const interactiveReview of [false, true]) {
+      const launch = buildReviewAgentLaunch({
+        workspace: createWorkspace(),
+        panel: { id: "reviewer", title: "Reviewer", command: "claude" },
+        context: createContext(),
+        processInfo: { platform: "linux", execPath: "/usr/bin/node" },
+        initialPrompt: "Review prompt",
+        draftOnlyReview: true,
+        interactiveReview,
+      })!;
+      const at = launch.args.indexOf("--setting-sources");
+      expect(at).toBeGreaterThanOrEqual(0);
+      expect(launch.args[at + 1]).toBe("user");
+    }
+    const ordinary = buildReviewAgentLaunch({
+      workspace: createWorkspace(),
+      panel: { id: "reviewer", title: "Reviewer", command: "claude" },
+      context: createContext(),
+      processInfo: { platform: "linux", execPath: "/usr/bin/node" },
+    })!;
+    expect(ordinary.args).not.toContain("--setting-sources");
+    // A later start of a tab in the isolated checkout (restart, app restart): no review pending, the folder may be
+    // trusted by now — its settings still never load.
+    const restarted = buildReviewAgentLaunch({
+      workspace: { ...createWorkspace(), cwd: "C:/reviews/pr-123-review-0f3c2a1b-9d8e-4f7a-8b6c-5d4e3f2a1b0c" },
+      panel: { id: "agent", title: "Claude", command: "claude --dangerously-skip-permissions" },
+      context: createContext(),
+      processInfo: { platform: "linux", execPath: "/usr/bin/node" },
+    })!;
+    expect(restarted.args[restarted.args.indexOf("--setting-sources") + 1]).toBe("user");
+  });
+
+  test.each([
+    ["claude", "claude --dangerously-skip-permissions --model sonnet", "--dangerously-skip-permissions"],
+    ["codex", "codex --dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-approvals-and-sandbox"],
+    ["copilot", "copilot --allow-all-tools", "--allow-all-tools"],
+    ["opencode", "opencode --model anthropic/claude-sonnet-4", "anthropic/claude-sonnet-4"],
+  ])(
+    "starts a user's review of %s interactively with the template's arguments and the prompt as first message",
+    (provider, command, templateFlag) => {
+      const prompt = "Review this PR; save local draft findings only.";
+      const launch = buildReviewAgentLaunch({
+        workspace: createWorkspace(),
+        panel: { id: "reviewer", title: "Reviewer", command },
+        context: createContext(),
+        processInfo: { platform: "linux", execPath: "/usr/bin/node" },
+        initialPrompt: prompt,
+        draftOnlyReview: true,
+        interactiveReview: true,
+      })!;
+      // The review MCP is still the draft-only bridge; what the agent does is the prompt's job.
+      expect(`${launch.args.join(" ")} ${JSON.stringify(launch.env || {})}`).toContain("--review-draft-only");
+      expect(launch.args).toContain(templateFlag);
+      expect(launch.args.join(" ")).toContain(prompt);
+      expect(launch.args).not.toContain("--permission-mode");
+      expect(launch.args).not.toContain("--strict-mcp-config");
+      expect(launch.args).not.toContain("exec");
+      expect(launch.args).not.toContain("run");
+      if (provider === "claude") {
+        expect(launch.args).not.toContain("-p");
+        expect(launch.args.at(-1)).toBe(prompt);
+      } else if (provider === "copilot") {
+        expect(launch.args).not.toContain("-p");
+        expect(launch.args[launch.args.indexOf("-i") + 1]).toBe(prompt);
+        expect(launch.env?.COPILOT_ALLOW_ALL).toBeUndefined();
+      } else if (provider === "opencode") {
+        // Auto-approval only when the template itself asks for it.
+        expect(launch.args).not.toContain("--yolo");
+        expect(launch.args[launch.args.indexOf("--prompt") + 1]).toBe(prompt);
+        expect(JSON.parse(launch.env?.OPENCODE_CONFIG_CONTENT || "{}").permission).toBeUndefined();
+      } else {
+        expect(launch.args.at(-1)).toBe(prompt);
+      }
+    },
+  );
+
   test("recognizes a configured absolute CLI path with spaces on a custom-titled panel", () => {
     const executable = "C:/Program Files/CLI/claude.exe";
     expect(

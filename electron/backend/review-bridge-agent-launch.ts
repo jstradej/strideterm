@@ -25,6 +25,7 @@ import {
 } from "./agent-mcp-launch.js";
 import { REVIEW_GIT_CAPABILITY_ENV, REVIEW_GIT_URL_ENV } from "../shared/review-git-env.js";
 import { buildReviewGitPolicy } from "../shared/review-git-policy.js";
+import { isIsolatedReviewCheckoutPath } from "../shared/review-source-identity.js";
 import { buildBasicReviewAgentPolicy } from "./basic-review-agent-policy.js";
 import { CODEX_NO_DAEMON_FLAG } from "./codex-no-daemon.js";
 
@@ -162,8 +163,13 @@ interface BuildLaunchInput extends GrantMcpServers {
   codexNoDaemon?: boolean;
   /** One-shot first turn for a backend-started review action. Ordinary tab launches omit this. */
   initialPrompt?: string;
-  /** Constrains the bridge to local draft tools for automated basic reviews. */
+  /** Constrains the bridge to local draft tools for basic reviews. */
   draftOnlyReview?: boolean;
+  /**
+   * A basic review the user started: an interactive tab with the template's own arguments and the prompt as its
+   * first message. Without it a draft-only review is the automation's non-interactive one-shot run.
+   */
+  interactiveReview?: boolean;
   /** Where Gemini's per-launch settings file goes; its MCP servers are configured there and nowhere else. */
   geminiSettingsPath?: string;
 }
@@ -527,17 +533,21 @@ function buildClaudeLaunch({
   processInfo,
   initialPrompt,
   draftOnlyReview,
+  interactiveReview,
   ...grants
 }: BuildLaunchInput): AgentLaunch {
   const installs = grantMcpInstalls(grants);
   const mcp = buildMcpServerSpec({ context, processInfo, draftOnlyReview });
   const platform = processInfo?.platform || process.platform;
-  const args =
-    initialPrompt?.trim() && draftOnlyReview
-      ? buildBasicReviewAgentPolicy("claude", inheritedPanelArgs(panel)).args
-      : [...inheritedPanelArgs(panel)];
-  const automaticReview = Boolean(initialPrompt?.trim() && draftOnlyReview);
+  const automaticReview = Boolean(initialPrompt?.trim() && draftOnlyReview && !interactiveReview);
+  const args = automaticReview
+    ? buildBasicReviewAgentPolicy("claude", inheritedPanelArgs(panel)).args
+    : [...inheritedPanelArgs(panel)];
   if (!automaticReview) pushWorkspaceScope(args, workspace?.cwd);
+  // The checkout is the pull request's content: its own settings (hooks run by Claude Code itself) and .mcp.json
+  // must never load — not with -p, which skips the trust check, and not at any later start of a tab in the isolated
+  // checkout, which may have been trusted from the review's notification.
+  if (draftOnlyReview || isIsolatedReviewCheckoutPath(workspace?.cwd)) args.push("--setting-sources", "user");
   const mcpServers: Record<string, unknown> = {
     review: {
       command: mcp.command,
@@ -548,7 +558,7 @@ function buildClaudeLaunch({
   Object.assign(mcpServers, claudeMcpServerEntries(installs));
   if (installs.length) appendClaudeMcpServers(args, mcpServers);
   else args.push("--mcp-config", JSON.stringify({ mcpServers }));
-  if (initialPrompt?.trim() && draftOnlyReview) args.push("--strict-mcp-config");
+  if (automaticReview) args.push("--strict-mcp-config");
   args.push(
     "--append-system-prompt",
     buildReviewPrompt(
@@ -571,7 +581,7 @@ function buildClaudeLaunch({
     win32Env: {
       ...(mcp.env || {}),
       ...installsEnv(installs),
-      ...(initialPrompt?.trim() && draftOnlyReview ? buildBasicReviewAgentPolicy("claude").env : {}),
+      ...(automaticReview ? buildBasicReviewAgentPolicy("claude").env : {}),
     },
   });
 }
@@ -583,17 +593,17 @@ function buildCodexLaunch({
   processInfo,
   initialPrompt,
   draftOnlyReview,
+  interactiveReview,
   codexNoDaemon,
   ...grants
 }: BuildLaunchInput): AgentLaunch {
   const installs = grantMcpInstalls(grants);
   const mcp = buildMcpServerSpec({ context, processInfo, draftOnlyReview });
   const platform = processInfo?.platform || process.platform;
-  const args =
-    initialPrompt?.trim() && draftOnlyReview
-      ? buildBasicReviewAgentPolicy("codex", inheritedPanelArgs(panel)).args
-      : [...inheritedPanelArgs(panel)];
-  const automaticReview = Boolean(initialPrompt?.trim() && draftOnlyReview);
+  const automaticReview = Boolean(initialPrompt?.trim() && draftOnlyReview && !interactiveReview);
+  const args = automaticReview
+    ? buildBasicReviewAgentPolicy("codex", inheritedPanelArgs(panel)).args
+    : [...inheritedPanelArgs(panel)];
   if (!automaticReview && !hasCodexSandboxOverride(args)) {
     args.unshift(initialPrompt?.trim() && draftOnlyReview ? "read-only" : "workspace-write");
     args.unshift("-s");
@@ -619,7 +629,7 @@ function buildCodexLaunch({
     win32Env: {
       ...(mcp.env || {}),
       ...installsEnv(installs),
-      ...(initialPrompt?.trim() && draftOnlyReview ? buildBasicReviewAgentPolicy("codex").env : {}),
+      ...(automaticReview ? buildBasicReviewAgentPolicy("codex").env : {}),
     },
     // Codex needs both `node` and its own shim resolved on Windows: the
     // launch invokes node directly against the resolved codex.js entrypoint
@@ -652,13 +662,13 @@ function buildCopilotLaunch({
   internalMcpEnv,
   initialPrompt,
   draftOnlyReview,
+  interactiveReview,
 }: BuildLaunchInput): AgentLaunch {
   const installs = grantMcpInstalls({ internalMcp });
   const mcp = buildMcpServerSpec({ context, processInfo, draftOnlyReview });
   const platform = processInfo?.platform || process.platform;
-  const policy =
-    initialPrompt?.trim() && draftOnlyReview ? buildBasicReviewAgentPolicy("copilot", inheritedPanelArgs(panel)) : null;
-  const automaticReview = Boolean(initialPrompt?.trim() && draftOnlyReview);
+  const automaticReview = Boolean(initialPrompt?.trim() && draftOnlyReview && !interactiveReview);
+  const policy = automaticReview ? buildBasicReviewAgentPolicy("copilot", inheritedPanelArgs(panel)) : null;
   const args = policy ? [...policy.args] : [...inheritedPanelArgs(panel)];
   if (
     !initialPrompt?.trim() &&
@@ -731,15 +741,13 @@ function buildOpencodeLaunch({
   internalMcpEnv,
   initialPrompt,
   draftOnlyReview,
+  interactiveReview,
 }: BuildLaunchInput): AgentLaunch {
   const installs = grantMcpInstalls({ internalMcp });
   const mcp = buildMcpServerSpec({ context, processInfo, draftOnlyReview });
   const platform = processInfo?.platform || process.platform;
-  const policy =
-    initialPrompt?.trim() && draftOnlyReview
-      ? buildBasicReviewAgentPolicy("opencode", inheritedPanelArgs(panel))
-      : null;
-  const automaticReview = Boolean(initialPrompt?.trim() && draftOnlyReview);
+  const automaticReview = Boolean(initialPrompt?.trim() && draftOnlyReview && !interactiveReview);
+  const policy = automaticReview ? buildBasicReviewAgentPolicy("opencode", inheritedPanelArgs(panel)) : null;
   const args = policy ? [...policy.args] : [...inheritedPanelArgs(panel)];
   // --yolo is a real flag but `hidden: true`, so it does NOT show up in
   // `opencode --help` — don't "fix" it away after reading that output. OpenCode
@@ -747,7 +755,8 @@ function buildOpencodeLaunch({
   // so this is exactly the documented --auto. Verified on opencode 1.18.14:
   // its yargs parser is strict (an unknown flag exits 1 with the help screen),
   // and --yolo starts the TUI normally.
-  if (!automaticReview && !args.includes("--yolo")) {
+  // A user's review keeps exactly the template's arguments: auto-approval inside a PR checkout only if they chose it.
+  if (!automaticReview && !interactiveReview && !args.includes("--yolo")) {
     args.unshift("--yolo");
   }
 
@@ -904,6 +913,7 @@ export function buildReviewAgentLaunch({
   codexNoDaemon,
   initialPrompt,
   draftOnlyReview,
+  interactiveReview,
   geminiSettingsPath,
 }: BuildLaunchInput): AgentLaunch | null {
   if (!context?.rootPath) {
@@ -922,6 +932,7 @@ export function buildReviewAgentLaunch({
       internalMcp: draftOnlyReview ? undefined : internalMcp,
       initialPrompt,
       draftOnlyReview,
+      interactiveReview,
     });
   }
   if (agent === "codex") {
@@ -935,6 +946,7 @@ export function buildReviewAgentLaunch({
       internalMcp: draftOnlyReview ? undefined : internalMcp,
       initialPrompt,
       draftOnlyReview,
+      interactiveReview,
     });
   }
   if (agent === "copilot") {
@@ -948,6 +960,7 @@ export function buildReviewAgentLaunch({
       internalMcpEnv: draftOnlyReview ? undefined : internalMcpEnv,
       initialPrompt,
       draftOnlyReview,
+      interactiveReview,
     });
   }
   if (agent === "opencode") {
@@ -961,6 +974,7 @@ export function buildReviewAgentLaunch({
       internalMcpEnv: draftOnlyReview ? undefined : internalMcpEnv,
       initialPrompt,
       draftOnlyReview,
+      interactiveReview,
     });
   }
   if (agent === "gemini" && !draftOnlyReview) {

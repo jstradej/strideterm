@@ -67,8 +67,11 @@ import type {
 } from "../electron/backend/ipc-schemas.js";
 import {
   startPullRequestReviewSchema,
+  TRUST_REVIEW_FOLDER_ROUTE,
+  trustReviewFolderSchema,
   type StartPullRequestReviewInput,
   type StartPullRequestReviewResult,
+  type TrustReviewFolderInput,
 } from "../electron/shared/pull-request-review.js";
 import {
   startPipelineAgentSchema,
@@ -2758,6 +2761,8 @@ export function createRemoteTransport(): Transport {
         "/api/review/start",
         startPullRequestReviewSchema.parse(payload),
       ) as Promise<StartPullRequestReviewResult>,
+    trustReviewFolder: (payload: TrustReviewFolderInput) =>
+      fetchJson(TRUST_REVIEW_FOLDER_ROUTE, trustReviewFolderSchema.parse(payload)) as Promise<{ trusted: true }>,
     startReviewAgentPreparation: (payload: StartReviewAgentPreparation) =>
       fetchJson("/api/review/agent-prepare", payload) as Promise<{ operationId: string }>,
     stopReviewAgentPreparation: (payload: { operationId?: string; sessionId?: string }) =>

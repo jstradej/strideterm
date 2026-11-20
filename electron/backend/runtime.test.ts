@@ -16556,7 +16556,16 @@ describe("headless pull request review start", () => {
             cwd: checkoutDir,
             profileId: "profile-a",
             activePanelId: "shell",
-            panels: [{ id: "shell", title: "Shell", command: "", startup: "default" }],
+            panels: [
+              { id: "shell", title: "Shell", command: "", startup: "default" },
+              // The workspace template's own agent tab: a user's review runs here, not in a second agent tab.
+              {
+                id: "agent",
+                title: "🤖 Claude Code",
+                command: "claude --dangerously-skip-permissions",
+                startup: "default",
+              },
+            ],
             review: { ...summary, provider: "github", checkout: { mode: "managed-worktree", rootPath: checkoutDir } },
           },
           created: true,
@@ -16776,6 +16785,22 @@ describe("headless pull request review start", () => {
     );
     expect(reviewLaunches).toHaveLength(1);
     expect(reviewLaunches[0].launch?.args?.join(" ")).toContain("--review-draft-only");
+    // Interactive, in the template's agent tab with the template's arguments; the prompt is its first message.
+    const reviewArgs = reviewLaunches[0].launch!.args;
+    expect(reviewLaunches[0].panel?.id).toBe("agent");
+    expect(reviewArgs).toContain("--dangerously-skip-permissions");
+    expect(reviewArgs).not.toContain("-p");
+    expect(reviewArgs.at(-1)).toContain("Perform a basic code review");
+    expect(reviewArgs[reviewArgs.indexOf("--setting-sources") + 1]).toBe("user");
+    expect(
+      fixture.store
+        .getState()
+        .workspaces.find((item) => item.id === "isolated-review")
+        ?.panels.map((panel) => panel.id),
+    ).toEqual(["shell", "agent"]);
+    await expect(
+      fixture.runtime.trustReviewFolder({ sessionId: "isolated-review:agent" }, undefined, "profile-a"),
+    ).rejects.toThrow("no longer waiting for folder trust");
     expect(fixture.store.getState().workspaces.find((item) => item.id === "isolated-review")?.profileId).toBe(
       "profile-a",
     );
@@ -16883,6 +16908,10 @@ describe("headless pull request review start", () => {
       (entry) => entry.workspace?.review?.automationRun?.workspaceId === autoId,
     )!;
     expect(autoLaunch.launch?.args.join(" ")).toContain("--review-draft-only");
+    // Unattended: nobody could answer a trust question, so the automation's run stays non-interactive.
+    expect(autoLaunch.panel?.id).not.toBe("agent");
+    expect(autoLaunch.launch?.args).toContain("-p");
+    expect(autoLaunch.launch?.args).toContain("--setting-sources");
     expect(autoLaunch.launch?.args.join(" ")).not.toContain("PRIVATE REVIEW INSTRUCTIONS");
     expect(autoLaunch.workspace?.review?.automationRun?.workspaceId).toBe(autoId);
     const runId = autoLaunch.workspace!.review!.automationRun!.runId;

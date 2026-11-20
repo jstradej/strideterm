@@ -401,6 +401,7 @@ import { useSignInNotice } from "./composables/useSignInNotice.js";
 import { useNotificationStore } from "./stores/notifications.js";
 import { useSshStore } from "./stores/ssh.js";
 import { useSandboxRequestsStore } from "./stores/sandbox-requests.js";
+import { useReviewTrustStore } from "./stores/review-trust.js";
 import { activateReviewCommentQuery, parseReviewCommentQuery } from "./app/review-comment-query.js";
 
 const api = inject(apiKey);
@@ -464,6 +465,7 @@ sshStore.load();
 // An isolated tab waiting on a destination is a Notification Center entry; this is what feeds it. Desktop
 // windows only: a transport without the sandbox events starts nothing.
 if (api) void useSandboxRequestsStore().start(api as Transport);
+useReviewTrustStore().start();
 
 const frameRef = ref<HTMLElement | null>(null);
 const sidebarRef = ref<HTMLElement | null>(null);

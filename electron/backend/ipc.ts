@@ -18,7 +18,11 @@ import { constants as fsConstants } from "node:fs";
 import { open as openFileHandle } from "node:fs/promises";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import type { createRuntime } from "./runtime.js";
-import { startPullRequestReviewSchema } from "../shared/pull-request-review.js";
+import {
+  startPullRequestReviewSchema,
+  TRUST_REVIEW_FOLDER_CHANNEL,
+  trustReviewFolderSchema,
+} from "../shared/pull-request-review.js";
 import { saveSidebarNoteSchema, sidebarNotesScopeSchema, undoSidebarNoteSchema } from "../shared/sidebar-notes.js";
 import { START_PIPELINE_AGENT_CHANNEL, startPipelineAgentSchema } from "../shared/pipeline-agent.js";
 import { START_JIRA_DEVELOPMENT_CHANNEL, startJiraDevelopmentSchema } from "../shared/jira-development.js";
@@ -1572,6 +1576,13 @@ export function registerIpc(
     const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
     return withOperationPromise({ opId: "review:start" }, () =>
       runtime.startPullRequestReview(validateIpc(startPullRequestReviewSchema, payload, "review:start"), windowId),
+    );
+  });
+  handle(TRUST_REVIEW_FOLDER_CHANNEL, async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return runtime.trustReviewFolder(
+      validateIpc(trustReviewFolderSchema, payload, TRUST_REVIEW_FOLDER_CHANNEL),
+      windowId || undefined,
     );
   });
   handle("review:agent-prepare", async (event, payload) => {

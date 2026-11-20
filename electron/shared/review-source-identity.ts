@@ -51,6 +51,20 @@ export function isManagedReviewBranch(branch: string, prId: string | number, sou
   return branch.startsWith(prefix) && ISOLATED_REVIEW_UUID.test(branch.slice(prefix.length));
 }
 
+/**
+ * The isolated one-shot review checkout (`pr-<id>-review-<uuid>`, made by the providers' managed review checkout).
+ * Its content is the pull request's: an agent started there must never load the checkout's own settings, at any
+ * launch — the folder may have been trusted from the review's notification.
+ */
+export function isIsolatedReviewCheckoutPath(cwd: unknown): boolean {
+  const base = String(cwd || "")
+    .replace(/[\\/]+$/u, "")
+    .split(/[\\/]/u)
+    .pop();
+  const marker = base?.lastIndexOf("-review-") ?? -1;
+  return !!base && base.startsWith("pr-") && marker > 3 && ISOLATED_REVIEW_UUID.test(base.slice(marker + 8));
+}
+
 function trimSlashes(value: string): string {
   let start = 0;
   let end = value.length;
