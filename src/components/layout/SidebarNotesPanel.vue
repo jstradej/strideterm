@@ -42,8 +42,8 @@
           >
             <header class="sidebar-notes__heading">
               <div class="sidebar-notes__heading-label">
-                <h3>{{ section.label }}</h3>
-                <span v-if="section.context" class="sidebar-notes__context" :title="section.context">{{
+                <h3 :title="section.title">{{ section.label }}</h3>
+                <span v-if="section.context" class="sidebar-notes__context" :title="section.contextTitle">{{
                   section.context
                 }}</span>
                 <span
@@ -59,7 +59,7 @@
                 type="button"
                 class="sidebar-notes__add"
                 :aria-label="section.addLabel"
-                :title="section.addLabel"
+                :title="section.addTitle"
                 :disabled="!section.collection || loading"
                 @click="section.collection && createNote(section.collection)"
               >
@@ -74,7 +74,11 @@
                 @focusout="leaveTabNote"
               >
                 <div class="sidebar-notes__tab-heading">
-                  <span class="sidebar-notes__tab-label">Tab</span>
+                  <span
+                    class="sidebar-notes__tab-label"
+                    title="A note for the active tab only. It is saved with the workspace and the tab shows a note marker while it has one."
+                    >Tab</span
+                  >
                   <span class="sidebar-notes__tab-title" :title="tabNote.title">{{ tabNote.title }}</span>
                   <template v-if="tabDraft && (tabDraft.editing || tabDraft.pending) && !tabDraft.error">
                     <span
@@ -129,7 +133,9 @@
                   type="button"
                   class="sidebar-notes__tab-body"
                   :class="{ 'sidebar-notes__tab-body--empty': !tabNoteText }"
-                  :title="'Edit note for tab ' + tabNote.title"
+                  :title="
+                    'Edit the note for the tab “' + tabNote.title + '” — only this tab has it. Esc closes the editor.'
+                  "
                   @click="openTabNote"
                 >
                   <span class="sidebar-notes__tab-text">{{ tabNoteText || "Add a note for this tab…" }}</span>
@@ -147,6 +153,7 @@
                   v-else-if="!loadError && !section.collection.notes.length"
                   type="button"
                   class="sidebar-notes__empty"
+                  :title="section.addTitle"
                   @click="createNote(section.collection)"
                 >
                   {{ section.emptyText }} <span>Add a note</span>
@@ -162,6 +169,11 @@
                     type="button"
                     :data-note-toggle="note.id"
                     :aria-expanded="section.collection.activeId === note.id"
+                    :title="
+                      section.collection.activeId === note.id
+                        ? 'Collapse this note'
+                        : 'Open this note to read or edit it. Changes save automatically.'
+                    "
                     @click="toggleEditor(section.collection, note)"
                   >
                     <svg class="sidebar-notes__chevron" viewBox="0 0 16 16" aria-hidden="true">
@@ -179,7 +191,11 @@
                       v-if="note.failed || note.text !== note.storedText"
                       class="sidebar-notes__unsaved"
                       :class="{ 'sidebar-notes__unsaved--failed': note.failed }"
-                      :title="note.failed ? 'Not saved' : 'Unsaved changes'"
+                      :title="
+                        note.failed
+                          ? 'Not saved — open the note to retry'
+                          : 'Unsaved changes — they save automatically in a moment'
+                      "
                     ></span>
                   </button>
                   <div v-if="section.collection.activeId === note.id" class="sidebar-notes__editor">
@@ -265,6 +281,7 @@
                         type="button"
                         class="sidebar-notes__link"
                         :disabled="!!note.pending || note.text !== note.storedText"
+                        title="Restore the text this note had before its last save."
                         @click="undo(section.collection, note)"
                       >
                         Undo last save
@@ -273,6 +290,7 @@
                         v-if="note.revision === 0 && !note.text.trim() && !note.pending"
                         type="button"
                         class="sidebar-notes__link"
+                        title="Remove this empty note."
                         @click="discardEmpty(section.collection, note)"
                       >
                         Discard
@@ -359,13 +377,18 @@ const profileName = computed(() => {
 const sections = computed(() => {
   const name = currentWorkspace.value?.name ?? "";
   const profile = profileName.value;
+  const inProfile = profile ? `in the ${profile} profile` : "in this profile";
+  const workspaceLabel = name ? `“${name}”` : "the selected workspace";
   return [
     {
       kind: "workspace",
       label: "Workspace",
+      title: `Notes that belong to ${workspaceLabel} only. They are shown while it is selected and stay with it whichever tab is open.`,
       context: name,
+      contextTitle: `Only for the workspace ${workspaceLabel}`,
       accent: currentWorkspace.value?.color || "var(--accent, var(--text))",
       addLabel: name ? `New note for ${name}` : "New workspace note",
+      addTitle: `New note for ${workspaceLabel} only. For a note you want in every workspace, use All workspaces below.`,
       emptyText: `No notes for ${name || "this workspace"} yet.`,
       placeholder: `Note for ${name || "this workspace"}… The first line is its title.`,
       collection: workspace.value,
@@ -373,9 +396,12 @@ const sections = computed(() => {
     {
       kind: "global",
       label: "All workspaces",
+      title: `Notes shared by every workspace ${inProfile}, shown whichever workspace is selected. Other profiles keep their own.`,
       context: profile,
+      contextTitle: `Shared by all workspaces ${inProfile}`,
       accent: "",
       addLabel: "New note for all workspaces",
+      addTitle: `New note shared by every workspace ${inProfile}.`,
       emptyText: "No notes shared by all workspaces yet.",
       placeholder: `Note shared by all workspaces${profile ? " in " + profile : ""}… The first line is its title.`,
       collection: global.value,

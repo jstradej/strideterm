@@ -157,7 +157,7 @@
             class="notification-center__tab"
             :class="{ 'notification-center__tab--active': activeTab === 'notes' }"
             aria-label="Notes"
-            title="Notes"
+            title="Notes — for the active tab, the selected workspace, and notes shared by all workspaces in this profile."
             @click="activeTab = 'notes'"
           >
             <span class="notification-center__tab-icon" aria-hidden="true">
@@ -279,7 +279,7 @@
             type="button"
             class="notification-center__tab notification-center__tab--compact-notes"
             aria-label="Notes"
-            title="Notes"
+            title="Notes — for the active tab, the selected workspace, and notes shared by all workspaces in this profile."
             @click="selectTab('notes')"
           >
             <span class="notification-center__tab-icon" aria-hidden="true">
