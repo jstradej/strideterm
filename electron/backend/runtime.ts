@@ -8430,7 +8430,7 @@ export async function createRuntime({
         if (ws) ws.profileId = repair.profileId;
       }
       for (const workspace of toAdd) {
-        draft.workspaces.push(workspace);
+        insertWorkspace(draft.workspaces, workspace);
       }
     });
     const removedIds = new Set([...toRemove.map((workspace) => workspace.id), ...duplicateIdsToRemove]);
@@ -10030,7 +10030,8 @@ export async function createRuntime({
           if (index >= 0 && String(draft.workspaces[index].profileId || "default") !== profileId)
             throw new Error("The isolated review workspace belongs to another profile.");
           if (index >= 0) draft.workspaces[index] = workspace;
-          else draft.workspaces.push(workspace);
+          // Newest first: right under its parent inbox, like every other child the sidebar shows.
+          else insertWorkspace(draft.workspaces, workspace, getViewerActiveWorkspaceId(windowId));
         });
         await handle.update({
           step: "starting",

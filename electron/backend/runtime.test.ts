@@ -16566,7 +16566,12 @@ describe("headless pull request review start", () => {
                 startup: "default",
               },
             ],
-            review: { ...summary, provider: "github", checkout: { mode: "managed-worktree", rootPath: checkoutDir } },
+            review: {
+              ...summary,
+              provider: "github",
+              parentWorkspaceId: "review-parent",
+              checkout: { mode: "managed-worktree", rootPath: checkoutDir },
+            },
           },
           created: true,
           attached: false,
@@ -16798,6 +16803,9 @@ describe("headless pull request review start", () => {
         .workspaces.find((item) => item.id === "isolated-review")
         ?.panels.map((panel) => panel.id),
     ).toEqual(["shell", "agent"]);
+    // Newest first: right under its parent, not at the end of the list.
+    const order = fixture.store.getState().workspaces.map((item) => item.id);
+    expect(order.indexOf("isolated-review")).toBe(order.indexOf("review-parent") + 1);
     await expect(
       fixture.runtime.trustReviewFolder({ sessionId: "isolated-review:agent" }, undefined, "profile-a"),
     ).rejects.toThrow("no longer waiting for folder trust");
