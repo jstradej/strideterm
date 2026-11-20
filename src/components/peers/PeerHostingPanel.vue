@@ -523,6 +523,7 @@ onBeforeUnmount(() => {
 .peer-hosting__muted {
   margin: 0;
   color: var(--muted);
+  font-size: 12px;
 }
 .peer-hosting__wait {
   display: flex;

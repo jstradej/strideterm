@@ -11,6 +11,54 @@
       <p class="profiles-description">
         Each profile has its own set of workspaces. Switch profiles to work on different projects.
       </p>
+      <div v-if="attached" class="add-profile-row" data-testid="attached-note">
+        <p class="profiles-description profiles-description--grow">
+          Local profiles are managed from a local window of this desktop.
+        </p>
+        <button
+          v-if="peers"
+          type="button"
+          class="button button--ghost"
+          data-testid="peer-connect-open"
+          title="Attach profiles of another strIDEterm on your network."
+          @click="openConnect"
+        >
+          Connect from network…
+        </button>
+      </div>
+      <div v-else-if="!isRemote" class="add-profile-row">
+        <input
+          v-model="newProfileName"
+          placeholder="New profile name..."
+          maxlength="40"
+          class="add-profile-input"
+          title="Type a name for the new profile. Press Enter or click + Add to create it."
+          @click.stop
+          @keydown.enter="addProfile"
+        />
+        <button
+          type="button"
+          class="button button--ghost"
+          title="Create a new profile with the typed name. New profiles start empty — drag workspaces into them or assign workspaces via the workspace editor."
+          @click="addProfile"
+        >
+          + Add
+        </button>
+        <button
+          v-if="peers"
+          type="button"
+          class="button button--ghost"
+          data-testid="peer-connect-open"
+          title="Attach profiles of another strIDEterm on your network."
+          @click="openConnect"
+        >
+          Connect from network…
+        </button>
+      </div>
+      <div v-if="errorMessage" class="dialog__error" role="alert">
+        <span class="dialog__error-icon" aria-hidden="true">⚠</span>
+        <span class="dialog__error-text">{{ errorMessage }}</span>
+      </div>
       <!-- Arrow-key navigation between profile cards. Tab still walks every
            focusable element in document order; ↑/↓ jump card-to-card by
            focusing each card's primary action (rename input or Activate). -->
@@ -167,50 +215,6 @@
           </div>
         </article>
       </div>
-      <div v-if="attached" class="add-profile-row" data-testid="attached-note">
-        <p class="profiles-description profiles-description--grow">
-          Local profiles are managed from a local window of this desktop.
-        </p>
-        <button
-          v-if="peers"
-          type="button"
-          class="button button--ghost"
-          data-testid="peer-connect-open"
-          title="Attach profiles of another strIDEterm on your network."
-          @click="openConnect"
-        >
-          Connect from network…
-        </button>
-      </div>
-      <div v-else-if="!isRemote" class="add-profile-row">
-        <input
-          v-model="newProfileName"
-          placeholder="New profile name..."
-          maxlength="40"
-          class="add-profile-input"
-          title="Type a name for the new profile. Press Enter or click + Add to create it."
-          @click.stop
-          @keydown.enter="addProfile"
-        />
-        <button
-          type="button"
-          class="button button--ghost"
-          title="Create a new profile with the typed name. New profiles start empty — drag workspaces into them or assign workspaces via the workspace editor."
-          @click="addProfile"
-        >
-          + Add
-        </button>
-        <button
-          v-if="peers"
-          type="button"
-          class="button button--ghost"
-          data-testid="peer-connect-open"
-          title="Attach profiles of another strIDEterm on your network."
-          @click="openConnect"
-        >
-          Connect from network…
-        </button>
-      </div>
       <p
         v-if="peers && hostsLoadingVisible && !orderedHosts.length"
         class="profiles-description profiles-description--wait"
@@ -257,10 +261,6 @@
             </button>
           </div>
         </div>
-      </div>
-      <div v-if="errorMessage" class="dialog__error" role="alert">
-        <span class="dialog__error-icon" aria-hidden="true">⚠</span>
-        <span class="dialog__error-text">{{ errorMessage }}</span>
       </div>
     </div>
   </div>

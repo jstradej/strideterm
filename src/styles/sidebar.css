@@ -950,6 +950,21 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   line-height: 1.5;
 }
 
+/* Undo the global `input { width: 100% }` and the uppercase field-label `label span`. */
+.remote-access__checkbox input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: auto;
+  margin: 2px 0 0;
+  padding: 0;
+}
+
+.remote-access__checkbox span {
+  font-size: inherit;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--text);
+}
+
 .remote-access__note {
   color: var(--text-muted);
   font-size: 11px;
