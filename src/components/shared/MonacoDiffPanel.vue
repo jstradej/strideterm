@@ -188,6 +188,7 @@ import DiffLoadingIndicator from "./DiffLoadingIndicator.vue";
 import "../../app/monaco-setup.js";
 import * as monaco from "monaco-editor";
 import { onAppThemeChange } from "../../app/app-theme.js";
+import { isPeerWindow } from "../../window-backend.js";
 import { monacoThemeName } from "../../app/monaco-theme.js";
 
 defineOptions({ inheritAttrs: false });
@@ -289,7 +290,8 @@ const hasNativePopout = computed(() => {
   const bridge = (typeof window !== "undefined" ? (window as any).strideterm : null) as {
     openDiffPopout?: (p: unknown) => Promise<unknown>;
   } | null;
-  return typeof bridge?.openDiffPopout === "function";
+  // A window attached to another computer has the bridge, but the popout is refused there: it runs on this machine.
+  return typeof bridge?.openDiffPopout === "function" && !isPeerWindow();
 });
 const canPopout = computed(() => {
   return !!props.popoutTitle && !!props.payload && hasNativePopout.value && !isMobile.value;

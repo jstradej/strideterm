@@ -5,6 +5,7 @@ import { tabSessionId } from "../app/selectors.js";
 import { isCompanionPrimaryViewId, resolveCompanionPrimaryBinding } from "../../electron/shared/companion-primary.js";
 import { isMobileViewport } from "./useIsNarrow.js";
 import type { Transport } from "../transport.js";
+import { windowBackend } from "../window-backend.js";
 
 /**
  * Terminal sessions rendered by workspace-grid cells. The grid shows OTHER
@@ -197,7 +198,9 @@ export function useAttentionSync(api: Transport) {
     const { count, waitingCount } = appStore.attentionSummary;
     const profile = appStore.activeProfile;
     const profileLabel = profile.id !== "default" ? ` [${profile.name}]` : "";
-    const base = documentTitleBase + profileLabel;
+    const backend = windowBackend.value;
+    const hostLabel = backend.kind === "peer" ? ` — ${backend.hostLabel}` : "";
+    const base = documentTitleBase + hostLabel + profileLabel;
     document.title = count > 0 ? `(${count}) ${base}` : base;
 
     const derived = deriveAttentionSync(

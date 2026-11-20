@@ -432,6 +432,15 @@ describe("buildRemoteCore", () => {
     expect(other.reviewGit.lastRuns.map((run) => run.operationId)).toEqual(["op-done-2"]);
   });
 
+  test("the sidebar notes counter reaches only the client bound to its profile", () => {
+    const payload = { ...fullPayload(), sidebarNotesRevisions: { p1: 4, p2: 11 } };
+    expect(buildRemoteCore(payload).sidebarNotesRevisions).toEqual({ p1: 4 });
+    expect(buildRemoteCore(payload, { profileId: "p2" }).sidebarNotesRevisions).toEqual({ p2: 11 });
+    expect(buildRemoteCore(fullPayload()).sidebarNotesRevisions).toEqual({});
+    const unbound = { ...payload, remoteClient: undefined };
+    expect(buildRemoteCore(unbound).sidebarNotesRevisions).toEqual({});
+  });
+
   test("pending PR action approvals reach only the client bound to their profile", () => {
     const core = buildRemoteCore(fullPayload());
     expect(core.reviewPrActions.pending.map((proposal) => proposal.proposalId)).toEqual(["proposal-p1"]);
@@ -713,6 +722,20 @@ describe("slimRemoteSettings", () => {
     expect(result.integrations).not.toHaveProperty("mobile");
     expect(result.integrations.telegram).toEqual({ connections: [] });
     expect(JSON.stringify(result)).not.toMatch(/phone-1|remoteUiConnected/);
+    expect(JSON.stringify(input)).toBe(before);
+  });
+
+  test("drops paired-desktop settings from remote settings", () => {
+    const input = {
+      integrations: {
+        peers: { instanceId: "instance-1", devices: [{ id: "device-1" }], hosts: [{ address: "192.0.2.10" }] },
+        telegram: { connections: [] },
+      },
+    };
+    const before = JSON.stringify(input);
+    const result = slimRemoteSettings(input);
+    expect(result.integrations).not.toHaveProperty("peers");
+    expect(JSON.stringify(result)).not.toMatch(/instance-1|device-1|192\.0\.2\.10/);
     expect(JSON.stringify(input)).toBe(before);
   });
 

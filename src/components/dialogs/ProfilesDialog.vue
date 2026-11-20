@@ -14,7 +14,7 @@
       <!-- Arrow-key navigation between profile cards. Tab still walks every
            focusable element in document order; ↑/↓ jump card-to-card by
            focusing each card's primary action (rename input or Activate). -->
-      <div ref="profileListRef" class="profile-list" @keydown="onProfileListKeydown">
+      <div v-if="!attached" ref="profileListRef" class="profile-list" @keydown="onProfileListKeydown">
         <article
           v-for="profile in localProfiles"
           :key="profile.id"
@@ -104,7 +104,85 @@
           </div>
         </article>
       </div>
-      <div v-if="!isRemote" class="add-profile-row">
+      <div
+        v-else
+        class="profile-list"
+        data-testid="local-profiles-attached"
+        :aria-busy="localProfilesLoading ? 'true' : undefined"
+      >
+        <p
+          v-if="localProfilesLoading && !(peers?.localProfiles ?? []).length"
+          class="profiles-description profiles-description--wait"
+          role="status"
+          data-testid="local-profiles-loading"
+        >
+          <Spinner size="sm" aria-hidden="true" />
+          Loading the profiles of this desktop…
+        </p>
+        <article
+          v-for="profile in peers?.localProfiles ?? []"
+          :key="profile.id"
+          class="profile-card"
+          :data-profile-id="profile.id"
+        >
+          <div class="profile-card__header">
+            <div class="profile-name-cell">
+              <span
+                class="profile-color-swatch"
+                :style="{ background: profile.color || '#ffa424' }"
+                aria-hidden="true"
+              ></span>
+              <span class="profile-name-display">{{ profile.name }}</span>
+              <span v-if="profile.openWindows > 0" class="profile-desktop-badge"
+                >Open in {{ profile.openWindows }} window{{ profile.openWindows === 1 ? "" : "s" }}</span
+              >
+            </div>
+            <div class="profile-card__actions">
+              <button
+                type="button"
+                class="button button--ghost"
+                data-testid="local-activate"
+                :disabled="activatingProfileId !== null"
+                title="Switch this window back to this profile of this desktop. The window restarts."
+                @click="handleActivateLocal(profile.id)"
+              >
+                <Spinner v-if="activatingProfileId === profile.id" size="sm" aria-hidden="true" />
+                {{ activatingProfileId === profile.id ? "Switching…" : "Activate" }}
+              </button>
+              <button
+                type="button"
+                class="button button--ghost"
+                data-testid="local-new-window"
+                title="Open this profile in a new window."
+                @click="handleOpenWindow(profile.id)"
+              >
+                New Window
+              </button>
+            </div>
+          </div>
+          <div class="profile-card__footer">
+            <small class="text-muted"
+              >{{ profile.workspaceCount }} workspace{{ profile.workspaceCount !== 1 ? "s" : "" }}</small
+            >
+          </div>
+        </article>
+      </div>
+      <div v-if="attached" class="add-profile-row" data-testid="attached-note">
+        <p class="profiles-description profiles-description--grow">
+          Local profiles are managed from a local window of this desktop.
+        </p>
+        <button
+          v-if="peers"
+          type="button"
+          class="button button--ghost"
+          data-testid="peer-connect-open"
+          title="Attach profiles of another strIDEterm on your network."
+          @click="openConnect"
+        >
+          Connect from network…
+        </button>
+      </div>
+      <div v-else-if="!isRemote" class="add-profile-row">
         <input
           v-model="newProfileName"
           placeholder="New profile name..."
@@ -122,6 +200,38 @@
         >
           + Add
         </button>
+        <button
+          v-if="peers"
+          type="button"
+          class="button button--ghost"
+          data-testid="peer-connect-open"
+          title="Attach profiles of another strIDEterm on your network."
+          @click="openConnect"
+        >
+          Connect from network…
+        </button>
+      </div>
+      <p
+        v-if="peers && hostsLoadingVisible && !orderedHosts.length"
+        class="profiles-description profiles-description--wait"
+        role="status"
+        data-testid="peer-hosts-loading"
+      >
+        <Spinner size="sm" aria-hidden="true" />
+        Looking for attached desktops…
+      </p>
+      <div v-if="peers && orderedHosts.length" class="peer-groups" data-testid="peer-groups">
+        <PeerHostGroup
+          v-for="host in orderedHosts"
+          :key="host.id"
+          :host="host"
+          :this-window="host.id === thisWindowHostId"
+          :current-profile-id="activeProfileId"
+          :busy-key="busyKey"
+          :busy-action="busyAction"
+          @activate="(profileId: string) => handleHostActivate(host.id, profileId)"
+          @new-window="(profileId: string) => handleHostNewWindow(host.id, profileId)"
+        />
       </div>
       <div v-if="pendingDeleteWithTasks" class="dialog__error profile-delete-tasks" role="alertdialog">
         <span class="dialog__error-icon" aria-hidden="true">⚠</span>
@@ -157,8 +267,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, useAttrs } from "vue";
+import { ref, reactive, computed, onBeforeUnmount, onMounted, useAttrs } from "vue";
 import { makeNewProfile } from "../../app/helpers.js";
+import PeerHostGroup from "../peers/PeerHostGroup.vue";
+import Spinner from "../common/Spinner.vue";
+import { useDelayedFlag } from "../../composables/useDelayedFlag.js";
+import { peersBridgeAvailable, usePeersStore } from "../../stores/peers.js";
+import { isPeerWindow, windowBackend } from "../../window-backend.js";
 
 defineOptions({ inheritAttrs: false });
 
@@ -230,6 +345,19 @@ const emit = defineEmits<{
 }>();
 const attrs = useAttrs();
 
+const peers = peersBridgeAvailable() ? usePeersStore() : null;
+const attached = computed(() => isPeerWindow());
+const thisWindowHostId = computed(() => (windowBackend.value.kind === "peer" ? windowBackend.value.hostId : ""));
+const orderedHosts = computed(() => {
+  const hosts = [...(peers?.hosts ?? [])];
+  return hosts.sort((a, b) => Number(b.id === thisWindowHostId.value) - Number(a.id === thisWindowHostId.value));
+});
+const busyKey = ref<string | null>(null);
+const busyAction = ref<"activate" | "new-window">("activate");
+const hostsLoadingVisible = useDelayedFlag(computed(() => peers?.loading ?? false));
+const localProfilesLoading = useDelayedFlag(computed(() => peers?.localProfilesLoading ?? false));
+let releasePeers: (() => void) | null = null;
+
 const localProfiles = reactive(props.profiles.map((p) => ({ ...p })));
 const newProfileName = ref("");
 const errorMessage = ref("");
@@ -287,6 +415,53 @@ async function handleActivate(profileId: string) {
   } finally {
     activatingProfileId.value = null;
   }
+}
+
+async function handleActivateLocal(profileId: string) {
+  if (!peers) return;
+  errorMessage.value = "";
+  activatingProfileId.value = profileId;
+  try {
+    if (await peers.activateLocalProfile(profileId)) emit("cancel");
+  } finally {
+    activatingProfileId.value = null;
+  }
+}
+
+async function handleHostActivate(hostId: string, profileId: string) {
+  if (!peers) return;
+  errorMessage.value = "";
+  busyKey.value = `${hostId}:${profileId}`;
+  busyAction.value = "activate";
+  try {
+    const result = await peers.activateProfile(hostId, profileId);
+    if (!result) return;
+    if (result.reloaded) {
+      emit("cancel");
+      return;
+    }
+    await (attrs.onActivate as ((id: string) => Promise<void>) | undefined)?.(profileId);
+  } catch (err) {
+    handleError(err);
+  } finally {
+    busyKey.value = null;
+  }
+}
+
+async function handleHostNewWindow(hostId: string, profileId: string) {
+  if (!peers) return;
+  errorMessage.value = "";
+  busyKey.value = `${hostId}:${profileId}`;
+  busyAction.value = "new-window";
+  try {
+    if (await peers.openWindow(hostId, profileId)) emit("cancel");
+  } finally {
+    busyKey.value = null;
+  }
+}
+
+function openConnect() {
+  (attrs.onConnect as (() => void) | undefined)?.();
 }
 
 async function handleOpenWindow(profileId: string) {
@@ -396,6 +571,11 @@ function onProfileListKeydown(event: KeyboardEvent): void {
 }
 
 onMounted(() => {
+  if (peers) {
+    releasePeers = peers.watch();
+    void peers.open();
+    if (attached.value) void peers.loadLocalProfiles();
+  }
   // Defer until DialogOverlay's focus retry loop has finished (it bails early
   // on data-no-autofocus, but the rAF cadence still matters) so we don't race
   // against it.
@@ -417,6 +597,8 @@ onMounted(() => {
     addInput?.focus({ preventScroll: true });
   });
 });
+
+onBeforeUnmount(() => releasePeers?.());
 </script>
 
 <style scoped>
@@ -428,6 +610,21 @@ onMounted(() => {
   color: var(--muted);
   font-size: 13px;
   line-height: 1.35;
+}
+.profiles-description--wait {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+.profiles-description--grow {
+  flex: 1;
+  margin: 0;
+}
+.peer-groups {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
 }
 .profile-list {
   display: grid;

@@ -205,3 +205,258 @@ async function getFreePort() {
   await new Promise<void>((resolve, reject) => probe.close((error) => (error ? reject(error) : resolve())));
   return port;
 }
+
+describe("desktop-class attachment routes", () => {
+  const routes = [
+    "/api/attachment/upload/begin",
+    "/api/attachment/upload/chunk",
+    "/api/attachment/upload/finish",
+    "/api/attachment/upload/cancel",
+    "/api/attachment/read",
+  ];
+
+  type Ctx = {
+    root: string;
+    call: (
+      route: string,
+      body: unknown,
+      options?: { client?: string | null; profile?: string; cookie?: string },
+    ) => Promise<{ status: number; body: Record<string, unknown> }>;
+    phoneCookie: () => Promise<string>;
+  };
+
+  async function withServer(run: (ctx: Ctx) => Promise<void>) {
+    const root = await mkdtemp(path.join(os.tmpdir(), "strideterm-remote-upload-"));
+    const otherRoot = await mkdtemp(path.join(os.tmpdir(), "strideterm-remote-upload-other-"));
+    const port = await getFreePort();
+    const desktop = generateX25519KeyPair();
+    const phone = generateX25519KeyPair();
+    const payload = {
+      appState: {
+        settings: { remoteAccess: { enabled: true, host: "127.0.0.1", port, token: "master" } },
+        profiles: [
+          { id: "default", name: "Default", workspaceIds: ["ws", "ssh-ws", "box-ws"] },
+          { id: "other", name: "Other", workspaceIds: ["other-ws"] },
+        ],
+        workspaces: [
+          { id: "ws", profileId: "default", kind: "manual", cwd: root, panels: [] },
+          { id: "other-ws", profileId: "other", kind: "manual", cwd: otherRoot, panels: [] },
+          { id: "ssh-ws", profileId: "default", kind: "ssh", cwd: root, panels: [] },
+          {
+            id: "box-ws",
+            profileId: "default",
+            kind: "manual",
+            cwd: root,
+            panels: [{ launch: { kind: "container" } }],
+          },
+        ],
+        windowSlots: [],
+      },
+    };
+    const device = {
+      publicKey: exportRawPublicKey(phone.publicKey).toString("base64"),
+      pairId: "pair-1",
+      sessionKeyVersion: 1,
+      capabilities: ["remote.webSession"],
+      profileAllowlist: ["default"],
+      revoked: false,
+      state: "active",
+    };
+    const runtime = {
+      getPayload: () => payload,
+      getInitialState: async () => payload,
+      setRemoteInfo: () => undefined,
+      listRemoteUrls: () => [],
+      listMobileTicketOrigins: () => ["http://127.0.0.1"],
+      on: () => () => undefined,
+      isMobileSessionStillAuthorized: () => true,
+      activateProfileForRemoteClient: async () => undefined,
+      getMobileAttachmentContext: () => ({ desktopDeviceId: "desktop-1", privateKey: desktop.privateKey, device }),
+      consumeMobileWebSessionTicket: (ticketId: string, secret: string) =>
+        ticketId === "t" && secret === "s"
+          ? {
+              deviceId: "phone-1",
+              pairId: "pair-1",
+              profileId: "default",
+              allowedOrigin: "http://127.0.0.1",
+              transport: "legacy" as const,
+              requiredCapability: "remote.webSession" as const,
+              expiresAt: Date.now() + 60_000,
+            }
+          : null,
+    };
+    const server = await startRemoteServer({ runtime: runtime as never, staticRoot: process.cwd() });
+    const base = `http://127.0.0.1:${port}`;
+    const makeCtx = (): Ctx => ({
+      root,
+      call: async (
+        route: string,
+        body: unknown,
+        options: { client?: string | null; profile?: string; cookie?: string } = {},
+      ) => {
+        const headers: Record<string, string> = { "content-type": "application/json" };
+        if (options.cookie) headers.Cookie = options.cookie;
+        else headers.Authorization = "Bearer master";
+        if (options.client !== null && !options.cookie)
+          headers["X-Strideterm-Client-Id"] = options.client ?? "client-a";
+        const response = await fetch(`${base}${route}?profileId=${options.profile ?? "default"}`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+        });
+        return { status: response.status, body: (await response.json()) as Record<string, unknown> };
+      },
+      phoneCookie: async () => {
+        const boot = await fetch(`${base}/api/mobile/session/bootstrap`, {
+          method: "POST",
+          redirect: "manual",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ticketId: "t", secret: "s" }),
+        });
+        return (boot.headers.get("set-cookie") ?? "").split(";")[0];
+      },
+    });
+    try {
+      await run(makeCtx());
+    } finally {
+      await server.close();
+      await rm(root, { recursive: true, force: true });
+      await rm(otherRoot, { recursive: true, force: true });
+    }
+  }
+
+  test("uploads in blocks, finishes with the list record, reads it back and refuses another client", async () => {
+    await withServer(async ({ call, root }) => {
+      const data = Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), Buffer.alloc(600 * 1024, 9)]);
+      const begin = await call("/api/attachment/upload/begin", {
+        workspaceId: "ws",
+        name: "pic.png",
+        size: data.length,
+      });
+      expect(begin.status, JSON.stringify(begin.body)).toBe(200);
+      expect(begin.body).toMatchObject({ chunkBytes: 512 * 1024, received: 0 });
+      const transferId = begin.body.transferId as string;
+      const block = (offset: number) => ({
+        workspaceId: "ws",
+        transferId,
+        offset,
+        data: data.subarray(offset, offset + 512 * 1024).toString("base64"),
+      });
+
+      expect((await call("/api/attachment/upload/chunk", block(0), { client: "client-b" })).status).toBe(400);
+      expect((await call("/api/attachment/upload/chunk", block(0))).body).toEqual({ received: 512 * 1024 });
+      expect((await call("/api/attachment/upload/chunk", block(512 * 1024))).body).toEqual({ received: data.length });
+      const refused = await call(
+        "/api/attachment/upload/finish",
+        { workspaceId: "ws", transferId },
+        { client: "client-b" },
+      );
+      expect(refused.status).toBe(400);
+      expect(refused.body.error).toMatch(/owner/);
+
+      const finished = await call("/api/attachment/upload/finish", { workspaceId: "ws", transferId });
+      expect(finished.status).toBe(200);
+      expect(finished.body).toMatchObject({
+        transferId,
+        name: "pic.png",
+        size: data.length,
+        sha256: createHash("sha256").update(data).digest("hex"),
+      });
+      expect(await readFile(path.join(root, finished.body.path as string))).toEqual(data);
+
+      const listed = await call("/api/attachment/list", { workspaceId: "ws" }, { client: "client-b" });
+      expect(listed.body.attachments).toHaveLength(1);
+      expect(listed.body.usage).toMatchObject({ dailyLimit: null, fileSizeLimit: 1024 ** 3 });
+
+      const window = await call(
+        "/api/attachment/read",
+        { workspaceId: "ws", transferId, name: "pic.png", offset: 512 * 1024, length: 512 * 1024 },
+        { client: "client-b" },
+      );
+      expect(window.status).toBe(200);
+      expect(window.body.eof).toBe(true);
+      expect(window.body.size).toBe(data.length);
+      expect(Buffer.from(window.body.data as string, "base64")).toEqual(data.subarray(512 * 1024));
+
+      const second = await call("/api/attachment/upload/begin", { workspaceId: "ws", name: "gone.png", size: 10 });
+      const cancelled = await call("/api/attachment/upload/cancel", {
+        workspaceId: "ws",
+        transferId: second.body.transferId,
+      });
+      expect(cancelled.body).toEqual({ ok: true });
+    });
+  });
+
+  test("refuses another profile's workspace, SSH and container workspaces, bad payloads and a caller without identity", async () => {
+    await withServer(async ({ call }) => {
+      const begin = { name: "a.png", size: 5 };
+      const other = await call("/api/attachment/upload/begin", { workspaceId: "other-ws", ...begin });
+      expect(other.status).toBe(400);
+      expect(other.body.error).toMatch(/not available in this profile/);
+      expect(
+        (
+          await call(
+            "/api/attachment/upload/begin",
+            { workspaceId: "other-ws", ...begin },
+            { profile: "other", client: "client-o" },
+          )
+        ).status,
+      ).toBe(200);
+      for (const workspaceId of ["ssh-ws", "box-ws"]) {
+        const refused = await call("/api/attachment/upload/begin", { workspaceId, ...begin });
+        expect(refused.status).toBe(400);
+        expect(refused.body.error).toMatch(/unavailable for SSH or container/);
+      }
+      const invalid = await call("/api/attachment/upload/begin", { workspaceId: "ws", name: "a.png", size: 0 });
+      expect(invalid.status).toBe(400);
+      expect(invalid.body.error).toMatch(/validation failed/);
+      const anonymous = await call("/api/attachment/upload/begin", { workspaceId: "ws", ...begin }, { client: null });
+      expect(anonymous.status).toBe(400);
+      expect(anonymous.body.error).toMatch(/bound session/);
+      const unknown = await call("/api/attachment/read", {
+        workspaceId: "ws",
+        transferId: randomUUID(),
+        name: "a.png",
+        offset: 0,
+        length: 1,
+      });
+      expect(unknown.status).toBe(400);
+      expect(unknown.body.error).toMatch(/not found/);
+    });
+  });
+
+  test("a quota refusal reaches the client as 4xx JSON that names the limit", async () => {
+    await withServer(async ({ call }) => {
+      for (let i = 0; i < 4; i++)
+        expect(
+          (await call("/api/attachment/upload/begin", { workspaceId: "ws", name: `p${i}.zip`, size: 1024 ** 3 }))
+            .status,
+        ).toBe(200);
+      const refused = await call("/api/attachment/upload/begin", { workspaceId: "ws", name: "more.zip", size: 1 });
+      expect(refused.status).toBe(400);
+      expect(refused.body.error).toBe("Attachment quota exceeded: a workspace holds at most 4 GiB of attachments");
+    });
+  });
+
+  test("a mobile session is refused on all five routes and a paired desktop is not", async () => {
+    await withServer(async ({ call, phoneCookie }) => {
+      const cookie = await phoneCookie();
+      expect(cookie).toBeTruthy();
+      const payloads: Record<string, unknown> = {
+        "/api/attachment/upload/begin": { workspaceId: "ws", name: "a.png", size: 5 },
+        "/api/attachment/upload/chunk": { workspaceId: "ws", transferId: randomUUID(), offset: 0, data: "AAAA" },
+        "/api/attachment/upload/finish": { workspaceId: "ws", transferId: randomUUID() },
+        "/api/attachment/upload/cancel": { workspaceId: "ws", transferId: randomUUID() },
+        "/api/attachment/read": { workspaceId: "ws", transferId: randomUUID(), name: "a.png", offset: 0, length: 1 },
+      };
+      for (const route of routes) {
+        const refused = await call(route, payloads[route], { cookie });
+        expect(refused.status, route).toBe(403);
+        expect(refused.body.reason, route).toBe("route-not-available-to-mobile");
+      }
+      expect((await call("/api/attachment/list", { workspaceId: "ws" }, { cookie })).status).toBe(200);
+    });
+    const { PEER_DENIED_ROUTES } = await import("./peer-session-route-policy.js");
+    for (const route of routes) expect(PEER_DENIED_ROUTES.has(route), route).toBe(false);
+  }, 60_000);
+});

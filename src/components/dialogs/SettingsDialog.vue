@@ -327,6 +327,12 @@
 import HelpTooltip from "../common/HelpTooltip.vue";
 import { computed, inject, provide, reactive, ref, toRaw, watch } from "vue";
 import { apiKey, appUpdateStatusKey } from "../../types/keys.js";
+import {
+  DEFAULT_TERMINAL_FONT_SIZE,
+  readTerminalFontSize,
+  writeTerminalFontSize,
+} from "../../lib/terminal-font-size.js";
+import { isPeerWindow } from "../../window-backend.js";
 import type { Transport } from "../../transport.js";
 import SettingsAboutTab from "./settings/SettingsAboutTab.vue";
 import SettingsGeneralTab from "./settings/SettingsGeneralTab.vue";
@@ -628,11 +634,7 @@ const form = reactive({
     systemSshPath: props.settings.ssh?.systemSshPath || "",
     requireEncryptedStorage: props.settings.ssh?.requireEncryptedStorage ?? true,
   },
-  terminalFontSize: api?.isRemote
-    ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      ((props.settings as any).terminalFontSizeRemote ?? 13)
-    : // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      ((props.settings as any).terminalFontSizeLocal ?? 13),
+  terminalFontSize: readTerminalFontSize(props.settings, api?.isRemote) ?? DEFAULT_TERMINAL_FONT_SIZE,
 });
 
 // -- Version check --
@@ -801,6 +803,16 @@ async function handleSave() {
     return;
   }
   if (!(await guardSshSettings())) return;
+  // A window attached to another desktop keeps its font size on this machine; the host refuses to take it.
+  const peerWindow = isPeerWindow();
+  if (peerWindow) {
+    const size = Math.min(32, Math.max(8, Math.round(Number(form.terminalFontSize) || DEFAULT_TERMINAL_FONT_SIZE)));
+    try {
+      await writeTerminalFontSize(size, true, undefined);
+    } catch (err) {
+      useNotificationStore().showError("Could not save the terminal font size", err);
+    }
+  }
   saving.value = true;
   leaveAfterSave.value = true;
   emit("save", {
@@ -848,9 +860,11 @@ async function handleSave() {
       systemSshPath: form.ssh.systemSshPath,
       requireEncryptedStorage: form.ssh.requireEncryptedStorage,
     },
-    ...(api?.isRemote
-      ? { terminalFontSizeRemote: Number(form.terminalFontSize) || 13 }
-      : { terminalFontSizeLocal: Number(form.terminalFontSize) || 13 }),
+    ...(peerWindow
+      ? {}
+      : api?.isRemote
+        ? { terminalFontSizeRemote: Number(form.terminalFontSize) || 13 }
+        : { terminalFontSizeLocal: Number(form.terminalFontSize) || 13 }),
   });
 }
 

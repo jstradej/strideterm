@@ -8,6 +8,12 @@ import { nextTick, reactive } from "vue";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createRemoteTransport, createTransport } from "./transport.js";
+import {
+  attachmentReadSchema,
+  attachmentTransferSchema,
+  attachmentUploadBeginSchema,
+  attachmentUploadChunkSchema,
+} from "../electron/shared/attachment-upload.js";
 import { useAppStore } from "./stores/app.js";
 import { useGitUiStore } from "./stores/git-ui.js";
 
@@ -2846,6 +2852,37 @@ describe("remote transport API parity — no method silently missing its remote 
     "listCredentials",
     "removeCredential",
     "removeOrphanCredentials",
+    // Attaching profiles between desktops, host side: pairing and removing devices is decided at this machine only.
+    "getPeerHostState",
+    "setPeerHosting",
+    "approvePeerPairing",
+    "rejectPeerPairing",
+    "removePeerDevice",
+    "onPeersUpdated",
+    "onPeerPairingProgress",
+    // The device side: which desktops this one attaches and the windows bound to them are decided at this machine
+    // only. The link (peerHttp, peerWs*) is carried by the main process for the window's own binding.
+    "listPeerHosts",
+    "refreshPeerHost",
+    "startPeerPairing",
+    "cancelPeerPairing",
+    "removePeerHost",
+    "updatePeerHostAddress",
+    "getWindowBackend",
+    "getLocalProfilesOverview",
+    "openPeerWindow",
+    "activatePeerProfile",
+    "activateLocalProfile",
+    "setPeerWindowProfile",
+    "setPeerWindowAttention",
+    "setPeerWindowFontSize",
+    "peerHttp",
+    "peerWsOpen",
+    "peerWsSend",
+    "peerWsClose",
+    "onPeerPairingResult",
+    "onPeerWsState",
+    "onPeerWsMessage",
     "onSandboxDenied",
     "onSandboxDeniedSettled",
     "showSystemNotification",
@@ -3063,6 +3100,34 @@ describe("remote transport — agent isolation and registries", () => {
       "listCredentials",
       "removeCredential",
       "removeOrphanCredentials",
+      "getPeerHostState",
+      "setPeerHosting",
+      "approvePeerPairing",
+      "rejectPeerPairing",
+      "removePeerDevice",
+      "onPeersUpdated",
+      "onPeerPairingProgress",
+      "listPeerHosts",
+      "refreshPeerHost",
+      "startPeerPairing",
+      "cancelPeerPairing",
+      "removePeerHost",
+      "updatePeerHostAddress",
+      "getWindowBackend",
+      "getLocalProfilesOverview",
+      "openPeerWindow",
+      "activatePeerProfile",
+      "activateLocalProfile",
+      "setPeerWindowProfile",
+      "setPeerWindowAttention",
+      "setPeerWindowFontSize",
+      "peerHttp",
+      "peerWsOpen",
+      "peerWsSend",
+      "peerWsClose",
+      "onPeerPairingResult",
+      "onPeerWsState",
+      "onPeerWsMessage",
     ]) {
       expect(transport[method], method).toBeUndefined();
     }
@@ -3700,5 +3765,111 @@ describe("operation:finished — transport boundary validation", () => {
     } finally {
       delete (window as unknown as Record<string, unknown>).strideterm;
     }
+  });
+});
+
+describe("attachment upload and read on both transports", () => {
+  const transferId = "6f1c7d0e-6b52-4f3c-9d44-1f2a3b4c5d6e";
+  const record = {
+    transferId,
+    path: `.strideterm/attachments/${transferId}/a.png`,
+    size: 4,
+    sha256: "a".repeat(64),
+    name: "a.png",
+    uploadedAt: 5,
+  };
+  const calls = [
+    {
+      method: "attachmentUploadBegin",
+      channel: "attachment:upload:begin",
+      route: "/api/attachment/upload/begin",
+      schema: attachmentUploadBeginSchema,
+      payload: { workspaceId: "ws", name: "a.png", size: 4, idempotencyKey: "k" },
+      reply: { transferId, chunkBytes: 512 * 1024, received: 0 },
+    },
+    {
+      method: "attachmentUploadChunk",
+      channel: "attachment:upload:chunk",
+      route: "/api/attachment/upload/chunk",
+      schema: attachmentUploadChunkSchema,
+      payload: { workspaceId: "ws", transferId, offset: 0, data: "AAAA" },
+      reply: { received: 3 },
+    },
+    {
+      method: "attachmentUploadFinish",
+      channel: "attachment:upload:finish",
+      route: "/api/attachment/upload/finish",
+      schema: attachmentTransferSchema,
+      payload: { workspaceId: "ws", transferId },
+      reply: record,
+    },
+    {
+      method: "attachmentUploadCancel",
+      channel: "attachment:upload:cancel",
+      route: "/api/attachment/upload/cancel",
+      schema: attachmentTransferSchema,
+      payload: { workspaceId: "ws", transferId },
+      reply: { ok: true },
+    },
+    {
+      method: "attachmentRead",
+      channel: "attachment:read",
+      route: "/api/attachment/read",
+      schema: attachmentReadSchema,
+      payload: { workspaceId: "ws", transferId, name: "a.png", offset: 0, length: 4 },
+      reply: { data: "AAAAAA==", size: 4, eof: true },
+    },
+  ] as const;
+
+  afterEach(() => {
+    delete (window as unknown as Record<string, unknown>).strideterm;
+  });
+
+  it("the Electron transport sends each payload to its channel and validates the answer", async () => {
+    const invoked: Array<{ channel: string; payload: unknown }> = [];
+    const stub: Record<string, unknown> = {};
+    for (const call of calls)
+      stub[call.method] = async (payload: unknown) => {
+        invoked.push({ channel: call.channel, payload });
+        return call.reply;
+      };
+    (window as unknown as Record<string, unknown>).strideterm = stub;
+    const transport = createTransport() as unknown as Record<string, (payload: unknown) => Promise<unknown>>;
+    for (const call of calls) {
+      expect(call.schema.safeParse(call.payload).success, call.method).toBe(true);
+      await expect(transport[call.method](reactive({ ...call.payload })), call.method).resolves.toEqual(call.reply);
+    }
+    expect(invoked.map((entry) => entry.payload)).toEqual(calls.map((call) => call.payload));
+    stub.attachmentUploadBegin = async () => ({ nope: true });
+    await expect(transport.attachmentUploadBegin(calls[0].payload)).rejects.toThrow(
+      "Invalid attachment upload response",
+    );
+    stub.attachmentRead = async () => ({ data: 1 });
+    await expect(transport.attachmentRead(calls[4].payload)).rejects.toThrow("Invalid attachment read response");
+  });
+
+  it("the remote transport posts each payload to its route and validates the answer", async () => {
+    const sent: Array<{ url: string; body: unknown }> = [];
+    globalThis.fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const call = calls.find((entry) => String(url) === entry.route)!;
+      sent.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+      return { ok: true, json: async () => call.reply } as Response;
+    }) as unknown as typeof fetch;
+    const transport = makeRemoteTransport() as unknown as Record<string, (payload: unknown) => Promise<unknown>>;
+    for (const call of calls) {
+      expect(typeof transport[call.method], call.method).toBe("function");
+      await expect(transport[call.method](call.payload), call.method).resolves.toEqual(call.reply);
+    }
+    expect(sent).toEqual(calls.map((call) => ({ url: call.route, body: call.payload })));
+    for (const entry of sent) {
+      const call = calls.find((candidate) => candidate.route === entry.url)!;
+      expect(call.schema.safeParse(entry.body).success, call.route).toBe(true);
+    }
+    globalThis.fetch = vi.fn(
+      async () => ({ ok: true, json: async () => ({ received: "x" }) }) as Response,
+    ) as unknown as typeof fetch;
+    await expect(transport.attachmentUploadChunk(calls[1].payload)).rejects.toThrow(
+      "Invalid attachment upload response",
+    );
   });
 });

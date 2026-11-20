@@ -459,6 +459,27 @@ describe("sanitizeSettingsFromRemote", () => {
     expect(settings.theme).toBe("dark");
   });
 
+  test("drops integrations.peers wholesale but leaves sibling integrations untouched", () => {
+    const settings = {
+      integrations: {
+        peers: {
+          instanceId: "instance-1",
+          hosting: { enabled: true, port: 43124 },
+          devices: [{ id: "device-1", publicKey: "key" }],
+          hosts: [{ id: "host-1", address: "192.0.2.10", hostPublicKey: "key" }],
+        },
+        telegram: { enabled: true, defaultPollSeconds: 5, connections: [] },
+      },
+      theme: "dark",
+    };
+    const removed = sanitizeSettingsFromRemote(settings as unknown as Record<string, unknown>);
+    expect(removed).toContain("integrations.peers");
+    expect(settings.integrations).not.toHaveProperty("peers");
+    expect(JSON.stringify(settings)).not.toContain("192.0.2.10");
+    expect(settings.integrations.telegram).toEqual({ enabled: true, defaultPollSeconds: 5, connections: [] });
+    expect(settings.theme).toBe("dark");
+  });
+
   test("is a no-op when integrations.mobile is absent", () => {
     const settings = { integrations: { telegram: { enabled: true, defaultPollSeconds: 5, connections: [] } } };
     const removed = sanitizeSettingsFromRemote(settings as unknown as Record<string, unknown>);
@@ -540,6 +561,25 @@ describe("stripSecretsForRemote", () => {
     expect(stripped.appState.settings.integrations).not.toHaveProperty("mobile");
     expect(stripped.appState.settings.integrations.telegram).toEqual({ connections: [{ id: "bot-1" }] });
     expect(payload.appState.settings.integrations.mobile.devices).toHaveLength(1);
+  });
+
+  test("removes paired-desktop settings from remote responses without mutating desktop state", () => {
+    const payload = {
+      appState: {
+        settings: {
+          integrations: {
+            peers: { instanceId: "instance-1", devices: [{ id: "device-1" }], hosts: [] },
+            telegram: { connections: [{ id: "bot-1" }] },
+          },
+        },
+      },
+    };
+    const stripped = stripSecretsForRemote(payload) as unknown as {
+      appState: { settings: { integrations: Record<string, unknown> } };
+    };
+    expect(stripped.appState.settings.integrations).not.toHaveProperty("peers");
+    expect(stripped.appState.settings.integrations.telegram).toEqual({ connections: [{ id: "bot-1" }] });
+    expect(payload.appState.settings.integrations.peers.devices).toHaveLength(1);
   });
 
   test("zeros the master token in a NESTED result envelope (mutation/verification results)", () => {

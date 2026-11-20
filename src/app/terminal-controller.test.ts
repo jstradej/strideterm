@@ -149,10 +149,12 @@ vi.mock("@xterm/addon-search", () => ({
 function buildController({
   getOverlay,
   isRemote = false,
+  hasNativeShell,
   getActiveSessionId,
 }: {
   getOverlay: () => unknown;
   isRemote?: boolean;
+  hasNativeShell?: boolean;
   getActiveSessionId?: () => string | null;
 }) {
   const focus = vi.fn();
@@ -178,7 +180,7 @@ function buildController({
     getOverlay,
     getPayload: () => null,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    api: { isRemote } as any,
+    api: { isRemote, hasNativeShell } as any,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     appConfig: {} as any,
     openTerminalLink: vi.fn(),
@@ -262,6 +264,20 @@ describe("createTerminalController", () => {
     for (const frame of queuedFrames) frame(0);
 
     expect(focus).not.toHaveBeenCalled();
+  });
+
+  test("a window attached to another computer focuses like a desktop window", () => {
+    const queuedFrames: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback: FrameRequestCallback) => {
+      queuedFrames.push(callback);
+      return queuedFrames.length;
+    });
+    const { controller, focus } = buildController({ getOverlay: () => null, isRemote: true, hasNativeShell: true });
+
+    controller.focusActiveTerminal();
+    for (const frame of queuedFrames) frame(0);
+
+    expect(focus).toHaveBeenCalledOnce();
   });
 });
 
@@ -1275,6 +1291,7 @@ describe("getTerminalTextSnapshot", () => {
 function buildAttachController(
   apiOverrides: Record<string, unknown> = {},
   appConfigOverride: Record<string, unknown> = {},
+  payload: unknown = null,
 ) {
   const views = { value: new Map() };
   const buffers = { value: new Map() };
@@ -1291,7 +1308,8 @@ function buildAttachController(
     buffers: buffers as any,
     getActiveSessionId: () => null,
     getOverlay: () => null,
-    getPayload: () => null,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    getPayload: () => payload as any,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     api: api as any,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -2389,6 +2407,140 @@ describe("image paste into an SSH tab", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("image paste in a window whose backend is another machine", () => {
+  const sessionId = "workspace-1:shell-1";
+  const payload = {
+    meta: { platform: "linux" },
+    appState: {
+      workspaces: [{ id: "workspace-1", cwd: "/home/dev/proj", panels: [{ id: "shell-1", title: "t", command: "" }] }],
+    },
+  };
+
+  function remote(apiOverrides: Record<string, unknown> = {}) {
+    const built = buildAttachController(
+      {
+        isRemote: true,
+        attachmentUploadBegin: vi.fn(async () => ({ transferId: "xfer", chunkBytes: 1024, received: 0 })),
+        attachmentUploadChunk: vi.fn(async (req: { offset: number }) => ({ received: req.offset + 3 })),
+        attachmentUploadFinish: vi.fn(async () => ({
+          transferId: "xfer",
+          path: ".strideterm/attachments/xfer/shot.png",
+          size: 3,
+          sha256: "a".repeat(64),
+          name: "shot.png",
+        })),
+        attachmentUploadCancel: vi.fn(async () => undefined),
+        ...apiOverrides,
+      },
+      {},
+      payload,
+    );
+    built.controller.ensureTerminal(sessionId);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (built.views.value as any).get(sessionId);
+    const firePaste = async (files: unknown[]) => {
+      const event = new Event("paste", { bubbles: true, cancelable: true }) as Event & { clipboardData: unknown };
+      event.clipboardData = { files, items: [] };
+      view.mount.dispatchEvent(event);
+      await flushPromises();
+      return event;
+    };
+    return { ...built, firePaste };
+  }
+
+  const png = {
+    name: "image.png",
+    type: "image/png",
+    size: 3,
+    slice: () => ({ arrayBuffer: async () => new Uint8Array(3).buffer }),
+  };
+
+  beforeEach(() => {
+    mockShowError.mockClear();
+    mockPushToast.mockClear();
+  });
+
+  test("uploads the pasted image to the workspace and types the path on the backend machine", async () => {
+    vi.stubGlobal(
+      "File",
+      class {
+        size = 3;
+        constructor(
+          _parts: unknown[],
+          public name: string,
+          public options: { type: string },
+        ) {}
+        get type() {
+          return this.options.type;
+        }
+        slice = png.slice;
+      },
+    );
+    try {
+      const { api, firePaste } = remote();
+      const event = await firePaste([png]);
+      expect(event.defaultPrevented).toBe(true);
+      expect((api as Record<string, unknown>).attachmentUploadBegin).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workspaceId: "workspace-1",
+          name: expect.stringMatching(/^pasted-\d{8}-\d{6}\.png$/),
+        }),
+      );
+      expect(api.writeTerminal).toHaveBeenCalledWith(
+        sessionId,
+        "/home/dev/proj/.strideterm/attachments/xfer/shot.png ",
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test("leaves a text paste and a window without the upload API alone", async () => {
+    const { api, firePaste } = remote();
+    const text = await firePaste([]);
+    expect(text.defaultPrevented).toBe(false);
+    expect((api as Record<string, unknown>).attachmentUploadBegin).not.toHaveBeenCalled();
+
+    const without = remote({ attachmentUploadBegin: undefined });
+    const event = await without.firePaste([png]);
+    expect(event.defaultPrevented).toBe(false);
+    expect(without.api.writeTerminal).not.toHaveBeenCalled();
+  });
+
+  test("types nothing and reports the server sentence when the upload is refused", async () => {
+    const sentence = "Attachments are not available in SSH workspaces.";
+    const { api, firePaste } = remote({
+      attachmentUploadBegin: vi.fn(async () => {
+        throw new Error(sentence);
+      }),
+    });
+    vi.stubGlobal(
+      "File",
+      class {
+        constructor(
+          _p: unknown[],
+          public name: string,
+          public options: { type: string },
+        ) {}
+        get type() {
+          return this.options.type;
+        }
+        get size() {
+          return 3;
+        }
+        slice = png.slice;
+      },
+    );
+    try {
+      await firePaste([png]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(api.writeTerminal).not.toHaveBeenCalled();
+    expect(mockShowError).toHaveBeenCalledWith("Upload failed", sentence, expect.anything());
   });
 });
 

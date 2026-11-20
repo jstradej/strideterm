@@ -343,6 +343,7 @@ export interface IntegrationSettings {
   telegram: TelegramIntegrationSettings;
   mobile: MobileIntegrationSettings;
   registry: RegistryIntegrationSettings;
+  peers: import("../peers.js").PeerIntegrationSettings;
 }
 
 export interface GitUiSettings {
@@ -849,6 +850,8 @@ export interface AppState {
   workspaceGrid?: WorkspaceGridState | null;
   /** Per-window state slots. Replaces the single-window global state. */
   windowSlots: WindowSlot[];
+  /** Windows that show a profile of another desktop; never mixed into `windowSlots`. */
+  peerWindows?: import("../peers.js").PeerWindowSlot[];
   // Legacy aliases
   activeProjectId?: string;
   projects?: WorkspaceState[];
@@ -1361,6 +1364,8 @@ export interface StatePayload {
   operations: OperationsState;
   /** Review Git operations running now and finished within 24 h (runtime-only, never persisted). */
   reviewGit: ReviewGitState;
+  /** profileId → change counter of that profile's sidebar notes (runtime-only, restarts at 0; never note text). */
+  sidebarNotesRevisions: Record<string, number>;
   /** SSH file transfers running now and finished within 24 h (runtime-only, never persisted). */
   sshFileTransfers: SshFileTransfersState;
   /** Review agents waiting in their terminal for the user to trust their checkout (runtime-only). */
@@ -1462,6 +1467,8 @@ export interface RemoteStateV2 {
   operations: OperationsState;
   /** Only the client's profile's operations. */
   reviewGit: ReviewGitState;
+  /** Only the client's own profile's notes counter. */
+  sidebarNotesRevisions: Record<string, number>;
   /** Only the client's profile's SSH file transfers. */
   sshFileTransfers: SshFileTransfersState;
   /** Only the client's profile's review agents waiting for folder trust. */

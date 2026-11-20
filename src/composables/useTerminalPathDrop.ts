@@ -5,6 +5,7 @@ import type { PanelState, WorkspaceState } from "../../electron/shared/types/sta
 import { useAppStore } from "../stores/app.js";
 import { useNotificationStore } from "../stores/notifications.js";
 import { useTerminalStore } from "../stores/terminal.js";
+import { canUploadToTerminal, uploadFilesToTerminal } from "../lib/terminal-attachment-upload.js";
 import { PATHS_MIME, formatDroppedPaths, readDragPaths, terminalDropKind } from "../lib/terminal-path-drop.js";
 
 const TITLE = "Cannot drop here";
@@ -60,7 +61,18 @@ export function useTerminalPathDrop(sessionId: () => string, target: Ref<HTMLEle
     event.preventDefault();
     event.stopPropagation();
     const dt = event.dataTransfer;
-    const paths = readDragPaths(dt) ?? (dt?.files?.length ? droppedFilePaths(dt.files) : null);
+    const dragged = readDragPaths(dt);
+    if (!dragged && dt?.files?.length && canUploadToTerminal(api)) {
+      void uploadFilesToTerminal({
+        api: api as Transport,
+        sessionId: sessionId(),
+        files: Array.from(dt.files),
+        payload: appStore.payload,
+        write: (text) => termStore.pasteToTerminal(sessionId(), text),
+      }).catch((err: unknown) => notifications.showError("Upload failed", err));
+      return;
+    }
+    const paths = dragged ?? (dt?.files?.length ? droppedFilePaths(dt.files) : null);
     if (!paths) return;
     const id = sessionId();
     const platform = appStore.payload?.meta?.platform || "";

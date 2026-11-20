@@ -5,6 +5,7 @@ import {
   ipcMain,
   nativeImage,
   nativeTheme,
+  Notification,
   safeStorage,
   shell,
   Menu,
@@ -20,7 +21,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
 import { inspect } from "node:util";
 import { createRuntime } from "./backend/runtime.js";
-import { registerIpc, type JiraIssuePopoutTarget } from "./backend/ipc.js";
+import { openPeerHostWindow, registerIpc, type JiraIssuePopoutTarget, type PeerWindowsAdapter } from "./backend/ipc.js";
 import { startRemoteServer } from "./backend/remote-server.js";
 import { loadUiPackageDescriptor } from "./backend/ui-package-descriptor.js";
 import { parseReviewBridgeMcpArgs, runReviewBridgeMcpServer } from "./backend/review-bridge-mcp.js";
@@ -30,6 +31,14 @@ import { registerDeferredSshIpcHandlers } from "./backend/ssh-bootstrap-ipc.js";
 import { createDefaultState, normalizeState, MIGRATION_WINDOW_SLOT_ID } from "./backend/default-state.js";
 import { summarizeAttentionForProfile } from "./backend/runtime-utils.js";
 import { isInputBlockingKind } from "./shared/attention-kinds.js";
+import { shouldShowSystemNotification } from "./backend/notifications/system-notification-dedupe.js";
+import {
+  computeAppBadge,
+  peerAttentionBody,
+  pickPeerWindowToFocus,
+  shouldNotifyPeerAttention,
+  topAttentionProfile,
+} from "./peer-attention-native.js";
 import { inheritShellPath } from "./backend/fix-path.js";
 import { startFreezeWatchdog } from "./backend/freeze-watchdog.js";
 import { APP_CONFIG, getRendererDevUrl, resolveRemoteAccessPort } from "../config/app-config.js";
@@ -42,7 +51,14 @@ import { createDesktopUpdater } from "./backend/desktop-updater.js";
 import { APP_UPDATE_RELEASES_URL, type AppUpdateStatus } from "./shared/app-update.js";
 import { createPerformanceSampler } from "./performance-metrics.js";
 import type { ConfirmCloseRequest, FilePopoutPayload } from "./shared/ipc-bridge.js";
-import type { WindowSlot, WorkspaceState } from "./shared/types/state.js";
+import type { AppState as StoredAppState, WindowSlot, WorkspaceState } from "./shared/types/state.js";
+import type { PeerWindowSlot, WindowBackend } from "./shared/peers.js";
+import { answerWindowBackendDuringBoot } from "./shared/window-backend-bootstrap.js";
+import {
+  isChannelAllowedInPeerWindow,
+  isEventAllowedInPeerWindow,
+  PEER_WINDOW_REFUSED_MESSAGE,
+} from "./shared/peer-window-channels.js";
 import type { TaskExecutionState } from "./shared/types/task.js";
 import type { CpuProfileCaptureResult, RevealResult } from "./shared/performance.js";
 
@@ -213,6 +229,18 @@ const webContentsToWindowId = new Map<number, string>();
 const windowFocusedAt = new Map<string, number>();
 // Per-window attention count (for flash logic)
 const windowAttentionCount = new Map<string, number>();
+// Attention count a window attached to another desktop reported for itself. Never derived from a local profile.
+const peerWindowAttention = new Map<string, number>();
+// Peer windows restored at startup, for the moments before the runtime exists to answer which windows are peers.
+const bootPeerWindowIds = new Set<string>();
+let markIpcRegistered: () => void = () => {};
+let markIpcFailed: (error: unknown) => void = () => {};
+// Settles when registerIpc has run (or the runtime failed to start); a peer window's boot waits on it.
+const ipcRegistered = new Promise<void>((resolve, reject) => {
+  markIpcRegistered = resolve;
+  markIpcFailed = reject;
+});
+ipcRegistered.catch(() => undefined);
 
 // --- Close-confirmation flow ---
 // Global gate: once the user has approved closing/quitting via the in-app
@@ -351,8 +379,10 @@ async function runShutdownCleanupOnce(): Promise<void> {
     stopFreezeWatchdog?.();
     runtimeState.unsubscribeStateUpdated?.();
     runtimeState.unsubscribeRemoteConfig?.();
+    runtimeState.unsubscribePeerEvents?.();
     runtimeState.disposeIpc?.();
     await runtimeState.remoteServer?.close?.();
+    await runtimeState.peerServer?.close?.().catch(() => {});
     (await runtimeState.runtime?.stop?.()) as Promise<void>;
   })();
   return shutdownCleanupPromise;
@@ -362,9 +392,41 @@ function finishShutdownOnce(): Promise<void> {
   return (shutdownFinalizationPromise ??= runShutdownCleanupOnce().finally(shutdownLogger));
 }
 
+/** True for a window that shows a profile of another desktop. The runtime answers once it exists. */
+function isPeerWindowId(windowId: string | undefined): boolean {
+  if (!windowId) return false;
+  const runtime = runtimeState.runtime;
+  return runtime ? runtime.isPeerWindow?.(windowId) === true : bootPeerWindowIds.has(windowId);
+}
+
+const peerRefusalsLogged = new Set<string>();
+
+/** A window attached to another desktop must not reach this machine's data through a channel main.ts registers itself. */
+function refusedForPeerWindow(channel: string, event: { sender: { id: number } }): boolean {
+  if (isChannelAllowedInPeerWindow(channel)) return false;
+  const windowId = webContentsToWindowId.get(event.sender.id);
+  if (!isPeerWindowId(windowId)) return false;
+  const key = `${windowId}
+${channel}`;
+  if (!peerRefusalsLogged.has(key)) {
+    if (peerRefusalsLogged.size >= 500) peerRefusalsLogged.clear();
+    peerRefusalsLogged.add(key);
+    log.warn("refused a channel from a window attached to another desktop", { windowId, channel });
+  }
+  return true;
+}
+
+/** Every channel main.ts registers directly goes through here, so none of them skips the peer-window decision. */
+function handleIpc(channel: string, listener: Parameters<typeof ipcMain.handle>[1]): void {
+  ipcMain.handle(channel, (event, ...args) => {
+    if (refusedForPeerWindow(channel, event)) throw new Error(PEER_WINDOW_REFUSED_MESSAGE);
+    return listener(event, ...args);
+  });
+}
+
 function registerAppUpdateIpc(): void {
   function handle(channel: string, action: (win: BrowserWindow) => AppUpdateStatus | Promise<void>): void {
-    ipcMain.handle(channel, async (event: IpcMainInvokeEvent, ...args: unknown[]) => {
+    handleIpc(channel, async (event: IpcMainInvokeEvent, ...args: unknown[]) => {
       const windowId = webContentsToWindowId.get(event.sender.id);
       const win = windowId ? windowRegistry.get(windowId) : undefined;
       if (
@@ -502,13 +564,18 @@ interface JiraIssuePopout {
 const jiraIssuePopoutsByKey = new Map<string, JiraIssuePopout>();
 const jiraIssuePopoutsByWebContentsId = new Map<number, JiraIssuePopout>();
 
-/** Return the window that had focus most recently (non-minimized preferred). */
-function getPrimaryWindow(): BrowserWindow | null {
+/**
+ * Return the window that had focus most recently (non-minimized preferred). `localOnly` skips windows attached to
+ * another desktop, for callers that act on THIS machine's data (a screenshot sent to a chat).
+ */
+function getPrimaryWindow(options: { localOnly?: boolean } = {}): BrowserWindow | null {
+  const eligible = (id: string) => !options.localOnly || !isPeerWindowId(id);
   let best: BrowserWindow | null = null;
   let bestTime = -1;
   for (const [id, win] of windowRegistry) {
     if (win.isDestroyed()) continue;
     if (win.isMinimized()) continue;
+    if (!eligible(id)) continue;
     const t = windowFocusedAt.get(id) ?? 0;
     if (t > bestTime) {
       bestTime = t;
@@ -517,8 +584,8 @@ function getPrimaryWindow(): BrowserWindow | null {
   }
   if (!best) {
     // Fallback: first non-destroyed window
-    for (const win of windowRegistry.values()) {
-      if (!win.isDestroyed()) return win;
+    for (const [id, win] of windowRegistry) {
+      if (!win.isDestroyed() && eligible(id)) return win;
     }
   }
   return best;
@@ -537,6 +604,9 @@ interface RuntimeState {
   remoteServer: { close?: () => Promise<void> } | null;
   remoteServerRestart: Promise<void>;
   unsubscribeRemoteConfig: (() => void) | null;
+  peerServer: { close?: () => Promise<void>; revokePeerDevice?: (deviceId: string) => void } | null;
+  peerServerRestart: Promise<void>;
+  unsubscribePeerEvents: (() => void) | null;
   unsubscribeStateUpdated: (() => void) | null;
   lastAttentionCount: number;
   /** Convenience getter – returns the last-focused non-minimized window. */
@@ -554,6 +624,9 @@ const runtimeState: RuntimeState = {
   remoteServer: null,
   remoteServerRestart: Promise.resolve(),
   unsubscribeRemoteConfig: null,
+  peerServer: null,
+  peerServerRestart: Promise.resolve(),
+  unsubscribePeerEvents: null,
   unsubscribeStateUpdated: null,
   lastAttentionCount: 0,
   get window() {
@@ -597,7 +670,9 @@ function createOverlayIcon(count: number, waitingCount: number): Electron.Native
   return nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`);
 }
 
-function getWindowProfileId(windowId: string): string {
+/** The local profile a window shows; null for a window attached to another desktop, which shows none of ours. */
+function getWindowProfileId(windowId: string): string | null {
+  if (isPeerWindowId(windowId)) return null;
   const appState = runtimeState.runtime?.getPayload?.()?.appState as Record<string, unknown> | undefined;
   const windowSlots = (appState?.windowSlots as Array<{ id: string; profileId: string }> | undefined) || [];
   return windowSlots.find((s) => s.id === windowId)?.profileId || "default";
@@ -750,23 +825,168 @@ async function createWindowForProfile(
   return { windowId: newWindowId };
 }
 
+const dataDirTitleSuffix = () => (customDataDir ? ` (${path.basename(customDataDir)})` : "");
+
+function peerWindowTitle(windowId: string): string {
+  const backend = runtimeState.runtime?.getWindowBackend?.(windowId) as
+    { kind?: string; hostLabel?: string } | undefined;
+  const label = backend?.kind === "peer" && backend.hostLabel ? ` — ${backend.hostLabel}` : "";
+  return APP_CONFIG.electron.title + label + dataDirTitleSuffix();
+}
+
+/** Title, overlay icon and taskbar flash of one window for `winCount` alerts. */
+function applyWindowAttention(
+  windowId: string,
+  win: BrowserWindow,
+  baseTitle: string,
+  winCount: number,
+  winWaitingCount: number,
+): void {
+  win.setTitle(winCount > 0 ? `(${winCount}) ${baseTitle}` : baseTitle);
+
+  if (process.platform === "win32") {
+    win.setOverlayIcon(
+      winCount > 0 ? createOverlayIcon(winCount, winWaitingCount) : null,
+      winCount > 0
+        ? `${winCount} workspace alert${winCount === 1 ? "" : "s"}${winWaitingCount ? `, ${winWaitingCount} waiting for input` : ""}`
+        : "",
+    );
+  }
+
+  const prevCount = windowAttentionCount.get(windowId) ?? 0;
+  const shouldFlash = winCount > prevCount && !win.isFocused();
+  if (shouldFlash) {
+    log.debug("flashing taskbar", { windowId, winCount, winWaitingCount, prevCount });
+    win.flashFrame(true);
+  } else if (winCount === 0 || win.isFocused()) {
+    win.flashFrame(false);
+  }
+  windowAttentionCount.set(windowId, winCount);
+}
+
+/** The app-wide badge: this machine's alerts plus those of every open window attached to another desktop. */
+function updateAppBadge(): void {
+  if (!app.setBadgeCount) return;
+  const windowCounts = new Map<string, number[]>();
+  for (const { id, hostId } of peerWindowsOfHost()) {
+    windowCounts.set(hostId, [...(windowCounts.get(hostId) ?? []), peerWindowAttention.get(id) ?? 0]);
+  }
+  const polled = new Map<string, number>();
+  for (const host of runtimeState.runtime?.getPeerHostAttention?.() ?? []) polled.set(host.hostId, host.total);
+  const hostIds = new Set([...windowCounts.keys(), ...polled.keys()]);
+  app.setBadgeCount(
+    computeAppBadge(
+      runtimeState.lastAttentionCount,
+      [...hostIds].map((hostId) => ({
+        polledTotal: polled.get(hostId) ?? null,
+        windowCounts: windowCounts.get(hostId) ?? [],
+      })),
+    ),
+  );
+}
+
+/** Open windows attached to another desktop, with the host and profile each one shows. */
+function peerWindowsOfHost(
+  hostId?: string,
+): Array<{ id: string; win: BrowserWindow; hostId: string; remoteProfileId: string }> {
+  const found: Array<{ id: string; win: BrowserWindow; hostId: string; remoteProfileId: string }> = [];
+  for (const [id, win] of windowRegistry) {
+    if (win.isDestroyed()) continue;
+    const backend = runtimeState.runtime?.getWindowBackend?.(id);
+    if (backend?.kind !== "peer" || (hostId !== undefined && backend.hostId !== hostId)) continue;
+    found.push({ id, win, hostId: backend.hostId, remoteProfileId: backend.remoteProfileId });
+  }
+  return found;
+}
+
+const peerAttentionNotifications = new Map<string, Notification>();
+
+function focusPeerHost(hostId: string): void {
+  const runtime = runtimeState.runtime;
+  const profiles =
+    runtime?.getPeerHostAttention?.().find((host: { hostId: string }) => host.hostId === hostId)?.profiles ?? [];
+  const windows = peerWindowsOfHost(hostId);
+  const targetId = pickPeerWindowToFocus(windows, profiles);
+  const target = windows.find((entry) => entry.id === targetId);
+  if (target) {
+    if (target.win.isMinimized()) target.win.restore();
+    target.win.show();
+    target.win.focus();
+    return;
+  }
+  const profileId =
+    topAttentionProfile(profiles) ??
+    runtime?.listPeerHosts?.().find((host: { id: string }) => host.id === hostId)?.profiles[0]?.id;
+  if (!profileId) {
+    log.warn("no profile to open for an attached desktop's alerts", { hostId });
+    return;
+  }
+  void openPeerHostWindow(runtime, peerWindowsAdapter, { hostId, profileId }).catch((error: Error) => {
+    log.warn("could not open a window for an attached desktop's alerts", { hostId, err: error.message });
+  });
+}
+
+function onPeerHostAttention(payload: { hostId?: string; total?: number; previousTotal?: number | null }): void {
+  updateAppBadge();
+  const hostId = String(payload?.hostId ?? "");
+  const total = Number(payload?.total ?? 0);
+  if (!hostId) return;
+  const windows = peerWindowsOfHost(hostId);
+  if (
+    !shouldNotifyPeerAttention({
+      previousTotal: payload.previousTotal ?? null,
+      total,
+      hostWindowFocused: windows.some((entry) => entry.win.isFocused()),
+    })
+  ) {
+    return;
+  }
+  for (const entry of windows) entry.win.flashFrame(true);
+  if (!Notification.isSupported() || !shouldShowSystemNotification(`peer-attention:${hostId}`)) return;
+  const label =
+    runtimeState.runtime?.listPeerHosts?.().find((host: { id: string }) => host.id === hostId)?.label || "strIDEterm";
+  peerAttentionNotifications.get(hostId)?.close();
+  const notification = new Notification({
+    title: label,
+    body: peerAttentionBody(total),
+    icon: path.join(app.getAppPath(), "assets", "icon.png"),
+  });
+  peerAttentionNotifications.set(hostId, notification);
+  notification.on("click", () => focusPeerHost(hostId));
+  notification.on("close", () => {
+    if (peerAttentionNotifications.get(hostId) === notification) peerAttentionNotifications.delete(hostId);
+  });
+  notification.show();
+}
+
+function setPeerWindowAttention(windowId: string, count: number): void {
+  peerWindowAttention.set(windowId, count);
+  const win = windowRegistry.get(windowId);
+  if (win && !win.isDestroyed()) applyWindowAttention(windowId, win, peerWindowTitle(windowId), count, 0);
+  updateAppBadge();
+}
+
 function updateNativeAttention(payload: Record<string, unknown> | null | undefined): void {
   if (!payload) return;
   const { count, waitingCount } = summarizeAttention(payload);
   const appState = payload.appState as Record<string, unknown> | undefined;
   const profiles = (appState?.profiles as Array<{ id: string; name: string }> | undefined) || [];
-  const dataDirSuffix = customDataDir ? ` (${path.basename(customDataDir)})` : "";
 
-  // Global badge count = sum across all windows
-  if (app.setBadgeCount) {
-    app.setBadgeCount(count);
+  if (count !== runtimeState.lastAttentionCount) {
+    log.trace("attention count changed", { prevCount: runtimeState.lastAttentionCount, newCount: count, waitingCount });
   }
+  runtimeState.lastAttentionCount = count;
+  updateAppBadge();
 
   // Per-window title + overlay icon + flash (§4.2: route to every window
   // whose profile owns the alert — a profile may be open in several windows,
   // and each of them gets the same badge/flash).
   for (const [windowId, win] of windowRegistry) {
     if (win.isDestroyed()) continue;
+    if (isPeerWindowId(windowId)) {
+      applyWindowAttention(windowId, win, peerWindowTitle(windowId), peerWindowAttention.get(windowId) ?? 0, 0);
+      continue;
+    }
     const profileId = getWindowProfileId(windowId);
     const activeProfile = profiles.find((p) => p.id === profileId);
     const profileSuffix = activeProfile && profileId !== "default" ? ` [${activeProfile.name}]` : "";
@@ -774,37 +994,17 @@ function updateNativeAttention(payload: Record<string, unknown> | null | undefin
     // Alert count for this window = alerts in the window's profile.
     const { count: winCount, waitingCount: winWaitingCount } = summarizeAttentionForProfile(
       payload as Parameters<typeof summarizeAttentionForProfile>[0],
-      profileId,
+      profileId ?? "default",
     );
 
-    const baseTitle = APP_CONFIG.electron.title + profileSuffix + dataDirSuffix;
-    const title = winCount > 0 ? `(${winCount}) ${baseTitle}` : baseTitle;
-    win.setTitle(title);
-
-    if (process.platform === "win32") {
-      win.setOverlayIcon(
-        winCount > 0 ? createOverlayIcon(winCount, winWaitingCount) : null,
-        winCount > 0
-          ? `${winCount} workspace alert${winCount === 1 ? "" : "s"}${winWaitingCount ? `, ${winWaitingCount} waiting for input` : ""}`
-          : "",
-      );
-    }
-
-    const prevCount = windowAttentionCount.get(windowId) ?? 0;
-    const shouldFlash = winCount > prevCount && !win.isFocused();
-    if (shouldFlash) {
-      log.debug("flashing taskbar", { windowId, winCount, winWaitingCount, prevCount });
-      win.flashFrame(true);
-    } else if (winCount === 0 || win.isFocused()) {
-      win.flashFrame(false);
-    }
-    windowAttentionCount.set(windowId, winCount);
+    applyWindowAttention(
+      windowId,
+      win,
+      APP_CONFIG.electron.title + profileSuffix + dataDirTitleSuffix(),
+      winCount,
+      winWaitingCount,
+    );
   }
-
-  if (count !== runtimeState.lastAttentionCount) {
-    log.trace("attention count changed", { prevCount: runtimeState.lastAttentionCount, newCount: count, waitingCount });
-  }
-  runtimeState.lastAttentionCount = count;
 }
 
 function syncTitleBarTheme(): void {
@@ -964,7 +1164,7 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
     y: safeBounds.y,
     minWidth: APP_CONFIG.electron.minWindowWidth,
     minHeight: APP_CONFIG.electron.minWindowHeight,
-    title: APP_CONFIG.electron.title,
+    title: isPeerWindowId(id) ? peerWindowTitle(id) : APP_CONFIG.electron.title,
     icon: windowIconPath,
     backgroundColor: APP_CONFIG.electron.backgroundColor,
     show: false,
@@ -1119,6 +1319,8 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
     webContentsToWindowId.delete(webContentsId);
     windowFocusedAt.delete(id);
     windowAttentionCount.delete(id);
+    peerWindowAttention.delete(id);
+    bootPeerWindowIds.delete(id);
     closingWindows.delete(id);
     const pending = pendingCloseConfirmations.get(id);
     if (pending) {
@@ -1128,9 +1330,12 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
     // Remove slot from persistent state — but not for windows the app's own quit is closing: their
     // slots are what the next start restores, and the store stays writable after runtime.stop().
     if (!shutdownCleanupPromise && runtimeState.runtimeInteractive && runtimeState.runtime) {
-      runtimeState.runtime
-        .removeWindowSlot?.(id)
-        .catch((err: unknown) => log.warn("removeWindowSlot failed", { windowId: id, err: (err as Error)?.message }));
+      const removal: Promise<void> = isPeerWindowId(id)
+        ? runtimeState.runtime.removePeerWindowSlot?.(id)
+        : runtimeState.runtime.removeWindowSlot?.(id);
+      removal?.catch((err: unknown) =>
+        log.warn("removing the window slot failed", { windowId: id, err: (err as Error)?.message }),
+      );
     }
   });
 
@@ -1187,8 +1392,9 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
   win.webContents.on("before-input-event", (event, input) => {
     if (input.type !== "keyDown") return;
 
-    // Ctrl+1-9 — switch workspace in this window
-    if (input.control && !input.alt && !input.shift) {
+    // Ctrl+1-9 — switch workspace in this window. A window attached to another desktop switches through its own
+    // renderer: the workspaces of this machine are not what it shows.
+    if (input.control && !input.alt && !input.shift && !isPeerWindowId(id)) {
       const digit =
         input.code?.match(/^Digit([1-9])$/)?.[1] || (input.key >= "1" && input.key <= "9" ? input.key : null);
       if (digit) {
@@ -1521,9 +1727,12 @@ function persistWindowSlot(windowId: string, win: BrowserWindow): void {
   const [wx, wy] = win.getPosition();
   const display = screen.getDisplayNearestPoint({ x: wx, y: wy });
   const displayId = display?.id;
-  runtimeState.runtime
-    .updateWindowSlotBounds?.(windowId, b, displayId)
-    .catch((err: unknown) => log.debug("updateWindowSlotBounds failed", { windowId, err: (err as Error)?.message }));
+  const update: Promise<void> | undefined = isPeerWindowId(windowId)
+    ? runtimeState.runtime.updatePeerWindowSlotBounds?.(windowId, b, displayId)
+    : runtimeState.runtime.updateWindowSlotBounds?.(windowId, b, displayId);
+  update?.catch((err: unknown) =>
+    log.debug("updating the window bounds failed", { windowId, err: (err as Error)?.message }),
+  );
 }
 
 const windowSlotPersistTimers = new Map<string, NodeJS.Timeout>();
@@ -1560,8 +1769,11 @@ function emitToWindow(windowId: string, channel: string, payload: unknown): void
 
 function emitToRenderer(channel: string, payload: unknown): void {
   if (channel === "state:updated") broadcastToJiraIssuePopouts(channel, payload);
-  for (const win of windowRegistry.values()) {
+  const peerEvent = isEventAllowedInPeerWindow(channel);
+  for (const [windowId, win] of windowRegistry) {
     if (win.isDestroyed()) continue;
+    // This machine's state, terminals and notifications are not what a window attached to another desktop shows.
+    if (!peerEvent && isPeerWindowId(windowId)) continue;
     try {
       win.webContents.send(channel, payload);
     } catch (error: unknown) {
@@ -1671,13 +1883,13 @@ async function invokeRuntimeMethod(methodName: string, ...args: unknown[]): Prom
 }
 
 function registerBootstrapIpcHandlers(): void {
-  ipcMain.handle("state:get", async () => {
+  handleIpc("state:get", async () => {
     if (runtimeState.runtimeInteractive && runtimeState.runtime) {
       return runtimeState.runtime.getInitialState();
     }
     return loadBootstrapPayload();
   });
-  ipcMain.handle("workspace:activate", async (_event, workspaceId: string) => {
+  handleIpc("workspace:activate", async (_event, workspaceId: string) => {
     if (runtimeState.runtimeInteractive && runtimeState.runtime) {
       return invokeRuntimeMethod("activateWorkspace", workspaceId);
     }
@@ -1689,7 +1901,7 @@ function registerBootstrapIpcHandlers(): void {
     }
     return runtimeState.bootstrapPayload;
   });
-  ipcMain.handle("project:activate", async (_event, projectId: string) => {
+  handleIpc("project:activate", async (_event, projectId: string) => {
     if (runtimeState.runtimeInteractive && runtimeState.runtime) {
       return invokeRuntimeMethod("activateProject", projectId);
     }
@@ -1701,7 +1913,7 @@ function registerBootstrapIpcHandlers(): void {
     }
     return runtimeState.bootstrapPayload;
   });
-  ipcMain.handle("session:activate", async (_event, sessionId: string) => {
+  handleIpc("session:activate", async (_event, sessionId: string) => {
     if (runtimeState.runtimeInteractive && runtimeState.runtime) {
       return invokeRuntimeMethod("activateSession", sessionId);
     }
@@ -1714,7 +1926,7 @@ function registerBootstrapIpcHandlers(): void {
     }
     return runtimeState.bootstrapPayload;
   });
-  ipcMain.handle("attention:sync", async (_event, payload) => {
+  handleIpc("attention:sync", async (_event, payload) => {
     if (runtimeState.runtimeInteractive && runtimeState.runtime) {
       return invokeRuntimeMethod("syncAttentionContext", payload);
     }
@@ -1723,10 +1935,21 @@ function registerBootstrapIpcHandlers(): void {
   // SSH screens can trigger RPCs before createRuntime() finishes during a
   // restored-window startup. Defer ordinary SSH requests until runtimeReady;
   // owner-bound test, transfer, auth, and host-key handlers stay in registerIpc.
-  disposeDeferredSshIpcHandlers = registerDeferredSshIpcHandlers(ipcMain, invokeRuntimeMethod);
+  disposeDeferredSshIpcHandlers = registerDeferredSshIpcHandlers(
+    { handle: handleIpc, removeHandler: (channel) => ipcMain.removeHandler(channel) },
+    invokeRuntimeMethod,
+  );
   // The renderer asks which isolated tabs are waiting for a network decision as soon as it mounts, which on a slow
   // start is before createRuntime() has finished. Answer once the runtime is there instead of "No handler registered".
-  ipcMain.handle("sandbox:requests", () => invokeRuntimeMethod("sandboxListPending"));
+  handleIpc("sandbox:requests", () => invokeRuntimeMethod("sandboxListPending"));
+  handleIpc("window:get-backend", (event) =>
+    answerWindowBackendDuringBoot({
+      isBootPeerWindow: bootPeerWindowIds.has(webContentsToWindowId.get(event.sender.id) ?? ""),
+      ipcReady: ipcRegistered,
+      getBackend: () =>
+        runtimeState.runtime.getWindowBackend(webContentsToWindowId.get(event.sender.id) ?? "") as WindowBackend,
+    }),
+  );
 }
 
 function unregisterBootstrapIpcHandlers(): void {
@@ -1736,6 +1959,7 @@ function unregisterBootstrapIpcHandlers(): void {
   ipcMain.removeHandler("session:activate");
   ipcMain.removeHandler("attention:sync");
   ipcMain.removeHandler("sandbox:requests");
+  ipcMain.removeHandler("window:get-backend");
   disposeDeferredSshIpcHandlers?.();
   disposeDeferredSshIpcHandlers = null;
 }
@@ -1833,6 +2057,84 @@ async function restartRemoteServer(): Promise<void> {
   await runtimeState.remoteServerRestart;
 }
 
+async function restartPeerServer(): Promise<void> {
+  runtimeState.peerServerRestart = runtimeState.peerServerRestart
+    .catch(() => {})
+    .then(async () => {
+      const runtime = runtimeState.runtime;
+      await runtimeState.peerServer?.close?.();
+      runtimeState.peerServer = null;
+      const { enabled, port } = runtime.getPeerHostState().hosting;
+      if (!enabled) {
+        runtime.setPeerListenerInfo({ listening: false, port, addresses: [], error: "" });
+        return;
+      }
+      try {
+        const handle = await startRemoteServer({
+          runtime,
+          staticRoot: path.join(app.getAppPath(), "dist"),
+          peerOrigin: {
+            host: "0.0.0.0",
+            port,
+            peerHost: runtime.peerHost,
+            hello: () => runtime.peerHello(),
+            listDirectories: (requested: string) => runtime.peerListDirectories(requested),
+            attention: () => runtime.peerAttention(),
+          },
+        });
+        runtimeState.peerServer = handle;
+        const bound = handle.address?.port ?? port;
+        const addresses = Object.values(os.networkInterfaces())
+          .flatMap((entries) => entries ?? [])
+          .filter((entry) => entry.family === "IPv4" && !entry.internal)
+          .map((entry) => entry.address);
+        runtime.setPeerListenerInfo({ listening: true, port: bound, addresses, error: "" });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        log.warn("peer listener could not start", { port, err: message });
+        runtime.setPeerListenerInfo({
+          listening: false,
+          port,
+          addresses: [],
+          error: /EADDRINUSE/.test(message)
+            ? `Port ${port} is already in use. Choose a different port.`
+            : `The listener could not start: ${message}`,
+        });
+      }
+    });
+
+  await runtimeState.peerServerRestart;
+}
+
+const peerWindowsAdapter: PeerWindowsAdapter = {
+  open(slot) {
+    createWindow(slot.id, slot);
+  },
+  reload(windowId) {
+    const win = windowRegistry.get(windowId);
+    if (!win || win.isDestroyed()) throw new Error("This window is no longer open.");
+    if (!isPeerWindowId(windowId)) peerWindowAttention.delete(windowId);
+    updateNativeAttention(runtimeState.runtime?.getPayload?.() as Record<string, unknown> | undefined);
+    win.webContents.reload();
+  },
+  setAttention: setPeerWindowAttention,
+};
+
+/** A host that was removed took its windows with it; keep the app alive when they were all there was. */
+async function closePeerWindowsOfRemovedHost(windowIds: string[]): Promise<void> {
+  const closing = new Set(windowIds);
+  const survivors = [...windowRegistry].some(([id, win]) => !win.isDestroyed() && !closing.has(id));
+  if (!survivors && windowRegistry.size > 0) {
+    const profileId = (runtimeState.runtime?.getPayload?.()?.appState as AppState | undefined)?.profiles?.[0]?.id;
+    const opened = profileId ? await createWindowForProfile(profileId) : { error: "no profile" };
+    if (opened.error) log.warn("could not open a local window before closing the removed host's windows", opened);
+  }
+  for (const windowId of windowIds) {
+    const win = windowRegistry.get(windowId);
+    if (win && !win.isDestroyed()) win.close();
+  }
+}
+
 async function startServices(): Promise<void> {
   runtimeState.runtimeInteractive = false;
   runtimeState.runtime = await createRuntime({
@@ -1874,11 +2176,11 @@ async function startServices(): Promise<void> {
       // which uploads via sendPhoto.
       captureMainWindowPng: async (windowId?: string): Promise<Buffer> => {
         let win: BrowserWindow | null = null;
-        if (windowId) {
+        if (windowId && !isPeerWindowId(windowId)) {
           win = windowRegistry.get(windowId) ?? null;
         }
         if (!win || win.isDestroyed()) {
-          win = getPrimaryWindow();
+          win = getPrimaryWindow({ localOnly: true });
         }
         if (!win || win.isDestroyed()) {
           throw new Error("No available window for screenshot.");
@@ -1897,12 +2199,40 @@ async function startServices(): Promise<void> {
     emitToWindow,
     openJiraIssuePopout: openJiraIssuePopoutWindow,
     getJiraIssuePopoutInit: (webContentsId) => jiraIssuePopoutsByWebContentsId.get(webContentsId)?.target ?? null,
+    peerWindows: peerWindowsAdapter,
   });
+  markIpcRegistered();
   runtimeState.unsubscribeRemoteConfig = runtimeState.runtime.on("remote:config-changed", async () => {
     await restartRemoteServer().catch((error: Error) => {
       console.warn(`Remote access server restart failed: ${error.message}`);
     });
   });
+  const unsubscribePeerHosting = runtimeState.runtime.on("peers:hosting-changed", () => {
+    void restartPeerServer().catch((error: Error) => {
+      log.warn("peer listener restart failed", { err: error.message });
+    });
+  });
+  const unsubscribePeerRemoval = runtimeState.runtime.on("peers:device-removed", (payload: { deviceId?: string }) => {
+    if (payload?.deviceId) runtimeState.peerServer?.revokePeerDevice?.(payload.deviceId);
+  });
+  const unsubscribePeerHostRemoved = runtimeState.runtime.on(
+    "peers:host-removed",
+    (payload: { windowIds?: string[] }) => {
+      void closePeerWindowsOfRemovedHost(Array.isArray(payload?.windowIds) ? payload.windowIds : []);
+    },
+  );
+  // A host's label is part of its windows' titles.
+  const unsubscribePeerLabels = runtimeState.runtime.on("peers:updated", () => {
+    updateNativeAttention(runtimeState.runtime.getPayload?.());
+  });
+  const unsubscribePeerAttention = runtimeState.runtime.on("peers:attention", onPeerHostAttention);
+  runtimeState.unsubscribePeerEvents = () => {
+    unsubscribePeerAttention();
+    unsubscribePeerHosting();
+    unsubscribePeerRemoval();
+    unsubscribePeerHostRemoved();
+    unsubscribePeerLabels();
+  };
   runtimeState.unsubscribeStateUpdated = runtimeState.runtime.on(
     "state:updated",
     (payload: Record<string, unknown>) => {
@@ -1914,6 +2244,9 @@ async function startServices(): Promise<void> {
   applyNativeTheme(runtimeState.runtime.getPayload?.());
   nativeTheme.on("updated", () => syncTitleBarTheme());
   await restartRemoteServer();
+  await restartPeerServer().catch((error: Error) => {
+    log.warn("peer listener start failed", { err: error.message });
+  });
   const desiredWorkspaceId =
     runtimeState.desiredWorkspaceId ||
     (runtimeState.bootstrapPayload?.appState as AppState | undefined)?.activeWorkspaceId ||
@@ -1965,11 +2298,11 @@ if (mcpMode) {
   registerAppUpdateIpc();
 
   // IPC: renderer requests its own windowId
-  ipcMain.handle("window:get-id", (event) => {
+  handleIpc("window:get-id", (event) => {
     return webContentsToWindowId.get(event.sender.id) ?? "";
   });
 
-  ipcMain.handle("window:focus-current", (event) => {
+  handleIpc("window:focus-current", (event) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win || win.isDestroyed()) return false;
     if (win.isMinimized()) win.restore();
@@ -1982,7 +2315,7 @@ if (mcpMode) {
   // be open in any number of windows — no exclusivity. Optional
   // cloneFromWindowId makes the new window start with the caller window's
   // workspace/session/grid ("Duplicate current window").
-  ipcMain.handle("window:create", async (event, profileId: string, options?: { cloneFromWindowId?: string }) => {
+  handleIpc("window:create", async (event, profileId: string, options?: { cloneFromWindowId?: string }) => {
     log.info("window:create IPC received", { profileId, registrySize: windowRegistry.size });
     if (!profileId || typeof profileId !== "string") {
       log.warn("window:create: rejected, profileId required");
@@ -1994,7 +2327,7 @@ if (mcpMode) {
   });
 
   // IPC: renderer closes its own window
-  ipcMain.handle("window:close", (event) => {
+  handleIpc("window:close", (event) => {
     const windowId = webContentsToWindowId.get(event.sender.id);
     if (windowId) {
       const win = windowRegistry.get(windowId);
@@ -2005,7 +2338,7 @@ if (mcpMode) {
   // IPC: renderer responds to a confirm-close-request shown via ConfirmDialog.
   // Resolves the pending promise so the close handler can decide whether to
   // re-trigger win.close() with the closeConfirmed flag set.
-  ipcMain.handle("window:confirm-close-response", (event, confirmed: boolean) => {
+  handleIpc("window:confirm-close-response", (event, confirmed: boolean) => {
     const windowId = webContentsToWindowId.get(event.sender.id);
     if (!windowId) return;
     const resolver = pendingCloseConfirmations.get(windowId);
@@ -2019,7 +2352,7 @@ if (mcpMode) {
   // highlight "this window" among sibling Tab processes. The sampler caches a
   // single reading briefly so multiple windows polling at once don't corrupt
   // each other's CPU interval.
-  ipcMain.handle("perf:get-snapshot", (event) => {
+  handleIpc("perf:get-snapshot", (event) => {
     const rendererPid = event.sender.getOSProcessId() ?? null;
     return performanceSampler.sample(rendererPid);
   });
@@ -2028,7 +2361,7 @@ if (mcpMode) {
   // BrowserWindow from event.sender so it profiles the calling window (not
   // whichever window happens to be focused), reusing the same mechanism as
   // Ctrl+Shift+F12. Returns the written path or a structured error.
-  ipcMain.handle("perf:capture-cpu-profile", async (event): Promise<CpuProfileCaptureResult> => {
+  handleIpc("perf:capture-cpu-profile", async (event): Promise<CpuProfileCaptureResult> => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win || win.isDestroyed()) {
       return { ok: false, error: "No window available to profile." };
@@ -2041,7 +2374,7 @@ if (mcpMode) {
   // Hardened: only a .cpuprofile that lives inside our own logs dir may be
   // revealed, so a compromised renderer can't open an arbitrary filesystem
   // location in the user's file manager.
-  ipcMain.handle("perf:reveal-cpu-profile", (_event, filePath: unknown): RevealResult => {
+  handleIpc("perf:reveal-cpu-profile", (_event, filePath: unknown): RevealResult => {
     if (typeof filePath !== "string" || !filePath) {
       return { ok: false, error: "No profile path provided." };
     }
@@ -2063,7 +2396,7 @@ if (mcpMode) {
   // self-contained MonacoDiffPanel.payload plus a title — we cache it
   // keyed by the new window's webContents.id so the popout (which loads
   // the same renderer bundle) can pull it via diff:popout:get-init.
-  ipcMain.handle("diff:popout:open", (event, payload: DiffPopoutPayload) => {
+  handleIpc("diff:popout:open", (event, payload: DiffPopoutPayload) => {
     if (!payload || typeof payload !== "object") {
       return { error: "payload required" };
     }
@@ -2079,11 +2412,11 @@ if (mcpMode) {
   // IPC: the popout renderer asks for its initial payload. Returns the
   // entry we stashed at create time (or null after the window has been
   // closed and reopened from a stale handle).
-  ipcMain.handle("diff:popout:get-init", (event) => {
+  handleIpc("diff:popout:get-init", (event) => {
     return diffPopoutPayloads.get(event.sender.id) ?? null;
   });
 
-  ipcMain.handle("file:popout:open", (_event, raw: unknown) => {
+  handleIpc("file:popout:open", (_event, raw: unknown) => {
     const payload = parseFilePopoutPayload(raw);
     if (typeof payload === "string") return { error: payload };
     try {
@@ -2095,7 +2428,7 @@ if (mcpMode) {
     }
   });
 
-  ipcMain.handle("file:popout:get-init", (event) => filePopoutPayloads.get(event.sender.id) ?? null);
+  handleIpc("file:popout:get-init", (event) => filePopoutPayloads.get(event.sender.id) ?? null);
 
   app.on("second-instance", (_event, argv) => {
     // Launching the exe while the app is already running means "give me
@@ -2139,6 +2472,7 @@ if (mcpMode) {
     await inheritShellPath({ cacheFile: path.join(userDataPath, "shell-path.json") });
     runtimeState.runtimeReady = startServices();
     void runtimeState.runtimeReady.catch((error: unknown) => {
+      markIpcFailed(error);
       log.error("Startup services failed", {
         error: (error as Error)?.message || String(error),
         stack: (error as Error)?.stack,
@@ -2196,12 +2530,17 @@ if (mcpMode) {
       bounds?: { x: number; y: number; width: number; height: number };
       isMaximized?: boolean;
     }> = [];
+    // Windows attached to another desktop come from the normalized state, which drops those whose host is gone.
+    let peerSlotsToRestore: PeerWindowSlot[] = [];
     try {
       const raw = await readFile(statePath, "utf8");
       if (raw.trim()) {
         const parsed = JSON.parse(raw) as Record<string, unknown>;
         if (Array.isArray(parsed.windowSlots) && parsed.windowSlots.length > 0) {
           slotsToRestore = parsed.windowSlots as typeof slotsToRestore;
+        }
+        if (Array.isArray(parsed.peerWindows) && parsed.peerWindows.length > 0) {
+          peerSlotsToRestore = (normalizeState(parsed) as StoredAppState).peerWindows ?? [];
         }
       }
     } catch {
@@ -2211,17 +2550,35 @@ if (mcpMode) {
     log.info("startup: restoring windows from state", {
       count: slotsToRestore.length,
       slotIds: slotsToRestore.map((s) => s.id),
+      peerSlotIds: peerSlotsToRestore.map((s) => s.id),
     });
+    for (const slot of peerSlotsToRestore) bootPeerWindowIds.add(slot.id);
     if (slotsToRestore.length > 0) {
       for (const slot of slotsToRestore) {
         createWindow(slot.id, slot);
       }
-    } else {
+    } else if (peerSlotsToRestore.length === 0) {
       // No slots in raw state — the backend's normalizeState will create a
       // migration slot with this exact id, so the boot window and its slot
       // agree (slot cleanup on close, "Duplicate current window", per-window
       // bookkeeping all key on windowId === slot.id).
       createWindow(MIGRATION_WINDOW_SLOT_ID);
+    }
+    for (const slot of peerSlotsToRestore) {
+      createWindow(slot.id, slot);
+    }
+    if (peerSlotsToRestore.length > 0) {
+      // The runtime has the last word on which of them are real.
+      void runtimeState.runtimeReady
+        .then(() => {
+          for (const slot of peerSlotsToRestore) {
+            if (runtimeState.runtime?.isPeerWindow?.(slot.id) === true) continue;
+            log.warn("closing a restored window the runtime does not know as attached", { windowId: slot.id });
+            const win = windowRegistry.get(slot.id);
+            if (win && !win.isDestroyed()) win.close();
+          }
+        })
+        .catch(() => undefined);
     }
 
     app.on("activate", () => {

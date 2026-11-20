@@ -21,6 +21,7 @@ import {
 import type { TerminalTextSnapshot, TerminalTextSnapshotOptions } from "../app/terminal-text-snapshot.js";
 import type { CompanionPrimaryTaskRunner } from "../../electron/shared/companion-primary.js";
 import { useNotificationStore } from "./notifications.js";
+import { readTerminalFontSize } from "../lib/terminal-font-size.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AppConfig = any;
@@ -360,15 +361,11 @@ export const useTerminalStore = defineStore("terminal", () => {
       document.addEventListener("visibilitychange", syncRemoteFocus);
     }
 
-    const transportKey: "terminalFontSizeLocal" | "terminalFontSizeRemote" = api.isRemote
-      ? "terminalFontSizeRemote"
-      : "terminalFontSizeLocal";
     let lastFontSize: number | undefined;
     watch(
       () => {
         const s = useAppStore().payload?.appState?.settings as Record<string, unknown> | undefined;
-        const v = s?.[transportKey];
-        return typeof v === "number" ? v : undefined;
+        return readTerminalFontSize(s, api.isRemote);
       },
       (next) => {
         if (typeof next === "number" && next !== lastFontSize) {

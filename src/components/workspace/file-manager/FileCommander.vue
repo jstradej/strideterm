@@ -142,6 +142,7 @@ import FileCommanderEditor from "./FileCommanderEditor.vue";
 import FileCommanderCompare from "./FileCommanderCompare.vue";
 import FileCommanderTerminal from "./FileCommanderTerminal.vue";
 import { guessLanguageFromPath } from "./language-map.js";
+import { isPeerWindow } from "../../../window-backend.js";
 import {
   buildRows,
   commanderMarksFor,
@@ -660,7 +661,8 @@ function popoutBridge(): FilePopoutBridge | null {
   return (window as unknown as { strideterm?: FilePopoutBridge }).strideterm ?? null;
 }
 
-const canPopOut = typeof popoutBridge()?.openFilePopout === "function";
+// A window attached to another computer cannot pop a file out: the popout reads and writes this machine's disk.
+const canPopOut = typeof popoutBridge()?.openFilePopout === "function" && !isPeerWindow();
 
 async function popOutEditor() {
   const entry = store.selectedEntry;

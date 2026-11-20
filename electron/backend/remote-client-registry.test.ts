@@ -732,6 +732,21 @@ describe("RemoteClientRegistry", () => {
       expect(rc2.activeSessionId).toBe("");
     });
 
+    test("a protocol-1 payload carries only the client's own sidebar notes counter", () => {
+      const registry = new RemoteClientRegistry();
+      const state = makeState({
+        profiles: [{ id: "p1" }, { id: "p2" }],
+        workspaces: [{ id: "ws1", profileId: "p1" }],
+        windowSlots: [{ id: "win-1", profileId: "p1", activeWorkspaceId: "ws1" }],
+      });
+      registry.getOrCreate("session1", state);
+      const base = { appState: { ...state }, sidebarNotesRevisions: { p1: 3, p2: 9 } };
+      const own = registry.composePayload("session1", base) as Record<string, unknown>;
+      expect(own.sidebarNotesRevisions).toEqual({ p1: 3 });
+      const unbound = registry.composePayload("unknown", base) as Record<string, unknown>;
+      expect(JSON.stringify(unbound.sidebarNotesRevisions)).not.toContain("9");
+    });
+
     test("desktop slot changes do NOT leak into the remote client's view", () => {
       const registry = new RemoteClientRegistry();
       const state = makeState({

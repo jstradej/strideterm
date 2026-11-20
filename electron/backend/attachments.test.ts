@@ -5,7 +5,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { begin, chunk, cleanup, finish, list, remove, status } from "./attachments.js";
+import { DESKTOP_LIMITS, begin, chunk, cleanup, finish, list, remove, status } from "./attachments.js";
 
 const run = promisify(execFile);
 
@@ -243,6 +243,29 @@ describe("attachments", () => {
     } finally {
       await rm(linked, { recursive: true, force: true });
       await rm(repo, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("attachment type policy by kind", () => {
+  test("a phone transfer keeps refusing types and contents; a desktop one takes them", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "strideterm-attachments-kind-"));
+    const sha = (value: Buffer) => crypto.createHash("sha256").update(value).digest("hex");
+    try {
+      for (const name of ["run.exe", "setup.sh", "tool.py", "report.docx", "backup.tar.gz", "noextension"])
+        await expect(begin(root, name, 1, sha(Buffer.from("x")), "p")).rejects.toThrow(/type is not allowed/);
+      const body = Buffer.from("not a png");
+      const started = await begin(root, "fake.png", body.length, sha(body), "p");
+      await chunk(root, started.transferId, 0, body.toString("base64"), "p");
+      await expect(finish(root, started.transferId, "p")).rejects.toThrow(/does not match/);
+      const desktop = await begin(root, "run.exe", body.length, "", "d", undefined, DESKTOP_LIMITS);
+      await chunk(root, desktop.transferId, 0, body.toString("base64"), "d");
+      await expect(finish(root, desktop.transferId, "d")).resolves.toMatchObject({
+        name: "run.exe",
+        sha256: sha(body),
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 });

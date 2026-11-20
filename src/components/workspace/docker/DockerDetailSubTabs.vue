@@ -55,6 +55,7 @@
 import { computed, ref, watch } from "vue";
 import type { SubTabKind } from "../../../stores/docker-detail.js";
 import { useIsNarrow } from "../../../composables/useIsNarrow.js";
+import { isPeerWindow } from "../../../window-backend.js";
 
 const props = defineProps<{
   activeSubTab: SubTabKind;
@@ -88,7 +89,10 @@ const ALL_TABS: Array<{ id: SubTabKind; label: string }> = [
 // than ship a "click to attach…" that stays stuck forever.
 // Detecting via `window.strideterm` (preload script) avoids needing Pinia
 // in unit tests — same signal that the Transport's `isRemote` boolean uses.
-const isRemote = computed(() => typeof window !== "undefined" && !(window as { strideterm?: unknown }).strideterm);
+// A window attached to another computer has the preload but is a remote client all the same.
+const isRemote = computed(
+  () => typeof window !== "undefined" && (!(window as { strideterm?: unknown }).strideterm || isPeerWindow()),
+);
 
 const tabs = computed(() => (isRemote.value ? ALL_TABS.filter((t) => t.id !== "shell") : ALL_TABS));
 

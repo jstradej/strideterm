@@ -408,6 +408,80 @@ describe("SidebarNotesPanel", () => {
     expect(host.querySelector(".sidebar-notes__problem")).toBeNull();
   });
 
+  describe("notes changed elsewhere", () => {
+    const setCounter = async (revisions: Record<string, number>) => {
+      useAppStore().payload = { sidebarNotesRevisions: revisions } as unknown as ReturnType<
+        typeof useAppStore
+      >["payload"];
+      await flushPromises();
+    };
+
+    it("reloads when the profile's counter changes, not when it stays or another profile's moves", async () => {
+      await setCounter({ "profile-a": 1 });
+      await flushPromises();
+      listSidebarNotes.mockClear();
+      await setCounter({ "profile-a": 1 });
+      await setCounter({ "profile-a": 1, "profile-b": 7 });
+      expect(listSidebarNotes).not.toHaveBeenCalled();
+      await setCounter({ "profile-a": 2, "profile-b": 7 });
+      expect(listSidebarNotes).toHaveBeenCalledTimes(1);
+    });
+
+    it("updates a note that is not being edited and keeps a draft being typed", async () => {
+      listSidebarNotes.mockResolvedValue({
+        global: [{ id: "global-a", text: "Pinned checklist", revision: 1, canUndo: false }],
+        workspace: [workspaceNote, { id: "note-b", text: "Other", revision: 1, canUndo: false }],
+      });
+      await flushPromises();
+      await setCounter({ "profile-a": 1 });
+      await click(".sidebar-notes__note-title");
+      await edit("My typing");
+      listSidebarNotes.mockResolvedValue({
+        global: fixture.global,
+        workspace: [
+          { ...workspaceNote, text: "Remote edit of a", revision: 2 },
+          { id: "note-b", text: "Remote edit of b", revision: 2, canUndo: true },
+        ],
+      });
+      await setCounter({ "profile-a": 2 });
+      expect(query<HTMLTextAreaElement>("textarea").value).toBe("My typing");
+      expect(host.textContent).toContain("Remote edit of b");
+      expect(host.textContent).not.toContain("Remote edit of a");
+      saveSidebarNote.mockRejectedValue(new Error("This note has changed. Reload it before trying again."));
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(saveSidebarNote).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 1, text: "My typing" }));
+      expect(query<HTMLTextAreaElement>("textarea").value).toBe("My typing");
+      expect(host.textContent).toContain("This note has changed");
+      expect(host.textContent).toContain("Review latest");
+    });
+
+    it("costs one extra reload after the panel's own save and does not loop", async () => {
+      saveSidebarNote.mockResolvedValue({ ...workspaceNote, text: "Mine", revision: 2, canUndo: true });
+      await setCounter({ "profile-a": 1 });
+      await click(".sidebar-notes__note-title");
+      await edit("Mine");
+      await vi.advanceTimersByTimeAsync(1000);
+      listSidebarNotes.mockClear();
+      listSidebarNotes.mockResolvedValue({
+        global: fixture.global,
+        workspace: [{ ...workspaceNote, text: "Mine", revision: 2, canUndo: true }],
+      });
+      await setCounter({ "profile-a": 2 });
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(listSidebarNotes).toHaveBeenCalledTimes(1);
+      expect(query<HTMLTextAreaElement>("textarea").value).toBe("Mine");
+      expect(saveSidebarNote).toHaveBeenCalledTimes(1);
+    });
+
+    it("still reloads once on a profile switch, without a second reload from the counter", async () => {
+      await setCounter({ "profile-a": 1, "profile-b": 5 });
+      listSidebarNotes.mockClear();
+      await wrapper.setProps({ profileId: "profile-b", workspaceId: "workspace-b" });
+      await flushPromises();
+      expect(listSidebarNotes).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("opens Notes from the dock's compact shortcut", async () => {
     const notifications = useNotificationStore();
     notifications.panelOpen = true;

@@ -13,6 +13,7 @@ import RemoteAccessDialog from "./RemoteAccessDialog.vue";
 import { apiKey } from "../../types/keys.js";
 import { useAppStore } from "../../stores/app.js";
 import MobileConnectionPanel from "./settings/MobileConnectionPanel.vue";
+import PeerHostingPanel from "../peers/PeerHostingPanel.vue";
 import { useNotificationStore } from "../../stores/notifications.js";
 
 type MobileConnectionPanelProps = { visible?: boolean };
@@ -211,6 +212,38 @@ describe("RemoteAccessDialog — secure storage warning", () => {
     const wrapper = await mountLan(secureStorage);
     expect(wrapper.find(".remote-access__footer").exists()).toBe(true);
     expect(wrapper.find(".remote-access__secure-warning").exists()).toBe(false);
+    wrapper.unmount();
+  });
+});
+
+describe("RemoteAccessDialog — Desktops tab", () => {
+  const hostApi = { getPeerHostState: vi.fn().mockResolvedValue(null) };
+
+  test("exists when the transport can host peers and does not depend on browser sharing", async () => {
+    const wrapper = mount(RemoteAccessDialog, {
+      global: { provide: { [apiKey]: hostApi }, stubs: { MobileConnectionPanel: true, PeerHostingPanel: true } },
+    });
+    const tab = wrapper.findAll(".remote-mode-tab").find((b) => b.text() === "Desktops");
+    expect(tab).toBeTruthy();
+    await tab!.trigger("click");
+    expect(wrapper.findComponent(PeerHostingPanel).exists()).toBe(true);
+    expect(wrapper.find(".remote-access__hero").exists()).toBe(false);
+    expect(wrapper.find(".remote-card--disabled").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("Enable browser sharing");
+    wrapper.unmount();
+  });
+
+  test("is absent without the host methods", () => {
+    const wrapper = mount(RemoteAccessDialog, {
+      global: { provide: { [apiKey]: {} }, stubs: { MobileConnectionPanel: true } },
+    });
+    expect(wrapper.findAll(".remote-mode-tab").map((b) => b.text())).not.toContain("Desktops");
+    wrapper.unmount();
+  });
+
+  test("is absent on a remote client", () => {
+    const wrapper = mount(RemoteAccessDialog, { global: { provide: { [apiKey]: { isRemote: true } } } });
+    expect(wrapper.findAll(".remote-mode-tab").map((b) => b.text())).not.toContain("Desktops");
     wrapper.unmount();
   });
 });

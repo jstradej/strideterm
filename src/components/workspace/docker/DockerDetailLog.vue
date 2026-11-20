@@ -68,6 +68,7 @@ import DockerLogToolbar from "./DockerLogToolbar.vue";
 import { useAppStore } from "../../../stores/app.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
 import { userFacingMessage } from "../../../lib/error-message.js";
+import { readTerminalFontSize, writeTerminalFontSize } from "../../../lib/terminal-font-size.js";
 import { downloadTextFile } from "../../../app/helpers.js";
 import { isLightAppTheme, onAppThemeChange } from "../../../app/app-theme.js";
 import { LIGHT_TERMINAL_THEME, terminalMinimumContrastRatio } from "../../../app/terminal-light-theme.js";
@@ -215,8 +216,9 @@ function scheduleFit(): void {
   });
 }
 
-function fontSizeKey(): "terminalFontSizeLocal" | "terminalFontSizeRemote" {
-  return (appStore as AnyApi).isRemoteTransport ? "terminalFontSizeRemote" : "terminalFontSizeLocal";
+function storedFontSize(): number | undefined {
+  const s = (appStore.payload as AnyApi)?.appState?.settings as Record<string, unknown> | undefined;
+  return readTerminalFontSize(s, Boolean((appStore as AnyApi).isRemoteTransport));
 }
 
 function clampFontSize(n: number): number {
@@ -224,8 +226,7 @@ function clampFontSize(n: number): number {
 }
 
 function readFontSize(): number {
-  const s = (appStore.payload as AnyApi)?.appState?.settings as Record<string, unknown> | undefined;
-  const raw = s?.[fontSizeKey()];
+  const raw = storedFontSize();
   return typeof raw === "number" ? clampFontSize(raw) : FONT_DEFAULT;
 }
 
@@ -247,7 +248,9 @@ function applyFontSize(size: number): void {
   persistFontTimer = setTimeout(() => {
     persistFontTimer = null;
 
-    (appStore as AnyApi).updateSettings?.({ [fontSizeKey()]: clamped })?.catch?.(() => {});
+    writeTerminalFontSize(clamped, Boolean((appStore as AnyApi).isRemoteTransport), (settings) =>
+      (appStore as AnyApi).updateSettings?.(settings),
+    ).catch(() => {});
   }, 200);
 }
 
@@ -795,20 +798,14 @@ onBeforeUnmount(() => {
 // Keep this view's font size in sync with the shared per-transport setting so
 // changes from the main terminal (Ctrl+wheel, Ctrl+0) or the Settings dialog
 // apply here too without requiring a remount.
-watch(
-  () => {
-    const s = (appStore.payload as AnyApi)?.appState?.settings as Record<string, unknown> | undefined;
-    return s?.[fontSizeKey()];
-  },
-  (raw) => {
-    if (typeof raw !== "number" || !term) return;
-    const clamped = clampFontSize(raw);
-    if (clamped === currentFontSize) return;
-    currentFontSize = clamped;
-    term.options.fontSize = clamped;
-    scheduleFit();
-  },
-);
+watch(storedFontSize, (raw) => {
+  if (typeof raw !== "number" || !term) return;
+  const clamped = clampFontSize(raw);
+  if (clamped === currentFontSize) return;
+  currentFontSize = clamped;
+  term.options.fontSize = clamped;
+  scheduleFit();
+});
 
 // Auto-resume when the container transitions stopped → running. The docker
 // snapshot is on a 30 s poll, so this is the natural event that brings us out

@@ -234,6 +234,7 @@ import { useAppStore } from "../../../stores/app.js";
 import { userFacingMessage } from "../../../lib/error-message.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
 import { useIsNarrow } from "../../../composables/useIsNarrow.js";
+import { isPeerWindow } from "../../../window-backend.js";
 import type { OpenTab } from "../../../stores/docker-detail.js";
 
 // Shell PTY I/O isn't wired through the remote/web transport (only Electron
@@ -258,7 +259,7 @@ const { isMobile } = useIsNarrow();
 // Mirror DockerDetailSubTabs: hide Shell on remote transports (window.strideterm
 // only exists in Electron). Same signal, no Pinia dependency for tests.
 const shellAvailable = computed(
-  () => typeof window !== "undefined" && !!(window as { strideterm?: unknown }).strideterm,
+  () => typeof window !== "undefined" && !!(window as { strideterm?: unknown }).strideterm && !isPeerWindow(),
 );
 
 const busyAction = ref<string>("");

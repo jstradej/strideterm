@@ -138,6 +138,34 @@ contextBridge.exposeInMainWorld("strideterm", {
   listCredentials: () => ipcRenderer.invoke("credentials:list"),
   removeCredential: (ref) => ipcRenderer.invoke("credentials:remove", { ref }),
   removeOrphanCredentials: () => ipcRenderer.invoke("credentials:remove-orphans"),
+  getPeerHostState: () => ipcRenderer.invoke("peers:host:get"),
+  setPeerHosting: (input) => ipcRenderer.invoke("peers:host:set-hosting", input),
+  approvePeerPairing: (input) => ipcRenderer.invoke("peers:host:approve", input),
+  rejectPeerPairing: (pairingId) => ipcRenderer.invoke("peers:host:reject", { pairingId }),
+  removePeerDevice: (deviceId) => ipcRenderer.invoke("peers:host:remove-device", { deviceId }),
+  listPeerHosts: () => ipcRenderer.invoke("peers:client:list"),
+  refreshPeerHost: (hostId, options) =>
+    ipcRenderer.invoke("peers:client:refresh", { hostId, ...(options?.force ? { force: true } : {}) }),
+  startPeerPairing: (input) => ipcRenderer.invoke("peers:client:pair:start", input),
+  cancelPeerPairing: (attemptId) => ipcRenderer.invoke("peers:client:pair:cancel", { attemptId }),
+  removePeerHost: (hostId) => ipcRenderer.invoke("peers:client:remove", { hostId }),
+  updatePeerHostAddress: (input) => ipcRenderer.invoke("peers:client:update-address", input),
+  getWindowBackend: () => ipcRenderer.invoke("window:get-backend"),
+  getLocalProfilesOverview: () => ipcRenderer.invoke("peers:local-profiles"),
+  openPeerWindow: (input) => ipcRenderer.invoke("peers:window:open", input),
+  activatePeerProfile: (input) => ipcRenderer.invoke("peers:window:activate", input),
+  activateLocalProfile: (profileId) => ipcRenderer.invoke("peers:window:activate-local", { profileId }),
+  setPeerWindowProfile: (profileId) => ipcRenderer.invoke("peers:window:set-profile", { profileId }),
+  setPeerWindowAttention: (count) => ipcRenderer.invoke("peers:window:attention", { count }),
+  setPeerWindowFontSize: (size) => ipcRenderer.invoke("peers:window:font-size", { size }),
+  peerHttp: (request) => ipcRenderer.invoke("peer:http", request),
+  peerWsOpen: (query) => ipcRenderer.send("peer:ws:open", query),
+  peerWsSend: (data) => ipcRenderer.send("peer:ws:send", data),
+  peerWsClose: (code, reason) =>
+    ipcRenderer.send("peer:ws:close", {
+      ...(code !== undefined ? { code } : {}),
+      ...(reason !== undefined ? { reason } : {}),
+    }),
   buildJiraOwnIssuesQuery: (payload) => invokeJira("jira:own-issues-query", payload),
   listJiraQueries: (connectionId) => invokeJira("jira:queries", connectionId),
   listJiraFavoriteFilters: (connectionId) => invokeJira("jira:filters:favourite", connectionId),
@@ -451,6 +479,11 @@ contextBridge.exposeInMainWorld("strideterm", {
   fileWrite: (p) => ipcRenderer.invoke("file:write", p),
   attachmentList: (p) => ipcRenderer.invoke("attachment:list", p),
   attachmentDelete: (p) => ipcRenderer.invoke("attachment:delete", p),
+  attachmentUploadBegin: (p) => ipcRenderer.invoke("attachment:upload:begin", p),
+  attachmentUploadChunk: (p) => ipcRenderer.invoke("attachment:upload:chunk", p),
+  attachmentUploadFinish: (p) => ipcRenderer.invoke("attachment:upload:finish", p),
+  attachmentUploadCancel: (p) => ipcRenderer.invoke("attachment:upload:cancel", p),
+  attachmentRead: (p) => ipcRenderer.invoke("attachment:read", p),
   fileCreateFile: (p) => ipcRenderer.invoke("file:create-file", p),
   fileCreateDir: (p) => ipcRenderer.invoke("file:create-dir", p),
   fileRename: (p) => ipcRenderer.invoke("file:rename", p),
@@ -524,6 +557,31 @@ contextBridge.exposeInMainWorld("strideterm", {
     const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(payload);
     ipcRenderer.on("sandbox:denied", listener);
     return () => ipcRenderer.removeListener("sandbox:denied", listener);
+  },
+  onPeersUpdated: (handler) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(payload);
+    ipcRenderer.on("peers:updated", listener);
+    return () => ipcRenderer.removeListener("peers:updated", listener);
+  },
+  onPeerPairingProgress: (handler) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(payload);
+    ipcRenderer.on("peers:pairing-progress", listener);
+    return () => ipcRenderer.removeListener("peers:pairing-progress", listener);
+  },
+  onPeerPairingResult: (handler) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(payload as never);
+    ipcRenderer.on("peers:pairing-result", listener);
+    return () => ipcRenderer.removeListener("peers:pairing-result", listener);
+  },
+  onPeerWsState: (handler) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(payload as never);
+    ipcRenderer.on("peer:ws:state", listener);
+    return () => ipcRenderer.removeListener("peer:ws:state", listener);
+  },
+  onPeerWsMessage: (handler) => {
+    const listener = (_event: Electron.IpcRendererEvent, data: unknown) => handler(data as string);
+    ipcRenderer.on("peer:ws:message", listener);
+    return () => ipcRenderer.removeListener("peer:ws:message", listener);
   },
   onSandboxDeniedSettled: (handler) => {
     const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(payload);

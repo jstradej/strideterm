@@ -1,14 +1,23 @@
 <template>
   <!-- Splash screen — stays visible until initial payload arrives -->
-  <div v-if="!store.payload && !store.bootstrapError" class="splash">
+  <div
+    v-if="
+      (!store.payload && !store.bootstrapError && !store.peerFailure) ||
+      (store.peerProfilePending && !store.peerFailure)
+    "
+    class="splash"
+  >
     <img src="/splash.png" alt="strIDEterm" class="splash__logo" />
     <div class="splash__progress">
       <div class="splash__bar"></div>
     </div>
+    <p v-if="peerHostLabel" class="splash__caption" role="status" data-testid="splash-peer-caption">
+      {{ store.peerProfilePending ? `Opening your profile on ${peerHostLabel}…` : `Connecting to ${peerHostLabel}…` }}
+    </p>
   </div>
 
   <div
-    v-else
+    v-else-if="store.payload || store.bootstrapError"
     ref="frameRef"
     class="frame"
     :class="{
@@ -257,6 +266,7 @@
                textarea and focuses it, which triggers the IME on Android /
                iOS reliably. -->
           <button
+            v-if="!peerWindow"
             type="button"
             class="mobile-keyboard-btn"
             :title="mobileKeyboardButtonTitle"
@@ -312,6 +322,9 @@
 
   <!-- Bootstrap error -->
   <BootstrapError v-if="store.bootstrapError" :message="store.bootstrapError" />
+
+  <!-- A window attached to another computer that cannot reach it -->
+  <PeerHostFailure v-if="store.peerFailure" :failure="store.peerFailure" />
 
   <!-- Dialog overlay -->
   <DialogOverlay />
@@ -385,6 +398,10 @@ import WorkspaceStage from "./components/workspace/WorkspaceStage.vue";
 import DialogOverlay from "./components/dialogs/DialogOverlay.vue";
 import RemoteAccessPanel from "./components/layout/RemoteAccessPanel.vue";
 import BootstrapError from "./components/layout/BootstrapError.vue";
+import PeerHostFailure from "./components/peers/PeerHostFailure.vue";
+import { isWebClient } from "./lib/client-kind.js";
+import { isPeerWindow, windowBackend } from "./window-backend.js";
+import { usePeerWindowAttention } from "./composables/usePeerWindowAttention.js";
 import ContextMenu from "./components/layout/ContextMenu.vue";
 import LayoutPicker from "./components/layout/LayoutPicker.vue";
 import TabPickerDropdown from "./components/layout/TabPickerDropdown.vue";
@@ -407,7 +424,9 @@ import { activateReviewCommentQuery, parseReviewCommentQuery } from "./app/revie
 const api = inject(apiKey);
 const store = useAppStore();
 
-const reviewCommentQuery = api?.isRemote ? parseReviewCommentQuery(window.location.href) : null;
+const peerWindow = isPeerWindow();
+const peerHostLabel = windowBackend.value.kind === "peer" ? windowBackend.value.hostLabel : "";
+const reviewCommentQuery = isWebClient(api) ? parseReviewCommentQuery(window.location.href) : null;
 if (
   reviewCommentQuery?.hasReviewParams &&
   reviewCommentQuery.cleanedHref !== `${window.location.pathname}${window.location.search}${window.location.hash}`
@@ -652,7 +671,7 @@ function onMobileKeyboardFocusIn(event: FocusEvent): void {
 
 function toggleMobileKeyboard(): void {
   const show = !mobileKeyboardVisible.value;
-  if (api?.isRemote) {
+  if (isWebClient(api)) {
     window.dispatchEvent(new CustomEvent("strideterm:toggle-system-keyboard", { detail: { show } }));
     if (!document.documentElement.classList.contains("native-keyboard-viewport")) {
       mobileKeyboardVisible.value = show;
@@ -895,6 +914,7 @@ const hostKeyWarning = computed(() => sshStore.hostKeyWarning as any);
 
 useGlobalEvents();
 useAttentionSync(api as Transport);
+usePeerWindowAttention();
 useKeyboardShortcuts(api as Transport, { onNewWorkspace: () => store.openNewWorkspaceFlow() });
 useSidebarResize(frameRef, sidebarRef);
 useNotificationDockResize(frameRef);
@@ -916,6 +936,11 @@ useNotificationDockResize(frameRef);
   width: 90%;
   border-radius: 8px;
   opacity: 0.92;
+}
+.splash__caption {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 13px;
 }
 .splash__progress {
   width: 220px;

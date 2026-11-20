@@ -465,6 +465,7 @@
           v-if="activeWorkspaceId"
           :workspace-id="activeWorkspaceId"
           :workspace-root="activeWorkspaceRoot"
+          :unavailable-reason="activeWorkspaceAttachmentsReason"
           open-by-default
           panel
         />
@@ -773,6 +774,7 @@ import ReviewTrustActions from "./ReviewTrustActions.vue";
 import { useSandboxRequestsStore } from "../../stores/sandbox-requests.js";
 import { useAutomationActivityStore } from "../../stores/automation-activity.js";
 import WorkspaceAttachments from "../workspace/WorkspaceAttachments.vue";
+import { attachmentsUnavailableReason } from "../../composables/useAttachmentUpload.js";
 import MobileDeviceList from "../mobile/MobileDeviceList.vue";
 import { dayBandKey, dayBandLabel } from "../../app/helpers.js";
 import { apiKey } from "../../types/keys.js";
@@ -833,6 +835,14 @@ const activeWorkspaceRoot = computed(() => {
     (candidate) => candidate.id === activeWorkspaceId.value && (candidate.profileId || "default") === profileId,
   );
   return typeof workspace?.cwd === "string" ? workspace.cwd : "";
+});
+const activeWorkspaceAttachmentsReason = computed(() => {
+  const profileId = activeProfileId.value || "default";
+  return attachmentsUnavailableReason(
+    (appStore.payload?.appState?.workspaces || []).find(
+      (candidate) => candidate.id === activeWorkspaceId.value && (candidate.profileId || "default") === profileId,
+    ),
+  );
 });
 // The Performance tab is offered on every transport, including the remote /
 // mobile client: the terminal-rendering counters it shows (WebGL vs DOM

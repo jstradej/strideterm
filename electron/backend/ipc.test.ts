@@ -123,6 +123,10 @@ import {
   azureClosedPrCleanupFinishedSchema,
 } from "../shared/azure-closed-pr-cleanup-events.js";
 import type { JiraWorkspaceViewsState } from "../shared/types/jira-workspace-views.js";
+import { readFileSync } from "node:fs";
+import { PEER_WINDOW_ALLOWED_CHANNELS, PEER_WINDOW_REFUSED_MESSAGE } from "../shared/peer-window-channels.js";
+import { defaultPeerSettings } from "../shared/peers.js";
+import { createRuntimePeers } from "./runtime-peers.js";
 
 /**
  * Minimal runtime stub: every property access returns a callable that
@@ -537,7 +541,15 @@ describe("registerIpc teardown", () => {
 
     const registeredListenerChannels = new Set(onRegistry.keys());
     expect(registeredListenerChannels).toEqual(
-      new Set(["terminal:resize", "terminal:input", "terminal:submit", "log:renderer"]),
+      new Set([
+        "terminal:resize",
+        "terminal:input",
+        "terminal:submit",
+        "log:renderer",
+        "peer:ws:open",
+        "peer:ws:send",
+        "peer:ws:close",
+      ]),
     );
 
     dispose();
@@ -1356,5 +1368,714 @@ describe("registerIpc — Jira issue pop-out", () => {
     await expect(init({ sender: { id: 9 } })).resolves.toEqual({ openerWindowId: "win-a" });
     await expect(init({ sender: { id: 5 } })).resolves.toBeNull();
     dispose();
+  });
+});
+
+describe("registerIpc — windows attached to another desktop", () => {
+  beforeEach(() => {
+    resetIpcMainMock();
+    logCalls.length = 0;
+  });
+
+  type Handler = (event: unknown, payload?: unknown) => Promise<unknown>;
+  const PEER_SENDER = 11;
+  const LOCAL_SENDER = 12;
+  const windowOf = (id: number) => (id === PEER_SENDER ? "peer-win" : id === LOCAL_SENDER ? "local-win" : undefined);
+  const channelsOnDisk = () =>
+    ["./ipc.ts", "../main.ts"].map((file) => readFileSync(new URL(file, import.meta.url), "utf8")).join("\n");
+
+  class FakeSocket {
+    readonly handlers: Record<string, Array<(arg?: never) => void>> = {};
+    readonly sent: string[] = [];
+    closed: Array<{ code?: number; reason?: string }> = [];
+    on(event: string, handler: (arg?: never) => void) {
+      (this.handlers[event] ??= []).push(handler);
+    }
+    send(data: string) {
+      this.sent.push(data);
+    }
+    close(code?: number, reason?: string) {
+      this.closed.push({ code, reason });
+    }
+    fire(event: string, arg?: unknown) {
+      for (const handler of this.handlers[event] ?? []) handler(arg as never);
+    }
+  }
+
+  function setup(options: { adapter?: boolean; peer?: Record<string, unknown> } = {}) {
+    const runtime = makeRuntimeStub();
+    const sockets: FakeSocket[] = [];
+    runtime.isPeerWindow = vi.fn((windowId: string) => windowId === "peer-win") as never;
+    runtime.getWindowBackend = vi.fn((windowId: string) =>
+      windowId === "peer-win"
+        ? { kind: "peer", hostId: "host-aaaaaaaa", hostLabel: "Mac", remoteProfileId: "work", clientId: "w123" }
+        : { kind: "local" },
+    ) as never;
+    runtime.peerWindowOpenSocket = vi.fn((windowId: string) => {
+      if (windowId !== "peer-win") throw new Error("This window is not attached to another desktop.");
+      const socket = new FakeSocket();
+      sockets.push(socket);
+      return socket;
+    }) as never;
+    runtime.createPeerWindowSlot = vi.fn(async (input: { hostId: string; profileId: string }) => ({
+      id: "new-peer-win",
+      hostId: input.hostId,
+      profileId: input.profileId,
+    })) as never;
+    runtime.removePeerWindowSlot = vi.fn(async () => undefined) as never;
+    runtime.convertWindowToPeer = vi.fn(async () => ({})) as never;
+    runtime.convertWindowToLocal = vi.fn(async () => ({})) as never;
+    runtime.setPeerWindowProfile = vi.fn(async () => undefined) as never;
+    runtime.requirePeerHostOnline = vi.fn(async () => ({})) as never;
+    runtime.retargetPeerWindow = vi.fn(async () => ({})) as never;
+    runtime.setPeerWindowFontSize = vi.fn(async () => undefined) as never;
+    for (const [name, fn] of Object.entries(options.peer ?? {})) (runtime as Record<string, unknown>)[name] = fn;
+    const adapter = { open: vi.fn(), reload: vi.fn(), setAttention: vi.fn() };
+    const emitted: Array<{ windowId: string; channel: string; payload: unknown }> = [];
+    const dispose = registerIpc(runtime, () => {}, {
+      getWindowIdByWebContentsId: windowOf,
+      emitToWindow: (windowId, channel, payload) => emitted.push({ windowId, channel, payload }),
+      ...(options.adapter === false ? {} : { peerWindows: adapter }),
+    });
+    const sender = (id: number) => ({ sender: { id, isDestroyed: () => false, once: vi.fn() } });
+    const call = (channel: string, payload?: unknown, senderId = PEER_SENDER) =>
+      (handleRegistry.get(channel) as Handler)(sender(senderId), payload);
+    const sendAs = (senderId: number, channel: string, ...args: unknown[]) => {
+      for (const listener of onRegistry.get(channel) ?? [])
+        (listener as (e: unknown, ...a: unknown[]) => void)(sender(senderId), ...args);
+    };
+    const send = (channel: string, payload?: unknown, senderId = PEER_SENDER) => {
+      for (const listener of onRegistry.get(channel) ?? [])
+        (listener as (e: unknown, p?: unknown) => void)(sender(senderId), payload);
+    };
+    return { runtime, adapter, emitted, sockets, dispose, call, send, sendAs };
+  }
+
+  test("every allowlisted channel is registered in ipc.ts or main.ts and none is a data channel", () => {
+    const source = channelsOnDisk();
+    for (const channel of PEER_WINDOW_ALLOWED_CHANNELS) {
+      expect(source, channel).toMatch(new RegExp(`\\b(handle|on|handleIpc)\\(\\s*"${channel}"`));
+      expect(
+        /^(workspace|session|terminal|file|git|settings|state|credentials|profile|azure|github|jira|docker|ssh|task|peers:host):/.test(
+          channel,
+        ),
+        channel,
+      ).toBe(false);
+    }
+    expect(PEER_WINDOW_ALLOWED_CHANNELS.has("state:get")).toBe(false);
+    expect([...PEER_WINDOW_ALLOWED_CHANNELS].some((channel) => channel.startsWith("peers:host:"))).toBe(false);
+  });
+
+  test("a data channel is refused from a peer window, logged once, and never reaches the runtime", async () => {
+    const { runtime, call, sendAs, dispose } = setup();
+    runtime.saveWorkspace = vi.fn() as never;
+    runtime.getInitialState = vi.fn() as never;
+    runtime.writeToSession = vi.fn() as never;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await expect(call("workspace:save", { id: "ws" })).rejects.toThrow(PEER_WINDOW_REFUSED_MESSAGE);
+      await expect(call("state:get")).rejects.toThrow(PEER_WINDOW_REFUSED_MESSAGE);
+      sendAs(PEER_SENDER, "terminal:input", "ws:shell", "ls\r");
+    }
+    expect(runtime.saveWorkspace).not.toHaveBeenCalled();
+    expect(runtime.getInitialState).not.toHaveBeenCalled();
+    expect(runtime.writeToSession).not.toHaveBeenCalled();
+    const refusals = logCalls.filter((entry) => entry.message.startsWith("refused a channel"));
+    expect(refusals.map((entry) => entry.meta?.channel).sort()).toEqual([
+      "state:get",
+      "terminal:input",
+      "workspace:save",
+    ]);
+    expect(logCalls.some((entry) => entry.message === "ipc handler failed")).toBe(false);
+    dispose();
+  });
+
+  test("the same calls from a local window go through", async () => {
+    const { runtime, call, sendAs, dispose } = setup();
+    runtime.saveWorkspace = vi.fn(async () => ({ ok: true })) as never;
+    runtime.getInitialState = vi.fn(async () => ({ ok: true })) as never;
+    runtime.writeToSession = vi.fn() as never;
+    runtime.sshTestSessionOwner = (() => undefined) as never;
+    runtime.isPrivateSshOperationSessionId = (() => false) as never;
+    runtime.reviewAgentPreparationSessionOwner = (() => undefined) as never;
+    await expect(call("workspace:save", { id: "ws", name: "x" }, LOCAL_SENDER)).resolves.toEqual({ ok: true });
+    await expect(call("state:get", undefined, LOCAL_SENDER)).resolves.toEqual({ ok: true });
+    sendAs(LOCAL_SENDER, "terminal:input", "ws:shell", "ls\r");
+    expect(runtime.saveWorkspace).toHaveBeenCalledTimes(1);
+    expect(runtime.getInitialState).toHaveBeenCalledTimes(1);
+    expect(runtime.writeToSession).toHaveBeenCalledTimes(1);
+    dispose();
+  });
+
+  test("host-side channels are refused from a peer window", async () => {
+    const { runtime, call, dispose } = setup();
+    runtime.getPeerHostState = vi.fn() as never;
+    await expect(call("peers:host:get")).rejects.toThrow(PEER_WINDOW_REFUSED_MESSAGE);
+    expect(runtime.getPeerHostState).not.toHaveBeenCalled();
+    dispose();
+  });
+
+  test("peer:http from a local window is refused by the runtime as not attached", async () => {
+    const peers = createRuntimePeers({
+      getState: () =>
+        ({
+          settings: { integrations: { peers: defaultPeerSettings() } },
+          peerWindows: [],
+          workspaces: [],
+          profiles: [],
+          windowSlots: [],
+        }) as never,
+      mutate: async () => undefined,
+      credentials: {} as never,
+      appVersion: "1.0.0",
+      emit: () => undefined,
+    });
+    const { call, dispose } = setup({
+      peer: { peerWindowRequest: (windowId: string, request: never) => peers.peerWindowRequest(windowId, request) },
+    });
+    const request = { method: "GET", pathname: "/api/state", headers: {} };
+    await expect(call("peer:http", request, LOCAL_SENDER)).rejects.toThrow(
+      "This window is not attached to another desktop.",
+    );
+    await expect(call("peer:http", { ...request, pathname: "" }, PEER_SENDER)).rejects.toThrow("IPC validation failed");
+    await expect(call("peer:http", { ...request, extra: 1 }, PEER_SENDER)).rejects.toThrow("IPC validation failed");
+    await expect(call("peer:http", { ...request, headers: { a: 1 } }, PEER_SENDER)).rejects.toThrow(
+      "IPC validation failed",
+    );
+    dispose();
+  });
+
+  test("peer:http forwards the validated request together with the calling window id", async () => {
+    const peerWindowRequest = vi.fn(async () => ({ status: 200, headers: {}, body: "{}" }));
+    const { call, dispose } = setup({ peer: { peerWindowRequest } });
+    const request = { method: "POST", pathname: "/api/x?y=1", headers: { "x-a": "b" }, body: "{}" };
+    await expect(call("peer:http", request)).resolves.toEqual({ status: 200, headers: {}, body: "{}" });
+    expect(peerWindowRequest).toHaveBeenCalledWith("peer-win", request);
+    dispose();
+  });
+
+  describe("the peer socket", () => {
+    test("reports open, relays messages both ways and reports the close", () => {
+      const { send, sockets, emitted, dispose } = setup();
+      send("peer:ws:open", { clientId: "ignored" });
+      expect(sockets).toHaveLength(1);
+      sockets[0]!.fire("open");
+      sockets[0]!.fire("message", "hello");
+      send("peer:ws:send", "ping");
+      expect(sockets[0]!.sent).toEqual(["ping"]);
+      send("peer:ws:close", { code: 1000, reason: "bye" });
+      expect(sockets[0]!.closed).toEqual([{ code: 1000, reason: "bye" }]);
+      sockets[0]!.fire("close", { code: 1000, reason: "bye" });
+      expect(emitted).toEqual([
+        { windowId: "peer-win", channel: "peer:ws:state", payload: { state: "open" } },
+        { windowId: "peer-win", channel: "peer:ws:message", payload: "hello" },
+        { windowId: "peer-win", channel: "peer:ws:state", payload: { state: "closed", code: 1000, reason: "bye" } },
+      ]);
+      dispose();
+    });
+
+    test("an open replaces the previous socket, whose later events are never delivered", () => {
+      const { send, sockets, emitted, dispose } = setup();
+      send("peer:ws:open", {});
+      send("peer:ws:open", {});
+      expect(sockets).toHaveLength(2);
+      expect(sockets[0]!.closed).toEqual([{ code: 1000, reason: "replaced" }]);
+      sockets[0]!.fire("message", "stale");
+      sockets[0]!.fire("close", { code: 1000, reason: "replaced" });
+      expect(emitted).toEqual([]);
+      sockets[1]!.fire("open");
+      send("peer:ws:send", "to-new");
+      expect(sockets[0]!.sent).toEqual([]);
+      expect(sockets[1]!.sent).toEqual(["to-new"]);
+      expect(emitted).toEqual([{ windowId: "peer-win", channel: "peer:ws:state", payload: { state: "open" } }]);
+      dispose();
+    });
+
+    test("a refused or malformed open is reported as a closed socket", () => {
+      const { send, emitted, dispose } = setup();
+      send("peer:ws:open", {}, LOCAL_SENDER);
+      send("peer:ws:open", { a: 1 });
+      expect(emitted).toEqual([
+        {
+          windowId: "local-win",
+          channel: "peer:ws:state",
+          payload: { state: "closed", code: 1008, reason: "This window is not attached to another desktop." },
+        },
+        {
+          windowId: "peer-win",
+          channel: "peer:ws:state",
+          payload: { state: "closed", code: 1008, reason: "The socket request is not valid." },
+        },
+      ]);
+      dispose();
+    });
+
+    test("sends and closes from a window that opened nothing are dropped", () => {
+      const { send, sockets, dispose } = setup();
+      send("peer:ws:open", {});
+      send("peer:ws:send", "from-local", LOCAL_SENDER);
+      send("peer:ws:close", {}, LOCAL_SENDER);
+      send("peer:ws:send", 42);
+      expect(sockets[0]!.sent).toEqual([]);
+      expect(sockets[0]!.closed).toEqual([]);
+      dispose();
+    });
+
+    test("the socket closes when its window's webContents is destroyed, and everything closes on dispose", () => {
+      const { sockets, dispose, runtime } = setup();
+      let destroyed: (() => void) | undefined;
+      const open = [...(onRegistry.get("peer:ws:open") ?? [])][0] as (e: unknown, p?: unknown) => void;
+      open(
+        {
+          sender: {
+            id: PEER_SENDER,
+            isDestroyed: () => false,
+            once: (_event: string, cb: () => void) => (destroyed = cb),
+          },
+        },
+        {},
+      );
+      expect(sockets).toHaveLength(1);
+      destroyed!();
+      expect(sockets[0]!.closed).toEqual([{ code: 1001, reason: "window closed" }]);
+
+      open({ sender: { id: PEER_SENDER, isDestroyed: () => false, once: () => undefined } }, {});
+      expect(sockets).toHaveLength(2);
+      dispose();
+      expect(sockets[1]!.closed).toEqual([{ code: 1001, reason: "shutting down" }]);
+      expect(runtime.peerWindowOpenSocket).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe("window operations", () => {
+    test("open creates the slot, then asks the window layer to open it; a failure removes the slot", async () => {
+      const { runtime, adapter, call, dispose } = setup();
+      await expect(call("peers:window:open", { hostId: "host-aaaaaaaa", profileId: "work" })).resolves.toEqual({
+        windowId: "new-peer-win",
+      });
+      expect(runtime.createPeerWindowSlot).toHaveBeenCalledWith({
+        hostId: "host-aaaaaaaa",
+        profileId: "work",
+        cloneFromWindowId: "peer-win",
+      });
+      expect(adapter.open).toHaveBeenCalledWith({ id: "new-peer-win", hostId: "host-aaaaaaaa", profileId: "work" });
+
+      adapter.open.mockRejectedValueOnce(new Error("no screen"));
+      await expect(call("peers:window:open", { hostId: "host-aaaaaaaa", profileId: "work" })).rejects.toThrow(
+        "no screen",
+      );
+      expect(runtime.removePeerWindowSlot).toHaveBeenCalledWith("new-peer-win");
+      await expect(call("peers:window:open", { hostId: "x", profileId: "work" })).rejects.toThrow(
+        "IPC validation failed",
+      );
+      dispose();
+    });
+
+    test("activate converts a local window and reloads it; a window of the same host only switches profile", async () => {
+      const { runtime, adapter, call, dispose } = setup();
+      await expect(
+        call("peers:window:activate", { hostId: "host-aaaaaaaa", profileId: "home" }, LOCAL_SENDER),
+      ).resolves.toEqual({
+        reloaded: true,
+      });
+      expect(runtime.convertWindowToPeer).toHaveBeenCalledWith("local-win", {
+        hostId: "host-aaaaaaaa",
+        profileId: "home",
+      });
+      expect(adapter.reload).toHaveBeenCalledWith("local-win");
+
+      adapter.reload.mockClear();
+      await expect(
+        call("peers:window:activate", { hostId: "host-aaaaaaaa", profileId: "home" }, PEER_SENDER),
+      ).resolves.toEqual({
+        reloaded: false,
+      });
+      expect(runtime.setPeerWindowProfile).toHaveBeenCalledWith("peer-win", "home");
+      expect(runtime.convertWindowToPeer).toHaveBeenCalledTimes(1);
+      expect(adapter.reload).not.toHaveBeenCalled();
+      dispose();
+    });
+
+    test("activate from a window of another host retargets it in place and reloads it, without a local detour", async () => {
+      const { runtime, adapter, call, dispose } = setup();
+      await expect(
+        call("peers:window:activate", { hostId: "host-bbbbbbbb", profileId: "home" }, PEER_SENDER),
+      ).resolves.toEqual({ reloaded: true });
+      expect(runtime.retargetPeerWindow).toHaveBeenCalledWith("peer-win", {
+        hostId: "host-bbbbbbbb",
+        profileId: "home",
+      });
+      expect(runtime.convertWindowToPeer).not.toHaveBeenCalled();
+      expect(runtime.convertWindowToLocal).not.toHaveBeenCalled();
+      expect(runtime.setPeerWindowProfile).not.toHaveBeenCalled();
+      expect(adapter.reload).toHaveBeenCalledWith("peer-win");
+      dispose();
+    });
+
+    test("open and activate refuse a host that is not online, with the reason, and change nothing", async () => {
+      const { runtime, adapter, call, dispose } = setup();
+      runtime.requirePeerHostOnline = vi.fn(async () => {
+        throw new Error("Mac cannot be reached.");
+      }) as never;
+      await expect(call("peers:window:open", { hostId: "host-aaaaaaaa", profileId: "work" })).rejects.toThrow(
+        "Mac cannot be reached.",
+      );
+      await expect(
+        call("peers:window:activate", { hostId: "host-aaaaaaaa", profileId: "work" }, LOCAL_SENDER),
+      ).rejects.toThrow("Mac cannot be reached.");
+      await expect(
+        call("peers:window:activate", { hostId: "host-bbbbbbbb", profileId: "work" }, PEER_SENDER),
+      ).rejects.toThrow("Mac cannot be reached.");
+      expect(runtime.requirePeerHostOnline).toHaveBeenCalledWith("host-aaaaaaaa");
+      expect(runtime.createPeerWindowSlot).not.toHaveBeenCalled();
+      expect(runtime.convertWindowToPeer).not.toHaveBeenCalled();
+      expect(runtime.retargetPeerWindow).not.toHaveBeenCalled();
+      expect(runtime.setPeerWindowProfile).not.toHaveBeenCalled();
+      expect(adapter.open).not.toHaveBeenCalled();
+      expect(adapter.reload).not.toHaveBeenCalled();
+      dispose();
+    });
+
+    test("the gate runs before the slot is created", async () => {
+      const { runtime, call, dispose } = setup();
+      const order: string[] = [];
+      runtime.requirePeerHostOnline = vi.fn(async () => {
+        order.push("gate");
+        return {};
+      }) as never;
+      runtime.createPeerWindowSlot = vi.fn(async () => {
+        order.push("slot");
+        return { id: "new-peer-win" };
+      }) as never;
+      await call("peers:window:open", { hostId: "host-aaaaaaaa", profileId: "work" });
+      expect(order).toEqual(["gate", "slot"]);
+      dispose();
+    });
+
+    test("font-size writes this desktop's size for a peer window only, inside the setting's range", async () => {
+      const { runtime, call, dispose } = setup();
+      await expect(call("peers:window:font-size", { size: 20 })).resolves.toBe(true);
+      expect(runtime.setPeerWindowFontSize).toHaveBeenCalledWith(20);
+      for (const size of [8, 32]) await expect(call("peers:window:font-size", { size })).resolves.toBe(true);
+      for (const bad of [{ size: 7 }, { size: 33 }, { size: 13.5 }, { size: "13" }, {}, { size: 13, extra: 1 }]) {
+        await expect(call("peers:window:font-size", bad)).rejects.toThrow("IPC validation failed");
+      }
+      await expect(call("peers:window:font-size", { size: 12 }, LOCAL_SENDER)).rejects.toThrow("not attached");
+      expect(runtime.setPeerWindowFontSize).toHaveBeenCalledTimes(3);
+      dispose();
+    });
+
+    test("activate-local converts a peer window back and reloads it; set-profile and attention act on the caller", async () => {
+      const { runtime, adapter, call, dispose } = setup();
+      await expect(call("peers:window:activate-local", { profileId: "default" })).resolves.toEqual({ reloaded: true });
+      expect(runtime.convertWindowToLocal).toHaveBeenCalledWith("peer-win", "default");
+      expect(adapter.reload).toHaveBeenCalledWith("peer-win");
+
+      await expect(call("peers:window:set-profile", { profileId: "work" })).resolves.toBe(true);
+      expect(runtime.setPeerWindowProfile).toHaveBeenCalledWith("peer-win", "work");
+
+      await call("peers:window:attention", { count: 4 });
+      expect(adapter.setAttention).toHaveBeenCalledWith("peer-win", 4);
+      await expect(call("peers:window:attention", { count: 4 }, LOCAL_SENDER)).rejects.toThrow("not attached");
+      for (const bad of [{ count: -1 }, { count: 10000 }, { count: 1.5 }, { count: "3" }, {}])
+        await expect(call("peers:window:attention", bad)).rejects.toThrow("IPC validation failed");
+      expect(adapter.setAttention).toHaveBeenCalledTimes(1);
+      dispose();
+    });
+
+    test("without a window adapter the three window operations reject and change nothing", async () => {
+      const { runtime, call, dispose } = setup({ adapter: false });
+      await expect(call("peers:window:open", { hostId: "host-aaaaaaaa", profileId: "work" })).rejects.toThrow(
+        /not available/,
+      );
+      await expect(
+        call("peers:window:activate", { hostId: "host-aaaaaaaa", profileId: "work" }, LOCAL_SENDER),
+      ).rejects.toThrow(/not available/);
+      await expect(call("peers:window:activate-local", { profileId: "default" })).rejects.toThrow(/not available/);
+      expect(runtime.createPeerWindowSlot).not.toHaveBeenCalled();
+      expect(runtime.convertWindowToPeer).not.toHaveBeenCalled();
+      expect(runtime.convertWindowToLocal).not.toHaveBeenCalled();
+      dispose();
+    });
+
+    test("window:get-backend answers for the calling window", async () => {
+      const { call, dispose } = setup();
+      await expect(call("window:get-backend", undefined, LOCAL_SENDER)).resolves.toEqual({ kind: "local" });
+      await expect(call("window:get-backend")).resolves.toMatchObject({
+        kind: "peer",
+        hostId: "host-aaaaaaaa",
+        clientId: "w123",
+      });
+      dispose();
+    });
+  });
+
+  describe("host management", () => {
+    test("each channel validates its strict payload and then calls the runtime", async () => {
+      const peer = {
+        listPeerHosts: vi.fn(async () => []),
+        refreshPeerHost: vi.fn(async () => null),
+        startPeerPairing: vi.fn(async () => ({})),
+        cancelPeerPairing: vi.fn(() => undefined),
+        removePeerHost: vi.fn(async () => true),
+        updatePeerHostAddress: vi.fn(async () => true),
+        getLocalProfilesOverview: vi.fn(() => []),
+      };
+      const { call, dispose } = setup({ peer });
+      await call("peers:client:list", undefined, LOCAL_SENDER);
+      await call("peers:client:refresh", { hostId: "host-aaaaaaaa" }, LOCAL_SENDER);
+      expect(peer.refreshPeerHost).toHaveBeenLastCalledWith("host-aaaaaaaa", { force: false });
+      await call("peers:client:refresh", { hostId: "host-aaaaaaaa", force: true }, LOCAL_SENDER);
+      expect(peer.refreshPeerHost).toHaveBeenLastCalledWith("host-aaaaaaaa", { force: true });
+      await call("peers:client:pair:start", { address: "192.168.1.9", port: 43124 }, LOCAL_SENDER);
+      expect(peer.startPeerPairing).toHaveBeenCalledWith({ address: "192.168.1.9", port: 43124 });
+      await call("peers:client:pair:cancel", { attemptId: "attempt-0001" }, LOCAL_SENDER);
+      expect(peer.cancelPeerPairing).toHaveBeenCalledWith("attempt-0001");
+      await call("peers:client:remove", { hostId: "host-aaaaaaaa" }, LOCAL_SENDER);
+      expect(peer.removePeerHost).toHaveBeenCalledWith("host-aaaaaaaa");
+      const update = { hostId: "host-aaaaaaaa", address: "10.0.0.2", port: 43125 };
+      await call("peers:client:update-address", update, LOCAL_SENDER);
+      expect(peer.updatePeerHostAddress).toHaveBeenCalledWith(update);
+      await call("peers:local-profiles", undefined, LOCAL_SENDER);
+      expect(peer.getLocalProfilesOverview).toHaveBeenCalledTimes(1);
+
+      for (const [channel, bad] of [
+        ["peers:client:refresh", { hostId: "x" }],
+        ["peers:client:refresh", { hostId: "host-aaaaaaaa", force: "yes" }],
+        ["peers:client:pair:start", { address: "bad host!", port: 43124 }],
+        ["peers:client:pair:start", { address: "h", port: 0 }],
+        ["peers:client:pair:cancel", {}],
+        ["peers:client:remove", "host-aaaaaaaa"],
+        ["peers:client:update-address", { address: "h", port: 1 }],
+      ] as const) {
+        await expect(call(channel, bad, LOCAL_SENDER), channel).rejects.toThrow("IPC validation failed");
+      }
+      expect(peer.startPeerPairing).toHaveBeenCalledTimes(1);
+      dispose();
+    });
+
+    test("the end of a pairing attempt reaches desktop windows", () => {
+      const handlers = new Map<string, (payload: unknown) => void>();
+      const callable = (..._args: unknown[]): unknown => callable;
+      const runtime = new Proxy(
+        {},
+        {
+          get: (_target, prop) =>
+            prop === "on"
+              ? (event: string, cb: (payload: unknown) => void) => {
+                  handlers.set(event, cb);
+                  return () => {};
+                }
+              : callable,
+        },
+      ) as Parameters<typeof registerIpc>[0];
+      const emitted: Array<{ channel: string; payload: unknown }> = [];
+      const dispose = registerIpc(runtime, (channel, payload) => emitted.push({ channel, payload }));
+      handlers.get("peers:pairing-result")!({ attemptId: "attempt-0001", state: "approved" });
+      expect(emitted).toContainEqual({
+        channel: "peers:pairing-result",
+        payload: { attemptId: "attempt-0001", state: "approved" },
+      });
+      dispose();
+    });
+  });
+});
+
+describe("registerIpc — attaching profiles between desktops (host side)", () => {
+  beforeEach(() => {
+    resetIpcMainMock();
+  });
+
+  const pairingId = "pairing-0001";
+  const deviceId = "device-0001";
+  type Handler = (event: unknown, payload?: unknown) => Promise<unknown>;
+
+  function setup() {
+    const runtime = makeRuntimeStub();
+    runtime.getPeerHostState = vi.fn(() => ({ marker: "state" })) as never;
+    runtime.setPeerHosting = vi.fn(async () => ({ marker: "state" })) as never;
+    runtime.approvePeerPairing = vi.fn(async () => "approved") as never;
+    runtime.rejectPeerPairing = vi.fn(() => true) as never;
+    runtime.removePeerDevice = vi.fn(async () => true) as never;
+    const dispose = registerIpc(runtime, () => {});
+    const call = (channel: string, payload?: unknown) => (handleRegistry.get(channel) as Handler)({}, payload);
+    return { runtime, dispose, call };
+  }
+
+  test("each channel validates its strict payload and then calls the runtime", async () => {
+    const { runtime, dispose, call } = setup();
+    try {
+      await call("peers:host:get");
+      expect(runtime.getPeerHostState).toHaveBeenCalledTimes(1);
+
+      await call("peers:host:set-hosting", { enabled: true, port: 43124 });
+      expect(runtime.setPeerHosting).toHaveBeenCalledWith({ enabled: true, port: 43124 });
+
+      await expect(call("peers:host:approve", { pairingId, code: "12345678" })).resolves.toBe("approved");
+      expect(runtime.approvePeerPairing).toHaveBeenCalledWith({ pairingId, code: "12345678" });
+
+      await expect(call("peers:host:reject", { pairingId })).resolves.toBe(true);
+      expect(runtime.rejectPeerPairing).toHaveBeenCalledWith(pairingId);
+
+      await expect(call("peers:host:remove-device", { deviceId })).resolves.toBe(true);
+      expect(runtime.removePeerDevice).toHaveBeenCalledWith(deviceId);
+    } finally {
+      dispose();
+    }
+  });
+
+  test("junk payloads are refused before the runtime is touched", async () => {
+    const { runtime, dispose, call } = setup();
+    try {
+      await expect(call("peers:host:set-hosting", { enabled: true, port: 0 })).rejects.toThrow("IPC validation failed");
+      await expect(call("peers:host:set-hosting", { enabled: "yes", port: 43124 })).rejects.toThrow(
+        "IPC validation failed",
+      );
+      await expect(call("peers:host:set-hosting", { enabled: true, port: 43124, extra: 1 })).rejects.toThrow(
+        "IPC validation failed",
+      );
+      await expect(call("peers:host:approve", { pairingId: "x", code: "1" })).rejects.toThrow("IPC validation failed");
+      await expect(call("peers:host:reject", "pairing-0001")).rejects.toThrow("IPC validation failed");
+      await expect(call("peers:host:remove-device", {})).rejects.toThrow("IPC validation failed");
+      expect(runtime.setPeerHosting).not.toHaveBeenCalled();
+      expect(runtime.approvePeerPairing).not.toHaveBeenCalled();
+      expect(runtime.rejectPeerPairing).not.toHaveBeenCalled();
+      expect(runtime.removePeerDevice).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+    }
+  });
+
+  test("pairing progress and updates reach desktop windows", () => {
+    const handlers = new Map<string, (payload: unknown) => void>();
+    const callable = (..._args: unknown[]): unknown => callable;
+    const runtime = new Proxy(
+      {},
+      {
+        get: (_target, prop) =>
+          prop === "on"
+            ? (event: string, cb: (payload: unknown) => void) => {
+                handlers.set(event, cb);
+                return () => {};
+              }
+            : callable,
+      },
+    ) as Parameters<typeof registerIpc>[0];
+    const emitted: Array<{ channel: string; payload: unknown }> = [];
+    const dispose = registerIpc(runtime, (channel, payload) => emitted.push({ channel, payload }));
+    handlers.get("peers:pairing-progress")!({ pairingId, state: "awaiting-approval" });
+    handlers.get("peers:updated")!({});
+    expect(emitted).toContainEqual({
+      channel: "peers:pairing-progress",
+      payload: { pairingId, state: "awaiting-approval" },
+    });
+    expect(emitted).toContainEqual({ channel: "peers:updated", payload: {} });
+    dispose();
+  });
+});
+
+describe("attachment transfer IPC", () => {
+  beforeEach(() => {
+    resetIpcMainMock();
+  });
+
+  async function withWindows(
+    run: (
+      invoke: (sender: number, channel: string, payload: unknown) => Promise<Record<string, unknown>>,
+    ) => Promise<void>,
+  ) {
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const root = await mkdtemp(path.join(os.tmpdir(), "strideterm-ipc-attachments-"));
+    const runtime = makeRuntimeStub() as unknown as { getPayload: () => unknown };
+    runtime.getPayload = () => ({
+      appState: {
+        workspaces: [
+          { id: "ws", profileId: "p1", kind: "manual", cwd: root, panels: [] },
+          { id: "ssh-ws", profileId: "p1", kind: "ssh", cwd: root, panels: [] },
+          { id: "other-ws", profileId: "p2", kind: "manual", cwd: root, panels: [] },
+        ],
+        windowSlots: [
+          { id: "window-a", profileId: "p1" },
+          { id: "window-b", profileId: "p1" },
+        ],
+      },
+    });
+    const senders: Record<number, string> = { 1: "window-a", 2: "window-b" };
+    const dispose = registerIpc(runtime as never, () => {}, { getWindowIdByWebContentsId: (id) => senders[id] });
+    const invoke = (sender: number, channel: string, payload: unknown) =>
+      (handleRegistry.get(channel) as (event: unknown, payload: unknown) => Promise<Record<string, unknown>>)(
+        { sender: { id: sender } },
+        payload,
+      );
+    try {
+      await run(invoke);
+    } finally {
+      dispose();
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+
+  test("each channel validates its payload and reaches the implementation with the window as owner", async () => {
+    await withWindows(async (invoke) => {
+      const data = Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), Buffer.from("rest")]);
+      const begin = await invoke(1, "attachment:upload:begin", { workspaceId: "ws", name: "a.png", size: data.length });
+      expect(begin).toMatchObject({ chunkBytes: 512 * 1024, received: 0 });
+      const block = { workspaceId: "ws", transferId: begin.transferId, offset: 0, data: data.toString("base64") };
+      await expect(invoke(2, "attachment:upload:chunk", block)).rejects.toThrow(/owner/);
+      await expect(invoke(1, "attachment:upload:chunk", block)).resolves.toEqual({ received: data.length });
+      const finishPayload = { workspaceId: "ws", transferId: begin.transferId };
+      await expect(invoke(2, "attachment:upload:finish", finishPayload)).rejects.toThrow(/owner/);
+      const record = await invoke(1, "attachment:upload:finish", finishPayload);
+      expect(record).toMatchObject({ name: "a.png", size: data.length, transferId: begin.transferId });
+      const window = await invoke(2, "attachment:read", {
+        workspaceId: "ws",
+        transferId: begin.transferId,
+        name: "a.png",
+        offset: 0,
+        length: 1024,
+      });
+      expect(window).toEqual({ data: data.toString("base64"), size: data.length, eof: true });
+      const second = await invoke(1, "attachment:upload:begin", { workspaceId: "ws", name: "b.png", size: 3 });
+      await expect(
+        invoke(2, "attachment:upload:cancel", { workspaceId: "ws", transferId: second.transferId }),
+      ).rejects.toThrow(/owner/);
+      await expect(
+        invoke(1, "attachment:upload:cancel", { workspaceId: "ws", transferId: second.transferId }),
+      ).resolves.toEqual({ ok: true });
+    });
+  });
+
+  test("refuses malformed payloads, an unknown window, another profile's workspace and SSH workspaces", async () => {
+    await withWindows(async (invoke) => {
+      const good = { workspaceId: "ws", name: "a.png", size: 5 };
+      await expect(invoke(1, "attachment:upload:begin", { ...good, size: 0 })).rejects.toThrow(/validation failed/);
+      await expect(invoke(1, "attachment:upload:begin", { ...good, extra: 1 })).rejects.toThrow(/validation failed/);
+      await expect(
+        invoke(1, "attachment:upload:chunk", { workspaceId: "ws", transferId: "nope", offset: 0, data: "AAAA" }),
+      ).rejects.toThrow(/validation failed/);
+      await expect(
+        invoke(1, "attachment:read", { workspaceId: "ws", transferId: "nope", name: "a", offset: 0, length: 1 }),
+      ).rejects.toThrow(/validation failed/);
+      await expect(invoke(9, "attachment:upload:begin", good)).rejects.toThrow(/caller identity/);
+      await expect(invoke(1, "attachment:upload:begin", { ...good, workspaceId: "other-ws" })).rejects.toThrow(
+        /no local filesystem root/,
+      );
+      await expect(invoke(1, "attachment:upload:begin", { ...good, workspaceId: "ssh-ws" })).rejects.toThrow(
+        /unavailable for SSH or container/,
+      );
+    });
+  });
+
+  test("none of the channels is allowed in a window attached to another desktop", async () => {
+    const { PEER_WINDOW_ALLOWED_CHANNELS } = await import("../shared/peer-window-channels.js");
+    for (const channel of [
+      "attachment:upload:begin",
+      "attachment:upload:chunk",
+      "attachment:upload:finish",
+      "attachment:upload:cancel",
+      "attachment:read",
+    ])
+      expect(PEER_WINDOW_ALLOWED_CHANNELS.has(channel), channel).toBe(false);
   });
 });

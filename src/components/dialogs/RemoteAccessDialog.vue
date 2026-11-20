@@ -1,11 +1,5 @@
 <template>
-  <div
-    :class="[
-      'dialog',
-      'remote-access-dialog',
-      selectedMode !== 'mobile' && !remoteConfig.enabled && 'remote-card--disabled',
-    ]"
-  >
+  <div :class="['dialog', 'remote-access-dialog', !ownPanelMode && !remoteConfig.enabled && 'remote-card--disabled']">
     <div class="dialog__header">
       <div>
         <p class="eyebrow">{{ isRemote ? "Connected Client" : "Remote Access" }}</p>
@@ -14,7 +8,7 @@
       <div class="remote-access__header-actions">
         <RemoteAccessPauseControl v-if="!isRemote" />
         <button
-          v-if="!isRemote && selectedMode !== 'mobile'"
+          v-if="!isRemote && !ownPanelMode"
           :disabled="remoteConfig.paused"
           type="button"
           class="button button--ghost"
@@ -44,7 +38,9 @@
         :title="
           tab.id === 'mobile'
             ? 'Pair phones, manage their access, and configure mobile connections.'
-            : `Show settings for ${tab.label} sharing.`
+            : tab.id === 'desktops'
+              ? 'Let other strIDEterm desktops attach profiles of this one.'
+              : `Show settings for ${tab.label} sharing.`
         "
         @click="selectMode(tab.id)"
       >
@@ -52,6 +48,10 @@
           <template v-if="tab.id === 'mobile'">
             <rect x="6" y="2.5" width="8" height="15" rx="1.5" />
             <path d="M9 15h2" />
+          </template>
+          <template v-else-if="tab.id === 'desktops'">
+            <rect x="2.5" y="3" width="15" height="10" rx="1" />
+            <path d="M7 17h6M10 13v4" />
           </template>
           <template v-else-if="tab.id === 'lan'">
             <circle cx="10" cy="10" r="7.5" />
@@ -76,7 +76,10 @@
         :visible="selectedMode === 'mobile'"
       />
     </div>
-    <fieldset v-if="selectedMode !== 'mobile'" class="remote-access__legacy" :disabled="remoteConfig.paused">
+    <div v-if="canHostPeers && selectedMode === 'desktops'" class="remote-access__mobile">
+      <PeerHostingPanel />
+    </div>
+    <fieldset v-if="!ownPanelMode" class="remote-access__legacy" :disabled="remoteConfig.paused">
       <!-- QR + share URL hero -->
       <div class="remote-access__hero">
         <button
@@ -349,6 +352,7 @@
 import { ref, computed, inject, watch } from "vue";
 import RemoteAccessPauseControl from "../layout/RemoteAccessPauseControl.vue";
 import MobileConnectionPanel from "./settings/MobileConnectionPanel.vue";
+import PeerHostingPanel from "../peers/PeerHostingPanel.vue";
 import { apiKey } from "../../types/keys.js";
 import { useAppStore } from "../../stores/app.js";
 import { useAccountStore } from "../../stores/account.js";
@@ -383,10 +387,13 @@ watch(
 );
 function selectMode(mode: string) {
   selectedMode.value = mode;
-  if (mode !== "mobile") store.setRemoteMode(mode);
+  if (mode !== "mobile" && mode !== "desktops") store.setRemoteMode(mode);
 }
+const canHostPeers = typeof api?.getPeerHostState === "function";
+const ownPanelMode = computed(() => selectedMode.value === "mobile" || selectedMode.value === "desktops");
 const availableModes = [
   ...(!isRemote ? [{ id: "mobile", label: "Mobile" }] : []),
+  ...(canHostPeers ? [{ id: "desktops", label: "Desktops" }] : []),
   { id: "lan", label: "LAN" },
   { id: "cloudflare", label: "Cloudflare" },
   { id: "vps", label: "VPS / Custom" },

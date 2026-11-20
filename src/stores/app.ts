@@ -48,6 +48,8 @@ import { maybeApplyMockFromUrl } from "./dev-mocks.js";
 import { useGitUiStore } from "./git-ui.js";
 import { useRemoteDetailsStore } from "./remote-details.js";
 import { useNotificationStore } from "./notifications.js";
+import { createPeerWindowSession, type PeerWindowSession } from "./peer-window.js";
+import { isPeerWindow, windowBackend } from "../window-backend.js";
 import {
   mobileConnectedDeviceSchema,
   type MobileConnectedDevice,
@@ -146,6 +148,9 @@ export function resolveViewerProfileId(
 export const useAppStore = defineStore("app", () => {
   // --- This window's identity (injected via additionalArguments in preload) ---
   const myWindowId = (window as AnyApi).strideterm?.startupFlags?.windowId || "";
+  // A window attached to another desktop has an id of THIS machine; the payload's windowSlots are the host's, so
+  // matching the id against them would read some other machine's window as this one.
+  const slotWindowId = isPeerWindow() ? "" : myWindowId;
 
   // Structured renderer logging — routes through the preload's `log:renderer`
   // channel into the main-process logger, where it appears in strideterm.log
@@ -198,6 +203,10 @@ export const useAppStore = defineStore("app", () => {
   const remoteConnectionHint = ref("");
   /** Epoch deadline for a scheduled remote reconnect; null outside that backoff. */
   const remoteReconnectAt = ref<number | null>(null);
+  /** Set in a window attached to another desktop; its failure replaces the app with a screen of its own. */
+  const peerSession = shallowRef<PeerWindowSession | null>(null);
+  const peerFailure = computed(() => peerSession.value?.failure.value ?? null);
+  const peerProfilePending = computed(() => peerSession.value?.profilePending.value ?? false);
   const remoteAccessMode = ref("lan"); // "lan" | "cloudflare" | "vps"
   const selectedLanUrl = ref("");
   const contextMenu = ref<{ x: number; y: number; viewId: string; anchor?: HTMLElement } | null>(null);
@@ -398,8 +407,8 @@ export const useAppStore = defineStore("app", () => {
   /** The window slot for this renderer instance. */
   const myWindowSlot = computed(() => {
     const slots = (payload.value?.appState as AnyApi)?.windowSlots as AnyApi[] | undefined;
-    if (!slots || !myWindowId) return null;
-    return slots.find((s: AnyApi) => s.id === myWindowId) ?? null;
+    if (!slots || !slotWindowId) return null;
+    return slots.find((s: AnyApi) => s.id === slotWindowId) ?? null;
   });
 
   function resolveRemoteWorkspaceId(sourcePayload: StatePayload | null = payload.value): string {
@@ -987,7 +996,7 @@ export const useAppStore = defineStore("app", () => {
     }
     const appState = sourcePayload?.appState as AnyApi | undefined;
     const slots = appState?.windowSlots as AnyApi[] | undefined;
-    const slot = myWindowId && slots ? slots.find((s: AnyApi) => s.id === myWindowId) : null;
+    const slot = slotWindowId && slots ? slots.find((s: AnyApi) => s.id === slotWindowId) : null;
     return slot?.activeWorkspaceId || appState?.activeWorkspaceId || "";
   }
 
@@ -1384,7 +1393,8 @@ export const useAppStore = defineStore("app", () => {
 
     // Derive the workspace ID that is active in THIS window / remote client from the incoming payload.
     const incomingSlots = (nextPayload as AnyApi)?.appState?.windowSlots as AnyApi[] | undefined;
-    const incomingSlot = myWindowId && incomingSlots ? incomingSlots.find((s: AnyApi) => s.id === myWindowId) : null;
+    const incomingSlot =
+      slotWindowId && incomingSlots ? incomingSlots.find((s: AnyApi) => s.id === slotWindowId) : null;
     // Remote: derive the active workspace exactly like myActiveWorkspaceId does
     // (resolveRemoteWorkspaceId), so the broadcast handler and the computed view
     // agree. Critically this no longer falls back to the global
@@ -1547,7 +1557,7 @@ export const useAppStore = defineStore("app", () => {
     try {
       const nextPayload = (await _api!.activateWorkspace(workspaceId)) as StatePayload;
       const nextSlots = (nextPayload as AnyApi)?.appState?.windowSlots as AnyApi[] | undefined;
-      const nextMySlot = myWindowId && nextSlots ? nextSlots.find((s: AnyApi) => s.id === myWindowId) : null;
+      const nextMySlot = slotWindowId && nextSlots ? nextSlots.find((s: AnyApi) => s.id === slotWindowId) : null;
       const responseMyWsId = getWindowWorkspaceIdFromPayload(nextPayload);
       rlog("debug", "ws-activate: ipc response", {
         workspaceId,
@@ -1962,6 +1972,19 @@ export const useAppStore = defineStore("app", () => {
   function init(api: Transport): void {
     _api = api;
     isRemoteTransport.value = !!api.isRemote;
+    const backend = windowBackend.value;
+    if (backend.kind === "peer") {
+      peerSession.value = createPeerWindowSession({
+        backend,
+        api,
+        payload,
+        myActiveProfileId,
+        activateProfile: (profileId) => apiActions.activateProfile(profileId),
+        setIssue: setRemoteConnectionIssue,
+        clearIssue: clearRemoteConnectionIssue,
+      });
+      peerSession.value.watchProfile();
+    }
     supportsPerformanceMetrics.value = typeof (api as AnyApi).getPerformanceSnapshot === "function";
     // Wire the slim-core detail cache (remote-only; a no-op on desktop). Must
     // run before any pane mounts so interest declarations reach the transport.
@@ -2120,7 +2143,8 @@ export const useAppStore = defineStore("app", () => {
 
     api.onConnectionState?.((connection) => {
       if ((connection as AnyApi)?.connected) {
-        clearRemoteConnectionIssue();
+        if (peerSession.value) peerSession.value.onConnectionState(connection);
+        else clearRemoteConnectionIssue();
         return;
       }
       // Connection dropped → forget the revision baseline. The server's
@@ -2129,6 +2153,10 @@ export const useAppStore = defineStore("app", () => {
       // without this reset the gate would wrongly drop every fresh snapshot and
       // wedge the client on stale state. A fresh connection starts a new baseline.
       lastAppliedCoreRevision = -1;
+      if (peerSession.value) {
+        peerSession.value.onConnectionState(connection);
+        return;
+      }
       if ((connection as AnyApi)?.message)
         setRemoteConnectionIssue(
           (connection as AnyApi).message,
@@ -2295,6 +2323,10 @@ export const useAppStore = defineStore("app", () => {
         }
       })
       .catch((error: AnyApi) => {
+        if (peerSession.value) {
+          void peerSession.value.onBootstrapFailure(error);
+          return;
+        }
         // The STATUS, not the text. This used to sniff for "401" inside the message, which stopped
         // being true the moment the transport started mapping 401 to a sentence of its own — the
         // branch had quietly become unreachable, and a token problem fell through to whatever the
@@ -2744,6 +2776,9 @@ export const useAppStore = defineStore("app", () => {
     remoteConnectionIssue,
     remoteConnectionHint,
     remoteReconnectAt,
+    peerFailure,
+    peerProfilePending,
+    reconnectPeerHost: () => peerSession.value?.reconnect() ?? Promise.resolve(),
     remoteAccessMode,
     selectedLanUrl,
     contextMenu,

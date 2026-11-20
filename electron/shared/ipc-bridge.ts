@@ -11,6 +11,12 @@ import type {
 import type { StatePayload, RecoveryResult } from "./types/state.js";
 import type { AppUpdateStatus } from "./app-update.js";
 import type {
+  AttachmentReadRequest,
+  AttachmentTransferRequest,
+  AttachmentUploadBeginRequest,
+  AttachmentUploadChunkRequest,
+} from "./attachment-upload.js";
+import type {
   SaveSidebarNote,
   SidebarNote,
   SidebarNotes,
@@ -415,6 +421,47 @@ export interface StridetermAPI {
   listCredentials: () => Promise<import("./credential-overview.js").CredentialOverview>;
   removeCredential: (ref: string) => Promise<import("./credential-overview.js").CredentialRemoveResult>;
   removeOrphanCredentials: () => Promise<import("./credential-overview.js").CredentialRemoveResult>;
+  /** Attaching profiles between desktops, host side (desktop only). */
+  getPeerHostState: () => Promise<import("./peers.js").PeerHostState>;
+  setPeerHosting: (input: import("./peers.js").PeerHostingSettings) => Promise<import("./peers.js").PeerHostState>;
+  approvePeerPairing: (input: { pairingId: string; code: string }) => Promise<import("./peers.js").PeerApproveResult>;
+  rejectPeerPairing: (pairingId: string) => Promise<boolean>;
+  removePeerDevice: (deviceId: string) => Promise<boolean>;
+  /** Attaching profiles between desktops, device side. Desktop only: no remote counterpart. */
+  listPeerHosts: () => Promise<import("./peers.js").PeerAttachedHost[]>;
+  /** `force` lifts the "no longer paired" latch and tries the network once (the user's Reconnect). */
+  refreshPeerHost: (
+    hostId: string,
+    options?: { force?: boolean },
+  ) => Promise<import("./peers.js").PeerAttachedHost | null>;
+  startPeerPairing: (input: { address: string; port: number }) => Promise<import("./peers.js").PeerStartedPairing>;
+  cancelPeerPairing: (attemptId: string) => Promise<void>;
+  removePeerHost: (hostId: string) => Promise<boolean>;
+  updatePeerHostAddress: (input: { hostId: string; address: string; port: number }) => Promise<boolean>;
+  getWindowBackend: () => Promise<import("./peers.js").WindowBackend>;
+  getLocalProfilesOverview: () => Promise<import("./peers.js").LocalProfileOverview[]>;
+  openPeerWindow: (input: { hostId: string; profileId: string }) => Promise<import("./peers.js").PeerWindowOpenResult>;
+  /** The calling window becomes a window of that host; `reloaded: false` when it already was one. */
+  activatePeerProfile: (input: {
+    hostId: string;
+    profileId: string;
+  }) => Promise<import("./peers.js").PeerWindowActivateResult>;
+  /** The calling window of another desktop becomes a window of a local profile. */
+  activateLocalProfile: (profileId: string) => Promise<import("./peers.js").PeerWindowActivateResult>;
+  setPeerWindowProfile: (profileId: string) => Promise<boolean>;
+  setPeerWindowAttention: (count: number) => Promise<void>;
+  /** Writes this desktop's own terminal font size; the calling window must be attached to another desktop. */
+  setPeerWindowFontSize: (size: number) => Promise<boolean>;
+  /** The link a window attached to another desktop talks over. The main process picks the host from the window. */
+  peerHttp: (request: {
+    method: string;
+    pathname: string;
+    headers: Record<string, string>;
+    body?: string;
+  }) => Promise<{ status: number; headers: Record<string, string>; body: string }>;
+  peerWsOpen: (query: Record<string, string>) => void;
+  peerWsSend: (data: string) => void;
+  peerWsClose: (code?: number, reason?: string) => void;
   buildJiraOwnIssuesQuery: (payload: {
     connectionId: string;
     baseJql?: string;
@@ -1093,6 +1140,11 @@ export interface StridetermAPI {
   fileWrite: (p: FileWrite) => Promise<unknown>;
   attachmentList: (p: { workspaceId: string }) => Promise<unknown>;
   attachmentDelete: (p: { workspaceId: string; transferId: string; name: string }) => Promise<unknown>;
+  attachmentUploadBegin: (p: AttachmentUploadBeginRequest) => Promise<unknown>;
+  attachmentUploadChunk: (p: AttachmentUploadChunkRequest) => Promise<unknown>;
+  attachmentUploadFinish: (p: AttachmentTransferRequest) => Promise<unknown>;
+  attachmentUploadCancel: (p: AttachmentTransferRequest) => Promise<unknown>;
+  attachmentRead: (p: AttachmentReadRequest) => Promise<unknown>;
   fileCreateFile: (p: FileCreate) => Promise<unknown>;
   fileCreateDir: (p: FileCreate) => Promise<unknown>;
   fileRename: (p: FileRename) => Promise<unknown>;
@@ -1207,6 +1259,12 @@ export interface StridetermAPI {
   /** A sandbox is waiting on a destination (desktop windows only). UNVALIDATED here; parsed at the transport boundary. */
   onSandboxDenied: (handler: (payload: unknown) => void) => () => void;
   onSandboxDeniedSettled: (handler: (payload: unknown) => void) => () => void;
+  /** The host's peer state changed (desktop windows only). Re-read it with `getPeerHostState`. */
+  onPeersUpdated: (handler: (payload: unknown) => void) => () => void;
+  onPeerPairingProgress: (handler: (payload: unknown) => void) => () => void;
+  onPeerPairingResult: (handler: (payload: import("./peers.js").PeerPairingResult) => void) => () => void;
+  onPeerWsState: (handler: (state: import("./peers.js").PeerWsState) => void) => () => void;
+  onPeerWsMessage: (handler: (data: string) => void) => () => void;
   onMobileStatus: (
     handler: (
       payload:

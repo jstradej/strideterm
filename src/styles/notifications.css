@@ -309,6 +309,12 @@
   min-height: 0;
 }
 
+/* The attachments panel fills the tab, so a file dropped anywhere in it lands on the panel. */
+.notification-center__body--attachments {
+  display: flex;
+  flex-direction: column;
+}
+
 .notification-center__body--connections {
   padding: 12px 8px 0;
 }

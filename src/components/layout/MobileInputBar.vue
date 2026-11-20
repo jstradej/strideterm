@@ -13,7 +13,7 @@
        hide it via the mobile.css media query. Direct typing into the
        terminal still works — the bar is additive, not a replacement. -->
   <div
-    v-if="api?.isRemote && targetSessionId"
+    v-if="isWebClient(api) && targetSessionId"
     ref="barRef"
     class="mobile-input-bar"
     :class="{
@@ -331,6 +331,7 @@ import { resolveInputOriginWorkspaceId } from "../../app/selectors.js";
 import type { CompanionPrimaryTaskRunner } from "../../../electron/shared/companion-primary.js";
 import { useTerminalStore } from "../../stores/terminal.js";
 import { useNotificationStore } from "../../stores/notifications.js";
+import { isWebClient } from "../../lib/client-kind.js";
 import {
   readMobileInputBarCollapsed,
   readMobileInputDraft,
@@ -601,7 +602,7 @@ onMounted(() => {
   window.screen.orientation?.addEventListener("change", updateDeviceOrientation);
   window.addEventListener("orientationchange", updateDeviceOrientation);
   updateNativeSessionRail();
-  postKeyboardAvailability(!!api?.isRemote && !!targetSessionId.value);
+  postKeyboardAvailability(isWebClient(api) && !!targetSessionId.value);
   window.addEventListener("strideterm:focus-composer", focusComposer);
   window.addEventListener("strideterm:toggle-system-keyboard", toggleSystemKeyboard);
   window.addEventListener("strideterm:native-session-rail-change", updateNativeSessionRail);
@@ -653,7 +654,7 @@ watch(
 );
 
 watch(targetSessionId, (sessionId, previousSessionId) => {
-  postKeyboardAvailability(!!api?.isRemote && !!sessionId);
+  postKeyboardAvailability(isWebClient(api) && !!sessionId);
   if (sessionId !== previousSessionId) {
     rewritingDraft = true;
     ignoreCompositionEnd.value = composing.value;
@@ -1103,7 +1104,7 @@ function currentProfileId(): string {
 }
 function reportAttachmentTargets(event: Event): void {
   const detail = (event as CustomEvent).detail;
-  if (!detail || typeof detail !== "object" || !api?.isRemote) return;
+  if (!detail || typeof detail !== "object" || !isWebClient(api)) return;
   const tabs = store.workspaceTabs as Array<{ id: string; type: string; title?: string; borrowed?: boolean }>;
   const workspace = store.payload?.workspace as {
     workspace?: { id: string };

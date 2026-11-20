@@ -109,7 +109,7 @@
             "
           />
           <button
-            v-if="api?.browseDirectory"
+            v-if="canBrowse"
             type="button"
             class="button button--ghost input-with-action__btn"
             :title="isGitHub ? undefined : 'Pick a directory using the OS file picker.'"
@@ -240,6 +240,7 @@ import { ref, reactive, computed, inject, onMounted, useAttrs } from "vue";
 import { apiKey } from "../../types/keys.js";
 import type { Transport } from "../../transport.js";
 import { useConnectionDialogForm } from "../../composables/useConnectionDialogForm.js";
+import { useDirectoryPicker } from "../../composables/useDirectoryPicker.js";
 
 defineOptions({ inheritAttrs: false });
 
@@ -284,6 +285,7 @@ const attrs = useAttrs();
 const isGitHub = computed(() => props.provider === "github");
 
 const api = inject<Transport>(apiKey);
+const { canBrowse, pickDirectory } = useDirectoryPicker(api);
 const labelRef = ref<HTMLInputElement | null>(null);
 
 const draft = reactive({
@@ -343,7 +345,7 @@ const { busy, errorMessage, verification, browseReviewRoot, testConnection, hand
 >({
   draft,
   defaultReviewRoot: () => props.defaultReviewRoot,
-  browseDirectory: api?.browseDirectory,
+  browseDirectory: canBrowse.value ? pickDirectory : undefined,
   buildPayload: buildDraftPayload,
   verify: (payload) =>
     (isGitHub.value ? api?.verifyGitHubConnection?.(payload) : api?.verifyAzureConnection?.(payload)) as

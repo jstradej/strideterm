@@ -26,6 +26,7 @@
 - **Docker Manager** - list containers, run actions, open shells, and stream logs
 - **SSH Support** - connect to remote machines, browse and preview running tmux sessions, and resume them in a workspace tab — see the [SSH guide](docs/ssh.md)
 - **Remote Access** - access your workspace from any device via LAN or Cloudflare tunnel with QR code; browser sessions expire after 24 hours idle or 7 days total by default and can be revoked in Settings
+- **Attach profiles of another computer** - show the profiles of a second strIDEterm on your network in windows of this one, while its terminals, agents and files stay on that computer — see the [attach profiles guide](docs/attach-profiles.md)
 - **Telegram Bot** - receive alerts and control selected app features from a Telegram chat — see the [Telegram guide](docs/telegram.md)
 - **Plugins** - extend functionality with plugins (Docker Ops and System Monitor built-in)
 - **Finish Notifications** - know when a command or agent finishes without watching the screen:

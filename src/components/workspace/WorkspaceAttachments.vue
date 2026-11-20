@@ -1,9 +1,15 @@
 <template>
   <section
     class="workspace-attachments"
-    :class="{ 'workspace-attachments--panel': panel }"
+    :class="{ 'workspace-attachments--panel': panel, 'workspace-attachments--dragging': dragging }"
     data-role="workspace-attachments"
+    tabindex="-1"
     @keydown="onMenuKeydown"
+    @dragenter="onDragEnter"
+    @dragover="onDragOver"
+    @dragleave="onDragLeave"
+    @drop="onDrop"
+    @paste="onPaste"
   >
     <button type="button" class="workspace-attachments__toggle" :aria-expanded="open" @click="toggle">
       <span>Attachments</span>
@@ -30,15 +36,39 @@
           <option value="">All days</option>
           <option v-for="day in availableDays" :key="day.key" :value="day.key">{{ day.label }}</option>
         </select>
+        <template v-if="canUpload">
+          <input
+            ref="fileInput"
+            class="sr-only"
+            type="file"
+            multiple
+            tabindex="-1"
+            data-role="attachment-file-input"
+            aria-label="Choose files to attach"
+            @change="onFilesPicked"
+          />
+          <button
+            type="button"
+            class="workspace-attachments__add"
+            data-role="attachment-add"
+            :disabled="Boolean(unavailableReason)"
+            :title="unavailableReason || addTitle"
+            @click="fileInput?.click()"
+          >
+            Add file
+          </button>
+        </template>
         <button
           type="button"
           class="workspace-attachments__refresh"
           :disabled="loading"
+          :aria-busy="refreshing ? 'true' : undefined"
           title="Reload the attachment list for this workspace"
           aria-label="Refresh attachments"
-          @click="load(true)"
+          @click="reload"
         >
-          ↻
+          <Spinner v-if="refreshing" size="sm" aria-hidden="true" />
+          <template v-else>↻</template>
         </button>
       </div>
       <p
@@ -49,12 +79,72 @@
       >
         {{ feedback.message }}
       </p>
-      <p v-if="loading && !attachments.length" class="workspace-attachments__status">Loading attachments…</p>
+      <p v-if="dragging" class="workspace-attachments__dropzone" data-role="attachment-dropzone">
+        Drop files to add them to this workspace
+      </p>
+      <ul v-if="transfers.length" class="workspace-attachments__transfers" data-role="attachment-transfers">
+        <li
+          v-for="item in transfers"
+          :key="item.id"
+          class="workspace-attachments__transfer"
+          :class="{ 'workspace-attachments__transfer--failed': item.state === 'failed' }"
+        >
+          <div class="workspace-attachments__transfer-head">
+            <strong :title="item.name">{{ item.name }}</strong>
+            <small>{{ transferLabel(item) }}</small>
+            <button
+              v-if="item.active"
+              type="button"
+              class="workspace-attachments__transfer-button"
+              :aria-label="`Cancel ${item.verb} of ${item.name}`"
+              :disabled="item.finishing"
+              @click="item.cancel()"
+            >
+              Cancel
+            </button>
+            <button
+              v-else
+              type="button"
+              class="workspace-attachments__transfer-button"
+              :aria-label="`Dismiss ${item.name}`"
+              @click="item.dismiss()"
+            >
+              Dismiss
+            </button>
+          </div>
+          <div
+            v-if="item.active"
+            class="workspace-attachments__bar"
+            role="progressbar"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            :aria-valuenow="item.percent"
+          >
+            <span :style="{ width: `${item.percent}%` }"></span>
+          </div>
+          <p v-else-if="item.error" class="workspace-attachments__transfer-error" role="alert">{{ item.error }}</p>
+        </li>
+      </ul>
+      <p
+        v-if="loading && !loaded && !attachments.length"
+        class="workspace-attachments__status workspace-attachments__status--wait"
+        role="status"
+      >
+        <Spinner size="sm" aria-hidden="true" />
+        Loading attachments…
+      </p>
       <p v-if="error" class="workspace-attachments__status workspace-attachments__status--error" role="alert">
         {{ error }}
       </p>
-      <p v-if="!loading && !error && !filteredAttachments.length" class="workspace-attachments__status">
+      <p v-if="(loaded || !loading) && !error && !filteredAttachments.length" class="workspace-attachments__status">
         {{ filterQuery.trim() || selectedDay ? "No matching attachments." : "No attachments yet." }}
+      </p>
+      <p
+        v-if="canUpload && !unavailableReason && (loaded || !loading) && !error && !attachments.length"
+        class="workspace-attachments__status workspace-attachments__hint"
+        data-role="attachment-drop-hint"
+      >
+        Drop files here, paste them, or use Add file.
       </p>
       <ul v-if="filteredAttachments.length" class="workspace-attachments__list">
         <template v-for="group in dayGroups" :key="group.key">
@@ -63,7 +153,12 @@
             <span class="notif-day-separator__label">{{ group.label }}</span>
             <span class="notif-day-separator__line"></span>
           </li>
-          <li v-for="attachment in group.files" :key="attachment.transferId" class="workspace-attachments__item">
+          <li
+            v-for="attachment in group.files"
+            :key="attachment.transferId"
+            class="workspace-attachments__item"
+            :aria-busy="deletingId === attachment.transferId ? 'true' : undefined"
+          >
             <div
               class="workspace-attachments__row"
               role="button"
@@ -87,6 +182,12 @@
               <small class="workspace-attachments__size">{{ formatSize(attachment.size) }}</small>
             </div>
             <div class="workspace-attachments__actions" @click.stop>
+              <Spinner
+                v-if="deletingId === attachment.transferId"
+                size="sm"
+                label="Deleting attachment"
+                data-role="attachment-deleting"
+              />
               <button
                 v-if="nativeOpenAvailable"
                 type="button"
@@ -125,7 +226,7 @@
                 type="button"
                 role="menuitem"
                 :disabled="!props.workspaceRoot"
-                title="Copy the path on the desktop workspace"
+                :title="`Copy the path on ${pathOwner}`"
                 @click="copyAbsolutePath(attachment.path)"
               >
                 Copy absolute path
@@ -154,6 +255,16 @@
                 Copy into clipboard
               </button>
               <button
+                v-if="canSave"
+                type="button"
+                role="menuitem"
+                data-role="attachment-save"
+                title="Download the file to this computer"
+                @click="saveAttachment(attachment)"
+              >
+                Save to this computer
+              </button>
+              <button
                 type="button"
                 role="menuitem"
                 class="workspace-attachments__menu-delete"
@@ -171,20 +282,44 @@
 </template>
 
 <script setup lang="ts">
-import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch, type ComponentPublicInstance } from "vue";
+import {
+  computed,
+  inject,
+  nextTick,
+  onMounted,
+  onUnmounted,
+  reactive,
+  ref,
+  watch,
+  type ComponentPublicInstance,
+} from "vue";
 import { apiKey } from "../../types/keys.js";
 import type { Transport } from "../../transport.js";
 import type { AttachmentRecord } from "../../attachments.js";
 import { useDismissable } from "../../composables/useDismissable.js";
 import { dayBandKey, dayBandLabel } from "../../app/helpers.js";
+import { hasAttachmentUpload, useAttachmentUpload, type UploadItem } from "../../composables/useAttachmentUpload.js";
+import { AttachmentDownloadCancelled, readAttachment, saveBlobAsDownload } from "../../lib/attachment-download.js";
+import { pastedImageName } from "../../lib/terminal-attachment-upload.js";
+import { useNotificationStore } from "../../stores/notifications.js";
+import Spinner from "../common/Spinner.vue";
+import { windowBackend } from "../../window-backend.js";
 
 const props = withDefaults(
-  defineProps<{ workspaceId: string; workspaceRoot?: string; openByDefault?: boolean; panel?: boolean }>(),
-  { workspaceRoot: "", openByDefault: false, panel: false },
+  defineProps<{
+    workspaceId: string;
+    workspaceRoot?: string;
+    openByDefault?: boolean;
+    panel?: boolean;
+    unavailableReason?: string;
+  }>(),
+  { workspaceRoot: "", openByDefault: false, panel: false, unavailableReason: "" },
 );
 const api = inject<Transport | null>(apiKey, null);
 const open = ref(props.openByDefault);
 const loading = ref(false);
+const loaded = ref(false);
+const refreshing = ref(false);
 const error = ref("");
 const attachments = ref<AttachmentRecord[]>([]);
 const filterQuery = ref("");
@@ -198,6 +333,78 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
 let feedbackTimer: ReturnType<typeof setTimeout> | null = null;
 let requestEpoch = 0;
 let mounted = false;
+
+const canUpload = hasAttachmentUpload(api);
+const canSave = computed(() => api?.isRemote === true && typeof api.attachmentRead === "function");
+const addTitle = "Upload files into this workspace's attachments. You can also drop or paste them here.";
+const pathOwner = computed(() => {
+  if (api?.isRemote !== true) return "this computer";
+  const backend = windowBackend.value;
+  return backend.kind === "peer" ? backend.hostLabel || "the other computer" : "the desktop workspace";
+});
+const fileInput = ref<HTMLInputElement | null>(null);
+const dragging = ref(false);
+let dragDepth = 0;
+const uploader = useAttachmentUpload({ onSettled: onUploadSettled });
+const downloads = reactive<
+  Array<{ id: string; name: string; size: number; read: number; error: string; controller: AbortController }>
+>([]);
+
+interface TransferRow {
+  id: string;
+  name: string;
+  verb: "upload" | "download";
+  active: boolean;
+  finishing: boolean;
+  percent: number;
+  error: string;
+  state: string;
+  size: number;
+  cancel: () => void;
+  dismiss: () => void;
+}
+
+function percentOf(sent: number, size: number): number {
+  return size > 0 ? Math.min(100, Math.floor((sent / size) * 100)) : 0;
+}
+
+const transfers = computed<TransferRow[]>(() => [
+  ...uploader.items
+    .filter((item) => item.state !== "cancelled")
+    .map((item) => ({
+      id: item.id,
+      name: item.name,
+      verb: "upload" as const,
+      active: item.state === "queued" || item.state === "uploading",
+      finishing: item.finishing,
+      percent: percentOf(item.sent, item.size),
+      error: item.error,
+      state: item.state,
+      size: item.size,
+      cancel: () => uploader.cancel(item),
+      dismiss: () => uploader.dismiss(item),
+    })),
+  ...downloads.map((item) => ({
+    id: item.id,
+    name: item.name,
+    verb: "download" as const,
+    active: !item.error,
+    finishing: false,
+    percent: percentOf(item.read, item.size),
+    error: item.error,
+    state: item.error ? "failed" : "downloading",
+    size: item.size,
+    cancel: () => item.controller.abort(),
+    dismiss: () => downloads.splice(downloads.indexOf(item), 1),
+  })),
+]);
+
+function transferLabel(row: TransferRow): string {
+  if (row.state === "queued") return "Waiting…";
+  if (row.finishing) return "Finishing…";
+  if (row.state === "failed") return row.verb === "upload" ? "Upload failed" : "Download failed";
+  return `${row.percent} % of ${formatSize(row.size)}`;
+}
 
 const nativeClipboardAvailable = computed(
   () => api?.isRemote === false && typeof api.fileClipboardCopy === "function" && Boolean(props.workspaceRoot),
@@ -250,6 +457,113 @@ const dayGroups = computed(() => {
   return groups;
 });
 
+function carriesFiles(event: DragEvent): boolean {
+  return canUpload && Array.from(event.dataTransfer?.types ?? []).includes("Files");
+}
+
+function onDragEnter(event: DragEvent): void {
+  if (!carriesFiles(event)) return;
+  event.preventDefault();
+  dragDepth += 1;
+  dragging.value = true;
+}
+
+function onDragOver(event: DragEvent): void {
+  if (!carriesFiles(event)) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = props.unavailableReason ? "none" : "copy";
+}
+
+function onDragLeave(event: DragEvent): void {
+  if (!carriesFiles(event)) return;
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) dragging.value = false;
+}
+
+async function onDrop(event: DragEvent): Promise<void> {
+  if (!carriesFiles(event)) return;
+  event.preventDefault();
+  dragDepth = 0;
+  dragging.value = false;
+  await startUpload(Array.from(event.dataTransfer?.files ?? []));
+}
+
+async function onPaste(event: ClipboardEvent): Promise<void> {
+  const files = Array.from(event.clipboardData?.files ?? []);
+  if (!canUpload || !files.length) return;
+  event.preventDefault();
+  await startUpload(files.map((file) => new File([file], pastedImageName(file), { type: file.type })));
+}
+
+async function onFilesPicked(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement;
+  const files = Array.from(input.files ?? []);
+  input.value = "";
+  await startUpload(files);
+}
+
+async function startUpload(files: File[]): Promise<void> {
+  if (!files.length) return;
+  if (props.unavailableReason) {
+    showFeedback(props.unavailableReason, true);
+    return;
+  }
+  const targetWorkspaceId = props.workspaceId;
+  await uploader.upload(files, targetWorkspaceId);
+  if (mounted && open.value && props.workspaceId === targetWorkspaceId) await load(true);
+}
+
+function onUploadSettled(item: UploadItem): void {
+  if (item.state === "failed") {
+    useNotificationStore().showError("Upload failed", item.error, { workspaceId: item.workspaceId });
+    return;
+  }
+  const record = item.record;
+  if (!record) return;
+  uploader.dismiss(item);
+  if (!mounted) {
+    useNotificationStore().pushEphemeralToast({ title: "Attachment uploaded", body: item.name });
+    return;
+  }
+  if (
+    props.workspaceId === item.workspaceId &&
+    !attachments.value.some((entry) => entry.transferId === record.transferId)
+  )
+    attachments.value = [...attachments.value, record];
+}
+
+async function saveAttachment(attachment: AttachmentRecord): Promise<void> {
+  closeMenu();
+  if (!api) return;
+  const entry = reactive({
+    id: crypto.randomUUID(),
+    name: attachment.name,
+    size: attachment.size,
+    read: 0,
+    error: "",
+    controller: new AbortController(),
+  });
+  downloads.push(entry);
+  try {
+    const blob = await readAttachment(api, {
+      workspaceId: props.workspaceId,
+      attachment,
+      signal: entry.controller.signal,
+      onProgress: (read) => (entry.read = read),
+    });
+    saveBlobAsDownload(blob, attachment.name);
+    downloads.splice(downloads.indexOf(entry), 1);
+    showFeedback(`Saving ${attachment.name}`);
+  } catch (cause) {
+    if (cause instanceof AttachmentDownloadCancelled) {
+      downloads.splice(downloads.indexOf(entry), 1);
+      return;
+    }
+    entry.error = cause instanceof Error ? cause.message : "The download failed.";
+    useNotificationStore().showError("Download failed", cause, { workspaceId: props.workspaceId });
+  }
+}
+
 function showFeedback(message: string, isError = false): void {
   feedback.value = { message, error: isError };
   if (feedbackTimer) clearTimeout(feedbackTimer);
@@ -264,13 +578,26 @@ async function load(force = false): Promise<void> {
   error.value = "";
   try {
     const result = await api.attachmentList({ workspaceId: targetWorkspaceId });
-    if (mounted && open.value && epoch === requestEpoch && props.workspaceId === targetWorkspaceId)
+    if (mounted && open.value && epoch === requestEpoch && props.workspaceId === targetWorkspaceId) {
       attachments.value = result;
+      loaded.value = true;
+    }
   } catch (cause) {
-    if (mounted && epoch === requestEpoch && props.workspaceId === targetWorkspaceId)
+    if (mounted && epoch === requestEpoch && props.workspaceId === targetWorkspaceId) {
       error.value = cause instanceof Error ? cause.message : "Unable to load attachments";
+      loaded.value = true;
+    }
   } finally {
     if (epoch === requestEpoch) loading.value = false;
+  }
+}
+
+async function reload(): Promise<void> {
+  refreshing.value = true;
+  try {
+    await load(true);
+  } finally {
+    refreshing.value = false;
   }
 }
 
@@ -381,7 +708,7 @@ useDismissable(
 
 async function deleteAttachment(attachment: AttachmentRecord): Promise<void> {
   closeMenu();
-  if (!api?.attachmentDelete) return;
+  if (!api?.attachmentDelete || deletingId.value === attachment.transferId) return;
   const targetWorkspaceId = props.workspaceId;
   if (!window.confirm(`Delete “${attachment.name}”? This removes the attachment for every tab in this workspace.`))
     return;
@@ -428,6 +755,8 @@ watch(
   () => [props.workspaceId, props.workspaceRoot],
   () => {
     requestEpoch += 1;
+    loading.value = false;
+    loaded.value = false;
     attachments.value = [];
     filterQuery.value = "";
     selectedDay.value = "";
@@ -457,6 +786,8 @@ onUnmounted(() => {
   background: rgba(12, 16, 24, 0.45);
 }
 .workspace-attachments--panel {
+  flex: 1 0 auto;
+  min-height: 100%;
   margin: 0;
   border: 0;
   border-radius: 0;
@@ -522,6 +853,102 @@ onUnmounted(() => {
   border-radius: 3px;
   background: var(--panel);
 }
+.workspace-attachments--dragging {
+  outline: 2px dashed var(--accent, #78a9ff);
+  outline-offset: -2px;
+}
+.workspace-attachments__dropzone {
+  margin: 8px 0;
+  padding: 10px;
+  border: 1px dashed var(--accent, #78a9ff);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+}
+.workspace-attachments__add {
+  padding: 3px 8px;
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.18));
+  border-radius: 4px;
+  color: inherit;
+  background: transparent;
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.workspace-attachments__add:hover:not(:disabled),
+.workspace-attachments__add:focus-visible {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+.workspace-attachments__add:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.workspace-attachments__transfers {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0;
+  padding: 0;
+  list-style: none;
+}
+.workspace-attachments__transfer {
+  display: grid;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 1px solid rgba(var(--tint), 0.12);
+  border-radius: 4px;
+  font-size: 11px;
+}
+.workspace-attachments__transfer--failed {
+  border-color: var(--danger-fg);
+}
+.workspace-attachments__transfer-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.workspace-attachments__transfer-head strong {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-attachments__transfer-head small {
+  color: var(--muted);
+  white-space: nowrap;
+}
+.workspace-attachments__transfer-button {
+  padding: 1px 6px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 11px;
+  cursor: pointer;
+}
+.workspace-attachments__transfer-button:hover,
+.workspace-attachments__transfer-button:focus-visible {
+  border-color: var(--border-color, rgba(255, 255, 255, 0.18));
+  color: inherit;
+}
+.workspace-attachments__bar {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: rgba(var(--tint), 0.12);
+}
+.workspace-attachments__bar span {
+  display: block;
+  height: 100%;
+  background: var(--accent, #78a9ff);
+}
+.workspace-attachments__transfer-error {
+  margin: 0;
+  color: var(--danger-fg);
+}
 .workspace-attachments__refresh,
 .workspace-attachments__menu-trigger,
 .workspace-attachments__open {
@@ -555,6 +982,11 @@ onUnmounted(() => {
 }
 .workspace-attachments__feedback {
   color: var(--success-fg, #7bd88f);
+}
+.workspace-attachments__status--wait {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .workspace-attachments__feedback--error,
 .workspace-attachments__status--error {

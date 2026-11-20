@@ -30,15 +30,13 @@
             maxlength="500"
             @change="onCwdChange"
           />
-          <button
-            v-if="api?.browseDirectory"
-            type="button"
-            class="button button--ghost input-with-action__btn"
-            @click="browseCwd"
-          >
+          <button v-if="canBrowse" type="button" class="button button--ghost input-with-action__btn" @click="browseCwd">
             Browse
           </button>
         </div>
+        <small v-if="browsingHost" class="help-text" data-testid="cwd-host-hint">
+          This folder is on {{ hostLabel }}, not on this computer.
+        </small>
       </label>
       <label>
         <span>Name</span>
@@ -681,7 +679,7 @@ import { safeColor } from "../../app/helpers.js";
 import { TASK_BRIEF_MAX_CHARS, TASK_BRIEF_HINT, formatBriefCounter } from "../../app/task-brief.js";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
-import { pickPath } from "../../lib/pick-path.js";
+import { useDirectoryPicker } from "../../composables/useDirectoryPicker.js";
 import { rlog } from "../../lib/renderer-log.js";
 import { BADGE_ICONS } from "../../lib/badge-icons.js";
 import HelpTooltip from "../common/HelpTooltip.vue";
@@ -797,6 +795,7 @@ const emit = defineEmits<{
 const attrs = useAttrs();
 
 const api = inject<Transport>(apiKey);
+const { canBrowse, browsingHost, hostLabel, pickDirectory } = useDirectoryPicker(api);
 
 const cwdPlaceholder = APP_CONFIG.ui.defaultProjectCwdPlaceholder;
 
@@ -1319,9 +1318,7 @@ const canSubmit = computed(() => {
 });
 
 async function browseCwd() {
-  const browseDirectory = api?.browseDirectory;
-  if (!browseDirectory) return;
-  const selected = await pickPath(() => browseDirectory(draft.cwd || ""));
+  const selected = await pickDirectory(draft.cwd || "");
   if (!selected) return;
   draft.cwd = selected;
   if (!draft.name.trim() || draft.name === APP_CONFIG.ui.defaultPanelTitle) {

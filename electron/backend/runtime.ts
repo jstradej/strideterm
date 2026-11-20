@@ -100,6 +100,8 @@ import { CloudflareTunnelManager, canReconnectTunnel } from "./tunnel-manager.js
 import { createPluginManager } from "./plugin-loader.js";
 import { createCredentialStore } from "./credential-store.js";
 import { createRuntimeCredentials } from "./runtime-credentials.js";
+import { createRuntimePeers, PEER_WINDOW_NOT_ATTACHED } from "./runtime-peers.js";
+import type { PeerHostingSettings, PeerListenerInfo, PeerWindowSlot } from "../shared/peers.js";
 import { createAzureReviewStore } from "./azure-review-store.js";
 import { createReviewBridgeStore } from "./review-bridge-store.js";
 import { createAzureAuditLogStore } from "./azure-audit-log-store.js";
@@ -374,7 +376,7 @@ import type { AppDistribution } from "../shared/app-distribution.js";
 import { initLogger, getLogger, setLogLevel, reconfigureLogger, createAuditLogger } from "./logger.js";
 import type { Logger } from "./logger.js";
 import { createRuntimeAttentionManager } from "./runtime-attention.js";
-import type { AppState, WorkspaceState } from "../shared/types/state.js";
+import type { AppState, WindowSlot, WindowSlotBounds, WorkspaceState } from "../shared/types/state.js";
 import { carryOverSourceBaseline, prePrSourceIdentityKey } from "../shared/review-source-identity.js";
 import { reviewAgentPreparationStopSchema } from "./ipc-schemas.js";
 import type { ReviewGitStart, StartReviewAgentPreparation, ReviewPrActionConfirm } from "./ipc-schemas.js";
@@ -3535,6 +3537,15 @@ export async function createRuntime({
     mobileManager.on(channel, (payload: unknown) => events.emit(channel, payload));
   }
 
+  const runtimePeers = createRuntimePeers({
+    getState: () => getState(),
+    mutate: (reason, mutator) => store.mutate(reason, mutator),
+    credentials: credentialStore,
+    appVersion: packageVersion,
+    emit: (event, payload) => events.emit(event, payload),
+    getAttentionPayload: () => ({ appState: { workspaces: getState().workspaces }, attention: getAttentionSnapshot() }),
+  });
+
   // --- Agent notification hook server ---
   const notifySecret = generateNotifySecret();
   let notifyServerHandle: NotifyServerHandle | null = null;
@@ -5119,6 +5130,11 @@ export async function createRuntime({
     broadcastState();
   }
 
+  const sidebarNotesRevisions = new Map<string, number>();
+  // Counters restart with the process. Starting from the clock keeps a value from repeating across a restart,
+  // which a client that was away for it would read as "nothing changed".
+  const sidebarNotesRevisionBase = Date.now();
+
   let jiraWorkspaceViewsSnapshot: () => JiraWorkspaceViewsSnapshot = () => ({});
   let automationsSnapshot: () => import("../shared/types/state.js").AutomationUiState = () => ({
     paused: getState().settings.automations.paused,
@@ -5235,6 +5251,7 @@ export async function createRuntime({
         };
       })(),
       reviewGit: reviewGitService.stateFor(),
+      sidebarNotesRevisions: Object.fromEntries(sidebarNotesRevisions),
       sshFileTransfers: sshFileService.transfers.getPayload(),
       reviewTrust: { waiting: reviewTrust.waiting() },
       reviewPrActions: reviewPrActionService?.stateFor() || { pending: [] },
@@ -8650,6 +8667,7 @@ export async function createRuntime({
   ensureGitPolling();
   syncTreeDirWatchers();
   reconfigureTelegram();
+  await runtimePeers.start();
   const retiredMobileDeviceId = credentialStore.getSecret("mobile:retired-desktop-device-id");
   if (retiredMobileDeviceId) {
     await mobileManager.switchInstallationIdentity(mobileDeviceId, retiredMobileDeviceId);
@@ -9524,6 +9542,122 @@ export async function createRuntime({
     return slot ? slot.profileId : null;
   }
 
+  async function createLocalWindowSlot(
+    profileId: string,
+    options: {
+      cloneFromWindowId?: string;
+      /** Converting a peer window keeps its id and geometry. */
+      keep?: { id: string; bounds: WindowSlotBounds; displayId?: number; isMaximized?: boolean };
+      alsoMutate?: (draft: AppState) => void;
+    } = {},
+  ): Promise<{ id: string; profileId: string; bounds: { x: number; y: number; width: number; height: number } }> {
+    const newId = options.keep?.id ?? randomUUID();
+    // Cascade offset new windows so they don't stack exactly on top of
+    // existing ones. Step of 32px is enough to expose the title bar of the
+    // window underneath without pushing the new window off-screen for
+    // typical 6-slot scenarios. resolveSafeBounds (main.ts) will clamp /
+    // re-center if the cascade walks past the work area.
+    const existingCount = (getState().windowSlots || []).length;
+    const baseX = 100;
+    const baseY = 100;
+    const step = 32;
+    const defaultBounds = options.keep?.bounds ?? {
+      x: baseX + existingCount * step,
+      y: baseY + existingCount * step,
+      width: 1280,
+      height: 800,
+    };
+    // "Duplicate current window": when the source window shows the same
+    // profile, the new window starts on the same workspace/session/grid.
+    // The clone is a one-time copy — afterwards the two windows are
+    // independent viewers.
+    const cloneSource = options.cloneFromWindowId
+      ? (getState().windowSlots || []).find((s) => s.id === options.cloneFromWindowId && s.profileId === profileId)
+      : undefined;
+    const restoreTarget = cloneSource
+      ? { workspaceId: cloneSource.activeWorkspaceId || "", sessionId: cloneSource.activeSessionId || "" }
+      : resolveProfileRestoreTarget(getState(), profileId);
+    const newActiveWorkspaceId = restoreTarget.workspaceId;
+    await store.mutate((draft: AppState) => {
+      if (!Array.isArray(draft.windowSlots)) draft.windowSlots = [];
+      const profile = draft.profiles.find((p) => p.id === profileId);
+      const seedGrid = cloneSource ? cloneSource.workspaceGrid : profile?.workspaceGrid;
+      draft.windowSlots.push({
+        id: newId,
+        profileId,
+        activeWorkspaceId: newActiveWorkspaceId,
+        activeSessionId: restoreTarget.sessionId,
+        workspaceGrid: seedGrid ? normalizeWorkspaceGrid(seedGrid, draft.workspaces, profileId) : null,
+        bounds: { ...defaultBounds },
+        ...(options.keep?.displayId !== undefined ? { displayId: options.keep.displayId } : {}),
+        ...(options.keep?.isMaximized !== undefined ? { isMaximized: options.keep.isMaximized } : {}),
+        lastFocusedAt: Date.now(),
+      });
+      options.alsoMutate?.(draft);
+    });
+    // Spawn PTYs for the new window's active workspace. Without this the
+    // freshly opened window paints terminal panes with "0 running" — the
+    // backend has no clue it needs to start anything, because nothing in
+    // the per-window flow calls ensureSession until the user navigates a
+    // workspace tab. (activeWorkspaceId at the global level may belong to
+    // a different window's profile, so the implicit-default path is
+    // wrong here.)
+    if (newActiveWorkspaceId) {
+      ensureVisibleSession(newActiveWorkspaceId);
+    }
+    syncInterestedGitWorkspaces();
+    broadcastState();
+    return { id: newId, profileId, bounds: defaultBounds };
+  }
+
+  async function removeLocalWindowSlot(
+    windowId: string,
+    alsoMutate?: (draft: AppState, closing: WindowSlot | undefined) => void,
+  ): Promise<void> {
+    windowFocusedAt.delete(windowId);
+    clearGitInterestOwners(windowId);
+    // The window that started the sign-in is closing, so the person who started it is gone. Any
+    // OTHER window closing leaves the attempt alone — the link may be open on a phone right now.
+    if (signInOwnerWindowId !== null && signInOwnerWindowId === windowId) {
+      if (onlineBootstrapState.phase === "downloading" && onlineBootstrapState.purpose === "sign-in") {
+        cancelOnlineBootstrap();
+      }
+      signInOwnerWindowId = null;
+      accountManager.cancelEmailSignIn();
+    }
+    await store.mutate((draft: AppState) => {
+      if (!Array.isArray(draft.windowSlots)) return;
+      const closing = draft.windowSlots.find((s) => s.id === windowId);
+      // Mirror the closing window's view into the profile's legacy/default
+      // fields so reopening the profile later restores where the user left
+      // off — the slot (and its viewer-owned grid) is gone after this.
+      if (closing) {
+        const profile = draft.profiles.find((p) => p.id === closing.profileId);
+        if (profile) {
+          profile.lastActiveWorkspaceId = closing.activeWorkspaceId || undefined;
+          profile.lastActiveSessionId = closing.activeSessionId || undefined;
+          if (closing.workspaceGrid !== undefined) {
+            profile.workspaceGrid = closing.workspaceGrid;
+          }
+        }
+      }
+      draft.windowSlots = draft.windowSlots.filter((s) => s.id !== windowId);
+      alsoMutate?.(draft, closing);
+    });
+    // The window is gone — drop its visible-session contribution so its
+    // panels stop counting as visible (otherwise their alerts stay suppressed),
+    // and its focus so it no longer keeps a terminal focused.
+    dropViewerVisibility(windowId);
+    dropViewerFocus(windowId);
+    syncInterestedGitWorkspaces();
+    // The closing window may have been the only one showing a docker
+    // workspace; without this the poll would keep spawning probes for a view
+    // that no longer exists.
+    ensureDockerPolling();
+    syncInterestedGitWorkspaces();
+    broadcastState();
+  }
+
   function assertSidebarNotesScope(state: AppState, scope: SidebarNotesScope, windowId: string | undefined): void {
     const profileId = windowId ? getWindowProfileId(windowId) : "default";
     if (scope.profileId !== profileId || !state.profiles.some((profile) => profile.id === profileId)) {
@@ -9544,6 +9678,7 @@ export async function createRuntime({
     const ownerId = input.workspaceId ?? input.profileId;
     const matchesNote = (note: NonNullable<AppState["sidebarNotes"]>[number]) =>
       note.id === input.id && note.owner === owner && note.ownerId === ownerId;
+    let changed = false;
     const state: AppState = await store.mutate("sidebar-note:update", (draft: AppState) => {
       assertSidebarNotesScope(draft, input, windowId);
       const notes = (draft.sidebarNotes ??= []);
@@ -9554,6 +9689,7 @@ export async function createRuntime({
       if ("text" in input) {
         if (!note) {
           notes.unshift({ id: input.id, text: input.text, owner, ownerId, revision: 1 });
+          changed = true;
           return;
         }
         if (input.text === note.text) return;
@@ -9568,7 +9704,15 @@ export async function createRuntime({
         delete note.previousText;
       }
       note.revision++;
+      changed = true;
     });
+    if (changed) {
+      sidebarNotesRevisions.set(
+        input.profileId,
+        (sidebarNotesRevisions.get(input.profileId) ?? sidebarNotesRevisionBase) + 1,
+      );
+      broadcastState();
+    }
     const savedNote = state.sidebarNotes?.find(matchesNote);
     if (!savedNote) throw new Error("The note could not be saved.");
     return toSidebarNote(savedNote);
@@ -13939,64 +14083,68 @@ export async function createRuntime({
 
     // --- Window slot management ---
 
-    async createWindowSlot(
+    createWindowSlot(
       profileId: string,
       options?: { cloneFromWindowId?: string },
     ): Promise<{ id: string; profileId: string; bounds: { x: number; y: number; width: number; height: number } }> {
-      const newId = randomUUID();
-      // Cascade offset new windows so they don't stack exactly on top of
-      // existing ones. Step of 32px is enough to expose the title bar of the
-      // window underneath without pushing the new window off-screen for
-      // typical 6-slot scenarios. resolveSafeBounds (main.ts) will clamp /
-      // re-center if the cascade walks past the work area.
-      const existingCount = (getState().windowSlots || []).length;
-      const baseX = 100;
-      const baseY = 100;
-      const step = 32;
-      const defaultBounds = {
-        x: baseX + existingCount * step,
-        y: baseY + existingCount * step,
-        width: 1280,
-        height: 800,
-      };
-      // "Duplicate current window": when the source window shows the same
-      // profile, the new window starts on the same workspace/session/grid.
-      // The clone is a one-time copy — afterwards the two windows are
-      // independent viewers.
-      const cloneSource = options?.cloneFromWindowId
-        ? (getState().windowSlots || []).find((s) => s.id === options.cloneFromWindowId && s.profileId === profileId)
-        : undefined;
-      const restoreTarget = cloneSource
-        ? { workspaceId: cloneSource.activeWorkspaceId || "", sessionId: cloneSource.activeSessionId || "" }
-        : resolveProfileRestoreTarget(getState(), profileId);
-      const newActiveWorkspaceId = restoreTarget.workspaceId;
-      await store.mutate((draft: AppState) => {
-        if (!Array.isArray(draft.windowSlots)) draft.windowSlots = [];
-        const profile = draft.profiles.find((p) => p.id === profileId);
-        const seedGrid = cloneSource ? cloneSource.workspaceGrid : profile?.workspaceGrid;
-        draft.windowSlots.push({
-          id: newId,
-          profileId,
-          activeWorkspaceId: newActiveWorkspaceId,
-          activeSessionId: restoreTarget.sessionId,
-          workspaceGrid: seedGrid ? normalizeWorkspaceGrid(seedGrid, draft.workspaces, profileId) : null,
-          bounds: { ...defaultBounds },
-          lastFocusedAt: Date.now(),
-        });
-      });
-      // Spawn PTYs for the new window's active workspace. Without this the
-      // freshly opened window paints terminal panes with "0 running" — the
-      // backend has no clue it needs to start anything, because nothing in
-      // the per-window flow calls ensureSession until the user navigates a
-      // workspace tab. (activeWorkspaceId at the global level may belong to
-      // a different window's profile, so the implicit-default path is
-      // wrong here.)
-      if (newActiveWorkspaceId) {
-        ensureVisibleSession(newActiveWorkspaceId);
+      return createLocalWindowSlot(profileId, { cloneFromWindowId: options?.cloneFromWindowId });
+    },
+
+    /**
+     * Turns a local window into a window of another desktop, keeping its id and geometry. The local slot goes
+     * through the same removal a closing window takes, and the peer slot is added in the same state change.
+     */
+    async convertWindowToPeer(
+      windowId: string,
+      target: { hostId: string; profileId: string },
+    ): Promise<PeerWindowSlot> {
+      const state = getState();
+      const local = (state.windowSlots || []).find((slot) => slot.id === windowId);
+      if (!local) {
+        throw new Error(
+          (state.peerWindows ?? []).some((slot) => slot.id === windowId)
+            ? "This window is already attached to another desktop."
+            : "This window is not a window of a local profile.",
+        );
       }
-      syncInterestedGitWorkspaces();
-      broadcastState();
-      return { id: newId, profileId, bounds: defaultBounds };
+      if (!state.settings.integrations.peers.hosts.some((host) => host.id === target.hostId)) {
+        throw new Error("This desktop is not attached.");
+      }
+      await runtimePeers.peerClient.ensureInstanceId();
+      await removeLocalWindowSlot(windowId, (draft, closing) => {
+        if (!closing) throw new Error("This window is no longer a window of a local profile.");
+        draft.peerWindows = [
+          ...(draft.peerWindows ?? []).filter((slot) => slot.id !== windowId),
+          {
+            id: windowId,
+            hostId: target.hostId,
+            remoteProfileId: target.profileId,
+            bounds: { ...closing.bounds },
+            ...(closing.displayId !== undefined ? { displayId: closing.displayId } : {}),
+            ...(closing.isMaximized !== undefined ? { isMaximized: closing.isMaximized } : {}),
+            lastFocusedAt: closing.lastFocusedAt ?? Date.now(),
+          },
+        ];
+      });
+      const converted = (getState().peerWindows ?? []).find((slot) => slot.id === windowId);
+      if (!converted) throw new Error("The window could not be attached to the other desktop.");
+      return converted;
+    },
+
+    /** The reverse of convertWindowToPeer: same id and geometry, a regular local slot for `profileId`. */
+    async convertWindowToLocal(windowId: string, profileId: string) {
+      const state = getState();
+      const peer = (state.peerWindows ?? []).find((slot) => slot.id === windowId);
+      if (!peer) throw new Error(PEER_WINDOW_NOT_ATTACHED);
+      if (!state.profiles.some((profile) => profile.id === profileId)) {
+        throw new Error(`Profile ${profileId} does not exist.`);
+      }
+      return createLocalWindowSlot(profileId, {
+        keep: { id: windowId, bounds: { ...peer.bounds }, displayId: peer.displayId, isMaximized: peer.isMaximized },
+        alsoMutate: (draft) => {
+          draft.peerWindows = (draft.peerWindows ?? []).filter((slot) => slot.id !== windowId);
+        },
+      });
     },
 
     /** Called by main.ts whenever a desktop window takes focus — see `windowFocusedAt`. */
@@ -14008,48 +14156,8 @@ export async function createRuntime({
       return windowFocusedAt.get(windowId);
     },
 
-    async removeWindowSlot(windowId: string) {
-      windowFocusedAt.delete(windowId);
-      clearGitInterestOwners(windowId);
-      // The window that started the sign-in is closing, so the person who started it is gone. Any
-      // OTHER window closing leaves the attempt alone — the link may be open on a phone right now.
-      if (signInOwnerWindowId !== null && signInOwnerWindowId === windowId) {
-        if (onlineBootstrapState.phase === "downloading" && onlineBootstrapState.purpose === "sign-in") {
-          cancelOnlineBootstrap();
-        }
-        signInOwnerWindowId = null;
-        accountManager.cancelEmailSignIn();
-      }
-      await store.mutate((draft: AppState) => {
-        if (!Array.isArray(draft.windowSlots)) return;
-        const closing = draft.windowSlots.find((s) => s.id === windowId);
-        // Mirror the closing window's view into the profile's legacy/default
-        // fields so reopening the profile later restores where the user left
-        // off — the slot (and its viewer-owned grid) is gone after this.
-        if (closing) {
-          const profile = draft.profiles.find((p) => p.id === closing.profileId);
-          if (profile) {
-            profile.lastActiveWorkspaceId = closing.activeWorkspaceId || undefined;
-            profile.lastActiveSessionId = closing.activeSessionId || undefined;
-            if (closing.workspaceGrid !== undefined) {
-              profile.workspaceGrid = closing.workspaceGrid;
-            }
-          }
-        }
-        draft.windowSlots = draft.windowSlots.filter((s) => s.id !== windowId);
-      });
-      // The window is gone — drop its visible-session contribution so its
-      // panels stop counting as visible (otherwise their alerts stay suppressed),
-      // and its focus so it no longer keeps a terminal focused.
-      dropViewerVisibility(windowId);
-      dropViewerFocus(windowId);
-      syncInterestedGitWorkspaces();
-      // The closing window may have been the only one showing a docker
-      // workspace; without this the poll would keep spawning probes for a view
-      // that no longer exists.
-      ensureDockerPolling();
-      syncInterestedGitWorkspaces();
-      broadcastState();
+    removeWindowSlot(windowId: string) {
+      return removeLocalWindowSlot(windowId);
     },
 
     async updateWindowSlotBounds(
@@ -15457,6 +15565,8 @@ export async function createRuntime({
       const {
         jira: _ignoredJiraSettings,
         registry: _ignoredRegistrySettings,
+        // Paired desktops' public keys and addresses are what the peer managers trust; own methods only.
+        peers: _ignoredPeerSettings,
         ...integrationsToSave
       } = settings.integrations || {};
       const previousConfig = getState().settings.remoteAccess;
@@ -16637,6 +16747,7 @@ export async function createRuntime({
     },
     async stop() {
       log.info("runtime shutting down");
+      runtimePeers.dispose();
       unsubscribeSystemResume?.();
       automationScheduler.stop();
       automationRunner?.dispose();
@@ -16776,6 +16887,54 @@ export async function createRuntime({
     credentialsList: () => runtimeCredentials.list(),
     credentialsRemove: (ref: string) => runtimeCredentials.remove(ref),
     credentialsRemoveOrphans: () => runtimeCredentials.removeOrphans(),
+    // Attaching profiles between desktops (host side). Desktop IPC only; the remote server gets `peerHost` for its
+    // own listener and registers no route for any of the rest.
+    peerHost: runtimePeers.peerHost,
+    getPeerHostState: () => runtimePeers.getHostState(),
+    setPeerHosting: (input: PeerHostingSettings) => runtimePeers.setHosting(input),
+    approvePeerPairing: (input: { pairingId: string; code: string }) => runtimePeers.approvePairing(input),
+    rejectPeerPairing: (pairingId: string) => runtimePeers.rejectPairing(pairingId),
+    removePeerDevice: (deviceId: string) => runtimePeers.removeDevice(deviceId),
+    peerHello: () => runtimePeers.hello(),
+    peerAttention: () => runtimePeers.attention(),
+    peerListDirectories: (requested: string) => runtimePeers.listDirectories(requested),
+    getPeerHostAttention: () => runtimePeers.getPeerHostAttention(),
+    setPeerListenerInfo: (info: PeerListenerInfo) => runtimePeers.setListenerInfo(info),
+    // Attaching profiles between desktops (device side). Desktop IPC only: no remote route reaches any of these, and
+    // the window-bound ones resolve the host from the window's binding, never from the caller's request.
+    listPeerHosts: () => runtimePeers.listHosts(),
+    refreshPeerHost: (hostId: string, options?: { force?: boolean }) => runtimePeers.refreshHost(hostId, options),
+    startPeerPairing: (target: { address: string; port: number }) => runtimePeers.startPairing(target),
+    cancelPeerPairing: (attemptId: string) => runtimePeers.cancelPairing(attemptId),
+    removePeerHost: (hostId: string) => runtimePeers.removeHost(hostId),
+    updatePeerHostAddress: (target: { hostId: string; address: string; port: number }) =>
+      runtimePeers.updateHostAddress(target),
+    getWindowBackend: (windowId: string) => runtimePeers.getWindowBackend(windowId),
+    isPeerWindow: (windowId: string) => runtimePeers.isPeerWindow(windowId),
+    getLocalProfilesOverview: () => runtimePeers.getLocalProfilesOverview(),
+    createPeerWindowSlot: (input: { hostId: string; profileId: string; cloneFromWindowId?: string }) =>
+      runtimePeers.createPeerWindowSlot(input),
+    requirePeerHostOnline: (hostId: string) => runtimePeers.requireHostOnline(hostId),
+    retargetPeerWindow: (windowId: string, target: { hostId: string; profileId: string }) =>
+      runtimePeers.retargetPeerWindow(windowId, target),
+    async setPeerWindowFontSize(size: number): Promise<void> {
+      await runtimePeers.setTerminalFontSize(size);
+      broadcastState();
+    },
+    removePeerWindowSlot: (windowId: string) => runtimePeers.removePeerWindowSlot(windowId),
+    updatePeerWindowSlotBounds: (
+      windowId: string,
+      bounds: { x: number; y: number; width: number; height: number },
+      displayId?: number,
+    ) => runtimePeers.updatePeerWindowSlotBounds(windowId, bounds, displayId),
+    setPeerWindowProfile: (windowId: string, profileId: string) =>
+      runtimePeers.setPeerWindowProfile(windowId, profileId),
+    peerWindowRequest: (
+      windowId: string,
+      request: { method: string; pathname: string; headers?: Record<string, string>; body?: string },
+    ) => runtimePeers.peerWindowRequest(windowId, request),
+    peerWindowOpenSocket: (windowId: string, query: Record<string, string>) =>
+      runtimePeers.peerWindowOpenSocket(windowId, query),
 
     listRemoteUrls() {
       return remoteInfo?.urls || [];

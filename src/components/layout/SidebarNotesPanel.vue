@@ -684,6 +684,13 @@ watch(
   { immediate: true },
 );
 
+watch(
+  [() => props.profileId, () => appStore.payload?.sidebarNotesRevisions?.[props.profileId] ?? 0],
+  ([profileId, revision], [previousProfileId, previousRevision]) => {
+    if (profileId === previousProfileId && revision !== previousRevision && props.host) void reload();
+  },
+);
+
 function fetchNotes(scope: SidebarNotesScope) {
   const api = getApi();
   if (!api?.listSidebarNotes) throw new Error("Notes are unavailable.");

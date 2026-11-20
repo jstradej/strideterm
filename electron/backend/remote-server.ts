@@ -23,6 +23,13 @@ import { brotliCompressSync, gzipSync } from "node:zlib";
 import { WebSocketServer } from "ws";
 import * as fm from "./file-manager.js";
 import * as attachments from "./attachments.js";
+import * as attachmentTransfer from "./attachment-transfer.js";
+import {
+  attachmentReadSchema,
+  attachmentTransferSchema,
+  attachmentUploadBeginSchema,
+  attachmentUploadChunkSchema,
+} from "../shared/attachment-upload.js";
 import { AttachmentPolicyError } from "./attachment-file-policy.js";
 import { deriveSessionKey, openEnvelope, publicKeyFromRaw, sealEnvelope } from "./mobile/mobile-crypto.js";
 import { decodeCanonicalPublicKey } from "./mobile/mobile-crypto.js";
@@ -150,6 +157,8 @@ import {
   RELAY_MOBILE_SESSION_IDLE_TTL_MS,
 } from "./mobile/mobile-relay-protocol.js";
 import { parseRemoteViewerId, remoteViewerId } from "./viewer-id.js";
+import { PEER_SESSION_HEADER, createPeerFrontDoor, type PeerOriginHost } from "./peer-origin.js";
+import type { PeerAttentionSummary, PeerDirectoryListing, PeerHello } from "../shared/peers.js";
 import { ClientRequestError } from "./shared/client-request-error.js";
 import { isFileChangedOnDiskError } from "../shared/file-conflict.js";
 import { JiraRequestError, withinJiraCallBudget } from "./jira/jira-manager.js";
@@ -821,7 +830,9 @@ interface MobileSessionRecord {
   expiresAt: number | null;
   /** Idle deadline, moved forward by meaningful activity only. */
   idleExpiresAt: number | null;
-  origin?: "token" | "ticket" | "mobile" | "token-client";
+  origin?: "token" | "ticket" | "mobile" | "token-client" | "peer";
+  /** The paired desktop a `peer` session belongs to; null for every other kind. */
+  peerDeviceId?: string;
   remoteAddress?: string;
   idleTtlMs?: number;
   /** Latest authenticated foreground heartbeat observed from this session's native-host UI. */
@@ -980,6 +991,16 @@ function sanitizeIntegrationsMobileFromRemote(settings: Record<string, unknown>)
   return [];
 }
 
+/** Paired-desktop device keys, host addresses and the instance id are nobody else's business. */
+function sanitizeIntegrationsPeersFromRemote(settings: Record<string, unknown>): string[] {
+  const integrations = settings.integrations as Record<string, unknown> | undefined;
+  if (integrations && typeof integrations === "object" && "peers" in integrations) {
+    delete integrations.peers;
+    return ["integrations.peers"];
+  }
+  return [];
+}
+
 /** Jira credentials/settings stay desktop-only; profile-scoped Jira read routes are registered separately below. */
 function sanitizeJiraFromRemote(settings: Record<string, unknown>): string[] {
   const integrations = settings.integrations as Record<string, unknown> | undefined;
@@ -1033,6 +1054,7 @@ export function sanitizeSettingsFromRemote(settings: Record<string, unknown>): s
     }
   }
   removed.push(...sanitizeIntegrationsMobileFromRemote(settings));
+  removed.push(...sanitizeIntegrationsPeersFromRemote(settings));
   removed.push(...sanitizeJiraFromRemote(settings));
   removed.push(...sanitizeRegistryFromRemote(settings));
   return removed;
@@ -1108,14 +1130,16 @@ function stripStateSecrets(state: Record<string, unknown>, opts: StripSecretsOpt
   const settings = appState?.settings as Record<string, unknown> | undefined;
   const integrations = settings?.integrations as Record<string, unknown> | undefined;
   const withoutMobile =
-    integrations && Object.hasOwn(integrations, "mobile")
+    integrations && (Object.hasOwn(integrations, "mobile") || Object.hasOwn(integrations, "peers"))
       ? {
           ...state,
           appState: {
             ...appState,
             settings: {
               ...settings,
-              integrations: Object.fromEntries(Object.entries(integrations).filter(([key]) => key !== "mobile")),
+              integrations: Object.fromEntries(
+                Object.entries(integrations).filter(([key]) => key !== "mobile" && key !== "peers"),
+              ),
             },
           },
         }
@@ -2350,6 +2374,22 @@ function resolveAttachmentRoot(runtime: Runtime, workspaceId: string, profileId:
   return cwd;
 }
 
+const ATTACHMENT_TRANSFER_ROUTES: Record<
+  string,
+  (route: string, root: string, body: Record<string, unknown>, owner: string) => Promise<unknown>
+> = {
+  "/api/attachment/upload/begin": (route, root, body, owner) =>
+    attachmentTransfer.begin(root, validateIpc(attachmentUploadBeginSchema, body, route), owner),
+  "/api/attachment/upload/chunk": (route, root, body, owner) =>
+    attachmentTransfer.chunk(root, validateIpc(attachmentUploadChunkSchema, body, route), owner),
+  "/api/attachment/upload/finish": (route, root, body, owner) =>
+    attachmentTransfer.finish(root, validateIpc(attachmentTransferSchema, body, route), owner),
+  "/api/attachment/upload/cancel": (route, root, body, owner) =>
+    attachmentTransfer.cancel(root, validateIpc(attachmentTransferSchema, body, route), owner),
+  "/api/attachment/read": (route, root, body) =>
+    attachmentTransfer.read(root, validateIpc(attachmentReadSchema, body, route)),
+};
+
 function targetBelongsToCaller(
   runtime: Runtime,
   targetId: string,
@@ -2920,6 +2960,7 @@ export async function startRemoteServer({
   wsHeartbeatIntervalMs = WS_HEARTBEAT_INTERVAL_MS,
   wsHeartbeatMaxMissed = WS_HEARTBEAT_MAX_MISSED,
   loopbackOrigin,
+  peerOrigin,
 }: {
   runtime: Runtime;
   staticRoot: string;
@@ -3012,10 +3053,33 @@ export async function startRemoteServer({
      */
     publicOrigin: string;
   };
+  /**
+   * Starts this same server as the listener for PAIRED DESKTOPS (attaching profiles over the LAN).
+   * Like `loopbackOrigin` it is not the user's remote access: it starts regardless of
+   * `remoteAccess.enabled`, its master token is a fresh random nobody is given, and it publishes
+   * nothing (only its own registry is added). Unlike it, it is meant to be reachable from the LAN.
+   *
+   * The connection is TLS-PSK and the TLS identity is the ONLY credential: a bearer token, a cookie
+   * or a ticket has no effect here, and there are no static files. A paired device is served as an
+   * ordinary remote client (session `peer:<deviceId>:<clientId>`, never a mobile one) minus
+   * `peer-session-route-policy.ts`. Mutually exclusive with `loopbackOrigin`.
+   */
+  peerOrigin?: {
+    /** Bind address; "0.0.0.0" and "::" are fine. */
+    host: string;
+    /** 0 lets the OS pick. */
+    port: number;
+    peerHost: PeerOriginHost;
+    hello(): PeerHello;
+    listDirectories(path: string): Promise<PeerDirectoryListing>;
+    attention(): PeerAttentionSummary;
+  };
 }): Promise<{
   close: () => Promise<void>;
-  /** Present only for a `loopbackOrigin` server: the address it actually bound. */
+  /** Present for a `loopbackOrigin` or `peerOrigin` server: the address it actually bound. */
   address?: { host: string; port: number };
+  /** Present only for a `peerOrigin` server: ends a removed device's sessions, sockets and connections. */
+  revokePeerDevice?: (deviceId: string) => void;
   _debugRouting?: () => { congested: boolean; hasCloseTimer: boolean }[];
   _debugCongestionTerminates?: () => number;
   _debugTelemetry?: () => ReturnType<ReturnType<typeof createRemoteTelemetry>["snapshot"]>;
@@ -3031,24 +3095,38 @@ export async function startRemoteServer({
   // A loopback-origin server is the relay's internal origin, not the user's remote access: it never
   // consults `remoteAccess.enabled`, never uses the master token, and never reports URLs.
   const isLoopbackOrigin = loopbackOrigin !== undefined;
+  const isPeerOrigin = peerOrigin !== undefined;
+  if (isLoopbackOrigin && isPeerOrigin) {
+    throw new Error("loopbackOrigin and peerOrigin are mutually exclusive");
+  }
+  // Either one is a second listener next to the user's own remote access, not that access itself.
+  const isAuxiliaryOrigin = isLoopbackOrigin || isPeerOrigin;
   if (isLoopbackOrigin && loopbackOrigin.host !== "127.0.0.1" && loopbackOrigin.host !== "::1") {
     throw new Error(`loopbackOrigin.host must be 127.0.0.1 or ::1 (got ${loopbackOrigin.host})`);
   }
-  const host = isLoopbackOrigin ? loopbackOrigin.host : resolveRemoteBindHost(configured);
+  const host = isLoopbackOrigin
+    ? loopbackOrigin.host
+    : isPeerOrigin
+      ? peerOrigin.host
+      : resolveRemoteBindHost(configured);
   // The configured port goes through the resolver, not straight off the settings object:
   // `STRIDETERM_REMOTE_PORT` has to be able to move a build that already HAS a settings file,
   // which is the only situation anybody sets it in (a dev build beside a production install,
   // both wanting 43123). A loopbackOrigin port is an explicit internal argument and is left
   // alone — overriding that would move the relay's own origin, which nobody asked for.
-  const port = isLoopbackOrigin ? loopbackOrigin.port : resolveRemoteAccessPort(configured.port);
+  const port = isLoopbackOrigin
+    ? loopbackOrigin.port
+    : isPeerOrigin
+      ? peerOrigin.port
+      : resolveRemoteAccessPort(configured.port);
   // A loopback-origin server has no usable master token: this value is never logged, never listed
   // and never handed to anyone, so the `?token=`/`Authorization: Bearer` path simply has no key.
-  const token = isLoopbackOrigin ? randomBytes(32).toString("base64url") : configured.token;
-  if (!isLoopbackOrigin && (!configured.enabled || configured.paused)) {
+  const token = isAuxiliaryOrigin ? randomBytes(32).toString("base64url") : configured.token;
+  if (!isAuxiliaryOrigin && (!configured.enabled || configured.paused)) {
     runtime.setRemoteInfo({ enabled: false, urls: [], port, host });
     return { close: async () => {} };
   }
-  if (!isLoopbackOrigin && !token) {
+  if (!isAuxiliaryOrigin && !token) {
     // The runtime adopts the token from the credential store at startup, so this is not expected.
     // Never start a server whose bearer secret is empty: treat remote access as disabled instead.
     log.error("remote access has no token; the remote server is not started");
@@ -3056,7 +3134,9 @@ export async function startRemoteServer({
     return { close: async () => {} };
   }
 
-  const audit = createAuditLogger(isLoopbackOrigin ? "relay-origin-api-audit" : "remote-api-audit");
+  const audit = createAuditLogger(
+    isLoopbackOrigin ? "relay-origin-api-audit" : isPeerOrigin ? "peer-origin-api-audit" : "remote-api-audit",
+  );
   const authFailureWindowMs = 5 * 60_000;
   const authFailureBlockMs = 15 * 60_000;
   const authFailureEntries = new Map<
@@ -3184,7 +3264,7 @@ export async function startRemoteServer({
   // client. A relay viewer whose registry the runtime cannot see is a viewer whose workspace switch
   // fails and whose profile guard silently does not apply.
   let releaseRegistry: () => void = () => {};
-  if (isLoopbackOrigin) {
+  if (isAuxiliaryOrigin) {
     releaseRegistry = runtime.addRemoteClientRegistry?.(registry) ?? releaseRegistry;
   } else {
     runtime.setRemoteClientRegistry?.(registry);
@@ -3233,7 +3313,16 @@ export async function startRemoteServer({
     return typeof presented === "string" && tokensEqual(presented, loopbackOrigin?.guardToken || "");
   }
 
+  /** The session a peer request was admitted under; set by the TLS front door, never by the client. */
+  function peerSessionFromHeaders(headers: IncomingMessage["headers"]): string {
+    if (!isPeerOrigin) return "";
+    const value = headers[PEER_SESSION_HEADER];
+    return typeof value === "string" && /^peer:[A-Za-z0-9_-]{8,64}:[A-Za-z0-9_-]{8,80}$/.test(value) ? value : "";
+  }
+
   function isAuthorized(requestUrl: string, headers: IncomingMessage["headers"]): boolean {
+    // The TLS identity is the only credential on a peer origin: no token, cookie or ticket counts.
+    if (isPeerOrigin) return peerSessionFromHeaders(headers) !== "";
     // Master token (URL `?token=` or `Authorization: Bearer …`) — used
     // by the renderer's fetch path and by external callers like the
     // mobile inbox / agent tooling.
@@ -3317,7 +3406,7 @@ export async function startRemoteServer({
     return Math.min(idle, absolute) * 60_000;
   }
 
-  if (!isLoopbackOrigin)
+  if (!isAuxiliaryOrigin)
     runtime.setRemoteBrowserSessionController?.({
       list: () => {
         const now = Date.now();
@@ -3379,6 +3468,7 @@ export async function startRemoteServer({
    * or shutdown that changed the set.
    */
   function publishMobileSessions(stopping = false): void {
+    if (isPeerOrigin) return;
     try {
       const sessions = stopping
         ? []
@@ -3563,10 +3653,15 @@ export async function startRemoteServer({
     registry.remove(sessionId);
     runtime.sshFileCloseViewer?.(remoteViewerId(sessionId));
     if (record?.deviceId) publishMobileSessions();
-    audit.info(record?.origin === "token" || record?.origin === "ticket" ? "session ended" : "mobile session ended", {
-      sessionRef: remoteSessionRef(sessionId),
-      reason,
-    });
+    audit.info(
+      record?.origin === "token" || record?.origin === "ticket" || record?.origin === "peer"
+        ? "session ended"
+        : "mobile session ended",
+      {
+        sessionRef: remoteSessionRef(sessionId),
+        reason,
+      },
+    );
   }
 
   /**
@@ -3624,6 +3719,30 @@ export async function startRemoteServer({
 
   function sessionIdForRequest(requestUrl: string, headers: IncomingMessage["headers"]): string {
     const url = new URL(requestUrl, "http://localhost");
+    if (isPeerOrigin) {
+      const peerSessionId = peerSessionFromHeaders(headers);
+      if (!peerSessionId) return "";
+      const existing = activeSessions.get(peerSessionId);
+      const client = registry.getOrCreate(
+        peerSessionId,
+        (runtime.getPayload() as Record<string, unknown>).appState,
+        url.searchParams.get("profileId") || "",
+      );
+      const now = Date.now();
+      activeSessions.set(peerSessionId, {
+        sessionId: peerSessionId,
+        deviceId: null,
+        pairId: null,
+        peerDeviceId: peerSessionId.split(":")[1],
+        profileId: client.profileId,
+        createdAt: existing?.createdAt ?? now,
+        lastSeenAt: now,
+        expiresAt: null,
+        idleExpiresAt: null,
+        origin: "peer",
+      });
+      return peerSessionId;
+    }
     const cookieSessionId = getSessionFromRequest(headers);
     if (cookieSessionId && !cookieSessionId.startsWith("token-client:") && activeSessions.has(cookieSessionId)) {
       // Same check as `isAuthorized`, because this function is reached on paths that did not go
@@ -4317,9 +4436,22 @@ export async function startRemoteServer({
       }),
   };
 
-  const server = http.createServer((request, response) => {
-    void handleHttpRequest(request, response);
-  });
+  const peerFront = isPeerOrigin
+    ? createPeerFrontDoor({
+        peerHost: peerOrigin.peerHost,
+        hello: () => peerOrigin.hello(),
+        listDirectories: (requested) => peerOrigin.listDirectories(requested),
+        attention: () => peerOrigin.attention(),
+        clientIdOf: getClientIdFromRequest,
+        serve: handleHttpRequest,
+        upgrade: handleWebSocketUpgradeRequest,
+      })
+    : null;
+  const server: http.Server =
+    peerFront?.server ??
+    http.createServer((request, response) => {
+      void handleHttpRequest(request, response);
+    });
 
   // http.createServer's listener type is (req, res) => void — Node itself
   // never awaits it, so an async listener passed directly is a floating
@@ -4554,7 +4686,8 @@ export async function startRemoteServer({
         // without `remote-core-v2` falls back to it. Only the profile scoping in
         // buildRemoteCore keeps another profile's state off the phone.
         const apiIsMobile = Boolean(apiSessionId && activeSessions.get(apiSessionId)?.deviceId);
-        const httpProtocol = apiIsMobile ? REMOTE_STATE_PROTOCOL : requestProtocol(requestUrl, request.headers);
+        const apiForcesCore = apiIsMobile || isPeerOrigin;
+        const httpProtocol = apiForcesCore ? REMOTE_STATE_PROTOCOL : requestProtocol(requestUrl, request.headers);
         // Response contract for a v2 client (see adaptRemoteResponse):
         //  - A route whose renderer handler ADOPTS the response (bootstrap,
         //    navigation: save / activate / reorder / settings / create-worktree /
@@ -4572,7 +4705,7 @@ export async function startRemoteServer({
         (response as ResponseWithCtx).__remoteCtx = {
           protocol: httpProtocol,
           capabilities: selectCapabilities(
-            apiIsMobile ? [] : requestCapabilities(requestUrl, request.headers),
+            apiForcesCore ? [] : requestCapabilities(requestUrl, request.headers),
             httpProtocol,
           ),
           coreRevision,
@@ -4587,8 +4720,8 @@ export async function startRemoteServer({
           ifNoneMatch: Array.isArray(request.headers["if-none-match"])
             ? request.headers["if-none-match"][0]
             : request.headers["if-none-match"],
-          stripShareUrls: isLoopbackOrigin || apiIsMobile,
-          noStore: isLoopbackOrigin || apiIsMobile,
+          stripShareUrls: isAuxiliaryOrigin || apiIsMobile,
+          noStore: isAuxiliaryOrigin || apiIsMobile,
         };
 
         if (request.method === "POST" && url.pathname === "/api/mobile/attachments") {
@@ -4638,7 +4771,14 @@ export async function startRemoteServer({
             const workspaceId = typeof body.workspaceId === "string" ? body.workspaceId : "";
             const root = resolveAttachmentRoot(runtime, workspaceId, profileId);
             if (url.pathname === "/api/attachment/list") {
-              json(response, 200, await attachments.listWithUsage(root));
+              json(
+                response,
+                200,
+                await attachments.listWithUsage(
+                  root,
+                  session?.deviceId ? attachments.PHONE_LIMITS : attachments.DESKTOP_LIMITS,
+                ),
+              );
             } else {
               const transferId = typeof body.transferId === "string" ? body.transferId : "";
               const name = typeof body.name === "string" ? body.name : "";
@@ -4665,6 +4805,35 @@ export async function startRemoteServer({
             json(response, refusal.status, { error: refusal.error, reason: refusal.reason });
             return;
           }
+        }
+
+        // Upload and read for desktop-class callers. After the mobile gate on purpose: a phone has its own sealed
+        // path with its own limits, and these routes would hand it the desktop ones.
+        const attachmentTransferRoute =
+          request.method === "POST" ? ATTACHMENT_TRANSFER_ROUTES[url.pathname] : undefined;
+        if (attachmentTransferRoute) {
+          const session = apiSessionId ? activeSessions.get(apiSessionId) : undefined;
+          if (!apiSessionId || !session) {
+            json(response, 400, {
+              error:
+                "Attachment transfer requires a bound session — include the strideterm cookie or X-Strideterm-Client-Id header.",
+            });
+            return;
+          }
+          if (session.deviceId) {
+            json(response, 403, { error: "Attachment transfer is not available to a mobile session" });
+            return;
+          }
+          try {
+            const profileId = session.profileId || registry.get(apiSessionId)?.profileId || "";
+            const body = await readRequestBody(request);
+            const workspaceId = typeof body.workspaceId === "string" ? body.workspaceId : "";
+            const root = resolveAttachmentRoot(runtime, workspaceId, profileId);
+            json(response, 200, await attachmentTransferRoute(url.pathname, root, body, remoteViewerId(apiSessionId)));
+          } catch (error) {
+            json(response, 400, { error: (error as Error).message || "Attachment request refused" });
+          }
+          return;
         }
 
         const detailRoute = request.method === "GET" ? DETAIL_ROUTES[url.pathname] : undefined;
@@ -4955,7 +5124,16 @@ export async function startRemoteServer({
       }
     }
   }
-  const unregisterMobileRemoteSessionRevoker = runtime.addMobileRemoteSessionRevoker?.(revokeMobileSessionsForDevice);
+  const unregisterMobileRemoteSessionRevoker = isPeerOrigin
+    ? undefined
+    : runtime.addMobileRemoteSessionRevoker?.(revokeMobileSessionsForDevice);
+
+  function revokePeerDevice(deviceId: string): void {
+    for (const [sessionId, record] of [...activeSessions]) {
+      if (record.peerDeviceId === deviceId) endMobileSession(sessionId, "revoked");
+    }
+    peerFront?.destroyDeviceConnections(deviceId);
+  }
 
   // Minimal in-memory rate limiter scoped to the mobile ticket-bootstrap
   // route only (no general rate-limiting middleware exists elsewhere in this
@@ -5476,7 +5654,7 @@ export async function startRemoteServer({
         deliverCore: true, // a catch-up frame IS a core push, not a mutation ack
         sessionId: wsSessionId || "",
         registry,
-        stripShareUrls: isLoopbackOrigin || Boolean(wsSessionId && activeSessions.get(wsSessionId)?.deviceId),
+        stripShareUrls: isAuxiliaryOrigin || Boolean(wsSessionId && activeSessions.get(wsSessionId)?.deviceId),
       });
       sendStateFrame(socket, JSON.stringify({ type: "state:updated", payload }));
     } catch (err) {
@@ -5864,7 +6042,7 @@ export async function startRemoteServer({
           deliverCore: true, // a WS state:updated frame IS the authoritative core push
           sessionId: sessionId || "",
           registry,
-          stripShareUrls: isLoopbackOrigin || Boolean(sessionId && activeSessions.get(sessionId)?.deviceId),
+          stripShareUrls: isAuxiliaryOrigin || Boolean(sessionId && activeSessions.get(sessionId)?.deviceId),
         });
         sendStateFrame(socket, JSON.stringify({ type: "state:updated", payload: adapted }));
         // Only protocol-2 sockets fetch details; a legacy socket carries the full
@@ -6009,18 +6187,20 @@ export async function startRemoteServer({
     ),
   ];
 
-  server.on("upgrade", (request, socket, head) => {
-    try {
-      handleWebSocketUpgradeRequest(request, socket, head);
-    } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      log.error("WebSocket upgrade failed", {
-        error: { name: error.name, message: error.message, stack: error.stack },
-        remoteAddress: request.socket?.remoteAddress,
-      });
-      socket.destroy();
-    }
-  });
+  if (!isPeerOrigin) {
+    server.on("upgrade", (request, socket, head) => {
+      try {
+        handleWebSocketUpgradeRequest(request, socket, head);
+      } catch (err) {
+        const error = err instanceof Error ? err : new Error(String(err));
+        log.error("WebSocket upgrade failed", {
+          error: { name: error.name, message: error.message, stack: error.stack },
+          remoteAddress: request.socket?.remoteAddress,
+        });
+        socket.destroy();
+      }
+    });
+  }
 
   function handleWebSocketUpgradeRequest(
     request: IncomingMessage,
@@ -6126,14 +6306,15 @@ export async function startRemoteServer({
       const wsSessionId = sessionIdForRequest(request.url || "/", request.headers);
       if (wsSessionId) socketIdentitySession.set(ws, wsSessionId);
       const wsIsMobile = Boolean(wsSessionId && activeSessions.get(wsSessionId)?.deviceId);
-      const wsAdvertisedProtocol = wsIsMobile
+      const wsForcesCore = wsIsMobile || isPeerOrigin;
+      const wsAdvertisedProtocol = wsForcesCore
         ? REMOTE_STATE_PROTOCOL
         : requestProtocol(request.url || "/", request.headers);
       socketProtocol.set(ws, wsAdvertisedProtocol);
       // Negotiate + record capabilities (?caps=). The intersection with what the
       // server supports selects the response contract and is echoed to the client.
       const wsCapabilities = selectCapabilities(
-        wsIsMobile ? [] : requestCapabilities(request.url || "/", request.headers),
+        wsForcesCore ? [] : requestCapabilities(request.url || "/", request.headers),
         wsAdvertisedProtocol,
       );
       socketCapabilities.set(ws, wsCapabilities);
@@ -6617,17 +6798,21 @@ export async function startRemoteServer({
     clearInterval(stallSweep);
     clearInterval(telemetryLog);
     clearInterval(mobileSessionSweep);
-    if (!isLoopbackOrigin) runtime.setRemoteBrowserSessionController?.(null);
-    if (!isLoopbackOrigin) runtime.clearRemoteBrowserTickets?.();
+    if (!isAuxiliaryOrigin) runtime.setRemoteBrowserSessionController?.(null);
+    if (!isAuxiliaryOrigin) runtime.clearRemoteBrowserTickets?.();
     audit.close();
     unsubscribe.forEach((dispose) => dispose());
     wss.close();
     server.close();
-    if (!isLoopbackOrigin) {
+    if (isPeerOrigin) {
+      registry.stopCleanupSweep();
+      releaseRegistry();
+    }
+    if (!isAuxiliaryOrigin) {
       runtime.setRemoteInfo({ enabled: false, urls: [], port, host, error: listenResult.error!.message });
       return { close: async () => {} };
     }
-    // A relay origin that cannot bind is a failure the relay manager has to see, not a silent
+    // A relay or peer origin that cannot bind is a failure its manager has to see, not a silent
     // no-op: without it the connector would attach to the relay and then answer nothing.
     throw listenResult.error!;
   }
@@ -6638,6 +6823,8 @@ export async function startRemoteServer({
     // Deliberately no URL and no token in this line: the relay origin's address is not something a
     // human ever types, and its token is a credential.
     log.info("relay internal origin ready", { host, port: boundPort });
+  } else if (isPeerOrigin) {
+    log.info("peer origin ready", { host, port: boundPort });
   } else {
     runtime.setRemoteInfo({
       enabled: true,
@@ -6653,14 +6840,15 @@ export async function startRemoteServer({
 
   return {
     address: { host, port: boundPort },
+    ...(isPeerOrigin ? { revokePeerDevice } : {}),
     async close() {
       unregisterMobileRemoteSessionRevoker?.();
       clearInterval(heartbeat);
       clearInterval(stallSweep);
       clearInterval(telemetryLog);
       clearInterval(mobileSessionSweep);
-      if (!isLoopbackOrigin) runtime.setRemoteBrowserSessionController?.(null);
-      if (!isLoopbackOrigin) runtime.clearRemoteBrowserTickets?.();
+      if (!isAuxiliaryOrigin) runtime.setRemoteBrowserSessionController?.(null);
+      if (!isAuxiliaryOrigin) runtime.clearRemoteBrowserTickets?.();
       if (telemetry.hasActivity()) log.debug("remote state delivery telemetry (final)", telemetry.snapshot());
       registry.stopCleanupSweep();
       releaseRegistry();
@@ -6686,7 +6874,7 @@ export async function startRemoteServer({
       // again. This was observed for real: turning the relay off left `close()` pending on one
       // pooled connection, so it could never be turned back on.
       server.closeIdleConnections?.();
-      if (isLoopbackOrigin) server.closeAllConnections?.();
+      if (isAuxiliaryOrigin) server.closeAllConnections?.();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
     // Test-only: snapshot each live socket's congestion + close-timer state so

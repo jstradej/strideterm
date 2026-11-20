@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeEach, vi } from "vitest";
+import { describe, expect, test, beforeEach, afterEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { nextTick } from "vue";
@@ -7,6 +7,7 @@ import { apiKey } from "../../types/keys.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { useAppStore } from "../../stores/app.js";
 import { BADGE_ICONS } from "../../lib/badge-icons.js";
+import { setWindowBackend } from "../../window-backend.js";
 
 beforeEach(() => {
   setActivePinia(createPinia());
@@ -935,6 +936,67 @@ describe("WorkspaceDialog", () => {
       const notifications = useNotificationStore();
       expect(notifications.sessions).toHaveLength(1);
       expect(notifications.sessions[0].events[0].title).toBe("Failed to open picker");
+    });
+  });
+
+  describe("browseCwd in a window attached to another desktop", () => {
+    afterEach(() => setWindowBackend({ kind: "local" }));
+
+    function attach() {
+      setWindowBackend({
+        kind: "peer",
+        hostId: "host-1",
+        hostLabel: "Office",
+        remoteProfileId: "default",
+        clientId: "c1",
+        terminalFontSize: 13,
+      } as never);
+    }
+
+    test("Browse opens the host browser, fills the field and says where the folder is", async () => {
+      attach();
+      const app = useAppStore();
+      const open = vi.spyOn(app, "openSubDialog").mockImplementation((name, props) => {
+        expect(name).toBe("HostFolderBrowser");
+        expect(props).toMatchObject({ hostLabel: "Office", initialPath: "/tmp/project" });
+        (props as { onSelect: (path: string) => void }).onSelect("/srv/picked");
+      });
+      const back = vi.spyOn(app, "backDialog").mockImplementation(() => {});
+      const wrapper = mountDialog({ workspace: buildTaskDraft() }, { listHostDirectories: vi.fn() });
+
+      expect(wrapper.get('[data-testid="cwd-host-hint"]').text()).toContain("Office");
+      await wrapper.get('button[type="button"].input-with-action__btn').trigger("click");
+      await flushPromises();
+
+      expect(open).toHaveBeenCalledTimes(1);
+      expect(back).toHaveBeenCalledTimes(1);
+      expect((wrapper.get('input[name="cwd"]').element as HTMLInputElement).value).toBe("/srv/picked");
+    });
+
+    test("cancelling the host browser leaves the field alone", async () => {
+      attach();
+      const app = useAppStore();
+      vi.spyOn(app, "openSubDialog").mockImplementation((_name, props) =>
+        (props as { onCancel: () => void }).onCancel(),
+      );
+      vi.spyOn(app, "backDialog").mockImplementation(() => {});
+      const wrapper = mountDialog({ workspace: buildTaskDraft() }, { listHostDirectories: vi.fn() });
+      await wrapper.get('button[type="button"].input-with-action__btn').trigger("click");
+      await flushPromises();
+      expect((wrapper.get('input[name="cwd"]').element as HTMLInputElement).value).toBe("/tmp/project");
+    });
+
+    test("without the listing method there is no Browse button and no hint", () => {
+      attach();
+      const wrapper = mountDialog({ workspace: buildTaskDraft() }, {});
+      expect(wrapper.find("button.input-with-action__btn").exists()).toBe(false);
+      expect(wrapper.find('[data-testid="cwd-host-hint"]').exists()).toBe(false);
+    });
+
+    test("a local window shows no host hint", () => {
+      const wrapper = mountDialog({ workspace: buildTaskDraft() }, { browseDirectory: vi.fn() });
+      expect(wrapper.find("button.input-with-action__btn").exists()).toBe(true);
+      expect(wrapper.find('[data-testid="cwd-host-hint"]').exists()).toBe(false);
     });
   });
 

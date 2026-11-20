@@ -59,6 +59,13 @@ export const MOBILE_DENIED_ROUTES: ReadonlySet<string> = new Set([
   "/api/file/copy",
   // Writes the desktop's disk, like the file writes above; upload (read from the profile's roots) stays available.
   "/api/ssh-file/download",
+  // A phone uploads through its own sealed path (/api/mobile/attachments) with the phone limits; these carry the
+  // desktop ones, and read would return attachment bytes the phone has no other way to fetch.
+  "/api/attachment/upload/begin",
+  "/api/attachment/upload/chunk",
+  "/api/attachment/upload/finish",
+  "/api/attachment/upload/cancel",
+  "/api/attachment/read",
 ]);
 
 /** Route families that are never available. */

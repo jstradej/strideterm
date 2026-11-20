@@ -10,6 +10,8 @@ The desktop is the main app and owns the running work. You can connect a browser
 network or a public address to view and control the same workspaces. The browser is a window into the
 desktop, not a separate copy of your projects.
 
+A second computer running strIDEterm can attach the profiles of the first over the local network and show them in its own windows; see [Attaching profiles of another computer](attach-profiles.md).
+
 The optional [mobile companion app](https://strideterm.com/mobile/) connects through a managed relay.
 Relay sessions are end-to-end encrypted between the phone and desktop. Other remote connection
 methods do not have this end-to-end encryption.

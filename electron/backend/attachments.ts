@@ -2,15 +2,49 @@ import crypto from "node:crypto";
 import path from "node:path";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
+import { createReadStream, constants as fsConstants } from "node:fs";
 import { lstat, mkdir, open, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { ATTACHMENT_READ_MAX_BYTES } from "../shared/attachment-upload.js";
 import { validateAttachmentName, validateAttachmentContent, AttachmentPolicyError } from "./attachment-file-policy.js";
 
 export const CHUNK_SIZE = 512 * 1024;
 export const MAX_SIZE = 25 * 1024 * 1024;
-export const MAX_TOTAL_SIZE = 256 * 1024 * 1024;
+export const MAX_TOTAL_SIZE = 4 * 1024 * 1024 * 1024;
 export const MAX_FILE_COUNT = 100;
 export const MAX_CONCURRENT_TRANSFERS = 4;
 const DAILY_RECEIVED_LIMIT = 128 * 1024 * 1024;
+const DESKTOP_MAX_SIZE = 1024 * 1024 * 1024;
+
+export interface AttachmentLimits {
+  kind: "phone" | "desktop";
+  maxFileBytes: number;
+  /** null: no daily limit, and uploads of this kind never touch the daily ledger. */
+  dailyReceivedBytes: number | null;
+  storageBytes: number;
+  fileCount: number;
+  activeTransfers: number;
+}
+export const PHONE_LIMITS: AttachmentLimits = {
+  kind: "phone",
+  maxFileBytes: MAX_SIZE,
+  dailyReceivedBytes: DAILY_RECEIVED_LIMIT,
+  storageBytes: MAX_TOTAL_SIZE,
+  fileCount: MAX_FILE_COUNT,
+  activeTransfers: MAX_CONCURRENT_TRANSFERS,
+};
+export const DESKTOP_LIMITS: AttachmentLimits = {
+  kind: "desktop",
+  maxFileBytes: DESKTOP_MAX_SIZE,
+  dailyReceivedBytes: null,
+  storageBytes: MAX_TOTAL_SIZE,
+  fileCount: MAX_FILE_COUNT,
+  activeTransfers: MAX_CONCURRENT_TRANSFERS,
+};
+export function formatLimitBytes(bytes: number) {
+  const gib = 1024 * 1024 * 1024;
+  const mib = 1024 * 1024;
+  return bytes >= gib && bytes % gib === 0 ? `${bytes / gib} GiB` : `${Math.round((bytes / mib) * 10) / 10} MiB`;
+}
 const run = promisify(execFile);
 const locks = new Map<string, Promise<void>>();
 const excludeLocks = new Map<string, Promise<void>>();
@@ -27,6 +61,8 @@ type State = {
   sha256: string;
   offset: number;
   owner?: string;
+  /** Absent for a phone transfer. A desktop transfer carries no hash until finish computes it. */
+  kind?: "desktop";
   idempotencyKey?: string;
   createdAt: number;
   updatedAt: number;
@@ -55,7 +91,9 @@ async function recordReceivedUnlocked(root: string, bytes: number) {
   const day = new Date().toISOString().slice(0, 10);
   if (usage.day !== day) usage = { day, received: 0 };
   if (!Number.isSafeInteger(bytes) || usage.received + bytes > DAILY_RECEIVED_LIMIT)
-    throw new Error("Attachment daily receive quota exceeded");
+    throw new Error(
+      `Attachment daily receive quota exceeded (limit ${formatLimitBytes(DAILY_RECEIVED_LIMIT)} per workspace per day)`,
+    );
   usage.received += bytes;
   await atomic(file, JSON.stringify(usage));
 }
@@ -63,7 +101,7 @@ async function recordReceived(root: string, bytes: number) {
   const base = await workspace(root);
   return locked(`${base}\u0000received-ledger`, () => recordReceivedUnlocked(base, bytes));
 }
-export async function usage(root: string) {
+export async function usage(root: string, limits: AttachmentLimits = PHONE_LIMITS) {
   const base = await workspace(root);
   let received = 0;
   const day = new Date().toISOString().slice(0, 10);
@@ -83,10 +121,11 @@ export async function usage(root: string) {
   return {
     day,
     received,
-    dailyLimit: DAILY_RECEIVED_LIMIT,
-    storageLimit: MAX_TOTAL_SIZE,
-    fileLimit: MAX_FILE_COUNT,
-    activeLimit: MAX_CONCURRENT_TRANSFERS,
+    dailyLimit: limits.dailyReceivedBytes,
+    storageLimit: limits.storageBytes,
+    fileLimit: limits.fileCount,
+    activeLimit: limits.activeTransfers,
+    ...(limits.kind === "desktop" ? { fileSizeLimit: limits.maxFileBytes } : {}),
   };
 }
 function validId(value: string) {
@@ -246,6 +285,18 @@ async function ensureGitExclude(root: string) {
     if (excludeLocks.get(lockKey) === chain) excludeLocks.delete(lockKey);
   }
 }
+async function hashFile(file: string) {
+  const hash = crypto.createHash("sha256");
+  let length = 0;
+  for await (const part of createReadStream(file)) {
+    hash.update(part as Buffer);
+    length += (part as Buffer).length;
+  }
+  return { digest: hash.digest("hex"), length };
+}
+function integrityFailure() {
+  return new Error("Attachment integrity check failed");
+}
 async function load(root: string, transferId: string) {
   const id = validId(transferId);
   const file = await safePath(root, `.strideterm/.attachment-transfers/${id}/state.json`, false);
@@ -255,14 +306,11 @@ async function load(root: string, transferId: string) {
     const target = await safePath(root, `.strideterm/attachments/${id}/${state.name}`);
     try {
       const info = await stat(target);
-      if (
-        info.isFile() &&
-        info.size === state.size &&
-        crypto
-          .createHash("sha256")
-          .update(await readFile(target))
-          .digest("hex") === state.sha256
-      ) {
+      // A renamed target only exists after finish verified and validated it, so a desktop transfer, which has no
+      // hash of its own, adopts the one computed here.
+      const adopted = info.isFile() && info.size === state.size ? (await hashFile(target)).digest : "";
+      if (adopted && (adopted === state.sha256 || (state.kind === "desktop" && !state.sha256))) {
+        state.sha256 = adopted;
         state.done = {
           transferId: id,
           path: `.strideterm/attachments/${id}/${state.name}`,
@@ -317,14 +365,16 @@ async function beginUnlocked(
   originalName: string,
   size: number,
   sha256: string,
-  requestOwner?: string,
-  idempotencyKey?: string,
+  requestOwner: string | undefined,
+  idempotencyKey: string | undefined,
+  limits: AttachmentLimits,
 ) {
-  if (!Number.isSafeInteger(size) || size < 0 || size > MAX_SIZE)
-    throw new Error("Attachment exceeds the 25 MiB limit");
-  if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error("Invalid SHA-256");
+  const desktop = limits.kind === "desktop";
+  if (!Number.isSafeInteger(size) || size < 0 || size > limits.maxFileBytes)
+    throw new Error(`Attachment exceeds the ${formatLimitBytes(limits.maxFileBytes)} limit`);
+  if (desktop ? sha256 !== "" : !/^[a-f0-9]{64}$/.test(sha256)) throw new Error("Invalid SHA-256");
   const name = safeName(originalName);
-  validateAttachmentName(name);
+  if (!desktop) validateAttachmentName(name);
   const base = await workspace(root);
   await ensureGitExclude(base);
   const key = idempotencyKey === undefined ? undefined : String(idempotencyKey);
@@ -356,7 +406,13 @@ async function beginUnlocked(
         try {
           const prior = await load(base, entry.name);
           if (prior.idempotencyKey === key) {
-            if (prior.name !== name || prior.size !== size || prior.sha256 !== sha256 || prior.owner !== requestOwner)
+            if (
+              prior.name !== name ||
+              prior.size !== size ||
+              prior.sha256 !== sha256 ||
+              prior.owner !== requestOwner ||
+              (prior.kind === "desktop") !== desktop
+            )
               throw new Error("Idempotency key metadata mismatch");
             return {
               transferId: prior.id,
@@ -370,8 +426,14 @@ async function beginUnlocked(
           throw error;
         }
       }
-  if (files >= MAX_FILE_COUNT || reserved + size > MAX_TOTAL_SIZE) throw new Error("Attachment quota exceeded");
-  if (active >= MAX_CONCURRENT_TRANSFERS) throw new Error("Too many concurrent attachment transfers");
+  if (files >= limits.fileCount)
+    throw new Error(`Attachment quota exceeded: a workspace holds at most ${limits.fileCount} attachments`);
+  if (reserved + size > limits.storageBytes)
+    throw new Error(
+      `Attachment quota exceeded: a workspace holds at most ${formatLimitBytes(limits.storageBytes)} of attachments`,
+    );
+  if (active >= limits.activeTransfers)
+    throw new Error(`Too many concurrent attachment transfers (limit ${limits.activeTransfers})`);
   const transferId = crypto.randomUUID();
   const dir = await safePath(base, `.strideterm/.attachment-transfers/${transferId}`);
   await mkdir(dir, { recursive: true });
@@ -390,6 +452,7 @@ async function beginUnlocked(
       sha256,
       offset: 0,
       owner: requestOwner,
+      ...(desktop ? { kind: "desktop" as const } : {}),
       idempotencyKey: key,
       createdAt: now,
       updatedAt: now,
@@ -404,10 +467,11 @@ export async function begin(
   sha256: string,
   requestOwner?: string,
   idempotencyKey?: string,
+  limits: AttachmentLimits = PHONE_LIMITS,
 ) {
   const base = await workspace(root);
   return locked(`${base}\u0000begin`, () =>
-    beginUnlocked(base, originalName, size, sha256, requestOwner, idempotencyKey),
+    beginUnlocked(base, originalName, size, sha256, requestOwner, idempotencyKey, limits),
   );
 }
 export async function status(root: string, transferId: string, requestOwner?: string) {
@@ -442,14 +506,20 @@ export async function chunk(root: string, transferId: string, offset: number, en
       throw new Error("Invalid attachment chunk offset or size");
     if (offset < state.offset) {
       if (offset + bytes.length > state.offset) throw new Error("Invalid attachment chunk retry range");
-      const existing = (await readFile(payload)).subarray(offset, offset + bytes.length);
+      const existing = Buffer.alloc(bytes.length);
+      const reader = await open(payload, "r");
+      try {
+        await reader.read(existing, 0, bytes.length, offset);
+      } finally {
+        await reader.close();
+      }
       if (existing.equals(bytes)) {
-        await recordReceived(root, bytes.length);
+        if (state.kind !== "desktop") await recordReceived(root, bytes.length);
         return { offset: state.offset };
       }
       throw new Error("Invalid attachment chunk retry");
     }
-    await recordReceived(root, bytes.length);
+    if (state.kind !== "desktop") await recordReceived(root, bytes.length);
     const handle = await open(payload, "r+");
     try {
       const written = await handle.write(bytes, 0, bytes.length, offset);
@@ -474,19 +544,26 @@ export async function finish(root: string, transferId: string, requestOwner?: st
     if (state.done) return state.done;
     if (state.offset !== state.size) throw new Error("Attachment is incomplete");
     const payload = await safePath(root, `.strideterm/.attachment-transfers/${state.id}/payload.part`, false);
-    const bytes = await readFile(payload);
-    if (bytes.length !== state.size || crypto.createHash("sha256").update(bytes).digest("hex") !== state.sha256)
-      throw new Error("Attachment integrity check failed");
-    try {
-      await validateAttachmentContent(state.name, bytes);
-    } catch (error) {
-      if (error instanceof AttachmentPolicyError) {
-        await rm(await safePath(root, `.strideterm/.attachment-transfers/${state.id}`), {
-          recursive: true,
-          force: true,
-        });
+    // A desktop transfer accepts any file type and is only hashed, as a stream; a phone transfer is held whole and inspected.
+    const bytes = state.kind === "desktop" ? undefined : await readFile(payload);
+    const measured = bytes
+      ? { digest: crypto.createHash("sha256").update(bytes).digest("hex"), length: bytes.length }
+      : await hashFile(payload);
+    if (measured.length !== state.size) throw integrityFailure();
+    if (state.kind === "desktop") state.sha256 = measured.digest;
+    else if (measured.digest !== state.sha256) throw integrityFailure();
+    if (bytes) {
+      try {
+        await validateAttachmentContent(state.name, bytes);
+      } catch (error) {
+        if (error instanceof AttachmentPolicyError) {
+          await rm(await safePath(root, `.strideterm/.attachment-transfers/${state.id}`), {
+            recursive: true,
+            force: true,
+          });
+        }
+        throw error;
       }
-      throw error;
     }
     const destination = await safePath(root, `.strideterm/attachments/${state.id}/${state.name}`);
     await mkdir(path.dirname(destination), { recursive: true });
@@ -534,7 +611,47 @@ export async function list(root: string): Promise<AttachmentListResult[]> {
     }
   return result;
 }
-export async function listWithUsage(root: string) {
+export async function record(root: string, transferId: string, requestOwner?: string): Promise<AttachmentListResult> {
+  return locked(validId(transferId), async () => {
+    const state = await load(root, transferId);
+    if (requestOwner !== undefined) owner(state, requestOwner);
+    if (!state.done) throw new Error("Attachment is incomplete");
+    const uploadedAt = state.updatedAt;
+    return Number.isSafeInteger(uploadedAt) && uploadedAt >= 0 ? { ...state.done, uploadedAt } : { ...state.done };
+  });
+}
+export async function read(root: string, transferId: string, fileName: string, offset: number, length: number) {
+  if (
+    !Number.isSafeInteger(offset) ||
+    offset < 0 ||
+    !Number.isSafeInteger(length) ||
+    length < 1 ||
+    length > ATTACHMENT_READ_MAX_BYTES
+  )
+    throw new Error("Invalid attachment read range");
+  return locked(validId(transferId), async () => {
+    let state: State;
+    try {
+      state = await load(root, transferId);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error("Attachment not found", { cause: error });
+      throw error;
+    }
+    if (!state.done || safeName(fileName) !== state.name) throw new Error("Attachment not found");
+    const target = await safePath(root, `.strideterm/attachments/${state.id}/${state.name}`, false);
+    const handle = await open(target, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    try {
+      const info = await handle.stat();
+      if (!info.isFile()) throw new Error("Attachment not found");
+      const buffer = Buffer.alloc(Math.max(0, Math.min(length, info.size - offset)));
+      const { bytesRead } = buffer.length ? await handle.read(buffer, 0, buffer.length, offset) : { bytesRead: 0 };
+      return { bytes: buffer.subarray(0, bytesRead), size: info.size };
+    } finally {
+      await handle.close();
+    }
+  });
+}
+export async function listWithUsage(root: string, limits: AttachmentLimits = PHONE_LIMITS) {
   const attachments = await list(root);
   const base = await workspace(root);
   const activeDir = await safePath(base, ".strideterm/.attachment-transfers");
@@ -560,7 +677,7 @@ export async function listWithUsage(root: string) {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  const current = await usage(base);
+  const current = await usage(base, limits);
   return { attachments, usage: { ...current, storageBytes, fileCount, activeTransfers } };
 }
 export async function remove(root: string, transferId: string, fileName: string, requestOwner?: string) {

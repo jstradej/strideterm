@@ -860,6 +860,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
           throw new Error(msg, { cause: err });
         }
       },
+      onConnect: () => openSubDialog("PeerConnectDialog", { onCancel: backDialog }),
       onOpenWindow: async (profileId: string) => {
         // Desktop only — the dialog hides the button on remote. createWindow
         // always makes a fresh window slot; the same profile may be open in

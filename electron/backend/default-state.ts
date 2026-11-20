@@ -25,6 +25,9 @@ import { normalizeSshTmuxTarget } from "../shared/ssh-tmux.js";
 import { sanitizeJiraPollingState } from "./jira/jira-polling.js";
 import { normalizeSandboxDomains } from "../shared/sandbox.js";
 import { normalizeRegistryConnections } from "./sandbox/registry-connections.js";
+import { defaultPeerSettings } from "../shared/peers.js";
+import { normalizePeerSettings } from "./peers/peer-settings.js";
+import { normalizePeerWindows } from "./peers/peer-windows.js";
 import { JIRA_CONNECTION_HEALTH_STATES } from "../shared/jira-error-codes.js";
 import {
   DEFAULT_JIRA_COMMENT_ATTRIBUTION,
@@ -790,6 +793,7 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
           connections: [],
         },
         registry: { connections: [] },
+        peers: defaultPeerSettings(),
         mobile: {
           enabled: false,
           devices: [],
@@ -862,6 +866,7 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
     scratchpads: [],
     sidebarNotes: [],
     windowSlots: [] as WindowSlot[],
+    peerWindows: [],
     ssh: {
       hosts: [],
       keys: [],
@@ -936,8 +941,28 @@ const DEFAULT_BOUNDS = { x: 100, y: 100, width: 1280, height: 800 };
  */
 export const MIGRATION_WINDOW_SLOT_ID = "window-main";
 
+function createMigrationWindowSlot(
+  profiles: Profile[],
+  activeProfileId: string,
+  activeWorkspaceId: string,
+  workspaces: WorkspaceState[],
+): WindowSlot {
+  const profile = profiles.find((p) => p.id === activeProfileId);
+  return {
+    id: MIGRATION_WINDOW_SLOT_ID,
+    profileId: activeProfileId,
+    activeWorkspaceId,
+    activeSessionId: "",
+    workspaceGrid: profile?.workspaceGrid
+      ? normalizeWorkspaceGrid(profile.workspaceGrid, workspaces, activeProfileId)
+      : null,
+    bounds: { ...DEFAULT_BOUNDS },
+    lastFocusedAt: Date.now(),
+  };
+}
+
 /**
- * Normalise windowSlots:
+ * Normalise windowSlots (empty when there are none; normalizeState decides whether the migration slot is needed):
  * - Each slot is an independent viewer — duplicate profileIds are valid
  *   (multiple windows showing the same profile).
  * - Per-slot validation: profileId must exist; activeWorkspaceId must belong
@@ -952,27 +977,9 @@ function normalizeWindowSlots(
   rawSlots: any, // eslint-disable-line @typescript-eslint/no-explicit-any
   profiles: Profile[],
   activeProfileId: string,
-  activeWorkspaceId: string,
   workspaces: WorkspaceState[],
 ): WindowSlot[] {
-  const migrationSlot = (): WindowSlot => {
-    const profile = profiles.find((p) => p.id === activeProfileId);
-    return {
-      id: MIGRATION_WINDOW_SLOT_ID,
-      profileId: activeProfileId,
-      activeWorkspaceId,
-      activeSessionId: "",
-      workspaceGrid: profile?.workspaceGrid
-        ? normalizeWorkspaceGrid(profile.workspaceGrid, workspaces, activeProfileId)
-        : null,
-      bounds: { ...DEFAULT_BOUNDS },
-      lastFocusedAt: Date.now(),
-    };
-  };
-  if (!Array.isArray(rawSlots) || rawSlots.length === 0) {
-    // Migration: create one slot from the current global state
-    return [migrationSlot()];
-  }
+  if (!Array.isArray(rawSlots) || rawSlots.length === 0) return [];
 
   const result: WindowSlot[] = [];
   for (const raw of rawSlots as Record<string, unknown>[]) {
@@ -1028,10 +1035,6 @@ function normalizeWindowSlots(
       isMaximized: Boolean(raw.isMaximized),
       lastFocusedAt: typeof raw.lastFocusedAt === "number" ? raw.lastFocusedAt : Date.now(),
     });
-  }
-
-  if (result.length === 0) {
-    return [migrationSlot()];
   }
 
   return result;
@@ -1850,6 +1853,7 @@ export function normalizeState(
       registry: {
         connections: normalizeRegistryConnections(rawIntegrations.registry?.connections),
       },
+      peers: normalizePeerSettings(rawIntegrations.peers),
       mobile: {
         ...defaults.settings.integrations.mobile,
         ...rawMobile,
@@ -2184,13 +2188,23 @@ export function normalizeState(
   const activeProfile = profilesWithGrid.find((p) => p.id === activeProfileId);
   const workspaceGrid = activeProfile?.workspaceGrid ?? null;
 
-  const windowSlots = normalizeWindowSlots(
+  let windowSlots = normalizeWindowSlots(
     (rawState as Record<string, unknown>).windowSlots,
     profilesWithGrid,
     activeProfileId,
-    activeWorkspaceId,
     workspaces,
   );
+
+  const peerWindows = normalizePeerWindows((rawState as Record<string, unknown>).peerWindows, {
+    hostIds: new Set(normalizedSettings.integrations.peers.hosts.map((host: { id: string }) => host.id)),
+    windowSlotIds: new Set(windowSlots.map((slot) => slot.id)),
+    defaultBounds: DEFAULT_BOUNDS,
+  });
+
+  // A state whose every window is attached to another desktop is valid; only a state with no window at all gets one.
+  if (windowSlots.length === 0 && peerWindows.length === 0) {
+    windowSlots = [createMigrationWindowSlot(profilesWithGrid, activeProfileId, activeWorkspaceId, workspaces)];
+  }
 
   // Drop activeProfileId from rawState so it is not re-serialized into the persisted file.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -2236,6 +2250,7 @@ export function normalizeState(
       : [],
     workspaceGrid,
     windowSlots,
+    peerWindows,
   };
 
   return {

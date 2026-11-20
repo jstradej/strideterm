@@ -8,7 +8,17 @@
       @click="$emit('click')"
     >
       {{ profile.name }}
-      <span v-if="isRemote" class="profile-bar__remote-badge" title="This profile is open from a remote browser client"
+      <span
+        v-if="peerHostLabel"
+        class="profile-bar__remote-badge profile-bar__host-badge"
+        data-testid="profile-bar-host-badge"
+        :title="`This window shows a profile of ${peerHostLabel}. Commands run on that computer.`"
+        >{{ peerHostLabel }}</span
+      >
+      <span
+        v-else-if="isRemote"
+        class="profile-bar__remote-badge"
+        title="This profile is open from a remote browser client"
         >Remote</span
       >
       <span
@@ -71,12 +81,14 @@
 import { computed } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
+import { windowBackend } from "../../window-backend.js";
 
 const store = useAppStore();
 const notifications = useNotificationStore();
 const profile = computed(() => store.activeProfile);
 const otherProfileCount = computed(() => store.otherProfileAttentionCount);
 const isRemote = computed(() => store.getApi()?.isRemote ?? false);
+const peerHostLabel = computed(() => (windowBackend.value.kind === "peer" ? windowBackend.value.hostLabel : ""));
 const query = computed({
   get: () => store.workspaceSearchQuery,
   set: (value: string) => {
@@ -112,6 +124,17 @@ defineEmits<{
   border-radius: 3px;
   vertical-align: middle;
   opacity: 0.7;
+}
+.profile-bar__host-badge {
+  max-width: 180px;
+  height: 16px;
+  font-size: 10px;
+  color: #fff;
+  background: var(--profile-color, var(--accent));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 1;
 }
 .profile-bar__other-attention {
   display: inline-flex;

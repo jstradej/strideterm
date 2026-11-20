@@ -153,6 +153,11 @@ function matchesProfile(value: AnyRecord, profileId: string | null): boolean {
   return String(value?.profileId || "default") === profileId;
 }
 
+function scopeSidebarNotesRevisions(value: unknown, profileId: string): Record<string, number> {
+  const revision = (value as Record<string, unknown> | undefined)?.[profileId];
+  return typeof revision === "number" ? { [profileId]: revision } : {};
+}
+
 /**
  * Reduce an Azure/GitHub provider snapshot to the badge + notification surface,
  * scoped to the client's profile. Drops the heavy `inbox` lists (fetched via the
@@ -591,6 +596,8 @@ export function slimRemoteSettings(settings: AnyRecord | undefined): AnyRecord {
   const telegram = integrations.telegram as AnyRecord | undefined;
   const remoteIntegrations = { ...integrations };
   delete remoteIntegrations.mobile;
+  // Paired-desktop device keys, host addresses and the instance id are nobody else's business.
+  delete remoteIntegrations.peers;
   // Registry connections name internal package hosts; they are desktop-managed and never leave it.
   if (Object.hasOwn(remoteIntegrations, "registry")) remoteIntegrations.registry = { connections: [] };
   // Jira connection/auth management is desktop-only until dedicated profile-scoped remote read routes exist.
@@ -779,6 +786,7 @@ export function buildRemoteCore(
         matchesProfile(run, scope),
       ) as RemoteStateV2["reviewGit"]["lastRuns"],
     },
+    sidebarNotesRevisions: scopeSidebarNotesRevisions(composed.sidebarNotesRevisions, scope),
     sshFileTransfers: {
       running: ((composed.sshFileTransfers?.running || []) as AnyRecord[]).filter((run) =>
         matchesProfile(run, scope),
@@ -858,6 +866,7 @@ export const STATE_PAYLOAD_KEYS: ReadonlySet<string> = new Set([
   "azureClosedPrCleanup",
   "operations",
   "reviewGit",
+  "sidebarNotesRevisions",
   "sshFileTransfers",
   "reviewTrust",
   "reviewPrActions",

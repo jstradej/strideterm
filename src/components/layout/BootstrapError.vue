@@ -1,5 +1,6 @@
 <template>
-  <section class="boot-shell">
+  <PeerHostFailure v-if="peerFailure" :failure="peerFailure" />
+  <section v-else class="boot-shell">
     <div class="boot-card">
       <p class="eyebrow">{{ isRemote ? "Remote Access" : "Startup Error" }}</p>
       <h1>strIDEterm could not load the workspace</h1>
@@ -34,13 +35,21 @@
 import { ref, inject } from "vue";
 import { apiKey } from "../../types/keys.js";
 import type { Transport } from "../../transport.js";
+import PeerHostFailure from "../peers/PeerHostFailure.vue";
+import type { PeerFailure } from "../../peer-link.js";
+import { windowBackend } from "../../window-backend.js";
 
-defineProps<{
+const props = defineProps<{
   message: string;
 }>();
 
 const api = inject<Transport>(apiKey);
 const isRemote = api?.isRemote || false;
+// A window attached to another computer has no token to paste and no page to reload.
+const peerFailure: PeerFailure | null =
+  windowBackend.value.kind === "peer"
+    ? { reason: "offline", title: `${windowBackend.value.hostLabel} could not be loaded`, message: props.message }
+    : null;
 const tokenInput = ref(api?.getRemoteToken?.() || "");
 
 function handleTokenSubmit(): void {

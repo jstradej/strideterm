@@ -13,6 +13,10 @@ import { buildTerminalTextSnapshot } from "./terminal-text-snapshot.js";
 import { isLightAppTheme } from "./app-theme.js";
 import { LIGHT_TERMINAL_THEME, terminalMinimumContrastRatio } from "./terminal-light-theme.js";
 import { openPathInWorkspaceFilesTab } from "./open-in-files-tab.js";
+import { isWebClient } from "../lib/client-kind.js";
+import { canUploadToTerminal, pastedImageName, uploadFilesToTerminal } from "../lib/terminal-attachment-upload.js";
+import type { Transport } from "../transport.js";
+import { DEFAULT_TERMINAL_FONT_SIZE, readTerminalFontSize, writeTerminalFontSize } from "../lib/terminal-font-size.js";
 import type { TerminalTextSnapshot, TerminalTextSnapshotOptions } from "./terminal-text-snapshot.js";
 
 // ---------------------------------------------------------------------------
@@ -176,6 +180,7 @@ interface TerminalControllerApi {
     path: string;
   }>;
   isRemote?: boolean;
+  hasNativeShell?: boolean;
   startupFlags?: {
     disableWebgl?: boolean;
     windowId?: string;
@@ -381,12 +386,12 @@ export function createTerminalController({
   // Font size: per-transport zoom (Ctrl+wheel, Ctrl+0, pinch, Settings)
   // ---------------------------------------------------------------------------
 
-  const FONT_SIZE_KEY = api.isRemote ? "terminalFontSizeRemote" : "terminalFontSizeLocal";
+  // A phone or browser has an on-screen keyboard and touch; a desktop window attached to another computer does not.
+  const touchClient = isWebClient(api);
 
   function readFontSize(): number {
     const s = getPayload()?.appState?.settings as Record<string, unknown> | undefined;
-    const raw = s?.[FONT_SIZE_KEY];
-    return typeof raw === "number" ? raw : 13;
+    return readTerminalFontSize(s, api.isRemote) ?? DEFAULT_TERMINAL_FONT_SIZE;
   }
 
   function setTerminalFontSize(view: TerminalView, size: number): void {
@@ -410,7 +415,11 @@ export function createTerminalController({
     if (applyFontSizeTimer !== null) clearTimeout(applyFontSizeTimer);
     applyFontSizeTimer = setTimeout(() => {
       applyFontSizeTimer = null;
-      api.updateSettings?.({ [FONT_SIZE_KEY]: clamped });
+      writeTerminalFontSize(clamped, api.isRemote, (settings) => api.updateSettings?.(settings)).catch(
+        (err: unknown) => {
+          api.logRenderer?.("warn", "[terminal] could not save the font size", { error: (err as Error)?.message });
+        },
+      );
     }, 200);
   }
 
@@ -565,8 +574,9 @@ export function createTerminalController({
     // The remote/mobile UI has a real composer input. Focusing xterm would
     // focus its hidden textarea and make Android/iOS raise the keyboard while
     // a workspace is merely opening or switching. On remote clients only a
-    // direct tap in MobileInputBar's editor is allowed to summon it.
-    if (api.isRemote) return;
+    // direct tap in MobileInputBar's editor is allowed to summon it. A desktop window attached to another
+    // computer has a physical keyboard and focuses like any desktop window.
+    if (touchClient) return;
     if (getOverlay()) return;
     const activeSessionId = getActiveSessionId();
     if (!activeSessionId) return;
@@ -1316,6 +1326,29 @@ export function createTerminalController({
         { capture: true },
       );
     }
+    // A window whose backend is another machine: the pasted image goes to that machine's attachments and its path there
+    // is typed, because a path on this computer means nothing to the terminal.
+    if (canUploadToTerminal(api)) {
+      mount.addEventListener(
+        "paste",
+        (event) => {
+          if (!isImagePasteEnabled()) return;
+          const images = Array.from(event.clipboardData?.files ?? []).filter((file) => file.type.startsWith("image/"));
+          if (!images.length) return;
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          const named = images.map((file) => new File([file], pastedImageName(file), { type: file.type }));
+          void uploadFilesToTerminal({
+            api: api as unknown as Partial<Transport>,
+            sessionId,
+            files: named,
+            payload: getPayload(),
+            write: (text) => api.writeTerminal(sessionId, text),
+          }).catch((err: unknown) => void reportImagePasteError(userFacingMessage(err, "Unknown error")));
+        },
+        { capture: true },
+      );
+    }
     // Ctrl/Cmd + wheel → zoom in/out; no modifier → let xterm scroll normally.
     //
     // We register a capture-phase listener on the mount in addition to xterm's
@@ -1517,7 +1550,7 @@ export function createTerminalController({
     // textarea cannot take the focus.
     function withoutTextareaFocus(run: () => void): void {
       const textarea = term.textarea;
-      if (!api.isRemote || !textarea || document.activeElement === textarea) {
+      if (!touchClient || !textarea || document.activeElement === textarea) {
         run();
         return;
       }
@@ -1765,7 +1798,7 @@ export function createTerminalController({
           if (dx < 10 && dy < 10) {
             // Desktop touchscreen tap: focus the terminal for direct typing —
             // first, so the click lands in an already focused terminal.
-            if (!api.isRemote && touch.mode === "scroll") term.focus();
+            if (!touchClient && touch.mode === "scroll") term.focus();
             clickAtTap(lift.clientX, lift.clientY);
           }
         }

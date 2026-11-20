@@ -49,6 +49,13 @@ import type {
 } from "../electron/shared/sandbox.js";
 import type { RegistrySavePayload, RegistryTestResult } from "../electron/shared/registry.js";
 import type { CredentialOverview, CredentialRemoveResult } from "../electron/shared/credential-overview.js";
+import type {
+  PeerApproveResult,
+  PeerDirectoryListing,
+  PeerHostState,
+  PeerHostingSettings,
+  WindowBackend,
+} from "../electron/shared/peers.js";
 import {
   OPERATION_FINISHED_CHANNEL,
   operationFinishedSchema,
@@ -113,11 +120,25 @@ import { rlog } from "./lib/renderer-log.js";
 import type { JiraSmartFilterId } from "../electron/shared/jira-smart-filters.js";
 import {
   normalizeAttachmentList,
+  parseAttachmentRead,
+  parseAttachmentRecord,
+  parseOk,
+  parseUploadBegin,
+  parseUploadChunk,
   type AttachmentDeleteRequest,
   type AttachmentDeleteResult,
   type AttachmentWorkspaceRequest,
   type AttachmentRecord,
 } from "./attachments.js";
+import type {
+  AttachmentReadRequest,
+  AttachmentReadResult,
+  AttachmentTransferRequest,
+  AttachmentUploadBeginRequest,
+  AttachmentUploadBeginResult,
+  AttachmentUploadChunkRequest,
+  AttachmentUploadChunkResult,
+} from "../electron/shared/attachment-upload.js";
 
 /**
  * The state shape a client actually receives: the full desktop `StatePayload`
@@ -334,7 +355,19 @@ interface EventHub {
  *  not present in the remote transport and are therefore excluded.
  */
 export interface Transport extends Partial<
-  Omit<StridetermAPI, "onConnectionState" | "getState" | "onStateUpdated" | "attachmentList" | "attachmentDelete">
+  Omit<
+    StridetermAPI,
+    | "onConnectionState"
+    | "getState"
+    | "onStateUpdated"
+    | "attachmentList"
+    | "attachmentDelete"
+    | "attachmentUploadBegin"
+    | "attachmentUploadChunk"
+    | "attachmentUploadFinish"
+    | "attachmentUploadCancel"
+    | "attachmentRead"
+  >
 > {
   listJiraConnections?: () => Promise<unknown>;
   nudgeJiraPolling?: () => Promise<{ nudged: number }>;
@@ -440,6 +473,19 @@ export interface Transport extends Partial<
   listCredentials?: () => Promise<CredentialOverview>;
   removeCredential?: (ref: string) => Promise<CredentialRemoveResult>;
   removeOrphanCredentials?: () => Promise<CredentialRemoveResult>;
+  /**
+   * Sub-folders of one folder on the desktop this window is attached to (empty path = its home folder). Only a window
+   * attached to another desktop has it; the web remote and the Electron transport leave it undefined.
+   */
+  listHostDirectories?: (payload: { path: string }) => Promise<PeerDirectoryListing>;
+  /** Attaching profiles between desktops, host side. Desktop only: no remote counterpart. */
+  getPeerHostState?: () => Promise<PeerHostState>;
+  setPeerHosting?: (input: PeerHostingSettings) => Promise<PeerHostState>;
+  approvePeerPairing?: (input: { pairingId: string; code: string }) => Promise<PeerApproveResult>;
+  rejectPeerPairing?: (pairingId: string) => Promise<boolean>;
+  removePeerDevice?: (deviceId: string) => Promise<boolean>;
+  onPeersUpdated?: (handler: Handler<unknown>) => () => void;
+  onPeerPairingProgress?: (handler: Handler<unknown>) => () => void;
   onSandboxDenied?: (handler: Handler<SandboxDeniedRequest>) => () => void;
   onSandboxDeniedSettled?: (handler: Handler<SandboxDeniedRequest>) => () => void;
   buildJiraOwnIssuesQuery?: (payload: {
@@ -538,7 +584,12 @@ export interface Transport extends Partial<
     connectionId: string;
     issueId: string;
   }) => Promise<JiraAttachmentUploadResultDto>;
+  /** The backend is on another machine and restricts this client. */
   isRemote: boolean;
+  /** This renderer runs inside the desktop app's own window, whichever machine the backend is on. */
+  hasNativeShell: boolean;
+  /** Closes the live socket and stops reconnecting until the page is reloaded. Remote transports only. */
+  suspendConnection?: () => void;
   /** Runtime platform and SSH administration capabilities. */
   sshCapabilitiesGet?: (payload?: { refresh?: boolean }) => Promise<SshRuntimeCapabilities>;
   sshTestStart?: (payload: { profileId: string; draft: Record<string, unknown> }) => Promise<{
@@ -634,6 +685,11 @@ export interface Transport extends Partial<
   onRemoteAuthFailures?: (handler: Handler<RemoteAuthFailures>) => void;
   attachmentList?: (payload: AttachmentWorkspaceRequest) => Promise<AttachmentRecord[]>;
   attachmentDelete?: (payload: AttachmentDeleteRequest) => Promise<AttachmentDeleteResult>;
+  attachmentUploadBegin?: (payload: AttachmentUploadBeginRequest) => Promise<AttachmentUploadBeginResult>;
+  attachmentUploadChunk?: (payload: AttachmentUploadChunkRequest) => Promise<AttachmentUploadChunkResult>;
+  attachmentUploadFinish?: (payload: AttachmentTransferRequest) => Promise<AttachmentRecord>;
+  attachmentUploadCancel?: (payload: AttachmentTransferRequest) => Promise<{ ok: true }>;
+  attachmentRead?: (payload: AttachmentReadRequest) => Promise<AttachmentReadResult>;
 }
 
 /** The transport as the stores call it: every method treated as present. A
@@ -737,10 +793,16 @@ function bindElectronTransport(): Transport {
   const electronAttachments = window.strideterm as unknown as {
     attachmentList: (payload: AttachmentWorkspaceRequest) => Promise<unknown>;
     attachmentDelete: (payload: AttachmentDeleteRequest) => Promise<unknown>;
+    attachmentUploadBegin: (payload: AttachmentUploadBeginRequest) => Promise<unknown>;
+    attachmentUploadChunk: (payload: AttachmentUploadChunkRequest) => Promise<unknown>;
+    attachmentUploadFinish: (payload: AttachmentTransferRequest) => Promise<unknown>;
+    attachmentUploadCancel: (payload: AttachmentTransferRequest) => Promise<unknown>;
+    attachmentRead: (payload: AttachmentReadRequest) => Promise<unknown>;
   };
   return {
     ...window.strideterm,
     isRemote: false,
+    hasNativeShell: true,
     listSidebarNotes: window.strideterm.listSidebarNotes
       ? (scope) => window.strideterm.listSidebarNotes({ ...scope })
       : undefined,
@@ -767,6 +829,15 @@ function bindElectronTransport(): Transport {
       }
       return { ok: true };
     },
+    attachmentUploadBegin: async (payload) =>
+      parseUploadBegin(await electronAttachments.attachmentUploadBegin({ ...payload })),
+    attachmentUploadChunk: async (payload) =>
+      parseUploadChunk(await electronAttachments.attachmentUploadChunk({ ...payload })),
+    attachmentUploadFinish: async (payload) =>
+      parseAttachmentRecord(await electronAttachments.attachmentUploadFinish({ ...payload })),
+    attachmentUploadCancel: async (payload) =>
+      parseOk(await electronAttachments.attachmentUploadCancel({ ...payload })),
+    attachmentRead: async (payload) => parseAttachmentRead(await electronAttachments.attachmentRead({ ...payload })),
     onConnectionState: () => {},
     // Performance diagnostics: validate the main-process response at the IPC
     // boundary so a malformed snapshot surfaces as a controlled error instead
@@ -903,18 +974,70 @@ function bindElectronTransport(): Transport {
   };
 }
 
-export function createRemoteTransport(): Transport {
-  const listeners = createEventHub();
+export interface RemoteRequestInit {
+  method: string;
+  headers: Record<string, string>;
+  body?: string;
+  signal?: AbortSignal;
+}
+
+export interface RemoteResponse {
+  status: number;
+  ok: boolean;
+  headers: { get(name: string): string | null };
+  text(): Promise<string>;
+  json(): Promise<unknown>;
+  /** The relay answered with its HTML bootstrap page instead of the API (an expired viewer cookie). */
+  relayBootstrapRedirect?: boolean;
+}
+
+export interface RemoteSocketEventMap {
+  open: unknown;
+  message: { data: unknown };
+  close: { code: number; reason: string };
+  error: unknown;
+}
+
+export interface RemoteSocket {
+  /** WebSocket numbering: 0 connecting, 1 open, 2 closing, 3 closed. */
+  readonly readyState: number;
+  send(data: string): void;
+  close(code?: number, reason?: string): void;
+  addEventListener<K extends keyof RemoteSocketEventMap>(
+    type: K,
+    handler: (event: RemoteSocketEventMap[K]) => void,
+  ): void;
+}
+
+/** Everything `createRemoteTransport` needs from the environment it runs in. */
+export interface RemoteTransportIo {
+  /** Sent as `X-Strideterm-Client-Id` and as the socket's `clientId`. */
+  clientId: string;
+  getToken(): string;
+  setToken(token: string): void;
+  /** `pathname` includes the query string. A rejection is a network failure; a non-2xx status is a response. */
+  request(pathname: string, init: RemoteRequestInit): Promise<RemoteResponse>;
+  /** `params` are the socket's query parameters, in the order they are to appear. */
+  openSocket(params: Record<string, string>): RemoteSocket;
+  reload(): void;
+}
+
+const SOCKET_CONNECTING = 0;
+const SOCKET_OPEN = 1;
+const SOCKET_CLOSING = 2;
+const SOCKET_CLOSED = 3;
+
+export function createWebRemoteIo(): RemoteTransportIo {
   const query = new URLSearchParams(window.location.search);
   let token = query.get("token") || window.sessionStorage.getItem("strideterm-token") || "";
   const clientIdStorageKey = "strideterm-remote-client-id";
-  let remoteClientId = window.sessionStorage.getItem(clientIdStorageKey) || "";
-  if (!remoteClientId) {
-    remoteClientId = createRemoteClientId();
-    window.sessionStorage.setItem(clientIdStorageKey, remoteClientId);
+  let clientId = window.sessionStorage.getItem(clientIdStorageKey) || "";
+  if (!clientId) {
+    clientId = createRemoteClientId();
+    window.sessionStorage.setItem(clientIdStorageKey, clientId);
   }
 
-  function persistToken(nextToken: string): void {
+  function setToken(nextToken: string): void {
     token = String(nextToken || "").trim();
     if (token) {
       window.sessionStorage.setItem("strideterm-token", token);
@@ -929,11 +1052,224 @@ export function createRemoteTransport(): Transport {
   }
 
   if (token) {
-    persistToken(token);
+    setToken(token);
   }
 
-  const mobileHost = (window as unknown as Record<string, unknown>).StridetermHost as
-    { postMessage?: (message: string) => void } | undefined;
+  function isRelayBootstrapRedirect(response: Response): boolean {
+    if (!response.redirected || !response.url) return false;
+    try {
+      const target = new URL(response.url, window.location.href);
+      return target.origin === window.location.origin && target.pathname === "/__relay/bootstrap";
+    } catch {
+      return false;
+    }
+  }
+
+  return {
+    clientId,
+    getToken: () => token,
+    setToken,
+    async request(pathname, init) {
+      // Without a token we fall through to the cookie-based path: the
+      // bootstrap redirect set `strideterm_session=…; HttpOnly` and the
+      // browser attaches it to every same-origin fetch. The server's
+      // `isAuthorized` accepts either, so dropping the Authorization
+      // header is correct here. If both are missing the server will
+      // 401 and the existing error path surfaces it.
+      const headers = token ? { ...init.headers, Authorization: `Bearer ${token}` } : init.headers;
+      const response = await fetch(pathname, { ...init, headers });
+      return {
+        status: response.status,
+        ok: response.ok,
+        headers: response.headers,
+        text: () => response.text(),
+        json: () => response.json() as Promise<unknown>,
+        relayBootstrapRedirect: isRelayBootstrapRedirect(response),
+      };
+    },
+    openSocket(params) {
+      // After the share-URL bootstrap, the token is gone from the URL and a
+      // session cookie has taken over (server: SESSION_COOKIE_NAME). The
+      // browser attaches that cookie to WS upgrade requests automatically,
+      // so dropping the `?token=` segment is enough to keep working without
+      // re-emitting the master token. External callers that still hold the
+      // token (e.g. API clients) keep the old `?token=` form.
+      const wsQuery = new URLSearchParams();
+      if (token) wsQuery.set("token", token);
+      for (const [key, value] of Object.entries(params)) wsQuery.set(key, value);
+      const wsSuffix = wsQuery.toString();
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      return new WebSocket(
+        `${protocol}//${window.location.host}/ws${wsSuffix ? `?${wsSuffix}` : ""}`,
+      ) as unknown as RemoteSocket;
+    },
+    reload: () => window.location.reload(),
+  };
+}
+
+/** The renderer-side view of the IPC the main process exposes for a profile that lives in another instance. */
+export interface PeerBridge {
+  /** Stable per-window id, already in the format the server accepts for X-Strideterm-Client-Id (/^[a-zA-Z0-9_-]{8,80}$/). */
+  clientId: string;
+  /** `pathname` includes the query string. A rejection is a network failure; any HTTP status is a resolved reply. */
+  http(request: {
+    method: string;
+    pathname: string;
+    headers: Record<string, string>;
+    body?: string;
+  }): Promise<{ status: number; headers: Record<string, string>; body: string }>;
+  /** Opens the one logical socket, replacing any earlier one; events of a replaced socket must not be reported. */
+  wsOpen(query: Record<string, string>): void;
+  wsSend(data: string): void;
+  wsClose(code?: number, reason?: string): void;
+  onWsState(
+    handler: (state: { state: "open" } | { state: "closed"; code: number; reason: string }) => void,
+  ): () => void;
+  onWsMessage(handler: (data: string) => void): () => void;
+}
+
+export function createPeerRemoteIo(bridge: PeerBridge): RemoteTransportIo {
+  interface PeerSocket extends RemoteSocket {
+    reportOpen(): void;
+    reportClosed(code: number, reason: string): void;
+    reportMessage(data: string): void;
+  }
+  let current: PeerSocket | null = null;
+  let subscribed = false;
+
+  function createPeerSocket(): PeerSocket {
+    let readyState = SOCKET_CONNECTING;
+    const handlers: { [K in keyof RemoteSocketEventMap]: Array<(event: RemoteSocketEventMap[K]) => void> } = {
+      open: [],
+      message: [],
+      close: [],
+      error: [],
+    };
+    const socket: PeerSocket = {
+      get readyState() {
+        return readyState;
+      },
+      send(data) {
+        if (readyState !== SOCKET_OPEN) throw new Error("WebSocket is not open");
+        bridge.wsSend(data);
+      },
+      close(code, reason) {
+        if (readyState === SOCKET_CLOSING || readyState === SOCKET_CLOSED) return;
+        readyState = SOCKET_CLOSING;
+        if (current === socket) bridge.wsClose(code, reason);
+      },
+      addEventListener(type, handler) {
+        (handlers[type] as Array<typeof handler>).push(handler);
+      },
+      reportOpen() {
+        if (readyState !== SOCKET_CONNECTING) return;
+        readyState = SOCKET_OPEN;
+        handlers.open.forEach((handler) => handler(undefined));
+      },
+      reportClosed(code, reason) {
+        if (readyState === SOCKET_CLOSED) return;
+        readyState = SOCKET_CLOSED;
+        if (current === socket) current = null;
+        handlers.close.forEach((handler) => handler({ code, reason }));
+      },
+      reportMessage(data) {
+        if (readyState !== SOCKET_OPEN && readyState !== SOCKET_CLOSING) return;
+        handlers.message.forEach((handler) => handler({ data }));
+      },
+    };
+    return socket;
+  }
+
+  function subscribe(): void {
+    if (subscribed) return;
+    subscribed = true;
+    bridge.onWsState((state) => {
+      if (state.state === "open") current?.reportOpen();
+      else current?.reportClosed(state.code, state.reason);
+    });
+    bridge.onWsMessage((data) => current?.reportMessage(data));
+  }
+
+  return {
+    clientId: bridge.clientId,
+    getToken: () => "",
+    setToken: () => {},
+    async request(pathname, init) {
+      const { signal } = init;
+      const abortError = () => Object.assign(new Error("The operation was aborted."), { name: "AbortError" });
+      if (signal?.aborted) throw abortError();
+      const pending = bridge.http({
+        method: init.method,
+        pathname,
+        headers: init.headers,
+        ...(init.body !== undefined ? { body: init.body } : {}),
+      });
+      let onAbort: (() => void) | undefined;
+      const aborted = new Promise<never>((_, reject) => {
+        if (!signal) return;
+        onAbort = () => reject(abortError());
+        signal.addEventListener("abort", onAbort, { once: true });
+      });
+      aborted.catch(() => {});
+      let reply: Awaited<typeof pending>;
+      try {
+        reply = await Promise.race([pending, aborted]);
+      } finally {
+        if (onAbort) signal?.removeEventListener("abort", onAbort);
+      }
+      const headers = new Map(Object.entries(reply.headers).map(([name, value]) => [name.toLowerCase(), value]));
+      return {
+        status: reply.status,
+        ok: reply.status >= 200 && reply.status < 300,
+        headers: { get: (name) => headers.get(name.toLowerCase()) ?? null },
+        text: async () => reply.body,
+        json: async () => JSON.parse(reply.body) as unknown,
+      };
+    },
+    openSocket(params) {
+      subscribe();
+      const socket = createPeerSocket();
+      current = socket;
+      bridge.wsOpen(params);
+      return socket;
+    },
+    reload: () => window.location.reload(),
+  };
+}
+
+function parsePeerDirectoryListing(value: unknown): PeerDirectoryListing {
+  const listing = value as Partial<PeerDirectoryListing> | null;
+  if (
+    !listing ||
+    typeof listing.path !== "string" ||
+    (listing.parent !== null && typeof listing.parent !== "string") ||
+    (listing.separator !== "/" && listing.separator !== "\\") ||
+    !Array.isArray(listing.entries) ||
+    !listing.entries.every((entry) => typeof entry?.name === "string") ||
+    !Array.isArray(listing.roots) ||
+    !listing.roots.every((root) => typeof root === "string") ||
+    typeof listing.truncated !== "boolean"
+  ) {
+    throw new Error("The other desktop sent a folder list this version cannot read.");
+  }
+  return listing as PeerDirectoryListing;
+}
+
+export function createRemoteTransport(
+  io: RemoteTransportIo = createWebRemoteIo(),
+  options: { nativeShell?: boolean } = {},
+): Transport {
+  const nativeShell = options.nativeShell === true;
+  const listeners = createEventHub();
+  const remoteClientId = io.clientId;
+
+  function readHost(): { postMessage?: (message: string) => void } | undefined {
+    if (nativeShell) return undefined;
+    return (window as unknown as Record<string, unknown>).StridetermHost as
+      { postMessage?: (message: string) => void } | undefined;
+  }
+
+  const mobileHost = readHost();
 
   type SessionLostReason = "expired" | "revoked" | "superseded" | "unauthorized" | "temporarily-paused" | "unknown";
   let lastPostedConnectionState = "";
@@ -966,6 +1302,40 @@ export function createRemoteTransport(): Transport {
       lastPostedConnectionState = serialized;
       postHost(hostPayload);
     }
+  }
+
+  /**
+   * The same failures as `createRemoteIssue` words them for the web and phone clients, in terms of a window
+   * of the desktop app that shows another computer's profile. Nothing here may tell the person to reload a
+   * page, paste a token or reopen a terminal from an app.
+   */
+  function describePeerIssue({ kind, statusCode, message }: { kind?: string; statusCode: number; message: string }): {
+    message: string;
+    hint: string;
+  } {
+    if (statusCode === 401) {
+      return {
+        message: "The other computer did not accept this window.",
+        hint: "Reconnect the window, or pair this desktop again from Profiles.",
+      };
+    }
+    if (statusCode === 423 && /temporarily paused/i.test(message)) {
+      return { message: "Access to the other computer is temporarily paused.", hint: "" };
+    }
+    if (statusCode === 403) return { message: message || "The other computer refused that.", hint: "" };
+    if ([502, 503, 504, 530].includes(statusCode)) {
+      return { message: "The other computer is temporarily unavailable.", hint: "It should come back on its own." };
+    }
+    if (kind === "ws-closed" || kind === "ws-error") {
+      return { message: "The connection to the other computer was lost.", hint: "" };
+    }
+    if (kind === "network") {
+      return {
+        message: "Cannot reach the other computer right now.",
+        hint: "Check that strIDEterm is running there and that both computers are on the same network.",
+      };
+    }
+    return { message: message || "The connection to the other computer failed.", hint: "" };
   }
 
   interface RemoteIssueOptions {
@@ -1032,7 +1402,9 @@ export function createRemoteTransport(): Transport {
     let message = normalizedMessage;
     let hint = "";
 
-    if (statusCode === 401) {
+    if (nativeShell) {
+      ({ message, hint } = describePeerIssue({ kind, statusCode, message: normalizedMessage }));
+    } else if (statusCode === 401) {
       message = "Remote token is missing or invalid.";
       hint = "Open this terminal again from the strIDEterm app to get a fresh one.";
     } else if (statusCode === 403 && /cannot switch profiles/i.test(normalizedMessage)) {
@@ -1082,7 +1454,6 @@ export function createRemoteTransport(): Transport {
     resources?: string[];
   }
 
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const reconnectBaseDelayMs = 500;
   const reconnectMaxDelayMs = 10_000;
   const webSocketConnectTimeoutMs = 10_000;
@@ -1094,7 +1465,7 @@ export function createRemoteTransport(): Transport {
   const webSocketStableMs = 5_000;
   const maxConsecutiveAuthCloses = 3;
   const pendingWsMessages: WsMessage[] = [];
-  let ws: WebSocket | null = null;
+  let ws: RemoteSocket | null = null;
   let reconnectTimer = 0;
   let webSocketConnectTimer = 0;
   let reconnectAttempt = 0;
@@ -1150,15 +1521,13 @@ export function createRemoteTransport(): Transport {
   function maybeSendStateSync(): void {
     if (!firstSocketNeedsSync || lastCoreRevision < 0) return;
     const current = ws;
-    if (current?.readyState !== WebSocket.OPEN) return;
+    if (current?.readyState !== SOCKET_OPEN) return;
     firstSocketNeedsSync = false;
     current.send(JSON.stringify({ type: "state:sync", rev: lastCoreRevision }));
   }
   function postHost(message: Record<string, unknown>): void {
-    const host = (window as unknown as Record<string, unknown>).StridetermHost as
-      { postMessage?: (message: string) => void } | undefined;
     try {
-      host?.postMessage?.(JSON.stringify(message));
+      readHost()?.postMessage?.(JSON.stringify(message));
     } catch {
       /* The native viewer may have closed. */
     }
@@ -1199,8 +1568,8 @@ export function createRemoteTransport(): Transport {
   /** Why this transport cannot vouch for `request` right now, or null when it can. */
   function terminalReadyRefusal(request: RemoteTerminalReadyRequest): TerminalReadyReason | null {
     if (request.connectionGeneration !== connectionGeneration) return "stale-generation";
-    if (ws?.readyState !== WebSocket.OPEN) {
-      return ws?.readyState === WebSocket.CONNECTING ? "socket-connecting" : "socket-closed";
+    if (ws?.readyState !== SOCKET_OPEN) {
+      return ws?.readyState === SOCKET_CONNECTING ? "socket-connecting" : "socket-closed";
     }
     if (
       !selectedRemoteTarget ||
@@ -1336,38 +1705,31 @@ export function createRemoteTransport(): Transport {
   // correctness never depends on it (a cache miss just refetches in full).
   const etagCache = new Map<string, { etag: string; body: unknown }>();
 
-  function buildWsUrl(): string {
-    // After the share-URL bootstrap, the token is gone from the URL and a
-    // session cookie has taken over (server: SESSION_COOKIE_NAME). The
-    // browser attaches that cookie to WS upgrade requests automatically,
-    // so dropping the `?token=` segment is enough to keep working without
-    // re-emitting the master token. External callers that still hold the
-    // token (e.g. API clients) keep the old `?token=` form.
-    const wsQuery = new URLSearchParams();
-    if (token) wsQuery.set("token", token);
-    wsQuery.set("clientId", remoteClientId);
-    wsQuery.set("sp", String(STATE_PROTOCOL));
-    wsQuery.set("caps", STATE_CAPABILITIES.join(","));
+  function buildWsParams(): Record<string, string> {
+    const params: Record<string, string> = {
+      clientId: remoteClientId,
+      sp: String(STATE_PROTOCOL),
+      caps: STATE_CAPABILITIES.join(","),
+    };
     // Only once we have a bootstrap revision — the first connect omits it so the
     // server holds bootstrap-once (no redundant initial frame) and lets the HTTP
     // /api/state bootstrap deliver the first snapshot.
-    if (lastCoreRevision >= 0) wsQuery.set("rev", String(lastCoreRevision));
-    const wsSuffix = wsQuery.toString();
-    return `${protocol}//${window.location.host}/ws${wsSuffix ? `?${wsSuffix}` : ""}`;
+    if (lastCoreRevision >= 0) params.rev = String(lastCoreRevision);
+    return params;
   }
 
   function flushPendingWsMessages(): void {
     const current = ws;
-    if (!current || current.readyState !== WebSocket.OPEN) {
+    if (!current || current.readyState !== SOCKET_OPEN) {
       return;
     }
-    while (pendingWsMessages.length > 0 && current.readyState === WebSocket.OPEN) {
+    while (pendingWsMessages.length > 0 && current.readyState === SOCKET_OPEN) {
       current.send(JSON.stringify(pendingWsMessages.shift()));
     }
   }
 
   /** The server explicitly ended this session (`closeSessionSockets`/idle expiry send 1008). */
-  function isExplicitAuthClose(event: CloseEvent): boolean {
+  function isExplicitAuthClose(event: RemoteSocketEventMap["close"]): boolean {
     return event.code === 1008;
   }
 
@@ -1386,7 +1748,7 @@ export function createRemoteTransport(): Transport {
   }
 
   /** The upgrade was refused for lack of a session; the relay proxy reports it as a close reason. */
-  function isUnauthorizedClose(event: CloseEvent): boolean {
+  function isUnauthorizedClose(event: RemoteSocketEventMap["close"]): boolean {
     return /unauthori[sz]ed/i.test(event.reason || "");
   }
 
@@ -1434,7 +1796,7 @@ export function createRemoteTransport(): Transport {
     }
   }
 
-  function handleWsMessage(event: MessageEvent, socketGeneration: number): void {
+  function handleWsMessage(event: RemoteSocketEventMap["message"], socketGeneration: number): void {
     let message: { type: string; payload: unknown };
     try {
       message = JSON.parse(event.data as string) as { type: string; payload: unknown };
@@ -1598,10 +1960,10 @@ export function createRemoteTransport(): Transport {
     invalidateTerminalReady("reconnecting");
     connectionGeneration += 1;
     const socketGeneration = connectionGeneration;
-    const nextWs = new WebSocket(buildWsUrl());
+    const nextWs = io.openSocket(buildWsParams());
     ws = nextWs;
     const connectTimeout = window.setTimeout(() => {
-      if (ws !== nextWs || nextWs.readyState !== WebSocket.CONNECTING) return;
+      if (ws !== nextWs || nextWs.readyState !== SOCKET_CONNECTING) return;
       webSocketConnectTimer = 0;
       consecutiveConnectTimeouts += 1;
       const error = createRemoteIssue({ kind: "ws-error", rawMessage: "WebSocket handshake timed out" });
@@ -1668,16 +2030,16 @@ export function createRemoteTransport(): Transport {
       // socket's filtered routing + replays each session. Only after the
       // visibility owner has subscribed at least once, so a fresh connection
       // stays in legacy mode until the app knows what's visible.
-      if (hasSubscribedTerminals && nextWs.readyState === WebSocket.OPEN) {
+      if (hasSubscribedTerminals && nextWs.readyState === SOCKET_OPEN) {
         nextWs.send(JSON.stringify({ type: "terminal:subscribe", sessionIds: lastTerminalSubscription }));
       }
       // Re-declare detail-resource interest so the server re-primes invalidations
       // for this fresh socket (interests are per-socket and dropped on close).
-      if (hasDeclaredInterest && nextWs.readyState === WebSocket.OPEN) {
+      if (hasDeclaredInterest && nextWs.readyState === SOCKET_OPEN) {
         nextWs.send(JSON.stringify({ type: "resource:interest", resources: lastResourceInterest }));
       }
       for (const interest of desiredGitInterests.values()) {
-        if (nextWs.readyState !== WebSocket.OPEN) break;
+        if (nextWs.readyState !== SOCKET_OPEN) break;
         nextWs.send(JSON.stringify({ type: "git:interest", ...interest }));
       }
       sendForegroundPresence(nextWs);
@@ -1686,7 +2048,7 @@ export function createRemoteTransport(): Transport {
       // window that the rev-less first WS URL couldn't advertise.
       //
       // Reconnect resync is SINGLE-PATH: the fresh socket's URL already carries
-      // `?rev=lastCoreRevision` (buildWsUrl, since we've bootstrapped), so the
+      // `?rev=lastCoreRevision` (buildWsParams, since we've bootstrapped), so the
       // server sends exactly one catch-up core when — and only when — its
       // revision differs from ours (newer state, OR a lower revision after a
       // server restart). We deliberately do NOT also `GET /api/state` here: that
@@ -1702,7 +2064,7 @@ export function createRemoteTransport(): Transport {
       handleWsMessage(event, socketGeneration);
     });
 
-    nextWs.addEventListener("close", (event: CloseEvent) => {
+    nextWs.addEventListener("close", (event) => {
       if (ws !== nextWs) return;
       clearConnectTimeout();
       clearStableTimer();
@@ -1766,7 +2128,9 @@ export function createRemoteTransport(): Transport {
   // The bridge is a small object on `window` because that is the surface a WebView host can call
   // (`runJavaScript`). It exposes exactly two verbs and one read; nothing here can send terminal
   // input, request a credential, or reach anything the page could not already reach.
-  const SUSPENDED_MESSAGE = "Paused while the app is in the background.";
+  const SUSPENDED_MESSAGE = nativeShell
+    ? "The connection to the other computer is paused."
+    : "Paused while the app is in the background.";
   /**
    * Two banners, because there are two readers and only one of them has a host behind them.
    *
@@ -1776,7 +2140,9 @@ export function createRemoteTransport(): Transport {
    * promise nobody kept.
    */
   const SESSION_LOST_HOSTED_MESSAGE = "Session ended. Reopening from the app…";
-  const SESSION_LOST_MESSAGE = "Session ended. Reload this page to start a new one.";
+  const SESSION_LOST_MESSAGE = nativeShell
+    ? "The session on the other computer ended."
+    : "Session ended. Reload this page to start a new one.";
   let suspended = false;
   /**
    * Latched the first time the server answers 401, cleared by a resume.
@@ -1818,7 +2184,7 @@ export function createRemoteTransport(): Transport {
     });
   }
 
-  function startWakeProbe(socketToCloseOnFailure?: WebSocket): void {
+  function startWakeProbe(socketToCloseOnFailure?: RemoteSocket): void {
     if (activeWakeProbe || suspended || sessionLost) return;
     const epoch = ++wakeProbeEpoch;
     activeWakeProbe = { epoch, controller: null };
@@ -1884,8 +2250,8 @@ export function createRemoteTransport(): Transport {
   // (a browser tab has no such deadline) and never while suspended, so a backgrounded phone still idles
   // out. The server's absolute deadline is untouched by it.
   const PRESENCE_INTERVAL_MS = 60_000;
-  function sendForegroundPresence(current: WebSocket): void {
-    if (!mobileHost || suspended || sessionLost || current !== ws || current.readyState !== WebSocket.OPEN) return;
+  function sendForegroundPresence(current: RemoteSocket): void {
+    if (!mobileHost || suspended || sessionLost || current !== ws || current.readyState !== SOCKET_OPEN) return;
     if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
     try {
       current.send(JSON.stringify({ type: "client:presence" }));
@@ -1941,7 +2307,7 @@ export function createRemoteTransport(): Transport {
     reconnectAttempt = 0;
     consecutiveAuthCloses = 0;
     consecutiveConnectTimeouts = 0;
-    // The fresh socket's URL carries `?rev=` (see `buildWsUrl`), so the server sends ONE catch-up
+    // The fresh socket's URL carries `?rev=` (see `buildWsParams`), so the server sends ONE catch-up
     // core if state moved while we were away, and the re-sent `terminal:subscribe` produces the
     // desktop's own BOUNDED replay per session — not the whole history. That bound is what keeps a
     // reconnect from undoing the data saving the suspend achieved.
@@ -1985,8 +2351,7 @@ export function createRemoteTransport(): Transport {
     sessionLost = true;
     cancelActiveBrowse?.();
     suspendTransport();
-    const host = (window as unknown as Record<string, unknown>).StridetermHost as
-      { postMessage?: (message: string) => void } | undefined;
+    const host = readHost();
     let hosted = false;
     try {
       if (typeof host?.postMessage === "function") {
@@ -2005,14 +2370,16 @@ export function createRemoteTransport(): Transport {
       reconnecting: false,
       message:
         reason === "temporarily-paused"
-          ? "Remote UI access is temporarily paused on the desktop."
+          ? nativeShell
+            ? "Access to the other computer is temporarily paused."
+            : "Remote UI access is temporarily paused on the desktop."
           : hosted
             ? SESSION_LOST_HOSTED_MESSAGE
             : SESSION_LOST_MESSAGE,
     });
   }
 
-  if (typeof window !== "undefined") {
+  if (!nativeShell && typeof window !== "undefined") {
     (window as unknown as Record<string, unknown>).__stridetermRemote = {
       requestTerminalReady: (request: RemoteTerminalReadyRequest) => {
         if (!isTerminalReadyRequest(request)) return;
@@ -2249,7 +2616,7 @@ export function createRemoteTransport(): Transport {
       connectWebSocket();
       return;
     }
-    if (current.readyState === WebSocket.CLOSED || current.readyState === WebSocket.CLOSING) {
+    if (current.readyState === SOCKET_CLOSED || current.readyState === SOCKET_CLOSING) {
       // Browser delivered the close event but the reconnect timer may
       // have been suspended along with the renderer. Kick one off if
       // there isn't already a pending reconnect.
@@ -2259,7 +2626,7 @@ export function createRemoteTransport(): Transport {
       }
       return;
     }
-    if (current.readyState !== WebSocket.OPEN) {
+    if (current.readyState !== SOCKET_OPEN) {
       // CONNECTING — the existing open/close handlers will resolve it.
       return;
     }
@@ -2295,16 +2662,6 @@ export function createRemoteTransport(): Transport {
     return query ? `${pathname}?${query}` : pathname;
   }
 
-  function isRelayBootstrapRedirect(response: Response): boolean {
-    if (!response.redirected || !response.url) return false;
-    try {
-      const target = new URL(response.url, window.location.href);
-      return target.origin === window.location.origin && target.pathname === "/__relay/bootstrap";
-    } catch {
-      return false;
-    }
-  }
-
   /**
    * A successful HTTP reply proves the server answered, not that this page is connected: once the
    * transport is suspended there is no socket, and a reply that lands after the suspend made the host
@@ -2337,28 +2694,19 @@ export function createRemoteTransport(): Transport {
     payload?: unknown,
     options: { signal?: AbortSignal; emitConnectionState?: boolean } = {},
   ): Promise<unknown> {
-    // Without a token we fall through to the cookie-based path: the
-    // bootstrap redirect set `strideterm_session=…; HttpOnly` and the
-    // browser attaches it to every same-origin fetch. The server's
-    // `isAuthorized` accepts either, so dropping the Authorization
-    // header is correct here. If both are missing the server will
-    // 401 and the existing error path surfaces it.
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     headers["X-Strideterm-Client-Id"] = remoteClientId;
     headers["X-Strideterm-State-Protocol"] = String(STATE_PROTOCOL);
     headers["X-Strideterm-Capabilities"] = STATE_CAPABILITIES.join(",");
-    if (token) {
-      headers.Authorization = `Bearer ${token}`;
-    }
     // GET revalidation: offer the ETag we last saw for this path so the server
     // can answer 304 (see json()/ETag in remote-server.ts). Never for POSTs.
     const isGet = !payload;
     const cachedEntry = isGet ? etagCache.get(pathname) : undefined;
     if (cachedEntry) headers["If-None-Match"] = cachedEntry.etag;
 
-    let response: Response;
+    let response: RemoteResponse;
     try {
-      response = await fetch(pathname, {
+      response = await io.request(pathname, {
         method: payload ? "POST" : "GET",
         headers,
         body: payload ? JSON.stringify(payload) : undefined,
@@ -2383,7 +2731,7 @@ export function createRemoteTransport(): Transport {
     // its HTML bootstrap page. Fetch follows that redirect, so the renderer sees 200 rather than
     // the original 302. Treat only the relay's same-origin bootstrap destination as the equivalent
     // of a 401; unrelated redirects and HTML responses remain ordinary malformed API responses.
-    if (isRelayBootstrapRedirect(response)) {
+    if (response.relayBootstrapRedirect) {
       const error = createRemoteIssue({ kind: "http", statusCode: 401 });
       reportSessionLost("unauthorized");
       throw error;
@@ -2581,7 +2929,7 @@ export function createRemoteTransport(): Transport {
 
   function send(message: WsMessage): void {
     const current = ws;
-    if (current?.readyState === WebSocket.OPEN) {
+    if (current?.readyState === SOCKET_OPEN) {
       current.send(JSON.stringify(message));
       return;
     }
@@ -2590,6 +2938,8 @@ export function createRemoteTransport(): Transport {
 
   return {
     isRemote: true,
+    hasNativeShell: nativeShell,
+    suspendConnection: suspendTransport,
     /**
      * Manual state refresh. Fetches /api/state from the server and emits
      * the result through the standard stateUpdated listeners, same as a
@@ -2616,7 +2966,7 @@ export function createRemoteTransport(): Transport {
       const current = ws;
       if (!current) {
         connectWebSocket();
-      } else if (current.readyState !== WebSocket.OPEN && current.readyState !== WebSocket.CONNECTING) {
+      } else if (current.readyState !== SOCKET_OPEN && current.readyState !== SOCKET_CONNECTING) {
         // CLOSED/CLOSING: schedule a reconnect if one isn't already queued.
         if (!reconnectTimer) {
           const error = createRemoteIssue({ kind: "ws-closed", rawMessage: "Manual refresh requested" });
@@ -2642,6 +2992,12 @@ export function createRemoteTransport(): Transport {
       return Promise.resolve();
     },
     ...(mobileHost && typeof mobileHost.postMessage === "function" ? { browseDirectory } : {}),
+    ...(nativeShell
+      ? {
+          listHostDirectories: async (payload: { path: string }) =>
+            parsePeerDirectoryListing(await fetchJson("/api/peer/fs/list", payload)),
+        }
+      : {}),
     getState: async () => {
       const state = (await fetchJson("/api/state")) as CoreState;
       noteCoreRevision(state);
@@ -2655,6 +3011,14 @@ export function createRemoteTransport(): Transport {
       }
       return { ok: true };
     },
+    attachmentUploadBegin: async (payload) =>
+      parseUploadBegin(await fetchJson("/api/attachment/upload/begin", payload)),
+    attachmentUploadChunk: async (payload) =>
+      parseUploadChunk(await fetchJson("/api/attachment/upload/chunk", payload)),
+    attachmentUploadFinish: async (payload) =>
+      parseAttachmentRecord(await fetchJson("/api/attachment/upload/finish", payload)),
+    attachmentUploadCancel: async (payload) => parseOk(await fetchJson("/api/attachment/upload/cancel", payload)),
+    attachmentRead: async (payload) => parseAttachmentRead(await fetchJson("/api/attachment/read", payload)),
     activateProject: (projectId) => fetchJson("/api/project/activate", { projectId }),
     activateSession: (sessionId) => {
       // sessionId format is "workspaceId:panelId" — derive workspaceId from it.
@@ -2924,7 +3288,7 @@ export function createRemoteTransport(): Transport {
         desiredGitInterests.delete(payload.viewId);
       }
       const socket = ws;
-      if (socket?.readyState === WebSocket.OPEN) {
+      if (socket?.readyState === SOCKET_OPEN) {
         socket.send(JSON.stringify({ type: "git:interest", ...payload }));
       }
       return Promise.resolve({ ok: true });
@@ -3143,7 +3507,7 @@ export function createRemoteTransport(): Transport {
       lastTerminalSubscription = [...sessionIds];
       hasSubscribedTerminals = true;
       const current = ws;
-      if (current?.readyState === WebSocket.OPEN) {
+      if (current?.readyState === SOCKET_OPEN) {
         current.send(JSON.stringify({ type: "terminal:subscribe", sessionIds }));
       }
       // If not open, the connectWebSocket open handler re-sends the remembered
@@ -3156,7 +3520,7 @@ export function createRemoteTransport(): Transport {
       // unchanged, so nothing else about the routing moves.
       const current = ws;
       if (!sessionId || !hasSubscribedTerminals || !lastTerminalSubscription.includes(sessionId)) return false;
-      if (current?.readyState !== WebSocket.OPEN) return false;
+      if (current?.readyState !== SOCKET_OPEN) return false;
       current.send(
         JSON.stringify({ type: "terminal:subscribe", sessionIds: lastTerminalSubscription, replay: [sessionId] }),
       );
@@ -3177,7 +3541,7 @@ export function createRemoteTransport(): Transport {
       lastResourceInterest = [...resources];
       hasDeclaredInterest = true;
       const current = ws;
-      if (current?.readyState === WebSocket.OPEN) {
+      if (current?.readyState === SOCKET_OPEN) {
         current.send(JSON.stringify({ type: "resource:interest", resources }));
       }
       // If not open, the open handler re-sends the remembered set.
@@ -3226,15 +3590,43 @@ export function createRemoteTransport(): Transport {
     onSshFileTransferFinished: (handler: Handler<SshFileTransferFinished>) => {
       listeners.sshFileTransferFinished.add(handler);
     },
-    getRemoteToken: () => token,
+    getRemoteToken: () => io.getToken(),
     setRemoteToken: (nextToken: string) => {
-      persistToken(nextToken);
-      window.location.reload();
+      if (nativeShell) return;
+      io.setToken(nextToken);
+      io.reload();
     },
   };
 }
 
-export function createTransport(): Transport {
+export function createPeerTransport(bridge: PeerBridge): Transport {
+  return createRemoteTransport(createPeerRemoteIo(bridge), { nativeShell: true });
+}
+
+/** What a window attached to another desktop gets from the preload; the main process picks the host from the window. */
+type PeerPreload = Pick<
+  StridetermAPI,
+  "peerHttp" | "peerWsOpen" | "peerWsSend" | "peerWsClose" | "onPeerWsState" | "onPeerWsMessage"
+>;
+
+export function createPeerBridge(backend: { clientId: string }, preload: PeerPreload): PeerBridge {
+  return {
+    clientId: backend.clientId,
+    http: (request) => preload.peerHttp(request),
+    wsOpen: (query) => preload.peerWsOpen(query),
+    wsSend: (data) => preload.peerWsSend(data),
+    wsClose: (code, reason) => preload.peerWsClose(code, reason),
+    onWsState: (handler) => preload.onPeerWsState(handler),
+    onWsMessage: (handler) => preload.onPeerWsMessage(handler),
+  };
+}
+
+export function createTransport(backend: WindowBackend = { kind: "local" }): Transport {
+  if (backend.kind === "peer") {
+    if (!window.strideterm) throw new Error("This window cannot reach another computer without the desktop app.");
+    return createPeerTransport(createPeerBridge(backend, window.strideterm));
+  }
+
   if (window.strideterm) {
     return bindElectronTransport();
   }

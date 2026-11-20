@@ -2618,4 +2618,110 @@ c${"z".repeat(600)}`,
     const [connection] = state.settings.integrations.jira.connections;
     expect(connection.label).toHaveLength(80);
   });
+
+  test("peers settings default when missing and a valid value survives normalization", () => {
+    expect(normalizeState({ settings: { integrations: {} } }).settings.integrations.peers).toEqual(
+      createDefaultState().settings.integrations.peers,
+    );
+    const peers = {
+      instanceId: "instance-0001",
+      hosting: { enabled: true, port: 9000 },
+      devices: [
+        {
+          id: "device-0001",
+          name: "Laptop",
+          platform: "win32",
+          publicKey: Buffer.alloc(32, 7).toString("base64"),
+          pairedAt: 1,
+          lastSeenAt: 2,
+          lastAddress: "192.168.1.5",
+        },
+      ],
+      hosts: [],
+    };
+    const once = normalizeState({ settings: { integrations: { peers } } });
+    expect(once.settings.integrations.peers).toEqual(peers);
+    expect(normalizeState(once).settings.integrations.peers).toEqual(peers);
+  });
+});
+
+describe("normalizeState — windows attached to another desktop", () => {
+  const hostKey = "A".repeat(43) + "=";
+  const host = {
+    id: "host-aaaaaaaa",
+    label: "Mac",
+    address: "192.168.1.9",
+    port: 43124,
+    hostPublicKey: hostKey,
+    pairedAt: 1,
+  };
+  const peerWindow = {
+    id: "peer-win-1",
+    hostId: host.id,
+    remoteProfileId: "work",
+    bounds: { x: 1, y: 2, width: 3, height: 4 },
+  };
+  const withHost = (peerWindows: unknown[], windowSlots?: unknown[]) =>
+    normalizeState({
+      settings: { integrations: { peers: { hosts: [host] } } },
+      peerWindows,
+      ...(windowSlots ? { windowSlots } : {}),
+    });
+
+  test("older state has none, and nothing is invented", () => {
+    expect(normalizeState({}).peerWindows).toEqual([]);
+    expect(createDefaultState().peerWindows).toEqual([]);
+  });
+
+  test("keeps a window of a known host with its geometry and survives re-normalizing", () => {
+    const once = withHost([{ ...peerWindow, displayId: 2, isMaximized: true, lastFocusedAt: 9 }]);
+    expect(once.peerWindows).toEqual([{ ...peerWindow, displayId: 2, isMaximized: true, lastFocusedAt: 9 }]);
+    expect(normalizeState(once).peerWindows).toEqual(once.peerWindows);
+  });
+
+  test("drops a window whose host was removed, whose id is a local slot's, or that repeats", () => {
+    const state = withHost(
+      [
+        peerWindow,
+        { ...peerWindow, id: "peer-win-2", hostId: "host-gone-1234" },
+        { ...peerWindow, id: "local-1" },
+        peerWindow,
+      ],
+      [{ id: "local-1", profileId: "default" }],
+    );
+    expect(state.peerWindows?.map((entry) => entry.id)).toEqual(["peer-win-1"]);
+    expect(state.windowSlots.map((slot) => slot.id)).toEqual(["local-1"]);
+  });
+
+  test("a state whose every window is attached to another desktop keeps no local slot", () => {
+    const once = withHost([peerWindow], []);
+    expect(once.windowSlots).toEqual([]);
+    expect(once.peerWindows?.map((entry) => entry.id)).toEqual(["peer-win-1"]);
+    const again = normalizeState(once);
+    expect(again.windowSlots).toEqual([]);
+    expect(again.peerWindows).toEqual(once.peerWindows);
+    expect(withHost([peerWindow]).windowSlots).toEqual([]);
+  });
+
+  test("a peer window may carry the id of the default local slot once that slot is gone", () => {
+    const state = withHost([{ ...peerWindow, id: "window-main" }], []);
+    expect(state.windowSlots).toEqual([]);
+    expect(state.peerWindows?.map((entry) => entry.id)).toEqual(["window-main"]);
+  });
+
+  test("with no window of either kind the default local slot is recreated", () => {
+    for (const state of [withHost([], []), withHost([]), normalizeState({})]) {
+      expect(state.windowSlots.map((slot) => slot.id)).toEqual(["window-main"]);
+      expect(state.peerWindows).toEqual([]);
+    }
+    const dropped = withHost([{ ...peerWindow, hostId: "host-gone-1234" }], []);
+    expect(dropped.windowSlots.map((slot) => slot.id)).toEqual(["window-main"]);
+    expect(dropped.peerWindows).toEqual([]);
+  });
+
+  test("local slots next to peer windows are untouched", () => {
+    const state = withHost([peerWindow], [{ id: "local-1", profileId: "default" }]);
+    expect(state.windowSlots.map((slot) => slot.id)).toEqual(["local-1"]);
+    expect(state.peerWindows?.map((entry) => entry.id)).toEqual(["peer-win-1"]);
+  });
 });

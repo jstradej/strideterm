@@ -837,7 +837,11 @@ export function createApiActions(ctx: ApiActionsCtx) {
     // clearing. The backend now saves and restores lastActiveWorkspaceId/SessionId
     // into the slot, so the payload reflects the correct selection after switching.
     const newPayload = ctx.payload.value as AnyApi;
-    const windowId = typeof window !== "undefined" ? (window as AnyApi).strideterm?.startupFlags?.windowId : undefined;
+    // A remote client (a window attached to another desktop included) has no slot in the host's windowSlots.
+    const windowId =
+      typeof window !== "undefined" && !ctx.getApi().isRemote
+        ? (window as AnyApi).strideterm?.startupFlags?.windowId
+        : undefined;
     const slots = newPayload?.appState?.windowSlots as AnyApi[] | undefined;
     const mySlot = windowId && slots ? slots.find((s: AnyApi) => s.id === windowId) : null;
     const restoredSession = mySlot?.activeSessionId || "";

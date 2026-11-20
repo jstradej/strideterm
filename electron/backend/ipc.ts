@@ -29,6 +29,13 @@ import { START_JIRA_DEVELOPMENT_CHANNEL, startJiraDevelopmentSchema } from "../s
 import { withOperationPromise } from "./effect/runtime.js";
 import * as fm from "./file-manager.js";
 import * as attachments from "./attachments.js";
+import * as attachmentTransfer from "./attachment-transfer.js";
+import {
+  attachmentReadSchema,
+  attachmentTransferSchema,
+  attachmentUploadBeginSchema,
+  attachmentUploadChunkSchema,
+} from "../shared/attachment-upload.js";
 import { parseRemoteViewerId } from "./viewer-id.js";
 import { parseCommandTemplate, substituteCommandArg } from "./command-template.js";
 import { resolveTerminalOpenAction } from "./terminal-open-action.js";
@@ -247,6 +254,31 @@ import { errorMessage } from "../shared/error-message.js";
 import { SSH_FILE_TRANSFER_FINISHED_CHANNEL, SSH_FILE_TRANSFER_PROGRESS_CHANNEL } from "../shared/ssh-file-events.js";
 import { toSshFileIpcFailure } from "../shared/ssh-file-error-codes.js";
 import { SshFileError } from "./ssh/ssh-file-error.js";
+import {
+  peerApproveSchema,
+  peerConnectSchema,
+  peerDeviceIdSchema,
+  peerHostIdSchema,
+  peerHostingSettingsSchema,
+  peerHttpSchema,
+  peerPairCancelSchema,
+  peerPairingIdSchema,
+  peerRefreshSchema,
+  peerUpdateAddressSchema,
+  peerWindowAttentionSchema,
+  peerWindowFontSizeSchema,
+  peerWindowLocalSchema,
+  peerWindowOpenSchema,
+  peerWsCloseSchema,
+  peerWsOpenSchema,
+  peerWsSendSchema,
+  type PeerWindowActivateResult,
+  type PeerWindowOpenResult,
+  type PeerWindowSlot,
+  type PeerWsState,
+} from "../shared/peers.js";
+import { isChannelAllowedInPeerWindow, PEER_WINDOW_REFUSED_MESSAGE } from "../shared/peer-window-channels.js";
+import type { PeerClientSocket } from "./peers/peer-client.js";
 import { toJiraIpcFailure } from "../shared/jira-ipc-failure.js";
 import { JiraRequestError } from "./jira/jira-manager.js";
 import { jiraErrorFields } from "./jira/jira-request-error.js";
@@ -315,6 +347,34 @@ export interface JiraIssuePopoutTarget {
   summary?: string;
 }
 
+/** What registerIpc needs from the Electron window layer to open, restart and badge windows attached to another desktop. */
+export interface PeerWindowsAdapter {
+  /** Creates the BrowserWindow for a slot that was just added. */
+  open(slot: PeerWindowSlot): void | Promise<void>;
+  /** After a conversion: restarts that window's renderer so it boots against its new backend. */
+  reload(windowId: string): void | Promise<void>;
+  setAttention(windowId: string, count: number): void;
+}
+
+/** The host must be reachable and the same version before a slot exists; a slot whose window fails to open is removed again. */
+export async function openPeerHostWindow(
+  runtime: Pick<Runtime, "requirePeerHostOnline" | "createPeerWindowSlot" | "removePeerWindowSlot">,
+  adapter: Pick<PeerWindowsAdapter, "open">,
+  target: { hostId: string; profileId: string; cloneFromWindowId?: string },
+): Promise<PeerWindowSlot> {
+  await runtime.requirePeerHostOnline(target.hostId);
+  const slot = await runtime.createPeerWindowSlot(target);
+  try {
+    await adapter.open(slot);
+  } catch (err) {
+    await runtime.removePeerWindowSlot(slot.id).catch(() => undefined);
+    throw err;
+  }
+  return slot;
+}
+
+class PeerWindowRefusal extends Error {}
+
 export function registerIpc(
   runtime: Runtime,
   emitToRenderer: (channel: string, payload: unknown) => void,
@@ -324,12 +384,14 @@ export function registerIpc(
     emitToWindow,
     openJiraIssuePopout,
     getJiraIssuePopoutInit,
+    peerWindows,
   }: {
     includeStateGet?: boolean;
     getWindowIdByWebContentsId?: (webContentsId: number) => string | undefined;
     emitToWindow?: (windowId: string, channel: string, payload: unknown) => void;
     openJiraIssuePopout?: (target: JiraIssuePopoutTarget) => { focused: boolean };
     getJiraIssuePopoutInit?: (webContentsId: number) => JiraIssuePopoutTarget | null;
+    peerWindows?: PeerWindowsAdapter;
   } = {},
 ): () => void {
   const sshTestOwnerDestroyHandlers = new Map<string, { sender: Electron.WebContents; listener: () => void }>();
@@ -433,6 +495,11 @@ export function registerIpc(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     runtime.on("mobile:device-revoked", (payload: any) => emitToRenderer("mobile:device-revoked", payload)),
     runtime.on("remote:auth-failures", (payload: unknown) => emitToRenderer("remote:auth-failures", payload)),
+    // Desktop windows only: the host's pairing requests are answered at this machine, never by a remote client.
+    runtime.on("peers:pairing-progress", (payload: unknown) => emitToRenderer("peers:pairing-progress", payload)),
+    runtime.on("peers:updated", (payload: unknown) => emitToRenderer("peers:updated", payload)),
+    // The device side's own attempt: whichever window is showing the pairing dialog needs the end of it.
+    runtime.on("peers:pairing-result", (payload: unknown) => emitToRenderer("peers:pairing-result", payload)),
     // One derived account state, broadcast to EVERY window. The renderer computes nothing from it —
     // see account-state.ts for what it carries and, more to the point, what it never does.
     runtime.on("account:updated", (payload: unknown) =>
@@ -476,11 +543,29 @@ export function registerIpc(
     channel === "github:quickfix:create";
   const registeredHandleChannels: string[] = [];
   const registeredListenerChannels: string[] = [];
+  const peerRefusalsLogged = new Set<string>();
+  /** A window attached to another desktop must not reach this runtime's data: only the allowlisted channels pass. */
+  function refusedForPeerWindow(channel: string, event: { sender?: { id?: number } } | undefined): boolean {
+    if (isChannelAllowedInPeerWindow(channel)) return false;
+    const senderId = event?.sender?.id;
+    if (typeof senderId !== "number") return false;
+    const windowId = getWindowIdByWebContentsId?.(senderId);
+    if (!windowId || runtime.isPeerWindow(windowId) !== true) return false;
+    const key = `${windowId}\n${channel}`;
+    if (!peerRefusalsLogged.has(key)) {
+      if (peerRefusalsLogged.size >= 500) peerRefusalsLogged.clear();
+      peerRefusalsLogged.add(key);
+      getLogger("ipc").warn("refused a channel from a window attached to another desktop", { windowId, channel });
+    }
+    return true;
+  }
   function handle(channel: string, listener: Parameters<typeof ipcMain.handle>[1]): void {
     ipcMain.handle(channel, async (event, ...args) => {
       try {
+        if (refusedForPeerWindow(channel, event)) throw new PeerWindowRefusal(PEER_WINDOW_REFUSED_MESSAGE);
         return await listener(event, ...args);
       } catch (err) {
+        if (err instanceof PeerWindowRefusal) throw err;
         // Not failures: a conflict is answered with an Overwrite / Skip dialog, and a pasted image in a System SSH
         // or WSL tab falls back to the local path.
         const expectedSshFileRefusal =
@@ -564,7 +649,10 @@ export function registerIpc(
     return "cancel";
   }
   function on(channel: string, listener: Parameters<typeof ipcMain.on>[1]): void {
-    ipcMain.on(channel, listener);
+    ipcMain.on(channel, (event, ...args) => {
+      if (refusedForPeerWindow(channel, event)) return;
+      listener(event, ...args);
+    });
     registeredListenerChannels.push(channel);
   }
 
@@ -929,6 +1017,189 @@ export function registerIpc(
     runtime.credentialsRemove(validateIpc(credentialRemoveSchema, payload, "credentials:remove").ref),
   );
   handle("credentials:remove-orphans", async () => runtime.credentialsRemoveOrphans());
+  // Attaching profiles between desktops (host side): desktop only, no remote counterpart exists.
+  handle("peers:host:get", async () => runtime.getPeerHostState());
+  handle("peers:host:set-hosting", async (_event, payload) =>
+    runtime.setPeerHosting(validateIpc(peerHostingSettingsSchema, payload, "peers:host:set-hosting")),
+  );
+  handle("peers:host:approve", async (_event, payload) =>
+    runtime.approvePeerPairing(validateIpc(peerApproveSchema, payload, "peers:host:approve")),
+  );
+  handle("peers:host:reject", async (_event, payload) =>
+    runtime.rejectPeerPairing(validateIpc(peerPairingIdSchema, payload, "peers:host:reject").pairingId),
+  );
+  handle("peers:host:remove-device", async (_event, payload) =>
+    runtime.removePeerDevice(validateIpc(peerDeviceIdSchema, payload, "peers:host:remove-device").deviceId),
+  );
+  // Attaching profiles between desktops (device side): desktop only, no remote counterpart exists.
+  handle("peers:client:list", async () => runtime.listPeerHosts());
+  handle("peers:client:refresh", async (_event, payload) => {
+    const { hostId, force } = validateIpc(peerRefreshSchema, payload, "peers:client:refresh");
+    return runtime.refreshPeerHost(hostId, { force: force === true });
+  });
+  handle("peers:client:pair:start", async (_event, payload) =>
+    runtime.startPeerPairing(validateIpc(peerConnectSchema, payload, "peers:client:pair:start")),
+  );
+  handle("peers:client:pair:cancel", async (_event, payload) =>
+    runtime.cancelPeerPairing(validateIpc(peerPairCancelSchema, payload, "peers:client:pair:cancel").attemptId),
+  );
+  handle("peers:client:remove", async (_event, payload) =>
+    runtime.removePeerHost(validateIpc(peerHostIdSchema, payload, "peers:client:remove").hostId),
+  );
+  handle("peers:client:update-address", async (_event, payload) =>
+    runtime.updatePeerHostAddress(validateIpc(peerUpdateAddressSchema, payload, "peers:client:update-address")),
+  );
+  handle("window:get-backend", async (event) =>
+    runtime.getWindowBackend(getWindowIdByWebContentsId?.(event.sender.id) ?? ""),
+  );
+  handle("peers:local-profiles", async () => runtime.getLocalProfilesOverview());
+
+  const callerWindowIdOf = (event: Electron.IpcMainInvokeEvent): string => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id);
+    if (!windowId) throw new Error("This request needs an application window.");
+    return windowId;
+  };
+  const requirePeerWindows = (): PeerWindowsAdapter => {
+    if (!peerWindows) throw new Error("Windows attached to another desktop are not available here.");
+    return peerWindows;
+  };
+  handle("peers:window:open", async (event, payload): Promise<PeerWindowOpenResult> => {
+    const adapter = requirePeerWindows();
+    const { hostId, profileId } = validateIpc(peerWindowOpenSchema, payload, "peers:window:open");
+    const slot = await openPeerHostWindow(runtime, adapter, {
+      hostId,
+      profileId,
+      cloneFromWindowId: getWindowIdByWebContentsId?.(event.sender.id),
+    });
+    return { windowId: slot.id };
+  });
+  handle("peers:window:activate", async (event, payload): Promise<PeerWindowActivateResult> => {
+    const adapter = requirePeerWindows();
+    const { hostId, profileId } = validateIpc(peerWindowOpenSchema, payload, "peers:window:activate");
+    const windowId = callerWindowIdOf(event);
+    await runtime.requirePeerHostOnline(hostId);
+    const backend = runtime.getWindowBackend(windowId);
+    if (backend.kind === "peer" && backend.hostId === hostId) {
+      await runtime.setPeerWindowProfile(windowId, profileId);
+      return { reloaded: false };
+    }
+    if (backend.kind === "peer") {
+      await runtime.retargetPeerWindow(windowId, { hostId, profileId });
+      closePeerSocket(windowId, 1000, "retargeted");
+    } else {
+      await runtime.convertWindowToPeer(windowId, { hostId, profileId });
+    }
+    await adapter.reload(windowId);
+    return { reloaded: true };
+  });
+  handle("peers:window:activate-local", async (event, payload): Promise<PeerWindowActivateResult> => {
+    const adapter = requirePeerWindows();
+    const { profileId } = validateIpc(peerWindowLocalSchema, payload, "peers:window:activate-local");
+    const windowId = callerWindowIdOf(event);
+    await runtime.convertWindowToLocal(windowId, profileId);
+    closePeerSocket(windowId, 1000, "detached");
+    await adapter.reload(windowId);
+    return { reloaded: true };
+  });
+  handle("peers:window:set-profile", async (event, payload) => {
+    const { profileId } = validateIpc(peerWindowLocalSchema, payload, "peers:window:set-profile");
+    await runtime.setPeerWindowProfile(callerWindowIdOf(event), profileId);
+    return true;
+  });
+  handle("peers:window:attention", async (event, payload) => {
+    const { count } = validateIpc(peerWindowAttentionSchema, payload, "peers:window:attention");
+    const windowId = callerWindowIdOf(event);
+    if (runtime.isPeerWindow(windowId) !== true) throw new Error("This window is not attached to another desktop.");
+    peerWindows?.setAttention(windowId, count);
+  });
+  handle("peers:window:font-size", async (event, payload) => {
+    const { size } = validateIpc(peerWindowFontSizeSchema, payload, "peers:window:font-size");
+    if (runtime.isPeerWindow(callerWindowIdOf(event)) !== true) {
+      throw new Error("This window is not attached to another desktop.");
+    }
+    await runtime.setPeerWindowFontSize(size);
+    return true;
+  });
+
+  handle("peer:http", async (event, payload) => {
+    const request = validateIpc(peerHttpSchema, payload, "peer:http");
+    return runtime.peerWindowRequest(callerWindowIdOf(event), request);
+  });
+
+  // One logical socket per window. Events of a socket that was replaced or closed are never delivered.
+  const peerSockets = new Map<string, PeerClientSocket>();
+  const peerSocketOwners = new Map<string, Electron.WebContents>();
+  const peerSocketWatchedSenders = new WeakSet<object>();
+  const emitPeerSocketState = (windowId: string, state: PeerWsState): void => {
+    emitToWindow?.(windowId, "peer:ws:state", state);
+  };
+  const closePeerSocket = (windowId: string, code: number, reason: string): void => {
+    const socket = peerSockets.get(windowId);
+    if (!socket) return;
+    peerSockets.delete(windowId);
+    peerSocketOwners.delete(windowId);
+    try {
+      socket.close(code, reason);
+    } catch {
+      // The connection is already gone; nothing is left to close.
+    }
+  };
+  on("peer:ws:open", (event, query) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    const parsed = peerWsOpenSchema.safeParse(query);
+    if (!parsed.success) {
+      emitPeerSocketState(windowId, { state: "closed", code: 1008, reason: "The socket request is not valid." });
+      return;
+    }
+    closePeerSocket(windowId, 1000, "replaced");
+    let socket: PeerClientSocket;
+    try {
+      socket = runtime.peerWindowOpenSocket(windowId, parsed.data);
+    } catch (err) {
+      emitPeerSocketState(windowId, { state: "closed", code: 1008, reason: describeIpcFailure(err) });
+      return;
+    }
+    peerSockets.set(windowId, socket);
+    peerSocketOwners.set(windowId, event.sender);
+    const current = () => peerSockets.get(windowId) === socket;
+    socket.on("open", () => {
+      if (current()) emitPeerSocketState(windowId, { state: "open" });
+    });
+    socket.on("message", (data) => {
+      if (current()) emitToWindow?.(windowId, "peer:ws:message", data);
+    });
+    socket.on("close", ({ code, reason }) => {
+      if (!current()) return;
+      peerSockets.delete(windowId);
+      peerSocketOwners.delete(windowId);
+      emitPeerSocketState(windowId, { state: "closed", code, reason });
+    });
+    if (!peerSocketWatchedSenders.has(event.sender) && !event.sender.isDestroyed()) {
+      peerSocketWatchedSenders.add(event.sender);
+      const sender = event.sender;
+      sender.once("destroyed", () => {
+        peerSocketWatchedSenders.delete(sender);
+        for (const [ownedWindowId, owner] of [...peerSocketOwners]) {
+          if (owner === sender) closePeerSocket(ownedWindowId, 1001, "window closed");
+        }
+      });
+    }
+  });
+  on("peer:ws:send", (event, data) => {
+    const parsed = peerWsSendSchema.safeParse(data);
+    if (!parsed.success) return;
+    try {
+      peerSockets.get(getWindowIdByWebContentsId?.(event.sender.id) ?? "")?.send(parsed.data);
+    } catch {
+      // Not open any more: the close event already told the renderer, and typing must not raise a toast per key.
+    }
+  });
+  on("peer:ws:close", (event, payload) => {
+    const parsed = peerWsCloseSchema.safeParse(payload ?? {});
+    if (!parsed.success) return;
+    peerSockets.get(getWindowIdByWebContentsId?.(event.sender.id) ?? "")?.close(parsed.data.code, parsed.data.reason);
+  });
+
   handle("jira:own-issues-query", async (event, payload) =>
     runtime.buildJiraOwnIssuesQuery(
       validateIpc(jiraOwnIssuesQuerySchema, payload, "jira:own-issues-query"),
@@ -3076,6 +3347,39 @@ export function registerIpc(
       p.name,
     );
   });
+  // The transfer owner is the calling window: another window can neither continue nor finish its upload.
+  const attachmentCaller = (event: { sender: { id: number } }) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    if (!windowId) throw new Error("Attachment upload needs a caller identity");
+    return windowId;
+  };
+  handle("attachment:upload:begin", async (event, payload) => {
+    const p = validateIpc(attachmentUploadBeginSchema, payload, "attachment:upload:begin");
+    const windowId = attachmentCaller(event);
+    return attachmentTransfer.begin(attachmentRoot(p.workspaceId, windowId), p, windowId);
+  });
+  handle("attachment:upload:chunk", async (event, payload) => {
+    const p = validateIpc(attachmentUploadChunkSchema, payload, "attachment:upload:chunk");
+    const windowId = attachmentCaller(event);
+    return attachmentTransfer.chunk(attachmentRoot(p.workspaceId, windowId), p, windowId);
+  });
+  handle("attachment:upload:finish", async (event, payload) => {
+    const p = validateIpc(attachmentTransferSchema, payload, "attachment:upload:finish");
+    const windowId = attachmentCaller(event);
+    return attachmentTransfer.finish(attachmentRoot(p.workspaceId, windowId), p, windowId);
+  });
+  handle("attachment:upload:cancel", async (event, payload) => {
+    const p = validateIpc(attachmentTransferSchema, payload, "attachment:upload:cancel");
+    const windowId = attachmentCaller(event);
+    return attachmentTransfer.cancel(attachmentRoot(p.workspaceId, windowId), p, windowId);
+  });
+  handle("attachment:read", async (event, payload) => {
+    const p = validateIpc(attachmentReadSchema, payload, "attachment:read");
+    return attachmentTransfer.read(
+      attachmentRoot(p.workspaceId, getWindowIdByWebContentsId?.(event.sender.id) ?? ""),
+      p,
+    );
+  });
 
   // --- File manager ---
   handle("file:list", async (_event, payload) =>
@@ -3600,6 +3904,7 @@ export function registerIpc(
 
   return () => {
     subscriptions.forEach((unsubscribe) => unsubscribe());
+    for (const windowId of [...peerSockets.keys()]) closePeerSocket(windowId, 1001, "shutting down");
     for (const { sender, listener } of sshTestOwnerDestroyHandlers.values()) {
       sender.removeListener("destroyed", listener);
     }

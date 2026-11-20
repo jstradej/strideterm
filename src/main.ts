@@ -16,6 +16,8 @@ import { installFormValidationFeedback } from "./lib/form-validation.js";
 import { installVueErrorHandler } from "./lib/vue-error-handler.js";
 import { useNotificationStore } from "./stores/notifications.js";
 import { installCanvasFontShim } from "./lib/canvas-font-shim.js";
+import { resolveWindowBackend } from "./boot-backend.js";
+import { setWindowBackend } from "./window-backend.js";
 
 installCanvasFontShim();
 
@@ -159,10 +161,13 @@ if (typeof window !== "undefined") {
 // exchange it for the session cookie before mounting. A ticketed page is never mounted unless
 // the exchange succeeds; failures are handled by the native session recovery bridge. A page
 // with no ticket (the normal browser/Telegram `?token=` path) proceeds immediately.
-void bootstrapMobileSessionFromFragment().then((handled) => {
+void bootstrapMobileSessionFromFragment().then(async (handled) => {
   if (handled) return;
 
-  const api = createTransport();
+  // A window attached to another desktop talks to its host through the peer link, not to this runtime.
+  const backend = await resolveWindowBackend();
+  setWindowBackend(backend);
+  const api = createTransport(backend);
 
   const app = createApp(App);
   app.use(createPinia());

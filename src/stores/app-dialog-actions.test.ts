@@ -222,6 +222,22 @@ describe("createDialogActions.openProfilesDialog", () => {
     expect(ctx.activeViewId.value).toBe("ws-b:shell");
     expect(ctx.overlay.value).toBeNull();
   });
+
+  it("opens the connect dialog on top of the profiles dialog and goes back to it", () => {
+    const ctx = makeCtx({ appState: { profiles: [{ id: "profile-a", name: "A" }], workspaces: [], windowSlots: [] } });
+    ctx.getApi = () => ({ isRemote: false });
+    const actions = createDialogActions(ctx);
+
+    actions.openProfilesDialog();
+    (ctx.overlayProps.value.onConnect as () => void)();
+
+    expect(ctx.overlay.value).toBe("PeerConnectDialog");
+    expect(actions.dialogLayers.value.map((layer) => layer.name)).toEqual(["ProfilesDialog", "PeerConnectDialog"]);
+
+    (ctx.overlayProps.value.onCancel as () => void)();
+
+    expect(ctx.overlay.value).toBe("ProfilesDialog");
+  });
 });
 
 describe("createDialogActions.openNewTabDialog SSH-tools forwarding", () => {

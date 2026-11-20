@@ -17,6 +17,8 @@ import { AzureDevOpsManager } from "./azure-devops-manager.js";
 import { GitHubManager } from "./github-manager.js";
 import { execFileText } from "./process-utils.js";
 import { createSessionId, normalizeState } from "./default-state.js";
+import { peerWindowClientId } from "./runtime-peers.js";
+import { readFileSync } from "node:fs";
 import { RemoteClientRegistry } from "./remote-client-registry.js";
 import { sanitizeSettingsFromRemote, startRemoteServer } from "./remote-server.js";
 import net from "node:net";
@@ -7301,6 +7303,582 @@ describe("runtime integration", () => {
     expect(after.jira).toEqual(before.jira);
     expect(after.azureDevops).toEqual(before.azureDevops);
     expect(after.github).toEqual(before.github);
+  });
+
+  describe("attaching profiles between desktops (host side)", () => {
+    const encrypted = () => ({ dependencies: { safeStorage: ENCRYPTING_SAFE_STORAGE } });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: shared runtime test fixture
+    const collect = (fixture: { runtime: any }, channel: string) => {
+      const seen: unknown[] = [];
+      fixture.runtime.on(channel, (payload: unknown) => seen.push(payload));
+      return seen;
+    };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: shared runtime test fixture
+    async function pendingPairing(fixture: { runtime: any }) {
+      const { randomBytes } = await import("node:crypto");
+      const { exportRawPublicKey, generateX25519KeyPair } = await import("./mobile/mobile-crypto.js");
+      const { computePeerCommitment } = await import("./peers/peer-crypto.js");
+      const publicKey = exportRawPublicKey(generateX25519KeyPair().publicKey).toString("base64");
+      const nonce = randomBytes(32).toString("base64");
+      const deviceId = "device-0001";
+      const begun = await fixture.runtime.peerHost.beginPairing(
+        {
+          protocolVersion: 1,
+          deviceId,
+          name: "Laptop",
+          platform: "win32",
+          appVersion: "1.0.0",
+          commitment: computePeerCommitment({ deviceId, publicKey, nonce }),
+        },
+        "192.168.1.9",
+      );
+      fixture.runtime.peerHost.revealPairing({ pairingId: begun.pairingId, publicKey, nonce });
+      return { begun, publicKey, nonce };
+    }
+
+    test("setPeerHosting enables and disables, emits once per change and is a no-op when nothing changes", async () => {
+      const fixture = await createFixture(encrypted());
+      fixtures.push(fixture);
+      const changes = collect(fixture, "peers:hosting-changed");
+
+      await fixture.runtime.setPeerHosting({ enabled: false, port: 43124 });
+      expect(changes).toEqual([]);
+
+      const on = await fixture.runtime.setPeerHosting({ enabled: true, port: 43124 });
+      expect(on.hosting).toEqual({ enabled: true, port: 43124 });
+      expect(on.instanceId).not.toBe("");
+      expect(fixture.store.getState().settings.integrations.peers.hosting.enabled).toBe(true);
+      expect(changes).toHaveLength(1);
+
+      await fixture.runtime.setPeerHosting({ enabled: true, port: 43124 });
+      expect(changes).toHaveLength(1);
+
+      const moved = await fixture.runtime.setPeerHosting({ enabled: true, port: 43999 });
+      expect(moved.hosting.port).toBe(43999);
+      expect(changes).toHaveLength(2);
+
+      const off = await fixture.runtime.setPeerHosting({ enabled: false, port: 43999 });
+      expect(off.hosting.enabled).toBe(false);
+      expect(changes).toHaveLength(3);
+    });
+
+    test("enabling without secure storage rejects with its message and leaves hosting off", async () => {
+      const fixture = await createFixture();
+      fixtures.push(fixture);
+      const changes = collect(fixture, "peers:hosting-changed");
+
+      await expect(fixture.runtime.setPeerHosting({ enabled: true, port: 43124 })).rejects.toThrow(/Secure storage/);
+
+      expect(fixture.store.getState().settings.integrations.peers.hosting.enabled).toBe(false);
+      expect(fixture.runtime.getPeerHostState().hosting.enabled).toBe(false);
+      expect(changes).toEqual([]);
+    });
+
+    test("updateSettings cannot change integrations.peers, from any caller", async () => {
+      const fixture = await createFixture(encrypted());
+      fixtures.push(fixture);
+      await fixture.runtime.setPeerHosting({ enabled: true, port: 43124 });
+      const before = structuredClone(fixture.store.getState().settings.integrations.peers);
+
+      await fixture.runtime.updateSettings({
+        integrations: {
+          telegram: { defaultPollSeconds: 91 },
+          peers: {
+            instanceId: "attacker-instance",
+            hosting: { enabled: false, port: 1 },
+            devices: [{ id: "device-evil", name: "x", platform: "win32", publicKey: "", pairedAt: 1, lastSeenAt: 1 }],
+            hosts: [],
+          },
+        },
+      });
+
+      expect(fixture.store.getState().settings.integrations.peers).toEqual(before);
+      expect(fixture.store.getState().settings.integrations.telegram.defaultPollSeconds).toBe(91);
+    });
+
+    test("with hosting already on, the identity is ready at startup; without secure storage startup still succeeds", async () => {
+      const initialState = { settings: { integrations: { peers: { hosting: { enabled: true, port: 43124 } } } } };
+
+      const withKeys = await createFixture({ initialState, ...encrypted() });
+      fixtures.push(withKeys);
+      expect(withKeys.runtime.getPeerHostState().instanceId).not.toBe("");
+
+      const withoutKeys = await createFixture({ initialState });
+      fixtures.push(withoutKeys);
+      expect(withoutKeys.runtime.getPeerHostState()).toMatchObject({
+        hosting: { enabled: true },
+        instanceId: "",
+        encryptionAvailable: false,
+      });
+    });
+
+    test("peerHello lists every profile with its workspace count", async () => {
+      const workspace = (id: string, profileId: string) => ({
+        id,
+        name: id,
+        kind: "terminal",
+        profileId,
+        cwd: `/tmp/${id}`,
+        activePanelId: "shell",
+        panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+      });
+      const fixture = await createFixture({
+        initialState: {
+          activeProjectId: "ws-1",
+          profiles: [
+            { id: "default", name: "Default" },
+            { id: "profile-b", name: "Profile B" },
+          ],
+          projects: [workspace("ws-1", "default"), workspace("ws-2", "default"), workspace("ws-3", "profile-b")],
+        },
+      });
+      fixtures.push(fixture);
+
+      const hello = fixture.runtime.peerHello();
+
+      expect(hello.protocolVersion).toBe(1);
+      expect(hello.hostName.length).toBeGreaterThan(0);
+      expect(hello.profiles).toEqual([
+        expect.objectContaining({ id: "default", name: "Default", workspaceCount: 2 }),
+        expect.objectContaining({ id: "profile-b", name: "Profile B", workspaceCount: 1 }),
+      ]);
+      for (const profile of hello.profiles) expect(typeof profile.color).toBe("string");
+    });
+
+    test("getPeerHostState shows a pending pairing and never a key, nonce or code", async () => {
+      const fixture = await createFixture(encrypted());
+      fixtures.push(fixture);
+      await fixture.runtime.setPeerHosting({ enabled: true, port: 43124 });
+      const { begun, publicKey, nonce } = await pendingPairing(fixture);
+
+      const state = fixture.runtime.getPeerHostState();
+
+      expect(state.pending).toEqual([
+        expect.objectContaining({ pairingId: begun.pairingId, deviceId: "device-0001", sasReady: true }),
+      ]);
+      const text = JSON.stringify(state);
+      for (const secret of [publicKey, nonce, begun.hostPublicKey, begun.hostNonce]) {
+        expect(text).not.toContain(secret);
+      }
+      expect(Object.keys(state.pending[0]).sort()).toEqual(
+        ["address", "appVersion", "createdAt", "deviceId", "name", "pairingId", "platform", "sasReady"].sort(),
+      );
+      expect(await fixture.runtime.approvePeerPairing({ pairingId: begun.pairingId, code: "00000000" })).toBe(
+        "sas-mismatch",
+      );
+    });
+
+    test("setPeerListenerInfo is returned by the state and announced only when it changes", async () => {
+      const fixture = await createFixture();
+      fixtures.push(fixture);
+      const updates = collect(fixture, "peers:updated");
+      const info = { listening: true, port: 43124, addresses: ["192.168.1.2"], error: "" };
+
+      fixture.runtime.setPeerListenerInfo(info);
+      fixture.runtime.setPeerListenerInfo({ ...info });
+
+      expect(fixture.runtime.getPeerHostState().listener).toEqual(info);
+      expect(updates).toHaveLength(1);
+    });
+
+    test("removePeerDevice emits peers:device-removed and forgets the device", async () => {
+      const fixture = await createFixture(encrypted());
+      fixtures.push(fixture);
+      await fixture.runtime.setPeerHosting({ enabled: true, port: 43124 });
+      const removed = collect(fixture, "peers:device-removed");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test seeds a persisted record
+      await fixture.store.mutate("test:seed-device", (draft: any) => {
+        draft.settings.integrations.peers.devices.push({
+          id: "device-0002",
+          name: "Laptop",
+          platform: "win32",
+          publicKey: `${"A".repeat(43)}=`,
+          pairedAt: 1,
+          lastSeenAt: 1,
+          lastAddress: "192.168.1.9",
+        });
+      });
+      expect(fixture.runtime.getPeerHostState().devices).toHaveLength(1);
+
+      expect(await fixture.runtime.removePeerDevice("device-0002")).toBe(true);
+      expect(await fixture.runtime.removePeerDevice("device-0002")).toBe(false);
+
+      expect(removed).toEqual([{ deviceId: "device-0002" }]);
+      expect(fixture.runtime.getPeerHostState().devices).toEqual([]);
+    });
+  });
+
+  describe("attaching profiles between desktops (device side)", () => {
+    const hostKey = `${"A".repeat(43)}=`;
+    const hostA = {
+      id: "host-aaaaaaaa",
+      label: "Mac",
+      address: "127.0.0.1",
+      port: 1,
+      hostPublicKey: hostKey,
+      pairedAt: 1,
+    };
+    const hostB = { ...hostA, id: "host-bbbbbbbb", label: "Linux" };
+    const instanceId = "instance-local-0001";
+    const geometry = { bounds: { x: 12, y: 34, width: 900, height: 700 }, displayId: 2, lastFocusedAt: 555 };
+
+    function deviceState() {
+      const base = makeProfileSwitchState();
+      return {
+        ...base,
+        settings: { terminalFontSizeLocal: 19, integrations: { peers: { instanceId, hosts: [hostA, hostB] } } },
+        windowSlots: [
+          { ...base.windowSlots[0], bounds: { x: 0, y: 0, width: 1280, height: 800 } },
+          {
+            id: "win-2",
+            profileId: "profile-b",
+            activeWorkspaceId: "ws-b1",
+            activeSessionId: "ws-b1:shell",
+            ...geometry,
+            isMaximized: true,
+          },
+        ],
+        peerWindows: [
+          { id: "peer-1", hostId: hostA.id, remoteProfileId: "work", ...geometry },
+          { id: "peer-2", hostId: hostA.id, remoteProfileId: "home", ...geometry },
+          { id: "peer-3", hostId: hostB.id, remoteProfileId: "home", ...geometry },
+        ],
+      };
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: shared runtime test fixture
+    const stateOf = (fixture: { store: { getState(): any } }) => fixture.store.getState();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: shared runtime test fixture
+    const collect = (fixture: { runtime: any }, channel: string) => {
+      const seen: unknown[] = [];
+      fixture.runtime.on(channel, (payload: unknown) => seen.push(payload));
+      return seen;
+    };
+
+    test("listPeerHosts maps each stored host with its link state and both versions, and carries no key", async () => {
+      const fixture = await createFixture({ initialState: deviceState() });
+      fixtures.push(fixture);
+
+      const hosts = fixture.runtime.listPeerHosts();
+
+      expect(hosts.map((host: { id: string }) => host.id)).toEqual([hostA.id, hostB.id]);
+      expect(hosts[0]).toMatchObject({
+        id: hostA.id,
+        label: "Mac",
+        address: "127.0.0.1",
+        port: 1,
+        state: "unknown",
+        hostAppVersion: "",
+        profiles: [],
+        checkedAt: 0,
+      });
+      expect(hosts[0].localAppVersion).toMatch(/^\d+\.\d+\.\d+/);
+      expect(JSON.stringify(hosts)).not.toContain("BEGIN");
+    });
+
+    test("refreshPeerHost answers null for an unknown host and the host's entry for a known one", async () => {
+      const fixture = await createFixture({ initialState: deviceState() });
+      fixtures.push(fixture);
+
+      await expect(fixture.runtime.refreshPeerHost("host-unknown1")).resolves.toBeNull();
+      await expect(fixture.runtime.refreshPeerHost(hostA.id, { force: true })).resolves.toMatchObject({ id: hostA.id });
+    });
+
+    test("getWindowBackend tells local, peer and unknown windows apart and derives the client id", async () => {
+      const fixture = await createFixture({ initialState: deviceState() });
+      fixtures.push(fixture);
+
+      expect(fixture.runtime.getWindowBackend("win-1")).toEqual({ kind: "local" });
+      expect(fixture.runtime.getWindowBackend("nobody")).toEqual({ kind: "local" });
+      const clientIdOf = (windowId: string) => {
+        const backend = fixture.runtime.getWindowBackend(windowId);
+        return backend.kind === "peer" ? backend.clientId : "";
+      };
+      const peer = fixture.runtime.getWindowBackend("peer-1");
+      expect(peer).toEqual({
+        kind: "peer",
+        hostId: hostA.id,
+        hostLabel: "Mac",
+        remoteProfileId: "work",
+        clientId: peerWindowClientId(instanceId, "peer-1"),
+        terminalFontSize: 19,
+      });
+      expect(clientIdOf("peer-1")).toMatch(/^[a-zA-Z0-9_-]{8,80}$/);
+      expect(fixture.runtime.getWindowBackend("peer-1")).toEqual(peer);
+      expect(clientIdOf("peer-2")).not.toBe(clientIdOf("peer-1"));
+      expect(peerWindowClientId("another-instance", "peer-1")).not.toBe(clientIdOf("peer-1"));
+      expect(fixture.runtime.isPeerWindow("peer-1")).toBe(true);
+      expect(fixture.runtime.isPeerWindow("win-1")).toBe(false);
+    });
+
+    test("getLocalProfilesOverview counts workspaces and open local windows, never peer windows", async () => {
+      const fixture = await createFixture({ initialState: deviceState() });
+      fixtures.push(fixture);
+
+      expect(fixture.runtime.getLocalProfilesOverview()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: "profile-a", name: "Profile A", workspaceCount: 1, openWindows: 1 }),
+          expect.objectContaining({ id: "profile-b", name: "Profile B", workspaceCount: 1, openWindows: 1 }),
+        ]),
+      );
+    });
+
+    test("createPeerWindowSlot adds a slot for an attached host only, and the slot is removable and updatable", async () => {
+      const fixture = await createFixture({ initialState: deviceState() });
+      fixtures.push(fixture);
+
+      await expect(
+        fixture.runtime.createPeerWindowSlot({ hostId: "host-unknown1", profileId: "home" }),
+      ).rejects.toThrow(/not attached/);
+      const slot = await fixture.runtime.createPeerWindowSlot({ hostId: hostB.id, profileId: "work" });
+      expect(slot).toMatchObject({ hostId: hostB.id, remoteProfileId: "work" });
+      expect(slot.bounds.width).toBeGreaterThan(0);
+      expect(stateOf(fixture).peerWindows.some((entry: { id: string }) => entry.id === slot.id)).toBe(true);
+
+      await fixture.runtime.updatePeerWindowSlotBounds(slot.id, { x: 5, y: 6, width: 700, height: 500 }, 4);
+      await fixture.runtime.setPeerWindowProfile(slot.id, "home");
+      expect(stateOf(fixture).peerWindows.find((entry: { id: string }) => entry.id === slot.id)).toMatchObject({
+        bounds: { x: 5, y: 6, width: 700, height: 500 },
+        displayId: 4,
+        remoteProfileId: "home",
+      });
+      await expect(fixture.runtime.setPeerWindowProfile("win-1", "home")).rejects.toThrow(/not attached/);
+
+      await fixture.runtime.removePeerWindowSlot(slot.id);
+      expect(stateOf(fixture).peerWindows.some((entry: { id: string }) => entry.id === slot.id)).toBe(false);
+    });
+
+    test("convertWindowToPeer and back keep the window's id and geometry, in one state change each", async () => {
+      const fixture = await createFixture({ initialState: deviceState() });
+      fixtures.push(fixture);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: shared runtime test fixture
+      const states: any[] = [];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: shared runtime test fixture
+      const store = fixture.store as any;
+      const mutate = store.mutate.bind(store);
+      store.mutate = async (...args: unknown[]) => {
+        const result = await mutate(...args);
+        states.push(structuredClone(result));
+        return result;
+      };
+
+      const peer = await fixture.runtime.convertWindowToPeer("win-2", { hostId: hostA.id, profileId: "work" });
+
+      expect(peer).toMatchObject({ id: "win-2", hostId: hostA.id, remoteProfileId: "work", ...geometry });
+      const afterToPeer = stateOf(fixture);
+      expect(afterToPeer.windowSlots.map((slot: { id: string }) => slot.id)).toEqual(["win-1"]);
+      expect(afterToPeer.peerWindows.find((entry: { id: string }) => entry.id === "win-2")).toMatchObject({
+        isMaximized: true,
+        ...geometry,
+      });
+      // The local view is mirrored into its profile exactly as when the window closes.
+      expect(afterToPeer.profiles.find((profile: { id: string }) => profile.id === "profile-b")).toMatchObject({
+        lastActiveWorkspaceId: "ws-b1",
+        lastActiveSessionId: "ws-b1:shell",
+      });
+      const windowSeenAs = states.map((state) => ({
+        local: state.windowSlots.some((slot: { id: string }) => slot.id === "win-2"),
+        peer: state.peerWindows.some((entry: { id: string }) => entry.id === "win-2"),
+      }));
+      expect(windowSeenAs.some((seen) => !seen.local && !seen.peer)).toBe(false);
+      expect(windowSeenAs.some((seen) => seen.local && seen.peer)).toBe(false);
+      expect(fixture.runtime.getWindowBackend("win-2")).toMatchObject({ kind: "peer", hostId: hostA.id });
+
+      const local = await fixture.runtime.convertWindowToLocal("win-2", "profile-b");
+
+      expect(local).toMatchObject({ id: "win-2", profileId: "profile-b", bounds: geometry.bounds });
+      const afterToLocal = stateOf(fixture);
+      expect(afterToLocal.peerWindows.some((entry: { id: string }) => entry.id === "win-2")).toBe(false);
+      expect(afterToLocal.windowSlots.find((slot: { id: string }) => slot.id === "win-2")).toMatchObject({
+        profileId: "profile-b",
+        activeWorkspaceId: "ws-b1",
+        bounds: geometry.bounds,
+        displayId: 2,
+        isMaximized: true,
+      });
+      expect(fixture.runtime.getWindowBackend("win-2")).toEqual({ kind: "local" });
+    });
+
+    test("the only local window can be attached to another desktop and brought back, whatever its id", async () => {
+      for (const onlyId of ["win-1", "window-main"]) {
+        const base = deviceState();
+        const fixture = await createFixture({
+          initialState: {
+            ...base,
+            windowSlots: [{ ...base.windowSlots[0], id: onlyId }],
+            peerWindows: [],
+          },
+        });
+        fixtures.push(fixture);
+        expect(stateOf(fixture).windowSlots.map((slot: { id: string }) => slot.id)).toEqual([onlyId]);
+
+        const peer = await fixture.runtime.convertWindowToPeer(onlyId, { hostId: hostA.id, profileId: "work" });
+
+        expect(peer).toMatchObject({ id: onlyId, hostId: hostA.id, remoteProfileId: "work" });
+        expect(stateOf(fixture).windowSlots).toEqual([]);
+        expect(stateOf(fixture).peerWindows.map((entry: { id: string }) => entry.id)).toEqual([onlyId]);
+        expect(fixture.runtime.getWindowBackend(onlyId)).toMatchObject({ kind: "peer", hostId: hostA.id });
+
+        const local = await fixture.runtime.convertWindowToLocal(onlyId, "profile-a");
+
+        expect(local).toMatchObject({ id: onlyId, profileId: "profile-a" });
+        expect(stateOf(fixture).peerWindows).toEqual([]);
+        expect(stateOf(fixture).windowSlots.map((slot: { id: string }) => slot.id)).toEqual([onlyId]);
+        expect(fixture.runtime.getWindowBackend(onlyId)).toEqual({ kind: "local" });
+      }
+    });
+
+    test("with only windows of other desktops a new local window and removing the last peer window both work", async () => {
+      const base = deviceState();
+      const fixture = await createFixture({
+        initialState: { ...base, windowSlots: [{ ...base.windowSlots[0], id: "window-main" }], peerWindows: [] },
+      });
+      fixtures.push(fixture);
+      await fixture.runtime.convertWindowToPeer("window-main", { hostId: hostA.id, profileId: "work" });
+      expect(stateOf(fixture).windowSlots).toEqual([]);
+
+      const created = await fixture.runtime.createWindowSlot("profile-b");
+      expect(stateOf(fixture).windowSlots.map((slot: { id: string }) => slot.id)).toEqual([created.id]);
+
+      await fixture.runtime.removeWindowSlot(created.id);
+      expect(stateOf(fixture).windowSlots).toEqual([]);
+      await fixture.runtime.removePeerWindowSlot("window-main");
+      expect(stateOf(fixture).peerWindows).toEqual([]);
+      expect(stateOf(fixture).windowSlots.map((slot: { id: string }) => slot.id)).toEqual(["window-main"]);
+    });
+
+    test("a conversion that cannot be done is refused with a reason and changes nothing", async () => {
+      const fixture = await createFixture({ initialState: deviceState() });
+      fixtures.push(fixture);
+      const before = structuredClone(stateOf(fixture));
+
+      await expect(
+        fixture.runtime.convertWindowToPeer("peer-1", { hostId: hostA.id, profileId: "work" }),
+      ).rejects.toThrow(/already attached/);
+      await expect(
+        fixture.runtime.convertWindowToPeer("nobody", { hostId: hostA.id, profileId: "work" }),
+      ).rejects.toThrow(/not a window of a local profile/);
+      await expect(fixture.runtime.convertWindowToLocal("win-1", "profile-a")).rejects.toThrow(/not attached/);
+      await expect(fixture.runtime.convertWindowToLocal("peer-1", "no-such-profile")).rejects.toThrow(/does not exist/);
+
+      expect(stateOf(fixture).windowSlots).toEqual(before.windowSlots);
+      expect(stateOf(fixture).peerWindows).toEqual(before.peerWindows);
+    });
+
+    test("retargetPeerWindow moves a peer window to another host and profile, keeping its id and geometry", async () => {
+      const fixture = await createFixture({ initialState: deviceState() });
+      fixtures.push(fixture);
+
+      const moved = await fixture.runtime.retargetPeerWindow("peer-1", { hostId: hostB.id, profileId: "home" });
+
+      expect(moved).toMatchObject({ id: "peer-1", hostId: hostB.id, remoteProfileId: "home", ...geometry });
+      expect(stateOf(fixture).peerWindows.map((entry: { id: string }) => entry.id)).toEqual([
+        "peer-1",
+        "peer-2",
+        "peer-3",
+      ]);
+      expect(fixture.runtime.getWindowBackend("peer-1")).toMatchObject({
+        kind: "peer",
+        hostId: hostB.id,
+        hostLabel: "Linux",
+      });
+      expect(stateOf(fixture).windowSlots.map((slot: { id: string }) => slot.id)).toEqual(["win-1", "win-2"]);
+      await expect(
+        fixture.runtime.retargetPeerWindow("win-1", { hostId: hostB.id, profileId: "home" }),
+      ).rejects.toThrow(/not attached/);
+      await expect(
+        fixture.runtime.retargetPeerWindow("peer-1", { hostId: "host-unknown1", profileId: "home" }),
+      ).rejects.toThrow(/not attached/);
+      expect(stateOf(fixture).peerWindows[0]).toMatchObject({ hostId: hostB.id });
+    });
+
+    test("setPeerWindowFontSize writes this desktop's own size and announces the state", async () => {
+      const fixture = await createFixture({ initialState: deviceState() });
+      fixtures.push(fixture);
+      const updates = collect(fixture, "state:updated");
+
+      await fixture.runtime.setPeerWindowFontSize(24);
+
+      expect(stateOf(fixture).settings.terminalFontSizeLocal).toBe(24);
+      expect(stateOf(fixture).settings.terminalFontSizeRemote).not.toBe(24);
+      expect(updates.length).toBeGreaterThan(0);
+      expect(fixture.runtime.getWindowBackend("peer-1")).toMatchObject({ terminalFontSize: 24 });
+    });
+
+    test("requirePeerHostOnline refuses a host that cannot be reached, by name", async () => {
+      const fixture = await createFixture({ initialState: deviceState() });
+      fixtures.push(fixture);
+
+      await expect(fixture.runtime.requirePeerHostOnline(hostA.id)).rejects.toThrow("Mac cannot be reached.");
+      await expect(fixture.runtime.requirePeerHostOnline("host-unknown1")).rejects.toThrow(/not attached/);
+    });
+
+    test("converting to a host that is not attached is refused", async () => {
+      const fixture = await createFixture({ initialState: deviceState() });
+      fixtures.push(fixture);
+
+      await expect(
+        fixture.runtime.convertWindowToPeer("win-2", { hostId: "host-unknown1", profileId: "work" }),
+      ).rejects.toThrow(/not attached/);
+      expect(stateOf(fixture).windowSlots.map((slot: { id: string }) => slot.id)).toEqual(["win-1", "win-2"]);
+    });
+
+    test("removePeerHost drops that host's windows, keeps the others and emits peers:host-removed", async () => {
+      const fixture = await createFixture({ initialState: deviceState() });
+      fixtures.push(fixture);
+      const removed = collect(fixture, "peers:host-removed");
+
+      expect(await fixture.runtime.removePeerHost(hostA.id)).toBe(true);
+
+      expect(removed).toEqual([{ hostId: hostA.id, windowIds: ["peer-1", "peer-2"] }]);
+      expect(stateOf(fixture).peerWindows.map((entry: { id: string }) => entry.id)).toEqual(["peer-3"]);
+      expect(stateOf(fixture).settings.integrations.peers.hosts.map((host: { id: string }) => host.id)).toEqual([
+        hostB.id,
+      ]);
+      expect(await fixture.runtime.removePeerHost(hostA.id)).toBe(false);
+      expect(removed).toHaveLength(1);
+    });
+
+    test("the link refuses a window that is not attached, whoever it claims to be", async () => {
+      const fixture = await createFixture({ initialState: deviceState() });
+      fixtures.push(fixture);
+      const request = {
+        method: "GET",
+        pathname: "/api/state",
+        headers: { "x-strideterm-client-id": "forged-client-0000" },
+      };
+
+      await expect(fixture.runtime.peerWindowRequest("win-1", request)).rejects.toThrow(
+        "This window is not attached to another desktop.",
+      );
+      await expect(fixture.runtime.peerWindowRequest("nobody", request)).rejects.toThrow(
+        "This window is not attached to another desktop.",
+      );
+      expect(() => fixture.runtime.peerWindowOpenSocket("win-1", {})).toThrow(
+        "This window is not attached to another desktop.",
+      );
+    });
+
+    test("no remote route reaches the device side", () => {
+      const server = readFileSync(path.join(__dirname, "remote-server.ts"), "utf8");
+      for (const name of [
+        "listPeerHosts",
+        "refreshPeerHost",
+        "startPeerPairing",
+        "cancelPeerPairing",
+        "removePeerHost",
+        "updatePeerHostAddress",
+        "getWindowBackend",
+        "getLocalProfilesOverview",
+        "createPeerWindowSlot",
+        "convertWindowTo",
+        "setPeerWindowProfile",
+        "peerWindowRequest",
+        "peerWindowOpenSocket",
+      ]) {
+        expect(server, name).not.toContain(name);
+      }
+    });
   });
 
   describe("Jira polling state", () => {
@@ -21600,6 +22178,42 @@ describe("sidebar notes", () => {
     expect((await createStore(statePath)).getState().sidebarNotes).toEqual([
       { id, owner: "profile", ownerId: "default", text: "", revision: 3 },
     ]);
+  });
+
+  test("counts changes per profile in the payload, without note text", async () => {
+    const fixture = await createFixture({
+      initialState: {
+        profiles: [{ id: "default" }, { id: "other" }],
+        windowSlots: [
+          { id: "win-local", profileId: "default" },
+          { id: "win-other", profileId: "other" },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    const { runtime } = fixture;
+    const counters = () =>
+      (runtime.getPayload() as { sidebarNotesRevisions: Record<string, number> }).sidebarNotesRevisions;
+    const mine = { profileId: "default", workspaceId: null, id: "n" };
+    expect(counters()).toEqual({});
+    await runtime.saveSidebarNote({ ...mine, text: "secret note text", expectedRevision: 0 }, "win-local");
+    const first = counters().default;
+    expect(first).toBeGreaterThan(0);
+    expect(counters()).toEqual({ default: first });
+    await runtime.saveSidebarNote({ ...mine, text: "secret note text", expectedRevision: 1 }, "win-local");
+    expect(counters()).toEqual({ default: first });
+    await runtime.saveSidebarNote({ ...mine, text: "changed", expectedRevision: 1 }, "win-local");
+    expect(counters()).toEqual({ default: first + 1 });
+    await runtime.undoSidebarNote({ ...mine, expectedRevision: 2 }, "win-local");
+    expect(counters()).toEqual({ default: first + 2 });
+    await expect(
+      runtime.saveSidebarNote({ ...mine, text: "stale", expectedRevision: 1 }, "win-local"),
+    ).rejects.toThrow();
+    expect(counters()).toEqual({ default: first + 2 });
+    await runtime.saveSidebarNote({ ...mine, profileId: "other", text: "x", expectedRevision: 0 }, "win-other");
+    expect(counters().default).toBe(first + 2);
+    expect(counters().other).toBeGreaterThan(0);
+    expect(JSON.stringify(runtime.getPayload())).not.toContain("secret note text");
   });
 
   test("scopes profile and workspace notes to the window's profile", async () => {

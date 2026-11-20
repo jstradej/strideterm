@@ -1,9 +1,9 @@
 import { describe, expect, test } from "vitest";
-import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { begin, chunk, cancel, finish, listWithUsage, remove, usage } from "./attachments.js";
+import { DESKTOP_LIMITS, begin, chunk, cancel, finish, listWithUsage, remove, usage } from "./attachments.js";
 
 const hash = (value: Buffer) => crypto.createHash("sha256").update(value).digest("hex");
 const temp = () => mkdtemp(path.join(os.tmpdir(), "strideterm-quota-"));
@@ -115,6 +115,111 @@ describe("attachment quotas", () => {
       expect(snapshot.activeTransfers).toBe(0);
       expect(snapshot.storageBytes).toBe(0);
       expect(snapshot.received).toBe(received);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("attachment limits by uploader", () => {
+  const GIB = 1024 * 1024 * 1024;
+  const fabricateDone = async (root: string, count: number) => {
+    for (let i = 0; i < count; i++) {
+      const id = crypto.randomUUID();
+      const dir = path.join(root, ".strideterm/.attachment-transfers", id);
+      await mkdir(dir, { recursive: true });
+      const done = { transferId: id, path: `.strideterm/attachments/${id}/f.txt`, size: 1, sha256: "", name: "f.txt" };
+      await writeFile(
+        path.join(dir, "state.json"),
+        JSON.stringify({ id, name: "f.txt", size: 1, sha256: "", offset: 1, createdAt: 1, updatedAt: 1, done }),
+      );
+    }
+  };
+
+  test("the phone is still refused above 25 MiB and by the daily ledger, naming the limit", async () => {
+    const root = await temp();
+    try {
+      await expect(begin(root, "big.zip", 25 * 1024 * 1024 + 1, hash(Buffer.from("x")))).rejects.toThrow(
+        "Attachment exceeds the 25 MiB limit",
+      );
+      const ledger = path.join(root, ".strideterm/.attachment-usage.json");
+      await mkdir(path.dirname(ledger), { recursive: true });
+      await writeFile(
+        ledger,
+        JSON.stringify({ day: new Date().toISOString().slice(0, 10), received: 128 * 1024 * 1024 - 1 }),
+      );
+      const started = await begin(root, "daily.txt", 2, hash(Buffer.from("ab")));
+      await expect(chunk(root, started.transferId, 0, Buffer.from("ab").toString("base64"))).rejects.toThrow(
+        /daily receive quota exceeded \(limit 128 MiB/,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a desktop upload takes more than 25 MiB, is refused above 1 GiB, and ignores the daily ledger", async () => {
+    const root = await temp();
+    try {
+      const ledger = path.join(root, ".strideterm/.attachment-usage.json");
+      await mkdir(path.dirname(ledger), { recursive: true });
+      const full = JSON.stringify({ day: new Date().toISOString().slice(0, 10), received: 128 * 1024 * 1024 });
+      await writeFile(ledger, full);
+      const big = await begin(root, "big.zip", GIB, "", "w", undefined, DESKTOP_LIMITS);
+      expect(big.offset).toBe(0);
+      await expect(begin(root, "huge.zip", GIB + 1, "", "w", undefined, DESKTOP_LIMITS)).rejects.toThrow(
+        "Attachment exceeds the 1 GiB limit",
+      );
+      await expect(begin(root, "x.zip", 1, hash(Buffer.from("x")), "w", undefined, DESKTOP_LIMITS)).rejects.toThrow(
+        /Invalid SHA-256/,
+      );
+      const small = await begin(root, "ok.txt", 2, "", "w", undefined, DESKTOP_LIMITS);
+      await chunk(root, small.transferId, 0, Buffer.from("ab").toString("base64"), "w");
+      expect(await readFile(ledger, "utf8")).toBe(full);
+      const desktop = (await listWithUsage(root, DESKTOP_LIMITS)).usage;
+      expect(desktop).toMatchObject({ dailyLimit: null, fileSizeLimit: GIB, storageLimit: 4 * GIB, fileLimit: 100 });
+      const phone = (await listWithUsage(root)).usage;
+      expect(phone).toMatchObject({ dailyLimit: 128 * 1024 * 1024, storageLimit: 4 * GIB, fileLimit: 100 });
+      expect(phone).not.toHaveProperty("fileSizeLimit");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("the storage cap is shared by both uploaders", async () => {
+    const root = await temp();
+    try {
+      for (let i = 0; i < 4; i++) await begin(root, `part-${i}.zip`, GIB, "", `w${i}`, undefined, DESKTOP_LIMITS);
+      await expect(begin(root, "more.zip", 1, "", "w", undefined, DESKTOP_LIMITS)).rejects.toThrow(
+        "Attachment quota exceeded: a workspace holds at most 4 GiB of attachments",
+      );
+      await expect(begin(root, "phone.txt", 1, hash(Buffer.from("x")))).rejects.toThrow(
+        "Attachment quota exceeded: a workspace holds at most 4 GiB of attachments",
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("the file count cap is shared by both uploaders", async () => {
+    const root = await temp();
+    try {
+      await fabricateDone(root, 100);
+      const message = "Attachment quota exceeded: a workspace holds at most 100 attachments";
+      await expect(begin(root, "x.txt", 1, hash(Buffer.from("x")))).rejects.toThrow(message);
+      await expect(begin(root, "x.txt", 1, "", "w", undefined, DESKTOP_LIMITS)).rejects.toThrow(message);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("the concurrent transfer cap names its limit for both uploaders", async () => {
+    const root = await temp();
+    try {
+      for (let i = 0; i < 4; i++) await begin(root, `a${i}.txt`, 1, "", `w${i}`, undefined, DESKTOP_LIMITS);
+      await expect(begin(root, "b.txt", 1, "", "w", undefined, DESKTOP_LIMITS)).rejects.toThrow(
+        "Too many concurrent attachment transfers (limit 4)",
+      );
+      await expect(begin(root, "c.txt", 1, hash(Buffer.from("x")))).rejects.toThrow(/limit 4/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

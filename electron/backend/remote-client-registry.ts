@@ -350,13 +350,23 @@ export class RemoteClientRegistry {
       windowIndex: idx + 1,
     }));
     const client = this.clients.get(sessionId);
+    const ownNotesRevisions = (profileId: string) => {
+      const all = payload.sidebarNotesRevisions as Record<string, number> | undefined;
+      if (!all) return {};
+      return { sidebarNotesRevisions: typeof all[profileId] === "number" ? { [profileId]: all[profileId] } : {} };
+    };
     if (!client) {
-      return { ...payload, appState: { ...remoteAppState, windowSlots: reducedSlots } };
+      return {
+        ...payload,
+        appState: { ...remoteAppState, windowSlots: reducedSlots },
+        ...ownNotesRevisions(this.fallbackProfileId(appState)),
+      };
     }
     this.revalidate(client, appState);
     return {
       ...payload,
       appState: { ...remoteAppState, windowSlots: reducedSlots },
+      ...ownNotesRevisions(client.profileId),
       remoteClient: {
         id: client.id,
         profileId: client.profileId,
