@@ -4,7 +4,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach, test } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
-import { nextTick } from "vue";
+import { nextTick, reactive } from "vue";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createRemoteTransport, createTransport } from "./transport.js";
@@ -3078,6 +3078,29 @@ describe("remote transport — Jira agent attachment limits", () => {
 describe("remote transport — Jira comment attribution", () => {
   it("has no setter, so a remote client cannot change it", () => {
     expect((makeRemoteTransport() as unknown as Record<string, unknown>).setJiraCommentAttribution).toBeUndefined();
+  });
+});
+
+describe("electron transport — sidebar notes", () => {
+  afterEach(() => {
+    delete (window as unknown as Record<string, unknown>).strideterm;
+  });
+
+  it("passes reactive notes payloads to the preload as cloneable objects", async () => {
+    const invoke = async (payload: unknown) => structuredClone(payload);
+    (window as unknown as Record<string, unknown>).strideterm = {
+      listSidebarNotes: invoke,
+      saveSidebarNote: invoke,
+      undoSidebarNote: invoke,
+    };
+
+    const transport = createTransport();
+    const scope = { profileId: "default", workspaceId: "demo" };
+    const undo = { ...scope, id: "note", expectedRevision: 1 };
+    const save = { ...undo, text: "Note" };
+    await expect(transport.listSidebarNotes!(reactive(scope))).resolves.toEqual(scope);
+    await expect(transport.saveSidebarNote!(reactive(save))).resolves.toEqual(save);
+    await expect(transport.undoSidebarNote!(reactive(undo))).resolves.toEqual(undo);
   });
 });
 

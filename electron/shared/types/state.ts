@@ -825,6 +825,15 @@ export interface ScratchpadRecord {
 
 // ------- AppState (persisted) -------
 
+export interface SidebarNoteRecord {
+  owner: "profile" | "workspace";
+  ownerId: string;
+  id: string;
+  text: string;
+  revision: number;
+  previousText?: string;
+}
+
 export interface AppState {
   activeWorkspaceId: string;
   settings: Settings;
@@ -833,6 +842,7 @@ export interface AppState {
   workspaces: WorkspaceState[];
   /** Backend-owned records for app-managed scratchpad workspaces. */
   scratchpads?: ScratchpadRecord[];
+  sidebarNotes?: SidebarNoteRecord[];
   ssh: SshAppState;
   /** @deprecated Global grid moved to Profile.workspaceGrid; kept for downgrade compat. */
   workspaceGrid?: WorkspaceGridState | null;
@@ -1331,7 +1341,7 @@ export interface AutomationUiState {
 
 export interface StatePayload {
   meta: MetaState;
-  appState: AppState;
+  appState: Omit<AppState, "sidebarNotes">;
   workspace: WorkspaceState | null;
   attention: AttentionState;
   docker: DockerState;

@@ -10,6 +10,13 @@ import type {
 } from "./automation-api.js";
 import type { StatePayload, RecoveryResult } from "./types/state.js";
 import type { AppUpdateStatus } from "./app-update.js";
+import type {
+  SaveSidebarNote,
+  SidebarNote,
+  SidebarNotes,
+  SidebarNotesScope,
+  UndoSidebarNote,
+} from "./sidebar-notes.js";
 import type { JiraWorkspaceViewInput, JiraWorkspaceViewsState } from "./types/jira-workspace-views.js";
 import type { JiraSmartFilterId } from "./jira-smart-filters.js";
 import type {
@@ -284,6 +291,9 @@ export interface StridetermAPI {
   syncAttentionContext: (payload: AttentionSync) => Promise<unknown>;
   clearAllAttention: () => Promise<unknown>;
   clearAlertForSession: (sessionId: string, options?: Record<string, unknown>) => Promise<unknown>;
+  listSidebarNotes: (scope: SidebarNotesScope) => Promise<SidebarNotes>;
+  saveSidebarNote: (note: SaveSidebarNote) => Promise<SidebarNote>;
+  undoSidebarNote: (note: UndoSidebarNote) => Promise<SidebarNote>;
   saveWorkspace: (workspace: Workspace) => Promise<unknown>;
   saveProject: (project: Workspace) => Promise<unknown>;
   deleteWorkspace: (workspaceId: string, options?: Record<string, unknown>) => Promise<unknown>;

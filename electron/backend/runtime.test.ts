@@ -21523,6 +21523,91 @@ describe("file access follows the caller's profile (security review 2026-09-30, 
   });
 });
 
+describe("sidebar notes", () => {
+  test("keeps notes and one preceding saved text across store reloads", async () => {
+    const fixture = await createFixture({ dependencies: { createStore } });
+    fixtures.push(fixture);
+    const { runtime } = fixture;
+    const scope = { profileId: "default", workspaceId: null };
+    const id = "note";
+    await expect(runtime.saveSidebarNote({ ...scope, id, text: "", expectedRevision: 0 })).resolves.toEqual({
+      id,
+      text: "",
+      revision: 1,
+      canUndo: false,
+    });
+    const updated = { id, text: "New text\r\n  including whitespace ", revision: 2, canUndo: true };
+    const saves = await Promise.allSettled([
+      runtime.saveSidebarNote({ ...scope, id, text: updated.text, expectedRevision: 1 }),
+      runtime.saveSidebarNote({ ...scope, id, text: "stale write", expectedRevision: 1 }),
+    ]);
+    expect(saves).toMatchObject([{ status: "fulfilled", value: updated }, { status: "rejected" }]);
+    await expect(runtime.saveSidebarNote({ ...scope, id, text: updated.text, expectedRevision: 2 })).resolves.toEqual(
+      updated,
+    );
+    expect(runtime.getPayload().appState).not.toHaveProperty("sidebarNotes");
+
+    const statePath = path.join(fixture.userDataPath, "strideterm-state.json");
+    const reloadedStore = await createStore(statePath);
+    expect(reloadedStore.getState().sidebarNotes).toEqual([
+      { id, owner: "profile", ownerId: "default", text: updated.text, revision: 2, previousText: "" },
+    ]);
+
+    await expect(runtime.undoSidebarNote({ ...scope, id, expectedRevision: 2 })).resolves.toEqual({
+      id,
+      text: "",
+      revision: 3,
+      canUndo: false,
+    });
+    await expect(runtime.undoSidebarNote({ ...scope, id, expectedRevision: 3 })).rejects.toThrow(/no previous/);
+    expect((await createStore(statePath)).getState().sidebarNotes).toEqual([
+      { id, owner: "profile", ownerId: "default", text: "", revision: 3 },
+    ]);
+  });
+
+  test("scopes profile and workspace notes to the window's profile", async () => {
+    const fixture = await createFixture({
+      initialState: {
+        profiles: [{ id: "default" }, { id: "other" }],
+        workspaces: [
+          { id: "mine", profileId: "default", name: "Shared name", cwd: "/tmp/shared" },
+          { id: "theirs", profileId: "other", name: "Shared name", cwd: "/tmp/shared" },
+        ],
+        windowSlots: [
+          { id: "win-local", profileId: "default", activeWorkspaceId: "mine" },
+          { id: "win-other", profileId: "other", activeWorkspaceId: "theirs" },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    const { runtime } = fixture;
+    const mine = { profileId: "default", workspaceId: "mine" };
+    const global = { ...mine, workspaceId: null };
+    const theirs = { profileId: "other", workspaceId: "theirs" };
+    const input = { id: "same-id", expectedRevision: 0 };
+    const globalNote = await runtime.saveSidebarNote({ ...global, ...input, text: "Global" }, "win-local");
+    const recentGlobalNote = await runtime.saveSidebarNote(
+      { ...global, ...input, id: "recent", text: "Recent" },
+      "win-local",
+    );
+    const ownNote = await runtime.saveSidebarNote({ ...mine, ...input, text: "Mine" }, "win-local");
+    const otherNote = await runtime.saveSidebarNote({ ...theirs, ...input, text: "Theirs" }, "win-other");
+    expect(runtime.listSidebarNotes(mine, "win-local")).toEqual({
+      global: [recentGlobalNote, globalNote],
+      workspace: [ownNote],
+    });
+    expect(runtime.listSidebarNotes(theirs, "win-other")).toEqual({ global: [], workspace: [otherNote] });
+    expect(() => runtime.listSidebarNotes(theirs, "win-local")).toThrow(/active profile/);
+    expect(() => runtime.listSidebarNotes(mine, "unknown-window")).toThrow(/active profile/);
+    await expect(
+      runtime.saveSidebarNote({ ...mine, ...input, workspaceId: "theirs", text: "Cross-profile" }, "win-local"),
+    ).rejects.toThrow(/active profile/);
+    await expect(runtime.undoSidebarNote({ ...theirs, ...input, expectedRevision: 1 }, "win-local")).rejects.toThrow(
+      /active profile/,
+    );
+  });
+});
+
 // The remote-access master token lives in the credential store, never in strideterm-state.json.
 describe("remote-access token storage", () => {
   async function tokenFixture({ stateToken, storedToken }: { stateToken?: string; storedToken?: string }) {

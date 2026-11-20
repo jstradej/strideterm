@@ -164,6 +164,28 @@ describe("registerIpc teardown", () => {
     expect(removeHandlerCalls.length).toBe(registeredChannels.size);
   });
 
+  test("sidebar note saves validate the payload and require an owning window", async () => {
+    const runtime = makeRuntimeStub();
+    const storedNote = { id: "n-1", text: "Release checklist", revision: 1, canUndo: false };
+    runtime.saveSidebarNote = vi.fn(async () => storedNote);
+    const dispose = registerIpc(runtime, () => {}, {
+      getWindowIdByWebContentsId: (id) => (id === 7 ? "win-a" : undefined),
+    });
+    const save = handleRegistry.get("sidebar-notes:save") as (_event: unknown, _payload: unknown) => Promise<unknown>;
+    const data = { profileId: "profile-a", workspaceId: null, id: "n-1", text: storedNote.text, expectedRevision: 0 };
+    try {
+      await expect(save({ sender: { id: 99 } }, data)).rejects.toThrow("Notes require an owning window");
+      await expect(save({ sender: { id: 7 } }, { ...data, expectedRevision: -1 })).rejects.toThrow(
+        "IPC validation failed",
+      );
+      expect(runtime.saveSidebarNote).not.toHaveBeenCalled();
+      await expect(save({ sender: { id: 7 } }, data)).resolves.toEqual(storedNote);
+      expect(runtime.saveSidebarNote).toHaveBeenCalledWith(data, "win-a");
+    } finally {
+      dispose();
+    }
+  });
+
   test("Jira cache flags and board filters pass through validated IPC payloads", async () => {
     const runtime = makeRuntimeStub();
     runtime.jiraGetBoardView = vi.fn(async () => null);

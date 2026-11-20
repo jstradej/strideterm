@@ -1035,6 +1035,36 @@ describe("workspace delete endpoint validation", () => {
     "X-Strideterm-Client-Id": "test-client",
   });
 
+  test("sidebar notes require a bound viewer and validate requests before calling the runtime", async () => {
+    const port = await getFreePort();
+    const auth = "test-token-sidebar-notes";
+    const listSidebarNotes = vi.fn(() => ({ global: [], workspace: [] }));
+    const runtime = { ...makeMinimalRuntime(auth, port), listSidebarNotes };
+    const server = await startRemoteServer({
+      runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    const scope = { profileId: "default", workspaceId: null };
+    const list = (body: unknown, bound = true) =>
+      fetch(`http://127.0.0.1:${port}/api/sidebar-notes/list`, {
+        method: "POST",
+        headers: bound ? clientHeaders(auth) : { Authorization: `Bearer ${auth}`, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    try {
+      expect((await list(scope, false)).status).toBe(400);
+      expect((await list({ ...scope, workspaceId: 42 })).status).toBe(400);
+      expect(listSidebarNotes).not.toHaveBeenCalled();
+
+      const response = await list(scope);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ global: [], workspace: [] });
+      expect(listSidebarNotes).toHaveBeenCalledWith(scope, expect.stringMatching(/^remote:/));
+    } finally {
+      await server.close();
+    }
+  });
+
   test("POST /api/workspace/delete with invalid options (wrong type) returns 400", async () => {
     const port = await getFreePort();
     const auth = "test-token-del";

@@ -1,4 +1,5 @@
 import { AUTOMATION_RUN_FINISHED_CHANNEL } from "../shared/automation-events-channel.js";
+import { saveSidebarNoteSchema, sidebarNotesScopeSchema, undoSidebarNoteSchema } from "../shared/sidebar-notes.js";
 import {
   automationCreateSchema,
   automationUpdateSchema,
@@ -4035,6 +4036,12 @@ export async function startRemoteServer({
         validateIpc(worktreePathPreviewSchema, body, "POST /api/git/preview-worktree-path"),
         windowId,
       ),
+    "/api/sidebar-notes/list": (body, windowId) =>
+      runtime.listSidebarNotes(validateIpc(sidebarNotesScopeSchema, body, "POST /api/sidebar-notes/list"), windowId),
+    "/api/sidebar-notes/save": (body, windowId) =>
+      runtime.saveSidebarNote(validateIpc(saveSidebarNoteSchema, body, "POST /api/sidebar-notes/save"), windowId),
+    "/api/sidebar-notes/undo": (body, windowId) =>
+      runtime.undoSidebarNote(validateIpc(undoSidebarNoteSchema, body, "POST /api/sidebar-notes/undo"), windowId),
     // saveWorkspace can change profileId or overwrite an existing
     // workspace; without slot-aware routing a remote on profile B
     // could create entries in profile A or hijack profile-A workspaces.

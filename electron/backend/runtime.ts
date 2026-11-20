@@ -18,6 +18,14 @@ import {
   type AzureClosedPrCleanupFinished,
 } from "../shared/azure-closed-pr-cleanup-events.js";
 import { createStore } from "./store.js";
+import { toSidebarNote } from "./sidebar-notes.js";
+import type {
+  SaveSidebarNote,
+  SidebarNote,
+  SidebarNotes,
+  SidebarNotesScope,
+  UndoSidebarNote,
+} from "../shared/sidebar-notes.js";
 import { readAutomationResult } from "./automations/automation-result.js";
 import { AutomationJournal, automationRunSummary } from "./automations/automation-journal.js";
 import { AutomationRunner } from "./automations/automation-runner.js";
@@ -5113,7 +5121,9 @@ export async function createRuntime({
         recoveryCandidates: _recoveryCandidates,
       },
       appState: (() => {
-        const cloned = clone(state);
+        const publicState = { ...state };
+        delete publicState.sidebarNotes;
+        const cloned = clone(publicState);
         // Filter connections to active profile only
         if (cloned.settings?.integrations?.azureDevops) {
           cloned.settings.integrations.azureDevops.connections = getAzureConnections(state);
@@ -9496,6 +9506,56 @@ export async function createRuntime({
     return slot ? slot.profileId : null;
   }
 
+  function assertSidebarNotesScope(state: AppState, scope: SidebarNotesScope, windowId: string | undefined): void {
+    const profileId = windowId ? getWindowProfileId(windowId) : "default";
+    if (scope.profileId !== profileId || !state.profiles.some((profile) => profile.id === profileId)) {
+      throw new ClientRequestError("Notes are outside the active profile.", 403);
+    }
+    if (
+      scope.workspaceId !== null &&
+      !state.workspaces.some(
+        (workspace) => workspace.id === scope.workspaceId && (workspace.profileId || "default") === profileId,
+      )
+    ) {
+      throw new ClientRequestError("Notes workspace is unavailable in the active profile.", 403);
+    }
+  }
+
+  async function persistSidebarNote(input: SaveSidebarNote | UndoSidebarNote, windowId?: string): Promise<SidebarNote> {
+    const owner = input.workspaceId === null ? "profile" : "workspace";
+    const ownerId = input.workspaceId ?? input.profileId;
+    const matchesNote = (note: NonNullable<AppState["sidebarNotes"]>[number]) =>
+      note.id === input.id && note.owner === owner && note.ownerId === ownerId;
+    const state: AppState = await store.mutate("sidebar-note:update", (draft: AppState) => {
+      assertSidebarNotesScope(draft, input, windowId);
+      const notes = (draft.sidebarNotes ??= []);
+      const note = notes.find(matchesNote);
+      if ((note?.revision ?? 0) !== input.expectedRevision) {
+        throw new ClientRequestError("This note has changed. Reload it before trying again.", 409);
+      }
+      if ("text" in input) {
+        if (!note) {
+          notes.unshift({ id: input.id, text: input.text, owner, ownerId, revision: 1 });
+          return;
+        }
+        if (input.text === note.text) return;
+        if (note.revision === Number.MAX_SAFE_INTEGER) throw new Error("This note has reached its revision limit.");
+        note.previousText = note.text;
+        note.text = input.text;
+      } else {
+        if (note?.previousText === undefined)
+          throw new ClientRequestError("There is no previous saved text to undo.", 409);
+        if (note.revision === Number.MAX_SAFE_INTEGER) throw new Error("This note has reached its revision limit.");
+        note.text = note.previousText;
+        delete note.previousText;
+      }
+      note.revision++;
+    });
+    const savedNote = state.sidebarNotes?.find(matchesNote);
+    if (!savedNote) throw new Error("The note could not be saved.");
+    return toSidebarNote(savedNote);
+  }
+
   function sshTmuxOwner(windowId: string) {
     const profileId = parseRemoteViewerId(windowId) ? "" : getWindowProfileId(windowId) || "";
     return { windowId, profileId };
@@ -12691,6 +12751,25 @@ export async function createRuntime({
     getPayload,
     getRemoteInfo() {
       return remoteInfo;
+    },
+    listSidebarNotes(scope: SidebarNotesScope, windowId?: string): SidebarNotes {
+      const state = getState();
+      assertSidebarNotesScope(state, scope, windowId);
+      const result: SidebarNotes = { global: [], workspace: [] };
+      for (const note of state.sidebarNotes ?? []) {
+        if (note.owner === "profile" && note.ownerId === scope.profileId) {
+          result.global.push(toSidebarNote(note));
+        } else if (note.owner === "workspace" && note.ownerId === scope.workspaceId) {
+          result.workspace.push(toSidebarNote(note));
+        }
+      }
+      return result;
+    },
+    saveSidebarNote(input: SaveSidebarNote, windowId?: string): Promise<SidebarNote> {
+      return persistSidebarNote(input, windowId);
+    },
+    undoSidebarNote(input: UndoSidebarNote, windowId?: string): Promise<SidebarNote> {
+      return persistSidebarNote(input, windowId);
     },
     getTerminalReplay(sessionId: string) {
       return { data: terminalReplay.snapshot(String(sessionId || "")).data };

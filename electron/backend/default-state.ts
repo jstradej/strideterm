@@ -35,6 +35,7 @@ import {
   normalizeJiraAgentAttachmentLimits,
 } from "../shared/jira-agent-attachments.js";
 import { clampJiraPollSeconds, JIRA_POLL_DEFAULT_SECONDS } from "../shared/jira-poll-interval.js";
+import { normalizeSidebarNotes } from "./sidebar-notes.js";
 
 const UTF8_DECODER = (() => {
   try {
@@ -859,6 +860,7 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
     ],
     workspaces: [] as WorkspaceState[],
     scratchpads: [],
+    sidebarNotes: [],
     windowSlots: [] as WindowSlot[],
     ssh: {
       hosts: [],
@@ -2193,6 +2195,7 @@ export function normalizeState(
   // Drop activeProfileId from rawState so it is not re-serialized into the persisted file.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { activeProfileId: _activeProfileIdDropped, ...rawStateWithoutProfileId } = rawState as Record<string, unknown>;
+  const sidebarNotes = normalizeSidebarNotes(rawState.sidebarNotes, profilesWithGrid, workspaces);
   const normalized = {
     ...defaults,
     ...rawStateWithoutProfileId,
@@ -2202,6 +2205,7 @@ export function normalizeState(
     tabTemplates,
     profiles: profilesWithGrid,
     workspaces,
+    sidebarNotes,
     scratchpads: Array.isArray((rawState as Record<string, unknown>).scratchpads)
       ? ((rawState as Record<string, unknown>).scratchpads as unknown[])
           .filter(

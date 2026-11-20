@@ -19,6 +19,7 @@ import { open as openFileHandle } from "node:fs/promises";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import type { createRuntime } from "./runtime.js";
 import { startPullRequestReviewSchema } from "../shared/pull-request-review.js";
+import { saveSidebarNoteSchema, sidebarNotesScopeSchema, undoSidebarNoteSchema } from "../shared/sidebar-notes.js";
 import { START_PIPELINE_AGENT_CHANNEL, startPipelineAgentSchema } from "../shared/pipeline-agent.js";
 import { START_JIRA_DEVELOPMENT_CHANNEL, startJiraDevelopmentSchema } from "../shared/jira-development.js";
 import { withOperationPromise } from "./effect/runtime.js";
@@ -728,6 +729,30 @@ export function registerIpc(
       windowId ? runtime.activateWorkspaceInWindow(projectId, windowId) : runtime.activateProject(projectId),
     );
   });
+  function sidebarNotesWindowId(webContentsId: number): string {
+    const windowId = getWindowIdByWebContentsId?.(webContentsId);
+    if (!windowId) throw new Error("Notes require an owning window.");
+    return windowId;
+  }
+
+  handle("sidebar-notes:list", (event, scope) =>
+    runtime.listSidebarNotes(
+      validateIpc(sidebarNotesScopeSchema, scope, "sidebar-notes:list"),
+      sidebarNotesWindowId(event.sender.id),
+    ),
+  );
+  handle("sidebar-notes:save", (event, note) =>
+    runtime.saveSidebarNote(
+      validateIpc(saveSidebarNoteSchema, note, "sidebar-notes:save"),
+      sidebarNotesWindowId(event.sender.id),
+    ),
+  );
+  handle("sidebar-notes:undo", (event, note) =>
+    runtime.undoSidebarNote(
+      validateIpc(undoSidebarNoteSchema, note, "sidebar-notes:undo"),
+      sidebarNotesWindowId(event.sender.id),
+    ),
+  );
   handle("workspace:save", async (event, workspace) => {
     const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
     return withOperationPromise({ opId: "workspace:save" }, () =>

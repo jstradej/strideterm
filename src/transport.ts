@@ -12,6 +12,7 @@ import type {
   TerminalExitPayload,
   GitPushProgressPayload,
 } from "../electron/shared/ipc-bridge.js";
+import type { SidebarNote, SidebarNotes } from "../electron/shared/sidebar-notes.js";
 import type { SshFileListing, SshFileTransferStarted } from "../electron/shared/ssh-file-events.js";
 import type { RemoteStateV2, RecoveryResult } from "../electron/shared/types/state.js";
 import type { JiraWorkspaceViewsState } from "../electron/shared/types/jira-workspace-views.js";
@@ -737,6 +738,15 @@ function bindElectronTransport(): Transport {
   return {
     ...window.strideterm,
     isRemote: false,
+    listSidebarNotes: window.strideterm.listSidebarNotes
+      ? (scope) => window.strideterm.listSidebarNotes({ ...scope })
+      : undefined,
+    saveSidebarNote: window.strideterm.saveSidebarNote
+      ? (note) => window.strideterm.saveSidebarNote({ ...note })
+      : undefined,
+    undoSidebarNote: window.strideterm.undoSidebarNote
+      ? (note) => window.strideterm.undoSidebarNote({ ...note })
+      : undefined,
     getRemoteToken: () => "",
     setRemoteToken: () => {},
     regenerateRemoteToken: () => window.strideterm.regenerateRemoteToken(),
@@ -2661,6 +2671,9 @@ export function createRemoteTransport(): Transport {
         sessionId,
         dismissed: options?.dismissed === true,
       }),
+    listSidebarNotes: async (scope) => (await fetchJson("/api/sidebar-notes/list", scope)) as SidebarNotes,
+    saveSidebarNote: async (note) => (await fetchJson("/api/sidebar-notes/save", note)) as SidebarNote,
+    undoSidebarNote: async (note) => (await fetchJson("/api/sidebar-notes/undo", note)) as SidebarNote,
     saveWorkspace: (workspace) => fetchJson("/api/workspace/save", { workspace }),
     saveProject: (project) => fetchJson("/api/project/save", { project }),
     deleteWorkspace: (workspaceId, options) => fetchJson("/api/workspace/delete", { workspaceId, ...options }),

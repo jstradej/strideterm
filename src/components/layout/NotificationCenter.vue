@@ -139,6 +139,17 @@
             <span class="notification-center__tab-icon" aria-hidden="true">📈</span>
             <span class="notification-center__tab-label">Performance</span>
           </button>
+          <button
+            type="button"
+            class="notification-center__tab"
+            :class="{ 'notification-center__tab--active': activeTab === 'notes' }"
+            aria-label="Notes"
+            title="Notes"
+            @click="activeTab = 'notes'"
+          >
+            <span class="notification-center__tab-icon" aria-hidden="true">📝</span>
+            <span class="notification-center__tab-label">Notes</span>
+          </button>
         </div>
         <!-- Very-narrow fallback: below the icon-tab threshold even the icons
              crowd the action buttons, so the tab bar collapses into this
@@ -150,7 +161,7 @@
             :class="{ 'notification-center__tabmenu-toggle--open': tabMenuOpen }"
             :aria-expanded="tabMenuOpen ? 'true' : 'false'"
             aria-haspopup="menu"
-            title="Switch section (Alerts · Attachments · Agents · Automations · Connections · Performance)"
+            title="Switch section"
             @click="tabMenuOpen = !tabMenuOpen"
           >
             <span class="notification-center__tabmenu-hamburger" aria-hidden="true">☰</span>
@@ -203,6 +214,16 @@
           </div>
         </div>
         <div class="notification-center__actions">
+          <button
+            v-if="activeTab !== 'notes'"
+            type="button"
+            class="notification-center__tab notification-center__tab--compact-notes"
+            aria-label="Notes"
+            title="Notes"
+            @click="selectTab('notes')"
+          >
+            <span class="notification-center__tab-icon" aria-hidden="true">📝</span>
+          </button>
           <button
             v-if="activeTab === 'alerts' && (profileUnreadCount > 0 || hasFinishedInProfile)"
             type="button"
@@ -637,8 +658,10 @@
       <div v-if="activeTab === 'performance'" class="notification-center__body notification-center__body--perf">
         <PerformancePanel />
       </div>
+      <div v-if="activeTab === 'notes'" ref="notesHost" class="notification-center__body--notes"></div>
     </aside>
   </Transition>
+  <SidebarNotesPanel :host="notesHost" :profile-id="activeProfileId || 'default'" :workspace-id="activeWorkspaceId" />
 </template>
 
 <script setup lang="ts">
@@ -656,6 +679,7 @@ import {
 import type { StatePayload, WorkspaceState } from "../../../electron/shared/types/state.js";
 import type { OperationFinished } from "../../../electron/shared/operation-events.js";
 import PerformancePanel from "./PerformancePanel.vue";
+import SidebarNotesPanel from "./SidebarNotesPanel.vue";
 import ApprovalsPanel from "./ApprovalsPanel.vue";
 import AutomationsPanel from "./AutomationsPanel.vue";
 import AutomationIcon from "../common/AutomationIcon.vue";
@@ -712,8 +736,9 @@ function clearAllInProfile(): void {
 const bodyRef = ref<HTMLElement | null>(null);
 const panelRef = ref<HTMLElement | null>(null);
 const selectedIndex = ref(0);
-type TabId = "alerts" | "attachments" | "agents" | "automations" | "telegram" | "approvals" | "performance";
+type TabId = "alerts" | "attachments" | "agents" | "automations" | "telegram" | "approvals" | "performance" | "notes";
 const activeTab = ref<TabId>("alerts");
+const notesHost = ref<HTMLElement | null>(null);
 const activeWorkspaceId = computed(() => appStore.myActiveWorkspaceId);
 const activeWorkspaceRoot = computed(() => {
   const profileId = activeProfileId.value || "default";
@@ -828,7 +853,7 @@ const menuTabs = computed<{ id: TabId; label: string }[]>(() => {
     { id: "telegram", label: "Connections" },
   ];
   if (showApprovals.value) tabs.push({ id: "approvals", label: "Approvals" });
-  tabs.push({ id: "performance", label: "Performance" });
+  tabs.push({ id: "performance", label: "Performance" }, { id: "notes", label: "Notes" });
   return tabs;
 });
 const activeTabLabel = computed(() => menuTabs.value.find((t) => t.id === activeTab.value)?.label ?? "Alerts");

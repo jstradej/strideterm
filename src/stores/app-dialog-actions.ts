@@ -507,19 +507,22 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       allowEmpty: true,
       onCancel: closeDialog,
       onSubmit: async (value: string) => {
-        const next = (value || "").trim();
-        if (next === existing.trim()) {
-          closeDialog();
-          return;
-        }
-        const nextWorkspace = cloneWorkspace(target.workspace);
-        nextWorkspace.panels = nextWorkspace.panels.map((p: AnyApi) =>
-          p.id === target.panel.id ? { ...p, notes: next } : p,
-        );
-        ctx.adoptPayload((await (ctx.getApi() as CallableTransport).saveWorkspace(nextWorkspace)) as StatePayload);
+        await saveTabNote(viewId, value || "");
         closeDialog();
       },
     });
+  }
+
+  async function saveTabNote(viewId: string, text: string): Promise<void> {
+    const target = ctx.getPanelByViewId(viewId);
+    if (!target) throw new Error("This tab no longer exists.");
+    const next = text.trim();
+    if (next === ((target.panel.notes || "") as string).trim()) return;
+    const nextWorkspace = cloneWorkspace(target.workspace);
+    nextWorkspace.panels = nextWorkspace.panels.map((p: AnyApi) =>
+      p.id === target.panel.id ? { ...p, notes: next } : p,
+    );
+    ctx.adoptPayload((await (ctx.getApi() as CallableTransport).saveWorkspace(nextWorkspace)) as StatePayload);
   }
 
   function openNewTabDialog(
@@ -1353,6 +1356,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     editTabWithDialog,
     editSshHostForView,
     openTabNotesDialog,
+    saveTabNote,
     openNewTabDialog,
     openWorkspaceDialog,
     openNewWorkspaceFlow,

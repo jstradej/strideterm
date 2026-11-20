@@ -334,6 +334,9 @@ const MOBILE_ROUTE_CLASSIFICATION: Record<string, MobileRouteClass> = {
   "/api/ssh/certs/list": "guarded",
   "/api/ssh/config/import": "guarded",
   "/api/ssh/config/preview": "guarded",
+  "/api/sidebar-notes/list": "guarded",
+  "/api/sidebar-notes/save": "guarded",
+  "/api/sidebar-notes/undo": "guarded",
   "/api/ssh/host-key/accept": "guarded",
   "/api/ssh/host-key/reject": "guarded",
   "/api/ssh/hosts/create": "guarded",
@@ -547,7 +550,15 @@ describe("mobile session route policy", () => {
   });
 
   test("a workspace, project or session of another profile is refused on any guarded route", () => {
-    for (const route of ["/api/git/refresh", "/api/task/stop", "/api/workspace/delete", "/api/file/read"]) {
+    for (const route of [
+      "/api/git/refresh",
+      "/api/task/stop",
+      "/api/workspace/delete",
+      "/api/file/read",
+      "/api/sidebar-notes/list",
+      "/api/sidebar-notes/save",
+      "/api/sidebar-notes/undo",
+    ]) {
       expect(decide(route, { workspaceId: "ws-work" }), route).toMatchObject({
         allow: false,
         reason: "target-outside-profile",
