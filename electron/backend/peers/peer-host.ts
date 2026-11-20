@@ -350,12 +350,19 @@ export function createPeerHost(deps: PeerHostDeps): PeerHost {
         lastSeenAt: paired,
         lastAddress: pairing.address.slice(0, 64),
       };
+      let keyReplaced = false;
       await deps.updateSettings("peers:device-paired", (draft) => {
         const index = draft.devices.findIndex((entry) => entry.id === device.id);
-        if (index >= 0) draft.devices[index] = device;
-        else draft.devices.push(device);
+        if (index >= 0) {
+          keyReplaced = draft.devices[index]!.publicKey !== device.publicKey;
+          draft.devices[index] = device;
+        } else draft.devices.push(device);
       });
       pskCache.delete(device.id);
+      if (keyReplaced) {
+        log.info("device re-paired with a new key, ending its old connections", { deviceId: device.id });
+        deps.emit("peers:device-removed", { deviceId: device.id });
+      }
       pairing.state = "approved";
       log.info("pairing approved", {
         pairingId: pairing.pairingId,

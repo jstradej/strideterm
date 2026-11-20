@@ -271,6 +271,17 @@ describe("peer host", () => {
     expect(h.host.pskForIdentity("device-0001")!.equals(before)).toBe(false);
   });
 
+  test("re-pairing a device with a new key revokes its old connections; a first pairing does not", async () => {
+    const removals = () => h.events.filter((entry) => entry.event === "peers:device-removed");
+    const first = await pairUntilApproval(h);
+    await h.host.approvePairing(first.begun.pairingId, first.code);
+    expect(removals()).toEqual([]);
+    const second = await pairUntilApproval(h, makeDevice("device-0001"));
+    await h.host.approvePairing(second.begun.pairingId, second.code);
+    expect(removals()).toEqual([{ event: "peers:device-removed", payload: { deviceId: "device-0001" } }]);
+    expect(h.settings.devices[0]!.publicKey).toBe(second.device.publicKey);
+  });
+
   test("removeDevice clears the PSK and emits the removal", async () => {
     const { begun, code } = await pairUntilApproval(h);
     await h.host.approvePairing(begun.pairingId, code);
