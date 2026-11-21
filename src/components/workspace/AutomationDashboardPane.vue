@@ -656,12 +656,12 @@ watch(
   },
 );
 watch(
-  () => [
-    props.workspaceId,
-    summary.value?.lastRun?.runId,
-    summary.value?.lastRun?.state,
-    summary.value?.currentRun?.runId,
-    summary.value?.currentRun?.state,
+  [
+    () => props.workspaceId,
+    () => summary.value?.lastRun?.runId,
+    () => summary.value?.lastRun?.state,
+    () => summary.value?.currentRun?.runId,
+    () => summary.value?.currentRun?.state,
   ],
   () => {
     void loadRuns();

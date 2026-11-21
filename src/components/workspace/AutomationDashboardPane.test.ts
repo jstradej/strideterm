@@ -115,6 +115,22 @@ describe("AutomationDashboardPane", () => {
     expect(wrapper.get(".runs li").findAll(".history-delete")).toHaveLength(0);
     wrapper.unmount();
   });
+  it("keeps the loaded history on a state broadcast that does not change a run", async () => {
+    const list = vi.fn().mockResolvedValue({ runs: [{ runId: "done", state: "succeeded" }] });
+    const wrapper = setup({ listAutomationRuns: list });
+    const app = useAppStore();
+    const payload = structuredClone(app.payload!);
+    payload.automations!.byWorkspaceId.first = { lastRun: { runId: "done", state: "succeeded" } };
+    app.payload = payload;
+    await flushPromises();
+    list.mockClear();
+    app.payload = structuredClone(app.payload!);
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find(".runs").exists()).toBe(true);
+    await flushPromises();
+    expect(list).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
   it("puts terminal confirmation and network requests in a prominent action section before the metrics", async () => {
     const wrapper = setup({ listAutomationRuns: vi.fn().mockResolvedValue({ runs: [] }) });
     const app = useAppStore();
