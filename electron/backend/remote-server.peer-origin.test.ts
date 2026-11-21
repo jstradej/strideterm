@@ -920,10 +920,17 @@ describe("peer origin: the global note of a paired desktop", () => {
     await f.api(GET, { method: "GET" });
     await f.api(SAVE, { body: { text: secret, expectedRevision: 0 } });
     await f.api(UNDO, { body: { expectedRevision: 1 } });
-    await waitFor(() => auditText().includes(UNDO) && auditText().includes("peer global note read"), "audit lines");
-    const lines = auditText()
-      .split("\n")
-      .filter((line) => line.includes(f.deviceId) && line.includes("peer global note"));
+    const ownLines = () =>
+      auditText()
+        .split("\n")
+        .filter((line) => line.includes(f.deviceId) && line.includes("peer global note"));
+    await waitFor(
+      () =>
+        ownLines().some((line) => line.includes(UNDO)) &&
+        ownLines().some((line) => line.includes("peer global note read")),
+      "audit lines",
+    );
+    const lines = ownLines();
     expect(lines.some((line) => line.includes("peer global note read") && line.includes(GET))).toBe(true);
     const write = lines.find((line) => line.includes(SAVE))!;
     expect(write).toContain("save");
@@ -938,12 +945,14 @@ describe("peer origin: the global note of a paired desktop", () => {
   test("the audit line is written after the runtime call and names its outcome", async () => {
     const f = await startFixture();
     await f.pair();
-    const lineFor = async (needle: string) => {
-      await waitFor(() => auditText().includes(needle), "audit line");
-      return auditText()
+    const ownLine = (needle: string) =>
+      auditText()
         .split(/\r?\n/)
         .filter((line) => line.includes(f.deviceId) && line.includes(needle))
-        .pop()!;
+        .pop();
+    const lineFor = async (needle: string) => {
+      await waitFor(() => ownLine(needle) !== undefined, "audit line");
+      return ownLine(needle)!;
     };
     await f.api(SAVE, { body: { text: "conflict-marker-text", expectedRevision: 9 } });
     expect(await lineFor("conflict")).toContain(SAVE);
