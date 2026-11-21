@@ -6,13 +6,19 @@ import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { usePeersStore } from "../../stores/peers.js";
 import { setWindowBackend } from "../../window-backend.js";
-import { PEER_DEFAULT_PORT, peerConnectSchema, type PeerPairingResult } from "../../../electron/shared/peers.js";
+import {
+  PEER_DEFAULT_PORT,
+  peerConnectSchema,
+  type PeerPairingResult,
+  type PeerPairingRetrying,
+} from "../../../electron/shared/peers.js";
 
 const ATTEMPT = "attempt-0001";
 const HOST_ID = "host-0001";
 
 function installBridge(overrides: Record<string, unknown> = {}) {
   const results: Array<(result: PeerPairingResult) => void> = [];
+  const retries: Array<(wait: PeerPairingRetrying) => void> = [];
   const bridge = {
     listPeerHosts: vi.fn().mockResolvedValue([]),
     startPeerPairing: vi.fn().mockResolvedValue({
@@ -27,10 +33,14 @@ function installBridge(overrides: Record<string, unknown> = {}) {
       results.push(handler);
       return vi.fn();
     }),
+    onPeerPairingRetrying: vi.fn((handler: (wait: PeerPairingRetrying) => void) => {
+      retries.push(handler);
+      return vi.fn();
+    }),
     ...overrides,
   };
   (window as unknown as { strideterm: unknown }).strideterm = bridge;
-  return { bridge, results };
+  return { bridge, results, retries };
 }
 
 function setLocalVersion(version: string) {
@@ -338,4 +348,141 @@ describe("PeerConnectDialog — busy indicators", () => {
       }
     },
   );
+});
+
+describe("PeerConnectDialog — failure guidance", () => {
+  const userAgent = (value: string) => vi.spyOn(window.navigator, "userAgent", "get").mockReturnValue(value);
+  const MAC = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";
+  const WINDOWS = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function failWith(reason: string | undefined, port = "43200") {
+    const { results } = installBridge();
+    const wrapper = mount(PeerConnectDialog);
+    await submit(wrapper, "office.local", port);
+    results[0]({ attemptId: ATTEMPT, state: "failed", error: "raw", ...(reason ? { reason } : {}) } as never);
+    await flushPromises();
+    return wrapper;
+  }
+
+  test("refused names the address and what to turn on, without firewall steps", async () => {
+    const wrapper = await failWith("refused");
+    expect(wrapper.find('[data-testid="peer-connect-result"]').text()).toBe(
+      "⚠Nothing is listening at office.local:43200. On the other desktop, turn on hosting in Remote Access → Desktops and check that the port matches.",
+    );
+    expect(wrapper.find('[data-testid="peer-failure-firewall"]').exists()).toBe(false);
+  });
+
+  test("other-program names the address and the port setting", async () => {
+    const wrapper = await failWith("other-program");
+    expect(wrapper.find('[data-testid="peer-connect-result"]').text()).toContain(
+      "Another program answers at office.local:43200, not strIDEterm's desktop link. Check the port set in Remote Access → Desktops on the other desktop.",
+    );
+    expect(wrapper.find('[data-testid="peer-failure-firewall"]').exists()).toBe(false);
+  });
+
+  test.each(["timeout", "unreachable"])("%s explains the firewall and lists every OS with the port", async (reason) => {
+    userAgent(WINDOWS);
+    const wrapper = await failWith(reason);
+    expect(wrapper.find('[data-testid="peer-connect-result"]').text()).toContain(
+      "office.local:43200 did not answer. Usually the other desktop's firewall blocks incoming connections, or the two computers are not on the same network.",
+    );
+    const details = wrapper.find('[data-testid="peer-failure-firewall"]');
+    expect(details.text()).toContain("How to allow the connection on the other desktop");
+    const text = details.text();
+    expect(text).toContain("When Windows asks whether strIDEterm may communicate on networks, allow Private networks.");
+    expect(text).toContain(
+      'New-NetFirewallRule -DisplayName "strIDEterm desktops" -Direction Inbound -Protocol TCP -LocalPort 43200 -Action Allow -Profile Private',
+    );
+    expect(text).toContain(
+      "System Settings → Network → Firewall → Options… → strIDEterm → Allow incoming connections.",
+    );
+    expect(text).toContain("sudo ufw allow 43200/tcp");
+    expect(text).toContain("sudo firewall-cmd --permanent --add-port=43200/tcp && sudo firewall-cmd --reload");
+  });
+
+  test("the Local Network line shows on a Mac", async () => {
+    userAgent(MAC);
+    const wrapper = await failWith("unreachable");
+    expect(wrapper.find('[data-testid="peer-failure-local-network"]').text()).toBe(
+      "On this Mac, also check System Settings → Privacy & Security → Local Network: strIDEterm must be allowed to reach devices on the local network.",
+    );
+  });
+
+  test("the Local Network line is absent on other systems", async () => {
+    userAgent(WINDOWS);
+    const wrapper = await failWith("timeout");
+    expect(wrapper.find('[data-testid="peer-failure-local-network"]').exists()).toBe(false);
+  });
+
+  test("the Local Network line is absent for a refused connection on a Mac", async () => {
+    userAgent(MAC);
+    const wrapper = await failWith("refused");
+    expect(wrapper.find('[data-testid="peer-failure-local-network"]').exists()).toBe(false);
+  });
+
+  test("a start failure shows its text and the same help, reading the reason from peerError", async () => {
+    userAgent(MAC);
+    installBridge({
+      startPeerPairing: vi.fn().mockRejectedValue(
+        Object.assign(new Error("office.local:43200 did not answer. Usually it is the firewall."), {
+          code: "unreachable",
+          peerError: { code: "unreachable", reason: "timeout" },
+        }),
+      ),
+    });
+    const wrapper = mount(PeerConnectDialog);
+    await submit(wrapper, "office.local", "43200");
+    expect(wrapper.find('[data-testid="peer-connect-error"]').text()).toBe(
+      "⚠office.local:43200 did not answer. Usually it is the firewall.",
+    );
+    expect(wrapper.find('[data-testid="peer-failure-firewall"]').text()).toContain("sudo ufw allow 43200/tcp");
+    expect(wrapper.find('[data-testid="peer-failure-local-network"]').exists()).toBe(true);
+  });
+
+  test("a trailing tag in the message is no longer read as a reason", async () => {
+    installBridge({ startPeerPairing: vi.fn().mockRejectedValue(new Error("It did not answer. [peer:timeout]")) });
+    const wrapper = mount(PeerConnectDialog);
+    await submit(wrapper, "office.local", "43200");
+    expect(wrapper.find('[data-testid="peer-connect-error"]').text()).toContain("[peer:timeout]");
+    expect(wrapper.find('[data-testid="peer-failure-help"]').exists()).toBe(false);
+  });
+
+  test("shows a muted line while the poll waits, for a rate limit and for a lost connection, and drops it again", async () => {
+    const { retries } = installBridge();
+    const wrapper = mount(PeerConnectDialog);
+    await submit(wrapper, "office.local", "43200");
+    const retrying = () => wrapper.find('[data-testid="peer-connect-retrying"]');
+    expect(retrying().exists()).toBe(false);
+
+    retries[0]!({ attemptId: ATTEMPT, reason: "rate-limited", retryInMs: 7000 });
+    await flushPromises();
+    expect(retrying().text()).toBe("The other desktop asked to wait. Trying again in 7 s.");
+
+    retries[0]!({ attemptId: ATTEMPT, reason: "timeout", retryInMs: 4000 });
+    await flushPromises();
+    expect(retrying().text()).toBe("Lost the connection to the other desktop. Trying again in 4 s.");
+
+    retries[0]!({ attemptId: ATTEMPT, reason: null, retryInMs: 0 });
+    await flushPromises();
+    expect(retrying().exists()).toBe(false);
+  });
+
+  test("a wait that belongs to another attempt is not shown", async () => {
+    const { retries } = installBridge();
+    const wrapper = mount(PeerConnectDialog);
+    await submit(wrapper, "office.local", "43200");
+    retries[0]!({ attemptId: "attempt-other", reason: "rate-limited", retryInMs: 3000 });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="peer-connect-retrying"]').exists()).toBe(false);
+  });
+
+  test("a failure without a reason keeps the plain text", async () => {
+    const wrapper = await failWith(undefined);
+    expect(wrapper.find('[data-testid="peer-connect-result"]').text()).toContain("raw");
+    expect(wrapper.find('[data-testid="peer-failure-help"]').exists()).toBe(false);
+  });
 });

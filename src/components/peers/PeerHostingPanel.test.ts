@@ -519,3 +519,35 @@ describe("PeerHostingPanel — busy indicators", () => {
     ).not.toBeNull();
   });
 });
+
+describe("PeerHostingPanel — firewall help", () => {
+  const MAC = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";
+  const WINDOWS = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+  const LINUX = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36";
+
+  async function helpFor(userAgent: string, port = 43200) {
+    vi.spyOn(window.navigator, "userAgent", "get").mockReturnValue(userAgent);
+    const { wrapper } = setup(makeState({ hosting: { enabled: false, port } }));
+    await flushPromises();
+    return wrapper.find('[data-testid="peer-hosting-firewall"]');
+  }
+
+  test("is a collapsed details with the steps for this OS only and the actual port", async () => {
+    const windows = await helpFor(WINDOWS);
+    expect(windows.element.hasAttribute("open")).toBe(false);
+    expect(windows.find("summary").text()).toBe("If another desktop cannot connect");
+    expect(windows.text()).toContain("-LocalPort 43200 -Action Allow -Profile Private");
+    expect(windows.find('[data-testid="peer-firewall-macos"]').exists()).toBe(false);
+    expect(windows.find('[data-testid="peer-firewall-linux"]').exists()).toBe(false);
+
+    const mac = await helpFor(MAC);
+    expect(mac.text()).toContain("Options… → strIDEterm → Allow incoming connections.");
+    expect(mac.find('[data-testid="peer-firewall-windows"]').exists()).toBe(false);
+
+    const linux = await helpFor(LINUX);
+    expect(linux.text()).toContain("sudo ufw allow 43200/tcp");
+    expect(linux.text()).toContain("--add-port=43200/tcp");
+    expect(linux.find('[data-testid="peer-firewall-windows"]').exists()).toBe(false);
+    expect(linux.find('[data-testid="peer-firewall-macos"]').exists()).toBe(false);
+  });
+});

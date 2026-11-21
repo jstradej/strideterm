@@ -1,4 +1,10 @@
-import type { PeerAttachedHost, PeerHostLinkState, WindowBackend } from "../electron/shared/peers.js";
+import {
+  peerFailureText,
+  type PeerAttachedHost,
+  type PeerFailureReason as PeerNetworkFailureReason,
+  type PeerHostLinkState,
+  type WindowBackend,
+} from "../electron/shared/peers.js";
 
 export type PeerWindowBackend = Extract<WindowBackend, { kind: "peer" }>;
 
@@ -9,6 +15,8 @@ export interface PeerFailure {
   reason: PeerFailureReason;
   title: string;
   message: string;
+  /** Set when the host could not be reached and the check classified why. */
+  network?: { reason: PeerNetworkFailureReason; target: { address: string; port: number } };
 }
 
 /** The reasons no amount of retrying changes: the window stops reconnecting and waits for the user. */
@@ -18,7 +26,10 @@ export function isFinalPeerReason(reason: PeerFailureReason): boolean {
 
 /** What `refreshPeerHost` learned, as the reason the window shows. `online` or no answer keeps `fallback`. */
 export function peerFailureFrom(
-  host: Pick<PeerAttachedHost, "state" | "hostAppVersion" | "localAppVersion"> | null,
+  host:
+    | (Pick<PeerAttachedHost, "state" | "hostAppVersion" | "localAppVersion"> &
+        Partial<Pick<PeerAttachedHost, "address" | "port" | "reason">>)
+    | null,
   hostLabel: string,
   fallback: "offline" | "session-ended",
 ): PeerFailure {
@@ -45,6 +56,15 @@ export function peerFailureFrom(
         }. Update the older one so that both match.`,
       };
     default:
+      if (fallback === "offline" && host?.reason && host.address && host.port) {
+        const target = { address: host.address, port: host.port };
+        return {
+          reason: "offline",
+          title: `${hostLabel} cannot be reached`,
+          message: peerFailureText(host.reason, `${target.address}:${target.port}`),
+          network: { reason: host.reason, target },
+        };
+      }
       return fallback === "session-ended"
         ? {
             reason: "session-ended",

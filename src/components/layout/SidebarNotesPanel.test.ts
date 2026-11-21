@@ -972,6 +972,22 @@ describe("SidebarNotesPanel", () => {
       );
     });
 
+    it("shows a host too old to have a global note as a quiet line, without an error or Retry", async () => {
+      getPeerGlobalNote.mockImplementation(async () => {
+        throw Object.assign(new Error("alpha.local runs an older strIDEterm without a global note."), {
+          code: "unsupported",
+          peerError: { code: "unsupported" },
+        });
+      });
+      await mountWithHosts([attached("host-aaaa0001", "alpha.local")]);
+      const card = hostCard("host-aaaa0001");
+      expect(card.textContent).toContain("alpha.local runs an older strIDEterm without a global note.");
+      expect(card.querySelector(".sidebar-notes__problem")).toBeNull();
+      expect(Array.from(card.querySelectorAll("button"), (button) => button.textContent?.trim())).not.toContain(
+        "Retry",
+      );
+    });
+
     it("does no peer work until the Notes tab shows the expanded Global section, then does it once", async () => {
       wrapper.unmount();
       const open = vi.spyOn(usePeersStore(), "open").mockResolvedValue(undefined);

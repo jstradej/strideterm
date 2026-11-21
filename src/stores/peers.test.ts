@@ -133,6 +133,21 @@ describe("peers store", () => {
     expect(offUpdated).toHaveBeenCalledTimes(1);
   });
 
+  test("a host that was never checked is checked as soon as the list reloads, a checked one is not", async () => {
+    const fresh = makeHost({ id: "host-0002", state: "unknown", checkedAt: 0 });
+    const { bridge, updated } = installBridge({
+      listPeerHosts: vi.fn().mockResolvedValue([makeHost(), fresh]),
+      refreshPeerHost: vi.fn().mockResolvedValue({ ...fresh, state: "online", checkedAt: 2 }),
+    });
+    const store = usePeersStore();
+    const release = store.watch();
+    updated[0]({});
+    await vi.waitFor(() => expect(bridge.refreshPeerHost).toHaveBeenCalledTimes(1));
+    expect(bridge.refreshPeerHost).toHaveBeenCalledWith("host-0002", {});
+    await vi.waitFor(() => expect(store.hosts.find((host) => host.id === "host-0002")?.state).toBe("online"));
+    release();
+  });
+
   test("collapsed state persists and survives a throwing localStorage", () => {
     installBridge();
     const store = usePeersStore();

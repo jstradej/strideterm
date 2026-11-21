@@ -156,12 +156,33 @@ export const peerRenameDeviceSchema = z.object({ deviceId: peerId, name: peerDis
 
 export type PeerPairingEndState = "approved" | "rejected" | "expired" | "cancelled" | "failed";
 
+/** Why the other desktop could not be reached; the dialog turns it into steps. */
+export type PeerFailureReason = "refused" | "timeout" | "unreachable" | "other-program";
+
+export function peerFailureText(reason: PeerFailureReason, where: string): string {
+  if (reason === "refused") {
+    return `Nothing is listening at ${where}. On the other desktop, turn on hosting in Remote Access → Desktops and check that the port matches.`;
+  }
+  if (reason === "other-program") {
+    return `Another program answers at ${where}, not strIDEterm's desktop link. Check the port set in Remote Access → Desktops on the other desktop.`;
+  }
+  return `${where} did not answer. Usually the other desktop's firewall blocks incoming connections, or the two computers are not on the same network.`;
+}
+
 /** The device side's own pairing attempt ended; `hostId` is set when it was approved. */
 export interface PeerPairingResult {
   attemptId: string;
   state: PeerPairingEndState;
   hostId?: string;
   error?: string;
+  reason?: PeerFailureReason;
+}
+
+/** The device's pairing poll is waiting to try again; `reason: null` (`retryInMs: 0`) clears the wait. */
+export interface PeerPairingRetrying {
+  attemptId: string;
+  reason: "rate-limited" | PeerFailureReason | null;
+  retryInMs: number;
 }
 
 export interface PeerStartedPairing {
@@ -182,6 +203,8 @@ export interface PeerAttachedHost extends PeerHostRecord {
   localAppVersion: string;
   profiles: PeerHello["profiles"];
   checkedAt: number;
+  /** Why the last check could not reach the host; unset while it answers. */
+  reason?: PeerFailureReason;
 }
 
 /** A window of this desktop that shows a profile of a host. Geometry mirrors `WindowSlot`. */

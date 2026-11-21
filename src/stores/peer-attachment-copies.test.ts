@@ -210,6 +210,22 @@ describe("peer attachment copies store", () => {
     expect(store.listings[HOST_ID]).toMatchObject({ loading: false, error: "Host is offline" });
   });
 
+  test("a host too old to share attachments is a quiet note on the listing, not a failure", async () => {
+    const { store, api } = boot();
+    api.listPeerAttachments.mockRejectedValueOnce(
+      Object.assign(new Error("Office runs an older strIDEterm that cannot share attachments."), {
+        code: "unsupported",
+        peerError: { code: "unsupported" },
+      }),
+    );
+    await expect(store.loadListing(HOST_ID)).resolves.toBeUndefined();
+    expect(store.listings[HOST_ID]).toMatchObject({
+      loading: false,
+      error: "",
+      unsupported: "Office runs an older strIDEterm that cannot share attachments.",
+    });
+  });
+
   test("the collapsed state is remembered in storage", () => {
     const { store } = boot();
     store.setCollapsed(HOST_ID, true);

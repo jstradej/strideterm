@@ -32,7 +32,7 @@ import { createPeerAttachmentsHost } from "./peers/peer-attachments.js";
 import { listPeerDirectories } from "./peers/peer-directories.js";
 import { createPeerAttentionPoller, type PeerHostAttention } from "./peers/peer-attention-poller.js";
 import { summarizeAttentionForProfile } from "./runtime-utils.js";
-import { createPeerClient, type PeerClientDeps, type PeerRequest } from "./peers/peer-client.js";
+import { createPeerClient, PeerClientError, type PeerClientDeps, type PeerRequest } from "./peers/peer-client.js";
 import { createPeerHost, type PeerHostDeps } from "./peers/peer-host.js";
 
 const log = getLogger("peers");
@@ -164,6 +164,12 @@ export function createRuntimePeers(deps: RuntimePeersDeps) {
     if (!host) throw new Error("This desktop is not attached.");
     if (host.state !== "online") await requireHostOnline(hostId);
     const response = await peerClient.request(hostId, request);
+    if (response.status === 404) {
+      throw new PeerClientError(
+        "unsupported",
+        `${host.label} runs an older strIDEterm without a global note. Update it to see its note here.`,
+      );
+    }
     let body: unknown;
     try {
       body = JSON.parse(response.body);
@@ -202,6 +208,7 @@ export function createRuntimePeers(deps: RuntimePeersDeps) {
       localAppVersion: deps.appVersion,
       profiles: status.profiles,
       checkedAt: status.checkedAt,
+      ...(status.reason ? { reason: status.reason } : {}),
     };
   }
 
@@ -485,6 +492,12 @@ export function createRuntimePeers(deps: RuntimePeersDeps) {
       if (!host) throw new Error("This desktop is not attached.");
       if (host.state !== "online") await requireHostOnline(hostId);
       const response = await peerClient.request(hostId, { method: "GET", pathname: "/api/peer/attachments" });
+      if (response.status === 404) {
+        throw new PeerClientError(
+          "unsupported",
+          `${host.label} runs an older strIDEterm that cannot share attachments. Update it to copy them here.`,
+        );
+      }
       if (response.status !== 200)
         throw new Error(`${host.label} could not list its attachments (status ${response.status}).`);
       let body: unknown;

@@ -67,6 +67,10 @@
           <p v-if="!portValid" class="inline-error" data-testid="peer-hosting-port-error">
             Enter a port between 1 and 65535.
           </p>
+          <details class="peer-hosting__help" data-testid="peer-hosting-firewall">
+            <summary>If another desktop cannot connect</summary>
+            <PeerFirewallHelp :port="firewallPort" :os="localOs" />
+          </details>
         </div>
       </section>
 
@@ -273,6 +277,8 @@ import { computed, inject, onBeforeUnmount, onMounted, reactive, ref } from "vue
 import { apiKey } from "../../types/keys.js";
 import type { Transport } from "../../transport.js";
 import Spinner from "../common/Spinner.vue";
+import { detectDesktopOs } from "../../lib/desktop-os.js";
+import PeerFirewallHelp from "./PeerFirewallHelp.vue";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import {
@@ -310,6 +316,8 @@ const portNumber = computed(() => {
 const portValid = computed(
   () => Number.isInteger(portNumber.value) && portNumber.value >= 1 && portNumber.value <= 65535,
 );
+const localOs = detectDesktopOs();
+const firewallPort = computed(() => state.value?.hosting.port ?? PEER_DEFAULT_PORT);
 const portUnchanged = computed(() => !!state.value && portNumber.value === state.value.hosting.port);
 const toggleDisabled = computed(() => {
   if (busy.value || !state.value) return true;
@@ -575,6 +583,16 @@ onBeforeUnmount(() => {
   display: grid;
   gap: 8px;
   min-width: 0;
+}
+.peer-hosting__help {
+  margin-top: 8px;
+  font-size: 12.5px;
+}
+.peer-hosting__help summary {
+  cursor: pointer;
+}
+.peer-hosting__help[open] summary {
+  margin-bottom: 6px;
 }
 .peer-hosting__title {
   margin: 0;

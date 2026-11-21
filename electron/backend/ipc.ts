@@ -298,8 +298,9 @@ import {
   type PeerWsState,
 } from "../shared/peers.js";
 import { isChannelAllowedInPeerWindow, PEER_WINDOW_REFUSED_MESSAGE } from "../shared/peer-window-channels.js";
-import type { PeerClientSocket } from "./peers/peer-client.js";
+import { PeerClientError, type PeerClientSocket } from "./peers/peer-client.js";
 import { toJiraIpcFailure } from "../shared/jira-ipc-failure.js";
+import { toPeerIpcFailure } from "../shared/peer-ipc-failure.js";
 import { JiraRequestError } from "./jira/jira-manager.js";
 import { jiraErrorFields } from "./jira/jira-request-error.js";
 
@@ -531,6 +532,7 @@ export function registerIpc(
     runtime.on("peers:updated", (payload: unknown) => emitToRenderer("peers:updated", payload)),
     // The device side's own attempt: whichever window is showing the pairing dialog needs the end of it.
     runtime.on("peers:pairing-result", (payload: unknown) => emitToRenderer("peers:pairing-result", payload)),
+    runtime.on("peers:pairing-retrying", (payload: unknown) => emitToRenderer("peers:pairing-retrying", payload)),
     // One derived account state, broadcast to EVERY window. The renderer computes nothing from it —
     // see account-state.ts for what it carries and, more to the point, what it never does.
     runtime.on("account:updated", (payload: unknown) =>
@@ -606,6 +608,7 @@ export function registerIpc(
         if (!expectedSshFileRefusal) logIpcFailure(channel, err);
         if (usesJiraFailureEnvelope(channel) && err instanceof JiraRequestError) return toJiraIpcFailure(err);
         if (channel.startsWith("ssh-file:") && err instanceof SshFileError) return toSshFileIpcFailure(err);
+        if (channel.startsWith("peers:client:") && err instanceof PeerClientError) return toPeerIpcFailure(err);
         throw normalizeIpcFailure(err);
       }
     });

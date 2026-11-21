@@ -1297,6 +1297,7 @@ export interface StridetermAPI {
   onPeerAttachmentCopyProgress: (handler: (payload: unknown) => void) => () => void;
   /** A paired host's global note changed. UNVALIDATED here; parse with `peerHostNoteChangedSchema`. */
   onPeerHostNoteChanged: (handler: (payload: unknown) => void) => () => void;
+  onPeerPairingRetrying: (handler: (payload: import("./peers.js").PeerPairingRetrying) => void) => () => void;
   onPeerPairingResult: (handler: (payload: import("./peers.js").PeerPairingResult) => void) => () => void;
   onPeerWsState: (handler: (state: import("./peers.js").PeerWsState) => void) => () => void;
   onPeerWsMessage: (handler: (data: string) => void) => () => void;

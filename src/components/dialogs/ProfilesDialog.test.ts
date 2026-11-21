@@ -465,7 +465,7 @@ describe("ProfilesDialog: attached desktops", () => {
       ["not-paired", "Needs pairing"],
       ["version-mismatch", "Different version (host 2.0.0 · this 1.0.0)"],
       ["wrong-host", "Another strIDEterm answers here"],
-      ["unknown", "Checking…"],
+      ["unknown", "Not checked yet"],
     ] as const)("shows the %s state chip", async (state, text) => {
       installBridge([host({ state, hostAppVersion: "2.0.0" })]);
       const wrapper = await mountDialog();

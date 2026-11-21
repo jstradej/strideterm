@@ -33,6 +33,23 @@ async function invokeJira(channel: string, ...args: unknown[]): Promise<any> {
   return result;
 }
 
+// Mirrors electron/shared/peer-ipc-failure.ts (a sandboxed preload cannot import it): a failed `peers:client:*` call
+// crosses IPC as a value, and the renderer gets an Error carrying `code` and `peerError: { code, reason? }`.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- each bridge method declares its own result type
+async function invokePeer(channel: string, ...args: unknown[]): Promise<any> {
+  const result = await ipcRenderer.invoke(channel, ...args);
+  if (result && typeof result === "object" && (result as Record<string, unknown>)["__stridePeerFailure"] === 1) {
+    const failure = result as { message?: unknown; code?: unknown; reason?: unknown };
+    const code = typeof failure.code === "string" ? failure.code : "unknown";
+    const reason = typeof failure.reason === "string" ? failure.reason : undefined;
+    throw Object.assign(new Error(typeof failure.message === "string" ? failure.message : "Desktop link failed."), {
+      code,
+      peerError: { code, ...(reason ? { reason } : {}) },
+    });
+  }
+  return result;
+}
+
 // Mirrors electron/shared/ssh-file-error-codes.ts: an SSH file failure crosses IPC as a value (a rejected call loses
 // `code`), and the renderer gets the Error shape the remote transport throws (`code`, `conflicts`).
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- each bridge method declares its own result type
@@ -149,20 +166,20 @@ contextBridge.exposeInMainWorld("strideterm", {
   rejectPeerPairing: (pairingId) => ipcRenderer.invoke("peers:host:reject", { pairingId }),
   removePeerDevice: (deviceId) => ipcRenderer.invoke("peers:host:remove-device", { deviceId }),
   renamePeerDevice: (input) => ipcRenderer.invoke("peers:host:device:rename", input),
-  listPeerHosts: () => ipcRenderer.invoke("peers:client:list"),
+  listPeerHosts: () => invokePeer("peers:client:list"),
   refreshPeerHost: (hostId, options) =>
-    ipcRenderer.invoke("peers:client:refresh", { hostId, ...(options?.force ? { force: true } : {}) }),
-  listPeerAttachments: (hostId) => ipcRenderer.invoke("peers:client:attachments:list", { hostId }),
-  getPeerGlobalNote: (hostId) => ipcRenderer.invoke("peers:client:global-note:get", { hostId }),
-  savePeerGlobalNote: (hostId, input) => ipcRenderer.invoke("peers:client:global-note:save", { hostId, ...input }),
-  undoPeerGlobalNote: (hostId, input) => ipcRenderer.invoke("peers:client:global-note:undo", { hostId, ...input }),
-  startPeerAttachmentCopy: (input) => ipcRenderer.invoke("peers:client:attachments:copy", input),
-  cancelPeerAttachmentCopy: (copyId) => ipcRenderer.invoke("peers:client:attachments:cancel", { copyId }),
-  startPeerPairing: (input) => ipcRenderer.invoke("peers:client:pair:start", input),
-  cancelPeerPairing: (attemptId) => ipcRenderer.invoke("peers:client:pair:cancel", { attemptId }),
-  removePeerHost: (hostId) => ipcRenderer.invoke("peers:client:remove", { hostId }),
-  updatePeerHostAddress: (input) => ipcRenderer.invoke("peers:client:update-address", input),
-  renamePeerHost: (input) => ipcRenderer.invoke("peers:client:rename", input),
+    invokePeer("peers:client:refresh", { hostId, ...(options?.force ? { force: true } : {}) }),
+  listPeerAttachments: (hostId) => invokePeer("peers:client:attachments:list", { hostId }),
+  getPeerGlobalNote: (hostId) => invokePeer("peers:client:global-note:get", { hostId }),
+  savePeerGlobalNote: (hostId, input) => invokePeer("peers:client:global-note:save", { hostId, ...input }),
+  undoPeerGlobalNote: (hostId, input) => invokePeer("peers:client:global-note:undo", { hostId, ...input }),
+  startPeerAttachmentCopy: (input) => invokePeer("peers:client:attachments:copy", input),
+  cancelPeerAttachmentCopy: (copyId) => invokePeer("peers:client:attachments:cancel", { copyId }),
+  startPeerPairing: (input) => invokePeer("peers:client:pair:start", input),
+  cancelPeerPairing: (attemptId) => invokePeer("peers:client:pair:cancel", { attemptId }),
+  removePeerHost: (hostId) => invokePeer("peers:client:remove", { hostId }),
+  updatePeerHostAddress: (input) => invokePeer("peers:client:update-address", input),
+  renamePeerHost: (input) => invokePeer("peers:client:rename", input),
   getWindowBackend: () => ipcRenderer.invoke("window:get-backend"),
   getLocalProfilesOverview: () => ipcRenderer.invoke("peers:local-profiles"),
   openPeerWindow: (input) => ipcRenderer.invoke("peers:window:open", input),
@@ -597,6 +614,11 @@ contextBridge.exposeInMainWorld("strideterm", {
     const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(payload);
     ipcRenderer.on("sidebar-notes:host-note-changed", listener);
     return () => ipcRenderer.removeListener("sidebar-notes:host-note-changed", listener);
+  },
+  onPeerPairingRetrying: (handler) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(payload as never);
+    ipcRenderer.on("peers:pairing-retrying", listener);
+    return () => ipcRenderer.removeListener("peers:pairing-retrying", listener);
   },
   onPeerPairingResult: (handler) => {
     const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(payload as never);

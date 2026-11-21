@@ -4,6 +4,7 @@
       <p class="eyebrow">{{ hostLabel }}</p>
       <h1 data-testid="peer-failure-title">{{ failure.title }}</h1>
       <p class="boot-copy" data-testid="peer-failure-message">{{ failure.message }}</p>
+      <PeerFailureHelp v-if="failure.network" :reason="failure.network.reason" :target="failure.network.target" />
       <div class="peer-failure__actions">
         <button
           type="button"
@@ -68,6 +69,7 @@ import type { PeerFailure } from "../../peer-link.js";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { windowBackend } from "../../window-backend.js";
+import PeerFailureHelp from "./PeerFailureHelp.vue";
 
 defineProps<{ failure: PeerFailure }>();
 

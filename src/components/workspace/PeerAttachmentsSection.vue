@@ -63,8 +63,11 @@
         >
           {{ listing.error }}
         </p>
+        <p v-if="listing?.unsupported" class="peer-attachments__status" data-role="peer-attachments-unsupported">
+          {{ listing.unsupported }}
+        </p>
         <p
-          v-if="listing && listing.loadedAt && !listing.error && !entries.length"
+          v-if="listing && listing.loadedAt && !listing.error && !listing.unsupported && !entries.length"
           class="peer-attachments__status"
           data-role="peer-attachments-empty"
         >

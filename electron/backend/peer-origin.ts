@@ -97,8 +97,17 @@ function parseBody<T extends z.ZodTypeAny>(schema: T, body: unknown): z.infer<T>
   return result.data;
 }
 
-function reply(response: ServerResponse, status: number, body: unknown): void {
-  response.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+function reply(
+  response: ServerResponse,
+  status: number,
+  body: unknown,
+  extraHeaders: Record<string, string> = {},
+): void {
+  response.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
+    ...extraHeaders,
+  });
   response.end(JSON.stringify(body));
 }
 
@@ -193,7 +202,8 @@ export function createPeerFrontDoor(deps: {
     log.warn("peer handshake failed", { address, reason });
   }
 
-  function pairingRateLimited(address: string): boolean {
+  /** Whole seconds until the exceeded window resets (at least 1), or 0 when the request is within the limits. */
+  function pairingRetryAfterSeconds(address: string): number {
     const now = Date.now();
     if (now - pairingOverall.start >= PAIRING_RATE_WINDOW_MS) {
       pairingOverall = { start: now, count: 0, blockedUntil: 0 };
@@ -213,7 +223,10 @@ export function createPeerFrontDoor(deps: {
     }
     window.count += 1;
     pairingOverall.count += 1;
-    return window.count > PAIRING_RATE_PER_ADDRESS || pairingOverall.count > PAIRING_RATE_OVERALL;
+    const resets: number[] = [];
+    if (window.count > PAIRING_RATE_PER_ADDRESS) resets.push(window.start + PAIRING_RATE_WINDOW_MS - now);
+    if (pairingOverall.count > PAIRING_RATE_OVERALL) resets.push(pairingOverall.start + PAIRING_RATE_WINDOW_MS - now);
+    return resets.length === 0 ? 0 : Math.max(1, Math.ceil(Math.max(...resets) / 1000));
   }
 
   async function handlePairing(request: IncomingMessage, response: ServerResponse, pathname: string): Promise<void> {
@@ -222,9 +235,10 @@ export function createPeerFrontDoor(deps: {
       reply(response, 403, { error: "Not available on this connection." });
       return;
     }
-    if (pairingRateLimited(address)) {
+    const retryAfter = pairingRetryAfterSeconds(address);
+    if (retryAfter > 0) {
       log.warn("peer pairing rate-limited", { address });
-      reply(response, 429, { error: "Too many requests." });
+      reply(response, 429, { error: "Too many requests." }, { "Retry-After": String(retryAfter) });
       return;
     }
     try {

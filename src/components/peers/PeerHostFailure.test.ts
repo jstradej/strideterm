@@ -154,6 +154,42 @@ describe("PeerHostFailure", () => {
   });
 });
 
+describe("PeerHostFailure — why the host cannot be reached", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    setWindowBackend(backend);
+  });
+  afterEach(() => setWindowBackend({ kind: "local" }));
+
+  it("names the reason and offers the firewall help when the check classified it", () => {
+    const next = peerFailureFrom(
+      {
+        state: "offline",
+        hostAppVersion: "",
+        localAppVersion: "",
+        address: "studio.local",
+        port: 43200,
+        reason: "timeout",
+      },
+      "Studio Mac",
+      "offline",
+    );
+    const wrapper = mount(PeerHostFailure, { props: { failure: next } });
+    expect(wrapper.find('[data-testid="peer-failure-message"]').text()).toContain("studio.local:43200 did not answer.");
+    expect(wrapper.find('[data-testid="peer-failure-firewall"]').exists()).toBe(true);
+  });
+
+  it("keeps the generic text and no help without a reason", () => {
+    const next = peerFailureFrom(
+      { state: "offline", hostAppVersion: "", localAppVersion: "" },
+      "Studio Mac",
+      "offline",
+    );
+    const wrapper = mount(PeerHostFailure, { props: { failure: next } });
+    expect(wrapper.find('[data-testid="peer-failure-help"]').exists()).toBe(false);
+  });
+});
+
 describe("PeerHostFailure — busy indicators", () => {
   const preload = {
     getLocalProfilesOverview: vi.fn(),

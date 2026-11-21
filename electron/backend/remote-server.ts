@@ -6856,11 +6856,19 @@ export async function startRemoteServer({
     server.once("error", (error: Error) => {
       const isPortBusy = (error as NodeJS.ErrnoException).code === "EADDRINUSE" || /EADDRINUSE/.test(error.message);
       if (isPortBusy) {
-        log.warn("remote access port already in use — disabled until restart", {
-          port,
-          host,
-          hint: "Set STRIDETERM_REMOTE_PORT to pick a different port, or stop the other strideterm instance.",
-        });
+        if (isPeerOrigin) {
+          log.warn("desktops hosting port already in use", {
+            port,
+            host,
+            hint: "Choose a different port in Remote Access → Desktops, or stop the program that holds it.",
+          });
+        } else {
+          log.warn("remote access port already in use — disabled until restart", {
+            port,
+            host,
+            hint: "Set STRIDETERM_REMOTE_PORT to pick a different port, or stop the other strideterm instance.",
+          });
+        }
       } else {
         log.warn("remote access server failed", { err: error.message, port, host });
       }

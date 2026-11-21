@@ -4,6 +4,7 @@ import vm from "node:vm";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { JIRA_IPC_FAILURE_MARKER } from "./shared/jira-ipc-failure.js";
+import { PEER_IPC_FAILURE_MARKER } from "./shared/peer-ipc-failure.js";
 
 const invoke = vi.fn();
 const exposed: Record<string, (...args: unknown[]) => Promise<unknown>> = {};
@@ -85,6 +86,30 @@ describe("preload Jira failure envelope", () => {
       expect(error.code).toBe("auth-expired");
       expect(invoke).toHaveBeenLastCalledWith(channel, {});
     }
+  });
+
+  it("sends every peers:client channel through invokePeer and turns its envelope into an Error with peerError", async () => {
+    const source = readFileSync(resolve(process.cwd(), "electron/preload.cts"), "utf8");
+    expect(source).toContain(`"${PEER_IPC_FAILURE_MARKER}"`);
+    expect(source).not.toMatch(/ipcRenderer\.invoke\("peers:client:/);
+    invoke.mockResolvedValueOnce({
+      [PEER_IPC_FAILURE_MARKER]: 1,
+      message: "office.local:43200 did not answer.",
+      code: "unreachable",
+      reason: "timeout",
+    });
+    const error = (await exposed.startPeerPairing({}).catch((cause: unknown) => cause)) as {
+      message: string;
+      code?: string;
+      peerError?: unknown;
+    };
+    expect(Object.prototype.toString.call(error)).toBe("[object Error]");
+    expect(error.message).toBe("office.local:43200 did not answer.");
+    expect(error.code).toBe("unreachable");
+    expect(error.peerError).toEqual({ code: "unreachable", reason: "timeout" });
+    expect(invoke).toHaveBeenLastCalledWith("peers:client:pair:start", {});
+    invoke.mockResolvedValueOnce({ ok: true });
+    await expect(exposed.listPeerHosts()).resolves.toEqual({ ok: true });
   });
 
   it("passes an ordinary result through untouched", async () => {

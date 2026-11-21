@@ -161,6 +161,7 @@
                         <button type="button" @click="loadCard(entry.card)">Retry</button>
                       </div>
                     </div>
+                    <p v-else-if="entry.card.unsupported" class="sidebar-notes__hint">{{ entry.card.unsupported }}</p>
                     <p v-else-if="!entry.card.current" class="sidebar-notes__hint">Loading…</p>
                     <template v-if="entry.card.current">
                       <textarea
@@ -579,7 +580,7 @@ import { isPeerWindow } from "../../window-backend.js";
 import { apiKey } from "../../types/keys.js";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
-import { usePeersStore } from "../../stores/peers.js";
+import { isUnsupportedPeerFeature, usePeersStore } from "../../stores/peers.js";
 
 const props = defineProps<{ host: HTMLElement | null; profileId: string; workspaceId?: string | null }>();
 const appStore = useAppStore();
@@ -1321,6 +1322,8 @@ interface GlobalCard {
   current: { draft: Draft; name: string } | null;
   editing: boolean;
   loadError: string;
+  /** The host is too old to have a global note; shown as a muted line, not as a failure. */
+  unsupported: string;
   loadGeneration: number;
   mutations: number;
 }
@@ -1344,6 +1347,7 @@ function cardFor(key: string, hostId: string | null): GlobalCard {
       current: null,
       editing: false,
       loadError: "",
+      unsupported: "",
       loadGeneration: 0,
       mutations: 0,
     });
@@ -1485,10 +1489,16 @@ async function loadCard(card: GlobalCard) {
       return;
     }
     card.loadError = "";
+    card.unsupported = "";
     mergeCard(card, result);
   } catch (error) {
     if (generation === card.loadGeneration && !disposed) {
-      card.loadError = userFacingMessage(error, "Couldn't load the global note.");
+      if (isUnsupportedPeerFeature(error)) {
+        card.loadError = "";
+        card.unsupported = userFacingMessage(error);
+      } else {
+        card.loadError = userFacingMessage(error, "Couldn't load the global note.");
+      }
     }
   }
 }

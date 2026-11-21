@@ -508,21 +508,26 @@ describe("peer origin: the pairing identity", () => {
     const f = await startFixture();
     const psk = f.peerHost.pskForIdentity(PEER_PAIRING_IDENTITY)!;
     const agent = f.rawAgent(PEER_PAIRING_IDENTITY, psk);
-    const statuses: number[] = [];
+    const answers = [];
     for (let index = 0; index < 22; index++) {
-      statuses.push(
-        (
-          await f.raw(PEER_PAIRING_IDENTITY, psk, {
-            method: "POST",
-            path: "/api/peer/pair/status",
-            body: { pairingId: "abcdefgh12" },
-            agent,
-          })
-        ).status,
+      answers.push(
+        await f.raw(PEER_PAIRING_IDENTITY, psk, {
+          method: "POST",
+          path: "/api/peer/pair/status",
+          body: { pairingId: "abcdefgh12" },
+          agent,
+        }),
       );
     }
-    expect(statuses.slice(0, 20).every((status) => status === 200)).toBe(true);
-    expect(statuses.slice(20)).toEqual([429, 429]);
+    expect(answers.slice(0, 20).every((answer) => answer.status === 200)).toBe(true);
+    expect(answers.slice(20).map((answer) => answer.status)).toEqual([429, 429]);
+    expect(answers.slice(0, 20).every((answer) => answer.headers["retry-after"] === undefined)).toBe(true);
+    for (const answer of answers.slice(20)) {
+      const seconds = Number(answer.headers["retry-after"]);
+      expect(Number.isInteger(seconds)).toBe(true);
+      expect(seconds).toBeGreaterThanOrEqual(1);
+      expect(seconds).toBeLessThanOrEqual(60);
+    }
   });
 
   test("a device identity cannot use the pairing routes", async () => {

@@ -4,6 +4,7 @@ import { WebSocket } from "ws";
 import {
   PEER_PAIRING_TTL_MS,
   PEER_PROTOCOL_VERSION,
+  type PeerFailureReason,
   type PeerHello,
   type PeerHostRecord,
   type PeerIntegrationSettings,
@@ -12,7 +13,9 @@ import {
   type PeerPairStatusResult,
   type PeerPairingEndState,
   type PeerPairingResult,
+  type PeerPairingRetrying,
   type PeerStartedPairing,
+  peerFailureText,
 } from "../../shared/peers.js";
 import {
   exportPrivateKeyPem,
@@ -41,6 +44,9 @@ export const PEER_MAX_RESPONSE_BYTES = 128 * 1024 * 1024;
 const PAIRING_CALL_TIMEOUT_MS = 15_000;
 const SOCKET_HANDSHAKE_TIMEOUT_MS = 15_000;
 const POLL_FAILURES_BEFORE_GIVING_UP = 3;
+const POLL_NETWORK_BACKOFF_MS = [4_000, 8_000, 15_000, 30_000];
+const POLL_NETWORK_GIVE_UP_MS = 120_000;
+const POLL_RETRY_AFTER_CAP_MS = 60_000;
 /** The host closes an idle keep-alive connection after 100 s; ours go earlier so a request after a pause is not the one that finds out. */
 export const PEER_IDLE_SOCKET_MS = 30_000;
 const CLIENT_ID_HEADER = "x-strideterm-client-id";
@@ -61,21 +67,28 @@ export type PeerClientErrorCode =
   | "unknown-host"
   | "invalid-request"
   | "host-error"
+  | "unsupported"
   | "storage-unavailable"
   | "cancelled";
 
 export class PeerClientError extends Error {
+  readonly reason?: PeerFailureReason;
+  readonly status?: number;
+  readonly retryAfterMs?: number;
   constructor(
     readonly code: PeerClientErrorCode,
     message: string,
-    options?: { cause?: unknown },
+    options?: { cause?: unknown; reason?: PeerFailureReason; status?: number; retryAfterMs?: number },
   ) {
     super(message, options);
+    this.reason = options?.reason;
+    this.status = options?.status;
+    this.retryAfterMs = options?.retryAfterMs;
     this.name = "PeerClientError";
   }
 }
 
-export type PeerClientEvent = "peers:updated" | "peers:pairing-result";
+export type PeerClientEvent = "peers:updated" | "peers:pairing-result" | "peers:pairing-retrying";
 
 export type { PeerPairingEndState, PeerPairingResult, PeerStartedPairing };
 
@@ -89,7 +102,7 @@ export interface PeerClientDeps {
   emit(event: PeerClientEvent, payload: unknown): void;
   now?(): number;
   randomId?(): string;
-  /** Default 2000. */
+  /** Default 4000. */
   pollIntervalMs?: number;
   limits?: { requestTimeoutMs?: number; maxResponseBytes?: number; idleSocketMs?: number };
 }
@@ -114,6 +127,7 @@ export interface PeerHostStatus {
   hostAppVersion: string;
   profiles: PeerHello["profiles"];
   checkedAt: number;
+  reason?: PeerFailureReason;
 }
 
 export interface PeerSocketClose {
@@ -164,7 +178,7 @@ interface RawRequest {
   signal?: AbortSignal;
 }
 
-type FailureKind = "refused" | "timeout" | "unreachable" | "tls" | "other";
+type FailureKind = "refused" | "timeout" | "unreachable" | "other-program" | "tls" | "other";
 
 /** A pooled keep-alive socket the host had already closed: nothing reached the host, so one retry is safe. */
 class StaleSocketError extends Error {}
@@ -175,8 +189,16 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+const NOT_TLS_CODES = new Set([
+  "ERR_SSL_WRONG_VERSION_NUMBER",
+  "ERR_SSL_PACKET_LENGTH_TOO_LONG",
+  "ERR_SSL_HTTP_REQUEST",
+]);
+const NOT_TLS_MESSAGE = /wrong version number|packet length too long|http request/i;
+
 function failureKind(error: unknown): FailureKind {
   const code = String((error as { code?: unknown } | null)?.code ?? "");
+  if (NOT_TLS_CODES.has(code) || NOT_TLS_MESSAGE.test(errorText(error))) return "other-program";
   if (code === "ECONNREFUSED") return "refused";
   if (code === "ETIMEDOUT" || code === "UND_ERR_CONNECT_TIMEOUT") return "timeout";
   if (code.startsWith("ERR_SSL") || code.startsWith("ERR_TLS") || code === "EPROTO") return "tls";
@@ -188,13 +210,9 @@ function failureKind(error: unknown): FailureKind {
 const where = (target: Target) => `${target.address}:${target.port}`;
 
 function networkError(kind: FailureKind, target: Target, cause: unknown): PeerClientError {
-  const text =
-    kind === "refused"
-      ? `Nothing is listening at ${where(target)}. Check the address and port, and that attaching profiles is turned on there.`
-      : kind === "timeout"
-        ? `${where(target)} did not answer in time.`
-        : `${where(target)} cannot be reached from this computer.`;
-  return new PeerClientError("unreachable", text, { cause });
+  const reason: PeerFailureReason =
+    kind === "refused" || kind === "other-program" || kind === "timeout" ? kind : "unreachable";
+  return new PeerClientError("unreachable", peerFailureText(reason, where(target)), { cause, reason });
 }
 
 function isSafeApiPath(pathname: unknown): pathname is string {
@@ -329,7 +347,7 @@ interface PairingAttempt {
 export function createPeerClient(deps: PeerClientDeps): PeerClient {
   const now = deps.now ?? Date.now;
   const randomId = deps.randomId ?? randomUUID;
-  const pollIntervalMs = deps.pollIntervalMs ?? 2000;
+  const pollIntervalMs = deps.pollIntervalMs ?? 4000;
   const requestTimeoutMs = deps.limits?.requestTimeoutMs ?? PEER_REQUEST_TIMEOUT_MS;
   const maxResponseBytes = deps.limits?.maxResponseBytes ?? PEER_MAX_RESPONSE_BYTES;
   const idleSocketMs = deps.limits?.idleSocketMs ?? PEER_IDLE_SOCKET_MS;
@@ -530,6 +548,7 @@ export function createPeerClient(deps: PeerClientDeps): PeerClient {
       !previous ||
       previous.state !== next.state ||
       previous.hostAppVersion !== next.hostAppVersion ||
+      previous.reason !== next.reason ||
       JSON.stringify(previous.profiles) !== JSON.stringify(next.profiles)
     ) {
       deps.emit("peers:updated", {});
@@ -550,7 +569,8 @@ export function createPeerClient(deps: PeerClientDeps): PeerClient {
       const code = error instanceof PeerClientError ? error.code : "host-error";
       if (code === "unknown-host") return getHostStatus(hostId);
       const state: PeerHostState = code === "not-paired" || code === "wrong-host" ? code : "offline";
-      next = { state, hostAppVersion: "", profiles: [] };
+      const reason = state === "offline" && error instanceof PeerClientError ? error.reason : undefined;
+      next = { state, hostAppVersion: "", profiles: [], ...(reason ? { reason } : {}) };
     }
     if (!findHost(hostId)) return getHostStatus(hostId);
     return setStatus(hostId, { ...next, checkedAt: now() });
@@ -587,11 +607,16 @@ export function createPeerClient(deps: PeerClientDeps): PeerClient {
     }
     if (response.status < 200 || response.status >= 300) {
       const sentence = (parsed as { error?: unknown } | null)?.error;
+      const retryAfter = Number(response.headers["retry-after"]);
       throw new PeerClientError(
         "host-error",
         typeof sentence === "string" && sentence
           ? sentence
           : `The other desktop answered with status ${response.status}.`,
+        {
+          status: response.status,
+          ...(Number.isFinite(retryAfter) && retryAfter > 0 ? { retryAfterMs: retryAfter * 1000 } : {}),
+        },
       );
     }
     if (!parsed || typeof parsed !== "object") {
@@ -608,7 +633,7 @@ export function createPeerClient(deps: PeerClientDeps): PeerClient {
     attempt.agent.destroy();
     if (pairing === attempt) pairing = null;
     if (!attempt.announced) return;
-    log.info("pairing ended", { attemptId: attempt.attemptId, state: result.state });
+    log.info("pairing ended", { attemptId: attempt.attemptId, state: result.state, error: result.error });
     deps.emit("peers:pairing-result", { attemptId: attempt.attemptId, ...result });
   }
 
@@ -667,8 +692,18 @@ export function createPeerClient(deps: PeerClientDeps): PeerClient {
     approved: { host: PeerHostRecord; privateKeyPem: string },
   ): Promise<void> {
     let failures = 0;
+    let networkSince: number | null = null;
+    let step = 0;
+    let delay = pollIntervalMs;
+    let waiting = false;
+    const announceWait = (reason: PeerPairingRetrying["reason"], retryInMs: number) => {
+      waiting = reason !== null;
+      const payload: PeerPairingRetrying = { attemptId: attempt.attemptId, reason, retryInMs };
+      deps.emit("peers:pairing-retrying", payload);
+    };
+    const nextBackoff = () => POLL_NETWORK_BACKOFF_MS[Math.min(step++, POLL_NETWORK_BACKOFF_MS.length - 1)]!;
     while (!attempt.done) {
-      await sleep(attempt, pollIntervalMs);
+      await sleep(attempt, delay);
       if (attempt.done) return;
       if (now() >= deadline) {
         finishAttempt(attempt, { state: "expired" });
@@ -680,9 +715,31 @@ export function createPeerClient(deps: PeerClientDeps): PeerClient {
           pairingId,
         });
         state = answer.state;
+        if (waiting) announceWait(null, 0);
         failures = 0;
+        networkSince = null;
+        step = 0;
+        delay = pollIntervalMs;
       } catch (error) {
         if (attempt.done) return;
+        const failure = error instanceof PeerClientError ? error : null;
+        if (failure?.status === 429) {
+          networkSince = null;
+          delay = Math.min(failure.retryAfterMs ?? nextBackoff(), POLL_RETRY_AFTER_CAP_MS);
+          announceWait("rate-limited", delay);
+          continue;
+        }
+        if (failure?.code === "unreachable") {
+          networkSince ??= now();
+          if (now() - networkSince > POLL_NETWORK_GIVE_UP_MS) {
+            finishAttempt(attempt, { state: "failed", error: failure.message, reason: failure.reason });
+            return;
+          }
+          delay = nextBackoff();
+          announceWait(failure.reason ?? "unreachable", delay);
+          continue;
+        }
+        delay = pollIntervalMs;
         failures += 1;
         if (failures >= POLL_FAILURES_BEFORE_GIVING_UP) {
           finishAttempt(attempt, { state: "failed", error: errorText(error) });
@@ -801,6 +858,16 @@ export function createPeerClient(deps: PeerClientDeps): PeerClient {
         };
       } catch (error) {
         finishAttempt(attempt, { state: "failed" });
+        if (error instanceof PeerClientError && error.reason) {
+          log.warn("pairing failed to start", {
+            attemptId: attempt.attemptId,
+            address: target.address,
+            port: target.port,
+            code: error.code,
+            reason: error.reason,
+          });
+          throw error;
+        }
         log.warn("pairing failed to start", {
           attemptId: attempt.attemptId,
           address: target.address,

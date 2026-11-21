@@ -6,6 +6,7 @@ import {
   type LocalProfileOverview,
   type PeerAttachedHost,
   type PeerPairingResult,
+  type PeerPairingRetrying,
   type PeerStartedPairing,
 } from "../../electron/shared/peers.js";
 import { userFacingMessage } from "../lib/error-message.js";
@@ -25,6 +26,10 @@ function bridge(): Partial<Bridge> | undefined {
 export function peersBridgeAvailable(): boolean {
   return typeof bridge()?.listPeerHosts === "function";
 }
+
+/** A paired host answered that it is too old for a feature (a 404 on its fixed route): not a failure to report. */
+export const isUnsupportedPeerFeature = (error: unknown): boolean =>
+  (error as { peerError?: { code?: unknown } } | null)?.peerError?.code === "unsupported";
 
 export function parsePeerAddress(
   addressText: string,
@@ -73,12 +78,14 @@ export const usePeersStore = defineStore("peers", () => {
   const loadError = ref("");
   const starting = ref(false);
   const pairing = ref<PeerPairingView | null>(null);
+  const retrying = ref<PeerPairingRetrying | null>(null);
   const collapsed = ref<Record<string, boolean>>(loadCollapsed());
   const localAppVersion = computed(() => hosts.value.find((host) => host.localAppVersion)?.localAppVersion || "");
 
   let watchers = 0;
   let offUpdated: (() => void) | null = null;
   let offPairing: (() => void) | null = null;
+  let offRetrying: (() => void) | null = null;
   let earlyResults: PeerPairingResult[] = [];
 
   function refreshAvailability(): boolean {
@@ -140,6 +147,14 @@ export const usePeersStore = defineStore("peers", () => {
     }
   }
 
+  // A host that was just paired (or re-paired, or moved to a new address) has never been asked; ask it now instead of
+  // showing it as unchecked until the next time something opens the list.
+  function checkNewHosts(): void {
+    for (const host of hosts.value) {
+      if (host.checkedAt === 0 && !checking.value[host.id]) void refresh(host.id);
+    }
+  }
+
   async function refreshAll(): Promise<void> {
     await Promise.all(hosts.value.map((host) => refresh(host.id)));
   }
@@ -148,7 +163,7 @@ export const usePeersStore = defineStore("peers", () => {
   function watch(): () => void {
     watchers += 1;
     if (watchers === 1) {
-      offUpdated = bridge()?.onPeersUpdated?.(() => void load()) ?? null;
+      offUpdated = bridge()?.onPeersUpdated?.(() => void load().then(checkNewHosts)) ?? null;
     }
     let released = false;
     return () => {
@@ -254,6 +269,9 @@ export const usePeersStore = defineStore("peers", () => {
   function stopListeningForPairing(): void {
     offPairing?.();
     offPairing = null;
+    offRetrying?.();
+    offRetrying = null;
+    retrying.value = null;
     earlyResults = [];
   }
 
@@ -268,6 +286,11 @@ export const usePeersStore = defineStore("peers", () => {
       bridge()?.onPeerPairingResult?.((result) => {
         if (pairing.value) applyPairingResult(result);
         else earlyResults.push(result);
+      }) ?? null;
+    offRetrying?.();
+    offRetrying =
+      bridge()?.onPeerPairingRetrying?.((wait) => {
+        retrying.value = wait.reason ? wait : null;
       }) ?? null;
     try {
       const started = await call({ address, port });
@@ -305,6 +328,7 @@ export const usePeersStore = defineStore("peers", () => {
     loadError,
     starting,
     pairing,
+    retrying,
     collapsed,
     localAppVersion,
     defaultPort: PEER_DEFAULT_PORT,

@@ -20,6 +20,7 @@ describe("peer window event allowlist", () => {
       "peers:updated",
       "peers:pairing-progress",
       "peers:pairing-result",
+      "peers:pairing-retrying",
     ]) {
       expect(isEventAllowedInPeerWindow(channel), channel).toBe(true);
     }

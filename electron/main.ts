@@ -2213,7 +2213,7 @@ async function restartPeerServer(): Promise<void> {
           port,
           addresses: [],
           error: /EADDRINUSE/.test(message)
-            ? `Port ${port} is already in use. Choose a different port.`
+            ? `Port ${port} is already in use by another program or another strIDEterm on this computer. Choose a different port, for example ${port + 1}.`
             : `The listener could not start: ${message}`,
         });
       }

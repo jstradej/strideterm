@@ -118,6 +118,8 @@ vi.mock("electron", () => ({
 import { registerIpc } from "./ipc.js";
 import { JiraRequestError } from "./jira/jira-manager.js";
 import { JIRA_IPC_FAILURE_MARKER, toJiraIpcFailure } from "../shared/jira-ipc-failure.js";
+import { PEER_IPC_FAILURE_MARKER } from "../shared/peer-ipc-failure.js";
+import { PeerClientError } from "./peers/peer-client.js";
 import {
   AZURE_CLOSED_PR_CLEANUP_FINISHED_CHANNEL,
   azureClosedPrCleanupFinishedSchema,
@@ -311,6 +313,34 @@ describe("registerIpc teardown", () => {
       retryAfterMs: 4000,
     });
     await expect(users(event, { connectionId: "jira-a", query: "alice" })).rejects.toThrow("plain failure");
+    dispose();
+  });
+
+  test("a peers:client failure crosses IPC as an envelope with code and reason; other errors and channels still reject", async () => {
+    const runtime = makeRuntimeStub();
+    runtime.startPeerPairing = vi.fn(async () => {
+      throw new PeerClientError("unreachable", "office.local:43200 did not answer.", { reason: "timeout" });
+    });
+    runtime.renamePeerHost = vi.fn(async () => {
+      throw new Error("plain failure");
+    });
+    runtime.stopTask = vi.fn(() => {
+      throw new PeerClientError("unreachable", "not for this channel", { reason: "refused" });
+    });
+    const dispose = registerIpc(runtime, () => {}, { getWindowIdByWebContentsId: () => "window-a" });
+    const event = { sender: { id: 1 } } as unknown as import("electron").IpcMainInvokeEvent;
+    const call = (channel: string, payload: unknown) =>
+      (handleRegistry.get(channel) as (event: unknown, payload: unknown) => Promise<unknown>)(event, payload);
+    await expect(call("peers:client:pair:start", { address: "office.local", port: 43200 })).resolves.toEqual({
+      [PEER_IPC_FAILURE_MARKER]: 1,
+      message: "office.local:43200 did not answer.",
+      code: "unreachable",
+      reason: "timeout",
+    });
+    await expect(call("peers:client:rename", { hostId: "host-aaaa", label: "Office" })).rejects.toThrow(
+      "plain failure",
+    );
+    await expect(call("task:stop", { workspaceId: "ws" })).rejects.toThrow("not for this channel");
     dispose();
   });
 

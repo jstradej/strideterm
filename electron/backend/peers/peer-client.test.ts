@@ -2,7 +2,8 @@ import https from "node:https";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { TLSSocket } from "node:tls";
-import { afterEach, describe, expect, test } from "vitest";
+import { setTimeout as realSleep } from "node:timers/promises";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { WebSocketServer } from "ws";
 import {
   PEER_PAIRING_TTL_MS,
@@ -42,6 +43,9 @@ interface HostFixture {
   upgradeUrls: string[];
   secureConnections: { count: number; refused: number };
   helloOverride: { hostInstanceId?: string };
+  statusOverride: { current: { status: number; headers?: Record<string, string> } | null };
+  pause(): Promise<void>;
+  resume(): Promise<void>;
   removeDevice(deviceId: string): Promise<void>;
   moveTo(): Promise<number>;
   stop(): Promise<void>;
@@ -103,6 +107,7 @@ async function createHostFixture(): Promise<HostFixture> {
   const upgradeUrls: string[] = [];
   const secureConnections = { count: 0, refused: 0 };
   const helloOverride: HostFixture["helloOverride"] = {};
+  const statusOverride: HostFixture["statusOverride"] = { current: null };
   const liveSockets = new Set<TLSSocket>();
 
   const handler = async (req: IncomingMessage, res: ServerResponse) => {
@@ -110,6 +115,12 @@ async function createHostFixture(): Promise<HostFixture> {
     const body = await readBody(req);
     const url = req.url ?? "";
     requests.push({ identity, method: req.method ?? "", url, headers: { ...req.headers }, body });
+    if (url === "/api/peer/pair/status" && statusOverride.current) {
+      const { status, headers } = statusOverride.current;
+      res.writeHead(status, { "content-type": "application/json", ...headers });
+      res.end(JSON.stringify({ error: "overridden" }));
+      return;
+    }
     const isPairingRoute = url.startsWith("/api/peer/pair/");
     if (isPairingRoute !== (identity === PEER_PAIRING_IDENTITY)) {
       send(res, 403, { error: "Not allowed for this connection." });
@@ -157,7 +168,7 @@ async function createHostFixture(): Promise<HostFixture> {
   });
 
   let server: https.Server;
-  const listen = async (): Promise<number> => {
+  const listen = async (port = 0): Promise<number> => {
     server = https.createServer(
       {
         ...PEER_TLS_OPTIONS,
@@ -185,7 +196,7 @@ async function createHostFixture(): Promise<HostFixture> {
       upgradeUrls.push(req.url ?? "");
       wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
     });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
     return (server.address() as AddressInfo).port;
   };
   const close = async () => {
@@ -206,6 +217,11 @@ async function createHostFixture(): Promise<HostFixture> {
     upgradeUrls,
     secureConnections,
     helloOverride,
+    statusOverride,
+    pause: close,
+    async resume() {
+      await listen(fixture.port);
+    },
     async removeDevice(deviceId) {
       await host.removeDevice(deviceId);
       for (const socket of liveSockets) {
@@ -238,6 +254,7 @@ function createDevice(
   options: {
     appVersion?: string;
     limits?: { requestTimeoutMs?: number; maxResponseBytes?: number; idleSocketMs?: number };
+    defaultPollInterval?: boolean;
   } = {},
 ): DeviceHarness {
   const settings = defaultPeerSettings();
@@ -268,7 +285,7 @@ function createDevice(
     platform: "win32",
     emit: (event, payload) => events.push({ event, payload: payload as Record<string, unknown> }),
     now: () => clock.value,
-    pollIntervalMs: 20,
+    pollIntervalMs: options.defaultPollInterval ? undefined : 20,
     limits: options.limits,
   });
   clients.push(client);
@@ -277,6 +294,9 @@ function createDevice(
 
 const pairingResults = (device: DeviceHarness) =>
   device.events.filter((entry) => entry.event === "peers:pairing-result").map((entry) => entry.payload);
+
+const retryingEvents = (device: DeviceHarness) =>
+  device.events.filter((entry) => entry.event === "peers:pairing-retrying").map((entry) => entry.payload);
 
 async function pairDevice(fixture: HostFixture, device: DeviceHarness): Promise<string> {
   const started = await device.client.startPairing({ address: "127.0.0.1", port: fixture.port });
@@ -459,7 +479,8 @@ describe("peer client pairing", () => {
       const failure = await device.client
         .startPairing({ address: "127.0.0.1", port: (plain.address() as AddressInfo).port })
         .catch((error: unknown) => error);
-      expect((failure as Error).message).toBe("This address does not answer as a strIDEterm that accepts desktops.");
+      expect((failure as PeerClientError).reason).toBe("other-program");
+      expect((failure as Error).message).toMatch(/Another program answers at 127\.0\.0\.1:\d+, not strIDEterm/);
     } finally {
       plain.closeAllConnections();
       await new Promise((resolve) => plain.close(resolve));
@@ -472,6 +493,237 @@ describe("peer client pairing", () => {
     expect(ids[0]).toBe(ids[1]);
     expect(ids[0]).toBe(device.settings.instanceId);
     expect(device.updateCalls.count).toBe(1);
+  });
+});
+
+describe("a plain HTTP server on the peer port", () => {
+  async function plainServer(): Promise<{ port: number; connections: { count: number }; stop(): Promise<void> }> {
+    const { createServer } = await import("node:http");
+    const connections = { count: 0 };
+    const server = createServer((_req, res) => res.end("hi"));
+    server.on("connection", () => {
+      connections.count += 1;
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    return {
+      port: (server.address() as AddressInfo).port,
+      connections,
+      stop: async () => {
+        server.closeAllConnections();
+        await new Promise((resolve) => server.close(resolve));
+      },
+    };
+  }
+
+  test("the TLS-PSK client sees EPROTO with a wrong-version-number message, not a PSK alert", async () => {
+    const plain = await plainServer();
+    try {
+      const error = await new Promise<NodeJS.ErrnoException>((resolve) => {
+        const agent = new https.Agent({
+          ...PEER_TLS_OPTIONS,
+          pskCallback: () => ({ psk: Buffer.alloc(32), identity: PEER_PAIRING_IDENTITY }),
+          checkServerIdentity: () => undefined,
+        });
+        const req = https.request({ agent, host: "127.0.0.1", port: plain.port, method: "POST", path: "/" });
+        req.on("error", (err: NodeJS.ErrnoException) => {
+          agent.destroy();
+          resolve(err);
+        });
+        req.end("{}");
+      });
+      expect(error.code).toBe("EPROTO");
+      expect(error.message).toMatch(/wrong version number/i);
+    } finally {
+      await plain.stop();
+    }
+  });
+
+  test("is reported as offline and retried, never latched as not paired", async () => {
+    const fixture = await createHostFixture();
+    const device = createDevice();
+    const hostId = await pairDevice(fixture, device);
+    const plain = await plainServer();
+    try {
+      await device.client.updateHostAddress(hostId, { address: "127.0.0.1", port: plain.port });
+      const first = await device.client.refreshHost(hostId, { force: true });
+      expect(first.state).toBe("offline");
+      expect(first.reason).toBe("other-program");
+      const before = plain.connections.count;
+      const second = await device.client.refreshHost(hostId);
+      expect(second.state).toBe("offline");
+      expect(plain.connections.count).toBeGreaterThan(before);
+      const error = await device.client.hello(hostId).catch((err: unknown) => err);
+      expect((error as PeerClientError).code).toBe("unreachable");
+      expect((error as PeerClientError).reason).toBe("other-program");
+      await device.client.updateHostAddress(hostId, { address: "127.0.0.1", port: fixture.port });
+      const recovered = await device.client.refreshHost(hostId, { force: true });
+      expect(recovered.state).toBe("online");
+      expect(recovered.reason).toBeUndefined();
+    } finally {
+      await plain.stop();
+    }
+  });
+});
+
+describe("peer client pairing poll", () => {
+  const statusRequests = (fixture: HostFixture) =>
+    fixture.requests.filter((request) => request.url === "/api/peer/pair/status").length;
+
+  async function startFaked(options: Parameters<typeof createDevice>[0] = {}): Promise<{
+    fixture: HostFixture;
+    device: DeviceHarness;
+    started: Awaited<ReturnType<PeerClient["startPairing"]>>;
+  }> {
+    const fixture = await createHostFixture();
+    const device = createDevice(options);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const started = await device.client.startPairing({ address: "127.0.0.1", port: fixture.port });
+    return { fixture, device, started };
+  }
+
+  async function advance(device: DeviceHarness, ms: number): Promise<void> {
+    for (let left = ms; left > 0; left -= 250) {
+      const step = Math.min(250, left);
+      device.clock.value += step;
+      await vi.advanceTimersByTimeAsync(step);
+      await realSleep(2);
+    }
+    await realSleep(30);
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test("polls every 4 seconds by default", async () => {
+    const { fixture, device } = await startFaked({ defaultPollInterval: true });
+    await advance(device, 3750);
+    expect(statusRequests(fixture)).toBe(0);
+    await advance(device, 500);
+    expect(statusRequests(fixture)).toBe(1);
+    await advance(device, 3500);
+    expect(statusRequests(fixture)).toBe(1);
+    await advance(device, 500);
+    expect(statusRequests(fixture)).toBe(2);
+  });
+
+  test("a 429 waits for Retry-After and never counts as a failure", async () => {
+    const { fixture, device, started } = await startFaked({ defaultPollInterval: true });
+    fixture.statusOverride.current = { status: 429, headers: { "retry-after": "7" } };
+    await advance(device, 4250);
+    expect(statusRequests(fixture)).toBe(1);
+    await advance(device, 6500);
+    expect(statusRequests(fixture)).toBe(1);
+    await advance(device, 1000);
+    expect(statusRequests(fixture)).toBe(2);
+    for (let index = 0; index < 4; index++) await advance(device, 7250);
+    expect(statusRequests(fixture)).toBeGreaterThanOrEqual(6);
+    expect(pairingResults(device)).toEqual([]);
+
+    fixture.statusOverride.current = null;
+    expect(await fixture.host.approvePairing(fixture.host.listPending()[0]!.pairingId, started.code)).toBe("approved");
+    await advance(device, 8000);
+    expect(pairingResults(device)).toEqual([
+      { attemptId: started.attemptId, state: "approved", hostId: fixture.instanceId },
+    ]);
+  });
+
+  test("a 429 announces the wait with its delay, and the next answer clears it", async () => {
+    const { fixture, device, started } = await startFaked({ defaultPollInterval: true });
+    fixture.statusOverride.current = { status: 429, headers: { "retry-after": "7" } };
+    await advance(device, 4250);
+    expect(retryingEvents(device)).toEqual([{ attemptId: started.attemptId, reason: "rate-limited", retryInMs: 7000 }]);
+    fixture.statusOverride.current = null;
+    await advance(device, 7250);
+    expect(retryingEvents(device)).toEqual([
+      { attemptId: started.attemptId, reason: "rate-limited", retryInMs: 7000 },
+      { attemptId: started.attemptId, reason: null, retryInMs: 0 },
+    ]);
+    await advance(device, 4250);
+    expect(retryingEvents(device)).toHaveLength(2);
+  });
+
+  test("a network failure announces its reason and backoff, and a returning host clears it", async () => {
+    const { fixture, device, started } = await startFaked({ defaultPollInterval: true });
+    await fixture.pause();
+    await advance(device, 4250);
+    expect(retryingEvents(device)[0]).toEqual({ attemptId: started.attemptId, reason: "refused", retryInMs: 4000 });
+    await fixture.resume();
+    await advance(device, 10_000);
+    expect(retryingEvents(device).at(-1)).toEqual({ attemptId: started.attemptId, reason: null, retryInMs: 0 });
+  });
+
+  test("a Retry-After above a minute is capped", async () => {
+    const { fixture, device } = await startFaked({ defaultPollInterval: true });
+    fixture.statusOverride.current = { status: 429, headers: { "retry-after": "600" } };
+    await advance(device, 4250);
+    expect(statusRequests(fixture)).toBe(1);
+    await advance(device, 59_000);
+    expect(statusRequests(fixture)).toBe(1);
+    await advance(device, 1500);
+    expect(statusRequests(fixture)).toBe(2);
+  });
+
+  test("network failures back off 4, 8, 15 and 30 seconds, and a returning host is polled again", async () => {
+    const { fixture, device, started } = await startFaked({ defaultPollInterval: true });
+    await fixture.pause();
+    await advance(device, 20_000);
+    await fixture.resume();
+    await advance(device, 10_500);
+    expect(statusRequests(fixture)).toBe(0);
+    await advance(device, 1000);
+    expect(statusRequests(fixture)).toBe(1);
+    expect(pairingResults(device)).toEqual([]);
+    expect(await fixture.host.approvePairing(fixture.host.listPending()[0]!.pairingId, started.code)).toBe("approved");
+    await advance(device, 5000);
+    expect(pairingResults(device)).toEqual([
+      { attemptId: started.attemptId, state: "approved", hostId: fixture.instanceId },
+    ]);
+  });
+
+  test("the backoff stops growing at 30 seconds", async () => {
+    const { fixture, device } = await startFaked({ defaultPollInterval: true });
+    await fixture.pause();
+    await advance(device, 100_000);
+    await fixture.resume();
+    await advance(device, 20_000);
+    expect(statusRequests(fixture)).toBe(0);
+    await advance(device, 2000);
+    expect(statusRequests(fixture)).toBe(1);
+  });
+
+  test("gives up on network failures after two minutes, with the reason", async () => {
+    const { fixture, device, started } = await startFaked({ defaultPollInterval: true });
+    await fixture.pause();
+    await advance(device, 4000 + 119_000);
+    expect(pairingResults(device)).toEqual([]);
+    await advance(device, 40_000);
+    expect(pairingResults(device)).toEqual([
+      {
+        attemptId: started.attemptId,
+        state: "failed",
+        reason: "refused",
+        error: expect.stringContaining("Nothing is listening at 127.0.0.1"),
+      },
+    ]);
+  });
+
+  test("another host error still fails after three consecutive answers", async () => {
+    const { fixture, device, started } = await startFaked({ defaultPollInterval: true });
+    fixture.statusOverride.current = { status: 500 };
+    await advance(device, 4250 * 3);
+    expect(pairingResults(device)).toEqual([{ attemptId: started.attemptId, state: "failed", error: "overridden" }]);
+  });
+
+  test("a start failure carries its reason on the error", async () => {
+    const fixture = await createHostFixture();
+    const device = createDevice();
+    const port = fixture.port;
+    await fixture.stop();
+    const failure = await device.client.startPairing({ address: "127.0.0.1", port }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(PeerClientError);
+    expect(failure).toMatchObject({ code: "unreachable", reason: "refused" });
+    expect((failure as Error).message).not.toContain("[peer:");
   });
 });
 
@@ -666,7 +918,10 @@ describe("peer client link", () => {
     const hostId = await pairDevice(fixture, device);
     await fixture.stop();
     expect(await codeOf(device.client.request(hostId, { method: "GET", pathname: "/api/echo" }))).toBe("unreachable");
-    expect((await device.client.refreshHost(hostId)).state).toBe("offline");
+    const status = await device.client.refreshHost(hostId);
+    expect(status.state).toBe("offline");
+    expect(status.reason).toBe("refused");
+    expect(device.events.filter((entry) => entry.event === "peers:updated").length).toBeGreaterThan(0);
   });
 
   test("a request that is not answered in time is unreachable", async () => {

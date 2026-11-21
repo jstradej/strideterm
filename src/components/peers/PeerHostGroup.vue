@@ -131,6 +131,11 @@
       </p>
     </form>
 
+    <div v-if="offlineReason" class="peer-group__failure" data-testid="peer-offline-reason">
+      <p class="peer-group__failure-text">{{ offlineText }}</p>
+      <PeerFailureHelp :reason="offlineReason" :target="{ address: host.address, port: host.port }" />
+    </div>
+
     <div v-if="!collapsed" class="peer-group__rows">
       <p v-if="!host.profiles.length" class="text-muted peer-group__empty">
         No profiles known yet{{ host.state === "online" ? "." : " — connect to see them." }}
@@ -190,10 +195,11 @@
 
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import type { PeerAttachedHost } from "../../../electron/shared/peers.js";
+import { peerFailureText, type PeerAttachedHost } from "../../../electron/shared/peers.js";
 import { useAppStore } from "../../stores/app.js";
 import { parsePeerAddress, usePeersStore } from "../../stores/peers.js";
 import Spinner from "../common/Spinner.vue";
+import PeerFailureHelp from "./PeerFailureHelp.vue";
 
 const props = defineProps<{
   host: PeerAttachedHost;
@@ -223,6 +229,10 @@ const renameValue = ref("");
 const collapsed = computed(() => peers.isCollapsed(props.host.id));
 const checking = computed(() => (peers.checking[props.host.id] ?? 0) > 0);
 const online = computed(() => props.host.state === "online");
+const offlineReason = computed(() => (props.host.state === "offline" ? props.host.reason : undefined));
+const offlineText = computed(() =>
+  offlineReason.value ? peerFailureText(offlineReason.value, `${props.host.address}:${props.host.port}`) : "",
+);
 const editParsed = computed(() => parsePeerAddress(editAddress.value, editPort.value));
 
 const chipText = computed(() => {
@@ -238,7 +248,7 @@ const chipText = computed(() => {
     case "wrong-host":
       return "Another strIDEterm answers here";
     default:
-      return "Checking…";
+      return checking.value ? "Checking…" : "Not checked yet";
   }
 });
 
@@ -425,6 +435,17 @@ async function disconnect(): Promise<void> {
   display: grid;
   gap: 8px;
   min-width: 0;
+}
+.peer-group__failure {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+.peer-group__failure-text {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.5;
 }
 .peer-group__empty {
   margin: 0;

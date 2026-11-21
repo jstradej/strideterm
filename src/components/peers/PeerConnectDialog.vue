@@ -43,6 +43,7 @@
         <span class="dialog__error-icon" aria-hidden="true">⚠</span>
         <span class="dialog__error-text">{{ submitError }}</span>
       </div>
+      <PeerFailureHelp v-if="submitReason" :reason="submitReason" :target="target" />
       <p v-if="peers.starting" class="peer-connect__waiting" role="status" data-testid="peer-connect-contacting">
         <Spinner size="sm" aria-hidden="true" />
         Contacting {{ parsed.ok ? parsed.value.address : "the other computer" }}… This can take a while if it is asleep.
@@ -77,6 +78,9 @@
         <Spinner size="sm" aria-hidden="true" />
         Waiting for {{ pairing.started.hostName }}…
       </p>
+      <p v-if="retryText" class="peer-connect__waiting" role="status" data-testid="peer-connect-retrying">
+        {{ retryText }}
+      </p>
       <div class="dialog__actions">
         <button type="button" class="button button--ghost" data-testid="peer-connect-cancel" @click="cancelAttempt">
           Cancel
@@ -89,6 +93,7 @@
         <span class="dialog__error-icon" aria-hidden="true">⚠</span>
         <span class="dialog__error-text">{{ resultMessage }}</span>
       </div>
+      <PeerFailureHelp v-if="resultReason" :reason="resultReason" :target="target" />
       <div class="dialog__actions">
         <button type="button" class="button button--ghost" @click="emit('cancel')">Close</button>
         <button type="button" class="button button--primary" data-testid="peer-connect-retry" @click="tryAgain">
@@ -101,12 +106,13 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { PEER_DEFAULT_PORT } from "../../../electron/shared/peers.js";
+import { PEER_DEFAULT_PORT, peerFailureText, type PeerFailureReason } from "../../../electron/shared/peers.js";
 import { userFacingMessage } from "../../lib/error-message.js";
 import { useAppStore } from "../../stores/app.js";
 import { parsePeerAddress, usePeersStore } from "../../stores/peers.js";
 import { isPeerWindow } from "../../window-backend.js";
 import Spinner from "../common/Spinner.vue";
+import PeerFailureHelp from "./PeerFailureHelp.vue";
 
 const emit = defineEmits<{ cancel: [] }>();
 
@@ -116,6 +122,7 @@ const app = useAppStore();
 const address = ref("");
 const port = ref(String(PEER_DEFAULT_PORT));
 const submitError = ref("");
+const submitReason = ref<PeerFailureReason | undefined>();
 
 const pairing = computed(() => peers.pairing);
 const step = computed<"address" | "code" | "result">(() => {
@@ -141,23 +148,48 @@ const versionHint = computed(() => {
   return `Pairing will work, but both desktops must run the same version to connect (${started.hostName} runs ${started.hostAppVersion}, this one ${localVersion.value}).`;
 });
 
+const target = computed(() =>
+  parsed.value.ok
+    ? { address: parsed.value.value.address, port: parsed.value.value.port }
+    : { address: address.value.trim(), port: Number(port.value) || PEER_DEFAULT_PORT },
+);
+
+const retryText = computed(() => {
+  const wait = peers.retrying;
+  if (!wait || !wait.reason || wait.attemptId !== pairing.value?.started.attemptId) return "";
+  const seconds = Math.max(1, Math.ceil(wait.retryInMs / 1000));
+  return wait.reason === "rate-limited"
+    ? `The other desktop asked to wait. Trying again in ${seconds} s.`
+    : `Lost the connection to the other desktop. Trying again in ${seconds} s.`;
+});
+
+const resultReason = computed(() => {
+  const end = pairing.value?.end;
+  return end?.state === "failed" ? end.reason : undefined;
+});
+
 const resultMessage = computed(() => {
   const end = pairing.value?.end;
   const host = pairing.value?.started.hostName ?? "the other computer";
   if (!end) return "";
   if (end.state === "rejected") return `The request was rejected on ${host}, or the code did not match.`;
   if (end.state === "expired") return "The request timed out.";
-  if (end.state === "failed") return end.error || "Pairing failed.";
+  if (end.state === "failed") {
+    if (end.reason) return peerFailureText(end.reason, `${target.value.address}:${target.value.port}`);
+    return end.error || "Pairing failed.";
+  }
   return "";
 });
 
 async function submit(): Promise<void> {
   if (!parsed.value.ok || peers.starting) return;
   submitError.value = "";
+  submitReason.value = undefined;
   try {
     await peers.startPairing(parsed.value.value.address, parsed.value.value.port);
   } catch (err) {
     submitError.value = userFacingMessage(err, "Could not start pairing.");
+    submitReason.value = (err as { peerError?: { reason?: PeerFailureReason } } | null)?.peerError?.reason;
   }
 }
 
@@ -167,6 +199,7 @@ async function cancelAttempt(): Promise<void> {
 
 async function tryAgain(): Promise<void> {
   submitError.value = "";
+  submitReason.value = undefined;
   await peers.resetPairing();
 }
 

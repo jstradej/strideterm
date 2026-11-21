@@ -82,6 +82,23 @@ Each host in **Profiles** shows a state:
 
 An attached window that loses its host shows a banner while it retries by itself. When retrying cannot help (**Needs pairing**, another installation, another version) or the connection was closed, the window shows a screen with the reason and three choices: **Reconnect**, **Switch to a local profile** and **Close window**. After a restart of your computer, its attached windows open again; if the host is not there, they show this screen.
 
+## If the other desktop cannot be reached
+
+When **Connect from network…** or **Reconnect** says the address did not answer, the other desktop's firewall usually blocks incoming connections, or the two computers are not on the same network. Allow the port shown in Remote Access → Desktops (default 43124) on the other desktop:
+
+- **Windows:** when Windows asks whether strIDEterm may communicate on networks, allow **Private networks**. If that was dismissed: Windows Security → Firewall & network protection → Allow an app through firewall → Change settings → tick strIDEterm for Private. The network must be Private: Settings → Network & internet → your Wi-Fi or Ethernet connection → Network profile type → Private. Or in PowerShell as administrator:
+
+  ```powershell
+  New-NetFirewallRule -DisplayName "strIDEterm desktops" -Direction Inbound -Protocol TCP -LocalPort 43124 -Action Allow -Profile Private
+  ```
+
+- **macOS:** System Settings → Network → Firewall → Options… → strIDEterm → Allow incoming connections.
+- **Linux:** with ufw, `sudo ufw allow 43124/tcp`. With firewalld, `sudo firewall-cmd --permanent --add-port=43124/tcp && sudo firewall-cmd --reload`.
+
+On a Mac that starts the connection, also check System Settings → Privacy & Security → Local Network: strIDEterm must be allowed to reach devices on the local network.
+
+"Nothing is listening" means the other desktop is not hosting on that port: turn on **Desktops** there and check the port. "Another program answers" means something else uses that port: choose a different one in Remote Access → Desktops. If a pairing waits for you to type the code, take your time: it keeps trying for ten minutes.
+
 ## Remove an attachment
 
 - **Disconnect** (on the device, in **Profiles**) removes the host from this computer and closes its windows here. Nothing is deleted on the host, and the host still lists this computer under **Paired desktops** until you remove it there.

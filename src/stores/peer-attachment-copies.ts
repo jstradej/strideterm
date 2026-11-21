@@ -11,6 +11,7 @@ import { absoluteAttachmentPath } from "../lib/attachment-path.js";
 import { userFacingMessage } from "../lib/error-message.js";
 import type { CallableTransport, Transport } from "../transport.js";
 import { useNotificationStore } from "./notifications.js";
+import { isUnsupportedPeerFeature } from "./peers.js";
 
 /**
  * Copies this client has already been told about, newest last. Per client (browser storage), bounded, and separate
@@ -62,6 +63,8 @@ export interface PeerAttachmentListing {
   truncated: boolean;
   loading: boolean;
   error: string;
+  /** Set instead of `error` when the host is too old to share attachments: nothing failed, there is nothing to show. */
+  unsupported: string;
   loadedAt: number;
 }
 
@@ -211,7 +214,14 @@ export const usePeerAttachmentCopiesStore = defineStore("peer-attachment-copies"
   }
 
   function setListing(hostId: string, patch: Partial<PeerAttachmentListing>): void {
-    const current = listings.value[hostId] ?? { items: [], truncated: false, loading: false, error: "", loadedAt: 0 };
+    const current = listings.value[hostId] ?? {
+      items: [],
+      truncated: false,
+      loading: false,
+      error: "",
+      unsupported: "",
+      loadedAt: 0,
+    };
     listings.value = { ...listings.value, [hostId]: { ...current, ...patch } };
   }
 
@@ -225,10 +235,15 @@ export const usePeerAttachmentCopiesStore = defineStore("peer-attachment-copies"
         truncated: result.truncated,
         loading: false,
         error: "",
+        unsupported: "",
         loadedAt: Date.now(),
       });
     } catch (error) {
-      setListing(hostId, { loading: false, error: userFacingMessage(error) });
+      if (isUnsupportedPeerFeature(error)) {
+        setListing(hostId, { items: [], loading: false, error: "", unsupported: userFacingMessage(error) });
+        return;
+      }
+      setListing(hostId, { loading: false, error: userFacingMessage(error), unsupported: "" });
       throw error;
     }
   }

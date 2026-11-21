@@ -2907,6 +2907,7 @@ describe("remote transport API parity — no method silently missing its remote 
     "peerWsSend",
     "peerWsClose",
     "onPeerPairingResult",
+    "onPeerPairingRetrying",
     "onPeerWsState",
     "onPeerWsMessage",
     "onSandboxDenied",
@@ -3166,6 +3167,7 @@ describe("remote transport — agent isolation and registries", () => {
       "peerWsSend",
       "peerWsClose",
       "onPeerPairingResult",
+      "onPeerPairingRetrying",
       "onPeerWsState",
       "onPeerWsMessage",
     ]) {
