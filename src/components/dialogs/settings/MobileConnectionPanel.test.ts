@@ -191,10 +191,10 @@ describe("MobileConnectionPanel", () => {
     expect(wrapper.find('[role="tabpanel"]').attributes("id")).toContain("phones-panel");
     expect(wrapper.text()).toContain("Connect your first phone");
     expect(wrapper.text()).toContain("Turn on phone pairing");
-    expect(wrapper.find(".mobile-tab__testing-notice").exists()).toBe(false);
+    expect(wrapper.find(".mobile-store-link").exists()).toBe(false);
   });
 
-  test("shows the internal testing access instructions before phone pairing", async () => {
+  test("shows the Google Play link before phone pairing", async () => {
     const account = useAccountStore();
     account.attach({
       getAccountState: async () => ({
@@ -207,18 +207,19 @@ describe("MobileConnectionPanel", () => {
     const { wrapper } = await mountTab({}, { enabled: true, devices: [] });
     expect(account.available).toBe(true);
     expect(account.entitlement?.source).toBe("trial");
-    const notice = wrapper.find(".mobile-tab__testing-notice");
+    const notice = wrapper.find(".mobile-store-link");
 
-    expect(notice.text()).toContain("Register and verify your email first");
-    expect(notice.text()).toContain("request access to the Google Play internal test");
-    expect(notice.find("a").attributes("href")).toBe("https://strideterm.com/mobile/#access-request-title");
+    expect(notice.text()).toContain("strIDEterm Mobile for Android is available on Google Play");
+    expect(notice.find("a").attributes("href")).toBe(
+      "https://play.google.com/store/apps/details?id=com.strideterm.mobile",
+    );
     expect(wrapper.find(".pairing-section__action").text()).toContain("Pair a phone");
 
     await wrapper
       .findAll('[role="tab"]')
       .find((tab) => tab.text() === "Overview")!
       .trigger("click");
-    expect(wrapper.find(".mobile-tab__testing-notice").text()).toContain("Register and verify your email first");
+    expect(wrapper.find(".mobile-store-link").text()).toContain("Get it on Google Play");
     expect(wrapper.text()).toContain("Connect first phone");
   });
 
@@ -2040,7 +2041,7 @@ describe("MobileConnectionPanel", () => {
     expect(wrapper.text()).toContain("Enable Mobile");
   });
 
-  test("trial users see the tester notice and can add phones", async () => {
+  test("trial users with a paired phone can add phones without the Google Play link", async () => {
     const account = useAccountStore();
     account.attach({
       getAccountState: async () => ({
@@ -2055,7 +2056,7 @@ describe("MobileConnectionPanel", () => {
       { enabled: true, devices: [SAMPLE_DEVICE] },
     );
 
-    expect(wrapper.find(".mobile-tab__testing-notice").exists()).toBe(false);
+    expect(wrapper.find(".mobile-store-link").exists()).toBe(false);
     expect(wrapper.text()).toContain("Pixel 8");
     expect(wrapper.text()).toContain("Edit access");
     await wrapper
