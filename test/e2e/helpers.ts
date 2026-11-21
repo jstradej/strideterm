@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import { expect } from "@playwright/test";
 
 interface MockServer {
@@ -25,4 +25,10 @@ export async function openApp(page: Page, mock: MockServer): Promise<void> {
 export function assertNoErrors(page: Page): void {
   const errors = page.__errorTracker || [];
   expect(errors, `Unexpected JS errors: ${errors.join(", ")}`).toEqual([]);
+}
+
+/** Opens a CustomSelect from its trigger button and picks the option with this label (the app has no native select). */
+export async function pickOption(trigger: Locator, label: string): Promise<void> {
+  await trigger.click();
+  await trigger.page().getByRole("listbox").getByRole("option", { name: label, exact: true }).click();
 }

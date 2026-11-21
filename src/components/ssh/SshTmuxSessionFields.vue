@@ -47,6 +47,7 @@
       <span>Session access</span>
       <CustomSelect
         :model-value="readOnly ? 'read-only' : 'interactive'"
+        aria-label="Session access"
         :options="ACCESS_OPTIONS"
         @update:model-value="setAccess"
       />

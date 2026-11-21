@@ -111,6 +111,24 @@ describe("useDismissable", () => {
     expect(onDismiss).not.toHaveBeenCalled();
   });
 
+  test("a pick in a CustomSelect's teleported list is not a click outside the select's host", () => {
+    const list = document.createElement("div");
+    list.className = "custom-select__list";
+    const option = document.createElement("li");
+    list.append(option);
+    document.body.append(list);
+    const elsewhere = document.createElement("div");
+    document.body.append(elsewhere);
+    const onDismiss = vi.fn();
+
+    buildHarness(ref(true), shallowRef(null), { onDismiss, eventName: "pointerdown" });
+
+    dispatchOn(option, "pointerdown");
+    expect(onDismiss).not.toHaveBeenCalled();
+    dispatchOn(elsewhere, "pointerdown");
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
   test("toggling isOpen back on re-attaches the listener", async () => {
     const outside = document.createElement("div");
     document.body.append(outside);

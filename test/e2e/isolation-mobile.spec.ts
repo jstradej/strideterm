@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { startMockServer } from "../mock-server.js";
-import { assertNoErrors, openApp } from "./helpers.js";
+import { assertNoErrors, openApp, pickOption } from "./helpers.js";
 
 test.use({ hasTouch: true });
 
@@ -74,12 +74,12 @@ test("reaches and opens tmux attachment from a long tab picker in landscape", as
   await expect(dialog.getByTestId("tmux-attach")).toBeChecked();
   await expect(dialog.getByText("Enter the session name. To browse sessions, use the desktop app.")).toBeVisible();
   await dialog.getByTestId("tmux-session-name").fill("shared-builds");
-  const access = dialog.getByRole("combobox", { name: /Session access/ });
-  await access.selectOption("read-only");
+  const access = dialog.getByRole("button", { name: "Session access", exact: true });
+  await pickOption(access, "Read-only");
   await expect(dialog.getByRole("button", { name: "Attach to tmux", exact: true })).toBeInViewport({ ratio: 1 });
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(dialog.getByTestId("tmux-session-name")).toHaveValue("shared-builds");
-  await expect(access).toHaveValue("read-only");
+  await expect(access).toHaveText(/Read-only/);
   await expect(dialog.getByRole("button", { name: "Attach to tmux", exact: true })).toBeInViewport({ ratio: 1 });
   assertNoErrors(page);
 });

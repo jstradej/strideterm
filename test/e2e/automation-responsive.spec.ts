@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { startMockServer } from "../mock-server.js";
-import { assertNoErrors, openApp } from "./helpers.js";
+import { assertNoErrors, openApp, pickOption } from "./helpers.js";
 
 test.describe("Automation dialog responsive layout", () => {
   let mock: Awaited<ReturnType<typeof startMockServer>>;
@@ -76,12 +76,9 @@ test.describe("Automation dialog responsive layout", () => {
       });
       await expect(dialog.getByRole("button", { name: "Save", exact: true })).toBeInViewport();
       await page.screenshot({ path: testInfo.outputPath("automation-options-light.png") });
-      await dialog.getByLabel("Checkout", { exact: true }).selectOption("worktree");
+      await pickOption(dialog.getByLabel("Checkout", { exact: true }), "New worktree");
       await dialog.getByLabel("New branch").fill("automation/nightly");
-      await dialog
-        .locator("select")
-        .filter({ has: page.locator('option[value="event"]') })
-        .selectOption("event");
+      await pickOption(dialog.getByLabel("Trigger", { exact: true }), "Event");
       await dialog.getByRole("button", { name: "Event data and prompt help" }).click();
       const help = page.locator('[role="tooltip"][data-open="true"]');
       await expect(help).toContainText("no placeholder substitution");
@@ -108,11 +105,11 @@ test.describe("Automation dialog responsive layout", () => {
       expect(eventSize.right).toBeLessThanOrEqual(viewport.width);
       await page.screenshot({ path: testInfo.outputPath("prompt-event-data-example.png") });
       await dialog.getByRole("checkbox", { name: "Check finished", exact: true }).check();
-      await eventContext.getByLabel("Example event", { exact: true }).selectOption("pr-check-finished");
+      await pickOption(eventContext.getByLabel("Example event", { exact: true }), "Check finished");
       await expect(eventJson).toContainText('"result": "succeeded"');
       await dialog.getByRole("checkbox", { name: "Check finished", exact: true }).uncheck();
       await expect(eventJson).not.toContainText('"check":');
-      await dialog.getByLabel("Run location", { exact: true }).selectOption("pr-review");
+      await pickOption(dialog.getByLabel("Run location", { exact: true }), "Isolated PR review checkout");
       await expect(dialog.getByText("The agent receives review tools only", { exact: false })).toBeVisible();
       const checkbox = dialog.getByRole("checkbox", { name: "Pull request added", exact: false });
       const checkboxSize = await checkbox.evaluate((element) => element.getBoundingClientRect().width);
@@ -134,7 +131,7 @@ test.describe("Automation dialog responsive layout", () => {
       await expect(dialog.getByRole("button", { name: "Cancel" })).toBeInViewport();
       await expect(dialog.getByRole("button", { name: "Save", exact: true })).toBeInViewport();
       await page.screenshot({ path: testInfo.outputPath("pr-review-dialog.png") });
-      await dialog.getByLabel("Run location", { exact: true }).selectOption("automation");
+      await pickOption(dialog.getByLabel("Run location", { exact: true }), "Automation workspace");
       await dialog.getByLabel("Name", { exact: true }).fill("Worktree retry");
       const requests: Array<{ idempotencyKey: string; checkout: { branch: string } }> = [];
       await page.route("**/api/automation/create", (route) => {
@@ -341,7 +338,7 @@ test.describe("Automation dashboard responsive layout", () => {
       const periods = dashboard.getByRole("group", { name: "Run history period" });
       await periods.getByRole("button", { name: "Today", exact: true }).click();
       await expect(dashboard.locator(".runs li")).toHaveCount(2);
-      await dashboard.getByLabel("Filter run history by state").selectOption("failed");
+      await pickOption(dashboard.getByLabel("Filter run history by state"), "Failed");
       await dashboard.getByLabel("Search run history").fill("exit");
       await expect(dashboard.locator(".runs li")).toHaveCount(1);
       await page.screenshot({ path: testInfo.outputPath("filtered-run-history-light.png") });
@@ -501,14 +498,14 @@ test.describe("Automation dashboard responsive layout", () => {
       await expect(overview.getByText("Every 60 minutes")).toBeVisible();
       await expect(overview.getByText(/^Next:/)).toBeVisible();
       await expect(overview.locator(".automation-overview")).toHaveCount(2);
-      await overview.getByLabel("Filter automations by trigger").selectOption("event");
+      await pickOption(overview.getByLabel("Filter automations by trigger"), "Events");
       await expect(overview.getByTitle("Open Review incoming PRs automation dashboard")).toBeVisible();
       await expect(overview.locator(".automation-overview")).toHaveCount(1);
-      await overview.getByLabel("Filter automations by state").selectOption("failed");
+      await pickOption(overview.getByLabel("Filter automations by state"), "Last run failed");
       await expect(overview.getByText("No automations match these filters.")).toBeVisible();
       await overview.getByRole("button", { name: "Clear filters", exact: true }).click();
       await overview.getByLabel("Search automations", { exact: true }).fill("nightly");
-      await overview.getByLabel("Filter automations by state").selectOption("failed");
+      await pickOption(overview.getByLabel("Filter automations by state"), "Last run failed");
       await expect(overview.locator(".automation-overview")).toHaveCount(1);
       const overviewSize = await overview.evaluate((element) => ({
         scroll: element.scrollWidth,
@@ -523,7 +520,7 @@ test.describe("Automation dashboard responsive layout", () => {
       await expect(dashboard.getByRole("heading", { name: "Nightly check" })).toBeVisible();
       const closeResult = dashboard.locator(".result").getByRole("button", { name: "Close", exact: true });
       if (await closeResult.isVisible()) await closeResult.click();
-      await dashboard.getByLabel("Filter run history by state").selectOption("failed");
+      await pickOption(dashboard.getByLabel("Filter run history by state"), "Failed");
       await dashboard.locator(".runs li").getByRole("button", { name: "Delete", exact: true }).click();
       const confirmation = page.locator(".overlay .dialog");
       await expect(confirmation.getByRole("heading", { name: "Delete run record?" })).toBeVisible();

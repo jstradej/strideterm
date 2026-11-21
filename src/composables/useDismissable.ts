@@ -42,6 +42,10 @@ export function useDismissable(
     const target = e.target as Node | null;
     if (!target) return;
     if (ignoreSelector && target instanceof Element && target.closest(ignoreSelector)) return;
+    // A CustomSelect's list is teleported to <body>, outside every container, yet it belongs to its trigger: a pick
+    // there is not a click outside whatever hosts that select. (A select outside an open popover already closed it
+    // with the press on its own trigger, before its list could open.)
+    if (target instanceof Element && target.closest(".custom-select__list")) return;
     const inside = refs.some((r) => r.value && r.value.contains(target));
     if (!inside) onDismiss();
   }
