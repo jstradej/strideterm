@@ -1,5 +1,9 @@
+import { readFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
 import type { IncomingHttpHeaders } from "node:http";
 import https from "node:https";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { WebSocket } from "ws";
 import { PEER_DENIED_ROUTES } from "./peer-session-route-policy.js";
@@ -7,12 +11,21 @@ import { startRemoteServer } from "./remote-server.js";
 import type { RemoteClientRegistry } from "./remote-client-registry.js";
 import {
   defaultPeerSettings,
+  type PeerAttachmentList,
   type PeerAttentionSummary,
   type PeerDirectoryListing,
   type PeerHello,
   type PeerIntegrationSettings,
 } from "../shared/peers.js";
+import type { AttachmentReadRequest, AttachmentReadResult } from "../shared/attachment-upload.js";
+import * as attachments from "./attachments.js";
+import { getLogDir } from "./logger.js";
+import { PeerAttachmentError, createPeerAttachmentsHost } from "./peers/peer-attachments.js";
 import { PeerDirectoryError } from "./peers/peer-directories.js";
+import { createFakeGlobalNoteHost } from "./peers/global-note-host.fake.js";
+import { createPeerAttentionPoller } from "./peers/peer-attention-poller.js";
+import { PEER_HOST_NOTE_CHANGED_CHANNEL, type PeerHostNoteChanged } from "../shared/peer-host-note-events.js";
+import { SIDEBAR_NOTE_MAX_LENGTH, type InstallationNote } from "../shared/sidebar-notes.js";
 import { PEER_PAIRING_IDENTITY, PEER_TLS_OPTIONS } from "./peers/peer-crypto.js";
 import { createPeerClient, type PeerClient } from "./peers/peer-client.js";
 import { createPeerHost, type PeerHost } from "./peers/peer-host.js";
@@ -98,7 +111,10 @@ interface Fixture {
   hooks: {
     listDirectories(requested: string): Promise<PeerDirectoryListing>;
     attention(): PeerAttentionSummary;
+    listAttachments(): Promise<PeerAttachmentList>;
+    readAttachment(request: AttachmentReadRequest): Promise<AttachmentReadResult>;
   };
+  note: ReturnType<typeof createFakeGlobalNoteHost>;
   server: Awaited<ReturnType<typeof startRemoteServer>>;
   device: PeerClient;
   deviceId: string;
@@ -164,9 +180,14 @@ async function startFixture(options: { startHosting?: boolean } = {}): Promise<F
   });
   const { instanceId: hostId } = await peerHost.ensureIdentity();
 
+  const note = createFakeGlobalNoteHost();
   const hooks = {
     listDirectories: async (_requested: string): Promise<PeerDirectoryListing> => emptyListing,
-    attention: (): PeerAttentionSummary => ({ total: 0, profiles: [] }),
+    attention: (): PeerAttentionSummary => ({ total: 0, profiles: [], globalNoteRevision: note.revision() }),
+    listAttachments: async (): Promise<PeerAttachmentList> => ({ items: [], truncated: false }),
+    readAttachment: async (_request: AttachmentReadRequest): Promise<AttachmentReadResult> => {
+      throw new PeerAttachmentError(404, "Attachment not found");
+    },
   };
   const runtime = makeRuntime();
   const server = await startRemoteServer({
@@ -179,6 +200,11 @@ async function startFixture(options: { startHosting?: boolean } = {}): Promise<F
       hello: helloFor(hostId),
       listDirectories: (requested) => hooks.listDirectories(requested),
       attention: () => hooks.attention(),
+      listAttachments: () => hooks.listAttachments(),
+      readAttachment: (request) => hooks.readAttachment(request),
+      getGlobalNote: () => note.get(),
+      saveGlobalNote: (input) => note.save(input),
+      undoGlobalNote: (input) => note.undo(input),
     },
   });
   const port = server.address!.port;
@@ -215,6 +241,7 @@ async function startFixture(options: { startHosting?: boolean } = {}): Promise<F
     hostSettings,
     runtime,
     hooks,
+    note,
     server,
     device,
     get deviceId() {
@@ -233,7 +260,7 @@ async function startFixture(options: { startHosting?: boolean } = {}): Promise<F
       return agent;
     },
     raw(identity, psk, { method = "GET", path, headers = {}, body, agent }) {
-      const payload = body === undefined ? undefined : JSON.stringify(body);
+      const payload = body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body);
       return new Promise((resolve, reject) => {
         let reused = false;
         const request = https.request(
@@ -453,6 +480,8 @@ describe("peer origin: the pairing identity", () => {
       "/api/peer/hello",
       "/api/peer/attention",
       "/api/peer/fs/list",
+      "/api/peer/attachments",
+      "/api/peer/attachments/read",
       "/api/state",
       "/api/remote-client/profile/activate",
     ]) {
@@ -613,7 +642,14 @@ describe("peer origin: options", () => {
           peerHost: f.peerHost,
           hello: helloFor(f.hostId),
           listDirectories: async () => emptyListing,
-          attention: () => ({ total: 0, profiles: [] }),
+          attention: () => ({ total: 0, profiles: [], globalNoteRevision: 0 }),
+          listAttachments: async () => ({ items: [], truncated: false }),
+          readAttachment: async () => {
+            throw new Error("unused");
+          },
+          getGlobalNote: () => f.note.get(),
+          saveGlobalNote: (input) => f.note.save(input),
+          undoGlobalNote: (input) => f.note.undo(input),
         },
       }),
     ).rejects.toThrow(/mutually exclusive/);
@@ -706,10 +742,14 @@ describe("peer origin: attention counts for a paired desktop", () => {
   test("a device gets exactly what attention() returns; no workspace or alert text from the runtime leaks", async () => {
     const f = await startFixture();
     await f.pair();
-    f.hooks.attention = () => ({ total: 3, profiles: [{ profileId: "work", count: 3 }] });
+    f.hooks.attention = () => ({ total: 3, profiles: [{ profileId: "work", count: 3 }], globalNoteRevision: 0 });
     const res = await f.api("/api/peer/attention", { method: "GET" });
     expect(res.status).toBe(200);
-    expect(parse<PeerAttentionSummary>(res)).toEqual({ total: 3, profiles: [{ profileId: "work", count: 3 }] });
+    expect(parse<PeerAttentionSummary>(res)).toEqual({
+      total: 3,
+      profiles: [{ profileId: "work", count: 3 }],
+      globalNoteRevision: 0,
+    });
     for (const text of ["Work repo", "Home repo", "/work-root", MASTER_UNUSED]) expect(res.body).not.toContain(text);
     expect(f.runtime.calls).toEqual([]);
   });
@@ -720,5 +760,458 @@ describe("peer origin: attention counts for a paired desktop", () => {
     const psk = f.peerHost.pskForIdentity(PEER_PAIRING_IDENTITY)!;
     expect((await f.raw(PEER_PAIRING_IDENTITY, psk, { path: "/api/peer/attention" })).status).toBe(403);
     expect((await f.api("/api/peer/attention", { method: "POST", body: {} })).status).toBe(404);
+  });
+});
+
+async function refusedAsTooLarge(attempt: Promise<{ status: number; body: string }>): Promise<boolean> {
+  return attempt.then(
+    (res) => res.status === 400 && res.body.includes("Request body too large"),
+    () => true,
+  );
+}
+
+describe("peer origin: the global note of a paired desktop", () => {
+  const SAVE = "/api/peer/global-note/save";
+  const UNDO = "/api/peer/global-note/undo";
+  const GET = "/api/peer/global-note";
+  const auditText = () => {
+    try {
+      return readFileSync(path.join(getLogDir(), "peer-origin-api-audit.log"), "utf8");
+    } catch {
+      return "";
+    }
+  };
+
+  test("a device reads, saves and undoes the note, and a stale save gets the host's 409 sentence", async () => {
+    const f = await startFixture();
+    await f.pair();
+    const empty = await f.api(GET, { method: "GET" });
+    expect(empty.status).toBe(200);
+    expect(parse<InstallationNote>(empty)).toEqual({
+      note: { id: "global", text: "", revision: 0, canUndo: false },
+      installationName: "Host PC",
+    });
+
+    const saved = await f.api(SAVE, { body: { text: "first", expectedRevision: 0 } });
+    expect(saved.status).toBe(200);
+    expect(parse<InstallationNote>(saved).note).toMatchObject({ text: "first", revision: 1, canUndo: true });
+    expect(f.note.get().note.text).toBe("first");
+
+    const stale = await f.api(SAVE, { body: { text: "second", expectedRevision: 0 } });
+    expect(stale.status).toBe(409);
+    expect(parse<{ error: string }>(stale).error).toBe("This note has changed. Reload it before trying again.");
+
+    const undone = await f.api(UNDO, { body: { expectedRevision: 1 } });
+    expect(undone.status).toBe(200);
+    expect(parse<InstallationNote>(undone).note).toMatchObject({ text: "", revision: 2, canUndo: false });
+    expect((await f.api(UNDO, { body: { expectedRevision: 2 } })).status).toBe(409);
+    expect(f.runtime.calls).toEqual([]);
+  });
+
+  test("the pairing identity is 403, the wrong method is 404, and neither reaches the note", async () => {
+    const f = await startFixture();
+    await f.pair();
+    const psk = f.peerHost.pskForIdentity(PEER_PAIRING_IDENTITY)!;
+    expect((await f.raw(PEER_PAIRING_IDENTITY, psk, { path: GET })).status).toBe(403);
+    for (const route of [SAVE, UNDO]) {
+      expect((await f.raw(PEER_PAIRING_IDENTITY, psk, { method: "POST", path: route, body: {} })).status).toBe(403);
+    }
+    expect((await f.api(GET, { method: "POST", body: {} })).status).toBe(404);
+    expect((await f.api(SAVE, { method: "GET" })).status).toBe(404);
+    expect((await f.api(UNDO, { method: "GET" })).status).toBe(404);
+    expect((await f.api("/api/peer/global-note/other", { method: "GET" })).status).toBe(404);
+    expect(f.note.get().note.revision).toBe(0);
+  });
+
+  test("a malformed body is 400 and changes nothing", async () => {
+    const f = await startFixture();
+    await f.pair();
+    for (const body of [
+      { text: "x" },
+      { text: 5, expectedRevision: 0 },
+      { text: "x", expectedRevision: -1 },
+      { text: "x", expectedRevision: 0, extra: true },
+      { text: "x".repeat(SIDEBAR_NOTE_MAX_LENGTH + 1), expectedRevision: 0 },
+    ]) {
+      expect((await f.api(SAVE, { body })).status).toBe(400);
+    }
+    expect((await f.api(UNDO, { body: { expectedRevision: 0 } })).status).toBe(400);
+    expect(f.note.get().note.revision).toBe(0);
+  });
+
+  test("a maximum-length note saves even when JSON escaping inflates it", async () => {
+    const f = await startFixture();
+    await f.pair();
+    const worst = "\u0001".repeat(SIDEBAR_NOTE_MAX_LENGTH);
+    const size = Buffer.byteLength(JSON.stringify({ text: worst, expectedRevision: 0 }));
+    expect(size).toBeGreaterThan(16 * 1024);
+    expect(size).toBeLessThan(512 * 1024);
+    const saved = await f.api(SAVE, { body: { text: worst, expectedRevision: 0 } });
+    expect(saved.status).toBe(200);
+    expect(f.note.get().note.text).toHaveLength(SIDEBAR_NOTE_MAX_LENGTH);
+  });
+
+  test("the save route refuses a schema-valid body over 512 KiB and accepts one just under it", async () => {
+    const f = await startFixture();
+    await f.pair();
+    const psk = f.peerHost.pskForIdentity(f.deviceId)!;
+    const padded = (revision: number, total: number) => {
+      const json = JSON.stringify({ text: "x", expectedRevision: revision });
+      return json + " ".repeat(total - Buffer.byteLength(json));
+    };
+    const under = await f.raw(f.deviceId, psk, { method: "POST", path: SAVE, body: padded(0, 512 * 1024 - 1) });
+    expect(under.status).toBe(200);
+    expect(f.note.revision()).toBe(1);
+
+    const over = await refusedAsTooLarge(
+      f.raw(f.deviceId, psk, { method: "POST", path: SAVE, body: padded(1, 512 * 1024 + 1) }),
+    );
+    expect(over).toBe(true);
+    expect(f.note.revision()).toBe(1);
+  });
+
+  test("the undo route keeps the 16 KiB cap", async () => {
+    const f = await startFixture();
+    await f.pair();
+    const psk = f.peerHost.pskForIdentity(f.deviceId)!;
+    const padded = (total: number) => {
+      const json = JSON.stringify({ expectedRevision: 1 });
+      return json + " ".repeat(total - Buffer.byteLength(json));
+    };
+    const under = await f.raw(f.deviceId, psk, { method: "POST", path: UNDO, body: padded(16 * 1024 - 1) });
+    expect(under.status).toBe(409);
+    expect(
+      await refusedAsTooLarge(f.raw(f.deviceId, psk, { method: "POST", path: UNDO, body: padded(16 * 1024 + 1) })),
+    ).toBe(true);
+  });
+
+  test("the 16 KiB cap of the pairing routes is unchanged", async () => {
+    const f = await startFixture();
+    const psk = f.peerHost.pskForIdentity(PEER_PAIRING_IDENTITY)!;
+    const json = JSON.stringify({ pairingId: "p".repeat(16) });
+    const body = json + " ".repeat(16 * 1024 + 1 - json.length);
+    const refused = await refusedAsTooLarge(
+      f.raw(PEER_PAIRING_IDENTITY, psk, { method: "POST", path: "/api/peer/pair/status", body }),
+    );
+    expect(refused).toBe(true);
+  });
+
+  test("an unexpected failure leaks nothing", async () => {
+    const f = await startFixture();
+    await f.pair();
+    f.note.save = async () => {
+      throw new Error("EIO: secret errno detail at C:\\private");
+    };
+    const res = await f.api(SAVE, { body: { text: "x", expectedRevision: 0 } });
+    expect(res.status).toBe(500);
+    expect(res.body).not.toContain("EIO");
+    expect(res.body).not.toContain("private");
+  });
+
+  test("each request leaves an audit line with the device, route and byte count, never the text", async () => {
+    const f = await startFixture();
+    await f.pair();
+    const secret = "launch-code-4711-é";
+    await f.api(GET, { method: "GET" });
+    await f.api(SAVE, { body: { text: secret, expectedRevision: 0 } });
+    await f.api(UNDO, { body: { expectedRevision: 1 } });
+    await waitFor(() => auditText().includes(UNDO) && auditText().includes("peer global note read"), "audit lines");
+    const lines = auditText()
+      .split("\n")
+      .filter((line) => line.includes(f.deviceId) && line.includes("peer global note"));
+    expect(lines.some((line) => line.includes("peer global note read") && line.includes(GET))).toBe(true);
+    const write = lines.find((line) => line.includes(SAVE))!;
+    expect(write).toContain("save");
+    expect(write).toContain(String(Buffer.byteLength(secret)));
+    expect(write).toContain("success");
+    const undoLine = lines.find((line) => line.includes(UNDO))!;
+    expect(undoLine).toContain("undo");
+    expect(undoLine).toContain("success");
+    expect(auditText()).not.toContain(secret);
+  });
+
+  test("the audit line is written after the runtime call and names its outcome", async () => {
+    const f = await startFixture();
+    await f.pair();
+    const lineFor = async (needle: string) => {
+      await waitFor(() => auditText().includes(needle), "audit line");
+      return auditText()
+        .split(/\r?\n/)
+        .filter((line) => line.includes(f.deviceId) && line.includes(needle))
+        .pop()!;
+    };
+    await f.api(SAVE, { body: { text: "conflict-marker-text", expectedRevision: 9 } });
+    expect(await lineFor("conflict")).toContain(SAVE);
+    await f.api(SAVE, { body: { text: "x", expectedRevision: 0, extra: true } });
+    expect(await lineFor("invalid")).toContain("save");
+    const original = f.note.save;
+    let auditedBeforeCall = true;
+    f.note.save = async (input) => {
+      auditedBeforeCall = auditText().includes("failure-marker");
+      throw new Error("EIO");
+    };
+    await f.api(SAVE, { body: { text: "failure-marker", expectedRevision: 0 } });
+    expect(await lineFor("failure")).toContain(SAVE);
+    expect(auditedBeforeCall).toBe(false);
+    f.note.save = original;
+    expect(auditText()).not.toContain("conflict-marker-text");
+  });
+
+  test("the attention answer carries the change counter, and the poller reports each change once", async () => {
+    const f = await startFixture();
+    await f.pair();
+    expect(parse<PeerAttentionSummary>(await f.api("/api/peer/attention", { method: "GET" })).globalNoteRevision).toBe(
+      0,
+    );
+
+    const changes: PeerHostNoteChanged[] = [];
+    const poller = createPeerAttentionPoller({
+      listHostIds: () => [f.hostId],
+      getHostStatus: () => ({ state: "online", checkedAt: 1 }),
+      request: (hostId, request) => f.device.request(hostId, request),
+      emit: (event, payload) => {
+        if (event === PEER_HOST_NOTE_CHANGED_CHANNEL) changes.push(payload as PeerHostNoteChanged);
+      },
+      firstPollDelayMs: 5,
+      tickMs: 10,
+      intervalMs: 20,
+    });
+    poller.start();
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(changes).toEqual([]);
+      await f.note.save({ text: "changed on the host", expectedRevision: 0 });
+      await waitFor(() => changes.length === 1, "the change event");
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(changes).toEqual([{ hostId: f.hostId, revision: 1 }]);
+    } finally {
+      poller.stop();
+    }
+  });
+
+  test("the routes exist only at the peer front door, not in the remote server's route tables", () => {
+    const remoteServer = readFileSync(path.join(__dirname, "remote-server.ts"), "utf8");
+    expect(remoteServer).not.toContain("/api/peer/global-note");
+    const shared = readFileSync(path.join(__dirname, "..", "shared", "peers.ts"), "utf8");
+    expect(shared).toContain('PEER_GLOBAL_NOTE_ROUTE = "/api/peer/global-note"');
+    const frontDoor = readFileSync(path.join(__dirname, "peer-origin.ts"), "utf8");
+    expect(frontDoor).toContain('[PEER_GLOBAL_NOTE_ROUTE]: "GET"');
+    expect(frontDoor).toContain('[PEER_GLOBAL_NOTE_SAVE_ROUTE]: "POST"');
+    expect(frontDoor).toContain('[PEER_GLOBAL_NOTE_UNDO_ROUTE]: "POST"');
+  });
+});
+
+describe("peer origin: attachments of a paired desktop", () => {
+  const roots: string[] = [];
+  afterEach(async () => {
+    while (roots.length) await rm(roots.pop()!, { recursive: true, force: true });
+  });
+
+  async function seed(name: string, bytes: Buffer): Promise<{ root: string; transferId: string }> {
+    const root = await mkdtemp(path.join(os.tmpdir(), "strideterm-peer-att-"));
+    roots.push(root);
+    const started = await attachments.begin(
+      root,
+      name,
+      bytes.length,
+      "",
+      "seed",
+      `seed-${name}`,
+      attachments.DESKTOP_LIMITS,
+    );
+    await attachments.chunk(root, started.transferId, 0, bytes.toString("base64"), "seed");
+    await attachments.finish(root, started.transferId, "seed");
+    return { root, transferId: started.transferId };
+  }
+
+  async function realHost(f: Fixture) {
+    const home = await seed("photo.png", Buffer.from("home-bytes"));
+    const work = await seed("notes.txt", Buffer.from("work-bytes"));
+    const ssh = await seed("secret.txt", Buffer.from("ssh-bytes"));
+    const state = {
+      profiles: [
+        { id: "home", name: "Home" },
+        { id: "work", name: "Work Profile" },
+      ],
+      workspaces: [
+        { id: "ws-home", name: "Home repo", profileId: "home", cwd: home.root, panels: [] },
+        { id: "ws-work", name: "Work repo", profileId: "work", cwd: work.root, panels: [] },
+        { id: "ws-ssh", name: "Remote", profileId: "work", kind: "ssh", cwd: ssh.root, panels: [] },
+      ],
+    };
+    const host = createPeerAttachmentsHost({ getState: () => state as never });
+    f.hooks.listAttachments = () => host.list();
+    f.hooks.readAttachment = (request) => host.read(request);
+    return { home, work, ssh };
+  }
+
+  const auditLines = () => {
+    try {
+      return readFileSync(path.join(getLogDir(), "peer-origin-api-audit.log"), "utf8");
+    } catch {
+      return "";
+    }
+  };
+
+  test("a device lists every profile's attachments and reads them in blocks; SSH workspaces stay out", async () => {
+    const f = await startFixture();
+    await f.pair();
+    const { home, work, ssh } = await realHost(f);
+    const list = await f.api("/api/peer/attachments", { method: "GET", clientId: null });
+    expect(list.status).toBe(200);
+    const body = parse<PeerAttachmentList>(list);
+    expect(body.truncated).toBe(false);
+    expect(body.items.map((item) => [item.workspaceId, item.profileName, item.name]).sort()).toEqual([
+      ["ws-home", "Home", "photo.png"],
+      ["ws-work", "Work Profile", "notes.txt"],
+    ]);
+    expect(body.items[0]!.uploadedAt).toBeGreaterThanOrEqual(body.items[1]!.uploadedAt);
+    expect(list.body).not.toContain(home.root);
+    expect(list.body).not.toContain("secret.txt");
+
+    const read = await f.api("/api/peer/attachments/read", {
+      body: { workspaceId: "ws-home", transferId: home.transferId, name: "photo.png", offset: 5, length: 100 },
+    });
+    expect(read.status).toBe(200);
+    const block = parse<AttachmentReadResult>(read);
+    expect(Buffer.from(block.data, "base64").toString()).toBe("bytes");
+    expect(block).toMatchObject({ size: 10, eof: true });
+    const first = parse<AttachmentReadResult>(
+      await f.api("/api/peer/attachments/read", {
+        body: { workspaceId: "ws-work", transferId: work.transferId, name: "notes.txt", offset: 0, length: 4 },
+      }),
+    );
+    expect(first.eof).toBe(false);
+
+    const refused = await f.api("/api/peer/attachments/read", {
+      body: { workspaceId: "ws-ssh", transferId: ssh.transferId, name: "secret.txt", offset: 0, length: 9 },
+    });
+    expect(refused.status).toBe(404);
+    expect(refused.body).not.toContain("ssh-bytes");
+    expect(f.runtime.calls).toEqual([]);
+  });
+
+  test("a sequential download leaves one audit line; a new sequence or a seek leaves another", async () => {
+    const f = await startFixture();
+    await f.pair();
+    const { home } = await realHost(f);
+    const read = (offset: number, length: number) =>
+      f.api("/api/peer/attachments/read", {
+        body: { workspaceId: "ws-home", transferId: home.transferId, name: "photo.png", offset, length },
+      });
+    const lines = () =>
+      auditLines()
+        .split("\n")
+        .filter((line) => line.includes("peer attachment read") && line.includes(home.transferId)).length;
+    expect((await read(0, 4)).status).toBe(200);
+    expect((await read(4, 4)).status).toBe(200);
+    expect((await read(8, 2)).status).toBe(200);
+    await waitFor(() => lines() === 1, "the first audit line");
+    expect((await read(2, 3)).status).toBe(200);
+    expect((await read(0, 4)).status).toBe(200);
+    await waitFor(() => lines() === 3, "a line for the seek and one for the restart");
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(lines()).toBe(3);
+  });
+
+  test("the pairing identity is 403, the wrong method is 404, and neither reaches the host hooks", async () => {
+    const f = await startFixture();
+    await f.pair();
+    let called = 0;
+    f.hooks.listAttachments = async () => {
+      called += 1;
+      return { items: [], truncated: false };
+    };
+    f.hooks.readAttachment = async () => {
+      called += 1;
+      throw new Error("unused");
+    };
+    const psk = f.peerHost.pskForIdentity(PEER_PAIRING_IDENTITY)!;
+    expect((await f.raw(PEER_PAIRING_IDENTITY, psk, { path: "/api/peer/attachments" })).status).toBe(403);
+    expect(
+      (await f.raw(PEER_PAIRING_IDENTITY, psk, { method: "POST", path: "/api/peer/attachments/read", body: {} }))
+        .status,
+    ).toBe(403);
+    expect((await f.api("/api/peer/attachments", { method: "POST", body: {} })).status).toBe(404);
+    expect((await f.api("/api/peer/attachments/read", { method: "GET" })).status).toBe(404);
+    expect(called).toBe(0);
+  });
+
+  test("a malformed read or a path trick in name or transferId is refused and never leaves the attachment store", async () => {
+    const f = await startFixture();
+    await f.pair();
+    const { home } = await realHost(f);
+    const good = { workspaceId: "ws-home", transferId: home.transferId, name: "photo.png", offset: 0, length: 4 };
+    const bodies: Array<[string, Record<string, unknown>, number]> = [
+      ["extra key", { ...good, root: "/etc" }, 400],
+      ["transferId is a path", { ...good, transferId: "../../../etc" }, 400],
+      ["transferId is not a uuid", { ...good, transferId: "nope" }, 400],
+      ["length over 512 KiB", { ...good, length: 512 * 1024 + 1 }, 400],
+      ["negative offset", { ...good, offset: -1 }, 400],
+      ["no workspace", { ...good, workspaceId: "" }, 400],
+      ["name climbs out", { ...good, name: "../../../etc/passwd" }, 404],
+      ["name with a backslash path", { ...good, name: "..\\..\\x" }, 404],
+      ["another name", { ...good, name: "other.png" }, 404],
+      ["unknown workspace", { ...good, workspaceId: "ws-nope" }, 404],
+    ];
+    for (const [label, body, status] of bodies) {
+      const res = await f.api("/api/peer/attachments/read", { body });
+      expect(res.status, label).toBe(status);
+    }
+    expect((await f.api("/api/peer/attachments/read", { body: good })).status).toBe(200);
+  });
+
+  test("an unexpected failure leaks nothing", async () => {
+    const f = await startFixture();
+    await f.pair();
+    f.hooks.listAttachments = async () => {
+      throw new Error("EIO: secret errno detail at C:\\private");
+    };
+    f.hooks.readAttachment = async () => {
+      throw new Error("EIO: secret errno detail at C:\\private");
+    };
+    const list = await f.api("/api/peer/attachments", { method: "GET" });
+    const read = await f.api("/api/peer/attachments/read", {
+      body: { workspaceId: "w", transferId: "11111111-1111-4111-8111-111111111111", name: "a", offset: 0, length: 1 },
+    });
+    for (const res of [list, read]) {
+      expect(res.status).toBe(500);
+      expect(res.body).not.toContain("EIO");
+      expect(res.body).not.toContain("private");
+    }
+  });
+
+  test("each request leaves one audit line with ids and counts, never content or names", async () => {
+    const f = await startFixture();
+    await f.pair();
+    const { home } = await realHost(f);
+    await f.api("/api/peer/attachments", { method: "GET" });
+    await f.api("/api/peer/attachments/read", {
+      body: { workspaceId: "ws-home", transferId: home.transferId, name: "photo.png", offset: 3, length: 4 },
+    });
+    await waitFor(
+      () => auditLines().includes(home.transferId) && auditLines().includes(`${f.deviceId}`),
+      "the audit lines",
+    );
+    const lines = auditLines().split("\n");
+    const readLine = lines.find((line) => line.includes("peer attachment read") && line.includes(home.transferId))!;
+    expect(readLine).toContain(f.deviceId);
+    expect(readLine).toContain("ws-home");
+    expect(readLine).toMatch(/offset.{0,4}3/);
+    expect(readLine).toMatch(/length.{0,4}4/);
+    expect(lines.some((line) => line.includes("peer attachment list") && line.includes(f.deviceId))).toBe(true);
+    for (const line of lines.filter((entry) => entry.includes(f.deviceId) && entry.includes("peer attachment"))) {
+      expect(line).not.toContain("home-bytes");
+      expect(line).not.toContain(Buffer.from("home-bytes").toString("base64"));
+      expect(line).not.toContain("photo.png");
+    }
+  });
+
+  test("the routes exist only at the peer front door, not in the remote server's route tables", () => {
+    const remoteServer = readFileSync(path.join(__dirname, "remote-server.ts"), "utf8");
+    expect(remoteServer).not.toContain("/api/peer/attachments");
+    const frontDoor = readFileSync(path.join(__dirname, "peer-origin.ts"), "utf8");
+    expect(frontDoor).toContain('"/api/peer/attachments": "GET"');
+    expect(frontDoor).toContain('"/api/peer/attachments/read": "POST"');
   });
 });

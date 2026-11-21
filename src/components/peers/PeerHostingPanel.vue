@@ -212,6 +212,44 @@
               >{{ device.platform }} · last seen {{ formatLastSeen(device.lastSeenAt) }}
               <template v-if="device.lastAddress">· {{ device.lastAddress }}</template></span
             >
+            <form
+              v-if="renamingId === device.id"
+              class="peer-card__rename"
+              data-testid="peer-rename-form"
+              @submit.prevent="saveRename(device)"
+            >
+              <input
+                v-model="renameValue"
+                class="settings-input"
+                data-testid="peer-rename-input"
+                type="text"
+                maxlength="64"
+                autocomplete="off"
+                aria-label="Name of this desktop"
+              />
+              <button
+                type="submit"
+                class="button button--primary"
+                :class="{ 'button--pending': rowAction(device.id) === 'rename' }"
+                :aria-busy="rowAction(device.id) === 'rename' ? 'true' : undefined"
+                data-testid="peer-rename-save"
+                :disabled="rowBusy(device.id) || !renameValue.trim()"
+              >
+                Save
+              </button>
+              <button type="button" class="button button--ghost" @click="renamingId = null">Cancel</button>
+            </form>
+            <button
+              v-else
+              type="button"
+              class="button button--ghost peer-card__remove"
+              data-testid="peer-rename"
+              :disabled="rowBusy(device.id)"
+              title="Change the name this computer shows for the paired desktop. The other desktop is not told."
+              @click="startRename(device)"
+            >
+              Rename
+            </button>
             <button
               type="button"
               class="button button--ghost peer-card__remove"
@@ -257,7 +295,9 @@ const busyAction = ref<"toggle" | "port" | null>(null);
 const busy = computed(() => busyAction.value !== null);
 const portDraft = ref(String(PEER_DEFAULT_PORT));
 const codes = reactive<Record<string, string>>({});
-const rowBusyIds = reactive<Record<string, "approve" | "reject" | "remove">>({});
+const rowBusyIds = reactive<Record<string, "approve" | "reject" | "remove" | "rename">>({});
+const renamingId = ref<string | null>(null);
+const renameValue = ref("");
 const outcomes = reactive<Record<string, { outcome: Outcome; entry: PeerPendingPairing }>>({});
 const now = ref(Date.now());
 
@@ -351,13 +391,13 @@ function rowBusy(id: string): boolean {
   return rowBusyIds[id] !== undefined;
 }
 
-function rowAction(id: string): "approve" | "reject" | "remove" | undefined {
+function rowAction(id: string): "approve" | "reject" | "remove" | "rename" | undefined {
   return rowBusyIds[id];
 }
 
 async function withRow(
   id: string,
-  action: "approve" | "reject" | "remove",
+  action: "approve" | "reject" | "remove" | "rename",
   fn: () => Promise<void>,
   title: string,
 ): Promise<void> {
@@ -448,6 +488,27 @@ async function removeDevice(device: PeerDeviceRecord): Promise<void> {
       await reload();
     },
     "Could not remove the desktop",
+  );
+}
+
+function startRename(device: PeerDeviceRecord): void {
+  renameValue.value = device.name;
+  renamingId.value = device.id;
+}
+
+async function saveRename(device: PeerDeviceRecord): Promise<void> {
+  const call = api?.renamePeerDevice;
+  const name = renameValue.value.trim();
+  if (!call || !name || rowBusy(device.id)) return;
+  await withRow(
+    device.id,
+    "rename",
+    async () => {
+      await call({ deviceId: device.id, name });
+      renamingId.value = null;
+      await reload();
+    },
+    "Could not rename the desktop",
   );
 }
 
@@ -566,6 +627,16 @@ onBeforeUnmount(() => {
   min-width: 0;
   color: var(--muted);
   font-size: 12px;
+}
+.peer-card__rename {
+  display: flex;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.peer-card__rename .settings-input {
+  flex: 1 1 160px;
+  min-width: 0;
 }
 .peer-card__remove {
   flex: 0 0 auto;

@@ -1,5 +1,11 @@
 import { AUTOMATION_RUN_FINISHED_CHANNEL } from "../shared/automation-events-channel.js";
-import { saveSidebarNoteSchema, sidebarNotesScopeSchema, undoSidebarNoteSchema } from "../shared/sidebar-notes.js";
+import {
+  saveInstallationNoteSchema,
+  saveSidebarNoteSchema,
+  sidebarNotesScopeSchema,
+  undoInstallationNoteSchema,
+  undoSidebarNoteSchema,
+} from "../shared/sidebar-notes.js";
 import {
   automationCreateSchema,
   automationUpdateSchema,
@@ -29,6 +35,8 @@ import {
   attachmentTransferSchema,
   attachmentUploadBeginSchema,
   attachmentUploadChunkSchema,
+  type AttachmentReadRequest,
+  type AttachmentReadResult,
 } from "../shared/attachment-upload.js";
 import { AttachmentPolicyError } from "./attachment-file-policy.js";
 import { deriveSessionKey, openEnvelope, publicKeyFromRaw, sealEnvelope } from "./mobile/mobile-crypto.js";
@@ -158,7 +166,8 @@ import {
 } from "./mobile/mobile-relay-protocol.js";
 import { parseRemoteViewerId, remoteViewerId } from "./viewer-id.js";
 import { PEER_SESSION_HEADER, createPeerFrontDoor, type PeerOriginHost } from "./peer-origin.js";
-import type { PeerAttentionSummary, PeerDirectoryListing, PeerHello } from "../shared/peers.js";
+import type { PeerAttachmentList, PeerAttentionSummary, PeerDirectoryListing, PeerHello } from "../shared/peers.js";
+import type { InstallationNote, SaveInstallationNote, UndoInstallationNote } from "../shared/sidebar-notes.js";
 import { ClientRequestError } from "./shared/client-request-error.js";
 import { isFileChangedOnDiskError } from "../shared/file-conflict.js";
 import { JiraRequestError, withinJiraCallBudget } from "./jira/jira-manager.js";
@@ -1144,7 +1153,11 @@ function stripStateSecrets(state: Record<string, unknown>, opts: StripSecretsOpt
           },
         }
       : state;
-  return stripShareUrls(stripStateToken(withoutMobile), opts);
+  // Copies into this machine's workspaces are the desktop windows' business: their errors can name a host's LAN address.
+  const withoutCopies = Object.hasOwn(withoutMobile, "peerAttachmentCopies")
+    ? { ...withoutMobile, peerAttachmentCopies: { running: [], lastResults: [] } }
+    : withoutMobile;
+  return stripShareUrls(stripStateToken(withoutCopies), opts);
 }
 
 /**
@@ -1588,7 +1601,7 @@ function readRequestBody(request: IncomingMessage): Promise<Record<string, unkno
 
 function readRequestBodyOnce(request: IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
-    let raw = "";
+    const chunks: Buffer[] = [];
     let size = 0;
     request.on("data", (chunk: Buffer) => {
       size += chunk.length;
@@ -1597,9 +1610,10 @@ function readRequestBodyOnce(request: IncomingMessage): Promise<Record<string, u
         reject(new Error("Request body too large"));
         return;
       }
-      raw += chunk.toString();
+      chunks.push(chunk);
     });
     request.on("end", () => {
+      const raw = Buffer.concat(chunks).toString("utf8");
       if (!raw.trim()) {
         resolve({});
         return;
@@ -3073,6 +3087,11 @@ export async function startRemoteServer({
     hello(): PeerHello;
     listDirectories(path: string): Promise<PeerDirectoryListing>;
     attention(): PeerAttentionSummary;
+    listAttachments(): Promise<PeerAttachmentList>;
+    readAttachment(request: AttachmentReadRequest): Promise<AttachmentReadResult>;
+    getGlobalNote(): InstallationNote;
+    saveGlobalNote(input: SaveInstallationNote): Promise<InstallationNote>;
+    undoGlobalNote(input: UndoInstallationNote): Promise<InstallationNote>;
   };
 }): Promise<{
   close: () => Promise<void>;
@@ -3897,6 +3916,36 @@ export async function startRemoteServer({
       }
     };
 
+  // The installation note is the one thing a phone reads and writes outside its profile, so each write by a
+  // MOBILE session leaves a `session.note` row: the operation and the byte count, never the text.
+  const installationNoteWrite =
+    (
+      op: "save" | "undo",
+      run: (body: unknown) => Promise<unknown>,
+      byteLength: (body: unknown, result?: unknown) => number,
+    ) =>
+    async (body: unknown, windowId: string) => {
+      const clientSessionId = parseRemoteViewerId(windowId);
+      const session = clientSessionId ? activeSessions.get(clientSessionId) : undefined;
+      const audit = (status: "success" | "failure", result?: unknown): void => {
+        let bytes = 0;
+        try {
+          bytes = byteLength(body, result);
+        } catch {
+          // an unparsable body is audited as empty
+        }
+        recordMobileSessionAudit(session, "session.note", status, `op=${op} scope=installation bytes=${bytes}`);
+      };
+      try {
+        const result = await run(body);
+        audit("success", result);
+        return result;
+      } catch (error) {
+        audit("failure");
+        throw error;
+      }
+    };
+
   const slotAwareRoute: Record<
     string,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -4170,6 +4219,24 @@ export async function startRemoteServer({
       runtime.listSidebarNotes(validateIpc(sidebarNotesScopeSchema, body, "POST /api/sidebar-notes/list"), windowId),
     "/api/sidebar-notes/save": (body, windowId) =>
       runtime.saveSidebarNote(validateIpc(saveSidebarNoteSchema, body, "POST /api/sidebar-notes/save"), windowId),
+    "/api/sidebar-notes/installation/get": () => Promise.resolve(runtime.getInstallationNote()),
+    "/api/sidebar-notes/installation/save": installationNoteWrite(
+      "save",
+      (body) =>
+        runtime.saveInstallationNote(
+          validateIpc(saveInstallationNoteSchema, body, "POST /api/sidebar-notes/installation/save"),
+        ),
+      (body) => Buffer.byteLength(String((body as { text?: unknown })?.text ?? ""), "utf8"),
+    ),
+    "/api/sidebar-notes/installation/undo": installationNoteWrite(
+      "undo",
+      (body) =>
+        runtime.undoInstallationNote(
+          validateIpc(undoInstallationNoteSchema, body, "POST /api/sidebar-notes/installation/undo"),
+        ),
+      (_body, result) =>
+        Buffer.byteLength(String((result as { note?: { text?: unknown } } | undefined)?.note?.text ?? ""), "utf8"),
+    ),
     "/api/sidebar-notes/undo": (body, windowId) =>
       runtime.undoSidebarNote(validateIpc(undoSidebarNoteSchema, body, "POST /api/sidebar-notes/undo"), windowId),
     // saveWorkspace can change profileId or overwrite an existing
@@ -4442,6 +4509,12 @@ export async function startRemoteServer({
         hello: () => peerOrigin.hello(),
         listDirectories: (requested) => peerOrigin.listDirectories(requested),
         attention: () => peerOrigin.attention(),
+        listAttachments: () => peerOrigin.listAttachments(),
+        readAttachment: (request) => peerOrigin.readAttachment(request),
+        getGlobalNote: () => peerOrigin.getGlobalNote(),
+        saveGlobalNote: (input) => peerOrigin.saveGlobalNote(input),
+        undoGlobalNote: (input) => peerOrigin.undoGlobalNote(input),
+        audit: (message, meta) => audit.info(message, meta),
         clientIdOf: getClientIdFromRequest,
         serve: handleHttpRequest,
         upgrade: handleWebSocketUpgradeRequest,

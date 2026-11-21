@@ -189,6 +189,19 @@ describe("remote transport endpoint routing", () => {
     ]);
   });
 
+  it("routes the installation note to its own endpoints", async () => {
+    const transport = makeRemoteTransport();
+    await transport.getInstallationNote?.();
+    await transport.saveInstallationNote?.({ text: "Note", expectedRevision: 0 });
+    await transport.undoInstallationNote?.({ expectedRevision: 1 });
+    expect(capturedUrls.map((url) => new URL(url, "http://localhost").pathname)).toEqual([
+      "/api/sidebar-notes/installation/get",
+      "/api/sidebar-notes/installation/save",
+      "/api/sidebar-notes/installation/undo",
+    ]);
+    expect(capturedBodies).toEqual([{}, { text: "Note", expectedRevision: 0 }, { expectedRevision: 1 }]);
+  });
+
   it("routes Jira issue writes to the remote preview/execute endpoints and keeps attachments desktop-only", async () => {
     const transport = makeRemoteTransport();
     const ref = { connectionId: "jira-a", issueId: "1", issueKey: "OPS-1" };
@@ -2858,16 +2871,29 @@ describe("remote transport API parity — no method silently missing its remote 
     "approvePeerPairing",
     "rejectPeerPairing",
     "removePeerDevice",
+    "renamePeerDevice",
     "onPeersUpdated",
     "onPeerPairingProgress",
     // The device side: which desktops this one attaches and the windows bound to them are decided at this machine
     // only. The link (peerHttp, peerWs*) is carried by the main process for the window's own binding.
     "listPeerHosts",
     "refreshPeerHost",
+    // Copying a paired desktop's attachments into a local workspace writes this machine's disk from a local window.
+    "listPeerAttachments",
+    "startPeerAttachmentCopy",
+    "cancelPeerAttachmentCopy",
+    "onPeerAttachmentCopyFinished",
+    "onPeerAttachmentCopyProgress",
+    // A paired desktop's global note is read and written from a local window over the link only this machine holds.
+    "getPeerGlobalNote",
+    "savePeerGlobalNote",
+    "undoPeerGlobalNote",
+    "onPeerHostNoteChanged",
     "startPeerPairing",
     "cancelPeerPairing",
     "removePeerHost",
     "updatePeerHostAddress",
+    "renamePeerHost",
     "getWindowBackend",
     "getLocalProfilesOverview",
     "openPeerWindow",
@@ -3105,14 +3131,25 @@ describe("remote transport — agent isolation and registries", () => {
       "approvePeerPairing",
       "rejectPeerPairing",
       "removePeerDevice",
+      "renamePeerDevice",
       "onPeersUpdated",
       "onPeerPairingProgress",
       "listPeerHosts",
       "refreshPeerHost",
+      "listPeerAttachments",
+      "startPeerAttachmentCopy",
+      "cancelPeerAttachmentCopy",
+      "onPeerAttachmentCopyFinished",
+      "onPeerAttachmentCopyProgress",
+      "getPeerGlobalNote",
+      "savePeerGlobalNote",
+      "undoPeerGlobalNote",
+      "onPeerHostNoteChanged",
       "startPeerPairing",
       "cancelPeerPairing",
       "removePeerHost",
       "updatePeerHostAddress",
+      "renamePeerHost",
       "getWindowBackend",
       "getLocalProfilesOverview",
       "openPeerWindow",
@@ -3157,6 +3194,8 @@ describe("electron transport — sidebar notes", () => {
       listSidebarNotes: invoke,
       saveSidebarNote: invoke,
       undoSidebarNote: invoke,
+      saveInstallationNote: invoke,
+      undoInstallationNote: invoke,
     };
 
     const transport = createTransport();
@@ -3166,6 +3205,13 @@ describe("electron transport — sidebar notes", () => {
     await expect(transport.listSidebarNotes!(reactive(scope))).resolves.toEqual(scope);
     await expect(transport.saveSidebarNote!(reactive(save))).resolves.toEqual(save);
     await expect(transport.undoSidebarNote!(reactive(undo))).resolves.toEqual(undo);
+    await expect(transport.saveInstallationNote!(reactive({ text: "Note", expectedRevision: 0 }))).resolves.toEqual({
+      text: "Note",
+      expectedRevision: 0,
+    });
+    await expect(transport.undoInstallationNote!(reactive({ expectedRevision: 1 }))).resolves.toEqual({
+      expectedRevision: 1,
+    });
   });
 });
 

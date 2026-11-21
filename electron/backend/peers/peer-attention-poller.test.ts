@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PeerHostLinkState } from "../../shared/peers.js";
+import { PEER_HOST_NOTE_CHANGED_CHANNEL, type PeerHostNoteChanged } from "../../shared/peer-host-note-events.js";
 import { PeerClientError, type PeerRequest, type PeerResponse } from "./peer-client.js";
 import { shouldNotifyPeerAttention } from "../../peer-attention-native.js";
 import {
@@ -10,10 +11,14 @@ import {
   type PeerAttentionEvent,
 } from "./peer-attention-poller.js";
 
-const ok = (total: number, profiles: Array<{ profileId: string; count: number }> = []): PeerResponse => ({
+const ok = (
+  total: number,
+  profiles: Array<{ profileId: string; count: number }> = [],
+  globalNoteRevision = 0,
+): PeerResponse => ({
   status: 200,
   headers: {},
-  body: JSON.stringify({ total, profiles }),
+  body: JSON.stringify({ total, profiles, globalNoteRevision }),
 });
 
 function setup() {
@@ -21,6 +26,7 @@ function setup() {
   const status = new Map<string, { state: PeerHostLinkState; checkedAt: number }>();
   const requests: Array<{ hostId: string; request: PeerRequest }> = [];
   const events: PeerAttentionEvent[] = [];
+  const noteEvents: PeerHostNoteChanged[] = [];
   const control = {
     reply: (async () => ok(0)) as (hostId: string) => Promise<PeerResponse>,
   };
@@ -32,15 +38,19 @@ function setup() {
       return control.reply(hostId);
     },
     emit: (event, payload) => {
+      if (event === PEER_HOST_NOTE_CHANGED_CHANNEL) {
+        noteEvents.push(payload as PeerHostNoteChanged);
+        return;
+      }
       expect(event).toBe(PEER_ATTENTION_EVENT);
-      events.push(payload);
+      events.push(payload as PeerAttentionEvent);
     },
     now: () => Date.now(),
   });
   const advance = async (ms: number) => {
     await vi.advanceTimersByTimeAsync(ms);
   };
-  return { poller, hosts, status, requests, events, control, advance };
+  return { poller, hosts, status, requests, events, noteEvents, control, advance };
 }
 
 beforeEach(() => {
@@ -52,6 +62,39 @@ afterEach(() => {
 });
 
 describe("peer attention poller", () => {
+  it("reports a host's global note change once, never on its first answer, and not for the same counter", async () => {
+    const t = setup();
+    const answers = [ok(0, [], 5), ok(0, [], 5), ok(0, [], 6), ok(0, [], 6)];
+    t.control.reply = async () => answers.shift()!;
+    t.poller.start();
+    await t.advance(10_000);
+    expect(t.noteEvents).toEqual([]);
+    for (let i = 0; i < 3; i++) await t.advance(PEER_ATTENTION_INTERVAL_MS);
+    expect(t.noteEvents).toEqual([{ hostId: "host-aaaa-1", revision: 6 }]);
+    t.poller.stop();
+  });
+
+  it("still reports a change made while the host was unreachable", async () => {
+    const t = setup();
+    const answers: Array<PeerResponse | Error> = [
+      ok(0, [], 1),
+      new PeerClientError("unreachable", "host is down"),
+      ok(0, [], 2),
+    ];
+    t.control.reply = async () => {
+      const next = answers.shift()!;
+      if (next instanceof Error) throw next;
+      return next;
+    };
+    t.poller.start();
+    await t.advance(10_000);
+    await t.advance(PEER_ATTENTION_INTERVAL_MS);
+    expect(t.noteEvents).toEqual([]);
+    await t.advance(PEER_ATTENTION_BACKOFF_MS);
+    expect(t.noteEvents).toEqual([{ hostId: "host-aaaa-1", revision: 2 }]);
+    t.poller.stop();
+  });
+
   it("polls soon after start, then every 30 s, with a plain GET of the attention route", async () => {
     const t = setup();
     t.poller.start();

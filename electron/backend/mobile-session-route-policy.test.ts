@@ -340,6 +340,9 @@ const MOBILE_ROUTE_CLASSIFICATION: Record<string, MobileRouteClass> = {
   "/api/ssh/certs/list": "guarded",
   "/api/ssh/config/import": "guarded",
   "/api/ssh/config/preview": "guarded",
+  "/api/sidebar-notes/installation/get": "guarded",
+  "/api/sidebar-notes/installation/save": "guarded",
+  "/api/sidebar-notes/installation/undo": "guarded",
   "/api/sidebar-notes/list": "guarded",
   "/api/sidebar-notes/save": "guarded",
   "/api/sidebar-notes/undo": "guarded",
@@ -580,6 +583,21 @@ describe("mobile session route policy", () => {
     expect(decide("/api/workspace/save", { workspace: { id: "ws-work" } })).toMatchObject({ allow: false });
     expect(decide("/api/azure/pipelines/run", { connectionId: "az-work" })).toMatchObject({ allow: false });
     expect(decide("/api/workspace/save", { profileId: "work" })).toMatchObject({ allow: false });
+  });
+
+  test("a phone reads and writes the installation note, but not another profile's note", () => {
+    expect(decide("/api/sidebar-notes/installation/get")).toEqual({ allow: true });
+    expect(decide("/api/sidebar-notes/installation/save", { text: "t", expectedRevision: 0 })).toEqual({ allow: true });
+    expect(decide("/api/sidebar-notes/installation/undo", { expectedRevision: 1 })).toEqual({ allow: true });
+    expect(
+      decide("/api/sidebar-notes/save", {
+        profileId: PROFILE,
+        workspaceId: "ws-work",
+        id: "n",
+        text: "t",
+        expectedRevision: 0,
+      }),
+    ).toMatchObject({ allow: false, reason: "target-outside-profile" });
   });
 
   test("the caller's own profile, and ids that name nothing yet, pass", () => {

@@ -136,6 +136,7 @@ export interface PeerClient {
   listHosts(): PeerHostRecord[];
   removeHost(hostId: string): Promise<boolean>;
   updateHostAddress(hostId: string, target: { address: string; port: number }): Promise<boolean>;
+  renameHost(hostId: string, label: string): Promise<boolean>;
   hello(hostId: string): Promise<PeerHello>;
   request(hostId: string, request: PeerRequest): Promise<PeerResponse>;
   openSocket(hostId: string, query: Record<string, string>): PeerClientSocket;
@@ -639,7 +640,7 @@ export function createPeerClient(deps: PeerClientDeps): PeerClient {
     try {
       await deps.updateSettings("peers:host-paired", (draft) => {
         const index = draft.hosts.findIndex((entry) => entry.id === host.id);
-        if (index >= 0) draft.hosts[index] = host;
+        if (index >= 0) draft.hosts[index] = { ...host, label: draft.hosts[index]!.label };
         else draft.hosts.push(host);
       });
     } catch (error) {
@@ -853,6 +854,17 @@ export function createPeerClient(deps: PeerClientDeps): PeerClient {
       loggedFailure.delete(hostId);
       notPaired.delete(hostId);
       log.info("host address changed", { hostId, address: target.address, port: target.port });
+      deps.emit("peers:updated", {});
+      return true;
+    },
+
+    async renameHost(hostId, label) {
+      if (!findHost(hostId)) return false;
+      await deps.updateSettings("peers:host-renamed", (draft) => {
+        const host = draft.hosts.find((entry) => entry.id === hostId);
+        if (host) host.label = label;
+      });
+      log.info("host renamed", { hostId });
       deps.emit("peers:updated", {});
       return true;
     },

@@ -5,10 +5,26 @@ import type { Duplex } from "node:stream";
 import type { TLSSocket } from "node:tls";
 import type { z } from "zod";
 import {
+  attachmentReadSchema,
+  type AttachmentReadRequest,
+  type AttachmentReadResult,
+} from "../shared/attachment-upload.js";
+import {
+  saveInstallationNoteSchema,
+  undoInstallationNoteSchema,
+  type InstallationNote,
+  type SaveInstallationNote,
+  type UndoInstallationNote,
+} from "../shared/sidebar-notes.js";
+import {
+  PEER_GLOBAL_NOTE_ROUTE,
+  PEER_GLOBAL_NOTE_SAVE_ROUTE,
+  PEER_GLOBAL_NOTE_UNDO_ROUTE,
   peerDirectoryListSchema,
   peerPairBeginSchema,
   peerPairRevealSchema,
   peerPairStatusSchema,
+  type PeerAttachmentList,
   type PeerAttentionSummary,
   type PeerDirectoryListing,
   type PeerHello,
@@ -16,8 +32,10 @@ import {
 import { getLogger } from "./logger.js";
 import { isPeerDeniedRoute } from "./peer-session-route-policy.js";
 import { PEER_PAIRING_IDENTITY, PEER_TLS_OPTIONS } from "./peers/peer-crypto.js";
+import { PeerAttachmentError } from "./peers/peer-attachments.js";
 import { PeerDirectoryError } from "./peers/peer-directories.js";
 import { PeerPairingError, type PeerHost } from "./peers/peer-host.js";
+import { ClientRequestError } from "./shared/client-request-error.js";
 
 const log = getLogger("peers");
 
@@ -33,6 +51,8 @@ export type PeerOriginHost = Pick<
 >;
 
 const PAIRING_BODY_MAX_BYTES = 16 * 1024;
+/** A note may be 65,536 characters, up to ~400 KiB once JSON-escaped; only the save route reads that much. */
+const GLOBAL_NOTE_BODY_MAX_BYTES = 512 * 1024;
 const PAIRING_RATE_WINDOW_MS = 60_000;
 const PAIRING_RATE_PER_ADDRESS = 20;
 const PAIRING_RATE_OVERALL = 200;
@@ -41,6 +61,7 @@ const HANDSHAKE_FAILURE_LIMIT = 10;
 const HANDSHAKE_BLOCK_MS = 15 * 60_000;
 const REVOKED_SOCKET_GRACE_MS = 1_000;
 const MAX_TRACKED_ADDRESSES = 512;
+const READ_CURSORS_MAX = 256;
 
 const PAIRING_ERROR_STATUS: Record<PeerPairingError["code"], number> = {
   "hosting-disabled": 403,
@@ -55,6 +76,11 @@ const PEER_DEVICE_ROUTES: Record<string, string> = {
   "/api/peer/hello": "GET",
   "/api/peer/attention": "GET",
   "/api/peer/fs/list": "POST",
+  "/api/peer/attachments": "GET",
+  "/api/peer/attachments/read": "POST",
+  [PEER_GLOBAL_NOTE_ROUTE]: "GET",
+  [PEER_GLOBAL_NOTE_SAVE_ROUTE]: "POST",
+  [PEER_GLOBAL_NOTE_UNDO_ROUTE]: "POST",
 };
 
 interface CountWindow {
@@ -76,13 +102,13 @@ function reply(response: ServerResponse, status: number, body: unknown): void {
   response.end(JSON.stringify(body));
 }
 
-function readSmallJson(request: IncomingMessage): Promise<unknown> {
+function readSmallJson(request: IncomingMessage, maxBytes = PAIRING_BODY_MAX_BYTES): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
     request.on("data", (chunk: Buffer) => {
       size += chunk.length;
-      if (size > PAIRING_BODY_MAX_BYTES) {
+      if (size > maxBytes) {
         request.destroy();
         reject(new BadPairingRequest("Request body too large"));
         return;
@@ -118,6 +144,16 @@ export function createPeerFrontDoor(deps: {
   listDirectories(path: string): Promise<PeerDirectoryListing>;
   /** Alert counts per profile, no text. */
   attention(): PeerAttentionSummary;
+  /** Recent attachments of every profile, metadata only. */
+  listAttachments(): Promise<PeerAttachmentList>;
+  /** One block of one attachment; throws `PeerAttachmentError` for a refusal the device can read. */
+  readAttachment(request: AttachmentReadRequest): Promise<AttachmentReadResult>;
+  /** This installation's global note; `saveGlobalNote` and `undoGlobalNote` throw `ClientRequestError` (409) on a concurrent change. */
+  getGlobalNote(): InstallationNote;
+  saveGlobalNote(input: SaveInstallationNote): Promise<InstallationNote>;
+  undoGlobalNote(input: UndoInstallationNote): Promise<InstallationNote>;
+  /** One audit line per attachment or note request: ids and counts, never file or note content. */
+  audit(message: string, meta: Record<string, unknown>): void;
   clientIdOf(requestUrl: string, headers: IncomingMessage["headers"]): string;
   /** The ordinary remote request path, reached only with the session header set. */
   serve(request: IncomingMessage, response: ServerResponse): Promise<void>;
@@ -125,6 +161,8 @@ export function createPeerFrontDoor(deps: {
 }): PeerFrontDoor {
   const identities = new WeakMap<TLSSocket, string>();
   const liveSockets = new Set<TLSSocket>();
+  // End of the previous read per (device, transfer), so a sequential download leaves one audit line, not one per block.
+  const readCursors = new Map<string, number>();
   const upgraded = new WeakSet<Duplex>();
   const failures = new Map<string, CountWindow>();
   const pairingByAddress = new Map<string, CountWindow>();
@@ -247,6 +285,113 @@ export function createPeerFrontDoor(deps: {
     }
   }
 
+  async function handleAttachmentList(response: ServerResponse, deviceId: string): Promise<void> {
+    try {
+      const list = await deps.listAttachments();
+      deps.audit("peer attachment list", { deviceId, route: "/api/peer/attachments", items: list.items.length });
+      reply(response, 200, list);
+    } catch (error) {
+      log.error("peer attachment listing failed", { err: errorText(error) });
+      reply(response, 500, { error: "The attachments could not be listed." });
+    }
+  }
+
+  async function handleAttachmentRead(
+    request: IncomingMessage,
+    response: ServerResponse,
+    deviceId: string,
+  ): Promise<void> {
+    try {
+      const parsed = attachmentReadSchema.safeParse(await readSmallJson(request));
+      if (!parsed.success) {
+        reply(response, 400, { error: "The attachment request is not valid." });
+        return;
+      }
+      const { workspaceId, transferId, offset, length } = parsed.data;
+      const cursorKey = `${deviceId}
+${transferId}`;
+      const continuesPreviousRead = offset > 0 && readCursors.get(cursorKey) === offset;
+      readCursors.delete(cursorKey);
+      readCursors.set(cursorKey, offset + length);
+      if (readCursors.size > READ_CURSORS_MAX) readCursors.delete(readCursors.keys().next().value!);
+      if (!continuesPreviousRead) {
+        deps.audit("peer attachment read", {
+          deviceId,
+          route: "/api/peer/attachments/read",
+          workspaceId,
+          transferId,
+          offset,
+          length,
+        });
+      }
+      reply(response, 200, await deps.readAttachment(parsed.data));
+    } catch (error) {
+      if (error instanceof PeerAttachmentError) {
+        reply(response, error.status, { error: error.message });
+      } else if (error instanceof BadPairingRequest) {
+        reply(response, 400, { error: error.message });
+      } else {
+        log.error("peer attachment read failed", { err: errorText(error) });
+        reply(response, 500, { error: "The attachment could not be read." });
+      }
+    }
+  }
+
+  async function handleGlobalNote(
+    request: IncomingMessage,
+    response: ServerResponse,
+    deviceId: string,
+    pathname: string,
+  ): Promise<void> {
+    if (pathname === PEER_GLOBAL_NOTE_ROUTE) {
+      deps.audit("peer global note read", { deviceId, route: pathname });
+      reply(response, 200, deps.getGlobalNote());
+      return;
+    }
+    const op = pathname === PEER_GLOBAL_NOTE_SAVE_ROUTE ? "save" : "undo";
+    let bytes = 0;
+    const auditWrite = (status: "success" | "conflict" | "invalid" | "failure"): void =>
+      deps.audit("peer global note write", { deviceId, route: pathname, op, bytes, status });
+    try {
+      const body = await readSmallJson(request, op === "save" ? GLOBAL_NOTE_BODY_MAX_BYTES : PAIRING_BODY_MAX_BYTES);
+      if (op === "save") {
+        const parsed = saveInstallationNoteSchema.safeParse(body);
+        if (!parsed.success) {
+          auditWrite("invalid");
+          reply(response, 400, { error: "The note is not valid." });
+          return;
+        }
+        bytes = Buffer.byteLength(parsed.data.text, "utf8");
+        const saved = await deps.saveGlobalNote(parsed.data);
+        auditWrite("success");
+        reply(response, 200, saved);
+        return;
+      }
+      const parsed = undoInstallationNoteSchema.safeParse(body);
+      if (!parsed.success) {
+        auditWrite("invalid");
+        reply(response, 400, { error: "The note request is not valid." });
+        return;
+      }
+      const restored = await deps.undoGlobalNote(parsed.data);
+      bytes = Buffer.byteLength(restored.note.text, "utf8");
+      auditWrite("success");
+      reply(response, 200, restored);
+    } catch (error) {
+      if (error instanceof ClientRequestError && (error.status === 409 || error.status === 400)) {
+        auditWrite(error.status === 409 ? "conflict" : "invalid");
+        reply(response, error.status, { error: error.message });
+      } else if (error instanceof BadPairingRequest) {
+        auditWrite("invalid");
+        reply(response, 400, { error: error.message });
+      } else {
+        auditWrite("failure");
+        log.error("peer global note request failed", { route: pathname, err: errorText(error) });
+        reply(response, 500, { error: "The note request failed." });
+      }
+    }
+  }
+
   async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const identity = identityOf(request.socket as TLSSocket);
     if (!identity) {
@@ -290,6 +435,10 @@ export function createPeerFrontDoor(deps: {
       deps.peerHost.noteDeviceSeen(identity, request.socket.remoteAddress || "");
       if (pathname === "/api/peer/hello") reply(response, 200, deps.hello());
       else if (pathname === "/api/peer/attention") reply(response, 200, deps.attention());
+      else if (pathname === "/api/peer/attachments") await handleAttachmentList(response, identity);
+      else if (pathname === "/api/peer/attachments/read") await handleAttachmentRead(request, response, identity);
+      else if (pathname.startsWith(PEER_GLOBAL_NOTE_ROUTE))
+        await handleGlobalNote(request, response, identity, pathname);
       else await handleDirectoryList(request, response);
       return;
     }

@@ -787,6 +787,8 @@ export function buildRemoteCore(
       ) as RemoteStateV2["reviewGit"]["lastRuns"],
     },
     sidebarNotesRevisions: scopeSidebarNotesRevisions(composed.sidebarNotesRevisions, scope),
+    installationNoteRevision:
+      typeof composed.installationNoteRevision === "number" ? composed.installationNoteRevision : 0,
     sshFileTransfers: {
       running: ((composed.sshFileTransfers?.running || []) as AnyRecord[]).filter((run) =>
         matchesProfile(run, scope),
@@ -795,6 +797,8 @@ export function buildRemoteCore(
         matchesProfile(run, scope),
       ) as RemoteStateV2["sshFileTransfers"]["lastRuns"],
     },
+    // Copies belong to this machine's own windows; a remote client is never told about them.
+    peerAttachmentCopies: { running: [], lastResults: [] },
     reviewTrust: {
       waiting: ((composed.reviewTrust?.waiting || []) as AnyRecord[]).filter((entry) =>
         matchesProfile(entry, scope),
@@ -867,7 +871,9 @@ export const STATE_PAYLOAD_KEYS: ReadonlySet<string> = new Set([
   "operations",
   "reviewGit",
   "sidebarNotesRevisions",
+  "installationNoteRevision",
   "sshFileTransfers",
+  "peerAttachmentCopies",
   "reviewTrust",
   "reviewPrActions",
   "secureStorage",

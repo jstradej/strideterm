@@ -12,7 +12,13 @@ import type {
   TerminalExitPayload,
   GitPushProgressPayload,
 } from "../electron/shared/ipc-bridge.js";
-import type { SidebarNote, SidebarNotes } from "../electron/shared/sidebar-notes.js";
+import type {
+  InstallationNote,
+  SaveInstallationNote,
+  SidebarNote,
+  SidebarNotes,
+  UndoInstallationNote,
+} from "../electron/shared/sidebar-notes.js";
 import type { SshFileListing, SshFileTransferStarted } from "../electron/shared/ssh-file-events.js";
 import type { RemoteStateV2, RecoveryResult } from "../electron/shared/types/state.js";
 import type { JiraWorkspaceViewsState } from "../electron/shared/types/jira-workspace-views.js";
@@ -49,8 +55,18 @@ import type {
 } from "../electron/shared/sandbox.js";
 import type { RegistrySavePayload, RegistryTestResult } from "../electron/shared/registry.js";
 import type { CredentialOverview, CredentialRemoveResult } from "../electron/shared/credential-overview.js";
+import { peerHostNoteChangedSchema, type PeerHostNoteChanged } from "../electron/shared/peer-host-note-events.js";
+import {
+  peerAttachmentCopyFinishedSchema,
+  peerAttachmentCopyProgressSchema,
+  type PeerAttachmentCopyFinished,
+  type PeerAttachmentCopyProgress,
+  type PeerAttachmentCopyStarted,
+} from "../electron/shared/peer-attachment-copy-events.js";
 import type {
   PeerApproveResult,
+  PeerAttachmentCopyRequest,
+  PeerAttachmentList,
   PeerDirectoryListing,
   PeerHostState,
   PeerHostingSettings,
@@ -478,12 +494,30 @@ export interface Transport extends Partial<
    * attached to another desktop has it; the web remote and the Electron transport leave it undefined.
    */
   listHostDirectories?: (payload: { path: string }) => Promise<PeerDirectoryListing>;
+  /**
+   * Attachments of a paired desktop, copied into a workspace of this window's profile. Local desktop windows only:
+   * no remote counterpart, and a window attached to another desktop is refused. The renderer names only `hostId`.
+   */
+  listPeerAttachments?: (hostId: string) => Promise<PeerAttachmentList>;
+  /**
+   * A paired desktop's global note, read and written from a LOCAL desktop window. No remote counterpart; a window
+   * attached to another desktop is refused. The renderer names only `hostId`.
+   */
+  getPeerGlobalNote?: (hostId: string) => Promise<InstallationNote>;
+  savePeerGlobalNote?: (hostId: string, input: SaveInstallationNote) => Promise<InstallationNote>;
+  undoPeerGlobalNote?: (hostId: string, input: UndoInstallationNote) => Promise<InstallationNote>;
+  onPeerHostNoteChanged?: (handler: Handler<PeerHostNoteChanged>) => () => void;
+  startPeerAttachmentCopy?: (input: PeerAttachmentCopyRequest) => Promise<PeerAttachmentCopyStarted>;
+  cancelPeerAttachmentCopy?: (copyId: string) => Promise<{ ok: true }>;
+  onPeerAttachmentCopyFinished?: (handler: Handler<PeerAttachmentCopyFinished>) => () => void;
+  onPeerAttachmentCopyProgress?: (handler: Handler<PeerAttachmentCopyProgress>) => () => void;
   /** Attaching profiles between desktops, host side. Desktop only: no remote counterpart. */
   getPeerHostState?: () => Promise<PeerHostState>;
   setPeerHosting?: (input: PeerHostingSettings) => Promise<PeerHostState>;
   approvePeerPairing?: (input: { pairingId: string; code: string }) => Promise<PeerApproveResult>;
   rejectPeerPairing?: (pairingId: string) => Promise<boolean>;
   removePeerDevice?: (deviceId: string) => Promise<boolean>;
+  renamePeerDevice?: (input: { deviceId: string; name: string }) => Promise<boolean>;
   onPeersUpdated?: (handler: Handler<unknown>) => () => void;
   onPeerPairingProgress?: (handler: Handler<unknown>) => () => void;
   onSandboxDenied?: (handler: Handler<SandboxDeniedRequest>) => () => void;
@@ -812,6 +846,18 @@ function bindElectronTransport(): Transport {
     undoSidebarNote: window.strideterm.undoSidebarNote
       ? (note) => window.strideterm.undoSidebarNote({ ...note })
       : undefined,
+    saveInstallationNote: window.strideterm.saveInstallationNote
+      ? (note) => window.strideterm.saveInstallationNote({ ...note })
+      : undefined,
+    undoInstallationNote: window.strideterm.undoInstallationNote
+      ? (note) => window.strideterm.undoInstallationNote({ ...note })
+      : undefined,
+    savePeerGlobalNote: window.strideterm.savePeerGlobalNote
+      ? (hostId, input) => window.strideterm.savePeerGlobalNote(hostId, { ...input })
+      : undefined,
+    undoPeerGlobalNote: window.strideterm.undoPeerGlobalNote
+      ? (hostId, input) => window.strideterm.undoPeerGlobalNote(hostId, { ...input })
+      : undefined,
     getRemoteToken: () => "",
     setRemoteToken: () => {},
     regenerateRemoteToken: () => window.strideterm.regenerateRemoteToken(),
@@ -918,6 +964,35 @@ function bindElectronTransport(): Transport {
         const parsed = sandboxDeniedRequestSchema.safeParse(payload);
         if (!parsed.success) return;
         handler(parsed.data);
+      });
+      return () => unsubscribe?.();
+    },
+    onPeerHostNoteChanged: (handler: Handler<PeerHostNoteChanged>) => {
+      const unsubscribe = window.strideterm.onPeerHostNoteChanged?.((payload: unknown) => {
+        const parsed = peerHostNoteChangedSchema.safeParse(payload);
+        if (!parsed.success) {
+          rlog("warn", "sidebar-notes:host-note-changed ignored: malformed payload");
+          return;
+        }
+        handler(parsed.data);
+      });
+      return () => unsubscribe?.();
+    },
+    onPeerAttachmentCopyFinished: (handler: Handler<PeerAttachmentCopyFinished>) => {
+      const unsubscribe = window.strideterm.onPeerAttachmentCopyFinished?.((payload: unknown) => {
+        const parsed = peerAttachmentCopyFinishedSchema.safeParse(payload);
+        if (!parsed.success) {
+          rlog("warn", "attachment:peer-copy-finished ignored: malformed payload");
+          return;
+        }
+        handler(parsed.data);
+      });
+      return () => unsubscribe?.();
+    },
+    onPeerAttachmentCopyProgress: (handler: Handler<PeerAttachmentCopyProgress>) => {
+      const unsubscribe = window.strideterm.onPeerAttachmentCopyProgress?.((payload: unknown) => {
+        const parsed = peerAttachmentCopyProgressSchema.safeParse(payload);
+        if (parsed.success) handler(parsed.data);
       });
       return () => unsubscribe?.();
     },
@@ -3041,6 +3116,11 @@ export function createRemoteTransport(
     listSidebarNotes: async (scope) => (await fetchJson("/api/sidebar-notes/list", scope)) as SidebarNotes,
     saveSidebarNote: async (note) => (await fetchJson("/api/sidebar-notes/save", note)) as SidebarNote,
     undoSidebarNote: async (note) => (await fetchJson("/api/sidebar-notes/undo", note)) as SidebarNote,
+    getInstallationNote: async () => (await fetchJson("/api/sidebar-notes/installation/get", {})) as InstallationNote,
+    saveInstallationNote: async (note) =>
+      (await fetchJson("/api/sidebar-notes/installation/save", note)) as InstallationNote,
+    undoInstallationNote: async (note) =>
+      (await fetchJson("/api/sidebar-notes/installation/undo", note)) as InstallationNote,
     saveWorkspace: (workspace) => fetchJson("/api/workspace/save", { workspace }),
     saveProject: (project) => fetchJson("/api/project/save", { project }),
     deleteWorkspace: (workspaceId, options) => fetchJson("/api/workspace/delete", { workspaceId, ...options }),

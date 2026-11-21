@@ -787,6 +787,18 @@ describe("peer client sockets", () => {
     expect(await codeOf(device.client.hello(hostId))).toBe("unknown-host");
   });
 
+  test("renameHost changes only the label, and pairing again keeps it", async () => {
+    const fixture = await createHostFixture();
+    const device = createDevice();
+    const hostId = await pairDevice(fixture, device);
+    expect(await device.client.renameHost(hostId, "Office")).toBe(true);
+    expect(device.client.listHosts()[0]).toMatchObject({ id: hostId, label: "Office" });
+    expect(await device.client.renameHost("nobody-here", "X")).toBe(false);
+    await pairDevice(fixture, device);
+    expect(device.client.listHosts()).toHaveLength(1);
+    expect(device.client.listHosts()[0]!.label).toBe("Office");
+  });
+
   test("updateHostAddress sends the next request to the new port", async () => {
     const fixture = await createHostFixture();
     const device = createDevice();

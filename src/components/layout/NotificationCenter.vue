@@ -466,6 +466,8 @@
           :workspace-id="activeWorkspaceId"
           :workspace-root="activeWorkspaceRoot"
           :unavailable-reason="activeWorkspaceAttachmentsReason"
+          :workspace-name="activeWorkspaceName"
+          :copy-targets="attachmentCopyTargets"
           open-by-default
           panel
         />
@@ -641,6 +643,19 @@
                     @click.stop="snooze(row.session)"
                   >
                     Snooze
+                  </button>
+                </div>
+                <div
+                  v-if="row.session.category === 'peer-attachment' && row.session.meta?.path"
+                  class="notification-item__quick-actions"
+                >
+                  <button
+                    type="button"
+                    class="quick-action"
+                    data-testid="peer-attachment-copy-path"
+                    @click.stop="copyNotificationPath(String(row.session.meta?.path), row.session.id)"
+                  >
+                    {{ copiedPathId === row.session.id ? "Copied" : "Copy path" }}
                   </button>
                 </div>
                 <div v-if="canDiscardOperation(row.session)" class="notification-item__quick-actions">
@@ -835,6 +850,25 @@ const activeWorkspaceRoot = computed(() => {
     (candidate) => candidate.id === activeWorkspaceId.value && (candidate.profileId || "default") === profileId,
   );
   return typeof workspace?.cwd === "string" ? workspace.cwd : "";
+});
+const activeWorkspaceName = computed(() => {
+  const profileId = activeProfileId.value || "default";
+  const workspace = (appStore.payload?.appState?.workspaces || []).find(
+    (candidate) => candidate.id === activeWorkspaceId.value && (candidate.profileId || "default") === profileId,
+  );
+  return workspace?.name || "";
+});
+const attachmentCopyTargets = computed(() => {
+  const profileId = activeProfileId.value || "default";
+  return (appStore.payload?.appState?.workspaces || [])
+    .filter(
+      (candidate) =>
+        (candidate.profileId || "default") === profileId &&
+        typeof candidate.cwd === "string" &&
+        candidate.cwd !== "" &&
+        !attachmentsUnavailableReason(candidate),
+    )
+    .map((candidate) => ({ id: candidate.id, name: candidate.name || candidate.id }));
 });
 const activeWorkspaceAttachmentsReason = computed(() => {
   const profileId = activeProfileId.value || "default";
@@ -1558,8 +1592,9 @@ async function copyNotificationPath(path: string, sessionId: string): Promise<vo
     setTimeout(() => {
       if (copiedPathId.value === sessionId) copiedPathId.value = "";
     }, 1500);
-  } catch {
+  } catch (error) {
     copiedPathId.value = "";
+    notifStore.showError("Could not copy the path", error);
   }
 }
 

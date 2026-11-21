@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { SIDEBAR_NOTE_MAX_LENGTH, saveInstallationNoteSchema, undoInstallationNoteSchema } from "./sidebar-notes.js";
 import type { WindowSlotBounds } from "./types/state.js";
 
 /**
@@ -149,6 +150,9 @@ export const peerConnectSchema = z
   })
   .strict();
 export const peerUpdateAddressSchema = peerConnectSchema.extend({ hostId: peerId }).strict();
+const peerDisplayName = z.string().trim().min(1, "Enter a name.").max(64, "Use at most 64 characters.");
+export const peerRenameHostSchema = z.object({ hostId: peerId, label: peerDisplayName }).strict();
+export const peerRenameDeviceSchema = z.object({ deviceId: peerId, name: peerDisplayName }).strict();
 
 export type PeerPairingEndState = "approved" | "rejected" | "expired" | "cancelled" | "failed";
 
@@ -283,13 +287,101 @@ export const PEER_DIRECTORY_MAX_ENTRIES = 2000;
 /** An empty path means the host's home folder. */
 export const peerDirectoryListSchema = z.object({ path: z.string().max(4096) }).strict();
 
-/** Alerts waiting on a host, counted per profile the way its own desktop counts them. Counts only. */
+/**
+ * Alerts waiting on a host, counted per profile the way its own desktop counts them, and the change counter of its
+ * global note. Numbers only: a note's text never rides in this answer.
+ */
 export interface PeerAttentionSummary {
   total: number;
   profiles: Array<{ profileId: string; count: number }>;
+  globalNoteRevision: number;
 }
 
 export const peerAttentionSummarySchema = z.object({
   total: z.int().min(0),
   profiles: z.array(z.object({ profileId: z.string().max(200), count: z.int().min(0) })).max(1000),
+  globalNoteRevision: z.int().min(0).default(0),
 });
+
+export const PEER_GLOBAL_NOTE_ROUTE = "/api/peer/global-note";
+export const PEER_GLOBAL_NOTE_SAVE_ROUTE = "/api/peer/global-note/save";
+export const PEER_GLOBAL_NOTE_UNDO_ROUTE = "/api/peer/global-note/undo";
+
+export const peerGlobalNoteSaveSchema = saveInstallationNoteSchema.extend({ hostId: peerId }).strict();
+export const peerGlobalNoteUndoSchema = undoInstallationNoteSchema.extend({ hostId: peerId }).strict();
+
+/** What a host answers for its global note; parsed on the device before the renderer sees it. */
+export const peerGlobalNoteSchema = z.object({
+  note: z.object({
+    id: z.string().min(1).max(200),
+    text: z.string().max(SIDEBAR_NOTE_MAX_LENGTH),
+    revision: z.int().min(0),
+    canUndo: z.boolean(),
+    updatedAt: z.string().max(64).optional(),
+  }),
+  installationName: z.string().max(200),
+});
+
+export const PEER_ATTACHMENT_LIST_DAYS = 14;
+export const PEER_ATTACHMENT_LIST_MAX_ITEMS = 200;
+
+/** One attachment a host holds, with the profile and workspace that own it. Metadata only. */
+export interface PeerAttachmentItem {
+  profileId: string;
+  profileName: string;
+  workspaceId: string;
+  workspaceName: string;
+  transferId: string;
+  name: string;
+  size: number;
+  sha256: string;
+  uploadedAt: number;
+}
+
+/** Recent attachments across every profile of the host, newest first. `truncated`: more than the cap were recent. */
+export interface PeerAttachmentList {
+  items: PeerAttachmentItem[];
+  truncated: boolean;
+}
+
+/** Names a host sends are cut to this; the item schema refuses a longer one. */
+export const PEER_ATTACHMENT_NAME_MAX = 200;
+
+export const peerAttachmentItemSchema = z.object({
+  profileId: z.string().max(PEER_ATTACHMENT_NAME_MAX),
+  profileName: z.string().max(PEER_ATTACHMENT_NAME_MAX),
+  workspaceId: z.string().min(1).max(PEER_ATTACHMENT_NAME_MAX),
+  workspaceName: z.string().max(PEER_ATTACHMENT_NAME_MAX),
+  transferId: z.string().uuid(),
+  name: z.string().min(1).max(255),
+  size: z.int().min(0),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  uploadedAt: z.int().min(0),
+});
+
+/** The list as an envelope only: each item is validated on its own, so one bad item does not reject the rest. */
+export const peerAttachmentListEnvelopeSchema = z.object({
+  items: z.array(z.unknown()).max(PEER_ATTACHMENT_LIST_MAX_ITEMS),
+  truncated: z.boolean(),
+});
+
+const PEER_ATTACHMENT_COPY_MAX_BYTES = 1024 * 1024 * 1024;
+
+export const peerAttachmentCopySchema = z
+  .object({
+    hostId: peerId,
+    source: z
+      .object({
+        workspaceId: z.string().min(1).max(200),
+        transferId: z.string().uuid(),
+        name: z.string().min(1).max(255),
+        size: z.int().min(1).max(PEER_ATTACHMENT_COPY_MAX_BYTES),
+        sha256: z.string().regex(/^[a-f0-9]{64}$/),
+      })
+      .strict(),
+    targetWorkspaceId: z.string().min(1).max(200),
+  })
+  .strict();
+export type PeerAttachmentCopyRequest = z.infer<typeof peerAttachmentCopySchema>;
+
+export const peerAttachmentCopyCancelSchema = z.object({ copyId: z.string().uuid() }).strict();

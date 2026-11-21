@@ -19,12 +19,19 @@ import {
 } from "../shared/azure-closed-pr-cleanup-events.js";
 import { createStore } from "./store.js";
 import { toSidebarNote } from "./sidebar-notes.js";
-import { SIDEBAR_NOTES_MAX_PER_OWNER } from "../shared/sidebar-notes.js";
+import {
+  INSTALLATION_NOTE_ID,
+  INSTALLATION_NOTE_OWNER_ID,
+  SIDEBAR_NOTES_MAX_PER_OWNER,
+} from "../shared/sidebar-notes.js";
 import type {
+  InstallationNote,
+  SaveInstallationNote,
   SaveSidebarNote,
   SidebarNote,
   SidebarNotes,
   SidebarNotesScope,
+  UndoInstallationNote,
   UndoSidebarNote,
 } from "../shared/sidebar-notes.js";
 import { readAutomationResult } from "./automations/automation-result.js";
@@ -101,8 +108,14 @@ import { CloudflareTunnelManager, canReconnectTunnel } from "./tunnel-manager.js
 import { createPluginManager } from "./plugin-loader.js";
 import { createCredentialStore } from "./credential-store.js";
 import { createRuntimeCredentials } from "./runtime-credentials.js";
-import { createRuntimePeers, PEER_WINDOW_NOT_ATTACHED } from "./runtime-peers.js";
-import type { PeerHostingSettings, PeerListenerInfo, PeerWindowSlot } from "../shared/peers.js";
+import { createRuntimePeers, PEER_WINDOW_NOT_ATTACHED, peerHostName } from "./runtime-peers.js";
+import type { AttachmentReadRequest } from "../shared/attachment-upload.js";
+import type {
+  PeerAttachmentCopyRequest,
+  PeerHostingSettings,
+  PeerListenerInfo,
+  PeerWindowSlot,
+} from "../shared/peers.js";
 import { createAzureReviewStore } from "./azure-review-store.js";
 import { createReviewBridgeStore } from "./review-bridge-store.js";
 import { createAzureAuditLogStore } from "./azure-audit-log-store.js";
@@ -377,7 +390,13 @@ import type { AppDistribution } from "../shared/app-distribution.js";
 import { initLogger, getLogger, setLogLevel, reconfigureLogger, createAuditLogger } from "./logger.js";
 import type { Logger } from "./logger.js";
 import { createRuntimeAttentionManager } from "./runtime-attention.js";
-import type { AppState, WindowSlot, WindowSlotBounds, WorkspaceState } from "../shared/types/state.js";
+import type {
+  AppState,
+  SidebarNoteRecord,
+  WindowSlot,
+  WindowSlotBounds,
+  WorkspaceState,
+} from "../shared/types/state.js";
 import { carryOverSourceBaseline, prePrSourceIdentityKey } from "../shared/review-source-identity.js";
 import { reviewAgentPreparationStopSchema } from "./ipc-schemas.js";
 import type { ReviewGitStart, StartReviewAgentPreparation, ReviewPrActionConfirm } from "./ipc-schemas.js";
@@ -3545,6 +3564,8 @@ export async function createRuntime({
     appVersion: packageVersion,
     emit: (event, payload) => events.emit(event, payload),
     getAttentionPayload: () => ({ appState: { workspaces: getState().workspaces }, attention: getAttentionSnapshot() }),
+    changed: () => broadcastState(),
+    getInstallationNoteRevision: () => installationNoteRevision,
   });
 
   // --- Agent notification hook server ---
@@ -5135,6 +5156,7 @@ export async function createRuntime({
   // Counters restart with the process. Starting from the clock keeps a value from repeating across a restart,
   // which a client that was away for it would read as "nothing changed".
   const sidebarNotesRevisionBase = Date.now();
+  let installationNoteRevision = sidebarNotesRevisionBase;
 
   let jiraWorkspaceViewsSnapshot: () => JiraWorkspaceViewsSnapshot = () => ({});
   let automationsSnapshot: () => import("../shared/types/state.js").AutomationUiState = () => ({
@@ -5253,7 +5275,9 @@ export async function createRuntime({
       })(),
       reviewGit: reviewGitService.stateFor(),
       sidebarNotesRevisions: Object.fromEntries(sidebarNotesRevisions),
+      installationNoteRevision,
       sshFileTransfers: sshFileService.transfers.getPayload(),
+      peerAttachmentCopies: runtimePeers.getAttachmentCopiesPayload(),
       reviewTrust: { waiting: reviewTrust.waiting() },
       reviewPrActions: reviewPrActionService?.stateFor() || { pending: [] },
       azureClosedPrCleanup: {
@@ -9674,24 +9698,28 @@ export async function createRuntime({
     }
   }
 
-  async function persistSidebarNote(input: SaveSidebarNote | UndoSidebarNote, windowId?: string): Promise<SidebarNote> {
-    const owner = input.workspaceId === null ? "profile" : "workspace";
-    const ownerId = input.workspaceId ?? input.profileId;
-    const matchesNote = (note: NonNullable<AppState["sidebarNotes"]>[number]) =>
-      note.id === input.id && note.owner === owner && note.ownerId === ownerId;
+  async function persistNoteRecord(
+    key: Pick<SidebarNoteRecord, "owner" | "ownerId" | "id">,
+    input: { text?: string; expectedRevision: number },
+    assertScope: ((draft: AppState) => void) | null,
+  ): Promise<{ note: SidebarNoteRecord; changed: boolean }> {
+    const { owner, ownerId } = key;
+    const matchesNote = (note: SidebarNoteRecord) =>
+      note.id === key.id && note.owner === owner && note.ownerId === ownerId;
     let changed = false;
     const state: AppState = await store.mutate("sidebar-note:update", (draft: AppState) => {
-      assertSidebarNotesScope(draft, input, windowId);
+      assertScope?.(draft);
       const notes = (draft.sidebarNotes ??= []);
       const note = notes.find(matchesNote);
       if ((note?.revision ?? 0) !== input.expectedRevision) {
         throw new ClientRequestError("This note has changed. Reload it before trying again.", 409);
       }
-      if ("text" in input) {
+      if (input.text !== undefined) {
         if (!note) {
           if (
+            owner !== "installation" &&
             notes.filter((entry) => entry.owner === owner && entry.ownerId === ownerId).length >=
-            SIDEBAR_NOTES_MAX_PER_OWNER
+              SIDEBAR_NOTES_MAX_PER_OWNER
           ) {
             throw new ClientRequestError(
               `A profile or workspace holds at most ${SIDEBAR_NOTES_MAX_PER_OWNER} notes. Reuse an existing note.`,
@@ -9699,7 +9727,7 @@ export async function createRuntime({
             );
           }
           notes.unshift({
-            id: input.id,
+            id: key.id,
             text: input.text,
             owner,
             ownerId,
@@ -9724,6 +9752,18 @@ export async function createRuntime({
       note.updatedAt = new Date().toISOString();
       changed = true;
     });
+    const savedNote = state.sidebarNotes?.find(matchesNote);
+    if (!savedNote) throw new Error("The note could not be saved.");
+    return { note: savedNote, changed };
+  }
+
+  async function persistSidebarNote(input: SaveSidebarNote | UndoSidebarNote, windowId?: string): Promise<SidebarNote> {
+    const owner = input.workspaceId === null ? "profile" : "workspace";
+    const { note, changed } = await persistNoteRecord(
+      { owner, ownerId: input.workspaceId ?? input.profileId, id: input.id },
+      { text: "text" in input ? input.text : undefined, expectedRevision: input.expectedRevision },
+      (draft) => assertSidebarNotesScope(draft, input, windowId),
+    );
     if (changed) {
       sidebarNotesRevisions.set(
         input.profileId,
@@ -9731,9 +9771,27 @@ export async function createRuntime({
       );
       broadcastState();
     }
-    const savedNote = state.sidebarNotes?.find(matchesNote);
-    if (!savedNote) throw new Error("The note could not be saved.");
-    return toSidebarNote(savedNote);
+    return toSidebarNote(note);
+  }
+
+  function installationNoteOf(state: AppState): SidebarNote {
+    const record = state.sidebarNotes?.find((note) => note.owner === "installation");
+    return record ? toSidebarNote(record) : { id: INSTALLATION_NOTE_ID, text: "", revision: 0, canUndo: false };
+  }
+
+  async function persistInstallationNote(
+    input: SaveInstallationNote | UndoInstallationNote,
+  ): Promise<InstallationNote> {
+    const { note, changed } = await persistNoteRecord(
+      { owner: "installation", ownerId: INSTALLATION_NOTE_OWNER_ID, id: INSTALLATION_NOTE_ID },
+      { text: "text" in input ? input.text : undefined, expectedRevision: input.expectedRevision },
+      null,
+    );
+    if (changed) {
+      installationNoteRevision++;
+      broadcastState();
+    }
+    return { note: toSidebarNote(note), installationName: peerHostName() };
   }
 
   function sshTmuxOwner(windowId: string) {
@@ -12977,6 +13035,15 @@ export async function createRuntime({
         }
       }
       return result;
+    },
+    getInstallationNote(): InstallationNote {
+      return { note: installationNoteOf(getState()), installationName: peerHostName() };
+    },
+    saveInstallationNote(input: SaveInstallationNote): Promise<InstallationNote> {
+      return persistInstallationNote(input);
+    },
+    undoInstallationNote(input: UndoInstallationNote): Promise<InstallationNote> {
+      return persistInstallationNote(input);
     },
     saveSidebarNote(input: SaveSidebarNote, windowId?: string): Promise<SidebarNote> {
       return persistSidebarNote(input, windowId);
@@ -16913,20 +16980,31 @@ export async function createRuntime({
     approvePeerPairing: (input: { pairingId: string; code: string }) => runtimePeers.approvePairing(input),
     rejectPeerPairing: (pairingId: string) => runtimePeers.rejectPairing(pairingId),
     removePeerDevice: (deviceId: string) => runtimePeers.removeDevice(deviceId),
+    renamePeerDevice: (input: { deviceId: string; name: string }) => runtimePeers.renameDevice(input),
     peerHello: () => runtimePeers.hello(),
     peerAttention: () => runtimePeers.attention(),
     peerListDirectories: (requested: string) => runtimePeers.listDirectories(requested),
+    peerListAttachments: () => runtimePeers.listAttachments(),
+    peerReadAttachment: (request: AttachmentReadRequest) => runtimePeers.readAttachment(request),
     getPeerHostAttention: () => runtimePeers.getPeerHostAttention(),
     setPeerListenerInfo: (info: PeerListenerInfo) => runtimePeers.setListenerInfo(info),
     // Attaching profiles between desktops (device side). Desktop IPC only: no remote route reaches any of these, and
     // the window-bound ones resolve the host from the window's binding, never from the caller's request.
     listPeerHosts: () => runtimePeers.listHosts(),
+    listPeerAttachments: (hostId: string) => runtimePeers.listHostAttachments(hostId),
+    getPeerGlobalNote: (hostId: string) => runtimePeers.getHostGlobalNote(hostId),
+    savePeerGlobalNote: (hostId: string, input: SaveInstallationNote) => runtimePeers.saveHostGlobalNote(hostId, input),
+    undoPeerGlobalNote: (hostId: string, input: UndoInstallationNote) => runtimePeers.undoHostGlobalNote(hostId, input),
+    startPeerAttachmentCopy: (request: PeerAttachmentCopyRequest, windowId: string) =>
+      runtimePeers.startAttachmentCopy(request, windowId),
+    cancelPeerAttachmentCopy: (copyId: string, windowId: string) => runtimePeers.cancelAttachmentCopy(copyId, windowId),
     refreshPeerHost: (hostId: string, options?: { force?: boolean }) => runtimePeers.refreshHost(hostId, options),
     startPeerPairing: (target: { address: string; port: number }) => runtimePeers.startPairing(target),
     cancelPeerPairing: (attemptId: string) => runtimePeers.cancelPairing(attemptId),
     removePeerHost: (hostId: string) => runtimePeers.removeHost(hostId),
     updatePeerHostAddress: (target: { hostId: string; address: string; port: number }) =>
       runtimePeers.updateHostAddress(target),
+    renamePeerHost: (input: { hostId: string; label: string }) => runtimePeers.renameHost(input),
     getWindowBackend: (windowId: string) => runtimePeers.getWindowBackend(windowId),
     isPeerWindow: (windowId: string) => runtimePeers.isPeerWindow(windowId),
     getLocalProfilesOverview: () => runtimePeers.getLocalProfilesOverview(),

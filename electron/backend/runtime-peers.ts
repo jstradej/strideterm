@@ -1,10 +1,19 @@
 import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
 import {
+  PEER_GLOBAL_NOTE_ROUTE,
+  PEER_GLOBAL_NOTE_SAVE_ROUTE,
+  PEER_GLOBAL_NOTE_UNDO_ROUTE,
   PEER_PROTOCOL_VERSION,
+  peerAttachmentItemSchema,
+  peerAttachmentListEnvelopeSchema,
+  peerGlobalNoteSchema,
   type LocalProfileOverview,
   type PeerApproveResult,
   type PeerAttachedHost,
+  type PeerAttachmentCopyRequest,
+  type PeerAttachmentItem,
+  type PeerAttachmentList,
   type PeerAttentionSummary,
   type PeerHello,
   type PeerHostState,
@@ -14,8 +23,12 @@ import {
   type PeerWindowSlot,
   type WindowBackend,
 } from "../shared/peers.js";
+import type { InstallationNote, SaveInstallationNote, UndoInstallationNote } from "../shared/sidebar-notes.js";
 import type { AppState, WindowSlotBounds } from "../shared/types/state.js";
 import { getLogger } from "./logger.js";
+import type { AttachmentReadRequest } from "../shared/attachment-upload.js";
+import { createPeerAttachmentCopies } from "./peers/peer-attachment-copy.js";
+import { createPeerAttachmentsHost } from "./peers/peer-attachments.js";
 import { listPeerDirectories } from "./peers/peer-directories.js";
 import { createPeerAttentionPoller, type PeerHostAttention } from "./peers/peer-attention-poller.js";
 import { summarizeAttentionForProfile } from "./runtime-utils.js";
@@ -40,6 +53,10 @@ export interface RuntimePeersDeps {
   emit: (event: string, payload: unknown) => void;
   /** Workspaces and the attention snapshot, in the shape `summarizeAttentionForProfile` reads. */
   getAttentionPayload?: () => Parameters<typeof summarizeAttentionForProfile>[0];
+  /** The state payload changed (an attachment copy advanced or ended). */
+  changed?: () => void;
+  /** Change counter of this installation's global note, for the attention answer. */
+  getInstallationNoteRevision?: () => number;
 }
 
 export function peerHostName(): string {
@@ -109,6 +126,68 @@ export function createRuntimePeers(deps: RuntimePeersDeps) {
     request: (hostId, request) => peerClient.request(hostId, request),
     emit: (event, payload) => deps.emit(event, payload),
   });
+
+  const attachmentsHost = createPeerAttachmentsHost({ getState: () => deps.getState() });
+
+  const attachmentCopies = createPeerAttachmentCopies({
+    getState: () => deps.getState(),
+    hostInfo: (hostId) => {
+      const host = settings().hosts.find((entry) => entry.id === hostId);
+      return host ? { label: host.label, state: peerClient.getHostStatus(hostId).state } : null;
+    },
+    requireHostOnline: (hostId) => requireHostOnline(hostId),
+    request: (hostId, request) => peerClient.request(hostId, request),
+    emit: (channel, payload) => deps.emit(channel, payload),
+    changed: () => deps.changed?.(),
+  });
+
+  /** Refreshes the host and refuses, with the reason, unless it is reachable, the same version and still pairing this desktop. */
+  async function requireHostOnline(hostId: string): Promise<PeerAttachedHost> {
+    if (!settings().hosts.some((host) => host.id === hostId)) throw new Error("This desktop is not attached.");
+    await peerClient.refreshHost(hostId);
+    const host = attached(hostId);
+    if (!host) throw new Error("This desktop is not attached.");
+    if (host.state === "online") return host;
+    if (host.state === "version-mismatch") {
+      throw new Error(
+        `${host.label} runs strIDEterm ${host.hostAppVersion || "of another version"}, this desktop runs ${host.localAppVersion}. Both must run the same version.`,
+      );
+    }
+    if (host.state === "not-paired") throw new Error(`${host.label} no longer accepts this desktop. Pair it again.`);
+    if (host.state === "wrong-host") throw new Error(`The address of ${host.label} now answers as another strIDEterm.`);
+    throw new Error(`${host.label} cannot be reached.`);
+  }
+
+  /** The host's own sentence travels with its refusal (a 409 says the note changed), never "status 409". */
+  async function hostGlobalNoteCall(hostId: string, request: PeerRequest): Promise<InstallationNote> {
+    const host = attached(hostId);
+    if (!host) throw new Error("This desktop is not attached.");
+    if (host.state !== "online") await requireHostOnline(hostId);
+    const response = await peerClient.request(hostId, request);
+    let body: unknown;
+    try {
+      body = JSON.parse(response.body);
+    } catch {
+      body = null;
+    }
+    if (response.status !== 200) {
+      const detail = (body as { error?: unknown } | null)?.error;
+      throw new Error(
+        typeof detail === "string" && detail
+          ? detail
+          : `${host.label} could not handle the note request (status ${response.status}).`,
+      );
+    }
+    const parsed = peerGlobalNoteSchema.safeParse(body);
+    if (!parsed.success) throw new Error(`${host.label} sent a note this version cannot read.`);
+    return parsed.data;
+  }
+
+  function localWindowProfile(windowId: string): { profileId: string } {
+    const slot = deps.getState().windowSlots.find((entry) => entry.id === windowId);
+    if (!slot) throw new Error("This action is only available in a window of this desktop.");
+    return { profileId: slot.profileId || "default" };
+  }
 
   const peerWindows = (): PeerWindowSlot[] => deps.getState().peerWindows ?? [];
 
@@ -182,6 +261,9 @@ export function createRuntimePeers(deps: RuntimePeersDeps) {
     updateHostAddress: (target: { hostId: string; address: string; port: number }): Promise<boolean> =>
       peerClient.updateHostAddress(target.hostId, { address: target.address, port: target.port }),
 
+    renameHost: (input: { hostId: string; label: string }): Promise<boolean> =>
+      peerClient.renameHost(input.hostId, input.label),
+
     getWindowBackend(windowId: string): WindowBackend {
       const slot = peerWindows().find((entry) => entry.id === windowId);
       if (!slot) return { kind: "local" };
@@ -196,23 +278,7 @@ export function createRuntimePeers(deps: RuntimePeersDeps) {
       };
     },
 
-    /** Refreshes the host and refuses, with the reason, unless it is reachable, the same version and still pairing this desktop. */
-    async requireHostOnline(hostId: string): Promise<PeerAttachedHost> {
-      if (!settings().hosts.some((host) => host.id === hostId)) throw new Error("This desktop is not attached.");
-      await peerClient.refreshHost(hostId);
-      const host = attached(hostId);
-      if (!host) throw new Error("This desktop is not attached.");
-      if (host.state === "online") return host;
-      if (host.state === "version-mismatch") {
-        throw new Error(
-          `${host.label} runs strIDEterm ${host.hostAppVersion || "of another version"}, this desktop runs ${host.localAppVersion}. Both must run the same version.`,
-        );
-      }
-      if (host.state === "not-paired") throw new Error(`${host.label} no longer accepts this desktop. Pair it again.`);
-      if (host.state === "wrong-host")
-        throw new Error(`The address of ${host.label} now answers as another strIDEterm.`);
-      throw new Error(`${host.label} cannot be reached.`);
-    },
+    requireHostOnline,
 
     /** Points an existing peer window at another host and profile; id and geometry stay. */
     async retargetPeerWindow(windowId: string, target: { hostId: string; profileId: string }): Promise<PeerWindowSlot> {
@@ -333,6 +399,7 @@ export function createRuntimePeers(deps: RuntimePeersDeps) {
     },
 
     dispose(): void {
+      attachmentCopies.dispose();
       attentionPoller.stop();
       peerClient.dispose();
     },
@@ -369,6 +436,9 @@ export function createRuntimePeers(deps: RuntimePeersDeps) {
 
     removeDevice: (deviceId: string): Promise<boolean> => peerHost.removeDevice(deviceId),
 
+    renameDevice: (input: { deviceId: string; name: string }): Promise<boolean> =>
+      peerHost.renameDevice(input.deviceId, input.name),
+
     hello(): PeerHello {
       const state = deps.getState();
       const counts = countWorkspacesByProfile(state);
@@ -396,10 +466,70 @@ export function createRuntimePeers(deps: RuntimePeersDeps) {
           count: summarizeAttentionForProfile(payload, profile.id).count,
         }))
         .filter((profile) => profile.count > 0);
-      return { total: profiles.reduce((sum, profile) => sum + profile.count, 0), profiles };
+      return {
+        total: profiles.reduce((sum, profile) => sum + profile.count, 0),
+        profiles,
+        globalNoteRevision: deps.getInstallationNoteRevision?.() ?? 0,
+      };
     },
 
     listDirectories: (requested: string) => listPeerDirectories(requested),
+
+    /** Host side: recent attachments of every profile, for a paired desktop. */
+    listAttachments: (): Promise<PeerAttachmentList> => attachmentsHost.list(),
+    readAttachment: (request: AttachmentReadRequest) => attachmentsHost.read(request),
+
+    /** Device side: what a paired host holds. The renderer names the host; the path is fixed here. */
+    async listHostAttachments(hostId: string): Promise<PeerAttachmentList> {
+      const host = attached(hostId);
+      if (!host) throw new Error("This desktop is not attached.");
+      if (host.state !== "online") await requireHostOnline(hostId);
+      const response = await peerClient.request(hostId, { method: "GET", pathname: "/api/peer/attachments" });
+      if (response.status !== 200)
+        throw new Error(`${host.label} could not list its attachments (status ${response.status}).`);
+      let body: unknown;
+      try {
+        body = JSON.parse(response.body);
+      } catch {
+        body = null;
+      }
+      const envelope = peerAttachmentListEnvelopeSchema.safeParse(body);
+      if (!envelope.success) throw new Error(`${host.label} sent a list this version cannot read.`);
+      const items: PeerAttachmentItem[] = [];
+      for (const raw of envelope.data.items) {
+        const item = peerAttachmentItemSchema.safeParse(raw);
+        if (item.success) items.push(item.data);
+      }
+      const dropped = envelope.data.items.length - items.length;
+      if (dropped > 0) log.warn("peer attachment list dropped items it cannot read", { hostId, dropped });
+      return { items, truncated: envelope.data.truncated };
+    },
+
+    /** Device side: a paired host's global note. The renderer names the host; the path is fixed here. */
+    getHostGlobalNote: (hostId: string): Promise<InstallationNote> =>
+      hostGlobalNoteCall(hostId, { method: "GET", pathname: PEER_GLOBAL_NOTE_ROUTE }),
+    saveHostGlobalNote: (hostId: string, input: SaveInstallationNote): Promise<InstallationNote> =>
+      hostGlobalNoteCall(hostId, {
+        method: "POST",
+        pathname: PEER_GLOBAL_NOTE_SAVE_ROUTE,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+      }),
+    undoHostGlobalNote: (hostId: string, input: UndoInstallationNote): Promise<InstallationNote> =>
+      hostGlobalNoteCall(hostId, {
+        method: "POST",
+        pathname: PEER_GLOBAL_NOTE_UNDO_ROUTE,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+      }),
+
+    startAttachmentCopy: async (request: PeerAttachmentCopyRequest, windowId: string) =>
+      attachmentCopies.start(request, localWindowProfile(windowId)),
+
+    cancelAttachmentCopy: (copyId: string, windowId: string) =>
+      attachmentCopies.cancel(copyId, localWindowProfile(windowId)),
+
+    getAttachmentCopiesPayload: () => attachmentCopies.getPayload(),
 
     getPeerHostAttention(): PeerHostAttention[] {
       return attentionPoller.getAll();

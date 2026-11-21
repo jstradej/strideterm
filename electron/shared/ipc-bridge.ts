@@ -17,10 +17,13 @@ import type {
   AttachmentUploadChunkRequest,
 } from "./attachment-upload.js";
 import type {
+  InstallationNote,
+  SaveInstallationNote,
   SaveSidebarNote,
   SidebarNote,
   SidebarNotes,
   SidebarNotesScope,
+  UndoInstallationNote,
   UndoSidebarNote,
 } from "./sidebar-notes.js";
 import type { JiraWorkspaceViewInput, JiraWorkspaceViewsState } from "./types/jira-workspace-views.js";
@@ -304,6 +307,9 @@ export interface StridetermAPI {
   listSidebarNotes: (scope: SidebarNotesScope) => Promise<SidebarNotes>;
   saveSidebarNote: (note: SaveSidebarNote) => Promise<SidebarNote>;
   undoSidebarNote: (note: UndoSidebarNote) => Promise<SidebarNote>;
+  getInstallationNote: () => Promise<InstallationNote>;
+  saveInstallationNote: (note: SaveInstallationNote) => Promise<InstallationNote>;
+  undoInstallationNote: (note: UndoInstallationNote) => Promise<InstallationNote>;
   saveWorkspace: (workspace: Workspace) => Promise<unknown>;
   saveProject: (project: Workspace) => Promise<unknown>;
   deleteWorkspace: (workspaceId: string, options?: Record<string, unknown>) => Promise<unknown>;
@@ -427,6 +433,7 @@ export interface StridetermAPI {
   approvePeerPairing: (input: { pairingId: string; code: string }) => Promise<import("./peers.js").PeerApproveResult>;
   rejectPeerPairing: (pairingId: string) => Promise<boolean>;
   removePeerDevice: (deviceId: string) => Promise<boolean>;
+  renamePeerDevice: (input: { deviceId: string; name: string }) => Promise<boolean>;
   /** Attaching profiles between desktops, device side. Desktop only: no remote counterpart. */
   listPeerHosts: () => Promise<import("./peers.js").PeerAttachedHost[]>;
   /** `force` lifts the "no longer paired" latch and tries the network once (the user's Reconnect). */
@@ -434,10 +441,22 @@ export interface StridetermAPI {
     hostId: string,
     options?: { force?: boolean },
   ) => Promise<import("./peers.js").PeerAttachedHost | null>;
+  /** Recent attachments of every profile of a paired host (local windows only). */
+  listPeerAttachments: (hostId: string) => Promise<import("./peers.js").PeerAttachmentList>;
+  /** Starts copying a host's attachment into a workspace of the calling window's profile; answers at once. */
+  /** A paired host's global note, over the link of a local window. The path is fixed in the main process. */
+  getPeerGlobalNote: (hostId: string) => Promise<InstallationNote>;
+  savePeerGlobalNote: (hostId: string, input: SaveInstallationNote) => Promise<InstallationNote>;
+  undoPeerGlobalNote: (hostId: string, input: UndoInstallationNote) => Promise<InstallationNote>;
+  startPeerAttachmentCopy: (
+    input: import("./peers.js").PeerAttachmentCopyRequest,
+  ) => Promise<import("./peer-attachment-copy-events.js").PeerAttachmentCopyStarted>;
+  cancelPeerAttachmentCopy: (copyId: string) => Promise<{ ok: true }>;
   startPeerPairing: (input: { address: string; port: number }) => Promise<import("./peers.js").PeerStartedPairing>;
   cancelPeerPairing: (attemptId: string) => Promise<void>;
   removePeerHost: (hostId: string) => Promise<boolean>;
   updatePeerHostAddress: (input: { hostId: string; address: string; port: number }) => Promise<boolean>;
+  renamePeerHost: (input: { hostId: string; label: string }) => Promise<boolean>;
   getWindowBackend: () => Promise<import("./peers.js").WindowBackend>;
   getLocalProfilesOverview: () => Promise<import("./peers.js").LocalProfileOverview[]>;
   openPeerWindow: (input: { hostId: string; profileId: string }) => Promise<import("./peers.js").PeerWindowOpenResult>;
@@ -1262,6 +1281,12 @@ export interface StridetermAPI {
   /** The host's peer state changed (desktop windows only). Re-read it with `getPeerHostState`. */
   onPeersUpdated: (handler: (payload: unknown) => void) => () => void;
   onPeerPairingProgress: (handler: (payload: unknown) => void) => () => void;
+  /** A copy of a host's attachment ended. UNVALIDATED here; parse with `peerAttachmentCopyFinishedSchema`. */
+  onPeerAttachmentCopyFinished: (handler: (payload: unknown) => void) => () => void;
+  /** Throttled progress of a running copy. UNVALIDATED here; parse with `peerAttachmentCopyProgressSchema`. */
+  onPeerAttachmentCopyProgress: (handler: (payload: unknown) => void) => () => void;
+  /** A paired host's global note changed. UNVALIDATED here; parse with `peerHostNoteChangedSchema`. */
+  onPeerHostNoteChanged: (handler: (payload: unknown) => void) => () => void;
   onPeerPairingResult: (handler: (payload: import("./peers.js").PeerPairingResult) => void) => () => void;
   onPeerWsState: (handler: (state: import("./peers.js").PeerWsState) => void) => () => void;
   onPeerWsMessage: (handler: (data: string) => void) => () => void;

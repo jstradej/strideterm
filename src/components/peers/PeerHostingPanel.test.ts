@@ -5,7 +5,12 @@ import PeerHostingPanel from "./PeerHostingPanel.vue";
 import { apiKey } from "../../types/keys.js";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
-import { PEER_DEFAULT_PORT, peerApproveSchema, type PeerHostState } from "../../../electron/shared/peers.js";
+import {
+  PEER_DEFAULT_PORT,
+  peerApproveSchema,
+  peerRenameDeviceSchema,
+  type PeerHostState,
+} from "../../../electron/shared/peers.js";
 
 const PAIRING_ID = "pairing-0001";
 const DEVICE_ID = "device-0001";
@@ -51,6 +56,7 @@ function setup(initial: PeerHostState) {
     approvePeerPairing: vi.fn(),
     rejectPeerPairing: vi.fn().mockResolvedValue(true),
     removePeerDevice: vi.fn().mockResolvedValue(true),
+    renamePeerDevice: vi.fn().mockResolvedValue(true),
     onPeersUpdated: vi.fn((h: Handler) => {
       handlers.updated.push(h);
       return off;
@@ -298,6 +304,25 @@ describe("PeerHostingPanel — paired desktops", () => {
     lastSeenAt: Date.now() - 5 * 60_000,
     lastAddress: "192.168.1.9",
   };
+
+  test("Rename sends the trimmed name with the device id and reloads", async () => {
+    const { api, wrapper } = setup({ ...listening(), devices: [device] });
+    await flushPromises();
+    await wrapper.find('[data-testid="peer-rename"]').trigger("click");
+    const input = wrapper.find('[data-testid="peer-rename-input"]');
+    expect((input.element as HTMLInputElement).value).toBe("Work laptop");
+    await input.setValue("   ");
+    expect(wrapper.find('[data-testid="peer-rename-save"]').attributes("disabled")).toBeDefined();
+    await input.setValue("  Desk  ");
+    api.getPeerHostState.mockResolvedValue({ ...listening(), devices: [{ ...device, name: "Desk" }] });
+    await wrapper.find('[data-testid="peer-rename-form"]').trigger("submit");
+    await flushPromises();
+    const sent = api.renamePeerDevice.mock.calls[0][0];
+    expect(sent).toEqual({ deviceId: DEVICE_ID, name: "Desk" });
+    expect(peerRenameDeviceSchema.safeParse(sent).success).toBe(true);
+    expect(wrapper.find('[data-testid="peer-rename-form"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="peer-device"]').text()).toContain("Desk");
+  });
 
   test("lists a device and removes it only after confirmation", async () => {
     const { api, wrapper } = setup({ ...listening(), devices: [device] });

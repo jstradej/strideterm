@@ -24,6 +24,7 @@ function makePeers() {
     credentials: {} as never,
     appVersion: "1.0.0",
     emit: () => undefined,
+    getInstallationNoteRevision: () => 7,
     getAttentionPayload: () => ({
       appState: { workspaces: state.workspaces },
       attention: {
@@ -48,6 +49,7 @@ describe("runtime peers: attention for an attached desktop", () => {
         { profileId: "home", count: 1 },
         { profileId: "work", count: 3 },
       ],
+      globalNoteRevision: 7,
     });
     const text = JSON.stringify(summary);
     for (const leaked of ["secret", "Private", "Work one", "Home Secret Name"]) expect(text).not.toContain(leaked);

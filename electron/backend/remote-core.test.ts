@@ -432,6 +432,35 @@ describe("buildRemoteCore", () => {
     expect(other.reviewGit.lastRuns.map((run) => run.operationId)).toEqual(["op-done-2"]);
   });
 
+  test("attachment copies into local workspaces never reach a remote client, bound to a profile or not", () => {
+    const run = (copyId: string, profileId: string) => ({
+      copyId,
+      profileId,
+      workspaceId: `ws-${profileId}`,
+      error: { message: "Nothing is listening at 192.168.1.20." },
+    });
+    const payload = {
+      ...fullPayload(),
+      peerAttachmentCopies: {
+        running: [run("c1", "p1"), run("c2", "p2")],
+        lastResults: [run("c3", "p2"), run("c4", "p1")],
+      },
+    };
+    const empty = { running: [], lastResults: [] };
+    expect(buildRemoteCore(payload).peerAttachmentCopies).toEqual(empty);
+    expect(buildRemoteCore(payload, { profileId: "p1" }).peerAttachmentCopies).toEqual(empty);
+    expect(buildRemoteCore(payload, { profileId: "p2" }).peerAttachmentCopies).toEqual(empty);
+    expect(JSON.stringify(buildRemoteCore(payload, { profileId: "p1" }))).not.toContain("192.168.1.20");
+    expect(buildRemoteCore(fullPayload()).peerAttachmentCopies).toEqual(empty);
+  });
+
+  test("the installation note counter reaches every client, whatever its profile", () => {
+    const payload = { ...fullPayload(), installationNoteRevision: 17 };
+    expect(buildRemoteCore(payload).installationNoteRevision).toBe(17);
+    expect(buildRemoteCore(payload, { profileId: "p2" }).installationNoteRevision).toBe(17);
+    expect(buildRemoteCore(fullPayload()).installationNoteRevision).toBe(0);
+  });
+
   test("the sidebar notes counter reaches only the client bound to its profile", () => {
     const payload = { ...fullPayload(), sidebarNotesRevisions: { p1: 4, p2: 11 } };
     expect(buildRemoteCore(payload).sidebarNotesRevisions).toEqual({ p1: 4 });

@@ -281,6 +281,21 @@
           </li>
         </template>
       </ul>
+      <PeerAttachmentsSection
+        v-for="host in peerHosts"
+        :key="host.id"
+        :host="host"
+        :workspace-id="workspaceId"
+        :workspace-name="workspaceName"
+        :unavailable-reason="unavailableReason"
+        :targets="copyTargets"
+        :local-attachments="attachments"
+        :filter-query="filterQuery"
+        :selected-day="selectedDay"
+        :can-open="nativeOpenAvailable"
+        @copy-path="copyRelativePath"
+        @open="openAttachment"
+      />
     </div>
   </section>
 </template>
@@ -307,7 +322,11 @@ import { AttachmentDownloadCancelled, readAttachment, saveBlobAsDownload } from 
 import { pastedImageName } from "../../lib/terminal-attachment-upload.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import Spinner from "../common/Spinner.vue";
-import { windowBackend } from "../../window-backend.js";
+import { isPeerWindow, windowBackend } from "../../window-backend.js";
+import { absoluteAttachmentPath } from "../../lib/attachment-path.js";
+import { hasPeerAttachmentCopy, usePeerAttachmentCopiesStore } from "../../stores/peer-attachment-copies.js";
+import { usePeersStore } from "../../stores/peers.js";
+import PeerAttachmentsSection from "./PeerAttachmentsSection.vue";
 
 const props = withDefaults(
   defineProps<{
@@ -316,8 +335,17 @@ const props = withDefaults(
     openByDefault?: boolean;
     panel?: boolean;
     unavailableReason?: string;
+    workspaceName?: string;
+    copyTargets?: Array<{ id: string; name: string }>;
   }>(),
-  { workspaceRoot: "", openByDefault: false, panel: false, unavailableReason: "" },
+  {
+    workspaceRoot: "",
+    openByDefault: false,
+    panel: false,
+    unavailableReason: "",
+    workspaceName: "",
+    copyTargets: () => [],
+  },
 );
 const api = inject<Transport | null>(apiKey, null);
 const open = ref(props.openByDefault);
@@ -339,6 +367,11 @@ let requestEpoch = 0;
 let mounted = false;
 
 const canUpload = hasAttachmentUpload(api);
+const peerAttachments = hasPeerAttachmentCopy(api) && !isPeerWindow();
+const peerCopies = peerAttachments ? usePeerAttachmentCopiesStore() : null;
+const peers = peerAttachments ? usePeersStore() : null;
+const peerHosts = computed(() => peers?.hosts ?? []);
+let releasePeers: (() => void) | null = null;
 const canSave = computed(() => api?.isRemote === true && typeof api.attachmentRead === "function");
 const addTitle = "Upload files into this workspace's attachments. You can also drop or paste them here.";
 const pathOwner = computed(() => {
@@ -434,14 +467,23 @@ const chronologicalAttachments = computed(() =>
     (a, b) => (uploadDate(b)?.getTime() ?? 0) - (uploadDate(a)?.getTime() ?? 0) || a.name.localeCompare(b.name),
   ),
 );
-const availableDays = computed(() => [
-  ...new Map(
-    chronologicalAttachments.value.map((file) => {
-      const day = uploadDay(file);
-      return [day.key, day] as const;
+const hostUploadTimes = computed(() => {
+  if (!peerCopies) return [];
+  return peerHosts.value
+    .filter((host) => host.state === "online" && !peerCopies.isCollapsed(host.id))
+    .flatMap((host) => peerCopies.listings[host.id]?.items.map((item) => item.uploadedAt) ?? []);
+});
+const availableDays = computed(() => {
+  const days: Array<{ at: number; key: string; label: string }> = [
+    ...chronologicalAttachments.value.map((file) => ({ at: uploadDate(file)?.getTime() ?? 0, ...uploadDay(file) })),
+    ...hostUploadTimes.value.map((at) => {
+      const date = new Date(at);
+      return { at, key: dayBandKey(date), label: dayBandLabel(date) };
     }),
-  ).values(),
-]);
+  ];
+  if (hostUploadTimes.value.length) days.sort((a, b) => b.at - a.at);
+  return [...new Map(days.map(({ key, label }) => [key, { key, label }] as const)).values()];
+});
 const filteredAttachments = computed(() => {
   const query = filterQuery.value.trim().toLowerCase();
   return chronologicalAttachments.value.filter(
@@ -619,20 +661,13 @@ function copyRelativePath(path: string): Promise<void> {
   return copyText(path, "Relative path");
 }
 
-function absolutePath(path: string): string {
-  const root = props.workspaceRoot.replace(/[\\/]+$/, "");
-  const relative = path.replace(/^[\\/]+/, "");
-  const separator = props.workspaceRoot.includes("\\") ? "\\" : "/";
-  return `${root}${separator}${relative.replace(/[\\/]/g, separator)}`;
-}
-
 function copyAbsolutePath(path: string): Promise<void> {
   closeMenu();
   if (!props.workspaceRoot) {
     showFeedback("Absolute path is unavailable for this workspace", true);
     return Promise.resolve();
   }
-  return copyText(absolutePath(path), "Absolute path");
+  return copyText(absoluteAttachmentPath(props.workspaceRoot, path), "Absolute path");
 }
 
 async function copyFileIntoClipboard(path: string): Promise<void> {
@@ -649,7 +684,7 @@ async function copyFileIntoClipboard(path: string): Promise<void> {
   }
 }
 
-async function openAttachment(attachment: AttachmentRecord): Promise<void> {
+async function openAttachment(attachment: Pick<AttachmentRecord, "path" | "name">): Promise<void> {
   if (!nativeOpenAvailable.value || !api?.openTerminalPath) {
     showFeedback("Opening attachments is available on the desktop only", true);
     return;
@@ -813,14 +848,38 @@ watch(
   },
 );
 
+// A copy into this workspace that just succeeded: reload the list now, so its row shows "Copied" without waiting for the poll.
+const reloadedCopies = new Set<string>(
+  Object.values(peerCopies?.runs ?? {})
+    .filter((run) => run.state === "succeeded")
+    .map((run) => run.copyId),
+);
+watch(
+  () => peerCopies?.runs,
+  (runs) => {
+    let arrived = false;
+    for (const run of Object.values(runs ?? {})) {
+      if (run.state !== "succeeded" || reloadedCopies.has(run.copyId)) continue;
+      reloadedCopies.add(run.copyId);
+      if (run.workspaceId === props.workspaceId) arrived = true;
+    }
+    if (arrived && open.value) void load(true);
+  },
+);
+
 onMounted(() => {
   mounted = true;
   if (open.value) startPolling();
+  if (peers) {
+    releasePeers = peers.watch();
+    void peers.open();
+  }
 });
 onUnmounted(() => {
   mounted = false;
   requestEpoch += 1;
   stopPolling();
+  releasePeers?.();
   if (feedbackTimer) clearTimeout(feedbackTimer);
   window.removeEventListener("scroll", closeMenuOnViewportChange, true);
   window.removeEventListener("resize", closeMenuOnViewportChange);

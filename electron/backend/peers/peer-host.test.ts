@@ -282,6 +282,19 @@ describe("peer host", () => {
     expect(h.settings.devices[0]!.publicKey).toBe(second.device.publicKey);
   });
 
+  test("renameDevice changes only the name, and re-pairing keeps it", async () => {
+    const first = await pairUntilApproval(h);
+    await h.host.approvePairing(first.begun.pairingId, first.code);
+    h.events.length = 0;
+    expect(await h.host.renameDevice("device-0001", "Desk")).toBe(true);
+    expect(h.host.listDevices()[0]).toMatchObject({ id: "device-0001", name: "Desk" });
+    expect(h.events).toEqual([{ event: "peers:updated", payload: {} }]);
+    expect(await h.host.renameDevice("nobody-here", "X")).toBe(false);
+    const second = await pairUntilApproval(h, makeDevice("device-0001"));
+    await h.host.approvePairing(second.begun.pairingId, second.code);
+    expect(h.host.listDevices()[0]!.name).toBe("Desk");
+  });
+
   test("removeDevice clears the PSK and emits the removal", async () => {
     const { begun, code } = await pairUntilApproval(h);
     await h.host.approvePairing(begun.pairingId, code);

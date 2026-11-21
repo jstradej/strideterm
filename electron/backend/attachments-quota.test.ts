@@ -1,9 +1,20 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { mkdtemp, readFile, rm, mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { DESKTOP_LIMITS, begin, chunk, cancel, finish, listWithUsage, remove, usage } from "./attachments.js";
+import {
+  DESKTOP_LIMITS,
+  PEER_COPY_ACTIVE_MS,
+  PEER_COPY_OWNER_PREFIX,
+  begin,
+  chunk,
+  cancel,
+  finish,
+  listWithUsage,
+  remove,
+  usage,
+} from "./attachments.js";
 
 const hash = (value: Buffer) => crypto.createHash("sha256").update(value).digest("hex");
 const temp = () => mkdtemp(path.join(os.tmpdir(), "strideterm-quota-"));
@@ -209,6 +220,26 @@ describe("attachment limits by uploader", () => {
       await expect(begin(root, "x.txt", 1, "", "w", undefined, DESKTOP_LIMITS)).rejects.toThrow(message);
     } finally {
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a stale partial of a runtime-run peer copy stops counting as active; every other owner keeps counting", async () => {
+    const fill = async (owner: (index: number) => string) => {
+      const root = await temp();
+      for (let i = 0; i < 4; i++) await begin(root, `a${i}.txt`, 1, "", owner(i), `k${i}`, DESKTOP_LIMITS);
+      await expect(begin(root, "b.txt", 1, "", "w", undefined, DESKTOP_LIMITS)).rejects.toThrow(/Too many concurrent/);
+      return root;
+    };
+    const peer = await fill((i) => `${PEER_COPY_OWNER_PREFIX}${i}`);
+    const other = await fill((i) => `window-${i}`);
+    const spy = vi.spyOn(Date, "now").mockReturnValue(Date.now() + PEER_COPY_ACTIVE_MS + 1000);
+    try {
+      await expect(begin(peer, "b.txt", 1, "", "w", undefined, DESKTOP_LIMITS)).resolves.toMatchObject({ offset: 0 });
+      await expect(begin(other, "b.txt", 1, "", "w", undefined, DESKTOP_LIMITS)).rejects.toThrow(/Too many concurrent/);
+    } finally {
+      spy.mockRestore();
+      await rm(peer, { recursive: true, force: true });
+      await rm(other, { recursive: true, force: true });
     }
   });
 

@@ -2080,6 +2080,11 @@ async function restartPeerServer(): Promise<void> {
             hello: () => runtime.peerHello(),
             listDirectories: (requested: string) => runtime.peerListDirectories(requested),
             attention: () => runtime.peerAttention(),
+            listAttachments: () => runtime.peerListAttachments(),
+            readAttachment: (request) => runtime.peerReadAttachment(request),
+            getGlobalNote: () => runtime.getInstallationNote(),
+            saveGlobalNote: (input) => runtime.saveInstallationNote(input),
+            undoGlobalNote: (input) => runtime.undoInstallationNote(input),
           },
         });
         runtimeState.peerServer = handle;

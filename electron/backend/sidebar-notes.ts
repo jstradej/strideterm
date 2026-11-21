@@ -1,10 +1,10 @@
 import { z } from "zod";
-import { saveSidebarNoteSchema } from "../shared/sidebar-notes.js";
+import { INSTALLATION_NOTE_ID, INSTALLATION_NOTE_OWNER_ID, saveSidebarNoteSchema } from "../shared/sidebar-notes.js";
 import type { SidebarNote } from "../shared/sidebar-notes.js";
 import type { Profile, SidebarNoteRecord, WorkspaceState } from "../shared/types/state.js";
 
 const recordSchema = saveSidebarNoteSchema.pick({ id: true, text: true }).extend({
-  owner: z.enum(["profile", "workspace"]),
+  owner: z.enum(["profile", "workspace", "installation"]),
   ownerId: z.string().min(1),
   revision: z.int().positive(),
   previousText: saveSidebarNoteSchema.shape.text.optional(),
@@ -26,8 +26,9 @@ export function normalizeSidebarNotes(
     const parsed = recordSchema.safeParse(entry);
     if (!parsed.success) continue;
     const note = parsed.data;
-    const ownerIds = note.owner === "profile" ? profileIds : workspaceIds;
-    if (!ownerIds.has(note.ownerId)) continue;
+    if (note.owner === "installation") {
+      if (note.ownerId !== INSTALLATION_NOTE_OWNER_ID || note.id !== INSTALLATION_NOTE_ID) continue;
+    } else if (!(note.owner === "profile" ? profileIds : workspaceIds).has(note.ownerId)) continue;
     const key = JSON.stringify([note.owner, note.ownerId, note.id]);
     if (seen.has(key)) continue;
     seen.add(key);

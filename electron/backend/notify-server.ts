@@ -167,7 +167,7 @@ export function startNotifyServer({
       log.trace("request authenticated", { sessionId });
 
       // Read JSON body
-      let body = "";
+      const bodyChunks: Buffer[] = [];
       let size = 0;
       let aborted = false;
 
@@ -180,12 +180,13 @@ export function startNotifyServer({
           response.end("Payload Too Large");
           request.destroy();
         } else {
-          body += chunk;
+          bodyChunks.push(chunk);
         }
       });
 
       request.on("end", () => {
         if (aborted) return;
+        const body = Buffer.concat(bodyChunks).toString("utf8");
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         let payload: Record<string, any> = {};

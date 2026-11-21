@@ -14,6 +14,7 @@ export const PEER_WINDOW_ALLOWED_CHANNELS: ReadonlySet<string> = new Set([
   "peers:client:pair:cancel",
   "peers:client:remove",
   "peers:client:update-address",
+  "peers:client:rename",
   "peers:local-profiles",
   "peers:window:open",
   "peers:window:activate",

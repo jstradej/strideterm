@@ -190,6 +190,40 @@ describe("registerIpc teardown", () => {
     }
   });
 
+  test("installation note channels validate the payload and need no owning window", async () => {
+    const runtime = makeRuntimeStub();
+    const stored = { note: { id: "global", text: "Shared", revision: 1, canUndo: false }, installationName: "pc" };
+    runtime.getInstallationNote = vi.fn(() => stored);
+    runtime.saveInstallationNote = vi.fn(async () => stored);
+    runtime.undoInstallationNote = vi.fn(async () => stored);
+    const dispose = registerIpc(runtime, () => {}, { getWindowIdByWebContentsId: () => undefined });
+    const call = (channel: string, payload?: unknown) =>
+      (handleRegistry.get(channel) as (_event: unknown, _payload: unknown) => Promise<unknown>)(
+        { sender: { id: 99 } },
+        payload,
+      );
+    try {
+      await expect(call("sidebar-notes:installation:get")).resolves.toEqual(stored);
+      await expect(call("sidebar-notes:installation:save", { text: "Shared", expectedRevision: 0 })).resolves.toEqual(
+        stored,
+      );
+      expect(runtime.saveInstallationNote).toHaveBeenCalledWith({ text: "Shared", expectedRevision: 0 });
+      await expect(
+        call("sidebar-notes:installation:save", { text: "Shared", expectedRevision: 0, profileId: "p" }),
+      ).rejects.toThrow("IPC validation failed");
+      await expect(call("sidebar-notes:installation:save", { text: "x", expectedRevision: -1 })).rejects.toThrow(
+        "IPC validation failed",
+      );
+      await expect(call("sidebar-notes:installation:undo", { expectedRevision: 1 })).resolves.toEqual(stored);
+      await expect(call("sidebar-notes:installation:undo", { expectedRevision: 0 })).rejects.toThrow(
+        "IPC validation failed",
+      );
+      expect(runtime.saveInstallationNote).toHaveBeenCalledTimes(1);
+    } finally {
+      dispose();
+    }
+  });
+
   test("Jira cache flags and board filters pass through validated IPC payloads", async () => {
     const runtime = makeRuntimeStub();
     runtime.jiraGetBoardView = vi.fn(async () => null);
@@ -1506,6 +1540,88 @@ describe("registerIpc — windows attached to another desktop", () => {
     dispose();
   });
 
+  test("copying a host's attachments is refused from a peer window and goes through from a local one", async () => {
+    const list = vi.fn(async () => ({ items: [], truncated: false }));
+    const start = vi.fn(async () => ({ copyId: "c1" }));
+    const cancel = vi.fn(() => ({ ok: true }));
+    const { runtime, call, dispose } = setup();
+    runtime.listPeerAttachments = list as never;
+    runtime.startPeerAttachmentCopy = start as never;
+    runtime.cancelPeerAttachmentCopy = cancel as never;
+    const copy = {
+      hostId: "host-aaaaaaaa",
+      source: {
+        workspaceId: "ws",
+        transferId: "11111111-1111-4111-8111-111111111111",
+        name: "a.png",
+        size: 5,
+        sha256: "a".repeat(64),
+      },
+      targetWorkspaceId: "lw",
+    };
+    const calls: Array<[string, unknown]> = [
+      ["peers:client:attachments:list", { hostId: "host-aaaaaaaa" }],
+      ["peers:client:attachments:copy", copy],
+      ["peers:client:attachments:cancel", { copyId: "11111111-1111-4111-8111-111111111111" }],
+    ];
+    for (const [channel, payload] of calls) {
+      expect(PEER_WINDOW_ALLOWED_CHANNELS.has(channel), channel).toBe(false);
+      await expect(call(channel, payload)).rejects.toThrow(PEER_WINDOW_REFUSED_MESSAGE);
+    }
+    expect(list).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+    expect(cancel).not.toHaveBeenCalled();
+
+    await expect(call(calls[0]![0], calls[0]![1], LOCAL_SENDER)).resolves.toEqual({ items: [], truncated: false });
+    await expect(call(calls[1]![0], calls[1]![1], LOCAL_SENDER)).resolves.toEqual({ copyId: "c1" });
+    await expect(call(calls[2]![0], calls[2]![1], LOCAL_SENDER)).resolves.toEqual({ ok: true });
+    expect(list).toHaveBeenCalledWith("host-aaaaaaaa");
+    expect(start).toHaveBeenCalledWith(copy, "local-win");
+    expect(cancel).toHaveBeenCalledWith("11111111-1111-4111-8111-111111111111", "local-win");
+    await expect(call(calls[1]![0], { ...copy, extra: 1 }, LOCAL_SENDER)).rejects.toThrow(/validation failed/);
+    await expect(call(calls[0]![0], { hostId: "host-aaaaaaaa", path: "/etc" }, LOCAL_SENDER)).rejects.toThrow(
+      /validation failed/,
+    );
+    dispose();
+  });
+
+  test("a host's global note is refused from a peer window and goes through from a local one", async () => {
+    const get = vi.fn(async () => ({ note: { id: "global" }, installationName: "Host" }));
+    const save = vi.fn(async () => ({ note: { id: "global" }, installationName: "Host" }));
+    const undo = vi.fn(async () => ({ note: { id: "global" }, installationName: "Host" }));
+    const { runtime, call, dispose } = setup();
+    runtime.getPeerGlobalNote = get as never;
+    runtime.savePeerGlobalNote = save as never;
+    runtime.undoPeerGlobalNote = undo as never;
+    const calls: Array<[string, unknown]> = [
+      ["peers:client:global-note:get", { hostId: "host-aaaaaaaa" }],
+      ["peers:client:global-note:save", { hostId: "host-aaaaaaaa", text: "note", expectedRevision: 2 }],
+      ["peers:client:global-note:undo", { hostId: "host-aaaaaaaa", expectedRevision: 3 }],
+    ];
+    for (const [channel, payload] of calls) {
+      expect(PEER_WINDOW_ALLOWED_CHANNELS.has(channel), channel).toBe(false);
+      await expect(call(channel, payload)).rejects.toThrow(PEER_WINDOW_REFUSED_MESSAGE);
+    }
+    expect(get).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+    expect(undo).not.toHaveBeenCalled();
+
+    for (const [channel, payload] of calls) await call(channel, payload, LOCAL_SENDER);
+    expect(get).toHaveBeenCalledWith("host-aaaaaaaa");
+    expect(save).toHaveBeenCalledWith("host-aaaaaaaa", { text: "note", expectedRevision: 2 });
+    expect(undo).toHaveBeenCalledWith("host-aaaaaaaa", { expectedRevision: 3 });
+    await expect(call(calls[0]![0], { hostId: "host-aaaaaaaa", path: "/x" }, LOCAL_SENDER)).rejects.toThrow(
+      /validation failed/,
+    );
+    await expect(call(calls[1]![0], { hostId: "host-aaaaaaaa", text: "n" }, LOCAL_SENDER)).rejects.toThrow(
+      /validation failed/,
+    );
+    await expect(call(calls[2]![0], { hostId: "host-aaaaaaaa", expectedRevision: 0 }, LOCAL_SENDER)).rejects.toThrow(
+      /validation failed/,
+    );
+    dispose();
+  });
+
   test("host-side channels are refused from a peer window", async () => {
     const { runtime, call, dispose } = setup();
     runtime.getPeerHostState = vi.fn() as never;
@@ -1818,6 +1934,7 @@ describe("registerIpc — windows attached to another desktop", () => {
         cancelPeerPairing: vi.fn(() => undefined),
         removePeerHost: vi.fn(async () => true),
         updatePeerHostAddress: vi.fn(async () => true),
+        renamePeerHost: vi.fn(async () => true),
         getLocalProfilesOverview: vi.fn(() => []),
       };
       const { call, dispose } = setup({ peer });
@@ -1835,6 +1952,8 @@ describe("registerIpc — windows attached to another desktop", () => {
       const update = { hostId: "host-aaaaaaaa", address: "10.0.0.2", port: 43125 };
       await call("peers:client:update-address", update, LOCAL_SENDER);
       expect(peer.updatePeerHostAddress).toHaveBeenCalledWith(update);
+      await call("peers:client:rename", { hostId: "host-aaaaaaaa", label: "  Office  " }, LOCAL_SENDER);
+      expect(peer.renamePeerHost).toHaveBeenCalledWith({ hostId: "host-aaaaaaaa", label: "Office" });
       await call("peers:local-profiles", undefined, LOCAL_SENDER);
       expect(peer.getLocalProfilesOverview).toHaveBeenCalledTimes(1);
 
@@ -1846,6 +1965,9 @@ describe("registerIpc — windows attached to another desktop", () => {
         ["peers:client:pair:cancel", {}],
         ["peers:client:remove", "host-aaaaaaaa"],
         ["peers:client:update-address", { address: "h", port: 1 }],
+        ["peers:client:rename", { hostId: "host-aaaaaaaa", label: "   " }],
+        ["peers:client:rename", { hostId: "host-aaaaaaaa", label: "x".repeat(65) }],
+        ["peers:client:rename", { hostId: "host-aaaaaaaa", label: "ok", extra: 1 }],
       ] as const) {
         await expect(call(channel, bad, LOCAL_SENDER), channel).rejects.toThrow("IPC validation failed");
       }
@@ -1896,6 +2018,7 @@ describe("registerIpc — attaching profiles between desktops (host side)", () =
     runtime.approvePeerPairing = vi.fn(async () => "approved") as never;
     runtime.rejectPeerPairing = vi.fn(() => true) as never;
     runtime.removePeerDevice = vi.fn(async () => true) as never;
+    runtime.renamePeerDevice = vi.fn(async () => true) as never;
     const dispose = registerIpc(runtime, () => {});
     const call = (channel: string, payload?: unknown) => (handleRegistry.get(channel) as Handler)({}, payload);
     return { runtime, dispose, call };
@@ -1918,6 +2041,9 @@ describe("registerIpc — attaching profiles between desktops (host side)", () =
 
       await expect(call("peers:host:remove-device", { deviceId })).resolves.toBe(true);
       expect(runtime.removePeerDevice).toHaveBeenCalledWith(deviceId);
+
+      await expect(call("peers:host:device:rename", { deviceId, name: " Desk " })).resolves.toBe(true);
+      expect(runtime.renamePeerDevice).toHaveBeenCalledWith({ deviceId, name: "Desk" });
     } finally {
       dispose();
     }
@@ -1936,6 +2062,11 @@ describe("registerIpc — attaching profiles between desktops (host side)", () =
       await expect(call("peers:host:approve", { pairingId: "x", code: "1" })).rejects.toThrow("IPC validation failed");
       await expect(call("peers:host:reject", "pairing-0001")).rejects.toThrow("IPC validation failed");
       await expect(call("peers:host:remove-device", {})).rejects.toThrow("IPC validation failed");
+      await expect(call("peers:host:device:rename", { deviceId, name: "" })).rejects.toThrow("IPC validation failed");
+      await expect(call("peers:host:device:rename", { deviceId, name: "x".repeat(65) })).rejects.toThrow(
+        "IPC validation failed",
+      );
+      expect(runtime.renamePeerDevice).not.toHaveBeenCalled();
       expect(runtime.setPeerHosting).not.toHaveBeenCalled();
       expect(runtime.approvePeerPairing).not.toHaveBeenCalled();
       expect(runtime.rejectPeerPairing).not.toHaveBeenCalled();

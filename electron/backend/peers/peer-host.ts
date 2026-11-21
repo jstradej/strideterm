@@ -75,6 +75,7 @@ export interface PeerHost {
   rejectPairing(pairingId: string): boolean;
   listDevices(): PeerDeviceRecord[];
   removeDevice(deviceId: string): Promise<boolean>;
+  renameDevice(deviceId: string, name: string): Promise<boolean>;
   noteDeviceSeen(deviceId: string, address: string): void;
 }
 
@@ -355,7 +356,7 @@ export function createPeerHost(deps: PeerHostDeps): PeerHost {
         const index = draft.devices.findIndex((entry) => entry.id === device.id);
         if (index >= 0) {
           keyReplaced = draft.devices[index]!.publicKey !== device.publicKey;
-          draft.devices[index] = device;
+          draft.devices[index] = { ...device, name: draft.devices[index]!.name };
         } else draft.devices.push(device);
       });
       pskCache.delete(device.id);
@@ -399,6 +400,17 @@ export function createPeerHost(deps: PeerHostDeps): PeerHost {
       lastSeenPersisted.delete(deviceId);
       log.info("device removed", { deviceId, platform: existing.platform });
       deps.emit("peers:device-removed", { deviceId });
+      deps.emit("peers:updated", {});
+      return true;
+    },
+
+    async renameDevice(deviceId, name) {
+      if (!deps.getSettings().devices.some((device) => device.id === deviceId)) return false;
+      await deps.updateSettings("peers:device-renamed", (draft) => {
+        const device = draft.devices.find((entry) => entry.id === deviceId);
+        if (device) device.name = name;
+      });
+      log.info("device renamed", { deviceId });
       deps.emit("peers:updated", {});
       return true;
     },

@@ -41,6 +41,16 @@
         <button
           type="button"
           class="button button--ghost"
+          data-testid="peer-rename"
+          :disabled="headerBusy"
+          title="Change the name this computer shows for the other desktop. The other desktop is not told."
+          @click="startRename"
+        >
+          Rename
+        </button>
+        <button
+          type="button"
+          class="button button--ghost"
           data-testid="peer-edit-address"
           :disabled="headerBusy"
           title="Change the address or port, for example after the other computer got a new IP address."
@@ -62,6 +72,29 @@
         </button>
       </div>
     </header>
+
+    <form v-if="renaming" class="peer-group__edit" data-testid="peer-rename-form" @submit.prevent="saveRename">
+      <input
+        v-model="renameValue"
+        class="settings-input"
+        data-testid="peer-rename-input"
+        type="text"
+        maxlength="64"
+        autocomplete="off"
+        aria-label="Name of this desktop"
+      />
+      <button
+        type="submit"
+        class="button button--primary"
+        :class="{ 'button--pending': headerAction === 'rename' }"
+        :aria-busy="headerAction === 'rename' ? 'true' : undefined"
+        data-testid="peer-rename-save"
+        :disabled="headerBusy || !renameValue.trim()"
+      >
+        Save
+      </button>
+      <button type="button" class="button button--ghost" @click="renaming = false">Cancel</button>
+    </form>
 
     <form v-if="editing" class="peer-group__edit" data-testid="peer-edit-form" @submit.prevent="saveAddress">
       <input
@@ -179,11 +212,13 @@ const emit = defineEmits<{ activate: [profileId: string]; "new-window": [profile
 const peers = usePeersStore();
 const app = useAppStore();
 
-const headerAction = ref<"reconnect" | "save" | "disconnect" | null>(null);
+const headerAction = ref<"reconnect" | "save" | "rename" | "disconnect" | null>(null);
 const headerBusy = computed(() => headerAction.value !== null);
 const editing = ref(false);
 const editAddress = ref("");
 const editPort = ref("");
+const renaming = ref(false);
+const renameValue = ref("");
 
 const collapsed = computed(() => peers.isCollapsed(props.host.id));
 const checking = computed(() => (peers.checking[props.host.id] ?? 0) > 0);
@@ -235,7 +270,10 @@ function isCurrent(profileId: string): boolean {
   return !!props.thisWindow && props.currentProfileId === profileId;
 }
 
-async function withHeader(action: "reconnect" | "save" | "disconnect", fn: () => Promise<unknown>): Promise<void> {
+async function withHeader(
+  action: "reconnect" | "save" | "rename" | "disconnect",
+  fn: () => Promise<unknown>,
+): Promise<void> {
   if (headerBusy.value) return;
   headerAction.value = action;
   try {
@@ -260,6 +298,19 @@ async function saveAddress(): Promise<void> {
   if (!parsed.ok) return;
   await withHeader("save", async () => {
     if (await peers.updateAddress(props.host.id, parsed.value.address, parsed.value.port)) editing.value = false;
+  });
+}
+
+function startRename(): void {
+  renameValue.value = props.host.label;
+  renaming.value = true;
+}
+
+async function saveRename(): Promise<void> {
+  const label = renameValue.value.trim();
+  if (!label) return;
+  await withHeader("rename", async () => {
+    if (await peers.renameHost(props.host.id, label)) renaming.value = false;
   });
 }
 

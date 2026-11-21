@@ -7873,6 +7873,7 @@ describe("runtime integration", () => {
         "cancelPeerPairing",
         "removePeerHost",
         "updatePeerHostAddress",
+        "renamePeerHost",
         "getWindowBackend",
         "getLocalProfilesOverview",
         "createPeerWindowSlot",
@@ -22264,6 +22265,129 @@ describe("sidebar notes", () => {
     expect(counters().default).toBe(first + 2);
     expect(counters().other).toBeGreaterThan(0);
     expect(JSON.stringify(runtime.getPayload())).not.toContain("secret note text");
+  });
+
+  describe("installation note", () => {
+    const counter = (runtime: { getPayload(): unknown }) =>
+      (runtime.getPayload() as { installationNoteRevision: number }).installationNoteRevision;
+
+    test("is empty and unstored until the first save", async () => {
+      const fixture = await createFixture({ dependencies: { createStore } });
+      fixtures.push(fixture);
+      const { runtime } = fixture;
+      expect(runtime.getInstallationNote()).toEqual({
+        note: { id: "global", text: "", revision: 0, canUndo: false },
+        installationName: expect.any(String),
+      });
+      expect(runtime.getInstallationNote().installationName).not.toBe("");
+      const store = await createStore(path.join(fixture.userDataPath, "strideterm-state.json"));
+      expect(store.getState().sidebarNotes ?? []).toEqual([]);
+    });
+
+    test("saves, refuses a stale write, undoes, and survives a reload", async () => {
+      const fixture = await createFixture({ dependencies: { createStore } });
+      fixtures.push(fixture);
+      const { runtime } = fixture;
+      const updatedAt = expect.any(String);
+      const first = await runtime.saveInstallationNote({ text: "one", expectedRevision: 0 });
+      expect(first.note).toEqual({ id: "global", text: "one", revision: 1, canUndo: false, updatedAt });
+      const saves = await Promise.allSettled([
+        runtime.saveInstallationNote({ text: "two", expectedRevision: 1 }),
+        runtime.saveInstallationNote({ text: "stale", expectedRevision: 1 }),
+      ]);
+      expect(saves).toMatchObject([{ status: "fulfilled" }, { status: "rejected", reason: { status: 409 } }]);
+      await expect(runtime.saveInstallationNote({ text: "x", expectedRevision: 1 })).rejects.toThrow(/has changed/);
+      expect(runtime.getInstallationNote().note).toEqual({
+        id: "global",
+        text: "two",
+        revision: 2,
+        canUndo: true,
+        updatedAt,
+      });
+
+      const statePath = path.join(fixture.userDataPath, "strideterm-state.json");
+      expect((await createStore(statePath)).getState().sidebarNotes).toEqual([
+        {
+          id: "global",
+          owner: "installation",
+          ownerId: "local",
+          text: "two",
+          revision: 2,
+          previousText: "one",
+          updatedAt,
+        },
+      ]);
+
+      await expect(runtime.undoInstallationNote({ expectedRevision: 2 })).resolves.toMatchObject({
+        note: { text: "one", revision: 3, canUndo: false },
+      });
+      await expect(runtime.undoInstallationNote({ expectedRevision: 3 })).rejects.toThrow(/no previous/);
+    });
+
+    test("records when the text last changed, and not for a save that changes nothing", async () => {
+      const fixture = await createFixture();
+      fixtures.push(fixture);
+      const { runtime } = fixture;
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        vi.setSystemTime(new Date("2026-11-20T10:00:00.000Z"));
+        await runtime.saveInstallationNote({ text: "a", expectedRevision: 0 });
+        vi.setSystemTime(new Date("2026-11-20T10:05:00.000Z"));
+        await expect(runtime.saveInstallationNote({ text: "a", expectedRevision: 1 })).resolves.toMatchObject({
+          note: { updatedAt: "2026-11-20T10:00:00.000Z" },
+        });
+        await expect(runtime.saveInstallationNote({ text: "b", expectedRevision: 1 })).resolves.toMatchObject({
+          note: { updatedAt: "2026-11-20T10:05:00.000Z" },
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    test("needs no profile, window or scope, and is not a profile note", async () => {
+      const fixture = await createFixture({
+        initialState: { profiles: [{ id: "default" }, { id: "other" }] },
+      });
+      fixtures.push(fixture);
+      const { runtime } = fixture;
+      await runtime.saveInstallationNote({ text: "shared", expectedRevision: 0 });
+      expect(runtime.getInstallationNote().note.text).toBe("shared");
+      expect(runtime.listSidebarNotes({ profileId: "default", workspaceId: null })).toEqual({
+        global: [],
+        workspace: [],
+      });
+    });
+
+    test("normalization keeps one installation record and drops a foreign owner id or note id", () => {
+      const record = { owner: "installation", text: "t", revision: 1 };
+      const state = normalizeState({
+        sidebarNotes: [
+          { ...record, ownerId: "local", id: "global", text: "kept" },
+          { ...record, ownerId: "local", id: "global", text: "duplicate" },
+          { ...record, ownerId: "somebody", id: "global" },
+          { ...record, ownerId: "local", id: "another" },
+        ],
+      });
+      expect(state.sidebarNotes).toEqual([{ ...record, ownerId: "local", id: "global", text: "kept" }]);
+    });
+
+    test("the counter starts at the clock, moves only on a real change and holds no text", async () => {
+      const fixture = await createFixture();
+      fixtures.push(fixture);
+      const { runtime } = fixture;
+      const start = counter(runtime);
+      expect(start).toBeGreaterThan(1_000_000_000_000);
+      await runtime.saveInstallationNote({ text: "secret installation text", expectedRevision: 0 });
+      expect(counter(runtime)).toBe(start + 1);
+      await runtime.saveInstallationNote({ text: "secret installation text", expectedRevision: 1 });
+      expect(counter(runtime)).toBe(start + 1);
+      await expect(runtime.saveInstallationNote({ text: "stale", expectedRevision: 0 })).rejects.toThrow();
+      expect(counter(runtime)).toBe(start + 1);
+      await runtime.saveInstallationNote({ text: "changed", expectedRevision: 1 });
+      await runtime.undoInstallationNote({ expectedRevision: 2 });
+      expect(counter(runtime)).toBe(start + 3);
+      expect(JSON.stringify(runtime.getPayload())).not.toContain("secret installation text");
+    });
   });
 
   test("the schema refuses an over-long note, profile or workspace id", () => {

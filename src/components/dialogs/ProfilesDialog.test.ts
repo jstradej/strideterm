@@ -5,7 +5,12 @@ import ProfilesDialog from "./ProfilesDialog.vue";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { setWindowBackend } from "../../window-backend.js";
-import { PEER_DEFAULT_PORT, peerUpdateAddressSchema, type PeerAttachedHost } from "../../../electron/shared/peers.js";
+import {
+  PEER_DEFAULT_PORT,
+  peerRenameHostSchema,
+  peerUpdateAddressSchema,
+  type PeerAttachedHost,
+} from "../../../electron/shared/peers.js";
 
 describe("ProfilesDialog", () => {
   it("opts out of dialog auto-focus so opening does not start inline rename", () => {
@@ -373,6 +378,7 @@ describe("ProfilesDialog: attached desktops", () => {
       refreshPeerHost: vi.fn().mockImplementation(async (id: string) => hosts.find((h) => h.id === id) ?? null),
       removePeerHost: vi.fn().mockResolvedValue(true),
       updatePeerHostAddress: vi.fn().mockResolvedValue(true),
+      renamePeerHost: vi.fn().mockResolvedValue(true),
       openPeerWindow: vi.fn().mockResolvedValue({ windowId: "w" }),
       activatePeerProfile: vi.fn().mockResolvedValue({ reloaded: true }),
       activateLocalProfile: vi.fn().mockResolvedValue({ reloaded: true }),
@@ -446,7 +452,8 @@ describe("ProfilesDialog: attached desktops", () => {
       expect(rows[1].text()).toContain("1 workspace");
       expect(group.find("input[type=color]").exists()).toBe(false);
       expect(group.find(".profile-name-input").exists()).toBe(false);
-      expect(group.findAll("button").some((b) => /Delete|Add|Rename/.test(b.text()))).toBe(false);
+      expect(rows.some((row) => row.findAll("button").some((b) => /Delete|Add|Rename/.test(b.text())))).toBe(false);
+      expect(group.findAll("button").some((b) => /Delete|Add/.test(b.text()))).toBe(false);
       expect(rows[0].findAll("button").map((b) => b.text())).toEqual(["Activate", "New Window"]);
       expect(wrapper.find('[data-testid="peer-this-window"]').exists()).toBe(false);
       expect(wrapper.find('[data-testid="peer-current"]').exists()).toBe(false);
@@ -557,6 +564,21 @@ describe("ProfilesDialog: attached desktops", () => {
       expect(sent).toEqual({ hostId: HOST_ID, address: "192.168.1.9", port: 43200 });
       expect(peerUpdateAddressSchema.safeParse(sent).success).toBe(true);
       expect(wrapper.find('[data-testid="peer-edit-form"]').exists()).toBe(false);
+    });
+
+    it("Rename sends the trimmed label for the host", async () => {
+      const bridge = installBridge([host()]);
+      const wrapper = await mountDialog();
+      await wrapper.find('[data-testid="peer-rename"]').trigger("click");
+      const input = wrapper.find('[data-testid="peer-rename-input"]');
+      expect((input.element as HTMLInputElement).value).toBe("Office");
+      await input.setValue("  Home PC ");
+      await wrapper.find('[data-testid="peer-rename-form"]').trigger("submit");
+      await flushPromises();
+      const sent = bridge.renamePeerHost.mock.calls[0][0];
+      expect(sent).toEqual({ hostId: HOST_ID, label: "Home PC" });
+      expect(peerRenameHostSchema.safeParse(sent).success).toBe(true);
+      expect(wrapper.find('[data-testid="peer-rename-form"]').exists()).toBe(false);
     });
 
     it("Disconnect removes the host only after the user confirms", async () => {

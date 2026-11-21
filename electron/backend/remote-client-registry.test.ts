@@ -747,6 +747,19 @@ describe("RemoteClientRegistry", () => {
       expect(JSON.stringify(unbound.sidebarNotesRevisions)).not.toContain("9");
     });
 
+    test("a profile-bound client still gets the installation note counter", () => {
+      const registry = new RemoteClientRegistry();
+      const state = makeState({
+        profiles: [{ id: "p1" }, { id: "p2" }],
+        workspaces: [{ id: "ws1", profileId: "p1" }],
+        windowSlots: [{ id: "win-1", profileId: "p1", activeWorkspaceId: "ws1" }],
+      });
+      registry.getOrCreate("session1", state);
+      const base = { appState: { ...state }, installationNoteRevision: 42 };
+      expect((registry.composePayload("session1", base) as Record<string, unknown>).installationNoteRevision).toBe(42);
+      expect((registry.composePayload("unknown", base) as Record<string, unknown>).installationNoteRevision).toBe(42);
+    });
+
     test("desktop slot changes do NOT leak into the remote client's view", () => {
       const registry = new RemoteClientRegistry();
       const state = makeState({

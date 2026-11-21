@@ -25,9 +25,23 @@ export const undoSidebarNoteSchema = sidebarNotesScopeSchema.extend({
   expectedRevision: revision.positive(),
 });
 
+export const saveInstallationNoteSchema = z
+  .object({
+    text: noteText,
+    expectedRevision: revision.nonnegative(),
+  })
+  .strict();
+
+export const undoInstallationNoteSchema = z.object({ expectedRevision: revision.positive() }).strict();
+
 export type SidebarNotesScope = z.infer<typeof sidebarNotesScopeSchema>;
 export type SaveSidebarNote = z.infer<typeof saveSidebarNoteSchema>;
 export type UndoSidebarNote = z.infer<typeof undoSidebarNoteSchema>;
+export type SaveInstallationNote = z.infer<typeof saveInstallationNoteSchema>;
+export type UndoInstallationNote = z.infer<typeof undoInstallationNoteSchema>;
+
+export const INSTALLATION_NOTE_ID = "global";
+export const INSTALLATION_NOTE_OWNER_ID = "local";
 
 export interface SidebarNote {
   id: string;
@@ -36,6 +50,12 @@ export interface SidebarNote {
   canUndo: boolean;
   /** ISO time the text last changed; absent on notes saved before it was recorded. */
   updatedAt?: string;
+}
+
+/** The installation's one note, with the name this installation goes by (the host name `hello` reports). */
+export interface InstallationNote {
+  note: SidebarNote;
+  installationName: string;
 }
 
 export interface SidebarNotes {

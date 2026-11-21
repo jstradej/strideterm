@@ -8,28 +8,26 @@
       <div
         ref="split"
         class="sidebar-notes__split"
-        :class="{ 'sidebar-notes__split--automatic': workspaceSize === null }"
-        :style="
-          workspaceSize === null
-            ? undefined
-            : { '--notes-workspace-size': workspaceSize + 'fr', '--notes-global-size': 100 - workspaceSize + 'fr' }
-        "
+        :class="{ 'sidebar-notes__split--automatic': sizes === null }"
+        :style="splitStyle"
       >
         <template v-for="(section, index) in sections" :key="section.kind">
           <div
-            v-if="index === 1"
+            v-if="index > 0"
             class="sidebar-notes__divider"
+            :class="{ 'sidebar-notes__divider--inactive': !dividerActive(index - 1) }"
             role="separator"
-            tabindex="0"
-            aria-label="Resize workspace and all-workspaces notes"
+            :tabindex="dividerActive(index - 1) ? 0 : -1"
+            :aria-label="index === 1 ? 'Resize workspace and profile notes' : 'Resize profile and global notes'"
             aria-orientation="horizontal"
-            :aria-valuenow="workspaceSize ?? undefined"
-            :aria-valuetext="workspaceSize === null ? 'Automatic' : undefined"
-            :aria-valuemin="minimumWorkspaceSize"
-            :aria-valuemax="80"
-            @keydown="resizeWithKeyboard"
-            @pointerdown="startResize"
-            @pointermove="moveResize"
+            :aria-disabled="dividerActive(index - 1) ? undefined : true"
+            :aria-valuenow="dividerValue(index - 1)"
+            :aria-valuetext="sizes === null ? 'Automatic' : undefined"
+            :aria-valuemin="minimumPanelSize"
+            :aria-valuemax="100 - minimumPanelSize"
+            @keydown="resizeWithKeyboard($event, index - 1)"
+            @pointerdown="startResize($event, index - 1)"
+            @pointermove="moveResize($event, index - 1)"
             @pointerup="endResize"
             @pointercancel="endResize"
             @lostpointercapture="endResize"
@@ -56,6 +54,20 @@
                 >
               </div>
               <button
+                v-if="section.kind === 'installation'"
+                type="button"
+                class="sidebar-notes__add sidebar-notes__collapse"
+                :aria-expanded="!installationCollapsed"
+                :aria-label="installationCollapsed ? 'Show the global note' : 'Hide the global note'"
+                :title="installationCollapsed ? 'Show the global note' : 'Collapse to the heading'"
+                @click="toggleInstallation"
+              >
+                <svg class="sidebar-notes__chevron" viewBox="0 0 16 16" aria-hidden="true">
+                  <path d="M6 4l4 4-4 4" />
+                </svg>
+              </button>
+              <button
+                v-else
                 type="button"
                 class="sidebar-notes__add"
                 :aria-label="section.addLabel"
@@ -66,9 +78,161 @@
                 <span aria-hidden="true">+</span>
               </button>
             </header>
-            <div class="sidebar-notes__scroll">
+            <div v-if="section.kind !== 'installation' || !installationCollapsed" class="sidebar-notes__scroll">
+              <template v-if="section.kind === 'installation'">
+                <template v-for="entry in globalEntries" :key="entry.key">
+                  <div
+                    v-if="entry.kind === 'card'"
+                    class="sidebar-notes__tab-note sidebar-notes__installation"
+                    :class="{ 'sidebar-notes__tab-note--editing': entry.card.editing }"
+                    :data-host-note="entry.card.hostId || undefined"
+                    @focusout="leaveCard(entry.card, $event)"
+                  >
+                    <div class="sidebar-notes__tab-heading">
+                      <span class="sidebar-notes__tab-title" :title="cardOrigin(entry.card)">{{
+                        cardOrigin(entry.card)
+                      }}</span>
+                      <span
+                        v-if="entry.card.current && ageOf(entry.card.current.draft)"
+                        class="sidebar-notes__age"
+                        :title="editedTitle(entry.card.current.draft)"
+                        >{{ ageOf(entry.card.current.draft) }}</span
+                      >
+                    </div>
+                    <div v-if="entry.card.loadError" class="sidebar-notes__problem" role="alert">
+                      <span class="sidebar-notes__error">{{ entry.card.loadError }}</span>
+                      <div class="sidebar-notes__problem-actions">
+                        <button type="button" @click="loadCard(entry.card)">Retry</button>
+                      </div>
+                    </div>
+                    <p v-else-if="!entry.card.current" class="sidebar-notes__hint">Loading…</p>
+                    <template v-if="entry.card.current">
+                      <textarea
+                        v-if="entry.card.editing"
+                        data-installation-editor
+                        aria-label="Global note text"
+                        :value="entry.card.current.draft.text"
+                        :maxlength="SIDEBAR_NOTE_MAX_LENGTH"
+                        :readonly="entry.card.current.draft.pending === 'undo'"
+                        placeholder="A note for every profile of this installation…"
+                        :style="editorStyle('installation')"
+                        @input="editCard(entry.card, ($event.target as HTMLTextAreaElement).value)"
+                        @keydown.esc="escapeCard(entry.card, $event)"
+                      />
+                      <div
+                        v-if="entry.card.editing"
+                        class="sidebar-notes__grip"
+                        role="separator"
+                        tabindex="0"
+                        aria-orientation="horizontal"
+                        aria-label="Resize global note editor"
+                        :aria-valuenow="editorHeight('installation') ?? undefined"
+                        :aria-valuetext="editorHeight('installation') === null ? 'Automatic' : undefined"
+                        title="Drag to resize, double-click to reset"
+                        @mousedown.prevent
+                        @pointerdown="startEditorResize"
+                        @pointermove="moveEditorResize('installation', $event)"
+                        @pointerup="endEditorResize('installation', $event)"
+                        @pointercancel="endEditorResize('installation', $event)"
+                        @lostpointercapture="endEditorResize('installation', $event)"
+                        @dblclick="setEditorHeight('installation', null, true)"
+                        @keydown="resizeEditorWithKeyboard('installation', $event)"
+                      ></div>
+                      <button
+                        v-else
+                        type="button"
+                        class="sidebar-notes__tab-body"
+                        :class="{ 'sidebar-notes__tab-body--empty': !entry.card.current.draft.text.trim() }"
+                        title="Edit the global note, shared by every profile of this computer and readable by its phones, browser sessions and attached desktops. Esc closes the editor."
+                        @click="openCard(entry.card, $event)"
+                      >
+                        <span class="sidebar-notes__tab-text">{{
+                          entry.card.current.draft.text.trim() || "Add a note for every profile…"
+                        }}</span>
+                      </button>
+                      <div v-if="entry.card.current.draft.failed" class="sidebar-notes__problem" role="alert">
+                        <span class="sidebar-notes__error">{{ entry.card.current.draft.error }}</span>
+                        <div class="sidebar-notes__problem-actions">
+                          <button type="button" @click="retryCard(entry.card)">Retry</button>
+                          <button
+                            v-if="!entry.card.current.draft.latest"
+                            type="button"
+                            @click="reviewLatestCard(entry.card)"
+                          >
+                            Review latest
+                          </button>
+                        </div>
+                      </div>
+                      <div v-if="entry.card.current.draft.latest" class="sidebar-notes__recovery">
+                        <p>Latest saved text</p>
+                        <pre>{{ entry.card.current.draft.latest.text || "(Empty)" }}</pre>
+                        <div class="sidebar-notes__problem-actions">
+                          <button type="button" @click="resolveCard(entry.card, false)">Use latest</button>
+                          <button
+                            v-if="entry.card.current.draft.failed === 'save'"
+                            type="button"
+                            @click="resolveCard(entry.card, true)"
+                          >
+                            Save my draft
+                          </button>
+                        </div>
+                      </div>
+                      <div v-if="entry.card.editing" class="sidebar-notes__editor-actions">
+                        <span
+                          v-if="
+                            noteStatus(entry.card.current.draft) === 'saving' ||
+                            noteStatus(entry.card.current.draft) === 'undoing'
+                          "
+                          class="sidebar-notes__status"
+                          role="status"
+                          :aria-label="noteStatus(entry.card.current.draft) === 'undoing' ? 'Undoing…' : 'Saving…'"
+                        >
+                          <span class="sidebar-notes__spinner" aria-hidden="true"></span>
+                          {{ noteStatus(entry.card.current.draft) === "undoing" ? "Undoing…" : "Saving…" }}
+                        </span>
+                        <span
+                          v-else-if="noteStatus(entry.card.current.draft) === 'unsaved'"
+                          class="sidebar-notes__status"
+                          role="status"
+                        >
+                          Unsaved changes
+                        </span>
+                        <span
+                          v-else-if="noteStatus(entry.card.current.draft) === 'saved'"
+                          class="sidebar-notes__status sidebar-notes__status--saved"
+                          role="status"
+                        >
+                          ✓ Saved
+                        </span>
+                        <span v-else-if="noteStatus(entry.card.current.draft) === 'new'" class="sidebar-notes__status">
+                          Saves automatically as you type
+                        </span>
+                        <span v-else class="sidebar-notes__status"></span>
+                        <button
+                          v-if="entry.card.current.draft.canUndo && !entry.card.current.draft.failed"
+                          type="button"
+                          class="sidebar-notes__link"
+                          :disabled="
+                            !!entry.card.current.draft.pending ||
+                            entry.card.current.draft.text !== entry.card.current.draft.storedText
+                          "
+                          title="Restore the text this note had before its last save."
+                          @click="mutateCard(entry.card, 'undo')"
+                        >
+                          Undo last save
+                        </button>
+                      </div>
+                    </template>
+                  </div>
+                  <p v-else-if="entry.kind === 'status'" class="sidebar-notes__hint sidebar-notes__host-status">
+                    {{ entry.text }}
+                    <button type="button" class="sidebar-notes__link" @click="openProfiles">Open Profiles</button>
+                  </p>
+                  <p v-else class="sidebar-notes__hint sidebar-notes__host-status">{{ entry.text }}</p>
+                </template>
+              </template>
               <div
-                v-if="section.kind === 'workspace' && tabNote"
+                v-else-if="section.kind === 'workspace' && tabNote"
                 class="sidebar-notes__tab-note"
                 :class="{ 'sidebar-notes__tab-note--editing': tabDraft?.editing }"
                 @focusout="leaveTabNote"
@@ -302,7 +466,9 @@
                   </div>
                 </article>
               </div>
-              <p v-else class="sidebar-notes__hint">Select a workspace to write workspace notes.</p>
+              <p v-else-if="section.kind === 'workspace'" class="sidebar-notes__hint">
+                Select a workspace to write workspace notes.
+              </p>
             </div>
           </section>
         </template>
@@ -313,22 +479,38 @@
 
 <script setup lang="ts">
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import type { PeerAttachedHost, PeerHostState } from "../../../electron/shared/peers.js";
 import { SIDEBAR_NOTE_MAX_LENGTH } from "../../../electron/shared/sidebar-notes.js";
-import type { SidebarNote, SidebarNotesScope } from "../../../electron/shared/sidebar-notes.js";
+import type {
+  InstallationNote,
+  SaveInstallationNote,
+  SidebarNote,
+  SidebarNotesScope,
+  UndoInstallationNote,
+} from "../../../electron/shared/sidebar-notes.js";
 import { formatRelativeAge } from "../../app/relative-age.js";
 import type { getWorkspacePanelByViewId } from "../../app/selectors.js";
 import { userFacingMessage } from "../../lib/error-message.js";
+import { rlog } from "../../lib/renderer-log.js";
+import { isPeerWindow } from "../../window-backend.js";
 import { apiKey } from "../../types/keys.js";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
+import { usePeersStore } from "../../stores/peers.js";
 
 const props = defineProps<{ host: HTMLElement | null; profileId: string; workspaceId?: string | null }>();
 const appStore = useAppStore();
 const injectedApi = inject(apiKey);
 const getApi = () => injectedApi ?? appStore.getApi();
 const split = ref<HTMLElement | null>(null);
-const workspaceSize = ref<number | null>(null);
-const minimumWorkspaceSize = ref(20);
+interface PanelSizes {
+  workspace: number;
+  profile: number;
+}
+const DEFAULT_PANEL_SIZES: PanelSizes = { workspace: 40, profile: 30 };
+const INSTALLATION_COLLAPSED_KEY = "strideterm.sidebarNotes.installationCollapsed";
+const sizes = ref<PanelSizes | null>(null);
+const minimumPanelSize = ref(20);
 const loading = ref(false);
 const loadError = ref("");
 
@@ -437,14 +619,14 @@ const sections = computed(() => {
       contextTitle: `Only for the workspace ${workspaceLabel}`,
       accent: currentWorkspace.value?.color || "var(--accent, var(--text))",
       addLabel: name ? `New note for ${name}` : "New workspace note",
-      addTitle: `New note for ${workspaceLabel} only. For a note you want in every workspace, use All workspaces below.`,
+      addTitle: `New note for ${workspaceLabel} only. For a note you want in every workspace, use Profile below.`,
       emptyText: `No notes for ${name || "this workspace"} yet.`,
       placeholder: `Note for ${name || "this workspace"}… The first line is its title.`,
       collection: workspace.value,
     },
     {
       kind: "global",
-      label: "All workspaces",
+      label: "Profile",
       title: `Notes shared by every workspace ${inProfile}, shown whichever workspace is selected. Other profiles keep their own.`,
       context: profile,
       contextTitle: `Shared by all workspaces ${inProfile}`,
@@ -454,6 +636,20 @@ const sections = computed(() => {
       emptyText: "No notes shared by all workspaces yet.",
       placeholder: `Note shared by all workspaces${profile ? " in " + profile : ""}… The first line is its title.`,
       collection: global.value,
+    },
+    {
+      kind: "installation",
+      label: "Global",
+      title:
+        "One note per computer, shared by all its profiles and workspaces, and readable and editable by its phones, browser sessions and attached desktops. The desktops attached to this one show their own below.",
+      context: "",
+      contextTitle: "",
+      accent: "",
+      addLabel: "",
+      addTitle: "",
+      emptyText: "",
+      placeholder: "",
+      collection: null,
     },
   ];
 });
@@ -561,7 +757,7 @@ function leaveTabNote(event: FocusEvent) {
   if (tabDraft.value?.editing) closeTabNote();
 }
 
-type EditorKind = "tab" | "note";
+type EditorKind = "tab" | "note" | "installation";
 const EDITOR_HEIGHT_KEY = "strideterm.sidebarNotes.editorHeight.";
 const EDITOR_MIN_HEIGHT = 60;
 const EDITOR_MAX_HEIGHT = 2000;
@@ -579,6 +775,7 @@ const editorHeights = reactive(
   new Map<EditorKind, number | null>([
     ["tab", readEditorHeight("tab")],
     ["note", readEditorHeight("note")],
+    ["installation", readEditorHeight("installation")],
   ]),
 );
 const editorHeight = (kind: EditorKind) => editorHeights.get(kind) ?? null;
@@ -829,6 +1026,7 @@ function flushSave(collection: Collection, note: Draft) {
 function flushVisibleNotes() {
   if (!props.host) return;
   if (tabDraft.value) void saveTabDraft(tabDraft.value);
+  flushCards();
   for (const collection of [global.value, workspace.value]) {
     if (collection) for (const note of collection.notes) flushSave(collection, note);
   }
@@ -914,13 +1112,423 @@ function resolveDraft(collection: Collection, note: Draft, saveDraft: boolean) {
   else note.text = note.storedText;
 }
 
-function setWorkspaceSize(percent: number, height: number) {
-  minimumWorkspaceSize.value = height > 0 ? Math.min(20, Math.ceil((44 * 100) / height)) : 20;
-  workspaceSize.value = Math.max(minimumWorkspaceSize.value, Math.min(80, Math.round(percent)));
+const LOCAL_CARD = "local";
+interface GlobalCard {
+  key: string;
+  hostId: string | null;
+  online: boolean;
+  current: { draft: Draft; name: string } | null;
+  editing: boolean;
+  loadError: string;
+  loadGeneration: number;
+  mutations: number;
+}
+const globalCards = reactive(new Map<string, GlobalCard>());
+const installationCollapsed = ref(readInstallationCollapsed());
+const hostNotesAvailable =
+  !getApi()?.isRemote &&
+  !isPeerWindow() &&
+  typeof getApi()?.getPeerGlobalNote === "function" &&
+  typeof getApi()?.savePeerGlobalNote === "function" &&
+  typeof getApi()?.undoPeerGlobalNote === "function";
+const peersStore = hostNotesAvailable ? usePeersStore() : null;
+const hostState = ref<PeerHostState | null>(null);
+
+function cardFor(key: string, hostId: string | null): GlobalCard {
+  let card = globalCards.get(key);
+  if (!card) {
+    card = reactive({
+      key,
+      hostId,
+      online: false,
+      current: null,
+      editing: false,
+      loadError: "",
+      loadGeneration: 0,
+      mutations: 0,
+    });
+    globalCards.set(key, card);
+  }
+  return card;
 }
 
-function startResize(event: PointerEvent) {
-  if (event.button !== 0 || dragPointer !== null) return;
+const localCard = cardFor(LOCAL_CARD, null);
+
+function readInstallationCollapsed() {
+  try {
+    return localStorage.getItem(INSTALLATION_COLLAPSED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function toggleInstallation() {
+  installationCollapsed.value = !installationCollapsed.value;
+  if (installationCollapsed.value) {
+    flushCards();
+    for (const card of globalCards.values()) card.editing = false;
+  } else {
+    loadHostCards();
+  }
+  try {
+    if (installationCollapsed.value) localStorage.setItem(INSTALLATION_COLLAPSED_KEY, "1");
+    else localStorage.removeItem(INSTALLATION_COLLAPSED_KEY);
+  } catch {
+    // Remembering the fold is a convenience; the panel works without it.
+  }
+}
+
+function cardCalls(card: GlobalCard) {
+  const api = getApi();
+  const hostId = card.hostId;
+  if (hostId) {
+    const get = api?.getPeerGlobalNote;
+    const save = api?.savePeerGlobalNote;
+    const undo = api?.undoPeerGlobalNote;
+    if (!get || !save || !undo) throw new Error("Notes are unavailable.");
+    return {
+      get: () => get(hostId),
+      save: (input: SaveInstallationNote) => save(hostId, input),
+      undo: (input: UndoInstallationNote) => undo(hostId, input),
+    };
+  }
+  const get = api?.getInstallationNote;
+  const save = api?.saveInstallationNote;
+  const undo = api?.undoInstallationNote;
+  if (!get || !save || !undo) throw new Error("Notes are unavailable.");
+  return { get, save, undo };
+}
+
+function cardOrigin(card: GlobalCard) {
+  if (card.hostId) return hostById(card.hostId)?.label || "Another computer";
+  const name = card.current?.name ?? "";
+  if (getApi()?.isRemote || isPeerWindow()) return name || "This installation";
+  return name ? `This computer (${name})` : "This computer";
+}
+
+function mergeCard(card: GlobalCard, { note, installationName }: InstallationNote) {
+  const current = card.current;
+  if (!current) {
+    card.current = { draft: makeDraft(note), name: installationName };
+    return;
+  }
+  current.name = installationName;
+  const draft = current.draft;
+  if (!draft.pending && !draft.failed && draft.text === draft.storedText) {
+    updateStored(draft, note);
+    draft.text = note.text;
+  }
+}
+
+async function loadCard(card: GlobalCard) {
+  const generation = ++card.loadGeneration;
+  const startedAfterMutation = card.mutations;
+  try {
+    const result = await cardCalls(card).get();
+    if (generation !== card.loadGeneration || disposed) return;
+    if (startedAfterMutation !== card.mutations) {
+      void loadCard(card);
+      return;
+    }
+    card.loadError = "";
+    mergeCard(card, result);
+  } catch (error) {
+    if (generation === card.loadGeneration && !disposed) {
+      card.loadError = userFacingMessage(error, "Couldn't load the global note.");
+    }
+  }
+}
+
+function loadHostCards() {
+  if (!props.host) return;
+  for (const card of globalCards.values()) if (card.hostId && card.online) void loadCard(card);
+}
+
+const hostById = (hostId: string) => peersStore?.hosts.find((host) => host.id === hostId);
+
+watch(
+  () => props.host,
+  (host) => {
+    if (!host) return;
+    void loadCard(localCard);
+    loadHostCards();
+  },
+  { immediate: true },
+);
+
+watch(
+  () => appStore.payload?.installationNoteRevision ?? 0,
+  (revision, previous) => {
+    if (revision !== previous && props.host) void loadCard(localCard);
+  },
+);
+
+watch(
+  () => peersStore?.hosts ?? [],
+  (hosts) => {
+    const listed = new Set(hosts.map((host) => host.id));
+    for (const host of hosts) {
+      const card = cardFor(host.id, host.id);
+      const online = host.state === "online";
+      const cameOnline = online && !card.online;
+      card.online = online;
+      if (cameOnline && props.host) void loadCard(card);
+    }
+    for (const [key, card] of [...globalCards]) {
+      if (!card.hostId || listed.has(key)) continue;
+      if (card.current) clearSaveTimer(card.current.draft);
+      globalCards.delete(key);
+    }
+  },
+  { immediate: true },
+);
+
+const hostStatusText = (host: PeerAttachedHost) => {
+  switch (host.state) {
+    case "offline":
+      return `${host.label} is offline.`;
+    case "not-paired":
+      return `${host.label} no longer pairs with this desktop.`;
+    case "version-mismatch":
+      return `${host.label} runs a different version of strIDEterm.`;
+    case "wrong-host":
+      return `Another strIDEterm answers at the address of ${host.label}.`;
+    default:
+      return `Checking ${host.label}…`;
+  }
+};
+
+const unseenDevices = computed(() => {
+  const attached = new Set((peersStore?.hosts ?? []).map((host) => host.id));
+  return [...(hostState.value?.devices ?? [])]
+    .filter((device) => !attached.has(device.id))
+    .sort((a, b) => a.name.localeCompare(b.name));
+});
+
+type GlobalEntry =
+  { kind: "card"; key: string; card: GlobalCard } | { kind: "status" | "device"; key: string; text: string };
+
+const globalEntries = computed<GlobalEntry[]>(() => {
+  const hosts = [...(peersStore?.hosts ?? [])].sort((a, b) => a.label.localeCompare(b.label));
+  return [
+    { kind: "card", key: LOCAL_CARD, card: localCard },
+    ...hosts.map((host): GlobalEntry => {
+      const card = globalCards.get(host.id);
+      return host.state === "online" && card
+        ? { kind: "card", key: host.id, card }
+        : { kind: "status", key: host.id, text: hostStatusText(host) };
+    }),
+    ...unseenDevices.value.map((device): GlobalEntry => ({
+      kind: "device",
+      key: "device:" + device.id,
+      text: `${device.name} is connected to this computer. You will see its note here once you connect to it from here too.`,
+    })),
+  ];
+});
+
+async function loadHostState() {
+  const load = getApi()?.getPeerHostState;
+  if (!hostNotesAvailable || !load) return;
+  try {
+    hostState.value = await load();
+  } catch (error) {
+    rlog("warn", "paired desktops could not be loaded for the notes panel", { err: userFacingMessage(error) });
+  }
+}
+
+function openProfiles() {
+  appStore.openProfilesDialog();
+}
+
+function openCard(card: GlobalCard, event: Event) {
+  card.editing = true;
+  const element = (event.currentTarget as HTMLElement).closest<HTMLElement>(".sidebar-notes__installation");
+  void nextTick(() => element?.querySelector<HTMLTextAreaElement>("[data-installation-editor]")?.focus());
+}
+
+function flushCard(card: GlobalCard) {
+  const draft = card.current?.draft;
+  if (!draft) return;
+  clearSaveTimer(draft);
+  if (shouldSave(draft)) void mutateCard(card, "save");
+}
+
+function flushCards() {
+  for (const card of globalCards.values()) flushCard(card);
+}
+
+function scheduleCardSave(card: GlobalCard) {
+  const draft = card.current?.draft;
+  if (!draft) return;
+  clearSaveTimer(draft);
+  if (!shouldSave(draft)) return;
+  saveTimers.set(
+    draft,
+    setTimeout(() => {
+      saveTimers.delete(draft);
+      void mutateCard(card, "save");
+    }, SAVE_DELAY_MS),
+  );
+}
+
+function editCard(card: GlobalCard, text: string) {
+  const draft = card.current?.draft;
+  if (!draft) return;
+  draft.text = text;
+  if (draft.failed === "undo") draft.failed = null;
+  scheduleCardSave(card);
+}
+
+function closeCard(card: GlobalCard) {
+  flushCard(card);
+  card.editing = false;
+}
+
+function escapeCard(card: GlobalCard, event: KeyboardEvent) {
+  event.stopPropagation();
+  closeCard(card);
+  const element = (event.currentTarget as HTMLElement).closest<HTMLElement>(".sidebar-notes__installation");
+  void nextTick(() => element?.querySelector<HTMLElement>(".sidebar-notes__tab-body")?.focus());
+}
+
+function leaveCard(card: GlobalCard, event: FocusEvent) {
+  const element = event.currentTarget as HTMLElement;
+  if (event.relatedTarget instanceof Node && element.contains(event.relatedTarget)) return;
+  if (!document.hasFocus()) return;
+  if ((event.target as Element).classList.contains("sidebar-notes__tab-body")) return;
+  if (card.editing) closeCard(card);
+}
+
+async function mutateCard(card: GlobalCard, action: Mutation) {
+  const current = card.current;
+  if (!current || current.draft.pending) return;
+  const note = current.draft;
+  const text = note.text;
+  const expectedRevision = note.revision;
+  note.pending = action;
+  note.failed = null;
+  note.latest = null;
+  card.mutations++;
+  try {
+    const calls = cardCalls(card);
+    const stored =
+      action === "save" ? await calls.save({ text, expectedRevision }) : await calls.undo({ expectedRevision });
+    if (disposed) return;
+    updateStored(note, stored.note);
+    current.name = stored.installationName;
+    if (note.text === text) note.text = stored.note.text;
+  } catch (error) {
+    if (disposed) return;
+    note.failed = action;
+    note.error = userFacingMessage(error, action === "save" ? "Couldn't save note." : "Couldn't undo save.");
+  } finally {
+    card.mutations++;
+    note.pending = null;
+    if (!disposed) scheduleCardSave(card);
+  }
+}
+
+function retryCard(card: GlobalCard) {
+  const action = card.current?.draft.failed;
+  if (action && !card.current?.draft.pending) void mutateCard(card, action);
+}
+
+async function reviewLatestCard(card: GlobalCard) {
+  const note = card.current?.draft;
+  const action = note?.failed;
+  if (!note) return;
+  try {
+    const latest = await cardCalls(card).get();
+    if (note.pending || !note.failed || action !== note.failed) return;
+    note.latest = latest.note;
+  } catch {
+    if (note.failed === action) note.error = "Couldn't load the latest saved note.";
+  }
+}
+
+function resolveCard(card: GlobalCard, saveDraft: boolean) {
+  const note = card.current?.draft;
+  if (!note || note.pending || !note.latest) return;
+  updateStored(note, note.latest);
+  note.latest = null;
+  note.failed = null;
+  if (saveDraft) flushCard(card);
+  else note.text = note.storedText;
+}
+
+function dividerActive(divider: number) {
+  return divider === 0 || !installationCollapsed.value;
+}
+
+function dividerValue(divider: number): number | undefined {
+  const current = sizes.value;
+  if (!current) return undefined;
+  const total = installationCollapsed.value ? current.workspace + current.profile : 100;
+  return Math.round(((divider === 0 ? current.workspace : current.workspace + current.profile) * 100) / total);
+}
+
+const splitStyle = computed(() => {
+  const current = sizes.value;
+  if (!current) return undefined;
+  const global = 100 - current.workspace - current.profile;
+  return {
+    "--notes-workspace-size": current.workspace + "fr",
+    "--notes-profile-size": current.profile + "fr",
+    "--notes-global-row": installationCollapsed.value ? "auto" : `minmax(var(--notes-pane-minimum), ${global}fr)`,
+  };
+});
+
+function flexibleHeight(divider: HTMLElement) {
+  const bounds = split.value?.getBoundingClientRect();
+  if (!bounds) return 0;
+  const collapsed = installationCollapsed.value
+    ? (split.value?.querySelector<HTMLElement>(".sidebar-notes__section--installation")?.offsetHeight ?? 0)
+    : 0;
+  return bounds.height - 2 * divider.offsetHeight - collapsed;
+}
+
+function clampSizes(next: PanelSizes, minimum: number): PanelSizes {
+  const workspace = Math.max(minimum, Math.min(100 - 2 * minimum, next.workspace));
+  return { workspace, profile: Math.max(minimum, Math.min(100 - workspace - minimum, next.profile)) };
+}
+
+function measuredSizes(divider: HTMLElement, height: number): PanelSizes {
+  const dividers = split.value?.querySelectorAll<HTMLElement>(".sidebar-notes__divider");
+  if (height <= 0 || !dividers || dividers.length < 2) return DEFAULT_PANEL_SIZES;
+  const scale = installationCollapsed.value ? 0.6 : 1;
+  const first = dividers[0].offsetTop;
+  const second = dividers[1].offsetTop - divider.offsetHeight;
+  if (first <= 0 || second <= first) return DEFAULT_PANEL_SIZES;
+  return {
+    workspace: ((100 * first) / height) * scale,
+    profile: ((100 * (second - first)) / height) * scale,
+  };
+}
+
+function updateSizes(divider: HTMLElement, height: number, change: (current: PanelSizes, total: number) => PanelSizes) {
+  minimumPanelSize.value = height > 0 ? Math.min(20, Math.ceil((44 * 100) / height)) : 20;
+  const minimum = minimumPanelSize.value;
+  const current = sizes.value ?? clampSizes(measuredSizes(divider, height), minimum);
+  const total = installationCollapsed.value ? current.workspace + current.profile : 100;
+  const next = change(current, total);
+  const shown = installationCollapsed.value ? (minimum * total) / 100 : minimum;
+  const workspace = Math.max(shown, Math.min(current.workspace + current.profile - shown, next.workspace));
+  const profile = installationCollapsed.value
+    ? current.workspace + current.profile - workspace
+    : Math.max(shown, Math.min(100 - workspace - shown, next.workspace + next.profile - workspace));
+  sizes.value = { workspace: Math.round(workspace), profile: Math.round(profile) };
+}
+
+function moveBoundary(divider: HTMLElement, index: number, height: number, percent: number) {
+  updateSizes(divider, height, (current, total) =>
+    index === 0
+      ? { workspace: (percent * total) / 100, profile: current.workspace + current.profile - (percent * total) / 100 }
+      : { workspace: current.workspace, profile: percent - current.workspace },
+  );
+}
+
+function startResize(event: PointerEvent, index: number) {
+  if (event.button !== 0 || dragPointer !== null || !dividerActive(index)) return;
   dragPointer = event.pointerId;
   const divider = event.currentTarget as HTMLElement;
   dragGrabOffset = event.clientY - divider.getBoundingClientRect().top;
@@ -929,30 +1537,67 @@ function startResize(event: PointerEvent) {
   event.preventDefault();
 }
 
-function moveResize(event: PointerEvent) {
+function moveResize(event: PointerEvent, index: number) {
   if (dragPointer !== event.pointerId) return;
   const bounds = split.value?.getBoundingClientRect();
   if (!bounds) return;
   const divider = event.currentTarget as HTMLElement;
-  const height = bounds.height - divider.offsetHeight;
-  if (height > 0) setWorkspaceSize((100 * (event.clientY - bounds.top - dragGrabOffset)) / height, height);
+  const height = flexibleHeight(divider);
+  if (height > 0) {
+    moveBoundary(
+      divider,
+      index,
+      height,
+      (100 * (event.clientY - bounds.top - dragGrabOffset - index * divider.offsetHeight)) / height,
+    );
+  }
 }
 
 function endResize(event: PointerEvent) {
   if (event.pointerId === dragPointer) dragPointer = null;
 }
 
-function resizeWithKeyboard(event: KeyboardEvent) {
+function resizeWithKeyboard(event: KeyboardEvent, index: number) {
+  if (!dividerActive(index)) return;
   const divider = event.currentTarget as HTMLElement;
-  const height = (split.value?.clientHeight ?? 0) - divider.offsetHeight;
-  const currentSize = workspaceSize.value ?? (height > 0 ? (100 * divider.offsetTop) / height : 55);
-  if (event.key === "ArrowUp") setWorkspaceSize(currentSize - 5, height);
-  else if (event.key === "ArrowDown") setWorkspaceSize(currentSize + 5, height);
-  else if (event.key === "Home") setWorkspaceSize(0, height);
-  else if (event.key === "End") setWorkspaceSize(80, height);
-  else return;
+  const height = flexibleHeight(divider);
+  const keys = ["ArrowUp", "ArrowDown", "Home", "End"];
+  if (!keys.includes(event.key)) return;
+  if (!sizes.value) updateSizes(divider, height, (current) => current);
+  const current = sizes.value ?? DEFAULT_PANEL_SIZES;
+  const boundary = dividerValue(index) ?? (index === 0 ? current.workspace : current.workspace + current.profile);
+  const target =
+    event.key === "ArrowUp" ? boundary - 5 : event.key === "ArrowDown" ? boundary + 5 : event.key === "Home" ? 0 : 100;
+  moveBoundary(divider, index, height, target);
   event.preventDefault();
 }
+
+let releasePeers: (() => void) | null = null;
+let offHostNoteChanged: (() => void) | null = null;
+let offPeersUpdated: (() => void) | null = null;
+
+// The panel is mounted in every window from the start; paired desktops are only worth asking about once
+// the Notes tab is showing with the Global section open.
+function startPeerWork() {
+  if (!peersStore || releasePeers) return;
+  releasePeers = peersStore.watch();
+  void peersStore.open();
+  void loadHostState();
+  offPeersUpdated = getApi()?.onPeersUpdated?.(() => void loadHostState()) ?? null;
+  offHostNoteChanged =
+    getApi()?.onPeerHostNoteChanged?.((event) => {
+      const card = globalCards.get(event.hostId);
+      if (card?.online && props.host) void loadCard(card);
+    }) ?? null;
+}
+
+watch(
+  () => !!props.host && !installationCollapsed.value,
+  (shown) => {
+    if (shown) startPeerWork();
+  },
+  { immediate: true },
+);
 
 onMounted(() => {
   window.addEventListener("blur", flushVisibleNotes);
@@ -964,6 +1609,9 @@ onBeforeUnmount(() => {
   disposed = true;
   window.removeEventListener("blur", flushVisibleNotes);
   document.removeEventListener("visibilitychange", onVisibilityChange);
+  releasePeers?.();
+  offPeersUpdated?.();
+  offHostNoteChanged?.();
   for (const timer of saveTimers.values()) clearTimeout(timer);
   clearTimeout(tabSaveTimer);
   clearInterval(clock);
@@ -984,12 +1632,13 @@ onBeforeUnmount(() => {
   display: grid;
   flex: 1;
   grid-template-rows:
-    minmax(var(--notes-pane-minimum), var(--notes-workspace-size, 55fr)) 9px
-    minmax(var(--notes-pane-minimum), var(--notes-global-size, 45fr));
+    minmax(var(--notes-pane-minimum), var(--notes-workspace-size, 40fr)) 9px
+    minmax(var(--notes-pane-minimum), var(--notes-profile-size, 30fr)) 9px
+    var(--notes-global-row, minmax(var(--notes-pane-minimum), 30fr));
   min-height: 0;
 }
 .sidebar-notes__split--automatic {
-  grid-template-rows: fit-content(55%) 9px minmax(0, 1fr);
+  grid-template-rows: fit-content(45%) 9px minmax(0, 1fr) 9px fit-content(35%);
 }
 .sidebar-notes__section {
   display: flex;
@@ -1117,6 +1766,19 @@ button:not(:disabled):hover {
 .sidebar-notes__divider:hover::after,
 .sidebar-notes__divider:focus-visible::after {
   background: var(--accent, var(--text));
+}
+.sidebar-notes__divider--inactive {
+  cursor: default;
+}
+.sidebar-notes__divider--inactive::after,
+.sidebar-notes__divider--inactive:hover::after {
+  display: none;
+}
+.sidebar-notes__collapse .sidebar-notes__chevron {
+  margin: 0;
+}
+.sidebar-notes__collapse[aria-expanded="true"] .sidebar-notes__chevron {
+  transform: rotate(90deg);
 }
 .sidebar-notes__tab-note {
   margin: 2px 8px 8px 14px;

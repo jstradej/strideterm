@@ -203,6 +203,16 @@ export const usePeersStore = defineStore("peers", () => {
     return done;
   }
 
+  async function renameHost(hostId: string, label: string): Promise<boolean> {
+    const call = bridge()?.renamePeerHost;
+    if (!call) return false;
+    const done = await notifications.runWithToast("Could not rename the desktop", async () => {
+      await call({ hostId, label });
+    });
+    if (done) await load();
+    return done;
+  }
+
   async function openWindow(hostId: string, profileId: string): Promise<boolean> {
     const call = bridge()?.openPeerWindow;
     if (!call) return false;
@@ -310,6 +320,7 @@ export const usePeersStore = defineStore("peers", () => {
     setCollapsed,
     removeHost,
     updateAddress,
+    renameHost,
     openWindow,
     activateProfile,
     activateLocalProfile,

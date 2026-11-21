@@ -1,4 +1,5 @@
 import { peerAttentionSummarySchema, type PeerAttentionSummary, type PeerHostLinkState } from "../../shared/peers.js";
+import { PEER_HOST_NOTE_CHANGED_CHANNEL, type PeerHostNoteChanged } from "../../shared/peer-host-note-events.js";
 import { getLogger } from "../logger.js";
 import { PeerClientError, type PeerRequest, type PeerResponse } from "./peer-client.js";
 
@@ -13,7 +14,7 @@ const TICK_MS = 5_000;
 /** Version and identity problems end polling until a refresh says otherwise; the request itself would only be refused. */
 const SKIPPED_STATES: ReadonlySet<PeerHostLinkState> = new Set(["not-paired", "wrong-host", "version-mismatch"]);
 
-export interface PeerHostAttention extends PeerAttentionSummary {
+export interface PeerHostAttention extends Omit<PeerAttentionSummary, "globalNoteRevision"> {
   hostId: string;
   checkedAt: number;
 }
@@ -30,7 +31,7 @@ export interface PeerAttentionPollerDeps {
   listHostIds(): string[];
   getHostStatus(hostId: string): { state: PeerHostLinkState; checkedAt: number };
   request(hostId: string, request: PeerRequest): Promise<PeerResponse>;
-  emit(event: string, payload: PeerAttentionEvent): void;
+  emit(event: string, payload: PeerAttentionEvent | PeerHostNoteChanged): void;
   now?(): number;
   intervalMs?: number;
   backoffMs?: number;
@@ -45,6 +46,8 @@ interface HostEntry {
   /** The host cannot be asked: `data` then holds a zero placeholder so the badge does not keep the last number. */
   unknown: boolean;
   failing: boolean;
+  /** The host's last known global note counter; kept across an outage so a change made meanwhile still counts. */
+  noteRevision: number | null;
   /** `checkedAt` of the status at the time the host refused this desktop; polling resumes when a refresh moves it. */
   refusedAt: number | null;
   loggedKind: string;
@@ -73,6 +76,7 @@ export function createPeerAttentionPoller(deps: PeerAttentionPollerDeps) {
         data: null,
         unknown: false,
         failing: false,
+        noteRevision: null,
         refusedAt: null,
         loggedKind: "",
       };
@@ -144,6 +148,11 @@ export function createPeerAttentionPoller(deps: PeerAttentionPollerDeps) {
       const previousTotal = wasUnknown ? null : (entry.data?.total ?? null);
       entry.unknown = false;
       entry.data = { hostId, total: outcome.total, profiles: outcome.profiles, checkedAt: now() };
+      const previousNoteRevision = entry.noteRevision;
+      entry.noteRevision = outcome.globalNoteRevision;
+      if (previousNoteRevision !== null && previousNoteRevision !== outcome.globalNoteRevision) {
+        deps.emit(PEER_HOST_NOTE_CHANGED_CHANNEL, { hostId, revision: outcome.globalNoteRevision });
+      }
       if (wasUnknown || previousTotal !== outcome.total) {
         deps.emit(PEER_ATTENTION_EVENT, { hostId, total: outcome.total, previousTotal, profiles: outcome.profiles });
       }

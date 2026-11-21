@@ -84,6 +84,9 @@ contextBridge.exposeInMainWorld("strideterm", {
   listSidebarNotes: (scope) => ipcRenderer.invoke("sidebar-notes:list", scope),
   saveSidebarNote: (note) => ipcRenderer.invoke("sidebar-notes:save", note),
   undoSidebarNote: (note) => ipcRenderer.invoke("sidebar-notes:undo", note),
+  getInstallationNote: () => ipcRenderer.invoke("sidebar-notes:installation:get"),
+  saveInstallationNote: (note) => ipcRenderer.invoke("sidebar-notes:installation:save", note),
+  undoInstallationNote: (note) => ipcRenderer.invoke("sidebar-notes:installation:undo", note),
   saveWorkspace: (workspace) => ipcRenderer.invoke("workspace:save", workspace),
   saveProject: (project) => ipcRenderer.invoke("project:save", project),
   deleteWorkspace: (workspaceId, options) => ipcRenderer.invoke("workspace:delete", workspaceId, options),
@@ -143,13 +146,21 @@ contextBridge.exposeInMainWorld("strideterm", {
   approvePeerPairing: (input) => ipcRenderer.invoke("peers:host:approve", input),
   rejectPeerPairing: (pairingId) => ipcRenderer.invoke("peers:host:reject", { pairingId }),
   removePeerDevice: (deviceId) => ipcRenderer.invoke("peers:host:remove-device", { deviceId }),
+  renamePeerDevice: (input) => ipcRenderer.invoke("peers:host:device:rename", input),
   listPeerHosts: () => ipcRenderer.invoke("peers:client:list"),
   refreshPeerHost: (hostId, options) =>
     ipcRenderer.invoke("peers:client:refresh", { hostId, ...(options?.force ? { force: true } : {}) }),
+  listPeerAttachments: (hostId) => ipcRenderer.invoke("peers:client:attachments:list", { hostId }),
+  getPeerGlobalNote: (hostId) => ipcRenderer.invoke("peers:client:global-note:get", { hostId }),
+  savePeerGlobalNote: (hostId, input) => ipcRenderer.invoke("peers:client:global-note:save", { hostId, ...input }),
+  undoPeerGlobalNote: (hostId, input) => ipcRenderer.invoke("peers:client:global-note:undo", { hostId, ...input }),
+  startPeerAttachmentCopy: (input) => ipcRenderer.invoke("peers:client:attachments:copy", input),
+  cancelPeerAttachmentCopy: (copyId) => ipcRenderer.invoke("peers:client:attachments:cancel", { copyId }),
   startPeerPairing: (input) => ipcRenderer.invoke("peers:client:pair:start", input),
   cancelPeerPairing: (attemptId) => ipcRenderer.invoke("peers:client:pair:cancel", { attemptId }),
   removePeerHost: (hostId) => ipcRenderer.invoke("peers:client:remove", { hostId }),
   updatePeerHostAddress: (input) => ipcRenderer.invoke("peers:client:update-address", input),
+  renamePeerHost: (input) => ipcRenderer.invoke("peers:client:rename", input),
   getWindowBackend: () => ipcRenderer.invoke("window:get-backend"),
   getLocalProfilesOverview: () => ipcRenderer.invoke("peers:local-profiles"),
   openPeerWindow: (input) => ipcRenderer.invoke("peers:window:open", input),
@@ -567,6 +578,21 @@ contextBridge.exposeInMainWorld("strideterm", {
     const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(payload);
     ipcRenderer.on("peers:pairing-progress", listener);
     return () => ipcRenderer.removeListener("peers:pairing-progress", listener);
+  },
+  onPeerAttachmentCopyFinished: (handler) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(payload);
+    ipcRenderer.on("attachment:peer-copy-finished", listener);
+    return () => ipcRenderer.removeListener("attachment:peer-copy-finished", listener);
+  },
+  onPeerAttachmentCopyProgress: (handler) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(payload);
+    ipcRenderer.on("attachment:peer-copy-progress", listener);
+    return () => ipcRenderer.removeListener("attachment:peer-copy-progress", listener);
+  },
+  onPeerHostNoteChanged: (handler) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(payload);
+    ipcRenderer.on("sidebar-notes:host-note-changed", listener);
+    return () => ipcRenderer.removeListener("sidebar-notes:host-note-changed", listener);
   },
   onPeerPairingResult: (handler) => {
     const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(payload as never);

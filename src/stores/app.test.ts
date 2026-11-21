@@ -165,6 +165,32 @@ function requestRemotePanel(
   });
 }
 
+describe("useAppStore attachment copies of paired desktops", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
+  it("is started on a desktop transport and never on a remote one", () => {
+    const desktop = makeElectronTransport(makeBasePayload());
+    const desktopFinished = vi.fn();
+    Object.assign(desktop, {
+      listPeerAttachments: vi.fn(),
+      startPeerAttachmentCopy: vi.fn(),
+      cancelPeerAttachmentCopy: vi.fn(),
+      onPeerAttachmentCopyFinished: desktopFinished,
+    });
+    useAppStore().init(desktop as AnyApi);
+    expect(desktopFinished).toHaveBeenCalledTimes(1);
+
+    setActivePinia(createPinia());
+    const remote = makeRemoteTransport(makeBasePayload());
+    const remoteFinished = vi.fn();
+    Object.assign(remote, { onPeerAttachmentCopyFinished: remoteFinished, onPeerAttachmentCopyProgress: vi.fn() });
+    useAppStore().init(remote as AnyApi);
+    expect(remoteFinished).not.toHaveBeenCalled();
+  });
+});
+
 describe("useAppStore mobile connection health bootstrap", () => {
   beforeEach(() => {
     setActivePinia(createPinia());

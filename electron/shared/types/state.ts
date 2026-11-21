@@ -7,6 +7,7 @@ import type { AzureClosedPrCleanupFinished } from "../azure-closed-pr-cleanup-ev
 import type { OperationsState } from "../operation-events.js";
 import type { ReviewGitState } from "../review-git-events.js";
 import type { SshFileTransfersState } from "../ssh-file-events.js";
+import type { PeerAttachmentCopiesState } from "../peer-attachment-copy-events.js";
 import type { ReviewTrustState } from "../pull-request-review.js";
 import type { ReviewPrActionsState } from "../review-pr-actions.js";
 import type { AppDistribution, MicrosoftStoreUpdateStatus } from "../app-distribution.js";
@@ -828,7 +829,7 @@ export interface ScratchpadRecord {
 // ------- AppState (persisted) -------
 
 export interface SidebarNoteRecord {
-  owner: "profile" | "workspace";
+  owner: "profile" | "workspace" | "installation";
   ownerId: string;
   id: string;
   text: string;
@@ -1368,8 +1369,12 @@ export interface StatePayload {
   reviewGit: ReviewGitState;
   /** profileId → change counter of that profile's sidebar notes (runtime-only, restarts at 0; never note text). */
   sidebarNotesRevisions: Record<string, number>;
+  /** Change counter of the installation's note (runtime-only, starts at the clock; never note text, never profile-scoped). */
+  installationNoteRevision: number;
   /** SSH file transfers running now and finished within 24 h (runtime-only, never persisted). */
   sshFileTransfers: SshFileTransfersState;
+  /** Copies of a paired desktop's attachments into local workspaces, queued or running now and finished within 24 h. */
+  peerAttachmentCopies: PeerAttachmentCopiesState;
   /** Review agents waiting in their terminal for the user to trust their checkout (runtime-only). */
   reviewTrust: ReviewTrustState;
   /** Pending MCP PR actions awaiting an explicit application decision. */
@@ -1471,8 +1476,12 @@ export interface RemoteStateV2 {
   reviewGit: ReviewGitState;
   /** Only the client's own profile's notes counter. */
   sidebarNotesRevisions: Record<string, number>;
+  /** The installation's note counter: one number for every client, whatever its profile. */
+  installationNoteRevision: number;
   /** Only the client's profile's SSH file transfers. */
   sshFileTransfers: SshFileTransfersState;
+  /** Always empty: copies into this machine's workspaces are for its own desktop windows, never a remote client. */
+  peerAttachmentCopies: PeerAttachmentCopiesState;
   /** Only the client's profile's review agents waiting for folder trust. */
   reviewTrust: ReviewTrustState;
   /** Pending MCP PR actions in the remote client's active profile only. */

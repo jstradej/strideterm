@@ -23,13 +23,20 @@ import {
   TRUST_REVIEW_FOLDER_CHANNEL,
   trustReviewFolderSchema,
 } from "../shared/pull-request-review.js";
-import { saveSidebarNoteSchema, sidebarNotesScopeSchema, undoSidebarNoteSchema } from "../shared/sidebar-notes.js";
+import {
+  saveInstallationNoteSchema,
+  saveSidebarNoteSchema,
+  sidebarNotesScopeSchema,
+  undoInstallationNoteSchema,
+  undoSidebarNoteSchema,
+} from "../shared/sidebar-notes.js";
 import { START_PIPELINE_AGENT_CHANNEL, startPipelineAgentSchema } from "../shared/pipeline-agent.js";
 import { START_JIRA_DEVELOPMENT_CHANNEL, startJiraDevelopmentSchema } from "../shared/jira-development.js";
 import { withOperationPromise } from "./effect/runtime.js";
 import * as fm from "./file-manager.js";
 import * as attachments from "./attachments.js";
 import * as attachmentTransfer from "./attachment-transfer.js";
+import { localAttachmentRoot } from "./attachment-root.js";
 import {
   attachmentReadSchema,
   attachmentTransferSchema,
@@ -252,19 +259,30 @@ import { REVIEW_GIT_OPERATION_CHANNEL } from "../shared/review-git-events.js";
 import { SANDBOX_DENIED_CHANNEL, SANDBOX_DENIED_SETTLED_CHANNEL } from "../shared/sandbox-events.js";
 import { errorMessage } from "../shared/error-message.js";
 import { SSH_FILE_TRANSFER_FINISHED_CHANNEL, SSH_FILE_TRANSFER_PROGRESS_CHANNEL } from "../shared/ssh-file-events.js";
+import {
+  PEER_ATTACHMENT_COPY_FINISHED_CHANNEL,
+  PEER_ATTACHMENT_COPY_PROGRESS_CHANNEL,
+} from "../shared/peer-attachment-copy-events.js";
+import { PEER_HOST_NOTE_CHANGED_CHANNEL } from "../shared/peer-host-note-events.js";
 import { toSshFileIpcFailure } from "../shared/ssh-file-error-codes.js";
 import { SshFileError } from "./ssh/ssh-file-error.js";
 import {
   peerApproveSchema,
+  peerAttachmentCopyCancelSchema,
+  peerAttachmentCopySchema,
   peerConnectSchema,
   peerDeviceIdSchema,
   peerHostIdSchema,
+  peerGlobalNoteSaveSchema,
+  peerGlobalNoteUndoSchema,
   peerHostingSettingsSchema,
   peerHttpSchema,
   peerPairCancelSchema,
   peerPairingIdSchema,
   peerRefreshSchema,
   peerUpdateAddressSchema,
+  peerRenameHostSchema,
+  peerRenameDeviceSchema,
   peerWindowAttentionSchema,
   peerWindowFontSizeSchema,
   peerWindowLocalSchema,
@@ -485,6 +503,17 @@ export function registerIpc(
     ),
     runtime.on(SSH_FILE_TRANSFER_FINISHED_CHANNEL, (payload: unknown) =>
       emitToRenderer(SSH_FILE_TRANSFER_FINISHED_CHANNEL, payload),
+    ),
+    // Desktop windows only: a copy into a local workspace is no business of a remote client.
+    runtime.on(PEER_ATTACHMENT_COPY_FINISHED_CHANNEL, (payload: unknown) =>
+      emitToRenderer(PEER_ATTACHMENT_COPY_FINISHED_CHANNEL, payload),
+    ),
+    runtime.on(PEER_ATTACHMENT_COPY_PROGRESS_CHANNEL, (payload: unknown) =>
+      emitToRenderer(PEER_ATTACHMENT_COPY_PROGRESS_CHANNEL, payload),
+    ),
+    // Desktop windows only, like the copy event: a host's note is no business of a remote client.
+    runtime.on(PEER_HOST_NOTE_CHANGED_CHANNEL, (payload: unknown) =>
+      emitToRenderer(PEER_HOST_NOTE_CHANGED_CHANNEL, payload),
     ),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     runtime.on("mobile:status", (payload: any) => emitToRenderer("mobile:status", payload)),
@@ -839,6 +868,13 @@ export function registerIpc(
       sidebarNotesWindowId(event.sender.id),
     ),
   );
+  handle("sidebar-notes:installation:get", () => runtime.getInstallationNote());
+  handle("sidebar-notes:installation:save", (_event, note) =>
+    runtime.saveInstallationNote(validateIpc(saveInstallationNoteSchema, note, "sidebar-notes:installation:save")),
+  );
+  handle("sidebar-notes:installation:undo", (_event, note) =>
+    runtime.undoInstallationNote(validateIpc(undoInstallationNoteSchema, note, "sidebar-notes:installation:undo")),
+  );
   handle("sidebar-notes:undo", (event, note) =>
     runtime.undoSidebarNote(
       validateIpc(undoSidebarNoteSchema, note, "sidebar-notes:undo"),
@@ -1031,12 +1067,41 @@ export function registerIpc(
   handle("peers:host:remove-device", async (_event, payload) =>
     runtime.removePeerDevice(validateIpc(peerDeviceIdSchema, payload, "peers:host:remove-device").deviceId),
   );
+  handle("peers:host:device:rename", async (_event, payload) =>
+    runtime.renamePeerDevice(validateIpc(peerRenameDeviceSchema, payload, "peers:host:device:rename")),
+  );
   // Attaching profiles between desktops (device side): desktop only, no remote counterpart exists.
   handle("peers:client:list", async () => runtime.listPeerHosts());
   handle("peers:client:refresh", async (_event, payload) => {
     const { hostId, force } = validateIpc(peerRefreshSchema, payload, "peers:client:refresh");
     return runtime.refreshPeerHost(hostId, { force: force === true });
   });
+  handle("peers:client:attachments:list", async (_event, payload) =>
+    runtime.listPeerAttachments(validateIpc(peerHostIdSchema, payload, "peers:client:attachments:list").hostId),
+  );
+  handle("peers:client:global-note:get", async (_event, payload) =>
+    runtime.getPeerGlobalNote(validateIpc(peerHostIdSchema, payload, "peers:client:global-note:get").hostId),
+  );
+  handle("peers:client:global-note:save", async (_event, payload) => {
+    const { hostId, ...input } = validateIpc(peerGlobalNoteSaveSchema, payload, "peers:client:global-note:save");
+    return runtime.savePeerGlobalNote(hostId, input);
+  });
+  handle("peers:client:global-note:undo", async (_event, payload) => {
+    const { hostId, ...input } = validateIpc(peerGlobalNoteUndoSchema, payload, "peers:client:global-note:undo");
+    return runtime.undoPeerGlobalNote(hostId, input);
+  });
+  handle("peers:client:attachments:copy", async (event, payload) =>
+    runtime.startPeerAttachmentCopy(
+      validateIpc(peerAttachmentCopySchema, payload, "peers:client:attachments:copy"),
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
+  handle("peers:client:attachments:cancel", async (event, payload) =>
+    runtime.cancelPeerAttachmentCopy(
+      validateIpc(peerAttachmentCopyCancelSchema, payload, "peers:client:attachments:cancel").copyId,
+      getWindowIdByWebContentsId?.(event.sender.id) ?? "",
+    ),
+  );
   handle("peers:client:pair:start", async (_event, payload) =>
     runtime.startPeerPairing(validateIpc(peerConnectSchema, payload, "peers:client:pair:start")),
   );
@@ -1048,6 +1113,9 @@ export function registerIpc(
   );
   handle("peers:client:update-address", async (_event, payload) =>
     runtime.updatePeerHostAddress(validateIpc(peerUpdateAddressSchema, payload, "peers:client:update-address")),
+  );
+  handle("peers:client:rename", async (_event, payload) =>
+    runtime.renamePeerHost(validateIpc(peerRenameHostSchema, payload, "peers:client:rename")),
   );
   handle("window:get-backend", async (event) =>
     runtime.getWindowBackend(getWindowIdByWebContentsId?.(event.sender.id) ?? ""),
@@ -3318,22 +3386,7 @@ export function registerIpc(
     const workspace = workspaces.find(
       (item) => String(item.id ?? "") === workspaceId && String(item.profileId ?? "default") === profileId,
     );
-    const cwd = workspace?.cwd;
-    if (typeof cwd !== "string" || !path.isAbsolute(cwd)) throw new Error("Workspace has no local filesystem root");
-    const panels = Array.isArray(workspace?.panels) ? workspace.panels : [];
-    if (
-      ["docker", "container", "ssh"].includes(String(workspace?.kind ?? "").toLowerCase()) ||
-      panels.some((panel) => {
-        const launch = panel && typeof panel === "object" ? (panel as Record<string, unknown>).launch : null;
-        return (
-          launch &&
-          typeof launch === "object" &&
-          ["docker", "container", "ssh"].includes(String((launch as Record<string, unknown>).kind ?? "").toLowerCase())
-        );
-      })
-    )
-      throw new Error("Attachments are unavailable for SSH or container workspaces");
-    return cwd;
+    return localAttachmentRoot(workspace);
   }
   handle("attachment:list", async (_event, payload) => {
     const p = validateIpc(attachmentWorkspaceSchema, payload, "attachment:list");

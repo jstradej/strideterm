@@ -38,6 +38,7 @@ import {
 } from "../app/helpers.js";
 import { useAutomationsStore } from "./automations.js";
 import { useSshFileTransfersStore } from "./ssh-file-transfers.js";
+import { hasPeerAttachmentCopy, usePeerAttachmentCopiesStore } from "./peer-attachment-copies.js";
 import { createDialogActions } from "./app-dialog-actions.js";
 import { createWorkspaceActions } from "./app-workspace-actions.js";
 import { createApiActions } from "./app-api-actions.js";
@@ -2110,6 +2111,31 @@ export const useAppStore = defineStore("app", () => {
         },
         { immediate: true },
       );
+      // Copies of a paired desktop's attachments: the same two paths (live event, and the payload for a missed one).
+      // Only a desktop window has them: a remote client is handed none, and must not announce a copy it never started.
+      if (hasPeerAttachmentCopy(api)) {
+        const peerAttachmentCopies = usePeerAttachmentCopiesStore();
+        peerAttachmentCopies.init(
+          api,
+          () => myActiveProfileId.value,
+          (workspaceId) => {
+            const profile = myActiveProfileId.value || "default";
+            const workspace = ((payload.value as AnyApi)?.appState?.workspaces || []).find(
+              (candidate: { id?: string; profileId?: string }) =>
+                candidate.id === workspaceId && (candidate.profileId || "default") === profile,
+            );
+            return typeof workspace?.cwd === "string" ? workspace.cwd : "";
+          },
+        );
+        watch(
+          () => [(payload.value as AnyApi)?.peerAttachmentCopies, myActiveProfileId.value] as const,
+          ([state, profile]) => {
+            peerAttachmentCopies.setProfile(profile);
+            peerAttachmentCopies.reconcile(state);
+          },
+          { immediate: true },
+        );
+      }
       watch(
         () => [(payload.value as AnyApi)?.azureClosedPrCleanup?.lastRuns, myActiveProfileId.value],
         ([runs]) => workspaceActions.reportAzureClosedPrCleanupRuns(runs),

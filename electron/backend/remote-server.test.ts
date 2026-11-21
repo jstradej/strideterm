@@ -1,5 +1,6 @@
 import type { RemoteClientRegistry } from "./remote-client-registry.js";
 import { describe, expect, test, vi } from "vitest";
+import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -580,6 +581,15 @@ describe("stripSecretsForRemote", () => {
     expect(stripped.appState.settings.integrations).not.toHaveProperty("peers");
     expect(stripped.appState.settings.integrations.telegram).toEqual({ connections: [{ id: "bot-1" }] });
     expect(payload.appState.settings.integrations.peers.devices).toHaveLength(1);
+  });
+
+  test("removes attachment copies of this machine from remote responses, protocol 1 payloads included", () => {
+    const run = { copyId: "c1", profileId: "p1", error: { message: "Nothing is listening at 192.168.1.20." } };
+    const payload = { appState: { settings: {} }, peerAttachmentCopies: { running: [run], lastResults: [run] } };
+    const stripped = stripSecretsForRemote(payload) as typeof payload;
+    expect(stripped.peerAttachmentCopies).toEqual({ running: [], lastResults: [] });
+    expect(JSON.stringify(stripped)).not.toContain("192.168.1.20");
+    expect(payload.peerAttachmentCopies.running).toHaveLength(1);
   });
 
   test("zeros the master token in a NESTED result envelope (mutation/verification results)", () => {
@@ -6481,6 +6491,10 @@ describe("a mobile session's activity is audited (metadata only)", () => {
     const written: { sessionId: string; data: string; pointerArrival?: string }[] = [];
     const tickets = new Map<string, { deviceId: string; pairId: string; profileId: string }>();
     const sshFileCalls: { op: string; body: unknown; mobile: boolean | undefined }[] = [];
+    let installationNote = {
+      note: { id: "global", text: "", revision: 0, canUndo: false },
+      installationName: "test-host",
+    };
     type SshFileCallOptions = { mobile?: boolean; onResolved?: (info: { hostLabel: string }) => void };
     return {
       rows,
@@ -6497,6 +6511,18 @@ describe("a mobile session's activity is audited (metadata only)", () => {
         listRemoteUrls: () => [],
         listMobileTicketOrigins: () => ["https://example.trycloudflare.com"],
         on: () => () => undefined,
+        getInstallationNote: () => installationNote,
+        saveInstallationNote: async (input: { text: string; expectedRevision: number }) => {
+          if (input.expectedRevision !== installationNote.note.revision) {
+            throw new ClientRequestError("This note has changed. Reload it before trying again.", 409);
+          }
+          installationNote = {
+            ...installationNote,
+            note: { id: "global", text: input.text, revision: input.expectedRevision + 1, canUndo: true },
+          };
+          return installationNote;
+        },
+        undoInstallationNote: async () => installationNote,
         sshFileList: async (body: unknown, _viewerId: string, options: SshFileCallOptions) => {
           options.onResolved?.({ hostLabel: "Test host" });
           sshFileCalls.push({ op: "list", body, mobile: options.mobile });
@@ -7087,6 +7113,91 @@ describe("a mobile session's activity is audited (metadata only)", () => {
         sshFileError: { code: "conflict", conflicts: ["/docs/a.txt"] },
       });
       expect(rows.filter((r) => r.action === "session.file").map((r) => r.status)).toEqual(["failure"]);
+    });
+  });
+
+  test("a phone writes the installation note and the audit row holds the operation and byte count, never the text", async () => {
+    await withAuditedServer({}, async ({ baseUrl, rows, seedTicket }) => {
+      seedTicket("t1", "s1", "dev-1");
+      const cookie = await bootstrap(baseUrl, "t1", "s1");
+      const post = (route: string, body: unknown) =>
+        fetch(`${baseUrl}${route}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Cookie: cookie },
+          body: JSON.stringify(body),
+        });
+
+      const read = await post("/api/sidebar-notes/installation/get", {});
+      expect(read.status).toBe(200);
+      expect(await read.json()).toMatchObject({ installationName: "test-host" });
+
+      const saved = await post("/api/sidebar-notes/installation/save", {
+        text: "h\u00e9llo secret",
+        expectedRevision: 0,
+      });
+      expect(saved.status).toBe(200);
+      expect((await post("/api/sidebar-notes/installation/save", { text: "stale", expectedRevision: 0 })).status).toBe(
+        409,
+      );
+      expect((await post("/api/sidebar-notes/installation/undo", { expectedRevision: 1 })).status).toBe(200);
+
+      expect(
+        rows.filter((r) => r.action === "session.note").map((r) => ({ status: r.status, detail: r.detail })),
+      ).toEqual([
+        { status: "success", detail: "op=save scope=installation bytes=13" },
+        { status: "failure", detail: "op=save scope=installation bytes=5" },
+        { status: "success", detail: "op=undo scope=installation bytes=13" },
+      ]);
+      expect(JSON.stringify(rows)).not.toContain("secret");
+    });
+  });
+
+  test("a JSON body split inside a multibyte character arrives intact", async () => {
+    await withAuditedServer({}, async ({ baseUrl }) => {
+      const text = "Příliš žluťoučký kůň";
+      const bytes = Buffer.from(JSON.stringify({ text, expectedRevision: 0 }));
+      const cut = bytes.indexOf(Buffer.from("ž")) + 1;
+      const reply = await new Promise<string>((resolve, reject) => {
+        const req = http.request(
+          `${baseUrl}/api/sidebar-notes/installation/save?token=unused-master-token`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Strideterm-Client-Id": "client-abcdef12" },
+          },
+          (res) => {
+            let out = "";
+            res.setEncoding("utf8");
+            res.on("data", (d: string) => (out += d));
+            res.on("end", () => resolve(out));
+          },
+        );
+        req.on("error", reject);
+        req.write(bytes.subarray(0, cut));
+        setTimeout(() => req.end(bytes.subarray(cut)), 50);
+      });
+      expect(JSON.parse(reply).note.text).toBe(text);
+    });
+  });
+
+  test("an installation note save by a master-token client records nothing, and an audit failure does not break the save", async () => {
+    await withAuditedServer({}, async ({ baseUrl, rows }) => {
+      const res = await fetch(`${baseUrl}/api/sidebar-notes/installation/save?token=unused-master-token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Strideterm-Client-Id": "client-abcdef12" },
+        body: JSON.stringify({ text: "x", expectedRevision: 0 }),
+      });
+      expect(res.status, await res.clone().text()).toBe(200);
+      expect(rows).toEqual([]);
+    });
+    await withAuditedServer({ auditThrows: true }, async ({ baseUrl, seedTicket }) => {
+      seedTicket("t1", "s1", "dev-1");
+      const cookie = await bootstrap(baseUrl, "t1", "s1");
+      const res = await fetch(`${baseUrl}/api/sidebar-notes/installation/save`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Cookie: cookie },
+        body: JSON.stringify({ text: "x", expectedRevision: 0 }),
+      });
+      expect(res.status).toBe(200);
     });
   });
 

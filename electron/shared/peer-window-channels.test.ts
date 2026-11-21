@@ -4,7 +4,13 @@ import {
   isEventAllowedInPeerWindow,
   PEER_WINDOW_ALLOWED_CHANNELS,
   PEER_WINDOW_ALLOWED_EVENTS,
+  PEER_WINDOW_EVENT_PREFIXES,
 } from "./peer-window-channels.js";
+import {
+  PEER_ATTACHMENT_COPY_FINISHED_CHANNEL,
+  PEER_ATTACHMENT_COPY_PROGRESS_CHANNEL,
+} from "./peer-attachment-copy-events.js";
+import { PEER_HOST_NOTE_CHANGED_CHANNEL } from "./peer-host-note-events.js";
 
 describe("peer window event allowlist", () => {
   test("the peer link and the peer management events pass", () => {
@@ -29,6 +35,23 @@ describe("peer window event allowlist", () => {
     ]) {
       expect(isEventAllowedInPeerWindow(channel), channel).toBe(true);
     }
+  });
+
+  test("a copy into a local workspace, its end and its progress, is never pushed into a window attached to another desktop", () => {
+    for (const channel of [PEER_ATTACHMENT_COPY_FINISHED_CHANNEL, PEER_ATTACHMENT_COPY_PROGRESS_CHANNEL]) {
+      expect(isEventAllowedInPeerWindow(channel), channel).toBe(false);
+      expect(
+        PEER_WINDOW_EVENT_PREFIXES.some((prefix) => channel.startsWith(prefix)),
+        channel,
+      ).toBe(false);
+      expect(PEER_WINDOW_ALLOWED_EVENTS.has(channel), channel).toBe(false);
+    }
+  });
+
+  test("a host's note changing is never pushed into a window attached to another desktop", () => {
+    expect(isEventAllowedInPeerWindow(PEER_HOST_NOTE_CHANGED_CHANNEL)).toBe(false);
+    expect(PEER_WINDOW_EVENT_PREFIXES.some((prefix) => PEER_HOST_NOTE_CHANGED_CHANNEL.startsWith(prefix))).toBe(false);
+    expect(PEER_WINDOW_ALLOWED_EVENTS.has(PEER_HOST_NOTE_CHANGED_CHANNEL)).toBe(false);
   });
 
   test("this machine's data events do not", () => {
@@ -56,6 +79,13 @@ describe("peer window channel allowlist", () => {
   test("the font size channel is allowed, host management and local data are not", () => {
     expect(isChannelAllowedInPeerWindow("peers:window:font-size")).toBe(true);
     expect(isChannelAllowedInPeerWindow("shell:open-external")).toBe(true);
+    for (const channel of [
+      "peers:client:global-note:get",
+      "peers:client:global-note:save",
+      "peers:client:global-note:undo",
+    ]) {
+      expect(isChannelAllowedInPeerWindow(channel), channel).toBe(false);
+    }
     for (const channel of ["peers:host:get", "state:get", "diff:popout:open", "file:popout:open", "terminal:input"]) {
       expect(isChannelAllowedInPeerWindow(channel), channel).toBe(false);
     }

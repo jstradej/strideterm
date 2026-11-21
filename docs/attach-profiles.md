@@ -57,9 +57,13 @@ Limits for files added from a computer: up to 1 GiB per file, 100 attachments an
 
 Attachments are not available in container workspaces or in SSH workspaces and terminals.
 
+In a local window, the **Attachments** tab also lists the recent attachments of each attached desktop (the last 14 days, all its profiles), under that desktop's name. **Copy here** copies one into the workspace the tab shows, **Copy to** (in its menu) into another workspace of the profile, and the eye button copies it and opens it. The copy runs in the background, shows its progress, and ends with a notification that has a **Copy path** action. A file that is already in the workspace is marked **Copied**.
+
 ## Notes
 
 The notes in an attached window are the host's notes for that profile and workspace. A change made on either computer appears on the other within moments. If you and someone at the host change the same note at once, the second save is refused with "This note has changed". Select **Review latest** to see the saved text, then **Use latest** or **Save my draft**. Your unsaved text is not overwritten by an update.
+
+The **Global** section holds one note for the whole installation, shared by every profile. In an attached window it is the host's global note. In a local window, **Global** also shows the note of each attached desktop under that desktop's name, and you can edit it there; an attached desktop that is offline or no longer paired shows a status line instead. A desktop that is connected to this one, but that you have not attached from here, is listed without its note: you see it once you attach it too. Nothing is synced: each note stays on its own computer.
 
 ## When the other computer is not reachable
 
@@ -74,7 +78,7 @@ Each host in **Profiles** shows a state:
 | **Another strIDEterm answers here** | The address now belongs to a different installation. Select **Edit address**, or pair again.                                                     |
 | **Checking…**                       | The first check is still running.                                                                                                                |
 
-**Reconnect** checks the host again, also after it refused this computer. **Edit address** changes the address or port, for example after the host got a new IP address.
+**Reconnect** checks the host again, also after it refused this computer. **Edit address** changes the address or port, for example after the host got a new IP address. **Rename** changes the name this computer shows for the host (and **Rename** in Remote Access → Desktops does the same for a paired device); the name is kept only on this computer and the other desktop is not told.
 
 An attached window that loses its host shows a banner while it retries by itself. When retrying cannot help (**Needs pairing**, another installation, another version) or the connection was closed, the window shows a screen with the reason and three choices: **Reconnect**, **Switch to a local profile** and **Close window**. After a restart of your computer, its attached windows open again; if the host is not there, they show this screen.
 

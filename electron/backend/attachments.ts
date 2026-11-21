@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import path from "node:path";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
-import { createReadStream, constants as fsConstants } from "node:fs";
+import { createReadStream, constants as fsConstants, type Dirent } from "node:fs";
 import { lstat, mkdir, open, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { ATTACHMENT_READ_MAX_BYTES } from "../shared/attachment-upload.js";
 import { validateAttachmentName, validateAttachmentContent, AttachmentPolicyError } from "./attachment-file-policy.js";
@@ -12,6 +12,13 @@ export const MAX_SIZE = 25 * 1024 * 1024;
 export const MAX_TOTAL_SIZE = 4 * 1024 * 1024 * 1024;
 export const MAX_FILE_COUNT = 100;
 export const MAX_CONCURRENT_TRANSFERS = 4;
+/**
+ * Owner prefix of a copy the runtime itself runs for a paired desktop's attachment (`peer-attachment-copy.ts`).
+ * Every caller-supplied owner is a window slot id, `remote:<session>` or a desktop pairing identity, never this.
+ */
+export const PEER_COPY_OWNER_PREFIX = "peer-copy:";
+/** A failed copy keeps its partial for Retry; it stops counting as a running transfer after this long. */
+export const PEER_COPY_ACTIVE_MS = 2 * 60 * 1000;
 const DAILY_RECEIVED_LIMIT = 128 * 1024 * 1024;
 const DESKTOP_MAX_SIZE = 1024 * 1024 * 1024;
 
@@ -193,6 +200,10 @@ async function locked<T>(key: string, fn: () => Promise<T>) {
     release();
     if (locks.get(key) === chain) locks.delete(key);
   }
+}
+function countsAsActive(state: State) {
+  if (state.done) return false;
+  return !state.owner?.startsWith(PEER_COPY_OWNER_PREFIX) || Date.now() - state.updatedAt < PEER_COPY_ACTIVE_MS;
 }
 function owner(state: State, value?: string) {
   if (state.owner !== value) throw new Error("Attachment owner mismatch");
@@ -392,7 +403,7 @@ async function beginUnlocked(
         const prior = await load(base, entry.name);
         files++;
         reserved += prior.size;
-        if (!prior.done) active++;
+        if (countsAsActive(prior)) active++;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
@@ -409,7 +420,7 @@ async function beginUnlocked(
             if (
               prior.name !== name ||
               prior.size !== size ||
-              prior.sha256 !== sha256 ||
+              (!desktop && prior.sha256 !== sha256) ||
               prior.owner !== requestOwner ||
               (prior.kind === "desktop") !== desktop
             )
@@ -459,6 +470,28 @@ async function beginUnlocked(
     } satisfies State),
   );
   return { transferId, chunkSize: CHUNK_SIZE, offset: 0 };
+}
+/** The transfer a key already names in this workspace, if any: what `begin` would resume instead of starting. */
+export async function findByIdempotencyKey(root: string, key: string): Promise<{ done: boolean } | null> {
+  const base = await workspace(root);
+  const transfers = await safePath(base, ".strideterm/.attachment-transfers");
+  let entries: Dirent[];
+  try {
+    entries = await readdir(transfers, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !UUID.test(entry.name)) continue;
+    try {
+      const prior = await load(base, entry.name);
+      if (prior.idempotencyKey === key) return { done: Boolean(prior.done) };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  return null;
 }
 export async function begin(
   root: string,
@@ -685,8 +718,8 @@ export async function remove(root: string, transferId: string, fileName: string,
     const state = await load(root, transferId);
     if (requestOwner !== undefined) owner(state, requestOwner);
     if (!state.done || safeName(fileName) !== state.name) throw new Error("Attachment not found");
-    await rm(await safePath(root, `.strideterm/attachments/${state.id}/${state.name}`, false));
-    await rm(await safePath(root, `.strideterm/attachments/${state.id}`), { recursive: true });
+    await rm(await safePath(root, `.strideterm/attachments/${state.id}/${state.name}`), { force: true });
+    await rm(await safePath(root, `.strideterm/attachments/${state.id}`), { recursive: true, force: true });
     await rm(await safePath(root, `.strideterm/.attachment-transfers/${state.id}`), { recursive: true });
     return { ok: true };
   });

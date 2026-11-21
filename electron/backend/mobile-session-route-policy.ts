@@ -185,6 +185,13 @@ export const MOBILE_PROBE_ROUTES: ReadonlySet<string> = new Set([
   "/api/check-command",
 ]);
 
+/**
+ * `/api/sidebar-notes/installation/*` is classified `guarded` ON PURPOSE and stays available to a phone: the
+ * installation's note is shared by every profile, so it is the one thing a profile-confined session reads and
+ * writes outside its profile. Their strict bodies name no profile or workspace, so the body guard has nothing
+ * to check; remote-server.ts audits each write as `session.note` (operation and byte count, never text).
+ */
+
 /** Routes that need an explicit paired-device grant in addition to profile scoping. */
 export const MOBILE_REQUIRED_CAPABILITIES: Readonly<Record<string, string>> = {
   "/api/review/start": "review.start",
