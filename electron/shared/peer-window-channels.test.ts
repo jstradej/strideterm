@@ -54,6 +54,12 @@ describe("peer window event allowlist", () => {
     expect(PEER_WINDOW_ALLOWED_EVENTS.has(PEER_HOST_NOTE_CHANGED_CHANNEL)).toBe(false);
   });
 
+  test("a note popout is a local window: its channels are refused in a window attached to another desktop", () => {
+    for (const channel of ["notes:popout:open", "notes:popout:get-init"]) {
+      expect(isChannelAllowedInPeerWindow(channel), channel).toBe(false);
+    }
+  });
+
   test("this machine's data events do not", () => {
     for (const channel of [
       "state:updated",

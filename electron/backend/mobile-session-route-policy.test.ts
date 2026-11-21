@@ -346,6 +346,8 @@ const MOBILE_ROUTE_CLASSIFICATION: Record<string, MobileRouteClass> = {
   "/api/sidebar-notes/list": "guarded",
   "/api/sidebar-notes/save": "guarded",
   "/api/sidebar-notes/undo": "guarded",
+  "/api/sidebar-notes/delete": "guarded",
+  "/api/sidebar-notes/set-color": "guarded",
   "/api/ssh/host-key/accept": "guarded",
   "/api/ssh/host-key/reject": "guarded",
   "/api/ssh/hosts/create": "guarded",
@@ -567,6 +569,8 @@ describe("mobile session route policy", () => {
       "/api/sidebar-notes/list",
       "/api/sidebar-notes/save",
       "/api/sidebar-notes/undo",
+      "/api/sidebar-notes/delete",
+      "/api/sidebar-notes/set-color",
     ]) {
       expect(decide(route, { workspaceId: "ws-work" }), route).toMatchObject({
         allow: false,
@@ -598,6 +602,24 @@ describe("mobile session route policy", () => {
         expectedRevision: 0,
       }),
     ).toMatchObject({ allow: false, reason: "target-outside-profile" });
+  });
+
+  test("a phone cannot delete a note of another profile's workspace, but can in its own", () => {
+    const note = { profileId: PROFILE, id: "n", expectedRevision: 1 };
+    expect(decide("/api/sidebar-notes/delete", { ...note, workspaceId: "ws-work" })).toMatchObject({
+      allow: false,
+      reason: "target-outside-profile",
+    });
+    expect(decide("/api/sidebar-notes/delete", { ...note, workspaceId: "ws-home" })).toEqual({ allow: true });
+  });
+
+  test("a phone can set a note colour only in its own profile", () => {
+    const note = { profileId: PROFILE, id: "n", color: "red" };
+    expect(decide("/api/sidebar-notes/set-color", { ...note, workspaceId: "ws-work" })).toMatchObject({
+      allow: false,
+      reason: "target-outside-profile",
+    });
+    expect(decide("/api/sidebar-notes/set-color", { ...note, workspaceId: "ws-home" })).toEqual({ allow: true });
   });
 
   test("the caller's own profile, and ids that name nothing yet, pass", () => {

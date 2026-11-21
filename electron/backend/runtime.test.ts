@@ -583,10 +583,14 @@ describe("automation runtime wiring", () => {
     forged.kind = "manual";
     forged.automation!.prompt = "forged";
     forged.panels[0].command = "evil";
+    forged.panels[0].notes = "check the nightly run";
+    forged.panels.push({ id: "planted", title: "Planted", command: "evil" });
     await fixture.runtime.saveWorkspace(forged);
     const after = fixture.store.getState().workspaces.find((item: WorkspaceState) => item.id === workspaceId)!;
     expect(after).toMatchObject({ kind: "automation", automation: { prompt: "original prompt" } });
     expect(after.panels[0].command).toBe("__automation-dashboard__");
+    expect(after.panels[0].notes).toBe("check the nightly run");
+    expect(after.panels.map((panel) => panel.id)).toEqual(saved.panels.map((panel) => panel.id));
     await fixture.runtime.setAutomationsPaused({ paused: true });
     expect(fixture.runtime.getPayload().appState.settings.automations.paused).toBe(true);
   });
@@ -22471,6 +22475,152 @@ describe("sidebar notes", () => {
     await expect(runtime.undoSidebarNote({ ...theirs, ...input, expectedRevision: 1 }, "win-local")).rejects.toThrow(
       /active profile/,
     );
+  });
+});
+
+describe("sidebar notes: delete", () => {
+  async function deleteFixture() {
+    const fixture = await createFixture({
+      initialState: {
+        profiles: [{ id: "default" }, { id: "other" }],
+        workspaces: [
+          { id: "mine", profileId: "default", name: "Mine", cwd: "/tmp/mine" },
+          { id: "theirs", profileId: "other", name: "Theirs", cwd: "/tmp/theirs" },
+        ],
+        windowSlots: [
+          { id: "win-local", profileId: "default", activeWorkspaceId: "mine" },
+          { id: "win-other", profileId: "other", activeWorkspaceId: "theirs" },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    return fixture;
+  }
+
+  test("removes a note, bumps the counter, and is a no-op for one that is already gone", async () => {
+    const { runtime } = await deleteFixture();
+    const scope = { profileId: "default", workspaceId: "mine" };
+    const keep = await runtime.saveSidebarNote(
+      { ...scope, id: "keep", text: "Keep", expectedRevision: 0 },
+      "win-local",
+    );
+    await runtime.saveSidebarNote({ ...scope, id: "gone", text: "Gone", expectedRevision: 0 }, "win-local");
+    const before = runtime.getPayload().sidebarNotesRevisions?.default ?? 0;
+    await expect(
+      runtime.deleteSidebarNote({ ...scope, id: "gone", expectedRevision: 1 }, "win-local"),
+    ).resolves.toBeUndefined();
+    expect(runtime.listSidebarNotes(scope, "win-local").workspace).toEqual([keep]);
+    expect(runtime.getPayload().sidebarNotesRevisions?.default).toBe(before + 1);
+    await expect(
+      runtime.deleteSidebarNote({ ...scope, id: "gone", expectedRevision: 1 }, "win-local"),
+    ).resolves.toBeUndefined();
+    expect(runtime.getPayload().sidebarNotesRevisions?.default).toBe(before + 1);
+  });
+
+  test("refuses a stale revision and another profile's scope", async () => {
+    const { runtime } = await deleteFixture();
+    const scope = { profileId: "default", workspaceId: null };
+    await runtime.saveSidebarNote({ ...scope, id: "n", text: "One", expectedRevision: 0 }, "win-local");
+    await runtime.saveSidebarNote({ ...scope, id: "n", text: "Two", expectedRevision: 1 }, "win-local");
+    await expect(runtime.deleteSidebarNote({ ...scope, id: "n", expectedRevision: 1 }, "win-local")).rejects.toThrow(
+      /has changed/,
+    );
+    await expect(
+      runtime.deleteSidebarNote(
+        { profileId: "other", workspaceId: "theirs", id: "n", expectedRevision: 2 },
+        "win-local",
+      ),
+    ).rejects.toThrow(/active profile/);
+    expect(runtime.listSidebarNotes(scope, "win-local").global).toHaveLength(1);
+  });
+
+  test("never touches the installation note", async () => {
+    const { runtime } = await deleteFixture();
+    await runtime.saveInstallationNote({ text: "Installation", expectedRevision: 0 });
+    const scope = { profileId: "default", workspaceId: null };
+    for (const id of ["global", "local"]) {
+      await runtime.deleteSidebarNote({ ...scope, id, expectedRevision: 1 }, "win-local");
+    }
+    expect(runtime.getInstallationNote().note).toMatchObject({ text: "Installation", revision: 1 });
+  });
+});
+
+describe("sidebar notes: colour", () => {
+  async function colourFixture() {
+    const fixture = await createFixture({
+      initialState: {
+        profiles: [{ id: "default" }, { id: "other" }],
+        workspaces: [
+          { id: "mine", profileId: "default", name: "Mine", cwd: "/tmp/mine" },
+          { id: "theirs", profileId: "other", name: "Theirs", cwd: "/tmp/theirs" },
+        ],
+        windowSlots: [
+          { id: "win-local", profileId: "default", activeWorkspaceId: "mine" },
+          { id: "win-other", profileId: "other", activeWorkspaceId: "theirs" },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    return fixture;
+  }
+  const counter = (runtime: { getPayload(): { sidebarNotesRevisions?: Record<string, number> } }) =>
+    runtime.getPayload().sidebarNotesRevisions?.default ?? 0;
+
+  test("sets and clears a colour without touching revision, previous text or age", async () => {
+    const { runtime } = await colourFixture();
+    const scope = { profileId: "default", workspaceId: "mine" };
+    await runtime.saveSidebarNote({ ...scope, id: "n", text: "One", expectedRevision: 0 }, "win-local");
+    const saved = await runtime.saveSidebarNote({ ...scope, id: "n", text: "Two", expectedRevision: 1 }, "win-local");
+    const before = counter(runtime);
+    const red = await runtime.setSidebarNoteColor({ ...scope, id: "n", color: "red" }, "win-local");
+    expect(red).toEqual({ ...saved, color: "red" });
+    expect(counter(runtime)).toBe(before + 1);
+    expect(runtime.listSidebarNotes(scope, "win-local").workspace).toEqual([red]);
+    const cleared = await runtime.setSidebarNoteColor({ ...scope, id: "n", color: null }, "win-local");
+    expect(cleared).toEqual(saved);
+    expect(cleared).not.toHaveProperty("color");
+    expect(counter(runtime)).toBe(before + 2);
+  });
+
+  test("bumps the counter only on a real change", async () => {
+    const { runtime } = await colourFixture();
+    const scope = { profileId: "default", workspaceId: null };
+    await runtime.saveSidebarNote({ ...scope, id: "n", text: "One", expectedRevision: 0 }, "win-local");
+    await runtime.setSidebarNoteColor({ ...scope, id: "n", color: null }, "win-local");
+    const before = counter(runtime);
+    await runtime.setSidebarNoteColor({ ...scope, id: "n", color: "green" }, "win-local");
+    await runtime.setSidebarNoteColor({ ...scope, id: "n", color: "green" }, "win-local");
+    expect(counter(runtime)).toBe(before + 1);
+  });
+
+  test("a text save with the old revision still succeeds after a colour change", async () => {
+    const { runtime } = await colourFixture();
+    const scope = { profileId: "default", workspaceId: "mine" };
+    await runtime.saveSidebarNote({ ...scope, id: "n", text: "One", expectedRevision: 0 }, "win-local");
+    await runtime.setSidebarNoteColor({ ...scope, id: "n", color: "orange" }, "win-local");
+    await expect(
+      runtime.saveSidebarNote({ ...scope, id: "n", text: "Two", expectedRevision: 1 }, "win-local"),
+    ).resolves.toMatchObject({ text: "Two", revision: 2, color: "orange" });
+  });
+
+  test("refuses another profile's scope, a missing note, and never colours the installation note", async () => {
+    const { runtime } = await colourFixture();
+    const scope = { profileId: "default", workspaceId: null };
+    await runtime.saveSidebarNote({ ...scope, id: "n", text: "One", expectedRevision: 0 }, "win-local");
+    await expect(
+      runtime.setSidebarNoteColor({ profileId: "other", workspaceId: "theirs", id: "n", color: "red" }, "win-local"),
+    ).rejects.toThrow(/active profile/);
+    await expect(
+      runtime.setSidebarNoteColor({ ...scope, id: "missing", color: "red" }, "win-local"),
+    ).rejects.toMatchObject({ status: 404, message: "This note no longer exists." });
+    await runtime.saveInstallationNote({ text: "Installation", expectedRevision: 0 });
+    for (const id of ["global", "local"]) {
+      await expect(runtime.setSidebarNoteColor({ ...scope, id, color: "red" }, "win-local")).rejects.toMatchObject({
+        status: 404,
+      });
+    }
+    expect(runtime.getInstallationNote().note).not.toHaveProperty("color");
+    expect(runtime.listSidebarNotes(scope, "win-local").global[0]).not.toHaveProperty("color");
   });
 });
 

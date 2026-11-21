@@ -69,7 +69,7 @@
         <span v-else class="tab__status-text">{{ tab.status }}</span>
       </small>
       <span v-if="tab.attention" class="tab__attention" :title="tab.attentionTooltip">🔔</span>
-      <span v-if="tab.notes" class="tab__notes" :title="tab.notes">📝</span>
+      <TabNoteMarker v-if="tab.notes" :notes="tab.notes" @edit="store.openTabNotesDialog(tab.id)" />
       <span
         v-if="!compact"
         class="tab__menu"
@@ -119,7 +119,7 @@
           >
           <small v-else-if="tab.taskBadge" class="tab-strip-compact-picker__item-status">{{ tab.taskBadge }}</small>
           <small v-else class="tab-strip-compact-picker__item-status">{{ tab.status }}</small>
-          <span v-if="tab.notes" :title="tab.notes">📝</span>
+          <TabNoteMarker v-if="tab.notes" :notes="tab.notes" picker @edit="store.openTabNotesDialog(tab.id)" />
           <span
             class="tab-strip-compact-picker__item-menu"
             title="Open the actions available for this tab."
@@ -142,6 +142,7 @@ import { useTabDragDrop } from "../../composables/useDragDrop.js";
 import { isFreshAlert, isGitViewId, tabAttentionTitle } from "../../app/helpers.js";
 import { hostedPanelIds, tabSessionId, type TabIsolation } from "../../app/selectors.js";
 import TabIsolationBadge from "./TabIsolationBadge.vue";
+import TabNoteMarker from "./TabNoteMarker.vue";
 import type { PanelLaunch } from "../../../electron/shared/types/state.js";
 import {
   companionPrimaryHostedPanelIds,
@@ -457,7 +458,7 @@ const tabModels = computed<TabStripTabModel[]>(() => {
       taskTooltip,
       companionWorkspaceId,
       companionRoleLabel,
-      // Free-text scratchpad from the tab's context menu. Surfaced as a 📝
+      // Free-text scratchpad from the tab's context menu. Surfaced as a notes icon
       // marker so a workspace full of tabs shows which ones carry a note
       // without opening each one.
       notes: panel?.notes || "",

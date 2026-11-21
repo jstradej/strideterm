@@ -161,7 +161,7 @@
         v-if="hasPersistentPanel"
         type="button"
         class="context-menu__item"
-        title="Open a scratchpad for this tab — free text for whatever you want to remember about it. Nothing acts on it; the note is saved with the workspace and marks the tab with 📝."
+        title="Open a scratchpad for this tab — free text for whatever you want to remember about it. Nothing acts on it; the note is saved with the workspace and marks the tab with a notes icon."
         @click="onNotes"
       >
         <span class="context-menu__icon">&#x1F4DD;</span><span>{{ hasNotes ? "Edit notes" : "Add notes" }}</span>

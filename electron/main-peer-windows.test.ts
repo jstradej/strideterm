@@ -22,6 +22,8 @@ const REFUSED_IN_PEER_WINDOW = [
   "diff:popout:get-init",
   "file:popout:open",
   "file:popout:get-init",
+  "notes:popout:open",
+  "notes:popout:get-init",
 ];
 
 const registeredChannels = (): string[] => {

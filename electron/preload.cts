@@ -84,6 +84,8 @@ contextBridge.exposeInMainWorld("strideterm", {
   listSidebarNotes: (scope) => ipcRenderer.invoke("sidebar-notes:list", scope),
   saveSidebarNote: (note) => ipcRenderer.invoke("sidebar-notes:save", note),
   undoSidebarNote: (note) => ipcRenderer.invoke("sidebar-notes:undo", note),
+  deleteSidebarNote: (note) => ipcRenderer.invoke("sidebar-notes:delete", note),
+  setSidebarNoteColor: (note) => ipcRenderer.invoke("sidebar-notes:set-color", note),
   getInstallationNote: () => ipcRenderer.invoke("sidebar-notes:installation:get"),
   saveInstallationNote: (note) => ipcRenderer.invoke("sidebar-notes:installation:save", note),
   undoInstallationNote: (note) => ipcRenderer.invoke("sidebar-notes:installation:undo", note),
@@ -477,6 +479,8 @@ contextBridge.exposeInMainWorld("strideterm", {
       return "";
     }
   },
+  openNotePopout: (target) => ipcRenderer.invoke("notes:popout:open", target),
+  getNotePopoutInit: () => ipcRenderer.invoke("notes:popout:get-init"),
   openJiraIssuePopout: (payload) => invokeJira("jira:issue:popout", payload),
   getJiraIssuePopoutInit: () => invokeJira("jira:issue:popout:get-init"),
   onNewWindowShortcut: (handler) => ipcRenderer.on("shortcut:new-window", () => handler()),

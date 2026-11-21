@@ -8,37 +8,43 @@
       <div
         ref="split"
         class="sidebar-notes__split"
-        :class="{ 'sidebar-notes__split--automatic': sizes === null }"
+        :class="{ 'sidebar-notes__split--automatic': weights === null }"
         :style="splitStyle"
       >
-        <template v-for="(section, index) in sections" :key="section.kind">
+        <template v-for="section in sections" :key="section.kind">
           <div
-            v-if="index > 0"
+            v-if="section.resizeIndex > 0"
             class="sidebar-notes__divider"
-            :class="{ 'sidebar-notes__divider--inactive': !dividerActive(index - 1) }"
+            :class="{ 'sidebar-notes__divider--inactive': !dividerActive(section.resizeIndex - 1) }"
             role="separator"
-            :tabindex="dividerActive(index - 1) ? 0 : -1"
-            :aria-label="index === 1 ? 'Resize workspace and profile notes' : 'Resize profile and global notes'"
+            :tabindex="dividerActive(section.resizeIndex - 1) ? 0 : -1"
+            :aria-label="section.dividerLabel"
             aria-orientation="horizontal"
-            :aria-disabled="dividerActive(index - 1) ? undefined : true"
-            :aria-valuenow="dividerValue(index - 1)"
-            :aria-valuetext="sizes === null ? 'Automatic' : undefined"
+            :aria-disabled="dividerActive(section.resizeIndex - 1) ? undefined : true"
+            :aria-valuenow="dividerValue(section.resizeIndex - 1)"
+            :aria-valuetext="weights === null ? 'Automatic' : undefined"
             :aria-valuemin="minimumPanelSize"
             :aria-valuemax="100 - minimumPanelSize"
-            @keydown="resizeWithKeyboard($event, index - 1)"
-            @pointerdown="startResize($event, index - 1)"
-            @pointermove="moveResize($event, index - 1)"
+            @keydown="resizeWithKeyboard($event, section.resizeIndex - 1)"
+            @pointerdown="startResize($event, section.resizeIndex - 1)"
+            @pointermove="moveResize($event, section.resizeIndex - 1)"
             @pointerup="endResize"
             @pointercancel="endResize"
             @lostpointercapture="endResize"
           ></div>
           <section
             class="sidebar-notes__section"
-            :class="'sidebar-notes__section--' + section.kind"
+            :class="[
+              'sidebar-notes__section--' + section.kind,
+              {
+                'sidebar-notes__section--flex': section.resizeIndex >= 0 && !isCollapsed(section.kind),
+                'sidebar-notes__section--collapsed': isCollapsed(section.kind),
+              },
+            ]"
             :aria-label="section.label"
             :style="section.accent ? { '--notes-section-accent': section.accent } : undefined"
           >
-            <header class="sidebar-notes__heading">
+            <header class="sidebar-notes__heading" @click="clickHeading(section.kind, $event)">
               <div class="sidebar-notes__heading-label">
                 <h3 :title="section.title">{{ section.label }}</h3>
                 <span v-if="section.context" class="sidebar-notes__context" :title="section.contextTitle">{{
@@ -52,33 +58,69 @@
                   "
                   >{{ section.collection.notes.length }}</span
                 >
+                <template
+                  v-if="section.kind === 'tab' && tabDraft && (tabDraft.editing || tabDraft.pending) && !tabDraft.error"
+                >
+                  <span
+                    v-if="tabDraft.pending"
+                    class="sidebar-notes__tab-status"
+                    role="status"
+                    aria-label="Saving tab note…"
+                  >
+                    <span class="sidebar-notes__spinner" aria-hidden="true"></span>
+                    Saving…
+                  </span>
+                  <span v-else-if="tabDraftDirty(tabDraft)" class="sidebar-notes__tab-status" role="status">
+                    Unsaved changes
+                  </span>
+                  <span v-else class="sidebar-notes__tab-status sidebar-notes__status--saved" role="status">
+                    ✓ Saved
+                  </span>
+                </template>
               </div>
-              <button
-                v-if="section.kind === 'installation'"
-                type="button"
-                class="sidebar-notes__add sidebar-notes__collapse"
-                :aria-expanded="!installationCollapsed"
-                :aria-label="installationCollapsed ? 'Show the global note' : 'Hide the global note'"
-                :title="installationCollapsed ? 'Show the global note' : 'Collapse to the heading'"
-                @click="toggleInstallation"
-              >
-                <svg class="sidebar-notes__chevron" viewBox="0 0 16 16" aria-hidden="true">
-                  <path d="M6 4l4 4-4 4" />
-                </svg>
-              </button>
-              <button
-                v-else
-                type="button"
-                class="sidebar-notes__add"
-                :aria-label="section.addLabel"
-                :title="section.addTitle"
-                :disabled="!section.collection || loading"
-                @click="section.collection && createNote(section.collection)"
-              >
-                <span aria-hidden="true">+</span>
-              </button>
+              <div class="sidebar-notes__heading-actions">
+                <button
+                  v-if="section.kind === 'tab' && canPopout && tabNote"
+                  type="button"
+                  class="sidebar-notes__add sidebar-notes__popout"
+                  aria-label="Open in a window"
+                  title="Open in a window"
+                  @click="popOutTabNote"
+                >
+                  <svg viewBox="0 0 16 16" aria-hidden="true">
+                    <path
+                      d="M9 2.5h4.5V7M13.5 2.5 7.5 8.5M6.5 3.5h-3a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-3"
+                    />
+                  </svg>
+                </button>
+                <button
+                  v-if="section.kind === 'workspace' || section.kind === 'global'"
+                  type="button"
+                  class="sidebar-notes__add"
+                  :aria-label="section.addLabel"
+                  :title="section.addTitle"
+                  :disabled="!section.collection || loading"
+                  @click="section.collection && createNote(section.collection)"
+                >
+                  <svg class="sidebar-notes__plus" viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="M8 3.5v9M3.5 8h9" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  class="sidebar-notes__add sidebar-notes__collapse"
+                  :aria-expanded="!isCollapsed(section.kind)"
+                  :aria-label="(isCollapsed(section.kind) ? 'Show the ' : 'Collapse the ') + section.noun"
+                  :title="isCollapsed(section.kind) ? 'Show the ' + section.noun : 'Collapse to the heading'"
+                  @click="toggleSection(section.kind)"
+                >
+                  <svg class="sidebar-notes__chevron" viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="M6 4l4 4-4 4" />
+                  </svg>
+                </button>
+              </div>
             </header>
-            <div v-if="section.kind !== 'installation' || !installationCollapsed" class="sidebar-notes__scroll">
+            <div v-if="!isCollapsed(section.kind)" class="sidebar-notes__scroll">
               <template v-if="section.kind === 'installation'">
                 <template v-for="entry in globalEntries" :key="entry.key">
                   <div
@@ -98,6 +140,20 @@
                         :title="editedTitle(entry.card.current.draft)"
                         >{{ ageOf(entry.card.current.draft) }}</span
                       >
+                      <button
+                        v-if="canPopout && entry.card.current"
+                        type="button"
+                        class="sidebar-notes__popout"
+                        aria-label="Open in a window"
+                        title="Open in a window"
+                        @click="popOutCard(entry.card)"
+                      >
+                        <svg viewBox="0 0 16 16" aria-hidden="true">
+                          <path
+                            d="M9 2.5h4.5V7M13.5 2.5 7.5 8.5M6.5 3.5h-3a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-3"
+                          />
+                        </svg>
+                      </button>
                     </div>
                     <div v-if="entry.card.loadError" class="sidebar-notes__problem" role="alert">
                       <span class="sidebar-notes__error">{{ entry.card.loadError }}</span>
@@ -232,36 +288,11 @@
                 </template>
               </template>
               <div
-                v-else-if="section.kind === 'workspace' && tabNote"
+                v-else-if="section.kind === 'tab' && tabNote"
                 class="sidebar-notes__tab-note"
                 :class="{ 'sidebar-notes__tab-note--editing': tabDraft?.editing }"
                 @focusout="leaveTabNote"
               >
-                <div class="sidebar-notes__tab-heading">
-                  <span
-                    class="sidebar-notes__tab-label"
-                    title="A note for the active tab only. It is saved with the workspace and the tab shows a note marker while it has one."
-                    >Tab</span
-                  >
-                  <span class="sidebar-notes__tab-title" :title="tabNote.title">{{ tabNote.title }}</span>
-                  <template v-if="tabDraft && (tabDraft.editing || tabDraft.pending) && !tabDraft.error">
-                    <span
-                      v-if="tabDraft.pending"
-                      class="sidebar-notes__tab-status"
-                      role="status"
-                      aria-label="Saving tab note…"
-                    >
-                      <span class="sidebar-notes__spinner" aria-hidden="true"></span>
-                      Saving…
-                    </span>
-                    <span v-else-if="tabDraftDirty(tabDraft)" class="sidebar-notes__tab-status" role="status">
-                      Unsaved changes
-                    </span>
-                    <span v-else class="sidebar-notes__tab-status sidebar-notes__status--saved" role="status">
-                      ✓ Saved
-                    </span>
-                  </template>
-                </div>
                 <textarea
                   v-if="tabDraft?.editing"
                   data-tab-note-editor
@@ -311,6 +342,7 @@
                   </div>
                 </div>
               </div>
+              <p v-else-if="section.kind === 'tab'" class="sidebar-notes__hint">{{ section.emptyText }}</p>
               <div v-if="section.collection">
                 <p v-if="loading && !section.collection.notes.length" class="sidebar-notes__hint">Loading…</p>
                 <button
@@ -326,8 +358,39 @@
                   v-for="note in section.collection.notes"
                   :key="note.id"
                   class="sidebar-notes__note"
-                  :class="{ 'sidebar-notes__note--open': isOpen(section.collection, note) }"
+                  :class="{
+                    'sidebar-notes__note--open': isOpen(section.collection, note),
+                    'sidebar-notes__note--popout': canPopout && note.revision > 0,
+                    'sidebar-notes__note--deletable': note.revision > 0,
+                    [`sidebar-notes__note--${note.color}`]: !!note.color,
+                  }"
                 >
+                  <button
+                    v-if="canPopout && note.revision > 0"
+                    type="button"
+                    class="sidebar-notes__popout sidebar-notes__popout--note"
+                    aria-label="Open in a window"
+                    title="Open in a window"
+                    @click="popOutNote(section.collection, note)"
+                  >
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <path
+                        d="M9 2.5h4.5V7M13.5 2.5 7.5 8.5M6.5 3.5h-3a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-3"
+                      />
+                    </svg>
+                  </button>
+                  <button
+                    v-if="note.revision > 0"
+                    type="button"
+                    class="sidebar-notes__popout sidebar-notes__popout--note sidebar-notes__delete"
+                    aria-label="Delete note"
+                    title="Delete note"
+                    @click="confirmDeleteNote(section.collection, note)"
+                  >
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.5 8a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1l.5-8M7 7v4M9 7v4" />
+                    </svg>
+                  </button>
                   <button
                     class="sidebar-notes__note-title"
                     type="button"
@@ -462,6 +525,24 @@
                       >
                         Discard
                       </button>
+                      <span
+                        v-if="note.revision > 0"
+                        class="sidebar-notes__colors"
+                        role="group"
+                        aria-label="Note colour"
+                      >
+                        <button
+                          v-for="option in COLOR_OPTIONS"
+                          :key="option.label"
+                          type="button"
+                          class="sidebar-notes__swatch"
+                          :class="`sidebar-notes__swatch--${option.color ?? 'none'}`"
+                          :aria-label="option.label"
+                          :title="option.label"
+                          :aria-pressed="(note.color ?? null) === option.color"
+                          @click="setNoteColor(section.collection, note, option.color)"
+                        ></button>
+                      </span>
                     </div>
                   </div>
                 </article>
@@ -483,8 +564,10 @@ import type { PeerAttachedHost, PeerHostState } from "../../../electron/shared/p
 import { SIDEBAR_NOTE_MAX_LENGTH } from "../../../electron/shared/sidebar-notes.js";
 import type {
   InstallationNote,
+  NotePopoutTarget,
   SaveInstallationNote,
   SidebarNote,
+  SidebarNoteColor,
   SidebarNotesScope,
   UndoInstallationNote,
 } from "../../../electron/shared/sidebar-notes.js";
@@ -503,22 +586,35 @@ const appStore = useAppStore();
 const injectedApi = inject(apiKey);
 const getApi = () => injectedApi ?? appStore.getApi();
 const split = ref<HTMLElement | null>(null);
-interface PanelSizes {
-  workspace: number;
-  profile: number;
-}
-const DEFAULT_PANEL_SIZES: PanelSizes = { workspace: 40, profile: 30 };
-const INSTALLATION_COLLAPSED_KEY = "strideterm.sidebarNotes.installationCollapsed";
-const sizes = ref<PanelSizes | null>(null);
+type SectionKind = "tab" | "workspace" | "global" | "installation";
+type ResizableKind = Exclude<SectionKind, "tab">;
+type PanelWeights = Record<ResizableKind, number>;
+const SECTION_KINDS: readonly SectionKind[] = ["tab", "workspace", "global", "installation"];
+const RESIZABLE_KINDS: readonly ResizableKind[] = ["workspace", "global", "installation"];
+const DEFAULT_WEIGHTS: PanelWeights = { workspace: 40, global: 30, installation: 30 };
+const COLLAPSED_SECTIONS_KEY = "strideterm.sidebarNotes.collapsedSections";
+const LEGACY_INSTALLATION_COLLAPSED_KEY = "strideterm.sidebarNotes.installationCollapsed";
+const weights = ref<PanelWeights | null>(null);
 const minimumPanelSize = ref(20);
 const loading = ref(false);
 const loadError = ref("");
 
 const SAVE_DELAY_MS = 1000;
 
+const canPopout = !getApi()?.isRemote && !isPeerWindow() && typeof getApi()?.openNotePopout === "function";
+
+async function openPopout(target: NotePopoutTarget) {
+  try {
+    await getApi()?.openNotePopout?.(target);
+  } catch (error) {
+    useNotificationStore().showError("Couldn't open the note in a window", error);
+  }
+}
+
 type Mutation = "save" | "undo";
 interface Draft extends SidebarNote {
   storedText: string;
+  colorPending: boolean;
   pending: Mutation | null;
   failed: Mutation | null;
   error: string;
@@ -610,14 +706,40 @@ const sections = computed(() => {
   const profile = profileName.value;
   const inProfile = profile ? `in the ${profile} profile` : "in this profile";
   const workspaceLabel = name ? `“${name}”` : "the selected workspace";
+  const tab = tabNote.value;
+  const accent = currentWorkspace.value?.color || "var(--accent, var(--text))";
   return [
+    ...(props.workspaceId
+      ? [
+          {
+            kind: "tab" as const,
+            label: "Tab",
+            noun: "tab note",
+            resizeIndex: -1,
+            dividerLabel: "",
+            title:
+              "A note for the active tab only. It is saved with the workspace and the tab shows a note marker while it has one.",
+            context: tab?.title ?? "",
+            contextTitle: tab?.title ?? "",
+            accent,
+            addLabel: "",
+            addTitle: "",
+            emptyText: `Select a tab of ${name || "this workspace"} to see or add its note.`,
+            placeholder: "",
+            collection: null,
+          },
+        ]
+      : []),
     {
-      kind: "workspace",
+      kind: "workspace" as const,
       label: "Workspace",
+      noun: "workspace notes",
+      resizeIndex: 0,
+      dividerLabel: "",
       title: `Notes that belong to ${workspaceLabel} only. They are shown while it is selected and stay with it whichever tab is open.`,
       context: name,
       contextTitle: `Only for the workspace ${workspaceLabel}`,
-      accent: currentWorkspace.value?.color || "var(--accent, var(--text))",
+      accent,
       addLabel: name ? `New note for ${name}` : "New workspace note",
       addTitle: `New note for ${workspaceLabel} only. For a note you want in every workspace, use Profile below.`,
       emptyText: `No notes for ${name || "this workspace"} yet.`,
@@ -625,8 +747,11 @@ const sections = computed(() => {
       collection: workspace.value,
     },
     {
-      kind: "global",
+      kind: "global" as const,
       label: "Profile",
+      noun: "profile notes",
+      resizeIndex: 1,
+      dividerLabel: "Resize workspace and profile notes",
       title: `Notes shared by every workspace ${inProfile}, shown whichever workspace is selected. Other profiles keep their own.`,
       context: profile,
       contextTitle: `Shared by all workspaces ${inProfile}`,
@@ -638,8 +763,11 @@ const sections = computed(() => {
       collection: global.value,
     },
     {
-      kind: "installation",
+      kind: "installation" as const,
       label: "Global",
+      noun: "global note",
+      resizeIndex: 2,
+      dividerLabel: "Resize profile and global notes",
       title:
         "One note per computer, shared by all its profiles and workspaces, and readable and editable by its phones, browser sessions and attached desktops. The desktops attached to this one show their own below.",
       context: "",
@@ -731,7 +859,8 @@ async function saveTabDraft(draft: TabDraft) {
     await appStore.saveTabNote(draft.viewId, text);
   } catch (error) {
     draft.error = userFacingMessage(error, "Couldn't save the tab note.");
-    if (tabDraft.value !== draft || disposed) useNotificationStore().showError("Tab note not saved", error);
+    if (tabDraft.value !== draft || disposed || isCollapsed("tab"))
+      useNotificationStore().showError("Tab note not saved", error);
   } finally {
     draft.pending = false;
     if (draft.error || draft.text.trim() === text.trim()) settleTabDraft(draft);
@@ -849,6 +978,7 @@ function makeDraft(note: SidebarNote): Draft {
   return reactive({
     ...note,
     storedText: note.text,
+    colorPending: false,
     pending: null,
     failed: null,
     error: "",
@@ -870,6 +1000,7 @@ function updateStored(note: Draft, stored: SidebarNote) {
   note.revision = stored.revision;
   note.canUndo = stored.canUndo;
   note.updatedAt = stored.updatedAt;
+  if (!note.colorPending) note.color = stored.color;
 }
 
 function merge(collection: Collection, stored: SidebarNote[]) {
@@ -881,6 +1012,8 @@ function merge(collection: Collection, stored: SidebarNote[]) {
     if (!note.pending && !note.failed && note.text === note.storedText) {
       updateStored(note, record);
       note.text = record.text;
+    } else if (!note.colorPending) {
+      note.color = record.color;
     }
     return note;
   });
@@ -980,6 +1113,8 @@ function focusEditor(note: Draft) {
 }
 
 function createNote(collection: Collection) {
+  const kind = collection === workspace.value ? "workspace" : "global";
+  if (isCollapsed(kind)) toggleSection(kind);
   let note = collection.notes.find((draft) => !draft.revision && !draft.text.trim());
   if (!note) {
     const id =
@@ -995,6 +1130,70 @@ function createNote(collection: Collection) {
 function discardEmpty(collection: Collection, note: Draft) {
   collection.notes = collection.notes.filter((draft) => draft !== note);
   setOpen(collection, note, false);
+}
+
+function confirmDeleteNote(collection: Collection, note: Draft) {
+  appStore.openDialog("ConfirmDialog", {
+    eyebrow: "Notes",
+    title: "Delete note?",
+    message: `“${titleOf(note.text)}” will be deleted. This cannot be undone.`,
+    confirmLabel: "Delete",
+    danger: true,
+    onCancel: () => appStore.closeDialog(),
+    onConfirm: () => {
+      appStore.closeDialog();
+      return deleteNote(collection, note);
+    },
+  });
+}
+
+async function deleteNote(collection: Collection, note: Draft) {
+  clearSaveTimer(note);
+  mutationGeneration++;
+  try {
+    const api = getApi();
+    if (!api?.deleteSidebarNote) throw new Error("Notes are unavailable.");
+    await api.deleteSidebarNote({ ...collection.scope, id: note.id, expectedRevision: note.revision });
+    if (disposed) return;
+    collection.notes = collection.notes.filter((draft) => draft !== note);
+    setOpen(collection, note, false);
+  } catch (error) {
+    if (disposed) return;
+    useNotificationStore().showError("Note not deleted", error);
+    void reload();
+  } finally {
+    mutationGeneration++;
+  }
+}
+
+const COLOR_OPTIONS: { color: SidebarNoteColor | null; label: string }[] = [
+  { color: null, label: "No colour" },
+  { color: "green", label: "Green" },
+  { color: "orange", label: "Orange" },
+  { color: "red", label: "Red" },
+];
+
+async function setNoteColor(collection: Collection, note: Draft, color: SidebarNoteColor | null) {
+  if ((note.color ?? null) === color) return;
+  const previous = note.color;
+  note.color = color ?? undefined;
+  note.colorPending = true;
+  mutationGeneration++;
+  try {
+    const api = getApi();
+    if (!api?.setSidebarNoteColor) throw new Error("Notes are unavailable.");
+    const stored = await api.setSidebarNoteColor({ ...collection.scope, id: note.id, color });
+    if (disposed) return;
+    note.colorPending = false;
+    note.color = stored.color;
+  } catch (error) {
+    note.colorPending = false;
+    if (disposed) return;
+    note.color = previous;
+    useNotificationStore().showError("Note colour not changed", error);
+  } finally {
+    mutationGeneration++;
+  }
 }
 
 function toggleEditor(collection: Collection, note: Draft) {
@@ -1068,6 +1267,8 @@ async function mutate(collection: Collection, note: Draft, action: Mutation) {
     note.failed = action;
     note.error =
       error instanceof Error ? error.message : action === "save" ? "Couldn't save note." : "Couldn't undo save.";
+    if (isCollapsed(collection === workspace.value ? "workspace" : "global"))
+      useNotificationStore().showError(action === "save" ? "Note not saved" : "Note not restored", error);
   } finally {
     mutationGeneration++;
     note.pending = null;
@@ -1124,7 +1325,6 @@ interface GlobalCard {
   mutations: number;
 }
 const globalCards = reactive(new Map<string, GlobalCard>());
-const installationCollapsed = ref(readInstallationCollapsed());
 const hostNotesAvailable =
   !getApi()?.isRemote &&
   !isPeerWindow() &&
@@ -1154,25 +1354,79 @@ function cardFor(key: string, hostId: string | null): GlobalCard {
 
 const localCard = cardFor(LOCAL_CARD, null);
 
-function readInstallationCollapsed() {
+function readCollapsedSections(): SectionKind[] {
+  const kinds: SectionKind[] = [];
   try {
-    return localStorage.getItem(INSTALLATION_COLLAPSED_KEY) === "1";
+    const stored: unknown = JSON.parse(localStorage.getItem(COLLAPSED_SECTIONS_KEY) ?? "[]");
+    if (Array.isArray(stored)) kinds.push(...SECTION_KINDS.filter((kind) => stored.includes(kind)));
   } catch {
-    return false;
+    // An unreadable value counts as nothing collapsed.
   }
+  try {
+    if (localStorage.getItem(LEGACY_INSTALLATION_COLLAPSED_KEY) === "1") {
+      if (!kinds.includes("installation")) kinds.push("installation");
+      localStorage.setItem(COLLAPSED_SECTIONS_KEY, JSON.stringify(kinds));
+    }
+    localStorage.removeItem(LEGACY_INSTALLATION_COLLAPSED_KEY);
+  } catch {
+    // The old key is read again next time; the panel works without storage.
+  }
+  return kinds;
 }
 
-function toggleInstallation() {
-  installationCollapsed.value = !installationCollapsed.value;
-  if (installationCollapsed.value) {
+const collapsedSections = reactive(new Set<SectionKind>(readCollapsedSections()));
+const isCollapsed = (kind: SectionKind) => collapsedSections.has(kind);
+
+function popOutNote(collection: Collection, note: Draft) {
+  flushSave(collection, note);
+  void openPopout({
+    kind: "note",
+    profileId: collection.scope.profileId,
+    workspaceId: collection.scope.workspaceId,
+    noteId: note.id,
+  });
+}
+
+function popOutCard(card: GlobalCard) {
+  flushCard(card);
+  void openPopout(card.hostId ? { kind: "host", hostId: card.hostId } : { kind: "installation" });
+}
+
+function popOutTabNote() {
+  const note = tabNote.value;
+  if (!note) return;
+  if (tabDraft.value) void saveTabDraft(tabDraft.value);
+  void openPopout({ kind: "tab", profileId: props.profileId, viewId: note.id });
+}
+
+function closeSection(kind: SectionKind) {
+  if (kind === "tab") closeTabNote();
+  else if (kind === "installation") {
     flushCards();
     for (const card of globalCards.values()) card.editing = false;
   } else {
-    loadHostCards();
+    const collection = kind === "workspace" ? workspace.value : global.value;
+    if (collection) for (const note of collection.notes) flushSave(collection, note);
+  }
+}
+
+// The chevron stays the keyboard and screen-reader control; the rest of the heading is a larger mouse target.
+function clickHeading(kind: SectionKind, event: MouseEvent) {
+  if ((event.target as Element | null)?.closest("button, a, input, textarea, select")) return;
+  toggleSection(kind);
+}
+
+function toggleSection(kind: SectionKind) {
+  if (collapsedSections.has(kind)) {
+    collapsedSections.delete(kind);
+    if (kind === "installation") loadHostCards();
+  } else {
+    collapsedSections.add(kind);
+    closeSection(kind);
   }
   try {
-    if (installationCollapsed.value) localStorage.setItem(INSTALLATION_COLLAPSED_KEY, "1");
-    else localStorage.removeItem(INSTALLATION_COLLAPSED_KEY);
+    if (collapsedSections.size) localStorage.setItem(COLLAPSED_SECTIONS_KEY, JSON.stringify([...collapsedSections]));
+    else localStorage.removeItem(COLLAPSED_SECTIONS_KEY);
   } catch {
     // Remembering the fold is a convenience; the panel works without it.
   }
@@ -1421,6 +1675,8 @@ async function mutateCard(card: GlobalCard, action: Mutation) {
     if (disposed) return;
     note.failed = action;
     note.error = userFacingMessage(error, action === "save" ? "Couldn't save note." : "Couldn't undo save.");
+    if (isCollapsed("installation"))
+      useNotificationStore().showError(action === "save" ? "Global note not saved" : "Global note not restored", error);
   } finally {
     card.mutations++;
     note.pending = null;
@@ -1456,75 +1712,94 @@ function resolveCard(card: GlobalCard, saveDraft: boolean) {
   else note.text = note.storedText;
 }
 
-function dividerActive(divider: number) {
-  return divider === 0 || !installationCollapsed.value;
+const expandedKinds = () => RESIZABLE_KINDS.filter((kind) => !collapsedSections.has(kind));
+
+function boundaryAround(divider: number) {
+  const expanded = expandedKinds();
+  const above = expanded.filter((kind) => RESIZABLE_KINDS.indexOf(kind) <= divider).pop();
+  const below = expanded.find((kind) => RESIZABLE_KINDS.indexOf(kind) > divider);
+  return above && below ? { above, below } : null;
 }
 
+const dividerActive = (divider: number) => boundaryAround(divider) !== null;
+
 function dividerValue(divider: number): number | undefined {
-  const current = sizes.value;
-  if (!current) return undefined;
-  const total = installationCollapsed.value ? current.workspace + current.profile : 100;
-  return Math.round(((divider === 0 ? current.workspace : current.workspace + current.profile) * 100) / total);
+  const current = weights.value;
+  const boundary = boundaryAround(divider);
+  if (!current || !boundary) return undefined;
+  const expanded = expandedKinds();
+  const total = expanded.reduce((sum, kind) => sum + current[kind], 0);
+  const above = expanded
+    .filter((kind) => RESIZABLE_KINDS.indexOf(kind) <= RESIZABLE_KINDS.indexOf(boundary.above))
+    .reduce((sum, kind) => sum + current[kind], 0);
+  return Math.round((above * 100) / total);
 }
 
 const splitStyle = computed(() => {
-  const current = sizes.value;
-  if (!current) return undefined;
-  const global = 100 - current.workspace - current.profile;
-  return {
-    "--notes-workspace-size": current.workspace + "fr",
-    "--notes-profile-size": current.profile + "fr",
-    "--notes-global-row": installationCollapsed.value ? "auto" : `minmax(var(--notes-pane-minimum), ${global}fr)`,
-  };
+  const rows: string[] = [];
+  const current = weights.value;
+  const expanded = expandedKinds();
+  const filler = expanded.includes("global") ? "global" : expanded[expanded.length - 1];
+  for (const section of sections.value) {
+    if (section.resizeIndex > 0) rows.push("9px");
+    const kind = section.kind;
+    if (collapsedSections.has(kind)) rows.push("auto");
+    else if (kind === "tab") rows.push("fit-content(30%)");
+    else if (current) rows.push(`minmax(var(--notes-pane-minimum), ${current[kind]}fr)`);
+    else if (kind === filler) rows.push("minmax(0, 1fr)");
+    else rows.push(kind === "workspace" ? "fit-content(45%)" : "fit-content(35%)");
+  }
+  return { gridTemplateRows: rows.join(" ") };
 });
 
-function flexibleHeight(divider: HTMLElement) {
+function fixedHeight(before?: Element) {
+  let height = 0;
+  for (const child of Array.from(split.value?.children ?? [])) {
+    if (child === before) break;
+    if (!child.classList.contains("sidebar-notes__section--flex")) height += (child as HTMLElement).offsetHeight;
+  }
+  return height;
+}
+
+function flexibleHeight() {
   const bounds = split.value?.getBoundingClientRect();
-  if (!bounds) return 0;
-  const collapsed = installationCollapsed.value
-    ? (split.value?.querySelector<HTMLElement>(".sidebar-notes__section--installation")?.offsetHeight ?? 0)
-    : 0;
-  return bounds.height - 2 * divider.offsetHeight - collapsed;
+  return bounds ? bounds.height - fixedHeight() : 0;
 }
 
-function clampSizes(next: PanelSizes, minimum: number): PanelSizes {
-  const workspace = Math.max(minimum, Math.min(100 - 2 * minimum, next.workspace));
-  return { workspace, profile: Math.max(minimum, Math.min(100 - workspace - minimum, next.profile)) };
-}
-
-function measuredSizes(divider: HTMLElement, height: number): PanelSizes {
-  const dividers = split.value?.querySelectorAll<HTMLElement>(".sidebar-notes__divider");
-  if (height <= 0 || !dividers || dividers.length < 2) return DEFAULT_PANEL_SIZES;
-  const scale = installationCollapsed.value ? 0.6 : 1;
-  const first = dividers[0].offsetTop;
-  const second = dividers[1].offsetTop - divider.offsetHeight;
-  if (first <= 0 || second <= first) return DEFAULT_PANEL_SIZES;
-  return {
-    workspace: ((100 * first) / height) * scale,
-    profile: ((100 * (second - first)) / height) * scale,
-  };
-}
-
-function updateSizes(divider: HTMLElement, height: number, change: (current: PanelSizes, total: number) => PanelSizes) {
-  minimumPanelSize.value = height > 0 ? Math.min(20, Math.ceil((44 * 100) / height)) : 20;
-  const minimum = minimumPanelSize.value;
-  const current = sizes.value ?? clampSizes(measuredSizes(divider, height), minimum);
-  const total = installationCollapsed.value ? current.workspace + current.profile : 100;
-  const next = change(current, total);
-  const shown = installationCollapsed.value ? (minimum * total) / 100 : minimum;
-  const workspace = Math.max(shown, Math.min(current.workspace + current.profile - shown, next.workspace));
-  const profile = installationCollapsed.value
-    ? current.workspace + current.profile - workspace
-    : Math.max(shown, Math.min(100 - workspace - shown, next.workspace + next.profile - workspace));
-  sizes.value = { workspace: Math.round(workspace), profile: Math.round(profile) };
-}
-
-function moveBoundary(divider: HTMLElement, index: number, height: number, percent: number) {
-  updateSizes(divider, height, (current, total) =>
-    index === 0
-      ? { workspace: (percent * total) / 100, profile: current.workspace + current.profile - (percent * total) / 100 }
-      : { workspace: current.workspace, profile: percent - current.workspace },
+function measuredWeights(minimum: number): PanelWeights {
+  const expanded = expandedKinds();
+  const heights = expanded.map(
+    (kind) => split.value?.querySelector<HTMLElement>(".sidebar-notes__section--" + kind)?.offsetHeight ?? 0,
   );
+  const measured = heights.reduce((sum, height) => sum + height, 0);
+  if (heights.some((height) => height <= 0)) return { ...DEFAULT_WEIGHTS };
+  const total = expanded.reduce((sum, kind) => sum + DEFAULT_WEIGHTS[kind], 0);
+  const next = { ...DEFAULT_WEIGHTS };
+  expanded.forEach((kind, index) => {
+    next[kind] = Math.round(Math.max((minimum * total) / 100, (heights[index] * total) / measured));
+  });
+  return next;
+}
+
+function ensureWeights(height: number): PanelWeights {
+  minimumPanelSize.value = height > 0 ? Math.min(20, Math.ceil((44 * 100) / height)) : 20;
+  weights.value ??= measuredWeights(minimumPanelSize.value);
+  return weights.value;
+}
+
+function moveBoundary(index: number, height: number, percent: number) {
+  const current = ensureWeights(height);
+  const boundary = boundaryAround(index);
+  if (!boundary) return;
+  const expanded = expandedKinds();
+  const total = expanded.reduce((sum, kind) => sum + current[kind], 0);
+  const minimum = (minimumPanelSize.value * total) / 100;
+  const pair = current[boundary.above] + current[boundary.below];
+  const before = expanded
+    .filter((kind) => RESIZABLE_KINDS.indexOf(kind) < RESIZABLE_KINDS.indexOf(boundary.above))
+    .reduce((sum, kind) => sum + current[kind], 0);
+  const above = Math.round(Math.max(minimum, Math.min(pair - minimum, (percent * total) / 100 - before)));
+  weights.value = { ...current, [boundary.above]: above, [boundary.below]: pair - above };
 }
 
 function startResize(event: PointerEvent, index: number) {
@@ -1542,14 +1817,9 @@ function moveResize(event: PointerEvent, index: number) {
   const bounds = split.value?.getBoundingClientRect();
   if (!bounds) return;
   const divider = event.currentTarget as HTMLElement;
-  const height = flexibleHeight(divider);
+  const height = flexibleHeight();
   if (height > 0) {
-    moveBoundary(
-      divider,
-      index,
-      height,
-      (100 * (event.clientY - bounds.top - dragGrabOffset - index * divider.offsetHeight)) / height,
-    );
+    moveBoundary(index, height, (100 * (event.clientY - bounds.top - dragGrabOffset - fixedHeight(divider))) / height);
   }
 }
 
@@ -1559,16 +1829,14 @@ function endResize(event: PointerEvent) {
 
 function resizeWithKeyboard(event: KeyboardEvent, index: number) {
   if (!dividerActive(index)) return;
-  const divider = event.currentTarget as HTMLElement;
-  const height = flexibleHeight(divider);
   const keys = ["ArrowUp", "ArrowDown", "Home", "End"];
   if (!keys.includes(event.key)) return;
-  if (!sizes.value) updateSizes(divider, height, (current) => current);
-  const current = sizes.value ?? DEFAULT_PANEL_SIZES;
-  const boundary = dividerValue(index) ?? (index === 0 ? current.workspace : current.workspace + current.profile);
+  const height = flexibleHeight();
+  ensureWeights(height);
+  const boundary = dividerValue(index) ?? 0;
   const target =
     event.key === "ArrowUp" ? boundary - 5 : event.key === "ArrowDown" ? boundary + 5 : event.key === "Home" ? 0 : 100;
-  moveBoundary(divider, index, height, target);
+  moveBoundary(index, height, target);
   event.preventDefault();
 }
 
@@ -1592,7 +1860,7 @@ function startPeerWork() {
 }
 
 watch(
-  () => !!props.host && !installationCollapsed.value,
+  () => !!props.host && !collapsedSections.has("installation"),
   (shown) => {
     if (shown) startPeerWork();
   },
@@ -1631,14 +1899,8 @@ onBeforeUnmount(() => {
   position: relative;
   display: grid;
   flex: 1;
-  grid-template-rows:
-    minmax(var(--notes-pane-minimum), var(--notes-workspace-size, 40fr)) 9px
-    minmax(var(--notes-pane-minimum), var(--notes-profile-size, 30fr)) 9px
-    var(--notes-global-row, minmax(var(--notes-pane-minimum), 30fr));
+  align-content: start;
   min-height: 0;
-}
-.sidebar-notes__split--automatic {
-  grid-template-rows: fit-content(45%) 9px minmax(0, 1fr) 9px fit-content(35%);
 }
 .sidebar-notes__section {
   display: flex;
@@ -1648,6 +1910,21 @@ onBeforeUnmount(() => {
 }
 .sidebar-notes__section {
   --notes-section-accent: var(--muted);
+}
+.sidebar-notes__section--tab {
+  border-bottom: 1px solid var(--border);
+}
+.sidebar-notes__section--collapsed .sidebar-notes__heading {
+  margin-bottom: 0;
+}
+.sidebar-notes__heading-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+}
+.sidebar-notes__section--tab .sidebar-notes__tab-note {
+  padding-top: 6px;
 }
 .sidebar-notes__heading {
   display: flex;
@@ -1659,6 +1936,8 @@ onBeforeUnmount(() => {
   border-bottom: 1px solid var(--border);
   border-left: 3px solid var(--notes-section-accent);
   background: rgba(var(--tint), 0.06);
+  cursor: pointer;
+  user-select: none;
 }
 .sidebar-notes__heading h3 {
   flex: 0 0 auto;
@@ -1777,6 +2056,14 @@ button:not(:disabled):hover {
 .sidebar-notes__collapse .sidebar-notes__chevron {
   margin: 0;
 }
+.sidebar-notes__plus {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
 .sidebar-notes__collapse[aria-expanded="true"] .sidebar-notes__chevron {
   transform: rotate(90deg);
 }
@@ -1803,17 +2090,6 @@ button:not(:disabled):hover {
   background: rgba(var(--tint), 0.07);
   font-size: 11px;
 }
-.sidebar-notes__tab-label {
-  flex: 0 0 auto;
-  padding: 0 5px;
-  border-radius: 3px;
-  background: rgba(var(--tint), 0.08);
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
 .sidebar-notes__tab-title {
   flex: 1;
   min-width: 0;
@@ -1828,6 +2104,7 @@ button:not(:disabled):hover {
   align-items: center;
   gap: 5px;
   color: var(--muted);
+  font-size: 11px;
   font-weight: 400;
 }
 .sidebar-notes__tab-body {
@@ -1897,11 +2174,102 @@ button:not(:disabled):hover {
   outline: none;
 }
 .sidebar-notes__note {
+  position: relative;
   border-left: 2px solid transparent;
+}
+.sidebar-notes__note--popout .sidebar-notes__note-title {
+  padding-right: 32px;
+}
+.sidebar-notes__popout {
+  display: grid;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  padding: 0;
+  border-color: transparent;
+  color: var(--muted);
+}
+.sidebar-notes__popout:hover {
+  color: var(--text);
+}
+.sidebar-notes__popout svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.sidebar-notes__popout--note {
+  position: absolute;
+  top: 3px;
+  right: 6px;
+  z-index: 1;
+}
+.sidebar-notes__note--deletable .sidebar-notes__note-title {
+  padding-right: 32px;
+}
+.sidebar-notes__note--popout.sidebar-notes__note--deletable .sidebar-notes__note-title {
+  padding-right: 58px;
+}
+.sidebar-notes__note--popout .sidebar-notes__delete {
+  right: 30px;
+}
+.sidebar-notes__delete:hover {
+  color: var(--danger, var(--text));
 }
 .sidebar-notes__note--open {
   border-left-color: var(--notes-section-accent);
   background: rgba(var(--tint), 0.04);
+}
+.sidebar-notes__note--green {
+  --note-color: var(--success);
+}
+.sidebar-notes__note--orange {
+  --note-color: var(--status-running, #ffa424);
+}
+.sidebar-notes__note--red {
+  --note-color: var(--danger);
+}
+.sidebar-notes__note--green,
+.sidebar-notes__note--orange,
+.sidebar-notes__note--red {
+  border-left: 3px solid var(--note-color);
+  background: color-mix(in srgb, var(--note-color) 12%, transparent);
+}
+.sidebar-notes__colors {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+}
+.sidebar-notes__swatch {
+  box-sizing: border-box;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: 1px solid var(--muted);
+  border-radius: 50%;
+  background: transparent;
+}
+.sidebar-notes__swatch--green {
+  border-color: var(--success);
+  background: var(--success);
+}
+.sidebar-notes__swatch--orange {
+  border-color: var(--status-running, #ffa424);
+  background: var(--status-running, #ffa424);
+}
+.sidebar-notes__swatch--red {
+  border-color: var(--danger);
+  background: var(--danger);
+}
+.sidebar-notes__swatch[aria-pressed="true"] {
+  box-shadow:
+    0 0 0 2px var(--base-fill, transparent),
+    0 0 0 3.5px var(--text);
 }
 .sidebar-notes__note-title {
   display: flex;

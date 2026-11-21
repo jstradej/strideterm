@@ -2943,6 +2943,9 @@ describe("remote transport API parity — no method silently missing its remote 
     "getFilePopoutInit",
     "getPathForDroppedFile",
     // A Jira issue in its own desktop window; the issue detail hides the pop-out button without it.
+    // A note in its own desktop window; the notes panel hides its pop-out button without it.
+    "openNotePopout",
+    "getNotePopoutInit",
     "openJiraIssuePopout",
     "getJiraIssuePopoutInit",
     "onNewWindowShortcut",
@@ -3194,6 +3197,8 @@ describe("electron transport — sidebar notes", () => {
       listSidebarNotes: invoke,
       saveSidebarNote: invoke,
       undoSidebarNote: invoke,
+      deleteSidebarNote: invoke,
+      setSidebarNoteColor: invoke,
       saveInstallationNote: invoke,
       undoInstallationNote: invoke,
     };
@@ -3205,6 +3210,9 @@ describe("electron transport — sidebar notes", () => {
     await expect(transport.listSidebarNotes!(reactive(scope))).resolves.toEqual(scope);
     await expect(transport.saveSidebarNote!(reactive(save))).resolves.toEqual(save);
     await expect(transport.undoSidebarNote!(reactive(undo))).resolves.toEqual(undo);
+    await expect(transport.deleteSidebarNote!(reactive(undo))).resolves.toEqual(undo);
+    const colour = { ...scope, id: "note", color: "red" as const };
+    await expect(transport.setSidebarNoteColor!(reactive(colour))).resolves.toEqual(colour);
     await expect(transport.saveInstallationNote!(reactive({ text: "Note", expectedRevision: 0 }))).resolves.toEqual({
       text: "Note",
       expectedRevision: 0,

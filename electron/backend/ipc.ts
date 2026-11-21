@@ -29,6 +29,8 @@ import {
   sidebarNotesScopeSchema,
   undoInstallationNoteSchema,
   undoSidebarNoteSchema,
+  deleteSidebarNoteSchema,
+  setSidebarNoteColorSchema,
 } from "../shared/sidebar-notes.js";
 import { START_PIPELINE_AGENT_CHANNEL, startPipelineAgentSchema } from "../shared/pipeline-agent.js";
 import { START_JIRA_DEVELOPMENT_CHANNEL, startJiraDevelopmentSchema } from "../shared/jira-development.js";
@@ -878,6 +880,18 @@ export function registerIpc(
   handle("sidebar-notes:undo", (event, note) =>
     runtime.undoSidebarNote(
       validateIpc(undoSidebarNoteSchema, note, "sidebar-notes:undo"),
+      sidebarNotesWindowId(event.sender.id),
+    ),
+  );
+  handle("sidebar-notes:delete", (event, note) =>
+    runtime.deleteSidebarNote(
+      validateIpc(deleteSidebarNoteSchema, note, "sidebar-notes:delete"),
+      sidebarNotesWindowId(event.sender.id),
+    ),
+  );
+  handle("sidebar-notes:set-color", (event, note) =>
+    runtime.setSidebarNoteColor(
+      validateIpc(setSidebarNoteColorSchema, note, "sidebar-notes:set-color"),
       sidebarNotesWindowId(event.sender.id),
     ),
   );

@@ -18,6 +18,7 @@ import type {
 } from "./attachment-upload.js";
 import type {
   InstallationNote,
+  NotePopoutTarget,
   SaveInstallationNote,
   SaveSidebarNote,
   SidebarNote,
@@ -25,6 +26,8 @@ import type {
   SidebarNotesScope,
   UndoInstallationNote,
   UndoSidebarNote,
+  DeleteSidebarNote,
+  SetSidebarNoteColor,
 } from "./sidebar-notes.js";
 import type { JiraWorkspaceViewInput, JiraWorkspaceViewsState } from "./types/jira-workspace-views.js";
 import type { JiraSmartFilterId } from "./jira-smart-filters.js";
@@ -307,6 +310,8 @@ export interface StridetermAPI {
   listSidebarNotes: (scope: SidebarNotesScope) => Promise<SidebarNotes>;
   saveSidebarNote: (note: SaveSidebarNote) => Promise<SidebarNote>;
   undoSidebarNote: (note: UndoSidebarNote) => Promise<SidebarNote>;
+  deleteSidebarNote: (note: DeleteSidebarNote) => Promise<void>;
+  setSidebarNoteColor: (note: SetSidebarNoteColor) => Promise<SidebarNote>;
   getInstallationNote: () => Promise<InstallationNote>;
   saveInstallationNote: (note: SaveInstallationNote) => Promise<InstallationNote>;
   undoInstallationNote: (note: UndoInstallationNote) => Promise<InstallationNote>;
@@ -1150,6 +1155,11 @@ export interface StridetermAPI {
     ref: { connectionId: string; issueId: string; issueKey: string };
     summary?: string;
   } | null>;
+
+  // A note in its own window, one per note (desktop only: the remote transport has neither method).
+  openNotePopout: (target: NotePopoutTarget) => Promise<{ focused: boolean }>;
+  // Called from the popout window itself: which note it was opened for.
+  getNotePopoutInit: () => Promise<NotePopoutTarget | null>;
 
   // File manager
   fileList: (p: FileList) => Promise<unknown>;

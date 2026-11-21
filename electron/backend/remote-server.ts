@@ -5,6 +5,8 @@ import {
   sidebarNotesScopeSchema,
   undoInstallationNoteSchema,
   undoSidebarNoteSchema,
+  deleteSidebarNoteSchema,
+  setSidebarNoteColorSchema,
 } from "../shared/sidebar-notes.js";
 import {
   automationCreateSchema,
@@ -4239,6 +4241,18 @@ export async function startRemoteServer({
     ),
     "/api/sidebar-notes/undo": (body, windowId) =>
       runtime.undoSidebarNote(validateIpc(undoSidebarNoteSchema, body, "POST /api/sidebar-notes/undo"), windowId),
+    "/api/sidebar-notes/delete": async (body, windowId) => {
+      await runtime.deleteSidebarNote(
+        validateIpc(deleteSidebarNoteSchema, body, "POST /api/sidebar-notes/delete"),
+        windowId,
+      );
+      return { ok: true };
+    },
+    "/api/sidebar-notes/set-color": (body, windowId) =>
+      runtime.setSidebarNoteColor(
+        validateIpc(setSidebarNoteColorSchema, body, "POST /api/sidebar-notes/set-color"),
+        windowId,
+      ),
     // saveWorkspace can change profileId or overwrite an existing
     // workspace; without slot-aware routing a remote on profile B
     // could create entries in profile A or hijack profile-A workspaces.

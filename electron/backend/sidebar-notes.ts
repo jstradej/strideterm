@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { INSTALLATION_NOTE_ID, INSTALLATION_NOTE_OWNER_ID, saveSidebarNoteSchema } from "../shared/sidebar-notes.js";
+import {
+  INSTALLATION_NOTE_ID,
+  INSTALLATION_NOTE_OWNER_ID,
+  SIDEBAR_NOTE_COLORS,
+  saveSidebarNoteSchema,
+} from "../shared/sidebar-notes.js";
 import type { SidebarNote } from "../shared/sidebar-notes.js";
 import type { Profile, SidebarNoteRecord, WorkspaceState } from "../shared/types/state.js";
 
@@ -8,6 +13,8 @@ const recordSchema = saveSidebarNoteSchema.pick({ id: true, text: true }).extend
   ownerId: z.string().min(1),
   revision: z.int().positive(),
   previousText: saveSidebarNoteSchema.shape.text.optional(),
+  // An unknown colour loses only the colour, never the note.
+  color: z.enum(SIDEBAR_NOTE_COLORS).optional().catch(undefined),
   // A bad timestamp loses only the timestamp, never the note.
   updatedAt: z.iso.datetime({ offset: true }).optional().catch(undefined),
 });
@@ -32,8 +39,12 @@ export function normalizeSidebarNotes(
     const key = JSON.stringify([note.owner, note.ownerId, note.id]);
     if (seen.has(key)) continue;
     seen.add(key);
-    const { updatedAt, ...rest } = note;
-    notes.push(updatedAt ? { ...rest, updatedAt } : rest);
+    const { updatedAt, color, ...rest } = note;
+    notes.push({
+      ...rest,
+      ...(color && note.owner !== "installation" ? { color } : {}),
+      ...(updatedAt ? { updatedAt } : {}),
+    });
   }
   return notes;
 }
@@ -44,6 +55,7 @@ export function toSidebarNote(note: SidebarNoteRecord): SidebarNote {
     text: note.text,
     revision: note.revision,
     canUndo: note.previousText !== undefined,
+    ...(note.color ? { color: note.color } : {}),
     ...(note.updatedAt ? { updatedAt: note.updatedAt } : {}),
   };
 }

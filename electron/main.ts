@@ -53,6 +53,8 @@ import { createPerformanceSampler } from "./performance-metrics.js";
 import type { ConfirmCloseRequest, FilePopoutPayload } from "./shared/ipc-bridge.js";
 import type { AppState as StoredAppState, WindowSlot, WorkspaceState } from "./shared/types/state.js";
 import type { PeerWindowSlot, WindowBackend } from "./shared/peers.js";
+import { notePopoutKey, notePopoutTargetSchema, type NotePopoutTarget } from "./shared/sidebar-notes.js";
+import { PEER_HOST_NOTE_CHANGED_CHANNEL } from "./shared/peer-host-note-events.js";
 import { answerWindowBackendDuringBoot } from "./shared/window-backend-bootstrap.js";
 import {
   isChannelAllowedInPeerWindow,
@@ -563,6 +565,17 @@ interface JiraIssuePopout {
 }
 const jiraIssuePopoutsByKey = new Map<string, JiraIssuePopout>();
 const jiraIssuePopoutsByWebContentsId = new Map<number, JiraIssuePopout>();
+
+// --- Note popout windows ---
+// Like the Jira popouts: not in windowRegistry, one per note, borrowing the opener's windowId so the notes IPC resolves
+// the same profile, and closed with that window. Local windows only: a window attached to another desktop never opens one.
+interface NotePopout {
+  win: BrowserWindow;
+  target: NotePopoutTarget;
+  openerWindowId: string;
+}
+const notePopoutsByKey = new Map<string, NotePopout>();
+const notePopoutsByWebContentsId = new Map<number, NotePopout>();
 
 /**
  * Return the window that had focus most recently (non-minimized preferred). `localOnly` skips windows attached to
@@ -1316,6 +1329,7 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
     });
     windowRegistry.delete(id);
     closeJiraIssuePopoutsOf(id);
+    closeNotePopoutsOf(id);
     webContentsToWindowId.delete(webContentsId);
     windowFocusedAt.delete(id);
     windowAttentionCount.delete(id);
@@ -1720,6 +1734,101 @@ function openJiraIssuePopoutWindow(target: JiraIssuePopoutTarget): { focused: bo
   return { focused: false };
 }
 
+function closeNotePopoutsOf(openerWindowId: string): void {
+  for (const popout of [...notePopoutsByKey.values()]) {
+    if (popout.openerWindowId !== openerWindowId || popout.win.isDestroyed()) continue;
+    popout.win.close();
+  }
+}
+
+function broadcastToNotePopouts(channel: string, payload: unknown): void {
+  for (const { win } of notePopoutsByKey.values()) {
+    if (win.isDestroyed()) continue;
+    try {
+      win.webContents.send(channel, payload);
+    } catch (error: unknown) {
+      const err = error as { code?: string; message?: string };
+      if (err?.code === "EPIPE" || err?.message?.includes("EPIPE")) continue;
+      throw error;
+    }
+  }
+}
+
+/** One window per note: asking again for an open one brings it forward. */
+function openNotePopoutWindow(target: NotePopoutTarget, openerWindowId: string): { focused: boolean } {
+  const key = notePopoutKey(target);
+  const existing = notePopoutsByKey.get(key);
+  if (existing && !existing.win.isDestroyed()) {
+    if (existing.win.isMinimized()) existing.win.restore();
+    existing.win.show();
+    existing.win.focus();
+    return { focused: true };
+  }
+  const windowIconPath =
+    process.platform === "win32"
+      ? path.join(app.getAppPath(), "assets", "icon.ico")
+      : path.join(app.getAppPath(), "assets", "icon.png");
+  const win = new BrowserWindow({
+    width: 560,
+    height: 520,
+    minWidth: 320,
+    minHeight: 240,
+    title: "Note",
+    icon: windowIconPath,
+    backgroundColor: nativeTheme.shouldUseDarkColors ? APP_CONFIG.electron.backgroundColor : "#f6f7f9",
+    show: false,
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: path.join(app.getAppPath(), "dist-electron", "electron", "preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      backgroundThrottling: false,
+      spellcheck: false,
+      additionalArguments: [
+        ...(webglDisabled ? ["--strideterm-disable-webgl"] : []),
+        "--strideterm-popout=note",
+        `--strideterm-window-id=${openerWindowId}`,
+      ],
+    },
+  });
+  const webContentsId = win.webContents.id;
+  const popout: NotePopout = { win, target, openerWindowId };
+  notePopoutsByKey.set(key, popout);
+  notePopoutsByWebContentsId.set(webContentsId, popout);
+  webContentsToWindowId.set(webContentsId, openerWindowId);
+  win.once("ready-to-show", () => win.show());
+  win.on("closed", () => {
+    if (notePopoutsByKey.get(key) === popout) notePopoutsByKey.delete(key);
+    notePopoutsByWebContentsId.delete(webContentsId);
+    webContentsToWindowId.delete(webContentsId);
+  });
+  win.webContents.on("will-navigate", (event, url) => {
+    if (!isRendererOrigin(url)) {
+      log.warn("blocked note-popout navigation away from renderer origin", { url: url.slice(0, 200) });
+      event.preventDefault();
+    }
+  });
+  win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+
+  const distNotePopoutPath = path.join(app.getAppPath(), "dist", "note-popout.html");
+  const notePopoutDevUrl = new URL("note-popout.html", rendererUrl).href;
+  if (isDev) {
+    let fellBackToDist = false;
+    win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
+      if (!isMainFrame || fellBackToDist || validatedUrl !== notePopoutDevUrl) return;
+      fellBackToDist = true;
+      log.warn("note-popout: dev renderer failed, falling back to dist", { errorCode, errorDescription });
+      win.loadFile(distNotePopoutPath);
+    });
+    win.loadURL(notePopoutDevUrl);
+  } else {
+    win.loadFile(distNotePopoutPath);
+  }
+  log.info("note-popout window created", { webContentsId, openerWindowId, kind: target.kind });
+  return { focused: false };
+}
+
 function persistWindowSlot(windowId: string, win: BrowserWindow): void {
   if (!runtimeState.runtimeInteractive || !runtimeState.runtime || win.isDestroyed()) return;
   if (win.isMinimized() || win.isMaximized()) return;
@@ -1769,6 +1878,8 @@ function emitToWindow(windowId: string, channel: string, payload: unknown): void
 
 function emitToRenderer(channel: string, payload: unknown): void {
   if (channel === "state:updated") broadcastToJiraIssuePopouts(channel, payload);
+  if (channel === "state:updated" || channel === PEER_HOST_NOTE_CHANGED_CHANNEL)
+    broadcastToNotePopouts(channel, payload);
   const peerEvent = isEventAllowedInPeerWindow(channel);
   for (const [windowId, win] of windowRegistry) {
     if (win.isDestroyed()) continue;
@@ -2432,6 +2543,16 @@ if (mcpMode) {
       return { error: (err as Error)?.message || "Failed to open file popout" };
     }
   });
+
+  handleIpc("notes:popout:open", (event, raw: unknown) => {
+    const target = notePopoutTargetSchema.parse(raw);
+    const openerWindowId = webContentsToWindowId.get(event.sender.id);
+    if (!openerWindowId || isPeerWindowId(openerWindowId))
+      throw new Error("Note pop-out is only available in the desktop app.");
+    return openNotePopoutWindow(target, openerWindowId);
+  });
+
+  handleIpc("notes:popout:get-init", (event) => notePopoutsByWebContentsId.get(event.sender.id)?.target ?? null);
 
   handleIpc("file:popout:get-init", (event) => filePopoutPayloads.get(event.sender.id) ?? null);
 

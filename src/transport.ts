@@ -846,6 +846,12 @@ function bindElectronTransport(): Transport {
     undoSidebarNote: window.strideterm.undoSidebarNote
       ? (note) => window.strideterm.undoSidebarNote({ ...note })
       : undefined,
+    deleteSidebarNote: window.strideterm.deleteSidebarNote
+      ? (note) => window.strideterm.deleteSidebarNote({ ...note })
+      : undefined,
+    setSidebarNoteColor: window.strideterm.setSidebarNoteColor
+      ? (note) => window.strideterm.setSidebarNoteColor({ ...note })
+      : undefined,
     saveInstallationNote: window.strideterm.saveInstallationNote
       ? (note) => window.strideterm.saveInstallationNote({ ...note })
       : undefined,
@@ -3116,6 +3122,10 @@ export function createRemoteTransport(
     listSidebarNotes: async (scope) => (await fetchJson("/api/sidebar-notes/list", scope)) as SidebarNotes,
     saveSidebarNote: async (note) => (await fetchJson("/api/sidebar-notes/save", note)) as SidebarNote,
     undoSidebarNote: async (note) => (await fetchJson("/api/sidebar-notes/undo", note)) as SidebarNote,
+    deleteSidebarNote: async (note) => {
+      await fetchJson("/api/sidebar-notes/delete", note);
+    },
+    setSidebarNoteColor: async (note) => (await fetchJson("/api/sidebar-notes/set-color", note)) as SidebarNote,
     getInstallationNote: async () => (await fetchJson("/api/sidebar-notes/installation/get", {})) as InstallationNote,
     saveInstallationNote: async (note) =>
       (await fetchJson("/api/sidebar-notes/installation/save", note)) as InstallationNote,

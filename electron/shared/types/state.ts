@@ -835,6 +835,7 @@ export interface SidebarNoteRecord {
   text: string;
   revision: number;
   previousText?: string;
+  color?: import("../sidebar-notes.js").SidebarNoteColor;
   /** ISO time the text last changed; absent on notes saved before it was recorded. */
   updatedAt?: string;
 }

@@ -1115,6 +1115,65 @@ describe("workspace delete endpoint validation", () => {
     }
   });
 
+  test("POST /api/sidebar-notes/delete validates the body and passes the viewer's window to the runtime", async () => {
+    const port = await getFreePort();
+    const auth = "test-token-sidebar-notes-delete";
+    const deleteSidebarNote = vi.fn(async () => undefined);
+    const runtime = { ...makeMinimalRuntime(auth, port), deleteSidebarNote };
+    const server = await startRemoteServer({
+      runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    const body = { profileId: "default", workspaceId: null, id: "n", expectedRevision: 2 };
+    const remove = (payload: unknown) =>
+      fetch(`http://127.0.0.1:${port}/api/sidebar-notes/delete`, {
+        method: "POST",
+        headers: clientHeaders(auth),
+        body: JSON.stringify(payload),
+      });
+    try {
+      expect((await remove({ ...body, expectedRevision: 0 })).status).toBe(400);
+      expect((await remove({ ...body, extra: true })).status).toBe(400);
+      expect(deleteSidebarNote).not.toHaveBeenCalled();
+      const ok = await remove(body);
+      expect(ok.status, await ok.clone().text()).toBe(200);
+      expect(deleteSidebarNote).toHaveBeenCalledWith(body, expect.stringMatching(/^remote:/));
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("POST /api/sidebar-notes/set-color validates the body, passes the viewer's window and returns the note", async () => {
+    const port = await getFreePort();
+    const auth = "test-token-sidebar-notes-color";
+    const note = { id: "n", text: "t", revision: 1, canUndo: false, color: "red" };
+    const setSidebarNoteColor = vi.fn(async () => note);
+    const runtime = { ...makeMinimalRuntime(auth, port), setSidebarNoteColor };
+    const server = await startRemoteServer({
+      runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    const body = { profileId: "default", workspaceId: null, id: "n", color: "red" };
+    const send = (payload: unknown) =>
+      fetch(`http://127.0.0.1:${port}/api/sidebar-notes/set-color`, {
+        method: "POST",
+        headers: clientHeaders(auth),
+        body: JSON.stringify(payload),
+      });
+    try {
+      expect((await send({ ...body, color: "blue" })).status).toBe(400);
+      expect((await send({ ...body, expectedRevision: 1 })).status).toBe(400);
+      expect(setSidebarNoteColor).not.toHaveBeenCalled();
+      const ok = await send(body);
+      expect(ok.status, await ok.clone().text()).toBe(200);
+      expect(await ok.json()).toEqual(note);
+      expect(setSidebarNoteColor).toHaveBeenCalledWith(body, expect.stringMatching(/^remote:/));
+      expect((await send({ ...body, color: null })).status).toBe(200);
+    } finally {
+      await server.close();
+    }
+  });
+
   test("POST /api/workspace/delete with invalid options (wrong type) returns 400", async () => {
     const port = await getFreePort();
     const auth = "test-token-del";

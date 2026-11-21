@@ -524,7 +524,10 @@ export function createDialogActions(ctx: DialogActionsCtx) {
   }
 
   async function saveTabNote(viewId: string, text: string): Promise<void> {
-    const target = ctx.getPanelByViewId(viewId);
+    const owner = (ctx.payload.value?.appState?.workspaces as AnyApi[] | undefined)?.find((workspace) =>
+      viewId.startsWith(workspace.id + ":"),
+    );
+    const target = ctx.getPanelByViewId(viewId) ?? (owner && ctx.getPanelByViewId(viewId, { workspace: owner }));
     if (!target) throw new Error("This tab no longer exists.");
     const next = text.trim();
     if (next === ((target.panel.notes || "") as string).trim()) return;

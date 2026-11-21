@@ -33,6 +33,8 @@ import type {
   SidebarNotesScope,
   UndoInstallationNote,
   UndoSidebarNote,
+  DeleteSidebarNote,
+  SetSidebarNoteColor,
 } from "../shared/sidebar-notes.js";
 import { readAutomationResult } from "./automations/automation-result.js";
 import { AutomationJournal, automationRunSummary } from "./automations/automation-journal.js";
@@ -13051,6 +13053,57 @@ export async function createRuntime({
     undoSidebarNote(input: UndoSidebarNote, windowId?: string): Promise<SidebarNote> {
       return persistSidebarNote(input, windowId);
     },
+    async deleteSidebarNote(input: DeleteSidebarNote, windowId?: string): Promise<void> {
+      const owner = input.workspaceId === null ? "profile" : "workspace";
+      const ownerId = input.workspaceId ?? input.profileId;
+      let removed = false;
+      await store.mutate("sidebar-note:delete", (draft: AppState) => {
+        assertSidebarNotesScope(draft, input, windowId);
+        const notes = draft.sidebarNotes ?? [];
+        const index = notes.findIndex(
+          (note) => note.id === input.id && note.owner === owner && note.ownerId === ownerId,
+        );
+        if (index < 0) return;
+        if (notes[index].revision !== input.expectedRevision) {
+          throw new ClientRequestError("This note has changed. Reload it before trying again.", 409);
+        }
+        notes.splice(index, 1);
+        removed = true;
+      });
+      if (removed) {
+        sidebarNotesRevisions.set(
+          input.profileId,
+          (sidebarNotesRevisions.get(input.profileId) ?? sidebarNotesRevisionBase) + 1,
+        );
+        broadcastState();
+      }
+    },
+    async setSidebarNoteColor(input: SetSidebarNoteColor, windowId?: string): Promise<SidebarNote> {
+      const owner = input.workspaceId === null ? "profile" : "workspace";
+      const ownerId = input.workspaceId ?? input.profileId;
+      const matches = (entry: SidebarNoteRecord) =>
+        entry.id === input.id && entry.owner === owner && entry.ownerId === ownerId;
+      let changed = false;
+      const state: AppState = await store.mutate("sidebar-note:color", (draft: AppState) => {
+        assertSidebarNotesScope(draft, input, windowId);
+        const note = draft.sidebarNotes?.find(matches);
+        if (!note) throw new ClientRequestError("This note no longer exists.", 404);
+        if ((note.color ?? null) === input.color) return;
+        if (input.color) note.color = input.color;
+        else delete note.color;
+        changed = true;
+      });
+      if (changed) {
+        sidebarNotesRevisions.set(
+          input.profileId,
+          (sidebarNotesRevisions.get(input.profileId) ?? sidebarNotesRevisionBase) + 1,
+        );
+        broadcastState();
+      }
+      const saved = state.sidebarNotes?.find(matches);
+      if (!saved) throw new ClientRequestError("This note no longer exists.", 404);
+      return toSidebarNote(saved);
+    },
     getTerminalReplay(sessionId: string) {
       return { data: terminalReplay.snapshot(String(sessionId || "")).data };
     },
@@ -14369,7 +14422,12 @@ export async function createRuntime({
           if (storedAutomation?.kind === "automation") {
             normalized.kind = "automation";
             normalized.automation = storedAutomation.automation;
-            normalized.panels = storedAutomation.panels;
+            // Tab notes are the user's own text, not part of the definition, so they are the one panel field kept.
+            const incomingNotes = new Map((normalized.panels || []).map((panel) => [panel.id, panel.notes]));
+            normalized.panels = storedAutomation.panels.map((panel) => {
+              const notes = incomingNotes.get(panel.id);
+              return typeof notes === "string" ? { ...panel, notes } : panel;
+            });
             normalized.cwd = storedAutomation.cwd;
             normalized.jiraMcpEnabled = storedAutomation.jiraMcpEnabled;
             normalized.sshMcpEnabled = storedAutomation.sshMcpEnabled;

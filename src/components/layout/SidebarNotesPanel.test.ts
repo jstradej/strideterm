@@ -3,7 +3,14 @@ import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DefineComponent } from "vue";
 import type { PeerAttachedHost, PeerHostState } from "../../../electron/shared/peers.js";
-import type { InstallationNote, SidebarNote, SidebarNotes } from "../../../electron/shared/sidebar-notes.js";
+import {
+  deleteSidebarNoteSchema,
+  notePopoutTargetSchema,
+  setSidebarNoteColorSchema,
+  type InstallationNote,
+  type SidebarNote,
+  type SidebarNotes,
+} from "../../../electron/shared/sidebar-notes.js";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { usePeersStore } from "../../stores/peers.js";
@@ -28,6 +35,8 @@ let wrapper: VueWrapper<InstanceType<typeof NotesPanel>>;
 const listSidebarNotes = vi.fn();
 const saveSidebarNote = vi.fn();
 const undoSidebarNote = vi.fn();
+const deleteSidebarNote = vi.fn();
+const setSidebarNoteColor = vi.fn();
 const getInstallationNote = vi.fn();
 const saveInstallationNote = vi.fn();
 const undoInstallationNote = vi.fn();
@@ -36,6 +45,7 @@ const emptyInstallation: InstallationNote = {
   installationName: "PC-1",
 };
 const INSTALLATION = ".sidebar-notes__installation";
+const INSTALLATION_TOGGLE = ".sidebar-notes__section--installation .sidebar-notes__collapse";
 
 function query<T extends HTMLElement = HTMLElement>(selector: string): T {
   const target = host.querySelector<T>(selector);
@@ -65,6 +75,8 @@ function mountPanel(workspaceId = "workspace-a", isRemote = false) {
           listSidebarNotes,
           saveSidebarNote,
           undoSidebarNote,
+          deleteSidebarNote,
+          setSidebarNoteColor,
           getInstallationNote,
           saveInstallationNote,
           undoInstallationNote,
@@ -78,12 +90,15 @@ beforeEach(() => {
   vi.useFakeTimers();
   localStorage.removeItem("strideterm.sidebarNotes.open");
   localStorage.removeItem("strideterm.sidebarNotes.installationCollapsed");
+  localStorage.removeItem("strideterm.sidebarNotes.collapsedSections");
   setActivePinia(createPinia());
   host = document.createElement("div");
   document.body.append(host);
   listSidebarNotes.mockReset().mockResolvedValue(fixture);
   saveSidebarNote.mockReset();
   undoSidebarNote.mockReset();
+  deleteSidebarNote.mockReset();
+  setSidebarNoteColor.mockReset();
   getInstallationNote.mockReset().mockResolvedValue(emptyInstallation);
   saveInstallationNote.mockReset();
   undoInstallationNote.mockReset();
@@ -97,9 +112,10 @@ afterEach(() => {
 });
 
 describe("SidebarNotesPanel", () => {
-  it("keeps the three sections in order and supports keyboard resizing of both dividers", async () => {
+  it("keeps the sections in order and supports keyboard resizing of both dividers", async () => {
     await flushPromises();
     expect(Array.from(host.querySelectorAll("h3"), (heading) => heading.textContent)).toEqual([
+      "Tab",
       "Workspace",
       "Profile",
       "Global",
@@ -267,6 +283,154 @@ describe("SidebarNotesPanel", () => {
       expectedRevision: 3,
     });
     expect(query<HTMLTextAreaElement>("textarea").value).toBe("Second");
+  });
+
+  describe("deleting a note", () => {
+    const DELETE = '[aria-label="Delete note"]';
+    const payload = {
+      profileId: "profile-a",
+      workspaceId: "workspace-a",
+      id: "note-a",
+      expectedRevision: 1,
+    };
+
+    async function openConfirm() {
+      const openDialog = vi.spyOn(useAppStore(), "openDialog").mockImplementation(() => undefined);
+      await flushPromises();
+      await click(DELETE);
+      const props = openDialog.mock.calls[0][1] as {
+        message: string;
+        confirmLabel: string;
+        danger: boolean;
+        onConfirm: () => Promise<void>;
+        onCancel: () => void;
+      };
+      return { openDialog, props };
+    }
+
+    it("offers delete only on saved notes", async () => {
+      await flushPromises();
+      expect(host.querySelectorAll(DELETE)).toHaveLength(2);
+      await click('[aria-label="New note for all workspaces"]');
+      expect(host.querySelectorAll(DELETE)).toHaveLength(2);
+    });
+
+    it("asks first, and cancelling sends nothing", async () => {
+      const { openDialog, props } = await openConfirm();
+      expect(openDialog).toHaveBeenCalledWith("ConfirmDialog", expect.objectContaining({ title: "Delete note?" }));
+      expect(props).toMatchObject({ confirmLabel: "Delete", danger: true });
+      expect(props.message).toContain("Start");
+      expect(props.message).toContain("cannot be undone");
+      props.onCancel();
+      await flushPromises();
+      expect(deleteSidebarNote).not.toHaveBeenCalled();
+      expect(host.textContent).toContain("Start");
+    });
+
+    it("sends a payload the schema accepts and removes the note", async () => {
+      deleteSidebarNote.mockResolvedValue(undefined);
+      const { props } = await openConfirm();
+      await props.onConfirm();
+      await flushPromises();
+      expect(deleteSidebarNote).toHaveBeenCalledWith(payload);
+      expect(deleteSidebarNoteSchema.safeParse(deleteSidebarNote.mock.calls[0][0]).success).toBe(true);
+      expect(host.textContent).not.toContain("Start");
+      expect(host.textContent).toContain("Pinned checklist");
+    });
+
+    it("keeps the note and shows a toast when deleting fails", async () => {
+      const showError = vi.spyOn(useNotificationStore(), "showError");
+      deleteSidebarNote.mockRejectedValue(new Error("This note has changed. Reload it before trying again."));
+      const { props } = await openConfirm();
+      await props.onConfirm();
+      await flushPromises();
+      expect(showError).toHaveBeenCalledWith("Note not deleted", expect.any(Error));
+      expect(host.textContent).toContain("Start");
+    });
+  });
+
+  describe("colour tag", () => {
+    const swatches = () => [...host.querySelectorAll<HTMLButtonElement>(".sidebar-notes__swatch")];
+    const swatch = (label: string) => query<HTMLButtonElement>(`.sidebar-notes__swatch[aria-label="${label}"]`);
+    const card = () => query(".sidebar-notes__note");
+    const payload = { profileId: "profile-a", workspaceId: "workspace-a", id: "note-a", color: "green" };
+    const setCounter = async (revision: number) => {
+      useAppStore().payload = { sidebarNotesRevisions: { "profile-a": revision } } as unknown as ReturnType<
+        typeof useAppStore
+      >["payload"];
+      await flushPromises();
+    };
+
+    it("shows four swatches only on a saved, open note", async () => {
+      await flushPromises();
+      expect(swatches()).toHaveLength(0);
+      await click(".sidebar-notes__note-title");
+      expect(swatches().map((entry) => entry.getAttribute("aria-label"))).toEqual([
+        "No colour",
+        "Green",
+        "Orange",
+        "Red",
+      ]);
+      expect(swatches().map((entry) => entry.title)).toEqual(["No colour", "Green", "Orange", "Red"]);
+      await click('[aria-label="New note for all workspaces"]');
+      expect(swatches()).toHaveLength(4);
+    });
+
+    it("sends a payload the schema accepts, tints the card and reflects the choice in aria-pressed", async () => {
+      setSidebarNoteColor.mockResolvedValue({ ...workspaceNote, color: "green" });
+      await flushPromises();
+      await click(".sidebar-notes__note-title");
+      expect(swatch("No colour").getAttribute("aria-pressed")).toBe("true");
+      await click('.sidebar-notes__swatch[aria-label="Green"]');
+      expect(setSidebarNoteColor).toHaveBeenCalledWith(payload);
+      expect(setSidebarNoteColorSchema.safeParse(setSidebarNoteColor.mock.calls[0][0]).success).toBe(true);
+      expect(swatch("Green").getAttribute("aria-pressed")).toBe("true");
+      expect(swatch("No colour").getAttribute("aria-pressed")).toBe("false");
+      expect(card().classList.contains("sidebar-notes__note--green")).toBe(true);
+      await click(".sidebar-notes__note-title");
+      expect(card().classList.contains("sidebar-notes__note--green")).toBe(true);
+    });
+
+    it("clearing sends null", async () => {
+      listSidebarNotes.mockResolvedValue({ ...fixture, workspace: [{ ...workspaceNote, color: "red" }] });
+      setSidebarNoteColor.mockResolvedValue(workspaceNote);
+      await flushPromises();
+      await setCounter(1);
+      await click(".sidebar-notes__note-title");
+      expect(swatch("Red").getAttribute("aria-pressed")).toBe("true");
+      await click('.sidebar-notes__swatch[aria-label="No colour"]');
+      expect(setSidebarNoteColor).toHaveBeenCalledWith({ ...payload, color: null });
+      expect(card().classList.contains("sidebar-notes__note--red")).toBe(false);
+    });
+
+    it("reverts and shows a toast when setting the colour fails", async () => {
+      const showError = vi.spyOn(useNotificationStore(), "showError");
+      setSidebarNoteColor.mockRejectedValue(new Error("This note no longer exists."));
+      await flushPromises();
+      await click(".sidebar-notes__note-title");
+      await click('.sidebar-notes__swatch[aria-label="Orange"]');
+      expect(showError).toHaveBeenCalledWith("Note colour not changed", expect.any(Error));
+      expect(swatch("No colour").getAttribute("aria-pressed")).toBe("true");
+      expect(card().classList.contains("sidebar-notes__note--orange")).toBe(false);
+    });
+
+    it("applies a reloaded colour without touching text that is being edited", async () => {
+      await flushPromises();
+      await setCounter(1);
+      await click(".sidebar-notes__note-title");
+      await edit("My typing");
+      listSidebarNotes.mockResolvedValue({
+        ...fixture,
+        workspace: [{ ...workspaceNote, text: "Remote edit", revision: 2, color: "red" }],
+      });
+      await setCounter(2);
+      expect(query<HTMLTextAreaElement>("textarea").value).toBe("My typing");
+      expect(card().classList.contains("sidebar-notes__note--red")).toBe(true);
+      expect(swatch("Red").getAttribute("aria-pressed")).toBe("true");
+      saveSidebarNote.mockRejectedValue(new Error("This note has changed. Reload it before trying again."));
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(saveSidebarNote).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 1, text: "My typing" }));
+    });
   });
 
   it("does not create an empty global note, and flushes typed text on blur", async () => {
@@ -452,7 +616,7 @@ describe("SidebarNotesPanel", () => {
     listSidebarNotes.mockResolvedValue({ global: [], workspace: [workspaceNote] });
     await wrapper.setProps({ workspaceId: "workspace-b" });
     await flushPromises();
-    const [workspaceSection, globalSection] = Array.from(host.querySelectorAll<HTMLElement>("section"));
+    const [, workspaceSection, globalSection] = Array.from(host.querySelectorAll<HTMLElement>("section"));
     expect(workspaceSection.style.getPropertyValue("--notes-section-accent")).toBe("#ff8800");
     expect(workspaceSection.querySelector(".sidebar-notes__context")?.textContent).toBe("demo");
     expect(workspaceSection.querySelector(".sidebar-notes__count")?.textContent).toBe("1");
@@ -486,7 +650,7 @@ describe("SidebarNotesPanel", () => {
     });
     appStore.activeViewId = "workspace-a:terminal";
     await flushPromises();
-    expect(query(".sidebar-notes__tab-title").textContent).toBe("Shell");
+    expect(query(".sidebar-notes__section--tab .sidebar-notes__context").textContent).toBe("Shell");
     expect(query(".sidebar-notes__tab-body").textContent?.trim()).toBe("waiting on review\nthen merge");
     await click(".sidebar-notes__tab-body");
     const editor = query<HTMLTextAreaElement>("[data-tab-note-editor]");
@@ -675,14 +839,14 @@ describe("SidebarNotesPanel", () => {
 
     it("collapses to its heading, remembers it, and leaves the lower divider inactive", async () => {
       await flushPromises();
-      const toggle = query<HTMLButtonElement>(".sidebar-notes__collapse");
+      const toggle = query<HTMLButtonElement>(INSTALLATION_TOGGLE);
       expect(toggle.getAttribute("aria-expanded")).toBe("true");
       toggle.click();
       await flushPromises();
       expect(toggle.getAttribute("aria-expanded")).toBe("false");
       expect(host.querySelector(INSTALLATION)).toBeNull();
       expect(host.querySelector(".sidebar-notes__section--installation h3")?.textContent).toBe("Global");
-      expect(localStorage.getItem("strideterm.sidebarNotes.installationCollapsed")).toBe("1");
+      expect(localStorage.getItem("strideterm.sidebarNotes.collapsedSections")).toBe('["installation"]');
       const [, second] = Array.from(host.querySelectorAll<HTMLElement>(".sidebar-notes__divider"));
       expect(second.getAttribute("aria-disabled")).toBe("true");
       expect(second.getAttribute("tabindex")).toBe("-1");
@@ -690,10 +854,10 @@ describe("SidebarNotesPanel", () => {
       wrapper = mountPanel();
       await flushPromises();
       expect(host.querySelector(INSTALLATION)).toBeNull();
-      query<HTMLButtonElement>(".sidebar-notes__collapse").click();
+      query<HTMLButtonElement>(INSTALLATION_TOGGLE).click();
       await flushPromises();
       expect(host.querySelector(INSTALLATION)).not.toBeNull();
-      expect(localStorage.getItem("strideterm.sidebarNotes.installationCollapsed")).toBeNull();
+      expect(localStorage.getItem("strideterm.sidebarNotes.collapsedSections")).toBeNull();
     });
   });
 
@@ -855,7 +1019,7 @@ describe("SidebarNotesPanel", () => {
       await wrapper.setProps({ host });
       await flushPromises();
       expect(open).not.toHaveBeenCalled();
-      query<HTMLButtonElement>(".sidebar-notes__collapse").click();
+      query<HTMLButtonElement>(INSTALLATION_TOGGLE).click();
       await flushPromises();
       expect(open).toHaveBeenCalledTimes(1);
       expect(getPeerHostState).toHaveBeenCalledTimes(1);
@@ -986,11 +1150,11 @@ describe("SidebarNotesPanel", () => {
 
     it("reloads the host cards when the section is expanded again", async () => {
       await mountWithHosts([attached("host-aaaa0001", "alpha.local")]);
-      query<HTMLButtonElement>(".sidebar-notes__collapse").click();
+      query<HTMLButtonElement>(INSTALLATION_TOGGLE).click();
       await flushPromises();
       expect(host.querySelector("[data-host-note]")).toBeNull();
       getPeerGlobalNote.mockClear();
-      query<HTMLButtonElement>(".sidebar-notes__collapse").click();
+      query<HTMLButtonElement>(INSTALLATION_TOGGLE).click();
       await flushPromises();
       expect(getPeerGlobalNote).toHaveBeenCalledWith("host-aaaa0001");
     });
@@ -1122,6 +1286,361 @@ describe("SidebarNotesPanel", () => {
       await wrapper.setProps({ profileId: "profile-b", workspaceId: "workspace-b" });
       await flushPromises();
       expect(listSidebarNotes).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("collapsible sections", () => {
+    const COLLAPSED_KEY = "strideterm.sidebarNotes.collapsedSections";
+    const toggleOf = (kind: string) =>
+      query<HTMLButtonElement>(`.sidebar-notes__section--${kind} .sidebar-notes__collapse`);
+    const rows = () => query(".sidebar-notes__split").style.gridTemplateRows.replaceAll("0px", "0");
+    const dividers = () => Array.from(host.querySelectorAll<HTMLElement>(".sidebar-notes__divider"));
+    const disabled = () => dividers().map((divider) => divider.getAttribute("aria-disabled"));
+    const press = async (target: HTMLElement, key: string) => {
+      target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+      await flushPromises();
+    };
+
+    async function showTabNote(panel = { title: "Shell", notes: "waiting" }) {
+      const appStore = useAppStore();
+      vi.spyOn(appStore, "getPanelByViewId").mockReturnValue({
+        workspace: { id: "workspace-a", profileId: "profile-a" },
+        panel,
+      });
+      appStore.activeViewId = "workspace-a:terminal";
+      await flushPromises();
+      return appStore;
+    }
+
+    it("keeps the tab note in its own strip above Workspace, without a divider, even without an active tab", async () => {
+      await flushPromises();
+      expect(host.querySelector(".sidebar-notes__section--tab .sidebar-notes__hint")?.textContent).toContain(
+        "Select a tab of",
+      );
+      expect(host.querySelector(".sidebar-notes__section--tab .sidebar-notes__tab-body")).toBeNull();
+      expect(rows()).toBe("fit-content(30%) fit-content(45%) 9px minmax(0, 1fr) 9px fit-content(35%)");
+      await showTabNote();
+      const headings = Array.from(host.querySelectorAll("h3"), (heading) => heading.textContent);
+      expect(headings).toEqual(["Tab", "Workspace", "Profile", "Global"]);
+      expect(host.querySelector(".sidebar-notes__section--tab .sidebar-notes__tab-body")?.textContent?.trim()).toBe(
+        "waiting",
+      );
+      expect(host.querySelector(".sidebar-notes__section--workspace .sidebar-notes__tab-note")).toBeNull();
+      expect(dividers()).toHaveLength(2);
+      expect(rows()).toBe("fit-content(30%) fit-content(45%) 9px minmax(0, 1fr) 9px fit-content(35%)");
+      expect(host.querySelector(".sidebar-notes__section--tab + .sidebar-notes__section--workspace")).not.toBeNull();
+      useAppStore().activeViewId = "elsewhere";
+      await flushPromises();
+      expect(host.querySelector(".sidebar-notes__section--tab .sidebar-notes__tab-body")).toBeNull();
+      expect(host.querySelector(".sidebar-notes__section--tab .sidebar-notes__hint")).not.toBeNull();
+      await wrapper.setProps({ workspaceId: undefined });
+      await flushPromises();
+      expect(host.querySelector(".sidebar-notes__section--tab")).toBeNull();
+    });
+
+    it("toggles a section by a click anywhere on its heading, but not through the heading's buttons", async () => {
+      await flushPromises();
+      query<HTMLElement>(".sidebar-notes__section--workspace h3").click();
+      await flushPromises();
+      expect(toggleOf("workspace").getAttribute("aria-expanded")).toBe("false");
+      query<HTMLElement>(".sidebar-notes__section--workspace .sidebar-notes__heading").click();
+      await flushPromises();
+      expect(toggleOf("workspace").getAttribute("aria-expanded")).toBe("true");
+      toggleOf("workspace").click();
+      await flushPromises();
+      expect(toggleOf("workspace").getAttribute("aria-expanded")).toBe("false");
+      toggleOf("workspace").click();
+      query<HTMLButtonElement>(
+        ".sidebar-notes__section--global .sidebar-notes__add:not(.sidebar-notes__collapse)",
+      ).click();
+      await flushPromises();
+      expect(toggleOf("workspace").getAttribute("aria-expanded")).toBe("true");
+      expect(toggleOf("global").getAttribute("aria-expanded")).toBe("true");
+    });
+
+    it("collapses every section to its heading and frees its space for the others", async () => {
+      await showTabNote();
+      for (const kind of ["tab", "workspace", "global", "installation"]) {
+        expect(toggleOf(kind).getAttribute("aria-expanded")).toBe("true");
+        expect(toggleOf(kind).getAttribute("aria-label")).toMatch(/^Collapse the /);
+        toggleOf(kind).click();
+        await flushPromises();
+        expect(toggleOf(kind).getAttribute("aria-expanded")).toBe("false");
+        expect(toggleOf(kind).getAttribute("aria-label")).toMatch(/^Show the /);
+        expect(host.querySelector(`.sidebar-notes__section--${kind} .sidebar-notes__scroll`)).toBeNull();
+        expect(query(`.sidebar-notes__section--${kind} h3`)).toBeTruthy();
+      }
+      expect(rows()).toBe("auto auto 9px auto 9px auto");
+      toggleOf("workspace").click();
+      await flushPromises();
+      expect(rows()).toBe("auto minmax(0, 1fr) 9px auto 9px auto");
+    });
+
+    it("activates a divider only with an expanded resizable section above and below it", async () => {
+      await flushPromises();
+      expect(disabled()).toEqual([null, null]);
+      toggleOf("workspace").click();
+      await flushPromises();
+      expect(disabled()).toEqual(["true", null]);
+      expect(dividers()[0].getAttribute("tabindex")).toBe("-1");
+      toggleOf("workspace").click();
+      toggleOf("installation").click();
+      await flushPromises();
+      expect(disabled()).toEqual([null, "true"]);
+      toggleOf("global").click();
+      await flushPromises();
+      expect(disabled()).toEqual(["true", "true"]);
+    });
+
+    it("moves the boundary between the nearest expanded sections and keeps the collapsed weight", async () => {
+      await flushPromises();
+      toggleOf("global").click();
+      await flushPromises();
+      const [first, second] = dividers();
+      await press(second, "End");
+      expect(first.getAttribute("aria-valuenow")).toBe("80");
+      expect(second.getAttribute("aria-valuenow")).toBe("80");
+      expect(rows()).toBe(
+        "fit-content(30%) minmax(var(--notes-pane-minimum), 56fr) 9px auto 9px minmax(var(--notes-pane-minimum), 14fr)",
+      );
+      await press(first, "ArrowUp");
+      expect(second.getAttribute("aria-valuenow")).toBe("76");
+      toggleOf("global").click();
+      await flushPromises();
+      expect(rows()).toBe(
+        "fit-content(30%) minmax(var(--notes-pane-minimum), 53fr) 9px minmax(var(--notes-pane-minimum), 30fr) 9px minmax(var(--notes-pane-minimum), 17fr)",
+      );
+      expect(first.getAttribute("aria-valuenow")).toBe("53");
+      expect(second.getAttribute("aria-valuenow")).toBe("83");
+    });
+
+    it("remembers the collapsed sections, and migrates the old Global-only key once", async () => {
+      toggleOf("workspace").click();
+      toggleOf("global").click();
+      await flushPromises();
+      expect(JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? "[]")).toEqual(["workspace", "global"]);
+      wrapper.unmount();
+      wrapper = mountPanel();
+      await flushPromises();
+      expect(toggleOf("workspace").getAttribute("aria-expanded")).toBe("false");
+      expect(toggleOf("global").getAttribute("aria-expanded")).toBe("false");
+      expect(toggleOf("installation").getAttribute("aria-expanded")).toBe("true");
+      toggleOf("workspace").click();
+      toggleOf("global").click();
+      await flushPromises();
+      expect(localStorage.getItem(COLLAPSED_KEY)).toBeNull();
+
+      wrapper.unmount();
+      localStorage.setItem("strideterm.sidebarNotes.installationCollapsed", "1");
+      localStorage.setItem(COLLAPSED_KEY, '["tab"]');
+      wrapper = mountPanel();
+      await flushPromises();
+      expect(toggleOf("installation").getAttribute("aria-expanded")).toBe("false");
+      expect(JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? "[]")).toEqual(["tab", "installation"]);
+      expect(localStorage.getItem("strideterm.sidebarNotes.installationCollapsed")).toBeNull();
+
+      wrapper.unmount();
+      localStorage.setItem(COLLAPSED_KEY, "not json");
+      wrapper = mountPanel();
+      await flushPromises();
+      expect(toggleOf("installation").getAttribute("aria-expanded")).toBe("true");
+    });
+
+    it("saves pending text of a section when it is collapsed", async () => {
+      saveSidebarNote.mockResolvedValue({ id: "note-a", text: "Second", revision: 2, canUndo: true });
+      await flushPromises();
+      await click(".sidebar-notes__note-title");
+      await edit("Second");
+      expect(saveSidebarNote).not.toHaveBeenCalled();
+      toggleOf("workspace").click();
+      await flushPromises();
+      expect(saveSidebarNote).toHaveBeenCalledWith(expect.objectContaining({ id: "note-a", text: "Second" }));
+      expect(host.querySelector("textarea")).toBeNull();
+    });
+
+    it("expands a collapsed section when a note is added to it", async () => {
+      await flushPromises();
+      toggleOf("workspace").click();
+      await flushPromises();
+      query<HTMLButtonElement>(
+        ".sidebar-notes__section--workspace .sidebar-notes__add:not(.sidebar-notes__collapse)",
+      ).click();
+      await flushPromises();
+      expect(toggleOf("workspace").getAttribute("aria-expanded")).toBe("true");
+      expect(host.querySelector(".sidebar-notes__section--workspace textarea")).not.toBeNull();
+    });
+
+    it("reports a save that fails after its section was collapsed, where the inline error cannot be seen", async () => {
+      const showError = vi.spyOn(useNotificationStore(), "showError");
+      saveSidebarNote.mockRejectedValue(new Error("disk full"));
+      saveInstallationNote.mockRejectedValue(new Error("disk full"));
+      await flushPromises();
+      await click(".sidebar-notes__note-title");
+      await edit("Second");
+      toggleOf("workspace").click();
+      await flushPromises();
+      expect(showError).toHaveBeenCalledWith("Note not saved", expect.objectContaining({ message: "disk full" }));
+
+      await click(`${INSTALLATION} .sidebar-notes__tab-body`);
+      const editor = query<HTMLTextAreaElement>("[data-installation-editor]");
+      editor.value = "kept";
+      editor.dispatchEvent(new Event("input", { bubbles: true }));
+      toggleOf("installation").click();
+      await flushPromises();
+      expect(showError).toHaveBeenCalledWith(
+        "Global note not saved",
+        expect.objectContaining({ message: "disk full" }),
+      );
+    });
+
+    it("saves a tab note draft when its section is collapsed and closes the editor", async () => {
+      const panel = { title: "Shell", notes: "" };
+      const appStore = await showTabNote(panel);
+      const saveTabNote = vi.spyOn(appStore, "saveTabNote").mockImplementation(async (_viewId, text) => {
+        panel.notes = text.trim();
+      });
+      await click(".sidebar-notes__tab-body");
+      const editor = query<HTMLTextAreaElement>("[data-tab-note-editor]");
+      editor.value = "draft";
+      editor.dispatchEvent(new Event("input", { bubbles: true }));
+      toggleOf("tab").click();
+      await flushPromises();
+      expect(saveTabNote).toHaveBeenCalledWith("workspace-a:terminal", "draft");
+      expect(host.querySelector("[data-tab-note-editor]")).toBeNull();
+    });
+
+    it("saves the Global note when Global is collapsed", async () => {
+      saveInstallationNote.mockResolvedValue({
+        note: { id: "global", text: "kept", revision: 2, canUndo: true },
+        installationName: "PC-1",
+      });
+      await flushPromises();
+      await click(`${INSTALLATION} .sidebar-notes__tab-body`);
+      const editor = query<HTMLTextAreaElement>("[data-installation-editor]");
+      editor.value = "kept";
+      editor.dispatchEvent(new Event("input", { bubbles: true }));
+      toggleOf("installation").click();
+      await flushPromises();
+      expect(saveInstallationNote).toHaveBeenCalledWith({ text: "kept", expectedRevision: 0 });
+    });
+  });
+
+  describe("Open in a window", () => {
+    const openNotePopout = vi.fn();
+    const POPOUT = 'button[aria-label="Open in a window"]';
+    const hostRecord = (id: string, label: string): PeerAttachedHost => ({
+      id,
+      label,
+      address: "10.0.0.5",
+      port: 43124,
+      hostPublicKey: "",
+      pairedAt: 1,
+      state: "online",
+      hostAppVersion: "3.4.1",
+      localAppVersion: "3.4.1",
+      profiles: [],
+      checkedAt: 1,
+    });
+
+    function mountWith(extra: Record<string, unknown>, isRemote = false) {
+      wrapper.unmount();
+      wrapper = mount(NotesPanel, {
+        props: { host, profileId: "profile-a", workspaceId: "workspace-a" },
+        global: {
+          provide: {
+            [apiKey]: {
+              isRemote,
+              listSidebarNotes,
+              saveSidebarNote,
+              undoSidebarNote,
+              getInstallationNote,
+              saveInstallationNote,
+              undoInstallationNote,
+              ...extra,
+            },
+          },
+        },
+      });
+    }
+
+    beforeEach(() => {
+      openNotePopout.mockReset().mockResolvedValue({ focused: false });
+      setWindowBackend({ kind: "local" });
+    });
+
+    it("sends a target the strict schema accepts from every kind of card", async () => {
+      const appStore = useAppStore();
+      vi.spyOn(appStore, "getPanelByViewId").mockReturnValue({
+        workspace: { id: "workspace-a", profileId: "profile-a" },
+        panel: { title: "Shell", notes: "tab text" },
+      });
+      appStore.activeViewId = "workspace-a:terminal";
+      usePeersStore().hosts = [hostRecord("host-aaaa0001", "alpha.local")];
+      mountWith({
+        openNotePopout,
+        getPeerGlobalNote: vi.fn().mockResolvedValue({
+          note: { id: "global", text: "remote", revision: 1, canUndo: false },
+          installationName: "x",
+        }),
+        savePeerGlobalNote: vi.fn(),
+        undoPeerGlobalNote: vi.fn(),
+      });
+      getInstallationNote.mockResolvedValue({
+        note: { id: "global", text: "mine", revision: 1, canUndo: false },
+        installationName: "PC-1",
+      });
+      await flushPromises();
+      const buttons = Array.from(host.querySelectorAll<HTMLButtonElement>(POPOUT));
+      expect(buttons).toHaveLength(5);
+      for (const button of buttons) button.click();
+      await flushPromises();
+      const targets = openNotePopout.mock.calls.map(([target]) => target);
+      expect(targets).toEqual(
+        expect.arrayContaining([
+          { kind: "tab", profileId: "profile-a", viewId: "workspace-a:terminal" },
+          { kind: "note", profileId: "profile-a", workspaceId: "workspace-a", noteId: "note-a" },
+          { kind: "note", profileId: "profile-a", workspaceId: null, noteId: "global-a" },
+          { kind: "installation" },
+          { kind: "host", hostId: "host-aaaa0001" },
+        ]),
+      );
+      expect(targets).toHaveLength(5);
+      for (const target of targets) expect(notePopoutTargetSchema.safeParse(target).success).toBe(true);
+    });
+
+    it("has no button on a remote client, in a window attached to another desktop, or without the method", async () => {
+      mountWith({ openNotePopout }, true);
+      await flushPromises();
+      expect(host.querySelector(POPOUT)).toBeNull();
+
+      mountWith({});
+      await flushPromises();
+      expect(host.querySelector(POPOUT)).toBeNull();
+
+      setWindowBackend({
+        kind: "peer",
+        hostId: "host-aaaa0001",
+        hostLabel: "alpha.local",
+        remoteProfileId: "home",
+        clientId: "wclient",
+        terminalFontSize: 13,
+      });
+      mountWith({ openNotePopout });
+      await flushPromises();
+      expect(host.querySelector(POPOUT)).toBeNull();
+    });
+
+    it("offers no button for a note that was never saved, and toasts a failure to open", async () => {
+      listSidebarNotes.mockResolvedValue({ workspace: [], global: [] });
+      mountWith({ openNotePopout });
+      await flushPromises();
+      await click(".sidebar-notes__section--workspace .sidebar-notes__add");
+      expect(host.querySelector(".sidebar-notes__note .sidebar-notes__popout")).toBeNull();
+
+      openNotePopout.mockRejectedValue(new Error("No window"));
+      const showError = vi.spyOn(useNotificationStore(), "showError");
+      await click(".sidebar-notes__installation .sidebar-notes__popout");
+      expect(showError).toHaveBeenCalledWith("Couldn't open the note in a window", expect.any(Error));
     });
   });
 
