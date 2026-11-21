@@ -1038,6 +1038,7 @@ describe("MobileInputBar", () => {
       const request = JSON.parse(postMessage.mock.calls[0][0]);
       expect(request).toMatchObject({
         type: "attachment-compose",
+        maxAttachments: 10,
         draft: "echo done",
         selectionStart: 5,
         selectionEnd: 5,
@@ -1067,6 +1068,100 @@ describe("MobileInputBar", () => {
         requestId: request.requestId,
         ok: true,
       });
+      wrapper.unmount();
+    });
+
+    it("inserts an ordered batch of quoted attachment paths and fingerprints the order", async () => {
+      const postMessage = vi.fn();
+      (window as AnyApi).StridetermHost = { postMessage };
+      const { wrapper, writeTerminal } = mountBar();
+      const input = wrapper.get<HTMLTextAreaElement>("[data-role='mobile-input-bar-input']");
+      await input.setValue("echo done");
+      input.element.setSelectionRange(5, 5);
+      await wrapper.get(".mobile-input-bar__key--attachment").trigger("click");
+      const request = JSON.parse(postMessage.mock.calls[0][0]);
+      const firstPath = ".strideterm/attachments/123e4567-e89b-12d3-a456-426614174000/first file.txt";
+      const secondPath = ".strideterm/attachments/223e4567-e89b-12d3-a456-426614174000/second.txt";
+      const detail = {
+        ...request,
+        paths: [firstPath, secondPath],
+        prompt: request.draft,
+        action: "insert",
+      };
+      window.dispatchEvent(new CustomEvent("strideterm:attachment-compose-result", { detail }));
+      await nextTick();
+      expect(input.element.value).toBe(`echo ${JSON.stringify(firstPath)} ${JSON.stringify(secondPath)} done`);
+      expect(writeTerminal).not.toHaveBeenCalled();
+      expect(JSON.parse(postMessage.mock.calls.at(-1)![0])).toMatchObject({
+        type: "attachment-compose-ack",
+        requestId: request.requestId,
+        ok: true,
+      });
+      const count = postMessage.mock.calls.length;
+      window.dispatchEvent(
+        new CustomEvent("strideterm:attachment-compose-result", {
+          detail: { ...detail, paths: [secondPath, firstPath] },
+        }),
+      );
+      expect(postMessage).toHaveBeenCalledTimes(count + 1);
+      expect(JSON.parse(postMessage.mock.calls.at(-1)![0])).toMatchObject({
+        type: "attachment-compose-ack",
+        requestId: request.requestId,
+        ok: false,
+      });
+      wrapper.unmount();
+    });
+
+    it("rejects empty, oversized, invalid, and mixed attachment path batches", async () => {
+      const postMessage = vi.fn();
+      (window as AnyApi).StridetermHost = { postMessage };
+      const { wrapper, writeTerminal } = mountBar();
+      const input = wrapper.get<HTMLTextAreaElement>("[data-role='mobile-input-bar-input']");
+      await input.setValue("keep this draft");
+
+      for (const resultPaths of [
+        [],
+        Array.from(
+          { length: 11 },
+          (_, index) => `.strideterm/attachments/123e4567-e89b-12d3-a456-426614174000/file${index}.txt`,
+        ),
+        [".strideterm/attachments/invalid/path.txt"],
+      ]) {
+        await wrapper.get(".mobile-input-bar__key--attachment").trigger("click");
+        const request = JSON.parse(postMessage.mock.calls.at(-1)![0]);
+        window.dispatchEvent(
+          new CustomEvent("strideterm:attachment-compose-result", {
+            detail: { ...request, paths: resultPaths, prompt: request.draft, action: "insert" },
+          }),
+        );
+        expect(input.element.value).toBe("keep this draft");
+        expect(JSON.parse(postMessage.mock.calls.at(-1)![0])).toMatchObject({
+          type: "attachment-compose-ack",
+          requestId: request.requestId,
+          ok: false,
+        });
+      }
+
+      await wrapper.get(".mobile-input-bar__key--attachment").trigger("click");
+      const request = JSON.parse(postMessage.mock.calls.at(-1)![0]);
+      window.dispatchEvent(
+        new CustomEvent("strideterm:attachment-compose-result", {
+          detail: {
+            ...request,
+            path: ".strideterm/attachments/123e4567-e89b-12d3-a456-426614174000/file.txt",
+            paths: [".strideterm/attachments/123e4567-e89b-12d3-a456-426614174000/file.txt"],
+            prompt: request.draft,
+            action: "insert",
+          },
+        }),
+      );
+      expect(input.element.value).toBe("keep this draft");
+      expect(JSON.parse(postMessage.mock.calls.at(-1)![0])).toMatchObject({
+        type: "attachment-compose-ack",
+        requestId: request.requestId,
+        ok: false,
+      });
+      expect(writeTerminal).not.toHaveBeenCalled();
       wrapper.unmount();
     });
 

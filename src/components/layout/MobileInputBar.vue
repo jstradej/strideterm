@@ -1039,8 +1039,11 @@ watch([landscape, targetSessionId], async () => {
   observeRailGeometry();
 });
 
+const MAX_ATTACHMENT_FILES = 10;
+
 type AttachmentComposeRequest = {
   requestId: string;
+  maxAttachments: number;
   profileId: string;
   workspaceId: string;
   sessionId: string;
@@ -1051,7 +1054,8 @@ type AttachmentComposeRequest = {
   workspaceLabel?: string;
 };
 type AttachmentComposeResult = AttachmentComposeRequest & {
-  path: string;
+  path?: string;
+  paths?: string[];
   prompt: string;
   action: "insert" | "send";
 };
@@ -1070,6 +1074,7 @@ function attachmentFingerprint(result: Partial<AttachmentComposeResult>): string
     result.workspaceId,
     result.sessionId,
     result.path,
+    result.paths,
     result.prompt,
     result.action,
   ]);
@@ -1152,6 +1157,7 @@ function requestAttachmentCompose(event?: Event): void {
   const end = Math.max(start, Math.min(input?.selectionEnd ?? start, value.length));
   const request: AttachmentComposeRequest = {
     requestId: requestId(),
+    maxAttachments: MAX_ATTACHMENT_FILES,
     profileId: currentProfileId(),
     workspaceId,
     sessionId,
@@ -1177,6 +1183,18 @@ function validAttachmentPath(path: unknown): path is string {
   );
   return !!match && match[1] !== "." && match[1] !== "..";
 }
+function attachmentPaths(result: Partial<AttachmentComposeResult>, maxFiles: number): string[] | null {
+  if (result.path !== undefined && result.paths !== undefined) return null;
+  if (result.paths !== undefined) {
+    return Array.isArray(result.paths) &&
+      result.paths.length >= 1 &&
+      result.paths.length <= maxFiles &&
+      Array.from(result.paths).every(validAttachmentPath)
+      ? result.paths
+      : null;
+  }
+  return validAttachmentPath(result.path) ? [result.path] : null;
+}
 function normalizeAttachmentPrompt(prompt: string): string | null {
   if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(prompt)) return null;
   return prompt.replace(/[\r\n]+/g, " ");
@@ -1184,8 +1202,8 @@ function normalizeAttachmentPrompt(prompt: string): string | null {
 function quotedAttachment(path: string): string {
   return JSON.stringify(path);
 }
-function mergeAttachment(value: string, start: number, end: number, path: string): string {
-  const quoted = quotedAttachment(path);
+function mergeAttachment(value: string, start: number, end: number, paths: string[]): string {
+  const quoted = paths.map(quotedAttachment).join(" ");
   const before = value.slice(0, start);
   const after = value.slice(end);
   return `${before}${before && !/\s$/.test(before) ? " " : ""}${quoted}${after && !/^\s/.test(after) ? " " : ""}${after}`;
@@ -1224,9 +1242,10 @@ function handleAttachmentCompose(event: Event): void {
     currentProfileId() === pending.profileId &&
     originWorkspaceIdFor(pending.sessionId) === pending.workspaceId;
   const normalizedPrompt = typeof result.prompt === "string" ? normalizeAttachmentPrompt(result.prompt) : null;
+  const paths = attachmentPaths(result, pending.maxAttachments);
   const ok =
     targetStillCurrent &&
-    validAttachmentPath(result.path) &&
+    paths !== null &&
     normalizedPrompt !== null &&
     (result.action === "insert" || result.action === "send");
   if (!ok) {
@@ -1236,10 +1255,11 @@ function handleAttachmentCompose(event: Event): void {
     return;
   }
   const prompt = normalizedPrompt!;
+  const selectedPaths = paths!;
   const value =
     prompt === pending.draft
-      ? mergeAttachment(prompt, pending.selectionStart, pending.selectionEnd, result.path!)
-      : `${prompt}${prompt && !/\s$/.test(prompt) ? " " : ""}${quotedAttachment(result.path!)}`;
+      ? mergeAttachment(prompt, pending.selectionStart, pending.selectionEnd, selectedPaths)
+      : `${prompt}${prompt && !/\s$/.test(prompt) ? " " : ""}${selectedPaths.map(quotedAttachment).join(" ")}`;
   attachmentPending.value = null;
   setDraftFromAttachment(value);
   try {
