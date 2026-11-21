@@ -802,7 +802,7 @@ const menuKeys: AccessoryKey[] = [
 const menuOpen = ref(false);
 const helpKey = ref<AccessoryKey | null>(null);
 const barRef = ref<HTMLElement | null>(null);
-const railMetrics = ref({ width: 0, top: 0, height: 0, editorLeft: 0, editorGap: 6 });
+const railMetrics = ref({ width: 0, top: 0, height: 0, editorLeft: 0 });
 const RAIL_CELL = 48;
 const RAIL_GAP = 4;
 const INLINE_KEY_WIDTH = 44;
@@ -881,37 +881,45 @@ const railStyle = computed(() => ({
   "--mobile-rail-rows": String(railRows.value),
   "--mobile-rail-width": `${RAIL_WIDTH}px`,
   "--mobile-editor-left": `${railMetrics.value.editorLeft}px`,
-  "--mobile-editor-gap": `${railMetrics.value.editorGap}px`,
 }));
+
+function findTerminal(workspace: HTMLElement | null | undefined): HTMLElement | null {
+  return (
+    workspace?.querySelector<HTMLElement>(".workspace-pane--active .workspace-pane__body--terminal") ??
+    workspace?.querySelector<HTMLElement>(".workspace-pane__body--terminal") ??
+    null
+  );
+}
+
+// The rail and the editor follow the whole pane stage, not the terminal pane:
+// in a split the terminal can sit below a dashboard or beside another pane.
+function findStage(workspace: HTMLElement, terminal: HTMLElement): HTMLElement {
+  return (
+    Array.from(workspace.children).find(
+      (child): child is HTMLElement => child instanceof HTMLElement && child.contains(terminal),
+    ) ?? terminal
+  );
+}
 
 function updateRailMetrics(): void {
   const bar = barRef.value;
   const workspace = bar?.parentElement;
-  const pane =
-    workspace?.querySelector<HTMLElement>(".workspace-pane--active:has(.workspace-pane__body--terminal)") ??
-    workspace?.querySelector<HTMLElement>(".workspace-pane:has(.workspace-pane__body--terminal)");
-  const terminal =
-    workspace?.querySelector<HTMLElement>(".workspace-pane--active .workspace-pane__body--terminal") ??
-    workspace?.querySelector<HTMLElement>(".workspace-pane__body--terminal");
+  const terminal = findTerminal(workspace);
   if (!bar || !workspace || !terminal) {
-    railMetrics.value = { width: 0, top: 0, height: 0, editorLeft: 0, editorGap: 6 };
+    railMetrics.value = { width: 0, top: 0, height: 0, editorLeft: 0 };
     return;
   }
   const workspaceRect = workspace.getBoundingClientRect();
-  const terminalRect = terminal.getBoundingClientRect();
-  const paneRect = pane?.getBoundingClientRect() ?? terminalRect;
+  const stageRect = findStage(workspace, terminal).getBoundingClientRect();
   const barRect = bar.getBoundingClientRect();
-  const top = Math.max(0, terminalRect.top - barRect.top);
   const editorTop =
     barRect.bottom - (bar.querySelector(".mobile-input-bar__row")?.getBoundingClientRect().height ?? 48);
-  const end = Math.min(terminalRect.bottom, editorTop - RAIL_GAP);
-  const railKeyLeft = workspaceRect.right - 6 - 44;
+  const end = Math.min(stageRect.bottom, editorTop - RAIL_GAP);
   railMetrics.value = {
     width: workspaceRect.width,
-    top,
-    height: Math.max(0, end - terminalRect.top),
-    editorLeft: Math.max(0, paneRect.left - workspaceRect.left),
-    editorGap: Math.max(6, railKeyLeft - paneRect.right),
+    top: Math.max(0, stageRect.top - barRect.top),
+    height: Math.max(0, end - stageRect.top),
+    editorLeft: Math.max(0, stageRect.left - workspaceRect.left),
   };
 }
 
@@ -1026,11 +1034,9 @@ function observeRailGeometry(): void {
   railResizeObserver = new ResizeObserver(updateRailMetrics);
   railResizeObserver.observe(barRef.value);
   const workspace = barRef.value.parentElement;
-  const terminal =
-    workspace?.querySelector<HTMLElement>(".workspace-pane--active .workspace-pane__body--terminal") ??
-    workspace?.querySelector<HTMLElement>(".workspace-pane__body--terminal");
+  const terminal = findTerminal(workspace);
   if (workspace) railResizeObserver.observe(workspace);
-  if (terminal) railResizeObserver.observe(terminal);
+  if (workspace && terminal) railResizeObserver.observe(findStage(workspace, terminal));
   updateRailMetrics();
 }
 

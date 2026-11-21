@@ -36,6 +36,104 @@
   touch-action: none;
 }
 
+/* Dictation and send are one pair: same look in every layout, outside the
+   phone media query so a tablet does not fall back to the browser's button. */
+.mobile-input-bar__voice,
+.mobile-input-bar__send {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(var(--tint), 0.1);
+  color: var(--text);
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.mobile-input-bar__voice:hover,
+.mobile-input-bar__voice:active,
+.mobile-input-bar__send:hover,
+.mobile-input-bar__send:active {
+  background: rgba(var(--tint), 0.2);
+}
+
+.mobile-input-bar__voice {
+  flex: 0 0 48px;
+  height: 38px;
+  align-self: flex-end;
+}
+
+.mobile-input-bar__voice:disabled {
+  opacity: 1;
+  cursor: progress;
+}
+
+/* The accessory keys get their look here for the same reason: a tablet in
+   portrait sits outside the phone media query that used to carry it. */
+.mobile-input-bar__key {
+  /* No side padding — the keys share one ~390px row, and the browser default
+     (~6px per side) would clip the widest label (⇧Tab). */
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.mobile-input-bar__key:hover,
+.mobile-input-bar__key:active {
+  background: rgba(var(--tint), 0.12);
+}
+
+.mobile-input-bar__key--collapse,
+.mobile-input-bar__key--more {
+  color: var(--muted);
+}
+
+.mobile-input-bar__key--active {
+  background: rgba(var(--tint), 0.18);
+  color: var(--text);
+}
+
+.mobile-input-bar__menu-item--cmd {
+  font-family: var(--mono, monospace);
+}
+
+.mobile-input-bar__menu-sep {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--border);
+}
+
+.mobile-input-bar__voice.mobile-input-bar__voice--listening {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+  color: var(--text);
+  animation: mobile-input-bar-voice-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes mobile-input-bar-voice-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mobile-input-bar__voice.mobile-input-bar__voice--listening {
+    animation: none;
+  }
+}
+
 .sidebar-backdrop {
   display: none;
 }
@@ -351,27 +449,10 @@
     flex: 1;
     min-width: 0;
     height: 32px;
-    /* No side padding — the keys share one ~390px row, and the browser default
-       (~6px per side) would clip the widest label (⇧Tab). */
-    padding: 0;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    background: var(--panel);
-    color: var(--text);
-    font-size: 13px;
-    line-height: 1;
-    white-space: nowrap;
-    cursor: pointer;
-  }
-
-  .mobile-input-bar__key:hover,
-  .mobile-input-bar__key:active {
-    background: rgba(var(--tint), 0.12);
   }
 
   .mobile-input-bar__key--collapse {
     flex: 0 0 32px;
-    color: var(--muted);
   }
 
   /* ⋯ menu: secondary keys + actions (slash, copy screen, arrows, Ctrl+C/R/L). */
@@ -383,12 +464,6 @@
 
   .mobile-input-bar__key--more {
     width: 100%;
-    color: var(--muted);
-  }
-
-  .mobile-input-bar__key--active {
-    background: rgba(var(--tint), 0.18);
-    color: var(--text);
   }
 
   /* Transparent full-screen catcher so a tap outside the menu dismisses it. */
@@ -417,16 +492,6 @@
     border-radius: 8px;
     background: var(--panel-elevated);
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-  }
-
-  .mobile-input-bar__menu-item--cmd {
-    font-family: var(--mono, monospace);
-  }
-
-  .mobile-input-bar__menu-sep {
-    height: 1px;
-    margin: 4px 2px;
-    background: var(--border);
   }
 
   .mobile-input-bar__menu-item {
@@ -500,58 +565,6 @@
     flex: 0 0 48px;
     height: 38px;
     align-self: flex-end;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    background: rgba(var(--tint), 0.1);
-    color: var(--text);
-    font-size: 17px;
-    line-height: 1;
-    cursor: pointer;
-  }
-
-  .mobile-input-bar__voice {
-    flex: 0 0 30px;
-    height: 38px;
-    align-self: flex-end;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    background: transparent;
-    color: var(--muted);
-    font-size: 15px;
-    cursor: pointer;
-  }
-
-  .mobile-input-bar__voice:disabled {
-    opacity: 1;
-    cursor: progress;
-  }
-
-  .mobile-input-bar__voice--listening {
-    border-color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 25%, transparent);
-    color: var(--text);
-    animation: mobile-input-bar-voice-pulse 1.4s ease-in-out infinite;
-  }
-
-  @keyframes mobile-input-bar-voice-pulse {
-    0%,
-    100% {
-      box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent);
-    }
-    50% {
-      box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 0%, transparent);
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .mobile-input-bar__voice--listening {
-      animation: none;
-    }
-  }
-
-  .mobile-input-bar__send:hover,
-  .mobile-input-bar__send:active {
-    background: rgba(var(--tint), 0.2);
   }
 
   .mobile-tab-picker__dropdown {
@@ -791,7 +804,6 @@
   }
 
   .workspace-pane__actions {
-    flex-direction: row;
     gap: 2px;
   }
 
@@ -879,19 +891,35 @@
   --native-session-rail-supported: 1;
   --native-session-rail-keyboard-toggle-supported: 1;
 }
+/* The toolbar stretches its children to the tab height; centre the button on
+   the same line as the tab actions next to it and match their ghost look. */
 .native-session-rail .mobile-keyboard-btn {
   display: grid;
   place-items: center;
+  align-self: center;
   width: 34px;
-  height: 34px;
-  border: 1px solid var(--border);
+  height: 30px;
+  margin-left: 6px;
+  padding: 0;
+  border: 0;
   border-radius: 4px;
-  background: var(--panel);
+  background: rgba(var(--tint), 0.05);
   color: var(--text);
   font-size: 18px;
   line-height: 1;
   cursor: pointer;
   flex-shrink: 0;
+}
+:root[data-theme="light"].native-session-rail .mobile-keyboard-btn {
+  border: 1px solid var(--field-border);
+  background: #ffffff;
+  box-shadow: 0 1px 1px rgba(15, 23, 42, 0.04);
+}
+.native-session-rail .mobile-keyboard-btn:active {
+  background: rgba(var(--tint), 0.12);
+}
+:root[data-theme="light"].native-session-rail .mobile-keyboard-btn:active {
+  background: #f3f4f6;
 }
 .native-session-rail .mobile-input-bar--landscape.mobile-input-bar--collapsed {
   display: none;
@@ -963,6 +991,7 @@
   pointer-events: auto;
 }
 .mobile-input-bar--rail .mobile-input-bar__input,
+.mobile-input-bar--rail .mobile-input-bar__voice,
 .mobile-input-bar--rail .mobile-input-bar__send {
   min-height: 44px;
   height: 44px;
@@ -1015,6 +1044,7 @@
 .mobile-input-bar--landscape .mobile-input-bar__row {
   order: 1;
   display: flex;
+  align-items: flex-end;
   flex: 1 1 220px;
   gap: 6px;
   min-width: 180px;
@@ -1026,6 +1056,7 @@
   min-width: 0;
   min-height: 40px;
   height: 40px;
+  resize: none;
   padding: 0 10px;
   border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
   border-radius: 4px;
@@ -1033,16 +1064,10 @@
   color: var(--text);
   font-size: 16px;
 }
+.mobile-input-bar--landscape .mobile-input-bar__voice,
 .mobile-input-bar--landscape .mobile-input-bar__send {
   flex: 0 0 40px;
   height: 40px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: rgba(var(--tint), 0.1);
-  color: var(--text);
-  font-size: 17px;
-  line-height: 1;
-  cursor: pointer;
 }
 .mobile-input-bar--landscape .mobile-input-bar__menu {
   position: fixed;
@@ -1146,11 +1171,13 @@
   display: none;
 }
 .mobile-input-bar--system .mobile-input-bar__input,
+.mobile-input-bar--system .mobile-input-bar__voice,
 .mobile-input-bar--system .mobile-input-bar__send,
 .mobile-input-bar--system .mobile-input-bar__key {
   min-height: 0;
   height: 40px;
 }
+.mobile-input-bar--system .mobile-input-bar__voice,
 .mobile-input-bar--system .mobile-input-bar__send {
   flex-basis: 40px;
 }
@@ -1339,6 +1366,7 @@ html.native-keyboard-viewport .mobile-input-bar.mobile-input-bar--landscape.mobi
   }
 
   html.native-keyboard-viewport .mobile-input-bar:not(.mobile-input-bar--landscape) .mobile-input-bar__input,
+  html.native-keyboard-viewport .mobile-input-bar:not(.mobile-input-bar--landscape) .mobile-input-bar__voice,
   html.native-keyboard-viewport .mobile-input-bar:not(.mobile-input-bar--landscape) .mobile-input-bar__send {
     min-height: 44px;
     height: 44px;
@@ -1349,6 +1377,7 @@ html.native-keyboard-viewport .mobile-input-bar.mobile-input-bar--landscape.mobi
     min-width: 0;
   }
 
+  html.native-keyboard-viewport .mobile-input-bar:not(.mobile-input-bar--landscape) .mobile-input-bar__voice,
   html.native-keyboard-viewport .mobile-input-bar:not(.mobile-input-bar--landscape) .mobile-input-bar__send {
     flex: 0 0 48px;
   }
@@ -1405,8 +1434,9 @@ html.native-keyboard-viewport .mobile-input-bar.mobile-input-bar--landscape.mobi
   }
 }
 
-/* Keep rail shortcuts aligned with the 44px editor action. The editor stops
-   at the active pane's outer border, measured with the rail geometry. */
+/* Keep rail shortcuts aligned with the 44px send button. The editor spans the
+   whole pane stage (measured with the rail geometry), so a split never moves
+   dictation or send away from the draft. */
 .mobile-input-bar.mobile-input-bar--landscape.mobile-input-bar--rail .mobile-input-bar__keys {
   grid-template-columns: 44px;
   padding-right: 6px;
@@ -1425,7 +1455,6 @@ html.native-keyboard-viewport .mobile-input-bar.mobile-input-bar--landscape.mobi
   right: 6px;
   left: var(--mobile-editor-left, 0px);
   width: auto;
-  gap: var(--mobile-editor-gap, 6px);
 }
 .mobile-input-bar--rail .mobile-input-bar__menu,
 .mobile-input-bar--rail .mobile-input-bar__menu-backdrop {
@@ -1459,10 +1488,12 @@ html.native-keyboard-viewport .mobile-input-bar.mobile-input-bar--landscape.mobi
   min-width: 44px;
 }
 .mobile-input-bar.mobile-input-bar--landscape.mobile-input-bar--system .mobile-input-bar__input,
+.mobile-input-bar.mobile-input-bar--landscape.mobile-input-bar--system .mobile-input-bar__voice,
 .mobile-input-bar.mobile-input-bar--landscape.mobile-input-bar--system .mobile-input-bar__send {
   min-height: 44px;
   height: 44px;
 }
+.mobile-input-bar.mobile-input-bar--landscape.mobile-input-bar--system .mobile-input-bar__voice,
 .mobile-input-bar.mobile-input-bar--landscape.mobile-input-bar--system .mobile-input-bar__send {
   flex-basis: 44px;
 }

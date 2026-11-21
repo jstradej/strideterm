@@ -64,7 +64,7 @@
         </colgroup>
         <thead>
           <tr>
-            <th v-for="(col, ci) in columns" :key="col.key" @click="toggleSort(col.key)">
+            <th v-for="(col, ci) in columns" :key="col.key" @click="onHeaderClick(col.key)">
               <div class="azure-audit-log__th-inner">
                 <span>{{ col.label }}</span>
                 <span v-if="sortKey === col.key" class="azure-audit-log__sort-arrow">{{
@@ -74,7 +74,8 @@
               <div
                 v-if="ci < columns.length - 1"
                 class="azure-audit-log__resize-handle"
-                @mousedown.stop.prevent="startResize($event, ci)"
+                @pointerdown.stop.prevent="startResize($event, ci)"
+                @click.stop
               ></div>
             </th>
           </tr>
@@ -197,7 +198,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, reactive } from "vue";
+import { ref, computed, watch, onMounted, onBeforeUnmount, reactive } from "vue";
 import { useAppStore } from "../../../stores/app.js";
 import CustomSelect from "../../common/CustomSelect.vue";
 import { downloadTextFile } from "../../../app/helpers.js";
@@ -295,27 +296,50 @@ const sortedEntries = computed(() => {
 let resizeCol = -1;
 let resizeStartX = 0;
 let resizeStartW = 0;
+let resizePointerId = -1;
+// The click that ends a drag lands on the header cell, not on the handle,
+// whenever the pointer is released past it; it must not re-sort the column.
+let resizeEndedAt = -Infinity;
+const RESIZE_CLICK_GRACE_MS = 400;
 
-function startResize(event: MouseEvent, colIndex: number) {
+function onHeaderClick(key: string) {
+  if (resizeCol >= 0 || performance.now() - resizeEndedAt < RESIZE_CLICK_GRACE_MS) return;
+  toggleSort(key);
+}
+
+function startResize(event: PointerEvent, colIndex: number) {
+  if (event.pointerType === "mouse" && event.button !== 0) return;
+  // A drag whose end never arrived (window lost focus mid-drag) must not lock resizing.
+  if (resizeCol >= 0) onResizeEnd();
   resizeCol = colIndex;
+  resizePointerId = event.pointerId;
   resizeStartX = event.clientX;
   resizeStartW = columns[colIndex].width;
-  document.addEventListener("mousemove", onResizeMove);
-  document.addEventListener("mouseup", onResizeEnd);
+  document.addEventListener("pointermove", onResizeMove);
+  document.addEventListener("pointerup", onResizeEnd);
+  document.addEventListener("pointercancel", onResizeEnd);
   document.body.style.cursor = "col-resize";
   document.body.style.userSelect = "none";
 }
 
-function onResizeMove(event: MouseEvent) {
-  if (resizeCol < 0) return;
+function onResizeMove(event: PointerEvent) {
+  if (resizeCol < 0 || event.pointerId !== resizePointerId) return;
+  if (event.pointerType === "mouse" && event.buttons === 0) {
+    onResizeEnd();
+    return;
+  }
   const delta = event.clientX - resizeStartX;
   columns[resizeCol].width = Math.max(columns[resizeCol].minWidth, resizeStartW + delta);
 }
 
-function onResizeEnd() {
+function onResizeEnd(event?: PointerEvent) {
+  if (event && event.pointerId !== resizePointerId) return;
+  resizeEndedAt = performance.now();
   resizeCol = -1;
-  document.removeEventListener("mousemove", onResizeMove);
-  document.removeEventListener("mouseup", onResizeEnd);
+  resizePointerId = -1;
+  document.removeEventListener("pointermove", onResizeMove);
+  document.removeEventListener("pointerup", onResizeEnd);
+  document.removeEventListener("pointercancel", onResizeEnd);
   document.body.style.cursor = "";
   document.body.style.userSelect = "";
 }
@@ -520,6 +544,9 @@ function formatTime(iso: string) {
 watch([filterCategory, filterSuccess, filterSource, filterRange], () => loadData());
 
 onMounted(() => loadData());
+onBeforeUnmount(() => {
+  if (resizeCol >= 0) onResizeEnd();
+});
 </script>
 
 <style scoped>
@@ -638,6 +665,13 @@ onMounted(() => loadData());
   width: 5px;
   cursor: col-resize;
   background: transparent;
+  touch-action: none;
+}
+
+@media (any-pointer: coarse) {
+  .azure-audit-log__resize-handle {
+    width: 12px;
+  }
 }
 
 .azure-audit-log__resize-handle:hover {

@@ -1,5 +1,5 @@
 <template>
-  <div class="profile-bar-row">
+  <div class="profile-bar-row" :class="{ 'profile-bar-row--badged': peerHostLabel || isRemote }">
     <button
       type="button"
       class="profile-bar"
@@ -7,7 +7,7 @@
       :title="`${profile.name} — click to open the Profiles dialog: switch the active profile, rename / colour profiles, or create a new one. The sidebar workspace list is filtered to the active profile.`"
       @click="$emit('click')"
     >
-      {{ profile.name }}
+      <span class="profile-bar__name">{{ profile.name }}</span>
       <span
         v-if="peerHostLabel"
         class="profile-bar__remote-badge profile-bar__host-badge"
@@ -111,11 +111,11 @@ defineEmits<{
 <style scoped>
 .profile-bar__remote-badge {
   display: inline-flex;
+  flex-shrink: 0;
   align-items: center;
   justify-content: center;
   height: 14px;
   padding: 0 5px;
-  margin-left: 5px;
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -126,8 +126,12 @@ defineEmits<{
   opacity: 0.7;
 }
 .profile-bar__host-badge {
+  display: block;
+  flex-shrink: 1;
+  min-width: 0;
   max-width: 180px;
   height: 16px;
+  line-height: 14px;
   font-size: 10px;
   color: #fff;
   background: var(--profile-color, var(--accent));
@@ -143,7 +147,6 @@ defineEmits<{
   min-width: 16px;
   height: 16px;
   padding: 0 4px;
-  margin-left: 6px;
   font-size: 10px;
   font-weight: 600;
   line-height: 1;

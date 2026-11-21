@@ -267,3 +267,86 @@ describe("AzureAuditLog — formatTime relative/fallback rendering", () => {
     expect(wrapper.find(".azure-audit-log__cell-time").text()).toBe(expectedAbsolute(timestamp));
   });
 });
+
+describe("AzureAuditLog — column resize", () => {
+  it("resizes a column with a touch drag, not only with a mouse", async () => {
+    const entry = {
+      id: 1,
+      timestamp: "2026-07-01T00:00:00.000Z",
+      operation: "GET /repos",
+      category: "read",
+      method: "GET",
+      statusCode: 200,
+      success: true,
+      durationMs: 42,
+      userInitiated: true,
+      project: "MyProject",
+    };
+    const { wrapper } = mountLog({
+      queryAzureAuditLog: vi.fn().mockResolvedValue({ entries: [entry], total: 1 }),
+    });
+    await flushPromises();
+    const firstCol = () => (wrapper.find("colgroup col").element as HTMLElement).style.width;
+    const before = Number.parseFloat(firstCol());
+    const pointer = (type: string, clientX: number) =>
+      Object.assign(new Event(type, { bubbles: true, cancelable: true }), {
+        pointerId: 7,
+        pointerType: "touch",
+        button: 0,
+        clientX,
+      });
+
+    wrapper.find(".azure-audit-log__resize-handle").element.dispatchEvent(pointer("pointerdown", 100));
+    document.dispatchEvent(pointer("pointermove", 160));
+    document.dispatchEvent(pointer("pointerup", 160));
+    await flushPromises();
+    expect(Number.parseFloat(firstCol())).toBe(before + 60);
+
+    document.dispatchEvent(pointer("pointermove", 260));
+    await flushPromises();
+    expect(Number.parseFloat(firstCol())).toBe(before + 60);
+
+    // The click that ends the drag lands on the header cell; it must not sort.
+    await wrapper.find("th").trigger("click");
+    expect(wrapper.find(".azure-audit-log__sort-arrow").exists()).toBe(false);
+  });
+
+  it("ends a mouse drag whose release never arrived instead of locking resizing", async () => {
+    const { wrapper } = mountLog({
+      queryAzureAuditLog: vi.fn().mockResolvedValue({
+        entries: [{ id: 1, timestamp: "2026-07-01T00:00:00.000Z", operation: "GET /repos", success: true }],
+        total: 1,
+      }),
+    });
+    await flushPromises();
+    const firstCol = () => Number.parseFloat((wrapper.find("colgroup col").element as HTMLElement).style.width);
+    const before = firstCol();
+    const mouse = (type: string, clientX: number, buttons: number) =>
+      Object.assign(new Event(type, { bubbles: true, cancelable: true }), {
+        pointerId: 1,
+        pointerType: "mouse",
+        button: 0,
+        buttons,
+        clientX,
+      });
+    const handle = wrapper.find(".azure-audit-log__resize-handle").element;
+
+    handle.dispatchEvent(mouse("pointerdown", 100, 1));
+    document.dispatchEvent(mouse("pointermove", 140, 1));
+    await flushPromises();
+    expect(firstCol()).toBe(before + 40);
+
+    // Released outside the window: the next hover move has no button pressed.
+    document.dispatchEvent(mouse("pointermove", 200, 0));
+    await flushPromises();
+    expect(firstCol()).toBe(before + 40);
+    expect(document.body.style.cursor).toBe("");
+
+    handle.dispatchEvent(mouse("pointerdown", 100, 1));
+    document.dispatchEvent(mouse("pointermove", 110, 1));
+    document.dispatchEvent(mouse("pointerup", 110, 0));
+    await flushPromises();
+    expect(firstCol()).toBe(before + 50);
+    wrapper.unmount();
+  });
+});

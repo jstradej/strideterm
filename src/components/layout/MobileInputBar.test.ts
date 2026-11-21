@@ -558,6 +558,79 @@ describe("MobileInputBar", () => {
     }
   });
 
+  it("runs the rail from the top of a split stage and spans the editor across the whole stage", async () => {
+    const media = vi.spyOn(window, "matchMedia").mockImplementation(
+      (query) =>
+        ({
+          matches: query === "(any-pointer: coarse)",
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+        }) as unknown as MediaQueryList,
+    );
+    const screenOrientation = mockScreenOrientation("landscape-primary");
+    document.documentElement.classList.add("native-session-rail");
+    const workspace = document.createElement("div");
+    document.body.appendChild(workspace);
+    const { wrapper } = mountBar({ attachTo: workspace });
+    const componentRoot = wrapper.get(".mobile-input-bar").element as HTMLElement;
+    const workspaceMain = componentRoot.parentElement!;
+    workspaceMain.className = "workspace-main";
+    // Top + 2 bottom: a dashboard above, the active terminal in the right half below it.
+    const stage = document.createElement("div");
+    stage.className = "terminal-stage";
+    const dashboard = document.createElement("article");
+    dashboard.className = "workspace-pane";
+    const terminalPane = document.createElement("article");
+    terminalPane.className = "workspace-pane workspace-pane--active";
+    const terminal = document.createElement("div");
+    terminal.className = "workspace-pane__body--terminal";
+    terminalPane.append(terminal);
+    stage.append(dashboard, terminalPane);
+    workspaceMain.append(stage);
+    const rect = (left: number, top: number, right: number, bottom: number): DOMRect =>
+      ({
+        x: left,
+        y: top,
+        left,
+        top,
+        right,
+        bottom,
+        width: right - left,
+        height: bottom - top,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    const setRect = (element: HTMLElement, getRect: () => DOMRect) =>
+      Object.defineProperty(element, "getBoundingClientRect", { configurable: true, value: getRect });
+    setRect(workspaceMain, () => rect(0, 0, 1000, 700));
+    setRect(stage, () => rect(10, 60, 944, 648));
+    setRect(terminalPane, () => rect(480, 360, 944, 648));
+    setRect(terminal, () => rect(480, 400, 944, 648));
+    setRect(componentRoot, () => rect(0, 0, 1000, 700));
+    setRect(wrapper.get(".mobile-input-bar__row").element as HTMLElement, () => rect(10, 652, 994, 700));
+    try {
+      await flushPromises();
+      window.dispatchEvent(new CustomEvent("strideterm:toggle-system-keyboard", { detail: { show: true } }));
+      await flushPromises();
+      window.dispatchEvent(new Event("resize"));
+      await nextTick();
+      const bar = wrapper.get(".mobile-input-bar");
+      expect(bar.classes()).toContain("mobile-input-bar--rail");
+      const style = (bar.element as HTMLElement).style;
+      expect(style.getPropertyValue("--mobile-rail-top")).toBe("60px");
+      expect(style.getPropertyValue("--mobile-editor-left")).toBe("10px");
+      // 60..648 is 12 rail rows: 11 keys plus ⋯, where the terminal alone (400..648) left room for 4.
+      expect(
+        wrapper.findAll(".mobile-input-bar__keys > .mobile-input-bar__key:not(.mobile-input-bar__key--more)"),
+      ).toHaveLength(11);
+    } finally {
+      wrapper.unmount();
+      workspace.remove();
+      document.documentElement.classList.remove("native-session-rail");
+      screenOrientation.restore();
+      media.mockRestore();
+    }
+  });
+
   describe("landscape key selection", () => {
     const CANONICAL = [
       "Esc",

@@ -47,6 +47,16 @@
   font-family: inherit;
 }
 
+.profile-bar-row--badged .profile-bar {
+  flex: 0 1 auto;
+}
+
+.profile-bar__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Divider between the profile pill and the workspace filter. */
 .profile-bar__sep {
   flex-shrink: 0;
@@ -61,6 +71,25 @@
   min-width: 0;
   display: flex;
   align-items: center;
+}
+
+.profile-bar-row--badged .profile-bar__search {
+  flex: 1 1 0;
+  min-width: 68px;
+}
+
+@container sidebar (max-width: 210px) {
+  .profile-bar-row--badged {
+    flex-wrap: wrap;
+  }
+
+  .profile-bar-row--badged .profile-bar {
+    flex-basis: 100%;
+  }
+
+  .profile-bar-row--badged .profile-bar__sep {
+    display: none;
+  }
 }
 
 .profile-bar__search-icon {
@@ -1046,8 +1075,11 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   /* All three panels share one grid cell (set on .remote-access-dialog
      .remote-access__body below) so the body keeps the tallest panel's
      height — flipping tabs no longer resizes the dialog. Inactive panels
-     stay laid out but hidden + non-interactive. */
+     stay laid out but hidden + non-interactive. A shorter panel keeps its
+     rows at their own height: stretched rows turned the status chips into
+     tall pills with the text stuck at the top. */
   display: grid;
+  align-content: start;
   gap: 10px;
   padding: 10px;
   border: 1px solid var(--border);
@@ -2700,6 +2732,13 @@ a.workspace-card__jira-chip:hover {
   grid-template-columns: repeat(2, 28px);
   justify-content: center;
   gap: 4px;
+}
+
+.frame--sidebar-collapsed .profile-bar-row--badged .profile-bar {
+  flex: 1;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding-inline: 4px;
 }
 
 /* No room for the filter box in the 84px icon strip — the profile pill and

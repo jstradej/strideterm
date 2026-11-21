@@ -221,7 +221,8 @@ body.platform-linux .workspace-meta {
   background: rgba(var(--tint), 0.08);
 }
 
-.workspace-chip--clean {
+.workspace-chip--clean,
+.workspace-chip--ok {
   background: color-mix(in srgb, var(--success-fg) 14%, transparent);
   color: var(--success-fg);
 }

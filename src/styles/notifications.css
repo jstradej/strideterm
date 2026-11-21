@@ -144,6 +144,10 @@
   cursor: col-resize;
   z-index: 50;
   background: transparent;
+  /* Without it a finger drag turns into a browser pan after a few pixels,
+     which cancels the pointer and ends the resize (as on the sidebar handle). */
+  touch-action: none;
+  user-select: none;
   transition: background 0.15s;
 }
 

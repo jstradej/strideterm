@@ -424,9 +424,10 @@ select option:checked {
     flex-wrap: wrap;
   }
 
+  /* Pane headers stay one row: their container queries (dialogs.css) fold the
+     icons into ☰ on a narrow pane, while a column here stacked every icon
+     down the side of a tablet's split panes. */
   .docker-manager__header,
-  .workspace-pane__header,
-  .workspace-pane__actions,
   .dialog__footer,
   .dialog__header,
   .section-head {
