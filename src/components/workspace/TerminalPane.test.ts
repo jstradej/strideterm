@@ -1,10 +1,5 @@
 /**
- * The pane-level entry point into the "Select text" panel.
- *
- * The long press does the same job, but a gesture nobody was told about is not
- * a discoverable feature — and the MobileInputBar that carries the menu entry
- * only renders on the remote transport, so a tablet driving the desktop build
- * (or any touchscreen laptop) would otherwise have no visible way in.
+ * Touch selection fallback for terminals without a tab menu.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
@@ -36,8 +31,11 @@ const COARSE = "(any-pointer: coarse)";
 
 // useIsNarrow seeds its shared refs at import time and re-reads matchMedia in
 // onMounted, so the media-query override only reaches the DOM on the next tick.
-async function mountPane(): Promise<VueWrapper> {
-  const wrapper = mount(TerminalPane, { props: { sessionId: SESSION_ID }, attachTo: document.body });
+async function mountPane(textSelectionInMenu = false): Promise<VueWrapper> {
+  const wrapper = mount(TerminalPane, {
+    props: { sessionId: SESSION_ID, textSelectionInMenu },
+    attachTo: document.body,
+  });
   await nextTick();
   return wrapper;
 }
@@ -53,11 +51,18 @@ afterEach(() => {
 });
 
 describe("TerminalPane select-text control", () => {
-  it("is offered on any device with a touchscreen", async () => {
+  it("is offered on touchscreens when the pane has no selection menu", async () => {
     globalThis.setMatchMediaResult(COARSE, true);
     const wrapper = await mountPane();
 
     expect(wrapper.find("[data-role='terminal-select-text']").exists()).toBe(true);
+  });
+
+  it("keeps the terminal output clear when Select text is available in the tab menu", async () => {
+    globalThis.setMatchMediaResult(COARSE, true);
+    const wrapper = await mountPane(true);
+
+    expect(wrapper.find("[data-role='terminal-select-text']").exists()).toBe(false);
   });
 
   it("stays out of the way on a pointer-only machine", async () => {

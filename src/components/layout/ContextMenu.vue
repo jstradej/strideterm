@@ -58,6 +58,14 @@
         <button
           type="button"
           class="context-menu__item"
+          title="Open a snapshot of the visible screen to select and copy its text."
+          @click="onSelectText"
+        >
+          <span class="context-menu__icon" aria-hidden="true">&#x2702;</span><span>Select text</span>
+        </button>
+        <button
+          type="button"
+          class="context-menu__item"
           title="Export the last 500 lines of this terminal's scrollback to a text file via the system save dialog."
           @click="onSaveTranscript"
         >
@@ -285,6 +293,7 @@ import {
   isAutomationDashboardViewId,
 } from "../../app/helpers.js";
 import { jiraViewIdFromTab } from "../../app/jira-view-tabs.js";
+import { tabSessionId } from "../../app/selectors.js";
 
 const store = useAppStore();
 const sshStore = useSshStore();
@@ -687,6 +696,14 @@ function onFind() {
   const id = viewId.value;
   store.hideContextMenu();
   termStore.requestSearch(id);
+}
+
+function onSelectText() {
+  const id = tabSessionId(currentTab.value) || viewId.value;
+  store.hideContextMenu();
+  if (!termStore.requestTextSelection(id)) {
+    useNotificationStore().showError("Can't select text", "That terminal isn't available right now.");
+  }
 }
 
 function onClear() {

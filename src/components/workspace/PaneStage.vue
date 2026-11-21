@@ -36,7 +36,11 @@
           :actions="terminalPaneActions(tab)"
           @action="(a, meta) => onPaneAction(a, tab, meta)"
         />
-        <TerminalPane :session-id="sessionIdOf(tab)" :starting-allowed="tab.processRunning === true" />
+        <TerminalPane
+          :session-id="sessionIdOf(tab)"
+          :starting-allowed="tab.processRunning === true"
+          text-selection-in-menu
+        />
       </template>
 
       <!-- Non-terminal pane (dynamic component) -->

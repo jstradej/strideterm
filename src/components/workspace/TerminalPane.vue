@@ -5,15 +5,8 @@
       <span class="tab__spinner" aria-hidden="true" />
       Starting…
     </div>
-    <!-- Touch affordance for "Select text". The long press inside the terminal
-         does the same thing, but a gesture nobody has been told about is not a
-         feature — and a tablet with an external keyboard and mouse never shows
-         the MobileInputBar that carries the menu entry. Gated on the device
-         having a coarse pointer at all, NOT on viewport width or on the remote
-         transport: a touchscreen laptop running the desktop build has exactly
-         the same problem dragging out an xterm selection by finger. -->
     <button
-      v-if="hasCoarsePointer"
+      v-if="hasCoarsePointer && !textSelectionInMenu"
       type="button"
       class="term-select-btn"
       data-role="terminal-select-text"
@@ -35,7 +28,7 @@ import { useTerminalPathDrop } from "../../composables/useTerminalPathDrop.js";
 import { useTerminalStore } from "../../stores/terminal.js";
 import TerminalSearchOverlay from "./TerminalSearchOverlay.vue";
 
-const props = defineProps<{ sessionId: string; startingAllowed?: boolean }>();
+const props = defineProps<{ sessionId: string; startingAllowed?: boolean; textSelectionInMenu?: boolean }>();
 
 const paneBodyRef = ref<HTMLDivElement | null>(null);
 useTerminal(() => props.sessionId, paneBodyRef);

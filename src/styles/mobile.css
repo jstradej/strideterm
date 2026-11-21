@@ -1532,6 +1532,11 @@ html.native-keyboard-viewport .mobile-input-bar:not(.mobile-input-bar--landscape
 }
 
 @media (pointer: coarse), (any-pointer: coarse) {
+  .context-menu {
+    max-height: calc(100dvh - 8px);
+    overflow-y: auto;
+  }
+
   .context-menu__item {
     min-height: 44px;
   }

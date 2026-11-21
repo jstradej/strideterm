@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from "pinia";
 import ContextMenu from "./ContextMenu.vue";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
+import { useTerminalStore } from "../../stores/terminal.js";
 import type { StatePayload } from "../../../electron/shared/types/state.js";
 
 beforeEach(() => {
@@ -62,6 +63,26 @@ describe("ContextMenu", () => {
     const texts = Array.from(buttons).map((b) => b.textContent);
     expect(texts.some((t) => t.includes("Restart"))).toBe(true);
     wrapper.unmount();
+  });
+
+  test("opens text selection for the menu's terminal instead of the active session", () => {
+    const store = useAppStore();
+    store.activeSessionId = "ws:shell-a";
+    store.contextMenu = { viewId: "ws:shell-b", x: 0, y: 0 };
+    const request = vi.spyOn(useTerminalStore(), "requestTextSelection").mockReturnValue(true);
+    const wrapper = mount(ContextMenu, { attachTo: document.body });
+    try {
+      const button = Array.from(document.querySelectorAll<HTMLButtonElement>(".context-menu__item")).find((item) =>
+        item.textContent?.includes("Select text"),
+      );
+      expect(button).toBeDefined();
+      button!.click();
+      expect(request).toHaveBeenCalledExactlyOnceWith("ws:shell-b");
+      expect(store.contextMenu).toBeNull();
+    } finally {
+      wrapper.unmount();
+      request.mockRestore();
+    }
   });
 
   test("offers background Jira sync on a saved view without terminal actions", async () => {

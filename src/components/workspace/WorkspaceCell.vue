@@ -56,7 +56,7 @@
          the cell switches tabs instead of rebinding xterm mid-update. -->
     <div class="workspace-cell__pane">
       <template v-if="activeViewType === 'terminal' && activeSessionId">
-        <TerminalPane :key="activeSessionId" :session-id="activeSessionId" />
+        <TerminalPane :key="activeSessionId" :session-id="activeSessionId" text-selection-in-menu />
       </template>
       <template v-else-if="paneComponent">
         <!-- :compact tells panes (TaskDashboardPane today, others later) to
