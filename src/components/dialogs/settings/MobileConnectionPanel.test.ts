@@ -1,7 +1,7 @@
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import SettingsMobileTab from "./SettingsMobileTab.vue";
+import MobileConnectionPanel from "./MobileConnectionPanel.vue";
 import { useAppStore } from "../../../stores/app.js";
 import { useAccountStore } from "../../../stores/account.js";
 import { MOBILE_TRIAL_WARNING_WINDOW_MS } from "../../../lib/mobile-access-warning.js";
@@ -145,7 +145,7 @@ const SAMPLE_DEVICE = {
   activatedAt: 3500,
 };
 
-describe("SettingsMobileTab", () => {
+describe("MobileConnectionPanel", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
   });
@@ -160,7 +160,7 @@ describe("SettingsMobileTab", () => {
     const appStore = useAppStore();
     appStore.init(transport as AnyApi);
     await flushPromises();
-    const wrapper = mount(SettingsMobileTab, {
+    const wrapper = mount(MobileConnectionPanel, {
       props: { profiles: [{ id: "default", name: "Default" }], initialView },
     });
     await flushPromises();
@@ -185,7 +185,7 @@ describe("SettingsMobileTab", () => {
     const payload = makePayload({ enabled: true, devices: [] });
     const transport = makeTransport(payload);
     useAppStore().init(transport as AnyApi);
-    const wrapper = mount(SettingsMobileTab, { props: { profiles: [{ id: "default", name: "Default" }] } });
+    const wrapper = mount(MobileConnectionPanel, { props: { profiles: [{ id: "default", name: "Default" }] } });
     await flushPromises();
 
     expect(wrapper.find('[role="tabpanel"]').attributes("id")).toContain("phones-panel");
@@ -328,7 +328,7 @@ describe("SettingsMobileTab", () => {
     appStore.init(transport as AnyApi);
     appStore.mobilePairingSas = { deviceId: "phone-1", label: "Pixel" };
 
-    const wrapper = mount(SettingsMobileTab, {
+    const wrapper = mount(MobileConnectionPanel, {
       props: { profiles: [{ id: "default", name: "Default" }], initialView: "overview" },
     });
     await flushPromises();
@@ -1173,7 +1173,7 @@ describe("SettingsMobileTab", () => {
     const payload = makePayload({ enabled: true, devices: [] });
     const transport = makeTransport(payload);
     useAppStore().init(transport as AnyApi);
-    const wrapper = mount(SettingsMobileTab, {
+    const wrapper = mount(MobileConnectionPanel, {
       props: { profiles: [{ id: "default", name: "Default" }] },
       attachTo: document.body,
     });

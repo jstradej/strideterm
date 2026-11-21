@@ -1275,6 +1275,7 @@ describe("NotificationCenter — Connections tab", () => {
     appStore.payload = makePayload({ telegram: { connections: [] } }) as AnyApi;
     notifStore.panelOpen = true;
     const openSettings = vi.spyOn(appStore, "openSettingsDialog").mockImplementation(() => undefined as AnyApi);
+    const openRemoteAccess = vi.spyOn(appStore, "openRemoteAccessDialog").mockImplementation(() => undefined as AnyApi);
     const wrapper = mount(NotificationCenter);
     await wrapper
       .findAll(".notification-center__tab")
@@ -1286,7 +1287,9 @@ describe("NotificationCenter — Connections tab", () => {
     expect(wrapper.text()).toContain("No phones paired yet.");
     const connectionsBody = wrapper.find(".notification-center__body--connections");
     expect(connectionsBody.text().indexOf("Phones")).toBeLessThan(connectionsBody.text().indexOf("Telegram"));
-    expect(connectionsBody.find('[aria-label="Mobile settings"]').attributes("title")).toBe("Open Mobile settings");
+    expect(connectionsBody.find('[aria-label="Mobile settings"]').attributes("title")).toBe(
+      "Open Remote Access → Mobile",
+    );
     expect(connectionsBody.find('[aria-label="Telegram settings"]').attributes("title")).toContain(
       "Open Settings → Telegram",
     );
@@ -1301,7 +1304,7 @@ describe("NotificationCenter — Connections tab", () => {
       .findAll("button")
       .find((button) => button.attributes("aria-label") === "Mobile settings")!
       .trigger("click");
-    expect(openSettings).toHaveBeenCalledWith({ initialTab: "mobile", initialMobileView: "phones" });
+    expect(openRemoteAccess).toHaveBeenCalledWith({ mode: "mobile", mobileView: "phones" });
     await connectionsBody.find('[aria-label="Telegram settings"]').trigger("click");
     expect(openSettings).toHaveBeenCalledWith({ initialTab: "telegram" });
   });
@@ -1318,7 +1321,7 @@ describe("NotificationCenter — Connections tab", () => {
       .find((button) => button.text().includes("Connections"))!
       .trigger("click");
     await nextTick();
-    expect(wrapper.text()).toContain("Phone management is available in Settings on the desktop app.");
+    expect(wrapper.text()).toContain("Phone management is available in Remote Access on the desktop app.");
     expect(wrapper.find("[data-role='mobile-device-list']").exists()).toBe(false);
     expect(wrapper.text()).not.toContain("Mobile settings");
   });

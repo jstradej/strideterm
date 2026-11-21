@@ -118,7 +118,7 @@ optional hosted services. They are off until you sign in.
 
 ### Diagnostics report (only when you send one)
 
-In **Settings → Mobile → Account** you can send us a diagnostics report. The app shows you the report
+In **Remote Access → Mobile → Account** you can send us a diagnostics report. The app shows you the report
 before it is sent, and you can save it to a file instead. It contains event codes, status, durations,
 shortened identifiers, the app version, your operating system and its version, and your optional
 note. The collected diagnostic fields do not include file paths, terminal output, tokens or your
@@ -225,8 +225,8 @@ who has them can try to connect. To report a security problem, see [SECURITY.md]
   Cloudflare tunnel, Telegram, GitHub and Azure DevOps connections, and AI agent hooks. Turning a
   feature off stops future transfers initiated by that feature; data already sent remains subject to
   the retention periods above.
-- **Unpair a phone** in Settings → Mobile to revoke its pairing and remove its registered push token.
-- **Request account deletion** in **Settings → Mobile → Account → Delete account**, or write to
+- **Unpair a phone** in Remote Access → Mobile to revoke its pairing and remove its registered push token.
+- **Request account deletion** in **Remote Access → Mobile → Account → Delete account**, or write to
   support@strideterm.com. The hosted service processes the deletion request and may need additional
   time to complete subscription cancellation with the payment provider. Data described above as
   retained after account deletion is not removed with the account.

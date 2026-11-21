@@ -2665,7 +2665,7 @@ export class TelegramManager extends EventEmitter {
       await this._sendText(
         token,
         chatId,
-        "⚠️ Remote-access info is not available\\. Open strIDEterm Settings → Remote access\\.",
+        "⚠️ Remote-access info is not available\\. Open Remote Access in strIDEterm\\.",
         true,
       );
       return;
@@ -2705,7 +2705,7 @@ export class TelegramManager extends EventEmitter {
           "",
           "Remote access is *off*\\.",
           "",
-          "Enable it in *Settings → Remote access* on the desktop, then run `/tunnel` again\\.",
+          "Enable it in *Remote Access* on the desktop, then run `/tunnel` again\\.",
         ].join("\n"),
         true,
       );
@@ -2837,7 +2837,7 @@ export class TelegramManager extends EventEmitter {
       await this._sendText(
         token,
         chatId,
-        "⚠️ Tunnel reconnect is not available\\. Start the Cloudflare tunnel once from *Settings → Remote access* on the desktop, then it can be reconnected from here\\.",
+        "⚠️ Tunnel reconnect is not available\\. Start the Cloudflare tunnel once from *Remote Access → Cloudflare* on the desktop, then it can be reconnected from here\\.",
         true,
       );
       return;

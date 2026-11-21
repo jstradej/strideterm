@@ -2503,7 +2503,7 @@ export async function createRuntime({
   // The real, Firebase-backed transport (mobile-firebase-transport-rest.ts). Its configuration
   // comes from the environment — no project id, API key or database URL is compiled in — and an
   // install with none set still gets the real transport: it simply reports a
-  // MobileFirebaseNotConfiguredError from connect(), which surfaces in Settings -> Mobile as
+  // MobileFirebaseNotConfiguredError from connect(), which surfaces in Remote Access -> Mobile as
   // `lastError` alongside the exact variable names to set. The in-memory fake is a test double
   // only; tests inject it through `dependencies.createMobileFirebaseTransport`.
   //

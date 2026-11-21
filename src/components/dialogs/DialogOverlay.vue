@@ -20,7 +20,7 @@
       <component
         :is="dialogFor(layer.name)"
         v-if="dialogFor(layer.name)"
-        :ref="index === layers.length - 1 ? setActiveDialogRef : undefined"
+        :ref="(component: unknown) => setLayerRef(layer.id, component)"
         v-bind="layer.props"
       />
     </div>
@@ -78,7 +78,7 @@ const DIALOGS = {
 const store = useAppStore();
 const sshStore = useSshStore();
 const overlayRef = ref<HTMLElement | null>(null);
-const activeDialogRef = ref<{ requestClose?: () => void } | null>(null);
+const layerRefs = new Map<number, { requestClose?: () => void }>();
 const hasDecision = computed(() => Boolean(sshStore.authPrompt || sshStore.hostKeyWarning));
 let previousStackLength = store.dialogLayers.length;
 
@@ -101,11 +101,12 @@ function setOverlayRef(element: unknown) {
   overlayRef.value = element instanceof HTMLElement ? element : null;
 }
 
-function setActiveDialogRef(component: unknown) {
-  activeDialogRef.value =
-    component && typeof component === "object" && "$el" in component
-      ? (component as { requestClose?: () => void })
-      : null;
+function setLayerRef(layerId: number, component: unknown) {
+  if (component && typeof component === "object" && "$el" in component) {
+    layerRefs.set(layerId, component as { requestClose?: () => void });
+  } else {
+    layerRefs.delete(layerId);
+  }
 }
 
 function releaseTerminalKeyboardCapture(preserve?: Element | null) {
@@ -210,8 +211,9 @@ watch(
 );
 
 function requestActiveClose(back = false) {
-  if (activeDialogRef.value?.requestClose) {
-    activeDialogRef.value.requestClose();
+  const topRef = layerRefs.get(layers.value.at(-1)?.id ?? NaN);
+  if (topRef?.requestClose) {
+    topRef.requestClose();
     return;
   }
   const props = store.overlayProps as Record<string, unknown> | undefined;

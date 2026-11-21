@@ -1,5 +1,5 @@
 import { mount, flushPromises, type VueWrapper } from "@vue/test-utils";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import SettingsDialog from "./SettingsDialog.vue";
 import { apiKey } from "../../types/keys.js";
@@ -186,67 +186,136 @@ describe("SettingsDialog — Jira connections", () => {
   });
 });
 
-describe("SettingsDialog — remote session controls", () => {
-  test("hides remote-only settings and omits desktop TTL fields on Save", async () => {
+describe("SettingsDialog — remote access overview", () => {
+  const mismatchHost = {
+    id: "host-mac-1",
+    label: "macmini.local",
+    address: "macmini.local",
+    port: 43444,
+    hostPublicKey: "",
+    pairedAt: 1,
+    state: "version-mismatch",
+    hostAppVersion: "2.4.1",
+    localAppVersion: "2.4.2",
+    profiles: [],
+    checkedAt: 1,
+  };
+  const onlineHost = { ...mismatchHost, id: "host-nas-1", label: "nas.local", state: "online" };
+
+  function seedStore(remoteAccess: Record<string, unknown> = {}) {
+    const store = useAppStore();
+    store.payload = {
+      appState: { settings: { remoteAccess: { enabled: true, ...remoteAccess } } },
+      remoteAccess: { enabled: true, urls: [], tunnel: {} },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any;
+    return store;
+  }
+
+  function overviewApi(overrides: AnySettings = {}) {
+    return {
+      isRemote: false,
+      listRemoteSessions: vi.fn(async () => [{}, {}]),
+      getPeerHostState: vi.fn(async () => ({
+        hosting: { enabled: false, port: 43444 },
+        instanceId: "x",
+        hostName: "this",
+        encryptionAvailable: true,
+        listener: {},
+        devices: [{ id: "d1" }],
+        pending: [],
+      })),
+      ...overrides,
+    };
+  }
+
+  afterEach(() => {
+    delete (window as unknown as { strideterm?: unknown }).strideterm;
+  });
+
+  test("replaces the Mobile and Remote access tabs with one Remote access tab", async () => {
+    const wrapper = await mountDialog({}, overviewApi({ createMobilePairingInvitation: vi.fn() }));
+    const labels = wrapper.findAll(".settings-tab-btn").map((tab) => tab.text().trim());
+    expect(labels.filter((label) => label === "Remote access")).toHaveLength(1);
+    expect(labels).not.toContain("Mobile");
+    wrapper.unmount();
+  });
+
+  test("is absent on a remote client, and Save never sends the session length", async () => {
     const wrapper = await mountWithTransport(
       { remoteAccess: { sessionIdleTtlMinutes: 777, sessionAbsoluteTtlMinutes: 9999 } },
       true,
     );
     expect(wrapper.findAll(".settings-tab-btn").some((tab) => tab.text().includes("Remote access"))).toBe(false);
     await clickSave(wrapper);
-    expect(lastSavedPayload(wrapper).remoteAccess).toEqual({ cloudflaredPath: "" });
+    expect(lastSavedPayload(wrapper)).not.toHaveProperty("remoteAccess");
     wrapper.unmount();
   });
 
-  test("saves desktop TTL settings and validates idle against absolute TTL", async () => {
-    const wrapper = await mountDialog(
-      { remoteAccess: {} },
-      { isRemote: false, listRemoteSessions: vi.fn(async () => []) },
-    );
-    await wrapper
-      .findAll(".settings-tab-btn")
-      .find((tab) => tab.text().includes("Remote access"))!
-      .trigger("click");
-    const inputs = wrapper.findAll('[data-testid="remote-session-settings"] input');
-    await inputs[0].setValue(600);
-    await inputs[1].setValue(500);
-    expect(wrapper.text()).toContain("Idle timeout cannot exceed the absolute lifetime.");
-    await inputs[1].setValue(1000);
+  test("Save on the desktop no longer carries the session length", async () => {
+    const wrapper = await mountDialog({ remoteAccess: { sessionIdleTtlMinutes: 600 } }, overviewApi());
     await clickSave(wrapper);
-    expect(lastSavedPayload(wrapper).remoteAccess).toMatchObject({
-      sessionIdleTtlMinutes: 600,
-      sessionAbsoluteTtlMinutes: 1000,
-    });
+    expect(lastSavedPayload(wrapper)).not.toHaveProperty("remoteAccess");
     wrapper.unmount();
   });
 
-  test("loads and revokes browser sessions without rendering the session reference", async () => {
-    const session = {
-      sessionRef: "a".repeat(64),
-      origin: "token",
-      remoteAddress: "192.0.2.10",
-      createdAt: 100,
-      lastSeenAt: 200,
-      expiresAt: 1000,
-      idleExpiresAt: 800,
+  test("shows channel status, warnings on top and one row per attached host", async () => {
+    seedStore({ paused: true });
+    (window as unknown as { strideterm: unknown }).strideterm = {
+      listPeerHosts: vi.fn(async () => [mismatchHost, onlineHost]),
     };
-    const listRemoteSessions = vi.fn(async () => [session]);
-    const revokeRemoteSessions = vi.fn(async () => ({ revoked: 1 }));
-    const wrapper = await mountDialog({}, { isRemote: false, listRemoteSessions, revokeRemoteSessions });
-    await wrapper
-      .findAll(".settings-tab-btn")
-      .find((tab) => tab.text().includes("Remote access"))!
-      .trigger("click");
+    const wrapper = await mountDialog({}, overviewApi(), { initialTab: "remote-access" });
     await flushPromises();
-    expect(listRemoteSessions).toHaveBeenCalled();
-    expect(wrapper.text()).toContain("192.0.2.10");
-    expect(wrapper.text()).not.toContain(session.sessionRef);
+    const text = wrapper.get('[data-testid="remote-overview"]').text();
+    expect(text).toContain("All remote access is paused.");
+    expect(text).toContain("Hosting is off, but 1 desktop is paired.");
+    expect(wrapper.get('[data-testid="remote-row-hosting"]').text()).toContain("Off · 1 paired desktop");
+    expect(wrapper.get('[data-testid="remote-row-browser"]').text()).toContain("Sharing on · LAN · 2 active sessions");
+    expect(wrapper.get('[data-testid="remote-row-host-host-mac-1"]').text()).toContain(
+      "macmini.local · version mismatch (host 2.4.1, here 2.4.2)",
+    );
+    expect(wrapper.get('[data-testid="remote-row-host-host-nas-1"]').text()).toContain("nas.local · online");
+    expect(wrapper.findAll(".remote-overview__warning").map((w) => w.text())).toEqual(
+      expect.arrayContaining([expect.stringContaining("macmini.local: version mismatch (host 2.4.1, here 2.4.2)")]),
+    );
+    wrapper.unmount();
+  });
+
+  test("refreshes every attached host's link state when it opens", async () => {
+    seedStore();
+    const refreshPeerHost = vi.fn(async (hostId: string) => ({
+      ...mismatchHost,
+      id: hostId,
+      state: "version-mismatch",
+    }));
+    (window as unknown as { strideterm: unknown }).strideterm = {
+      listPeerHosts: vi.fn(async () => [mismatchHost, onlineHost]),
+      refreshPeerHost,
+    };
+    const wrapper = await mountDialog({}, overviewApi(), { initialTab: "remote-access" });
+    await flushPromises();
+    expect(refreshPeerHost.mock.calls.map((call) => call[0]).sort()).toEqual(["host-mac-1", "host-nas-1"]);
+    wrapper.unmount();
+  });
+
+  test("Open goes to the right tab as a layer over Settings, and back returns to Settings", async () => {
+    const store = seedStore();
+    store.openSettingsDialog();
+    const wrapper = await mountDialog({}, overviewApi(), { initialTab: "remote-access" });
+    await flushPromises();
+
     await wrapper
+      .get('[data-testid="remote-row-hosting"]')
       .findAll("button")
-      .find((button) => button.text() === "Sign out")!
+      .find((button) => button.text() === "Open")!
       .trigger("click");
-    await flushPromises();
-    expect(revokeRemoteSessions).toHaveBeenCalledWith({ sessionRef: session.sessionRef });
+    expect(store.dialogLayers.map((layer) => layer.name)).toEqual(["SettingsDialog", "RemoteAccessDialog"]);
+    expect(store.dialogLayers.at(-1)!.props).toMatchObject({ initialMode: "desktops" });
+    (store.dialogLayers.at(-1)!.props.onClose as () => void)();
+    expect(store.dialogLayers.map((layer) => layer.name)).toEqual(["SettingsDialog"]);
+
+    await wrapper.get('[data-testid="remote-open-sessions"]').trigger("click");
+    expect(store.dialogLayers.at(-1)!.props).toMatchObject({ initialMode: "lan", focusSessions: true });
     wrapper.unmount();
   });
 });

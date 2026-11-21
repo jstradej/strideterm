@@ -2958,9 +2958,9 @@ describe("remote transport API parity — no method silently missing its remote 
     // A remote HTTP client must never be able to pair/rename/revoke a mobile
     // device or read its own audit log/quota — that's the same boundary
     // remote-server.ts's sanitizeSettingsFromRemote already enforces for the
-    // persisted mobile settings themselves. SettingsMobileTab.vue hides the
-    // Mobile settings tab entirely when the transport doesn't advertise
-    // createMobilePairingInvitation (the WorkspaceDialog browseDirectory
+    // persisted mobile settings themselves. RemoteAccessDialog.vue hides the
+    // Mobile tab entirely on a remote client (`!isRemote`), where the transport
+    // does not advertise these methods (the WorkspaceDialog browseDirectory
     // v-if precedent), rather than showing controls that would silently no-op.
     "createMobilePairingInvitation",
     "cancelMobilePairingInvitation",

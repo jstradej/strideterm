@@ -63,7 +63,7 @@ describe("useSignInNotice", () => {
     await wrapper.vm.$nextTick();
     expect(notifications.persistentToasts).toHaveLength(1);
     expect(notifications.persistentToasts[0]?.title).toContain("Finish signing in");
-    expect(notifications.persistentToasts[0]?.body).toContain("Settings");
+    expect(notifications.persistentToasts[0]?.body).toContain("Remote Access");
 
     // The address is the customer's own and this renders over whatever they are sharing.
     expect(notifications.persistentToasts[0]?.body).not.toContain("owner@example.test");
@@ -140,7 +140,7 @@ describe("useSignInNotice", () => {
 
   it("opens Mobile Account directly when the sign-in notice is clicked", async () => {
     const account = useAccountStore();
-    const openSettings = vi.spyOn(useAppStore(), "openSettingsDialog").mockImplementation(() => {});
+    const openRemoteAccess = vi.spyOn(useAppStore(), "openRemoteAccessDialog").mockImplementation(() => {});
     const host = mount(Host);
     const stack = mount(PersistentToastStack);
 
@@ -149,7 +149,7 @@ describe("useSignInNotice", () => {
     await stack.vm.$nextTick();
     await stack.find(".persistent-toast__target").trigger("click");
 
-    expect(openSettings).toHaveBeenCalledWith({ initialTab: "mobile", initialMobileView: "account" });
+    expect(openRemoteAccess).toHaveBeenCalledWith({ mode: "mobile", mobileView: "account" });
     stack.unmount();
     host.unmount();
   });

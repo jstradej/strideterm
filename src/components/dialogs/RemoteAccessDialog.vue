@@ -74,6 +74,7 @@
         :profiles="store.payload?.appState?.profiles || []"
         :show-pause-control="false"
         :visible="selectedMode === 'mobile'"
+        :initial-view="initialMobileView"
       />
     </div>
     <div v-if="canHostPeers && selectedMode === 'desktops'" class="remote-access__mobile">
@@ -345,11 +346,86 @@
         </div>
       </div>
     </fieldset>
+    <!-- Outside the fieldset above: signing a session out is a security action and must work while paused. -->
+    <section
+      v-if="showSessions"
+      ref="sessionsSection"
+      class="remote-sessions"
+      data-testid="remote-sessions"
+      :aria-label="`Active browser sessions (${remoteSessions.length})`"
+    >
+      <button
+        type="button"
+        class="remote-sessions__toggle"
+        :aria-expanded="sessionsOpen"
+        data-testid="remote-sessions-toggle"
+        @click="sessionsOpen = !sessionsOpen"
+      >
+        <span :class="['disclosure-chevron', sessionsOpen && 'disclosure-chevron--open']" aria-hidden="true" />
+        Active browser sessions ({{ remoteSessions.length }})
+      </button>
+      <div v-if="sessionsOpen" class="remote-sessions__body">
+        <h3>Session length</h3>
+        <p class="remote-access__note">Sessions end after inactivity or when their absolute lifetime expires.</p>
+        <label class="remote-session-setting">
+          <span>Idle timeout (minutes)</span>
+          <input v-model.number="sessionIdleInput" type="number" min="15" max="43200" />
+        </label>
+        <label class="remote-session-setting">
+          <span>Absolute lifetime (minutes)</span>
+          <input v-model.number="sessionAbsoluteInput" type="number" min="60" max="129600" />
+        </label>
+        <p v-if="sessionTtlError" class="inline-error" role="alert">{{ sessionTtlError }}</p>
+        <p v-else-if="sessionTtlSaveError" class="inline-error" role="alert">{{ sessionTtlSaveError }}</p>
+        <div class="remote-sessions__actions">
+          <button
+            type="button"
+            class="button"
+            data-testid="session-ttl-apply"
+            :disabled="!sessionTtlDirty || !!sessionTtlError || sessionTtlSaving"
+            @click="applySessionTtl"
+          >
+            Apply
+          </button>
+        </div>
+        <h3>Sessions</h3>
+        <div class="remote-sessions__actions">
+          <button type="button" class="button button--ghost" :disabled="remoteSessionsBusy" @click="loadRemoteSessions">
+            Refresh
+          </button>
+          <button
+            type="button"
+            class="button button--ghost"
+            :disabled="remoteSessionsBusy || !remoteSessions.length"
+            @click="revokeAllRemoteSessions"
+          >
+            Sign out all
+          </button>
+        </div>
+        <p v-if="remoteSessionsBusy">Loading sessions…</p>
+        <p v-else-if="!remoteSessions.length">No active browser sessions.</p>
+        <article v-for="session in remoteSessions" :key="session.sessionRef" class="remote-sessions__entry">
+          <strong>{{ session.origin }}</strong> · {{ session.remoteAddress }}
+          <p>
+            Created {{ formatRemoteDate(session.createdAt) }} · Last used {{ formatRemoteDate(session.lastSeenAt) }} ·
+            Expires {{ formatRemoteDate(Math.min(session.expiresAt, session.idleExpiresAt)) }}
+          </p>
+          <button
+            type="button"
+            class="button button--ghost"
+            :disabled="remoteSessionsBusy"
+            @click="revokeRemoteSession(session.sessionRef)"
+          >
+            Sign out
+          </button>
+        </article>
+      </div>
+    </section>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, inject, watch } from "vue";
+import { ref, computed, inject, watch, nextTick, onMounted } from "vue";
 import RemoteAccessPauseControl from "../layout/RemoteAccessPauseControl.vue";
 import MobileConnectionPanel from "./settings/MobileConnectionPanel.vue";
 import PeerHostingPanel from "../peers/PeerHostingPanel.vue";
@@ -360,7 +436,16 @@ import { useRemoteConnection } from "../../composables/useRemoteConnection.js";
 import { useQrCode } from "../../composables/useQrCode.js";
 import type { Transport } from "../../transport.js";
 import { pickPath } from "../../lib/pick-path.js";
+import { rlog } from "../../lib/renderer-log.js";
+import { userFacingMessage } from "../../lib/error-message.js";
+import { useNotificationStore } from "../../stores/notifications.js";
+import type { RemoteBrowserSession } from "../../../electron/shared/remote-access.js";
 
+const props = defineProps<{
+  initialMode?: "mobile" | "desktops" | "lan" | "cloudflare" | "vps";
+  initialMobileView?: "overview" | "phones" | "account";
+  focusSessions?: boolean;
+}>();
 const emit = defineEmits<{ close: [] }>();
 
 const api = inject<Transport>(apiKey);
@@ -372,7 +457,23 @@ const secureStorageMissing = computed(
 const accountStore = useAccountStore();
 const isRemote = api?.isRemote || false;
 
-const selectedMode = ref(isRemote ? store.remoteAccessMode : "mobile");
+const canHostPeers = typeof api?.getPeerHostState === "function";
+const availableModes = [
+  ...(!isRemote ? [{ id: "mobile", label: "Mobile" }] : []),
+  ...(canHostPeers ? [{ id: "desktops", label: "Desktops" }] : []),
+  { id: "lan", label: "LAN" },
+  { id: "cloudflare", label: "Cloudflare" },
+  { id: "vps", label: "VPS / Custom" },
+];
+
+function startingMode(): string {
+  if (isRemote) return store.remoteAccessMode;
+  const wanted = props.initialMode ?? (props.focusSessions ? store.remoteAccessMode : "mobile");
+  return availableModes.some((mode) => mode.id === wanted) ? wanted : "mobile";
+}
+const selectedMode = ref(startingMode());
+if (!isRemote && selectedMode.value !== "mobile" && selectedMode.value !== "desktops")
+  store.setRemoteMode(selectedMode.value);
 watch(
   () => store.mobilePairingSas?.deviceId,
   (deviceId) => {
@@ -389,15 +490,7 @@ function selectMode(mode: string) {
   selectedMode.value = mode;
   if (mode !== "mobile" && mode !== "desktops") store.setRemoteMode(mode);
 }
-const canHostPeers = typeof api?.getPeerHostState === "function";
 const ownPanelMode = computed(() => selectedMode.value === "mobile" || selectedMode.value === "desktops");
-const availableModes = [
-  ...(!isRemote ? [{ id: "mobile", label: "Mobile" }] : []),
-  ...(canHostPeers ? [{ id: "desktops", label: "Desktops" }] : []),
-  { id: "lan", label: "LAN" },
-  { id: "cloudflare", label: "Cloudflare" },
-  { id: "vps", label: "VPS / Custom" },
-];
 
 const {
   remoteConfig,
@@ -473,6 +566,96 @@ async function browseCloudflared(): Promise<void> {
 function saveCustomUrl(): void {
   store.saveCustomPublicUrl(customUrlInput.value.trim());
 }
+
+// Desktop only, like today's Settings tab: a remote client's transport has no session list.
+const canManageSessions = !isRemote && typeof api?.listRemoteSessions === "function";
+const showSessions = computed(() => canManageSessions && !ownPanelMode.value);
+const notifications = useNotificationStore();
+const remoteSessions = ref<RemoteBrowserSession[]>([]);
+const remoteSessionsBusy = ref(false);
+const sessionsOpen = ref(props.focusSessions === true);
+const sessionsSection = ref<HTMLElement | null>(null);
+
+async function loadRemoteSessions(): Promise<void> {
+  if (!api?.listRemoteSessions || remoteSessionsBusy.value) return;
+  remoteSessionsBusy.value = true;
+  try {
+    await notifications.runWithToast("Failed to load sessions", async () => {
+      remoteSessions.value = await api.listRemoteSessions!();
+    });
+  } finally {
+    remoteSessionsBusy.value = false;
+  }
+}
+async function revokeRemoteSessions(selection: { sessionRef: string } | { all: true }, title: string): Promise<void> {
+  if (!api?.revokeRemoteSessions || remoteSessionsBusy.value) return;
+  remoteSessionsBusy.value = true;
+  try {
+    await notifications.runWithToast(title, async () => {
+      await api.revokeRemoteSessions!(selection);
+      remoteSessions.value = await api.listRemoteSessions!();
+    });
+  } finally {
+    remoteSessionsBusy.value = false;
+  }
+}
+function revokeRemoteSession(sessionRef: string): Promise<void> {
+  return revokeRemoteSessions({ sessionRef }, "Failed to sign out session");
+}
+function revokeAllRemoteSessions(): Promise<void> {
+  return revokeRemoteSessions({ all: true }, "Failed to sign out sessions");
+}
+function formatRemoteDate(at: number): string {
+  return new Date(at).toLocaleString();
+}
+
+const storedIdleTtl = computed(() => Number(remoteConfig.value.sessionIdleTtlMinutes ?? 1440));
+const storedAbsoluteTtl = computed(() => Number(remoteConfig.value.sessionAbsoluteTtlMinutes ?? 10080));
+const sessionIdleInput = ref(storedIdleTtl.value);
+const sessionAbsoluteInput = ref(storedAbsoluteTtl.value);
+const sessionTtlSaving = ref(false);
+const sessionTtlSaveError = ref("");
+watch([storedIdleTtl, storedAbsoluteTtl], ([idle, absolute], [oldIdle, oldAbsolute]) => {
+  if (sessionIdleInput.value === oldIdle) sessionIdleInput.value = idle;
+  if (sessionAbsoluteInput.value === oldAbsolute) sessionAbsoluteInput.value = absolute;
+});
+const sessionTtlDirty = computed(
+  () => sessionIdleInput.value !== storedIdleTtl.value || sessionAbsoluteInput.value !== storedAbsoluteTtl.value,
+);
+const sessionTtlError = computed(() => {
+  const idle = sessionIdleInput.value;
+  const absolute = sessionAbsoluteInput.value;
+  if (!Number.isInteger(idle) || idle < 15 || idle > 43200)
+    return "Idle timeout must be between 15 and 43,200 minutes.";
+  if (!Number.isInteger(absolute) || absolute < 60 || absolute > 129600)
+    return "Absolute lifetime must be between 60 and 129,600 minutes.";
+  if (idle > absolute) return "Idle timeout cannot exceed the absolute lifetime.";
+  return "";
+});
+async function applySessionTtl(): Promise<void> {
+  if (sessionTtlSaving.value || sessionTtlError.value) return;
+  sessionTtlSaving.value = true;
+  sessionTtlSaveError.value = "";
+  try {
+    await store.updateSettings({
+      remoteAccess: {
+        sessionIdleTtlMinutes: sessionIdleInput.value,
+        sessionAbsoluteTtlMinutes: sessionAbsoluteInput.value,
+      },
+    });
+  } catch (err) {
+    sessionTtlSaveError.value = userFacingMessage(err);
+    rlog("error", "[remote-access] saving the browser session length failed", { err: userFacingMessage(err) });
+  } finally {
+    sessionTtlSaving.value = false;
+  }
+}
+
+onMounted(() => {
+  if (canManageSessions) void loadRemoteSessions();
+  if (props.focusSessions && showSessions.value)
+    void nextTick(() => sessionsSection.value?.scrollIntoView?.({ block: "nearest" }));
+});
 </script>
 
 <style scoped>
@@ -484,6 +667,70 @@ function saveCustomUrl(): void {
   background: rgba(217, 119, 6, 0.12);
   font-size: 12.5px;
   line-height: 1.5;
+}
+
+.remote-sessions {
+  flex: 0 0 auto;
+  max-height: 45%;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.remote-sessions__toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.remote-sessions__body {
+  display: grid;
+  gap: 8px;
+  padding-top: 8px;
+}
+
+.remote-sessions__body h3 {
+  margin: 4px 0 0;
+}
+
+.remote-sessions__actions {
+  display: flex;
+  gap: 6px;
+}
+
+.remote-sessions__entry {
+  display: grid;
+  gap: 4px;
+  justify-items: start;
+}
+
+.remote-sessions__entry p {
+  margin: 0;
+}
+
+.remote-session-setting {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, 220px);
+  align-items: center;
+  gap: 12px;
+}
+
+.remote-session-setting > input {
+  width: 100%;
+}
+
+@media (max-width: 600px) {
+  .remote-session-setting {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
 }
 
 .button-spinner {

@@ -875,7 +875,7 @@ export class MobileManager extends EventEmitter {
     return { ok: true };
   }
 
-  /** All devices (active and revoked) — desktop Settings → Mobile device list (plan §10.5). */
+  /** All devices (active and revoked) — desktop Remote Access → Mobile device list (plan §10.5). */
   listDevices(): MobileDeviceRecord[] {
     return this.deviceStore.listDevices();
   }
@@ -1011,7 +1011,7 @@ export class MobileManager extends EventEmitter {
     return this.profileSync;
   }
 
-  /** Status snapshot for desktop Settings → Mobile (plan §10.5 "refresh connection health") — never a secret/key. */
+  /** Status snapshot for desktop Remote Access → Mobile (plan §10.5 "refresh connection health") — never a secret/key. */
   getConnectionHealth(): MobileConnectionHealth {
     return {
       running: this.running,
@@ -1090,7 +1090,7 @@ export class MobileManager extends EventEmitter {
       kind: "test",
       priority: "normal",
       title: "strIDEterm test notification",
-      detail: "This is a test push sent from desktop Settings → Mobile.",
+      detail: "This is a test push sent from desktop Remote Access → Mobile.",
       dedupeKey: `test:${deviceId}:${this.now()}`,
       collapseKey: null,
       createdAt: this.now(),

@@ -25,7 +25,6 @@ function buildForm({ agentHook = true, autoApprovePermissions = false }: FormOve
     externalPathOpener: { mode: "system", command: "" },
     clipboardImagePasteEnabled: true,
     clipboardImagePasteDir: "",
-    remoteAccess: { cloudflaredPath: "" },
     logLevel: "info",
     notifications: {
       promptQuietMs: 900,

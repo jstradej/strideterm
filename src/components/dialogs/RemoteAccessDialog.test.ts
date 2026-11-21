@@ -16,7 +16,7 @@ import MobileConnectionPanel from "./settings/MobileConnectionPanel.vue";
 import PeerHostingPanel from "../peers/PeerHostingPanel.vue";
 import { useNotificationStore } from "../../stores/notifications.js";
 
-type MobileConnectionPanelProps = { visible?: boolean };
+type MobileConnectionPanelProps = { visible?: boolean; initialView?: string };
 
 beforeEach(() => {
   setActivePinia(createPinia());
@@ -245,5 +245,171 @@ describe("RemoteAccessDialog — Desktops tab", () => {
     const wrapper = mount(RemoteAccessDialog, { global: { provide: { [apiKey]: { isRemote: true } } } });
     expect(wrapper.findAll(".remote-mode-tab").map((b) => b.text())).not.toContain("Desktops");
     wrapper.unmount();
+  });
+});
+
+describe("RemoteAccessDialog — browser sessions", () => {
+  const session = {
+    sessionRef: "a".repeat(64),
+    origin: "token",
+    remoteAddress: "192.0.2.10",
+    createdAt: 100,
+    lastSeenAt: 200,
+    expiresAt: 1000,
+    idleExpiresAt: 800,
+  };
+
+  function mountSessions(
+    options: {
+      remoteAccess?: Record<string, unknown>;
+      api?: Record<string, unknown>;
+      props?: Record<string, unknown>;
+    } = {},
+  ) {
+    const store = useAppStore();
+    store.payload = {
+      appState: { settings: { remoteAccess: { enabled: true, ...options.remoteAccess } } },
+      remoteAccess: { enabled: true, urls: [], tunnel: {} },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any;
+    const listRemoteSessions = vi.fn(async () => [session]);
+    const revokeRemoteSessions = vi.fn(async () => ({ revoked: 1 }));
+    const updateSettings = vi.spyOn(store, "updateSettings").mockResolvedValue(undefined as never);
+    const wrapper = mount(RemoteAccessDialog, {
+      props: options.props,
+      global: {
+        provide: { [apiKey]: { listRemoteSessions, revokeRemoteSessions, ...options.api } },
+        stubs: { MobileConnectionPanel: true },
+      },
+    });
+    return { wrapper, store, listRemoteSessions, revokeRemoteSessions, updateSettings };
+  }
+
+  async function openMode(wrapper: VueWrapper, label: string) {
+    await wrapper
+      .findAll(".remote-mode-tab")
+      .find((b) => b.text() === label)!
+      .trigger("click");
+    await flushPromises();
+  }
+
+  test("is shown in LAN, Cloudflare and VPS, not in Mobile or Desktops", async () => {
+    const { wrapper } = mountSessions({ api: { getPeerHostState: vi.fn().mockResolvedValue(null) } });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="remote-sessions"]').exists()).toBe(false);
+    for (const label of ["LAN", "Cloudflare", "VPS / Custom"]) {
+      await openMode(wrapper, label);
+      expect(wrapper.find('[data-testid="remote-sessions"]').exists()).toBe(true);
+    }
+    await openMode(wrapper, "Desktops");
+    expect(wrapper.find('[data-testid="remote-sessions"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  test("needs listRemoteSessions and never renders on a remote client", async () => {
+    const withoutList = mountSessions({ api: { listRemoteSessions: undefined } });
+    await openMode(withoutList.wrapper, "LAN");
+    expect(withoutList.wrapper.find('[data-testid="remote-sessions"]').exists()).toBe(false);
+    withoutList.wrapper.unmount();
+
+    const remote = mountSessions({ api: { isRemote: true } });
+    await flushPromises();
+    expect(remote.wrapper.find('[data-testid="remote-sessions"]').exists()).toBe(false);
+    expect(remote.listRemoteSessions).not.toHaveBeenCalled();
+    remote.wrapper.unmount();
+  });
+
+  test("is collapsed with a count, loads and revokes without rendering the session reference", async () => {
+    const { wrapper, listRemoteSessions, revokeRemoteSessions } = mountSessions();
+    await openMode(wrapper, "LAN");
+    expect(listRemoteSessions).toHaveBeenCalled();
+    const toggle = wrapper.get('[data-testid="remote-sessions-toggle"]');
+    expect(toggle.text()).toBe("Active browser sessions (1)");
+    expect(toggle.attributes("aria-expanded")).toBe("false");
+    expect(wrapper.text()).not.toContain("192.0.2.10");
+    await toggle.trigger("click");
+    expect(wrapper.text()).toContain("192.0.2.10");
+    expect(wrapper.text()).not.toContain(session.sessionRef);
+    await wrapper
+      .findAll("button")
+      .find((b) => b.text() === "Sign out")!
+      .trigger("click");
+    await flushPromises();
+    expect(revokeRemoteSessions).toHaveBeenCalledWith({ sessionRef: session.sessionRef });
+    wrapper.unmount();
+  });
+
+  test("a session can be signed out while everything is paused", async () => {
+    const { wrapper, revokeRemoteSessions } = mountSessions({ remoteAccess: { paused: true } });
+    await openMode(wrapper, "LAN");
+    const section = wrapper.get('[data-testid="remote-sessions"]');
+    expect(section.element.closest("fieldset")).toBeNull();
+    expect(wrapper.get(".remote-access__legacy").attributes("disabled")).toBeDefined();
+    await wrapper.get('[data-testid="remote-sessions-toggle"]').trigger("click");
+    const signOutAll = wrapper.findAll("button").find((b) => b.text() === "Sign out all")!;
+    expect(signOutAll.attributes("disabled")).toBeUndefined();
+    await signOutAll.trigger("click");
+    await flushPromises();
+    expect(revokeRemoteSessions).toHaveBeenCalledWith({ all: true });
+    wrapper.unmount();
+  });
+
+  test("session length validates, applies only on Apply, and shows a failure in the dialog", async () => {
+    const { wrapper, updateSettings } = mountSessions({ props: { focusSessions: true } });
+    await openMode(wrapper, "LAN");
+    const [idle, absolute] = wrapper.findAll(".remote-sessions__body input");
+    const apply = () => wrapper.get('[data-testid="session-ttl-apply"]');
+    expect(apply().attributes("disabled")).toBeDefined();
+
+    await idle.setValue(600);
+    await absolute.setValue(500);
+    expect(wrapper.text()).toContain("Idle timeout cannot exceed the absolute lifetime.");
+    expect(apply().attributes("disabled")).toBeDefined();
+    await idle.setValue(10);
+    await absolute.setValue(1000);
+    expect(wrapper.text()).toContain("Idle timeout must be between 15 and 43,200 minutes.");
+    await idle.setValue(600);
+    await absolute.setValue(200000);
+    expect(wrapper.text()).toContain("Absolute lifetime must be between 60 and 129,600 minutes.");
+    expect(updateSettings).not.toHaveBeenCalled();
+
+    await absolute.setValue(1000);
+    expect(apply().attributes("disabled")).toBeUndefined();
+    await apply().trigger("click");
+    await flushPromises();
+    expect(updateSettings).toHaveBeenCalledWith({
+      remoteAccess: { sessionIdleTtlMinutes: 600, sessionAbsoluteTtlMinutes: 1000 },
+    });
+
+    updateSettings.mockRejectedValueOnce(new Error("Disk full"));
+    await apply().trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("Disk full");
+    wrapper.unmount();
+  });
+
+  test("initialMode, initialMobileView and focusSessions are honoured", async () => {
+    const mobile = mountSessions({ props: { initialMode: "mobile", initialMobileView: "account" } });
+    const panel = mobile.wrapper.findComponent(MobileConnectionPanel) as VueWrapper<
+      unknown,
+      ComponentPublicInstance<MobileConnectionPanelProps>
+    >;
+    expect(panel.props("initialView")).toBe("account");
+    mobile.wrapper.unmount();
+
+    const cloudflare = mountSessions({ props: { initialMode: "cloudflare" } });
+    expect(cloudflare.wrapper.find(".remote-mode-tab--active").text()).toBe("Cloudflare");
+    expect(cloudflare.store.remoteAccessMode).toBe("cloudflare");
+    cloudflare.wrapper.unmount();
+
+    const focus = mountSessions({ props: { focusSessions: true } });
+    await flushPromises();
+    expect(["LAN", "Cloudflare", "VPS / Custom"]).toContain(focus.wrapper.find(".remote-mode-tab--active").text());
+    expect(focus.wrapper.get('[data-testid="remote-sessions-toggle"]').attributes("aria-expanded")).toBe("true");
+    focus.wrapper.unmount();
+
+    const unavailable = mountSessions({ props: { initialMode: "desktops" } });
+    expect(unavailable.wrapper.find(".remote-mode-tab--active").text()).toBe("Mobile");
+    unavailable.wrapper.unmount();
   });
 });

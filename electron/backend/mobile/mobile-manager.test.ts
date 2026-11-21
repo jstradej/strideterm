@@ -1858,7 +1858,7 @@ describe("mobile:* runtime events never carry secrets", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Plan §10.5: desktop Settings → Mobile management methods added on top of
+// Plan §10.5: desktop Remote Access → Mobile management methods added on top of
 // the existing lifecycle/outbox/inbox behavior above.
 // ---------------------------------------------------------------------------
 

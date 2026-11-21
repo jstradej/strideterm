@@ -120,7 +120,7 @@ describe("MobileDeviceList", () => {
     app.isRemoteTransport = true;
     app.mobileDevices = [phone];
     const wrapper = mount(MobileDeviceList);
-    expect(wrapper.text()).toContain("Phone management is available in Settings on the desktop app.");
+    expect(wrapper.text()).toContain("Phone management is available in Remote Access on the desktop app.");
     expect(wrapper.find("button").exists()).toBe(false);
   });
 

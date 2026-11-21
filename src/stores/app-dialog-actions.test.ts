@@ -238,6 +238,88 @@ describe("createDialogActions.openProfilesDialog", () => {
 
     expect(ctx.overlay.value).toBe("ProfilesDialog");
   });
+
+  it("as a layer over Settings, goes back to Settings after cancel and after activating a profile", async () => {
+    const activateProfile = vi.fn(() => Promise.resolve({ appState: { workspaces: [], windowSlots: [] } }));
+    const ctx = makeCtx({ appState: { profiles: [{ id: "profile-a", name: "A" }], workspaces: [], windowSlots: [] } });
+    ctx.getApi = () => ({ isRemote: false, activateProfile });
+    const actions = createDialogActions(ctx);
+    const names = () => actions.dialogLayers.value.map((layer) => layer.name);
+
+    actions.openSettingsDialog();
+    actions.openProfilesDialog({ subDialog: true });
+    expect(names()).toEqual(["SettingsDialog", "ProfilesDialog"]);
+    (ctx.overlayProps.value.onCancel as () => void)();
+    expect(names()).toEqual(["SettingsDialog"]);
+
+    actions.openProfilesDialog({ subDialog: true });
+    await (ctx.overlayProps.value.onActivate as (profileId: string) => Promise<void>)("profile-a");
+    expect(names()).toEqual(["SettingsDialog"]);
+  });
+});
+
+describe("createDialogActions.openRemoteAccessDialog", () => {
+  const names = (actions: ReturnType<typeof createDialogActions>) => actions.dialogLayers.value.map((l) => l.name);
+
+  it("opens on its own and closes everything", () => {
+    const ctx = makeCtx({ appState: {} });
+    const actions = createDialogActions(ctx);
+    actions.openRemoteAccessDialog({ mode: "lan", focusSessions: true });
+    expect(names(actions)).toEqual(["RemoteAccessDialog"]);
+    expect(ctx.overlayProps.value).toMatchObject({ initialMode: "lan", focusSessions: true });
+    (ctx.overlayProps.value.onClose as () => void)();
+    expect(ctx.overlay.value).toBeNull();
+  });
+
+  it("stacks over Settings and goes back to it instead of closing it", () => {
+    const ctx = makeCtx({ appState: {} });
+    const actions = createDialogActions(ctx);
+    actions.openSettingsDialog();
+    actions.openRemoteAccessDialog({ mode: "mobile", mobileView: "account" });
+    expect(names(actions)).toEqual(["SettingsDialog", "RemoteAccessDialog"]);
+    expect(ctx.overlayProps.value).toMatchObject({ initialMode: "mobile", initialMobileView: "account" });
+    (ctx.overlayProps.value.onClose as () => void)();
+    expect(names(actions)).toEqual(["SettingsDialog"]);
+    expect(ctx.overlay.value).toBe("SettingsDialog");
+  });
+
+  it("does not stack a second Remote Access over itself", () => {
+    const ctx = makeCtx({ appState: {} });
+    const actions = createDialogActions(ctx);
+    actions.openSettingsDialog();
+    actions.openRemoteAccessDialog({ mode: "lan" });
+    actions.openRemoteAccessDialog({ mode: "mobile", mobileView: "phones" });
+    expect(names(actions)).toEqual(["SettingsDialog", "RemoteAccessDialog"]);
+  });
+  it("a Settings save result lands on Settings even when a layer was opened before the save resolved", async () => {
+    let finish!: (payload: AnyApi) => void;
+    const ctx = makeCtx({ appState: {} });
+    ctx.getApi = () => ({ updateSettings: () => new Promise((resolve) => (finish = resolve)) });
+    const actions = createDialogActions(ctx);
+    actions.openSettingsDialog();
+    const saving = (ctx.overlayProps.value.onSave as (patch: AnyApi) => Promise<void>)({ theme: "dark" });
+    actions.openRemoteAccessDialog({ mode: "lan" });
+    finish({ appState: {} });
+    await saving;
+    const [settings, layer] = actions.dialogLayers.value;
+    expect(settings!.props.saveCompleted).toEqual(expect.any(Number));
+    expect(layer!.props).not.toHaveProperty("saveCompleted");
+    expect(ctx.overlayProps.value).not.toHaveProperty("saveCompleted");
+  });
+
+  it("is what the retired Mobile and Remote access Settings tabs open", () => {
+    const mobile = makeCtx({ appState: {} });
+    const mobileActions = createDialogActions(mobile);
+    mobileActions.openSettingsDialog({ initialTab: "mobile", initialMobileView: "phones" });
+    expect(names(mobileActions)).toEqual(["RemoteAccessDialog"]);
+    expect(mobile.overlayProps.value).toMatchObject({ initialMode: "mobile", initialMobileView: "phones" });
+
+    const remote = makeCtx({ appState: {} });
+    const remoteActions = createDialogActions(remote);
+    remoteActions.openSettingsDialog({ initialTab: "remote" });
+    expect(names(remoteActions)).toEqual(["RemoteAccessDialog"]);
+    expect(remote.overlayProps.value).toMatchObject({ focusSessions: true });
+  });
 });
 
 describe("createDialogActions.openNewTabDialog SSH-tools forwarding", () => {

@@ -192,30 +192,6 @@
     </div>
 
     <div>
-      <span class="section-label">Cloudflared binary</span>
-      <div class="input-with-action">
-        <input
-          v-model="form.remoteAccess.cloudflaredPath"
-          placeholder="Leave empty to use PATH"
-          class="settings-input"
-        />
-        <button
-          v-if="api?.browseFile"
-          type="button"
-          class="button button--ghost input-with-action__btn"
-          title="Open a file picker to locate the cloudflared binary used for Cloudflare quick-tunnels. Leave empty to fall back to PATH lookup."
-          @click="browseCloudflared"
-        >
-          Browse
-        </button>
-      </div>
-      <small class="help-text"
-        >Used for Cloudflare Quick Tunnel detection and launch. Leave empty to fall back to PATH. Download cloudflared
-        from <code>https://developers.cloudflare.com/tunnel/downloads/</code>.</small
-      >
-    </div>
-
-    <div>
       <span class="section-label">Log Level</span>
       <CustomSelect v-model="form.logLevel" class="settings-input settings-select" :options="logLevelOptions" />
       <small class="help-text"
@@ -546,13 +522,6 @@ async function browseEditor() {
   if (!browseFile) return;
   const selected = await pickPath(() => browseFile({ defaultPath: form.externalEditor }));
   if (selected) form.externalEditor = selected;
-}
-
-async function browseCloudflared() {
-  const browseFile = props.api?.browseFile;
-  if (!browseFile) return;
-  const selected = await pickPath(() => browseFile({ defaultPath: form.remoteAccess.cloudflaredPath }));
-  if (selected) form.remoteAccess.cloudflaredPath = selected;
 }
 
 // Hint text only — backend has the authoritative copy of this default.

@@ -75,7 +75,7 @@ function iconFor(kind: string): string {
 
 function openAction(t: PersistentToast): void {
   if (t.action === "open-mobile-account") {
-    appStore.openSettingsDialog({ initialTab: "mobile", initialMobileView: "account" });
+    appStore.openRemoteAccessDialog({ mode: "mobile", mobileView: "account" });
   }
 }
 

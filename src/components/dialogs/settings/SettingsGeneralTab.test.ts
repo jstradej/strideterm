@@ -21,7 +21,6 @@ function buildForm() {
     externalPathOpener: { mode: "system", command: "" },
     clipboardImagePasteEnabled: true,
     clipboardImagePasteDir: "",
-    remoteAccess: { cloudflaredPath: "" },
     logLevel: "info",
     notifications: {
       promptQuietMs: 900,
@@ -69,19 +68,6 @@ describe("SettingsGeneralTab — picker call sites", () => {
     const wrapper = mountTab({ browseFile });
 
     await findBrowseButton(wrapper, "external editor binary").trigger("click");
-    await flushPromises();
-
-    expect(browseFile).toHaveBeenCalled();
-    const notifications = useNotificationStore();
-    expect(notifications.sessions).toHaveLength(1);
-    expect(notifications.sessions[0].events[0].title).toBe("Failed to open picker");
-  });
-
-  test("browseCloudflared: a rejecting browseFile shows an error notification instead of throwing", async () => {
-    const browseFile = vi.fn().mockRejectedValueOnce(new Error("picker crashed"));
-    const wrapper = mountTab({ browseFile });
-
-    await findBrowseButton(wrapper, "cloudflared binary").trigger("click");
     await flushPromises();
 
     expect(browseFile).toHaveBeenCalled();

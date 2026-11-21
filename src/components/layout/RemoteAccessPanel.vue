@@ -268,14 +268,14 @@ const mobileWarningCompactLabel = computed(() => {
 const mobileWarningTitle = computed(() => {
   if (mobileWarning.value === "trial-expired" || mobileWarning.value === "access-expired") {
     const subject = mobileWarning.value === "trial-expired" ? "The free mobile trial" : "Mobile access";
-    return `${subject} ended ${mobileAccessEndDateTime.value}. Open Mobile settings to review account access.`;
+    return `${subject} ended ${mobileAccessEndDateTime.value}. Open Remote Access → Mobile to review account access.`;
   }
   if (isUpcomingExpiry.value) {
     const subject = mobileWarning.value === "trial-expiring" ? "The free mobile trial" : "Mobile access";
-    return `${subject} ends in ${mobileTimeRemaining.value} (${mobileAccessEndDateTime.value}). Open Mobile settings to review account access.`;
+    return `${subject} ends in ${mobileTimeRemaining.value} (${mobileAccessEndDateTime.value}). Open Remote Access → Mobile to review account access.`;
   }
   const authorizationMessage =
-    "The desktop's mobile access was not authorized. Open Mobile settings to review account and phone access.";
+    "The desktop's mobile access was not authorized. Open Remote Access → Mobile to review account and phone access.";
   if (mobileWarning.value === "authorization-denied" && mobileRemainingMs.value > 0) {
     return `${authorizationMessage} Mobile access ends in ${mobileTimeRemaining.value} (${mobileAccessEndDateTime.value}).`;
   }
@@ -329,9 +329,9 @@ function scheduleMobileWarningPulse(interval: number | null): void {
 watch(mobileWarningPulseInterval, scheduleMobileWarningPulse, { immediate: true });
 
 function openMobileSettings(): void {
-  store.openSettingsDialog({
-    initialTab: "mobile",
-    initialMobileView: isExpiredWarning.value || isUpcomingExpiry.value ? "account" : "overview",
+  store.openRemoteAccessDialog({
+    mode: "mobile",
+    mobileView: isExpiredWarning.value || isUpcomingExpiry.value ? "account" : "overview",
   });
 }
 

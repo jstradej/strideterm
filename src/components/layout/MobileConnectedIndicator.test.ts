@@ -80,13 +80,13 @@ describe("MobileConnectedIndicator", () => {
     expect(wrapper.find(SELECTOR).exists()).toBe(false);
   });
 
-  it("opens Settings, Mobile, Phones when clicked", async () => {
+  it("opens Remote Access, Mobile, Phones when clicked", async () => {
     const store = useAppStore();
-    const open = vi.spyOn(store, "openSettingsDialog").mockImplementation(() => undefined as AnyApi);
+    const open = vi.spyOn(store, "openRemoteAccessDialog").mockImplementation(() => undefined as AnyApi);
     store.mobileConnectedDevices = [device("d1", "Pixel 8")];
     const wrapper = mount(MobileConnectedIndicator);
 
     await wrapper.get(SELECTOR).trigger("click");
-    expect(open).toHaveBeenCalledWith({ initialTab: "mobile", initialMobileView: "phones" });
+    expect(open).toHaveBeenCalledWith({ mode: "mobile", mobileView: "phones" });
   });
 });

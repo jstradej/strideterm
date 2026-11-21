@@ -4,7 +4,8 @@ import { createPinia, setActivePinia } from "pinia";
 import DialogOverlay from "./DialogOverlay.vue";
 import { useAppStore } from "../../stores/app.js";
 
-describe("DialogOverlay", () => {
+// The Settings tests load the whole async Settings dialog, which can take over 5 s in a full parallel run.
+describe("DialogOverlay", { timeout: 30_000 }, () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     document.body.innerHTML = "";
@@ -104,6 +105,38 @@ describe("DialogOverlay", () => {
     expect(document.querySelector(".settings-dialog")).not.toBeNull();
     expect(document.querySelector('[role="alertdialog"]')?.textContent).toContain("Save these changes before leaving");
     expect(store.dialogLayers.map((layer) => layer.name)).toEqual(["SettingsDialog"]);
+    wrapper.unmount();
+  });
+
+  test("Escape on dirty Settings still asks after a layer above it went back", async () => {
+    const store = useAppStore();
+    store.openSettingsDialog();
+    const wrapper = mount(DialogOverlay, { attachTo: document.body });
+    await vi.waitFor(() => expect(document.querySelector(".settings-check__row input")).not.toBeNull(), {
+      timeout: 10_000,
+    });
+    const checkbox = document.querySelector<HTMLInputElement>(".settings-check__row input")!;
+    checkbox.checked = !checkbox.checked;
+    checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+    await flushPromises();
+
+    store.openSubDialog("HelpDialog", { onClose: store.backDialog });
+    await vi.waitFor(() => expect(document.querySelectorAll(".overlay").length).toBe(2), {
+      timeout: 10_000,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await flushPromises();
+    store.backDialog();
+    await flushPromises();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(store.dialogLayers.map((layer) => layer.name)).toEqual(["SettingsDialog"]);
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await flushPromises();
+
+    expect(store.dialogLayers.map((layer) => layer.name)).toEqual(["SettingsDialog"]);
+    expect(document.querySelector(".settings-dialog")).not.toBeNull();
+    expect(document.querySelector('[role="alertdialog"]')?.textContent).toContain("Save these changes before leaving");
     wrapper.unmount();
   });
 

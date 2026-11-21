@@ -192,8 +192,8 @@ void bootstrapMobileSessionFromFragment().then(async (handled) => {
   azurePipelinesStore.init(api);
   // The account store subscribes to ONE broadcast and holds the state the main process derived.
   // On the remote web client the transport has none of these methods, so `attach` finds nothing to
-  // subscribe to, and the Mobile tab (which hosts the account section) is absent — see
-  // SettingsDialog's TABS.
+  // subscribe to, and the Mobile tab of Remote Access (which hosts the account section) is absent — see
+  // RemoteAccessDialog's isRemote checks.
   const accountStore = useAccountStore();
   accountStore.attach(api);
   void accountStore.refreshState().catch(() => {});

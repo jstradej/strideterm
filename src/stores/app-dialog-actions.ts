@@ -268,6 +268,16 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     syncDialogTop();
   }
 
+  function updateDialogPropsById(layerId: number, patch: Record<string, unknown>): void {
+    const index = dialogLayers.value.findIndex((layer) => layer.id === layerId);
+    if (index < 0) return;
+    const layer = dialogLayers.value[index]!;
+    const next = [...dialogLayers.value];
+    next[index] = { ...layer, props: { ...layer.props, ...patch } };
+    dialogLayers.value = next;
+    if (index === next.length - 1) syncDialogTop();
+  }
+
   // A follow-up the user is waiting on failed: show it (which also logs it)
   // instead of leaving it in the DevTools console where nobody looks.
   async function reportFailure(title: string, err: unknown): Promise<void> {
@@ -735,6 +745,15 @@ export function createDialogActions(ctx: DialogActionsCtx) {
   function openSettingsDialog(
     opts: { initialTab?: string; initialMobileView?: "overview" | "phones" | "account" } = {},
   ): void {
+    if (opts.initialTab === "mobile") {
+      openRemoteAccessDialog({ mode: "mobile", mobileView: opts.initialMobileView });
+      return;
+    }
+    if (opts.initialTab === "remote") {
+      openRemoteAccessDialog({ focusSessions: true });
+      return;
+    }
+    let settingsLayerId = -1;
     openDialog("SettingsDialog", {
       settings: ctx.payload.value?.appState?.settings || {},
       tabTemplates: ctx.payload.value?.appState?.tabTemplates || [],
@@ -745,30 +764,44 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       microsoftStoreUrl: (ctx.payload.value as AnyApi)?.meta?.microsoftStoreUrl || "",
       versionCheck: (ctx.payload.value as AnyApi)?.meta?.versionCheck || null,
       initialTab: opts.initialTab || "general",
-      initialMobileView: opts.initialMobileView,
       onCancel: closeDialog,
       onSave: async (patch: AnyApi) => {
-        updateTopDialogProps({ saveError: "" });
+        updateDialogPropsById(settingsLayerId, { saveError: "" });
         try {
           const plain = JSON.parse(JSON.stringify(patch)) as AnyApi;
           ctx.adoptPayload((await (ctx.getApi() as CallableTransport).updateSettings(plain)) as StatePayload);
-          updateTopDialogProps({ saveError: "", saveCompleted: Date.now() });
+          updateDialogPropsById(settingsLayerId, { saveError: "", saveCompleted: Date.now() });
         } catch (err) {
-          updateTopDialogProps({ saveError: (err as Error).message || "Failed to save settings" });
+          updateDialogPropsById(settingsLayerId, {
+            saveError: (err as Error).message || "Failed to save settings",
+          });
         }
       },
     });
+    settingsLayerId = dialogLayers.value.at(-1)?.id ?? -1;
   }
 
   function openHelpDialog(): void {
     openDialog("HelpDialog", { onClose: closeDialog });
   }
 
-  function openRemoteAccessDialog(): void {
-    openDialog("RemoteAccessDialog", { onClose: closeDialog });
+  function openRemoteAccessDialog(
+    opts: {
+      mode?: "mobile" | "desktops" | "lan" | "cloudflare" | "vps";
+      mobileView?: "overview" | "phones" | "account";
+      focusSessions?: boolean;
+    } = {},
+  ): void {
+    const props = { initialMode: opts.mode, initialMobileView: opts.mobileView, focusSessions: opts.focusSessions };
+    if (dialogLayers.value.at(-1)?.name === "RemoteAccessDialog") return;
+    // Over another dialog (Settings) it is a layer, so going back leaves that dialog and its unsaved changes alone.
+    if (dialogLayers.value.length) openSubDialog("RemoteAccessDialog", { ...props, onClose: backDialog });
+    else openDialog("RemoteAccessDialog", { ...props, onClose: closeDialog });
   }
 
-  function openProfilesDialog(): void {
+  function openProfilesDialog(opts: { subDialog?: boolean } = {}): void {
+    const open = opts.subDialog ? openSubDialog : openDialog;
+    const close = opts.subDialog ? backDialog : closeDialog;
     const appState = ctx.payload.value?.appState || ({} as AnyApi);
     const api = ctx.getApi();
     const isRemote = api.isRemote;
@@ -792,7 +825,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     // profile that is not shown in any desktop window.
     const visibleProfiles = profiles;
 
-    openDialog("ProfilesDialog", {
+    open("ProfilesDialog", {
       profiles: JSON.parse(JSON.stringify(visibleProfiles)) as unknown[],
       activeProfileId: myCurrentProfileId ?? undefined,
       workspaces: (appState as AnyApi).workspaces || [],
@@ -803,7 +836,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       windowSlots: isRemote ? [] : (appState as AnyApi).windowSlots || [],
       isRemote,
       desktopOccupancy,
-      onCancel: closeDialog,
+      onCancel: close,
       onSave: async (profile: AnyApi) => {
         ctx.adoptPayload((await (api as CallableTransport).saveProfile(profile)) as StatePayload);
       },
@@ -843,7 +876,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
               return slot?.activeSessionId || "";
             })();
         adoptRestoredSession(ctx, restoredSession);
-        closeDialog();
+        close();
         setTimeout(() => {
           ctx.suppressBroadcast.value = false;
         }, 200);
@@ -868,7 +901,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const result = (await (window as any).strideterm?.createWindow?.(profileId)) as { error?: string } | undefined;
         if (result?.error) throw new Error(result.error);
-        closeDialog();
+        close();
       },
     });
   }

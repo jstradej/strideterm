@@ -366,14 +366,14 @@
               type="button"
               class="connections-section__settings"
               aria-label="Mobile settings"
-              title="Open Mobile settings"
+              title="Open Remote Access → Mobile"
               @click="openMobileSettings"
             >
               <span aria-hidden="true">⚙</span>
             </button>
           </header>
           <p v-if="appStore.isRemoteTransport" class="connections-section__hint">
-            Phone management is available in Settings on the desktop app.
+            Phone management is available in Remote Access on the desktop app.
           </p>
           <template v-else>
             <p v-if="!appStore.mobileEnabled" class="connections-section__hint">
@@ -1057,7 +1057,7 @@ function openTelegramSettings(): void {
   appStore.openSettingsDialog({ initialTab: "telegram" });
 }
 function openMobileSettings(): void {
-  appStore.openSettingsDialog({ initialTab: "mobile", initialMobileView: "phones" });
+  appStore.openRemoteAccessDialog({ mode: "mobile", mobileView: "phones" });
 }
 // Selection outline is only shown when the user is actively driving the list
 // with the keyboard. Mouse interaction resets it so the panel doesn't look

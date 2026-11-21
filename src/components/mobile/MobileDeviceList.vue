@@ -1,7 +1,7 @@
 <template>
   <div ref="listRoot" class="mobile-device-list" data-role="mobile-device-list">
     <p v-if="app.isRemoteTransport" class="mobile-device-list__empty">
-      Phone management is available in Settings on the desktop app.
+      Phone management is available in Remote Access on the desktop app.
     </p>
     <template v-else>
       <p v-if="errors._list" class="device-item__test-result" role="alert">{{ errors._list }}</p>
@@ -382,7 +382,7 @@ async function reviewPairing(device: Device): Promise<void> {
       errors[device.deviceId] = "The pairing code for this phone is no longer available. Start pairing again.";
       return;
     }
-    app.openSettingsDialog({ initialTab: "mobile", initialMobileView: "phones" });
+    app.openRemoteAccessDialog({ mode: "mobile", mobileView: "phones" });
   } catch (error) {
     errors[device.deviceId] = mobileErrorCopy(error, "review");
   } finally {

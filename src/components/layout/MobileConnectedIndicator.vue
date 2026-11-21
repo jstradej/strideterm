@@ -52,6 +52,6 @@ const ariaLabel = computed(() =>
 );
 
 function openPhones(): void {
-  appStore.openSettingsDialog({ initialTab: "mobile", initialMobileView: "phones" });
+  appStore.openRemoteAccessDialog({ mode: "mobile", mobileView: "phones" });
 }
 </script>

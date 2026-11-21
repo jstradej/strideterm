@@ -5,7 +5,6 @@ import RemoteAccessPanel from "./RemoteAccessPanel.vue";
 import { MOBILE_TRIAL_WARNING_WINDOW_MS } from "../../lib/mobile-access-warning.js";
 
 const mocks = vi.hoisted(() => ({
-  openSettingsDialog: vi.fn(),
   openRemoteAccessDialog: vi.fn(),
   copyText: vi.fn(),
   pairAuthorization: "denied" as string,
@@ -44,7 +43,6 @@ vi.mock("../../stores/app.js", () => ({
     mobileEnabled: true,
     mobileDevices: [],
     mobileConnectionHealth: { running: true, pairAuthorization: mocks.pairAuthorization },
-    openSettingsDialog: mocks.openSettingsDialog,
     openRemoteAccessDialog: mocks.openRemoteAccessDialog,
     copyText: mocks.copyText,
   }),
@@ -96,7 +94,6 @@ vi.mock("../../composables/useQrCode.js", async () => {
 
 describe("RemoteAccessPanel", () => {
   beforeEach(() => {
-    mocks.openSettingsDialog.mockReset();
     mocks.openRemoteAccessDialog.mockReset();
     mocks.pairAuthorization = "denied";
     mocks.entitlement = { state: "active", source: "subscription" };
@@ -119,7 +116,7 @@ describe("RemoteAccessPanel", () => {
     expect(wrapper.find(".remote-pill--ok").text()).toBe("public");
     expect(warning.find(".remote-pill__label-full").text()).toBe("Mobile · Attention");
     await warning.trigger("click");
-    expect(mocks.openSettingsDialog).toHaveBeenCalledWith({ initialTab: "mobile", initialMobileView: "overview" });
+    expect(mocks.openRemoteAccessDialog).toHaveBeenCalledWith({ mode: "mobile", mobileView: "overview" });
   });
 
   test("expired trial points directly to Account settings", async () => {
@@ -131,7 +128,7 @@ describe("RemoteAccessPanel", () => {
     expect(warning.classes()).toContain("remote-pill--mobile-warning-expired");
     expect(warning.attributes("aria-label")).toContain("The free mobile trial ended");
     await warning.trigger("click");
-    expect(mocks.openSettingsDialog).toHaveBeenCalledWith({ initialTab: "mobile", initialMobileView: "account" });
+    expect(mocks.openRemoteAccessDialog).toHaveBeenCalledWith({ mode: "mobile", mobileView: "account" });
   });
 
   test("uses the canonical entitlement when the overview summary is missing", async () => {
@@ -200,7 +197,7 @@ describe("RemoteAccessPanel", () => {
       expect(warning.attributes("title")).toContain("The free mobile trial ends in");
       expect(warning.attributes("aria-label")).toBe(warning.attributes("title"));
       await warning.trigger("click");
-      expect(mocks.openSettingsDialog).toHaveBeenCalledWith({ initialTab: "mobile", initialMobileView: "account" });
+      expect(mocks.openRemoteAccessDialog).toHaveBeenCalledWith({ mode: "mobile", mobileView: "account" });
     } finally {
       wrapper.unmount();
       vi.useRealTimers();
@@ -340,7 +337,7 @@ describe("RemoteAccessPanel", () => {
 
     expect(warning.find(".remote-pill__label-full").text()).toBe("15h 20m left");
     expect(warning.attributes("title")).toContain("Mobile access ends in 15h 20m");
-    expect(mocks.openSettingsDialog).not.toHaveBeenCalled();
+    expect(mocks.openRemoteAccessDialog).not.toHaveBeenCalled();
   });
 
   test("stops the cancellation countdown at its deadline without claiming active access ended", async () => {

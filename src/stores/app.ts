@@ -2216,7 +2216,7 @@ export const useAppStore = defineStore("app", () => {
         //
         // The status changed from `claimed` to `awaiting-approval` because what happens next changed
         // (review 3 §P0.1). A claim used to BE the pairing, and this code was advisory. Now the device
-        // is inert until the user types the phone's code or chooses "Mismatch" in the Mobile tab.
+        // is inert until the user types the phone's code or chooses "Mismatch" in Remote Access → Mobile.
         mobilePairingSas.value =
           claim.sasReady === true ? { deviceId: claim.deviceId, label: claim.label, state: "awaiting-approval" } : null;
         // Picks up the newly-claimed device without waiting on a broadcast:
@@ -2516,7 +2516,7 @@ export const useAppStore = defineStore("app", () => {
   /**
    * The just-claimed device whose pairing code the user has yet to type, until they dismiss it.
    *
-   * Kept in the store rather than in SettingsMobileTab.vue because the event that carries it
+   * Kept in the store rather than in MobileConnectionPanel.vue because the event that carries it
    * (`mobile:pairing-progress`) arrives on the transport, not on any component, and a claim can
    * land while the tab is being re-mounted. `{ deviceId, label, state }` or null — never the code
    * itself (review 3 §3.6).
@@ -2640,7 +2640,7 @@ export const useAppStore = defineStore("app", () => {
   /**
    * Re-reads the devices waiting for a human decision, each with whether a pairing code exists to type.
    *
-   * Called when the Mobile tab opens, so a desktop that restarted between "the code appeared" and "the
+   * Called when Remote Access → Mobile opens, so a desktop that restarted between "the code appeared" and "the
    * user pressed something" shows the prompt again instead of leaving a device stuck in a state only a
    * TTL sweep can resolve (review 3 §P0.1's restart case).
    */
