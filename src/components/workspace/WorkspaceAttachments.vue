@@ -13,289 +13,347 @@
   >
     <button type="button" class="workspace-attachments__toggle" :aria-expanded="open" @click="toggle">
       <span>Attachments</span>
-      <span v-if="open || attachments.length" class="workspace-attachments__count">{{ attachments.length }}</span>
+      <span v-if="open || rows.length" class="workspace-attachments__count">{{ rows.length }}</span>
       <span
         :class="['disclosure-chevron', 'disclosure-chevron--down', open && 'disclosure-chevron--open']"
         aria-hidden="true"
       />
     </button>
     <div v-if="open" class="workspace-attachments__body">
-      <div class="workspace-attachments__toolbar approvals__toolbar">
-        <label class="workspace-attachments__filter">
-          <span class="sr-only">Filter attachments</span>
-          <input
-            v-model="filterQuery"
-            class="approvals__search"
-            type="search"
-            placeholder="Filter attachments…"
-            autocomplete="off"
-            aria-label="Filter attachments"
-          />
-        </label>
-        <select v-model="selectedDay" class="workspace-attachments__day-filter" aria-label="Filter by upload day">
-          <option value="">All days</option>
-          <option v-for="day in availableDays" :key="day.key" :value="day.key">{{ day.label }}</option>
-        </select>
-        <template v-if="canUpload">
-          <input
-            ref="fileInput"
-            class="sr-only"
-            type="file"
-            multiple
-            tabindex="-1"
-            data-role="attachment-file-input"
-            aria-label="Choose files to attach"
-            @change="onFilesPicked"
-          />
-          <button
-            type="button"
-            class="workspace-attachments__add"
-            data-role="attachment-add"
-            :disabled="Boolean(unavailableReason)"
-            :title="unavailableReason || addTitle"
-            @click="fileInput?.click()"
-          >
-            Add file
-          </button>
-        </template>
+      <nav
+        v-if="canListAll"
+        class="subtabs workspace-attachments__scope"
+        role="tablist"
+        aria-label="Which attachments to show"
+        data-role="attachment-scope"
+      >
         <button
           type="button"
-          class="workspace-attachments__refresh"
-          :disabled="loading"
-          :aria-busy="refreshing ? 'true' : undefined"
-          title="Reload the attachment list for this workspace"
-          aria-label="Refresh attachments"
-          @click="reload"
+          role="tab"
+          :aria-selected="showAll ? 'false' : 'true'"
+          :class="['subtabs__tab', !showAll && 'subtabs__tab--active']"
+          title="Attachments of the active workspace"
+          @click="setScope('workspace')"
         >
-          <Spinner v-if="refreshing" size="sm" aria-hidden="true" />
-          <template v-else>↻</template>
+          This workspace
         </button>
-      </div>
-      <p
-        v-if="feedback"
-        class="workspace-attachments__feedback"
-        :class="{ 'workspace-attachments__feedback--error': feedback.error }"
-        role="status"
-      >
-        {{ feedback.message }}
-      </p>
-      <p v-if="dragging" class="workspace-attachments__dropzone" data-role="attachment-dropzone">
-        Drop files to add them to this workspace
-      </p>
-      <ul v-if="transfers.length" class="workspace-attachments__transfers" data-role="attachment-transfers">
-        <li
-          v-for="item in transfers"
-          :key="item.id"
-          class="workspace-attachments__transfer"
-          :class="{ 'workspace-attachments__transfer--failed': item.state === 'failed' }"
+        <button
+          type="button"
+          role="tab"
+          :aria-selected="showAll ? 'true' : 'false'"
+          :class="['subtabs__tab', showAll && 'subtabs__tab--active']"
+          :title="`Attachments of every workspace on this computer, in every profile, from the last ${RECENT_DAYS} days`"
+          @click="setScope('all')"
         >
-          <div class="workspace-attachments__transfer-head">
-            <strong :title="item.name">{{ item.name }}</strong>
-            <small>{{ transferLabel(item) }}</small>
+          All workspaces
+        </button>
+        <small v-if="showAll" class="workspace-attachments__scope-hint"
+          >every profile · last {{ RECENT_DAYS }} days</small
+        >
+      </nav>
+      <!-- Under the section tabs, the content is the panel the selected tab opens into (as in the Git pane). -->
+      <div class="workspace-attachments__content" :class="{ 'subtabs-panel': canListAll }">
+        <div class="workspace-attachments__toolbar approvals__toolbar">
+          <label class="workspace-attachments__filter">
+            <span class="sr-only">Filter attachments</span>
+            <input
+              v-model="filterQuery"
+              class="approvals__search"
+              type="search"
+              placeholder="Filter attachments…"
+              autocomplete="off"
+              aria-label="Filter attachments"
+            />
+          </label>
+          <CustomSelect
+            v-model="selectedDay"
+            class="workspace-attachments__day-filter"
+            aria-label="Filter by upload day"
+            :options="dayOptions"
+          />
+          <template v-if="canUpload">
+            <input
+              ref="fileInput"
+              class="sr-only"
+              type="file"
+              multiple
+              tabindex="-1"
+              data-role="attachment-file-input"
+              aria-label="Choose files to attach"
+              @change="onFilesPicked"
+            />
             <button
-              v-if="item.active"
               type="button"
-              class="workspace-attachments__transfer-button"
-              :aria-label="`Cancel ${item.verb} of ${item.name}`"
-              :disabled="item.finishing"
-              @click="item.cancel()"
+              class="workspace-attachments__add"
+              data-role="attachment-add"
+              :disabled="Boolean(unavailableReason)"
+              :title="unavailableReason || addTitle"
+              @click="fileInput?.click()"
             >
-              Cancel
+              Add file
             </button>
-            <button
-              v-else
-              type="button"
-              class="workspace-attachments__transfer-button"
-              :aria-label="`Dismiss ${item.name}`"
-              @click="item.dismiss()"
-            >
-              Dismiss
-            </button>
-          </div>
-          <div
-            v-if="item.active"
-            class="workspace-attachments__bar"
-            role="progressbar"
-            aria-valuemin="0"
-            aria-valuemax="100"
-            :aria-valuenow="item.percent"
+          </template>
+          <button
+            type="button"
+            class="workspace-attachments__refresh"
+            :disabled="loading"
+            :aria-busy="refreshing ? 'true' : undefined"
+            :title="
+              showAll ? 'Reload the attachment list of this computer' : 'Reload the attachment list for this workspace'
+            "
+            aria-label="Refresh attachments"
+            @click="reload"
           >
-            <span :style="{ width: `${item.percent}%` }"></span>
-          </div>
-          <p v-else-if="item.error" class="workspace-attachments__transfer-error" role="alert">{{ item.error }}</p>
-        </li>
-      </ul>
-      <p
-        v-if="loading && !loaded && !attachments.length"
-        class="workspace-attachments__status workspace-attachments__status--wait"
-        role="status"
-      >
-        <Spinner size="sm" aria-hidden="true" />
-        Loading attachments…
-      </p>
-      <p v-if="error" class="workspace-attachments__status workspace-attachments__status--error" role="alert">
-        {{ error }}
-      </p>
-      <p v-if="(loaded || !loading) && !error && !filteredAttachments.length" class="workspace-attachments__status">
-        {{ filterQuery.trim() || selectedDay ? "No matching attachments." : "No attachments yet." }}
-      </p>
-      <p
-        v-if="canUpload && !unavailableReason && (loaded || !loading) && !error && !attachments.length"
-        class="workspace-attachments__status workspace-attachments__hint"
-        data-role="attachment-drop-hint"
-      >
-        Drop files here, paste them, or use Add file.
-      </p>
-      <ul v-if="filteredAttachments.length" class="workspace-attachments__list">
-        <template v-for="group in dayGroups" :key="group.key">
-          <li class="notif-day-separator">
-            <span class="notif-day-separator__line"></span>
-            <span class="notif-day-separator__label">{{ group.label }}</span>
-            <span class="notif-day-separator__line"></span>
-          </li>
+            <Spinner v-if="refreshing" size="sm" aria-hidden="true" />
+            <template v-else>↻</template>
+          </button>
+          <!-- Hangs below the sticky toolbar: it floats over the list instead of pushing it down and back. -->
+          <p
+            v-if="feedback"
+            class="workspace-attachments__feedback"
+            :class="{ 'workspace-attachments__feedback--error': feedback.error }"
+            role="status"
+          >
+            {{ feedback.message }}
+          </p>
+        </div>
+        <p v-if="dragging" class="workspace-attachments__dropzone" data-role="attachment-dropzone">
+          Drop files to add them to this workspace
+        </p>
+        <ul v-if="transfers.length" class="workspace-attachments__transfers" data-role="attachment-transfers">
           <li
-            v-for="attachment in group.files"
-            :key="attachment.transferId"
-            class="workspace-attachments__item"
-            :aria-busy="deletingId === attachment.transferId ? 'true' : undefined"
+            v-for="item in transfers"
+            :key="item.id"
+            class="workspace-attachments__transfer"
+            :class="{ 'workspace-attachments__transfer--failed': item.state === 'failed' }"
           >
+            <div class="workspace-attachments__transfer-head">
+              <strong :title="item.name">{{ item.name }}</strong>
+              <small>{{ transferLabel(item) }}</small>
+              <button
+                v-if="item.active"
+                type="button"
+                class="workspace-attachments__transfer-button"
+                :aria-label="`Cancel ${item.verb} of ${item.name}`"
+                :disabled="item.finishing"
+                @click="item.cancel()"
+              >
+                Cancel
+              </button>
+              <button
+                v-else
+                type="button"
+                class="workspace-attachments__transfer-button"
+                :aria-label="`Dismiss ${item.name}`"
+                @click="item.dismiss()"
+              >
+                Dismiss
+              </button>
+            </div>
             <div
-              class="workspace-attachments__row"
-              role="button"
-              tabindex="0"
-              :aria-label="`Copy relative path for ${attachment.name}`"
-              @click="copyRelativePath(attachment.path)"
-              @keydown="onRowKeydown($event, attachment.path)"
+              v-if="item.active"
+              class="workspace-attachments__bar"
+              role="progressbar"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              :aria-valuenow="item.percent"
             >
-              <div class="workspace-attachments__details">
-                <time
-                  class="workspace-attachments__time"
-                  :title="uploadDate(attachment)?.toLocaleString()"
-                  :datetime="uploadDate(attachment)?.toISOString()"
-                  >{{
-                    uploadDate(attachment)?.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }) ?? "—"
-                  }}</time
-                >
-                <strong :title="attachment.name">{{ attachment.name }}</strong>
-                <code :title="attachment.path">{{ attachment.path }}</code>
-              </div>
-              <small class="workspace-attachments__size">{{ formatSize(attachment.size) }}</small>
+              <span :style="{ width: `${item.percent}%` }"></span>
             </div>
-            <div class="workspace-attachments__actions" @click.stop>
-              <Spinner
-                v-if="deletingId === attachment.transferId"
-                size="sm"
-                label="Deleting attachment"
-                data-role="attachment-deleting"
-              />
-              <button
-                v-if="nativeOpenAvailable"
-                type="button"
-                class="workspace-attachments__open"
-                :aria-label="`Open attachment ${attachment.name}`"
-                :title="`Open ${attachment.name} with the default app`"
-                @click.stop="openAttachment(attachment)"
-              >
-                <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-                  <path d="M1.5 10s3.1-5.5 8.5-5.5 8.5 5.5 8.5 5.5-3.1 5.5-8.5 5.5S1.5 10 1.5 10Z" />
-                  <circle cx="10" cy="10" r="2.5" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                class="workspace-attachments__menu-trigger"
-                data-role="attachment-menu-trigger"
-                :aria-expanded="openMenuId === attachment.transferId"
-                aria-haspopup="menu"
-                :aria-label="`Actions for ${attachment.name}`"
-                @click.stop="toggleMenu(attachment.transferId, $event)"
-              >
-                ⋯
-              </button>
-            </div>
-            <Teleport to="body">
-              <div
-                v-if="openMenuId === attachment.transferId"
-                :ref="setMenuRef"
-                class="workspace-attachments__menu"
-                role="menu"
-                :aria-label="`Actions for ${attachment.name}`"
-                :style="menuStyle"
-                @click.stop
-                @keydown.esc.stop.prevent="closeMenu"
-                @keydown.tab.prevent="closeMenu"
-              >
-                <button
-                  type="button"
-                  role="menuitem"
-                  :disabled="!props.workspaceRoot"
-                  :title="`Copy the path on ${pathOwner}`"
-                  @click="copyAbsolutePath(attachment.path)"
-                >
-                  Copy absolute path
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  @click="
-                    copyRelativePath(attachment.path);
-                    closeMenu();
-                  "
-                >
-                  Copy path
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  :disabled="!nativeClipboardAvailable"
-                  :title="
-                    nativeClipboardAvailable
-                      ? 'Copy the file so it can be pasted in Explorer or Finder'
-                      : 'Available on the desktop only'
-                  "
-                  @click="copyFileIntoClipboard(attachment.path)"
-                >
-                  Copy into clipboard
-                </button>
-                <button
-                  v-if="canSave"
-                  type="button"
-                  role="menuitem"
-                  data-role="attachment-save"
-                  title="Download the file to this computer"
-                  @click="saveAttachment(attachment)"
-                >
-                  Save to this computer
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  class="workspace-attachments__menu-delete"
-                  :disabled="deletingId === attachment.transferId"
-                  @click="deleteAttachment(attachment)"
-                >
-                  {{ deletingId === attachment.transferId ? "Deleting…" : "Delete" }}
-                </button>
-              </div>
-            </Teleport>
+            <p v-else-if="item.error" class="workspace-attachments__transfer-error" role="alert">{{ item.error }}</p>
           </li>
-        </template>
-      </ul>
-      <PeerAttachmentsSection
-        v-for="host in peerHosts"
-        :key="host.id"
-        :host="host"
-        :workspace-id="workspaceId"
-        :workspace-name="workspaceName"
-        :unavailable-reason="unavailableReason"
-        :targets="copyTargets"
-        :local-attachments="attachments"
-        :filter-query="filterQuery"
-        :selected-day="selectedDay"
-        :can-open="nativeOpenAvailable"
-        @copy-path="copyRelativePath"
-        @open="openAttachment"
-      />
+        </ul>
+        <p
+          v-if="loading && !loaded && !rows.length"
+          class="workspace-attachments__status workspace-attachments__status--wait"
+          role="status"
+        >
+          <Spinner size="sm" aria-hidden="true" />
+          Loading attachments…
+        </p>
+        <p v-if="error" class="workspace-attachments__status workspace-attachments__status--error" role="alert">
+          {{ error }}
+        </p>
+        <p v-if="(loaded || !loading) && !error && !filteredAttachments.length" class="workspace-attachments__status">
+          {{
+            filterQuery.trim() || selectedDay
+              ? "No matching attachments."
+              : showAll
+                ? `No attachments on this computer from the last ${RECENT_DAYS} days.`
+                : "No attachments yet."
+          }}
+        </p>
+        <p v-if="showAll && allTruncated" class="workspace-attachments__status" data-role="attachment-all-truncated">
+          Showing the {{ allItems.length }} newest attachments.
+        </p>
+        <p
+          v-if="canUpload && !showAll && !unavailableReason && (loaded || !loading) && !error && !rows.length"
+          class="workspace-attachments__status workspace-attachments__hint"
+          data-role="attachment-drop-hint"
+        >
+          Drop files here, paste them, or use Add file.
+        </p>
+        <ul v-if="filteredAttachments.length" class="workspace-attachments__list">
+          <template v-for="group in dayGroups" :key="group.key">
+            <li class="notif-day-separator">
+              <span class="notif-day-separator__line"></span>
+              <span class="notif-day-separator__label">{{ group.label }}</span>
+              <span class="notif-day-separator__line"></span>
+            </li>
+            <li
+              v-for="attachment in group.files"
+              :key="attachment.transferId"
+              class="workspace-attachments__item"
+              :aria-busy="deletingId === attachment.transferId ? 'true' : undefined"
+            >
+              <div
+                class="workspace-attachments__row"
+                role="button"
+                tabindex="0"
+                :title="attachment.root ? absoluteAttachmentPath(attachment.root, attachment.path) : attachment.path"
+                :aria-label="`Copy ${attachment.root ? 'absolute' : 'relative'} path for ${attachment.name}`"
+                @click="copyClickedPath(attachment)"
+                @keydown="onRowKeydown($event, attachment)"
+              >
+                <div class="workspace-attachments__details">
+                  <time
+                    class="workspace-attachments__time"
+                    :title="uploadDate(attachment)?.toLocaleString()"
+                    :datetime="uploadDate(attachment)?.toISOString()"
+                    >{{
+                      uploadDate(attachment)?.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }) ??
+                      "—"
+                    }}</time
+                  >
+                  <strong :title="attachment.name">{{ attachment.name }}</strong>
+                  <span v-if="showAll" class="workspace-attachments__owner" data-role="attachment-owner">{{
+                    ownerLabel(attachment)
+                  }}</span>
+                  <code v-else :title="attachment.path">{{ attachment.path }}</code>
+                </div>
+                <small class="workspace-attachments__size">{{ formatSize(attachment.size) }}</small>
+              </div>
+              <div class="workspace-attachments__actions" @click.stop>
+                <Spinner
+                  v-if="deletingId === attachment.transferId"
+                  size="sm"
+                  label="Deleting attachment"
+                  data-role="attachment-deleting"
+                />
+                <button
+                  v-if="canOpen(attachment)"
+                  type="button"
+                  class="workspace-attachments__open"
+                  :aria-label="`Open attachment ${attachment.name}`"
+                  :title="`Open ${attachment.name} with the default app`"
+                  @click.stop="openAttachment(attachment)"
+                >
+                  <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                    <path d="M1.5 10s3.1-5.5 8.5-5.5 8.5 5.5 8.5 5.5-3.1 5.5-8.5 5.5S1.5 10 1.5 10Z" />
+                    <circle cx="10" cy="10" r="2.5" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  class="workspace-attachments__menu-trigger"
+                  data-role="attachment-menu-trigger"
+                  :aria-expanded="openMenuId === attachment.transferId"
+                  aria-haspopup="menu"
+                  :aria-label="`Actions for ${attachment.name}`"
+                  @click.stop="toggleMenu(attachment.transferId, $event)"
+                >
+                  ⋯
+                </button>
+              </div>
+              <Teleport to="body">
+                <div
+                  v-if="openMenuId === attachment.transferId"
+                  :ref="setMenuRef"
+                  class="workspace-attachments__menu"
+                  role="menu"
+                  :aria-label="`Actions for ${attachment.name}`"
+                  :style="menuStyle"
+                  @click.stop
+                  @keydown.esc.stop.prevent="closeMenu"
+                  @keydown.tab.prevent="closeMenu"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    :disabled="!attachment.root"
+                    :title="`Copy the path on ${pathOwner}`"
+                    @click="copyAbsolutePath(attachment)"
+                  >
+                    Copy absolute path
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    @click="
+                      copyRelativePath(attachment.path);
+                      closeMenu();
+                    "
+                  >
+                    Copy path
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    :disabled="!canNativeClipboard(attachment)"
+                    :title="
+                      canNativeClipboard(attachment)
+                        ? 'Copy the file so it can be pasted in Explorer or Finder'
+                        : 'Available on the desktop only'
+                    "
+                    @click="copyFileIntoClipboard(attachment)"
+                  >
+                    Copy into clipboard
+                  </button>
+                  <button
+                    v-if="canSave"
+                    type="button"
+                    role="menuitem"
+                    data-role="attachment-save"
+                    title="Download the file to this computer"
+                    @click="saveAttachment(attachment)"
+                  >
+                    Save to this computer
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    class="workspace-attachments__menu-delete"
+                    :disabled="deletingId === attachment.transferId || !canDelete(attachment)"
+                    :title="
+                      canDelete(attachment)
+                        ? undefined
+                        : `Switch to the ${attachment.profileName} profile to delete this attachment`
+                    "
+                    @click="deleteAttachment(attachment)"
+                  >
+                    {{ deletingId === attachment.transferId ? "Deleting…" : "Delete" }}
+                  </button>
+                </div>
+              </Teleport>
+            </li>
+          </template>
+        </ul>
+        <PeerAttachmentsSection
+          v-for="host in peerHosts"
+          :key="host.id"
+          :host="host"
+          :workspace-id="workspaceId"
+          :workspace-name="workspaceName"
+          :unavailable-reason="unavailableReason"
+          :targets="copyTargets"
+          :local-attachments="attachments"
+          :filter-query="filterQuery"
+          :selected-day="selectedDay"
+          :can-open="nativeOpenAvailable"
+          @copy-path="(path: string) => copyClickedPath({ path, root: props.workspaceRoot })"
+          @open="openAttachment"
+        />
+      </div>
     </div>
   </section>
 </template>
@@ -327,6 +385,9 @@ import { absoluteAttachmentPath } from "../../lib/attachment-path.js";
 import { hasPeerAttachmentCopy, usePeerAttachmentCopiesStore } from "../../stores/peer-attachment-copies.js";
 import { usePeersStore } from "../../stores/peers.js";
 import PeerAttachmentsSection from "./PeerAttachmentsSection.vue";
+import CustomSelect from "../common/CustomSelect.vue";
+import type { LocalAttachmentItem } from "../../../electron/shared/attachment-upload.js";
+import { PEER_ATTACHMENT_LIST_DAYS as RECENT_DAYS } from "../../../electron/shared/peers.js";
 
 const props = withDefaults(
   defineProps<{
@@ -336,6 +397,8 @@ const props = withDefaults(
     panel?: boolean;
     unavailableReason?: string;
     workspaceName?: string;
+    /** The active profile: an attachment of another profile is listed but not deleted from here. */
+    profileId?: string;
     copyTargets?: Array<{ id: string; name: string }>;
   }>(),
   {
@@ -344,9 +407,15 @@ const props = withDefaults(
     panel: false,
     unavailableReason: "",
     workspaceName: "",
+    profileId: "default",
     copyTargets: () => [],
   },
 );
+
+/** A listed attachment with the workspace that owns it; `root` is empty where this client cannot know it. */
+type AttachmentRow = AttachmentRecord &
+  Pick<LocalAttachmentItem, "workspaceId" | "root"> &
+  Partial<Pick<LocalAttachmentItem, "workspaceName" | "profileId" | "profileName">>;
 const api = inject<Transport | null>(apiKey, null);
 const open = ref(props.openByDefault);
 const loading = ref(false);
@@ -367,6 +436,54 @@ let requestEpoch = 0;
 let mounted = false;
 
 const canUpload = hasAttachmentUpload(api);
+// Every profile's attachments on this machine: a local desktop window only. A phone or web client stays confined
+// to its profile, and a window attached to another desktop would list this machine instead of the host.
+const canListAll = typeof api?.attachmentListAll === "function" && api.isRemote !== true && !isPeerWindow();
+const SCOPE_STORAGE_KEY = "strideterm.attachments.scope";
+const scope = ref<"workspace" | "all">(readScope());
+const showAll = computed(() => canListAll && scope.value === "all");
+const allItems = ref<LocalAttachmentItem[]>([]);
+const allTruncated = ref(false);
+const rows = computed<AttachmentRow[]>(() =>
+  showAll.value
+    ? allItems.value
+    : attachments.value.map((attachment) => ({
+        ...attachment,
+        workspaceId: props.workspaceId,
+        root: props.workspaceRoot,
+      })),
+);
+
+function readScope(): "workspace" | "all" {
+  if (!canListAll) return "workspace";
+  try {
+    return localStorage.getItem(SCOPE_STORAGE_KEY) === "all" ? "all" : "workspace";
+  } catch {
+    return "workspace";
+  }
+}
+
+function setScope(next: "workspace" | "all"): void {
+  if (scope.value === next) return;
+  scope.value = next;
+  try {
+    localStorage.setItem(SCOPE_STORAGE_KEY, next);
+  } catch {
+    // Storage can be unavailable; the choice then lasts for this panel only.
+  }
+  requestEpoch += 1;
+  loading.value = false;
+  loaded.value = false;
+  error.value = "";
+  selectedDay.value = "";
+  closeMenu();
+  if (open.value) startPolling();
+}
+
+function ownerLabel(row: AttachmentRow): string {
+  const workspace = row.workspaceName || row.workspaceId;
+  return row.profileId && row.profileId !== props.profileId ? `${workspace} · ${row.profileName}` : workspace;
+}
 const peerAttachments = hasPeerAttachmentCopy(api) && !isPeerWindow();
 const peerCopies = peerAttachments ? usePeerAttachmentCopiesStore() : null;
 const peers = peerAttachments ? usePeersStore() : null;
@@ -443,12 +560,19 @@ function transferLabel(row: TransferRow): string {
   return `${row.percent} % of ${formatSize(row.size)}`;
 }
 
-const nativeClipboardAvailable = computed(
-  () => api?.isRemote === false && typeof api.fileClipboardCopy === "function" && Boolean(props.workspaceRoot),
-);
 const nativeOpenAvailable = computed(
   () => api?.isRemote === false && typeof api.openTerminalPath === "function" && Boolean(props.workspaceRoot),
 );
+function canOpen(row: AttachmentRow): boolean {
+  return api?.isRemote === false && typeof api.openTerminalPath === "function" && Boolean(row.root);
+}
+function canNativeClipboard(row: AttachmentRow): boolean {
+  return api?.isRemote === false && typeof api.fileClipboardCopy === "function" && Boolean(row.root);
+}
+// Deleting goes through the calling window's profile, so another profile's attachment is only listed.
+function canDelete(row: AttachmentRow): boolean {
+  return !row.profileId || row.profileId === props.profileId;
+}
 function uploadDate(attachment: AttachmentRecord): Date | null {
   const timestamp = attachment.uploadedAt;
   return typeof timestamp === "number" &&
@@ -463,7 +587,7 @@ function uploadDay(attachment: AttachmentRecord): { key: string; label: string }
   return date ? { key: dayBandKey(date), label: dayBandLabel(date) } : { key: "unknown", label: "Unknown date" };
 }
 const chronologicalAttachments = computed(() =>
-  [...attachments.value].sort(
+  [...rows.value].sort(
     (a, b) => (uploadDate(b)?.getTime() ?? 0) - (uploadDate(a)?.getTime() ?? 0) || a.name.localeCompare(b.name),
   ),
 );
@@ -484,16 +608,23 @@ const availableDays = computed(() => {
   if (hostUploadTimes.value.length) days.sort((a, b) => b.at - a.at);
   return [...new Map(days.map(({ key, label }) => [key, { key, label }] as const)).values()];
 });
+const dayOptions = computed(() => [
+  { value: "", label: "All days" },
+  ...availableDays.value.map((day) => ({ value: day.key, label: day.label })),
+]);
 const filteredAttachments = computed(() => {
   const query = filterQuery.value.trim().toLowerCase();
   return chronologicalAttachments.value.filter(
     (attachment) =>
       (!selectedDay.value || uploadDay(attachment).key === selectedDay.value) &&
-      (!query || attachment.name.toLowerCase().includes(query) || attachment.path.toLowerCase().includes(query)),
+      (!query ||
+        attachment.name.toLowerCase().includes(query) ||
+        attachment.path.toLowerCase().includes(query) ||
+        (showAll.value && ownerLabel(attachment).toLowerCase().includes(query))),
   );
 });
 const dayGroups = computed(() => {
-  const groups: Array<{ key: string; label: string; files: AttachmentRecord[] }> = [];
+  const groups: Array<{ key: string; label: string; files: AttachmentRow[] }> = [];
   for (const attachment of filteredAttachments.value) {
     const day = uploadDay(attachment);
     const previous = groups.at(-1);
@@ -571,6 +702,10 @@ function onUploadSettled(item: UploadItem): void {
     useNotificationStore().pushEphemeralToast({ title: "Attachment uploaded", body: item.name });
     return;
   }
+  if (showAll.value) {
+    if (open.value) void load(true);
+    return;
+  }
   if (
     props.workspaceId === item.workspaceId &&
     !attachments.value.some((entry) => entry.transferId === record.transferId)
@@ -578,7 +713,7 @@ function onUploadSettled(item: UploadItem): void {
     attachments.value = [...attachments.value, record];
 }
 
-async function saveAttachment(attachment: AttachmentRecord): Promise<void> {
+async function saveAttachment(attachment: AttachmentRow): Promise<void> {
   closeMenu();
   if (!api) return;
   const entry = reactive({
@@ -592,7 +727,7 @@ async function saveAttachment(attachment: AttachmentRecord): Promise<void> {
   downloads.push(entry);
   try {
     const blob = await readAttachment(api, {
-      workspaceId: props.workspaceId,
+      workspaceId: attachment.workspaceId,
       attachment,
       signal: entry.controller.signal,
       onProgress: (read) => (entry.read = read),
@@ -606,7 +741,7 @@ async function saveAttachment(attachment: AttachmentRecord): Promise<void> {
       return;
     }
     entry.error = cause instanceof Error ? cause.message : "The download failed.";
-    useNotificationStore().showError("Download failed", cause, { workspaceId: props.workspaceId });
+    useNotificationStore().showError("Download failed", cause, { workspaceId: attachment.workspaceId });
   }
 }
 
@@ -617,6 +752,7 @@ function showFeedback(message: string, isError = false): void {
 }
 
 async function load(force = false): Promise<void> {
+  if (showAll.value) return loadAll(force);
   if (!api?.attachmentList || !props.workspaceId || (loading.value && !force)) return;
   const targetWorkspaceId = props.workspaceId;
   const epoch = ++requestEpoch;
@@ -630,6 +766,28 @@ async function load(force = false): Promise<void> {
     }
   } catch (cause) {
     if (mounted && epoch === requestEpoch && props.workspaceId === targetWorkspaceId) {
+      error.value = cause instanceof Error ? cause.message : "Unable to load attachments";
+      loaded.value = true;
+    }
+  } finally {
+    if (epoch === requestEpoch) loading.value = false;
+  }
+}
+
+async function loadAll(force: boolean): Promise<void> {
+  if (!api?.attachmentListAll || (loading.value && !force)) return;
+  const epoch = ++requestEpoch;
+  loading.value = true;
+  error.value = "";
+  try {
+    const result = await api.attachmentListAll();
+    if (mounted && open.value && epoch === requestEpoch && showAll.value) {
+      allItems.value = result.items;
+      allTruncated.value = result.truncated;
+      loaded.value = true;
+    }
+  } catch (cause) {
+    if (mounted && epoch === requestEpoch && showAll.value) {
       error.value = cause instanceof Error ? cause.message : "Unable to load attachments";
       loaded.value = true;
     }
@@ -661,38 +819,45 @@ function copyRelativePath(path: string): Promise<void> {
   return copyText(path, "Relative path");
 }
 
-function copyAbsolutePath(path: string): Promise<void> {
+// A click copies the absolute path, which works from any terminal or app; the relative one only from the
+// workspace's own folder. Without a known root (a client that cannot see it) the relative path is all there is.
+function copyClickedPath(row: Pick<AttachmentRow, "path" | "root">): Promise<void> {
+  return row.root ? copyText(absoluteAttachmentPath(row.root, row.path), "Absolute path") : copyRelativePath(row.path);
+}
+
+function copyAbsolutePath(row: AttachmentRow): Promise<void> {
   closeMenu();
-  if (!props.workspaceRoot) {
+  if (!row.root) {
     showFeedback("Absolute path is unavailable for this workspace", true);
     return Promise.resolve();
   }
-  return copyText(absoluteAttachmentPath(props.workspaceRoot, path), "Absolute path");
+  return copyText(absoluteAttachmentPath(row.root, row.path), "Absolute path");
 }
 
-async function copyFileIntoClipboard(path: string): Promise<void> {
+async function copyFileIntoClipboard(row: AttachmentRow): Promise<void> {
   closeMenu();
-  if (!nativeClipboardAvailable.value || !api?.fileClipboardCopy) {
+  if (!canNativeClipboard(row) || !api?.fileClipboardCopy) {
     showFeedback("Native file clipboard is available on the desktop only", true);
     return;
   }
   try {
-    await api.fileClipboardCopy({ rootPath: props.workspaceRoot, relativePath: path });
+    await api.fileClipboardCopy({ rootPath: row.root, relativePath: row.path });
     showFeedback("File copied into clipboard");
   } catch {
     showFeedback("Unable to copy file into clipboard", true);
   }
 }
 
-async function openAttachment(attachment: Pick<AttachmentRecord, "path" | "name">): Promise<void> {
-  if (!nativeOpenAvailable.value || !api?.openTerminalPath) {
+async function openAttachment(attachment: Pick<AttachmentRecord, "path" | "name"> & { root?: string }): Promise<void> {
+  const root = attachment.root ?? props.workspaceRoot;
+  if (!api?.openTerminalPath || !canOpen({ ...attachment, root } as AttachmentRow)) {
     showFeedback("Opening attachments is available on the desktop only", true);
     return;
   }
   try {
     const result = await api.openTerminalPath({
       path: attachment.path,
-      workspaceCwd: props.workspaceRoot,
+      workspaceCwd: root,
       forceSystem: true,
     });
     if (!result?.ok) {
@@ -705,10 +870,10 @@ async function openAttachment(attachment: Pick<AttachmentRecord, "path" | "name"
   }
 }
 
-function onRowKeydown(event: KeyboardEvent, path: string): void {
+function onRowKeydown(event: KeyboardEvent, row: AttachmentRow): void {
   if (event.key !== "Enter" && event.key !== " ") return;
   event.preventDefault();
-  void copyRelativePath(path);
+  void copyClickedPath(row);
 }
 
 function toggleMenu(transferId: string, event: MouseEvent): void {
@@ -788,12 +953,12 @@ useDismissable(
   },
 );
 
-async function deleteAttachment(attachment: AttachmentRecord): Promise<void> {
+async function deleteAttachment(attachment: AttachmentRow): Promise<void> {
   closeMenu();
-  if (!api?.attachmentDelete || deletingId.value === attachment.transferId) return;
-  const targetWorkspaceId = props.workspaceId;
-  if (!window.confirm(`Delete “${attachment.name}”? This removes the attachment for every tab in this workspace.`))
-    return;
+  if (!api?.attachmentDelete || deletingId.value === attachment.transferId || !canDelete(attachment)) return;
+  const targetWorkspaceId = attachment.workspaceId;
+  const where = showAll.value ? `in ${attachment.workspaceName || "its workspace"}` : "in this workspace";
+  if (!window.confirm(`Delete “${attachment.name}”? This removes the attachment for every tab ${where}.`)) return;
   deletingId.value = attachment.transferId;
   error.value = "";
   try {
@@ -802,7 +967,7 @@ async function deleteAttachment(attachment: AttachmentRecord): Promise<void> {
       transferId: attachment.transferId,
       name: attachment.name,
     });
-    if (mounted && open.value && props.workspaceId === targetWorkspaceId) await load(true);
+    if (mounted && open.value && (showAll.value || props.workspaceId === targetWorkspaceId)) await load(true);
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : "Unable to delete attachment";
   } finally {
@@ -818,7 +983,8 @@ function stopPolling(): void {
 function startPolling(): void {
   stopPolling();
   void load();
-  pollTimer = setInterval(() => void load(), 5000);
+  // Listing every workspace of the machine reads every one of them; it does not need the 5 s of one workspace.
+  pollTimer = setInterval(() => void load(), showAll.value ? 15_000 : 5000);
 }
 
 function toggle(): void {
@@ -836,10 +1002,12 @@ function formatSize(size: number): string {
 watch(
   () => [props.workspaceId, props.workspaceRoot],
   () => {
+    attachments.value = [];
+    // The machine-wide list does not depend on the active workspace.
+    if (showAll.value) return;
     requestEpoch += 1;
     loading.value = false;
     loaded.value = false;
-    attachments.value = [];
     filterQuery.value = "";
     selectedDay.value = "";
     closeMenu();
@@ -861,7 +1029,7 @@ watch(
     for (const run of Object.values(runs ?? {})) {
       if (run.state !== "succeeded" || reloadedCopies.has(run.copyId)) continue;
       reloadedCopies.add(run.copyId);
-      if (run.workspaceId === props.workspaceId) arrived = true;
+      if (showAll.value || run.workspaceId === props.workspaceId) arrived = true;
     }
     if (arrived && open.value) void load(true);
   },
@@ -905,8 +1073,23 @@ onUnmounted(() => {
   display: none;
 }
 .workspace-attachments--panel .workspace-attachments__body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
   max-height: none;
   padding: 0;
+}
+.workspace-attachments--panel {
+  display: flex;
+  flex-direction: column;
+}
+/* The framed panel reaches the bottom of the dock even with a short list. */
+.workspace-attachments__content {
+  flex: 1;
+  min-width: 0;
+}
+.workspace-attachments__content.subtabs-panel {
+  padding-top: 0;
 }
 .workspace-attachments__toggle {
   display: flex;
@@ -952,14 +1135,17 @@ onUnmounted(() => {
   padding: 4px 6px;
 }
 .workspace-attachments__day-filter {
-  max-width: 100px;
-  min-width: 0;
-  font-size: 11px;
-  padding: 3px 4px;
-  color: var(--muted);
-  border: 1px solid rgba(var(--tint), 0.12);
-  border-radius: 3px;
+  --cs-width: 96px;
+  flex: 0 0 auto;
+}
+.workspace-attachments__day-filter :deep(.custom-select__button) {
+  height: 24px;
+  padding: 3px 6px;
+  border-color: rgba(var(--tint), 0.12);
   background: var(--panel);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
 }
 .workspace-attachments--dragging {
   outline: 2px dashed var(--accent, #78a9ff);
@@ -1084,12 +1270,23 @@ onUnmounted(() => {
 .workspace-attachments__notice,
 .workspace-attachments__status,
 .workspace-attachments__feedback {
-  margin: 8px 14px;
-  color: var(--muted);
-  font-size: 11px;
-}
-.workspace-attachments__feedback {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  max-width: calc(100% - 24px);
+  margin: 0;
+  padding: 4px 10px;
+  overflow: hidden;
+  transform: translateX(-50%);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-elevated, var(--panel));
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
   color: var(--success-fg, #7bd88f);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
 }
 .workspace-attachments__status--wait {
   display: flex;
@@ -1153,6 +1350,37 @@ onUnmounted(() => {
 .workspace-attachments__details strong {
   font-size: 11px;
   font-weight: 600;
+}
+.workspace-attachments {
+  container: attachments / inline-size;
+}
+/* The tabs give way before the panel scrolls sideways. */
+.workspace-attachments__scope .subtabs__tab {
+  display: block;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.workspace-attachments__scope-hint {
+  align-self: center;
+  min-width: 0;
+  margin-left: auto;
+  padding-left: 8px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-attachments__owner {
+  grid-column: 1 / -1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .workspace-attachments__details code {
   grid-column: 1 / -1;
@@ -1249,6 +1477,23 @@ onUnmounted(() => {
   }
   .workspace-attachments__size {
     min-width: 46px;
+  }
+}
+@container attachments (max-width: 420px) {
+  .workspace-attachments__scope-hint {
+    display: none;
+  }
+}
+/* A narrow dock: the filter takes its own line above the day filter and buttons. */
+@container attachments (max-width: 360px) {
+  .workspace-attachments__toolbar {
+    flex-wrap: wrap;
+  }
+  .workspace-attachments__filter {
+    flex-basis: 100%;
+  }
+  .workspace-attachments__day-filter {
+    margin-right: auto;
   }
 }
 </style>

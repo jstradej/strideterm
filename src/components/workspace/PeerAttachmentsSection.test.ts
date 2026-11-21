@@ -15,6 +15,7 @@ const openProfilesDialog = vi.fn();
 vi.mock("../../stores/app.js", () => ({ useAppStore: () => ({ openProfilesDialog }) }));
 
 import WorkspaceAttachments from "./WorkspaceAttachments.vue";
+import CustomSelect from "../common/CustomSelect.vue";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { usePeerAttachmentCopiesStore } from "../../stores/peer-attachment-copies.js";
 import { usePeersStore } from "../../stores/peers.js";
@@ -214,13 +215,14 @@ describe("PeerAttachmentsSection", () => {
     ]);
     const { wrapper } = mountPanel(api);
     await flushPromises();
-    const options = wrapper
-      .findAll(".workspace-attachments__day-filter option")
-      .map((option) => option.attributes("value"));
+    const dayFilter = wrapper.findComponent(CustomSelect);
+    const options = (dayFilter.props() as unknown as { options: Array<{ value: string }> }).options.map(
+      (option) => option.value,
+    );
     expect(options).toContain("today");
     expect(options.length).toBe(3);
     const dayOfOld = options.find((value) => value && value !== "today")!;
-    await wrapper.find(".workspace-attachments__day-filter").setValue(dayOfOld);
+    await dayFilter.setValue(dayOfOld);
     expect(rows(wrapper).map((row) => row.text())).toEqual([expect.stringContaining("old.png")]);
   });
 
@@ -296,7 +298,7 @@ describe("PeerAttachmentsSection", () => {
     expect(wrapper.find("[data-role='peer-attachment-copy-here']").exists()).toBe(false);
     await wrapper.find("[data-role='peer-attachment-copy-path']").trigger("click");
     await flushPromises();
-    expect(writeText).toHaveBeenCalledWith(local.path);
+    expect(writeText).toHaveBeenCalledWith("C:\\work\\repo\\.strideterm\\attachments\\local-1\\photo.png");
   });
 
   it("Copy here and open copies first and opens the result once the copy succeeded", async () => {

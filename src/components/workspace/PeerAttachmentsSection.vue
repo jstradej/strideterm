@@ -858,4 +858,14 @@ onUnmounted(() => {
   font-size: 10px;
   text-transform: uppercase;
 }
+/* A narrow dock (the container is the attachments panel): the actions take their own line under the row
+   instead of squeezing the name, time and size into each other. */
+@container attachments (max-width: 360px) {
+  .peer-attachments__item {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .peer-attachments__actions {
+    justify-content: flex-end;
+  }
+}
 </style>

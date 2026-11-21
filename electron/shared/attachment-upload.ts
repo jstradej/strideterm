@@ -46,6 +46,27 @@ export interface AttachmentReadResult {
   eof: boolean;
 }
 
+/** One recent attachment of any profile's local workspace: the desktop's "All on this computer" view. */
+export interface LocalAttachmentItem {
+  profileId: string;
+  profileName: string;
+  workspaceId: string;
+  workspaceName: string;
+  transferId: string;
+  name: string;
+  size: number;
+  sha256: string;
+  uploadedAt: number;
+  /** Relative to `root`. */
+  path: string;
+  /** The workspace's attachment root on this machine. */
+  root: string;
+}
+export interface LocalAttachmentList {
+  items: LocalAttachmentItem[];
+  truncated: boolean;
+}
+
 const workspaceId = z.string().min(1);
 const transferId = z.string().uuid();
 const MAX_BASE64_CHUNK_CHARS = Math.ceil(ATTACHMENT_UPLOAD_CHUNK_BYTES / 3) * 4;

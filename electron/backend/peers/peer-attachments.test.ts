@@ -6,6 +6,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { PEER_ATTACHMENT_LIST_MAX_ITEMS, peerAttachmentItemSchema } from "../../shared/peers.js";
 import * as attachments from "../attachments.js";
 import { createPeerAttachmentsHost } from "./peer-attachments.js";
+import { listRecentAttachments } from "../recent-attachments.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -46,6 +47,27 @@ async function plantFinished(root: string, name: string, updatedAt: number): Pro
 
 const profiles = [{ id: "p", name: "Profile" }];
 const workspace = (id: string, cwd: string) => ({ id, name: id, profileId: "p", cwd, panels: [] });
+
+describe("recent attachments of this machine", () => {
+  test("the local list names this machine's root and path; the paired desktop's list does not", async () => {
+    const root = await makeRoot();
+    await seed(root, "a.txt");
+    const state = {
+      profiles: [...profiles, { id: "other", name: "Other" }],
+      workspaces: [{ ...workspace("ws", root), profileId: "other" }],
+    } as never;
+
+    const local = await listRecentAttachments(state);
+    expect(local.items).toHaveLength(1);
+    expect(local.items[0]).toMatchObject({ profileId: "other", profileName: "Other", workspaceId: "ws", root });
+    expect(local.items[0]!.path).toContain("a.txt");
+
+    const peer = await createPeerAttachmentsHost({ getState: () => state }).list();
+    expect(Object.keys(peer.items[0]!)).not.toContain("path");
+    expect(Object.keys(peer.items[0]!)).not.toContain("root");
+    expect(peerAttachmentItemSchema.safeParse(peer.items[0]).success).toBe(true);
+  });
+});
 
 describe("peer attachments host", () => {
   test("lists only the last 14 days and says so when more than the cap are recent", async () => {

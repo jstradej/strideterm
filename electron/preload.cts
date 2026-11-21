@@ -510,6 +510,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   fileRead: (p) => ipcRenderer.invoke("file:read", p),
   fileWrite: (p) => ipcRenderer.invoke("file:write", p),
   attachmentList: (p) => ipcRenderer.invoke("attachment:list", p),
+  attachmentListAll: () => ipcRenderer.invoke("attachment:list-all"),
   attachmentDelete: (p) => ipcRenderer.invoke("attachment:delete", p),
   attachmentUploadBegin: (p) => ipcRenderer.invoke("attachment:upload:begin", p),
   attachmentUploadChunk: (p) => ipcRenderer.invoke("attachment:upload:chunk", p),

@@ -39,6 +39,8 @@ import * as fm from "./file-manager.js";
 import * as attachments from "./attachments.js";
 import * as attachmentTransfer from "./attachment-transfer.js";
 import { localAttachmentRoot } from "./attachment-root.js";
+import { listRecentAttachments } from "./recent-attachments.js";
+import type { AppState } from "../shared/types/state.js";
 import {
   attachmentReadSchema,
   attachmentTransferSchema,
@@ -3408,6 +3410,13 @@ export function registerIpc(
   handle("attachment:list", async (_event, payload) => {
     const p = validateIpc(attachmentWorkspaceSchema, payload, "attachment:list");
     return attachments.list(attachmentRoot(p.workspaceId, getWindowIdByWebContentsId?.(_event.sender.id) ?? ""));
+  });
+  // Every profile's recent attachments, for this machine's own windows only: no remote route, refused in a window
+  // attached to another desktop. Profiles are no boundary on the desktop; a phone stays confined to its profile.
+  handle("attachment:list-all", async () => {
+    const appState = (runtime.getPayload() as unknown as { appState?: Pick<AppState, "profiles" | "workspaces"> })
+      .appState;
+    return listRecentAttachments({ profiles: appState?.profiles ?? [], workspaces: appState?.workspaces ?? [] });
   });
   handle("attachment:delete", async (_event, payload) => {
     const p = validateIpc(attachmentWorkspaceDeleteSchema, payload, "attachment:delete");

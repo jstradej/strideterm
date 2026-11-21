@@ -467,6 +467,7 @@
           :workspace-root="activeWorkspaceRoot"
           :unavailable-reason="activeWorkspaceAttachmentsReason"
           :workspace-name="activeWorkspaceName"
+          :profile-id="activeProfileId || 'default'"
           :copy-targets="attachmentCopyTargets"
           open-by-default
           panel

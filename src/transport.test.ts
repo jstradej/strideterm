@@ -2878,6 +2878,8 @@ describe("remote transport API parity — no method silently missing its remote 
     // only. The link (peerHttp, peerWs*) is carried by the main process for the window's own binding.
     "listPeerHosts",
     "refreshPeerHost",
+    // Every profile's attachments on this machine: a phone stays confined to its profile.
+    "attachmentListAll",
     // Copying a paired desktop's attachments into a local workspace writes this machine's disk from a local window.
     "listPeerAttachments",
     "startPeerAttachmentCopy",

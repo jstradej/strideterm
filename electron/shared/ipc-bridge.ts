@@ -1168,6 +1168,8 @@ export interface StridetermAPI {
   fileRead: (p: FileRead) => Promise<unknown>;
   fileWrite: (p: FileWrite) => Promise<unknown>;
   attachmentList: (p: { workspaceId: string }) => Promise<unknown>;
+  /** Recent attachments of every profile's local workspaces (local windows only, no remote counterpart). */
+  attachmentListAll: () => Promise<import("./attachment-upload.js").LocalAttachmentList>;
   attachmentDelete: (p: { workspaceId: string; transferId: string; name: string }) => Promise<unknown>;
   attachmentUploadBegin: (p: AttachmentUploadBeginRequest) => Promise<unknown>;
   attachmentUploadChunk: (p: AttachmentUploadChunkRequest) => Promise<unknown>;

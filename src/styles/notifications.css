@@ -353,6 +353,7 @@
     .approval-row,
     .automation-overview,
     .workspace-attachments__item,
+    .peer-attachments__item,
     .perf__card,
     .perf__chart,
     .perf__mini,
@@ -373,7 +374,13 @@
 
 .notification-center
   .notification-center__body
-  :is(.agent-run-item, .telegram-status-item, .approval-row, .workspace-attachments__item):hover {
+  :is(
+    .agent-run-item,
+    .telegram-status-item,
+    .approval-row,
+    .workspace-attachments__item,
+    .peer-attachments__item
+  ):hover {
   --item-tint: rgba(var(--tint), 0.05);
   background-color: var(--surface-card);
   background-image: linear-gradient(var(--item-tint), var(--item-tint));

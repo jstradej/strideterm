@@ -2,6 +2,7 @@ import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import type { ComponentPublicInstance } from "vue";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WorkspaceAttachments from "./WorkspaceAttachments.vue";
+import CustomSelect from "../common/CustomSelect.vue";
 import { apiKey } from "../../types/keys.js";
 import type { AttachmentRecord } from "../../attachments.js";
 
@@ -74,13 +75,13 @@ describe("WorkspaceAttachments", () => {
       "old.png",
       "legacy.png",
     ]);
-    await wrapper.get("select").setValue("yesterday");
+    await wrapper.findComponent(CustomSelect).setValue("yesterday");
     expect(wrapper.findAll(".workspace-attachments__row")).toHaveLength(1);
     expect(wrapper.get(".workspace-attachments__details strong").text()).toBe("old.png");
     await wrapper.get("input").setValue("no-match");
     expect(wrapper.text()).toContain("No matching attachments.");
     await wrapper.setProps({ workspaceId: "workspace-b" });
-    expect((wrapper.get("select").element as HTMLSelectElement).value).toBe("");
+    expect((wrapper.findComponent(CustomSelect).props() as unknown as { modelValue: unknown }).modelValue).toBe("");
     wrapper.unmount();
   });
 
@@ -323,5 +324,120 @@ describe("WorkspaceAttachments", () => {
     await wrapper.get("button").trigger("click");
     await flushPromises();
     expect(wrapper.get('[role="alert"]').text()).toBe("offline");
+  });
+});
+
+describe("WorkspaceAttachments — every attachment on this computer", () => {
+  const recent = (overrides: Record<string, unknown> = {}) => ({
+    profileId: "default",
+    profileName: "Default",
+    workspaceId: "workspace-b",
+    workspaceName: "api",
+    transferId: "t-b",
+    name: "spec.pdf",
+    size: 10,
+    sha256: "b".repeat(64),
+    uploadedAt: Date.now(),
+    path: ".strideterm/attachments/t-b/spec.pdf",
+    root: "C:\\api",
+    ...overrides,
+  });
+
+  afterEach(() => localStorage.removeItem("strideterm.attachments.scope"));
+
+  it("copies the absolute path when a row is clicked", async () => {
+    const writeText = mockClipboard();
+    const wrapper = mountPanel(
+      { attachmentList: vi.fn().mockResolvedValue([attachment]) },
+      { workspaceRoot: "C:\\repo" },
+    );
+    await wrapper.get("button").trigger("click");
+    await flushPromises();
+    await wrapper.get(".workspace-attachments__row").trigger("click");
+    await flushPromises();
+    expect(writeText).toHaveBeenCalledWith("C:\\repo\\.strideterm\\attachments\\transfer-1\\photo.png");
+    expect(wrapper.text()).toContain("Absolute path copied");
+    wrapper.unmount();
+  });
+
+  it("lists every profile's attachments and acts on the workspace that owns each", async () => {
+    const writeText = mockClipboard();
+    const attachmentListAll = vi.fn().mockResolvedValue({
+      items: [
+        recent({ uploadedAt: Date.now() }),
+        recent({
+          profileId: "work",
+          profileName: "Work",
+          workspaceId: "workspace-c",
+          workspaceName: "site",
+          transferId: "t-c",
+          name: "other.png",
+          uploadedAt: Date.now() - 60_000,
+          path: ".strideterm/attachments/t-c/other.png",
+          root: "D:\\site",
+        }),
+      ],
+      truncated: false,
+    });
+    const openTerminalPath = vi.fn().mockResolvedValue({ ok: true });
+    const attachmentDelete = vi.fn().mockResolvedValue({ ok: true });
+    const wrapper = mountPanel(
+      {
+        isRemote: false,
+        attachmentList: vi.fn().mockResolvedValue([attachment]),
+        attachmentListAll,
+        openTerminalPath,
+        attachmentDelete,
+      },
+      { workspaceRoot: "C:\\repo" },
+    );
+    await wrapper.get("button").trigger("click");
+    await flushPromises();
+    expect(wrapper.findAll(".workspace-attachments__row")).toHaveLength(1);
+    expect(attachmentListAll).not.toHaveBeenCalled();
+
+    await wrapper
+      .findAll("[data-role='attachment-scope'] [role='tab']")
+      .find((tab) => tab.text() === "All workspaces")!
+      .trigger("click");
+    await flushPromises();
+    expect(localStorage.getItem("strideterm.attachments.scope")).toBe("all");
+    expect(wrapper.findAll("[data-role='attachment-owner']").map((owner) => owner.text())).toEqual([
+      "api",
+      "site · Work",
+    ]);
+
+    await wrapper.findAll(".workspace-attachments__row")[0]!.trigger("click");
+    await flushPromises();
+    expect(writeText).toHaveBeenCalledWith("C:\\api\\.strideterm\\attachments\\t-b\\spec.pdf");
+
+    await wrapper.get("[aria-label='Open attachment other.png']").trigger("click");
+    expect(openTerminalPath).toHaveBeenCalledWith({
+      path: ".strideterm/attachments/t-c/other.png",
+      workspaceCwd: "D:\\site",
+      forceSystem: true,
+    });
+
+    // Deleting goes through this window's profile: another profile's attachment is listed only.
+    await wrapper.findAll("[data-role='attachment-menu-trigger']")[1]!.trigger("click");
+    expect(wrapper.get(".workspace-attachments__menu-delete").attributes("disabled")).toBeDefined();
+    await wrapper.findAll("[data-role='attachment-menu-trigger']")[0]!.trigger("click");
+    vi.spyOn(window, "confirm").mockReturnValueOnce(true);
+    await wrapper.get(".workspace-attachments__menu-delete").trigger("click");
+    await flushPromises();
+    expect(attachmentDelete).toHaveBeenCalledWith({ workspaceId: "workspace-b", transferId: "t-b", name: "spec.pdf" });
+    wrapper.unmount();
+  });
+
+  it("offers no machine-wide view to a remote client", async () => {
+    const wrapper = mountPanel({
+      isRemote: true,
+      attachmentList: vi.fn().mockResolvedValue([attachment]),
+      attachmentListAll: vi.fn(),
+    });
+    await wrapper.get("button").trigger("click");
+    await flushPromises();
+    expect(wrapper.find("[data-role='attachment-scope']").exists()).toBe(false);
+    wrapper.unmount();
   });
 });
