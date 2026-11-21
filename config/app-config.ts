@@ -196,7 +196,7 @@ export function getRendererDevUrl(): string {
  *
  * WHY THIS IS NOT JUST `settings.remoteAccess.port`. `STRIDETERM_REMOTE_PORT` was read in exactly
  * one place: as the default for a settings file that does not exist yet. So it worked on a first
- * run and silently did nothing ever after — while `dev.ps1` sets it to 43124 precisely so a dev
+ * run and silently did nothing ever after — while `dev.ps1` sets it to 43133 precisely so a dev
  * build can run beside a production install, and the tunnel's own failure message tells the user to
  * "change STRIDETERM_REMOTE_PORT, then restart". Both promised an override that was not there.
  *

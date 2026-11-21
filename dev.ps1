@@ -180,10 +180,12 @@ function Import-MobileFirebaseDevConfig {
 }
 
 function Stop-ProcessTree([int]$procId) {
+    # PID 0 (Idle) and 4 (System) are never ours; Idle is also its own parent, so walking it never ends.
+    if ($procId -le 4) { return }
     try {
         $children = Get-CimInstance Win32_Process -Filter "ParentProcessId=$procId" -ErrorAction SilentlyContinue
         foreach ($child in $children) {
-            Stop-ProcessTree $child.ProcessId
+            if ($child.ProcessId -ne $procId) { Stop-ProcessTree $child.ProcessId }
         }
         Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
     }
@@ -192,12 +194,29 @@ function Stop-ProcessTree([int]$procId) {
     }
 }
 
+function Get-PortOwnerIds([int]$portNum) {
+    return @(Get-NetTCPConnection -LocalPort $portNum -State Listen -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty OwningProcess -Unique)
+}
+
 function Get-PortProcess([int]$portNum) {
-    $conn = Get-NetTCPConnection -LocalPort $portNum -State Listen -ErrorAction SilentlyContinue
-    if ($conn) {
-        return Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
+    $ids = @(Get-PortOwnerIds $portNum | Where-Object { $_ -gt 4 })
+    if ($ids.Count) {
+        return Get-Process -Id $ids[0] -ErrorAction SilentlyContinue
     }
     return $null
+}
+
+# A listening socket reported with owner PID 0 or 4 belongs to a process that has already exited (Windows lingers it,
+# often while a leftover child of the previous run still holds the handle). There is nothing to kill; wait for it.
+function Wait-OrphanedPort([int]$portNum, [int]$seconds) {
+    $orphaned = @(Get-PortOwnerIds $portNum | Where-Object { $_ -le 4 })
+    if (-not $orphaned.Count) { return }
+    Write-Warn "Port $portNum is held by a socket whose process already exited (PID $($orphaned -join ', ')). Waiting up to ${seconds}s for Windows to release it..."
+    $until = (Get-Date).AddSeconds($seconds)
+    while ((Get-Date) -lt $until -and @(Get-PortOwnerIds $portNum | Where-Object { $_ -le 4 }).Count) {
+        Start-Sleep -Milliseconds 500
+    }
 }
 
 function Test-PortOpen([int]$portNum) {
@@ -213,6 +232,8 @@ function Test-PortOpen([int]$portNum) {
 }
 
 function Kill-PortOwner([int]$portNum) {
+    Wait-OrphanedPort $portNum 15
+
     # Method 1: PowerShell API
     $blocker = Get-PortProcess $portNum
     if ($blocker) {
@@ -229,7 +250,7 @@ function Kill-PortOwner([int]$portNum) {
         foreach ($line in $lines) {
             $parts = $line.ToString().Trim() -split '\s+'
             $ownerPid = $parts[-1]
-            if ($ownerPid -match '^\d+$') {
+            if ($ownerPid -match '^\d+$' -and [int]$ownerPid -gt 4) {
                 $proc = Get-Process -Id ([int]$ownerPid) -ErrorAction SilentlyContinue
                 $procName = if ($proc) { $proc.ProcessName } else { 'unknown' }
                 Write-Warn "Found via netstat: $procName (PID $ownerPid) - killing..."
@@ -413,11 +434,12 @@ if (-not $env:STRIDETERM_ENV) {
 if (-not $env:STRIDETERM_LOG_LEVEL) {
     $env:STRIDETERM_LOG_LEVEL = 'trace'
 }
-# Default remote-access port in dev to 43124 so it doesn't collide with the
-# production strideterm (default 43123). Without this, both instances fight
-# for the same port and the second one logs EADDRINUSE on every start.
+# Default remote-access port in dev to 43133 so it doesn't collide with the
+# production strideterm (remote access 43123, desktops hosting 43124). Without
+# this, the instances fight for the same port and the second one logs
+# EADDRINUSE on every start.
 if (-not $env:STRIDETERM_REMOTE_PORT) {
-    $env:STRIDETERM_REMOTE_PORT = '43124'
+    $env:STRIDETERM_REMOTE_PORT = '43133'
 }
 Import-MobileFirebaseDevConfig
 if (-not (Test-Path $DataDir)) {
@@ -475,6 +497,7 @@ Kill-PortOwner $Port
 
 if (Test-PortOpen $Port) {
     Write-Err "Port $Port is STILL occupied after cleanup. Aborting."
+    Write-Err "Close leftover node.exe / esbuild.exe processes of a previous dev run (Task Manager > Details), or sign out and back in."
     exit 1
 }
 Write-Ok "Port $Port is free."
