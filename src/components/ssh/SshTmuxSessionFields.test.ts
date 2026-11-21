@@ -4,6 +4,7 @@ import type { DefineComponent } from "vue";
 import type { SshTmuxListResult, SshTmuxPreviewResult } from "../../../electron/shared/ssh-tmux.js";
 import { apiKey } from "../../types/keys.js";
 import SshTmuxSessionFields from "./SshTmuxSessionFields.vue";
+import CustomSelect from "../common/CustomSelect.vue";
 
 const sessions: SshTmuxListResult = {
   ok: true,
@@ -62,7 +63,7 @@ describe("SSH tmux session fields", () => {
     expect(sshTmuxPreview).toHaveBeenCalledWith({ hostId: "first", name: " a team " });
     expect(fields.get("pre").element.textContent).toBe(output);
     expect(fields.find("img").exists()).toBe(false);
-    await fields.get("select").setValue("read-only");
+    await fields.getComponent(CustomSelect).setValue("read-only");
     expect(fields.emitted("update:readOnly")).toEqual([[true]]);
     fields.unmount();
   });
@@ -119,7 +120,7 @@ describe("SSH tmux session fields", () => {
 
   it.each([{ remote: true }, { hostId: "" }])("keeps manual entry available with %j", (overrides) => {
     const fields = mountFields({ sshTmuxList: vi.fn(), sshTmuxPreview: vi.fn() }, { ...overrides, name: "known" });
-    expect(fields.find("button").exists()).toBe(false);
+    expect(fields.find("button:not(.custom-select__button)").exists()).toBe(false);
     expect(fields.text()).toContain("Type the exact name.");
     expect(fields.get("input").element.value).toBe("known");
     fields.unmount();

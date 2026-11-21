@@ -2,6 +2,7 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import SettingsRegistryTab from "./SettingsRegistryTab.vue";
+import CustomSelect from "../../common/CustomSelect.vue";
 import { apiKey } from "../../../types/keys.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
 import { useAppStore } from "../../../stores/app.js";
@@ -19,6 +20,12 @@ const connection: RegistryConnection = {
   username: "svc",
   npmScope: "",
 };
+
+function pick(wrapper: ReturnType<typeof mountTab>, testId: string, value: string) {
+  const select = wrapper.findAllComponents(CustomSelect).find((c) => c.attributes("data-testid") === testId);
+  if (!select) throw new Error(`select ${testId} not found`);
+  return select.setValue(value);
+}
 
 function mountTab(api: Record<string, unknown>, connections: RegistryConnection[] = [connection]) {
   return mount(SettingsRegistryTab, {
@@ -55,12 +62,12 @@ describe("SettingsRegistryTab", () => {
     const wrapper = mountTab({}, []);
     const url = () => wrapper.get('[data-testid="registry-url"]').attributes("placeholder");
     expect(url()).toContain("maven");
-    await wrapper.get('[data-testid="registry-kind"]').setValue("pip");
+    await pick(wrapper, "registry-kind", "pip");
     expect(url()).toMatch(/pypi.*\/simple\/$/u);
-    await wrapper.get('[data-testid="registry-kind"]').setValue("npm");
+    await pick(wrapper, "registry-kind", "npm");
     expect(url()).toContain("npm");
     expect(wrapper.find('[data-testid="registry-auth-hint"]').text()).toContain("read:packages");
-    await wrapper.get('[data-testid="registry-auth"]').setValue("none");
+    await pick(wrapper, "registry-auth", "none");
     expect(wrapper.find('[data-testid="registry-auth-hint"]').exists()).toBe(false);
   });
 

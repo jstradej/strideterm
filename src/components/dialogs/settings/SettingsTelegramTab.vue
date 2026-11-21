@@ -434,6 +434,7 @@ async function deleteConnection(id: string) {
 <!-- Inline sub-component to avoid repetition between add / edit forms -->
 <script lang="ts">
 import { defineComponent, h } from "vue";
+import CustomSelect from "../../common/CustomSelect.vue";
 
 /**
  * Alert kinds a connection can be filtered to.
@@ -534,24 +535,19 @@ export const ConnectionForm = defineComponent({
             },
             [
               h("span", "Profile"),
-              h(
-                "select",
-                {
-                  value: d.profileId || "",
-                  class: "settings-input",
-                  title:
-                    "Global = receive alerts from every profile (default, recommended for one bot). Specific profile = strict isolation, alerts from other profiles never reach this chat.",
-                  onChange: (e: Event) => {
-                    d.profileId = (e.target as HTMLSelectElement).value;
-                  },
-                },
-                [
-                  h("option", { value: "" }, "All profiles (global)"),
-                  ...props.profileOptions.map((profile) =>
-                    h("option", { value: profile.id }, profile.name || profile.id),
-                  ),
+              h(CustomSelect, {
+                modelValue: String(d.profileId || ""),
+                ariaLabel: "Profile",
+                title:
+                  "Global = receive alerts from every profile (default, recommended for one bot). Specific profile = strict isolation, alerts from other profiles never reach this chat.",
+                options: [
+                  { value: "", label: "All profiles (global)" },
+                  ...props.profileOptions.map((profile) => ({ value: profile.id, label: profile.name || profile.id })),
                 ],
-              ),
+                "onUpdate:modelValue": (value: string | number) => {
+                  d.profileId = String(value);
+                },
+              }),
             ],
           ),
         ]),

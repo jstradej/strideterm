@@ -12,9 +12,12 @@
     <form class="form" @submit.prevent="submit">
       <label>
         <span>Workspace folder</span>
-        <select v-model="root" name="sftp-download-root" data-testid="sftp-download-root">
-          <option v-for="candidate in roots" :key="candidate" :value="candidate">{{ candidate }}</option>
-        </select>
+        <CustomSelect
+          v-model="root"
+          :options="rootOptions"
+          name="sftp-download-root"
+          data-testid="sftp-download-root"
+        />
       </label>
       <label>
         <span>Sub-folder (optional)</span>
@@ -37,7 +40,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
+import CustomSelect from "../common/CustomSelect.vue";
 import { isSafeRelativeFolder, joinLocal } from "../workspace/sftp/sftp-helpers.js";
 
 const props = defineProps<{ roots: string[] }>();
@@ -46,6 +50,7 @@ const emit = defineEmits<{
   submit: [localDir: string];
 }>();
 
+const rootOptions = computed(() => props.roots.map((candidate) => ({ value: candidate, label: candidate })));
 const root = ref(props.roots[0] || "");
 const relative = ref("");
 const error = ref("");

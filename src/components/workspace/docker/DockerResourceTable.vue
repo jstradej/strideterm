@@ -64,16 +64,15 @@
                 @click.stop
                 @input="emit('update:filter', col.key, ($event.target as HTMLInputElement).value)"
               />
-              <select
+              <CustomSelect
                 v-else-if="filterKind(col) === 'select'"
                 class="dr-table__filter-select"
-                :value="filterValues?.[col.key] ?? ''"
+                :aria-label="col.label ? `${col.label} filter` : 'Column filter'"
+                :model-value="filterValues?.[col.key] ?? ''"
+                :options="selectOptions(col)"
                 @click.stop
-                @change="emit('update:filter', col.key, ($event.target as HTMLSelectElement).value)"
-              >
-                <option value="">{{ filterPlaceholder(col) }}</option>
-                <option v-for="o in selectOptions(col)" :key="o.value" :value="o.value">{{ o.label }}</option>
-              </select>
+                @update:model-value="(value: string | number) => emit('update:filter', col.key, String(value))"
+              />
               <span
                 v-if="resizable && col.resizable !== false"
                 class="dr-table__resizer"
@@ -127,6 +126,7 @@
 
 <script setup lang="ts" generic="T extends object">
 import { computed, ref, reactive, watch, onMounted, nextTick } from "vue";
+import CustomSelect from "../../common/CustomSelect.vue";
 
 /**
  * Generic, slot-based table for docker resource lists. Owns its sort state
@@ -205,8 +205,9 @@ const emit = defineEmits<{
 function filterKind(col: Column<T>): "text" | "select" | "" {
   return col.filter?.kind ?? "";
 }
+/** The column's options after an empty "no filter" entry labelled with the placeholder. */
 function selectOptions(col: Column<T>): { value: string; label: string }[] {
-  return col.filter?.kind === "select" ? col.filter.options : [];
+  return [{ value: "", label: filterPlaceholder(col) }, ...(col.filter?.kind === "select" ? col.filter.options : [])];
 }
 function filterPlaceholder(col: Column<T>): string {
   return col.filter?.placeholder ?? (col.filter?.kind === "select" ? "All" : "Filter…");
@@ -580,7 +581,7 @@ thead th {
   border-bottom: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
 }
 .dr-table__filter-input,
-.dr-table__filter-select {
+.dr-table__filter-select :deep(.custom-select__button) {
   width: 100%;
   box-sizing: border-box;
   font-size: 11px;
@@ -595,8 +596,15 @@ thead th {
   letter-spacing: 0;
 }
 .dr-table__filter-input:focus,
-.dr-table__filter-select:focus {
+.dr-table__filter-select :deep(.custom-select__button:focus) {
   border-color: var(--accent, #63b3ed);
+}
+.dr-table__filter-select :deep(.custom-select__button) {
+  gap: 4px;
+}
+.dr-table__filter-select :deep(.custom-select__arrow) {
+  width: 12px;
+  height: 12px;
 }
 
 .dr-table__check {

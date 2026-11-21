@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import { mount } from "@vue/test-utils";
 import SftpConflictDialog from "./SftpConflictDialog.vue";
 import SftpDownloadTargetDialog from "./SftpDownloadTargetDialog.vue";
+import CustomSelect from "../common/CustomSelect.vue";
 
 describe("SftpConflictDialog", () => {
   test("names the conflicts and answers with the chosen policy", async () => {
@@ -26,7 +27,10 @@ describe("SftpConflictDialog", () => {
 describe("SftpDownloadTargetDialog", () => {
   test("submits the chosen workspace folder with the sub-folder joined to it", async () => {
     const wrapper = mount(SftpDownloadTargetDialog, { props: { roots: ["/work/app", "/work/lib"] } });
-    await wrapper.find('[data-testid="sftp-download-root"]').setValue("/work/lib");
+    await wrapper
+      .findAllComponents(CustomSelect)
+      .find((select) => select.attributes("data-testid") === "sftp-download-root")!
+      .setValue("/work/lib");
     await wrapper.find('[data-testid="sftp-download-subfolder"]').setValue("out/logs");
     await wrapper.find("form").trigger("submit");
     expect(wrapper.emitted("submit")).toEqual([["/work/lib/out/logs"]]);

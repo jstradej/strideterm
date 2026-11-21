@@ -327,8 +327,8 @@
                       <span class="azure-inbox__pill">{{ author.count }}</span>
                     </button>
                   </div>
-                  <!-- A chip sized to its label, with the native select laid invisibly
-                       over it: a bare <select> is as wide as its longest option. -->
+                  <!-- A chip sized to its label, with an invisible CustomSelect laid over it
+                       to take the clicks and the keyboard; its list is teleported, so it shows. -->
                   <label
                     v-if="overflowAuthors.length"
                     class="azure-inbox__chip azure-inbox__more"
@@ -345,17 +345,13 @@
                       <path v-for="d in icons.chevronDown" :key="d" :d="d" />
                     </svg>
                     <!-- Picking an author adds or removes them; the list itself stays on "+N more". -->
-                    <select
+                    <CustomSelect
                       class="azure-inbox__more-select"
                       aria-label="More authors"
-                      value=""
-                      @change="onOverflowPick($event.target as HTMLSelectElement)"
-                    >
-                      <option value="">+{{ overflowAuthors.length }} more</option>
-                      <option v-for="author in overflowAuthors" :key="author.key" :value="author.key">
-                        {{ authorFilter.includes(author.key) ? "✓ " : "" }}{{ author.label }} ({{ author.count }})
-                      </option>
-                    </select>
+                      model-value=""
+                      :options="overflowOptions"
+                      @change="onOverflowPick"
+                    />
                   </label>
                   <div :ref="setMeasure" class="azure-inbox__measure" aria-hidden="true">
                     <span class="azure-inbox__chip">All authors</span>
@@ -372,11 +368,12 @@
                 <div class="azure-inbox__filter-tools">
                   <label class="azure-inbox__tool">
                     Sort
-                    <select v-model="sortMode" class="azure-inbox__select">
-                      <option value="activity">Last activity</option>
-                      <option value="attention">Needs attention first</option>
-                      <option value="created">Created</option>
-                    </select>
+                    <CustomSelect
+                      v-model="sortMode"
+                      class="azure-inbox__sort"
+                      aria-label="Sort"
+                      :options="SORT_OPTIONS"
+                    />
                   </label>
                   <label class="azure-inbox__tool">
                     <input v-model="hideDrafts" type="checkbox" />
@@ -475,6 +472,7 @@ import { useMobileShellMenus } from "../../composables/useMobileShellMenus.js";
 import { useResourceInterest } from "../../composables/useResourceInterest.js";
 import { useInboxConnectionFocus } from "../../composables/useInboxConnectionFocus.js";
 import PaneShell from "../layout/PaneShell.vue";
+import CustomSelect from "../common/CustomSelect.vue";
 import PrRow from "./PrRow.vue";
 import { PR_ICONS, daysSince, isUnread } from "./prRowFormat.js";
 import AuditLog from "./azure/AzureAuditLog.vue";
@@ -641,6 +639,11 @@ const repoFilter = ref<string[]>([]);
 const authorFilter = ref<string[]>([]);
 type SortMode = "activity" | "attention" | "created";
 const SORT_MODES: SortMode[] = ["activity", "attention", "created"];
+const SORT_OPTIONS: { value: SortMode; label: string }[] = [
+  { value: "activity", label: "Last activity" },
+  { value: "attention", label: "Needs attention first" },
+  { value: "created", label: "Created" },
+];
 const sortMode = ref<SortMode>("activity");
 const hideDrafts = ref(false);
 // Names of picked authors, so a restored pick still reads as a name while that author has no PR in the inbox.
@@ -901,8 +904,8 @@ function authorNameOf(key: string): string {
   return item?.author?.displayName || item?.author?.uniqueName || savedAuthorNames.value.get(key) || "Unknown author";
 }
 
-// Author chips are fitted to the row: the ones that do not fit move into a
-// native <select>. `null` means "show them all" (not measured / no layout).
+// Author chips are fitted to the row: the ones that do not fit move into the
+// "+N more" picker. `null` means "show them all" (not measured / no layout).
 const authorFit = ref<number | null>(null);
 const visibleAuthors = computed(() =>
   authorFit.value == null ? authorOptions.value : authorOptions.value.slice(0, authorFit.value),
@@ -917,10 +920,17 @@ const overflowChipLabel = computed(() => {
   return picked.length ? `+${picked.length} authors` : `+${overflowAuthors.value.length} more`;
 });
 
-function onOverflowPick(select: HTMLSelectElement) {
-  if (select.value) authorFilter.value = toggled(authorFilter.value, select.value);
-  // Back on "+N more", so the same author can be picked again to remove them.
-  select.value = "";
+const overflowOptions = computed(() => [
+  { value: "", label: `+${overflowAuthors.value.length} more` },
+  ...overflowAuthors.value.map((author) => ({
+    value: author.key,
+    label: `${authorFilter.value.includes(author.key) ? "✓ " : ""}${author.label} (${author.count})`,
+  })),
+]);
+
+// The picker's own value never moves off "+N more", so the same author can be picked again to remove them.
+function onOverflowPick(value: string | number) {
+  if (value) authorFilter.value = toggled(authorFilter.value, String(value));
 }
 
 let authorGroupEl: HTMLElement | null = null;
@@ -1289,3 +1299,39 @@ function onMarkSeen(prKey: string) {
   else appStore.markAzurePrSeen(prKey);
 }
 </script>
+
+<style scoped>
+/* The pane's styles live in styles/review.css; these reach into its CustomSelects. */
+
+/* Invisible over the "+N more" chip, so its trigger takes the clicks and the keyboard;
+   the list is teleported to <body>, so it stays visible. */
+.azure-inbox__more .azure-inbox__more-select {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+}
+.azure-inbox__more-select :deep(.custom-select__button) {
+  height: 100%;
+  padding: 0;
+  border: 0;
+}
+
+/* Sized like the native select it replaced, and a fixed width so the row does not
+   shift with the picked option. */
+.azure-inbox__sort {
+  flex: 0 0 auto;
+  --cs-width: 160px;
+}
+.azure-inbox__sort :deep(.custom-select__button) {
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: var(--panel);
+  font-size: 12px;
+}
+@media (max-width: 768px), (max-height: 500px) {
+  .azure-inbox__sort :deep(.custom-select__button) {
+    min-height: 36px;
+  }
+}
+</style>

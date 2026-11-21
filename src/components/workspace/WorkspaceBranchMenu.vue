@@ -37,16 +37,15 @@
           placeholder="Search for branches and actions"
           aria-label="Search for branches and actions"
         />
-        <select
+        <CustomSelect
           v-if="roots.length > 1"
           class="branch-menu__root"
-          :value="rootPath"
+          :model-value="rootPath"
+          :options="rootOptions"
           title="Repository the actions below run in"
           aria-label="Repository"
-          @change="onRootChange(($event.target as HTMLSelectElement).value)"
-        >
-          <option v-for="root in roots" :key="root" :value="root">{{ rootLabel(root) }}</option>
-        </select>
+          @update:model-value="onRootChange(String($event))"
+        />
       </div>
       <p v-if="busyLabel" class="branch-menu__status">{{ busyLabel }}</p>
 
@@ -146,6 +145,7 @@ import { useIsNarrow } from "../../composables/useIsNarrow.js";
 import { buildBranchForest, type BranchForestNode } from "./git/branch-forest.js";
 import { useBranchActions } from "./git/branch-actions.js";
 import Spinner from "../common/Spinner.vue";
+import CustomSelect from "../common/CustomSelect.vue";
 
 const props = defineProps<{
   workspaceId: string;
@@ -265,6 +265,7 @@ const gitUi = computed(() => gitUiStore.get(props.workspaceId));
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- git workspace entry is open-ended server JSON
 const gitEntry = computed<any>(() => appStore.getGitWorkspaceEntry(props.workspaceId));
 const roots = computed<string[]>(() => Object.keys(gitEntry.value?.roots || {}));
+const rootOptions = computed(() => roots.value.map((root) => ({ value: root, label: rootLabel(root) })));
 const rootPath = computed(
   () => gitUiStore.getActiveRoot(props.workspaceId) || String(gitEntry.value?.primaryRoot || ""),
 );
@@ -884,6 +885,7 @@ function toggle(): void {
 }
 
 function onRootChange(path: string): void {
+  if (path === rootPath.value) return;
   gitUiStore.setActiveRoot(props.workspaceId, path);
   closeSubmenu();
   void gitUiStore.gitListBranches(props.workspaceId, { force: true });
@@ -924,6 +926,10 @@ function moveSubActive(dir: number): void {
 
 // Returns the started action so Vue's error handler sees a rejection.
 function onKeydown(e: KeyboardEvent): Promise<void> | undefined {
+  // Arrows and Enter on the repository select move and pick in its own list, never in the branch list.
+  if (e.key !== "Escape" && e.key !== "Tab" && (e.target as Element | null)?.closest?.(".branch-menu__root")) {
+    return undefined;
+  }
   const inSubmenu = !!menuFor.value && subActiveIndex.value >= 0;
   const row = rows.value[activeIndex.value];
   switch (e.key) {
@@ -980,7 +986,12 @@ function onKeydown(e: KeyboardEvent): Promise<void> | undefined {
   return undefined;
 }
 
-useDismissable(open, [chipRef, popoverRef, submenuRef], { onDismiss: close, eventName: "mousedown" });
+// The repository select's list is teleported to <body>: picking from it is not a click outside the menu.
+useDismissable(open, [chipRef, popoverRef, submenuRef], {
+  onDismiss: close,
+  eventName: "mousedown",
+  ignoreSelector: ".custom-select__list",
+});
 
 watch(query, () => {
   closeSubmenu();
@@ -1072,12 +1083,13 @@ onBeforeUnmount(() => {
 .branch-menu__root {
   flex: 0 1 40%;
   min-width: 0;
+}
+/* Three classes: this sheet is not scoped, and CustomSelect's scoped rule weighs two (class + scope attribute). */
+.branch-menu .branch-menu__root .custom-select__button {
   padding: 4px 6px;
   background: rgba(var(--tint), 0.05);
-  border: 1px solid var(--border);
   border-radius: 4px;
-  color: var(--text);
-  font: inherit;
+  font-size: inherit;
 }
 .branch-menu__status {
   margin: 0;

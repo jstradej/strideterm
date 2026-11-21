@@ -5,6 +5,7 @@ import NotificationCenter from "./NotificationCenter.vue";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { apiKey } from "../../types/keys.js";
+import CustomSelect from "../common/CustomSelect.vue";
 import type { StatePayload } from "../../../electron/shared/types/state.js";
 
 function makePayload(): StatePayload {
@@ -138,8 +139,12 @@ describe("NotificationCenter — Automations tab", () => {
     await flushPromises();
     await wrapper.get('[aria-label="Search automations"]').setValue("repository");
     expect(wrapper.findAll(".automation-overview")).toHaveLength(2);
-    await wrapper.get('[aria-label="Filter automations by trigger"]').setValue("event");
-    await wrapper.get('[aria-label="Filter automations by state"]').setValue("failed");
+    const filter = (label: string) =>
+      wrapper
+        .findAllComponents(CustomSelect)
+        .find((select) => (select.props() as unknown as { ariaLabel: string }).ariaLabel === label)!;
+    await filter("Filter automations by trigger").setValue("event");
+    await filter("Filter automations by state").setValue("failed");
     expect(wrapper.findAll(".automation-overview")).toHaveLength(1);
     expect(wrapper.get(".automation-overview").text()).toContain("Review incoming PRs");
     expect(wrapper.get(".automation-overview__types").text()).toContain("Event");

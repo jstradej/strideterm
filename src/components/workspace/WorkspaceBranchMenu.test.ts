@@ -23,7 +23,7 @@ function localBranch(name: string, extra: Record<string, unknown> = {}) {
   };
 }
 
-function setup({ dirty = false, aheadCount = 0 } = {}) {
+function setup({ dirty = false, aheadCount = 0, twoRoots = false } = {}) {
   setActivePinia(createPinia());
   const appStore = useAppStore();
   const snapshot = {
@@ -38,7 +38,11 @@ function setup({ dirty = false, aheadCount = 0 } = {}) {
   };
   appStore.payload = {
     appState: { workspaces: [{ id: "ws", name: "Repo", kind: "terminal", cwd: "/repo" }] },
-    git: { workspaces: { ws: { primaryRoot: "/repo", roots: { "/repo": snapshot } } } },
+    git: {
+      workspaces: {
+        ws: { primaryRoot: "/repo", roots: twoRoots ? { "/repo": snapshot, "/lib": snapshot } : { "/repo": snapshot } },
+      },
+    },
   } as unknown as StatePayload;
   const activateView = vi.spyOn(appStore, "activateView").mockResolvedValue(undefined);
 
@@ -321,6 +325,40 @@ describe("WorkspaceBranchMenu", () => {
 
     expect(rename.classList).toContain("branch-menu__row--active");
     expect(rowByLabel("Checkout").classList).not.toContain("branch-menu__row--active");
+  });
+
+  it("picks another repository from its select and the menu stays open", async () => {
+    setup({ twoRoots: true });
+    const setActiveRoot = vi.spyOn(useGitUiStore(), "setActiveRoot").mockImplementation(() => undefined);
+    await openMenu();
+
+    document.body.querySelector<HTMLElement>(".branch-menu__root .custom-select__button")!.click();
+    await flushPromises();
+    const option = Array.from(document.body.querySelectorAll<HTMLElement>(".custom-select__option")).find(
+      (el) => el.textContent?.trim() === "lib",
+    )!;
+    option.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    await flushPromises();
+
+    expect(setActiveRoot).toHaveBeenCalledWith("ws", "/lib");
+    expect(document.body.querySelector(".branch-menu")).not.toBeNull();
+  });
+
+  it("arrows and Enter on the repository select stay in its list and run no menu row", async () => {
+    const { pull } = setup({ twoRoots: true });
+    const setActiveRoot = vi.spyOn(useGitUiStore(), "setActiveRoot").mockImplementation(() => undefined);
+    await openMenu();
+
+    const button = document.body.querySelector<HTMLElement>(".branch-menu__root .custom-select__button")!;
+    for (const key of ["ArrowDown", "ArrowDown", "Enter"]) {
+      button.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+      await flushPromises();
+    }
+
+    expect(setActiveRoot).toHaveBeenCalledWith("ws", "/lib");
+    expect(document.body.querySelector(".branch-menu__row--active")).toBeNull();
+    expect(pull).not.toHaveBeenCalled();
+    expect(document.body.querySelector(".branch-menu")).not.toBeNull();
   });
 
   it("search filters branches and actions", async () => {

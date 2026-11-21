@@ -402,7 +402,10 @@ describe("EditTabDialog", () => {
     await flushPromises();
     expect(wrapper.find('[data-testid="ssh-remote-cwd"]').exists()).toBe(false);
     await wrapper.get('[data-testid="tmux-session-name"]').setValue(" shared session ");
-    await wrapper.get(".tmux-fields select").setValue("read-only");
+    await wrapper
+      .findAllComponents(CustomSelect)
+      .find((select) => select.element.closest(".tmux-fields"))!
+      .setValue("read-only");
     await wrapper.get("form").trigger("submit");
     await flushPromises();
 
@@ -460,7 +463,8 @@ describe("EditTabDialog", () => {
       const wrapper = mountDialog({ sshTab: true, title: "Build", tmux: { name: "build", readOnly: true } });
       await flushPromises();
       expect(wrapper.get<HTMLInputElement>('[data-testid="tmux-session-name"]').element.value).toBe("build");
-      expect(wrapper.get<HTMLSelectElement>(".tmux-fields select").element.value).toBe("read-only");
+      const access = wrapper.findAllComponents(CustomSelect).find((select) => select.element.closest(".tmux-fields"))!;
+      expect((access.props() as unknown as { modelValue: unknown }).modelValue).toBe("read-only");
       await wrapper.get('[data-testid="tmux-attach"]').setValue(false);
       await wrapper.get("input[placeholder='e.g. claude']").setValue("hostname");
       await wrapper.get("form").trigger("submit");

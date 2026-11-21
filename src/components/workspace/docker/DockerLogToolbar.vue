@@ -78,12 +78,13 @@
     <!-- Tail size -->
     <label class="log-toolbar__select" title="Initial scrollback to load when the stream starts">
       <span class="log-toolbar__select-label">Tail</span>
-      <select :value="String(tail)" @change="onTailChange">
-        <option value="100">100</option>
-        <option value="1000">1k</option>
-        <option value="10000">10k</option>
-        <option value="all">all</option>
-      </select>
+      <CustomSelect
+        class="log-toolbar__tail"
+        aria-label="Tail"
+        :model-value="String(tail)"
+        :options="TAIL_OPTIONS"
+        @update:model-value="onTailChange"
+      />
     </label>
 
     <!-- Timestamps toggle -->
@@ -109,6 +110,7 @@
 
 <script setup lang="ts">
 import { ref, watch } from "vue";
+import CustomSelect from "../../common/CustomSelect.vue";
 
 const props = defineProps<{
   paused: boolean;
@@ -153,8 +155,17 @@ function clearSearch(): void {
   emit("search", "");
 }
 
-function onTailChange(e: Event): void {
-  const v = (e.target as HTMLSelectElement).value;
+const TAIL_OPTIONS = [
+  { value: "100", label: "100" },
+  { value: "1000", label: "1k" },
+  { value: "10000", label: "10k" },
+  { value: "all", label: "all" },
+];
+
+function onTailChange(value: string | number): void {
+  const v = String(value);
+  // Picking the current size again restarts nothing, as with a native select.
+  if (v === String(props.tail)) return;
   emit("tail-change", v === "all" ? "all" : Number(v));
 }
 
@@ -301,15 +312,30 @@ watch(
   letter-spacing: 0.3px;
   font-size: 9px;
 }
-.log-toolbar__select select {
-  background: transparent;
+/* A bare value inside the Tail pill: CustomSelect fills its container by
+   default, so let it take its own width, and drop its box and hover tint. */
+.log-toolbar__tail {
+  flex: 0 0 auto;
+  --cs-width: auto;
+}
+.log-toolbar__tail :deep(.custom-select__button) {
+  gap: 4px;
+  min-width: 3.5em;
+  padding: 0;
   border: 0;
   color: var(--text-primary, #e2e8f0);
   font-size: 11px;
-  outline: none;
-  padding: 0;
-  cursor: pointer;
-  font-family: inherit;
+}
+.log-toolbar__tail :deep(.custom-select__button),
+.log-toolbar__tail :deep(.custom-select__button:hover:not(:disabled)) {
+  background: transparent;
+}
+.log-toolbar__tail :deep(.custom-select__button:focus-visible) {
+  outline-offset: 1px;
+}
+.log-toolbar__tail :deep(.custom-select__arrow) {
+  width: 12px;
+  height: 12px;
 }
 
 .log-toolbar__stats {

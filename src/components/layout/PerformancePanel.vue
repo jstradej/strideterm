@@ -17,9 +17,12 @@
 
       <label class="perf__interval" title="How often this panel samples metrics. Stored per client.">
         <span class="perf__interval-label">Every</span>
-        <select class="perf__select" :value="refreshMs" @change="onIntervalChange">
-          <option v-for="opt in INTERVAL_OPTIONS" :key="opt" :value="opt">{{ opt / 1000 }}s</option>
-        </select>
+        <CustomSelect
+          class="perf__select"
+          :model-value="refreshMs"
+          :options="INTERVAL_SELECT_OPTIONS"
+          @update:model-value="onIntervalChange"
+        />
       </label>
 
       <button
@@ -381,6 +384,7 @@
 <script setup lang="ts">
 import { ref, shallowRef, computed, onMounted, onBeforeUnmount } from "vue";
 import Spinner from "../common/Spinner.vue";
+import CustomSelect from "../common/CustomSelect.vue";
 // Reused generic sparkline (no Docker coupling — pure presentational leaf).
 import Sparkline from "../workspace/docker/Sparkline.vue";
 import { useAppStore } from "../../stores/app.js";
@@ -393,6 +397,7 @@ import type { TerminalDiagnosticsSnapshot } from "../../app/terminal-controller.
 
 const HISTORY_LEN = 150; // ~5 min at 2s
 const INTERVAL_OPTIONS = [1000, 2000, 5000, 10000];
+const INTERVAL_SELECT_OPTIONS = INTERVAL_OPTIONS.map((ms) => ({ value: ms, label: `${ms / 1000}s` }));
 
 const appStore = useAppStore();
 const terminalStore = useTerminalStore();
@@ -571,9 +576,10 @@ function stop(): void {
   terminalStore.setTerminalDiagnosticsEnabled(false);
 }
 
-function onIntervalChange(event: Event): void {
-  const value = Number((event.target as HTMLSelectElement).value);
-  if (!INTERVAL_OPTIONS.includes(value)) return;
+function onIntervalChange(picked: string | number): void {
+  const value = Number(picked);
+  // Picking the current interval again is no change, as with a native select (it would reset the timer).
+  if (!INTERVAL_OPTIONS.includes(value) || value === refreshMs.value) return;
   refreshMs.value = value;
   writePerfRefreshInterval(value);
   if (timer) {
@@ -736,14 +742,15 @@ onBeforeUnmount(() => {
   color: var(--muted);
 }
 .perf__select {
-  background: rgba(var(--tint), 0.06);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 5px;
+  --cs-width: 56px;
+  flex: 0 0 auto;
+}
+.perf__select :deep(.custom-select__button) {
+  gap: 4px;
   padding: 2px 6px;
+  background: rgba(var(--tint), 0.06);
+  border-radius: 5px;
   font-size: 11px;
-  font-family: inherit;
-  cursor: pointer;
 }
 
 .perf__btn {

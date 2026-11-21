@@ -45,9 +45,7 @@
       </label>
       <label>
         <span>Type</span>
-        <select v-model="form.kind" data-testid="registry-kind">
-          <option v-for="kind in REGISTRY_KINDS" :key="kind" :value="kind">{{ kind }}</option>
-        </select>
+        <CustomSelect v-model="form.kind" :options="KIND_OPTIONS" data-testid="registry-kind" />
       </label>
       <label>
         <span>URL</span>
@@ -55,10 +53,7 @@
       </label>
       <label>
         <span>Use as</span>
-        <select v-model="form.mode" data-testid="registry-mode">
-          <option value="mirror">Mirror (replaces the default registry)</option>
-          <option value="additional">Additional (searched next to it)</option>
-        </select>
+        <CustomSelect v-model="form.mode" :options="MODE_OPTIONS" data-testid="registry-mode" />
       </label>
       <label v-if="form.kind === 'npm'">
         <span>{{ form.mode === "additional" ? "npm scope (required)" : "npm scope (optional)" }}</span>
@@ -66,11 +61,7 @@
       </label>
       <label>
         <span>Sign-in</span>
-        <select v-model="form.authKind" data-testid="registry-auth">
-          <option value="none">None</option>
-          <option value="basic">Username and password or token</option>
-          <option value="bearer">Bearer token</option>
-        </select>
+        <CustomSelect v-model="form.authKind" :options="AUTH_OPTIONS" data-testid="registry-auth" />
         <small v-if="form.authKind !== 'none'" class="registry-tab__field-hint" data-testid="registry-auth-hint">
           Nexus, Artifactory: your user name and a user or access token. GitHub Packages: your GitHub user name and a
           token with <code>read:packages</code>. Azure Artifacts: any user name and a personal access token with
@@ -106,6 +97,7 @@
 
 <script setup lang="ts">
 import { computed, inject, reactive, ref } from "vue";
+import CustomSelect from "../../common/CustomSelect.vue";
 import { apiKey } from "../../../types/keys.js";
 import { useAppStore } from "../../../stores/app.js";
 import { useNotificationStore } from "../../../stores/notifications.js";
@@ -127,6 +119,16 @@ const URL_EXAMPLES: Record<RegistryConnection["kind"], string> = {
   npm: "https://registry.example.com/repository/npm-group/",
   pip: "https://registry.example.com/repository/pypi-group/simple/",
 };
+const KIND_OPTIONS = REGISTRY_KINDS.map((kind) => ({ value: kind, label: kind }));
+const MODE_OPTIONS = [
+  { value: "mirror", label: "Mirror (replaces the default registry)" },
+  { value: "additional", label: "Additional (searched next to it)" },
+];
+const AUTH_OPTIONS = [
+  { value: "none", label: "None" },
+  { value: "basic", label: "Username and password or token" },
+  { value: "bearer", label: "Bearer token" },
+];
 const api = inject<Transport>(apiKey);
 const store = useAppStore();
 

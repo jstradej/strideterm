@@ -9,6 +9,7 @@ import { describe, expect, test, beforeEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import AzurePipelineRunDialog from "./AzurePipelineRunDialog.vue";
+import CustomSelect from "../common/CustomSelect.vue";
 import { useAzurePipelinesStore } from "../../stores/azure-pipelines.js";
 import type { Transport } from "../../transport.js";
 
@@ -120,10 +121,13 @@ describe("AzurePipelineRunDialog", () => {
       branch: "refs/heads/release",
     });
 
-    // Choice param → <select> pre-set to the run's value; boolean → checked checkbox.
-    const select = wrapper.find("select.apr-row__value").element as HTMLSelectElement;
-    expect(select.value).toBe("staging");
-    expect(wrapper.findAll("select.apr-row__value option")).toHaveLength(2);
+    // Choice param → select pre-set to the run's value; boolean → checked checkbox.
+    const select = wrapper.getComponent(CustomSelect).props() as unknown as {
+      modelValue: unknown;
+      options: Array<{ value: string }>;
+    };
+    expect(select.modelValue).toBe("staging");
+    expect(select.options).toHaveLength(2);
     const bool = wrapper.find(".apr-row__bool input[type=checkbox]").element as HTMLInputElement;
     expect(bool.checked).toBe(true);
     // Declared params have fixed labels, not editable name inputs (only the 2 variables do).

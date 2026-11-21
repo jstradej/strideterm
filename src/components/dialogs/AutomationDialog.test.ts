@@ -5,6 +5,7 @@ import { useAppStore } from "../../stores/app.js";
 import { automationCreateSchema, automationDefinitionInputSchema } from "../../../electron/shared/automation-api.js";
 import AutomationDialog from "./AutomationDialog.vue";
 import { AutomationCreationFailed } from "../../stores/automations.js";
+import CustomSelect from "../common/CustomSelect.vue";
 
 const parent = {
   id: "project",
@@ -16,11 +17,23 @@ const parent = {
   sshMcpEnabled: false,
   sandboxEnabled: false,
 };
-function setup(onSubmit: ReturnType<typeof vi.fn>) {
+function setup(
+  onSubmit: ReturnType<typeof vi.fn>,
+  parentOverride: Partial<typeof parent> & { gitRoots?: string[] } = {},
+) {
   return mount(AutomationDialog, {
-    props: { parent: parent as never, onSubmit, onCancel: vi.fn() },
+    props: { parent: { ...parent, ...parentOverride } as never, onSubmit, onCancel: vi.fn() },
     global: { stubs: { WorkspaceSandboxSection: true } },
   });
+}
+type SelectProps = { modelValue: unknown; options: Array<{ value: string | number; label: string }> };
+const selectProps = (select: { props: () => unknown }) => select.props() as unknown as SelectProps;
+function selectWith(wrapper: ReturnType<typeof setup>, value: string) {
+  const select = wrapper
+    .findAllComponents(CustomSelect)
+    .find((candidate) => selectProps(candidate).options.some((option) => option.value === value));
+  if (!select) throw new Error(`No select offers "${value}"`);
+  return select;
 }
 describe("AutomationDialog", () => {
   beforeEach(() => setActivePinia(createPinia()));
@@ -50,7 +63,7 @@ describe("AutomationDialog", () => {
     await testButton.trigger("click");
     await flushPromises();
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ testRun: true }));
-    await wrapper.find("select").setValue("worktree");
+    await selectWith(wrapper, "worktree").setValue("worktree");
     expect(testButton.attributes("disabled")).toBeDefined();
   });
   it("keeps an error visible when saving fails", async () => {
@@ -67,7 +80,7 @@ describe("AutomationDialog", () => {
     const wrapper = setup(onSubmit);
     await wrapper.find("input[maxlength='200']").setValue("Job");
     await wrapper.find("textarea").setValue("prompt");
-    await wrapper.find("select").setValue("worktree");
+    await selectWith(wrapper, "worktree").setValue("worktree");
     await wrapper.find('input[placeholder="automation/my-job"]').setValue("auto/job");
     await wrapper.find("form").trigger("submit");
     await flushPromises();
@@ -90,7 +103,7 @@ describe("AutomationDialog", () => {
     const wrapper = setup(onSubmit);
     await wrapper.find("input[maxlength='200']").setValue("My job");
     await wrapper.find("textarea").setValue("A long prompt that must survive failure");
-    await wrapper.find("select").setValue("worktree");
+    await selectWith(wrapper, "worktree").setValue("worktree");
     await wrapper.find('input[placeholder="automation/my-job"]').setValue("auto/existing");
     await wrapper.find("form").trigger("submit");
     expect(wrapper.get("fieldset.automation-form__fields").attributes("disabled")).toBeDefined();
@@ -115,7 +128,7 @@ describe("AutomationDialog", () => {
     const wrapper = setup(onSubmit);
     await wrapper.find("input[maxlength='200']").setValue("Job");
     await wrapper.find("textarea").setValue("prompt");
-    await wrapper.find("select").setValue("worktree");
+    await selectWith(wrapper, "worktree").setValue("worktree");
     await wrapper.find('input[placeholder="automation/my-job"]').setValue("auto/job");
     await wrapper.find("form").trigger("submit");
     await flushPromises();
@@ -127,7 +140,7 @@ describe("AutomationDialog", () => {
   it("explains event data and literal prompts through accessible help", async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     const wrapper = setup(onSubmit);
-    await wrapper.find('select:has(option[value="event"])').setValue("event");
+    await selectWith(wrapper, "event").setValue("event");
     await wrapper.get('[aria-label="Event data and prompt help"]').trigger("click");
     await flushPromises();
     const help = document.body.querySelector('[role="tooltip"][data-open="true"]')!;
@@ -146,7 +159,7 @@ describe("AutomationDialog", () => {
   it("shows source-specific JSON next to the prompt without opening help", async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     const wrapper = setup(onSubmit);
-    await wrapper.find('select:has(option[value="event"])').setValue("event");
+    await selectWith(wrapper, "event").setValue("event");
     const preview = wrapper.get('[aria-label="Event data example"]');
     const readExample = () => JSON.parse(preview.get("pre").text());
     expect(readExample()).toEqual([
@@ -161,14 +174,14 @@ describe("AutomationDialog", () => {
       }),
     ]);
     await wrapper.find('input[value="pr-check-finished"]').setValue(true);
-    await preview.find("select").setValue("pr-check-finished");
+    await selectWith(wrapper, "pr-check-finished").setValue("pr-check-finished");
     expect(readExample()[0]).toMatchObject({ check: { name: "Unit tests", result: "succeeded" } });
-    await wrapper.find('select:has(option[value="azure-devops"])').setValue("azure-devops");
+    await selectWith(wrapper, "azure-devops").setValue("azure-devops");
     expect(readExample()[0]).toMatchObject({
       source: "azure-devops",
       pr: { webUrl: expect.stringContaining("dev.azure.com") },
     });
-    await wrapper.find('select:has(option[value="jira"])').setValue("jira");
+    await selectWith(wrapper, "jira").setValue("jira");
     expect(preview.text()).toContain("Select at least one event kind");
     expect(preview.find("pre").exists()).toBe(false);
     await wrapper.find('input[value="jira-issue-changed"]').setValue(true);
@@ -187,7 +200,7 @@ describe("AutomationDialog", () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     const wrapper = setup(onSubmit);
     await wrapper.find("input[maxlength='200']").setValue("My event automation");
-    await wrapper.find('select:has(option[value="event"])').setValue("event");
+    await selectWith(wrapper, "event").setValue("event");
     await wrapper.get("textarea").setValue("Keep this instruction.");
     const editor = wrapper.get("textarea").element;
     editor.setSelectionRange(editor.value.length, editor.value.length);
@@ -204,10 +217,8 @@ describe("AutomationDialog", () => {
     const wrapper = setup(onSubmit);
     await wrapper.find("input[maxlength='200']").setValue("Review");
     await wrapper.find("textarea").setValue("Review the changes");
-    const trigger = wrapper.findAll("select").find((select) => select.find('option[value="event"]').exists())!;
-    await trigger.setValue("event");
-    const location = wrapper.findAll("select").find((select) => select.find('option[value="pr-review"]').exists())!;
-    await location.setValue("pr-review");
+    await selectWith(wrapper, "event").setValue("event");
+    await selectWith(wrapper, "pr-review").setValue("pr-review");
     expect(wrapper.text()).toContain("review tools only");
     await wrapper.find("form").trigger("submit");
     await flushPromises();
@@ -232,21 +243,12 @@ describe("AutomationDialog", () => {
     const wrapper = setup(onSubmit);
     await wrapper.find("input[maxlength='200']").setValue("Jira job");
     await wrapper.find("textarea").setValue("Check issues");
-    await wrapper
-      .findAll("select")
-      .find((select) => select.find('option[value="event"]').exists())!
-      .setValue("event");
-    await wrapper
-      .findAll("select")
-      .find((select) => select.find('option[value="jira"]').exists())!
-      .setValue("jira");
+    await selectWith(wrapper, "event").setValue("event");
+    await selectWith(wrapper, "jira").setValue("jira");
     await wrapper.find('input[value="jira-issue-added"]').setValue(true);
-    const connection = wrapper.findAll("select").find((select) => select.find('option[value="first"]').exists())!;
+    const connection = selectWith(wrapper, "first");
     await connection.setValue("first");
-    await wrapper
-      .findAll("select")
-      .find((select) => select.find('option[value="query"]').exists())!
-      .setValue("query");
+    await selectWith(wrapper, "query").setValue("query");
     await connection.setValue("second");
     await wrapper.find("form").trigger("submit");
     await flushPromises();
@@ -254,5 +256,35 @@ describe("AutomationDialog", () => {
     expect(automationDefinitionInputSchema.safeParse(definition).success).toBe(true);
     expect(definition.trigger).toMatchObject({ source: "jira", connectionId: "second" });
     expect(definition.trigger.jiraQueryId).toBeUndefined();
+  });
+  it("requires a repository for a new worktree when the parent has several", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const wrapper = setup(onSubmit, { gitRoots: ["/repo", "/repo/tools"] });
+    await wrapper.find("input[maxlength='200']").setValue("Job");
+    await wrapper.find("textarea").setValue("prompt");
+    await selectWith(wrapper, "worktree").setValue("worktree");
+    await wrapper.find('input[placeholder="automation/my-job"]').setValue("auto/job");
+    await wrapper.find("form").trigger("submit");
+    await flushPromises();
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(wrapper.get('[role="alert"]').text()).toContain("Select a repository");
+    await selectWith(wrapper, "/repo/tools").setValue("/repo/tools");
+    await wrapper.find("form").trigger("submit");
+    await flushPromises();
+    expect(onSubmit.mock.calls[0]![0].checkout).toEqual({
+      mode: "worktree",
+      branch: "auto/job",
+      repository: "/repo/tools",
+    });
+    wrapper.unmount();
+  });
+  it("clears the effort only when the provider actually changes", async () => {
+    const wrapper = setup(vi.fn().mockResolvedValue(undefined));
+    await selectWith(wrapper, "xhigh").setValue("high");
+    await selectWith(wrapper, "codex").setValue("claude");
+    expect(selectProps(selectWith(wrapper, "xhigh")).modelValue).toBe("high");
+    await selectWith(wrapper, "codex").setValue("codex");
+    expect(selectProps(selectWith(wrapper, "xhigh")).modelValue).toBe("");
+    wrapper.unmount();
   });
 });

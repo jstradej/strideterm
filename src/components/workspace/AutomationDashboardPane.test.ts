@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { useAppStore } from "../../stores/app.js";
 import AutomationDashboardPane from "./AutomationDashboardPane.vue";
 import { useSandboxRequestsStore } from "../../stores/sandbox-requests.js";
+import CustomSelect from "../common/CustomSelect.vue";
 
 function setup(api: Record<string, unknown>) {
   const app = useAppStore();
@@ -71,7 +72,12 @@ describe("AutomationDashboardPane", () => {
       .find((button) => button.text() === "Yesterday")!
       .trigger("click");
     expect(wrapper.findAll(".runs li")).toHaveLength(1);
-    await wrapper.get('[aria-label="Filter run history by state"]').setValue("failed");
+    await wrapper
+      .findAllComponents(CustomSelect)
+      .find(
+        (select) => (select.props() as unknown as { ariaLabel: string }).ariaLabel === "Filter run history by state",
+      )!
+      .setValue("failed");
     await wrapper.get('[aria-label="Search run history"]').setValue("needle");
     expect(wrapper.findAll(".runs li")).toHaveLength(1);
     await wrapper

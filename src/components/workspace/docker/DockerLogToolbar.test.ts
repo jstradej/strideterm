@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { mount } from "@vue/test-utils";
 import DockerLogToolbar from "./DockerLogToolbar.vue";
+import CustomSelect from "../../common/CustomSelect.vue";
 
 function defaultProps() {
   return {
@@ -77,7 +78,7 @@ describe("DockerLogToolbar — visual + interaction with mock state", () => {
 
   it("emits tail-change with parsed numeric value", async () => {
     const w = mount(DockerLogToolbar, { props: defaultProps() });
-    const select = w.find("select");
+    const select = w.findComponent(CustomSelect);
     await select.setValue("10000");
     const emitted = w.emitted("tail-change");
     expect(emitted).toBeTruthy();
@@ -86,9 +87,15 @@ describe("DockerLogToolbar — visual + interaction with mock state", () => {
 
   it("emits tail-change with 'all' string when select chooses all", async () => {
     const w = mount(DockerLogToolbar, { props: defaultProps() });
-    const select = w.find("select");
+    const select = w.findComponent(CustomSelect);
     await select.setValue("all");
     expect(w.emitted("tail-change")![0]).toEqual(["all"]);
+  });
+
+  it("does not emit tail-change when the current size is picked again", async () => {
+    const w = mount(DockerLogToolbar, { props: defaultProps() });
+    await w.findComponent(CustomSelect).setValue("1000");
+    expect(w.emitted("tail-change")).toBeUndefined();
   });
 
   it("highlights timestamps toggle when enabled", () => {

@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import SettingsTelegramTab from "./SettingsTelegramTab.vue";
 import { apiKey } from "../../../types/keys.js";
+import CustomSelect from "../../common/CustomSelect.vue";
 
 describe("SettingsTelegramTab", () => {
   beforeEach(() => {
@@ -103,7 +104,7 @@ describe("SettingsTelegramTab", () => {
     });
 
     await wrapper.find(".connection-item__header").trigger("click");
-    await wrapper.find("select").setValue("work");
+    await wrapper.findComponent(CustomSelect).setValue("work");
     await wrapper
       .findAll("button")
       .find((button) => button.text() === "Save connection")!

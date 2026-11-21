@@ -182,14 +182,12 @@
             aria-label="Search run history"
             title="Search stored run states, dates, IDs, reasons and result excerpts."
           />
-          <select
+          <CustomSelect
             v-model="historyState"
             aria-label="Filter run history by state"
             title="Show stored runs with the selected state."
-          >
-            <option value="">All states</option>
-            <option v-for="state in historyStates" :key="state.value" :value="state.value">{{ state.label }}</option>
-          </select>
+            :options="historyStateOptions"
+          />
         </div>
         <div class="history-periods" role="group" aria-label="Run history period">
           <button
@@ -401,6 +399,7 @@
 <script setup lang="ts">
 import cronstrue from "cronstrue";
 import HelpTooltip from "../common/HelpTooltip.vue";
+import CustomSelect from "../common/CustomSelect.vue";
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useAutomationsStore } from "../../stores/automations.js";
@@ -533,6 +532,7 @@ const historyStates = [
   { value: "stopped", label: "Stopped" },
   { value: "skipped", label: "Skipped" },
 ];
+const historyStateOptions = [{ value: "", label: "All states" }, ...historyStates];
 const historyPeriods = [
   { value: "all", label: "All" },
   { value: "today", label: "Today" },
@@ -790,10 +790,17 @@ async function showResult(entry: Run) {
   gap: 8px;
   margin-top: 14px;
 }
-.history-filters input,
-.history-filters select {
+.history-filters input {
   min-width: 0;
   width: 100%;
+  height: 32px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+.history-filters .custom-select {
+  min-width: 0;
+}
+.history-filters .custom-select :deep(.custom-select__button) {
   height: 32px;
   padding: 5px 8px;
   font-size: 12px;

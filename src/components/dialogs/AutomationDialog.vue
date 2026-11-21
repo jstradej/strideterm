@@ -25,23 +25,17 @@
                 <HelpTooltip
                   label="Checkout help"
                   text="Use parent workspace shares the parent's files. New worktree creates a separate checkout on a new branch from the current commit, without uncommitted changes. Save the new worktree before testing it." /></span
-              ><select v-model="checkoutMode" aria-label="Checkout">
-                <option value="here">Use parent workspace</option>
-                <option value="worktree">New worktree</option>
-              </select></label
-            >
+              ><CustomSelect v-model="checkoutMode" aria-label="Checkout" :options="checkoutOptions"
+            /></label>
             <template v-if="checkoutMode === 'worktree'">
               <label v-if="repositoryChoices.length > 1"
                 ><span>Repository</span
-                ><select
+                ><CustomSelect
                   v-model="checkoutRepository"
-                  required
+                  aria-label="Repository"
                   title="The Git repository in which to create the worktree."
-                >
-                  <option value="">Select a repository</option>
-                  <option v-for="root in repositoryChoices" :key="root" :value="root">{{ root }}</option>
-                </select></label
-              >
+                  :options="repositoryOptions"
+              /></label>
               <label
                 ><span>New branch</span
                 ><input
@@ -56,42 +50,32 @@
           </template>
           <label
             ><span>Trigger</span
-            ><select
+            ><CustomSelect
               v-model="triggerType"
+              aria-label="Trigger"
               title="Start on a schedule or when a matching integration event is detected. strIDEterm must be running."
-            >
-              <option value="schedule">Schedule</option>
-              <option value="event">Event</option>
-            </select></label
-          >
+              :options="triggerOptions"
+          /></label>
           <template v-if="triggerType === 'schedule'">
             <p class="hint automation-form__wide">
               The application must be running for scheduled automations to start.
             </p>
             <label
               ><span>Schedule</span
-              ><select
+              ><CustomSelect
                 v-model="scheduleKind"
+                aria-label="Schedule"
                 title="Choose an interval, a one-time date, days and time, or a five-field cron schedule."
-              >
-                <option value="interval">Every N minutes</option>
-                <option value="once">Once</option>
-                <option value="daily">Daily</option>
-                <option value="weekdays">Selected days</option>
-                <option value="cron">Advanced cron</option>
-              </select></label
-            >
+                :options="scheduleKindOptions"
+            /></label>
             <label
               ><span
                 >Missed runs
                 <HelpTooltip
                   label="Missed runs help"
                   text="After sleep, app downtime or a global pause, Skip records a missed run and waits for the next slot. Run once catches up with a single run, even if several slots were missed." /></span
-              ><select v-model="catchUp" aria-label="Missed runs">
-                <option value="skip">Skip</option>
-                <option value="run-once">Run once</option>
-              </select></label
-            >
+              ><CustomSelect v-model="catchUp" aria-label="Missed runs" :options="catchUpOptions"
+            /></label>
             <template v-if="scheduleKind === 'interval'"
               ><label
                 ><span>Every</span
@@ -103,12 +87,12 @@
                   required /></label
               ><label
                 ><span>Unit</span
-                ><select v-model="intervalUnit" title="Interpret the interval as minutes or hours.">
-                  <option value="minutes">Minutes</option>
-                  <option value="hours">Hours</option>
-                </select></label
-              ></template
-            >
+                ><CustomSelect
+                  v-model="intervalUnit"
+                  aria-label="Unit"
+                  title="Interpret the interval as minutes or hours."
+                  :options="intervalUnitOptions" /></label
+            ></template>
             <label v-if="scheduleKind === 'once'"
               ><span>Date and time</span
               ><input
@@ -165,15 +149,12 @@
             </p>
             <label
               ><span>Source</span
-              ><select
+              ><CustomSelect
                 v-model="source"
+                aria-label="Source"
                 title="Events are discovered during integration polling while strIDEterm is running."
-              >
-                <option value="github">GitHub</option>
-                <option value="azure-devops">Azure DevOps</option>
-                <option value="jira">Jira</option>
-              </select></label
-            >
+                :options="sourceOptions"
+            /></label>
             <fieldset class="automation-form__wide automation-form__choices">
               <legend>
                 Event kinds
@@ -195,26 +176,20 @@
             </fieldset>
             <label
               ><span>Connection</span
-              ><select
+              ><CustomSelect
                 v-model="connectionId"
+                aria-label="Connection"
                 title="Use one connection or any connection for this source in the automation's profile."
-              >
-                <option value="">Any connection</option>
-                <option v-for="connection in connectionChoices" :key="connection.id" :value="connection.id">
-                  {{ connection.label }}
-                </option>
-              </select></label
-            >
+                :options="connectionOptions"
+            /></label>
             <label v-if="source === 'jira'"
               ><span>Saved Jira query</span
-              ><select
+              ><CustomSelect
                 v-model="jiraQueryId"
+                aria-label="Saved Jira query"
                 title="Watch issues added to, removed from or changed within a saved query's results. Blank watches any query in this profile and connection."
-              >
-                <option value="">Any watched query</option>
-                <option v-for="query in queryChoices" :key="query.id" :value="query.id">{{ query.name }}</option>
-              </select></label
-            >
+                :options="jiraQueryOptions"
+            /></label>
             <template v-else
               ><label
                 ><span>Repositories (comma separated)</span
@@ -223,14 +198,11 @@
                   title="Exact repository names, including case. For GitHub use owner/repository. Separate names with commas; blank matches all. Wildcards are not supported." /></label
               ><label
                 ><span>Role</span
-                ><select
+                ><CustomSelect
                   v-model="role"
+                  aria-label="Role"
                   title="Your role on the pull request. Some event kinds are available only to authors or reviewers."
-                >
-                  <option value="">Any</option>
-                  <option value="author">Author</option>
-                  <option value="reviewer">Reviewer</option>
-                </select></label
+                  :options="roleOptions" /></label
               ><label
                 ><span>Target branches (comma separated)</span
                 ><input
@@ -260,11 +232,8 @@
               <HelpTooltip
                 label="Executor help"
                 text="Agent runs one agent with fresh context. Worker + Judge runs a worker to perform the task and a judge to assess it, repeating up to Maximum rounds. Only one run of this automation can be active at a time." /></span
-            ><select v-model="executorType" aria-label="Executor">
-              <option value="agent">Agent</option>
-              <option value="task">Worker + Judge</option>
-            </select></label
-          >
+            ><CustomSelect v-model="executorType" aria-label="Executor" :options="executorOptions"
+          /></label>
           <label
             ><span
               >Maximum run time (minutes)
@@ -281,16 +250,13 @@
             <legend>{{ agentRole.label }}</legend>
             <label
               ><span>Provider</span
-              ><select
-                v-model="agentRole.value.providerId"
+              ><CustomSelect
+                :model-value="agentRole.value.providerId"
+                aria-label="Provider"
                 title="The installed agent to run. Sign in to its CLI before unattended use."
-                @change="agentRole.value.effort = ''"
-              >
-                <option v-for="provider in providers" :key="provider.id" :value="provider.id">
-                  {{ provider.name }}
-                </option>
-              </select></label
-            >
+                :options="providerOptions"
+                @update:model-value="setProvider(agentRole.value, $event)"
+            /></label>
             <label v-if="triggerType !== 'event' || location !== 'pr-review'"
               ><span>Model</span
               ><input
@@ -301,14 +267,12 @@
             <label
               v-if="(triggerType !== 'event' || location !== 'pr-review') && efforts(agentRole.value.providerId).length"
               ><span>Effort</span
-              ><select
+              ><CustomSelect
                 v-model="agentRole.value.effort"
+                aria-label="Effort"
                 title="The provider's reasoning effort for this role. Blank uses its default."
-              >
-                <option value="">Provider default</option>
-                <option v-for="effort in efforts(agentRole.value.providerId)" :key="effort">{{ effort }}</option>
-              </select></label
-            >
+                :options="effortOptions(agentRole.value.providerId)"
+            /></label>
             <div v-if="triggerType !== 'event' || location !== 'pr-review'" class="automation-form__permissions">
               <label class="check"
                 ><input v-model="agentRole.value.skipPermissions" type="checkbox" /> Skip permission prompts</label
@@ -334,11 +298,8 @@
               <HelpTooltip
                 label="Run location help"
                 text="Automation workspace uses this automation's checkout. Isolated PR review checkout creates a separate PR checkout and saves local review drafts for human publication. Reviews require supported PR events and a single Claude, Codex, Copilot or OpenCode agent; model and arguments come from its tab template." /></span
-            ><select v-model="location" aria-label="Run location">
-              <option value="automation">Automation workspace</option>
-              <option value="pr-review">Isolated PR review checkout</option>
-            </select></label
-          >
+            ><CustomSelect v-model="location" aria-label="Run location" :options="locationOptions"
+          /></label>
           <p v-if="triggerType === 'event' && location === 'pr-review'" class="hint automation-form__wide">
             PR review supports new, ready, and source-updated pull request events with a single Claude, Codex, Copilot,
             or OpenCode agent. Its model and arguments come from the matching tab template. The agent receives review
@@ -475,6 +436,7 @@ import type { WorkspaceState } from "../../../electron/shared/types/state.js";
 import { EFFORT_LEVELS, PROVIDER_CHOICES } from "../../../electron/shared/agent-provider-catalog.js";
 import WorkspaceSandboxSection from "./WorkspaceSandboxSection.vue";
 import HelpTooltip from "../common/HelpTooltip.vue";
+import CustomSelect from "../common/CustomSelect.vue";
 import AutomationEventContext from "./AutomationEventContext.vue";
 
 const eventPromptHelp = `Event data
@@ -518,6 +480,51 @@ let createKey = crypto.randomUUID();
 const repositoryChoices = computed(() => [
   ...new Set([props.parent.cwd, ...(props.parent.gitRoots || [])].filter(Boolean)),
 ]);
+const checkoutOptions = [
+  { value: "here", label: "Use parent workspace" },
+  { value: "worktree", label: "New worktree" },
+];
+const repositoryOptions = computed(() => [
+  { value: "", label: "Select a repository" },
+  ...repositoryChoices.value.map((root) => ({ value: root, label: root })),
+]);
+const triggerOptions = [
+  { value: "schedule", label: "Schedule" },
+  { value: "event", label: "Event" },
+];
+const scheduleKindOptions = [
+  { value: "interval", label: "Every N minutes" },
+  { value: "once", label: "Once" },
+  { value: "daily", label: "Daily" },
+  { value: "weekdays", label: "Selected days" },
+  { value: "cron", label: "Advanced cron" },
+];
+const catchUpOptions = [
+  { value: "skip", label: "Skip" },
+  { value: "run-once", label: "Run once" },
+];
+const intervalUnitOptions = [
+  { value: "minutes", label: "Minutes" },
+  { value: "hours", label: "Hours" },
+];
+const sourceOptions = [
+  { value: "github", label: "GitHub" },
+  { value: "azure-devops", label: "Azure DevOps" },
+  { value: "jira", label: "Jira" },
+];
+const roleOptions = [
+  { value: "", label: "Any" },
+  { value: "author", label: "Author" },
+  { value: "reviewer", label: "Reviewer" },
+];
+const executorOptions = [
+  { value: "agent", label: "Agent" },
+  { value: "task", label: "Worker + Judge" },
+];
+const locationOptions = [
+  { value: "automation", label: "Automation workspace" },
+  { value: "pr-review", label: "Isolated PR review checkout" },
+];
 const triggerType = ref<"schedule" | "event">(trigger?.type || "schedule");
 const scheduleKind = ref<"interval" | "once" | "daily" | "weekdays" | "cron">(
   trigger?.type === "schedule" ? trigger.kind : "interval",
@@ -564,6 +571,14 @@ const queryChoices = computed(() =>
       (!connectionId.value || query.connectionId === connectionId.value),
   ),
 );
+const connectionOptions = computed(() => [
+  { value: "", label: "Any connection" },
+  ...connectionChoices.value.map((connection) => ({ value: connection.id, label: connection.label })),
+]);
+const jiraQueryOptions = computed(() => [
+  { value: "", label: "Any watched query" },
+  ...queryChoices.value.map((query) => ({ value: query.id, label: query.name })),
+]);
 watch(source, () => {
   kinds.value = kinds.value.filter((kind) => eventChoices.value.some((event) => event.kind === kind));
   connectionId.value = "";
@@ -594,6 +609,16 @@ const visibleRoles = computed(() =>
 );
 const providers = PROVIDER_CHOICES;
 const efforts = (id: string) => providers.find((provider) => provider.id === id)?.effortLevels || [];
+const providerOptions = providers.map((provider) => ({ value: provider.id, label: provider.name }));
+const effortOptions = (id: string) => [
+  { value: "", label: "Provider default" },
+  ...efforts(id).map((effort) => ({ value: effort, label: effort })),
+];
+function setProvider(value: RoleDraft, providerId: string | number): void {
+  if (providerId === value.providerId) return;
+  value.providerId = String(providerId);
+  value.effort = "";
+}
 const maxRounds = ref(initial?.executor.type === "task" ? initial.executor.maxRounds : 10);
 const location = ref<"automation" | "pr-review">(initial?.location || "automation");
 const prompt = ref(initial?.prompt || "");
@@ -711,6 +736,13 @@ async function submit(testRun = false) {
   if (submitting.value) return;
   error.value = "";
   try {
+    if (
+      !props.workspace &&
+      checkoutMode.value === "worktree" &&
+      repositoryChoices.value.length > 1 &&
+      !checkoutRepository.value
+    )
+      throw new Error("Select a repository for the new worktree.");
     if (
       triggerType.value === "event" &&
       location.value === "pr-review" &&
@@ -854,17 +886,23 @@ async function submit(testRun = false) {
   min-height: 20px;
 }
 .automation-form input:not([type="checkbox"]),
-.automation-form select,
 .automation-form textarea {
   width: 100%;
   min-width: 0;
   font-family: inherit;
   font-size: 13px;
 }
-.automation-form input:not([type="checkbox"]),
-.automation-form select {
+.automation-form input:not([type="checkbox"]) {
   height: 32px;
   padding: 5px 8px;
+}
+.automation-form .custom-select {
+  min-width: 0;
+}
+.automation-form .custom-select :deep(.custom-select__button) {
+  height: 32px;
+  padding: 5px 8px;
+  font-size: 13px;
 }
 .automation-form textarea {
   min-height: 110px;

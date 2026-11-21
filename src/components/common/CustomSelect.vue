@@ -6,6 +6,7 @@
       :class="['custom-select__button', buttonClass]"
       :disabled="disabled"
       :aria-expanded="open ? 'true' : 'false'"
+      :aria-label="ariaLabel || undefined"
       aria-haspopup="listbox"
       @click="toggle"
       @keydown="onButtonKeydown"
@@ -26,7 +27,7 @@
           :placeholder="searchPlaceholder"
           @keydown="onSearchKeydown"
         />
-        <ul class="custom-select__options" role="listbox" tabindex="-1">
+        <ul class="custom-select__options" role="listbox" tabindex="-1" :aria-label="ariaLabel || undefined">
           <li
             v-for="(opt, idx) in filteredOptions"
             :key="opt.value"
@@ -88,6 +89,8 @@ interface Props {
   searchPlaceholder?: string;
   hasMore?: boolean;
   loading?: boolean;
+  /** Labels the trigger button and its list (an `aria-label` attribute on the component lands here). */
+  ariaLabel?: string;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -100,6 +103,7 @@ const props = withDefaults(defineProps<Props>(), {
   searchPlaceholder: "Type to filter…",
   hasMore: false,
   loading: false,
+  ariaLabel: "",
 });
 
 const emit = defineEmits<{

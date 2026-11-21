@@ -45,10 +45,11 @@
     </label>
     <label class="tmux-fields__access">
       <span>Session access</span>
-      <select :value="readOnly ? 'read-only' : 'interactive'" @change="setAccess">
-        <option value="interactive">Interactive</option>
-        <option value="read-only">Read-only</option>
-      </select>
+      <CustomSelect
+        :model-value="readOnly ? 'read-only' : 'interactive'"
+        :options="ACCESS_OPTIONS"
+        @update:model-value="setAccess"
+      />
     </label>
     <p v-if="readOnly" class="tmux-fields__help">View the session without sending input to it.</p>
     <div v-if="canPreview && exactName" class="tmux-fields__actions">
@@ -71,10 +72,15 @@
 <script setup lang="ts">
 import { computed, inject, onBeforeUnmount, ref, watch } from "vue";
 import { normalizeSshTmuxName, type SshTmuxSession } from "../../../electron/shared/ssh-tmux.js";
+import CustomSelect from "../common/CustomSelect.vue";
 import { userFacingMessage } from "../../lib/error-message.js";
 import type { Transport } from "../../transport.js";
 import { apiKey } from "../../types/keys.js";
 
+const ACCESS_OPTIONS = [
+  { value: "interactive", label: "Interactive" },
+  { value: "read-only", label: "Read-only" },
+];
 const props = defineProps<{ hostId: string; remote: boolean; manualHint: string }>();
 const name = defineModel<string>("name", { required: true });
 const readOnly = defineModel<boolean>("readOnly", { required: true });
@@ -177,8 +183,8 @@ function formatActivity(timestamp: number | null) {
   return timestamp === null ? "unknown" : new Date(timestamp).toLocaleString();
 }
 
-function setAccess(event: Event) {
-  readOnly.value = (event.target as HTMLSelectElement).value === "read-only";
+function setAccess(value: string | number) {
+  readOnly.value = value === "read-only";
 }
 </script>
 

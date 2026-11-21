@@ -118,9 +118,13 @@
             <!-- Declared parameter: fixed label + control typed from the pipeline schema. -->
             <template v-if="row.def">
               <span class="apr-row__label" :title="row.def.name">{{ row.def.displayName }}</span>
-              <select v-if="row.def.values" v-model="row.value" class="apr-row__value">
-                <option v-for="opt in selectOptions(row)" :key="opt" :value="opt">{{ opt }}</option>
-              </select>
+              <CustomSelect
+                v-if="row.def.values"
+                v-model="row.value"
+                class="apr-row__value"
+                :options="selectOptions(row)"
+                :aria-label="row.def.displayName"
+              />
               <label v-else-if="row.def.type === 'boolean'" class="apr-row__bool">
                 <input type="checkbox" :checked="isTrue(row.value)" @change="setBool(row, $event)" />
                 <span>{{ isTrue(row.value) ? "true" : "false" }}</span>
@@ -175,6 +179,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from "vue";
+import CustomSelect from "../common/CustomSelect.vue";
 import { useAzurePipelinesStore } from "../../stores/azure-pipelines.js";
 import type { AzurePipelineParameterDef, AzurePipelineCommit } from "../../../electron/shared/types/azure-pipelines.js";
 import { useDismissable } from "../../composables/useDismissable.js";
@@ -356,10 +361,10 @@ function pickCommit(commit: AzurePipelineCommit): void {
 }
 
 /** Options for a choice parameter, keeping the run's current value visible if it dropped out of the list. */
-function selectOptions(row: ParamRow): string[] {
+function selectOptions(row: ParamRow): Array<{ value: string; label: string }> {
   const values = row.def?.values ?? [];
-  if (row.value && !values.includes(row.value)) return [row.value, ...values];
-  return values;
+  const shown = row.value && !values.includes(row.value) ? [row.value, ...values] : values;
+  return shown.map((value) => ({ value, label: value }));
 }
 
 /** Azure sends booleans as "True"/"False" (capitalised) — compare loosely. */

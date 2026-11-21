@@ -112,3 +112,18 @@ describe("CustomSelect loading", () => {
     expect(wrapper.emitted("loadMore")).toHaveLength(1);
   });
 });
+
+describe("CustomSelect accessible name", () => {
+  test("an aria-label on the component names the trigger and the list, not the wrapper", async () => {
+    const wrapper = mount(CustomSelect, {
+      props: { options: [{ value: "a", label: "Alpha" }] },
+      attrs: { "aria-label": "Filter by day" },
+      attachTo: document.body,
+    });
+    expect(wrapper.get("button").attributes("aria-label")).toBe("Filter by day");
+    expect(wrapper.attributes("aria-label")).toBeUndefined();
+    await wrapper.get("button").trigger("click");
+    expect(document.querySelector("[role='listbox']")?.getAttribute("aria-label")).toBe("Filter by day");
+    wrapper.unmount();
+  });
+});

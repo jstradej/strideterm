@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import PerformancePanel from "./PerformancePanel.vue";
+import CustomSelect from "../common/CustomSelect.vue";
 import type { PerformanceSnapshot } from "../../../electron/shared/performance.js";
 import type { TerminalDiagnosticsSnapshot } from "../../app/terminal-controller.js";
 import { heartbeatTargetCount, resetHeartbeatForTests } from "../../app/status-heartbeat.js";
@@ -188,7 +189,7 @@ describe("PerformancePanel", () => {
   it("changing the refresh interval persists it", async () => {
     const wrapper = mount(PerformancePanel);
     await flushPromises();
-    await wrapper.find(".perf__select").setValue("5000");
+    await wrapper.getComponent(CustomSelect).setValue(5000);
     expect(window.localStorage.getItem("strideterm-perf-refresh-ms")).toBe("5000");
     expect(wrapper.text()).toContain("every 5s");
     wrapper.unmount();

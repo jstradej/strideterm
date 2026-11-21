@@ -6,16 +6,14 @@
     </header>
     <label class="event-context__picker">
       <span>Example event</span>
-      <select
+      <CustomSelect
         aria-label="Example event"
-        :value="selectedKind || ''"
+        :model-value="selectedKind || ''"
+        :options="exampleOptions"
         :disabled="!choices.length"
         title="Preview example data for an event kind selected above. These values are illustrative, not a live event."
-        @change="preferredKind = ($event.target as HTMLSelectElement).value"
-      >
-        <option v-if="!choices.length" value="">Select an event kind above</option>
-        <option v-for="event in choices" :key="event.kind" :value="event.kind">{{ event.label }}</option>
-      </select>
+        @update:model-value="preferredKind = String($event)"
+      />
     </label>
     <template v-if="example.length">
       <pre tabindex="0" aria-label="Example EVENT.json"><code>{{ json }}</code></pre>
@@ -41,12 +39,18 @@ import {
   type AutomationEventKind,
   type AutomationEventSource,
 } from "../../../electron/shared/automation-events.js";
+import CustomSelect from "../common/CustomSelect.vue";
 
 const props = defineProps<{ source: AutomationEventSource; kinds: AutomationEventKind[] }>();
 const emit = defineEmits<{ "insert-reference": [text: string] }>();
 const preferredKind = ref("");
 const choices = computed(() =>
   AUTOMATION_EVENT_CATALOG.filter((event) => event.sources.includes(props.source) && props.kinds.includes(event.kind)),
+);
+const exampleOptions = computed(() =>
+  choices.value.length
+    ? choices.value.map((event) => ({ value: event.kind, label: event.label }))
+    : [{ value: "", label: "Select an event kind above" }],
 );
 const selectedKind = computed(
   () => choices.value.find((event) => event.kind === preferredKind.value)?.kind || choices.value[0]?.kind,

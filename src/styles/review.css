@@ -287,22 +287,6 @@
   color: var(--inbox-mute);
 }
 
-/* Invisible, but it takes the clicks and the keyboard. The colours still
-   reach the native dropdown list, which opacity does not affect. */
-.azure-inbox__more-select {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  border: 0;
-  opacity: 0;
-  background: var(--panel);
-  color: var(--text);
-  font: inherit;
-  cursor: pointer;
-}
-
 .azure-inbox__measure {
   position: absolute;
   left: 0;
@@ -340,17 +324,6 @@
 .azure-inbox__tool input[type="checkbox"] {
   margin: 0;
   accent-color: var(--accent);
-}
-
-.azure-inbox__select {
-  height: 28px;
-  padding: 0 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--panel);
-  color: var(--text);
-  font: inherit;
-  font-size: 12px;
 }
 
 .azure-section {
@@ -2601,7 +2574,6 @@ details[open] > .review-tree-dir__label .review-tree-dir__icon::before {
   .azure-inbox__chip {
     height: 32px;
   }
-  .azure-inbox__select,
   .azure-inbox__tool {
     min-height: 36px;
   }

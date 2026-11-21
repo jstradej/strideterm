@@ -44,27 +44,18 @@
           aria-label="Search automations"
           title="Search automation names and parent project names in this profile."
         />
-        <select
+        <CustomSelect
           v-model="triggerFilter"
           aria-label="Filter automations by trigger"
           title="Show scheduled automations, event automations or both in this profile."
-        >
-          <option value="all">All triggers</option>
-          <option value="schedule">Scheduled</option>
-          <option value="event">Events</option>
-        </select>
-        <select
+          :options="triggerFilterOptions"
+        />
+        <CustomSelect
           v-model="statusFilter"
           aria-label="Filter automations by state"
           title="Filter current automation state. Last run failed includes failed, timed-out and interrupted runs."
-        >
-          <option value="all">All states</option>
-          <option value="running">Running</option>
-          <option value="awaiting-user">Needs attention</option>
-          <option value="enabled">Enabled</option>
-          <option value="disabled">Disabled</option>
-          <option value="failed">Last run failed</option>
-        </select>
+          :options="statusFilterOptions"
+        />
       </div>
       <div class="automations-panel__count-row">
         <p class="automations-panel__count" aria-live="polite">
@@ -143,6 +134,7 @@
 <script setup lang="ts">
 import NextRunTime from "../common/NextRunTime.vue";
 import HelpTooltip from "../common/HelpTooltip.vue";
+import CustomSelect from "../common/CustomSelect.vue";
 import cronstrue from "cronstrue";
 import AutomationIcon from "../common/AutomationIcon.vue";
 import AutomationStatusBadge from "../common/AutomationStatusBadge.vue";
@@ -173,6 +165,19 @@ const busy = ref(false);
 const search = ref("");
 const triggerFilter = ref("all");
 const statusFilter = ref("all");
+const triggerFilterOptions = [
+  { value: "all", label: "All triggers" },
+  { value: "schedule", label: "Scheduled" },
+  { value: "event", label: "Events" },
+];
+const statusFilterOptions = [
+  { value: "all", label: "All states" },
+  { value: "running", label: "Running" },
+  { value: "awaiting-user", label: "Needs attention" },
+  { value: "enabled", label: "Enabled" },
+  { value: "disabled", label: "Disabled" },
+  { value: "failed", label: "Last run failed" },
+];
 function clearFilters(): void {
   search.value = "";
   triggerFilter.value = "all";
@@ -381,11 +386,17 @@ async function togglePause(): Promise<void> {
 .automations-panel__filters input {
   grid-column: 1 / -1;
 }
-.automations-panel__filters input,
-.automations-panel__filters select {
+.automations-panel__filters input {
   min-width: 0;
   padding: 5px 7px;
   font: inherit;
+  font-size: 11px;
+}
+.automations-panel__filters .custom-select {
+  min-width: 0;
+}
+.automations-panel__filters .custom-select :deep(.custom-select__button) {
+  padding: 5px 7px;
   font-size: 11px;
 }
 .automations-panel__no-results {

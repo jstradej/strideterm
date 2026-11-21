@@ -13,6 +13,7 @@ import { afterEach, describe, expect, test, beforeEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import InboxPane from "./InboxPane.vue";
+import CustomSelect from "../common/CustomSelect.vue";
 import AzurePipelinesTab from "./azure/AzurePipelinesTab.vue";
 import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
@@ -338,6 +339,16 @@ function rowAuthors(wrapper: ReturnType<typeof mountAzurePane>) {
   return wrapper.findAll(".azure-pr-row-stub").map((row) => row.text());
 }
 
+function customSelect(wrapper: ReturnType<typeof mountAzurePane>, className: string) {
+  const select = wrapper.findAllComponents(CustomSelect).find((candidate) => candidate.classes(className));
+  if (!select) throw new Error(`no CustomSelect .${className}`);
+  return select;
+}
+
+function selectProps(select: ReturnType<typeof customSelect>) {
+  return select.props() as unknown as { modelValue: unknown; options: Array<{ value: string; label: string }> };
+}
+
 async function openTab(wrapper: ReturnType<typeof mountAzurePane>, name: string) {
   await wrapper
     .findAll(".azure-tab")
@@ -463,7 +474,7 @@ describe("InboxPane (azure) filters", () => {
       .findAll("button")
       .find((button) => button.text() === "api")!
       .trigger("click");
-    await first.get("select.azure-inbox__select").setValue("created");
+    await customSelect(first, "azure-inbox__sort").setValue("created");
     await first.get('input[type="checkbox"]').setValue(true);
     first.unmount();
 
@@ -476,7 +487,7 @@ describe("InboxPane (azure) filters", () => {
         .find((button) => button.text() === "api")!
         .attributes("aria-pressed"),
     ).toBe("true");
-    expect((second.get("select.azure-inbox__select").element as HTMLSelectElement).value).toBe("created");
+    expect(selectProps(customSelect(second, "azure-inbox__sort")).modelValue).toBe("created");
     expect((second.get('input[type="checkbox"]').element as HTMLInputElement).checked).toBe(true);
   });
 
@@ -547,27 +558,36 @@ describe("InboxPane (azure) filters", () => {
         "Bob",
         "Carol",
       ]);
-      const select = wrapper.get('select[aria-label="More authors"]');
-      expect(select.findAll("option").map((o) => o.text())).toEqual(["+3 more", "Dave (1)", "Erin (1)", "Frank (1)"]);
+      const select = customSelect(wrapper, "azure-inbox__more-select");
+      const optionLabels = () => selectProps(select).options.map((option) => option.label);
+      expect(optionLabels()).toEqual(["+3 more", "Dave (1)", "Erin (1)", "Frank (1)"]);
       // The visible chip is sized to its own label, not to the longest option.
       expect(wrapper.get(".azure-inbox__more-label").text()).toBe("+3 more");
 
-      await select.setValue("frank");
+      // The invisible picker over the chip is a real button that opens the app's own list.
+      await wrapper.get('button[aria-label="More authors"]').trigger("click");
+      const frank = Array.from(document.body.querySelectorAll(".custom-select__option")).find(
+        (option) => option.textContent?.trim() === "Frank (1)",
+      )!;
+      frank.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+      await flushPromises();
       expect(rowAuthors(wrapper)).toEqual(["Frank"]);
       const chip = wrapper.get(".azure-inbox__more");
       expect(chip.attributes("data-active")).toBe("true");
       expect(chip.get(".azure-inbox__more-label").text()).toBe("Frank");
       expect(chip.get(".azure-inbox__pill").text()).toBe("1");
       // The list is back on "+3 more" and marks who is picked.
-      expect((select.element as HTMLSelectElement).value).toBe("");
-      expect(select.findAll("option").map((o) => o.text())).toContain("✓ Frank (1)");
+      expect(selectProps(select).modelValue).toBe("");
+      expect(optionLabels()).toContain("✓ Frank (1)");
 
-      await select.setValue("dave");
+      select.vm.$emit("change", "dave");
+      await flushPromises();
       expect(rowAuthors(wrapper)).toEqual(["Dave", "Frank"]);
       expect(chip.get(".azure-inbox__more-label").text()).toBe("+2 authors");
 
       // Picking a picked author again takes them out.
-      await select.setValue("frank");
+      select.vm.$emit("change", "frank");
+      await flushPromises();
       expect(rowAuthors(wrapper)).toEqual(["Dave"]);
     });
   });
@@ -577,7 +597,7 @@ describe("InboxPane (azure) filters", () => {
     const wrapper = mountAzurePane(payloadWithPrs(prs));
     await flushPromises();
     expect(chipNames(group(wrapper, "Author"))).toHaveLength(7);
-    expect(wrapper.find('select[aria-label="More authors"]').exists()).toBe(false);
+    expect(wrapper.find('[aria-label="More authors"]').exists()).toBe(false);
   });
 
   test("Hide drafts drops draft PRs", async () => {
@@ -618,7 +638,7 @@ describe("InboxPane (azure) filters", () => {
       await openTab(wrapper, "All");
 
       expect(rowAuthors(wrapper)).toEqual(["Bob", "Cid", "Ann"]);
-      const sort = wrapper.get("select.azure-inbox__select");
+      const sort = customSelect(wrapper, "azure-inbox__sort");
       await sort.setValue("attention");
       expect(rowAuthors(wrapper)).toEqual(["Cid", "Bob", "Ann"]);
       await sort.setValue("created");
