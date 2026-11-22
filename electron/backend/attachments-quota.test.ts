@@ -5,8 +5,8 @@ import path from "node:path";
 import crypto from "node:crypto";
 import {
   DESKTOP_LIMITS,
-  PEER_COPY_ACTIVE_MS,
   PEER_COPY_OWNER_PREFIX,
+  TRANSFER_ACTIVE_MS,
   begin,
   chunk,
   cancel,
@@ -223,7 +223,7 @@ describe("attachment limits by uploader", () => {
     }
   });
 
-  test("a stale partial of a runtime-run peer copy stops counting as active; every other owner keeps counting", async () => {
+  test("an idle partial stops counting as active for every owner, so abandoned uploads cannot lock a workspace", async () => {
     const fill = async (owner: (index: number) => string) => {
       const root = await temp();
       for (let i = 0; i < 4; i++) await begin(root, `a${i}.txt`, 1, "", owner(i), `k${i}`, DESKTOP_LIMITS);
@@ -231,15 +231,58 @@ describe("attachment limits by uploader", () => {
       return root;
     };
     const peer = await fill((i) => `${PEER_COPY_OWNER_PREFIX}${i}`);
-    const other = await fill((i) => `window-${i}`);
-    const spy = vi.spyOn(Date, "now").mockReturnValue(Date.now() + PEER_COPY_ACTIVE_MS + 1000);
+    const window = await fill((i) => `window-${i}`);
+    // Four phone uploads the user abandoned (cancelled, closed the sheet, lost the relay) without the desktop hearing.
+    const phone = await temp();
+    for (let i = 0; i < 4; i++) await begin(phone, `p${i}.txt`, 2, hash(Buffer.from("xy")), "pair:device:p:w", `p${i}`);
+    await expect(begin(phone, "next.txt", 1, hash(Buffer.from("x")), "pair:device:p:w", "next")).rejects.toThrow(
+      /Too many concurrent/,
+    );
+    const spy = vi.spyOn(Date, "now").mockReturnValue(Date.now() + TRANSFER_ACTIVE_MS + 1000);
     try {
       await expect(begin(peer, "b.txt", 1, "", "w", undefined, DESKTOP_LIMITS)).resolves.toMatchObject({ offset: 0 });
-      await expect(begin(other, "b.txt", 1, "", "w", undefined, DESKTOP_LIMITS)).rejects.toThrow(/Too many concurrent/);
+      await expect(begin(window, "b.txt", 1, "", "w", undefined, DESKTOP_LIMITS)).resolves.toMatchObject({
+        offset: 0,
+      });
+      await expect(
+        begin(phone, "next.txt", 1, hash(Buffer.from("x")), "pair:device:p:w", "next"),
+      ).resolves.toMatchObject({ offset: 0 });
+      // An idle partial is not gone: its idempotency key still resumes it.
+      const resumed = await begin(phone, "p0.txt", 2, hash(Buffer.from("xy")), "pair:device:p:w", "p0");
+      await expect(
+        chunk(phone, resumed.transferId, 0, Buffer.from("xy").toString("base64"), "pair:device:p:w"),
+      ).resolves.toEqual({
+        offset: 2,
+      });
     } finally {
       spy.mockRestore();
       await rm(peer, { recursive: true, force: true });
-      await rm(other, { recursive: true, force: true });
+      await rm(window, { recursive: true, force: true });
+      await rm(phone, { recursive: true, force: true });
+    }
+  });
+
+  test("a transfer that keeps receiving chunks keeps counting as active", async () => {
+    const root = await temp();
+    const started = Date.now();
+    const spy = vi.spyOn(Date, "now").mockReturnValue(started);
+    try {
+      const data = Buffer.from("abcd");
+      const ids: string[] = [];
+      for (let i = 0; i < 4; i++)
+        ids.push((await begin(root, `a${i}.txt`, 4, hash(data), "pair:device:p:w", `k${i}`)).transferId);
+      // Each transfer moves just inside the window, again and again: none of them is idle.
+      for (let step = 1; step <= 3; step++) {
+        spy.mockReturnValue(started + step * (TRANSFER_ACTIVE_MS - 1000));
+        for (const id of ids)
+          await chunk(root, id, step - 1, data.subarray(step - 1, step).toString("base64"), "pair:device:p:w");
+      }
+      await expect(begin(root, "b.txt", 1, hash(Buffer.from("x")), "pair:device:p:w", "b")).rejects.toThrow(
+        /Too many concurrent/,
+      );
+    } finally {
+      spy.mockRestore();
+      await rm(root, { recursive: true, force: true });
     }
   });
 

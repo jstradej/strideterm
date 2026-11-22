@@ -2570,9 +2570,13 @@ async function handleMobileAttachmentRequest(
         ? error.code
         : /daily receive quota/i.test(message)
           ? "attachment-daily-quota-exceeded"
-          : /quota exceeded|concurrent attachment/i.test(message)
-            ? "attachment-quota-exceeded"
-            : "attachment-failed";
+          : // Busy, not full: deleting a stored file would not help, so it must not read as the storage quota.
+            // The phone already knows this code (it is also what a 429 maps to) and says to try again later.
+            /concurrent attachment/i.test(message)
+            ? "attachment-transfer-limit"
+            : /quota exceeded/i.test(message)
+              ? "attachment-quota-exceeded"
+              : "attachment-failed";
     result = {
       error: { code },
     };

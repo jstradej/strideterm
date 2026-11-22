@@ -17,8 +17,17 @@ export const MAX_CONCURRENT_TRANSFERS = 4;
  * Every caller-supplied owner is a window slot id, `remote:<session>` or a desktop pairing identity, never this.
  */
 export const PEER_COPY_OWNER_PREFIX = "peer-copy:";
-/** A failed copy keeps its partial for Retry; it stops counting as a running transfer after this long. */
-export const PEER_COPY_ACTIVE_MS = 2 * 60 * 1000;
+/**
+ * An incomplete transfer that has not moved for this long stops counting as a running transfer, whoever owns it.
+ *
+ * Partials are left behind all the time: a failed peer copy keeps its partial for Retry, and a phone whose user
+ * cancelled, closed the sheet or lost the relay mid-upload may never manage to tell the desktop. Counted as running
+ * until the 24 h cleanup, four of them locked the workspace out of every upload for a day. A live transfer moves
+ * far more often than this (every chunk updates `updatedAt`, and a relay request is cancelled after 30 s), and an
+ * idle partial stays resumable through its idempotency key and still counts against the file and storage quotas,
+ * so a caller that keeps abandoning transfers is bounded there instead.
+ */
+export const TRANSFER_ACTIVE_MS = 2 * 60 * 1000;
 const DAILY_RECEIVED_LIMIT = 128 * 1024 * 1024;
 const DESKTOP_MAX_SIZE = 1024 * 1024 * 1024;
 
@@ -203,7 +212,7 @@ async function locked<T>(key: string, fn: () => Promise<T>) {
 }
 function countsAsActive(state: State) {
   if (state.done) return false;
-  return !state.owner?.startsWith(PEER_COPY_OWNER_PREFIX) || Date.now() - state.updatedAt < PEER_COPY_ACTIVE_MS;
+  return Date.now() - state.updatedAt < TRANSFER_ACTIVE_MS;
 }
 function owner(state: State, value?: string) {
   if (state.owner !== value) throw new Error("Attachment owner mismatch");

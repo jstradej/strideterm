@@ -174,6 +174,27 @@ describe("encrypted mobile attachment route", () => {
       expect(listed.value.attachments).toHaveLength(1);
       const crossProfile = await send("attachment.list", { workspaceId: "other-ws" });
       expect(crossProfile.value.error.code).toBe("attachment-failed");
+      // Too many transfers at once is "busy, try later", never the storage quota: deleting a file would not help.
+      const partials: string[] = [];
+      for (let i = 0; i < 4; i++) {
+        const partial = await send("attachment.begin", {
+          workspaceId: "ws",
+          name: `busy-${i}.txt`,
+          size: 3,
+          sha256: createHash("sha256").update(Buffer.from("abc")).digest("hex"),
+          idempotencyKey: `busy-${i}`,
+        });
+        partials.push(partial.value.transferId as string);
+      }
+      const busy = await send("attachment.begin", {
+        workspaceId: "ws",
+        name: "busy-5.txt",
+        size: 3,
+        sha256: createHash("sha256").update(Buffer.from("abc")).digest("hex"),
+        idempotencyKey: "busy-5",
+      });
+      expect(busy.value.error.code).toBe("attachment-transfer-limit");
+      for (const partial of partials) await send("attachment.cancel", { workspaceId: "ws", transferId: partial });
       const switched = await fetch(`${base}/api/remote-client/profile/activate`, {
         method: "POST",
         headers: { "content-type": "application/json", Cookie: cookie },
