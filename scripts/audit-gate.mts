@@ -32,17 +32,7 @@ interface AcceptedAdvisory {
   expires: string;
 }
 
-const ACCEPTED: AcceptedAdvisory[] = [
-  {
-    id: "GHSA-fc5q-39xc-vjpf",
-    package: "picomatch",
-    reason:
-      "ReDoS through a crafted glob PATTERN (CVE-2026-112366). No patched release exists (<= 4.0.7 is every version). " +
-      "It is in the tree only through dev tooling (vite, vitest, tinyglobby, lint-staged, vue-tsc, patch-package), " +
-      "whose patterns come from this repository's own configuration.",
-    expires: "2027-01-15",
-  },
-];
+const ACCEPTED: AcceptedAdvisory[] = [];
 
 const BLOCKING = new Set(["high", "critical"]);
 
