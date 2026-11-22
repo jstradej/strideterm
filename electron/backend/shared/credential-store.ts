@@ -55,7 +55,7 @@ export interface CredentialStore {
 }
 
 /**
- * `mobile:` refs that hold NO secret — a device id and two markers. Everything else under `mobile:`
+ * `mobile:` refs that hold NO secret — two device ids and two markers. Everything else under `mobile:`
  * (the desktop's long-lived X25519 key, the Firebase refresh token, the relay's Ed25519 installation key)
  * is key material for the end-to-end channel and is never written as base64 plaintext: a keyring-less
  * Linux box would otherwise keep all three readable from credentials.json, and from every backup of

@@ -16095,8 +16095,9 @@ export async function createRuntime({
      *
      * `filters.profileId` narrows the answer to one profile, and the remote
      * server passes the profile its caller's session is bound to — the same
-     * scoping the live `approval:recorded` event already applies. Desktop IPC
-     * omits it: the Settings viewer is a local, whole-installation view.
+     * scoping the live `approval:recorded` event already applies. Over desktop
+     * IPC the dock's Approvals tab passes the active profile; a call without one
+     * answers for the whole installation.
      */
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     queryApprovalAuditLog(filters: any = {}) {
