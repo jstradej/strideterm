@@ -681,6 +681,16 @@ describe("rebase onto the PR target", () => {
     expect(await f.remoteSha()).toBe(remoteBefore);
   });
 
+  test("with askFirst false it rebases without a proposal", async () => {
+    const f = await createFixture();
+    const target = await advanceTarget(f, "main-only.txt", "m\n");
+    const remoteBefore = await f.remoteSha();
+
+    expectStatus(await f.engine.rebase(f.subject, requester, undefined, { askFirst: false }), "rebased");
+    expect(await git(f.checkout, ["merge-base", "--is-ancestor", target, "HEAD"]).then(() => true)).toBe(true);
+    expect(await f.remoteSha()).toBe(remoteBefore);
+  });
+
   test("a provider-side retarget while the user is deciding turns the continuation into a fresh proposal", async () => {
     const f = await createFixture();
     await advanceTarget(f, "main-only.txt", "m\n");
@@ -738,21 +748,11 @@ describe("rebase onto the PR target", () => {
 });
 
 describe("stage, commit and resolving a paused operation", () => {
-  test("stage pins the intended paths and the index; a changed index asks again", async () => {
+  test("stage runs at once, without a proposal, and stages only the named paths", async () => {
     const f = await createFixture();
     await writeFile(path.join(f.checkout, "one.txt"), "1\n");
     await writeFile(path.join(f.checkout, "two.txt"), "2\n");
-    const first = expectStatus(await f.engine.stage(f.subject, requester, ["one.txt"]), "confirm-required");
-    await writeFile(path.join(f.checkout, "three.txt"), "3\n");
-    const stale = expectStatus(
-      await f.engine.stage(f.subject, requester, ["one.txt"], { proposalId: first.proposal.proposalId }),
-      "confirm-required",
-    );
-    expect(stale.stale).toBe(true);
-    expectStatus(
-      await f.engine.stage(f.subject, requester, ["one.txt"], { proposalId: stale.proposal.proposalId }),
-      "staged",
-    );
+    expectStatus(await f.engine.stage(f.subject, requester, ["one.txt"]), "staged");
     expect(await git(f.checkout, ["diff", "--cached", "--name-only"])).toBe("one.txt");
   });
 
@@ -769,36 +769,16 @@ describe("stage, commit and resolving a paused operation", () => {
     const f = await createFixture();
     await writeFile(path.join(f.checkout, "one.txt"), "1\n");
     await git(f.checkout, ["add", "one.txt"]);
-    const first = expectStatus(await f.engine.unstage(f.subject, requester, ["one.txt"]), "confirm-required");
-    expectStatus(
-      await f.engine.unstage(f.subject, requester, ["one.txt"], { proposalId: first.proposal.proposalId }),
-      "unstaged",
-    );
+    expectStatus(await f.engine.unstage(f.subject, requester, ["one.txt"]), "unstaged");
     expect(await git(f.checkout, ["diff", "--cached", "--name-only"])).toBe("");
   });
 
-  test("commit pins the staged diff and the message: changing either asks again", async () => {
+  test("commit runs at once, without a proposal, and never moves the baseline", async () => {
     const f = await createFixture();
     await writeFile(path.join(f.checkout, "one.txt"), "1\n");
     await git(f.checkout, ["add", "one.txt"]);
-    const first = expectStatus(await f.engine.commit(f.subject, requester, "add one"), "confirm-required");
-    await writeFile(path.join(f.checkout, "one.txt"), "changed after asking\n");
-    await git(f.checkout, ["add", "one.txt"]);
-    const stale = expectStatus(
-      await f.engine.commit(f.subject, requester, "add one", { proposalId: first.proposal.proposalId }),
-      "confirm-required",
-    );
-    expect(stale.stale).toBe(true);
-    const reworded = expectStatus(
-      await f.engine.commit(f.subject, requester, "different message", { proposalId: stale.proposal.proposalId }),
-      "confirm-required",
-    );
-    expect(reworded.stale).toBe(true);
-    const done = expectStatus(
-      await f.engine.commit(f.subject, requester, "different message", { proposalId: reworded.proposal.proposalId }),
-      "committed",
-    );
-    expect(await git(f.checkout, ["log", "-1", "--format=%s"])).toBe("different message");
+    const done = expectStatus(await f.engine.commit(f.subject, requester, "add one"), "committed");
+    expect(await git(f.checkout, ["log", "-1", "--format=%s"])).toBe("add one");
     expect(done.headSha).toBe(await f.head());
     expect(f.baselines).toEqual([]);
   });
@@ -825,11 +805,7 @@ describe("stage, commit and resolving a paused operation", () => {
 
     await writeFile(path.join(f.checkout, "same.txt"), "resolved\n");
     await git(f.checkout, ["add", "same.txt"]);
-    const ask = expectStatus(await f.engine.continueOperation(f.subject, requester), "confirm-required");
-    expectStatus(
-      await f.engine.continueOperation(f.subject, requester, { proposalId: ask.proposal.proposalId }),
-      "continued",
-    );
+    expectStatus(await f.engine.continueOperation(f.subject, requester), "continued");
     expect(await git(f.checkout, ["status", "--porcelain"])).toBe("");
   });
 
@@ -891,11 +867,7 @@ describe("last-moment recheck, identity and proposals for agents", () => {
     const f = await createFixture();
     f.subject.pullRequestClosed = "abandoned";
     await writeFile(path.join(f.checkout, "one.txt"), "1\n");
-    const first = expectStatus(await f.engine.stage(f.subject, requester, ["one.txt"]), "confirm-required");
-    expectStatus(
-      await f.engine.stage(f.subject, requester, ["one.txt"], { proposalId: first.proposal.proposalId }),
-      "staged",
-    );
+    expectStatus(await f.engine.stage(f.subject, requester, ["one.txt"]), "staged");
   });
 
   test("a source that changed since the workspace was linked blocks source-targeted work", async () => {

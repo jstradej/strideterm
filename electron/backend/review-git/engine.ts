@@ -722,6 +722,7 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
     subject: ReviewGitSubject,
     requester: ReviewGitRequester,
     confirmation?: ReviewGitConfirmation,
+    { askFirst = true }: { askFirst?: boolean } = {},
   ): Promise<ReviewGitResult> {
     return withLocks(subject, async () => {
       const result = await prepare(subject, { queryLive: false });
@@ -794,7 +795,11 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
         incoming: { commits: incoming.commits, total: incoming.total },
         proceedLabel: `Rebase onto ${targetBranch}`,
       });
-      if (confirmation?.proposalId !== proposal.proposalId) return confirmRequired(facts, proposal, confirmation);
+      // The UI shows this proposal as its dialog. An agent is not stopped: a local rebase loses nothing (reflog),
+      // and when to ask before one is the project's and the user's call.
+      if (askFirst && confirmation?.proposalId !== proposal.proposalId) {
+        return confirmRequired(facts, proposal, confirmation);
+      }
 
       return audited(subject, requester, "rebase", facts, { headSha: head, targetSha, targetRef }, async () => {
         const changed = await recheck(subject, facts, { clean: true });
@@ -846,9 +851,9 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
     options: { force?: boolean; confirmation?: ReviewGitConfirmation; requireProposal?: boolean } = {},
   ): Promise<ReviewGitResult> {
     const force = options.force === true;
-    // An agent never pushes on its own say-so: its first call only describes the
-    // push, and the continuation must name that exact proposal. The UI's Push
-    // button is itself the explicit action, so it does not take this step.
+    // When set (an agent's force push), the first call only describes the push
+    // and the continuation must name that exact proposal. A force push over
+    // server commits the baseline does not know is always proposed.
     const requireProposal = options.requireProposal === true;
     return withLocks(subject, async () => {
       const result = await prepare(subject, { queryLive: true, requireWritable: true });
@@ -1033,7 +1038,6 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
     requester: ReviewGitRequester,
     kind: "stage" | "unstage",
     paths: string[],
-    confirmation?: ReviewGitConfirmation,
   ): Promise<ReviewGitResult> {
     return withLocks(subject, async () => {
       const prepared = await prepare(subject, { queryLive: false, allowOperation: true, local: true });
@@ -1042,13 +1046,7 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
       const wanted = [...new Set(paths.map((entry) => entry.replace(/\\/gu, "/")))].sort();
       const problem = validatePaths(wanted, facts.dirty.paths);
       if (problem) return blocked(facts, "invalid-paths", problem);
-      const proposal = makeProposal(subject, kind, {
-        title: `${kind === "stage" ? "Stage" : "Unstage"} ${wanted.length} path${wanted.length !== 1 ? "s" : ""}?`,
-        message: `${kind === "stage" ? "Stage" : "Unstage"}: ${wanted.join(", ")}.`,
-        facts: { headSha: facts.headSha, paths: wanted, statusDigest: facts.dirty.digest },
-        proceedLabel: kind === "stage" ? "Stage" : "Unstage",
-      });
-      if (confirmation?.proposalId !== proposal.proposalId) return confirmRequired(facts, proposal, confirmation);
+      // Local and undoable, so no proposal; anything that rewrites history, discards work or pushes still asks.
       return audited(subject, requester, kind, facts, { headSha: facts.headSha }, async () => {
         const changed = await recheck(subject, facts, { status: true });
         if (changed) return changed;
@@ -1075,7 +1073,6 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
     subject: ReviewGitSubject,
     requester: ReviewGitRequester,
     message: string,
-    confirmation?: ReviewGitConfirmation,
   ): Promise<ReviewGitResult> {
     return withLocks(subject, async () => {
       const prepared = await prepare(subject, { queryLive: false, local: true });
@@ -1086,15 +1083,6 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
       if (facts.dirty.staged === 0) {
         return blocked(facts, "nothing-to-commit", "Nothing is staged.", "Stage the intended paths first.");
       }
-      const stagedDiff = (await git(subject.cwd, ["diff", "--cached", "--binary", "--no-ext-diff"])).stdout;
-      const stat = (await git(subject.cwd, ["diff", "--cached", "--stat", "--no-ext-diff"])).stdout.trim();
-      const proposal = makeProposal(subject, "commit", {
-        title: "Commit the staged changes?",
-        message: `Commit ${facts.dirty.staged} staged path${facts.dirty.staged !== 1 ? "s" : ""} with message "${text.split(/\r?\n/u)[0]}".\n${stat}`,
-        facts: { headSha: facts.headSha, stagedDiffDigest: digest(stagedDiff), messageDigest: digest(text) },
-        proceedLabel: "Commit",
-      });
-      if (confirmation?.proposalId !== proposal.proposalId) return confirmRequired(facts, proposal, confirmation);
       return audited(subject, requester, "commit", facts, { headSha: facts.headSha }, async () => {
         const changed = await recheck(subject, facts, { status: true });
         if (changed) return changed;
@@ -1138,7 +1126,10 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
         facts: { operation: facts.operation, headSha: facts.headSha, statusDigest: facts.dirty.digest, conflicts },
         proceedLabel: action[0].toUpperCase() + action.slice(1),
       });
-      if (confirmation?.proposalId !== proposal.proposalId) return confirmRequired(facts, proposal, confirmation);
+      // Continue only finishes what was started and discards nothing; skip and abort drop work, so they ask.
+      if (action !== "continue" && confirmation?.proposalId !== proposal.proposalId) {
+        return confirmRequired(facts, proposal, confirmation);
+      }
       return audited(subject, requester, action, facts, { headSha: facts.headSha }, async () => {
         const changed = await recheck(subject, facts, { status: true });
         if (changed) return changed;
@@ -1182,24 +1173,13 @@ export function createReviewGitEngine(deps: ReviewGitEngineDeps) {
     refresh,
     rebase,
     push,
-    stage: (
-      subject: ReviewGitSubject,
-      requester: ReviewGitRequester,
-      paths: string[],
-      confirmation?: ReviewGitConfirmation,
-    ) => stagePaths(subject, requester, "stage", paths, confirmation),
-    unstage: (
-      subject: ReviewGitSubject,
-      requester: ReviewGitRequester,
-      paths: string[],
-      confirmation?: ReviewGitConfirmation,
-    ) => stagePaths(subject, requester, "unstage", paths, confirmation),
+    stage: (subject: ReviewGitSubject, requester: ReviewGitRequester, paths: string[]) =>
+      stagePaths(subject, requester, "stage", paths),
+    unstage: (subject: ReviewGitSubject, requester: ReviewGitRequester, paths: string[]) =>
+      stagePaths(subject, requester, "unstage", paths),
     commit,
-    continueOperation: (
-      subject: ReviewGitSubject,
-      requester: ReviewGitRequester,
-      confirmation?: ReviewGitConfirmation,
-    ) => resolveOperation(subject, requester, "continue", confirmation),
+    continueOperation: (subject: ReviewGitSubject, requester: ReviewGitRequester) =>
+      resolveOperation(subject, requester, "continue"),
     skipOperation: (subject: ReviewGitSubject, requester: ReviewGitRequester, confirmation?: ReviewGitConfirmation) =>
       resolveOperation(subject, requester, "skip", confirmation),
     abortOperation: (subject: ReviewGitSubject, requester: ReviewGitRequester, confirmation?: ReviewGitConfirmation) =>

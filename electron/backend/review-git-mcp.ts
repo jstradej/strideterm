@@ -255,7 +255,7 @@ export function describeOperation(calledTool: string, lookup: OperationLookup): 
     lines.push(
       `${engine.message}`,
       `Conflicted files: ${(engine.conflictedPaths || []).join(", ") || "(none listed)"}.`,
-      "Use review_git_conflicts to read them, resolve, stage (with consent), then continue or abort.",
+      "Use review_git_conflicts to read them, resolve, stage, then continue (abort asks the user first).",
     );
   } else {
     lines.push(`${engine.status}: ${engine.message || ""}`);
@@ -506,34 +506,41 @@ export function registerReviewGitTools(
     "review_git_rebase",
     "rebase",
     "Review Git: rebase onto the target branch",
-    "Rebase the local branch onto the TARGET branch: the pull request's, or the base branch of a quickfix (the target SHA is pinned). Rewrites local history only; it never pushes and never changes the source baseline.",
+    "Rebase the local branch onto the TARGET branch: the pull request's, or the base branch of a quickfix (the target SHA is pinned). Rewrites local history only; it never pushes and never changes the source baseline. Runs at once.",
+    {},
+    false,
   );
   mutation(
     "review_git_stage",
     "stage",
     "Review Git: stage paths",
-    "Stage specific repository-relative paths (the intended paths and the current index are pinned).",
+    "Stage specific repository-relative paths. Runs at once; no question needed.",
     { paths: z.array(z.string().max(4096)).min(1).max(500) },
+    false,
   );
   mutation(
     "review_git_unstage",
     "unstage",
     "Review Git: unstage paths",
-    "Unstage specific repository-relative paths.",
+    "Unstage specific repository-relative paths. Runs at once; no question needed.",
     { paths: z.array(z.string().max(4096)).min(1).max(500) },
+    false,
   );
   mutation(
     "review_git_commit",
     "commit",
     "Review Git: commit",
-    "Commit what is staged (the staged diff and the message are pinned: change either and you are asked again). Hooks run; they are never bypassed.",
+    "Commit what is staged. Runs at once; no question needed. Hooks run; they are never bypassed.",
     { message: z.string().min(1).max(10_000) },
+    false,
   );
   mutation(
     "review_git_continue",
     "continue",
     "Review Git: continue a paused operation",
-    "Continue a paused rebase/merge/cherry-pick/revert after its conflicts were resolved and staged.",
+    "Continue a paused rebase/merge/cherry-pick/revert after its conflicts were resolved and staged. Runs at once; no question needed.",
+    {},
+    false,
   );
   mutation(
     "review_git_skip",
@@ -551,7 +558,9 @@ export function registerReviewGitTools(
     "review_git_push",
     "push",
     "Review Git: push",
-    "Push HEAD to the pull request's SOURCE branch (or the quickfix branch) in the verified source repository. Allowed only when it fast-forwards the live source branch; for a quickfix branch that is not on the remote yet it publishes it. Never publishes queued draft comments.",
+    "Push HEAD to the pull request's SOURCE branch (or the quickfix branch) in the verified source repository. Allowed only when it fast-forwards the live source branch; for a quickfix branch that is not on the remote yet it publishes it. Never publishes queued draft comments. Runs at once.",
+    {},
+    false,
   );
   mutation(
     "review_git_force_push",

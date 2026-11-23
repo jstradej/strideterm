@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { buildReviewGitPolicy } from "../shared/review-git-policy.js";
+import { buildReviewGitPolicy, REVIEW_GIT_CONSENT_REQUIRED } from "../shared/review-git-policy.js";
 import { createReviewGitBroker } from "./review-git/broker.js";
 import {
   createReviewGitClient,
@@ -230,12 +230,14 @@ describe("what the agent is told", () => {
     expect(text).toContain("never repeat a push that succeeded");
   });
 
-  test("the policy tells every agent to ask and wait; Claude is told to use AskUserQuestion", () => {
+  test("the policy tells every agent to ask and wait for the operations that need consent; Claude is told to use AskUserQuestion", () => {
     const generic = buildReviewGitPolicy({ askTool: null });
     expect(generic).toContain("ask the user in the conversation, then STOP and wait for their actual reply");
     expect(generic).toContain("NOT the user's consent");
-    expect(generic).toContain("Do not run git commands that change the repository in a shell");
-    for (const operation of ["rebase", "stage", "commit", "push", "force push", "continue / skip / abort"]) {
+    expect(generic).toContain("never push from a shell");
+    expect(generic).toContain("Purely local history work that has no tool");
+    expect(generic).toContain("Stage, unstage, commit, continue, rebase and a fast-forward push run at once");
+    for (const operation of REVIEW_GIT_CONSENT_REQUIRED) {
       expect(generic).toContain(operation);
     }
     // The same briefing serves a quickfix branch that has no pull request yet.
@@ -345,23 +347,27 @@ describe("the MCP tools, end to end through the broker", () => {
     expect(names.some((name) => /shell|exec|run_git|stash|merge|revert|reset|publish/u.test(name))).toBe(false);
   });
 
-  test("every consent-required tool says so in its description; fetch and the read tools do not take a proposal", async () => {
+  test("only the consent-required tools say so and take a proposal; the run-at-once, fetch and read tools do not", async () => {
     const tools = (await client.listTools()).tools;
     const byName = new Map(tools.map((tool) => [tool.name, tool]));
+    for (const name of ["review_git_skip", "review_git_abort", "review_git_force_push"]) {
+      const tool = byName.get(name)!;
+      expect(tool.description).toContain("Needs the user's consent");
+      expect(Object.keys(tool.inputSchema.properties || {})).toEqual(expect.arrayContaining(["proposalId", "consent"]));
+    }
     for (const name of [
       "review_git_rebase",
       "review_git_stage",
       "review_git_unstage",
       "review_git_commit",
       "review_git_continue",
-      "review_git_skip",
-      "review_git_abort",
       "review_git_push",
-      "review_git_force_push",
     ]) {
       const tool = byName.get(name)!;
-      expect(tool.description).toContain("Needs the user's consent");
-      expect(Object.keys(tool.inputSchema.properties || {})).toEqual(expect.arrayContaining(["proposalId", "consent"]));
+      expect(tool.description).not.toContain("Needs the user's consent");
+      expect(tool.description).toContain("Runs at once");
+      const fields = Object.keys(tool.inputSchema.properties || {});
+      for (const field of ["proposalId", "expectedFacts", "consent"]) expect(fields).not.toContain(field);
     }
     // A safe refresh runs without a question; only its proposal needs the user.
     const refresh = byName.get("review_git_refresh")!;
@@ -375,13 +381,13 @@ describe("the MCP tools, end to end through the broker", () => {
   });
 
   test("a first call without proposalId returns a proposal and tells the agent to ask", async () => {
-    scripted.commit = {
+    scripted["force-push"] = {
       status: "confirm-required",
       proposal: {
         proposalId: "prop-1",
-        kind: "commit",
-        title: "Commit the staged changes?",
-        message: "Commit 1 staged path.",
+        kind: "force-push",
+        title: "Force push?",
+        message: "Replace the remote branch.",
         facts: {},
         affectedCommits: [],
         affectedTotal: 0,
@@ -389,33 +395,32 @@ describe("the MCP tools, end to end through the broker", () => {
         incomingTotal: 0,
       },
     };
-    const result = await client.callTool({ name: "review_git_commit", arguments: { message: "fix it" } });
+    const result = await client.callTool({ name: "review_git_force_push", arguments: {} });
     expect(textOf(result)).toContain("USER CONSENT REQUIRED");
     expect(textOf(result)).toContain('proposalId="prop-1"');
-    expect(started[0].input).toMatchObject({ kind: "commit", message: "fix it" });
+    expect(started[0].input).toMatchObject({ kind: "force-push" });
     expect(started[0].input.confirmation).toBeUndefined();
   });
 
   test("the continuation carries the proposal id and the user's reported answer as audit context", async () => {
     await client.callTool({
-      name: "review_git_commit",
-      arguments: { message: "fix it", proposalId: "prop-1", consent: "Yes, commit it." },
+      name: "review_git_abort",
+      arguments: { proposalId: "prop-1", consent: "Yes, abort it." },
     });
     expect(started[0].input).toMatchObject({
-      kind: "commit",
-      message: "fix it",
+      kind: "abort",
       confirmation: { proposalId: "prop-1" },
     });
     expect((started[0].input.confirmation as Record<string, unknown>).facts).toBeUndefined();
     expect(started[0].caller).toMatchObject({
       profileId: "default",
-      requester: { source: "mcp", agent: "claude", consent: "Yes, commit it." },
+      requester: { source: "mcp", agent: "claude", consent: "Yes, abort it." },
     });
   });
 
   test("the continuation hands the shown facts back so a stale answer can say what changed", async () => {
     await client.callTool({
-      name: "review_git_push",
+      name: "review_git_force_push",
       arguments: { proposalId: "prop-2", expectedFacts: { headSha: "a".repeat(40), liveSha: "b".repeat(40) } },
     });
     expect(started[0].input.confirmation).toEqual({

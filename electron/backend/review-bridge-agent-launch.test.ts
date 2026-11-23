@@ -1152,7 +1152,7 @@ describe("review Git capability in the agent launch", () => {
       expect(prompt).toContain("review_git_*");
       expect(prompt).toContain("call AskUserQuestion with those facts and WAIT for the user's actual answer");
       expect(prompt).toContain("PermissionRequest hooks and auto-approval are NOT the user's consent");
-      expect(prompt).toContain("Do not run git commands that change the repository in a shell");
+      expect(prompt).toContain("never push from a shell");
       expect(prompt).toContain("Safe refresh needs no question");
     },
   );
@@ -1249,7 +1249,7 @@ describe("review Git capability in the agent launch", () => {
       const result = quickfixLaunch("claude", "linux", { reviewGitEnv })!;
       const prompt = result.args[result.args.indexOf("--append-system-prompt") + 1] as string;
       expect(prompt).toContain("pull request or quickfix branch");
-      expect(prompt).toContain("Do not run git commands that change the repository in a shell");
+      expect(prompt).toContain("never push from a shell");
       expect(prompt).toContain("call AskUserQuestion with those facts and WAIT for the user's actual answer");
     });
   });

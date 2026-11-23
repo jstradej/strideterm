@@ -395,7 +395,7 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
         result = await manager.syncReviewWorkspace({ ...common, confirmation: input.confirmation });
         break;
       case "rebase":
-        result = await manager.rebaseReviewWorkspace({ ...common, confirmation: input.confirmation });
+        result = await manager.rebaseReviewWorkspace({ ...common, confirmation: input.confirmation, askFirst: !mcp });
         break;
       case "push":
       case "force-push":
@@ -403,7 +403,8 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
           ...common,
           force: kind === "force-push",
           confirmation: input.confirmation,
-          requireProposal: mcp,
+          // A fast-forward push replaces nothing; only an agent's force push must be proposed first.
+          requireProposal: mcp && kind === "force-push",
         });
         break;
       case "push-and-publish":
@@ -412,7 +413,7 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
           ...common,
           force: kind === "force-push-and-publish",
           confirmation: input.confirmation,
-          requireProposal: mcp,
+          requireProposal: mcp && kind === "force-push-and-publish",
         })) as ReviewGitResult;
         const pushed = push.status === "pushed" || push.status === "up-to-date";
         const publish = pushed
@@ -431,12 +432,10 @@ export function createReviewGitService(ctx: ReviewGitServiceCtx) {
         const engine = manager.getReviewGitEngine();
         const subject = manager.buildReviewSubject(workspace);
         if (kind === "continue" || kind === "skip") continuationBase = await headBeforeContinuation(located);
-        if (kind === "stage") result = await engine.stage(subject, requester, input.paths || [], input.confirmation);
-        else if (kind === "unstage")
-          result = await engine.unstage(subject, requester, input.paths || [], input.confirmation);
-        else if (kind === "commit")
-          result = await engine.commit(subject, requester, input.message || "", input.confirmation);
-        else if (kind === "continue") result = await engine.continueOperation(subject, requester, input.confirmation);
+        if (kind === "stage") result = await engine.stage(subject, requester, input.paths || []);
+        else if (kind === "unstage") result = await engine.unstage(subject, requester, input.paths || []);
+        else if (kind === "commit") result = await engine.commit(subject, requester, input.message || "");
+        else if (kind === "continue") result = await engine.continueOperation(subject, requester);
         else if (kind === "skip") result = await engine.skipOperation(subject, requester, input.confirmation);
         else result = await engine.abortOperation(subject, requester, input.confirmation);
         break;

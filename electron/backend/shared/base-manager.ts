@@ -1453,16 +1453,19 @@ export class BaseProviderManager extends EventEmitter {
     workspace,
     requester,
     confirmation,
+    askFirst,
   }: {
     workspace: ReviewWorkspaceRef;
     requester?: ReviewGitRequester;
     confirmation?: ReviewGitConfirmation;
+    askFirst?: boolean;
   }): Promise<ReviewGitResult> {
     this.log.info("rebase review workspace", { workspaceId: workspace.id });
     return this.getReviewGitEngine().rebase(
       this.buildReviewSubject(workspace),
       this.reviewRequester(requester),
       confirmation,
+      { askFirst },
     );
   }
 

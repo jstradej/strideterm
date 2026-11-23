@@ -27,16 +27,16 @@ async function startAgentSide(options: { withGrant: boolean }) {
     lookup: () => ({
       status: "succeeded" as const,
       operation: {
-        kind: "commit",
+        kind: "force-push",
         startedAt: "t",
         finishedAt: "t",
         result: {
           status: "confirm-required",
           proposal: {
             proposalId: "prop-1",
-            kind: "commit",
-            title: "Commit the staged changes?",
-            message: "Commit 1 staged path.",
+            kind: "force-push",
+            title: "Force push?",
+            message: "Replace the remote branch.",
             facts: {},
             affectedCommits: [],
             affectedTotal: 0,
@@ -115,7 +115,7 @@ describe("the real review bridge MCP server process", () => {
     );
     const instructions = client.getInstructions() || "";
     expect(instructions).toContain("ask the user in the conversation, then STOP and wait for their actual reply");
-    expect(instructions).toContain("Do not run git commands that change the repository in a shell");
+    expect(instructions).toContain("never push from a shell");
   }, 60_000);
 
   test("a Git tool reaches the runtime through the per-tab capability in its environment", async () => {
@@ -125,9 +125,9 @@ describe("the real review bridge MCP server process", () => {
     expect(JSON.parse(textOf(status))).toEqual({ read: "status" });
     expect(read).toHaveBeenCalledTimes(1);
 
-    const commit = await client.callTool({ name: "review_git_commit", arguments: { message: "fix" } });
-    expect(textOf(commit)).toContain("USER CONSENT REQUIRED");
-    expect(textOf(commit)).toContain('proposalId="prop-1"');
+    const forcePush = await client.callTool({ name: "review_git_force_push", arguments: {} });
+    expect(textOf(forcePush)).toContain("USER CONSENT REQUIRED");
+    expect(textOf(forcePush)).toContain('proposalId="prop-1"');
     expect(start).toHaveBeenCalledTimes(1);
   }, 60_000);
 

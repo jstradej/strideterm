@@ -346,22 +346,16 @@ describe("a quickfix branch without a pull request: grant liveness", () => {
 });
 
 describe("a quickfix branch without a pull request: operations on a real repository", () => {
-  test("push publishes the new branch: proposal first for an agent, then the continuation; the baseline follows the exact HEAD", async () => {
+  test("an agent's push publishes the new branch at once; the baseline follows the exact HEAD", async () => {
     const f = await createFixture();
     await commitFile(f.checkout, "n.txt", "n\n", "local");
     const head = git(f.checkout, ["rev-parse", "HEAD"]);
     expect(remoteSha(f, BRANCH)).toBe("");
 
-    const proposed = await run(f, { kind: "push" });
-    expect(proposed.status).toBe("confirm-required");
-    expect(proposed.proposal).toMatchObject({ kind: "push", title: `Publish ${BRANCH}?` });
-    expect(proposed.proposal.facts).toMatchObject({ headSha: head, liveSha: null, published: false });
-    expect(proposed.proposal.affectedTotal).toBe(1);
-    expect(remoteSha(f, BRANCH)).toBe("");
     expect(f.insertEntry).not.toHaveBeenCalled();
     expect(f.current().quickfix.sourceBaselineSha).toBeUndefined();
 
-    const pushed = await run(f, { kind: "push", confirmation: { proposalId: proposed.proposal.proposalId } });
+    const pushed = await run(f, { kind: "push" });
     expect(pushed).toMatchObject({ status: "pushed", headSha: head });
     expect(remoteSha(f, BRANCH)).toBe(head);
     expect(f.current().quickfix.sourceBaselineSha).toBe(head);
@@ -376,18 +370,6 @@ describe("a quickfix branch without a pull request: operations on a real reposit
     });
   });
 
-  test("a stale push proposal returns a NEW proposal instead of pushing", async () => {
-    const f = await createFixture();
-    await commitFile(f.checkout, "n.txt", "n\n", "local");
-    const proposed = await run(f, { kind: "push" });
-    await commitFile(f.checkout, "m.txt", "m\n", "second");
-    const again = await run(f, { kind: "push", confirmation: { proposalId: proposed.proposal.proposalId } });
-    expect(again.status).toBe("confirm-required");
-    expect(again.stale).toBe(true);
-    expect(again.proposal.proposalId).not.toBe(proposed.proposal.proposalId);
-    expect(remoteSha(f, BRANCH)).toBe("");
-  });
-
   test("push on the wrong branch is branch-mismatch, and a PR alias is not accepted for a quickfix", async () => {
     const f = await createFixture();
     await commitFile(f.checkout, "n.txt", "n\n", "local");
@@ -398,7 +380,7 @@ describe("a quickfix branch without a pull request: operations on a real reposit
     expect(remoteSha(f, "other")).toBe("");
   });
 
-  test("the UI's push (its own explicit action) publishes without a proposal", async () => {
+  test("the UI's push publishes without a proposal", async () => {
     const f = await createFixture();
     await commitFile(f.checkout, "n.txt", "n\n", "local");
     expect((await run(f, { kind: "push" }, ui as never)).status).toBe("pushed");
@@ -416,7 +398,7 @@ describe("a quickfix branch without a pull request: operations on a real reposit
   test("fetch and commit do not advance the baseline; a refresh that updates does", async () => {
     const f = await createFixture();
     await commitFile(f.checkout, "n.txt", "n\n", "local");
-    await proceed(f, { kind: "push" });
+    await run(f, { kind: "push" });
     const published = git(f.checkout, ["rev-parse", "HEAD"]);
     expect(f.current().quickfix.sourceBaselineSha).toBe(published);
 
@@ -431,7 +413,7 @@ describe("a quickfix branch without a pull request: operations on a real reposit
     expect(f.current().quickfix.sourceBaselineSha).toBe(published);
     await fs.writeFile(path.join(f.checkout, "c.txt"), "c\n");
     git(f.checkout, ["add", "c.txt"]);
-    const committed = await proceed(f, { kind: "commit", message: "mine" });
+    const committed = await run(f, { kind: "commit", message: "mine" });
     expect(committed.status).toBe("committed");
     expect(f.current().quickfix.sourceBaselineSha).toBe(published);
 
@@ -446,27 +428,22 @@ describe("a quickfix branch without a pull request: operations on a real reposit
     expect(f.current().quickfix.sourceBaselineSha).toBe(serverTip);
   });
 
-  test("rebase onto the base branch: proposal first, then it rewrites only the local branch", async () => {
+  test("an agent's rebase onto the base branch runs at once and rewrites only the local branch", async () => {
     const f = await createFixture();
     await commitFile(f.checkout, "n.txt", "n\n", "local");
     await commitFile(f.seed, "base.txt", "b\n", "base moves");
     git(f.seed, ["push", "-q", "origin", "HEAD:refs/heads/main"]);
     const before = git(f.checkout, ["rev-parse", "HEAD"]);
 
-    const proposed = await run(f, { kind: "rebase" });
-    expect(proposed.status).toBe("confirm-required");
-    expect(proposed.proposal.kind).toBe("rebase");
-    expect(proposed.proposal.message).toContain("does not push anything");
-    expect(git(f.checkout, ["rev-parse", "HEAD"])).toBe(before);
-
-    const rebased = await run(f, { kind: "rebase", confirmation: { proposalId: proposed.proposal.proposalId } });
+    const rebased = await run(f, { kind: "rebase" });
     expect(rebased.status).toBe("rebased");
+    expect(git(f.checkout, ["rev-parse", "HEAD"])).not.toBe(before);
     expect(git(f.checkout, ["rev-parse", "HEAD~1"])).toBe(git(f.seed, ["rev-parse", "HEAD"]));
     expect(remoteSha(f, BRANCH)).toBe("");
     expect(f.current().quickfix.sourceBaselineSha).toBeUndefined();
   });
 
-  test("a rebase that conflicts stops, can be aborted, and can be resolved and continued — each behind a proposal", async () => {
+  test("a rebase that conflicts stops, can be aborted behind a proposal, and can be resolved and continued at once", async () => {
     const f = await createFixture();
     await fs.writeFile(path.join(f.checkout, "a.txt"), "one\nLOCAL\nthree\n");
     git(f.checkout, ["commit", "-q", "-am", "local edit"]);
@@ -475,36 +452,30 @@ describe("a quickfix branch without a pull request: operations on a real reposit
     git(f.seed, ["push", "-q", "origin", "HEAD:refs/heads/main"]);
     const before = git(f.checkout, ["rev-parse", "HEAD"]);
 
-    const conflict = await proceed(f, { kind: "rebase" });
+    const conflict = await run(f, { kind: "rebase" });
     expect(conflict).toMatchObject({ status: "conflict", operation: "rebase", conflictedPaths: ["a.txt"] });
 
     const aborted = await proceed(f, { kind: "abort" });
     expect(aborted.status).toBe("aborted");
     expect(git(f.checkout, ["rev-parse", "HEAD"])).toBe(before);
 
-    expect((await proceed(f, { kind: "rebase" })).status).toBe("conflict");
+    expect((await run(f, { kind: "rebase" })).status).toBe("conflict");
     await fs.writeFile(path.join(f.checkout, "a.txt"), "one\nBOTH\nthree\n");
     git(f.checkout, ["add", "a.txt"]);
-    const continued = await proceed(f, { kind: "continue" });
+    const continued = await run(f, { kind: "continue" });
     expect(continued.status).toBe("continued");
     expect(git(f.checkout, ["show", "HEAD:a.txt"])).toContain("BOTH");
   });
 
-  test("stage and commit are proposal-first for an agent and are audited", async () => {
+  test("an agent's stage and commit run at once and are audited", async () => {
     const f = await createFixture();
     await fs.writeFile(path.join(f.checkout, "n.txt"), "n\n");
-    const staged = await proceed(f, { kind: "stage", paths: ["n.txt"] });
+    const staged = await run(f, { kind: "stage", paths: ["n.txt"] });
     expect(staged.status).toBe("staged");
     const head = git(f.checkout, ["rev-parse", "HEAD"]);
-    const proposed = await run(f, { kind: "commit", message: "agent commit" });
-    expect(proposed.status).toBe("confirm-required");
-    expect(git(f.checkout, ["rev-parse", "HEAD"])).toBe(head);
-    const committed = await run(f, {
-      kind: "commit",
-      message: "agent commit",
-      confirmation: { proposalId: proposed.proposal.proposalId },
-    });
+    const committed = await run(f, { kind: "commit", message: "agent commit" });
     expect(committed.status).toBe("committed");
+    expect(git(f.checkout, ["rev-parse", "HEAD"])).not.toBe(head);
     expect(f.insertEntry).toHaveBeenCalledTimes(2);
   });
 
@@ -519,10 +490,10 @@ describe("a quickfix branch without a pull request: operations on a real reposit
 
   async function publishThenRewrite(f: Fixture) {
     await commitFile(f.checkout, "n.txt", "n\n", "local");
-    await proceed(f, { kind: "push" });
+    await run(f, { kind: "push" });
     await commitFile(f.seed, "base.txt", "b\n", "base moves");
     git(f.seed, ["push", "-q", "origin", "HEAD:refs/heads/main"]);
-    expect((await proceed(f, { kind: "rebase" })).status).toBe("rebased");
+    expect((await run(f, { kind: "rebase" })).status).toBe("rebased");
   }
 
   test("force push after a rebase: proposal first, leases the live SHA, and replaces the remote branch", async () => {

@@ -192,17 +192,7 @@ describe("starting an operation", () => {
     (f.manager as unknown as { auditLogStore: { insertEntry: unknown } }).auditLogStore.insertEntry = insertEntry;
     await fs.writeFile(path.join(f.checkout, "n.txt"), "n\n");
     git(f.checkout, ["add", "n.txt"]);
-    const proposed = f.service.start({ kind: "commit", workspaceId: "ws-1", message: "audit me" }, ui);
-    await f.service.operations.idle();
-    const proposal = (
-      f.service.lookup(proposed.operationId, "default", "ws-1") as never as {
-        operation: { result: { proposal: { proposalId: string } } };
-      }
-    ).operation.result.proposal;
-    const started = f.service.start(
-      { kind: "commit", workspaceId: "ws-1", message: "audit me", confirmation: { proposalId: proposal.proposalId } },
-      ui,
-    );
+    const started = f.service.start({ kind: "commit", workspaceId: "ws-1", message: "audit me" }, ui);
     await f.service.operations.idle();
     expect(insertEntry).toHaveBeenCalledTimes(1);
     expect((insertEntry.mock.calls[0] as unknown[])[0]).toMatchObject({ operationId: started.operationId });
@@ -784,11 +774,15 @@ describe("anchors after a REAL paused rebase (real engine)", () => {
     f: Awaited<ReturnType<typeof createFixture>>,
     kind: "continue" | "skip",
   ): Promise<Validator> {
-    const first = f.service.start({ kind, workspaceId: "ws-1" }, ui);
-    await f.service.operations.idle();
-    const proposal = (f.service.lookup(first.operationId, "default", "ws-1") as any).operation.result.proposal;
-    expect(proposal?.proposalId).toBeTruthy();
-    f.service.start({ kind, workspaceId: "ws-1", confirmation: { proposalId: proposal.proposalId } }, ui);
+    if (kind === "skip") {
+      const first = f.service.start({ kind, workspaceId: "ws-1" }, ui);
+      await f.service.operations.idle();
+      const proposal = (f.service.lookup(first.operationId, "default", "ws-1") as any).operation.result.proposal;
+      expect(proposal?.proposalId).toBeTruthy();
+      f.service.start({ kind, workspaceId: "ws-1", confirmation: { proposalId: proposal.proposalId } }, ui);
+    } else {
+      f.service.start({ kind, workspaceId: "ws-1" }, ui);
+    }
     await f.service.operations.idle();
     expect(f.bridge.markStaleAnchors).toHaveBeenCalledTimes(1);
     return f.bridge.markStaleAnchors.mock.calls[0][1] as Validator;
