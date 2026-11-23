@@ -275,6 +275,23 @@
         </div>
         <div class="notification-center__actions">
           <button
+            v-if="activeTab === 'notes'"
+            type="button"
+            class="notification-center__tab notification-center__tab--compact-back"
+            :aria-label="`Back to ${tabBeforeNotesLabel}`"
+            :title="`Back to ${tabBeforeNotesLabel}`"
+            @click="selectTab(tabBeforeNotes)"
+          >
+            <span aria-hidden="true">←</span>
+            <span>{{ tabBeforeNotesLabel }}</span>
+            <span
+              v-if="tabBeforeNotes === 'alerts' && profileUnreadCount > 0"
+              class="notification-center__title-badge"
+              :title="`${profileUnreadCount} unread in this profile`"
+              >{{ profileUnreadCount > 99 ? "99+" : profileUnreadCount }}</span
+            >
+          </button>
+          <button
             v-if="activeTab !== 'notes'"
             type="button"
             class="notification-center__tab notification-center__tab--compact-notes"
@@ -305,10 +322,15 @@
             class="notification-center__action notification-center__action--toggle"
             :class="{ 'notification-center__action--on': showAlertNotes }"
             aria-label="Show notes under alerts"
-            title="Show notes under alerts"
+            :title="
+              showAlertNotes
+                ? 'Notes under alerts: on — click to hide them'
+                : 'Notes under alerts: off — click to show them'
+            "
             :aria-pressed="showAlertNotes"
             @click="toggleAlertNotes"
           >
+            <!-- Lucide "panel-bottom" (ISC): a pane docked under the list, unlike the Notes tab's notepad. -->
             <svg
               width="13"
               height="13"
@@ -320,9 +342,8 @@
               stroke-linejoin="round"
               aria-hidden="true"
             >
-              <path d="M8 2v4M12 2v4M16 2v4" />
-              <rect x="4" y="4" width="16" height="18" rx="2" />
-              <path d="M8 10h6M8 14h8M8 18h5" />
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+              <path d="M3 15h18" />
             </svg>
           </button>
           <button
@@ -734,6 +755,7 @@
       </div>
       <template v-if="activeTab === 'alerts' && showAlertNotes">
         <div
+          v-if="!alertNotesAllCollapsed"
           class="notification-center__alert-notes-resize"
           data-role="alert-notes-resize"
           role="separator"
@@ -753,7 +775,7 @@
           ref="alertNotesHost"
           class="notification-center__alert-notes"
           data-role="alert-notes"
-          :style="{ height: alertNotesHeight + 'px' }"
+          :style="alertNotesAllCollapsed ? undefined : { height: alertNotesHeight + 'px' }"
         ></div>
       </template>
 
@@ -818,6 +840,7 @@
     :embedded="activeTab === 'alerts'"
     :profile-id="activeProfileId || 'default'"
     :workspace-id="activeWorkspaceId"
+    @all-collapsed="alertNotesAllCollapsed = $event"
   />
 </template>
 
@@ -900,6 +923,7 @@ type TabId = "alerts" | "attachments" | "agents" | "automations" | "telegram" | 
 const activeTab = ref<TabId>("alerts");
 const notesHost = ref<HTMLElement | null>(null);
 const alertNotesHost = ref<HTMLElement | null>(null);
+const alertNotesAllCollapsed = ref(false);
 
 const ALERT_NOTES_VISIBLE_KEY = "strideterm.notificationCenter.alertNotesVisible";
 const ALERT_NOTES_HEIGHT_KEY = "strideterm.notificationCenter.alertNotesHeight";
@@ -1130,6 +1154,15 @@ function selectTab(id: TabId): void {
   activeTab.value = id;
   tabMenuOpen.value = false;
 }
+
+// Notes is reached from any tab through its own button; its counterpart goes back to wherever that was.
+const tabBeforeNotes = ref<TabId>("alerts");
+watch(activeTab, (now, before) => {
+  if (now === "notes" && before !== "notes") tabBeforeNotes.value = before;
+});
+const tabBeforeNotesLabel = computed(
+  () => menuTabs.value.find((t) => t.id === tabBeforeNotes.value)?.label ?? "Alerts",
+);
 
 // --- Running agents -------------------------------------------------------
 // Exactly the same task-only row model the sidebar's RUNNING surface and the

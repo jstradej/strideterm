@@ -1755,6 +1755,29 @@ describe("SidebarNotesPanel", () => {
       expect(localStorage.getItem(VISIBLE_KEY)).toBe("0");
     });
 
+    it("drops the fixed height and the resize handle once every shown section is collapsed", async () => {
+      localStorage.removeItem("strideterm.sidebarNotes.collapsedSections");
+      await mountDock();
+      const notes = () => dock.get<HTMLElement>(".notification-center__alert-notes").element;
+      const handle = () => dock.find(".notification-center__alert-notes-resize");
+      expect(notes().style.height).not.toBe("");
+      expect(handle().exists()).toBe(true);
+
+      const collapse = () =>
+        dock.findAll('.notification-center__alert-notes .sidebar-notes__collapse[aria-expanded="true"]');
+      expect(collapse().length).toBeGreaterThan(0);
+      while (collapse().length) await collapse()[0].trigger("click");
+      await flushPromises();
+      expect(notes().style.height).toBe("");
+      expect(handle().exists()).toBe(false);
+
+      await dock.get(".notification-center__alert-notes .sidebar-notes__collapse").trigger("click");
+      await flushPromises();
+      expect(notes().style.height).not.toBe("");
+      expect(handle().exists()).toBe(true);
+      localStorage.removeItem("strideterm.sidebarNotes.collapsedSections");
+    });
+
     it("starts hidden when the stored choice is off", async () => {
       localStorage.setItem(VISIBLE_KEY, "0");
       await mountDock();
@@ -1773,6 +1796,31 @@ describe("SidebarNotesPanel", () => {
       expect(dock.get(TOGGLE).attributes("aria-pressed")).toBe("true");
       await dock.get(TOGGLE).trigger("click");
       expect(dock.get(TOGGLE).attributes("aria-pressed")).toBe("false");
+    });
+
+    it("goes back from Notes to the tab Notes was opened from", async () => {
+      await mountDock();
+      const back = ".notification-center__tab--compact-back";
+      expect(dock.find(back).exists()).toBe(false);
+      await dock.get(".notification-center__tab--compact-notes").trigger("click");
+      await flushPromises();
+      expect(dock.find(".notification-center__tab--compact-notes").exists()).toBe(false);
+      expect(dock.get(back).attributes("title")).toBe("Back to Alerts");
+      await dock.get(back).trigger("click");
+      await flushPromises();
+      expect(dock.find(".notification-center__alert-notes").exists()).toBe(true);
+
+      await dock.get(".notification-center__tabmenu-toggle").trigger("click");
+      await dock
+        .findAll(".notification-center__tabmenu-item")
+        .find((item) => item.text().startsWith("Agents"))!
+        .trigger("click");
+      await dock.get(".notification-center__tab--compact-notes").trigger("click");
+      await flushPromises();
+      expect(dock.get(back).attributes("title")).toBe("Back to Agents");
+      await dock.get(back).trigger("click");
+      expect(dock.find(back).exists()).toBe(false);
+      expect(dock.find(".notification-center__body--notes").exists()).toBe(false);
     });
 
     it("keeps the Notes tab unchanged", async () => {

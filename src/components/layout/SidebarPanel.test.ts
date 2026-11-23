@@ -4612,6 +4612,9 @@ describe("SidebarPanel — workspace groups", () => {
     const header = wrapper.get("[data-workspace-id='g-1']");
     expect(header.classes()).toContain("workspace-card--group");
     expect(header.text()).toContain("2 workspaces");
+    const chevron = header.get(".workspace-card__actions > [data-role='group-chevron']");
+    expect(chevron.element.previousElementSibling?.classList.contains("workspace-card__action--menu")).toBe(true);
+    expect(header.findAll("[data-role='group-chevron']")).toHaveLength(1);
     expect(wrapper.get("[data-workspace-id='ws-A']").classes()).toContain("workspace-card--sub");
     expect(wrapper.get("[data-workspace-id='ws-C']").classes()).not.toContain("workspace-card--sub");
   });
@@ -4643,6 +4646,29 @@ describe("SidebarPanel — workspace groups", () => {
     window.localStorage.setItem("strideterm:collapsedGroups:default", "not json");
     const broken = mount(SidebarPanel);
     expect(cardIds(broken)).toEqual(["g-1", "ws-A", "ws-B", "ws-C"]);
+  });
+
+  it("unfolds a group when one of its members becomes the active workspace", async () => {
+    window.localStorage.setItem("strideterm:collapsedGroups:default", JSON.stringify(["g-1"]));
+    const store = useAppStore();
+    const activeC = {
+      activeWorkspaceId: "ws-C",
+      windowSlots: [{ id: "win-test", profileId: "default", activeWorkspaceId: "ws-C" }],
+    };
+    store.payload = makePayload({ workspaces: grouped(), ...activeC });
+    const wrapper = mount(SidebarPanel);
+    expect(cardIds(wrapper)).toEqual(["g-1", "ws-C"]);
+
+    store.payload = makePayload({
+      workspaces: grouped(),
+      activeWorkspaceId: "ws-B",
+      windowSlots: [{ id: "win-test", profileId: "default", activeWorkspaceId: "ws-B" }],
+    });
+    await nextTick();
+    await nextTick();
+
+    expect(cardIds(wrapper)).toEqual(["g-1", "ws-A", "ws-B", "ws-C"]);
+    expect(JSON.parse(window.localStorage.getItem("strideterm:collapsedGroups:default") || "[]")).toEqual([]);
   });
 
   it("shows the attention of a folded group's members on the group", async () => {

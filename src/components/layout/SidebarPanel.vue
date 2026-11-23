@@ -1561,6 +1561,18 @@ function toggleGroupCollapsed(groupId: string): void {
   }
 }
 
+// Opening a workspace filed under a folded group (from a notification, a shortcut, …) unfolds that group, so the
+// active card is visible.
+watch(
+  () => store.myActiveWorkspaceId,
+  (workspaceId) => {
+    if (!workspaceId || collapsedGroupIds.value.size === 0) return;
+    const ancestors = buildWorkspaceTree(store.filteredWorkspaces).ancestorsOf(workspaceId);
+    const folded = ancestors.filter((ancestorId) => collapsedGroupIds.value.has(ancestorId));
+    for (const groupId of folded) toggleGroupCollapsed(groupId);
+  },
+);
+
 // A search shows every match, so collapsed groups stay open while one is active.
 const collapsedHiddenIds = computed((): Set<string> => {
   if (searchActive.value || collapsedGroupIds.value.size === 0) return new Set();

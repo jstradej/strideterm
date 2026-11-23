@@ -586,6 +586,7 @@ const props = withDefaults(
   defineProps<{ host: HTMLElement | null; profileId: string; workspaceId?: string | null; embedded?: boolean }>(),
   { embedded: false },
 );
+const emit = defineEmits<{ "all-collapsed": [value: boolean] }>();
 const appStore = useAppStore();
 const injectedApi = inject(apiKey);
 const getApi = () => injectedApi ?? appStore.getApi();
@@ -1393,6 +1394,13 @@ function readCollapsedSections(): SectionKind[] {
 
 const collapsedSections = reactive(new Set<SectionKind>(readCollapsedSections()));
 const isCollapsed = (kind: SectionKind) => collapsedSections.has(kind);
+
+// Lets the alerts view drop its fixed notes height once nothing is open, so the section falls to the bottom.
+watch(
+  () => props.embedded && sections.value.every((section) => isCollapsed(section.kind)),
+  (value) => emit("all-collapsed", value),
+  { immediate: true },
+);
 
 function popOutNote(collection: Collection, note: Draft) {
   flushSave(collection, note);

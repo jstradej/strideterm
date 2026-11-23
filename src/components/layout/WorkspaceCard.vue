@@ -67,12 +67,6 @@
     </button>
     <span class="workspace-card__meta" :class="{ 'workspace-card__meta--inline-items': workspace.inlineWorkItems }">
       <span class="workspace-card__title-row">
-        <span
-          v-if="workspace.isGroup"
-          :class="['disclosure-chevron', !workspace.collapsed && 'disclosure-chevron--open']"
-          data-role="group-chevron"
-          aria-hidden="true"
-        />
         <strong>{{ workspace.name }}</strong>
         <svg
           v-if="workspace.isolated"
@@ -176,6 +170,12 @@
       >
         &#x2026;
       </button>
+      <span
+        v-if="workspace.isGroup"
+        :class="['disclosure-chevron', !workspace.collapsed && 'disclosure-chevron--open']"
+        data-role="group-chevron"
+        aria-hidden="true"
+      />
     </span>
   </div>
 </template>

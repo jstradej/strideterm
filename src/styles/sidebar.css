@@ -1891,13 +1891,18 @@ a.workspace-card__jira-chip:hover {
 }
 
 /* A group header: the folder the workspaces under it are filed in. It is never opened, so it carries no index, star or
-   grid-slot, and its title row leads with the collapse chevron. */
+   grid-slot; the collapse chevron sits at the right end, after the menu. */
 .workspace-card--group {
   background: color-mix(in srgb, var(--accent), transparent 90%);
   border-style: dashed;
 }
-.workspace-card--group .workspace-card__title-row .disclosure-chevron {
-  flex-shrink: 0;
+.workspace-card--group .workspace-card__actions {
+  align-items: center;
+}
+.workspace-card--group .workspace-card__actions .disclosure-chevron {
+  width: 16px;
+  height: 16px;
+  margin-right: -3px;
   color: var(--muted);
 }
 

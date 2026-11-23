@@ -1311,7 +1311,8 @@
   font-weight: 600;
 }
 
-.notification-center__tab--compact-notes {
+.notification-center__tab--compact-notes,
+.notification-center__tab--compact-back {
   display: none;
 }
 
@@ -1339,7 +1340,8 @@
   .notification-center__tabmenu {
     display: flex;
   }
-  .notification-center__tab--compact-notes {
+  .notification-center__tab--compact-notes,
+  .notification-center__tab--compact-back {
     display: inline-flex;
   }
 }
