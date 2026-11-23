@@ -174,8 +174,7 @@ export function buildWorkspaceCards({
     const prStatus = prStatusInfo?.status || (worktreeMerged ? "completed" : null);
     const reviewProviderLabel = workspace.review?.provider === "github" ? "GitHub review" : "Azure review";
     // A managed checkout with no pull request yet (Quick fix, Fix with agent) is a new branch, not a review. The badge
-    // draws the kind only while the icon is still the one inherited from the inbox — an icon picked in Edit workspace
-    // stays.
+    // always draws the kind, whatever icon the workspace or its inbox carries.
     const newBranch = isReviewChild && !workspace.review?.pullRequest;
     const workItems = ((workspace as WorkspaceState & { workItems?: unknown[] }).workItems || []) as Array<{
       ref: { provider: "jira"; connectionId: string; issueId: string; issueKey: string };
@@ -184,11 +183,10 @@ export function buildWorkspaceCards({
     }>;
     // A branch started from a Jira issue is named after it, so the card leads with the ticket instead of "New branch".
     const jiraBranch = newBranch && workItems.length > 0;
-    const parentIcon = byId.get(getParentWorkspaceId(workspace) || "")?.icon;
     const badgeGlyph =
       workspace.kind === "automation"
         ? "automation"
-        : isReviewChild && (!workspace.icon || workspace.icon === parentIcon)
+        : isReviewChild
           ? jiraBranch
             ? "jira-branch"
             : newBranch

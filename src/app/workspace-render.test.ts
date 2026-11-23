@@ -74,7 +74,7 @@ describe("buildWorkspaceCards", () => {
     expect(reviewCard.depth).toBe(1);
   });
 
-  test("marks a managed checkout with no pull request as a new branch, keeping a custom icon", () => {
+  test("marks a managed checkout with no pull request as a new branch, drawing the kind over any icon", () => {
     const managedChild = (id: string, icon: string, review: Record<string, unknown>) =>
       ({
         id,
@@ -103,8 +103,8 @@ describe("buildWorkspaceCards", () => {
     });
 
     expect(branchCard).toMatchObject({ newBranch: true, badgeGlyph: "new-branch" });
-    expect(String(branchCard.summary)).toMatch(/^New branch/);
-    expect(customCard).toMatchObject({ newBranch: true, badgeGlyph: null, icon: "🔧" });
+    expect(String(branchCard.summary)).toMatch(/^New branch · /);
+    expect(customCard).toMatchObject({ newBranch: true, badgeGlyph: "new-branch" });
     expect(reviewCard).toMatchObject({ newBranch: false, badgeGlyph: "review" });
   });
 

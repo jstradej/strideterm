@@ -3772,7 +3772,7 @@ describe("SidebarPanel — canonical status cue in the activity rows", () => {
     expect(row.attributes("title")).toContain("PR open");
   });
 
-  it("draws the tree card's review and new-branch glyphs on the recent rows, and keeps a custom icon", () => {
+  it("draws the tree card's review and new-branch glyphs on the recent rows, even over a custom icon", () => {
     const store = useAppStore();
     const now = Date.now();
     const review = { provider: "azure-devops", checkout: { mode: "managed-worktree" }, parentWorkspaceId: "ws-az" };
@@ -3805,10 +3805,10 @@ describe("SidebarPanel — canonical status cue in the activity rows", () => {
     expect(wrapper.get('.recent-shortcuts [data-workspace-id="ws-review"]').classes()).not.toContain(
       "activity-row--new-branch",
     );
-    // `ws-pr` wears an icon of its own ("P"), so it keeps it — on the card and on the row.
+    // `ws-pr` wears an icon of its own ("P"); the kind glyph still wins.
     const custom = wrapper.get('.recent-shortcuts [data-workspace-id="ws-pr"]');
-    expect(custom.find(".activity-row__glyph").exists()).toBe(false);
-    expect(custom.get(".activity-row__badge").text()).toContain("P");
+    expect(custom.find(".activity-row__glyph").exists()).toBe(true);
+    expect(custom.get(".activity-row__badge").text()).not.toContain("P");
   });
 
   /**
