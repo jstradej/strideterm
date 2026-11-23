@@ -144,7 +144,9 @@
    space on the sidebar / desktop-size chrome. iPads in landscape (height
    ≥ 700px) stay on desktop layout. */
 @media (max-width: 768px), (max-height: 500px) {
-  .frame {
+  .frame,
+  .frame.frame--notif-pinned,
+  .frame.frame--notif-pinned.frame--sidebar-collapsed {
     grid-template-columns: 1fr;
     grid-template-rows: 1fr;
   }
@@ -766,7 +768,13 @@
     display: flex;
     flex: 0 1 auto;
     min-width: 0;
-    max-width: 36%;
+    max-width: 50%;
+  }
+
+  /* Neither the path nor the stats grow here, so the agent chip / phone indicator / bell group is pushed to the
+     right end on its own. `+ *` takes the first one that renders (a v-if'd chip leaves only a comment node). */
+  .workspace-meta__stats + * {
+    margin-left: auto;
   }
 
   .workspace-meta__stats:not(:has(.workspace-branch-chip)) {
@@ -782,9 +790,11 @@
     max-width: 100%;
   }
 
+  /* The stats box caps the width here (and ellipsis gives way first), not the desktop 28ch. */
   .workspace-meta__stats .workspace-chip__branch {
     flex: 0 1 auto;
     min-width: 0;
+    max-width: none;
   }
 
   .workspace-branch-chip__state-word {
