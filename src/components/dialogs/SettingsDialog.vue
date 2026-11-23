@@ -266,7 +266,8 @@
 
 <script setup lang="ts">
 import HelpTooltip from "../common/HelpTooltip.vue";
-import { computed, inject, provide, reactive, ref, toRaw, watch } from "vue";
+import { computed, inject, onBeforeUnmount, provide, reactive, ref, toRaw, watch } from "vue";
+import { applyAppearance, normalizePalette } from "../../app/appearance.js";
 import { apiKey, appUpdateStatusKey } from "../../types/keys.js";
 import {
   DEFAULT_TERMINAL_FONT_SIZE,
@@ -350,6 +351,7 @@ interface ProfileSetting {
 interface SettingsObj {
   automations?: { paused?: boolean };
   theme?: string;
+  palette?: string;
   logLevel?: string;
   externalEditor?: string;
   clipboardImagePasteEnabled?: boolean;
@@ -484,6 +486,7 @@ const notifications = computed(() => useNotificationStore());
 const sshSettingsTab = ref<{ requestClose?: () => Promise<boolean> } | null>(null);
 const form = reactive({
   theme: props.settings.theme || "dark",
+  palette: normalizePalette(props.settings.palette),
   logLevel: props.settings.logLevel || "warn",
   externalEditor: props.settings.externalEditor || "",
   clipboardImagePasteEnabled: props.settings.clipboardImagePasteEnabled !== false,
@@ -626,6 +629,17 @@ const hasUnsavedChanges = computed(
   () => JSON.stringify({ form: toRaw(form), templates: toRaw(templates) }) !== initialSnapshot,
 );
 provide("settingsForm", form);
+
+// Theme and palette preview as soon as they are picked. Closing puts back what is saved: after a save that is the new
+// value (and the payload that carries it re-applies it too), after Cancel the old one.
+watch(
+  () => [form.theme, form.palette] as const,
+  ([theme, palette]) => applyAppearance({ theme, palette }),
+);
+onBeforeUnmount(() => {
+  const saved = useAppStore().payload?.appState?.settings;
+  applyAppearance({ theme: saved?.theme, palette: saved?.palette });
+});
 provide("settingsTemplates", templates);
 
 async function guardSshSettings(): Promise<boolean> {
@@ -686,6 +700,7 @@ async function handleSave() {
   leaveAfterSave.value = true;
   emit("save", {
     theme: form.theme,
+    palette: form.palette,
     logLevel: form.logLevel,
     externalEditor: form.externalEditor,
     clipboardImagePasteEnabled: form.clipboardImagePasteEnabled,

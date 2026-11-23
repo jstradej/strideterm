@@ -1,4 +1,5 @@
 import { defineStore } from "pinia";
+import { applyAppearance } from "../app/appearance.js";
 import { ref, shallowRef, computed, watch } from "vue";
 import {
   getWorkspaceTabs,
@@ -846,27 +847,10 @@ export const useAppStore = defineStore("app", () => {
     }
   });
 
-  // Sync document theme attribute when settings change
-  let _lastAppliedTheme = "";
+  // Sync the document theme and palette when settings change
   watch(
-    () => payload.value?.appState?.settings?.theme,
-    (theme) => {
-      const resolved =
-        theme === "system"
-          ? window.matchMedia?.("(prefers-color-scheme: light)").matches
-            ? "light"
-            : "dark"
-          : theme || "dark";
-      if (resolved === _lastAppliedTheme) return;
-      _lastAppliedTheme = resolved;
-      if (resolved === "light") {
-        document.documentElement.setAttribute("data-theme", "light");
-      } else {
-        document.documentElement.removeAttribute("data-theme");
-      }
-      // Let terminal panes know the theme changed
-      window.dispatchEvent(new CustomEvent("strideterm:theme-changed"));
-    },
+    () => [payload.value?.appState?.settings?.theme, payload.value?.appState?.settings?.palette] as const,
+    ([theme, palette]) => applyAppearance({ theme, palette }),
     { immediate: true },
   );
 

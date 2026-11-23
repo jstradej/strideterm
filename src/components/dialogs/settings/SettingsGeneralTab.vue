@@ -41,6 +41,28 @@
     </div>
 
     <div>
+      <span class="section-label">Palette</span>
+      <div class="theme-control" role="group" aria-label="Color palette">
+        <button
+          v-for="palette in PALETTES"
+          :key="palette"
+          type="button"
+          :class="['button', 'theme-control__option', form.palette === palette ? 'button--active' : 'button--ghost']"
+          :aria-pressed="form.palette === palette"
+          :title="`${PALETTE_LABELS[palette]} palette, in both the dark and the light theme. Terminals keep their own neutral colours.`"
+          :data-palette-option="palette"
+          @click="form.palette = palette"
+        >
+          <span class="palette-swatch" :class="`palette-swatch--${palette}`" aria-hidden="true">
+            <span></span><span></span><span></span>
+          </span>
+          <span>{{ PALETTE_LABELS[palette] }}</span>
+        </button>
+      </div>
+      <small class="help-text">Shows at once; Save keeps it, Cancel puts the previous one back.</small>
+    </div>
+
+    <div>
       <span class="section-label">Terminal font size</span>
       <input
         v-model.number="form.terminalFontSize"
@@ -435,6 +457,7 @@ import { computed, inject } from "vue";
 import type { Transport } from "../../../transport.js";
 import { pickPath } from "../../../lib/pick-path.js";
 import SettingsHookProviderSection from "./SettingsHookProviderSection.vue";
+import { PALETTES, PALETTE_LABELS } from "../../../app/appearance.js";
 import CustomSelect from "../../common/CustomSelect.vue";
 
 interface Props {
@@ -590,6 +613,63 @@ async function browseClipboardImageDir() {
   gap: 6px;
   min-width: 84px;
   padding: 6px 10px;
+}
+
+/* Fixed swatches: what each palette looks like in its dark variant, whatever is applied right now. */
+.palette-swatch {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid rgba(var(--tint), 0.18);
+  border-radius: 3px;
+}
+.palette-swatch > span {
+  width: 6px;
+  height: 14px;
+}
+.palette-swatch--default > span:nth-child(1) {
+  background: #1e1e23;
+}
+.palette-swatch--default > span:nth-child(2) {
+  background: #25252b;
+}
+.palette-swatch--default > span:nth-child(3) {
+  background: #ffa424;
+}
+.palette-swatch--soft > span:nth-child(1) {
+  background: #2b2c31;
+}
+.palette-swatch--soft > span:nth-child(2) {
+  background: #c9ccd2;
+}
+.palette-swatch--soft > span:nth-child(3) {
+  background: #ffa424;
+}
+.palette-swatch--autumn > span:nth-child(1) {
+  background: #241b15;
+}
+.palette-swatch--autumn > span:nth-child(2) {
+  background: #33261d;
+}
+.palette-swatch--autumn > span:nth-child(3) {
+  background: #e2793a;
+}
+.palette-swatch--winter > span:nth-child(1) {
+  background: #18202a;
+}
+.palette-swatch--winter > span:nth-child(2) {
+  background: #222c38;
+}
+.palette-swatch--winter > span:nth-child(3) {
+  background: #74b9ec;
+}
+.palette-swatch--forest > span:nth-child(1) {
+  background: #18211b;
+}
+.palette-swatch--forest > span:nth-child(2) {
+  background: #212d24;
+}
+.palette-swatch--forest > span:nth-child(3) {
+  background: #93c26d;
 }
 
 .theme-control__icon {

@@ -393,6 +393,8 @@ export interface ExternalPathOpenerSettings {
 
 export interface Settings {
   theme: string;
+  /** Colour mood of the surfaces and accent; missing means the default palette. */
+  palette?: "default" | "soft" | "autumn" | "winter" | "forest";
   sidebarWidth: number;
   sidebarCollapsed: boolean;
   logLevel: "error" | "warn" | "info" | "debug" | "trace";

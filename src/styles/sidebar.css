@@ -1734,8 +1734,12 @@ a.workspace-card__jira-chip:hover {
   display: flex;
   gap: 4px;
   align-items: center;
-  justify-content: space-between;
   overflow: hidden;
+}
+
+/* Only the bell goes to the right end; the shield and the checks dot stay beside the name. */
+.workspace-card__title-row > .workspace-card__attention {
+  margin-left: auto;
 }
 
 .project__title-row strong,

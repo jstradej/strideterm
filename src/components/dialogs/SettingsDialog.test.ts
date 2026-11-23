@@ -608,3 +608,44 @@ describe("SettingsDialog — credentials tab", () => {
     expect(open).not.toHaveBeenCalled();
   });
 });
+
+describe("palette", () => {
+  afterEach(() => {
+    document.documentElement.removeAttribute("data-palette");
+    document.documentElement.removeAttribute("data-theme");
+  });
+
+  test("previews a picked palette and theme at once and saves the palette", async () => {
+    const wrapper = await mountDialog({ theme: "dark", palette: "autumn" });
+    expect(wrapper.get('[data-palette-option="autumn"]').attributes("aria-pressed")).toBe("true");
+
+    await wrapper.get('[data-palette-option="winter"]').trigger("click");
+    expect(document.documentElement.getAttribute("data-palette")).toBe("winter");
+    const light = wrapper.findAll(".theme-control__option").find((button) => button.text() === "Light");
+    await light!.trigger("click");
+    expect(document.documentElement.getAttribute("data-theme")).toBe("light");
+
+    await clickSave(wrapper);
+    const saved = (wrapper.emitted("save") || []).at(-1)?.[0] as { palette?: string; theme?: string };
+    expect(saved).toMatchObject({ palette: "winter", theme: "light" });
+  });
+
+  test("closing without saving puts the saved appearance back", async () => {
+    const store = useAppStore();
+    store.payload = { appState: { settings: { theme: "dark", palette: "forest" } } } as never;
+    document.documentElement.setAttribute("data-palette", "forest");
+    const wrapper = await mountDialog({ theme: "dark", palette: "forest" });
+
+    await wrapper.get('[data-palette-option="autumn"]').trigger("click");
+    expect(document.documentElement.getAttribute("data-palette")).toBe("autumn");
+
+    wrapper.unmount();
+    expect(document.documentElement.getAttribute("data-palette")).toBe("forest");
+    expect(document.documentElement.hasAttribute("data-theme")).toBe(false);
+  });
+
+  test("an unknown stored palette is treated as the default", async () => {
+    const wrapper = await mountDialog({ palette: "neon" });
+    expect(wrapper.get('[data-palette-option="default"]').attributes("aria-pressed")).toBe("true");
+  });
+});

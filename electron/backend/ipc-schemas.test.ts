@@ -399,6 +399,10 @@ describe("ipc-schemas", () => {
       validateIpc(gitStageHunkSchema, { workspaceId: "ws", path: "a", diffToken: "bad", hunk: "@@" }, "git:stage-hunk"),
     ).toThrow();
   });
+  test("accepts a known palette and refuses an unknown one", () => {
+    expect(validateIpc(settingsSchema, { palette: "forest" }, "settings:update")).toMatchObject({ palette: "forest" });
+    expect(() => validateIpc(settingsSchema, { palette: "neon" }, "settings:update")).toThrow();
+  });
   test("preserves partial Git UI settings while accepting retired fields from older clients", () => {
     expect(
       validateIpc(settingsSchema, { git: { ui: { newView: false, showAllActions: true } } }, "settings:update"),

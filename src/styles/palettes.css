@@ -1,0 +1,131 @@
+/* Colour palettes: the mood of the surfaces and the accent, on top of the dark or light theme.
+ *
+ * Each palette has a dark block (scoped with :not([data-theme="light"]) so it never leaks into light) and a light
+ * block. Only surfaces, text, muted and accent change. Status colours keep their meaning in every palette, and
+ * --surface-term is left alone: terminals stay neutral (xterm also has its own fixed background and ANSI colours). */
+
+/* ── Soft gray: neutral like the default, but dark is lifted and light is dimmed ── */
+:root[data-palette="soft"]:not([data-theme="light"]) {
+  --base: #2b2c31;
+  --surface-pane: #26272b;
+  --surface-pane-raised: #313238;
+  --surface-card: #35363c;
+  --bg: #232428;
+  --panel: #292a2f;
+  --panel-elevated: rgba(41, 42, 47, 0.95);
+  --surface-dialog: #292a2f;
+  --surface-control: #292a2f;
+  --menu-bg: #3b3c43;
+  --text: #e2e2e6;
+  --muted: #8b8b93;
+}
+:root[data-palette="soft"][data-theme="light"] {
+  --base: #c9ccd2;
+  --surface-pane: #d3d6db;
+  --surface-pane-raised: #dcdfe3;
+  --surface-card: #e4e6ea;
+  --bg: #d3d6db;
+  --panel: #dcdfe3;
+  --panel-elevated: #e4e6ea;
+  --surface-dialog: #dcdfe3;
+  --surface-control: #e7e9ec;
+  --menu-bg: #e7e9ec;
+  --text: #1c1d21;
+  --muted: #555963;
+}
+
+/* ── Autumn: warm browns, amber accent ── */
+:root[data-palette="autumn"]:not([data-theme="light"]) {
+  --base: #241b15;
+  --surface-pane: #1d1611;
+  --surface-pane-raised: #2b2119;
+  --surface-card: #33261d;
+  --bg: #19130f;
+  --panel: #211913;
+  --panel-elevated: rgba(33, 25, 19, 0.95);
+  --surface-dialog: #211913;
+  --surface-control: #211913;
+  --menu-bg: #382a20;
+  --text: #ebdfd3;
+  --muted: #8f7e6f;
+  --accent: #e2793a;
+}
+:root[data-palette="autumn"][data-theme="light"] {
+  --base: #e9dfd3;
+  --surface-pane: #f1e9df;
+  --surface-pane-raised: #f8f2eb;
+  --surface-card: #fffbf6;
+  --bg: #f1e9df;
+  --panel: #f8f2eb;
+  --panel-elevated: #fffbf6;
+  --surface-dialog: #f8f2eb;
+  --surface-control: #fffbf6;
+  --menu-bg: #fffbf6;
+  --text: #2a1d14;
+  --muted: #6f5d4e;
+  --accent: #b0501a;
+}
+
+/* ── Winter: cold blue-greys, ice-blue accent ── */
+:root[data-palette="winter"]:not([data-theme="light"]) {
+  --base: #18202a;
+  --surface-pane: #141a22;
+  --surface-pane-raised: #1d2630;
+  --surface-card: #222c38;
+  --bg: #11161d;
+  --panel: #171e27;
+  --panel-elevated: rgba(23, 30, 39, 0.95);
+  --surface-dialog: #171e27;
+  --surface-control: #171e27;
+  --menu-bg: #27323f;
+  --text: #dce6f0;
+  --muted: #7b8898;
+  --accent: #74b9ec;
+}
+:root[data-palette="winter"][data-theme="light"] {
+  --base: #dbe3ec;
+  --surface-pane: #e7edf4;
+  --surface-pane-raised: #f2f6fa;
+  --surface-card: #ffffff;
+  --bg: #e7edf4;
+  --panel: #f2f6fa;
+  --panel-elevated: #ffffff;
+  --surface-dialog: #f2f6fa;
+  --surface-control: #ffffff;
+  --menu-bg: #ffffff;
+  --text: #13202f;
+  --muted: #546375;
+  --accent: #1d6aa8;
+}
+
+/* ── Forest: deep greens, moss accent ── */
+:root[data-palette="forest"]:not([data-theme="light"]) {
+  --base: #18211b;
+  --surface-pane: #141b16;
+  --surface-pane-raised: #1d2720;
+  --surface-card: #212d24;
+  --bg: #111713;
+  --panel: #171f19;
+  --panel-elevated: rgba(23, 31, 25, 0.95);
+  --surface-dialog: #171f19;
+  --surface-control: #171f19;
+  --menu-bg: #27332a;
+  --text: #dde6dc;
+  --muted: #7b8b7e;
+  --accent: #93c26d;
+}
+:root[data-palette="forest"][data-theme="light"] {
+  --base: #dde5d9;
+  --surface-pane: #e8eee4;
+  --surface-pane-raised: #f3f6f0;
+  --surface-card: #ffffff;
+  --bg: #e8eee4;
+  --panel: #f3f6f0;
+  --panel-elevated: #ffffff;
+  --surface-dialog: #f3f6f0;
+  --surface-control: #ffffff;
+  --menu-bg: #ffffff;
+  --text: #16221a;
+  --muted: #56655a;
+  --accent: #3d7728;
+}

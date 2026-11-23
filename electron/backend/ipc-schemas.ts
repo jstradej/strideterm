@@ -183,6 +183,7 @@ export type WorkspaceUIState = z.infer<typeof workspaceUIStateSchema>;
 
 export const settingsSchema = z
   .object({
+    palette: z.enum(["default", "soft", "autumn", "winter", "forest"]).optional(),
     git: z
       .object({
         ui: z.object({}).passthrough().optional(),
