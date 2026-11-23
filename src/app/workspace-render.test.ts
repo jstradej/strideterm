@@ -93,7 +93,7 @@ describe("buildWorkspaceCards", () => {
     const [, branchCard, customCard, reviewCard] = buildWorkspaceCards({
       workspaces: [
         { id: "azure-root", name: "Azure DevOps", kind: "azure", icon: "AZ", panels: [] } as unknown as WorkspaceState,
-        managedChild("pipeline-fix", "AZ", {}),
+        managedChild("pipeline-fix", "AZ", { repository: { id: "r1", name: "library-streams", remoteUrl: "" } }),
         managedChild("quick-fix", "🔧", {}),
         managedChild("pr-123", "AZ", { pullRequest: { id: 123 } }),
       ],
@@ -103,7 +103,7 @@ describe("buildWorkspaceCards", () => {
     });
 
     expect(branchCard).toMatchObject({ newBranch: true, badgeGlyph: "new-branch" });
-    expect(String(branchCard.summary)).toMatch(/^New branch · /);
+    expect(String(branchCard.summary)).toMatch(/^New branch · library-streams · /);
     expect(customCard).toMatchObject({ newBranch: true, badgeGlyph: "new-branch" });
     expect(reviewCard).toMatchObject({ newBranch: false, badgeGlyph: "review" });
   });

@@ -176,6 +176,8 @@ export function buildWorkspaceCards({
     // A managed checkout with no pull request yet (Quick fix, Fix with agent) is a new branch, not a review. The badge
     // always draws the kind, whatever icon the workspace or its inbox carries.
     const newBranch = isReviewChild && !workspace.review?.pullRequest;
+    // A PR card names its repository in the title; a new branch is named after the branch, so the summary carries it.
+    const newBranchRepo = newBranch ? workspace.review?.repository?.name || "" : "";
     const workItems = ((workspace as WorkspaceState & { workItems?: unknown[] }).workItems || []) as Array<{
       ref: { provider: "jira"; connectionId: string; issueId: string; issueKey: string };
       summary?: string;
@@ -224,7 +226,7 @@ export function buildWorkspaceCards({
                       ? `${gitSnapshot.dirtyCount} dirty`
                       : `${workspace.panels.length} tabs`
                     : isReviewChild
-                      ? `${workspace.review?.pullRequest ? reviewProviderLabel : "New branch"} \u00B7 ${gitSnapshot?.branch || `${workspace.panels.length} tabs`}${gitSnapshot?.dirty ? ` \u00B7 ${gitSnapshot.dirtyCount} dirty` : ""}`
+                      ? `${workspace.review?.pullRequest ? reviewProviderLabel : `New branch${newBranchRepo ? ` \u00B7 ${newBranchRepo}` : ""}`} \u00B7 ${gitSnapshot?.branch || `${workspace.panels.length} tabs`}${gitSnapshot?.dirty ? ` \u00B7 ${gitSnapshot.dirtyCount} dirty` : ""}`
                       : gitSnapshot?.available
                         ? `${gitSnapshot.branch}${gitSnapshot.dirty ? ` \u00B7 ${gitSnapshot.dirtyCount} dirty` : ""}`
                         : `${workspace.panels.length} tabs`;
