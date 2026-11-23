@@ -313,6 +313,43 @@
   min-height: 0;
 }
 
+.notification-center__alert-notes {
+  flex: 0 0 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.notification-center__alert-notes-resize {
+  position: relative;
+  flex: 0 0 9px;
+  cursor: row-resize;
+  touch-action: none;
+}
+
+.notification-center__alert-notes-resize::before {
+  position: absolute;
+  inset: 4px 0;
+  content: "";
+  background: var(--border);
+}
+
+.notification-center__alert-notes-resize:hover::before,
+.notification-center__alert-notes-resize:focus-visible::before {
+  background: var(--accent);
+}
+
+.notification-center__action--toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.notification-center__action--on {
+  color: var(--accent);
+}
+
 /* The attachments panel fills the tab, so a file dropped anywhere in it lands on the panel. */
 .notification-center__body--attachments {
   display: flex;

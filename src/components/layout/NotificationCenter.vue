@@ -300,6 +300,32 @@
             </span>
           </button>
           <button
+            v-if="activeTab === 'alerts'"
+            type="button"
+            class="notification-center__action notification-center__action--toggle"
+            :class="{ 'notification-center__action--on': showAlertNotes }"
+            aria-label="Show notes under alerts"
+            title="Show notes under alerts"
+            :aria-pressed="showAlertNotes"
+            @click="toggleAlertNotes"
+          >
+            <svg
+              width="13"
+              height="13"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M8 2v4M12 2v4M16 2v4" />
+              <rect x="4" y="4" width="16" height="18" rx="2" />
+              <path d="M8 10h6M8 14h8M8 18h5" />
+            </svg>
+          </button>
+          <button
             v-if="activeTab === 'alerts' && (profileUnreadCount > 0 || hasFinishedInProfile)"
             type="button"
             class="notification-center__action"
@@ -706,6 +732,30 @@
           </template>
         </div>
       </div>
+      <template v-if="activeTab === 'alerts' && showAlertNotes">
+        <div
+          class="notification-center__alert-notes-resize"
+          data-role="alert-notes-resize"
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="Resize notes under alerts"
+          tabindex="0"
+          :aria-valuenow="alertNotesHeight"
+          @pointerdown="startAlertNotesResize"
+          @pointermove="moveAlertNotesResize"
+          @pointerup="endAlertNotesResize"
+          @pointercancel="endAlertNotesResize"
+          @lostpointercapture="endAlertNotesResize"
+          @keydown="resizeAlertNotesWithKeyboard"
+          @dblclick="setAlertNotesHeight(ALERT_NOTES_DEFAULT_HEIGHT, true)"
+        ></div>
+        <div
+          ref="alertNotesHost"
+          class="notification-center__alert-notes"
+          data-role="alert-notes"
+          :style="{ height: alertNotesHeight + 'px' }"
+        ></div>
+      </template>
 
       <!-- Agents tab — the same rows the sidebar surface renders, with room
            for the full ancestry and the elapsed. The tab stays in the bar even
@@ -763,7 +813,12 @@
       <div v-if="activeTab === 'notes'" ref="notesHost" class="notification-center__body--notes"></div>
     </aside>
   </Transition>
-  <SidebarNotesPanel :host="notesHost" :profile-id="activeProfileId || 'default'" :workspace-id="activeWorkspaceId" />
+  <SidebarNotesPanel
+    :host="notesHost ?? alertNotesHost"
+    :embedded="activeTab === 'alerts'"
+    :profile-id="activeProfileId || 'default'"
+    :workspace-id="activeWorkspaceId"
+  />
 </template>
 
 <script setup lang="ts">
@@ -844,6 +899,88 @@ const selectedIndex = ref(0);
 type TabId = "alerts" | "attachments" | "agents" | "automations" | "telegram" | "approvals" | "performance" | "notes";
 const activeTab = ref<TabId>("alerts");
 const notesHost = ref<HTMLElement | null>(null);
+const alertNotesHost = ref<HTMLElement | null>(null);
+
+const ALERT_NOTES_VISIBLE_KEY = "strideterm.notificationCenter.alertNotesVisible";
+const ALERT_NOTES_HEIGHT_KEY = "strideterm.notificationCenter.alertNotesHeight";
+const ALERT_NOTES_DEFAULT_HEIGHT = 220;
+const ALERT_NOTES_MIN_HEIGHT = 80;
+const ALERT_NOTES_MAX_HEIGHT = 2000;
+
+function readAlertNotesVisible(): boolean {
+  try {
+    return localStorage.getItem(ALERT_NOTES_VISIBLE_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
+function readAlertNotesHeight(): number {
+  try {
+    const stored = Number(localStorage.getItem(ALERT_NOTES_HEIGHT_KEY));
+    return Number.isFinite(stored) && stored >= ALERT_NOTES_MIN_HEIGHT
+      ? Math.min(stored, ALERT_NOTES_MAX_HEIGHT)
+      : ALERT_NOTES_DEFAULT_HEIGHT;
+  } catch {
+    return ALERT_NOTES_DEFAULT_HEIGHT;
+  }
+}
+
+const showAlertNotes = ref(readAlertNotesVisible());
+const alertNotesHeight = ref(readAlertNotesHeight());
+
+function toggleAlertNotes(): void {
+  showAlertNotes.value = !showAlertNotes.value;
+  try {
+    localStorage.setItem(ALERT_NOTES_VISIBLE_KEY, showAlertNotes.value ? "1" : "0");
+  } catch {
+    // Remembering the toggle is a convenience; the panel works without it.
+  }
+}
+
+function setAlertNotesHeight(height: number, persist = false): void {
+  alertNotesHeight.value = Math.round(Math.max(ALERT_NOTES_MIN_HEIGHT, Math.min(ALERT_NOTES_MAX_HEIGHT, height)));
+  if (!persist) return;
+  try {
+    localStorage.setItem(ALERT_NOTES_HEIGHT_KEY, String(alertNotesHeight.value));
+  } catch {
+    // Remembering the size is a convenience; the panel works without it.
+  }
+}
+
+let alertNotesDrag: { pointerId: number; startY: number; startHeight: number } | null = null;
+
+function startAlertNotesResize(event: PointerEvent): void {
+  if (event.button !== 0 || alertNotesDrag) return;
+  alertNotesDrag = { pointerId: event.pointerId, startY: event.clientY, startHeight: alertNotesHeight.value };
+  (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
+  event.preventDefault();
+}
+
+function moveAlertNotesResize(event: PointerEvent): void {
+  if (alertNotesDrag?.pointerId !== event.pointerId) return;
+  const available = (panelRef.value?.clientHeight ?? Infinity) - 160;
+  setAlertNotesHeight(
+    Math.min(
+      alertNotesDrag.startHeight + alertNotesDrag.startY - event.clientY,
+      Math.max(available, ALERT_NOTES_MIN_HEIGHT),
+    ),
+  );
+}
+
+function endAlertNotesResize(event: PointerEvent): void {
+  if (alertNotesDrag?.pointerId !== event.pointerId) return;
+  alertNotesDrag = null;
+  setAlertNotesHeight(alertNotesHeight.value, true);
+}
+
+function resizeAlertNotesWithKeyboard(event: KeyboardEvent): void {
+  if (event.key === "ArrowUp") setAlertNotesHeight(alertNotesHeight.value + 20, true);
+  else if (event.key === "ArrowDown") setAlertNotesHeight(alertNotesHeight.value - 20, true);
+  else if (event.key === "Home") setAlertNotesHeight(ALERT_NOTES_DEFAULT_HEIGHT, true);
+  else return;
+  event.preventDefault();
+}
 const activeWorkspaceId = computed(() => appStore.myActiveWorkspaceId);
 const activeWorkspaceRoot = computed(() => {
   const profileId = activeProfileId.value || "default";

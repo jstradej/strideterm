@@ -1677,4 +1677,115 @@ describe("SidebarNotesPanel", () => {
       dock.unmount();
     }
   });
+  describe("embedded under the Alerts", () => {
+    let embeddedHost: HTMLElement;
+    let embedded: VueWrapper;
+    const api = () => ({
+      isRemote: false,
+      listSidebarNotes,
+      saveSidebarNote,
+      undoSidebarNote,
+      deleteSidebarNote,
+      setSidebarNoteColor,
+      getInstallationNote,
+      saveInstallationNote,
+      undoInstallationNote,
+    });
+    const mountEmbedded = async () => {
+      embeddedHost = document.createElement("div");
+      document.body.append(embeddedHost);
+      embedded = mount(NotesPanel, {
+        props: { host: embeddedHost, profileId: "profile-a", workspaceId: "workspace-a", embedded: true },
+        global: { provide: { [apiKey]: api() } },
+      });
+      await flushPromises();
+    };
+    const headings = () => Array.from(embeddedHost.querySelectorAll("h3"), (heading) => heading.textContent);
+
+    afterEach(() => {
+      embedded.unmount();
+      embeddedHost.remove();
+    });
+
+    it("always shows Global, hides empty Workspace, Profile and Tab, and draws no create button", async () => {
+      listSidebarNotes.mockResolvedValue({ workspace: [], global: [] });
+      await mountEmbedded();
+      expect(headings()).toEqual(["Global"]);
+      expect(embeddedHost.querySelector(".sidebar-notes__installation")).not.toBeNull();
+      expect(embeddedHost.querySelector(".sidebar-notes__add:not(.sidebar-notes__collapse)")).toBeNull();
+      expect(embeddedHost.querySelector(".sidebar-notes__divider")).toBeNull();
+      expect(embeddedHost.textContent).not.toContain("No notes");
+    });
+
+    it("shows Workspace and Profile once they have notes, still without create buttons", async () => {
+      await mountEmbedded();
+      expect(headings()).toEqual(["Workspace", "Profile", "Global"]);
+      expect(embeddedHost.querySelector(".sidebar-notes__add:not(.sidebar-notes__collapse)")).toBeNull();
+      expect(embeddedHost.querySelector(".sidebar-notes__divider")).toBeNull();
+    });
+  });
+
+  describe("notes under the dock's Alerts", () => {
+    const TOGGLE = 'button[aria-label="Show notes under alerts"]';
+    const VISIBLE_KEY = "strideterm.notificationCenter.alertNotesVisible";
+    let dock: VueWrapper;
+    const mountDock = async () => {
+      useNotificationStore().panelOpen = true;
+      dock = mount(NotificationCenter, {
+        attachTo: document.body,
+        global: { provide: { [apiKey]: { listSidebarNotes, getInstallationNote } } },
+      });
+      await flushPromises();
+    };
+
+    beforeEach(() => localStorage.removeItem(VISIBLE_KEY));
+    afterEach(() => {
+      dock.unmount();
+      vi.restoreAllMocks();
+    });
+
+    it("shows the notes by default and hides them after the toggle, remembering the choice", async () => {
+      await mountDock();
+      expect(dock.get(TOGGLE).attributes("aria-pressed")).toBe("true");
+      expect(dock.get(".notification-center__alert-notes").text()).toContain("Pinned checklist");
+
+      await dock.get(TOGGLE).trigger("click");
+      expect(dock.get(TOGGLE).attributes("aria-pressed")).toBe("false");
+      expect(dock.find(".notification-center__alert-notes").exists()).toBe(false);
+      expect(localStorage.getItem(VISIBLE_KEY)).toBe("0");
+    });
+
+    it("starts hidden when the stored choice is off", async () => {
+      localStorage.setItem(VISIBLE_KEY, "0");
+      await mountDock();
+      expect(dock.get(TOGGLE).attributes("aria-pressed")).toBe("false");
+      expect(dock.find(".notification-center__alert-notes").exists()).toBe(false);
+    });
+
+    it("falls back to showing the notes when storage throws", async () => {
+      vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+        throw new Error("blocked");
+      });
+      vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+        throw new Error("blocked");
+      });
+      await mountDock();
+      expect(dock.get(TOGGLE).attributes("aria-pressed")).toBe("true");
+      await dock.get(TOGGLE).trigger("click");
+      expect(dock.get(TOGGLE).attributes("aria-pressed")).toBe("false");
+    });
+
+    it("keeps the Notes tab unchanged", async () => {
+      await mountDock();
+      await dock.get(".notification-center__tab--compact-notes").trigger("click");
+      await flushPromises();
+      expect(dock.find(".notification-center__alert-notes").exists()).toBe(false);
+      expect(
+        dock
+          .get(".notification-center__body--notes")
+          .find(".sidebar-notes__add:not(.sidebar-notes__collapse)")
+          .exists(),
+      ).toBe(true);
+    });
+  });
 });

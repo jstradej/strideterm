@@ -1,6 +1,6 @@
 <template>
   <Teleport v-if="host" :to="host">
-    <div class="sidebar-notes">
+    <div class="sidebar-notes" :class="{ 'sidebar-notes--embedded': embedded }">
       <div v-if="loadError" class="sidebar-notes__load-error">
         <span role="alert" :title="loadError">{{ loadError }}</span>
         <button type="button" @click="reload">Retry</button>
@@ -94,7 +94,7 @@
                   </svg>
                 </button>
                 <button
-                  v-if="section.kind === 'workspace' || section.kind === 'global'"
+                  v-if="!embedded && (section.kind === 'workspace' || section.kind === 'global')"
                   type="button"
                   class="sidebar-notes__add"
                   :aria-label="section.addLabel"
@@ -582,7 +582,10 @@ import { useAppStore } from "../../stores/app.js";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { isUnsupportedPeerFeature, usePeersStore } from "../../stores/peers.js";
 
-const props = defineProps<{ host: HTMLElement | null; profileId: string; workspaceId?: string | null }>();
+const props = withDefaults(
+  defineProps<{ host: HTMLElement | null; profileId: string; workspaceId?: string | null; embedded?: boolean }>(),
+  { embedded: false },
+);
 const appStore = useAppStore();
 const injectedApi = inject(apiKey);
 const getApi = () => injectedApi ?? appStore.getApi();
@@ -702,7 +705,7 @@ const profileName = computed(() => {
   if (profiles.length < 2) return "";
   return profiles.find((profile) => profile.id === props.profileId)?.name ?? "";
 });
-const sections = computed(() => {
+const allSections = computed(() => {
   const name = currentWorkspace.value?.name ?? "";
   const profile = profileName.value;
   const inProfile = profile ? `in the ${profile} profile` : "in this profile";
@@ -781,6 +784,16 @@ const sections = computed(() => {
       collection: null,
     },
   ];
+});
+
+const sections = computed(() => {
+  if (!props.embedded) return allSections.value;
+  const hasContent = (section: (typeof allSections.value)[number]) => {
+    if (section.kind === "installation") return true;
+    if (section.kind === "tab") return !!tabNote.value?.notes.trim() || !!tabDraft.value?.editing;
+    return !!section.collection?.notes.length;
+  };
+  return allSections.value.filter(hasContent).map((section) => ({ ...section, resizeIndex: -1 }));
 });
 
 const tabNote = computed(() => {
@@ -1753,7 +1766,8 @@ const splitStyle = computed(() => {
   for (const section of sections.value) {
     if (section.resizeIndex > 0) rows.push("9px");
     const kind = section.kind;
-    if (collapsedSections.has(kind)) rows.push("auto");
+    if (props.embedded) rows.push("auto");
+    else if (collapsedSections.has(kind)) rows.push("auto");
     else if (kind === "tab") rows.push("fit-content(30%)");
     else if (current) rows.push(`minmax(var(--notes-pane-minimum), ${current[kind]}fr)`);
     else if (kind === filler) rows.push("minmax(0, 1fr)");
@@ -1903,6 +1917,12 @@ onBeforeUnmount(() => {
   flex-direction: column;
   height: 100%;
   min-height: 0;
+}
+.sidebar-notes--embedded {
+  height: auto;
+}
+.sidebar-notes--embedded .sidebar-notes__split {
+  flex: none;
 }
 .sidebar-notes__split {
   --notes-pane-minimum: min(44px, 20%);
