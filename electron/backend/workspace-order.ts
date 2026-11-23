@@ -17,10 +17,16 @@ function explicitParentId(workspace: WorkspaceState): string {
   );
 }
 
+function groupParentId(workspace: WorkspaceState, workspaces: WorkspaceState[]): string {
+  if (workspace.kind === "group" || !workspace.groupId) return "";
+  const group = workspaces.find((candidate) => candidate.id === workspace.groupId);
+  return group?.kind === "group" && profileId(group) === profileId(workspace) ? group.id : "";
+}
+
 function resolveParentId(workspace: WorkspaceState, workspaces: WorkspaceState[]): string {
   const explicit = explicitParentId(workspace);
   if (explicit) return explicit;
-  if (!(workspace.notes || "").startsWith("Worktree of ")) return "";
+  if (!(workspace.notes || "").startsWith("Worktree of ")) return groupParentId(workspace, workspaces);
 
   const marker = `${workspace.name.split(" / ")[0]}`;
   const ownerProfileId = profileId(workspace);
@@ -34,6 +40,7 @@ function resolveParentId(workspace: WorkspaceState, workspaces: WorkspaceState[]
       candidate.id !== workspace.id &&
       profileId(candidate) === ownerProfileId &&
       candidate.kind !== "automation" &&
+      candidate.kind !== "group" &&
       !explicitParentId(candidate) &&
       !(candidate.notes || "").startsWith("Worktree of "),
   );

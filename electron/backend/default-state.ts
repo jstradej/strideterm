@@ -39,6 +39,7 @@ import {
 } from "../shared/jira-agent-attachments.js";
 import { clampJiraPollSeconds, JIRA_POLL_DEFAULT_SECONDS } from "../shared/jira-poll-interval.js";
 import { normalizeSidebarNotes } from "./sidebar-notes.js";
+import { hasKindSpecificParent } from "../shared/workspace-tree.js";
 
 const UTF8_DECODER = (() => {
   try {
@@ -468,6 +469,7 @@ export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
         } as AutomationState)
     : undefined;
   const isJiraBoardWorkspace = workspace.kind === "jira-board";
+  const isGroupWorkspace = workspace.kind === "group";
   const rawJiraBoardProjectKeys: unknown = workspace.jiraBoard?.projectKeys;
   const jiraBoardProjectKeys =
     Array.isArray(rawJiraBoardProjectKeys) && rawJiraBoardProjectKeys.length <= 50
@@ -500,15 +502,16 @@ export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
   const preserveTask = isTaskWorkspace || hasTaskWorkspaceEvidence(workspace.task);
   const shouldNormalizeTask = Boolean(workspace.task && preserveTask);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const rawPanels: any[] = isJiraBoardWorkspace
-    ? []
-    : isDockerWorkspace
-      ? (workspace.panels || []).filter(
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (panel: any) => !(panel.id === "lazydocker" && panel.command === "lazydocker" && !panel.launch),
-        )
-      : // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (workspace.panels || []).filter((panel: any) => !(panel.id === "git" && !panel.command && !panel.launch));
+  const rawPanels: any[] =
+    isJiraBoardWorkspace || isGroupWorkspace
+      ? []
+      : isDockerWorkspace
+        ? (workspace.panels || []).filter(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (panel: any) => !(panel.id === "lazydocker" && panel.command === "lazydocker" && !panel.launch),
+          )
+        : // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (workspace.panels || []).filter((panel: any) => !(panel.id === "git" && !panel.command && !panel.launch));
   const panels = rawPanels.map((panel, panelIndex) => normalizePanel(panel, panelIndex));
   const fallbackPanelId = panels[0]?.id || null;
   const activePanelId = panels.some((panel) => panel.id === workspace.activePanelId)
@@ -541,10 +544,13 @@ export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
               : workspace.kind || APP_CONFIG.ui.defaultProjectKind,
     source: workspace.source === "plugin" ? "plugin" : "manual",
     pluginId: workspace.pluginId || "",
-    cwd: isJiraBoardWorkspace ? "" : workspace.cwd || (isAzureWorkspace || isGitHubWorkspace ? "" : defaultCwd()),
+    cwd:
+      isJiraBoardWorkspace || isGroupWorkspace
+        ? ""
+        : workspace.cwd || (isAzureWorkspace || isGitHubWorkspace ? "" : defaultCwd()),
     gitRoots: (function () {
       // Don't allow gitRoots on review workspaces or task workspaces that run in a worktree
-      if (isAzureWorkspace || isGitHubWorkspace || isJiraBoardWorkspace) return [];
+      if (isAzureWorkspace || isGitHubWorkspace || isJiraBoardWorkspace || isGroupWorkspace) return [];
       if (isTaskWorkspace && workspace.task?.worktreeBranch) return [];
       const roots: unknown[] = Array.isArray(workspace.gitRoots)
         ? (workspace.gitRoots as unknown[]).filter(Boolean)
@@ -646,17 +652,23 @@ export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
       workspace.kind !== "task" &&
       !isAutomationWorkspace &&
       !isJiraBoardWorkspace &&
+      !isGroupWorkspace &&
       workspace.internalMcpEnabled === true,
-    sshMcpEnabled: workspace.kind !== "task" && !isJiraBoardWorkspace && workspace.sshMcpEnabled === true,
+    sshMcpEnabled:
+      workspace.kind !== "task" && !isJiraBoardWorkspace && !isGroupWorkspace && workspace.sshMcpEnabled === true,
     // A task workspace carries it: its Worker and Judge run inside the sandbox of the workspace it came from.
-    sandboxEnabled: !isJiraBoardWorkspace && workspace.sandboxEnabled === true,
-    sandboxAllowedDomains: isJiraBoardWorkspace ? [] : normalizeSandboxDomains(workspace.sandboxAllowedDomains),
-    jiraMcpEnabled: !isJiraBoardWorkspace && workspace.jiraMcpEnabled === true,
+    sandboxEnabled: !isJiraBoardWorkspace && !isGroupWorkspace && workspace.sandboxEnabled === true,
+    sandboxAllowedDomains:
+      isJiraBoardWorkspace || isGroupWorkspace ? [] : normalizeSandboxDomains(workspace.sandboxAllowedDomains),
+    jiraMcpEnabled: !isJiraBoardWorkspace && !isGroupWorkspace && workspace.jiraMcpEnabled === true,
     jiraMcpCommentDrafts:
-      !isJiraBoardWorkspace && Array.isArray(workspace.jiraMcpCommentDrafts)
+      !isJiraBoardWorkspace && !isGroupWorkspace && Array.isArray(workspace.jiraMcpCommentDrafts)
         ? workspace.jiraMcpCommentDrafts.slice(-100)
         : [],
     jiraBoard,
+    ...(!isGroupWorkspace && typeof workspace.groupId === "string" && workspace.groupId.trim()
+      ? { groupId: workspace.groupId.trim() }
+      : {}),
     ...(workItems ? { workItems } : {}),
     task: shouldNormalizeTask
       ? {
@@ -993,11 +1005,15 @@ function normalizeWindowSlots(
     // activeWorkspaceId must belong to the slot's profile — otherwise fall back
     // to the profile's last-active workspace, then the first profile workspace.
     let slotActiveWorkspaceId = String(raw.activeWorkspaceId || "");
-    if (!slotActiveWorkspaceId || !profileWorkspaces.some((ws) => ws.id === slotActiveWorkspaceId)) {
+    if (
+      !slotActiveWorkspaceId ||
+      !profileWorkspaces.some((ws) => ws.id === slotActiveWorkspaceId && ws.kind !== "group")
+    ) {
       slotActiveWorkspaceId =
-        profile.lastActiveWorkspaceId && profileWorkspaces.some((ws) => ws.id === profile.lastActiveWorkspaceId)
+        profile.lastActiveWorkspaceId &&
+        profileWorkspaces.some((ws) => ws.id === profile.lastActiveWorkspaceId && ws.kind !== "group")
           ? profile.lastActiveWorkspaceId
-          : profileWorkspaces[0]?.id || "";
+          : profileWorkspaces.find((ws) => ws.kind !== "group")?.id || "";
     }
     // activeSessionId must belong to the active workspace — otherwise clear.
     let slotActiveSessionId = String(raw.activeSessionId || "");
@@ -1120,11 +1136,14 @@ function groupChildWorkspaces(workspaces: WorkspaceState[]): WorkspaceState[] {
         findParentByCwd(workspace) ||
         workspaces.find(
           (candidate) =>
+            candidate.kind !== "group" &&
             candidate.name === parentName &&
             candidate.id !== workspace.id &&
             (candidate.profileId || "default") === childProfile,
         ) ||
-        workspaces.find((candidate) => candidate.name === parentName && candidate.id !== workspace.id) ||
+        workspaces.find(
+          (candidate) => candidate.kind !== "group" && candidate.name === parentName && candidate.id !== workspace.id,
+        ) ||
         null;
       addChild(parent?.id || "", workspace);
       continue;
@@ -1183,6 +1202,14 @@ function groupChildWorkspaces(workspaces: WorkspaceState[]): WorkspaceState[] {
       const parentId = byId.has(workspace.task.parentWorkspaceId) ? workspace.task.parentWorkspaceId : "";
       addChild(parentId, workspace);
       continue;
+    }
+
+    if (workspace.kind !== "group" && workspace.groupId) {
+      const group = byId.get(workspace.groupId);
+      if (group?.kind === "group" && (group.profileId || "default") === (workspace.profileId || "default")) {
+        addChild(group.id, workspace);
+        continue;
+      }
     }
 
     roots.push(workspace);
@@ -2028,14 +2055,29 @@ export function normalizeState(
       pinnedBoardKeys.add(key);
       return true;
     });
-  const workspaces = groupChildWorkspaces(validatedWorkspaces);
+  const workspaces = groupChildWorkspaces(
+    validatedWorkspaces.map((workspace) => {
+      if (!workspace.groupId) return workspace;
+      const group = workspaceById.get(workspace.groupId);
+      if (
+        group?.kind === "group" &&
+        (group.profileId || "default") === (workspace.profileId || "default") &&
+        !hasKindSpecificParent(workspace)
+      )
+        return workspace;
+      const { groupId: _staleGroupId, ...ungrouped } = workspace;
+      return ungrouped;
+    }),
+  );
 
   // Validate activeWorkspaceId against workspaces in the active profile
   const profileWorkspaces = workspaces.filter((workspace) => (workspace.profileId || "default") === activeProfileId);
   const requestedActiveWorkspaceId = rawState.activeWorkspaceId || rawState.activeProjectId;
-  const activeWorkspaceId = profileWorkspaces.some((workspace) => workspace.id === requestedActiveWorkspaceId)
+  const activeWorkspaceId = profileWorkspaces.some(
+    (workspace) => workspace.id === requestedActiveWorkspaceId && workspace.kind !== "group",
+  )
     ? requestedActiveWorkspaceId
-    : profileWorkspaces[0]?.id || "";
+    : profileWorkspaces.find((workspace) => workspace.kind !== "group")?.id || "";
 
   // Migration: legacy provider connections saved without a profileId inherit
   // the profile of their provider's inbox workspace when that is UNAMBIGUOUS

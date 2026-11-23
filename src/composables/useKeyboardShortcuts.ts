@@ -42,7 +42,7 @@ export function useKeyboardShortcuts(api: Transport, { onNewWorkspace }: { onNew
       if (digitMatch) {
         event.preventDefault();
         event.stopImmediatePropagation();
-        const workspaces = appStore.filteredWorkspaces;
+        const workspaces = appStore.filteredWorkspaces.filter((ws: AnyApi) => ws.kind !== "group");
         const index = parseInt(digitMatch[1], 10) - 1;
         if (index < workspaces.length) {
           await appStore.activateWorkspaceInGrid(workspaces[index].id);
@@ -140,7 +140,9 @@ export function useKeyboardShortcuts(api: Transport, { onNewWorkspace }: { onNew
       }
       if (appStore.myWindowId) {
         // Last panel (or no workspace): try to navigate away, else close window
-        const others = appStore.filteredWorkspaces.filter((ws: AnyApi) => ws.id !== activeWs?.id);
+        const others = appStore.filteredWorkspaces.filter(
+          (ws: AnyApi) => ws.id !== activeWs?.id && ws.kind !== "group",
+        );
         if (others.length > 0) {
           // Navigate to the next workspace in this profile
           event.preventDefault();
@@ -179,7 +181,9 @@ export function useKeyboardShortcuts(api: Transport, { onNewWorkspace }: { onNew
       if (event.shiftKey) {
         // Ctrl/Cmd+Shift+PgUp/PgDown — switch workspace. Always cycles through
         // all workspaces sequentially; star filtering happens via display, not navigation.
-        const all = appStore.filteredWorkspaces as Array<{ id: string; starred?: boolean }>;
+        const all = (appStore.filteredWorkspaces as Array<{ id: string; starred?: boolean; kind?: string }>).filter(
+          (ws) => ws.kind !== "group",
+        );
         if (all.length < 2) return;
         const list = all;
         const activeId = appStore.myActiveWorkspaceId || null;

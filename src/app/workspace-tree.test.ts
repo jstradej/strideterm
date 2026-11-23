@@ -143,3 +143,50 @@ describe("buildWorkspaceTree", () => {
     expect(tree.indexOf("unknown-a")).toBe(-1);
   });
 });
+
+describe("workspace groups", () => {
+  const group = (id: string, extra: Record<string, unknown> = {}) => ws(id, { kind: "group", ...extra });
+
+  it("resolves a member's parent to its group, after every kind-specific parent", () => {
+    const g = group("g");
+    const member = ws("m", { groupId: "g" });
+    expect(resolveParentId(member, [g, member])).toBe("g");
+    expect(buildWorkspaceTree([g, member]).parentOf("m")).toBe("g");
+    expect(buildWorkspaceTree([g, member]).depthOf("m")).toBe(1);
+
+    const task = ws("t", { groupId: "g", task: { parentWorkspaceId: "p" } });
+    expect(resolveParentId(task, [g, ws("p"), task])).toBe("p");
+  });
+
+  it("ignores a groupId that does not point at a group of the same profile", () => {
+    const notAGroup = ws("plain");
+    const foreignGroup = group("g-other", { profileId: "p2" });
+    const dangling = ws("a", { groupId: "missing" });
+    const pointsAtWorkspace = ws("b", { groupId: "plain" });
+    const crossProfile = ws("c", { groupId: "g-other" });
+    const all = [notAGroup, foreignGroup, dangling, pointsAtWorkspace, crossProfile];
+    for (const member of [dangling, pointsAtWorkspace, crossProfile]) {
+      expect(resolveParentId(member, all)).toBeNull();
+      expect(buildWorkspaceTree(all).parentOf(member.id)).toBeNull();
+    }
+  });
+
+  it("never nests a group and never matches a group as a legacy worktree parent", () => {
+    const g = group("g", { name: "alpha", groupId: "other" });
+    const other = group("other");
+    expect(buildWorkspaceTree([other, g]).parentOf("g")).toBeNull();
+
+    const worktree = ws("wt", { name: "alpha / feat", notes: "Worktree of alpha" });
+    expect(resolveParentId(worktree, [g, worktree])).toBeNull();
+    expect(buildWorkspaceTree([g, worktree]).parentOf("wt")).toBeNull();
+  });
+
+  it("keeps the family of a member under the member", () => {
+    const g = group("g");
+    const member = ws("m", { groupId: "g" });
+    const child = ws("c", { task: { parentWorkspaceId: "m" } });
+    const tree = buildWorkspaceTree([g, member, child]);
+    expect(tree.ancestorsOf("c")).toEqual(["g", "m"]);
+    expect(tree.depthOf("c")).toBe(2);
+  });
+});

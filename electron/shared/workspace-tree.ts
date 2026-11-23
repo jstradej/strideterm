@@ -29,9 +29,25 @@ export interface WorkspaceTreeNode {
 }
 
 /**
+ * True when the workspace hangs under a review / quickfix / task / automation / Jira-inbox parent (or is a legacy
+ * "Worktree of" child). Such a workspace cannot be filed in a group — its parent can, and the family follows.
+ */
+export function hasKindSpecificParent(ws: WsLike): boolean {
+  return Boolean(
+    (ws.kind === "jira-board" && ws.jiraBoard?.parentWorkspaceId) ||
+    ws.review?.checkout?.mode === "managed-worktree" ||
+    ws.quickfix?.parentWorkspaceId ||
+    ws.task?.parentWorkspaceId ||
+    ws.automation?.parentWorkspaceId ||
+    (ws.notes || "").startsWith("Worktree of "),
+  );
+}
+
+/**
  * Resolve the explicit parent workspace id of a review/quickfix/task child,
  * falling back to the legacy "Worktree of X" name-based link for worktrees
- * created before that metadata existed.
+ * created before that metadata existed, and finally to the group the
+ * workspace is filed in.
  *
  * `allWs` MUST already be scoped to a single profile — a missing, cyclical or
  * cross-profile parent simply resolves to no match, since a foreign-profile
@@ -51,9 +67,17 @@ export function resolveParentId(ws: WsLike, allWs: WsLike[]): string | null {
     const parentName = String(ws.name || "").split(" / ")[0];
     const wsProfile = ws.profileId || "default";
     const parent =
-      allWs.find((c) => c.name === parentName && c.id !== ws.id && (c.profileId || "default") === wsProfile) ||
-      allWs.find((c) => c.name === parentName && c.id !== ws.id);
+      allWs.find(
+        (c) =>
+          c.kind !== "group" && c.name === parentName && c.id !== ws.id && (c.profileId || "default") === wsProfile,
+      ) || allWs.find((c) => c.kind !== "group" && c.name === parentName && c.id !== ws.id);
     return parent?.id || null;
+  }
+  if (ws.kind !== "group" && ws.groupId) {
+    const group = allWs.find((c) => c.id === ws.groupId);
+    if (group && group.kind === "group" && (group.profileId || "default") === (ws.profileId || "default")) {
+      return group.id;
+    }
   }
   return null;
 }
@@ -136,6 +160,7 @@ export function buildWorkspaceTree(workspaces: readonly WorkspaceTreeNode[]): Wo
 
   const sameProfileByName = new Map<string, string[]>();
   for (const workspace of list) {
+    if ((workspace as WsLike).kind === "group") continue;
     const profileId = workspace.profileId || "default";
     const key = `${profileId}\u0000${workspace.name || ""}`;
     const matches = sameProfileByName.get(key) || [];
@@ -151,6 +176,7 @@ export function buildWorkspaceTree(workspaces: readonly WorkspaceTreeNode[]): Wo
     let parentId: string | null = null;
     if (ws) {
       let candidate: string | null = null;
+      let viaGroup = false;
       if (ws.kind === "jira-board" && ws.jiraBoard?.parentWorkspaceId) {
         candidate = ws.jiraBoard.parentWorkspaceId;
       } else if (ws.review?.checkout?.mode === "managed-worktree" && ws.review?.parentWorkspaceId) {
@@ -167,6 +193,9 @@ export function buildWorkspaceTree(workspaces: readonly WorkspaceTreeNode[]): Wo
           sameProfileByName
             .get(`${ws.profileId || "default"}\u0000${parentName}`)
             ?.find((candidateId) => candidateId !== ws.id) || null;
+      } else if (ws.kind !== "group" && ws.groupId) {
+        candidate = ws.groupId;
+        viaGroup = true;
       }
       const parent = candidate ? byId.get(candidate) : null;
       // Same-profile only. `list` is normally pre-scoped to one profile, but a
@@ -176,7 +205,8 @@ export function buildWorkspaceTree(workspaces: readonly WorkspaceTreeNode[]): Wo
         parent &&
         candidate !== id &&
         (parent.profileId || "default") === (ws.profileId || "default") &&
-        (ws.kind !== "jira-board" || parent.kind === "jira")
+        (ws.kind !== "jira-board" || parent.kind === "jira") &&
+        (!viaGroup || parent.kind === "group")
       ) {
         parentId = candidate;
       }

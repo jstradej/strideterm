@@ -79,7 +79,9 @@ export class RemoteClientRegistry {
 
   private profileWorkspaces(appState: AnyState, profileId: string): AnyState[] {
     const workspaces: AnyState[] = appState?.workspaces || [];
-    return workspaces.filter((ws: AnyState) => String(ws?.profileId || "default") === profileId);
+    return workspaces.filter(
+      (ws: AnyState) => ws?.kind !== "group" && String(ws?.profileId || "default") === profileId,
+    );
   }
 
   /**
@@ -251,6 +253,7 @@ export class RemoteClientRegistry {
     const workspaces: AnyState[] = appState?.workspaces || [];
     const ws = workspaces.find((w: AnyState) => w.id === workspaceId);
     if (!ws) throw new Error("Workspace not found");
+    if (ws.kind === "group") throw new Error("A group cannot be opened");
     if ((ws.profileId || "default") !== client.profileId) {
       throw new Error("Workspace does not belong to the active profile");
     }
@@ -267,6 +270,7 @@ export class RemoteClientRegistry {
     if (!this.existingProfileIds(appState).includes(profileId)) throw new Error("Profile not found");
     const workspace = (appState?.workspaces || []).find((item: AnyState) => item.id === workspaceId);
     if (!workspace) throw new Error("Workspace not found");
+    if (workspace.kind === "group") throw new Error("A group cannot be opened");
     if ((workspace.profileId || "default") !== profileId)
       throw new Error("Workspace does not belong to the selected profile");
     client.profileId = profileId;

@@ -448,3 +448,43 @@ describe("buildWorkspaceCards", () => {
     expect(card.agentActivityLabel).toBe("");
   });
 });
+
+describe("buildWorkspaceCards groups", () => {
+  const base = { color: "#fff", icon: "x", profileId: "default", panels: [] };
+  const build = (workspaces: unknown[], activeWorkspaceId = "") =>
+    buildWorkspaceCards({
+      workspaces: workspaces as WorkspaceState[],
+      activeWorkspaceId,
+      getGitSnapshot: () => null,
+      getWorkspaceAttention: () => null,
+    });
+
+  test("a group card counts its members and carries no index or shortcut; members are indented under it", () => {
+    const [groupCard, first, second, loose] = build([
+      { ...base, id: "g", name: "Clients", kind: "group" },
+      { ...base, id: "a", name: "A", kind: "manual", groupId: "g" },
+      { ...base, id: "b", name: "B", kind: "manual", groupId: "g" },
+      { ...base, id: "c", name: "C", kind: "manual" },
+    ]);
+
+    expect(groupCard).toMatchObject({ isGroup: true, memberCount: 2, summary: "2 workspaces", depth: 0, index: "" });
+    expect(String(groupCard.title)).not.toContain("Ctrl+");
+    expect(first).toMatchObject({ depth: 1, index: 1, isGroup: false });
+    expect(second).toMatchObject({ depth: 1, index: 2 });
+    expect(loose).toMatchObject({ depth: 0, index: 3 });
+  });
+
+  test("a member whose group is gone is drawn as a root", () => {
+    const [member] = build([{ ...base, id: "a", name: "A", kind: "manual", groupId: "deleted" }]);
+    expect(member).toMatchObject({ depth: 0 });
+  });
+
+  test("the family of a member sits one level deeper than the member", () => {
+    const cards = build([
+      { ...base, id: "g", name: "Clients", kind: "group" },
+      { ...base, id: "a", name: "A", kind: "manual", groupId: "g" },
+      { ...base, id: "t", name: "T", kind: "task", task: { parentWorkspaceId: "a", state: "idle" } },
+    ]);
+    expect(cards.map((card) => card.depth)).toEqual([0, 1, 2]);
+  });
+});

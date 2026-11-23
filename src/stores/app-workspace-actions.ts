@@ -766,6 +766,38 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     ctx.adoptPayload((await (ctx.getApi() as CallableTransport).saveWorkspace(draft)) as StatePayload);
   }
 
+  /** Creates a group (a `kind: "group"` workspace) in the active profile. Resolves with its id. */
+  async function createWorkspaceGroup(input: { name: string; icon: string; color: string }): Promise<string> {
+    const name = input.name.trim();
+    if (!name) throw new Error("Enter a name for the group.");
+    const id = `group-${crypto.randomUUID()}`;
+    await saveWorkspace({
+      id,
+      name,
+      icon: input.icon.trim() || "📁",
+      color: input.color,
+      kind: "group",
+      source: "manual",
+      pluginId: "",
+      cwd: "",
+      notes: "",
+      activePanelId: null,
+      panels: [],
+      profileId: ctx.myActiveProfileId.value || "default",
+    });
+    return id;
+  }
+
+  /** Files a workspace in a group (`groupId`) or takes it out of its group (empty `groupId`). */
+  async function setWorkspaceGroup(workspaceId: string, groupId: string): Promise<void> {
+    const ws = (ctx.payload.value?.appState?.workspaces || []).find((w: AnyApi) => w.id === workspaceId);
+    if (!ws) throw new Error("The workspace no longer exists.");
+    const next = cloneWorkspace(ws as AnyApi);
+    if (groupId) next.groupId = groupId;
+    else delete next.groupId;
+    await saveWorkspace(next);
+  }
+
   /**
    * Clear the workspace.review marker so the workspace stops being treated as a
    * PR review checkout. Also strips the auto-set "{Provider} review workspace
@@ -837,7 +869,9 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     const wasActive = ctx.myActiveWorkspaceId.value === workspaceId;
     const before = ctx.payload.value;
     const remainingWorkspaces = (before?.appState?.workspaces || []).filter((w: AnyApi) => w.id !== workspaceId);
-    const nextActiveId = wasActive ? remainingWorkspaces[0]?.id || "" : ctx.myActiveWorkspaceId.value || "";
+    const nextActiveId = wasActive
+      ? remainingWorkspaces.find((w: AnyApi) => w.kind !== "group")?.id || ""
+      : ctx.myActiveWorkspaceId.value || "";
     // Track the id so any broadcast arriving before the backend finishes the
     // delete (e.g. from a docker poll) doesn't put the workspace back into
     // the sidebar tree.
@@ -946,6 +980,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
   async function deleteWorkspace(workspaceId: string): Promise<void> {
     const ws = (ctx.payload.value?.appState?.workspaces || []).find((w: AnyApi) => w.id === workspaceId);
     if (!ws) return;
+    const isGroup = (ws as AnyApi).kind === "group";
     const isTaskAgent = (ws as AnyApi).kind === "task";
     const hasOwnWorktree = isTaskAgent && !!(ws as AnyApi).task?.worktreeBase;
     // Use the formatted display name so the prompt matches the sidebar card
@@ -953,17 +988,21 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     // would all confirm with "Delete task agent 'orders'?" and you couldn't
     // tell which one you're about to remove.
     const displayName = formatWorkspaceDisplayName(ws as AnyApi);
-    const firstTitle = isTaskAgent ? "Delete task agent" : "Delete workspace";
+    const firstTitle = isGroup ? "Delete group" : isTaskAgent ? "Delete task agent" : "Delete workspace";
     // For a task agent without its own worktree, spell out exactly what's
     // touched on disk — only the agent's .strideterm/tasks/{taskId} folder.
     // The base directory and project files are left alone. The previous
     // "Delete workspace 'orders'?" wording made it sound like the entire
     // workspace directory was about to be removed.
-    const firstMessage = isTaskAgent
-      ? hasOwnWorktree
-        ? `Delete task agent "${displayName}"?`
-        : `Delete task agent "${displayName}"?\n\nOnly the agent's state under .strideterm/tasks is removed. Your project files in ${(ws as AnyApi).cwd || "the workspace directory"} are kept.`
-      : `Delete workspace "${displayName}"?`;
+    const firstMessage = isGroup
+      ? `Delete group "${displayName}"?
+
+Its workspaces are kept and become ungrouped.`
+      : isTaskAgent
+        ? hasOwnWorktree
+          ? `Delete task agent "${displayName}"?`
+          : `Delete task agent "${displayName}"?\n\nOnly the agent's state under .strideterm/tasks is removed. Your project files in ${(ws as AnyApi).cwd || "the workspace directory"} are kept.`
+        : `Delete workspace "${displayName}"?`;
     const confirmed = await confirmInApp({
       title: firstTitle,
       message: firstMessage,
@@ -1796,6 +1835,8 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     subscribeReviewAgentPreparation,
     getReviewAgentPreparationResult,
     saveWorkspace,
+    createWorkspaceGroup,
+    setWorkspaceGroup,
     detachWorkspaceReview,
     confirmAndDetachWorkspaceReview,
     deleteWorkspace,

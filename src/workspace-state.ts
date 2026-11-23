@@ -68,6 +68,7 @@ export function getParentWorkspaceId(ws: WorkspaceWithParentRefs): string | null
   if (ws.quickfix?.parentWorkspaceId) return ws.quickfix.parentWorkspaceId;
   if (ws.task?.parentWorkspaceId) return ws.task.parentWorkspaceId ?? null;
   if (ws.automation?.parentWorkspaceId) return ws.automation.parentWorkspaceId;
+  if (ws.kind !== "group" && ws.groupId) return ws.groupId;
   return null;
 }
 

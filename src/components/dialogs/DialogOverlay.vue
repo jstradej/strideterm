@@ -41,6 +41,7 @@ const DIALOGS = {
   HelpDialog: defineAsyncComponent(() => import("./HelpDialog.vue")),
   NewWorkspacePicker: defineAsyncComponent(() => import("./NewWorkspacePicker.vue")),
   WorkspaceDialog: defineAsyncComponent(() => import("./WorkspaceDialog.vue")),
+  GroupDialog: defineAsyncComponent(() => import("./GroupDialog.vue")),
   ReviewAgentPreparationDialog: defineAsyncComponent(() => import("./ReviewAgentPreparationDialog.vue")),
   CompanionAgentDialog: defineAsyncComponent(() => import("./CompanionAgentDialog.vue")),
   SettingsDialog: defineAsyncComponent(() => import("./SettingsDialog.vue")),

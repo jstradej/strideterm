@@ -507,7 +507,9 @@ const sidebarCollapseLabel = computed(() => (store.sidebarCollapsed ? "Expand si
 const hasAnyStarred = computed(() => store.filteredWorkspaces.some((ws) => ws.starred));
 const activeTabLabel = computed(() => store.workspaceTabs.find((tab) => tab.id === store.activeViewId)?.title || "");
 const activeTabModel = computed(() => store.workspaceTabs.find((tab) => tab.id === store.activeViewId) || null);
-const showWelcome = computed(() => store.payload && store.filteredWorkspaces.length === 0);
+const showWelcome = computed(
+  () => store.payload && store.filteredWorkspaces.every((workspace) => workspace.kind === "group"),
+);
 
 const versionLabel = computed(() => {
   const v = store.payload?.meta?.appVersion;

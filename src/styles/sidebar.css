@@ -1879,9 +1879,26 @@ a.workspace-card__jira-chip:hover {
   bottom: -1px;
 }
 
+/* Dropping a workspace on a group header files it in the group — the whole header lights up instead of a line. */
+.workspace-card--drop-into {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 .workspace-card--sub {
   border-left: 2px solid color-mix(in srgb, var(--accent), transparent 50%);
   font-size: 0.95em;
+}
+
+/* A group header: the folder the workspaces under it are filed in. It is never opened, so it carries no index, star or
+   grid-slot, and its title row leads with the collapse chevron. */
+.workspace-card--group {
+  background: color-mix(in srgb, var(--accent), transparent 90%);
+  border-style: dashed;
+}
+.workspace-card--group .workspace-card__title-row .disclosure-chevron {
+  flex-shrink: 0;
+  color: var(--muted);
 }
 
 .workspace-card__glyph {

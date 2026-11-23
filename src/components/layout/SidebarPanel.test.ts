@@ -4566,3 +4566,201 @@ describe("SidebarPanel — V7: one search projection, scoped before it matches",
     expect(treeIds(wrapper)).toEqual(["ws-root", "ws-alpha", "ws-beta"]);
   });
 });
+
+describe("SidebarPanel — workspace groups", () => {
+  const GROUP = {
+    id: "g-1",
+    name: "Clients",
+    kind: "group",
+    cwd: "",
+    panels: [],
+    icon: "G",
+    color: "#fff",
+    profileId: "default",
+  };
+  const grouped = () => [
+    GROUP,
+    { ...BASE_WORKSPACES[0], groupId: "g-1" },
+    { ...BASE_WORKSPACES[1], groupId: "g-1" },
+    BASE_WORKSPACES[2],
+  ];
+  const cardIds = (wrapper: ReturnType<typeof mount>) =>
+    wrapper
+      .findAll("[data-role='workspace-list'] > .workspace-card")
+      .map((card) => card.attributes("data-workspace-id"));
+
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "win-test" } };
+    window.localStorage.clear();
+    document.body.innerHTML = "";
+  });
+
+  async function openMenuOf(wrapper: ReturnType<typeof mount>, workspaceId: string) {
+    await wrapper.get(`[data-workspace-id='${workspaceId}'] .workspace-card__action--menu`).trigger("click");
+    await nextTick();
+  }
+  const menuItems = () =>
+    Array.from(document.body.querySelectorAll(".context-menu__item")).map((el) => el.textContent?.trim());
+
+  it("draws the group as a header over its indented members and counts them", () => {
+    const store = useAppStore();
+    store.payload = makePayload({ workspaces: grouped() });
+    const wrapper = mount(SidebarPanel);
+
+    expect(cardIds(wrapper)).toEqual(["g-1", "ws-A", "ws-B", "ws-C"]);
+    const header = wrapper.get("[data-workspace-id='g-1']");
+    expect(header.classes()).toContain("workspace-card--group");
+    expect(header.text()).toContain("2 workspaces");
+    expect(wrapper.get("[data-workspace-id='ws-A']").classes()).toContain("workspace-card--sub");
+    expect(wrapper.get("[data-workspace-id='ws-C']").classes()).not.toContain("workspace-card--sub");
+  });
+
+  it("clicking a group folds it without opening anything, and remembers the fold per profile", async () => {
+    const store = useAppStore();
+    store.payload = makePayload({ workspaces: grouped() });
+    const activateWorkspace = vi.spyOn(store, "activateWorkspace").mockResolvedValue();
+    const wrapper = mount(SidebarPanel);
+
+    await wrapper.get("[data-workspace-id='g-1']").trigger("click");
+    await flushPromises();
+
+    expect(activateWorkspace).not.toHaveBeenCalled();
+    expect(cardIds(wrapper)).toEqual(["g-1", "ws-C"]);
+    expect(JSON.parse(window.localStorage.getItem("strideterm:collapsedGroups:default") || "[]")).toEqual(["g-1"]);
+
+    await wrapper.get("[data-workspace-id='g-1']").trigger("click");
+    expect(cardIds(wrapper)).toEqual(["g-1", "ws-A", "ws-B", "ws-C"]);
+    expect(JSON.parse(window.localStorage.getItem("strideterm:collapsedGroups:default") || "[]")).toEqual([]);
+  });
+
+  it("starts folded when the profile remembered it, and survives unavailable storage", () => {
+    window.localStorage.setItem("strideterm:collapsedGroups:default", JSON.stringify(["g-1"]));
+    const store = useAppStore();
+    store.payload = makePayload({ workspaces: grouped() });
+    expect(cardIds(mount(SidebarPanel))).toEqual(["g-1", "ws-C"]);
+
+    window.localStorage.setItem("strideterm:collapsedGroups:default", "not json");
+    const broken = mount(SidebarPanel);
+    expect(cardIds(broken)).toEqual(["g-1", "ws-A", "ws-B", "ws-C"]);
+  });
+
+  it("shows the attention of a folded group's members on the group", async () => {
+    const store = useAppStore();
+    store.payload = makePayload({ workspaces: grouped() });
+    vi.spyOn(store, "getWorkspaceAttentionForId").mockImplementation(((id: string) =>
+      id === "ws-A" ? { count: 2, alerts: [] } : null) as AnyApi);
+    const wrapper = mount(SidebarPanel);
+    await wrapper.get("[data-workspace-id='g-1']").trigger("click");
+
+    expect(wrapper.get("[data-workspace-id='g-1'] .workspace-card__attention-count").text()).toBe("2");
+  });
+
+  it("offers every group, a new group and no 'remove' on a loose workspace", async () => {
+    const store = useAppStore();
+    store.payload = makePayload({ workspaces: grouped() });
+    const wrapper = mount(SidebarPanel);
+
+    await openMenuOf(wrapper, "ws-C");
+
+    expect(menuItems()).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("Move to Clients"),
+        expect.stringContaining("Move to new group"),
+      ]),
+    );
+    expect(menuItems().some((label) => label?.includes("Remove from group"))).toBe(false);
+  });
+
+  it("files a workspace through the store and reports a failure to the user", async () => {
+    const store = useAppStore();
+    store.payload = makePayload({ workspaces: grouped() });
+    const setWorkspaceGroup = vi.spyOn(store, "setWorkspaceGroup").mockRejectedValueOnce(new Error("save failed"));
+    const notifications = useNotificationStore();
+    const wrapper = mount(SidebarPanel);
+
+    await openMenuOf(wrapper, "ws-C");
+    (document.body.querySelector("[data-role='move-to-group']") as HTMLElement).click();
+    await flushPromises();
+
+    expect(setWorkspaceGroup).toHaveBeenCalledWith("ws-C", "g-1");
+    expect(notifications.sessions[0].events[0].title).toBe("Move to group failed");
+  });
+
+  it("takes a member out of its group", async () => {
+    const store = useAppStore();
+    store.payload = makePayload({ workspaces: grouped() });
+    const setWorkspaceGroup = vi.spyOn(store, "setWorkspaceGroup").mockResolvedValue();
+    const wrapper = mount(SidebarPanel);
+
+    await openMenuOf(wrapper, "ws-A");
+    expect(menuItems().some((label) => label?.includes("Move to Clients"))).toBe(false);
+    (document.body.querySelector("[data-role='remove-from-group']") as HTMLElement).click();
+    await flushPromises();
+
+    expect(setWorkspaceGroup).toHaveBeenCalledWith("ws-A", "");
+  });
+
+  it("starts a new group that takes the workspace in", async () => {
+    const store = useAppStore();
+    store.payload = makePayload({ workspaces: grouped() });
+    const openGroupDialog = vi.spyOn(store, "openGroupDialog").mockImplementation(() => undefined);
+    const wrapper = mount(SidebarPanel);
+
+    await openMenuOf(wrapper, "ws-C");
+    (document.body.querySelector("[data-role='move-to-new-group']") as HTMLElement).click();
+
+    expect(openGroupDialog).toHaveBeenCalledWith({ assignWorkspaceId: "ws-C" });
+  });
+
+  it("does not offer grouping to a workspace that follows a parent", async () => {
+    const store = useAppStore();
+    store.payload = makePayload({
+      workspaces: [
+        ...BASE_WORKSPACES,
+        {
+          id: "task-1",
+          name: "Task",
+          kind: "task",
+          cwd: "/t",
+          panels: [],
+          icon: "T",
+          color: "#fff",
+          profileId: "default",
+          task: { parentWorkspaceId: "ws-A", state: "idle" },
+        },
+      ],
+    });
+    const wrapper = mount(SidebarPanel);
+
+    await openMenuOf(wrapper, "task-1");
+
+    expect(menuItems().some((label) => label?.includes("Move to"))).toBe(false);
+  });
+
+  it("gives a group only Edit and Delete group", async () => {
+    const store = useAppStore();
+    store.payload = makePayload({ workspaces: grouped() });
+    const wrapper = mount(SidebarPanel);
+
+    await openMenuOf(wrapper, "g-1");
+
+    const labels = menuItems().join("|");
+    expect(labels).toContain("Edit");
+    expect(labels).toContain("Delete group");
+    expect(labels).not.toContain("Create task agent");
+    expect(labels).not.toContain("Create automation");
+    expect(labels).not.toContain("Remove from list");
+    expect(labels).not.toContain("Move to");
+  });
+
+  it("keeps groups out of the 'All workspaces' count", () => {
+    const store = useAppStore();
+    store.payload = makePayload({
+      workspaces: grouped(),
+      profiles: [{ id: "default", name: "Default", sidebarWorkspaceViewMode: "recent" }],
+    });
+    const wrapper = mount(SidebarPanel);
+    expect(wrapper.get("[data-role='all-workspaces-title']").text()).toBe("All workspaces (3)");
+  });
+});

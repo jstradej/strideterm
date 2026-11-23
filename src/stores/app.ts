@@ -1543,6 +1543,9 @@ export const useAppStore = defineStore("app", () => {
   }
 
   async function activateWorkspace(workspaceId: string): Promise<void> {
+    // A group is a sidebar folder, never an active workspace.
+    if (filteredWorkspaces.value.some((workspace) => workspace.id === workspaceId && workspace.kind === "group"))
+      return;
     const prevWsId = myActiveWorkspaceId.value;
     rlog("debug", "ws-activate: entry", {
       workspaceId,
@@ -1963,6 +1966,8 @@ export const useAppStore = defineStore("app", () => {
     withSuppressedBroadcast,
     getPanelByViewId,
     createWorktree: workspaceActions.createWorktree,
+    createWorkspaceGroup: workspaceActions.createWorkspaceGroup,
+    setWorkspaceGroup: workspaceActions.setWorkspaceGroup,
     subscribeReviewAgentPreparation: workspaceActions.subscribeReviewAgentPreparation,
     getReviewAgentPreparationResult: workspaceActions.getReviewAgentPreparationResult,
     quickAddTemplateTab: workspaceActions.quickAddTemplateTab,

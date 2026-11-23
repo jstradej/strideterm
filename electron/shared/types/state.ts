@@ -723,6 +723,8 @@ export interface WorkspaceState {
   workItems?: Array<{ ref: import("./task.js").JiraIssueRef; summary: string; status: string }>;
   /** Profile-scoped saved Jira board view; only used by `kind: "jira-board"` workspaces. */
   jiraBoard?: JiraBoardWorkspaceInfo;
+  /** Id of the `kind: "group"` workspace of the same profile this workspace is filed under. Purely organisational. */
+  groupId?: string;
   /**
    * Lets Claude Code / Codex terminals started in this workspace create and watch
    * tasks through the internal MCP. Off by default, desktop-only to turn on, and

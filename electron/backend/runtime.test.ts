@@ -25012,3 +25012,83 @@ describe("Jira issue pop-out profile resolution", () => {
     );
   });
 });
+
+describe("workspace groups", () => {
+  const groupFixture = async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-group-"));
+    tempPaths.push(cwd);
+    const fixture = await createFixture({
+      initialState: {
+        profiles: [{ id: "default", name: "Default", workspaceIds: [] }],
+        workspaces: [
+          { id: "g", name: "Clients", kind: "group", profileId: "default", panels: [] },
+          { id: "a", name: "A", kind: "manual", cwd, profileId: "default", groupId: "g", panels: [] },
+          { id: "b", name: "B", kind: "manual", cwd, profileId: "default", groupId: "g", panels: [] },
+          { id: "c", name: "C", kind: "manual", cwd, profileId: "default", panels: [] },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    return { fixture, cwd };
+  };
+  const workspaceOf = (fixture: { store: { getState: () => AppState } }, id: string) =>
+    fixture.store.getState().workspaces.find((workspace) => workspace.id === id);
+
+  test("deleting a group frees its members and keeps them", async () => {
+    const { fixture } = await groupFixture();
+
+    await fixture.runtime.deleteWorkspace("g");
+
+    expect(workspaceOf(fixture, "g")).toBeUndefined();
+    expect(workspaceOf(fixture, "a")).toMatchObject({ id: "a" });
+    expect(workspaceOf(fixture, "a")?.groupId).toBeUndefined();
+    expect(workspaceOf(fixture, "b")?.groupId).toBeUndefined();
+  });
+
+  test("a group is never opened", async () => {
+    const { fixture } = await groupFixture();
+
+    await expect(fixture.runtime.activateWorkspace("g")).rejects.toThrow(/cannot be opened/);
+    await expect(fixture.runtime.activateWorkspaceInWindow("g", "win-1")).rejects.toThrow(/cannot be opened/);
+    expect(fixture.store.getState().activeWorkspaceId).not.toBe("g");
+  });
+
+  test("saving a member into a group files it, and saving a workspace as a group or back is refused", async () => {
+    const { fixture } = await groupFixture();
+    const c = workspaceOf(fixture, "c")!;
+
+    await fixture.runtime.saveWorkspace({ ...c, groupId: "g" });
+    expect(workspaceOf(fixture, "c")?.groupId).toBe("g");
+    expect(fixture.store.getState().workspaces.map((workspace) => workspace.id)).toEqual(["g", "a", "b", "c"]);
+
+    await expect(fixture.runtime.saveWorkspace({ ...c, kind: "group" })).rejects.toThrow(
+      /cannot be turned into a group/,
+    );
+    await expect(fixture.runtime.saveWorkspace({ ...workspaceOf(fixture, "g")!, kind: "manual" })).rejects.toThrow(
+      /cannot be turned into a group/,
+    );
+  });
+
+  test("creating a group does not make it the active workspace or a recently worked one", async () => {
+    const { fixture } = await groupFixture();
+    const activeBefore = fixture.store.getState().activeWorkspaceId;
+
+    await fixture.runtime.saveWorkspace({
+      id: "g2",
+      name: "More",
+      kind: "group",
+      profileId: "default",
+      panels: [],
+    });
+
+    expect(workspaceOf(fixture, "g2")).toMatchObject({ kind: "group", cwd: "", panels: [] });
+    expect(workspaceOf(fixture, "g2")?.lastWorkedAt).toBeUndefined();
+    expect(fixture.store.getState().activeWorkspaceId).toBe(activeBefore);
+  });
+
+  test("a group cannot be placed in the workspace grid", async () => {
+    const { fixture } = await groupFixture();
+
+    await expect(fixture.runtime.enableWorkspaceGrid("cols", ["a", "g"])).rejects.toThrow(/cannot be placed/);
+  });
+});

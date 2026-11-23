@@ -10,6 +10,7 @@
       'workspace-card--pr-completed': workspace.prStatus === 'completed',
       'workspace-card--pr-abandoned': workspace.prStatus === 'abandoned',
       'workspace-card--in-grid': workspace.inGrid,
+      'workspace-card--group': workspace.isGroup,
     }"
     :style="`--accent:${workspace.color}${workspace.depth > 0 ? `;margin-left:${workspace.depth * 16}px` : ''}`"
     :title="workspace.title"
@@ -20,7 +21,7 @@
     @drop="$emit('drop', $event)"
   >
     <span class="workspace-card__badge">
-      <span class="workspace-card__index">{{ workspace.index }}</span><svg
+      <span v-if="!workspace.isGroup" class="workspace-card__index">{{ workspace.index }}</span><svg
         v-if="workspace.badgeGlyph"
         class="workspace-card__glyph"
         :viewBox="workspace.badgeGlyph === 'automation' ? '0 0 330 330' : '0 0 24 24'"
@@ -49,6 +50,7 @@
       >
     </span>
     <button
+      v-if="!workspace.isGroup"
       type="button"
       draggable="false"
       class="workspace-card__star"
@@ -65,6 +67,12 @@
     </button>
     <span class="workspace-card__meta" :class="{ 'workspace-card__meta--inline-items': workspace.inlineWorkItems }">
       <span class="workspace-card__title-row">
+        <span
+          v-if="workspace.isGroup"
+          :class="['disclosure-chevron', !workspace.collapsed && 'disclosure-chevron--open']"
+          data-role="group-chevron"
+          aria-hidden="true"
+        />
         <strong>{{ workspace.name }}</strong>
         <svg
           v-if="workspace.isolated"
@@ -158,7 +166,11 @@
       <button
         class="workspace-card__action workspace-card__action--menu"
         type="button"
-        title="Open the workspace actions menu — Edit, Delete, Star/Unstar, and (for Azure / GitHub workspaces) New branch / New worktree / Create task agent shortcuts."
+        :title="
+          workspace.isGroup
+            ? 'Open the group actions menu — Edit or Delete the group.'
+            : 'Open the workspace actions menu — Edit, Delete, Star/Unstar, and (for Azure / GitHub workspaces) New branch / New worktree / Create task agent shortcuts.'
+        "
         @mousedown.stop
         @click.stop="$emit('open-menu', $event)"
       >
@@ -204,6 +216,9 @@ interface WorkspaceCardData {
   title?: string;
   id: string;
   inGrid?: boolean;
+  /** A group card: a collapsible header over the workspaces filed in it, never opened itself. */
+  isGroup?: boolean;
+  collapsed?: boolean;
   slotIndex?: number;
   relativeAge?: string;
   lastActivity?: string;

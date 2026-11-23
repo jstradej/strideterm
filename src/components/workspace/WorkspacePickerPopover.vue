@@ -89,7 +89,7 @@ onMounted(async () => {
   // workspaces from other profiles in the cell picker would silently let the
   // user pull a workspace into a grid that lives in a different profile and
   // confuse the "switch profile = filter the visible list" mental model.
-  const ws: AnyApi[] = store.filteredWorkspaces || [];
+  const ws: AnyApi[] = allWorkspaces.value;
   const parentIds = new Set<string>();
   for (const w of ws) {
     const pid = resolveParentId(w, ws);
@@ -139,7 +139,9 @@ function positionPopover(): void {
 // one into a grid cell from a different profile would let the user populate
 // the grid with rows the sidebar then refuses to display — surprising and
 // not what "switch profile filters the workspace list" implies.
-const allWorkspaces = computed<AnyApi[]>(() => store.filteredWorkspaces || []);
+const allWorkspaces = computed<AnyApi[]>(() =>
+  (store.filteredWorkspaces || []).filter((ws: AnyApi) => ws.kind !== "group"),
+);
 
 const currentCellId = computed<string | null>(() => {
   const grid = store.workspaceGrid;

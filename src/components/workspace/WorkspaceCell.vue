@@ -243,6 +243,7 @@ async function onDrop(event: DragEvent): Promise<void> {
   dragOver.value = false;
   const wsId = event.dataTransfer?.getData("workspace-id");
   if (!wsId) return;
+  if (store.filteredWorkspaces.find((workspace) => workspace.id === wsId)?.kind === "group") return;
   await store.setGridCell(props.cellIndex, wsId);
   await store.activateWorkspace(wsId);
 }

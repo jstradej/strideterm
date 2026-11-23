@@ -91,7 +91,7 @@ function computeDepth(workspace: WorkspaceState, byId: Map<string, WorkspaceStat
       seen.add(parentId);
       return computeDepth(parent, byId, seen) + 1;
     }
-    return 1;
+    return workspace.groupId === parentId ? 0 : 1;
   }
   if (
     ["azure-devops", "github"].includes(workspace.review?.provider ?? "") &&
@@ -152,7 +152,17 @@ export function buildWorkspaceCards({
       });
     }
   }
-  return workspaces.map((workspace, index) => {
+  const memberCounts = new Map<string, number>();
+  for (const member of workspaces) {
+    if (member.kind !== "group" && member.groupId && byId.get(member.groupId)?.kind === "group") {
+      memberCounts.set(member.groupId, (memberCounts.get(member.groupId) || 0) + 1);
+    }
+  }
+  // Ctrl+N and the slot numbers count openable workspaces only; a group is never one of them.
+  let openableCount = 0;
+  return workspaces.map((workspace) => {
+    const isGroup = workspace.kind === "group";
+    const index = isGroup ? -1 : openableCount++;
     const active = workspace.id === activeWorkspaceId;
     const gitSnapshot = getGitSnapshot(workspace.id);
     const attention = getWorkspaceAttention(workspace.id);
@@ -208,8 +218,10 @@ export function buildWorkspaceCards({
     const taskSummary = taskState
       ? `${taskState === "running" ? "Running" : taskState === "evaluating" ? "Evaluating" : taskState === "judge-evaluating" ? "Judge evaluating" : taskState === "refreshing" ? "Refreshing" : taskState === "completed" ? "Completed" : taskState === "failed" ? "Failed" : taskState === "paused" ? "Paused" : "Idle"} \u00B7 R${taskCurrentRound}/${taskMaxRounds}`
       : null;
-    const summary =
-      workspace.kind === "task" && taskSummary
+    const memberCount = memberCounts.get(workspace.id) || 0;
+    const summary = isGroup
+      ? `${memberCount} workspace${memberCount === 1 ? "" : "s"}`
+      : workspace.kind === "task" && taskSummary
         ? taskSummary
         : workspace.kind === "jira-board"
           ? "Jira board"
@@ -247,7 +259,7 @@ export function buildWorkspaceCards({
         ? `\nPR ${prStatus}${prStatusInfo?.closedDate ? ` · ${new Date(prStatusInfo.closedDate).toLocaleDateString()}` : ""}`
         : "";
     const taskTooltipSegment = taskDescription ? `\n\n${taskDescription}` : "";
-    const shortcutSegment = index < 9 ? ` (Ctrl+${index + 1})` : "";
+    const shortcutSegment = !isGroup && index < 9 ? ` (Ctrl+${index + 1})` : "";
 
     // "Last activity" = the most recent thing that happened on this workspace,
     // whichever signal it came from: remote PR activity (commit / comment /
@@ -270,7 +282,9 @@ export function buildWorkspaceCards({
 
     return {
       id: workspace.id,
-      index: index + 1,
+      index: isGroup ? "" : index + 1,
+      isGroup,
+      memberCount,
       icon: workspace.icon,
       badgeGlyph,
       newBranch,

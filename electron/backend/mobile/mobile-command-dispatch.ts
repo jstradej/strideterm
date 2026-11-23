@@ -683,7 +683,7 @@ export function createMobileCommandDispatcher(deps: MobileCommandDispatcherDeps)
         // Profile.workspaceIds is retained for legacy/grid compatibility and
         // can lag behind manual reorders, so never use it as the catalog order.
         const profileWorkspaces = state.workspaces.filter(
-          (workspace) => (workspace.profileId || "default") === profileId,
+          (workspace) => workspace.kind !== "group" && (workspace.profileId || "default") === profileId,
         );
         const runtimePayload = deps.runtime.getPayload();
         const rows = projectMobileWorkspaces(

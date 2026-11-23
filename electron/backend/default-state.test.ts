@@ -2725,3 +2725,104 @@ describe("normalizeState — windows attached to another desktop", () => {
     expect(state.peerWindows?.map((entry) => entry.id)).toEqual(["peer-win-1"]);
   });
 });
+
+describe("workspace groups", () => {
+  const workspaceDraft = (id: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    name: id,
+    cwd: "/work/" + id,
+    profileId: "default",
+    panels: [],
+    ...extra,
+  });
+  const ids = (state: ReturnType<typeof normalizeState>) => state.workspaces.map((workspace) => workspace.id);
+  const profiles = [
+    { id: "default", name: "Default" },
+    { id: "other", name: "Other" },
+  ];
+
+  test("a group has no panels, cwd or git roots and keeps its kind", () => {
+    const group = normalizeWorkspace({
+      id: "g",
+      name: "Clients",
+      kind: "group",
+      cwd: "/x",
+      gitRoots: ["/x"],
+      panels: [{ id: "p" }],
+    });
+    expect(group).toMatchObject({ kind: "group", cwd: "", gitRoots: [], panels: [], internalMcpEnabled: false });
+    expect(group.groupId).toBeUndefined();
+  });
+
+  test("members follow their group in the order they were stored", () => {
+    const state = normalizeState({
+      profiles,
+      workspaces: [
+        workspaceDraft("loose-1"),
+        workspaceDraft("m-b", { groupId: "g" }),
+        workspaceDraft("loose-2"),
+        workspaceDraft("g", { kind: "group" }),
+        workspaceDraft("m-a", { groupId: "g" }),
+      ],
+    });
+    expect(ids(state)).toEqual(["loose-1", "loose-2", "g", "m-b", "m-a"]);
+  });
+
+  test("the family of a member stays right behind the member", () => {
+    const state = normalizeState({
+      profiles,
+      workspaces: [
+        workspaceDraft("g", { kind: "group" }),
+        workspaceDraft("task", { kind: "task", task: { parentWorkspaceId: "m" } }),
+        workspaceDraft("m", { groupId: "g" }),
+      ],
+    });
+    expect(ids(state)).toEqual(["g", "m", "task"]);
+  });
+
+  test("an invalid groupId is dropped and never minted", () => {
+    const state = normalizeState({
+      profiles,
+      workspaces: [
+        workspaceDraft("g", { kind: "group" }),
+        workspaceDraft("dangling", { groupId: "missing" }),
+        workspaceDraft("not-a-group", { groupId: "dangling" }),
+        workspaceDraft("foreign-group", { kind: "group", profileId: "other" }),
+        workspaceDraft("cross-profile", { groupId: "foreign-group" }),
+        workspaceDraft("nested", { kind: "group", groupId: "g" }),
+        workspaceDraft("task", { kind: "task", groupId: "g", task: { parentWorkspaceId: "dangling" } }),
+        workspaceDraft("legacy-worktree", { groupId: "g", notes: "Worktree of x", name: "x / y" }),
+        workspaceDraft("plain"),
+      ],
+    });
+    const byId = new Map(state.workspaces.map((workspace) => [workspace.id, workspace]));
+    for (const id of ["dangling", "not-a-group", "cross-profile", "nested", "task", "legacy-worktree", "plain"]) {
+      expect(byId.get(id)?.groupId, id).toBeUndefined();
+    }
+    expect(Object.keys(byId.get("plain")!)).not.toContain("groupId");
+  });
+
+  test("a valid membership survives normalizing again and a deleted group releases its members", () => {
+    const once = normalizeState({
+      profiles,
+      workspaces: [workspaceDraft("g", { kind: "group" }), workspaceDraft("m", { groupId: "g" })],
+    });
+    const twice = normalizeState(JSON.parse(JSON.stringify(once)));
+    expect(twice.workspaces.find((workspace) => workspace.id === "m")?.groupId).toBe("g");
+
+    const afterDelete = normalizeState({
+      ...JSON.parse(JSON.stringify(twice)),
+      workspaces: twice.workspaces.filter((workspace) => workspace.id !== "g"),
+    });
+    expect(afterDelete.workspaces.find((workspace) => workspace.id === "m")?.groupId).toBeUndefined();
+  });
+
+  test("a group is never the active workspace", () => {
+    const state = normalizeState({
+      profiles,
+      activeWorkspaceId: "g",
+      workspaces: [workspaceDraft("g", { kind: "group" }), workspaceDraft("m", { groupId: "g" })],
+    });
+    expect(state.activeWorkspaceId).toBe("m");
+  });
+});

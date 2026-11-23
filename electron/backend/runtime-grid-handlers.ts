@@ -186,6 +186,7 @@ export function createGridHandlers<Payload>(ctx: GridHandlerCtx<Payload>) {
           for (const id of workspaceIds) {
             if (!id) continue;
             const ws = state.workspaces.find((w) => w.id === id);
+            if (ws?.kind === "group") throw new Error("A group cannot be placed in the workspace grid.");
             if (ws && (ws.profileId || "default") !== gridProfileId) {
               throw new Error(
                 `Cross-profile refused: workspace ${id} is in profile ${ws.profileId || "default"}, grid belongs to profile ${gridProfileId}.`,
@@ -220,6 +221,7 @@ export function createGridHandlers<Payload>(ctx: GridHandlerCtx<Payload>) {
         const gridProfile = resolveWorkspaceGridProfile(state, windowId);
         const gridProfileId = gridProfile?.id || null;
         const ws = state.workspaces.find((w) => w.id === workspaceId);
+        if (ws?.kind === "group") throw new Error("A group cannot be placed in the workspace grid.");
         if (ws && gridProfileId && (ws.profileId || "default") !== gridProfileId) {
           throw new Error(
             `Cross-profile refused: workspace ${workspaceId} is in profile ${ws.profileId || "default"}, grid belongs to profile ${gridProfileId}.`,

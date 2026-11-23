@@ -112,3 +112,31 @@ describe("insertWorkspace", () => {
     expect(workspaces.map((item) => item.id)).toEqual(["a-1", "b-new", "b-1", "b-2"]);
   });
 });
+
+describe("insertWorkspace with groups", () => {
+  const group = (id: string, profileId = "default") => workspace(id, profileId, { kind: "group" });
+
+  test("a new group member lands right after its group", () => {
+    const workspaces = [group("g"), workspace("m1", "default", { groupId: "g" }), workspace("other")];
+
+    insertWorkspace(workspaces, workspace("m2", "default", { groupId: "g" }));
+
+    expect(workspaces.map((item) => item.id)).toEqual(["g", "m2", "m1", "other"]);
+  });
+
+  test("a new root workspace created while a member is active goes after the whole group", () => {
+    const workspaces = [group("g"), workspace("m1", "default", { groupId: "g" }), workspace("other")];
+
+    insertWorkspace(workspaces, workspace("new"), "m1");
+
+    expect(workspaces.map((item) => item.id)).toEqual(["g", "m1", "new", "other"]);
+  });
+
+  test("a groupId pointing into another profile does not file the workspace anywhere", () => {
+    const workspaces = [group("g", "profile-a"), workspace("x", "profile-b")];
+
+    insertWorkspace(workspaces, workspace("m", "profile-b", { groupId: "g" }));
+
+    expect(workspaces.map((item) => item.id)).toEqual(["g", "m", "x"]);
+  });
+});

@@ -2865,7 +2865,7 @@ export async function createRuntime({
           { profiles?: Array<{ id?: string }>; workspaces?: WorkspaceState[] } | undefined;
         if (!appState?.profiles?.some((profile) => profile.id === profileId)) return null;
         const workspaces = (appState.workspaces ?? []).filter(
-          (workspace) => (workspace.profileId || "default") === profileId,
+          (workspace) => workspace.kind !== "group" && (workspace.profileId || "default") === profileId,
         );
         return projectMobileWorkspaces(workspaces, payload as Parameters<typeof projectMobileWorkspaces>[1]) as Array<
           Record<string, unknown> & { id: string }
@@ -8085,7 +8085,9 @@ export async function createRuntime({
     }
     for (const slot of draft.windowSlots || []) {
       if (removeIds.has(slot.activeWorkspaceId)) {
-        const sibling = draft.workspaces.find((w) => (w.profileId || "default") === slot.profileId);
+        const sibling = draft.workspaces.find(
+          (w) => w.kind !== "group" && (w.profileId || "default") === slot.profileId,
+        );
         slot.activeWorkspaceId = sibling?.id || "";
       }
     }
@@ -8094,8 +8096,10 @@ export async function createRuntime({
         (a, b) => (b.lastFocusedAt || 0) - (a.lastFocusedAt || 0),
       )[0];
       const fallbackProfileId = primarySlot?.profileId || "default";
-      const fallback = draft.workspaces.find((w) => (w.profileId || "default") === fallbackProfileId);
-      draft.activeWorkspaceId = fallback?.id || draft.workspaces[0]?.id || "";
+      const fallback = draft.workspaces.find(
+        (w) => w.kind !== "group" && (w.profileId || "default") === fallbackProfileId,
+      );
+      draft.activeWorkspaceId = fallback?.id || draft.workspaces.find((w) => w.kind !== "group")?.id || "";
     }
   }
 
@@ -9547,7 +9551,7 @@ export async function createRuntime({
     const savedWorkspaceId =
       profile?.lastActiveWorkspaceId && profileWsIds.has(profile.lastActiveWorkspaceId)
         ? profile.lastActiveWorkspaceId
-        : profileWorkspaces[0]?.id || "";
+        : profileWorkspaces.find((w) => w.kind !== "group")?.id || "";
     return { workspaceId: savedWorkspaceId, sessionId: "" };
   }
 
@@ -10986,6 +10990,13 @@ export async function createRuntime({
       throw new Error(
         `Cross-profile refused: workspace ${workspaceId} is in profile ${wsProfileId}, window ${windowId} is bound to ${slotProfileId}.`,
       );
+    }
+  }
+
+  /** A group is a sidebar folder with no terminal, git checkout or view of its own: it is never the active workspace. */
+  function assertWorkspaceOpenable(workspaceId: string): void {
+    if (getState().workspaces.find((w) => w.id === workspaceId)?.kind === "group") {
+      throw new Error("A group cannot be opened.");
     }
   }
 
@@ -13903,6 +13914,7 @@ export async function createRuntime({
       // profile B can activate a profile-A workspace globally and the
       // primary slot also flips.
       assertWorkspaceInViewerProfile(String(workspaceId), windowId);
+      assertWorkspaceOpenable(String(workspaceId));
       const remoteCallerSessionId = parseRemoteViewerId(windowId);
       await store.mutate((draft: AppState) => {
         if (draft.workspaces.some((workspace) => workspace.id === workspaceId)) {
@@ -14035,6 +14047,7 @@ export async function createRuntime({
       const preState = getState();
       const preSlot = (preState.windowSlots || []).find((s) => s.id === windowId);
       const targetWs = preState.workspaces.find((ws) => ws.id === workspaceId);
+      if (targetWs?.kind === "group") throw new Error("A group cannot be opened.");
       const isCrossProfile = !!(targetWs && preSlot) && (targetWs.profileId || "default") !== preSlot.profileId;
       log.debug("activateWorkspaceInWindow: entry", {
         workspaceId,
@@ -14398,6 +14411,10 @@ export async function createRuntime({
 
       await store.mutate((draft: AppState) => {
         const normalized = normalizeWorkspace(workspace);
+        const storedKind = draft.workspaces.find((item) => item.id === normalized.id)?.kind;
+        if (storedKind && (storedKind === "group") !== (normalized.kind === "group")) {
+          throw new Error("A workspace cannot be turned into a group or the other way round.");
+        }
         if (options.automationTaskGuard) {
           const guard = options.automationTaskGuard;
           const parent = draft.workspaces.find((item) => item.id === guard.id && item.kind === "automation");
@@ -14547,8 +14564,8 @@ export async function createRuntime({
             delete normalized.task.jiraCommentDrafts;
           }
           insertWorkspace(draft.workspaces, normalized, getViewerActiveWorkspaceId(windowId));
-          // Creating a workspace IS work (V2 plan allowlist).
-          markWorkspaceWorked(draft, normalized.id);
+          // Creating a workspace IS work (V2 plan allowlist). A group is a folder, not work.
+          if (normalized.kind !== "group") markWorkspaceWorked(draft, normalized.id);
         }
 
         // An isolated workspace forces isolation on the tasks (and companions) below it, today's and not the
@@ -14590,7 +14607,7 @@ export async function createRuntime({
           }
         }
 
-        if (!draft.activeWorkspaceId) {
+        if (!draft.activeWorkspaceId && normalized.kind !== "group") {
           draft.activeWorkspaceId = normalized.id;
         }
       });
@@ -15475,17 +15492,27 @@ export async function createRuntime({
           if (deletedScratchpadId) {
             draft.scratchpads = (draft.scratchpads || []).filter((item) => item.workspaceId !== deletedScratchpadId);
           }
+          // Members of a deleted group become ungrouped roots; they are never deleted with it.
+          if (ws?.kind === "group") {
+            for (const member of draft.workspaces) {
+              if (member.groupId === workspaceId) delete member.groupId;
+            }
+          }
           if (draft.activeWorkspaceId === workspaceId) {
             // Pick next-best in same profile
             const profileId = ws ? ws.profileId || "default" : "default";
-            const sibling = draft.workspaces.find((w) => (w.profileId || "default") === profileId);
-            draft.activeWorkspaceId = sibling?.id || draft.workspaces[0]?.id || "";
+            const sibling = draft.workspaces.find(
+              (w) => w.kind !== "group" && (w.profileId || "default") === profileId,
+            );
+            draft.activeWorkspaceId = sibling?.id || draft.workspaces.find((w) => w.kind !== "group")?.id || "";
           }
           // Clear workspace from all window slots
           for (const slot of draft.windowSlots || []) {
             if (slot.activeWorkspaceId === workspaceId) {
               const profileId = slot.profileId;
-              const sibling = draft.workspaces.find((w) => (w.profileId || "default") === profileId);
+              const sibling = draft.workspaces.find(
+                (w) => w.kind !== "group" && (w.profileId || "default") === profileId,
+              );
               slot.activeWorkspaceId = sibling?.id || "";
             }
           }

@@ -137,7 +137,7 @@
       class="eyebrow recent-shortcuts__all-title"
       data-role="all-workspaces-title"
     >
-      All workspaces ({{ treeCards.length }})
+      All workspaces ({{ allWorkspacesCount }})
     </p>
     <WorkspaceCard
       v-for="ws in treeCards"
@@ -163,6 +163,16 @@
     >
       <span class="workspace-new-tile__plus" aria-hidden="true">+</span>
       <span class="workspace-new-tile__label">add new workspace</span>
+    </button>
+    <button
+      type="button"
+      class="workspace-new-tile"
+      data-role="new-group"
+      title="Create a group — a collapsible folder in the sidebar you can file workspaces in, wherever they live on disk."
+      @click="onNewGroup()"
+    >
+      <span class="workspace-new-tile__plus" aria-hidden="true">&#x1F4C1;</span>
+      <span class="workspace-new-tile__label">add new group</span>
     </button>
     <button
       type="button"
@@ -236,7 +246,12 @@
         &#x1F33F; New worktree
       </button>
       <button
-        v-if="wsMenu.ws.kind !== 'task' && wsMenu.ws.kind !== 'automation' && wsMenu.ws.kind !== 'docker'"
+        v-if="
+          wsMenu.ws.kind !== 'task' &&
+          wsMenu.ws.kind !== 'automation' &&
+          wsMenu.ws.kind !== 'docker' &&
+          wsMenu.ws.kind !== 'group'
+        "
         type="button"
         class="context-menu__item"
         title="Spawn a task workspace bound to this project — runs a supervised Worker + Judge AI loop with auto-detected verification commands."
@@ -246,7 +261,9 @@
       </button>
       <button
         v-if="
-          !['task', 'automation', 'docker', 'azure', 'github', 'jira', 'jira-board'].includes(String(wsMenu.ws.kind))
+          !['task', 'automation', 'docker', 'azure', 'github', 'jira', 'jira-board', 'group'].includes(
+            String(wsMenu.ws.kind),
+          )
         "
         type="button"
         class="context-menu__item"
@@ -272,11 +289,48 @@
       >
         &#x1F517; Detach from PR review
       </button>
+      <template v-if="wsMenuCanGroup">
+        <div class="context-menu__divider"></div>
+        <button
+          v-for="group in wsMenuGroups"
+          :key="group.id"
+          type="button"
+          class="context-menu__item"
+          data-role="move-to-group"
+          :title="`File this workspace in the group ${group.name}.`"
+          @click="onMenuAction('move-to-group', group.id)"
+        >
+          &#x1F4C1; Move to {{ group.name }}
+        </button>
+        <button
+          type="button"
+          class="context-menu__item"
+          data-role="move-to-new-group"
+          title="Create a group and file this workspace in it."
+          @click="onMenuAction('new-group')"
+        >
+          &#x1F4C1; Move to new group…
+        </button>
+        <button
+          v-if="wsMenuGroupId"
+          type="button"
+          class="context-menu__item"
+          data-role="remove-from-group"
+          title="Take this workspace out of its group. It stays in the sidebar."
+          @click="onMenuAction('remove-from-group')"
+        >
+          &#x21A4; Remove from group
+        </button>
+      </template>
       <div class="context-menu__divider"></div>
       <button
         type="button"
         class="context-menu__item"
-        title="Open the workspace editor — rename, change icon/colour, edit notes, manage tabs, and configure multi-repo roots."
+        :title="
+          wsMenu.ws.kind === 'group'
+            ? 'Rename the group and change its icon or colour.'
+            : 'Open the workspace editor — rename, change icon/colour, edit notes, manage tabs, and configure multi-repo roots.'
+        "
         @click="onMenuAction('edit')"
       >
         &#x270E; Edit
@@ -284,10 +338,14 @@
       <button
         type="button"
         class="context-menu__item context-menu__item--danger"
-        title="Remove this workspace from the sidebar and kill its PTY sessions. Review/quickfix worktrees prompt for cleanup separately."
+        :title="
+          wsMenu.ws.kind === 'group'
+            ? 'Delete the group. Its workspaces are kept and become ungrouped.'
+            : 'Remove this workspace from the sidebar and kill its PTY sessions. Review/quickfix worktrees prompt for cleanup separately.'
+        "
         @click="onMenuAction('delete')"
       >
-        &#x2715; Delete
+        &#x2715; {{ wsMenu.ws.kind === "group" ? "Delete group" : "Delete" }}
       </button>
       <button
         v-if="wsMenu.ws.kind === 'azure'"
@@ -305,6 +363,7 @@
         }}</span>
       </button>
       <button
+        v-if="wsMenu.ws.kind !== 'group'"
         type="button"
         class="context-menu__item"
         title="Remove only the sidebar entry — leaves files on disk untouched. Use when a regular Delete couldn't finish (locked files, missing directory, manually deleted worktree) so the orphan entry sticks around."
@@ -327,10 +386,10 @@ import { useWorkspaceDragDrop } from "../../composables/useDragDrop.js";
 import { useContextMenu } from "../../composables/useContextMenu.js";
 import { buildWorkspaceCards } from "../../app/workspace-render.js";
 import { buildRecentWorkspaceShortcuts, type RecentWorkspaceShortcut } from "../../app/workspace-sidebar-projection.js";
-import { resolveParentId } from "../../app/workspace-tree.js";
+import { buildWorkspaceTree, hasKindSpecificParent, resolveParentId } from "../../app/workspace-tree.js";
 import { buildActivityForest, type ActivityCluster, type ActivityRowView } from "../../app/workspace-activity-tree.js";
 import { formatRelativeAge } from "../../app/relative-age.js";
-import { resolveWorkspaceStatusCue, type WorkspaceStatusCue } from "../../app/workspace-status.js";
+import { isTaskRunningState, resolveWorkspaceStatusCue, type WorkspaceStatusCue } from "../../app/workspace-status.js";
 import type { WorkspaceBadgeGlyph } from "../../app/workspace-badge-glyphs.js";
 import type { Transport } from "../../transport.js";
 import type { GitSnapshot, StatePayload, WorkspaceState } from "../../../electron/shared/types/state.js";
@@ -508,6 +567,12 @@ const workspaceCards = computed((): WorkspaceCardData[] => {
 });
 
 const hasAnyStarred = computed(() => store.filteredWorkspaces.some((ws) => ws.starred));
+
+// A group is a sidebar folder: it has no terminal, never runs anything and is never "recently worked in", so the
+// RUNNING and RECENT surfaces are built without it (its members then simply have no parent there).
+const openableWorkspaces = computed(
+  () => store.filteredWorkspaces.filter((ws) => ws.kind !== "group") as WorkspaceState[],
+);
 
 // Auto-deactivate star filter when no starred workspaces remain
 watch(
@@ -705,7 +770,7 @@ const liveRunningRows = computed((): RunningAgentRow[] => {
   const payload = store.payload;
   if (!payload) return [];
   return collectSupervisedAgents({
-    workspaces: store.filteredWorkspaces as WorkspaceState[],
+    workspaces: openableWorkspaces.value,
     taskRunnerSnapshot: (payload.taskRunner as Record<string, { state?: string }>) || null,
     workspaceGrid: store.workspaceGrid,
   });
@@ -732,7 +797,7 @@ const liveRunningClusters = computed((): ActivityCluster<RunningAgentRow>[] => {
       metric: row.startedAtMs ? -row.startedAtMs : Number.NEGATIVE_INFINITY,
       payload: row,
     })),
-    workspaces: store.filteredWorkspaces as WorkspaceState[],
+    workspaces: openableWorkspaces.value,
   });
 });
 
@@ -847,7 +912,7 @@ const recentVisibleIds = computed(() => {
 const liveRecentRows = computed((): RecentWorkspaceShortcut[] => {
   if (!isRecentActive.value) return [];
   return buildRecentWorkspaceShortcuts({
-    workspaces: store.filteredWorkspaces as WorkspaceState[],
+    workspaces: openableWorkspaces.value,
     now: recentNow.value,
     visibleIds: recentVisibleIds.value,
   }).filter((row) => !runningWorkspaceIds.value.has(row.workspaceId));
@@ -870,7 +935,7 @@ const liveRecentClusters = computed((): ActivityCluster<RecentWorkspaceShortcut>
       metric: row.lastWorkedAtMs,
       payload: row,
     })),
-    workspaces: store.filteredWorkspaces as WorkspaceState[],
+    workspaces: openableWorkspaces.value,
   }),
 );
 
@@ -1181,9 +1246,9 @@ function onListDragleave(event: DragEvent): void {
   if (isRecentRowEvent(event)) return;
   dragDrop.onDragleave(event);
 }
-function onListDrop(event: DragEvent): void {
+async function onListDrop(event: DragEvent): Promise<void> {
   if (isRecentRowEvent(event)) return;
-  dragDrop.onDrop(event);
+  await notifications.runWithToast("Could not move the workspace", () => dragDrop.onDrop(event));
 }
 function onListDragend(): void {
   dragDrop.onDragend();
@@ -1276,6 +1341,11 @@ async function onOpenJiraInbox(): Promise<void> {
 }
 
 async function onActivate(workspaceId: string): Promise<void> {
+  // A group is never opened: clicking its header folds or unfolds it.
+  if (store.filteredWorkspaces.find((workspace) => workspace.id === workspaceId)?.kind === "group") {
+    toggleGroupCollapsed(workspaceId);
+    return;
+  }
   // Diagnostic: log every sidebar click so the dev log shows whether activation
   // was actually requested (vs e.g. swallowed by a parent handler). Routes
   // through preload's `log:renderer` → main logger → strideterm.log.
@@ -1457,6 +1527,73 @@ const splitGroupCards = computed<{ slotIndex: number; card: WorkspaceCardData }[
 // CSS uses to render them as dimmed ghosts (with the slot indicator
 // badge). Click on a ghost still works → activateWorkspace focuses the
 // matching grid cell.
+const COLLAPSED_GROUPS_KEY_PREFIX = "strideterm:collapsedGroups:";
+
+function collapsedGroupsKey(): string {
+  return `${COLLAPSED_GROUPS_KEY_PREFIX}${store.myActiveProfileId || "default"}`;
+}
+
+function loadCollapsedGroups(): Set<string> {
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(collapsedGroupsKey()) || "[]");
+    return new Set(Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+const collapsedGroupIds = ref<Set<string>>(loadCollapsedGroups());
+watch(
+  () => store.myActiveProfileId,
+  () => {
+    collapsedGroupIds.value = loadCollapsedGroups();
+  },
+);
+
+function toggleGroupCollapsed(groupId: string): void {
+  const next = new Set(collapsedGroupIds.value);
+  if (!next.delete(groupId)) next.add(groupId);
+  collapsedGroupIds.value = next;
+  try {
+    window.localStorage.setItem(collapsedGroupsKey(), JSON.stringify([...next]));
+  } catch {
+    // Storage unavailable: the group stays collapsed for this session only.
+  }
+}
+
+// A search shows every match, so collapsed groups stay open while one is active.
+const collapsedHiddenIds = computed((): Set<string> => {
+  if (searchActive.value || collapsedGroupIds.value.size === 0) return new Set();
+  const tree = buildWorkspaceTree(store.filteredWorkspaces);
+  const hidden = new Set<string>();
+  for (const ws of store.filteredWorkspaces) {
+    if (tree.ancestorsOf(ws.id).some((ancestorId) => collapsedGroupIds.value.has(ancestorId))) hidden.add(ws.id);
+  }
+  return hidden;
+});
+
+// What a collapsed group stands in for: the attention and the running work of everything filed under it.
+const groupAggregates = computed(() => {
+  const aggregates = new Map<string, { attention: number; fresh: boolean; running: number }>();
+  if (collapsedGroupIds.value.size === 0) return aggregates;
+  const tree = buildWorkspaceTree(store.filteredWorkspaces);
+  for (const card of workspaceCards.value) {
+    if (card.isGroup) continue;
+    const running = card.agentActivityState === "running" || isTaskRunningState(card.taskState as string | undefined);
+    for (const ancestorId of tree.ancestorsOf(card.id)) {
+      if (!collapsedGroupIds.value.has(ancestorId)) continue;
+      const aggregate = aggregates.get(ancestorId) || { attention: 0, fresh: false, running: 0 };
+      aggregate.attention += card.attentionCount;
+      aggregate.fresh ||= card.attentionFresh;
+      if (running) aggregate.running++;
+      aggregates.set(ancestorId, aggregate);
+    }
+  }
+  return aggregates;
+});
+
+const allWorkspacesCount = computed(() => displayedCards.value.filter((card) => !card.isGroup).length);
+
 const treeCards = computed<WorkspaceCardData[]>(() => {
   const occ = gridCellIds.value;
   const slotByWs = new Map<string, number>();
@@ -1466,11 +1603,34 @@ const treeCards = computed<WorkspaceCardData[]>(() => {
       if (id) slotByWs.set(id, idx + 1);
     });
   }
-  return displayedCards.value.map((c) => ({
-    ...c,
-    inGrid: occ.has(c.id),
-    slotIndex: slotByWs.get(c.id),
-  }));
+  const hidden = collapsedHiddenIds.value;
+  return displayedCards.value
+    .filter((c) => !hidden.has(c.id))
+    .map((c) => {
+      if (c.isGroup) {
+        const collapsed = collapsedGroupIds.value.has(c.id) && !searchActive.value;
+        const aggregate = collapsed ? groupAggregates.value.get(c.id) : undefined;
+        return {
+          ...c,
+          collapsed,
+          ...(aggregate?.attention
+            ? {
+                attentionCount: aggregate.attention,
+                attentionFresh: aggregate.fresh,
+                attentionTooltip: `${aggregate.attention} notification${aggregate.attention === 1 ? "" : "s"} in this group`,
+              }
+            : {}),
+          ...(aggregate?.running
+            ? {
+                agentActivityState: "running",
+                agentActivityLabel:
+                  aggregate.running > 1 ? `${aggregate.running} agents are working` : "An agent is working",
+              }
+            : {}),
+        };
+      }
+      return { ...c, inGrid: occ.has(c.id), slotIndex: slotByWs.get(c.id) };
+    });
 });
 
 // --- Workspace actions menu ---
@@ -1511,6 +1671,19 @@ const wsMenuIsPrLinked = computed<boolean>(() => {
   return !!ws?.review?.prKey;
 });
 
+const wsMenuWorkspace = computed((): WorkspaceState | undefined =>
+  store.filteredWorkspaces.find((w) => w.id === wsMenu.value?.ws?.id),
+);
+// Only a root workspace can be filed in a group; a review, task or automation follows its parent instead.
+const wsMenuCanGroup = computed(() => {
+  const ws = wsMenuWorkspace.value;
+  return !!ws && ws.kind !== "group" && !hasKindSpecificParent(ws);
+});
+const wsMenuGroupId = computed(() => wsMenuWorkspace.value?.groupId || "");
+const wsMenuGroups = computed(() =>
+  store.filteredWorkspaces.filter((w) => w.kind === "group" && w.id !== wsMenuGroupId.value),
+);
+
 function onOpenMenu(event: MouseEvent, ws: Record<string, unknown>): void {
   const btn = (event.target as Element).closest("button");
   if (btn) {
@@ -1525,11 +1698,21 @@ function dismissMenu(): void {
   wsMenu.value = null;
 }
 
-function onMenuAction(action: string): void {
+function onNewGroup(assignWorkspaceId?: string): void {
+  store.openGroupDialog({ assignWorkspaceId });
+}
+
+function onMenuAction(action: string, argument = ""): void {
   const ws = wsMenu.value?.ws;
   dismissMenu();
   if (!ws) return;
-  if (action === "quick-fix") {
+  if (action === "move-to-group") {
+    void notifications.runWithToast("Move to group failed", () => store.setWorkspaceGroup(ws.id as string, argument));
+  } else if (action === "remove-from-group") {
+    void notifications.runWithToast("Remove from group failed", () => store.setWorkspaceGroup(ws.id as string, ""));
+  } else if (action === "new-group") {
+    onNewGroup(ws.id as string);
+  } else if (action === "quick-fix") {
     if (ws.kind === "github") store.openGitHubQuickFixWizard();
     else store.openQuickFixWizard();
   } else if (action === "create-worktree") {

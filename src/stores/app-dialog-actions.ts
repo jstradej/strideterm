@@ -42,6 +42,8 @@ interface DialogActionsCtx {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   getPanelByViewId: (viewId: string, workspace?: any) => any;
   createWorktree: (workspaceId: string, name: string, rootPath?: string) => Promise<void>;
+  createWorkspaceGroup: (input: { name: string; icon: string; color: string }) => Promise<string>;
+  setWorkspaceGroup: (workspaceId: string, groupId: string) => Promise<void>;
   quickAddTemplateTab: (
     command: string,
     title: string,
@@ -597,7 +599,36 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     return /^https?:\/\//i.test(String(panel.command || "").trim());
   }
 
+  /**
+   * The create / edit dialog of a group. With `assignWorkspaceId` the new group also takes that workspace in; a retry
+   * after a failed assignment reuses the group already created instead of making a second one.
+   */
+  function openGroupDialog(options: { group?: AnyApi; assignWorkspaceId?: string } = {}): void {
+    const { group, assignWorkspaceId } = options;
+    let createdGroupId = "";
+    openDialog("GroupDialog", {
+      ...(group
+        ? { title: "Edit group", submitLabel: "Save", name: group.name, icon: group.icon, color: group.color }
+        : {}),
+      onCancel: closeDialog,
+      onSubmit: async (value: { name: string; icon: string; color: string }) => {
+        if (group) {
+          const next = JSON.parse(JSON.stringify({ ...group, ...value })) as AnyApi;
+          ctx.adoptPayload((await (ctx.getApi() as CallableTransport).saveWorkspace(next)) as StatePayload);
+        } else {
+          createdGroupId ||= await ctx.createWorkspaceGroup(value);
+          if (assignWorkspaceId) await ctx.setWorkspaceGroup(assignWorkspaceId, createdGroupId);
+        }
+        closeDialog();
+      },
+    });
+  }
+
   function openWorkspaceDialog(workspace: AnyApi = null): void {
+    if (workspace?.kind === "group") {
+      openGroupDialog({ group: workspace });
+      return;
+    }
     const tabTemplates = ctx.payload.value?.appState?.tabTemplates || [];
     openDialog("WorkspaceDialog", {
       workspace,
@@ -1396,6 +1427,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     saveTabNote,
     openNewTabDialog,
     openWorkspaceDialog,
+    openGroupDialog,
     openNewWorkspaceFlow,
     openPluginWorkspaceDialog,
     openSettingsDialog,
