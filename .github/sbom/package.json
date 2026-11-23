@@ -1,0 +1,8 @@
+{
+  "name": "strideterm-sbom-tool",
+  "private": true,
+  "description": "Pinned SBOM generator for CI; kept out of the app's lockfile and audit gate.",
+  "dependencies": {
+    "@cyclonedx/cyclonedx-npm": "7.0.1"
+  }
+}

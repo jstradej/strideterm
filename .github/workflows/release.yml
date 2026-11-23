@@ -181,8 +181,11 @@ jobs:
       # transitive dependency graph it was built from. Without this the
       # SBOM only existed as a weekly security-scan artifact, retained 30
       # days, and not connected to any specific binary.
+      # Not `npm sbom`, which rejects the minimatch overrides; see security.yml.
+      - name: Install SBOM generator
+        run: npm ci --prefix .github/sbom --omit=optional --ignore-scripts --no-audit --no-fund
       - name: Generate SBOM (CycloneDX)
-        run: npm sbom --sbom-format cyclonedx > strideterm-sbom-${{ github.ref_name }}.json
+        run: .github/sbom/node_modules/.bin/cyclonedx-npm --ignore-npm-errors --output-file strideterm-sbom-${{ github.ref_name }}.json
       - name: Upload SBOM artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:

@@ -143,12 +143,21 @@ jobs:
 
       - run: npm ci
 
-      # npm sbom (built-in since npm 8.19) generates a CycloneDX SBOM listing
-      # every direct and transitive dependency with resolved versions.
-      # The artifact can be used for licence audits and CVE cross-referencing
-      # against external databases (NIST NVD, OSV, etc.).
+      # A CycloneDX SBOM listing every direct and transitive dependency with
+      # resolved versions, for licence audits and CVE cross-referencing against
+      # external databases (NIST NVD, OSV, etc.).
+      #
+      # Not `npm sbom`: npm's tree check reports the `overrides` that move
+      # minimatch to 11 as invalid edges (ESBOMPROBLEMS), even though `npm ci`
+      # installs exactly them. cyclonedx-npm reads the same `npm ls` graph and
+      # needs --ignore-npm-errors only for that report; `npm ci` above already
+      # enforced the lockfile. The generator is pinned by its own lockfile in
+      # .github/sbom, outside the app's dependencies and audit gate.
+      - name: Install SBOM generator
+        run: npm ci --prefix .github/sbom --omit=optional --ignore-scripts --no-audit --no-fund
+
       - name: Generate SBOM (CycloneDX)
-        run: npm sbom --sbom-format cyclonedx > sbom.json
+        run: .github/sbom/node_modules/.bin/cyclonedx-npm --ignore-npm-errors --output-file sbom.json
 
       - name: Upload SBOM artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
