@@ -96,6 +96,29 @@ describe("review bridge agent launch", () => {
     expect(detectReviewAgentPanel({ title: "Reviewer", command })).toBe(provider);
   });
 
+  test("adds the project skills plugin for Claude only, and only when given", () => {
+    const base = {
+      workspace: createWorkspace(),
+      context: createContext(),
+      processInfo: { platform: "linux", execPath: "/usr/bin/node" },
+      initialPrompt: "Review prompt",
+      draftOnlyReview: true,
+      interactiveReview: true,
+    };
+    const claude = { panel: { id: "r", title: "Reviewer", command: "claude" } };
+    const without = buildReviewAgentLaunch({ ...base, ...claude })!;
+    expect(without.args).not.toContain("--plugin-dir");
+    const withSkills = buildReviewAgentLaunch({ ...base, ...claude, projectSkillsDir: "/data/review-skills/ws-1" })!;
+    expect(withSkills.args[withSkills.args.indexOf("--plugin-dir") + 1]).toBe("/data/review-skills/ws-1");
+    expect(withSkills.args[withSkills.args.indexOf("--setting-sources") + 1]).toBe("user");
+    const codex = buildReviewAgentLaunch({
+      ...base,
+      panel: { id: "r", title: "Reviewer", command: "codex" },
+      projectSkillsDir: "/data/review-skills/ws-1",
+    })!;
+    expect(codex.args.join(" ")).not.toContain("review-skills");
+  });
+
   test("never loads the checkout's own Claude settings for a draft-only review, automatic or interactive", () => {
     for (const interactiveReview of [false, true]) {
       const launch = buildReviewAgentLaunch({

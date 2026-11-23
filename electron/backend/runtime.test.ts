@@ -1305,6 +1305,32 @@ describe("automation scheduled agent", () => {
       await fs.rm(cwd, { recursive: true, force: true });
     }
   });
+  test("deleting a workspace removes its materialised review project skills", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-review-skills-del-"));
+    tempPaths.push(cwd);
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [
+          {
+            id: "root",
+            name: "Project",
+            kind: "manual",
+            cwd,
+            profileId: "default",
+            panels: [{ id: "shell", title: "Shell", command: "" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    const skillsDir = path.join(fixture.userDataPath, "review-skills", "root");
+    await fs.mkdir(path.join(skillsDir, ".claude-plugin"), { recursive: true });
+    await fs.writeFile(path.join(skillsDir, ".claude-plugin", "plugin.json"), "{}");
+    await fixture.runtime.deleteWorkspace("root");
+    await vi.waitFor(async () => {
+      await expect(fs.stat(skillsDir)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+  });
   test("deleting the last scheduled automation's parent clears its idle timer", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-auto-parent-timer-"));
     tempPaths.push(cwd);
@@ -17384,6 +17410,9 @@ describe("headless pull request review start", () => {
     expect(reviewArgs).toContain("--dangerously-skip-permissions");
     expect(reviewArgs).not.toContain("-p");
     expect(reviewArgs.at(-1)).toContain("Perform a basic code review");
+    // Project review guidance is read at the merge base, never from the author-controlled checkout.
+    expect(reviewArgs.at(-1)).toMatch(/AGENTS\.md, CLAUDE\.md, and agent skill definitions/);
+    expect(reviewArgs.at(-1)).toMatch(/`git show [0-9a-f]{7,64}:<path>`/);
     expect(reviewArgs[reviewArgs.indexOf("--setting-sources") + 1]).toBe("user");
     expect(
       fixture.store

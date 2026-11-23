@@ -172,6 +172,8 @@ interface BuildLaunchInput extends GrantMcpServers {
   interactiveReview?: boolean;
   /** Where Gemini's per-launch settings file goes; its MCP servers are configured there and nowhere else. */
   geminiSettingsPath?: string;
+  /** Claude only: the session plugin holding the project's skills at the review's merge base. */
+  projectSkillsDir?: string;
 }
 
 function normalizeText(value: unknown): string {
@@ -534,6 +536,7 @@ function buildClaudeLaunch({
   initialPrompt,
   draftOnlyReview,
   interactiveReview,
+  projectSkillsDir,
   ...grants
 }: BuildLaunchInput): AgentLaunch {
   const installs = grantMcpInstalls(grants);
@@ -548,6 +551,8 @@ function buildClaudeLaunch({
   // must never load — not with -p, which skips the trust check, and not at any later start of a tab in the isolated
   // checkout, which may have been trusted from the review's notification.
   if (draftOnlyReview || isIsolatedReviewCheckoutPath(workspace?.cwd)) args.push("--setting-sources", "user");
+  // --setting-sources user never loads the repo's own skills; this is the base-commit copy the runtime materialised.
+  if (projectSkillsDir && !runsInWslSandbox(processInfo)) args.push("--plugin-dir", projectSkillsDir);
   const mcpServers: Record<string, unknown> = {
     review: {
       command: mcp.command,
@@ -915,6 +920,7 @@ export function buildReviewAgentLaunch({
   draftOnlyReview,
   interactiveReview,
   geminiSettingsPath,
+  projectSkillsDir,
 }: BuildLaunchInput): AgentLaunch | null {
   if (!context?.rootPath) {
     return null;
@@ -933,6 +939,7 @@ export function buildReviewAgentLaunch({
       initialPrompt,
       draftOnlyReview,
       interactiveReview,
+      projectSkillsDir,
     });
   }
   if (agent === "codex") {
