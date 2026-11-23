@@ -849,7 +849,7 @@ export const useAppStore = defineStore("app", () => {
 
   // Sync the document theme and palette when settings change
   watch(
-    () => [payload.value?.appState?.settings?.theme, payload.value?.appState?.settings?.palette] as const,
+    [() => payload.value?.appState?.settings?.theme, () => payload.value?.appState?.settings?.palette] as const,
     ([theme, palette]) => applyAppearance({ theme, palette }),
     { immediate: true },
   );
