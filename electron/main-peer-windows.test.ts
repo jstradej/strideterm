@@ -18,6 +18,8 @@ const REFUSED_IN_PEER_WINDOW = [
   "session:activate",
   "attention:sync",
   "sandbox:requests",
+  "sidebar-notes:list",
+  "sidebar-notes:installation:get",
   "diff:popout:open",
   "diff:popout:get-init",
   "file:popout:open",

@@ -53,7 +53,13 @@ import { createPerformanceSampler } from "./performance-metrics.js";
 import type { ConfirmCloseRequest, FilePopoutPayload } from "./shared/ipc-bridge.js";
 import type { AppState as StoredAppState, WindowSlot, WorkspaceState } from "./shared/types/state.js";
 import type { PeerWindowSlot, WindowBackend } from "./shared/peers.js";
-import { notePopoutKey, notePopoutTargetSchema, type NotePopoutTarget } from "./shared/sidebar-notes.js";
+import {
+  notePopoutKey,
+  notePopoutTargetSchema,
+  sidebarNotesScopeSchema,
+  type NotePopoutTarget,
+} from "./shared/sidebar-notes.js";
+import { validateIpc } from "./backend/ipc-schemas.js";
 import { PEER_HOST_NOTE_CHANGED_CHANNEL } from "./shared/peer-host-note-events.js";
 import { answerWindowBackendDuringBoot } from "./shared/window-backend-bootstrap.js";
 import {
@@ -2053,6 +2059,17 @@ function registerBootstrapIpcHandlers(): void {
   // The renderer asks which isolated tabs are waiting for a network decision as soon as it mounts, which on a slow
   // start is before createRuntime() has finished. Answer once the runtime is there instead of "No handler registered".
   handleIpc("sandbox:requests", () => invokeRuntimeMethod("sandboxListPending"));
+  // The notes panel loads its notes on mount, so the same applies to it.
+  handleIpc("sidebar-notes:list", (event, scope) => {
+    const windowId = webContentsToWindowId.get(event.sender.id);
+    if (!windowId) throw new Error("Notes require an owning window.");
+    return invokeRuntimeMethod(
+      "listSidebarNotes",
+      validateIpc(sidebarNotesScopeSchema, scope, "sidebar-notes:list"),
+      windowId,
+    );
+  });
+  handleIpc("sidebar-notes:installation:get", () => invokeRuntimeMethod("getInstallationNote"));
   handleIpc("window:get-backend", (event) =>
     answerWindowBackendDuringBoot({
       isBootPeerWindow: bootPeerWindowIds.has(webContentsToWindowId.get(event.sender.id) ?? ""),
@@ -2070,6 +2087,8 @@ function unregisterBootstrapIpcHandlers(): void {
   ipcMain.removeHandler("session:activate");
   ipcMain.removeHandler("attention:sync");
   ipcMain.removeHandler("sandbox:requests");
+  ipcMain.removeHandler("sidebar-notes:list");
+  ipcMain.removeHandler("sidebar-notes:installation:get");
   ipcMain.removeHandler("window:get-backend");
   disposeDeferredSshIpcHandlers?.();
   disposeDeferredSshIpcHandlers = null;
