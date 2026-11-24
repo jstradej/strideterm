@@ -38,6 +38,7 @@
   --muted: #76767e;
   --border: rgba(var(--tint), 0.07);
   --accent: #ffa424;
+  --on-accent: #000;
   --success: #4caf50;
   --success-fg: #6edfb6;
   --danger: #ff6f8d;
@@ -81,6 +82,7 @@
   --border: rgba(15, 23, 42, 0.11);
   /* Deeper than the dark accent so it holds up as text and hairlines on white. */
   --accent: #c26a0a;
+  --on-accent: #000;
   --success: #2e7d32;
   --success-fg: #1b6e2e;
   --danger: #b7284c;

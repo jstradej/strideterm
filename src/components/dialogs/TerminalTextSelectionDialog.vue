@@ -532,9 +532,9 @@ watch(stillValid, (valid) => {
 
 .termsel__confirm {
   padding: 10px 12px;
-  border: 1px solid rgba(255, 164, 36, 0.35);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
   border-radius: 4px;
-  background: rgba(255, 164, 36, 0.1);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
 .termsel__confirm-text {

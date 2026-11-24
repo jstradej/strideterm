@@ -10,7 +10,7 @@
 
 .workspace-chip--local {
   border-color: color-mix(in srgb, var(--accent), transparent 50%);
-  background: rgba(255, 164, 36, 0.1);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
   color: var(--accent);
 }
 
@@ -67,7 +67,7 @@
 }
 
 .git-status-code--pending {
-  background: rgba(255, 164, 36, 0.16);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
   color: #ffd28c;
 }
 

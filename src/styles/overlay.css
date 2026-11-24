@@ -174,7 +174,7 @@
 .tab-picker-dropdown__cwd-select option:checked {
   background: var(--accent) !important;
   box-shadow: inset 0 0 0 100px var(--accent);
-  color: #000 !important;
+  color: var(--on-accent) !important;
 }
 
 .layout-picker {
@@ -308,7 +308,7 @@ select option {
 select option:checked {
   background: var(--accent) !important;
   box-shadow: inset 0 0 0 100px var(--accent);
-  color: #000 !important;
+  color: var(--on-accent) !important;
 }
 
 .panel-card {

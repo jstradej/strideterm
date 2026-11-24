@@ -321,15 +321,22 @@ type AppConfig = typeof APP_CONFIG;
 
 // ---------------------------------------------------------------------------
 
+/** The palette tints the terminal through --surface-term; the theme's own value is the fallback. */
+function paletteTerminalBackground(fallback: string): string {
+  return getComputedStyle(document.documentElement).getPropertyValue("--surface-term").trim() || fallback;
+}
+
 function resolveTerminalTheme(appConfig: AppConfig): ITheme {
-  return isLightAppTheme()
-    ? LIGHT_TERMINAL_THEME
-    : {
-        background: "#141416",
-        foreground: appConfig?.ui?.terminalForegroundColor || "#d8e4f5",
-        cursor: "#ffa424",
-        selectionBackground: "rgba(255,255,255,0.15)",
-      };
+  if (isLightAppTheme()) {
+    const background = paletteTerminalBackground(LIGHT_TERMINAL_THEME.background!);
+    return { ...LIGHT_TERMINAL_THEME, background, cursorAccent: background };
+  }
+  return {
+    background: paletteTerminalBackground("#141416"),
+    foreground: appConfig?.ui?.terminalForegroundColor || "#d8e4f5",
+    cursor: "#ffa424",
+    selectionBackground: "rgba(255,255,255,0.15)",
+  };
 }
 
 export function createTerminalController({

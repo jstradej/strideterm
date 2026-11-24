@@ -549,7 +549,7 @@ function onDiskUsageOpen(kind: "images" | "volumes" | "networks" | "cache"): voi
 
 .docker-mobile-nav__badge {
   background: var(--accent, #63b3ed);
-  color: #000;
+  color: var(--on-accent);
   border-radius: 8px;
   padding: 0 6px;
   font-size: 10px;

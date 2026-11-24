@@ -173,7 +173,7 @@ const sortedCommits = computed(() => {
 
 .git-log-info-btn:hover,
 .git-log-info-btn:focus-visible {
-  background: rgba(255, 164, 36, 0.18);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
   border-color: var(--accent, #ffa424);
   outline: none;
 }
@@ -198,7 +198,7 @@ const sortedCommits = computed(() => {
 }
 
 .git-log-table--unpushed {
-  background: rgba(255, 164, 36, 0.06);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
   border-left: 2px solid var(--accent);
 }
 
@@ -207,7 +207,7 @@ const sortedCommits = computed(() => {
   font-size: 9px;
   padding: 0 4px;
   border-radius: 3px;
-  background: rgba(255, 164, 36, 0.15);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
   color: var(--accent);
   margin-right: 6px;
   vertical-align: middle;

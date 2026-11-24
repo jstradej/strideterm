@@ -588,7 +588,9 @@ function showOlderActivity(): void {
   margin: 8px 0 16px;
   border: 1px solid var(--border, #333);
   border-radius: 8px;
-  background: radial-gradient(circle at 50% 0%, rgba(255, 164, 36, 0.08), transparent 60%), rgba(var(--tint), 0.02);
+  background:
+    radial-gradient(circle at 50% 0%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 60%),
+    rgba(var(--tint), 0.02);
   text-align: center;
 }
 .td__hero-eyebrow {
@@ -713,14 +715,14 @@ function showOlderActivity(): void {
   font-size: 14px;
   font-weight: 700;
   margin-top: 4px;
-  box-shadow: 0 2px 14px rgba(255, 164, 36, 0.25);
+  box-shadow: 0 2px 14px color-mix(in srgb, var(--accent) 25%, transparent);
   transition:
     transform 0.1s,
     box-shadow 0.15s;
 }
 .td__hero-start:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 4px 18px rgba(255, 164, 36, 0.35);
+  box-shadow: 0 4px 18px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 .td__hero-start--disabled,
 .td__hero-start:disabled {

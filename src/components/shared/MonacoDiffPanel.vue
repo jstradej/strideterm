@@ -1072,7 +1072,7 @@ defineExpose({ goToChange });
 }
 
 .mdp__btn--active {
-  background: rgba(255, 164, 36, 0.15);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
   color: var(--accent);
   border-color: var(--accent);
 }

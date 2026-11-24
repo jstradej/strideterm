@@ -390,8 +390,8 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   cursor: pointer;
   border-radius: 4px;
   padding: 7px 12px;
-  background: linear-gradient(135deg, #ffa424, #e07800);
-  color: #051017;
+  background: linear-gradient(135deg, var(--button-from, #ffa424), var(--button-to, #e07800));
+  color: var(--button-fg, #051017);
   font-weight: 700;
   font-size: 13px;
 }
@@ -410,7 +410,7 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
 .button--active {
   border: 1px solid var(--accent);
   background: var(--accent);
-  color: #000;
+  color: var(--on-accent);
 }
 
 .danger {
@@ -1379,7 +1379,7 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
 }
 
 .docker-card--running {
-  border-color: rgba(255, 164, 36, 0.32);
+  border-color: color-mix(in srgb, var(--accent) 32%, transparent);
 }
 
 /* Connection error box — used on Azure/GitHub connection cards when lastError

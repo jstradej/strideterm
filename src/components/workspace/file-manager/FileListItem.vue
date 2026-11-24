@@ -147,13 +147,13 @@ async function onDrop() {
 }
 
 .fli--selected {
-  background: rgba(255, 164, 36, 0.1) !important;
+  background: color-mix(in srgb, var(--accent) 10%, transparent) !important;
 }
 
 .fli--drop {
   outline: 1px dashed var(--accent);
   outline-offset: -1px;
-  background: rgba(255, 164, 36, 0.16);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
 }
 
 .fli--list.fli--git-modified::before,
@@ -264,7 +264,7 @@ async function onDrop() {
 }
 
 .fli--grid.fli--selected {
-  background: rgba(255, 164, 36, 0.1);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
 .fli__grid-icon {

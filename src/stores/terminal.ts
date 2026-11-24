@@ -349,6 +349,7 @@ export const useTerminalStore = defineStore("terminal", () => {
     }
 
     window.addEventListener("strideterm:theme-changed", () => controller?.syncTheme());
+    window.addEventListener("strideterm:palette-changed", () => controller?.syncTheme());
 
     // A remote client reports which terminal it shows (see syncRemoteFocus):
     // re-evaluate whenever that, the page's visibility or the window's focus

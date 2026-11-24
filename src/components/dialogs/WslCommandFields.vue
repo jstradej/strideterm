@@ -258,7 +258,7 @@ onMounted(async () => {
 }
 .segmented__btn--active {
   background: var(--accent);
-  color: #000;
+  color: var(--on-accent);
 }
 
 /* WSL launcher fields — two-column layout for distro + cwd, then full-width

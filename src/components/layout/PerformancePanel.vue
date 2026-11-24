@@ -1037,7 +1037,7 @@ onBeforeUnmount(() => {
   text-transform: uppercase;
   letter-spacing: 0.3px;
   color: var(--accent, #ffa424);
-  border: 1px solid rgba(255, 164, 36, 0.4);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
   border-radius: 4px;
   padding: 0 4px;
 }

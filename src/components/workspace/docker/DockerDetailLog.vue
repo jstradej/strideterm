@@ -940,7 +940,7 @@ watch(
   gap: 6px;
   padding: 6px 12px;
   background: var(--accent, #63b3ed);
-  color: #000;
+  color: var(--on-accent);
   border: 0;
   border-radius: 14px;
   font-size: 12px;

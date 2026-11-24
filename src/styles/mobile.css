@@ -203,7 +203,7 @@
     padding: 0 4px;
     border-radius: 9px;
     background: var(--accent);
-    color: #000;
+    color: var(--on-accent);
     font-size: 10px;
     font-weight: 700;
     line-height: 1;

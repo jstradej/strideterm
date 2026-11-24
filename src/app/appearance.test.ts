@@ -33,4 +33,26 @@ describe("applyAppearance", () => {
       window.removeEventListener("strideterm:theme-changed", listener);
     }
   });
+
+  test("a palette change alone tells only the terminals, once per actual change", () => {
+    const palette = vi.fn();
+    const theme = vi.fn();
+    window.addEventListener("strideterm:palette-changed", palette);
+    window.addEventListener("strideterm:theme-changed", theme);
+    try {
+      applyAppearance({ theme: "dark", palette: "default" });
+      expect(palette).not.toHaveBeenCalled();
+      applyAppearance({ theme: "dark", palette: "soft" });
+      applyAppearance({ theme: "dark", palette: "soft" });
+      expect(palette).toHaveBeenCalledTimes(1);
+      applyAppearance({ theme: "dark", palette: "default" });
+      expect(palette).toHaveBeenCalledTimes(2);
+      applyAppearance({ theme: "light", palette: "winter" });
+      expect(palette).toHaveBeenCalledTimes(2);
+      expect(theme).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener("strideterm:palette-changed", palette);
+      window.removeEventListener("strideterm:theme-changed", theme);
+    }
+  });
 });

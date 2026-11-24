@@ -509,7 +509,7 @@ function onShowCommitInfo(entry: any) {
 
 .nb-step--active {
   border-color: var(--accent, #ffa424);
-  background: rgba(255, 164, 36, 0.06);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
 }
 
 .nb-step__check {

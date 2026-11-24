@@ -2403,7 +2403,7 @@ watch(
   min-width: 16px;
   padding: 0 4px;
   border-radius: 8px;
-  background: rgba(255, 164, 36, 0.15);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
   font-size: 10px;
   text-align: center;
 }
@@ -2539,13 +2539,13 @@ watch(
 }
 
 .git-branches__chip--on {
-  background: rgba(255, 164, 36, 0.18);
-  border-color: rgba(255, 164, 36, 0.45);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
   color: var(--accent);
 }
 
 .git-branches__chip--on:hover {
-  background: rgba(255, 164, 36, 0.25);
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
 }
 
 .git-branches__filter input {
@@ -2559,7 +2559,7 @@ watch(
   padding: 6px 8px;
   border: 1px dashed var(--accent);
   border-radius: 4px;
-  background: rgba(255, 164, 36, 0.05);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
   flex: 0 0 auto;
 }
 
@@ -2669,7 +2669,7 @@ watch(
   font-size: 10px;
   padding: 1px 6px;
   border-radius: 8px;
-  background: rgba(255, 164, 36, 0.15);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
   color: var(--accent);
   font-variant-numeric: tabular-nums;
 }
@@ -2958,7 +2958,7 @@ watch(
 }
 
 .git-branches__mobile-tab--active {
-  background: rgba(255, 164, 36, 0.15);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
   color: var(--accent);
   border-color: var(--accent);
 }

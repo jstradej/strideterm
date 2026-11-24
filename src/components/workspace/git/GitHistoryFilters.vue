@@ -824,7 +824,7 @@ function onClear() {
   gap: 4px;
   padding: 1px 4px 1px 6px;
   border-radius: 3px;
-  background: rgba(255, 164, 36, 0.18);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
   color: var(--accent);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
@@ -849,7 +849,7 @@ function onClear() {
 }
 
 .git-branches__sort-active {
-  background: rgba(255, 164, 36, 0.18) !important;
+  background: color-mix(in srgb, var(--accent) 18%, transparent) !important;
   color: var(--accent) !important;
 }
 

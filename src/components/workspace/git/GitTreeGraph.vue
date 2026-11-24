@@ -1151,7 +1151,7 @@ watch(
 }
 
 .git-tree__row--selected {
-  background: rgba(255, 164, 36, 0.12);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .git-tree__cell {
@@ -1229,7 +1229,7 @@ watch(
 }
 
 .git-tree__ref--head {
-  background: rgba(255, 164, 36, 0.22);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
   color: var(--accent);
 }
 
@@ -1357,14 +1357,14 @@ watch(
 }
 
 .git-tree--history .git-tree__ref--filled {
-  background: rgba(255, 164, 36, 0.16);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
   color: var(--accent);
   padding: 0 6px;
   border-radius: 999px;
 }
 
 .git-tree--history .git-tree__ref--outlined {
-  box-shadow: inset 0 0 0 1px rgba(255, 164, 36, 0.45);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
   color: var(--accent);
   padding: 0 6px;
   border-radius: 999px;

@@ -818,7 +818,7 @@ defineExpose({ requestClose });
 }
 .settings-tab-btn--active {
   background: var(--accent);
-  color: #000;
+  color: var(--on-accent);
 }
 .settings-tab-content {
   flex: 1;

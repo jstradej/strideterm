@@ -284,7 +284,7 @@ function onContextMenu(e: MouseEvent) {
 }
 
 .gct-node__row--selected {
-  background: rgba(255, 164, 36, 0.16);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
   color: var(--accent);
 }
 

@@ -282,11 +282,16 @@
   border-color: color-mix(in srgb, var(--accent) 50%, transparent);
 }
 
-:root[data-theme="light"] .terminal-host,
 :root[data-theme="light"] .detail-shell,
 :root[data-theme="light"] .detail-log,
 :root[data-theme="light"] .xterm .xterm-viewport {
   background: #ffffff;
+}
+
+/* The main terminals take the palette's tint (resolveTerminalTheme reads the same token). */
+:root[data-theme="light"] .terminal-host,
+:root[data-theme="light"] .terminal-host .xterm .xterm-viewport {
+  background: var(--surface-term);
 }
 
 /* ── Notifications ──────────────────────────────────────────────────────

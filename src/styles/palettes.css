@@ -1,8 +1,10 @@
 /* Colour palettes: the mood of the surfaces and the accent, on top of the dark or light theme.
  *
  * Each palette has a dark block (scoped with :not([data-theme="light"]) so it never leaks into light) and a light
- * block. Only surfaces, text, muted and accent change. Status colours keep their meaning in every palette, and
- * --surface-term is left alone: terminals stay neutral (xterm also has its own fixed background and ANSI colours). */
+ * block. Only surfaces, text, muted and accent change, plus the primary .button, which follows the accent (a light
+ * palette's accent is dark, so its button text turns white). Status colours keep their meaning in every palette.
+ * --surface-term gives the terminal a light tint of the palette; xterm reads it in resolveTerminalTheme, and its ANSI
+ * colours stay fixed. */
 
 /* ── Soft gray: neutral like the default, but dark is lifted and light is dimmed ── */
 :root[data-palette="soft"]:not([data-theme="light"]) {
@@ -16,6 +18,7 @@
   --surface-dialog: #292a2f;
   --surface-control: #292a2f;
   --menu-bg: #3b3c43;
+  --surface-term: #1f2024;
   --text: #e2e2e6;
   --muted: #8b8b93;
 }
@@ -30,6 +33,7 @@
   --surface-dialog: #dcdfe3;
   --surface-control: #e7e9ec;
   --menu-bg: #e7e9ec;
+  --surface-term: #e4e6ea;
   --text: #1c1d21;
   --muted: #555963;
 }
@@ -46,9 +50,12 @@
   --surface-dialog: #211913;
   --surface-control: #211913;
   --menu-bg: #382a20;
+  --surface-term: #19130f;
   --text: #ebdfd3;
   --muted: #8f7e6f;
   --accent: #e2793a;
+  --button-from: #e2793a;
+  --button-to: #c25a1e;
 }
 :root[data-palette="autumn"][data-theme="light"] {
   --base: #e9dfd3;
@@ -61,9 +68,14 @@
   --surface-dialog: #f8f2eb;
   --surface-control: #fffbf6;
   --menu-bg: #fffbf6;
+  --surface-term: #fbf5ee;
   --text: #2a1d14;
   --muted: #6f5d4e;
   --accent: #b0501a;
+  --button-from: #b0501a;
+  --button-to: #8f3e10;
+  --button-fg: #ffffff;
+  --on-accent: #ffffff;
 }
 
 /* ── Winter: cold blue-greys, ice-blue accent ── */
@@ -78,9 +90,12 @@
   --surface-dialog: #171e27;
   --surface-control: #171e27;
   --menu-bg: #27323f;
+  --surface-term: #121820;
   --text: #dce6f0;
   --muted: #7b8898;
   --accent: #74b9ec;
+  --button-from: #74b9ec;
+  --button-to: #4a94cf;
 }
 :root[data-palette="winter"][data-theme="light"] {
   --base: #dbe3ec;
@@ -93,9 +108,14 @@
   --surface-dialog: #f2f6fa;
   --surface-control: #ffffff;
   --menu-bg: #ffffff;
+  --surface-term: #eef3f8;
   --text: #13202f;
   --muted: #546375;
   --accent: #1d6aa8;
+  --button-from: #1d6aa8;
+  --button-to: #154f80;
+  --button-fg: #ffffff;
+  --on-accent: #ffffff;
 }
 
 /* ── Forest: deep greens, moss accent ── */
@@ -110,9 +130,12 @@
   --surface-dialog: #171f19;
   --surface-control: #171f19;
   --menu-bg: #27332a;
+  --surface-term: #121813;
   --text: #dde6dc;
   --muted: #7b8b7e;
   --accent: #93c26d;
+  --button-from: #93c26d;
+  --button-to: #6fa047;
 }
 :root[data-palette="forest"][data-theme="light"] {
   --base: #dde5d9;
@@ -125,7 +148,12 @@
   --surface-dialog: #f3f6f0;
   --surface-control: #ffffff;
   --menu-bg: #ffffff;
+  --surface-term: #f0f5ec;
   --text: #16221a;
   --muted: #56655a;
   --accent: #3d7728;
+  --button-from: #3d7728;
+  --button-to: #2c5a1c;
+  --button-fg: #ffffff;
+  --on-accent: #ffffff;
 }

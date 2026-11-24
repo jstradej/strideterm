@@ -486,7 +486,7 @@ defineExpose({ focus: () => buttonRef.value?.focus() });
 }
 .custom-select__option--selected {
   background: var(--accent);
-  color: #000;
+  color: var(--on-accent);
   font-weight: 600;
 }
 .custom-select__option--selected.custom-select__option--active {

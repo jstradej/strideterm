@@ -330,7 +330,7 @@ defineExpose({ pageSize });
 
 .fcp--active .fcp__path {
   background: var(--accent);
-  color: #141416;
+  color: var(--on-accent);
 }
 
 .fcp__header,
@@ -503,7 +503,7 @@ defineExpose({ pageSize });
   padding: 2px 8px;
   overflow: hidden;
   background: var(--accent);
-  color: #141416;
+  color: var(--on-accent);
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;

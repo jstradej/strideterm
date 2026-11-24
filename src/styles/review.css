@@ -1646,7 +1646,7 @@
 
 .review-comment-card--local {
   border-left-color: color-mix(in srgb, var(--accent), transparent 50%);
-  background: rgba(255, 164, 36, 0.03);
+  background: color-mix(in srgb, var(--accent) 3%, transparent);
 }
 
 /* File context header */
@@ -1893,7 +1893,7 @@
 }
 
 .review-comment--draft {
-  background: rgba(255, 164, 36, 0.05);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
   border-left: 2px solid var(--accent);
   margin: 4px 0;
   border-radius: 3px;

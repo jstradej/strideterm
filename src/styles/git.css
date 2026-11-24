@@ -793,7 +793,7 @@
 
 .git-file__edit-btn:hover {
   background: var(--accent);
-  color: #000;
+  color: var(--on-accent);
 }
 
 .git-file__name {

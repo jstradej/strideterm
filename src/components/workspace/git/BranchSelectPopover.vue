@@ -636,7 +636,7 @@ defineExpose({ focus: (): void => buttonRef.value?.focus() });
 }
 .branch-picker__row--selected,
 .branch-picker__row--off-selected {
-  background: rgba(255, 164, 36, 0.18);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
   color: var(--accent);
   font-weight: 600;
 }

@@ -663,7 +663,7 @@ async function revoke(device: Device): Promise<void> {
   border-radius: 10px;
   padding: 2px 7px;
   background: var(--accent);
-  color: #1a1a1a;
+  color: var(--on-accent);
   font-size: 11px;
   font-weight: 700;
 }

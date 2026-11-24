@@ -571,7 +571,7 @@ onMounted(() => {
 
 .nb-item--active {
   border-color: var(--accent, #ffa424);
-  background: rgba(255, 164, 36, 0.1);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
 .nb-item__name {
@@ -644,7 +644,7 @@ onMounted(() => {
 }
 
 .nb-combo__option--active {
-  background: rgba(255, 164, 36, 0.12);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
   font-weight: 600;
 }
 

@@ -764,7 +764,7 @@ button.workspace-chip--alert:hover {
 }
 
 .workspace-pane--active {
-  border-color: rgba(255, 164, 36, 0.45);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
 /* Active-pane indicator is useful for terminal panes (signals which pane

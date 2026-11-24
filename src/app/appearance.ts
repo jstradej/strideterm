@@ -22,8 +22,8 @@ export function resolveTheme(theme: unknown): "light" | "dark" {
 
 /**
  * Puts the theme and the palette on <html>. Settings previews through this before saving and the app store applies
- * the saved values through it, so the document always reflects whichever was applied last. Terminals are told only
- * when light/dark actually changes: a palette leaves them neutral.
+ * the saved values through it, so the document always reflects whichever was applied last. Editors and other themed
+ * widgets are told only when light/dark actually changes; a palette change alone only re-tints the terminals.
  */
 export function applyAppearance({ theme, palette }: { theme: unknown; palette: unknown }): void {
   const root = document.documentElement;
@@ -32,7 +32,9 @@ export function applyAppearance({ theme, palette }: { theme: unknown; palette: u
   if (resolved === "light") root.setAttribute("data-theme", "light");
   else root.removeAttribute("data-theme");
   const normalized = normalizePalette(palette);
+  const paletteChanged = (root.getAttribute("data-palette") ?? "default") !== normalized;
   if (normalized === "default") root.removeAttribute("data-palette");
   else root.setAttribute("data-palette", normalized);
   if (themeChanged) window.dispatchEvent(new CustomEvent("strideterm:theme-changed"));
+  else if (paletteChanged) window.dispatchEvent(new CustomEvent("strideterm:palette-changed"));
 }

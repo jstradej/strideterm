@@ -228,12 +228,12 @@ async function onDrop() {
 }
 
 .tree-node__label--selected {
-  background: rgba(255, 164, 36, 0.08);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
 .tree-node__label--drop {
   outline: 1px dashed var(--accent);
-  background: rgba(255, 164, 36, 0.16);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
 }
 
 .tree-node__label--git-ignored {
