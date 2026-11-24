@@ -1,5 +1,14 @@
 <template>
-  <aside v-if="proposals.length" class="review-pr-approvals" aria-label="Pull request approvals">
+  <button
+    v-if="proposals.length && minimized"
+    type="button"
+    class="review-pr-approvals__chip"
+    title="Show the pull request actions an agent is waiting for you to approve or reject"
+    @click="setAside.clear()"
+  >
+    {{ proposals.length }} pull request {{ proposals.length === 1 ? "approval" : "approvals" }} waiting
+  </button>
+  <aside v-else-if="proposals.length" class="review-pr-approvals" aria-label="Pull request approvals">
     <article v-for="proposal in proposals" :key="proposal.proposalId" class="review-pr-approval">
       <header class="review-pr-approval__header">
         <div>
@@ -98,6 +107,14 @@
           <button
             class="button button--ghost"
             type="button"
+            title="Hide this panel without deciding. The agent keeps waiting until you approve, reject or it expires."
+            @click="setAllAside"
+          >
+            Later
+          </button>
+          <button
+            class="button button--ghost"
+            type="button"
             :disabled="isBusy(proposal.proposalId)"
             @click="decide(proposal, false)"
           >
@@ -119,7 +136,7 @@
 </template>
 
 <script setup lang="ts">
-import { reactive } from "vue";
+import { computed, reactive } from "vue";
 import type { ReviewPrActionProposal, ReviewPrAction } from "../../../electron/shared/review-pr-actions.js";
 
 const props = defineProps<{
@@ -130,6 +147,14 @@ const props = defineProps<{
 }>();
 
 const errors = reactive(new Map<string, string>());
+
+// Set aside per proposal, so a proposal that arrives later opens the panel again instead of waiting unseen.
+const setAside = reactive(new Set<string>());
+const minimized = computed(() => props.proposals.every((proposal) => setAside.has(proposal.proposalId)));
+
+function setAllAside(): void {
+  for (const proposal of props.proposals) setAside.add(proposal.proposalId);
+}
 
 function providerName(provider: ReviewPrActionProposal["provider"]): string {
   return provider === "github" ? "GitHub" : "Azure DevOps";
@@ -189,6 +214,23 @@ async function decide(proposal: ReviewPrActionProposal, approved: boolean): Prom
   width: min(620px, calc(100vw - 36px));
   max-height: min(82vh, 900px);
   overflow-y: auto;
+}
+
+.review-pr-approvals__chip {
+  position: fixed;
+  z-index: 1200;
+  right: 18px;
+  bottom: 18px;
+  padding: 8px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  border-radius: 999px;
+  background: var(--panel, #202329);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
 }
 
 .review-pr-approval {

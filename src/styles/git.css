@@ -983,13 +983,13 @@
 }
 
 .button--danger {
-  background: rgba(255, 111, 141, 0.18);
-  border-color: rgba(255, 111, 141, 0.4);
-  color: #ff6f8d;
+  background: color-mix(in srgb, var(--danger) 18%, transparent);
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+  color: var(--danger);
 }
 
 .button--danger:hover {
-  background: rgba(255, 111, 141, 0.28);
+  background: color-mix(in srgb, var(--danger) 28%, transparent);
 }
 
 .git-diverged-banner {
