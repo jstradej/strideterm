@@ -102,7 +102,8 @@ watch(
   async ([branch, root]) => {
     const requestId = ++previewRequestId;
     const name = branch.trim();
-    destinationPath.value = "";
+    // Keep the previous path until the new one arrives: clearing it removed the line on every keystroke and the
+    // dialog jumped in height.
     try {
       const preview = attrs.onPreview as ((payload: { name: string; rootPath: string }) => Promise<string>) | undefined;
       const path = await preview?.({ name, rootPath: root || "" });

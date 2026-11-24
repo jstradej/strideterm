@@ -58,6 +58,21 @@ describe("WorktreeDialog", () => {
     expect(wrapper.find(".worktree-destination code").text()).toBe("/repo/.strideterm/tree/feature-new");
   });
 
+  // Regression: clearing the path while the next preview was in flight made the dialog jump on every keystroke.
+  test("keeps the previous destination visible while the next preview is pending", async () => {
+    const onPreview = vi.fn(({ name }: { name: string }) =>
+      name === "ab" ? new Promise<string>(() => {}) : Promise.resolve(`/repo/.strideterm/tree/${name}`),
+    );
+    const wrapper = mountDialog({ onPreview, preselectedRootPath: "/repo" });
+
+    await wrapper.find('input[name="name"]').setValue("a");
+    await flushPromises();
+    await wrapper.find('input[name="name"]').setValue("ab");
+    await flushPromises();
+
+    expect(wrapper.find(".worktree-destination code").text()).toBe("/repo/.strideterm/tree/a");
+  });
+
   // Regression: a failed create used to close the dialog with no feedback
   // and no log line — the user saw "nothing happens".
   test("a rejection stays open and shows the error without Electron's IPC prefix", async () => {
