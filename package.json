@@ -228,7 +228,7 @@
     "globals": "^17.14.0",
     "husky": "^9.1.7",
     "jsdom": "31.0.1",
-    "lint-staged": "^17.6.1",
+    "lint-staged": "^17.6.2",
     "patch-package": "8.0.1",
     "prettier": "^3.10.1",
     "tsx": "4.23.15",
